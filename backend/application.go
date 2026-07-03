@@ -15,29 +15,29 @@ import (
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core"
 	coretools "github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/mcp"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/c0wrk/sdk/tools/mcp"
 )
 
 // ApplicationConfig holds all parameters needed to construct an Application.
 // Desktop provides the UI callbacks; everything else is derived from config.
 type ApplicationConfig struct {
-	Config      *config.Config
-	Logger      *slog.Logger
-	AgentDir    string // base agent directory (e.g. ~/.c0wrk)
+	Config   *config.Config
+	Logger   *slog.Logger
+	AgentDir string // base agent directory (e.g. ~/.c0wrk)
 
 	// Persistence stores (optional — nil disables corresponding functionality).
 	SessionStore session.SessionStore
 	TaskStore    session.TaskStore
 
 	// UI callbacks provided by the desktop adapter.
-	UIEmitFunc    func(session.Event)  // Wails event emission
-	AskUserFunc   coretools.AskUserFunc // ask_user tool callback
-	ConfirmFunc   sdktools.ConfirmFunc    // tool confirmation callback
-	HITLHandler  agent.HITLHandler  // step limit and tool confirmation callback
+	UIEmitFunc  func(session.Event)   // Wails event emission
+	AskUserFunc coretools.AskUserFunc // ask_user tool callback
+	ConfirmFunc sdktools.ConfirmFunc  // tool confirmation callback
+	HITLHandler agent.HITLHandler     // step limit and tool confirmation callback
 
 	// Vector search callbacks (optional — nil disables semantic_search tool).
 	VectorSearchFunc     builtins.VectorSearchFunc
@@ -70,7 +70,7 @@ func (app *Application) log() *slog.Logger {
 // and event persister from the given configuration.
 func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	app := &Application{
-		logger:        cfg.Logger,
+		logger:      cfg.Logger,
 		hitlHandler: cfg.HITLHandler,
 	}
 

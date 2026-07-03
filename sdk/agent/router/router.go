@@ -30,12 +30,12 @@ type Config struct {
 
 // Router classifies user requests by domain and complexity.
 type Router struct {
-	llm                    agent.LLMCaller
-	systemPrompt           string
-	historyWindow          int
-	modelRegistry          *llm.ModelRegistry
-	reasoningEffort        string
-	appendContextSections  func(ctx context.Context) string
+	llm                   agent.LLMCaller
+	systemPrompt          string
+	historyWindow         int
+	modelRegistry         *llm.ModelRegistry
+	reasoningEffort       string
+	appendContextSections func(ctx context.Context) string
 }
 
 // NewRouter creates a new Router with the given caller and config.

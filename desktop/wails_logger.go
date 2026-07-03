@@ -16,9 +16,9 @@ import (
 // exits. A nil delegate (before session logger init) is tolerated — messages
 // are written to the fallback file only.
 type wailsLogAdapter struct {
-	logger    *slog.Logger
-	file      *os.File
-	delegate  *slog.Logger
+	logger   *slog.Logger
+	file     *os.File
+	delegate *slog.Logger
 }
 
 // NewWailsLogger creates a Wails Logger that writes to <logDir>/wails.log.
@@ -52,13 +52,27 @@ func (w *wailsLogAdapter) write(level slog.Level, msg string) {
 	}
 }
 
-func (w *wailsLogAdapter) Print(message string)      { w.write(slog.LevelInfo, strings.TrimRight(message, "\n")) }
-func (w *wailsLogAdapter) Trace(message string)      { w.write(slog.LevelDebug-4, strings.TrimRight(message, "\n")) } //nolint:mnd // trace level 4 below debug
-func (w *wailsLogAdapter) Debug(message string)      { w.write(slog.LevelDebug, strings.TrimRight(message, "\n")) }
-func (w *wailsLogAdapter) Info(message string)       { w.write(slog.LevelInfo, strings.TrimRight(message, "\n")) }
-func (w *wailsLogAdapter) Warning(message string)    { w.write(slog.LevelWarn, strings.TrimRight(message, "\n")) }
-func (w *wailsLogAdapter) Error(message string)      { w.write(slog.LevelError, strings.TrimRight(message, "\n")) }
-func (w *wailsLogAdapter) Fatal(message string)      { w.write(slog.LevelError, strings.TrimRight(message, "\n")) }
+func (w *wailsLogAdapter) Print(message string) {
+	w.write(slog.LevelInfo, strings.TrimRight(message, "\n"))
+}
+func (w *wailsLogAdapter) Trace(message string) {
+	w.write(slog.LevelDebug-4, strings.TrimRight(message, "\n"))
+} //nolint:mnd // trace level 4 below debug
+func (w *wailsLogAdapter) Debug(message string) {
+	w.write(slog.LevelDebug, strings.TrimRight(message, "\n"))
+}
+func (w *wailsLogAdapter) Info(message string) {
+	w.write(slog.LevelInfo, strings.TrimRight(message, "\n"))
+}
+func (w *wailsLogAdapter) Warning(message string) {
+	w.write(slog.LevelWarn, strings.TrimRight(message, "\n"))
+}
+func (w *wailsLogAdapter) Error(message string) {
+	w.write(slog.LevelError, strings.TrimRight(message, "\n"))
+}
+func (w *wailsLogAdapter) Fatal(message string) {
+	w.write(slog.LevelError, strings.TrimRight(message, "\n"))
+}
 
 func (w *wailsLogAdapter) Close() error {
 	if w.file != nil {

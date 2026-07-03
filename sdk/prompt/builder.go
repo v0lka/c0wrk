@@ -189,4 +189,3 @@ func (s *SystemPromptBuilder) CacheBreak() *SystemPromptBuilder {
 func (s *SystemPromptBuilder) Build() string {
 	return s.b.Build()
 }
-

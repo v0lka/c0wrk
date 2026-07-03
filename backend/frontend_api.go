@@ -37,9 +37,9 @@ type FrontendAPI struct {
 	logLevel      string
 
 	// Workspace
-	watcher         *workspace.Watcher
-	gitRepoCache    map[string]gitRepoCacheEntry
-	gitRepoCacheMu  sync.Mutex
+	watcher        *workspace.Watcher
+	gitRepoCache   map[string]gitRepoCacheEntry
+	gitRepoCacheMu sync.Mutex
 
 	// Project
 	projectManager    *project.Manager

@@ -84,4 +84,3 @@ func NewCompactionStrategy(name string, cfg CompactionConfig, deps CompactionDep
 		return NewSlidingWindowStrategy(cfg.SlidingWindow.KeepFirst, cfg.SlidingWindow.KeepLast)
 	}
 }
-

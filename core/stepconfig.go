@@ -4,11 +4,11 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/v0lka/c0wrk/sdk/skills"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	"github.com/v0lka/c0wrk/sdk/planner"
-	"github.com/v0lka/c0wrk/sdk/agent/router"
+	"github.com/v0lka/c0wrk/sdk/skills"
 	tools "github.com/v0lka/c0wrk/sdk/tools"
 )
 

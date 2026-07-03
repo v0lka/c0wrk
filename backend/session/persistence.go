@@ -25,8 +25,8 @@ type SessionInfo struct {
 	TotalOutputTokens int    `json:"total_output_tokens"`
 	Model             string `json:"model"`
 	Family            string `json:"family"`
-	PlanReviewPhase   string `json:"plan_review_phase"` // "" | "awaiting_accept" | "awaiting_feedback"
-	PlanReviewPath    string `json:"plan_review_path"`  // path to .md plan file awaiting review
+	PlanReviewPhase   string `json:"plan_review_phase"`   // "" | "awaiting_accept" | "awaiting_feedback"
+	PlanReviewPath    string `json:"plan_review_path"`    // path to .md plan file awaiting review
 	PlanReviewContext string `json:"plan_review_context"` // JSON with {msg, mode, skills} for restart survival
 }
 
@@ -34,7 +34,7 @@ type SessionInfo struct {
 type ChatMessage struct {
 	ID               int64            `json:"id"`
 	SessionID        string           `json:"session_id"`
-	Role             string           `json:"role"`              // "user", "assistant", "tool_call", "tool_result", "routing", "eval", "reflection", "error"
+	Role             string           `json:"role"` // "user", "assistant", "tool_call", "tool_result", "routing", "eval", "reflection", "error"
 	Content          string           `json:"content"`
 	ReasoningContent *string          `json:"reasoning_content,omitempty"` // chain-of-thought / reasoning content (DeepSeek)
 	ToolCalls        *json.RawMessage `json:"tool_calls,omitempty"`        // JSON-encoded tool calls (for assistant)

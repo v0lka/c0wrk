@@ -15,13 +15,13 @@ import (
 // All limit and callback types are imported directly from their source packages
 // per ADR-008 (no type re-exports).
 type BuiltinToolsConfig struct {
-	FileLimits          builtins.FileLimits
-	RipgrepLimits       builtins.RipgrepLimits
-	WebFetchLimits      builtins.WebFetchLimits
-	WebSearchLimits     builtins.WebSearchLimits
-	BashTimeouts        builtins.BashTimeouts
-	BashBlacklist       []string
-	ExtraBashBlacklist  []string
+	FileLimits         builtins.FileLimits
+	RipgrepLimits      builtins.RipgrepLimits
+	WebFetchLimits     builtins.WebFetchLimits
+	WebSearchLimits    builtins.WebSearchLimits
+	BashTimeouts       builtins.BashTimeouts
+	BashBlacklist      []string
+	ExtraBashBlacklist []string
 
 	// Search provider configuration.
 	SearchProvider string

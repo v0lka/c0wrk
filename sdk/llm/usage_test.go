@@ -92,7 +92,6 @@ func TestUsageTracker_Totals(t *testing.T) {
 	}
 }
 
-
 func TestUsageTracker_ConcurrentRecord(t *testing.T) {
 	tr := NewUsageTracker()
 	const goroutines = 50

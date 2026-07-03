@@ -35,7 +35,7 @@ type CheckpointedBlackboard struct {
 	logger             *slog.Logger
 	persistenceTimeout time.Duration
 	persistCh          chan persistOp
-	persistCtx         context.Context // context for persistence operations; nil-safe (falls back to Background)
+	persistCtx         context.Context         // context for persistence operations; nil-safe (falls back to Background)
 	onChanged          func(changeType string) // optional callback, nil-safe
 	wg                 sync.WaitGroup          // waits for persistence worker on shutdown
 	shutdownOnce       sync.Once               // ensures Shutdown is executed at most once

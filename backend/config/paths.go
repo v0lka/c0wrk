@@ -199,6 +199,7 @@ func ValidateNoProjectSessionPath(projectDir, absDir string) error {
 	}
 	return nil
 }
+
 // ---------------------------------------------------------------------------
 // Path containment and session-infra helpers
 // ---------------------------------------------------------------------------
@@ -243,4 +244,3 @@ func SessionStepDumpDir(agentDir, projectID, sessionID string) string {
 	dumpPath := SessionDumpPath(agentDir, projectID, sessionID)
 	return filepath.Join(filepath.Dir(dumpPath), "steps")
 }
-

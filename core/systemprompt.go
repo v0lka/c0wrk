@@ -6,9 +6,9 @@ import (
 
 	"github.com/v0lka/c0wrk/core/prompts"
 	coretools "github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/prompt"
+	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/sdk/tools"
 )
 

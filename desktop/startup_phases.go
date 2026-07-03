@@ -22,14 +22,14 @@ import (
 	"github.com/v0lka/c0wrk/backend/logger"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
-	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/terminal"
 	"github.com/v0lka/c0wrk/core/toolmanager"
+	coretools "github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/embedding"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
-	"github.com/v0lka/c0wrk/core/vectorindex"
 )
 
 // initLogger initializes the session logger with a temporary INFO level so any
@@ -639,8 +639,8 @@ func (a *App) startVectorIndexBackground(
 			TokenizerPath: tokenizerPath,
 			LibraryPath:   libraryPath,
 			MaxSeqLength:  512,
-			HiddenDim:    512,
-			Logger:       log,
+			HiddenDim:     512,
+			Logger:        log,
 		})
 		if embErr != nil {
 			log.Warn("vector search unavailable", "error", embErr)

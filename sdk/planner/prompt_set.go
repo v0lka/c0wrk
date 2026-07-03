@@ -9,12 +9,12 @@ type PromptSet struct {
 	ReplanPrompt   string
 
 	// Mode sections (multi-step, single-step, continuation variants)
-	PlanPreamble           string
-	SingleStepPreamble     string
-	MultiStepToT           string
-	SingleStepToT          string
-	MultiStepGuidance      string
-	SingleStepGuidance     string
+	PlanPreamble                   string
+	SingleStepPreamble             string
+	MultiStepToT                   string
+	SingleStepToT                  string
+	MultiStepGuidance              string
+	SingleStepGuidance             string
 	ContinuationPreamble           string
 	ContinuationIncompletePreamble string
 	ContinuationSingleStep         string

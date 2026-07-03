@@ -16,11 +16,15 @@ import (
 // wiring used by conversation-history tests.
 func newHistoryTestOrchestrator(mockLLM *mockLLMCaller) *Orchestrator {
 	registry := createTestRegistry()
+	pl, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		panic(err)
+	}
 	return NewOrchestrator(OrchestratorConfig{
 		MaxSteps: 10,
 	}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
-		Planner:        newCorePlanner(mockLLM, coretools.NewToolRegistry()),
+		Planner:        pl,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,

@@ -1,9 +1,9 @@
 package agent
 
 import (
-	"errors"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -403,7 +403,7 @@ func (tw *testWriterStruct) Write(p []byte) (n int, err error) { return len(p), 
 type testFactStoreStruct struct{}
 
 func (tfs *testFactStoreStruct) StoreFact(keywords []string, content, author string) {}
-func (tfs *testFactStoreStruct) SearchFacts(keywords []string) []FactEntry          { return nil }
+func (tfs *testFactStoreStruct) SearchFacts(keywords []string) []FactEntry           { return nil }
 
 var _ FactStore = (*testFactStoreStruct)(nil)
 

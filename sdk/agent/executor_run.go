@@ -617,11 +617,11 @@ func (e *Executor) processBatchTool(
 			e.emitter.ToolCall(state.stepNum, effectiveIdx, batchedName, string(sub.Input), e.tools.GetToolSource(sub.Tool))
 			e.emitter.ToolResult(state.stepNum, effectiveIdx, len(obs), obs, true)
 			step := Step{
-				Thought:     thought,
-				Action:      subCall,
-				Observation: obs,
-				IsUntrusted: false,
-				TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				Thought:       thought,
+				Action:        subCall,
+				Observation:   obs,
+				IsUntrusted:   false,
+				TokensUsed:    resp.Usage.InputTokens + resp.Usage.OutputTokens,
 				ResponseGroup: responseGroup,
 			}
 			state.allSteps = append(state.allSteps, step)
@@ -660,11 +660,11 @@ func (e *Executor) processBatchTool(
 				obs := fmt.Sprintf("[Tool call rejected: %s]", reason)
 				e.emitter.ToolResult(state.stepNum, effectiveIdx, len(obs), obs, true)
 				step := Step{
-					Thought:     thought,
-					Action:      subCall,
-					Observation: obs,
-					IsUntrusted: false,
-					TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+					Thought:       thought,
+					Action:        subCall,
+					Observation:   obs,
+					IsUntrusted:   false,
+					TokensUsed:    resp.Usage.InputTokens + resp.Usage.OutputTokens,
 					ResponseGroup: responseGroup,
 				}
 				state.allSteps = append(state.allSteps, step)

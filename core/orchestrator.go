@@ -13,9 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
-	"github.com/v0lka/c0wrk/sdk/strutil"
-	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/agent/reflector"
@@ -24,7 +21,10 @@ import (
 	sdkmemory "github.com/v0lka/c0wrk/sdk/memory"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	"github.com/v0lka/c0wrk/sdk/planner"
+	"github.com/v0lka/c0wrk/sdk/skills"
+	"github.com/v0lka/c0wrk/sdk/strutil"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 )
 
 type planModeKeyType struct{}
@@ -54,14 +54,14 @@ var InjectionDefenseKey = injectionDefenseKeyType{}
 
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
-	MaxSteps                       int
-	KeepFirst                      int     // for sliding window compaction
-	KeepLast                       int     // for sliding window compaction
-	MaxRetries                     int     // max retry attempts (default: 2, yielding 3 total executions)
-	PlannerHistoryBudgetTokens     int     // max tokens for conversation history sent to planner (default: 4000); triggers summarisation compaction when exceeded
-	PlannerHistoryKeepRecentRatio  float64 // fraction of PlannerHistoryBudgetTokens reserved for recent messages during compaction (default: 0.75)
-	MaxDependencyContextChars      int     // max chars for dependency context in step tasks (default: 8000)
-	Model                          string  // active model name for ModelRegistry.Resolve()
+	MaxSteps                      int
+	KeepFirst                     int     // for sliding window compaction
+	KeepLast                      int     // for sliding window compaction
+	MaxRetries                    int     // max retry attempts (default: 2, yielding 3 total executions)
+	PlannerHistoryBudgetTokens    int     // max tokens for conversation history sent to planner (default: 4000); triggers summarisation compaction when exceeded
+	PlannerHistoryKeepRecentRatio float64 // fraction of PlannerHistoryBudgetTokens reserved for recent messages during compaction (default: 0.75)
+	MaxDependencyContextChars     int     // max chars for dependency context in step tasks (default: 8000)
+	Model                         string  // active model name for ModelRegistry.Resolve()
 
 	// ReasoningEffort is the reasoning effort applied to step executors.
 	// When non-empty, each executor gets this value directly (no role adaptation).
@@ -108,7 +108,7 @@ type BlackboardFactory func(taskID string) orchestration.Blackboard
 // same session are rejected before reaching HandleMessage.
 type Orchestrator struct {
 	engine              *orchestration.Orchestrator // SDK P&E engine
-	planner             *planner.Planner           // for PlanContinuation in P&E continuations
+	planner             *planner.Planner            // for PlanContinuation in P&E continuations
 	router              *router.Router
 	llm                 agent.LLMCaller
 	modelSwitcher       *llm.Router // raw LLM router for per-message model override
@@ -177,17 +177,17 @@ type OrchestratorDeps struct {
 	TokenCounter     llm.TokenCounter
 	ContextFactory   ContextManagerFactory
 	Reflector        *reflector.Reflector // optional, nil-safe
-	Logger           *slog.Logger       // optional, nil-safe
-	Emitter          Emitter            // optional, uses noopEmitter if nil
-	ModelRegistry    *llm.ModelRegistry // optional, nil-safe
+	Logger           *slog.Logger         // optional, nil-safe
+	Emitter          Emitter              // optional, uses noopEmitter if nil
+	ModelRegistry    *llm.ModelRegistry   // optional, nil-safe
 	ToolResultBudget agent.ToolResultBudget
 	CircuitBreaker   agent.CircuitBreakerConfig
-	BBFactory        BlackboardFactory      // optional, nil = default MapBlackboard
-	TrackingCaller   *llm.TrackingCaller    // optional, for per-step context tracker wiring
+	BBFactory        BlackboardFactory         // optional, nil = default MapBlackboard
+	TrackingCaller   *llm.TrackingCaller       // optional, for per-step context tracker wiring
 	VectorSearchFunc builtins.VectorSearchFunc // optional, for auto-RAG hint generation
-	SkillManager     *skills.SkillManager   // optional, for skill discovery and activation
-	CoreToolRegistry *tools.ToolRegistry    // core tool registry for skill policy overrides
-	ModelSwitcher    *llm.Router            // raw LLM router for per-message model override
+	SkillManager     *skills.SkillManager      // optional, for skill discovery and activation
+	CoreToolRegistry *tools.ToolRegistry       // core tool registry for skill policy overrides
+	ModelSwitcher    *llm.Router               // raw LLM router for per-message model override
 
 	// Tool result caching and per-tool truncation.
 	ToolCache         *agent.ToolResultCache

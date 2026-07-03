@@ -89,7 +89,7 @@ type noopEmitter struct {
 var _ Emitter = (*noopEmitter)(nil)
 
 func (n *noopEmitter) Routing(_, _, _ string)                                       {}
-func (n *noopEmitter) PlanGenerated(_ int, _ []orchestration.PlanStepEvent)                       {}
+func (n *noopEmitter) PlanGenerated(_ int, _ []orchestration.PlanStepEvent)         {}
 func (n *noopEmitter) PlanStepStart(_, _, _ string)                                 {}
 func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration, _ string) {}
 func (n *noopEmitter) Reflection(_ *orchestration.Reflection, _, _ int)             {}
@@ -100,7 +100,7 @@ func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)               
 func (n *noopEmitter) ReplanFailed(_ error)                                         {}
 func (n *noopEmitter) SkillsActivated(_ []string)                                   {}
 func (n *noopEmitter) StepTodoUpdate(_ string, _ []TodoItem)                        {}
-func (n *noopEmitter) MemoryRead(_ int, _ string)                                    {}
+func (n *noopEmitter) MemoryRead(_ int, _ string)                                   {}
 
 // ---------------------------------------------------------------------------
 // emitterEventsAdapter wraps a core Emitter to implement orchestration.Events.
@@ -184,19 +184,19 @@ type ExecutorConfig struct {
 
 // TaskDefinition — defines a task for the Executor.
 type TaskDefinition struct {
-	Task  string                   `json:"task"`
+	Task  string                    `json:"task"`
 	Tools []sdktools.ToolDescriptor `json:"tools"`
 }
 
 // HandleResult — result of Orchestrator.Handle (Phase 2).
 // Provides rich output for CLI display including routing and plan info.
 type HandleResult struct {
-	Output          string                       `json:"output"`
-	RoutingDecision *router.RoutingDecision       `json:"routing_decision"`
-	Plan            *orchestration.Plan            `json:"plan,omitempty"`
-	Blackboard      orchestration.Blackboard       `json:"-"` // shared state for downstream consumers (not serialized)
+	Output          string                   `json:"output"`
+	RoutingDecision *router.RoutingDecision  `json:"routing_decision"`
+	Plan            *orchestration.Plan      `json:"plan,omitempty"`
+	Blackboard      orchestration.Blackboard `json:"-"` // shared state for downstream consumers (not serialized)
 	// Retry-loop fields (Phase 3)
-	AttemptCount int                    `json:"attempt_count,omitempty"` // Number of attempts made (1 = first try)
+	AttemptCount int                        `json:"attempt_count,omitempty"` // Number of attempts made (1 = first try)
 	Reflections  []orchestration.Reflection `json:"reflections,omitempty"`   // Reflections from failed attempts
 	// Typed execution outcome (empty = success for legacy/short-circuit paths).
 	Status      orchestration.ExecutionStatus `json:"status,omitempty"`

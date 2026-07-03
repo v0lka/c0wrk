@@ -85,7 +85,7 @@ func ManagedTools() ([]ToolSpec, error) {
 			Checksums: map[string]string{
 				"darwin-amd64":  "dc5037f3ffbf8074b3ee63de7a73aa57421b0da0837a478e26317424dbab16f3",
 				"darwin-arm64":  "964ebe641b563920e0650a60bf5ac21e6c8c56557704e5ecfaaad7ff62c3a73c",
-				"linux-amd64":  "08e1bb8fdea2c6d5edbe40ab1651de097b884020056c0925a9973582ff669d04",
+				"linux-amd64":   "08e1bb8fdea2c6d5edbe40ab1651de097b884020056c0925a9973582ff669d04",
 				"linux-arm64":   "540fcb8f2f972c82260a8063a6a4b496d7ff858edc42aa0e2c733a7b55ef8dd8",
 				"windows-amd64": "62836c9d6e3f346d06c45fee4109be21ca9d1df8d087472dcc8d51815f182332",
 			},

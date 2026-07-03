@@ -166,8 +166,13 @@ func (p *EventPersister) Persist(evt Event) {
 		// grouping logic to skip this as a pending action.
 		role = "plan_review"
 		if data, ok := evt.Data.(map[string]any); ok {
-			data["resolved"] = true
-			data["decision"] = "accepted"
+			newData := make(map[string]any, len(data)+2)
+			for k, v := range data {
+				newData[k] = v
+			}
+			newData["resolved"] = true
+			newData["decision"] = "accepted"
+			evt.Data = newData
 		} else {
 			evt.Data = map[string]any{"resolved": true, "decision": "accepted"}
 		}
@@ -177,8 +182,13 @@ func (p *EventPersister) Persist(evt Event) {
 		// after app restart.
 		role = "plan_review"
 		if data, ok := evt.Data.(map[string]any); ok {
-			data["resolved"] = true
-			data["decision"] = "rejected"
+			newData := make(map[string]any, len(data)+2)
+			for k, v := range data {
+				newData[k] = v
+			}
+			newData["resolved"] = true
+			newData["decision"] = "rejected"
+			evt.Data = newData
 		} else {
 			evt.Data = map[string]any{"resolved": true, "decision": "rejected"}
 		}

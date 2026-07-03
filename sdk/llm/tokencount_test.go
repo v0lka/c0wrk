@@ -478,7 +478,6 @@ func TestContextTokenTracker_AddDelta(t *testing.T) {
 	})
 }
 
-
 func TestContextTokenTracker_Correct(t *testing.T) {
 	counter := NewSimpleTokenCounter()
 	tracker := NewContextTokenTracker(counter)

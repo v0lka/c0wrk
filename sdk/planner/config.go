@@ -47,13 +47,13 @@ type Config struct {
 
 	// --- Optional dependencies ---
 
-	Logger              *slog.Logger
-	Emitter             PlannerEvents
-	TokenCounter        llm.TokenCounter
-	ContextFactory      ContextManagerFactory
-	CallerForStep       func(cm agent.ContextManager, stepID string) agent.LLMCaller
-	MaxExploreSteps     int
-	ReasoningEffort     string
+	Logger          *slog.Logger
+	Emitter         PlannerEvents
+	TokenCounter    llm.TokenCounter
+	ContextFactory  ContextManagerFactory
+	CallerForStep   func(cm agent.ContextManager, stepID string) agent.LLMCaller
+	MaxExploreSteps int
+	ReasoningEffort string
 }
 
 // DefaultConfig returns a Config with sensible defaults for testing.

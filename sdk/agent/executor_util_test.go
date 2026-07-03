@@ -17,7 +17,7 @@ func (m *mockToolExecutorMCP) Execute(_ context.Context, _ string, _ json.RawMes
 	return tools.ToolResult{Content: "mcp result"}, nil
 }
 func (m *mockToolExecutorMCP) GetToolSource(_ string) string { return "mcp:test" }
-func (m *mockToolExecutorMCP) IsToolUntrusted(_ string) bool  { return true }
+func (m *mockToolExecutorMCP) IsToolUntrusted(_ string) bool { return true }
 
 var _ ToolExecutor = (*mockToolExecutorMCP)(nil)
 

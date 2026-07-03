@@ -8,9 +8,9 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/core/proxy"
 )
 
 // maskedAPIKey is the placeholder returned for configured API keys in the UI.
@@ -29,7 +29,7 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 		Loaded:       true,
 		LogLevel:     f.config.LogLevel,
 		ConfigErrors: nonNilStringSlice(f.configLoadErrors),
-		LLM: f.buildLLMResponse(),
+		LLM:          f.buildLLMResponse(),
 		Search: ConfigSearchResp{
 			Provider: f.config.Search.Provider,
 			APIKey:   maskAPIKey(f.config.Search.APIKey),
@@ -319,8 +319,8 @@ func (f *FrontendAPI) GetSecuritySettings() SecuritySettingsResponse {
 		return SecuritySettingsResponse{DefaultPolicy: "user_confirm"}
 	}
 	resp := SecuritySettingsResponse{
-		DefaultPolicy:             f.config.Security.DefaultPolicy,
-		ToolPolicies:              make(map[string]ToolPolicyResponse),
+		DefaultPolicy:              f.config.Security.DefaultPolicy,
+		ToolPolicies:               make(map[string]ToolPolicyResponse),
 		AutoApproveWorkspaceWrites: f.config.Security.AutoApproveWorkspaceWrites,
 	}
 	for name, cfg := range f.config.Security.ToolPolicies {

@@ -15,8 +15,8 @@ import (
 	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 	"github.com/v0lka/c0wrk/sdk/skills"
+	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 
 // planFileExt is the file extension for serialized plan metadata (JSON with
@@ -27,8 +27,8 @@ const planFileExt = ".plan.json"
 // hidden fields (DependsOn, Profile, etc.) and the routing decision survive
 // app restart.
 type PlanReviewSidecar struct {
-	Plan  *orchestration.Plan       `json:"plan"`
-	Route *router.RoutingDecision   `json:"route,omitempty"`
+	Plan  *orchestration.Plan     `json:"plan"`
+	Route *router.RoutingDecision `json:"route,omitempty"`
 }
 
 // RandomSuffix generates a 6-character random hex suffix for plan filenames.

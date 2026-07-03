@@ -195,4 +195,3 @@ func (r *ToolRegistry) SetParamManager(pm ParamManager) {
 	defer r.mu.Unlock()
 	r.paramManager = pm
 }
-

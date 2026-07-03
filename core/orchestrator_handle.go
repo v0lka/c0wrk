@@ -7,9 +7,9 @@ import (
 	"strconv"
 
 	"github.com/google/uuid"
-	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/c0wrk/sdk/skills"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 )
 

@@ -253,7 +253,7 @@ func GitIgnoredPaths(ctx context.Context, dir string) (map[string]bool, error) {
 
 	output := stdout.Bytes()
 	if len(output) == 0 {
-		return nil, nil //nolint:nilnil // no ignored paths
+		return map[string]bool{}, nil
 	}
 
 	result := make(map[string]bool)

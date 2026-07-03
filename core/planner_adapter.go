@@ -16,23 +16,23 @@ import (
 // c0wrkPromptSet returns the planner PromptSet wired with c0wrk prompt templates.
 func c0wrkPromptSet() planner.PromptSet {
 	return planner.PromptSet{
-		BasePrompt:           prompts.PlannerBase,
-		InformedPrompt:       prompts.PlannerInformed,
-		ReplanPrompt:         prompts.PlannerReplan,
-		PlanPreamble:         prompts.PlannerPlanPreamble,
-		SingleStepPreamble:   prompts.PlannerSingleStepPreamble,
-		MultiStepToT:         prompts.PlannerMultiStepToT,
-		SingleStepToT:        prompts.PlannerSingleStepToT,
-		MultiStepGuidance:    prompts.PlannerMultiStepGuidance,
-		SingleStepGuidance:   prompts.PlannerSingleStepGuidance,
+		BasePrompt:                     prompts.PlannerBase,
+		InformedPrompt:                 prompts.PlannerInformed,
+		ReplanPrompt:                   prompts.PlannerReplan,
+		PlanPreamble:                   prompts.PlannerPlanPreamble,
+		SingleStepPreamble:             prompts.PlannerSingleStepPreamble,
+		MultiStepToT:                   prompts.PlannerMultiStepToT,
+		SingleStepToT:                  prompts.PlannerSingleStepToT,
+		MultiStepGuidance:              prompts.PlannerMultiStepGuidance,
+		SingleStepGuidance:             prompts.PlannerSingleStepGuidance,
 		ContinuationPreamble:           prompts.PlannerContinuationPreamble,
 		ContinuationIncompletePreamble: prompts.PlannerContinuationIncompletePreamble,
 		ContinuationSingleStep:         prompts.PlannerContinuationSingleStep,
-		DomainAssignment:     prompts.PlannerDomainAssignment,
-		AgentProfiles:        prompts.PlannerAgentProfiles,
-		ExtraSections:        prompts.PlannerExtraSections,
-		FamilyPrompt:         prompts.FamilyPrompt,
-		VerificationMandate:  prompts.VerificationMandate,
+		DomainAssignment:               prompts.PlannerDomainAssignment,
+		AgentProfiles:                  prompts.PlannerAgentProfiles,
+		ExtraSections:                  prompts.PlannerExtraSections,
+		FamilyPrompt:                   prompts.FamilyPrompt,
+		VerificationMandate:            prompts.VerificationMandate,
 	}
 }
 
@@ -81,7 +81,7 @@ var plannerToolNames = map[string]bool{
 
 // newCorePlanner creates an SDK planner wired with c0wrk-specific prompts,
 // context functions, and tool configuration.
-func newCorePlanner(caller agent.LLMCaller, reg *tools.ToolRegistry) *planner.Planner {
+func newCorePlanner(caller agent.LLMCaller, reg *tools.ToolRegistry) (*planner.Planner, error) {
 	cfg := planner.Config{
 		Prompts:               c0wrkPromptSet(),
 		DomainFromContext:     DomainFromContext,

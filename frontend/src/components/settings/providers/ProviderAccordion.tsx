@@ -1,0 +1,180 @@
+import { useState, useMemo } from 'react'
+import { ProviderConfigForm } from '../ProviderConfigForm'
+import { useModelFetch } from '../useModelFetch'
+import { ChevronDown, ChevronRight, X } from 'lucide-react'
+
+export interface ProviderConfig {
+  api_key: string
+  base_url: string
+  models: string[]
+}
+
+interface ProviderAccordionProps {
+  provider: string
+  label: string
+  config: ProviderConfig
+  isExpanded: boolean
+  onToggle: () => void
+  onConfigChange: (updates: Partial<{ api_key: string; base_url: string }>) => void
+  onToggleModel: (model: string) => void
+  onDelete?: () => void
+  defaultModel: string
+  providerConfigs: Record<string, ProviderConfig>
+}
+
+export function ProviderAccordion({
+  provider,
+  label,
+  config,
+  isExpanded,
+  onToggle,
+  onConfigChange,
+  onToggleModel,
+  onDelete,
+  defaultModel,
+  providerConfigs,
+}: ProviderAccordionProps) {
+  const {
+    models,
+    modelsLoading,
+    modelsError,
+    apiKeyDirty,
+    handleApply,
+    hasRequiredCredentials,
+  } = useModelFetch(provider, providerConfigs)
+
+  // Show configured models immediately when the provider API hasn't been
+  // fetched yet. Once the user clicks "Fetch Models" / "Apply", the full
+  // provider model list replaces the configured subset.
+  const displayModels = useMemo(() => {
+    if (models.length > 0) return models
+    return config.models
+  }, [models, config.models])
+
+  const isEmpty = displayModels.length === 0
+
+  // Deletion confirmation: warn when the provider owns the default model.
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const ownsDefaultModel = config.models.includes(defaultModel)
+
+  const handleDeleteClick = () => {
+    if (ownsDefaultModel && !confirmDelete) {
+      setConfirmDelete(true)
+      return
+    }
+    onDelete?.()
+  }
+
+  return (
+    <div className="rounded-lg border">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/50"
+        onClick={onToggle}
+      >
+        <span className="flex items-center gap-2">
+          {isExpanded ? (
+            <ChevronDown className="h-4 w-4" />
+          ) : (
+            <ChevronRight className="h-4 w-4" />
+          )}
+          {label}
+        </span>
+        <span className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">
+            {config.models.length} model{config.models.length !== 1 ? 's' : ''} enabled
+          </span>
+          {onDelete && (
+            <span
+              role="button"
+              tabIndex={0}
+              className="ml-1 flex h-5 w-5 cursor-pointer items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+              onClick={(e) => {
+                e.stopPropagation()
+                handleDeleteClick()
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  handleDeleteClick()
+                }
+              }}
+              title={
+                confirmDelete
+                  ? 'Click again to confirm deletion'
+                  : 'Delete provider'
+              }
+            >
+              <X className="h-3.5 w-3.5" />
+            </span>
+          )}
+        </span>
+      </button>
+
+      {confirmDelete && (
+        <div className="border-t px-4 py-2 text-xs text-destructive">
+          This provider contains the default model &ldquo;{defaultModel}&rdquo;.
+          Click the X again to confirm deletion.
+        </div>
+      )}
+
+      {isExpanded && (
+        <div className="flex flex-col gap-4 border-t px-4 py-4">
+          <ProviderConfigForm
+            activeProvider={provider}
+            config={config}
+            apiKeyDirty={apiKeyDirty}
+            hasRequiredCredentials={hasRequiredCredentials}
+            modelsLoading={modelsLoading}
+            onConfigChange={onConfigChange}
+            onApply={handleApply}
+          />
+
+          {/* Model Checklist */}
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium">Enabled Models</label>
+            {modelsLoading && (
+              <span className="text-xs text-muted-foreground">Fetching models...</span>
+            )}
+            {modelsError && (
+              <span className="text-xs text-destructive">{modelsError}</span>
+            )}
+            <div className="flex max-h-48 flex-col gap-1 overflow-y-auto custom-scrollbar rounded-md border p-2">
+              {isEmpty && !modelsLoading && (
+                <span className="text-xs text-muted-foreground">
+                  {hasRequiredCredentials
+                    ? 'No models available. Click "Fetch Models" to load them.'
+                    : 'Configure API key and click "Fetch Models" to load available models.'}
+                </span>
+              )}
+              {displayModels.map((model) => {
+                const isEnabled = config.models.includes(model)
+                const isDefault = model === defaultModel
+                return (
+                  <label
+                    key={model}
+                    className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs hover:bg-muted"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isEnabled}
+                      onChange={() => onToggleModel(model)}
+                      className="h-3.5 w-3.5"
+                    />
+                    <span className="flex-1">{model}</span>
+                    {isDefault && (
+                      <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                        default
+                      </span>
+                    )}
+                  </label>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

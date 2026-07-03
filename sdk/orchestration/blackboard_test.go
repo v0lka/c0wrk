@@ -269,7 +269,6 @@ func TestBlackboard_StepResult_EmptyOutput(t *testing.T) {
 	}
 }
 
-
 func TestCopyPlanPreservesExplorationContext(t *testing.T) {
 	original := &Plan{
 		Steps: []PlanStep{

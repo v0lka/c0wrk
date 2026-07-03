@@ -32,12 +32,12 @@ type ModelInfo struct {
 
 // ConfigLLMResponse holds sanitised LLM provider info.
 type ConfigLLMResponse struct {
-	DefaultModel     string             `json:"default_model"` // global, cross-provider
-	Anthropic        ConfigProviderFull `json:"anthropic"`
+	DefaultModel     string                        `json:"default_model"` // global, cross-provider
+	Anthropic        ConfigProviderFull            `json:"anthropic"`
 	OpenAICompatible map[string]ConfigProviderFull `json:"openai_compatible"`
-	ChatGPT          ConfigProviderFull `json:"chatgpt"`
-	AllModels        []ModelInfo        `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
-	ModelsReady      bool               `json:"models_ready"` // false during async LLM init; true once registry is wired
+	ChatGPT          ConfigProviderFull            `json:"chatgpt"`
+	AllModels        []ModelInfo                   `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
+	ModelsReady      bool                          `json:"models_ready"` // false during async LLM init; true once registry is wired
 }
 
 // ConfigProviderFull is a provider with api_key, optional base_url, and enabled models list.
@@ -61,10 +61,10 @@ type LLMSettingsRequest struct {
 
 // LLMFullConfigRequest is the full LLM configuration payload for UpdateLLMConfig.
 type LLMFullConfigRequest struct {
-	DefaultModel     string                 `json:"default_model"`
-	Anthropic        *ProviderConfigRequest `json:"anthropic,omitempty"`
+	DefaultModel     string                           `json:"default_model"`
+	Anthropic        *ProviderConfigRequest           `json:"anthropic,omitempty"`
 	OpenAICompatible map[string]ProviderConfigRequest `json:"openai_compatible,omitempty"`
-	ChatGPT          *ProviderConfigRequest `json:"chatgpt,omitempty"`
+	ChatGPT          *ProviderConfigRequest           `json:"chatgpt,omitempty"`
 }
 
 // ProviderConfigRequest holds a single provider's configuration.
@@ -98,9 +98,9 @@ type ProxySettingsRequest struct {
 
 // SecuritySettingsResponse holds security settings for the frontend.
 type SecuritySettingsResponse struct {
-	DefaultPolicy               string                        `json:"default_policy"`
-	ToolPolicies                 map[string]ToolPolicyResponse `json:"tool_policies"`
-	AutoApproveWorkspaceWrites   bool                          `json:"auto_approve_workspace_writes"`
+	DefaultPolicy              string                        `json:"default_policy"`
+	ToolPolicies               map[string]ToolPolicyResponse `json:"tool_policies"`
+	AutoApproveWorkspaceWrites bool                          `json:"auto_approve_workspace_writes"`
 }
 
 // ToolPolicyResponse holds per-tool policy for the frontend.

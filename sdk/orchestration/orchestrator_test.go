@@ -1090,13 +1090,13 @@ func TestConfig_StepDefaultsStruct(t *testing.T) {
 func TestConfig_NewOrchestratorWithFullConfig(t *testing.T) {
 	registry := llm.NewModelRegistry(nil)
 	o := New(Config{
-		Model:                    "gpt-4o",
-		ModelRegistry:            registry,
-		MaxRetries:               3,
-		MaxSteps:                 20,
+		Model:                     "gpt-4o",
+		ModelRegistry:             registry,
+		MaxRetries:                3,
+		MaxSteps:                  20,
 		MaxDependencyContextChars: 4000,
-		PreWarningPercent:        70,
-		ReasoningEffort:          "high",
+		PreWarningPercent:         70,
+		ReasoningEffort:           "high",
 	})
 	if o.cfg.Model != "gpt-4o" {
 		t.Errorf("Model = %q", o.cfg.Model)

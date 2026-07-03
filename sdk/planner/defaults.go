@@ -11,12 +11,12 @@ import (
 // meaningful defaults suitable for production framework use.
 func DefaultPlannerConfig() Config {
 	return Config{
-		DomainFromContext:      func(context.Context) string { return "" },
-		ComplexityFromContext:  func(context.Context) int { return 0 },
-		UserSkillsFromContext:  func(context.Context) []string { return nil },
-		FormatSkillList:        func(context.Context, []skills.SkillDescriptor) string { return "None" },
-		FormatWorkspacePath:    func(context.Context) string { return "" },
-		AppendContextSections:  func(_ context.Context, base string) string { return base },
-		MaxExploreSteps:        7,
+		DomainFromContext:     func(context.Context) string { return "" },
+		ComplexityFromContext: func(context.Context) int { return 0 },
+		UserSkillsFromContext: func(context.Context) []string { return nil },
+		FormatSkillList:       func(context.Context, []skills.SkillDescriptor) string { return "None" },
+		FormatWorkspacePath:   func(context.Context) string { return "" },
+		AppendContextSections: func(_ context.Context, base string) string { return base },
+		MaxExploreSteps:       7,
 	}
 }

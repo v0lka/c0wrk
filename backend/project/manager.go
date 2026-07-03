@@ -16,9 +16,9 @@ import (
 
 // Manager provides high-level project lifecycle operations.
 type Manager struct {
-	store     ProjectStore
-	agentDir  string // ~/.c0wrk
-	mu        sync.RWMutex
+	store    ProjectStore
+	agentDir string // ~/.c0wrk
+	mu       sync.RWMutex
 }
 
 // EnsureNoProject creates the No Project pseudo-project if it does not already exist.

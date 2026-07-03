@@ -97,8 +97,11 @@ func makeTestMode() planPromptMode {
 // ---------------------------------------------------------------------------
 
 func TestNewPlanner_NilCaller(t *testing.T) {
-	got := NewPlanner(nil, Config{})
-	if got != nil {
+	p, err := NewPlanner(nil, Config{})
+	if err == nil {
+		t.Error("expected error when caller is nil")
+	}
+	if p != nil {
 		t.Error("expected nil Planner when caller is nil")
 	}
 }
@@ -112,7 +115,10 @@ func TestNewPlanner_ValidCaller(t *testing.T) {
 		FormatWorkspacePath:   func(context.Context) string { return "" },
 		AppendContextSections: func(_ context.Context, base string) string { return base },
 	}
-	p := NewPlanner(caller, cfg)
+	p, err := NewPlanner(caller, cfg)
+	if err != nil {
+		t.Fatalf("NewPlanner: %v", err)
+	}
 	if p == nil {
 		t.Fatal("expected non-nil Planner")
 	}
@@ -127,7 +133,10 @@ func TestNewPlanner_ValidCaller(t *testing.T) {
 func TestNewPlanner_CustomMaxExploreSteps(t *testing.T) {
 	caller := &mockLLMCaller{}
 	cfg := Config{MaxExploreSteps: 10}
-	p := NewPlanner(caller, cfg)
+	p, err := NewPlanner(caller, cfg)
+	if err != nil {
+		t.Fatalf("NewPlanner: %v", err)
+	}
 	if p == nil {
 		t.Fatal("expected non-nil Planner")
 	}
@@ -139,7 +148,10 @@ func TestNewPlanner_CustomMaxExploreSteps(t *testing.T) {
 func TestNewPlanner_NegativeMaxExploreStepsDefaulted(t *testing.T) {
 	caller := &mockLLMCaller{}
 	cfg := Config{MaxExploreSteps: -5}
-	p := NewPlanner(caller, cfg)
+	p, err := NewPlanner(caller, cfg)
+	if err != nil {
+		t.Fatalf("NewPlanner: %v", err)
+	}
 	if p == nil {
 		t.Fatal("expected non-nil Planner")
 	}

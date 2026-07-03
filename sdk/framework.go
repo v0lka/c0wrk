@@ -269,12 +269,12 @@ func New(cfg Config) (*Framework, error) {
 	}
 
 	fw := &Framework{
-		cfg:        cfg,
-		llmRouter:  llmRouter,
-		tools:      tools.NewToolRegistry(),
-		modelReg:   modelReg,
-		toolCache:  toolCache,
-		logger:     logger,
+		cfg:       cfg,
+		llmRouter: llmRouter,
+		tools:     tools.NewToolRegistry(),
+		modelReg:  modelReg,
+		toolCache: toolCache,
+		logger:    logger,
 	}
 
 	// Start MCP gateway if configured
@@ -324,9 +324,9 @@ func (fw *Framework) NewOrchestrator(systemPrompt orchestration.SystemPromptFact
 	plannerCfg.MaxExploreSteps = 7
 	plannerCfg.ReasoningEffort = ""
 
-	corePlanner := planner.NewPlanner(loggedLLM, plannerCfg)
-	if corePlanner == nil {
-		return nil, errors.New("failed to create planner")
+	corePlanner, err := planner.NewPlanner(loggedLLM, plannerCfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating planner: %w", err)
 	}
 
 	// Build orchestrator config

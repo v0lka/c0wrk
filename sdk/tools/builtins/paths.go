@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"github.com/v0lka/c0wrk/sdk/pathutil"
 	"github.com/v0lka/c0wrk/sdk/tools"
+	"os"
+	"path/filepath"
 )
 
 // resolvePath resolves a file path against the session workspace.
@@ -75,7 +75,6 @@ func resolveWorkspaceRoot(ws string) (string, error) {
 	}
 	return resolved, nil
 }
-
 
 // validatePathInWorkspace checks whether the given path (already resolved by
 // resolvePath) lies within the session workspace. The path may be absolute

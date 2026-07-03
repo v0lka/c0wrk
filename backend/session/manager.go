@@ -48,8 +48,8 @@ func SessionIDFromContext(ctx context.Context) string {
 type PlanReviewPhase string
 
 const (
-	PlanReviewNone            PlanReviewPhase = ""
-	PlanReviewAwaitingAccept  PlanReviewPhase = "awaiting_accept"
+	PlanReviewNone             PlanReviewPhase = ""
+	PlanReviewAwaitingAccept   PlanReviewPhase = "awaiting_accept"
 	PlanReviewAwaitingFeedback PlanReviewPhase = "awaiting_feedback"
 )
 
@@ -73,14 +73,14 @@ type Session struct {
 	mu                  sync.Mutex
 
 	// Plan review state
-	planReviewPhase  PlanReviewPhase            // guarded by mu
-	planReviewPath   string                     // path to .md plan file, guarded by mu
-	planReviewMsg    string                     // original user message, guarded by mu
-	planReviewMode   string                     // execution mode, guarded by mu
-	planReviewSkills []string                   // active skills, guarded by mu
-	planReviewBB     orchestration.Blackboard   // blackboard from planning phase, guarded by mu
-	planReviewRoute  *router.RoutingDecision    // routing decision from planning phase, guarded by mu
-	planReviewCancel context.CancelFunc         // cancel func for in-flight replan, guarded by mu
+	planReviewPhase  PlanReviewPhase          // guarded by mu
+	planReviewPath   string                   // path to .md plan file, guarded by mu
+	planReviewMsg    string                   // original user message, guarded by mu
+	planReviewMode   string                   // execution mode, guarded by mu
+	planReviewSkills []string                 // active skills, guarded by mu
+	planReviewBB     orchestration.Blackboard // blackboard from planning phase, guarded by mu
+	planReviewRoute  *router.RoutingDecision  // routing decision from planning phase, guarded by mu
+	planReviewCancel context.CancelFunc       // cancel func for in-flight replan, guarded by mu
 }
 
 // sessionTempDir returns the temp directory path for a session.
@@ -116,7 +116,7 @@ type Manager struct {
 	sessionStore        SessionStore        // optional persistent session store
 	planReviewStore     PlanReviewStore     // optional plan review persistence (may be same as sessionStore)
 	titleGen            *TitleGenerator     // optional title generator for auto-naming
-	envInfo             *sdktools.EnvInfo      // environment info for context injection
+	envInfo             *sdktools.EnvInfo   // environment info for context injection
 	stopTimeout         time.Duration       // how long to wait for goroutine on cancel/delete
 	maxSummaryLen       int                 // character limit for auto-generated step summaries
 	projectResolver     ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
@@ -487,8 +487,8 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 			jsonPath := strings.TrimSuffix(info.PlanReviewPath, ".md") + ".plan.json"
 			if data, readErr := os.ReadFile(jsonPath); readErr == nil {
 				var sidecar struct {
-					Plan  *orchestration.Plan       `json:"plan"`
-					Route *router.RoutingDecision   `json:"route,omitempty"`
+					Plan  *orchestration.Plan     `json:"plan"`
+					Route *router.RoutingDecision `json:"route,omitempty"`
 				}
 				if json.Unmarshal(data, &sidecar) == nil && sidecar.Plan != nil {
 					// Create a lightweight blackboard carrying the restored plan.

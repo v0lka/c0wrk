@@ -7,9 +7,9 @@ import (
 
 func TestGetTypes(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		input any
-		want []string
+		want  []string
 	}{
 		{"nil", nil, nil},
 		{"string", "object", []string{"object"}},

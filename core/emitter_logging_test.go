@@ -26,9 +26,11 @@ func (s *spyEmitter) record(method string, args ...any) {
 func (s *spyEmitter) StepStart(n int)                      { s.record("StepStart", n) }
 func (s *spyEmitter) Thought(n int, c, r string)           { s.record("Thought", n, c, r) }
 func (s *spyEmitter) ToolCall(n, ci int, t, a, src string) { s.record("ToolCall", n, ci, t, a, src) }
-func (s *spyEmitter) ToolResult(n, ci, l int, p string, e bool) { s.record("ToolResult", n, ci, l, p, e) }
-func (s *spyEmitter) StepComplete(n int, d time.Duration)  { s.record("StepComplete", n, d) }
-func (s *spyEmitter) SubAgentLaunch(id, desc string)       { s.record("SubAgentLaunch", id, desc) }
+func (s *spyEmitter) ToolResult(n, ci, l int, p string, e bool) {
+	s.record("ToolResult", n, ci, l, p, e)
+}
+func (s *spyEmitter) StepComplete(n int, d time.Duration) { s.record("StepComplete", n, d) }
+func (s *spyEmitter) SubAgentLaunch(id, desc string)      { s.record("SubAgentLaunch", id, desc) }
 func (s *spyEmitter) SubAgentComplete(id string, ok bool, d time.Duration) {
 	s.record("SubAgentComplete", id, ok, d)
 }
@@ -44,8 +46,10 @@ func (s *spyEmitter) Finishing(n int, summary string) { s.record("Finishing", n,
 func (s *spyEmitter) ExecutorDiagnostic(n int, e string, d map[string]any) {
 	s.record("ExecutorDiagnostic", n, e, d)
 }
-func (s *spyEmitter) Routing(m, d, c string)                     { s.record("Routing", m, d, c) }
-func (s *spyEmitter) PlanGenerated(n int, steps []orchestration.PlanStepEvent) { s.record("PlanGenerated", n, steps) }
+func (s *spyEmitter) Routing(m, d, c string) { s.record("Routing", m, d, c) }
+func (s *spyEmitter) PlanGenerated(n int, steps []orchestration.PlanStepEvent) {
+	s.record("PlanGenerated", n, steps)
+}
 func (s *spyEmitter) PlanStepStart(id, desc, summary string) {
 	s.record("PlanStepStart", id, desc, summary)
 }

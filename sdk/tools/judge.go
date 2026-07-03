@@ -41,14 +41,14 @@ type judgeResult struct {
 // ToolJudge evaluates whether a mutating tool call is safe to auto-approve.
 // It maintains an LRU-style cache keyed by tool+input to avoid redundant LLM calls.
 type ToolJudge struct {
-	provider       llm.Provider
-	model          string
-	systemPrompt   string           // judge system prompt (defaults to judge_prompts.JudgeSystem)
-	isInternalFn   func(string) bool // returns true for internal tools that bypass the judge
-	cache          map[string]judgeResult
-	mu             sync.RWMutex
-	maxCacheSize   int // max cached results before cache is cleared (default: 1000)
-	logger         *slog.Logger
+	provider     llm.Provider
+	model        string
+	systemPrompt string            // judge system prompt (defaults to judge_prompts.JudgeSystem)
+	isInternalFn func(string) bool // returns true for internal tools that bypass the judge
+	cache        map[string]judgeResult
+	mu           sync.RWMutex
+	maxCacheSize int // max cached results before cache is cleared (default: 1000)
+	logger       *slog.Logger
 }
 
 // NewToolJudge creates a new ToolJudge with the given LLM provider and model.
@@ -330,11 +330,11 @@ func parseJudgeResponse(content string) (verdict JudgeVerdict, reasoning string)
 
 // JudgeConfig holds the settings needed to create a ToolJudge.
 type JudgeConfig struct {
-	Model        string        // specific model for judge; if empty, uses DefaultModel
-	DefaultModel string        // fallback model from active provider
+	Model        string // specific model for judge; if empty, uses DefaultModel
+	DefaultModel string // fallback model from active provider
 	Provider     llm.Provider
-	MaxCacheSize int           // max cached results before cache is cleared (default: 1000)
-	SystemPrompt string        // judge system prompt; if empty, uses judge_prompts.JudgeSystem
+	MaxCacheSize int               // max cached results before cache is cleared (default: 1000)
+	SystemPrompt string            // judge system prompt; if empty, uses judge_prompts.JudgeSystem
 	IsInternalFn func(string) bool // returns true for internal tools that bypass the judge
 }
 

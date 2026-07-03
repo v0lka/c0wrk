@@ -74,10 +74,10 @@ type Planner struct {
 }
 
 // NewPlanner creates a new Planner with the given LLM caller and configuration.
-// Returns nil if caller is nil (required dependency).
-func NewPlanner(caller agent.LLMCaller, cfg Config) *Planner {
+// Returns an error if caller is nil (required dependency).
+func NewPlanner(caller agent.LLMCaller, cfg Config) (*Planner, error) {
 	if caller == nil {
-		return nil
+		return nil, fmt.Errorf("planner: caller is required")
 	}
 	if cfg.MaxExploreSteps <= 0 {
 		cfg.MaxExploreSteps = defaultMaxExploreSteps
@@ -85,7 +85,7 @@ func NewPlanner(caller agent.LLMCaller, cfg Config) *Planner {
 	return &Planner{
 		llm: caller,
 		Cfg: cfg,
-	}
+	}, nil
 }
 
 func (p *Planner) log() *slog.Logger {

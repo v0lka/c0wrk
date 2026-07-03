@@ -55,7 +55,7 @@ type ContextWindow struct {
 // noopCounter is a zero-cost TokenCounter used when no tracker is provided.
 type noopCounter struct{}
 
-func (n *noopCounter) Count(string) int         { return 0 }
+func (n *noopCounter) Count(string) int                { return 0 }
 func (n *noopCounter) CountMessages([]llm.Message) int { return 0 }
 
 // defaultSafetyMargin is the default percentage of context window reserved as safety margin.

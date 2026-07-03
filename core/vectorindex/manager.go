@@ -18,12 +18,12 @@ import (
 // depends on model paths, making the package usable with any embedding backend.
 type ManagerConfig struct {
 	EmbeddingFunc    chromem.EmbeddingFunc // Required: embedding function for vector storage
-	CloseFn          func() error         // Optional: called in Shutdown (e.g., embedder.Close)
-	ChunkFn          ChunkFunc            // Optional: defaults to adapter over embedding.ChunkFile
-	HashFn           HashFunc             // Optional: defaults to embedding.ComputeFileHash
-	IgnoreDirs       []string             // user-configured dirs to skip (merged with defaults)
-	IgnoreExtensions []string             // user-configured extensions to skip
-	IgnoreFileNames  []string             // user-configured file names to skip
+	CloseFn          func() error          // Optional: called in Shutdown (e.g., embedder.Close)
+	ChunkFn          ChunkFunc             // Optional: defaults to adapter over embedding.ChunkFile
+	HashFn           HashFunc              // Optional: defaults to embedding.ComputeFileHash
+	IgnoreDirs       []string              // user-configured dirs to skip (merged with defaults)
+	IgnoreExtensions []string              // user-configured extensions to skip
+	IgnoreFileNames  []string              // user-configured file names to skip
 	Logger           *slog.Logger
 }
 

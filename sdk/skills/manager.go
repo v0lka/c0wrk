@@ -167,4 +167,3 @@ func SafeResolvePath(baseDir, relPath string) (string, error) {
 	}
 	return cleanAbs, nil
 }
-

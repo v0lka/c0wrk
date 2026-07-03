@@ -70,7 +70,6 @@ func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot st
 	return absPath, absRoot, nil
 }
 
-
 // resolveFileIcon returns the Nerd Font icon and hex color for a file or directory.
 // The color is snapped to the nearest theme palette color.
 func resolveFileIcon(info os.FileInfo) (icon, color string) {

@@ -121,7 +121,7 @@ type BuilderSummarization struct {
 
 // BuilderHierarchical configures hierarchical compaction ratios.
 type BuilderHierarchical struct {
-	EnabledAboveSteps int     // step count at which hierarchical compaction activates
+	EnabledAboveSteps int // step count at which hierarchical compaction activates
 	DistantRatio      float64
 	MiddleRatio       float64
 	RecentRatio       float64
@@ -232,11 +232,11 @@ type BuilderMCPServer struct {
 
 // BuilderOrchestrationConfig holds orchestration-level limits.
 type BuilderOrchestrationConfig struct {
-	PlannerHistoryBudgetTokens     int     // max tokens for conversation history sent to planner (default: 4000)
-	PlannerHistoryKeepRecentRatio  float64 // fraction of PlannerHistoryBudgetTokens reserved for recent messages during compaction (default: 0.75)
-	MaxDependencyContextChars      int
-	MaxJudgeCacheSize              int
-	MaxPlannerExploreSteps         int     // Max steps for planner exploration. Default: 7
+	PlannerHistoryBudgetTokens    int     // max tokens for conversation history sent to planner (default: 4000)
+	PlannerHistoryKeepRecentRatio float64 // fraction of PlannerHistoryBudgetTokens reserved for recent messages during compaction (default: 0.75)
+	MaxDependencyContextChars     int
+	MaxJudgeCacheSize             int
+	MaxPlannerExploreSteps        int // Max steps for planner exploration. Default: 7
 }
 
 // ---------------------------------------------------------------------------
@@ -271,5 +271,3 @@ type BuilderTimeoutsConfig struct {
 	WebFetchTimeout  int
 	WebSearchTimeout int
 }
-
-

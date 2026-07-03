@@ -24,7 +24,7 @@ var internalTools = map[string]struct{}{
 	"semantic_search":     {},
 	"set_step_status":     {},
 	"store_fact":          {},
-	sdktools.ToolBatch:  {},
+	sdktools.ToolBatch:    {},
 }
 
 // IsInternalTool returns true if the given tool name is an internal tool
@@ -55,13 +55,13 @@ type ToolRegistry struct {
 	skillPolicyOverrides       map[string]sdktools.ToolPolicy
 	defaultPolicy              sdktools.ToolPolicy
 	hasDefaultPolicy           bool
-	preExecuteHook              PreExecuteHook
-	toolFilter                  ToolFilter
-	paramManager                sdktools.ParamManager
-	disabledTools               map[string]bool
-	extraBashBlacklist          []*regexp.Regexp
-	logger                      *slog.Logger
-	autoApproveWorkspaceWrites  bool
+	preExecuteHook             PreExecuteHook
+	toolFilter                 ToolFilter
+	paramManager               sdktools.ParamManager
+	disabledTools              map[string]bool
+	extraBashBlacklist         []*regexp.Regexp
+	logger                     *slog.Logger
+	autoApproveWorkspaceWrites bool
 }
 
 // PreExecuteHook is called before tool execution. It may block to wait for
@@ -87,16 +87,16 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 	defer r.mu.RUnlock()
 
 	cloned := &ToolRegistry{
-		ToolRegistry:              r.ToolRegistry, // shared SDK registry (tool definitions)
-		confirmFunc:               r.confirmFunc,
-		judge:                     r.judge,
-		defaultPolicy:             r.defaultPolicy,
-		hasDefaultPolicy:          r.hasDefaultPolicy,
-		preExecuteHook:            r.preExecuteHook,
-		toolFilter:                r.toolFilter,
-		paramManager:              r.paramManager,
-		extraBashBlacklist:        r.extraBashBlacklist, // shared (compiled regexps are read-only)
-		logger:                    r.logger,
+		ToolRegistry:               r.ToolRegistry, // shared SDK registry (tool definitions)
+		confirmFunc:                r.confirmFunc,
+		judge:                      r.judge,
+		defaultPolicy:              r.defaultPolicy,
+		hasDefaultPolicy:           r.hasDefaultPolicy,
+		preExecuteHook:             r.preExecuteHook,
+		toolFilter:                 r.toolFilter,
+		paramManager:               r.paramManager,
+		extraBashBlacklist:         r.extraBashBlacklist, // shared (compiled regexps are read-only)
+		logger:                     r.logger,
 		autoApproveWorkspaceWrites: r.autoApproveWorkspaceWrites,
 	}
 	if r.disabledTools != nil {

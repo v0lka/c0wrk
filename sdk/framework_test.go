@@ -754,11 +754,14 @@ func TestFrameworkPlannerAdapter_PlanContinuation_NilPlannerPanics(t *testing.T)
 
 func TestFrameworkPlannerAdapter_WithRealPlanner(t *testing.T) {
 	// Create a minimal planner with stub dependencies.
-	p := planner.NewPlanner(&stubLLMCaller{}, planner.DefaultPlannerConfig())
+	p, err := planner.NewPlanner(&stubLLMCaller{}, planner.DefaultPlannerConfig())
+	if err != nil {
+		t.Fatalf("NewPlanner: %v", err)
+	}
 	adapter := &frameworkPlannerAdapter{planner: p}
 
 	// Plan will fail because the stub caller returns an error — this is expected.
-	_, err := adapter.Plan(context.Background(), "test task", nil, nil)
+	_, err = adapter.Plan(context.Background(), "test task", nil, nil)
 	if err == nil {
 		t.Fatal("expected error from stub LLM caller")
 	}

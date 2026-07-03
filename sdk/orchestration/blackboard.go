@@ -14,14 +14,14 @@ var _ Blackboard = (*MapBlackboard)(nil)
 
 // MapBlackboard is a thread-safe, map-backed implementation of Blackboard.
 type MapBlackboard struct {
-	mu               sync.RWMutex
-	request          string
-	plan             *Plan
-	stepResults      map[string]StepResult
-	reflections      []Reflection
-	finalResult      string
-	maxSummaryLen    int    // char-based limit for summaries (0 = use default 500)
-	facts            []Fact // keyword-tagged facts for inter-step communication
+	mu            sync.RWMutex
+	request       string
+	plan          *Plan
+	stepResults   map[string]StepResult
+	reflections   []Reflection
+	finalResult   string
+	maxSummaryLen int    // char-based limit for summaries (0 = use default 500)
+	facts         []Fact // keyword-tagged facts for inter-step communication
 }
 
 // MapBlackboardOption configures a MapBlackboard.

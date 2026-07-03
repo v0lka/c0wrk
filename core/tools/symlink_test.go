@@ -11,6 +11,7 @@ import (
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 )
+
 // ── Registry integration tests ────────────────────────────────────────────
 
 func newRegistryForSymlinkTest(t *testing.T) *ToolRegistry {

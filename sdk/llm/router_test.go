@@ -435,7 +435,7 @@ func TestNewRouter(t *testing.T) {
 			Providers: []ProviderEntry{
 				{Name: "openai", ProviderType: "openai", BaseURL: "http://localhost:9999", Models: []string{"test-model"}},
 			},
-			MaxRetries:     0,
+			MaxRetries: 0,
 		}
 
 		router, err := NewRouter(context.Background(), cfg, nil)

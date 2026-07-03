@@ -3,9 +3,9 @@ package builtins
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"github.com/v0lka/c0wrk/sdk/pathutil"
 	"github.com/v0lka/c0wrk/sdk/tools"
+	"path/filepath"
 )
 
 // judgeWriteInWorkspace checks whether a write operation targets a path
@@ -47,7 +47,6 @@ func judgeWriteInWorkspace(ctx context.Context, path string) (allowed bool, reas
 
 	return true, "target is within session workspace"
 }
-
 
 // judgeReadInWorkspace checks whether a read operation targets a path inside
 // the session workspace or temp directory. For PolicyAlwaysAllow read tools:

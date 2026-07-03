@@ -878,8 +878,6 @@ func TestNewTokenizer_NonexistentFile(t *testing.T) {
 // Embedder – closed state and edge cases
 // =============================================================================
 
-
-
 func TestEmbedder_EmbeddingFunc_Nil(t *testing.T) {
 	// EmbeddingFunc always returns a non-nil function regardless of embedder state.
 	e := &Embedder{
@@ -1044,8 +1042,6 @@ func TestEmbedder_EmbeddingFunc_CallOnClosed(t *testing.T) {
 		t.Error("calling EmbeddingFunc on closed embedder should return error")
 	}
 }
-
-
 
 // =============================================================================
 // Embedder.EmbedDocuments – closed embedder with non-empty texts
@@ -1358,12 +1354,6 @@ func TestChunkerConfig_WithDefaults_BothZero(t *testing.T) {
 	}
 }
 
-
-
-
-
-
-
 func TestEmbedder_EmbedQuery_NilTokenizer(t *testing.T) {
 	e := &Embedder{tokenizer: nil, maxSeqLen: 512, hiddenDim: 512}
 	_, err := e.EmbedQuery(context.Background(), "test")
@@ -1371,17 +1361,3 @@ func TestEmbedder_EmbedQuery_NilTokenizer(t *testing.T) {
 		t.Error("expected error for nil tokenizer")
 	}
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-

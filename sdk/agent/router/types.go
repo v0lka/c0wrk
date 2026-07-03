@@ -25,8 +25,8 @@ const (
 
 // RoutingDecision is the result of Router classification.
 type RoutingDecision struct {
-	Domain             string   `json:"domain"`               // "code" | "research" | "general" | "mixed"
-	Complexity         int      `json:"complexity"`            // 1-5
+	Domain             string   `json:"domain"`     // "code" | "research" | "general" | "mixed"
+	Complexity         int      `json:"complexity"` // 1-5
 	NeedsClarification bool     `json:"needs_clarification"`
 	MatchedSkills      []string `json:"matched_skills,omitempty"` // skills selected by the router
 }

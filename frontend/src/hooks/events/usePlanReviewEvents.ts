@@ -58,7 +58,7 @@ export function usePlanReviewEvents(sessionId: string | null): void {
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,
-          type: 'service' as never,
+          type: 'service',
           content: `Plan validation failed: ${issues}`,
           timestamp: Date.now(),
         })
@@ -72,7 +72,7 @@ export function usePlanReviewEvents(sessionId: string | null): void {
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,
-          type: 'service' as never,
+          type: 'service',
           content: 'Plan rejected. Describe what needs to change, then send a message.',
           timestamp: Date.now(),
         })

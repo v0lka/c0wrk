@@ -38,9 +38,9 @@ func TestExtractJSON_MultipleBlocks(t *testing.T) {
 			wantJSON: `{"b": 2}`,
 		},
 		{
-			name:    "nested braces",
-			content: `Result: {"outer": {"inner": "value"}} end`,
-			wantOK:  true,
+			name:     "nested braces",
+			content:  `Result: {"outer": {"inner": "value"}} end`,
+			wantOK:   true,
 			wantJSON: `{"outer": {"inner": "value"}}`,
 		},
 		{
@@ -50,21 +50,21 @@ func TestExtractJSON_MultipleBlocks(t *testing.T) {
 			wantJSON: `{"y": 2}`,
 		},
 		{
-			name:    "markdown block with nested JSON",
-			content: "```json\n{\"result\": {\"data\": [1,2,3]}}\n```",
-			wantOK:  true,
+			name:     "markdown block with nested JSON",
+			content:  "```json\n{\"result\": {\"data\": [1,2,3]}}\n```",
+			wantOK:   true,
 			wantJSON: `{"result": {"data": [1,2,3]}}`,
 		},
 		{
-			name:    "brace inside string value",
-			content: `{"key": "value with } inside"}`,
-			wantOK:  true,
+			name:     "brace inside string value",
+			content:  `{"key": "value with } inside"}`,
+			wantOK:   true,
 			wantJSON: `{"key": "value with } inside"}`,
 		},
 		{
-			name:    "escaped quote inside string",
-			content: `{"key": "escaped \" quote"}`,
-			wantOK:  true,
+			name:     "escaped quote inside string",
+			content:  `{"key": "escaped \" quote"}`,
+			wantOK:   true,
 			wantJSON: `{"key": "escaped \" quote"}`,
 		},
 		{

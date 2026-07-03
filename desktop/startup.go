@@ -178,7 +178,7 @@ func (a *App) Startup(ctx context.Context) {
 		UIEmitFunc:           uiEmitFunc,
 		AskUserFunc:          askUserFunc,
 		ConfirmFunc:          confirmFunc,
-		HITLHandler:         hitlHandler,
+		HITLHandler:          hitlHandler,
 		VectorSearchFunc:     vectorSearchFunc,
 		VectorSearchWaitFunc: vectorSearchWaitFunc,
 	}, log, startTime)

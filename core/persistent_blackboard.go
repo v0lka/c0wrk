@@ -71,5 +71,5 @@ type TaskState struct {
 	Reflections     []orchestration.Reflection
 	FinalOutput     string
 	Facts           []orchestration.Fact // keyword-tagged facts
-	Status          string // "in_progress", "completed", "failed", "cancelled"
+	Status          string               // "in_progress", "completed", "failed", "cancelled"
 }

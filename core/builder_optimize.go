@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/strutil"
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/c0wrk/sdk/strutil"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 )
 

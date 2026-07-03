@@ -17,7 +17,7 @@ const (
 	ToolListStepOutput = "list_step_outputs"
 	ToolToolResultRead = "tool_result_read"
 	ToolReadSkillRes   = "read_skill_resource"
-	ToolBatch           = "batch"
+	ToolBatch          = "batch"
 
 	// Read-only file/code exploration tools.
 	ToolReadFile       = "read_file"

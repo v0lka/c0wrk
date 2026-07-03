@@ -41,7 +41,10 @@ func TestPlan_CreatesValidDAG(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	availableTools := []tools.ToolDescriptor{
 		{Name: "bash", Description: "Execute shell commands"},
@@ -104,14 +107,17 @@ func TestPlan_IncludesToolsInPrompt(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	availableTools := []tools.ToolDescriptor{
 		{Name: "bash", Description: "Execute shell commands"},
 		{Name: "file_read", Description: "Read file contents"},
 	}
 
-	_, err := p.Plan(context.Background(), "Build project", availableTools, nil, nil, false, nil)
+	_, err = p.Plan(context.Background(), "Build project", availableTools, nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -150,7 +156,10 @@ func TestReplan_ReturnsUpdatedPlan(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	originalPlan := &orchestration.Plan{
 		Steps: []orchestration.PlanStep{
@@ -213,7 +222,10 @@ func TestPlan_WithReflections(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	reflections := []orchestration.Reflection{
 		{
@@ -228,7 +240,7 @@ func TestPlan_WithReflections(t *testing.T) {
 		},
 	}
 
-	_, err := p.Plan(context.Background(), "Deploy application", nil, reflections, nil, false, nil)
+	_, err = p.Plan(context.Background(), "Deploy application", nil, reflections, nil, false, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -270,7 +282,10 @@ func TestPlan_ParsesMarkdownCodeBlock(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	plan, err := p.Plan(context.Background(), "Test task", nil, nil, nil, false, nil)
 	if err != nil {
@@ -301,7 +316,10 @@ func TestReplan_IncludesOriginalPlanAndFailureDetails(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	originalPlan := &orchestration.Plan{
 		Steps: []orchestration.PlanStep{
@@ -390,7 +408,10 @@ func TestParsePlanResponse_WithAgentProfile(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	plan, err := p.Plan(context.Background(), "Research task", nil, nil, nil, false, nil)
 	if err != nil {
@@ -447,7 +468,10 @@ func TestParsePlanResponse_WithoutAgentProfile(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	plan, err := p.Plan(context.Background(), "Simple task", nil, nil, nil, false, nil)
 	if err != nil {
@@ -482,11 +506,14 @@ func TestPlan_WorkspacePathSubstitution(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// With workspace path
 	ctx := tools.WithWorkspacePath(context.Background(), "/my/project")
-	_, err := p.Plan(ctx, "Build project", nil, nil, nil, false, nil)
+	_, err = p.Plan(ctx, "Build project", nil, nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -535,7 +562,10 @@ func TestReplan_WorkspacePathSubstitution(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 	originalPlan := &orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "step_1", Description: "First step"}}}
 	failedStep := orchestration.CompletedStep{StepID: "step_1", Output: "Failed"}
 
@@ -565,7 +595,10 @@ func TestReplanWithSessionReflections(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	originalPlan := &orchestration.Plan{
 		Steps: []orchestration.PlanStep{
@@ -595,7 +628,7 @@ func TestReplanWithSessionReflections(t *testing.T) {
 		},
 	}
 
-	_, err := p.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, sessionReflections, nil)
+	_, err = p.Replan(context.Background(), originalPlan, completedSteps, failedStep, reflection, sessionReflections, nil)
 	if err != nil {
 		t.Fatalf("Replan failed: %v", err)
 	}
@@ -634,7 +667,10 @@ func TestBuildPlanSystemPrompt_WithEnvInfo(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	info := &tools.EnvInfo{
 		OS:   "macOS 15.4 (Darwin 24.4.0)",
@@ -642,7 +678,7 @@ func TestBuildPlanSystemPrompt_WithEnvInfo(t *testing.T) {
 	}
 	ctx := tools.WithEnvInfo(context.Background(), info)
 
-	_, err := p.Plan(ctx, "Build project", nil, nil, nil, false, nil)
+	_, err = p.Plan(ctx, "Build project", nil, nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -754,7 +790,10 @@ func TestPlanWithExploration_InformedPath(t *testing.T) {
 		{"ripgrep", ""},
 	})
 
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 	p.Cfg.ToolRegistry = reg
 	p.Cfg.ContextFactory = plannerContextFactory()
 	p.Cfg.TokenCounter = llm.NewSimpleTokenCounter()
@@ -802,7 +841,10 @@ func TestPlanWithExploration_FSOnlyPath(t *testing.T) {
 		{"ripgrep", ""},
 	})
 
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 	p.Cfg.ToolRegistry = reg
 	p.Cfg.ContextFactory = plannerContextFactory()
 	p.Cfg.TokenCounter = llm.NewSimpleTokenCounter()
@@ -843,7 +885,10 @@ func TestPlanDirect_GeneralDomain(t *testing.T) {
 			{"read_file", ""},
 		})
 
-		p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+		p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
 		p.Cfg.ToolRegistry = reg
 		p.Cfg.ContextFactory = plannerContextFactory()
 
@@ -892,7 +937,10 @@ func TestPlanDirect_GeneralDomain(t *testing.T) {
 			{"ripgrep", ""},
 		})
 
-		p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+		p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
 		p.Cfg.ToolRegistry = reg
 		p.Cfg.ContextFactory = plannerContextFactory()
 		p.Cfg.TokenCounter = llm.NewSimpleTokenCounter()
@@ -934,7 +982,10 @@ func TestPlanDirect_NoToolsAvailable(t *testing.T) {
 	}
 
 	// Test with nil registry
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 	// toolRegistry is nil by default
 
 	ctx := WithDomain(context.Background(), "code")
@@ -957,7 +1008,10 @@ func TestPlanDirect_NoToolsAvailable(t *testing.T) {
 	reg := newPlannerTestRegistry([]struct{ name, source string }{
 		{"unrelated_tool", ""},
 	})
-	p2 := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p2, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 	p2.Cfg.ToolRegistry = reg
 
 	plan2, err := p2.Plan(ctx, "Do something", nil, nil, nil, false, nil)
@@ -989,7 +1043,10 @@ func TestPlanWithExploration_DomainVariants(t *testing.T) {
 				{"read_file", ""},
 			})
 
-			p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+			p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+			if err != nil {
+				t.Fatal(err)
+			}
 			p.Cfg.ToolRegistry = reg
 			p.Cfg.ContextFactory = plannerContextFactory()
 			p.Cfg.TokenCounter = llm.NewSimpleTokenCounter()
@@ -1035,14 +1092,17 @@ func TestPlanWithExploration_DomainVariants(t *testing.T) {
 			{"read_file", ""},
 		})
 
-		p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+		p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
 		p.Cfg.ToolRegistry = reg
 		p.Cfg.ContextFactory = plannerContextFactory()
 
 		ctx := WithDomain(context.Background(), "general")
 		ctx = WithComplexity(ctx, 2) // below threshold → planDirect
 
-		_, err := p.Plan(ctx, "General task", nil, nil, nil, false, nil)
+		_, err = p.Plan(ctx, "General task", nil, nil, nil, false, nil)
 		if err != nil {
 			t.Fatalf("Plan() returned error: %v", err)
 		}
@@ -1071,7 +1131,10 @@ func TestPlanWithExploration_DomainVariants(t *testing.T) {
 			{"ripgrep", ""},
 		})
 
-		p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+		p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
 		p.Cfg.ToolRegistry = reg
 		p.Cfg.ContextFactory = plannerContextFactory()
 		p.Cfg.TokenCounter = llm.NewSimpleTokenCounter()
@@ -1122,7 +1185,10 @@ func TestPlanWithExploration_ExecutorError_FallsBackToDirect(t *testing.T) {
 		{"ripgrep", ""},
 	})
 
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 	p.Cfg.ToolRegistry = reg
 	p.Cfg.ContextFactory = plannerContextFactory()
 	p.Cfg.TokenCounter = llm.NewSimpleTokenCounter()
@@ -1164,7 +1230,10 @@ func TestPlanWithExploration_ContextCancellation_Propagates(t *testing.T) {
 		{"read_file", ""},
 	})
 
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 	p.Cfg.ToolRegistry = reg
 	p.Cfg.ContextFactory = plannerContextFactory()
 	p.Cfg.TokenCounter = llm.NewSimpleTokenCounter()
@@ -1174,7 +1243,7 @@ func TestPlanWithExploration_ContextCancellation_Propagates(t *testing.T) {
 	ctx = tools.WithWorkspacePath(ctx, "/tmp/test")
 	cancel() // cancel immediately
 
-	_, err := p.Plan(ctx, "Refactor module", nil, nil, nil, false, nil)
+	_, err = p.Plan(ctx, "Refactor module", nil, nil, nil, false, nil)
 	if err == nil {
 		t.Fatal("expected error for cancelled context, got nil")
 	}
@@ -1202,7 +1271,10 @@ func TestPlanContinuation(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	originalRequest := "Build a CLI tool"
 	existingPlan := &orchestration.Plan{
@@ -1256,12 +1328,15 @@ func TestPlan_AgentsMD_InjectedInPrompt(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	agentsContent := "# Project Instructions\nAlways run `make test` before committing."
 	ctx := WithAgentsMD(context.Background(), &AgentsMD{Content: agentsContent})
 
-	_, err := p.Plan(ctx, "Build the feature", nil, nil, nil, false, nil)
+	_, err = p.Plan(ctx, "Build the feature", nil, nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -1303,9 +1378,12 @@ func TestPlan_AgentsMD_AbsentWhenNotInContext(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := p.Plan(context.Background(), "Build the feature", nil, nil, nil, false, nil)
+	_, err = p.Plan(context.Background(), "Build the feature", nil, nil, nil, false, nil)
 	if err != nil {
 		t.Fatalf("Plan() returned error: %v", err)
 	}
@@ -1334,7 +1412,10 @@ func TestPlan_AgentsMD_InjectedInReplan(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	agentsContent := "# Project Rules\nDo not modify vendor directory."
 	ctx := WithAgentsMD(context.Background(), &AgentsMD{Content: agentsContent})
@@ -1346,7 +1427,7 @@ func TestPlan_AgentsMD_InjectedInReplan(t *testing.T) {
 	}
 	failedStep := orchestration.CompletedStep{StepID: "step_1", Output: "failed", Error: errors.New("build error")}
 
-	_, err := p.Replan(ctx, originalPlan, nil, failedStep, nil, nil, nil)
+	_, err = p.Replan(ctx, originalPlan, nil, failedStep, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Replan() returned error: %v", err)
 	}
@@ -1378,7 +1459,10 @@ func TestPlan_AgentsMD_InjectedInContinuation(t *testing.T) {
 		},
 	}
 
-	p := newCorePlanner(mock, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mock, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	agentsContent := "# Project Rules\nAlways use idiomatic Go."
 	ctx := WithAgentsMD(context.Background(), &AgentsMD{Content: agentsContent})
@@ -1392,7 +1476,7 @@ func TestPlan_AgentsMD_InjectedInContinuation(t *testing.T) {
 		{StepID: "step_1", Output: "done"},
 	}
 
-	_, err := p.PlanContinuation(ctx, "Original request", existingPlan, completedSteps, "Follow-up", nil, nil, false, nil, true)
+	_, err = p.PlanContinuation(ctx, "Original request", existingPlan, completedSteps, "Follow-up", nil, nil, false, nil, true)
 	if err != nil {
 		t.Fatalf("PlanContinuation() returned error: %v", err)
 	}
@@ -1635,3 +1719,4 @@ func TestAppendPlannerContextSections(t *testing.T) {
 		}
 	})
 }
+

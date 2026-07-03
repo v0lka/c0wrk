@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 	tools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools/builtins"
 )
 
 // mockSearchProvider implements SearchProvider for unit tests that don't need HTTP.

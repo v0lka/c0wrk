@@ -11,6 +11,7 @@ export type MessageType =
   | 'subagent_launch' | 'subagent_complete' | 'status'
   | 'task_failed_resumable' | 'task_resumed' | 'step_limit' | 'context_compaction'
   | 'step_todo_update' | 'memory_read' | 'plan_review'
+  | 'service'
 
 export interface ChatMessageUI {
   id: string

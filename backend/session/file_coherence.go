@@ -29,7 +29,7 @@ type writeRecord struct {
 type FileCoherenceTracker struct {
 	mu           sync.RWMutex
 	snapshots    map[string]map[string]sdktools.FileSig // sessionID -> path -> sig
-	activity     []writeRecord                       // ring buffer of recent writes
+	activity     []writeRecord                          // ring buffer of recent writes
 	activityCap  int
 	fileMutexes  map[string]*sync.Mutex
 	fileMu       sync.Mutex // protects fileMutexes map

@@ -82,7 +82,10 @@ func TestOrchestrator_NeedsClarificationMode(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         r,
@@ -189,7 +192,10 @@ func TestOrchestrator_PlanExecuteMode(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         r,
@@ -269,9 +275,13 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
+	pl, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+		}
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
-		Planner:        newCorePlanner(mockLLM, coretools.NewToolRegistry()),
+		Planner:        pl,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -363,9 +373,13 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 
 	counter := llm.NewSimpleTokenCounter()
 
+	pl, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+		}
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10, MaxRetries: 0}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
-		Planner:        newCorePlanner(mockLLM, coretools.NewToolRegistry()),
+		Planner:        pl,
 		LLM:            mockLLM,
 		ToolExec:       reg,
 		ToolRegistry:   reg,
@@ -374,7 +388,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 		CircuitBreaker: defaultCircuitBreakerConfig,
 	})
 
-	_, err := orchestrator.HandleMessage(context.Background(), "Run two steps", "", HandleOptions{ExecutionMode: "advanced"})
+	_, err = orchestrator.HandleMessage(context.Background(), "Run two steps", "", HandleOptions{ExecutionMode: "advanced"})
 	// ErrExecutionIncomplete is the expected outcome here — step 1 failing
 	// blocks step 2, so the plan does not fully execute. The sentinel is the
 	// signal we now propagate; treat it as success for this test (C-5).
@@ -437,9 +451,13 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
+	pl, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+		}
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
-		Planner:        newCorePlanner(mockLLM, coretools.NewToolRegistry()),
+		Planner:        pl,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -580,9 +598,13 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
+	pl, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+		}
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
-		Planner:        newCorePlanner(mockLLM, coretools.NewToolRegistry()),
+		Planner:        pl,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -880,7 +902,10 @@ func TestHandleMessage_Continuation(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         r,
@@ -975,7 +1000,10 @@ func TestHandleMessage_ReActContinuation_ClarificationBypass(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         r,
@@ -1038,9 +1066,13 @@ func TestHandleMessage_Continuation_NoTaskStore(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
+	pl, err := newCorePlanner(&mockLLMCaller{}, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+		}
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         newCoreRouter(&mockLLMCaller{}, 5),
-		Planner:        newCorePlanner(&mockLLMCaller{}, coretools.NewToolRegistry()),
+		Planner:        pl,
 		LLM:            &mockLLMCaller{},
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -1050,7 +1082,7 @@ func TestHandleMessage_Continuation_NoTaskStore(t *testing.T) {
 	})
 	// Note: taskStore is nil by default
 
-	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{TaskID: "task-123", ExecutionMode: "advanced"})
+	_, err = orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{TaskID: "task-123", ExecutionMode: "advanced"})
 	if err == nil {
 		t.Fatal("expected error when task store is not configured")
 	}
@@ -1079,7 +1111,10 @@ func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
 	}
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         r,
@@ -1098,7 +1133,7 @@ func TestHandleMessage_Continuation_TaskNotFound(t *testing.T) {
 	orchestrator.SetTaskStore(mockStore)
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
-	_, err := orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{TaskID: "non-existent-task", ExecutionMode: "advanced"})
+	_, err = orchestrator.HandleMessage(context.Background(), "message", "session-456", HandleOptions{TaskID: "non-existent-task", ExecutionMode: "advanced"})
 	if err == nil {
 		t.Fatal("expected error when task is not found")
 	}
@@ -1153,7 +1188,10 @@ func TestHandleMessage_PlanExecuteFirstMessage(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         r,
@@ -1245,7 +1283,10 @@ func TestHandleMessage_PlanExecuteContinuation(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         r,
@@ -1358,7 +1399,10 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         r,
@@ -1394,7 +1438,7 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 	orchestrator.SetTaskStore(mockStore)
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
-	_, err := orchestrator.HandleMessage(context.Background(), "Continue", "session-456", HandleOptions{TaskID: "task-123", ExecutionMode: "advanced"})
+	_, err = orchestrator.HandleMessage(context.Background(), "Continue", "session-456", HandleOptions{TaskID: "task-123", ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -1465,7 +1509,10 @@ func TestHandleMessage_Clarification(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         r,
@@ -1579,7 +1626,10 @@ func TestHandleMessage_ClarificationSuppressedWithUserSkills(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         r,
@@ -1857,9 +1907,13 @@ func TestOrchestrator_VectorSearchHints_NilFunc(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
+	pl, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+		}
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
-		Planner:        newCorePlanner(mockLLM, coretools.NewToolRegistry()),
+		Planner:        pl,
 		LLM:            mockLLM,
 		ToolExec:       registry,
 		ToolRegistry:   registry,
@@ -2151,7 +2205,10 @@ func TestOrchestrator_AgentsMD_RouterPromptInjection(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         r,
@@ -2165,7 +2222,7 @@ func TestOrchestrator_AgentsMD_RouterPromptInjection(t *testing.T) {
 	})
 
 	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
-	_, err := orchestrator.HandleMessage(ctx, "build the project", "", HandleOptions{ExecutionMode: "advanced"})
+	_, err = orchestrator.HandleMessage(ctx, "build the project", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -2212,7 +2269,10 @@ func TestOrchestrator_AgentsMD_RouterPromptAbsentWhenNoWorkspace(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         r,
@@ -2227,7 +2287,7 @@ func TestOrchestrator_AgentsMD_RouterPromptAbsentWhenNoWorkspace(t *testing.T) {
 
 	// No workspace path in context — AGENTS.md should not be read or injected.
 	ctx := context.Background()
-	_, err := orchestrator.HandleMessage(ctx, "build the project", "", HandleOptions{ExecutionMode: "advanced"})
+	_, err = orchestrator.HandleMessage(ctx, "build the project", "", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -2533,7 +2593,10 @@ func TestOrchestrator_NormalModeSingleStep(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         r,
@@ -2638,7 +2701,10 @@ func TestConversationHistory_NoTruncation(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{
 		MaxSteps:                   10,
@@ -2674,7 +2740,7 @@ func TestConversationHistory_NoTruncation(t *testing.T) {
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
 	// First message.
-	_, err := orchestrator.HandleMessage(context.Background(), "write REST API", "session-1", HandleOptions{ExecutionMode: "advanced"})
+	_, err = orchestrator.HandleMessage(context.Background(), "write REST API", "session-1", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("First message failed: %v", err)
 	}
@@ -2786,7 +2852,10 @@ func TestConversationHistory_PlannerReceivesFullHistory(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{
 		MaxSteps:                   10,
@@ -2822,7 +2891,7 @@ func TestConversationHistory_PlannerReceivesFullHistory(t *testing.T) {
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
 	// First message
-	_, err := orchestrator.HandleMessage(context.Background(), "write REST API", "session-2", HandleOptions{ExecutionMode: "advanced"})
+	_, err = orchestrator.HandleMessage(context.Background(), "write REST API", "session-2", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("First message failed: %v", err)
 	}
@@ -2973,7 +3042,10 @@ func TestConversationHistory_CompactionTriggered(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	r := newCoreRouter(mockLLM, 5)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Set a very small budget to force compaction.
 	orchestrator := NewOrchestrator(OrchestratorConfig{
@@ -3010,7 +3082,7 @@ func TestConversationHistory_CompactionTriggered(t *testing.T) {
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
 
 	// First message — produces long output to inflate conversationHistory.
-	_, err := orchestrator.HandleMessage(context.Background(), "build something with a very long request "+
+	_, err = orchestrator.HandleMessage(context.Background(), "build something with a very long request "+
 		strings.Repeat("padding to make the history large enough to exceed the token budget ", 5),
 		"session-3", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
@@ -3078,7 +3150,10 @@ func TestConversationHistory_RouterHistoryUnchanged(t *testing.T) {
 
 	// Router with HistoryWindow=2 (only last 2 messages).
 	r := newCoreRouter(mockLLM, 2)
-	p := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	p, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{
 		MaxSteps: 10,
@@ -3103,7 +3178,7 @@ func TestConversationHistory_RouterHistoryUnchanged(t *testing.T) {
 
 	// HandleMessage should succeed. The router will receive the full history,
 	// but internally it should limit to HistoryWindow=2.
-	_, err := orchestrator.HandleMessage(context.Background(), "test", "session-4", HandleOptions{ExecutionMode: "advanced"})
+	_, err = orchestrator.HandleMessage(context.Background(), "test", "session-4", HandleOptions{ExecutionMode: "advanced"})
 	if err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
 	}
@@ -3114,3 +3189,6 @@ func TestConversationHistory_RouterHistoryUnchanged(t *testing.T) {
 		t.Errorf("expected 12 messages in history (10 pre-populated + 2 new), got %d", len(history))
 	}
 }
+
+
+

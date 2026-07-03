@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent/router"
 	coretools "github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
@@ -51,12 +51,12 @@ type MessageReceivedData struct {
 
 // TaskCompleteData is the payload for "task_complete" events.
 type TaskCompleteData struct {
-	SessionID       string                `json:"session_id"`
-	Output          string                `json:"output"`
-	RoutingDecision *router.RoutingDecision `json:"routing_decision"`
-	Plan            *orchestration.Plan            `json:"plan,omitempty"`
-	AttemptCount    int                   `json:"attempt_count,omitempty"`
-	Reflections     []orchestration.Reflection     `json:"reflections,omitempty"`
+	SessionID       string                     `json:"session_id"`
+	Output          string                     `json:"output"`
+	RoutingDecision *router.RoutingDecision    `json:"routing_decision"`
+	Plan            *orchestration.Plan        `json:"plan,omitempty"`
+	AttemptCount    int                        `json:"attempt_count,omitempty"`
+	Reflections     []orchestration.Reflection `json:"reflections,omitempty"`
 	// Typed success contract: Success is false for partial/failed/aborted
 	// executions that are still delivered as task_complete so the best-effort
 	// output reaches the user. Completion refines the outcome.
@@ -132,7 +132,7 @@ type JudgeResponsePayload struct {
 
 // AskUserPayload is sent to the frontend when the agent asks the user questions.
 type AskUserPayload struct {
-	RequestID string                  `json:"request_id"`
+	RequestID string                      `json:"request_id"`
 	Questions []coretools.AskUserQuestion `json:"questions"`
 }
 

@@ -338,8 +338,6 @@ func walkSymlinkComponents(absPath, workspace string) *SymlinkTraversal {
 	return nil
 }
 
-
-
 // FormatSymlinkReasoning formats symlink traversals into a human-readable
 // message for the confirmation dialog. Outside-workspace traversals are
 // highlighted as more dangerous.

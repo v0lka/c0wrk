@@ -85,7 +85,7 @@ export function UserMessageContent({ content }: UserMessageContentProps) {
     return (
         <span className="whitespace-pre-wrap break-words text-sm">
             {segments.map((seg, i) => {
-                const segKey = seg.type === 'text' ? `text-${i}-${seg.content.slice(0, 20)}` : `${seg.type}-${seg.content}-${i}`
+                const segKey = seg.type === 'text' ? `text-${i}-${seg.content}` : `${seg.type}-${seg.content}-${i}`
                 if (seg.type === 'skill') {
                     return (
                         <span

@@ -56,6 +56,3 @@ func ExtractSystemPromptParts(messages []Message) (parts []string, filtered []Me
 	}
 	return parts, filtered
 }
-
-
-

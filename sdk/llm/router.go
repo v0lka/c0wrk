@@ -24,14 +24,14 @@ type SamplingFunc func(family string) *float64
 // or budget control should account for this default. To disable retries entirely,
 // set MaxRetries to a negative value (e.g. -1).
 type RouterConfig struct {
-	Providers     []ProviderEntry // all enabled providers (at least one required)
-	MaxRetries          int           // Max retry attempts on retryable errors
-	InitialBackoff      time.Duration // Already parsed initial backoff duration
-	MaxBackoff          time.Duration // Already parsed max backoff duration
-	SafetyMarginPercent int           // Percentage of context window reserved as safety margin (default: 5)
-	OutputTokenReserve  int           // Default output token reserve when model metadata doesn't specify (default: 4096)
-	HTTPClient          *http.Client  // Optional proxy-configured HTTP client (nil = default)
-	SamplingFunc        SamplingFunc  // Optional family-aware temperature defaults; nil = no default (provider decides)
+	Providers           []ProviderEntry // all enabled providers (at least one required)
+	MaxRetries          int             // Max retry attempts on retryable errors
+	InitialBackoff      time.Duration   // Already parsed initial backoff duration
+	MaxBackoff          time.Duration   // Already parsed max backoff duration
+	SafetyMarginPercent int             // Percentage of context window reserved as safety margin (default: 5)
+	OutputTokenReserve  int             // Default output token reserve when model metadata doesn't specify (default: 4096)
+	HTTPClient          *http.Client    // Optional proxy-configured HTTP client (nil = default)
+	SamplingFunc        SamplingFunc    // Optional family-aware temperature defaults; nil = no default (provider decides)
 }
 
 // ProviderEntry describes a single LLM provider with its enabled models.
@@ -339,4 +339,3 @@ func (r *Router) SetModel(ctx context.Context, model string) error {
 	r.activeProviderName = providerName
 	return nil
 }
-

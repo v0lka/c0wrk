@@ -1,9 +1,10 @@
-import { useState, useMemo } from 'react'
-import { Folder, ChevronDown, ChevronRight, File, Loader2 } from 'lucide-react'
+import { useMemo } from 'react'
+import { ChevronDown, ChevronRight, File, Loader2 } from 'lucide-react'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
-import { GitFileEntry } from './GitFileEntry'
+import { Section } from './ChangesList/Section'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
+import type { SectionData, TreeDirNode, TreeFileNode, TreeNode } from './ChangesList/types'
 
 // ─────────────────────────────────── Types ───────────────────────────────────
 
@@ -11,28 +12,6 @@ interface ChangesListProps {
   onToggleFile: (path: string) => void
   onOpenDiff: (path: string) => void
 }
-
-interface SectionData {
-  key: string
-  title: string
-  entries: GitPanelEntry[]
-}
-
-/** Internal node type for tree view */
-interface TreeDirNode {
-  name: string
-  fullPath: string
-  isDir: true
-  children: TreeNode[]
-}
-
-interface TreeFileNode {
-  name: string
-  entry: GitPanelEntry
-  isDir: false
-}
-
-type TreeNode = TreeDirNode | TreeFileNode
 
 // ──────────────────────────────── Tree Builder ───────────────────────────────
 
@@ -44,7 +23,7 @@ type TreeNode = TreeDirNode | TreeFileNode
  * @param entries  Flat list of git file entries (absolute paths preserved for callbacks).
  * @param workspaceRoot  Workspace root path (to compute display-relative paths for tree structure).
  */
-function buildTree(entries: GitPanelEntry[], workspaceRoot: string): TreeNode[] {
+export function buildTree(entries: GitPanelEntry[], workspaceRoot: string): TreeNode[] {
   const root: TreeNode[] = []
   const dirMap = new Map<string, TreeDirNode>()
 
@@ -133,7 +112,7 @@ interface SectionHeaderProps {
   onToggle: () => void
 }
 
-function SectionHeader({ title, count, expanded, onToggle }: SectionHeaderProps) {
+export function SectionHeader({ title, count, expanded, onToggle }: SectionHeaderProps) {
   return (
     <button
       type="button"
@@ -152,206 +131,6 @@ function SectionHeader({ title, count, expanded, onToggle }: SectionHeaderProps)
         {count}
       </span>
     </button>
-  )
-}
-
-// ─────────────────────────── Tree View Renderer ──────────────────────────────
-
-interface TreeRowProps {
-  node: TreeNode
-  depth: number
-  workspaceRoot: string
-  expandedDirs: Set<string>
-  onToggleExpandedDir: (dir: string) => void
-  onToggleFile: (path: string) => void
-  onOpenDiff: (path: string) => void
-}
-
-function TreeRow({
-  node,
-  depth,
-  workspaceRoot,
-  expandedDirs,
-  onToggleExpandedDir,
-  onToggleFile,
-  onOpenDiff,
-}: TreeRowProps) {
-  // ── Directory node ──
-  if (node.isDir) {
-    const isExpanded = expandedDirs.has(node.fullPath)
-    const indentPx = depth * 12
-
-    return (
-      <>
-        <div
-          className="flex h-7 cursor-pointer select-none items-center gap-1.5 px-2 hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-          style={{ paddingLeft: `${indentPx + 8}px` }}
-          onClick={() => onToggleExpandedDir(node.fullPath)}
-          role="treeitem"
-          aria-expanded={isExpanded}
-        >
-          {isExpanded ? (
-            <ChevronDown className="size-3.5 shrink-0" />
-          ) : (
-            <ChevronRight className="size-3.5 shrink-0" />
-          )}
-          <Folder className="size-3.5 shrink-0" />
-          <span className="min-w-0 truncate text-sm leading-none">
-            {node.name}
-          </span>
-        </div>
-        {isExpanded &&
-          node.children.map((child) => (
-            <TreeRow
-              key={child.isDir ? child.fullPath : child.entry.path}
-              node={child}
-              depth={depth + 1}
-              workspaceRoot={workspaceRoot}
-              expandedDirs={expandedDirs}
-              onToggleExpandedDir={onToggleExpandedDir}
-              onToggleFile={onToggleFile}
-              onOpenDiff={onOpenDiff}
-            />
-          ))}
-      </>
-    )
-  }
-
-  // ── File node ──
-  const indentPx = (depth + 1) * 12
-  return (
-    <div style={{ paddingLeft: `${indentPx}px` }}>
-      <GitFileEntry
-        entry={node.entry}
-        workspaceRoot={workspaceRoot}
-        onToggle={onToggleFile}
-        onOpenDiff={onOpenDiff}
-      />
-    </div>
-  )
-}
-
-// ───────────────────────────── Flat Section ──────────────────────────────────
-
-interface FlatSectionProps {
-  entries: GitPanelEntry[]
-  workspaceRoot: string
-  onToggleFile: (path: string) => void
-  onOpenDiff: (path: string) => void
-}
-
-function FlatSection({ entries, workspaceRoot, onToggleFile, onOpenDiff }: FlatSectionProps) {
-  return (
-    <>
-      {entries.map((entry) => (
-        <GitFileEntry
-          key={entry.path}
-          entry={entry}
-          workspaceRoot={workspaceRoot}
-          onToggle={onToggleFile}
-          onOpenDiff={onOpenDiff}
-        />
-      ))}
-    </>
-  )
-}
-
-// ───────────────────────────── Tree Section ──────────────────────────────────
-
-interface TreeSectionProps {
-  entries: GitPanelEntry[]
-  workspaceRoot: string
-  expandedDirs: Set<string>
-  onToggleExpandedDir: (dir: string) => void
-  onToggleFile: (path: string) => void
-  onOpenDiff: (path: string) => void
-}
-
-function TreeSection({
-  entries,
-  workspaceRoot,
-  expandedDirs,
-  onToggleExpandedDir,
-  onToggleFile,
-  onOpenDiff,
-}: TreeSectionProps) {
-  const tree = useMemo(() => buildTree(entries, workspaceRoot), [entries, workspaceRoot])
-
-  return (
-    <>
-      {tree.map((node) => (
-        <TreeRow
-          key={node.isDir ? node.fullPath : node.entry.path}
-          node={node}
-          depth={0}
-          workspaceRoot={workspaceRoot}
-          expandedDirs={expandedDirs}
-          onToggleExpandedDir={onToggleExpandedDir}
-          onToggleFile={onToggleFile}
-          onOpenDiff={onOpenDiff}
-        />
-      ))}
-    </>
-  )
-}
-
-// ────────────────────────── Collapsible Section ──────────────────────────────
-
-interface SectionProps {
-  section: SectionData
-  defaultExpanded?: boolean
-  viewMode: 'flat' | 'tree'
-  workspaceRoot: string
-  expandedDirs: Set<string>
-  onToggleExpandedDir: (dir: string) => void
-  onToggleFile: (path: string) => void
-  onOpenDiff: (path: string) => void
-}
-
-function Section({
-  section,
-  defaultExpanded = true,
-  viewMode,
-  workspaceRoot,
-  expandedDirs,
-  onToggleExpandedDir,
-  onToggleFile,
-  onOpenDiff,
-}: SectionProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded)
-
-  if (section.entries.length === 0) return null
-
-  return (
-    <div>
-      <SectionHeader
-        title={section.title}
-        count={section.entries.length}
-        expanded={expanded}
-        onToggle={() => setExpanded((prev) => !prev)}
-      />
-      {expanded && (
-        <div>
-          {viewMode === 'flat' ? (
-            <FlatSection
-              entries={section.entries}
-              workspaceRoot={workspaceRoot}
-              onToggleFile={onToggleFile}
-              onOpenDiff={onOpenDiff}
-            />
-          ) : (
-            <TreeSection
-              entries={section.entries}
-              workspaceRoot={workspaceRoot}
-              expandedDirs={expandedDirs}
-              onToggleExpandedDir={onToggleExpandedDir}
-              onToggleFile={onToggleFile}
-              onOpenDiff={onOpenDiff}
-            />
-          )}
-        </div>
-      )}
-    </div>
   )
 }
 

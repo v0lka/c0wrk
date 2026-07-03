@@ -30,10 +30,10 @@ type Config struct {
 
 // Reflector analyzes execution trajectory to produce structured self-correction insights.
 type Reflector struct {
-	llm                 agent.LLMCaller
-	systemPrompt        string
-	analyzeFooter       string
-	reasoningEffort     string
+	llm             agent.LLMCaller
+	systemPrompt    string
+	analyzeFooter   string
+	reasoningEffort string
 }
 
 // NewReflector creates a new Reflector with the given caller and config.

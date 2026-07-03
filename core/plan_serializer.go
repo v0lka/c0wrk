@@ -147,7 +147,7 @@ func detectFieldHeader(line string) (fieldName, content string, isHeader bool) {
 		// The format is "**FieldName**: rest" or "**FieldName** rest"
 		idxStar := strings.Index(after, "**")
 		idxColon := strings.Index(after, ":")
-	
+
 		var sepIdx int
 		switch {
 		case idxStar >= 0 && idxColon >= 0:
@@ -164,7 +164,7 @@ func detectFieldHeader(line string) (fieldName, content string, isHeader bool) {
 		default:
 			return "", "", false
 		}
-	
+
 		name := normalize(after[:sepIdx])
 		if name == "what" || name == "where" || name == "how" || name == "acceptance_criteria" {
 			rest := strings.TrimLeft(after[sepIdx:], ":* ")

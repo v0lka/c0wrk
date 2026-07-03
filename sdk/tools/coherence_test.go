@@ -11,10 +11,10 @@ type mockCoherenceChecker struct{}
 func (m *mockCoherenceChecker) CheckRead(_ context.Context, _ string) *CoherenceConflict  { return nil }
 func (m *mockCoherenceChecker) CheckWrite(_ context.Context, _ string) *CoherenceConflict { return nil }
 func (m *mockCoherenceChecker) RecordWrite(_ context.Context, _ string)                   {}
-func (m *mockCoherenceChecker) RecordDelete(_ context.Context, _ string)                   {}
-func (m *mockCoherenceChecker) PurgeSession(_ string)                                      {}
-func (m *mockCoherenceChecker) Lock(_ string)                                              {}
-func (m *mockCoherenceChecker) Unlock(_ string)                                            {}
+func (m *mockCoherenceChecker) RecordDelete(_ context.Context, _ string)                  {}
+func (m *mockCoherenceChecker) PurgeSession(_ string)                                     {}
+func (m *mockCoherenceChecker) Lock(_ string)                                             {}
+func (m *mockCoherenceChecker) Unlock(_ string)                                           {}
 
 func TestWithCoherence(t *testing.T) {
 	ctx := context.Background()

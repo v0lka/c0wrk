@@ -18,9 +18,9 @@ const DefaultAgentDir = ".c0wrk"
 
 // Config is the top-level configuration structure.
 type Config struct {
-	LogLevel  string          `yaml:"log_level"`
-	LLM LLMConfig `yaml:"llm"`
-	MCP       MCPConfig       `yaml:"mcp"`
+	LogLevel string    `yaml:"log_level"`
+	LLM      LLMConfig `yaml:"llm"`
+	MCP      MCPConfig `yaml:"mcp"`
 
 	Router        RouterConfig        `yaml:"router"`
 	Executor      ExecutorConfig      `yaml:"executor"`
@@ -74,12 +74,12 @@ type VectorIndexConfig struct {
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.
 type LLMConfig struct {
-	DefaultModel    string                   `yaml:"default_model"` // cross-provider default model (must exist in some provider's Models list)
-	Anthropic        AnthropicConfig          `yaml:"anthropic"`
+	DefaultModel     string                            `yaml:"default_model"` // cross-provider default model (must exist in some provider's Models list)
+	Anthropic        AnthropicConfig                   `yaml:"anthropic"`
 	OpenAICompatible map[string]OpenAICompatibleConfig `yaml:"openai_compatible"`
-	ChatGPT          ChatGPTConfig            `yaml:"chatgpt"`
-	Models           map[string]ModelOverride `yaml:"models"`
-	Retry            LLMRetryConfig           `yaml:"retry"`
+	ChatGPT          ChatGPTConfig                     `yaml:"chatgpt"`
+	Models           map[string]ModelOverride          `yaml:"models"`
+	Retry            LLMRetryConfig                    `yaml:"retry"`
 }
 
 // AnthropicConfig holds Anthropic provider configuration.
@@ -293,12 +293,12 @@ type TimeoutsConfig struct {
 
 // OrchestrationConfig holds orchestration-specific limits and settings.
 type OrchestrationConfig struct {
-	MaxDependencyContextChars      int     `yaml:"maxDependencyContextChars"`      // default: 8000
-	MaxSummaryLength               int     `yaml:"maxSummaryLength"`               // default: 500
-	PlannerHistoryBudgetTokens     int     `yaml:"plannerHistoryBudgetTokens"`     // max tokens for conversation history sent to planner (default: 4000); triggers summarisation when exceeded
-	PlannerHistoryKeepRecentRatio  float64 `yaml:"plannerHistoryKeepRecentRatio"`  // fraction of token budget for recent messages during compaction (default: 0.75)
-	MaxJudgeCacheSize              int     `yaml:"maxJudgeCacheSize"`              // default: 1000
-	MaxPlannerExploreSteps         int     `yaml:"maxPlannerExploreSteps"`         // default: 7
+	MaxDependencyContextChars     int     `yaml:"maxDependencyContextChars"`     // default: 8000
+	MaxSummaryLength              int     `yaml:"maxSummaryLength"`              // default: 500
+	PlannerHistoryBudgetTokens    int     `yaml:"plannerHistoryBudgetTokens"`    // max tokens for conversation history sent to planner (default: 4000); triggers summarisation when exceeded
+	PlannerHistoryKeepRecentRatio float64 `yaml:"plannerHistoryKeepRecentRatio"` // fraction of token budget for recent messages during compaction (default: 0.75)
+	MaxJudgeCacheSize             int     `yaml:"maxJudgeCacheSize"`             // default: 1000
+	MaxPlannerExploreSteps        int     `yaml:"maxPlannerExploreSteps"`        // default: 7
 }
 
 // SkillsConfig holds Agent Skills discovery configuration.
@@ -329,8 +329,8 @@ type LoadResult struct {
 
 // ProviderWithModels pairs a provider config key with its enabled models.
 type ProviderWithModels struct {
-	Name         string   // config key: "anthropic", "chatgpt", or a named openai_compatible provider
-	ProviderType string   // Go type constant
+	Name         string // config key: "anthropic", "chatgpt", or a named openai_compatible provider
+	ProviderType string // Go type constant
 	APIKey       string
 	BaseURL      string
 	Models       []string // enabled models for this one provider
@@ -338,10 +338,10 @@ type ProviderWithModels struct {
 
 // providerEntry is the canonical, single-source-of-truth provider list.
 type providerEntry struct {
-	name     string
-	apiKey   string
-	baseURL  string
-	models   []string
+	name    string
+	apiKey  string
+	baseURL string
+	models  []string
 }
 
 // allProviderEntries returns the flat list of all known providers.

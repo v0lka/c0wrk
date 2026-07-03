@@ -19,19 +19,19 @@ import (
 
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/c0wrk/core/proxy"
-	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/mcp"
 	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/agent/reflector"
+	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/planner"
 	sdkmemory "github.com/v0lka/c0wrk/sdk/memory"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/c0wrk/sdk/planner"
 	"github.com/v0lka/c0wrk/sdk/prompt"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/c0wrk/sdk/skills"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/c0wrk/sdk/tools/mcp"
 )
 
 // OrchestratorBuilder owns the shared tool registry, MCP gateway, and cached
@@ -311,7 +311,10 @@ func (b *OrchestratorBuilder) Build(
 
 	// Build core agents (router, planner, reflector) with tracking caller
 	tokenCounter := llm.NewSimpleTokenCounter()
-	coreRouter, corePlanner, coreReflector := b.buildCoreAgents(trackingCaller, cfg, emitter, logger, modelReg, contextFactory, tokenCounter, dumpWriter, stepDumpTracker)
+	coreRouter, corePlanner, coreReflector, err := b.buildCoreAgents(trackingCaller, cfg, emitter, logger, modelReg, contextFactory, tokenCounter, dumpWriter, stepDumpTracker)
+	if err != nil {
+		return nil, fmt.Errorf("building core agents: %w", err)
+	}
 	if coreRouter == nil || corePlanner == nil {
 		return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, or corePlanner is nil")
 	}
@@ -890,7 +893,6 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	return llmRouter, modelRegistry, nil
 }
 
-
 // buildCoreAgents creates the core Router, Planner, Reflector.
 func (b *OrchestratorBuilder) buildCoreAgents(
 	caller agent.LLMCaller,
@@ -902,15 +904,18 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	tokenCounter llm.TokenCounter,
 	dumpWriter io.Writer,
 	stepDumpTracker *orchestration.StepDumpTracker,
-) (*router.Router, *planner.Planner, *reflector.Reflector) {
+) (*router.Router, *planner.Planner, *reflector.Reflector, error) {
 	if caller == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	providerName := cfg.LLM.DefaultProviderName()
 	loggedCaller := agent.NewLoggingLLMCaller(caller, providerName, logger)
 	loggedCaller = agent.NewDumpCaller(loggedCaller, dumpWriter, logger)
 	coreRouter := newCoreRouter(loggedCaller, cfg.Router.HistoryWindow)
-	corePlanner := newCorePlanner(loggedCaller, b.registry)
+	corePlanner, err := newCorePlanner(loggedCaller, b.registry)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("creating planner: %w", err)
+	}
 	coreReflector := newCoreReflector(loggedCaller)
 
 	if modelRegistry != nil {
@@ -954,7 +959,7 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 		}
 	}
 
-	return coreRouter, corePlanner, coreReflector
+	return coreRouter, corePlanner, coreReflector, nil
 }
 
 // plannerContextFactoryAdapter adapts a core ContextManagerFactory to the planner's
