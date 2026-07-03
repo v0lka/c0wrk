@@ -115,8 +115,21 @@ llm.Router.Call(ctx, ChatRequest)
 | `anthropic`                | provider_anthropic.go                             | Prompt caching (CacheBreak + ephemeral), thinking |
 | `gemini`                         | provider_gemini.go                                | Safety settings, large context                    |
 | `lmstudio`                       | provider_lmstudio.go                              | Any local model, OpenAI-compatible API            |
-| `openai_compatible`              | provider_openai.go + provider_openai_responses.go | Generic OpenAI-compatible API endpoint. `openai_codex` family routes to Responses API automatically. |
+| `openai_compatible`              | provider_openai.go + provider_openai_responses.go | Generic OpenAI-compatible API endpoint. `openai_codex` family routes to Responses API automatically. Reasoning items round-tripped (see below). |
 | `chatgpt`                        | provider_openai.go                                | Simplified OpenAI mode (Chat Completions only)    |
+
+### Responses API Reasoning Round-Trip
+
+The `openai_codex` model family (e.g. `gpt-5.3-codex`) uses the OpenAI Responses API instead of Chat Completions. Reasoning models on this transport return reasoning output items (type `"reasoning"`) alongside function calls. These items carry an `ID` and a `Summary` text.
+
+**Without round-tripping**, the model's committed plan (e.g. "I have enough info, now I'll edit line 42") exists only in reasoning tokens that are dropped between ReAct iterations. This causes the agent to revert to read-only exploration every turn, never escalating to mutations.
+
+The Responses API provider (`provider_openai_responses.go`) handles this:
+
+- **Response extraction** (`convertResponsesResponse`): reasoning items from `resp.Output` are extracted into `Message.ReasoningItems` (ID + Summary), `Message.ReasoningContent` (concatenated summaries), and `ChatResponse.Reasoning`.
+- **Request round-trip** (`convertToResponsesInput`): for assistant messages with `ReasoningItems`, each item is re-emitted as a `ResponseInputItemParamOfReasoning(id, summary)` input item **before** the message content and function calls. The original `ID` is preserved, which is required by the Responses API to maintain the reasoning chain across turns.
+
+`Message.ReasoningItems` is populated only by the Responses API provider. Other providers (Chat Completions, Anthropic, etc.) use `ReasoningContent` / `Reasoning` as plain strings.
 
 ## Reasoning Effort
 
@@ -209,6 +222,8 @@ Default-model validation: `default_model` must be non-empty and must appear in a
 - Token counting is best-effort (predictive until corrected by API response)
 - Provider initialization failure prevents Build() from completing
 - Reasoning effort is a native family-specific string (e.g., "high", "On", "Max") passed directly to the provider without role-based translation or resolution
+- Responses API (`openai_codex` family) round-trips reasoning items: `convertResponsesResponse` extracts them into `Message.ReasoningItems`, `convertToResponsesInput` re-emits them with original IDs to maintain the reasoning chain across turns
+- `Message.ReasoningItems` is populated only by the Responses API provider; other providers use `ReasoningContent` / `Reasoning` as plain strings
 
 ## Extension Points
 

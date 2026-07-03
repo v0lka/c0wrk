@@ -42,6 +42,23 @@ const executorWrapUpNudge = "[System] You are running low on tool call iteration
 
 const executorFinishNudge = "[System] You must call the finish tool to complete your task. Simply responding with text does not count as completion. Call the finish tool now with your final answer."
 
+// executorMutationNudge is injected when a step flagged as requiring mutations
+// (e.g. a coder step with domain=code) calls finish without having executed any
+// mutating tool. This catches the "false success" pattern where the agent reads
+// extensively but finishes without making the required code changes.
+const executorMutationNudge = "[System] You are finishing a step that requires code modifications, but you have not made any file changes (no write_file, edit_file, create_directory, delete_file, or delete_directory calls). If the task genuinely requires no changes, explain why explicitly in your finish answer. Otherwise, make the required changes NOW before calling finish."
+
+// mutatingTools is the set of tool names that constitute a filesystem mutation.
+// The mutation gate checks whether any of these were successfully executed before
+// accepting finish on a step flagged as mutation-required.
+var mutatingTools = map[string]struct{}{
+	"write_file":        {},
+	"edit_file":         {},
+	"create_directory":  {},
+	"delete_file":       {},
+	"delete_directory":  {},
+}
+
 // Circuit-breaker nudge messages. Kept as Go constants because they use fmt.Sprintf
 // with runtime values that would require a template engine if moved to markdown.
 const (
@@ -115,6 +132,12 @@ type Executor struct {
 	// Finish nudge tracker: ensure explicit finish tool call before accepting implicit finish
 	finishNudgeAttempted bool
 
+	// Mutation gate: when true, finish is rejected if no mutating tool was
+	// successfully executed during this step. Prevents "false success" where
+	// the agent reads extensively but finishes without making required changes.
+	mutationRequired      bool
+	mutationNudgeAttempted bool
+
 	// Multi-tool-call response group counter
 	responseGroupCounter int64
 
@@ -163,6 +186,13 @@ func (e *Executor) SetLogger(l *slog.Logger) { e.logger = l }
 
 // SetReasoningEffort sets the reasoning effort for LLM calls.
 func (e *Executor) SetReasoningEffort(effort string) { e.reasoningEffort = effort }
+
+// SetMutationRequired configures the mutation gate. When true, the executor
+// will not accept a finish call unless at least one mutating tool (write_file,
+// edit_file, create_directory, delete_file, delete_directory) was successfully
+// executed during this step. A nudge is injected on the first attempt; on the
+// second attempt the step is marked as not finished (Finished: false).
+func (e *Executor) SetMutationRequired(required bool) { e.mutationRequired = required }
 
 // SetPreWarningPercent sets the context fill percentage that triggers the pre-compaction
 // store_fact nudge. When fill reaches this threshold (but is below the compaction trigger),

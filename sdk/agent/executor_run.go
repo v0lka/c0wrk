@@ -119,6 +119,28 @@ func (e *Executor) callLLMWithReactiveCompaction(ctx context.Context, state *run
 	return resp, actionNone, nil
 }
 
+// hasMutatingToolExecuted checks whether any mutating tool (write_file,
+// edit_file, create_directory, delete_file, delete_directory) was
+// successfully executed during this step. It scans the accumulated steps
+// for Action.Name in the mutatingTools set, ignoring steps that carry
+// an error observation (rejected calls, circuit-breaker intercepts).
+func (e *Executor) hasMutatingToolExecuted(state *runState) bool {
+	for _, s := range state.allSteps {
+		if s.Action.Name == "" {
+			continue
+		}
+		if _, ok := mutatingTools[s.Action.Name]; ok {
+			// A step with an Observation starting with "[Tool call rejected"
+			// was denied by HITL — don't count it as a mutation.
+			if strings.HasPrefix(s.Observation, "[Tool call rejected") {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
 // handleImplicitFinish handles the "no tool calls" branches: nudge → finish-nudge → implicit finish.
 func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, state *runState, cw ContextManager, hasTools bool) (*ExecutorResult, loopAction) {
 	// Check for implicit finish (no tool calls with end_turn)
@@ -366,6 +388,26 @@ func (e *Executor) processSingleToolCall(
 		// instead of "Running tool: finish".
 		e.emitter.Finishing(state.stepNum, params.Answer)
 
+		// Mutation gate: if this step requires mutations, check whether any
+		// mutating tool was successfully executed. If not, inject a nudge on
+		// the first attempt and reject finish. On the second attempt, accept
+		// finish but mark the step as not finished (Finished: false) so the
+		// orchestrator triggers reflection/replan instead of recording success.
+		if e.mutationRequired && !e.hasMutatingToolExecuted(state) && !e.mutationNudgeAttempted {
+			e.mutationNudgeAttempted = true
+			nudgeStep := Step{
+				Thought:     thought,
+				Observation: executorMutationNudge,
+				TokensUsed:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			}
+			state.allSteps = append(state.allSteps, nudgeStep)
+			cw.AddStep(nudgeStep)
+			e.emitter.ExecutorDiagnostic(state.stepNum, "mutation_gate_nudge", map[string]any{
+				"reason": "finish_without_mutation",
+			})
+			return nil, actionBreak, nil // retry — LLM should now make changes or justify
+		}
+
 		stepThought := ""
 		stepReasoning := ""
 		if callIdx == 0 {
@@ -383,10 +425,20 @@ func (e *Executor) processSingleToolCall(
 
 		e.emitter.ToolResult(state.stepNum, callIdx, len(params.Answer), params.Answer, false)
 
+		// If mutation gate was triggered (nudge attempted) but still no mutation,
+		// mark as not finished so the orchestrator treats this as a failure.
+		finished := true
+		if e.mutationRequired && !e.hasMutatingToolExecuted(state) {
+			finished = false
+			e.emitter.ExecutorDiagnostic(state.stepNum, "mutation_gate_rejected", map[string]any{
+				"reason": "finish_without_mutation_after_nudge",
+			})
+		}
+
 		state.finishResult = &ExecutorResult{
 			Output:   params.Answer,
 			Steps:    state.allSteps,
-			Finished: true,
+			Finished: finished,
 		}
 		return nil, actionBreak, nil // stop processing further tool calls
 	}

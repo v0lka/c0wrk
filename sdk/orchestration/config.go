@@ -96,4 +96,12 @@ type StepConfig struct {
 	// AgentRole is the step's agent role (e.g. "researcher", "coder", "tester", "executor").
 	// Used to resolve per-role reasoning effort. Empty defaults to "executor".
 	AgentRole string
+
+	// MutationRequired, when true, instructs the executor to reject finish calls
+	// that are not preceded by at least one mutating tool execution (write_file,
+	// edit_file, create_directory, delete_file, delete_directory). This prevents
+	// "false success" on code-modification steps where the agent reads extensively
+	// but finishes without making changes. Set by the StepConfigurator based on
+	// the step's role and domain.
+	MutationRequired bool
 }

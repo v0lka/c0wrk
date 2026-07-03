@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -95,6 +96,21 @@ func convertToResponsesInput(messages []Message) responses.ResponseInputParam {
 			})
 
 		case "assistant":
+			// Re-emit reasoning items first (with their original IDs) so the
+			// Responses API can maintain the reasoning chain across turns.
+			// This is critical for reasoning models (e.g. Codex): without
+			// round-tripping reasoning items, the model loses its committed
+			// plan between ReAct iterations and reverts to read-only exploration.
+			for _, ri := range msg.ReasoningItems {
+				summaryParams := make([]responses.ResponseReasoningItemSummaryParam, 0, 1)
+				if ri.Summary != "" {
+					summaryParams = append(summaryParams, responses.ResponseReasoningItemSummaryParam{
+						Text: ri.Summary,
+					})
+				}
+				items = append(items, responses.ResponseInputItemParamOfReasoning(ri.ID, summaryParams))
+			}
+
 			// If assistant has tool calls, add the text message (if any) and then each function_call
 			if msg.Content != "" {
 				items = append(items, responses.ResponseInputItemUnionParam{
@@ -198,9 +214,32 @@ func convertResponsesResponse(resp *responses.Response) (*ChatResponse, error) {
 		Content: resp.OutputText(),
 	}
 
-	// Extract function_call items as tool calls
+	// Extract reasoning items and function_call items from the response output.
+	var reasoningParts []string
 	for _, item := range resp.Output {
-		if item.Type == "function_call" {
+		switch item.Type {
+		case "reasoning":
+			// Collect summary text from the reasoning item.
+			var summaryText strings.Builder
+			for _, s := range item.Summary {
+				if s.Text != "" {
+					if summaryText.Len() > 0 {
+						summaryText.WriteString("\n")
+					}
+					summaryText.WriteString(s.Text)
+				}
+			}
+			summary := summaryText.String()
+			if summary != "" {
+				reasoningParts = append(reasoningParts, summary)
+			}
+			if item.ID != "" {
+				message.ReasoningItems = append(message.ReasoningItems, ReasoningItem{
+					ID:      item.ID,
+					Summary: summary,
+				})
+			}
+		case "function_call":
 			message.ToolCalls = append(message.ToolCalls, ToolCall{
 				ID:    item.CallID,
 				Name:  item.Name,
@@ -209,16 +248,24 @@ func convertResponsesResponse(resp *responses.Response) (*ChatResponse, error) {
 		}
 	}
 
+	// Populate ReasoningContent and Reasoning from the concatenated reasoning summaries.
+	// This makes reasoning visible to the UI and to non-Responses transports.
+	if len(reasoningParts) > 0 {
+		message.ReasoningContent = strings.Join(reasoningParts, "\n")
+	}
+
 	stopReason := mapResponsesStopReason(resp)
 
-	return &ChatResponse{
+	result := &ChatResponse{
 		Message:    message,
 		StopReason: stopReason,
 		Usage: TokenUsage{
 			InputTokens:  int(resp.Usage.InputTokens),
 			OutputTokens: int(resp.Usage.OutputTokens),
 		},
-	}, nil
+	}
+	result.Reasoning = message.ReasoningContent
+	return result, nil
 }
 
 // wrapResponsesError wraps errors from the official OpenAI SDK into our error type.

@@ -976,6 +976,7 @@ func (o *Orchestrator) configureExecutor(executor *agent.Executor, stepCfg StepC
 	if o.cfg.ReasoningEffort != "" {
 		executor.SetReasoningEffort(o.cfg.ReasoningEffort)
 	}
+	executor.SetMutationRequired(stepCfg.MutationRequired)
 }
 
 // SetReasoningEffort updates the reasoning effort used for all subsequent step executors.

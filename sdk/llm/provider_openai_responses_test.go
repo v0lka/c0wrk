@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/openai/openai-go/responses"
@@ -193,6 +194,83 @@ func TestConvertToResponsesInput(t *testing.T) {
 			wantCount: 0,
 			checkItems: func(t *testing.T, items responses.ResponseInputParam) {
 				// nothing to check
+			},
+		},
+		{
+			name: "assistant message with reasoning items round-trips them",
+			messages: []Message{
+				{
+					Role:    "assistant",
+					Content: "Let me check.",
+					ReasoningItems: []ReasoningItem{
+						{ID: "rs_001", Summary: "I should read the file first."},
+					},
+					ToolCalls: []ToolCall{
+						{ID: "call-1", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`)},
+					},
+				},
+			},
+			wantCount: 3, // reasoning + text message + function_call
+			checkItems: func(t *testing.T, items responses.ResponseInputParam) {
+				// First item: reasoning (must come before message)
+				if items[0].OfReasoning == nil {
+					t.Fatal("expected first item to be OfReasoning")
+				}
+				if items[0].OfReasoning.ID != "rs_001" {
+					t.Errorf("reasoning ID = %q, want %q", items[0].OfReasoning.ID, "rs_001")
+				}
+				// Second item: the text message
+				if items[1].OfMessage == nil {
+					t.Fatal("expected second item to be OfMessage")
+				}
+				if items[1].OfMessage.Content.OfString.Value != "Let me check." {
+					t.Errorf("text content = %q", items[1].OfMessage.Content.OfString.Value)
+				}
+				// Third item: the function call
+				if items[2].OfFunctionCall == nil {
+					t.Fatal("expected third item to be OfFunctionCall")
+				}
+			},
+		},
+		{
+			name: "assistant with reasoning items but no text or tool calls",
+			messages: []Message{
+				{
+					Role:    "assistant",
+					ReasoningItems: []ReasoningItem{
+						{ID: "rs_002", Summary: "Thinking step."},
+					},
+				},
+			},
+			wantCount: 1, // only reasoning item
+			checkItems: func(t *testing.T, items responses.ResponseInputParam) {
+				if items[0].OfReasoning == nil {
+					t.Fatal("expected OfReasoning to be set")
+				}
+				if items[0].OfReasoning.ID != "rs_002" {
+					t.Errorf("reasoning ID = %q, want rs_002", items[0].OfReasoning.ID)
+				}
+			},
+		},
+		{
+			name: "assistant with multiple reasoning items",
+			messages: []Message{
+				{
+					Role:    "assistant",
+					ReasoningItems: []ReasoningItem{
+						{ID: "rs_a", Summary: "First block."},
+						{ID: "rs_b", Summary: "Second block."},
+					},
+				},
+			},
+			wantCount: 2,
+			checkItems: func(t *testing.T, items responses.ResponseInputParam) {
+				if items[0].OfReasoning == nil || items[0].OfReasoning.ID != "rs_a" {
+					t.Error("expected first item to be reasoning rs_a")
+				}
+				if items[1].OfReasoning == nil || items[1].OfReasoning.ID != "rs_b" {
+					t.Error("expected second item to be reasoning rs_b")
+				}
 			},
 		},
 	}
@@ -443,6 +521,109 @@ func TestConvertResponsesResponse(t *testing.T) {
 		}
 		if result.StopReason != "tool_use" {
 			t.Errorf("stop_reason = %q, want %q", result.StopReason, "tool_use")
+		}
+	})
+
+	t.Run("response with reasoning items extracts summary and IDs", func(t *testing.T) {
+		resp := &responses.Response{
+			Status: responses.ResponseStatusCompleted,
+			Output: []responses.ResponseOutputItemUnion{
+				{
+					Type: "reasoning",
+					ID:   "rs_abc123",
+					Summary: []responses.ResponseReasoningItemSummary{
+						{Text: "I need to read the file first.", Type: "summary_text"},
+						{Text: "Then I will edit line 42.", Type: "summary_text"},
+					},
+				},
+				{Type: "function_call", CallID: "call-1", Name: "read_file", Arguments: `{"path":"main.go"}`},
+			},
+			Usage: responses.ResponseUsage{
+				InputTokens:  300,
+				OutputTokens: 80,
+			},
+		}
+		result, err := convertResponsesResponse(resp)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result.Message.ReasoningItems) != 1 {
+			t.Fatalf("expected 1 reasoning item, got %d", len(result.Message.ReasoningItems))
+		}
+		ri := result.Message.ReasoningItems[0]
+		if ri.ID != "rs_abc123" {
+			t.Errorf("reasoning item ID = %q, want %q", ri.ID, "rs_abc123")
+		}
+		if !strings.Contains(ri.Summary, "I need to read the file first.") {
+			t.Errorf("reasoning item summary missing first part: %q", ri.Summary)
+		}
+		if !strings.Contains(ri.Summary, "Then I will edit line 42.") {
+			t.Errorf("reasoning item summary missing second part: %q", ri.Summary)
+		}
+		if result.Message.ReasoningContent == "" {
+			t.Error("expected ReasoningContent to be populated from reasoning summaries")
+		}
+		if result.Reasoning == "" {
+			t.Error("expected Reasoning to be populated from reasoning summaries")
+		}
+		if result.Message.ReasoningContent != result.Reasoning {
+			t.Errorf("ReasoningContent (%q) != Reasoning (%q)", result.Message.ReasoningContent, result.Reasoning)
+		}
+	})
+
+	t.Run("response with multiple reasoning items", func(t *testing.T) {
+		resp := &responses.Response{
+			Status: responses.ResponseStatusCompleted,
+			Output: []responses.ResponseOutputItemUnion{
+				{
+					Type: "reasoning",
+					ID:   "rs_001",
+					Summary: []responses.ResponseReasoningItemSummary{
+						{Text: "First reasoning block.", Type: "summary_text"},
+					},
+				},
+				{
+					Type: "reasoning",
+					ID:   "rs_002",
+					Summary: []responses.ResponseReasoningItemSummary{
+						{Text: "Second reasoning block.", Type: "summary_text"},
+					},
+				},
+			},
+		}
+		result, err := convertResponsesResponse(resp)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result.Message.ReasoningItems) != 2 {
+			t.Fatalf("expected 2 reasoning items, got %d", len(result.Message.ReasoningItems))
+		}
+		if result.Message.ReasoningItems[0].ID != "rs_001" {
+			t.Errorf("first reasoning item ID = %q, want rs_001", result.Message.ReasoningItems[0].ID)
+		}
+		if result.Message.ReasoningItems[1].ID != "rs_002" {
+			t.Errorf("second reasoning item ID = %q, want rs_002", result.Message.ReasoningItems[1].ID)
+		}
+	})
+
+	t.Run("response with reasoning item without ID is skipped", func(t *testing.T) {
+		resp := &responses.Response{
+			Status: responses.ResponseStatusCompleted,
+			Output: []responses.ResponseOutputItemUnion{
+				{
+					Type: "reasoning",
+					Summary: []responses.ResponseReasoningItemSummary{
+						{Text: "Orphan reasoning.", Type: "summary_text"},
+					},
+				},
+			},
+		}
+		result, err := convertResponsesResponse(resp)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result.Message.ReasoningItems) != 0 {
+			t.Errorf("expected 0 reasoning items (no ID), got %d", len(result.Message.ReasoningItems))
 		}
 	})
 }

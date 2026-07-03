@@ -103,7 +103,13 @@ Executor.Run(ctx, task, tools, systemPrompt)
 │   │      └─ Check context fill → compact if needed
 │   │
 │   ├─ 3. If finish tool called:
-│   │      → Extract output, return success
+│   │      ├─ Mutation gate (if mutationRequired): check if any mutating tool
+│   │      │   (write_file, edit_file, create_directory, delete_file, delete_directory)
+│   │      │   was successfully executed in this step.
+│   │      │   → No mutation + first attempt: inject mutation nudge, continue loop
+│   │      │   → No mutation + second attempt: return Finished=false (triggers reflection/replan)
+│   │      │   → Mutation present or gate disabled: extract output, return success
+│   │      └─ Extract output, return success (when gate passes)
 │   │
 │   ├─ 4. Circuit breaker check (see below)
 │   │      → If abort threshold reached: call HITLHandler.OnStepLimit(reason)
@@ -137,6 +143,28 @@ When a circuit breaker abort threshold is reached, the executor calls `HITLHandl
 If `HITLHandler` is nil (no UI connected), the executor aborts immediately (preserving headless/test behavior).
 
 Config: `CircuitBreakerConfig` (thresholds per detection type).
+
+### Mutation Gate
+
+When `mutationRequired` is set on the executor (via `SetMutationRequired(true)`), the finish tool call is intercepted before completion. The gate checks whether any mutating tool (`write_file`, `edit_file`, `create_directory`, `delete_file`, `delete_directory`) was **successfully** executed during the current step (scanning `state.allSteps` for `Step.Action.Name` in the mutating set, excluding rejected calls).
+
+Flow:
+
+```
+finish called + mutationRequired=true
+  │
+  ├─ hasMutatingToolExecuted?
+  │   ├─ YES → accept finish, return Finished=true
+  │   └─ NO  → mutationNudgeAttempted?
+  │       ├─ NO  → inject executorMutationNudge, set flag, continue loop (retry)
+  │       └─ YES → return Finished=false (triggers orchestrator reflection/replan)
+```
+
+Purpose: prevents "false success" on code-modification steps where the agent reads extensively but finishes without making changes. The gate is role-dependent — set by `coreStepConfigurator` only for `profile.Role == "coder" && profile.Domain == "code"`. Researcher/audit/tester steps are not gated.
+
+Rejected tool calls (HITL denial with `Observation` starting `[Tool call rejected`) do **not** count as mutations. `bash_exec` is intentionally excluded from the mutating set — it's ambiguous (could be `pwd && ls` or `go test`), and the gate focuses on structural filesystem mutations.
+
+Source: `sdk/agent/executor.go` `mutatingTools` set, `sdk/agent/executor_run.go` `hasMutatingToolExecuted` + finish branch gate.
 
 ### Critical Always-Allowed Tools
 
@@ -222,6 +250,8 @@ Key behaviors:
 ## Invariants
 
 - `finish` tool is ALWAYS available in every step (never filtered out)
+- When `mutationRequired` is set, finish without a prior mutating tool execution is rejected (nudge → `Finished: false`)
+- Mutation gate only applies to coder steps with `domain == "code"`; researcher/tester/audit steps are unaffected
 - Context window never exceeds model limit (compaction triggers automatically)
 - MaxSteps bounds total iterations (HITLHandler.OnStepLimit may extend)
 - Each step has its own ContextManager (isolated memory)

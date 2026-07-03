@@ -182,6 +182,7 @@ func coreStepConfigurator(
 			KeepLastN:          keepLastN,
 			ProtectedTools:     protectedTools,
 			AgentRole:          profile.Role,
+			MutationRequired:   profile.Role == "coder" && profile.Domain == "code",
 		}
 	}
 }
