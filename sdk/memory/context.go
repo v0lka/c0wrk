@@ -47,9 +47,18 @@ type ContextWindow struct {
 	// injectionDefenseEnabled gates the prompt injection defense wrapping (<untrusted-content> tags).
 	injectionDefenseEnabled bool
 
-	// compactedMessages stores the result of compaction.
-	// When non-nil, BuildPrompt uses this instead of converting steps.
+	// compactedMessages stores the frozen prefix produced by the last Compact() call.
+	// When non-nil, buildStepMessages prepends this instead of converting
+	// steps[:compactedThroughIndex]. Steps appended after that point (the
+	// "tail") are still rendered normally and combined with this prefix, so
+	// that adding a step never forces a full reversion to the raw,
+	// unbounded step history — see compactedThroughIndex.
 	compactedMessages []llm.Message
+
+	// compactedThroughIndex is the number of leading entries in steps that are
+	// already represented by compactedMessages. Only steps[compactedThroughIndex:]
+	// need to be converted on subsequent BuildPrompt calls, until the next Compact().
+	compactedThroughIndex int
 }
 
 // noopCounter is a zero-cost TokenCounter used when no tracker is provided.
@@ -180,8 +189,13 @@ func (cw *ContextWindow) SetPlan(planText string) {
 // on actual API-reported token usage, so estimates converge over time.
 func (cw *ContextWindow) AddStep(step sdkagent.Step) {
 	cw.steps = append(cw.steps, step)
-	// Clear compacted messages since we have new steps
-	cw.compactedMessages = nil
+	// NOTE: compactedMessages is intentionally left untouched here. It holds a
+	// frozen prefix from the last Compact() call; buildStepMessages appends
+	// messages for steps[compactedThroughIndex:] (which now includes this new
+	// step) on top of that prefix. Clearing it on every step would force
+	// BuildPrompt to reconvert the entire, ever-growing step history on the
+	// very next call — which re-crosses the compaction threshold almost
+	// immediately and causes Compact() to be re-triggered on every step.
 	// Estimate tokens for this step and add to tracker delta
 	stepText := fmt.Sprintf("%s %s %s %s", step.Thought, step.Action.Name, string(step.Action.Input), step.Observation)
 	cw.tracker.AddDelta(stepText)
@@ -239,10 +253,16 @@ func (cw *ContextWindow) BuildPrompt() []llm.Message {
 const invisibleChars = " \t\n\r\x00\u200b\u200c\u200d\ufeff"
 
 // buildStepMessages returns messages for the step history.
-// Uses compactedMessages if available, otherwise converts steps.
+// If compaction has occurred, the frozen compactedMessages prefix is combined
+// with freshly-built messages for the tail (steps[compactedThroughIndex:]) —
+// i.e. everything added since the last Compact() call. Otherwise, all steps
+// are converted directly.
 func (cw *ContextWindow) buildStepMessages() []llm.Message {
+	startIdx := 0
+	var messages []llm.Message
 	if cw.compactedMessages != nil {
-		return cw.compactedMessages
+		messages = append(messages, cw.compactedMessages...)
+		startIdx = cw.compactedThroughIndex
 	}
 
 	// Determine which step indices have tool results and should be pruned
@@ -266,8 +286,7 @@ func (cw *ContextWindow) buildStepMessages() []llm.Message {
 		)
 	}
 
-	var messages []llm.Message
-	for i := 0; i < len(cw.steps); {
+	for i := startIdx; i < len(cw.steps); {
 		step := cw.steps[i]
 
 		if step.ResponseGroup > 0 {
@@ -557,10 +576,13 @@ func (cw *ContextWindow) Compact(ctx context.Context) *CompactionResult {
 
 	// Compact steps using the strategy.
 	// Steps are preserved after compaction so that diagnostics (VulnerableOutputs,
-	// computeProtectedIndices) remain functional. compactedMessages takes precedence
-	// in BuildPrompt when non-nil, so the original step history is effectively inert
-	// for prompt generation but still available for introspection.
+	// computeProtectedIndices) remain functional. compactedMessages becomes the
+	// frozen prefix that buildStepMessages combines with any steps added
+	// afterward (see compactedThroughIndex), so re-compaction is only needed
+	// once the new tail grows the fill back past the threshold — not on every
+	// subsequent step.
 	cw.compactedMessages = cw.strategy.Compact(ctx, cw.steps, budgetTokens)
+	cw.compactedThroughIndex = len(cw.steps)
 
 	// Estimate after-compaction fill
 	effectiveMax := cw.EffectiveMax()

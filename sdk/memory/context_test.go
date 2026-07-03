@@ -304,8 +304,14 @@ func TestAddStep(t *testing.T) {
 	}
 }
 
-// TestCompactClearsCompactedOnNewStep verifies that adding a new step clears compacted messages.
-func TestCompactClearsCompactedOnNewStep(t *testing.T) {
+// TestAddStepAfterCompactAppendsToCompactedPrefix is a regression test for a bug
+// where AddStep unconditionally cleared compactedMessages, forcing BuildPrompt to
+// reconvert the entire (unbounded) raw step history on the very next call. Since
+// cw.steps is never trimmed by Compact(), that reconversion re-crossed the
+// compaction threshold almost immediately, causing compaction to fire again on
+// (almost) every subsequent ReAct step instead of staying compacted until the new
+// tail itself grows large enough to warrant it.
+func TestAddStepAfterCompactAppendsToCompactedPrefix(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(2, 2)
@@ -318,37 +324,70 @@ func TestCompactClearsCompactedOnNewStep(t *testing.T) {
 	}
 	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0, false)
 
-	// Add steps
+	// Add 10 steps: sliding window (keepFirst=2, keepLast=2) will keep T1,T2,T9,T10
+	// and omit T3..T8.
 	for i := 1; i <= 10; i++ {
 		cw.AddStep(makeStep(fmt.Sprintf("T%d", i), fmt.Sprintf("O%d", i), i))
 	}
 
-	// Compact - this clears steps and stores compacted messages
 	cw.Compact(context.Background())
 	messagesAfterCompact := cw.BuildPrompt()
 
-	// Verify compacted messages exist (2 first + 1 summary + 2 last = 5 messages, each step = 2 messages)
-	// Actually: 2 first steps (4 msgs) + 1 summary + 2 last steps (4 msgs) = 9 messages including system
-	if len(messagesAfterCompact) == 0 {
-		t.Error("Expected compacted messages after Compact()")
+	// 2 first steps (4 msgs) + 1 summary + 2 last steps (4 msgs) = 9 step messages,
+	// plus the system prompt = 10 messages total.
+	wantAfterCompact := 10
+	if len(messagesAfterCompact) != wantAfterCompact {
+		t.Fatalf("messages after Compact() = %d, want %d", len(messagesAfterCompact), wantAfterCompact)
 	}
 
-	// Add new step - should clear compacted messages
+	// Add a new step after compaction.
 	cw.AddStep(makeStep("New thought", "New obs", 99))
 	messagesAfterNewStep := cw.BuildPrompt()
 
-	// After adding a new step, compacted messages should be cleared
-	// and we should see just the system prompt + the new step (1 + 2 = 3 messages)
-	// The new step is not compacted - it should appear in full
-	foundNewThought := false
+	// The new step should be *appended* to the frozen compacted prefix (+2
+	// messages: assistant + tool), not force a full rebuild from raw steps
+	// (which would yield 1 (system) + 11*2 (all raw steps, uncompacted) = 23).
+	wantAfterNewStep := wantAfterCompact + 2
+	if len(messagesAfterNewStep) != wantAfterNewStep {
+		t.Fatalf("messages after AddStep() post-compaction = %d, want %d (bug: compaction was discarded, history rebuilt in full)",
+			len(messagesAfterNewStep), wantAfterNewStep)
+	}
+
+	var foundNewThought, foundFirstStep, foundLastStep, foundOmittedStep bool
 	for _, msg := range messagesAfterNewStep {
-		if msg.Content == "New thought" {
+		switch msg.Content {
+		case "New thought":
 			foundNewThought = true
-			break
+		case "T1":
+			foundFirstStep = true
+		case "T9":
+			foundLastStep = true
+		case "T5":
+			foundOmittedStep = true
 		}
 	}
 	if !foundNewThought {
-		t.Error("New step should be present in messages after adding it")
+		t.Error("new step should be present in messages after adding it")
+	}
+	if !foundFirstStep {
+		t.Error("compacted prefix's kept first step (T1) should still be present after adding a new step")
+	}
+	if !foundLastStep {
+		t.Error("compacted prefix's kept last step (T9) should still be present after adding a new step")
+	}
+	if foundOmittedStep {
+		t.Error("omitted step (T5) reappeared — compaction was discarded and raw history was rebuilt in full")
+	}
+
+	// A second round-trip: compact again, then add another step, and verify the
+	// pattern holds (guards against the fix only working for the first cycle).
+	cw.Compact(context.Background())
+	messagesAfterSecondCompact := cw.BuildPrompt()
+	cw.AddStep(makeStep("Second new thought", "Second new obs", 100))
+	messagesAfterSecondNewStep := cw.BuildPrompt()
+	if len(messagesAfterSecondNewStep) != len(messagesAfterSecondCompact)+2 {
+		t.Fatalf("messages after second AddStep() post-compaction = %d, want %d",
+			len(messagesAfterSecondNewStep), len(messagesAfterSecondCompact)+2)
 	}
 }
 
