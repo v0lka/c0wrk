@@ -67,6 +67,18 @@ func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm Cont
 		duration := time.Since(startTime)
 		success := err == nil && result.Finished
 
+		// Defense-in-depth: even if the executor returned Finished=true, a
+		// failure-mode where the model printed tool-call syntax as text
+		// (instead of emitting a tool_use block) is NOT a success. The
+		// handleImplicitFinish detector should have aborted such cases with
+		// Finished=false, but this guard catches any escape.
+		if success && DetectToolCallSyntaxInContent(result.Output) {
+			success = false
+			if err == nil {
+				err = errors.New("model printed tool-call syntax as text instead of using tool_use blocks")
+			}
+		}
+
 		// Emit subagent complete
 		emitter.SubAgentComplete(stepID, success, duration)
 

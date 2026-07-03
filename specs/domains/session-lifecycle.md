@@ -248,6 +248,13 @@ that accumulates one user/assistant pair per exchange, without truncation:
   completion: …]` note), and cancellation (`[Task was cancelled before
   completion]` note). `Orchestrator.Resume` (interrupted-task resume, plan
   review approval) appends the assistant-side outcome the same way.
+- When the assistant output contains tool-call syntax printed as text (failure-mode
+  detected by `agent.DetectToolCallSyntaxInContent` — e.g. `` ```bash_exec ``
+  typed as prose instead of a `tool_use` block), the history records a
+  `[Task failed before completion: task ended in failure-mode: model printed
+  tool-call syntax as text instead of using tool_use blocks]` note instead of
+  the hallucinated text. This ensures future routing/planning sees an honest
+  failure, not the stuck-model artifact.
 - A failed attempt retried with the same message (continuation fallback)
   replaces the failed pair instead of duplicating the user message.
 - History sent to Router for context-aware classification (last

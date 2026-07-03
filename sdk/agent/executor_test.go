@@ -138,11 +138,13 @@ func TestExecutor_Run_MaxStepsExhausted(t *testing.T) {
 }
 
 func TestExecutor_Run_NudgeOnImplicitFinish(t *testing.T) {
-	// First call: end_turn without tools → nudge
-	// Second call: end_turn again → accept
+	// First call: end_turn without tools → nudge (attempt 1)
+	// Second call: end_turn again → nudge (attempt 2)
+	// Third call: end_turn again → accept (nudge budget exhausted)
 	mockLLM := &mockLLMCaller{
 		responses: []*llm.ChatResponse{
 			llmResponseEndTurn("I think I know"),
+			llmResponseEndTurn("still thinking"),
 			llmResponseEndTurn("The answer is yes"),
 		},
 	}
@@ -156,23 +158,30 @@ func TestExecutor_Run_NudgeOnImplicitFinish(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.Finished {
-		t.Error("expected Finished=true after nudge")
+		t.Error("expected Finished=true after nudges")
 	}
 	if result.Output != "The answer is yes" {
 		t.Errorf("Output = %q, want %q", result.Output, "The answer is yes")
 	}
-	// Should have nudge step + final step
-	if len(result.Steps) < 2 {
-		t.Errorf("expected at least 2 steps (nudge + final), got %d", len(result.Steps))
+	// Should have 2 nudge steps + final step
+	if len(result.Steps) < 3 {
+		t.Errorf("expected at least 3 steps (2 nudges + final), got %d", len(result.Steps))
 	}
 }
 
 func TestExecutor_Run_NudgeOnNoToolsNoEndTurn(t *testing.T) {
-	// No tool calls, stop_reason != "end_turn" → nudge, then finish
+	// No tool calls, stop_reason != "end_turn" → nudge (attempt 1)
+	// Second call: still no tools, no end_turn → nudge (attempt 2)
+	// Third call: end_turn → accept
 	mockLLM := &mockLLMCaller{
 		responses: []*llm.ChatResponse{
 			{
 				Message:    llm.Message{Role: "assistant", Content: "hmm"},
+				StopReason: "max_tokens",
+				Usage:      llm.TokenUsage{InputTokens: 50, OutputTokens: 50},
+			},
+			{
+				Message:    llm.Message{Role: "assistant", Content: "hmm2"},
 				StopReason: "max_tokens",
 				Usage:      llm.TokenUsage{InputTokens: 50, OutputTokens: 50},
 			},

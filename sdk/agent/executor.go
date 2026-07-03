@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -18,6 +19,24 @@ import (
 )
 
 const executorNudge = "[System] You have tools available that can help answer this request. Before finishing, try using relevant tools to discover the answer. Do NOT say you cannot determine something without first attempting to use your tools."
+
+const executorToolCallSyntaxNudge = "[System] You printed tool-call syntax (e.g. ```bash_exec) as text in your response instead of invoking the tool through the tool_use block. This is an error — tools must be called via the tool_use mechanism, not typed as text. Re-issue your tool call correctly using the tool_use block."
+
+// toolCallSyntaxRe matches a fenced code block at the start of a line whose
+// language tag looks like a c0wrk tool name (lowercase words joined by
+// underscores, e.g. ```bash_exec, ```read_file, ```edit_file). When the model
+// enters a failure-mode where it "prints" a tool invocation as prose instead
+// of emitting a tool_use block, this pattern is a reliable signal.
+var toolCallSyntaxRe = regexp.MustCompile("(?m)^\\s*```\\w+_\\w+")
+
+// DetectToolCallSyntaxInContent reports whether content contains tool-call
+// syntax printed as text — a failure-mode sign where the model writes a
+// fenced code block with a tool-name language tag (e.g. ```bash_exec) instead
+// of emitting a proper tool_use block. Callers use this to avoid treating
+// such output as a legitimate "implicit finish".
+func DetectToolCallSyntaxInContent(content string) bool {
+	return toolCallSyntaxRe.MatchString(content)
+}
 
 // nonCacheableTools is the set of tool names whose results are NOT cached.
 // These are internal meta-tools or produce tiny outputs where caching adds overhead.

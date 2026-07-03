@@ -124,12 +124,19 @@ HandleMessage(ctx, message, sessionID, opts)
 ├─ 2. Load available tools from registry (filtered via ListFiltered to
 │     exclude disabled tools in No Project mode)
 │
-├─ 3. ROUTE: router.Route(ctx, routingMessage, tools, history, skills)
-│     → When opts.UserSkills is non-empty, routingMessage is augmented with
-│       skill descriptions via buildSkillAugmentedRoutingMessage so the router
-│       can classify domain/complexity based on the actual task semantics
-│     → RoutingDecision
-│     → Emit Routing event
+├─ 3. ROUTE (or continuation fast-path):
+│     ├─ Continuation fast-path (routeOrContinue): if opts.TaskID != "" AND
+│     │   restored BB has an existing plan + routing decision → skip router
+│     │   entirely, reuse restored RoutingDecision, reactivate skills from it,
+│     │   proceed to step 6. Avoids spurious needsClarification on continuation
+│     │   messages (router only sees flat history, not the plan).
+│     │
+│     └─ Default: router.Route(ctx, routingMessage, tools, history, skills)
+│         → When opts.UserSkills is non-empty, routingMessage is augmented with
+│           skill descriptions via buildSkillAugmentedRoutingMessage so the router
+│           can classify domain/complexity based on the actual task semantics
+│         → RoutingDecision
+│         → Emit Routing event
 │
 ├─ 3a. No Project: override routing.Domain from "code" to "general"
 │
@@ -176,7 +183,7 @@ HandleMessage(ctx, message, sessionID, opts)
 
 ## Invariants
 
-- Every user message passes through Route (even in normal mode)
+- Every FIRST user message passes through Route; continuation messages (opts.TaskID != "") with a restored plan + routing take the continuation fast-path and skip the router
 - Routing always produces a valid domain from {"code", "research", "general", "mixed"}
 - Complexity is always in range [1, 5]
 - MaxRetries bounds total attempts at MaxRetries + 1
@@ -195,6 +202,10 @@ HandleMessage(ctx, message, sessionID, opts)
   cancellation record `[Task failed before completion: …]` /
   `[Task was cancelled before completion]` assistant notes shared with the
   backend's history restore (core.HistoryNoteFailed / core.HistoryNoteCancelled)
+- When the assistant output contains tool-call syntax printed as text (failure-mode
+  detected by `agent.DetectToolCallSyntaxInContent`), the history records a
+  `HistoryNoteFailed(...)` note instead of the hallucinated text, so future
+  routing/planning sees an honest failure, not garbage
 - isNoProject: routing domain "code" is overridden to "general" after classification
 - SetNoProjectMode(): disables code tools (ripgrep, glob, edit_file, semantic_search) and adds extended bash command blacklist on the core tool registry
 

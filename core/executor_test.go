@@ -572,7 +572,8 @@ func TestExecutor_NudgeMechanism_AcceptsImplicitFinishAfterRetry(t *testing.T) {
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callCount++
-			// Both calls return no tool calls - second should accept implicit finish
+			// All calls return no tool calls - third should accept implicit finish
+			// (2 nudges before accepting, per the implicitFinishNudgeCount < 2 guard)
 			return &llm.ChatResponse{
 				Message:    llm.Message{Role: "assistant", Content: "I really cannot do this"},
 				StopReason: "end_turn",
@@ -598,9 +599,9 @@ func TestExecutor_NudgeMechanism_AcceptsImplicitFinishAfterRetry(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify LLM was called twice (first attempt + retry after nudge)
-	if callCount != 2 {
-		t.Errorf("expected 2 LLM calls, got %d", callCount)
+	// Verify LLM was called 3 times (first attempt + 2 nudges + accept)
+	if callCount != 3 {
+		t.Errorf("expected 3 LLM calls, got %d", callCount)
 	}
 
 	// Verify result is finished (implicit finish accepted after nudge retry)
@@ -613,9 +614,9 @@ func TestExecutor_NudgeMechanism_AcceptsImplicitFinishAfterRetry(t *testing.T) {
 		t.Errorf("expected output 'I really cannot do this', got '%s'", result.Output)
 	}
 
-	// Should have 2 steps: nudge step + final implicit finish step
-	if len(result.Steps) != 2 {
-		t.Errorf("expected 2 steps (nudge + implicit finish), got %d", len(result.Steps))
+	// Should have 3 steps: 2 nudge steps + final implicit finish step
+	if len(result.Steps) != 3 {
+		t.Errorf("expected 3 steps (2 nudges + implicit finish), got %d", len(result.Steps))
 	}
 }
 
@@ -778,8 +779,9 @@ func TestExecutor_NudgeMechanism_NudgeOnLaterSteps(t *testing.T) {
 					Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
 				}, nil
 			}
-			// Calls 2 and 3: return no tools
-			// Call 2 will trigger nudge, call 3 will be implicit finish
+			// Calls 2, 3, 4: return no tools
+			// Calls 2 and 3 will trigger nudge, call 4 will be implicit finish
+			// (2 nudges before accepting, per the implicitFinishNudgeCount < 2 guard)
 			return &llm.ChatResponse{
 				Message:    llm.Message{Role: "assistant", Content: "No more tools needed"},
 				StopReason: "end_turn",
@@ -809,9 +811,9 @@ func TestExecutor_NudgeMechanism_NudgeOnLaterSteps(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify LLM was called 3 times (nudge on step 2)
-	if callCount != 3 {
-		t.Errorf("expected 3 LLM calls (nudge on step 2), got %d", callCount)
+	// Verify LLM was called 4 times (tool + 2 nudges + accept)
+	if callCount != 4 {
+		t.Errorf("expected 4 LLM calls (tool + 2 nudges + accept), got %d", callCount)
 	}
 
 	// Verify result is finished
@@ -819,9 +821,9 @@ func TestExecutor_NudgeMechanism_NudgeOnLaterSteps(t *testing.T) {
 		t.Error("expected Finished to be true")
 	}
 
-	// Should have 3 steps: tool call + nudge + implicit finish
-	if len(result.Steps) != 3 {
-		t.Errorf("expected 3 steps, got %d", len(result.Steps))
+	// Should have 4 steps: tool call + 2 nudges + implicit finish
+	if len(result.Steps) != 4 {
+		t.Errorf("expected 4 steps, got %d", len(result.Steps))
 	}
 }
 

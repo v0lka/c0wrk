@@ -28,18 +28,19 @@ const batchIndexBase = 10000
 
 // runState holds all loop-local state for a single Run invocation.
 type runState struct {
-	stepNum                   int
-	allSteps                  []Step
-	nudgeAttempted            bool
-	wrapUpNudgeAttempted      bool
-	reactiveCompactAttempted  bool
-	preCompactionNudgeEmitted bool
-	unlimitedSteps            bool
-	effectiveMaxSteps         int
-	finishResult              *ExecutorResult
-	stepStartTime             time.Time
-	circuitBreakerTriggered   bool
-	responseGroup             int64
+	stepNum                     int
+	allSteps                    []Step
+	implicitFinishNudgeCount    int
+	toolCallSyntaxNudgeCount    int
+	wrapUpNudgeAttempted        bool
+	reactiveCompactAttempted    bool
+	preCompactionNudgeEmitted   bool
+	unlimitedSteps              bool
+	effectiveMaxSteps           int
+	finishResult                *ExecutorResult
+	stepStartTime               time.Time
+	circuitBreakerTriggered     bool
+	responseGroup               int64
 }
 
 // handleStepLimitBoundary handles the step-limit boundary logic (when stepNum > effectiveMaxSteps).
@@ -148,14 +149,47 @@ func (e *Executor) hasMutatingToolExecuted(state *runState) bool {
 }
 
 // handleImplicitFinish handles the "no tool calls" branches: nudge → finish-nudge → implicit finish.
+//
+// The model can enter a failure-mode where it prints tool-call syntax
+// (```bash_exec, ```read_file) as text instead of emitting a tool_use block.
+// This is NOT a legitimate finish — the model is stuck. DetectToolCallSyntaxInContent
+// catches this; we apply a dedicated nudge up to 3 times, then abort with
+// Finished=false so the caller (subagent) treats it as a failure, not a success.
+//
+// For the general "no tool calls with end_turn" case, we nudge up to 2 times
+// before accepting an implicit finish.
 func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, state *runState, cw ContextManager, hasTools bool) (*ExecutorResult, loopAction) {
+	// Failure-mode: model printed tool-call syntax as text. This is not an
+	// implicit finish — the model is stuck. Apply a dedicated nudge up to 3
+	// times, then abort. Applies regardless of stop_reason (end_turn or not).
+	if hasTools && DetectToolCallSyntaxInContent(thought) {
+		if state.toolCallSyntaxNudgeCount < 3 {
+			state.toolCallSyntaxNudgeCount++
+			nudgeStep := Step{
+				Thought:        thought,
+				UserNudge:      executorToolCallSyntaxNudge,
+				ReasoningItems: resp.Message.ReasoningItems,
+				TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			}
+			state.allSteps = append(state.allSteps, nudgeStep)
+			cw.AddStep(nudgeStep)
+			e.emitter.ExecutorDiagnostic(state.stepNum, "tool_call_syntax_nudge", map[string]any{"reason": "tool_call_syntax_as_text", "attempt": state.toolCallSyntaxNudgeCount})
+			return nil, actionContinue
+		}
+		e.emitter.ExecutorDiagnostic(state.stepNum, "tool_call_syntax_abort", map[string]any{"attempts": state.toolCallSyntaxNudgeCount})
+		return &ExecutorResult{
+			Output:   "Aborted: model repeatedly printed tool-call syntax as text instead of using tool_use blocks",
+			Steps:    state.allSteps,
+			Finished: false,
+		}, actionNone
+	}
+
 	// Check for implicit finish (no tool calls with end_turn)
 	if resp.StopReason == "end_turn" {
 		// Nudge mechanism: if this is early in execution and tools are available,
-		// give the LLM a second chance to use tools before accepting implicit finish
-		if hasTools && !state.nudgeAttempted {
-			state.nudgeAttempted = true
-			// Create a nudge step to encourage tool usage
+		// give the LLM up to 2 chances to use tools before accepting implicit finish
+		if hasTools && state.implicitFinishNudgeCount < 2 {
+			state.implicitFinishNudgeCount++
 			nudgeStep := Step{
 				Thought:        thought,
 				UserNudge:      executorNudge,
@@ -164,7 +198,7 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 			}
 			state.allSteps = append(state.allSteps, nudgeStep)
 			cw.AddStep(nudgeStep)
-			e.emitter.ExecutorDiagnostic(state.stepNum, "executor_nudge", map[string]any{"reason": "no_tools_used_on_step_1"})
+			e.emitter.ExecutorDiagnostic(state.stepNum, "executor_nudge", map[string]any{"reason": "no_tools_used_on_step_1", "attempt": state.implicitFinishNudgeCount})
 			return nil, actionContinue // retry with nudge in context
 		}
 
@@ -207,9 +241,9 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 		}, actionNone
 	}
 
-	// No tool calls but not end_turn — apply nudge if not attempted
-	if hasTools && !state.nudgeAttempted {
-		state.nudgeAttempted = true
+	// No tool calls but not end_turn — apply nudge if attempts remain
+	if hasTools && state.implicitFinishNudgeCount < 2 {
+		state.implicitFinishNudgeCount++
 		nudgeStep := Step{
 			Thought:        thought,
 			UserNudge:      executorNudge,
@@ -218,7 +252,7 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 		}
 		state.allSteps = append(state.allSteps, nudgeStep)
 		cw.AddStep(nudgeStep)
-		e.emitter.ExecutorDiagnostic(state.stepNum, "executor_nudge", map[string]any{"reason": "no_tools_no_end_turn_on_step_1"})
+		e.emitter.ExecutorDiagnostic(state.stepNum, "executor_nudge", map[string]any{"reason": "no_tools_no_end_turn_on_step_1", "attempt": state.implicitFinishNudgeCount})
 		return nil, actionContinue
 	}
 

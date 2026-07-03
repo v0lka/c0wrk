@@ -86,6 +86,7 @@ The router prompt includes the full list of available skills (name + description
 - User-specified skills (from HandleOptions.UserSkills) are merged with router-matched skills in the orchestrator, not in the router
 - When UserSkills is non-empty, the orchestrator augments the routing message with skill descriptions (via `buildSkillAugmentedRoutingMessage`) so the router classifies domain/complexity based on the skill's purpose, not just the stripped arguments. NeedsClarification is also suppressed as a safety net.
 - Router never modifies tool registry or any state (pure classification)
+- The orchestrator's continuation fast-path (`routeOrContinue`) skips the router entirely when `opts.TaskID` is non-empty AND the restored blackboard has an existing plan + routing decision. The restored `RoutingDecision` is reused, skills are reactivated from it, and execution proceeds to `executeContinuation` without a routing LLM call. This avoids spurious `needsClarification` on continuation messages (e.g. "continue step 10"), which the router cannot interpret — it only sees flat conversation history, not the plan.
 
 ## Related Specs
 

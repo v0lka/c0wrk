@@ -80,6 +80,92 @@ func (o *Orchestrator) setupBlackboard(message, sessionID, taskID string) (orche
 	return pbb, nil
 }
 
+// routeOrContinue wraps routeAndActivateSkills with a continuation fast-path.
+//
+// When the user sends a follow-up message to a restored task (opts.TaskID !=
+// "") and the restored blackboard has an existing plan + routing decision, the
+// router is skipped entirely. The router only sees the flat conversation
+// history (user/assistant pairs) and is blind to the plan — so a message like
+// "continue step 10" would be classified as ambiguous (needsClarification),
+// short-circuiting before executeContinuation (which DOES see the plan) can
+// run. The fast-path reuses the restored routing decision and reactivates
+// skills from it, then falls through to executeContinuation.
+func (o *Orchestrator) routeOrContinue(
+	ctx context.Context,
+	message string,
+	opts HandleOptions,
+	bb orchestration.Blackboard,
+	availableTools []sdktools.ToolDescriptor,
+) (context.Context, *router.RoutingDecision, []skills.SkillDescriptor, *HandleResult, error) {
+	if opts.TaskID != "" {
+		if pbb, ok := bb.(PersistableBlackboard); ok {
+			if plan := pbb.GetPlan(); plan != nil {
+				if restored := pbb.Routing(); restored != nil {
+					o.logDebug("orchestrator: continuation fast-path (routing skipped — existing plan found)", "taskID", opts.TaskID)
+					o.emitter.ServiceWithMeta("Continuation (routing skipped — existing plan found)", map[string]any{"phase": "orchestration"})
+					o.emitter.Routing("plan_execute", restored.Domain, strconv.Itoa(restored.Complexity))
+					o.logInfo("routing_decision", "domain", restored.Domain, "complexity", restored.Complexity)
+					ctx = o.reactivateSkills(ctx, restored, opts.UserSkills)
+					activeSkills := o.collectActiveSkillDescriptors(restored, opts.UserSkills)
+					ctx = WithDomain(ctx, restored.Domain)
+					ctx = WithComplexity(ctx, restored.Complexity)
+					if len(opts.UserSkills) > 0 {
+						ctx = WithUserSkills(ctx, opts.UserSkills)
+					}
+					return ctx, restored, activeSkills, nil, nil
+				}
+			}
+		}
+	}
+	return o.routeAndActivateSkills(ctx, message, opts, bb, availableTools)
+}
+
+// reactivateSkills re-applies skill activation (context value + tool policy
+// overrides + emitter event) from a restored routing decision. Used by the
+// continuation fast-path to avoid calling the router while still wiring skills.
+func (o *Orchestrator) reactivateSkills(ctx context.Context, routing *router.RoutingDecision, userSkills []string) context.Context {
+	mergedSkillNames := mergeSkillNames(routing.MatchedSkills, userSkills)
+	if len(mergedSkillNames) == 0 || o.skillManager == nil {
+		return ctx
+	}
+	var activeSkills []*skills.Skill
+	var activatedNames []string
+	for _, name := range mergedSkillNames {
+		if s, ok := o.skillManager.Get(name); ok {
+			activeSkills = append(activeSkills, s)
+			activatedNames = append(activatedNames, name)
+		} else {
+			o.logDebug("orchestrator: matched skill not found", "name", name)
+		}
+	}
+	if len(activeSkills) > 0 {
+		ctx = WithActiveSkills(ctx, &ActiveSkills{Skills: activeSkills})
+		o.emitter.SkillsActivated(activatedNames)
+		o.logInfo("skills_activated", "skills", activatedNames)
+		skillOverrides := o.buildSkillPolicyOverrides(activeSkills)
+		if len(skillOverrides) > 0 && o.coreToolRegistry != nil {
+			o.coreToolRegistry.SetSkillPolicyOverrides(skillOverrides)
+		}
+	}
+	return ctx
+}
+
+// collectActiveSkillDescriptors builds the SkillDescriptor slice for a restored
+// routing decision (mirrors what routeAndActivateSkills would produce).
+func (o *Orchestrator) collectActiveSkillDescriptors(routing *router.RoutingDecision, userSkills []string) []skills.SkillDescriptor {
+	mergedSkillNames := mergeSkillNames(routing.MatchedSkills, userSkills)
+	if len(mergedSkillNames) == 0 || o.skillManager == nil {
+		return nil
+	}
+	var descriptors []skills.SkillDescriptor
+	for _, name := range mergedSkillNames {
+		if s, ok := o.skillManager.Get(name); ok {
+			descriptors = append(descriptors, s.Descriptor())
+		}
+	}
+	return descriptors
+}
+
 // routeAndActivateSkills performs routing, activates matched skills, applies
 // skill policy overrides, and checks for clarification. If clarification is
 // needed (and no user-specified skills suppress it), a non-nil *HandleResult is

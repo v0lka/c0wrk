@@ -847,8 +847,17 @@ func (o *Orchestrator) recordConversationOutcome(ctx context.Context, message st
 		if result.Blackboard != nil {
 			reasoning = lastReasoningContent(result.Blackboard)
 		}
+		// Failure-mode guard: if the assistant output contains tool-call
+		// syntax printed as text (```bash_exec etc. instead of a tool_use
+		// block), the "finish" was a stuck-model artifact, not a real
+		// answer. Record a failure note instead of the hallucinated text
+		// so future routing/planning sees an honest failure, not garbage.
+		assistantContent := result.Output
+		if agent.DetectToolCallSyntaxInContent(assistantContent) {
+			assistantContent = HistoryNoteFailed("task ended in failure-mode: model printed tool-call syntax as text instead of using tool_use blocks")
+		}
 		o.conversationHistory = append(o.conversationHistory, userMsg,
-			llm.Message{Role: "assistant", Content: result.Output, ReasoningContent: reasoning})
+			llm.Message{Role: "assistant", Content: assistantContent, ReasoningContent: reasoning})
 	case ctx.Err() != nil:
 		// Cancellation (or deadline): the manager persists a task_cancelled
 		// event; mirror it in the in-memory history.
@@ -870,8 +879,12 @@ func (o *Orchestrator) recordConversationOutcome(ctx context.Context, message st
 func (o *Orchestrator) recordResumeOutcome(ctx context.Context, bb orchestration.Blackboard, result *HandleResult, err error) {
 	switch {
 	case (err == nil || errors.Is(err, orchestration.ErrExecutionIncomplete)) && result != nil:
+		assistantContent := result.Output
+		if agent.DetectToolCallSyntaxInContent(assistantContent) {
+			assistantContent = HistoryNoteFailed("task ended in failure-mode: model printed tool-call syntax as text instead of using tool_use blocks")
+		}
 		o.conversationHistory = append(o.conversationHistory,
-			llm.Message{Role: "assistant", Content: result.Output, ReasoningContent: lastReasoningContent(bb)})
+			llm.Message{Role: "assistant", Content: assistantContent, ReasoningContent: lastReasoningContent(bb)})
 	case ctx.Err() != nil:
 		o.conversationHistory = append(o.conversationHistory,
 			llm.Message{Role: "assistant", Content: HistoryNoteCancelled})
@@ -942,7 +955,10 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	o.logDebug("orchestrator: tools loaded from registry", "total", len(availableTools), "mcp", mcpCount)
 
 	// 3. Route and activate skills; may short-circuit with clarification.
-	ctx, routing, activeSkills, clarification, err := o.routeAndActivateSkills(ctx, message, opts, bb, availableTools)
+	// Continuation fast-path: routeOrContinue skips the router when a restored
+	// task has an existing plan + routing (the router is blind to the plan and
+	// would force clarification on continuation messages).
+	ctx, routing, activeSkills, clarification, err := o.routeOrContinue(ctx, message, opts, bb, availableTools)
 	if err != nil {
 		return nil, err
 	}

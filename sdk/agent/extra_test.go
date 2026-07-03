@@ -1027,3 +1027,93 @@ func TestExecutor_Run_ReactiveCompaction(t *testing.T) {
 		t.Error("expected Finished=true after reactive compaction + recovery")
 	}
 }
+
+// ============================================================================
+// DetectToolCallSyntaxInContent: failure-mode detector
+// ============================================================================
+
+func TestDetectToolCallSyntaxInContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"bash_exec fenced", "Let me check.\n```bash_exec\ncommand\n```\n", true},
+		{"read_file fenced", "I'll read the file.\n```read_file\ncmd\n", true},
+		{"edit_file fenced", "```edit_file\n", true},
+		{"plain text no tools", "The answer is yes.", false},
+		{"markdown code block no underscore", "```go\nfmt.Println()\n```", false},
+		{"empty", "", false},
+		{"indented fenced tool", "  ```bash_exec\n", true},
+		{"tool with suffix", "```bash_exec (batched)\n", true},
+		{"legit explanation mentioning tool name", "Use the `bash_exec` tool to run commands.", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := DetectToolCallSyntaxInContent(tt.content); got != tt.want {
+				t.Errorf("DetectToolCallSyntaxInContent(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// handleImplicitFinish: tool-call syntax failure-mode path
+// ============================================================================
+
+func TestExecutor_Run_ToolCallSyntaxNudge_ThenAbort(t *testing.T) {
+	// Model repeatedly prints tool-call syntax as text instead of using
+	// tool_use blocks. After 3 special nudges, the executor should abort
+	// with Finished=false.
+	syntaxResp := &llm.ChatResponse{
+		Message:    llm.Message{Role: "assistant", Content: "Let me check.\n```bash_exec\ncommand\n```"},
+		StopReason: "end_turn",
+		Usage:      llm.TokenUsage{InputTokens: 50, OutputTokens: 50},
+	}
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{syntaxResp, syntaxResp, syntaxResp, syntaxResp},
+	}
+	cm := newMockContextManager()
+	exec := newExecutorDefaultHITL(mockLLM, newMockToolExecutor(), &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "bash_exec", Description: "run bash", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Finished {
+		t.Error("expected Finished=false (abort after 3 tool-call syntax nudges)")
+	}
+	if !strings.Contains(result.Output, "Aborted") {
+		t.Errorf("expected abort message, got %q", result.Output)
+	}
+}
+
+func TestExecutor_Run_ToolCallSyntaxNudge_ThenRecovery(t *testing.T) {
+	// Model prints tool-call syntax once, then after a nudge recovers and
+	// uses a real tool_use block (finish).
+	mockLLM := &mockLLMCaller{
+		responses: []*llm.ChatResponse{
+			{
+				Message:    llm.Message{Role: "assistant", Content: "Let me check.\n```bash_exec\necho hi"},
+				StopReason: "end_turn",
+				Usage:      llm.TokenUsage{InputTokens: 50, OutputTokens: 50},
+			},
+			llmResponseFinish("done", "completed"),
+		},
+	}
+	mockTools := newMockToolExecutor()
+	cm := newMockContextManager()
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, 20, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "finish", Description: "finish", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Finished {
+		t.Error("expected Finished=true after recovery from tool-call syntax nudge")
+	}
+}

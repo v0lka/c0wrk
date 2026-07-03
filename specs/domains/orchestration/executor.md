@@ -6,8 +6,9 @@ Executes individual plan steps via the ReAct loop (Thought → Action → Observ
 
 ## Key Files
 
-- `sdk/agent/executor.go` — Executor struct (Run method, ReAct loop, non-cacheable tools set, batch dispatch)
-- `sdk/agent/executor_run.go` — `processSingleToolCall`, `processBatchTool` (batch meta-tool interception)
+- `sdk/agent/executor.go` — Executor struct (Run method, ReAct loop, non-cacheable tools set, batch dispatch, `DetectToolCallSyntaxInContent` failure-mode detector)
+- `sdk/agent/executor_run.go` — `processSingleToolCall`, `processBatchTool` (batch meta-tool interception), `handleImplicitFinish` (nudge → abort logic)
+- `sdk/agent/subagent.go` — `RunSubAgent` (subagent lifecycle, defense-in-depth success check)
 - `sdk/orchestration/orchestrator.go` — SDK Orchestrator (drives DAG execution, parallel steps)
 - `core/stepconfig.go` — coreStepConfigurator (resolves per-step config)
 - `sdk/agent/events.go` — AgentEvents interface (lifecycle hooks)
@@ -102,22 +103,27 @@ Executor.Run(ctx, task, tools, systemPrompt)
 │   │      ├─ Add observation to messages (context.go wraps untrusted output in <untrusted-content>)
 │   │      └─ Check context fill → compact if needed
 │   │
-│   ├─ 3. If finish tool called:
-│   │      ├─ Mutation gate (if mutationRequired): check if any mutating tool
-│   │      │   (write_file, edit_file, create_directory, delete_file, delete_directory)
-│   │      │   was successfully executed in this step.
-│   │      │   → No mutation + first attempt: inject mutation nudge, continue loop
-│   │      │   → No mutation + second attempt: return Finished=false (triggers reflection/replan)
-│   │      │   → Mutation present or gate disabled: extract output, return success
-│   │      └─ Extract output, return success (when gate passes)
-│   │
-│   ├─ 4. Circuit breaker check (see below)
-│   │      → If abort threshold reached: call HITLHandler.OnStepLimit(reason)
-│   │      → AllowOnce: reset + nudge, AllowAlways: disable + nudge, Deny: stop
-│   │
-│   └─ 5. If step limit reached:
-│          → Call HITLHandler.OnStepLimit(reason="")
-│          → AllowOnce: +N steps, AllowAlways: unlimited, Deny: stop
+ │   ├─ 3. If finish tool called:
+ │   │      ├─ Mutation gate (if mutationRequired): check if any mutating tool
+ │   │      │   (write_file, edit_file, create_directory, delete_file, delete_directory)
+ │   │      │   was successfully executed in this step.
+ │   │      │   → No mutation + first attempt: inject mutation nudge, continue loop
+ │   │      │   → No mutation + second attempt: return Finished=false (triggers reflection/replan)
+ │   │      │   → Mutation present or gate disabled: extract output, return success
+ │   │      └─ Extract output, return success (when gate passes)
+ │   │
+ │   ├─ 3a. If no tool calls (implicit finish path — see Implicit Finish & Failure-Mode below):
+ │   │      → Failure-mode detector checks for tool-call syntax printed as text
+ │   │      → General nudge (up to 2 attempts) before accepting implicit finish
+ │   │      → Finish nudge (suppressAssistantEvents mode) requires explicit finish call
+ │   │
+ │   ├─ 4. Circuit breaker check (see below)
+ │   │      → If abort threshold reached: call HITLHandler.OnStepLimit(reason)
+ │   │      → AllowOnce: reset + nudge, AllowAlways: disable + nudge, Deny: stop
+ │   │
+ │   └─ 5. If step limit reached:
+ │          → Call HITLHandler.OnStepLimit(reason="")
+ │          → AllowOnce: +N steps, AllowAlways: unlimited, Deny: stop
 │
 └─ Return ExecutorResult {Steps, Output, Finished}
 ```
@@ -165,6 +171,29 @@ Purpose: prevents "false success" on code-modification steps where the agent rea
 Rejected tool calls (HITL denial with `Observation` starting `[Tool call rejected`) do **not** count as mutations. `bash_exec` is intentionally excluded from the mutating set — it's ambiguous (could be `pwd && ls` or `go test`), and the gate focuses on structural filesystem mutations.
 
 Source: `sdk/agent/executor.go` `mutatingTools` set, `sdk/agent/executor_run.go` `hasMutatingToolExecuted` + finish branch gate.
+
+### Implicit Finish & Failure-Mode Detection
+
+When the LLM returns no tool calls, `handleImplicitFinish` decides whether to accept an implicit finish, nudge the LLM to use tools, or abort. Two paths:
+
+**General implicit finish** (no tool calls, `end_turn` or other stop reason):
+
+- Up to 2 general nudges (`executorNudge`) are injected before accepting implicit finish. The nudge counter (`implicitFinishNudgeCount`) tracks attempts across the step.
+- In `suppressAssistantEvents` mode (plan-step execution), a finish nudge (`executorFinishNudge`) requires an explicit `finish` tool call before accepting completion.
+- After the nudge budget is exhausted, the response is accepted as an implicit finish (`Finished: true`).
+
+**Failure-mode: tool-call syntax as text** (`DetectToolCallSyntaxInContent`):
+
+- The detector (`toolCallSyntaxRe` regex) matches a fenced code block at the start of a line whose language tag looks like a c0wrk tool name (`` ```\w+_\w+ `` — e.g. `` ```bash_exec ``, `` ```read_file ``).
+- This signals the model is stuck: it "printed" a tool invocation as prose instead of emitting a `tool_use` block. This is NOT a legitimate finish.
+- A dedicated nudge (`executorToolCallSyntaxNudge`) is injected up to 3 times, explaining that tools must be called via the `tool_use` mechanism, not typed as text.
+- After 3 failed nudges, the executor aborts with `Finished: false` and an "Aborted: model repeatedly printed tool-call syntax as text" output. This triggers reflection/replan or step failure — never a silent success.
+
+**Defense-in-depth (subagent)**:
+
+`RunSubAgent` computes `success = err == nil && result.Finished`. As a backup guard, if `DetectToolCallSyntaxInContent(result.Output)` is true even when `Finished` is true, `success` is forced to false. This catches any escape from the executor's failure-mode detector.
+
+Source: `sdk/agent/executor.go` `DetectToolCallSyntaxInContent` + `executorToolCallSyntaxNudge`, `sdk/agent/executor_run.go` `handleImplicitFinish`, `sdk/agent/subagent.go` `RunSubAgent`.
 
 ### Critical Always-Allowed Tools
 
@@ -266,6 +295,9 @@ Key behaviors:
 - `batch` is intercepted in `processBatchTool()` before reaching the registry; its own `Execute()` returns an error. Sub-calls within a batch go through the full policy + truncation + caching pipeline and are emitted as `"<tool_name> (batched)"`
 - The `batch` tool is marked in `nonCacheableTools`; its sub-calls are cached individually per normal tool rules
 - `batch` sub-call errors do not abort the batch — errors are captured inline and processing continues to the next sub-call
+- The general implicit-finish nudge budget is 2 attempts before accepting `Finished: true`
+- `DetectToolCallSyntaxInContent` catches failure-mode where the model prints tool-call syntax (`` ```\w+_\w+ ``) as text; 3 dedicated nudges are injected before aborting with `Finished: false`
+- Subagent success requires `result.Finished && !DetectToolCallSyntaxInContent(result.Output)` (defense-in-depth: even if the executor returns Finished=true with tool-call syntax in output, the subagent treats it as failure)
 
 ## Related Specs
 
