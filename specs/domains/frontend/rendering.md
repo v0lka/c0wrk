@@ -32,13 +32,13 @@ Backend persists: ChatMessage[] (flat, role-based)
 Frontend converts: ChatMessageUI[] (semantic type, metadata)
          │
          ▼
-groupMessages(): DisplayItem[] (tree structure, 16 kinds)
+groupMessages(): GroupedMessages { items: DisplayItem[], pendingActions: ... } (tree structure, 18 kinds)
          │
          ▼
 ChatMessageRenderer: renders each DisplayItem by type
 ```
 
-### Display Item Types (16 kinds)
+### Display Item Types (18 kinds)
 
 | Type                 | Description               | Visual Treatment                                                              |
 | -------------------- | ------------------------- | ----------------------------------------------------------------------------- |
@@ -52,12 +52,14 @@ ChatMessageRenderer: renders each DisplayItem by type
 | `step_limit`         | Budget decision           | Action buttons                                                                |
 | `resume_action`      | Resume after failure      | Resume button                                                                 |
 | `error`              | Error message             | Red accent, error icon                                                        |
-| `service`            | System/status message     | Muted, small text                                                             |
+| `service`            | System/status message     | Muted, small text (routing, retry, status events are grouped here)            |
 | `plan_step`          | Plan step indicator       | Step badge with status                                                        |
+| `plan_review`        | Plan review message       | Plan review UI (approve/reject/feedback)                                      |
 | `reflection`         | Reflector analysis        | Warning accent, collapsible                                                   |
-| `step_finish`        | Step completion marker    | Success/fail indicator                                                        |
+| `step_finish`        | Step completion marker    | Success/fail indicator (emitted by `finish` tool call)                        |
+| `memory_read`        | Memory read notice        | Info badge (agent read from persistent memory)                                |
 | `action_placeholder` | Pending action indicator  | Placeholder with label                                                        |
-| `context_compaction` | Compaction notice         | Info badge                                                                    |
+| `context_compaction` | Compaction notice         | Info badge (shows before/after fill %)                                        |
 
 ### Grouping Logic
 
@@ -67,7 +69,8 @@ Key transformations in `groupMessages()`:
 2. **Thought collapsing**: consecutive thought messages grouped into `thought_group`
 3. **Plan step nesting**: messages between `plan_step_start` and `plan_step_complete` nested under step
 4. **Pending action extraction**: unresolved confirmations/questions extracted to PendingActionsBar
-5. **Subagent handling**: subagent messages optionally collapsed
+5. **Subagent handling**: subagent messages (`subagent_launch`/`subagent_complete`) are skipped entirely (not rendered as display items)
+6. **Special tool handling**: `finish` tool call → `step_finish` item; `memory_read` event → `memory_read` item; `plan_review_*` events → `plan_review` item; `context_compaction` event → `context_compaction` item (with before/after fill %); `routing`/`retry`/`status` events → `service` item
 
 ### Smart Auto-Scroll
 

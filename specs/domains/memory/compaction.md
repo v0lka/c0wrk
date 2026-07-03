@@ -10,6 +10,7 @@ Compress conversation history when the context window approaches capacity, prese
 - `sdk/memory/compaction_summary.go` — SummarizationStrategy
 - `sdk/memory/compaction_hierarchy.go` — HierarchicalStrategy
 - `sdk/memory/context.go` — ToolOutputPruning (separate from strategy compaction)
+- `sdk/memory/compaction_conversation.go` — `CompactConversationHistory` (planner prompt compaction: trims conversation history to a token budget, keeping recent messages at the configured ratio). Used by `core/orchestrator.go` `plannerHistory()` before passing history to the planner — separate from the executor's step-level compaction.
 
 ## Behavior
 

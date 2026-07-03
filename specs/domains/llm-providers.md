@@ -66,6 +66,7 @@ type RouterConfig struct {
     MaxBackoff          time.Duration
     SafetyMarginPercent int
     OutputTokenReserve  int
+    HTTPClient          *http.Client    // optional proxy-configured HTTP client (nil = default)
     SamplingFunc        SamplingFunc
 }
 
@@ -139,7 +140,7 @@ Controls extended thinking (reasoning tokens) for supported models. Reasoning ef
 // Get available reasoning options and default for a model family
 func FamilyReasoningOptions(family string) (options []string, default_ string, ok bool)
 // e.g., FamilyReasoningOptions("anthropic") → (["On", "Off"], "On", true)
-//       FamilyReasoningOptions("openai_flagship") → (["minimal", "low", "medium", "high"], "medium", true)
+//       FamilyReasoningOptions("openai_flagship") → (["minimal", "low", "medium", "high"], "high", true)
 ```
 
 The full flow:
@@ -158,11 +159,11 @@ Maps model names to metadata (context window, output limit, tokenizer type, capa
 
 - Built-in registry with common models
 - User can override via config (`models` section)
-- `Resolve(ctx, modelName)` returns ModelMetadata
+- `Resolve(ctx, modelName)` returns `(ModelMetadata, bool)` — `ok=false` if model not found
 
 ## Token Counting
 
-- `TokenCounter` interface: `CountTokens(text) int`
+- `TokenCounter` interface: `Count(text string) int` + `CountMessages(msgs []Message) int`
 - Implementation uses tiktoken-go
 - `ContextTokenTracker`: tracks cumulative usage per-step, corrects predictive estimates with API-reported counts
 
@@ -171,7 +172,7 @@ Maps model names to metadata (context window, output limit, tokenizer type, capa
 Wraps LLMCaller to track token usage:
 
 - Counts input/output tokens per call
-- Emits `session_tokens` events
+- Records usage to `UsageTracker` (accumulates per-session totals) and notifies registered `UsageObserver` callbacks (the session emitter observes and emits `session_tokens` events)
 - Provides `WithContextTracker()` for per-step accuracy
 
 ## Configuration
@@ -190,16 +191,6 @@ llm:
       - "claude-sonnet-4-20250514"
       - "claude-opus-4-20250514"
 
-  gemini:
-    api_key: "${GEMINI_API_KEY}"
-    models:
-      - "gemini-2.5-pro"
-
-  lmstudio:
-    api_key: ""
-    base_url: "http://localhost:1234"
-    models: []
-
   openai_compatible:
     api_key: "${OPENAI_API_KEY}"
     base_url: ""
@@ -209,6 +200,8 @@ llm:
     api_key: "${OPENAI_API_KEY}"
     models: []
 ```
+
+> **Note**: `config.example.yaml` shows only `anthropic`, `openai_compatible`, and `chatgpt` blocks. `gemini` and `lmstudio` providers are supported (see provider table above) but not included in the example config — add them following the same structure when needed.
 
 Default-model validation: `default_model` must be non-empty and must appear in at least one provider's `models` list. Only providers with non-empty `models` are registered in the Router. There is no `active_provider` field — the Router resolves which provider to use by looking up the model name in its `modelToProvider` reverse index.
 

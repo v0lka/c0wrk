@@ -16,7 +16,7 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 - `sdk/tools/builtins/web_search/exa.go` — Exa Search API provider
 - `sdk/tools/builtins/web_search/tavily.go` — Tavily Search API provider
 - `sdk/tools/builtins/doc.go` — package documentation
-- `sdk/tools/builtins/limits.go` — BuiltinToolsConfig and limit types
+- `sdk/tools/builtins/limits.go` — limit types (per-tool truncation limits, ripgrep/read-file limits). `BuiltinToolsConfig` is defined in `core/tools/builtin_registration.go`, not here.
 - `sdk/tools/builtins/paths.go` — workspace path resolution
 - `sdk/tools/builtins/workspace.go` — workspace detection
 - `sdk/tools/builtins/netcheck.go` — network connectivity check for web tools
@@ -30,7 +30,7 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 
 ### Tool Registration
 
-All built-in tools are registered at startup via `RegisterBuiltinTools(registry, cfg)`. Registration is ordered (earlier tools take precedence in case of name conflicts). Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_step_output`, `tool_result_read`, `batch`) always bypass policy checks during execution. `batch` is marked internal (`internalTools` map) but is intercepted at the executor level before reaching the registry — its policy is `always_allow` to ensure the LLM can always use the schema.
+All built-in tools are registered at startup via `RegisterBuiltinTools(registry, cfg)` (in `core/tools/builtin_registration.go`). Registration is ordered: bash_exec → read_file → write_file → edit_file → list_directory → create_directory → delete_directory → delete_file → finish → web_fetch → web_search → glob → ripgrep → tool_result_read → batch → read_step_output → list_step_outputs → set_step_status → … Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_step_output`, `tool_result_read`, `batch`, `search_facts`, `semantic_search`, `store_fact`, `read_skill_resource`, `set_step_status` — 11 total) always bypass policy checks during execution. `batch` is marked internal (`internalTools` map) but is intercepted at the executor level before reaching the registry — its policy is `always_allow` to ensure the LLM can always use the schema.
 
 ### Policy Resolution
 
@@ -139,16 +139,16 @@ Per-tool output truncation is centralized in the executor's two-stage pipeline (
 | `toolLimits.perToolTruncation`      | All cacheable tools (map)  | per-tool (see below)|
 | `toolResultBudget.cacheTTLSeconds`  | ToolResultCache eviction   | 300                |
 
-> Stage 1 is a memory-exhaustion prevention layer, not a token optimizer. Values are deliberately generous — normal usage on an average project should never trigger truncation.
+> Stage 1 is a memory-exhaustion prevention layer. Values are conservative (2000 lines for most tools, 5000 for ripgrep) — truncation triggers on large outputs to keep context manageable. Defaults are configurable via `config.yaml` `toolLimits.perToolTruncation`.
 
 Default per-tool Stage 1 truncation:
 
 | Tool           | MaxLines      | MaxBytes        |
 | -------------- | ------------- | --------------- |
-| `read_file`    | 50000         | —               |
+| `read_file`    | 2000          | —               |
 | `ripgrep`      | 5000          | —               |
-| `glob`         | 5000          | —               |
-| `list_directory`| 5000         | —               |
+| `glob`         | 2000          | —               |
+| `list_directory`| 2000         | —               |
 | `web_fetch`    | —             | 2097152 (2 MiB)  |
 | `bash_exec`    | 10000         | —               |
 
@@ -167,7 +167,7 @@ Non-truncation tool limits (timeouts, search limits, etc.)— still in code:
 2. Add constructor: `NewXxxTool(...)` with relevant limits/config
 3. Register in `core/tools/builtin_registration.go` → `RegisterBuiltinTools()`
 4. If tool needs config, add field to `BuiltinToolsConfig` struct
-5. If config comes from config.yaml, update `backend/configadapter.go` → `configToBuiltinToolsConfig()`
+5. If config comes from config.yaml, update `core/builder.go` → `configToBuiltinToolsConfig()`
 6. If the tool reads data from external sources (filesystem, web, subprocess), set `Untrusted: true` on `BaseTool` so output is wrapped before entering the LLM context
 7. If tool is mutating (writes files, runs commands), set `DefaultPolicy()` to `PolicyUserConfirm`
 8. If tool should be available in specific roles only, update `core/toolprofiles.go`

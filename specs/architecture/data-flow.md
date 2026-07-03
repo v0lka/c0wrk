@@ -15,13 +15,13 @@ User types message in frontend
 Frontend: chatStore.sendMessage(text)
          │
          ▼
-RPC: window.go.desktop.App.SendMessage(sessionId, text, mode, skills, modelOverride, reasoningEffort)
+RPC: window.go.desktop.App.SendMessage(sessionId, text, mode, skills, modelOverride, reasoningEffort, planReview)
          │
          ▼
 backend/frontend_api_session.go: FrontendAPI.SendMessage()
          │
          ▼
-backend/session/manager.go: Manager.SendMessage()
+backend/session/manager_execution.go: Manager.SendMessage()
   ├─ Creates/reuses Orchestrator for session
   ├─ Wraps emitter (EventPersister + WailsEmitter)
   └─ Calls orchestrator.HandleMessage()
@@ -141,7 +141,7 @@ desktop/startup.go (background goroutine, after EventBackendReady):
 Application startup follows a phased approach with conditional window visibility:
 
 ```
-main.go: wails.Run(options.App{StartHidden: true})
+main.go: wails.Run(options.App{StartHidden: os.Getenv("C0WRK_START_HIDDEN") != "false"})
   ↓
 Phase 0: resolve agent directory
 Phase 1: shell env + logger (<50ms)

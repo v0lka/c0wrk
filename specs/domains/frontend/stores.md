@@ -15,6 +15,8 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 - `frontend/src/stores/inputModeStore.ts`
 - `frontend/src/stores/executionModeStore.ts`
 - `frontend/src/stores/blackboardStore.ts`
+- `frontend/src/stores/planReviewStore.ts`
+- `frontend/src/stores/gitPanelStore.ts`
 - `frontend/src/stores/settingsStore.ts`
 - `frontend/src/stores/uiStore.ts`
 - `frontend/src/stores/vectorIndexStore.ts`
@@ -24,7 +26,7 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 | Store                | Responsibility                                                     | Persistence  |
 | -------------------- | ------------------------------------------------------------------ | ------------ |
 | `chatStore`          | Messages per session, streaming text, activity flags, token counts | No           |
-| `planStore`          | DAG items per session, step status, routing stats                  | No           |
+| `planStore`          | DAG items (`planGroups` — single session-reset array, not keyed by sessionId), step status, routing stats (`sessionStats` — keyed by sessionId) | No           |
 | `sessionStore`       | Session list (sorted by last_active_at), active session ID, project-switch reset (`resetForProjectSwitch`) | No           |
 | `projectStore`       | Project list (sorted by last_active_at, No Project always first), active project ID, lastRealProjectId (for CODE toggle) | No           |
 | `fileTreeStore`      | Lazy-loaded directory tree, expanded dirs, search, git status      | No           |
@@ -32,9 +34,11 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 | `inputModeStore`     | Chat/terminal input mode, panel height, expanded state, selected model override, selected reasoning effort | localStorage |
 | `executionModeStore` | Normal/advanced execution mode toggle                              | localStorage |
 | `blackboardStore`    | Blackboard facts and metadata for current session                  | No           |
+| `planReviewStore`    | Plan review toggle state (enabled/disabled)                        | localStorage |
+| `gitPanelStore`      | Git panel UI state (branch selection, commit draft, diff view mode) | No           |
 | `settingsStore`      | Settings modal open/close, active tab                              | No           |
-| `uiStore`            | Sidebar collapsed state, log level                                 | localStorage |
-| `vectorIndexStore`   | Vector index status and progress                                   | No           |
+| `uiStore`            | Sidebar collapsed state (log level is fetched via `GetLogLevel` RPC, not stored) | localStorage |
+| `vectorIndexStore`   | Vector index status, progress, and search mode                     | localStorage (mode only) |
 
 ## Critical Anti-Patterns
 
@@ -70,7 +74,7 @@ const active = useStore((s) => s.activeId);
 3. **Stable selectors**: return primitives or direct store properties
 4. **No cross-store writes**: stores don't import other stores
 5. **Declarative persistence**: Zustand `persist` middleware, not manual localStorage
-6. **Session-keyed data**: chatStore and planStore key data by sessionId
+6. **Session-keyed data**: chatStore keys messages by sessionId; planStore uses a single session-reset `planGroups` array (not keyed by sessionId) with `sessionStats` keyed by sessionId
 
 ## Invariants
 

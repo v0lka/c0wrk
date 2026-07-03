@@ -15,13 +15,13 @@
 | `HandleOptions`       | core           | backend → core | Execution mode, plan review, model override, reasoning effort, user skill overrides, session plans dir |
 | `Emitter`             | core           | backend → core | Event emission interface              |
 | `Blackboard`          | sdk/orchestration (direct) | core → backend | Task state (for persistence)          |
-| `RoutingDecision`     | core           | core → backend | Routing classification                |
+| `RoutingDecision`     | sdk/agent/router | core → backend | Routing classification                |
 | `Plan`, `PlanStep`    | sdk/orchestration (direct) | core → backend | Plan structure                        |
 | `ToolPolicy`          | sdk/tools      | backend → core | Security policy values                |
-| `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. perToolTruncation, ExtraBashBlacklist) |
+| `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. ExtraBashBlacklist). Per-tool truncation lives in `BuilderConfig.ToolLimits.PerToolTruncation`, not `BuiltinToolsConfig`. |
 | `StepDumpTracker`     | sdk/orchestration (direct) | backend → core | Per-step LLM dump file manager        |
 | `Manager`             | core/vectorindex | core → backend | Vector index management (embedding, search, git monitoring) |
-| `PTYManager`          | core/terminal  | core → backend | PTY lifecycle, shell env, I/O         |
+| `terminal.Manager`    | core/terminal  | core → backend | PTY lifecycle, shell env, I/O         |
 | `Watcher`             | core/workspace | core → backend | Filesystem event watcher with debouncing |
 | `FileNode`            | core/workspace | core → backend | File tree node (type alias in backend) |
 | `GitStatusEntry`      | core/workspace | core → backend | Git porcelain status (type alias in backend) |
@@ -116,7 +116,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Reasoning effort       | backend → core | `HandleOptions.ReasoningEffort`          |
 | Session plans dir      | backend → core | `HandleOptions.SessionPlansDir`          |
 | Task ID (continuation) | backend → core | `HandleOptions.TaskID`                   |
-| Available tools config | backend → core | `BuiltinToolsConfig` (incl. perToolTruncation, ExtraBashBlacklist) |
+| Available tools config | backend → core | `BuiltinToolsConfig` (incl. ExtraBashBlacklist). Per-tool truncation via `BuilderConfig.ToolLimits.PerToolTruncation`. |
 | No Project mode        | backend → core | `Orchestrator.SetNoProjectMode()` (disables code tools, adds bash blacklist) |
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
 | Security policies      | backend → core | `BuilderConfig.Security`                 |
@@ -128,13 +128,13 @@ The emitter implementation lives in `backend/session/` (not in core).
 ## Error Propagation
 
 - Core returns `error` from `HandleMessage()` / `Resume()`
-- Backend wraps with session context: `fmt.Errorf("session %s: %w", id, err)`
+- Backend wraps with descriptive context (no `session %s:` prefix idiom — uses general `fmt.Errorf("failed to <action>: %w", err)`)
 - Backend decides whether to emit error to frontend or retry
 
 ## Breaking Change Checklist
 
 - Adding a field to `BuilderConfig` → update `backend/configadapter.go`
-- Adding a new per-tool truncation entry → update `backend/configadapter.go` `convertTruncationMap()`
+- Adding a new per-tool truncation entry → update `backend/configadapter.go` `convertTruncationMap()` (maps to `BuilderConfig.ToolLimits.PerToolTruncation`, not `BuiltinToolsConfig`)
 - Changing `OrchestratorFactory` signature → update factory closure in `backend/application.go` and all test factory mocks
 - Changing `HandleResult` fields → update session event emission in backend
 - Adding `PlanReview` to `HandleOptions` → update `backend/frontend_api_session.go` + `backend/session/manager_execution.go`

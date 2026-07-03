@@ -20,6 +20,7 @@ Manages the project workspace: file tree loading, filesystem watching for change
 - `core/vectorindex/lexical/` — bleve/BM25 lexical index with `c0wrk_code` analyzer (camelCase split + lowercase + stop-en)
 - `sdk/embedding/` — embedding model interface
 - `backend/frontend_api_vector.go` — FrontendAPI vector methods + lazy manager access (SetVectorManager/getVectorManager with RWMutex)
+- `backend/api_types.go` — `VectorIndexStatus` struct (shared API response type, also used by frontend_api_vector.go)
 
 ## Core Types
 
@@ -37,8 +38,10 @@ type FileNode struct {
 
 // GitStatusEntry — per-file git status (map key is the absolute file path)
 type GitStatusEntry struct {
-    Status    string // "M", "A", "R", "C", or "U"
-    Staged    bool
+    Status         string // legacy primary status char: "M", "A", "R", "C", or "U"
+    Staged         bool   // legacy: true=index, false=worktree
+    IndexStatus    string // status in the index (staged): "M", "A", "R", "C", "U", "?" or ""
+    WorkTreeStatus string // status in the work tree (unstaged): "M", "A", "R", "C", "U", "?" or ""
 }
 
 // VectorIndexStatus — indexing progress for frontend
@@ -139,7 +142,7 @@ Project switched (after vector index ready)
 | Method                              | Description                                         |
 | ----------------------------------- | --------------------------------------------------- |
 | `ListDirectory(dirPath, recursive)` | Lazy directory tree with git status                 |
-| `ReadFile(path)`                    | Read file content (binary detection via null bytes) |
+| `ReadFile(path)`                    | Read file content (no backend-side binary detection; frontend `isBinaryContent` checks null bytes in first 8KB) |
 | `GetFileDiff(path)`                 | Unified git diff for file                           |
 | `GetGitStatus()`                    | Workspace-level git status summary                  |
 
@@ -158,7 +161,7 @@ Filename search is available via the `glob` built-in tool (`sdk/tools/builtins/g
 - Every git invocation flows through `exec.CommandContext`; git errors propagate to the caller (no silent fallback)
 - Missing `git` binary is a fatal startup condition, never a runtime surprise
 - ONNX embedder loading runs asynchronously after EventBackendReady; it never blocks the critical startup path
-- Vector search RPC returns empty results (not an error) if invoked before the embedder is ready
+- Vector search RPC returns an error if invoked before the embedder is ready (graceful "vector search not available" error, not empty results)
 - No Project: git operations and vector indexing are skipped (deactivated at the FrontendAPI layer). File watching is scoped to the active session's workspace directory (`__no_project__/<sessionID>/workspace/`), falling back to the project base directory when no session exists.
 - No Project: git status and diff always return empty (no git process spawned)
 - No Project: vector search never returns results (indexer is never started, semantic_search tool is disabled anyway)

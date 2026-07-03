@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-06-06)
+**Superseded** (2026-07-03). Skills (`sdk/skills/`) and MCP gateway (`sdk/tools/mcp/`) have since moved to the `sdk/` layer. The concerns about orchestration coupling were resolved via interface indirection — `sdk/skills` uses context values for per-session activation, and `sdk/tools/mcp` registers through the standard SDK tool registry. `core/` now only *wires* skills and MCP into the orchestration cycle (see `core/builder.go`, `core/builder_mcp.go`). No superseding ADR was written for this move; this status update records the drift.
 
 ## Context
 

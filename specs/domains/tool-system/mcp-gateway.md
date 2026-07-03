@@ -8,7 +8,7 @@ Manages connections to external MCP (Model Context Protocol) servers, discovers 
 
 - `sdk/tools/mcp/gateway.go` — Gateway struct (Start, Stop, RegisterTools, Status) + config types
 - `sdk/tools/mcp/server.go` — Server struct (Connect, DiscoverTools, CallTool, Close)
-- `sdk/tools/mcp/mcptool.go` — MCPTool (wraps MCP tool as sdk Tool interface)
+- `sdk/tools/mcp/mcptool.go` — `mcp.Tool` (wraps MCP tool as sdk Tool interface; struct is `Tool`, not `MCPTool`)
 
 ## Behavior
 
@@ -31,7 +31,7 @@ NewOrchestratorBuilder()
 │           └─ registry.RegisterWithSource(mcpTool, "mcp:"+serverName)
 │
 ├─ Application running...
-│   ├─ Tool execution: MCPTool.Execute() → server.CallTool(name, input)
+│   ├─ Tool execution: mcp.Tool.Execute() → server.CallTool(name, input)
 │   └─ ReconfigureMCP() → Stop + Start with new config
 │
 └─ Shutdown:
@@ -47,7 +47,7 @@ NewOrchestratorBuilder()
 
 ### Tool Registration
 
-MCP tools are wrapped in `MCPTool` struct that implements `sdk/tools.Tool`:
+MCP tools are wrapped in `mcp.Tool` struct (in `sdk/tools/mcp/mcptool.go`) that implements `sdk/tools.Tool`:
 
 - `Name()` — prefixed or as-is from MCP server
 - `Description()` — from MCP tool metadata
@@ -55,6 +55,7 @@ MCP tools are wrapped in `MCPTool` struct that implements `sdk/tools.Tool`:
 - `Execute()` — proxies to `server.CallTool()`
 - `DefaultPolicy()` — `PolicyUserConfirm` (MCP tools are external, conservative default)
 - `IsUntrusted()` — returns `true` (all MCP tool output is wrapped in `<untrusted-content>` tags)
+- `Judge()` — implements `ToolJudger`: defers to the LLM judge (same evaluation flow as built-in tools)
 
 ### Schema Sanitization
 
@@ -62,12 +63,14 @@ The gateway's `SchemaSanitizer` removes parameters from tool schemas that are au
 
 ### Status Reporting
 
-`gateway.Status()` returns per-server status:
+`gateway.Status()` returns per-server `ServerStatus`:
 
-- Server name
-- Connected (bool)
-- Tool count
-- Error message (if failed)
+- `Name` — server name
+- `Transport` — transport type (stdio, sse, http)
+- `Connected` (bool)
+- `ToolCount` — number of discovered tools
+- `Tools` — list of tool names (`[]string`)
+- `Error` — error message (if failed)
 
 Used by frontend MCP management UI.
 

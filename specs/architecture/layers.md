@@ -29,7 +29,7 @@ c0wrk enforces a strict layered architecture. Each layer has a single responsibi
 ┌─────────────────────────────────────────────────────────────────────┐
 │  core/              Orchestration engine + domain services          │
 │                     Router, Planner, Reflector, Orchestrator,       │
-│                     tool registry (policy), MCP gateway, skills,    │
+│                     tool registry (policy),                         │
 │                     vector index, proxy, workspace watcher, terminal│
 └────────────────────────────────┬────────────────────────────────────┘
                                  │ Go imports
@@ -37,7 +37,8 @@ c0wrk enforces a strict layered architecture. Each layer has a single responsibi
 ┌─────────────────────────────────────────────────────────────────────┐
 │  sdk/               Reusable agent execution engine                 │
 │                     Agent executor, LLM providers, memory,          │
-│                     orchestration loop, tools, prompts, embeddings  │
+│                     orchestration loop, tools, skills, MCP gateway,  │
+│                     prompts, embeddings                             │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -51,15 +52,17 @@ c0wrk enforces a strict layered architecture. Each layer has a single responsibi
 | `core/`     | `sdk`                                | `backend`, `desktop`         |
 | `sdk/`      | External libs only                   | `core`, `backend`, `desktop` |
 
+> **depguard enforcement** (`.golangci.yml`): the linter currently enforces a subset of the above — `sdk` may not import `core`/`backend`, and `core` may not import `backend`. The `→desktop` prohibitions are maintained by convention (and by the import cycles they would create), not by the linter.
+
 ## Layer Responsibilities
 
 ### `sdk/` — Reusable Agent Engine
 
-The lowest layer. Contains the generic building blocks for an LLM agent application: executor (ReAct loop), LLM provider abstraction (OpenAI, Anthropic, Gemini, LM Studio), memory management (context window + compaction strategies), orchestration primitives (Plan&Execute DAG engine, Blackboard), tool interface and registry, prompt utilities, and embedding support. Nothing in sdk/ is c0wrk-specific.
+The lowest layer. Contains the generic building blocks for an LLM agent application: executor (ReAct loop), LLM provider abstraction (OpenAI, Anthropic, Gemini, LM Studio), memory management (context window + compaction strategies), orchestration primitives (Plan&Execute DAG engine, Blackboard), tool interface and registry, skill system, MCP gateway, prompt utilities, and embedding support. Nothing in sdk/ is c0wrk-specific.
 
 ### `core/` — c0wrk Orchestration + Domain Services
 
-The brain of c0wrk. Implements the specific orchestration cycle: Router (classifies requests), Planner (generates DAG plans), Reflector (analyzes failures), and the top-level Orchestrator that ties them together. Wraps the sdk tool registry with policy enforcement, confirmation flow, and the LLM judge. Manages the MCP gateway and skill system. Contains all prompt templates (embedded markdown).
+The brain of c0wrk. Implements the specific orchestration cycle: Router (classifies requests), Planner (generates DAG plans), Reflector (analyzes failures), and the top-level Orchestrator that ties them together. Wraps the sdk tool registry with policy enforcement, confirmation flow, and the LLM judge. Wires the MCP gateway and skill system (both implemented in `sdk/`) into the orchestration cycle. Contains all prompt templates (embedded markdown).
 
 Also owns domain services:
 - `core/vectorindex/` — embedding, BM25+chromem hybrid search, git branch monitoring for index freshness

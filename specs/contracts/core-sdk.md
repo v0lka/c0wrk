@@ -12,7 +12,7 @@
 
 | Interface / Type       | Package   | Consumed By                      | Purpose                               |
 | ---------------------- | --------- | -------------------------------- | ------------------------------------- |
-| `LLMCaller`            | sdk/agent | core/orchestrator, core/planner  | LLM call interface                    |
+| `LLMCaller`            | sdk/agent | core/orchestrator, sdk/planner    | LLM call interface                    |
 | `ToolExecutor`         | sdk/agent | core (via sdk/orchestration)     | Tool execution interface              |
 | `CompactionStrategy`   | sdk/agent | core/stepconfig                  | Memory compaction                     |
 | `AgentEvents`          | sdk/agent | core/types (embedded in Emitter) | Lifecycle event hooks                 |
@@ -24,7 +24,7 @@
 | `ToolResultBudget`     | sdk/agent | core/orchestrator                | Tool result truncation (Stage 2)     |
 | `ToolResultCache`      | sdk/agent | core/orchestrator, core/builder   | Full result cache keyed by SHA256    |
 | `ToolTruncationConfig` | sdk/agent | core/orchestrator config          | Per-tool Stage 1 truncation limits   |
-| `ToolCacheMeta`        | sdk/agent | core/executor                     | Cache entry metadata (paths, mtime)  |
+| `ToolCacheMeta`        | sdk/agent | sdk/agent (executor)              | Cache entry metadata (paths, mtime)  |
 | `TodoItem`             | sdk/agent | core/types (adapter)             | Step todo item                        |
 
 ### Consumed from `sdk/orchestration`
@@ -32,7 +32,7 @@
 | Interface / Type   | Package           | Consumed By                                   | Purpose                    |
 | ------------------ | ----------------- | --------------------------------------------- | -------------------------- |
 | `Planner`          | sdk/orchestration | core (adapted via plannerSDKAdapter)          | Plan generation interface  |
-| `Reflector`        | sdk/orchestration | core/reflector                                | Failure analysis interface |
+| `Reflector`        | sdk/orchestration | core (via sdk/orchestration engine)         | Failure analysis interface |
 | `Events`           | sdk/orchestration | core/types (adapted via emitterEventsAdapter) | Orchestration lifecycle    |
 | `Blackboard`       | sdk/orchestration | core/types (direct)                            | Shared task state          |
 | `Orchestrator`     | sdk/orchestration | core/orchestrator (as `engine`)               | DAG execution engine       |
@@ -110,11 +110,14 @@ import "github.com/v0lka/c0wrk/sdk/tools"  // → sdktools.ConfirmFunc, ...
 import "github.com/v0lka/c0wrk/core/tools" // → coretools.AskUserFunc, coretools.WithNoProject
 import "github.com/v0lka/c0wrk/sdk/agent"   // → agent.HITLHandler, agent.StepLimitDeny, ...
 
+// backend/configadapter.go
+import "github.com/v0lka/c0wrk/core/proxy"      // → proxy.Config, proxy.MaskURL
+// backend/frontend_api_config.go
+import "github.com/v0lka/c0wrk/core/proxy"      // → proxy.MaskURL (for UI display)
 // backend/application.go
 import "github.com/v0lka/c0wrk/sdk/tools"      // → sdktools.ConfirmFunc, sdktools.EnvInfo, ...
 import "github.com/v0lka/c0wrk/sdk/tools/mcp"  // → mcp.ServerStatus
 import "github.com/v0lka/c0wrk/sdk/agent"       // → agent.HITLHandler
-import "github.com/v0lka/c0wrk/core/proxy"       // → proxy.MaskURL, proxy.Config
 import "github.com/v0lka/c0wrk/core/tools"       // → coretools.AskUserFunc
 ```
 
@@ -134,7 +137,7 @@ import "github.com/v0lka/c0wrk/core/tools"       // → coretools.AskUserFunc
 Core uses adapters to bridge its interfaces with SDK interfaces:
 
 - `emitterEventsAdapter` — wraps `core.Emitter` to implement `orchestration.Events`
-- `plannerSDKAdapter` — wraps `core.Planner` to implement `orchestration.Planner` (adds skill threading)
+- `plannerSDKAdapter` — wraps `sdk/planner.Planner` (via `core/*Planner` receiver) to implement `orchestration.Planner` (adds skill threading)
 - `ContextManagerFactory` closure — wraps `core.ContextManager` creation to return `agent.ContextManager`
 
 ## Data Flow Across Boundary
@@ -154,8 +157,8 @@ Core uses adapters to bridge its interfaces with SDK interfaces:
 | Plan structure          | sdk → core | `orchestration.Plan` (direct)                       |
 | Orchestration lifecycle | core → sdk | `orchestration.Events` (adapted Emitter)            |
 | Blackboard state        | sdk ↔ core | `orchestration.Blackboard` (direct, shared)         |
-| Context window status   | sdk → core | `ContextManager.State()`                            |
-| CompactionResult        | sdk → core | `CompactionResult{BeforeFill, AfterFill, Strategy}` |
+| Context window status   | sdk → core | `ContextManager.FillPercent()` / `AvailableTokens()` / `MaxTokens()` / `UsedTokens()` |
+| CompactionResult        | sdk → core | `CompactionResult{BeforePercent, AfterPercent}` (no `Strategy` field) |
 
 ## Error Propagation
 

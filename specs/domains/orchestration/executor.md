@@ -187,7 +187,7 @@ Every non-infrastructure tool result is cached and truncated in two stages:
 
 **Stage 1 — Per-tool line/byte truncation (configurable per tool):**
 
-- Full result is stored in `ToolResultCache` keyed by SHA256(toolName + content)
+- Full result is stored in `ToolResultCache` keyed by SHA256(toolName + "\x00" + content) (null-byte separator prevents collisions)
 - Result is truncated to per-tool `MaxLines` / `MaxBytes` (from config `toolLimits.perToolTruncation`)
 - A fragmentation nudge is appended: `[This output was truncated. Read the rest with tool_result_read(hash="sha256...", start_line=N+1, num_lines=M)]`
 - Cache entries carry metadata for coherence checking (file tools: mtime+size; MCP tools: TTL)
@@ -261,7 +261,7 @@ Key behaviors:
 - Step-local skill narrowing fires whenever `step.Profile.Skills` is non-empty; requested names resolve from the task-scope ActiveSkills pool first, falling back to the SkillManager only for names absent from the pool
 - Every `Step` carries `IsUntrusted`; set by executor after tool execution via `tool.IsUntrusted()` or MCP source check
 - Untrusted tool output is wrapped in `<untrusted-content>` XML tags in `context.go` `buildStepMessages()` before messages are sent to the LLM
-- Every tool result from a cacheable tool is stored in ToolResultCache before truncation; the cache entry key is SHA256(toolName + full content)
+- Every tool result from a cacheable tool is stored in ToolResultCache before truncation; the cache entry key is SHA256(toolName + "\x00" + full content)
 - `tool_result_read` validates cache coherence on every read: for file tools, it compares current file mtime+size with the cached signature; for MCP tools, it checks TTL expiry
 - `batch` is intercepted in `processBatchTool()` before reaching the registry; its own `Execute()` returns an error. Sub-calls within a batch go through the full policy + truncation + caching pipeline and are emitted as `"<tool_name> (batched)"`
 - The `batch` tool is marked in `nonCacheableTools`; its sub-calls are cached individually per normal tool rules

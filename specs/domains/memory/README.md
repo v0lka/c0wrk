@@ -28,6 +28,13 @@ type ContextWindow struct {
     thresholds      CompactionThresholds
     pruning         ToolOutputPruning
     safetyMargin    int
+
+    // injectionDefenseEnabled gates <untrusted-content> wrapping for untrusted tool output
+    injectionDefenseEnabled bool
+    // compactedMessages stores the frozen prefix from the last Compact() call
+    compactedMessages []llm.Message
+    // compactedThroughIndex marks where the frozen prefix ends in the steps slice
+    compactedThroughIndex int
 }
 
 // CompactionStrategy interface
@@ -37,9 +44,8 @@ type CompactionStrategy interface {
 
 // CompactionResult
 type CompactionResult struct {
-    BeforeFill float64
-    AfterFill  float64
-    Strategy   string
+    BeforePercent float64
+    AfterPercent  float64
 }
 ```
 

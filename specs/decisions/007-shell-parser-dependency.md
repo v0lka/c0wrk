@@ -17,9 +17,9 @@ Add `mvdan.cc/sh/v3/syntax` as a dependency of `core/tools`. This library:
 - Is the de-facto standard shell parser for Go (used by staticcheck, shfmt, and gopls)
 - Parses POSIX Shell and Bash syntax per the POSIX/IEEE Std 1003.1 specification
 - Provides an AST that enables reliable resolution of argument paths, distinguishing string literals from actual file arguments
-- Is used exclusively in `core/tools/symlink.go` for bash command traversal detection
+- Is used exclusively in `sdk/tools/symlink.go` for bash command traversal detection
 
-The dependency is confined to `core/tools/symlink.go` — no other package in the module imports it.
+The dependency is confined to `sdk/tools/symlink.go` — no other package in the module imports it.
 
 ## Consequences
 
@@ -32,7 +32,7 @@ The dependency is confined to `core/tools/symlink.go` — no other package in th
 
 **Negative:**
 
-- Adds a compile-time dependency from `core/tools` on a third-party module. Breaking changes in `mvdan.cc/sh/v3` would require code updates in `symlink.go`.
+- Adds a compile-time dependency from `sdk/tools` on a third-party module. Breaking changes in `mvdan.cc/sh/v3` would require code updates in `symlink.go`.
 - `go.mod` gains a new `require` directive. The module is otherwise dependency-light, so the supply-chain impact is bounded.
 - The parser adds CPU cost to every `bash_exec` invocation with symlink detection enabled. This cost is negligible relative to the bash process startup time (~1ms parse vs. ~10ms `exec`).
 

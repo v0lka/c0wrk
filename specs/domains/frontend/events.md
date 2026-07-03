@@ -7,14 +7,17 @@ Manages real-time event subscription, validation, and store updates. Events flow
 ## Key Files
 
 - `frontend/src/hooks/useSessionEvents.ts` — master event subscription hook
-- `frontend/src/hooks/events/useChatEvents.ts` — streaming, thoughts, errors
+- `frontend/src/hooks/events/useChatEvents.ts` — streaming, thoughts, errors, task lifecycle (task_complete, task_cancelled, task_failed_resumable)
 - `frontend/src/hooks/events/usePlanEvents.ts` — plan generation, step lifecycle
 - `frontend/src/hooks/events/useToolEvents.ts` — tool call/result correlation
 - `frontend/src/hooks/events/useActionEvents.ts` — confirmations, ask_user, step limits
 - `frontend/src/hooks/events/useContextEvents.ts` — context fill, compaction
-- `frontend/src/hooks/events/useLifecycleEvents.ts` — task complete/cancel/fail, retry
+- `frontend/src/hooks/events/useLifecycleEvents.ts` — routing, step_start, step_complete, retry, step_retry
 - `frontend/src/hooks/events/useSubagentEvents.ts` — subagent lifecycle
 - `frontend/src/hooks/events/useBlackboardEvents.ts` — blackboard state updates
+- `frontend/src/hooks/events/usePlanReviewEvents.ts` — plan review lifecycle (plan_review_ready, plan_validation_failed, etc.)
+- `frontend/src/hooks/events/useTerminalEvents.ts` — terminal output events
+- `frontend/src/hooks/events/useToolJudgeEvents.ts` — LLM judge response events
 - `frontend/src/types/events.ts` — event payload type definitions
 - `frontend/src/types/guards.ts` — type guard functions
 
@@ -29,14 +32,17 @@ useSessionEvents(sessionId)
   │   └─ Set up dispatch to type-specific handlers
   │
   ├─ Delegates to focused hooks:
-  │   ├─ useChatEvents → chatStore updates
+  │   ├─ useChatEvents → chatStore updates (streaming, thoughts, errors, task lifecycle)
   │   ├─ usePlanEvents → planStore updates
   │   ├─ useToolEvents → chatStore (tool messages)
   │   ├─ useActionEvents → chatStore (pending actions)
   │   ├─ useContextEvents → chatStore (context fill)
-  │   ├─ useLifecycleEvents → chatStore + sessionStore
+  │   ├─ useLifecycleEvents → chatStore (routing, step_start/complete, retry)
   │   ├─ useSubagentEvents → planStore
-  │   └─ useBlackboardEvents → blackboardStore
+  │   ├─ useBlackboardEvents → blackboardStore
+  │   ├─ usePlanReviewEvents → planStore + planReviewStore
+  │   ├─ useTerminalEvents → terminal state
+  │   └─ useToolJudgeEvents → tool confirmation state
   │
   └─ On unmount/sessionId change:
       └─ Unsubscribe all listeners
@@ -52,12 +58,12 @@ function handleAssistantChunk(data: unknown, sessionId: string) {
   if (!isAssistantChunkData(data)) return;
 
   // 2. Update activity status
-  chatStore.setActivity(sessionId, "streaming");
+  chatStore.setActivityStatus("Generating response...");
 
   // 3. Update domain-specific store
   chatStore.setStreamingText(data.accumulated_content, sessionId);
 
-  // 4. Trigger scroll if needed (via ScrollContext)
+  // 4. Auto-scroll handled by ChatScrollManager component (not by event handlers)
 }
 ```
 
@@ -69,7 +75,7 @@ Backend emits assistant_chunk events (rapid, during LLM streaming):
   → component renders streaming text in real-time
 
 Backend emits assistant_done (once, when LLM finishes):
-  → handler calls chatStore.flushStreamingToMessage(content, sessionId)
+  → handler calls chatStore.addMessage(sessionId, message) + chatStore.clearStreamingText()
   → streaming state cleared
   → permanent ChatMessageUI added to message list
 ```
@@ -83,6 +89,7 @@ Certain events create "pending actions" that require user response:
 | `tool_confirm` | Tool confirmation    | Allow/Deny buttons | `tool_confirm_response` |
 | `ask_user`     | Multi-question form  | Form with inputs   | `ask_user_response`     |
 | `step_limit`   | Step budget decision | Allow/Deny/Always  | `step_limit_response`   |
+| `plan_review_ready` | Plan review     | Approve/Reject + feedback | `ApprovePlan` / `RejectPlan` RPC |
 
 Pending actions are stored in chatStore and rendered by the PendingActionsBar component.
 

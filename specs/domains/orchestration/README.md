@@ -43,6 +43,7 @@ type Orchestrator struct {
     taskStore            TaskPersistence              // optional, for ContinueTask BB restoration
     bbRestoreFunc        BlackboardRestoreFunc        // optional, restores BB from store
     trackingCaller       *llm.TrackingCaller          // per-step context tracker wiring
+    tokenCounter         llm.TokenCounter             // for token counting in planner history compaction
     vectorSearchFunc     builtins.VectorSearchFunc     // for vector search hints (from sdk/tools/builtins)
     skillManager         *skills.SkillManager         // skill discovery and activation
 
@@ -58,13 +59,14 @@ type Orchestrator struct {
 
 // Configuration
 type OrchestratorConfig struct {
-    MaxSteps                  int    // default: 30
-    KeepFirst                 int    // default: 3
-    KeepLast                  int    // default: 10
-    MaxRetries                int    // default: 2 (3 total attempts)
-    MaxHistoryMessages        int    // default: 20
-    MaxDependencyContextChars int    // default: 8000
-    PreWarningPercent         int    // default: 75 (context-fill notification threshold)
+    MaxSteps                  int     // default: 50
+    KeepFirst                 int     // default: 3
+    KeepLast                  int     // default: 10
+    MaxRetries                int     // default: 2 (3 total attempts)
+    PlannerHistoryBudgetTokens int     // max tokens for conversation history sent to planner (default: 4000); triggers summarisation compaction when exceeded
+    PlannerHistoryKeepRecentRatio float64 // fraction of PlannerHistoryBudgetTokens reserved for recent messages (default: 0.75)
+    MaxDependencyContextChars int     // default: 8000
+    PreWarningPercent         int     // default: 75 (context-fill notification threshold)
     Model                     string
     ReasoningEffort           string
     HITLHandler               agent.HITLHandler            // from sdk/agent (OnStepLimit + OnToolCall)
@@ -82,11 +84,13 @@ type RoutingDecision struct {
 
 // Handle options
 type HandleOptions struct {
-    TaskID        string   // non-empty = continuation of existing task
-    ExecutionMode string   // "normal" = single-step plan, "advanced" = full multi-step DAG
+    TaskID          string   // non-empty = continuation of existing task
+    ExecutionMode   string   // "normal" = single-step plan, "advanced" = full multi-step DAG
     UserSkills      []string // explicitly requested by user via /skill refs (bypass router)
     ModelOverride   string   // non-empty = use this model for all LLM calls in this request (empty = router default)
     ReasoningEffort string   // native reasoning effort value for the model family (e.g., "high", "On")
+    PlanReview      bool     // true = pause after planning for user review before execution
+    SessionPlansDir string   // directory for session-scoped plan files; REQUIRED when PlanReview is true
 }
 
 // Handle result
@@ -97,6 +101,10 @@ type HandleResult struct {
     Blackboard      Blackboard
     AttemptCount    int
     Reflections     []Reflection
+    Status          orchestration.ExecutionStatus  // typed outcome: success | partial | failed | aborted | cancelled
+    FailedSteps     int                            // steps that finished with an error in the final attempt
+    PlanReviewPhase string                         // non-empty = orchestrator paused in plan review
+    PlanReviewPath  string                         // path to the .md plan file for review
 }
 ```
 
@@ -198,7 +206,8 @@ From `config.yaml` (via BuilderConfig → OrchestratorConfig):
 | ----------------------------------------- | ------- | --------------------------------- |
 | `executor.max_react_steps`                | 50      | Max ReAct iterations per step     |
 | `executor.max_retries`                    | 2       | Max retry attempts (3 total)      |
-| `orchestration.maxHistoryMessages`        | 20      | Conversation history window       |
+| `orchestration.plannerHistoryBudgetTokens` | 4000   | Max tokens for conversation history sent to planner (triggers summarisation compaction when exceeded) |
+| `orchestration.plannerHistoryKeepRecentRatio` | 0.75 | Fraction of budget reserved for recent messages during compaction |
 | `orchestration.maxDependencyContextChars` | 8000    | Max chars from dependency outputs |
 
 Note: yaml key casing is mixed across config sections — `executor.*` keys use `snake_case`, while `orchestration.*` and `toolLimits.*` keys use `camelCase`. This matches the struct tags in `backend/config/config.go`.

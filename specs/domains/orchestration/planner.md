@@ -14,7 +14,8 @@ Generates DAG execution plans from user tasks, assigns agent profiles to steps, 
 - `core/prompts/planner_informed.md` — informed planning prompt (after exploration)
 - `core/prompts/planner_replan.md` — replanning prompt
 - `core/prompts/planner_*.md` — provider-specific variants (anthropic, openai, gemini, etc.)
-- `sdk/orchestration/dag.go` — Plan and PlanStep types
+- `sdk/orchestration/types.go` — `Plan` and `PlanStep` types; `sdk/orchestration/dag.go` — DAG traversal (dependency resolution, ready-step computation)
+- `core/plan_review.go` — also writes a `.plan.json` sidecar (struct `PlanReviewSidecar`) next to the `.md` plan file so hidden fields (routing decision, full step metadata) survive backend restarts during plan review
 
 ## Behavior
 
@@ -56,7 +57,7 @@ All modes receive full Tree of Thoughts reasoning and structured step descriptio
 | 4          | 4-7 steps  |
 | 5          | 6-10 steps |
 
-Hard cap: MAX-STEPS (configured, typically 10).
+Soft cap: the complexity→step-count table above is prompt guidance (no code-enforced cap on plan size). Only single-step mode (`singleStep=true`) is hard-truncated to 1 step in `planDirect`/`planWithExploration`/`PlanContinuation`.
 
 ### PlanStep Structure
 
@@ -74,7 +75,7 @@ type PlanStep struct {
 
 ### Agent Profiles
 
-Agent profiles are defined in the `AgentProfile` struct (`core/types.go`) and described to the LLM planner via `planModeAgentProfiles` constant in `core/planner.go`:
+Agent profiles are defined in the `AgentProfile` struct (`sdk/planner/types.go`) and described to the LLM planner via `PlannerAgentProfiles` variable in `core/prompts/prompts.go`:
 
 | Role         | Primary Tools                                        | Compaction Bias        |
 | ------------ | ---------------------------------------------------- | ---------------------- |

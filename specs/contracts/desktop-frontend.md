@@ -16,7 +16,7 @@ Frontend communicates with Go exclusively through Wails IPC. No direct Go import
 | `FileNode`                 | backend  | backend → frontend | File tree entry                     |
 | `ChatMessage`              | backend  | backend → frontend | Message history entry               |
 | `VectorIndexStatus`        | backend  | backend → frontend | Index progress                      |
-| `MCPServerStatus`          | backend  | backend → frontend | MCP server state                    |
+| `mcp.ServerStatus`        | sdk/tools/mcp | backend → frontend | MCP server state (used by `GetMCPStatus`) |
 | `ToolInfo`                 | backend  | backend → frontend | Tool descriptor for UI              |
 | `ConfigResponse`           | backend  | backend → frontend | Sanitized config view               |
 | `LLMFullConfigRequest`    | frontend | frontend → backend | LLM multi-provider config update |
@@ -31,7 +31,7 @@ Frontend communicates with Go exclusively through Wails IPC. No direct Go import
 
 All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callable from frontend via `window.go.desktop.App.<MethodName>()`.
 
-**Convention**: Methods returning complex types always return `(T, error)` in Go. The "Returns" column shows the success type; all non-`error`-only methods also return `error` as a second value (surfaced as a rejected Promise in TypeScript).
+**Convention**: Methods that can fail return `(T, error)` in Go. Read-only getters that cannot fail return `T` only (e.g., `GetConfig`, `GetSecuritySettings`, `GetProxySettings`, `GetMCPStatus`, `GetMCPServers`, `GetToolList`, `GetVectorIndexStatus`, `ListSkills`, `GetSessionTokens`). The "Returns" column shows the actual signature; Wails surfaces `error` as a rejected Promise in TypeScript.
 
 ### Session (`backend/frontend_api_session.go`)
 
@@ -49,6 +49,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `CancelTask`           | id                           | error                     | Cancel running task                                   |
 | `ResumeTask`           | id                           | error                     | Resume failed task                                    |
 | `CancelUnfinishedTask` | id                           | error                     | Discard a resumable task (no resume prompt next time) |
+| `GetSessionTokens`    | sessionID                    | SessionTokensResponse     | Get token usage for session (getter, no error return) |
 
 ### Plan Review (`backend/frontend_api_plan_review.go`)
 
@@ -79,12 +80,12 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `GetConfig`              | —                        | ConfigResponse                    | Get current config (sanitized) |
 | `UpdateLLMConfig`       | LLMFullConfigRequest    | error                             | Update full LLM multi-provider config |
 | `UpdateSearchSettings`   | SearchSettingsRequest    | error                             | Update search config           |
-| `GetSecuritySettings`    | —                        | (SecuritySettingsResponse, error) | Get security policies          |
+| `GetSecuritySettings`    | —                        | SecuritySettingsResponse          | Get security policies          |
 | `UpdateSecuritySettings` | SecuritySettingsResponse | error                             | Update security policies       |
 | `GetLogLevel`            | —                        | string                            | Get current log level          |
 | `SetLogLevel`            | level                    | error                             | Set log level dynamically      |
 | `ListProviderModels`     | provider                 | ([]string, error)                 | List models for a provider     |
-| `GetProxySettings`       | —                        | (ProxySettingsResponse, error)    | Get proxy configuration        |
+| `GetProxySettings`       | —                        | ProxySettingsResponse             | Get proxy configuration        |
 | `UpdateProxySettings`    | ProxySettingsRequest     | error                             | Update proxy configuration     |
 
 ### Workspace (`backend/frontend_api_workspace.go`)
@@ -99,15 +100,14 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `GetFileIcon`         | filePath           | (FileIconResponse, error)            | Get devicon for file         |
 | `WatchDirectory`      | dirPath            | error                                | Subscribe to dir changes     |
 | `UnwatchDirectory`    | dirPath            | error                                | Unsubscribe dir changes      |
-| `GetSessionTokens`    | sessionID          | SessionTokensResponse                | Get token usage for session  |
 
 ### MCP (`backend/frontend_api_mcp.go`)
 
 | Method             | Parameters                 | Returns                           | Description                |
 | ------------------ | -------------------------- | --------------------------------- | -------------------------- |
-| `GetMCPStatus`     | —                          | ([]MCPServerStatus, error)        | Get MCP server statuses    |
-| `GetMCPServers`    | —                          | (map[string]MCPServerConfig, error) | Get MCP server configs   |
-| `GetToolList`      | —                          | ([]ToolInfo, error)               | List all registered tools  |
+| `GetMCPStatus`     | —                          | []mcp.ServerStatus               | Get MCP server statuses    |
+| `GetMCPServers`    | —                          | map[string]MCPServerConfig       | Get MCP server configs   |
+| `GetToolList`      | —                          | []ToolInfo                       | List all registered tools  |
 | `UpdateMCPServers` | map[string]MCPServerConfig | error                             | Update MCP config + reload |
 
 ### Terminal (`backend/frontend_api_terminal.go`)
@@ -122,9 +122,58 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 ### Vector (`backend/frontend_api_vector.go`)
 
-| Method              | Parameters                                                    | Returns                       | Description                                         |
-| ------------------- | ------------------------------------------------------------- | ----------------------------- | --------------------------------------------------- |
-| `SearchVectorStore` | `SearchRequest{query, top_k, file_pattern, must_match, mode}` | ([]VectorStoreEntry, error)   | Hybrid search/browse; mode= hybrid\|vector\|lexical |
+| Method                | Parameters                                                    | Returns                       | Description                                         |
+| --------------------- | ------------------------------------------------------------- | ----------------------------- | --------------------------------------------------- |
+| `SearchVectorStore`   | `SearchRequest{query, top_k, file_pattern, must_match, mode}` | ([]VectorStoreEntry, error)   | Hybrid search/browse; mode= hybrid\|vector\|lexical |
+| `GetVectorIndexStatus`| —                                                             | VectorIndexStatus             | Get vector index state/progress (getter, no error)  |
+
+### Git (`backend/frontend_api_git.go`)
+
+| Method                 | Parameters              | Returns                       | Description |
+| ---------------------- | ----------------------- | ----------------------------- | ----------- |
+| `StageFile`            | path                    | error                         | Stage a single file |
+| `UnstageFile`          | path                    | error                         | Unstage a single file |
+| `StageAll`             | —                       | error                         | Stage all changes |
+| `UnstageAll`           | —                       | error                         | Unstage all changes |
+| `StageHunks`           | path, hunks []HunkRange | error                         | Stage selected hunks |
+| `GetDiffStat`          | path                    | (*DiffStat, error)            | Diff stat for a file |
+| `GetDiffStats`         | —                       | (map[string]DiffStat, error)  | Diff stats for all changed files |
+| `Commit`               | message                 | (string, error)               | Create a commit |
+| `GetBranches`          | —                       | ([]Branch, error)             | List branches |
+| `GetCurrentBranch`     | —                       | (BranchInfo, error)           | Get current branch |
+| `CheckoutBranch`       | name                    | error                         | Checkout a branch |
+| `CreateBranch`         | name                    | error                         | Create a new branch |
+| `GenerateCommitMessage`| diff                    | (string, error)               | AI-generate a commit message from diff |
+| `Pull`                 | remote                  | (string, error)               | Pull from remote |
+| `Push`                 | remote                  | (string, error)               | Push to remote |
+| `Fetch`                | remote                  | (string, error)               | Fetch from remote |
+| `GetCommitLog`         | limit, skip             | ([]CommitInfo, error)         | Paginated commit log |
+| `GetCommitFiles`       | sha                     | ([]CommitFile, error)         | Files changed in a commit |
+| `StashCreate`          | message                 | error                         | Create a stash entry |
+| `StashPop`             | index                   | error                         | Pop a stash entry |
+| `StashDrop`            | index                   | error                         | Drop a stash entry |
+| `StashList`            | —                       | ([]StashEntry, error)         | List stash entries |
+| `DiscardChanges`       | path                    | error                         | Discard working-tree changes for a file |
+| `AppendToGitignore`    | pattern                 | error                         | Append a pattern to .gitignore |
+| `Merge`                | branch                  | error                         | Merge a branch |
+| `Rebase`               | branch                  | error                         | Rebase onto a branch |
+| `AbortMerge`           | —                       | error                         | Abort an in-progress merge |
+| `AbortRebase`          | —                       | error                         | Abort an in-progress rebase |
+| `GetRebaseMergeState`  | —                       | (MergeRebaseState, error)     | Get in-progress merge/rebase state |
+| `GetGitGraph`          | limit, skip             | ([]GraphCommit, error)        | Paginated git graph (DAG) |
+
+### Lifecycle (`backend/frontend_api.go`)
+
+| Method             | Parameters       | Returns              | Description |
+| ------------------ | ---------------- | -------------------- | ----------- |
+| `Lifecycle`        | —                | *FrontendAPILifecycle | Returns lifecycle sub-API (config load state, vector manager, cleanup) |
+
+### Desktop (`desktop/app.go` — methods on `*App`, not promoted from `FrontendAPI`)
+
+| Method           | Parameters | Returns       | Description |
+| ---------------- | ---------- | ------------- | ----------- |
+| `PickDirectory`  | —          | (string, error) | Native directory picker dialog |
+| `SetWailsLogger` | wl         | —             | Binding artifact: stores Wails log adapter (called internally, not from frontend) |
 
 ### Prompt (`backend/frontend_api_prompt.go`)
 

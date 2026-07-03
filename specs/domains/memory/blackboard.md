@@ -9,6 +9,7 @@ Provides shared state for the Plan&Execute loop: stores the plan, step results, 
 - `sdk/orchestration/blackboard.go` — MapBlackboard (in-memory implementation)
 - `sdk/orchestration/interfaces.go` — Blackboard interface definition
 - `backend/session/persistent_blackboard.go` — PersistentBlackboard (SQLite-backed)
+- `core/persistent_blackboard.go` — `PersistableBlackboard` interface, `TaskPersistence` store interface (persistence contract types used by orchestrator for BB restoration)
 
 ## Behavior
 
@@ -39,6 +40,8 @@ type Blackboard interface {
     // Fact Memory (inter-step communication)
     StoreFact(fact Fact)
     SearchFacts(keywords []string) []Fact
+    GetFacts() []Fact
+    SetFacts(facts []Fact)
 
     // Full-text search
     Search(query string) []BlackboardEntry
@@ -77,7 +80,7 @@ Wraps `MapBlackboard` with SQLite persistence:
 
 - Automatically saves state on `SetStepResult`, `StoreFact`, `SetFinalResult`
 - Supports `RestoreBlackboard()` for task resumption
-- Tracks task lifecycle: `ReactivateTask()`, `CompleteTask()`, `FailTask()`
+- Tracks task lifecycle: `ReactivateTask()`, `CompleteTask()`, `FailTask()`, `CancelTask()`
 - Emits warnings via `Emitter` if persistence fails (non-fatal)
 
 ### Step Results

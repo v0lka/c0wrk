@@ -69,7 +69,7 @@ The router prompt includes the full list of available skills (name + description
 
 - Domain: must be one of {"code", "research", "general", "mixed"}; invalid → "general"
 - Complexity: clamped to [1, 5]
-- MatchedSkills: deduplicated, unknown skills silently dropped
+- MatchedSkills: deduplicated; unknown skill names are retained in the RoutingDecision but filtered out during orchestrator skill activation (the router itself is pure classification and does not drop entries — see `core/orchestrator_handle.go` `routeAndActivateSkills`)
 
 ## Error Handling
 

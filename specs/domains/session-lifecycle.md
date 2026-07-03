@@ -8,6 +8,8 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 
 - `backend/session/manager.go` — SessionManager (session CRUD, message routing, plan review state)
 - `backend/session/manager_execution.go` — SendMessage, ApprovePlan, RejectPlan, CancelTask execution flows
+- `core/plan_review.go` — HandlePlanReview, PlanWithFeedback, SemanticValidatePlan (plan review orchestration)
+- `backend/frontend_api_plan_review.go` — FrontendAPI.ApprovePlan, FrontendAPI.RejectPlan (plan review RPC surface)
 - `backend/config/paths.go` — centralized path functions (single source of truth for ~/.c0wrk/ directory structure)
 - `sdk/orchestration/step_dump_tracker.go` — StepDumpTracker (per-step LLM dump file management)
 - `backend/session/file_coherence.go` — FileCoherenceTracker (cross-session conflict detection)
@@ -342,6 +344,8 @@ type HandleResult struct {
     Blackboard      Blackboard       `json:"-"`
     AttemptCount    int              `json:"attempt_count,omitempty"`
     Reflections     []Reflection     `json:"reflections,omitempty"`
+    Status          ExecutionStatus  `json:"status,omitempty"`      // typed outcome: success | partial | failed | aborted | cancelled
+    FailedSteps     int              `json:"failed_steps,omitempty"` // steps that finished with an error in the final attempt
     PlanReviewPhase string           `json:"plan_review_phase,omitempty"` // non-empty = paused for review
     PlanReviewPath  string           `json:"plan_review_path,omitempty"`  // path to .md plan file
 }
