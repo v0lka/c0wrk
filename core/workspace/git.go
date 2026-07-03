@@ -124,9 +124,12 @@ func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry,
 
 // porcelainStatus maps a single git-status --porcelain status column
 // character to its letter string.  Returns empty string for unmodified.
+// 'D' (deleted) is included so that staged/work-tree deletions and
+// both-deleted (DD) merge conflicts are surfaced to consumers instead of
+// being silently skipped.
 func porcelainStatus(c byte) string {
 	switch c {
-	case 'M', 'A', 'R', 'C', 'U':
+	case 'M', 'A', 'R', 'C', 'U', 'D':
 		return string(c)
 	case '?':
 		return "?"

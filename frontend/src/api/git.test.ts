@@ -27,6 +27,23 @@ import {
   createBranch,
   generateCommitMessage,
   getDiffStat,
+  pull,
+  push,
+  fetch,
+  getCommitLog,
+  getCommitFiles,
+  stashCreate,
+  stashPop,
+  stashList,
+  discardChanges,
+  appendToGitignore,
+  stageHunks,
+  merge,
+  rebase,
+  abortMerge,
+  abortRebase,
+  getRebaseMergeState,
+  getGitGraph,
 } from '@/api/git'
 
 // --- Type guard tests (import inline guards) ---
@@ -272,25 +289,48 @@ describe('getCurrentBranch', () => {
     Object.keys(mockApp).forEach(k => delete mockApp[k])
   })
 
-  it('returns branch name string', async () => {
-    mockApp.GetCurrentBranch = vi.fn().mockResolvedValue('main')
+  it('returns BranchInfo from backend', async () => {
+    mockApp.GetCurrentBranch = vi.fn().mockResolvedValue({
+      name: 'main',
+      upstream: 'origin/main',
+      ahead: 2,
+      behind: 1,
+    })
     const result = await getCurrentBranch()
-    expect(result).toBe('main')
+    expect(result).toEqual({
+      name: 'main',
+      upstream: 'origin/main',
+      ahead: 2,
+      behind: 1,
+    })
   })
 
-  it('throws when backend returns non-string', async () => {
-    mockApp.GetCurrentBranch = vi.fn().mockResolvedValue({ name: 'main' })
-    await expect(getCurrentBranch()).rejects.toThrow('backend returned non-string data')
+  it('returns BranchInfo with empty upstream for detached HEAD', async () => {
+    mockApp.GetCurrentBranch = vi.fn().mockResolvedValue({
+      name: 'HEAD',
+      upstream: '',
+      ahead: 0,
+      behind: 0,
+    })
+    const result = await getCurrentBranch()
+    expect(result.upstream).toBe('')
+    expect(result.ahead).toBe(0)
+    expect(result.behind).toBe(0)
+  })
+
+  it('throws when backend returns a plain string (old shape)', async () => {
+    mockApp.GetCurrentBranch = vi.fn().mockResolvedValue('main')
+    await expect(getCurrentBranch()).rejects.toThrow('invalid BranchInfo data')
   })
 
   it('throws when backend returns null', async () => {
     mockApp.GetCurrentBranch = vi.fn().mockResolvedValue(null)
-    await expect(getCurrentBranch()).rejects.toThrow('backend returned non-string data')
+    await expect(getCurrentBranch()).rejects.toThrow('invalid BranchInfo data')
   })
 
-  it('throws when backend returns number', async () => {
-    mockApp.GetCurrentBranch = vi.fn().mockResolvedValue(42)
-    await expect(getCurrentBranch()).rejects.toThrow('backend returned non-string data')
+  it('throws when backend returns object missing ahead', async () => {
+    mockApp.GetCurrentBranch = vi.fn().mockResolvedValue({ name: 'main', upstream: '', behind: 0 })
+    await expect(getCurrentBranch()).rejects.toThrow('invalid BranchInfo data')
   })
 
   it('propagates errors from backend', async () => {
@@ -422,5 +462,458 @@ describe('generateCommitMessage', () => {
     await expect(generateCommitMessage('diff')).rejects.toThrow(
       'llm router not available',
     )
+  })
+})
+
+// ── Phase 5: remote operations ──
+
+describe('pull', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.Pull with remote and returns output', async () => {
+    mockApp.Pull = vi.fn().mockResolvedValue('Already up to date.')
+    const result = await pull('origin')
+    expect(result).toBe('Already up to date.')
+    expect(mockApp.Pull).toHaveBeenCalledWith('origin')
+  })
+
+  it('passes empty remote to use configured upstream', async () => {
+    mockApp.Pull = vi.fn().mockResolvedValue('Updating abc..def')
+    await pull('')
+    expect(mockApp.Pull).toHaveBeenCalledWith('')
+  })
+
+  it('throws when backend returns non-string', async () => {
+    mockApp.Pull = vi.fn().mockResolvedValue({ output: 'x' })
+    await expect(pull('')).rejects.toThrow('non-string output')
+  })
+
+  it('propagates errors', async () => {
+    mockApp.Pull = vi.fn().mockRejectedValue(new Error('merge conflict'))
+    await expect(pull('')).rejects.toThrow('merge conflict')
+  })
+})
+
+describe('push', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.Push with remote and returns output', async () => {
+    mockApp.Push = vi.fn().mockResolvedValue('Everything up-to-date')
+    const result = await push('origin')
+    expect(result).toBe('Everything up-to-date')
+    expect(mockApp.Push).toHaveBeenCalledWith('origin')
+  })
+
+  it('throws when backend returns non-string', async () => {
+    mockApp.Push = vi.fn().mockResolvedValue(42)
+    await expect(push('')).rejects.toThrow('non-string output')
+  })
+
+  it('propagates errors', async () => {
+    mockApp.Push = vi.fn().mockRejectedValue(new Error('rejected'))
+    await expect(push('')).rejects.toThrow('rejected')
+  })
+})
+
+describe('fetch', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.Fetch with remote and returns output', async () => {
+    mockApp.Fetch = vi.fn().mockResolvedValue('From origin\n   abc..def  main -> origin/main')
+    const result = await fetch('origin')
+    expect(result).toContain('origin/main')
+    expect(mockApp.Fetch).toHaveBeenCalledWith('origin')
+  })
+
+  it('throws when backend returns non-string', async () => {
+    mockApp.Fetch = vi.fn().mockResolvedValue(null)
+    await expect(fetch('')).rejects.toThrow('non-string output')
+  })
+
+  it('propagates errors', async () => {
+    mockApp.Fetch = vi.fn().mockRejectedValue(new Error('network'))
+    await expect(fetch('')).rejects.toThrow('network')
+  })
+})
+
+// ── Phase 5: commit history ──
+
+describe('getCommitLog', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('returns parsed commits from backend', async () => {
+    mockApp.GetCommitLog = vi.fn().mockResolvedValue([
+      { sha: 'abc1234', author: 'Alice', email: 'a@x.com', date: '2024-01-01', message: 'init' },
+      { sha: 'def5678', author: 'Bob', email: 'b@x.com', date: '2024-01-02', message: 'fix' },
+    ])
+    const result = await getCommitLog(25, 0)
+    expect(result).toHaveLength(2)
+    expect(result[0]!.sha).toBe('abc1234')
+    expect(mockApp.GetCommitLog).toHaveBeenCalledWith(25, 0)
+  })
+
+  it('returns empty array when backend returns non-array', async () => {
+    mockApp.GetCommitLog = vi.fn().mockResolvedValue('invalid')
+    const result = await getCommitLog(25, 0)
+    expect(result).toEqual([])
+  })
+
+  it('returns empty array when an element fails the guard', async () => {
+    mockApp.GetCommitLog = vi.fn().mockResolvedValue([
+      { sha: 'abc', author: 'A', email: 'a@x.com', date: 'd', message: 'm' },
+      { sha: 123, author: 'B', email: 'b@x.com', date: 'd', message: 'm' },
+    ])
+    const result = await getCommitLog(25, 0)
+    expect(result).toEqual([])
+  })
+
+  it('returns empty array for empty backend array', async () => {
+    mockApp.GetCommitLog = vi.fn().mockResolvedValue([])
+    expect(await getCommitLog(25, 0)).toEqual([])
+  })
+
+  it('propagates errors', async () => {
+    mockApp.GetCommitLog = vi.fn().mockRejectedValue(new Error('no repo'))
+    await expect(getCommitLog(25, 0)).rejects.toThrow('no repo')
+  })
+})
+
+describe('getCommitFiles', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('returns parsed commit files from backend', async () => {
+    mockApp.GetCommitFiles = vi.fn().mockResolvedValue([
+      { path: 'src/a.ts', status: 'A' },
+      { path: 'src/b.ts', status: 'M' },
+    ])
+    const result = await getCommitFiles('abc123')
+    expect(result).toEqual([
+      { path: 'src/a.ts', status: 'A' },
+      { path: 'src/b.ts', status: 'M' },
+    ])
+    expect(mockApp.GetCommitFiles).toHaveBeenCalledWith('abc123')
+  })
+
+  it('returns empty array when backend returns non-array', async () => {
+    mockApp.GetCommitFiles = vi.fn().mockResolvedValue('invalid')
+    expect(await getCommitFiles('abc')).toEqual([])
+  })
+
+  it('returns empty array when an element fails the guard', async () => {
+    mockApp.GetCommitFiles = vi.fn().mockResolvedValue([
+      { path: 'a.ts', status: 'M' },
+      { path: 'b.ts' },
+    ])
+    expect(await getCommitFiles('abc')).toEqual([])
+  })
+
+  it('propagates errors', async () => {
+    mockApp.GetCommitFiles = vi.fn().mockRejectedValue(new Error('bad sha'))
+    await expect(getCommitFiles('abc')).rejects.toThrow('bad sha')
+  })
+})
+
+// ── Phase 5: stash ──
+
+describe('stashCreate', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.StashCreate with message', async () => {
+    mockApp.StashCreate = vi.fn().mockResolvedValue(undefined)
+    await stashCreate('wip')
+    expect(mockApp.StashCreate).toHaveBeenCalledWith('wip')
+  })
+
+  it('passes empty message for default stash', async () => {
+    mockApp.StashCreate = vi.fn().mockResolvedValue(undefined)
+    await stashCreate('')
+    expect(mockApp.StashCreate).toHaveBeenCalledWith('')
+  })
+
+  it('propagates errors', async () => {
+    mockApp.StashCreate = vi.fn().mockRejectedValue(new Error('no changes'))
+    await expect(stashCreate('wip')).rejects.toThrow('no changes')
+  })
+})
+
+describe('stashPop', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.StashPop with index', async () => {
+    mockApp.StashPop = vi.fn().mockResolvedValue(undefined)
+    await stashPop(0)
+    expect(mockApp.StashPop).toHaveBeenCalledWith(0)
+  })
+
+  it('propagates errors', async () => {
+    mockApp.StashPop = vi.fn().mockRejectedValue(new Error('conflict'))
+    await expect(stashPop(0)).rejects.toThrow('conflict')
+  })
+})
+
+describe('stashList', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('returns parsed stash entries from backend', async () => {
+    mockApp.StashList = vi.fn().mockResolvedValue([
+      { index: 0, message: 'WIP on main: abc123 fix' },
+      { index: 1, message: 'WIP on main: def456 init' },
+    ])
+    const result = await stashList()
+    expect(result).toHaveLength(2)
+    expect(result[0]!.index).toBe(0)
+    expect(mockApp.StashList).toHaveBeenCalled()
+  })
+
+  it('returns empty array when backend returns non-array', async () => {
+    mockApp.StashList = vi.fn().mockResolvedValue('invalid')
+    expect(await stashList()).toEqual([])
+  })
+
+  it('returns empty array when an element fails the guard', async () => {
+    mockApp.StashList = vi.fn().mockResolvedValue([
+      { index: 0, message: 'wip' },
+      { index: 'x', message: 'bad' },
+    ])
+    expect(await stashList()).toEqual([])
+  })
+
+  it('returns empty array for empty backend array', async () => {
+    mockApp.StashList = vi.fn().mockResolvedValue([])
+    expect(await stashList()).toEqual([])
+  })
+
+  it('propagates errors', async () => {
+    mockApp.StashList = vi.fn().mockRejectedValue(new Error('no repo'))
+    await expect(stashList()).rejects.toThrow('no repo')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase 6 wrappers: discard, gitignore, hunk staging, merge/rebase, graph
+// ---------------------------------------------------------------------------
+
+describe('discardChanges', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.DiscardChanges with path', async () => {
+    mockApp.DiscardChanges = vi.fn().mockResolvedValue(undefined)
+    await discardChanges('/repo/file.txt')
+    expect(mockApp.DiscardChanges).toHaveBeenCalledWith('/repo/file.txt')
+  })
+
+  it('propagates errors', async () => {
+    mockApp.DiscardChanges = vi.fn().mockRejectedValue(new Error('discard failed'))
+    await expect(discardChanges('/repo/file.txt')).rejects.toThrow('discard failed')
+  })
+})
+
+describe('appendToGitignore', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.AppendToGitignore with pattern', async () => {
+    mockApp.AppendToGitignore = vi.fn().mockResolvedValue(undefined)
+    await appendToGitignore('build/')
+    expect(mockApp.AppendToGitignore).toHaveBeenCalledWith('build/')
+  })
+
+  it('propagates errors', async () => {
+    mockApp.AppendToGitignore = vi.fn().mockRejectedValue(new Error('write failed'))
+    await expect(appendToGitignore('build/')).rejects.toThrow('write failed')
+  })
+})
+
+describe('stageHunks', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.StageHunks with path and validated hunks', async () => {
+    mockApp.StageHunks = vi.fn().mockResolvedValue(undefined)
+    const hunks = [{ start_line: 1, end_line: 3 }]
+    await stageHunks('/repo/file.txt', hunks)
+    expect(mockApp.StageHunks).toHaveBeenCalledWith('/repo/file.txt', hunks)
+  })
+
+  it('throws without calling backend when hunk ranges are invalid', async () => {
+    mockApp.StageHunks = vi.fn().mockResolvedValue(undefined)
+    const invalid = [{ start_line: 1, end_line: 'bad' as unknown as number }]
+    await expect(stageHunks('/repo/file.txt', invalid)).rejects.toThrow('stageHunks: invalid hunk ranges')
+    expect(mockApp.StageHunks).not.toHaveBeenCalled()
+  })
+
+  it('throws when an element is missing a field', async () => {
+    mockApp.StageHunks = vi.fn().mockResolvedValue(undefined)
+    const invalid = [{ start_line: 1 } as unknown as { start_line: number; end_line: number }]
+    await expect(stageHunks('/repo/file.txt', invalid)).rejects.toThrow('stageHunks: invalid hunk ranges')
+    expect(mockApp.StageHunks).not.toHaveBeenCalled()
+  })
+
+  it('propagates backend errors', async () => {
+    mockApp.StageHunks = vi.fn().mockRejectedValue(new Error('no unstaged changes'))
+    await expect(stageHunks('/repo/file.txt', [{ start_line: 1, end_line: 1 }])).rejects.toThrow('no unstaged changes')
+  })
+})
+
+describe('merge', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.Merge with branch', async () => {
+    mockApp.Merge = vi.fn().mockResolvedValue(undefined)
+    await merge('topic')
+    expect(mockApp.Merge).toHaveBeenCalledWith('topic')
+  })
+
+  it('propagates conflict errors', async () => {
+    mockApp.Merge = vi.fn().mockRejectedValue(new Error('merge conflict'))
+    await expect(merge('topic')).rejects.toThrow('merge conflict')
+  })
+})
+
+describe('rebase', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.Rebase with branch', async () => {
+    mockApp.Rebase = vi.fn().mockResolvedValue(undefined)
+    await rebase('main')
+    expect(mockApp.Rebase).toHaveBeenCalledWith('main')
+  })
+
+  it('propagates conflict errors', async () => {
+    mockApp.Rebase = vi.fn().mockRejectedValue(new Error('rebase conflict'))
+    await expect(rebase('main')).rejects.toThrow('rebase conflict')
+  })
+})
+
+describe('abortMerge', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.AbortMerge', async () => {
+    mockApp.AbortMerge = vi.fn().mockResolvedValue(undefined)
+    await abortMerge()
+    expect(mockApp.AbortMerge).toHaveBeenCalled()
+  })
+
+  it('propagates errors', async () => {
+    mockApp.AbortMerge = vi.fn().mockRejectedValue(new Error('no merge in progress'))
+    await expect(abortMerge()).rejects.toThrow('no merge in progress')
+  })
+})
+
+describe('abortRebase', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.AbortRebase', async () => {
+    mockApp.AbortRebase = vi.fn().mockResolvedValue(undefined)
+    await abortRebase()
+    expect(mockApp.AbortRebase).toHaveBeenCalled()
+  })
+
+  it('propagates errors', async () => {
+    mockApp.AbortRebase = vi.fn().mockRejectedValue(new Error('no rebase in progress'))
+    await expect(abortRebase()).rejects.toThrow('no rebase in progress')
+  })
+})
+
+describe('getRebaseMergeState', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('returns the merge/rebase state from backend', async () => {
+    mockApp.GetRebaseMergeState = vi.fn().mockResolvedValue({ is_merging: true, is_rebasing: false })
+    const result = await getRebaseMergeState()
+    expect(result).toEqual({ is_merging: true, is_rebasing: false })
+  })
+
+  it('returns clean default when backend returns a non-conforming shape', async () => {
+    mockApp.GetRebaseMergeState = vi.fn().mockResolvedValue({ is_merging: 'yes' })
+    expect(await getRebaseMergeState()).toEqual({ is_merging: false, is_rebasing: false })
+  })
+
+  it('returns clean default when backend returns null', async () => {
+    mockApp.GetRebaseMergeState = vi.fn().mockResolvedValue(null)
+    expect(await getRebaseMergeState()).toEqual({ is_merging: false, is_rebasing: false })
+  })
+
+  it('propagates errors', async () => {
+    mockApp.GetRebaseMergeState = vi.fn().mockRejectedValue(new Error('git error'))
+    await expect(getRebaseMergeState()).rejects.toThrow('git error')
+  })
+})
+
+describe('getGitGraph', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('returns parsed commits from backend', async () => {
+    mockApp.GetGitGraph = vi.fn().mockResolvedValue([
+      { sha: 'aaa', parents: ['bbb'], message: 'feat: x', refs: ['HEAD -> main'] },
+      { sha: 'bbb', parents: [], message: 'init', refs: [] },
+    ])
+    const result = await getGitGraph()
+    expect(result).toEqual([
+      { sha: 'aaa', parents: ['bbb'], message: 'feat: x', refs: ['HEAD -> main'] },
+      { sha: 'bbb', parents: [], message: 'init', refs: [] },
+    ])
+  })
+
+  it('returns empty array when backend returns a non-array', async () => {
+    mockApp.GetGitGraph = vi.fn().mockResolvedValue('invalid')
+    expect(await getGitGraph()).toEqual([])
+  })
+
+  it('returns empty array when an element fails the guard', async () => {
+    mockApp.GetGitGraph = vi.fn().mockResolvedValue([
+      { sha: 'aaa', parents: [], message: 'ok', refs: [] },
+      { sha: 123, parents: [], message: 'bad', refs: [] },
+    ])
+    expect(await getGitGraph()).toEqual([])
+  })
+
+  it('returns empty array when backend returns empty array', async () => {
+    mockApp.GetGitGraph = vi.fn().mockResolvedValue([])
+    expect(await getGitGraph()).toEqual([])
+  })
+
+  it('returns empty array when parents is not an array', async () => {
+    mockApp.GetGitGraph = vi.fn().mockResolvedValue([
+      { sha: 'aaa', parents: 'bbb', message: 'ok', refs: [] },
+    ])
+    expect(await getGitGraph()).toEqual([])
+  })
+
+  it('propagates errors', async () => {
+    mockApp.GetGitGraph = vi.fn().mockRejectedValue(new Error('git error'))
+    await expect(getGitGraph()).rejects.toThrow('git error')
   })
 })

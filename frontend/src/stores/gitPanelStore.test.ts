@@ -1,7 +1,7 @@
 // Unit tests for gitPanelStore — Zustand store actions and state transitions
 
 import { describe, it, expect, beforeEach } from 'vitest'
-import { useGitPanelStore, type GitPanelEntry } from '@/stores/gitPanelStore'
+import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, type GitPanelEntry } from '@/stores/gitPanelStore'
 
 /** Reset the store to initial state before each test */
 function resetStore() {
@@ -15,6 +15,8 @@ function makeEntry(overrides: Partial<GitPanelEntry> & { path: string }): GitPan
     status: 'M',
     staged: false,
     diffStat: null,
+    indexStatus: '',
+    worktreeStatus: '',
     ...overrides,
   }
 }
@@ -31,13 +33,15 @@ describe('gitPanelStore', () => {
     expect(s.viewMode).toBe('flat')
     expect(s.entries).toEqual([])
     expect(s.commitMessage).toBe('')
-    expect(s.branch).toBe('')
+    expect(s.branch).toEqual({ name: '', upstream: '', ahead: 0, behind: 0 })
     expect(s.branches).toEqual([])
     expect(s.expandedDirs).toEqual(new Set())
     expect(s.isLoading).toBe(false)
     expect(s.isGitRepo).toBe(false)
     expect(s.isBranchPickerOpen).toBe(false)
     expect(s.isGeneratingCommit).toBe(false)
+    expect(s.remoteOperationInProgress).toBe(false)
+    expect(s.activeTab).toBe('changes')
     expect(s.error).toBeNull()
   })
 
@@ -165,17 +169,27 @@ describe('gitPanelStore', () => {
 
   // ── setBranch ──
 
-  it('setBranch updates branch name', () => {
+  it('setBranch updates branch info', () => {
     const { setBranch } = useGitPanelStore.getState()
-    setBranch('feature/login')
-    expect(useGitPanelStore.getState().branch).toBe('feature/login')
+    setBranch({ name: 'feature/login', upstream: 'origin/feature/login', ahead: 2, behind: 0 })
+    expect(useGitPanelStore.getState().branch).toEqual({
+      name: 'feature/login',
+      upstream: 'origin/feature/login',
+      ahead: 2,
+      behind: 0,
+    })
   })
 
-  it('setBranch allows empty string', () => {
+  it('setBranch allows empty branch info', () => {
     const { setBranch } = useGitPanelStore.getState()
-    setBranch('main')
-    setBranch('')
-    expect(useGitPanelStore.getState().branch).toBe('')
+    setBranch({ name: 'main', upstream: '', ahead: 0, behind: 0 })
+    setBranch({ name: '', upstream: '', ahead: 0, behind: 0 })
+    expect(useGitPanelStore.getState().branch).toEqual({
+      name: '',
+      upstream: '',
+      ahead: 0,
+      behind: 0,
+    })
   })
 
   // ── setGitRepo ──
@@ -268,6 +282,42 @@ describe('gitPanelStore', () => {
     expect(useGitPanelStore.getState().isGeneratingCommit).toBe(false)
   })
 
+  // ── setRemoteOperationInProgress ──
+
+  it('setRemoteOperationInProgress toggles the flag', () => {
+    const { setRemoteOperationInProgress } = useGitPanelStore.getState()
+    expect(useGitPanelStore.getState().remoteOperationInProgress).toBe(false)
+    setRemoteOperationInProgress(true)
+    expect(useGitPanelStore.getState().remoteOperationInProgress).toBe(true)
+    setRemoteOperationInProgress(false)
+    expect(useGitPanelStore.getState().remoteOperationInProgress).toBe(false)
+  })
+
+  // ── setActiveTab ──
+
+  it('setActiveTab switches between changes and history', () => {
+    const { setActiveTab } = useGitPanelStore.getState()
+    expect(useGitPanelStore.getState().activeTab).toBe('changes')
+    setActiveTab('history')
+    expect(useGitPanelStore.getState().activeTab).toBe('history')
+    setActiveTab('changes')
+    expect(useGitPanelStore.getState().activeTab).toBe('changes')
+  })
+
+  // ── GitPanelEntry carries index/worktree status ──
+
+  it('loadEntries preserves indexStatus and worktreeStatus', () => {
+    const { loadEntries } = useGitPanelStore.getState()
+    loadEntries([
+      makeEntry({ path: 'conflict.ts', indexStatus: 'U', worktreeStatus: 'U' }),
+      makeEntry({ path: 'deleted.ts', indexStatus: 'D', worktreeStatus: ' ' }),
+    ])
+    const entries = useGitPanelStore.getState().entries
+    expect(entries[0]!.indexStatus).toBe('U')
+    expect(entries[0]!.worktreeStatus).toBe('U')
+    expect(entries[1]!.indexStatus).toBe('D')
+  })
+
   // ── reset ──
 
   it('reset clears all state to initial values', () => {
@@ -275,7 +325,7 @@ describe('gitPanelStore', () => {
     store.setViewMode('tree')
     store.loadEntries([makeEntry({ path: 'a.ts' })])
     store.setCommitMessage('fix: bug')
-    store.setBranch('feature/x')
+    store.setBranch({ name: 'feature/x', upstream: '', ahead: 0, behind: 0 })
     store.setBranches([{ name: 'main', is_current: true }])
     store.setGitRepo(true)
     store.setLoading(true)
@@ -290,13 +340,15 @@ describe('gitPanelStore', () => {
     expect(s.viewMode).toBe('flat')
     expect(s.entries).toEqual([])
     expect(s.commitMessage).toBe('')
-    expect(s.branch).toBe('')
+    expect(s.branch).toEqual({ name: '', upstream: '', ahead: 0, behind: 0 })
     expect(s.branches).toEqual([])
     expect(s.expandedDirs).toEqual(new Set())
     expect(s.isLoading).toBe(false)
     expect(s.isGitRepo).toBe(false)
     expect(s.isBranchPickerOpen).toBe(false)
     expect(s.isGeneratingCommit).toBe(false)
+    expect(s.remoteOperationInProgress).toBe(false)
+    expect(s.activeTab).toBe('changes')
     expect(s.error).toBeNull()
   })
 
@@ -307,7 +359,7 @@ describe('gitPanelStore', () => {
 
     // Initial load
     store.setGitRepo(true)
-    store.setBranch('main')
+    store.setBranch({ name: 'main', upstream: '', ahead: 0, behind: 0 })
     store.loadEntries([
       makeEntry({ path: 'src/app.ts', status: 'M', staged: false }),
       makeEntry({ path: 'README.md', status: 'M', staged: false }),
@@ -343,5 +395,60 @@ describe('gitPanelStore', () => {
     expect(s.error).toBeNull() // loadEntries clears error
     expect(s.isGitRepo).toBe(false)
     expect(s.entries).toEqual([])
+  })
+})
+
+// --- Phase 6: merge/rebase state & graph tab ---
+
+describe('gitPanelStore — Phase 6 (merge/rebase state & graph tab)', () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  it('initializes mergeRebaseState to the empty state', () => {
+    expect(useGitPanelStore.getState().mergeRebaseState).toEqual({ is_merging: false, is_rebasing: false })
+  })
+
+  it('exposes EMPTY_MERGE_REBASE_STATE matching the empty state', () => {
+    expect(EMPTY_MERGE_REBASE_STATE).toEqual({ is_merging: false, is_rebasing: false })
+  })
+
+  it('setMergeRebaseState updates the merge/rebase state', () => {
+    const { setMergeRebaseState } = useGitPanelStore.getState()
+    setMergeRebaseState({ is_merging: true, is_rebasing: false })
+    expect(useGitPanelStore.getState().mergeRebaseState).toEqual({ is_merging: true, is_rebasing: false })
+    setMergeRebaseState({ is_merging: false, is_rebasing: true })
+    expect(useGitPanelStore.getState().mergeRebaseState).toEqual({ is_merging: false, is_rebasing: true })
+  })
+
+  it('reset() restores mergeRebaseState to the empty state', () => {
+    const { setMergeRebaseState, reset } = useGitPanelStore.getState()
+    setMergeRebaseState({ is_merging: true, is_rebasing: true })
+    reset()
+    expect(useGitPanelStore.getState().mergeRebaseState).toEqual({ is_merging: false, is_rebasing: false })
+  })
+
+  it('mergeRebaseState is transient: reset reverts it independent of viewMode', () => {
+    // viewMode is persisted; mergeRebaseState is not. After reset both return
+    // to their defaults, confirming mergeRebaseState is never carried over.
+    const { setViewMode, setMergeRebaseState, reset } = useGitPanelStore.getState()
+    setViewMode('tree')
+    setMergeRebaseState({ is_merging: true, is_rebasing: false })
+
+    reset()
+
+    const s = useGitPanelStore.getState()
+    expect(s.mergeRebaseState).toEqual(EMPTY_MERGE_REBASE_STATE)
+    expect(s.activeTab).toBe('changes')
+  })
+
+  it('setActiveTab accepts the graph and history tabs', () => {
+    const { setActiveTab } = useGitPanelStore.getState()
+    setActiveTab('graph')
+    expect(useGitPanelStore.getState().activeTab).toBe('graph')
+    setActiveTab('history')
+    expect(useGitPanelStore.getState().activeTab).toBe('history')
+    setActiveTab('changes')
+    expect(useGitPanelStore.getState().activeTab).toBe('changes')
   })
 })

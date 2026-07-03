@@ -75,6 +75,57 @@ export interface Branch {
   is_current: boolean
 }
 
+/** Current branch with upstream tracking + ahead/behind counts (Phase 5). */
+export interface BranchInfo {
+  name: string
+  upstream: string
+  ahead: number
+  behind: number
+}
+
+/** A commit in the history log (Phase 5). */
+export interface CommitInfo {
+  sha: string
+  author: string
+  email: string
+  date: string
+  message: string
+}
+
+/** A file changed by a given commit (Phase 5). Status is a single letter A/M/D/R/C. */
+export interface CommitFile {
+  path: string
+  status: string
+}
+
+/** A stash entry (Phase 5). */
+export interface StashEntry {
+  index: number
+  message: string
+}
+
+/** A commit node in the commit graph (Phase 6). */
+export interface GraphCommit {
+  sha: string
+  /** Parent commit SHAs (empty for the root commit). */
+  parents: string[]
+  message: string
+  /** Git decorations: branch names, tags, HEAD pointer (e.g. `HEAD -> main`). */
+  refs: string[]
+}
+
+/** A line range identifying a diff hunk for partial staging (Phase 6). */
+export interface HunkRange {
+  start_line: number
+  end_line: number
+}
+
+/** Active merge/rebase state for the current repository (Phase 6). */
+export interface MergeRebaseState {
+  is_merging: boolean
+  is_rebasing: boolean
+}
+
 export type SearchMode = 'hybrid' | 'vector' | 'lexical'
 
 export type IndexPhase = 'both' | 'embedding' | 'lexical'

@@ -1194,19 +1194,19 @@ type mockEmitter struct {
 	serviceCalls []string
 }
 
-func (m *mockEmitter) StepStart(_ int)                                         {}
-func (m *mockEmitter) Thought(_ int, _, _ string)                              {}
-func (m *mockEmitter) ToolCall(_, _ int, _, _, _ string)                       {}
-func (m *mockEmitter) ToolResult(_, _, _ int, _ string, _ bool)                {}
-func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                     {}
-func (m *mockEmitter) SubAgentLaunch(_, _ string)                              {}
-func (m *mockEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration)      {}
-func (m *mockEmitter) AssistantChunk(_ string)                                 {}
-func (m *mockEmitter) AssistantDone(_ string, _, _ int)                        {}
-func (m *mockEmitter) ContextFill(_ float64, _, _ int, _, _ string)            {}
-func (m *mockEmitter) ContextCompaction(_, _ float64, _ string)                {}
-func (m *mockEmitter) Finishing(_ int, _ string)                               {}
-func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any)    {}
+func (m *mockEmitter) StepStart(_ int)                                      {}
+func (m *mockEmitter) Thought(_ int, _, _ string)                           {}
+func (m *mockEmitter) ToolCall(_, _ int, _, _, _ string)                    {}
+func (m *mockEmitter) ToolResult(_, _, _ int, _ string, _ bool)             {}
+func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                  {}
+func (m *mockEmitter) SubAgentLaunch(_, _ string)                           {}
+func (m *mockEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration)   {}
+func (m *mockEmitter) AssistantChunk(_ string)                              {}
+func (m *mockEmitter) AssistantDone(_ string, _, _ int)                     {}
+func (m *mockEmitter) ContextFill(_ float64, _, _ int, _, _ string)         {}
+func (m *mockEmitter) ContextCompaction(_, _ float64, _ string)             {}
+func (m *mockEmitter) Finishing(_ int, _ string)                            {}
+func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
 func (m *mockEmitter) ServiceWithMeta(content string, _ map[string]any) {
 	m.serviceCalls = append(m.serviceCalls, content)
 }
@@ -1477,7 +1477,7 @@ func TestBuildContinuationSystemPrompt_MixedStatus(t *testing.T) {
 		},
 	}
 	completedSteps := []orchestration.CompletedStep{
-		{StepID: "step_1", Output: "done", Error: nil},             // COMPLETED
+		{StepID: "step_1", Output: "done", Error: nil},                      // COMPLETED
 		{StepID: "step_2", Output: "partial", Error: errors.New("timeout")}, // FAILED
 		// step_3: not present → PENDING
 	}

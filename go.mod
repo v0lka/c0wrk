@@ -20,6 +20,7 @@ require (
 	github.com/blevesearch/bleve/v2 v2.6.0
 	github.com/creack/pty v1.1.24
 	github.com/epilande/go-devicons v0.0.0-20250505162540-0661cab71a28
+	github.com/google/go-cmp v0.7.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/sugarme/tokenizer v0.3.0
 	github.com/yalue/onnxruntime_go v1.27.0

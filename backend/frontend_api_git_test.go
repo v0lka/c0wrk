@@ -731,12 +731,18 @@ func TestGetCurrentBranch_ReturnsBranchName(t *testing.T) {
 	defBranch := gitDefaultBranch(t, tmpDir)
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
-	name, err := f.GetCurrentBranch()
+	info, err := f.GetCurrentBranch()
 	if err != nil {
 		t.Fatalf("GetCurrentBranch: %v", err)
 	}
-	if name != defBranch {
-		t.Errorf("GetCurrentBranch: got %q, want %q", name, defBranch)
+	if info.Name != defBranch {
+		t.Errorf("GetCurrentBranch: got %q, want %q", info.Name, defBranch)
+	}
+	if info.Upstream != "" {
+		t.Errorf("GetCurrentBranch: upstream: got %q, want empty (no upstream configured)", info.Upstream)
+	}
+	if info.Ahead != 0 || info.Behind != 0 {
+		t.Errorf("GetCurrentBranch: ahead/behind: got %d/%d, want 0/0", info.Ahead, info.Behind)
 	}
 }
 
@@ -749,12 +755,15 @@ func TestGetCurrentBranch_DetachedHead(t *testing.T) {
 	runGit(t, tmpDir, "checkout", "--detach", "HEAD")
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
-	name, err := f.GetCurrentBranch()
+	info, err := f.GetCurrentBranch()
 	if err != nil {
 		t.Fatalf("GetCurrentBranch (detached): %v", err)
 	}
-	if name != "HEAD" {
-		t.Errorf("GetCurrentBranch (detached): got %q, want HEAD", name)
+	if info.Name != "HEAD" {
+		t.Errorf("GetCurrentBranch (detached): got %q, want HEAD", info.Name)
+	}
+	if info.Upstream != "" {
+		t.Errorf("GetCurrentBranch (detached): upstream: got %q, want empty", info.Upstream)
 	}
 }
 
@@ -956,8 +965,8 @@ func TestCheckoutBranch_Success(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetCurrentBranch: %v", err)
 		}
-		if current != "feature-x" {
-			t.Errorf("current branch: got %q, want %q", current, "feature-x")
+		if current.Name != "feature-x" {
+			t.Errorf("current branch: got %q, want %q", current.Name, "feature-x")
 		}
 		if emitted != dir {
 			t.Errorf("event payload: got %q, want %q", emitted, dir)
@@ -1051,8 +1060,8 @@ func TestCreateBranch_Success(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetCurrentBranch: %v", err)
 		}
-		if current != "new-feature" {
-			t.Errorf("current branch: got %q, want %q", current, "new-feature")
+		if current.Name != "new-feature" {
+			t.Errorf("current branch: got %q, want %q", current.Name, "new-feature")
 		}
 		if emitted != dir {
 			t.Errorf("event payload: got %q, want %q", emitted, dir)
@@ -1115,5 +1124,500 @@ func TestGenerateCommitMessage_PropagatesError(t *testing.T) {
 
 	if _, err := f.GenerateCommitMessage("diff"); err == nil {
 		t.Fatal("expected error to propagate")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 tests: remote operations, commit history, stash
+// ---------------------------------------------------------------------------
+
+// gitOut runs a git command in dir and returns trimmed stdout. It fails
+// the test (not skip) on error so integration assertions are reliable.
+// Safe to call after gitInit: by then git is known to be present.
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(context.Background(), "git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// --- parser tests (deterministic, no git needed) ---
+
+func TestParseCommitLog(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []CommitInfo
+	}{
+		{name: "empty", input: "", want: []CommitInfo{}},
+		{name: "single", input: "abc123\x1fAlice\x1falice@x\x1f2024-01-01\x1ffeat: add", want: []CommitInfo{
+			{SHA: "abc123", Author: "Alice", Email: "alice@x", Date: "2024-01-01", Message: "feat: add"},
+		}},
+		{name: "multiple", input: "s1\x1fA\x1fa@x\x1fd1\x1fm1\x1es2\x1fB\x1fb@x\x1fd2\x1fm2", want: []CommitInfo{
+			{SHA: "s1", Author: "A", Email: "a@x", Date: "d1", Message: "m1"},
+			{SHA: "s2", Author: "B", Email: "b@x", Date: "d2", Message: "m2"},
+		}},
+		{name: "pipe in message preserved", input: "s1\x1fA\x1fa@x\x1fd1\x1ffix: a | b", want: []CommitInfo{
+			{SHA: "s1", Author: "A", Email: "a@x", Date: "d1", Message: "fix: a | b"},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseCommitLog(tc.input)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len: got %d, want %d (%+v)", len(got), len(tc.want), got)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("[%d]: got %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestParseCommitFiles(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []CommitFile
+	}{
+		{name: "empty", input: "", want: []CommitFile{}},
+		{name: "added", input: "A\ta.txt", want: []CommitFile{{Status: "A", Path: "a.txt"}}},
+		{name: "modified", input: "M\tb.txt", want: []CommitFile{{Status: "M", Path: "b.txt"}}},
+		{name: "deleted", input: "D\tc.txt", want: []CommitFile{{Status: "D", Path: "c.txt"}}},
+		{name: "rename with score normalized", input: "R100\told.txt\tnew.txt", want: []CommitFile{{Status: "R", Path: "new.txt"}}},
+		{name: "multiple", input: "A\ta.txt\nD\tb.txt\nM\tc.txt", want: []CommitFile{
+			{Status: "A", Path: "a.txt"},
+			{Status: "D", Path: "b.txt"},
+			{Status: "M", Path: "c.txt"},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseCommitFiles(tc.input)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len: got %d, want %d (%+v)", len(got), len(tc.want), got)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("[%d]: got %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestParseStashList(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []StashEntry
+	}{
+		{name: "empty", input: "", want: []StashEntry{}},
+		{name: "wip", input: "stash@{0}: WIP on main: abc1234 msg", want: []StashEntry{{Index: 0, Message: "WIP on main: abc1234 msg"}}},
+		{name: "on branch", input: "stash@{1}: On main: my message", want: []StashEntry{{Index: 1, Message: "On main: my message"}}},
+		{name: "multiple", input: "stash@{0}: WIP on main: m0\nstash@{1}: On main: m1", want: []StashEntry{
+			{Index: 0, Message: "WIP on main: m0"},
+			{Index: 1, Message: "On main: m1"},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseStashList(tc.input)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len: got %d, want %d (%+v)", len(got), len(tc.want), got)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("[%d]: got %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// --- GetCommitLog ---
+
+func TestGetCommitLog(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// withGitRepo already commits "committed.txt" (1 commit). Add two more.
+		commitFile(t, dir, "b.txt", "b\n")
+		commitFile(t, dir, "c.txt", "c\n")
+
+		log, err := f.GetCommitLog(10, 0)
+		if err != nil {
+			t.Fatalf("GetCommitLog: %v", err)
+		}
+		if len(log) != 3 {
+			t.Fatalf("len: got %d, want 3", len(log))
+		}
+		// Most recent first.
+		if log[0].Message != "add c.txt" {
+			t.Errorf("log[0].Message: got %q, want %q", log[0].Message, "add c.txt")
+		}
+		if log[0].SHA == "" || log[0].Author == "" || log[0].Date == "" {
+			t.Errorf("log[0]: expected populated fields, got %+v", log[0])
+		}
+
+		// Pagination: skip 2 -> oldest commit.
+		log2, err := f.GetCommitLog(10, 2)
+		if err != nil {
+			t.Fatalf("GetCommitLog skip: %v", err)
+		}
+		if len(log2) != 1 {
+			t.Fatalf("skip len: got %d, want 1", len(log2))
+		}
+		if log2[0].Message != "add committed.txt" {
+			t.Errorf("log2[0].Message: got %q, want %q", log2[0].Message, "add committed.txt")
+		}
+	})
+}
+
+func TestGetCommitLog_DefaultLimit(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// Non-positive limit falls back to defaultCommitLogLimit; just verify
+		// it does not error and returns the single existing commit.
+		log, err := f.GetCommitLog(0, 0)
+		if err != nil {
+			t.Fatalf("GetCommitLog(0,0): %v", err)
+		}
+		if len(log) != 1 {
+			t.Errorf("len: got %d, want 1", len(log))
+		}
+	})
+}
+
+// --- GetCommitFiles ---
+
+func TestGetCommitFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	gitInit(t, tmpDir)
+	commitFile(t, tmpDir, "keep.txt", "k\n")
+	commitFile(t, tmpDir, "del.txt", "d\n")
+	commitFile(t, tmpDir, "mod.txt", "v1\n")
+
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	// A mixed commit: add, modify, delete, rename.
+	if err := os.WriteFile(filepath.Join(tmpDir, "new.txt"), []byte("n\n"), 0o644); err != nil {
+		t.Fatalf("write new: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "mod.txt"), []byte("v2\n"), 0o644); err != nil {
+		t.Fatalf("write mod: %v", err)
+	}
+	runGit(t, tmpDir, "rm", "del.txt")
+	runGit(t, tmpDir, "mv", "keep.txt", "renamed.txt")
+	runGit(t, tmpDir, "add", "-A")
+	runGit(t, tmpDir, "commit", "-m", "mixed changes")
+
+	sha := gitOut(t, tmpDir, "rev-parse", "HEAD")
+
+	files, err := f.GetCommitFiles(sha)
+	if err != nil {
+		t.Fatalf("GetCommitFiles: %v", err)
+	}
+
+	byPath := map[string]string{}
+	for _, cf := range files {
+		byPath[cf.Path] = cf.Status
+	}
+	if byPath["new.txt"] != "A" {
+		t.Errorf("new.txt: got %q, want A", byPath["new.txt"])
+	}
+	if byPath["mod.txt"] != "M" {
+		t.Errorf("mod.txt: got %q, want M", byPath["mod.txt"])
+	}
+	if byPath["del.txt"] != "D" {
+		t.Errorf("del.txt: got %q, want D", byPath["del.txt"])
+	}
+	if byPath["renamed.txt"] != "R" {
+		t.Errorf("renamed.txt: got %q, want R", byPath["renamed.txt"])
+	}
+}
+
+func TestGetCommitFiles_EmptySHA(t *testing.T) {
+	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	if _, err := f.GetCommitFiles(""); err == nil {
+		t.Fatal("expected error for empty sha")
+	}
+	if _, err := f.GetCommitFiles("   "); err == nil {
+		t.Fatal("expected error for whitespace-only sha")
+	}
+}
+
+// --- Stash ---
+
+func TestStashCreateListPop(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// No stashes initially.
+		list, err := f.StashList()
+		if err != nil {
+			t.Fatalf("StashList (initial): %v", err)
+		}
+		if len(list) != 0 {
+			t.Errorf("initial stash list: got %d, want 0", len(list))
+		}
+
+		// Modify a tracked file and stash it.
+		if err := os.WriteFile(filepath.Join(dir, "committed.txt"), []byte("modified\n"), 0o644); err != nil {
+			t.Fatalf("write committed: %v", err)
+		}
+		if err := f.StashCreate("my stash"); err != nil {
+			t.Fatalf("StashCreate: %v", err)
+		}
+
+		// Stash list now has one entry.
+		list, err = f.StashList()
+		if err != nil {
+			t.Fatalf("StashList (after create): %v", err)
+		}
+		if len(list) != 1 {
+			t.Fatalf("stash list: got %d, want 1", len(list))
+		}
+		if list[0].Index != 0 {
+			t.Errorf("stash index: got %d, want 0", list[0].Index)
+		}
+		if !strings.Contains(list[0].Message, "my stash") {
+			t.Errorf("stash message: got %q, want to contain %q", list[0].Message, "my stash")
+		}
+
+		// After stash the tracked file reverts to its committed content.
+		got, _ := os.ReadFile(filepath.Join(dir, "committed.txt"))
+		if string(got) != "v1\n" {
+			t.Errorf("after stash: committed.txt = %q, want %q", string(got), "v1\n")
+		}
+
+		// Pop restores the modification.
+		if err := f.StashPop(0); err != nil {
+			t.Fatalf("StashPop: %v", err)
+		}
+		got, _ = os.ReadFile(filepath.Join(dir, "committed.txt"))
+		if string(got) != "modified\n" {
+			t.Errorf("after pop: committed.txt = %q, want %q", string(got), "modified\n")
+		}
+
+		// Stash list is empty again after pop.
+		list, err = f.StashList()
+		if err != nil {
+			t.Fatalf("StashList (after pop): %v", err)
+		}
+		if len(list) != 0 {
+			t.Errorf("after pop stash list: got %d, want 0", len(list))
+		}
+	})
+}
+
+func TestStashPop_NegativeIndex(t *testing.T) {
+	f := &FrontendAPI{}
+	if err := f.StashPop(-1); err == nil {
+		t.Fatal("expected error for negative stash index")
+	}
+}
+
+func TestEventEmitted_StashCreate(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		var emitted string
+		f.emitEvent = func(name string, args ...any) {
+			if name == EventGitStatusChanged && len(args) >= 1 {
+				emitted, _ = args[0].(string)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(dir, "committed.txt"), []byte("changed\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := f.StashCreate("event test"); err != nil {
+			t.Fatalf("StashCreate: %v", err)
+		}
+		if emitted != dir {
+			t.Errorf("event payload: got %q, want %q", emitted, dir)
+		}
+	})
+}
+
+// --- GetCurrentBranch ahead/behind ---
+
+func TestGetCurrentBranch_AheadBehind(t *testing.T) {
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+
+	// Bare remote + upstream tracking via push -u.
+	remoteDir := t.TempDir()
+	gitOut(t, remoteDir, "init", "--bare")
+	gitOut(t, localDir, "remote", "add", "origin", remoteDir)
+	branch := gitDefaultBranch(t, localDir)
+	gitOut(t, localDir, "push", "-u", "origin", branch)
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+
+	// In sync.
+	info, err := f.GetCurrentBranch()
+	if err != nil {
+		t.Fatalf("GetCurrentBranch: %v", err)
+	}
+	if info.Upstream != "origin/"+branch {
+		t.Errorf("upstream: got %q, want %q", info.Upstream, "origin/"+branch)
+	}
+	if info.Ahead != 0 || info.Behind != 0 {
+		t.Errorf("in sync: ahead/behind = %d/%d, want 0/0", info.Ahead, info.Behind)
+	}
+
+	// One local commit ahead.
+	commitFile(t, localDir, "b.txt", "b\n")
+	info, err = f.GetCurrentBranch()
+	if err != nil {
+		t.Fatalf("GetCurrentBranch (ahead): %v", err)
+	}
+	if info.Ahead != 1 || info.Behind != 0 {
+		t.Errorf("ahead: ahead/behind = %d/%d, want 1/0", info.Ahead, info.Behind)
+	}
+}
+
+// --- remote operations via a local bare remote ---
+
+func TestPush_LocalRemote(t *testing.T) {
+	remoteDir := t.TempDir()
+	gitOut(t, remoteDir, "init", "--bare")
+
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+	gitOut(t, localDir, "remote", "add", "origin", remoteDir)
+	branch := gitDefaultBranch(t, localDir)
+	// Set upstream (and seed the remote) outside the RPC under test.
+	gitOut(t, localDir, "push", "-u", "origin", branch)
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+	var emitted string
+	f.emitEvent = func(name string, args ...any) {
+		if name == EventGitStatusChanged && len(args) >= 1 {
+			emitted, _ = args[0].(string)
+		}
+	}
+
+	// New local commit to push via the RPC.
+	commitFile(t, localDir, "b.txt", "b\n")
+	if _, err := f.Push("origin"); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if emitted != localDir {
+		t.Errorf("event payload: got %q, want %q", emitted, localDir)
+	}
+
+	// The bare remote should now point at the new local commit.
+	remoteHead := gitOut(t, remoteDir, "rev-parse", "refs/heads/"+branch)
+	localHead := gitOut(t, localDir, "rev-parse", "HEAD")
+	if remoteHead != localHead {
+		t.Errorf("after push: remote head %q != local head %q", remoteHead, localHead)
+	}
+}
+
+func TestFetchAndPull_LocalRemote(t *testing.T) {
+	remoteDir := t.TempDir()
+	gitOut(t, remoteDir, "init", "--bare")
+
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+	gitOut(t, localDir, "remote", "add", "origin", remoteDir)
+	branch := gitDefaultBranch(t, localDir)
+	gitOut(t, localDir, "push", "-u", "origin", branch)
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+
+	// Advance the remote from a clone so local falls behind.
+	cloneParent := t.TempDir()
+	cloneDir := filepath.Join(cloneParent, "clone")
+	gitOut(t, cloneParent, "clone", remoteDir, cloneDir)
+	runGit(t, cloneDir, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, "config", "user.name", "Test")
+	commitFile(t, cloneDir, "b.txt", "b\n")
+	runGit(t, cloneDir, "push", "origin", branch)
+
+	// Fetch updates origin/<branch>; local is now behind by 1.
+	if _, err := f.Fetch("origin"); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	info, err := f.GetCurrentBranch()
+	if err != nil {
+		t.Fatalf("GetCurrentBranch after fetch: %v", err)
+	}
+	if info.Behind != 1 || info.Ahead != 0 {
+		t.Errorf("after fetch: behind/ahead = %d/%d, want 1/0", info.Behind, info.Ahead)
+	}
+	// Fetch must not merge: b.txt still absent locally.
+	if _, err := os.Stat(filepath.Join(localDir, "b.txt")); !os.IsNotExist(err) {
+		t.Errorf("after fetch: b.txt should not exist yet, stat err: %v", err)
+	}
+
+	// Pull fast-forwards local to include b.txt.
+	if _, err := f.Pull("origin"); err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(localDir, "b.txt")); err != nil {
+		t.Errorf("after pull: b.txt should exist, stat err: %v", err)
+	}
+}
+
+// --- error paths ---
+
+func TestPhase5Git_NoProject(t *testing.T) {
+	f := &FrontendAPI{}
+	if _, err := f.Pull("origin"); err == nil {
+		t.Error("Pull: expected error")
+	}
+	if _, err := f.Push("origin"); err == nil {
+		t.Error("Push: expected error")
+	}
+	if _, err := f.Fetch("origin"); err == nil {
+		t.Error("Fetch: expected error")
+	}
+	if _, err := f.GetCommitLog(10, 0); err == nil {
+		t.Error("GetCommitLog: expected error")
+	}
+	if _, err := f.GetCommitFiles("abc"); err == nil {
+		t.Error("GetCommitFiles: expected error")
+	}
+	if err := f.StashCreate("msg"); err == nil {
+		t.Error("StashCreate: expected error")
+	}
+	if err := f.StashPop(0); err == nil {
+		t.Error("StashPop: expected error")
+	}
+	if _, err := f.StashList(); err == nil {
+		t.Error("StashList: expected error")
+	}
+}
+
+func TestPhase5Git_NoProjectMode(t *testing.T) {
+	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
+	if _, err := f.Pull("origin"); err == nil {
+		t.Error("Pull: expected error")
+	}
+	if _, err := f.Push("origin"); err == nil {
+		t.Error("Push: expected error")
+	}
+	if _, err := f.Fetch("origin"); err == nil {
+		t.Error("Fetch: expected error")
+	}
+	if _, err := f.GetCommitLog(10, 0); err == nil {
+		t.Error("GetCommitLog: expected error")
+	}
+	if _, err := f.GetCommitFiles("abc"); err == nil {
+		t.Error("GetCommitFiles: expected error")
+	}
+	if err := f.StashCreate("msg"); err == nil {
+		t.Error("StashCreate: expected error")
+	}
+	if err := f.StashPop(0); err == nil {
+		t.Error("StashPop: expected error")
+	}
+	if _, err := f.StashList(); err == nil {
+		t.Error("StashList: expected error")
 	}
 }

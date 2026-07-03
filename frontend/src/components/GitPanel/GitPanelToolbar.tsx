@@ -1,12 +1,14 @@
 import { useState, useCallback } from 'react'
-import { GitBranch, List, FolderTree, RefreshCw, Loader2, Plus, Minus, ChevronDown } from 'lucide-react'
+import { GitBranch, List, FolderTree, RefreshCw, Loader2, Plus, Minus, ChevronDown, Ban } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { stageAll, unstageAll } from '@/api/git'
+import { stageAll, unstageAll, abortMerge, abortRebase } from '@/api/git'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { GitStashButtons } from './GitStashButtons'
+import type { BranchInfo } from '@/types/models'
 
 interface GitPanelToolbarProps {
-  branch: string
+  branch: BranchInfo
   viewMode: 'flat' | 'tree'
   onViewModeChange: (mode: 'flat' | 'tree') => void
   onRefresh: () => void
@@ -19,12 +21,14 @@ export function GitPanelToolbar({
   onRefresh,
 }: GitPanelToolbarProps) {
   const openBranchPicker = useGitPanelStore((s) => s.openBranchPicker)
+  const mergeRebaseState = useGitPanelStore((s) => s.mergeRebaseState)
   const [isStagingAll, setIsStagingAll] = useState(false)
   const [isUnstagingAll, setIsUnstagingAll] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [isAborting, setIsAborting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const isBusy = isStagingAll || isUnstagingAll
+  const isBusy = isStagingAll || isUnstagingAll || isAborting
 
   const handleStageAll = useCallback(async () => {
     setIsStagingAll(true)
@@ -62,6 +66,25 @@ export function GitPanelToolbar({
     }
   }, [onRefresh])
 
+  /** Abort an in-progress merge or rebase (Phase 6). */
+  const handleAbort = useCallback(async (op: 'merge' | 'rebase') => {
+    setIsAborting(true)
+    setError(null)
+    try {
+      if (op === 'merge') {
+        await abortMerge()
+      } else {
+        await abortRebase()
+      }
+      // Backend emits git:status_changed → useGitStatusEvents refreshes
+      // (and re-fetches merge/rebase state).
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to abort ${op}`)
+    } finally {
+      setIsAborting(false)
+    }
+  }, [])
+
   return (
     <div className="flex items-center gap-1 px-2 py-1 min-h-[32px] shrink-0 border-b border-border bg-secondary/30">
       {/* Branch indicator — click to open the branch picker */}
@@ -73,10 +96,30 @@ export function GitPanelToolbar({
       >
         <GitBranch className="size-3.5 shrink-0" />
         <span className="truncate font-mono text-[11px]">
-          {branch || <span className="italic opacity-50">no branch</span>}
+          {branch.name || <span className="italic opacity-50">no branch</span>}
         </span>
+        {(branch.ahead > 0 || branch.behind > 0) && (
+          <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
+            ↑{branch.ahead} ↓{branch.behind}
+          </span>
+        )}
         <ChevronDown className="size-3 shrink-0 opacity-60" />
       </button>
+
+      {/* Abort merge / rebase — shown only while a merge or rebase is in progress (Phase 6) */}
+      {(mergeRebaseState.is_merging || mergeRebaseState.is_rebasing) && (
+        <Button
+          variant="destructive"
+          size="xs"
+          disabled={isBusy}
+          onClick={() => void handleAbort(mergeRebaseState.is_merging ? 'merge' : 'rebase')}
+          title={mergeRebaseState.is_merging ? 'Abort merge' : 'Abort rebase'}
+          aria-label={mergeRebaseState.is_merging ? 'Abort merge' : 'Abort rebase'}
+        >
+          {isAborting ? <Loader2 className="animate-spin" /> : <Ban />}
+          Abort {mergeRebaseState.is_merging ? 'Merge' : 'Rebase'}
+        </Button>
+      )}
 
       {/* Separator */}
       <div className="w-px h-4 bg-border mx-0.5" />
@@ -113,6 +156,9 @@ export function GitPanelToolbar({
           )}
         </Button>
       </div>
+
+      {/* Stash / Pop stash */}
+      <GitStashButtons onError={setError} />
 
       {/* Spacer */}
       <div className="flex-1" />

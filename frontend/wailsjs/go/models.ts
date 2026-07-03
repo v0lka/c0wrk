@@ -872,6 +872,58 @@ export namespace workspace {
 	        this.is_current = source["is_current"];
 	    }
 	}
+	export class BranchInfo {
+	    name: string;
+	    upstream: string;
+	    ahead: number;
+	    behind: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new BranchInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.upstream = source["upstream"];
+	        this.ahead = source["ahead"];
+	        this.behind = source["behind"];
+	    }
+	}
+	export class CommitFile {
+	    status: string;
+	    path: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CommitFile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.status = source["status"];
+	        this.path = source["path"];
+	    }
+	}
+	export class CommitInfo {
+	    sha: string;
+	    author: string;
+	    email: string;
+	    date: string;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CommitInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sha = source["sha"];
+	        this.author = source["author"];
+	        this.email = source["email"];
+	        this.date = source["date"];
+	        this.message = source["message"];
+	    }
+	}
 	export class DiffStat {
 	    added: number;
 	    deleted: number;
@@ -908,6 +960,66 @@ export namespace workspace {
 	        this.icon_color = source["icon_color"];
 	        this.hidden = source["hidden"];
 	        this.gitignored = source["gitignored"];
+	    }
+	}
+	export class GraphCommit {
+	    sha: string;
+	    parents: string[];
+	    message: string;
+	    refs: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new GraphCommit(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sha = source["sha"];
+	        this.parents = source["parents"];
+	        this.message = source["message"];
+	        this.refs = source["refs"];
+	    }
+	}
+	export class HunkRange {
+	    start_line: number;
+	    end_line: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HunkRange(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.start_line = source["start_line"];
+	        this.end_line = source["end_line"];
+	    }
+	}
+	export class MergeRebaseState {
+	    is_merging: boolean;
+	    is_rebasing: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new MergeRebaseState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.is_merging = source["is_merging"];
+	        this.is_rebasing = source["is_rebasing"];
+	    }
+	}
+	export class StashEntry {
+	    index: number;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new StashEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.index = source["index"];
+	        this.message = source["message"];
 	    }
 	}
 

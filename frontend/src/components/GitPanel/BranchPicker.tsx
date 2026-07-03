@@ -75,7 +75,7 @@ export function BranchPicker() {
 
   const handleCheckout = useCallback(
     async (name: string) => {
-      if (name === currentBranch) {
+      if (name === currentBranch.name) {
         closeBranchPicker()
         return
       }
@@ -167,7 +167,7 @@ export function BranchPicker() {
           ) : (
             <ul className="flex flex-col gap-0.5">
               {filteredBranches.map((name) => {
-                const isCurrent = name === currentBranch
+                const isCurrent = name === currentBranch.name
                 const isBusy = checkingOut === name
                 return (
                   <li key={name}>

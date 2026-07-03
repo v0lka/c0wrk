@@ -77,7 +77,7 @@ type Planner struct {
 // Returns an error if caller is nil (required dependency).
 func NewPlanner(caller agent.LLMCaller, cfg Config) (*Planner, error) {
 	if caller == nil {
-		return nil, fmt.Errorf("planner: caller is required")
+		return nil, errors.New("planner: caller is required")
 	}
 	if cfg.MaxExploreSteps <= 0 {
 		cfg.MaxExploreSteps = defaultMaxExploreSteps

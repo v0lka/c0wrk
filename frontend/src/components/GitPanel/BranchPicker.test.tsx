@@ -57,7 +57,9 @@ beforeEach(() => {
 
   useGitPanelStore.getState().reset()
   useGitPanelStore.getState().openBranchPicker()
-  useGitPanelStore.setState({ branch: 'main' })
+  useGitPanelStore.setState({
+    branch: { name: 'main', upstream: '', ahead: 0, behind: 0 },
+  })
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)

@@ -3,7 +3,7 @@
 
 import { useEffect, useCallback, useRef } from 'react'
 import { getGitStatus } from '@/api/workspace'
-import { getCurrentBranch } from '@/api/git'
+import { getCurrentBranch, getRebaseMergeState } from '@/api/git'
 import { subscribe } from '@/api/runtime'
 import { useProjectStore } from '@/stores/projectStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
@@ -19,6 +19,8 @@ function toEntries(statusMap: Record<string, GitStatusEntry>): GitPanelEntry[] {
     status: entry.status,
     staged: entry.staged,
     diffStat: null,
+    indexStatus: entry.index_status,
+    worktreeStatus: entry.worktree_status,
   }))
 }
 
@@ -48,16 +50,27 @@ export function useGitStatusEvents(): void {
   const refresh = useCallback(async () => {
     if (!workspacePath) return
 
-    // Fetch git status and current branch in parallel.
-    // Promise.allSettled ensures one failure does not prevent the other.
-    const [statusResult, branchResult] = await Promise.allSettled([
+    // Fetch git status, current branch, and merge/rebase state in parallel.
+    // Promise.allSettled ensures one failure does not prevent the others.
+    const [statusResult, branchResult, stateResult] = await Promise.allSettled([
       getGitStatus(workspacePath),
       getCurrentBranch(),
+      getRebaseMergeState(),
     ])
 
     // Always update branch if the call succeeded
     if (branchResult.status === 'fulfilled') {
       useGitPanelStore.getState().setBranch(branchResult.value)
+    }
+
+    // Merge/rebase state (Phase 6) — default to "no op in progress" on failure.
+    if (stateResult.status === 'fulfilled') {
+      useGitPanelStore.getState().setMergeRebaseState(stateResult.value)
+    } else {
+      useGitPanelStore.getState().setMergeRebaseState({
+        is_merging: false,
+        is_rebasing: false,
+      })
     }
 
     if (statusResult.status === 'fulfilled') {

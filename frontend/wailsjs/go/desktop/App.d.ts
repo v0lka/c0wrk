@@ -8,6 +8,12 @@ import {config} from '../models';
 import {mcp} from '../models';
 import {desktop} from '../models';
 
+export function AbortMerge():Promise<void>;
+
+export function AbortRebase():Promise<void>;
+
+export function AppendToGitignore(arg1:string):Promise<void>;
+
 export function ApprovePlan(arg1:string,arg2:string):Promise<void>;
 
 export function ArchiveSession(arg1:string):Promise<void>;
@@ -30,21 +36,31 @@ export function DeleteProject(arg1:string):Promise<void>;
 
 export function DeleteSession(arg1:string):Promise<void>;
 
+export function DiscardChanges(arg1:string):Promise<void>;
+
+export function Fetch(arg1:string):Promise<string>;
+
 export function GenerateCommitMessage(arg1:string):Promise<string>;
 
 export function GetBlackboardState(arg1:string):Promise<backend.BlackboardStateResponse>;
 
 export function GetBranches():Promise<Array<workspace.Branch>>;
 
+export function GetCommitFiles(arg1:string):Promise<Array<workspace.CommitFile>>;
+
+export function GetCommitLog(arg1:number,arg2:number):Promise<Array<workspace.CommitInfo>>;
+
 export function GetConfig():Promise<backend.ConfigResponse>;
 
-export function GetCurrentBranch():Promise<string>;
+export function GetCurrentBranch():Promise<workspace.BranchInfo>;
 
 export function GetDiffStat(arg1:string):Promise<workspace.DiffStat>;
 
 export function GetFileDiff(arg1:string):Promise<string>;
 
 export function GetFileIcon(arg1:string):Promise<backend.FileIconResponse>;
+
+export function GetGitGraph():Promise<Array<workspace.GraphCommit>>;
 
 export function GetGitStatus(arg1:string):Promise<Record<string, workspace.GitStatusEntry>>;
 
@@ -59,6 +75,8 @@ export function GetProjectSwitchState(arg1:string):Promise<backend.ProjectUIStat
 export function GetProjectUIState(arg1:string):Promise<backend.ProjectUIStateResponse>;
 
 export function GetProxySettings():Promise<backend.ProxySettingsResponse>;
+
+export function GetRebaseMergeState():Promise<workspace.MergeRebaseState>;
 
 export function GetSecuritySettings():Promise<backend.SecuritySettingsResponse>;
 
@@ -88,11 +106,19 @@ export function ListSessions():Promise<Array<session.SessionInfo>>;
 
 export function ListSkills():Promise<Array<backend.SkillDescriptorDTO>>;
 
+export function Merge(arg1:string):Promise<void>;
+
 export function OptimizePrompt(arg1:string):Promise<backend.OptimizePromptResponse>;
 
 export function PickDirectory():Promise<string>;
 
+export function Pull(arg1:string):Promise<string>;
+
+export function Push(arg1:string):Promise<string>;
+
 export function ReadFile(arg1:string):Promise<string>;
+
+export function Rebase(arg1:string):Promise<void>;
 
 export function RejectPlan(arg1:string,arg2:string):Promise<void>;
 
@@ -118,7 +144,15 @@ export function StageAll():Promise<void>;
 
 export function StageFile(arg1:string):Promise<void>;
 
+export function StageHunks(arg1:string,arg2:Array<workspace.HunkRange>):Promise<void>;
+
 export function StartTerminal(arg1:string):Promise<void>;
+
+export function StashCreate(arg1:string):Promise<void>;
+
+export function StashList():Promise<Array<workspace.StashEntry>>;
+
+export function StashPop(arg1:number):Promise<void>;
 
 export function StopTerminal(arg1:string):Promise<void>;
 

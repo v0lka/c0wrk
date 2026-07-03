@@ -1,15 +1,33 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { Branch } from '@/types/models'
+import type { Branch, BranchInfo, MergeRebaseState } from '@/types/models'
 
 // --- Types ---
 
+/** Empty BranchInfo used as the initial branch state. */
+export const EMPTY_BRANCH_INFO: BranchInfo = {
+  name: '',
+  upstream: '',
+  ahead: 0,
+  behind: 0,
+}
+
+/** Empty MergeRebaseState — no merge or rebase in progress. */
+export const EMPTY_MERGE_REBASE_STATE: MergeRebaseState = {
+  is_merging: false,
+  is_rebasing: false,
+}
+
 export interface GitPanelEntry {
   path: string
-  /** Git status code: M=modified, A=added, R=renamed, C=copied, U=unmerged */
+  /** Git status code: M=modified, A=added, R=renamed, C=copied, D=deleted, U=unmerged */
   status: string
   staged: boolean
   diffStat: { added: number; deleted: number } | null
+  /** Raw index (staged) status code from `git status --porcelain` (Phase 5). */
+  indexStatus: string
+  /** Raw worktree (unstaged) status code from `git status --porcelain` (Phase 5). */
+  worktreeStatus: string
 }
 
 // --- State types ---
@@ -18,7 +36,7 @@ interface GitPanelState {
   viewMode: 'flat' | 'tree'
   entries: GitPanelEntry[]
   commitMessage: string
-  branch: string
+  branch: BranchInfo
   branches: Branch[]
   isBranchPickerOpen: boolean
   isGeneratingCommit: boolean
@@ -26,6 +44,12 @@ interface GitPanelState {
   isLoading: boolean
   isGitRepo: boolean
   error: string | null
+  /** True while a pull/push/fetch is running — blocks parallel remote ops (Phase 5). */
+  remoteOperationInProgress: boolean
+  /** Active GitPanel tab (Phase 5/6). */
+  activeTab: 'changes' | 'history' | 'graph'
+  /** Transient: whether a merge or rebase is currently in progress (Phase 6). Not persisted. */
+  mergeRebaseState: MergeRebaseState
 }
 
 interface GitPanelActions {
@@ -33,7 +57,7 @@ interface GitPanelActions {
   setCommitMessage: (message: string) => void
   loadEntries: (entries: GitPanelEntry[]) => void
   toggleStage: (path: string) => void
-  setBranch: (branch: string) => void
+  setBranch: (branch: BranchInfo) => void
   setBranches: (branches: Branch[]) => void
   openBranchPicker: () => void
   closeBranchPicker: () => void
@@ -42,6 +66,9 @@ interface GitPanelActions {
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
   toggleExpandedDir: (dir: string) => void
+  setRemoteOperationInProgress: (inProgress: boolean) => void
+  setActiveTab: (tab: 'changes' | 'history' | 'graph') => void
+  setMergeRebaseState: (state: MergeRebaseState) => void
   reset: () => void
 }
 
@@ -51,7 +78,7 @@ const initialState: GitPanelState = {
   viewMode: 'flat',
   entries: [],
   commitMessage: '',
-  branch: '',
+  branch: EMPTY_BRANCH_INFO,
   branches: [],
   expandedDirs: new Set<string>(),
   isLoading: false,
@@ -59,6 +86,9 @@ const initialState: GitPanelState = {
   isBranchPickerOpen: false,
   isGeneratingCommit: false,
   error: null,
+  remoteOperationInProgress: false,
+  activeTab: 'changes',
+  mergeRebaseState: EMPTY_MERGE_REBASE_STATE,
 }
 
 // --- Store ---
@@ -109,6 +139,13 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
           }
           return { expandedDirs: next }
         }),
+
+      setRemoteOperationInProgress: (inProgress) =>
+        set({ remoteOperationInProgress: inProgress }),
+
+      setActiveTab: (tab) => set({ activeTab: tab }),
+
+      setMergeRebaseState: (state) => set({ mergeRebaseState: state }),
 
       reset: () => set({ ...initialState, expandedDirs: new Set<string>() }),
     }),

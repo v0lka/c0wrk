@@ -131,6 +131,34 @@ type DiffStat = workspace.DiffStat
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type Branch = workspace.Branch
 
+// BranchInfo describes the current branch and its upstream tracking state.
+// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
+type BranchInfo = workspace.BranchInfo
+
+// CommitInfo describes a single commit in the repository history.
+// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
+type CommitInfo = workspace.CommitInfo
+
+// CommitFile describes a single file changed by a commit.
+// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
+type CommitFile = workspace.CommitFile
+
+// StashEntry describes a single entry in the stash list.
+// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
+type StashEntry = workspace.StashEntry
+
+// GraphCommit describes a commit for graph visualization.
+// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
+type GraphCommit = workspace.GraphCommit
+
+// HunkRange identifies a contiguous slice of a file in old-file line coordinates.
+// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
+type HunkRange = workspace.HunkRange
+
+// MergeRebaseState reports whether a merge or rebase is in progress.
+// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
+type MergeRebaseState = workspace.MergeRebaseState
+
 // SessionTokensResponse holds token usage statistics for a session.
 type SessionTokensResponse struct {
 	TotalInputTokens  int    `json:"total_input_tokens"`

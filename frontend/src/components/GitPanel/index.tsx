@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import { GitBranch, AlertCircle } from 'lucide-react'
-import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { cn } from '@/lib/utils'
+import { useGitPanelStore, EMPTY_BRANCH_INFO } from '@/stores/gitPanelStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useGitStatusEvents } from '@/hooks/useGitStatusEvents'
@@ -11,6 +12,9 @@ import { GitPanelToolbar } from './GitPanelToolbar'
 import { ChangesList } from './ChangesList'
 import { CommitSection } from './CommitSection'
 import { BranchPicker } from './BranchPicker'
+import { GitHistoryTab } from './GitHistoryTab'
+import { GitGraph } from './GitGraph'
+import { GitPanelFooter } from './GitPanelFooter'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
 import type { GitStatusEntry } from '@/types/models'
 
@@ -25,6 +29,8 @@ function toEntries(
     status: entry.status,
     staged: entry.staged,
     diffStat: null,
+    indexStatus: entry.index_status,
+    worktreeStatus: entry.worktree_status,
   }))
 }
 
@@ -51,6 +57,8 @@ export function GitPanel() {
   const viewMode = useGitPanelStore((s) => s.viewMode)
   const isLoading = useGitPanelStore((s) => s.isLoading)
   const error = useGitPanelStore((s) => s.error)
+  const activeTab = useGitPanelStore((s) => s.activeTab)
+  const setActiveTab = useGitPanelStore((s) => s.setActiveTab)
 
   // ── Callbacks ──────────────────────────────────────────────────────────
 
@@ -108,12 +116,12 @@ export function GitPanel() {
       store.loadEntries(toEntries(statusMap))
       store.setGitRepo(true)
 
-      // Fetch branch name (non-critical — best-effort)
+      // Fetch branch info (non-critical — best-effort)
       try {
-        const branchName = await getCurrentBranch()
-        store.setBranch(branchName)
+        const branchInfo = await getCurrentBranch()
+        store.setBranch(branchInfo)
       } catch {
-        store.setBranch('')
+        store.setBranch(EMPTY_BRANCH_INFO)
       }
     } catch {
       store.setGitRepo(false)
@@ -152,14 +160,41 @@ export function GitPanel() {
         onViewModeChange={onViewModeChange}
         onRefresh={onRefresh}
       />
+      {/* Changes | History | Graph tab switcher (Phase 5/6) */}
+      <div className="flex shrink-0 border-b border-border bg-secondary/20">
+        {(['changes', 'history', 'graph'] as const).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => setActiveTab(tab)}
+            className={cn(
+              'px-3 py-1 text-xs capitalize transition-colors',
+              activeTab === tab
+                ? 'text-primary border-b border-primary -mb-px'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
       {error && (
         <div className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-destructive bg-destructive/10 border-b border-destructive/20">
           <AlertCircle className="size-3.5 shrink-0" />
           <span className="truncate">{error}</span>
         </div>
       )}
-      <ChangesList onToggleFile={onToggleFile} onOpenDiff={onOpenDiff} />
-      <CommitSection />
+      {activeTab === 'changes' ? (
+        <>
+          <ChangesList onToggleFile={onToggleFile} onOpenDiff={onOpenDiff} />
+          <CommitSection />
+        </>
+      ) : activeTab === 'history' ? (
+        <GitHistoryTab />
+      ) : (
+        <GitGraph />
+      )}
+      <GitPanelFooter />
       <BranchPicker />
     </div>
   )

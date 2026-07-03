@@ -57,7 +57,14 @@ let root: Root
 function makeEntry(
   overrides: Partial<GitPanelEntry> & { path: string },
 ): GitPanelEntry {
-  return { status: 'M', staged: false, diffStat: null, ...overrides }
+  return {
+    status: 'M',
+    staged: false,
+    diffStat: null,
+    indexStatus: '',
+    worktreeStatus: '',
+    ...overrides,
+  }
 }
 
 beforeEach(() => {

@@ -1,6 +1,7 @@
-import { useCallback } from 'react'
-import { File, Check } from 'lucide-react'
+import { useCallback, useState } from 'react'
+import { File, Check, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { GitFileContextMenu } from './GitFileContextMenu'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
 
 // --- Props ---
@@ -15,6 +16,14 @@ interface GitFileEntryProps {
 
 // --- Helpers ---
 
+/** Two-char porcelain status combinations that indicate an unresolved merge conflict. */
+const CONFLICT_COMBOS = new Set(['UU', 'AA', 'DD', 'AU', 'UD', 'UA', 'DU'])
+
+/** True when the index/worktree status pair marks an unresolved merge conflict. */
+function isMergeConflict(indexStatus: string, worktreeStatus: string): boolean {
+  return CONFLICT_COMBOS.has(`${indexStatus}${worktreeStatus}`)
+}
+
 /** Map git status codes to One Dark theme Tailwind text colors */
 function statusColorClass(status: string): string {
   switch (status) {
@@ -22,12 +31,14 @@ function statusColorClass(status: string): string {
       return 'text-warning'
     case 'A':
       return 'text-success'
+    case 'D':
+      return 'text-destructive'
     case 'R':
       return 'text-info'
     case 'C':
       return 'text-hljs-keyword'
     case 'U':
-      return 'text-muted-foreground'
+      return 'text-destructive'
     default:
       return 'text-muted-foreground'
   }
@@ -48,6 +59,8 @@ function splitPathParts(filePath: string): { dir: string; name: string } {
 // --- Component ---
 
 export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: GitFileEntryProps) {
+  const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null)
+
   const handleToggle = useCallback(() => {
     onToggle(entry.path)
   }, [entry.path, onToggle])
@@ -55,6 +68,13 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
   const handleDoubleClick = useCallback(() => {
     onOpenDiff(entry.path)
   }, [entry.path, onOpenDiff])
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setContextMenuPos({ x: e.clientX, y: e.clientY })
+  }, [])
+
+  const closeContextMenu = useCallback(() => setContextMenuPos(null), [])
 
   // Strip workspace root prefix from the absolute path for display
   const displayPath =
@@ -64,9 +84,18 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
 
   const { dir, name } = splitPathParts(displayPath)
   const statusCls = statusColorClass(entry.status)
+  const conflict = isMergeConflict(entry.indexStatus, entry.worktreeStatus)
 
   return (
-    <div className="group flex h-7 items-center gap-1.5 px-2 hover:bg-muted/50 cursor-pointer select-none">
+    <>
+    <div
+      className={cn(
+        'group flex h-7 items-center gap-1.5 px-2 hover:bg-muted/50 cursor-pointer select-none',
+        conflict && 'bg-destructive/10 hover:bg-destructive/15',
+      )}
+      onDoubleClick={handleDoubleClick}
+      onContextMenu={handleContextMenu}
+    >
       {/* Checkbox */}
       <label className="relative flex items-center justify-center shrink-0 size-3.5 rounded border border-muted-foreground/40 cursor-pointer transition-colors hover:border-muted-foreground/60 has-checked:border-info has-checked:bg-info">
         <input
@@ -80,13 +109,19 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
         )}
       </label>
 
-      {/* File icon */}
-      <File className="size-3.5 shrink-0 text-muted-foreground" />
+      {/* File / conflict icon */}
+      {conflict ? (
+        <AlertTriangle
+          className="size-3.5 shrink-0 text-destructive"
+          aria-label="Merge conflict"
+        />
+      ) : (
+        <File className="size-3.5 shrink-0 text-muted-foreground" />
+      )}
 
       {/* File name */}
       <span
         className="min-w-0 truncate text-sm leading-none"
-        onDoubleClick={handleDoubleClick}
       >
         {dir && (
           <span className="text-muted-foreground/60">{dir}</span>
@@ -117,5 +152,12 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
         </span>
       )}
     </div>
+    <GitFileContextMenu
+      entry={entry}
+      workspaceRoot={workspaceRoot}
+      position={contextMenuPos}
+      onClose={closeContextMenu}
+    />
+    </>
   )
 }

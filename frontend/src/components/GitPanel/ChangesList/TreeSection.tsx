@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { TreeRow } from './TreeRow'
-import { buildTree } from '../ChangesList'
+import { buildTree } from './buildTree'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
 
 // ───────────────────────────── Tree Section ──────────────────────────────────

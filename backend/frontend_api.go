@@ -40,6 +40,9 @@ type FrontendAPI struct {
 	watcher        *workspace.Watcher
 	gitRepoCache   map[string]gitRepoCacheEntry
 	gitRepoCacheMu sync.Mutex
+	// remoteOpMu serializes remote git operations (pull/push/fetch) so that
+	// only one network operation runs at a time per app instance.
+	remoteOpMu sync.Mutex
 
 	// Project
 	projectManager    *project.Manager

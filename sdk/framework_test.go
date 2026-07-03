@@ -209,10 +209,10 @@ func TestNew_DefaultsNotOverwriteCustom(t *testing.T) {
 			DefaultModel: "test-model",
 		},
 		Execution: ExecutionConfig{
-			MaxSteps:          10,
-			MaxRetries:        1,
-			ToolResultBudget:  customBudget,
-			CircuitBreaker:    customCB,
+			MaxSteps:         10,
+			MaxRetries:       1,
+			ToolResultBudget: customBudget,
+			CircuitBreaker:   customCB,
 		},
 		Compaction: CompactionConfig{
 			Strategy:          "summary",
@@ -967,5 +967,3 @@ func (c *stubCheckpointer) LoadCheckpoint(_ context.Context, id string) (orchest
 func (c *stubCheckpointer) DeleteCheckpoint(_ context.Context, id string) error {
 	return nil
 }
-
-

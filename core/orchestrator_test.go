@@ -10,15 +10,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/skills"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	"github.com/v0lka/c0wrk/sdk/planner"
+	"github.com/v0lka/c0wrk/sdk/skills"
 	tools "github.com/v0lka/c0wrk/sdk/tools"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
-	coretools "github.com/v0lka/c0wrk/core/tools"
 )
 
 // mockTool implements tools.Tool for testing.
@@ -278,7 +278,7 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 	pl, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 	if err != nil {
 		t.Fatal(err)
-		}
+	}
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
 		Planner:        pl,
@@ -376,7 +376,7 @@ func TestPlanExecute_FailedStepBlocksDependents(t *testing.T) {
 	pl, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 	if err != nil {
 		t.Fatal(err)
-		}
+	}
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10, MaxRetries: 0}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
 		Planner:        pl,
@@ -454,7 +454,7 @@ func TestPlanExecute_StepLifecycleEvents(t *testing.T) {
 	pl, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 	if err != nil {
 		t.Fatal(err)
-		}
+	}
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
 		Planner:        pl,
@@ -601,7 +601,7 @@ func TestHandle_BlackboardPopulated(t *testing.T) {
 	pl, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 	if err != nil {
 		t.Fatal(err)
-		}
+	}
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
 		Planner:        pl,
@@ -839,12 +839,14 @@ func (m *mockTaskStore) PersistRouting(taskID string, routing *router.RoutingDec
 func (m *mockTaskStore) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []agent.Step) error {
 	return nil
 }
-func (m *mockTaskStore) PersistReflection(taskID string, r orchestration.Reflection) error { return nil }
+func (m *mockTaskStore) PersistReflection(taskID string, r orchestration.Reflection) error {
+	return nil
+}
 func (m *mockTaskStore) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
 	return nil
 }
-func (m *mockTaskStore) PersistFailure(taskID string) error             { return nil }
-func (m *mockTaskStore) PersistCancellation(taskID string) error        { return nil }
+func (m *mockTaskStore) PersistFailure(taskID string) error                           { return nil }
+func (m *mockTaskStore) PersistCancellation(taskID string) error                      { return nil }
 func (m *mockTaskStore) PersistFacts(taskID string, facts []orchestration.Fact) error { return nil }
 func (m *mockTaskStore) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {
@@ -1069,7 +1071,7 @@ func TestHandleMessage_Continuation_NoTaskStore(t *testing.T) {
 	pl, err := newCorePlanner(&mockLLMCaller{}, coretools.NewToolRegistry())
 	if err != nil {
 		t.Fatal(err)
-		}
+	}
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         newCoreRouter(&mockLLMCaller{}, 5),
 		Planner:        pl,
@@ -1458,7 +1460,9 @@ type mockTaskStoreWithReactivate struct {
 func (m *mockTaskStoreWithReactivate) PersistNewTask(taskID, sessionID, originalRequest string) error {
 	return nil
 }
-func (m *mockTaskStoreWithReactivate) PersistPlan(taskID string, plan *orchestration.Plan) error { return nil }
+func (m *mockTaskStoreWithReactivate) PersistPlan(taskID string, plan *orchestration.Plan) error {
+	return nil
+}
 func (m *mockTaskStoreWithReactivate) PersistRouting(taskID string, routing *router.RoutingDecision) error {
 	return nil
 }
@@ -1471,9 +1475,11 @@ func (m *mockTaskStoreWithReactivate) PersistReflection(taskID string, r orchest
 func (m *mockTaskStoreWithReactivate) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
 	return nil
 }
-func (m *mockTaskStoreWithReactivate) PersistFailure(taskID string) error             { return nil }
-func (m *mockTaskStoreWithReactivate) PersistCancellation(taskID string) error        { return nil }
-func (m *mockTaskStoreWithReactivate) PersistFacts(taskID string, facts []orchestration.Fact) error { return nil }
+func (m *mockTaskStoreWithReactivate) PersistFailure(taskID string) error      { return nil }
+func (m *mockTaskStoreWithReactivate) PersistCancellation(taskID string) error { return nil }
+func (m *mockTaskStoreWithReactivate) PersistFacts(taskID string, facts []orchestration.Fact) error {
+	return nil
+}
 func (m *mockTaskStoreWithReactivate) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {
 		return nil, m.loadErr
@@ -1910,7 +1916,7 @@ func TestOrchestrator_VectorSearchHints_NilFunc(t *testing.T) {
 	pl, err := newCorePlanner(mockLLM, coretools.NewToolRegistry())
 	if err != nil {
 		t.Fatal(err)
-		}
+	}
 	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
 		Planner:        pl,
@@ -3189,6 +3195,3 @@ func TestConversationHistory_RouterHistoryUnchanged(t *testing.T) {
 		t.Errorf("expected 12 messages in history (10 pre-populated + 2 new), got %d", len(history))
 	}
 }
-
-
-
