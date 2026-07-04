@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"sort"
 	"time"
 )
 
@@ -32,6 +34,7 @@ type RouterConfig struct {
 	OutputTokenReserve  int             // Default output token reserve when model metadata doesn't specify (default: 4096)
 	HTTPClient          *http.Client    // Optional proxy-configured HTTP client (nil = default)
 	SamplingFunc        SamplingFunc    // Optional family-aware temperature defaults; nil = no default (provider decides)
+	Logger              *slog.Logger    // Optional logger for ambiguity warnings (nil = silent)
 }
 
 // ProviderEntry describes a single LLM provider with its enabled models.
@@ -50,9 +53,10 @@ type ProviderEntry struct {
 // this via its single-active-request contract.
 type Router struct {
 	providers          map[string]Provider
-	modelToProvider    map[string]string // model name → provider name
+	modelToProvider    map[string]string // composite model ID ("provider/model") → provider name
 	activeProvider     Provider
-	activeModel        string
+	activeModel        string // composite model ID ("provider/model") — the selector
+	activeBareModel    string // bare model name sent to the LLM API / used for metadata
 	activeProviderName string
 	// Retry configuration
 	maxRetries     int
@@ -62,8 +66,9 @@ type Router struct {
 	registry            *ModelRegistry
 	tokenCounter        TokenCounter
 	sampling            SamplingFunc
-	safetyMarginPercent int // percentage of context window reserved as safety margin (default: 5)
-	outputTokenReserve  int // default output token reserve when model metadata doesn't specify (default: 4096)
+	safetyMarginPercent int  // percentage of context window reserved as safety margin (default: 5)
+	outputTokenReserve  int  // default output token reserve when model metadata doesn't specify (default: 4096)
+	logger              *slog.Logger
 }
 
 // NewRouter creates a new Router from the given configuration.
@@ -88,9 +93,11 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 		}
 		providers[entry.Name] = provider
 
-		// Build reverse index: model name → provider name
+		// Build reverse index: composite model ID ("provider/model") → provider
+		// name. Composite keys disambiguate models that share the same bare name
+		// across multiple providers.
 		for _, m := range entry.Models {
-			modelToProvider[m] = entry.Name
+			modelToProvider[CompositeModelID(entry.Name, m)] = entry.Name
 		}
 	}
 
@@ -132,7 +139,8 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 		providers:           providers,
 		modelToProvider:     modelToProvider,
 		activeProvider:      activeProvider,
-		activeModel:         first.Models[0],
+		activeModel:         CompositeModelID(first.Name, first.Models[0]),
+		activeBareModel:     first.Models[0],
 		activeProviderName:  first.Name,
 		maxRetries:          maxRetries,
 		initialBackoff:      initialBackoff,
@@ -142,6 +150,7 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 		sampling:            cfg.SamplingFunc,
 		safetyMarginPercent: safetyMarginPercent,
 		outputTokenReserve:  outputTokenReserve,
+		logger:              cfg.Logger,
 	}, nil
 }
 
@@ -257,9 +266,13 @@ func (r *Router) applyDefaultTemperature(ctx context.Context, req *ChatRequest) 
 
 // prepareRequest fills defaults (model, temperature) and validates the context window.
 // Returns an error if the request would exceed the context window.
+//
+// The bare model name (without provider prefix) is what is sent to the LLM API
+// and used for metadata lookups; the composite identifier is only the internal
+// selector stored in activeModel.
 func (r *Router) prepareRequest(ctx context.Context, req *ChatRequest) error {
 	if req.Model == "" {
-		req.Model = r.activeModel
+		req.Model = r.activeBareModel
 	}
 	r.applyDefaultTemperature(ctx, req)
 	return r.validateContextWindow(ctx, req.Model, req.Messages)
@@ -323,19 +336,63 @@ func (r *Router) ActiveProviderName() string {
 	return r.activeProviderName
 }
 
-// SetModel switches the active provider and model to the given model name.
-// The model must be known to one of the configured providers.
+// ActiveModel returns the composite model identifier ("provider/model") of the
+// currently active model. Use BareModel(ActiveModel()) to obtain the bare model
+// name shown to users / sent to the LLM API.
+func (r *Router) ActiveModel() string {
+	return r.activeModel
+}
+
+// SetModel switches the active provider and model to the given model identifier.
+//
+// The identifier may be a composite "provider/model" (routes to the named
+// provider, disambiguating models that share a bare name across providers) or a
+// bare model name (resolved to the first matching provider for backward
+// compatibility). When a bare name matches multiple providers, the first match
+// (deterministic, sorted by composite ID) is selected and a warning is logged
+// when a logger is configured.
 func (r *Router) SetModel(ctx context.Context, model string) error {
-	providerName, ok := r.modelToProvider[model]
-	if !ok {
+	// Composite identifier: direct lookup.
+	if IsCompositeModelID(model) {
+		providerName, ok := r.modelToProvider[model]
+		if !ok {
+			return fmt.Errorf("model %q is not enabled in any provider", model)
+		}
+		provider, ok := r.providers[providerName]
+		if !ok {
+			return fmt.Errorf("provider %q not found", providerName)
+		}
+		r.activeProvider = provider
+		r.activeModel = model
+		r.activeBareModel = BareModel(model)
+		r.activeProviderName = providerName
+		return nil
+	}
+
+	// Bare identifier: resolve to a composite ID via reverse scan of the index.
+	var matches []string
+	for id := range r.modelToProvider {
+		if BareModel(id) == model {
+			matches = append(matches, id)
+		}
+	}
+	if len(matches) == 0 {
 		return fmt.Errorf("model %q is not enabled in any provider", model)
 	}
+	sort.Strings(matches) // deterministic first-match when ambiguous
+	compositeID := matches[0]
+	if len(matches) > 1 && r.logger != nil {
+		r.logger.Warn("model name is ambiguous across providers; selecting first match — use a composite \"provider/model\" identifier to disambiguate",
+			"model", model, "selected", compositeID, "candidates", matches)
+	}
+	providerName := r.modelToProvider[compositeID]
 	provider, ok := r.providers[providerName]
 	if !ok {
 		return fmt.Errorf("provider %q not found", providerName)
 	}
 	r.activeProvider = provider
-	r.activeModel = model
+	r.activeModel = compositeID
+	r.activeBareModel = model
 	r.activeProviderName = providerName
 	return nil
 }

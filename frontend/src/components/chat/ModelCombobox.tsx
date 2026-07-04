@@ -4,12 +4,42 @@ import { useInputModeStore } from '@/stores/inputModeStore'
 import { useConfigData } from '@/hooks/useConfigData'
 import { useDropdown } from '@/hooks/useDropdown'
 import { computeDropdownPosition, type DropdownPosition } from '@/lib/dropdownPosition'
-import { PROVIDER_LABELS, type ProviderKey } from '@/lib/llm-providers'
 
 interface ModelEntry {
+  /** Composite selector "provider/name" — the value sent to the backend. */
+  id: string
+  /** Bare model name — what is displayed to the user. */
   model: string
+  /** Provider config key used for grouping. */
   provider: string
+  /** Human-readable provider label for grouping headers. */
   providerLabel: string
+}
+
+/** Build the composite selector value from a provider config key + bare model
+ *  name. Mirrors the backend llm.CompositeModelID / config.CompositeModelID. */
+function compositeModelId(provider: string, model: string): string {
+  return `${provider}/${model}`
+}
+
+/** Return the bare model name portion of a composite id (everything after the
+ *  first "/"). Mirrors the backend llm.BareModel. */
+function bareModel(id: string): string {
+  const idx = id.indexOf('/')
+  return idx >= 0 ? id.slice(idx + 1) : id
+}
+
+/** Human-readable label for a provider config key. Fixed providers have
+ *  canonical labels; OpenAI-compatible providers display their config key. */
+function providerLabel(provider: string): string {
+  switch (provider) {
+    case 'anthropic':
+      return 'Anthropic'
+    case 'chatgpt':
+      return 'ChatGPT'
+    default:
+      return provider
+  }
 }
 
 /**
@@ -48,27 +78,29 @@ export function ModelCombobox() {
   const [position, setPosition] = useState<DropdownPosition | null>(null)
 
   // Convert ModelInfo[] → ModelEntry[] (flat list of enabled models per provider).
+  // `id` is the composite selector sent to the backend; `model` is the bare name
+  // shown to the user.
   const allModels: ModelEntry[] = useMemo(() => {
     const entries: ModelEntry[] = []
     for (const info of modelInfos) {
       entries.push({
+        id: compositeModelId(info.provider, info.name),
         model: info.name,
-        provider: info.family,
-        providerLabel: PROVIDER_LABELS[info.family as ProviderKey] || info.family,
+        provider: info.provider,
+        providerLabel: providerLabel(info.provider),
       })
     }
     return entries
   }, [modelInfos])
 
-  // Build display label.
-  const effectiveModel = selectedModel ?? defaultModel
+  // Build display label. selectedModel is a composite id (or null = default).
   const displayLabel = selectedModel
-    ? effectiveModel
+    ? bareModel(selectedModel)
     : defaultModel
       ? `Default: ${defaultModel}`
       : 'Select model…'
 
-  const effectiveEntry = allModels.find((e) => e.model === effectiveModel)
+  const effectiveEntry = allModels.find((e) => e.id === (selectedModel ?? ''))
 
   // Group models by provider for the dropdown.
   const grouped = useMemo(() => {
@@ -134,7 +166,7 @@ export function ModelCombobox() {
         className="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors max-w-[200px] truncate disabled:opacity-50 disabled:cursor-not-allowed"
         onClick={() => setIsOpen((v) => !v)}
         onKeyDown={(e) => { if (e.key === 'Escape' && isOpen) { e.stopPropagation(); close() } }}
-        title={isLoading ? 'Loading models…' : effectiveEntry ? `${effectiveEntry.providerLabel}: ${effectiveModel}` : displayLabel}
+        title={isLoading ? 'Loading models…' : effectiveEntry ? `${effectiveEntry.providerLabel}: ${effectiveEntry.model}` : displayLabel}
       >
         <span className="truncate">{isLoading ? 'Loading models\u2026' : displayLabel}</span>
         <svg className="size-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -182,17 +214,21 @@ export function ModelCombobox() {
               {Array.from(grouped.entries()).map(([provider, models]) => (
                 <div key={provider}>
                   <div className="px-3 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30">
-                    {PROVIDER_LABELS[provider as ProviderKey] || provider}
+                    {providerLabel(provider)}
                   </div>
                   {models.map((entry) => {
-                    const isSelected = selectedModel === entry.model
+                    const isSelected = selectedModel === entry.id
+                    // "default" badge is a display hint: marks entries whose
+                    // bare name matches the global default_model. When the bare
+                    // name is shared across providers this may badge more than
+                    // one entry; it is purely cosmetic.
                     const isDefault = !selectedModel && entry.model === defaultModel
                     return (
                       <button
-                        key={entry.model}
+                        key={entry.id}
                         type="button"
                         className={`flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted ${isSelected ? 'bg-primary/10 font-medium' : ''}`}
-                        onClick={() => { setSelectedModel(entry.model); setIsOpen(false) }}
+                        onClick={() => { setSelectedModel(entry.id); setIsOpen(false) }}
                       >
                         <span className="flex-1 text-left truncate">{entry.model}</span>
                         {isSelected && (

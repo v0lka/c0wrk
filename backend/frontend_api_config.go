@@ -86,26 +86,25 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 // entries. When reg is non-nil, family and reasoning metadata are resolved
 // from the registry. When reg is nil (registry not yet initialized), models
 // are returned without metadata so the frontend still sees configured models.
+//
+// Entries are keyed by composite (provider, model) so that two providers
+// exposing the same bare model name both appear — the frontend uses the
+// composite "provider/name" value to select a specific provider while
+// displaying the bare model name.
 func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
-	// Collect all model lists from known providers
-	type modelsEntry struct {
-		models []string
-	}
-	providers := make([]modelsEntry, 0, len(f.config.LLM.OpenAICompatible)+2)
-	providers = append(providers, modelsEntry{f.config.LLM.Anthropic.Models})
-	for _, cfg := range f.config.LLM.OpenAICompatible {
-		providers = append(providers, modelsEntry{cfg.Models})
-	}
-	providers = append(providers, modelsEntry{f.config.LLM.ChatGPT.Models})
+	// GetAllProviderConfigs returns providers in deterministic order
+	// (anthropic, chatgpt, then openai_compatible keys sorted).
+	providers := f.config.LLM.GetAllProviderConfigs()
 
-	seen := make(map[string]bool)
+	seen := make(map[string]bool) // dedupe by composite "provider/model"
 	var result []ModelInfo
 	for _, p := range providers {
-		for _, modelName := range p.models {
-			if seen[modelName] {
+		for _, modelName := range p.Models {
+			compositeID := config.CompositeModelID(p.Name, modelName)
+			if seen[compositeID] {
 				continue
 			}
-			seen[modelName] = true
+			seen[compositeID] = true
 
 			var family string
 			if reg != nil {
@@ -114,8 +113,9 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 			}
 
 			info := ModelInfo{
-				Name:   modelName,
-				Family: family,
+				Name:     modelName,
+				Provider: p.Name,
+				Family:   family,
 			}
 
 			if family != "" {

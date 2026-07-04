@@ -24,8 +24,14 @@ type ReasoningInfo struct {
 }
 
 // ModelInfo pairs a model name with its resolved family and reasoning metadata.
+// Provider is the config key of the provider that exposes this model
+// ("anthropic", "chatgpt", or a named openai_compatible provider). The composite
+// model identifier "Provider/Name" uniquely identifies the (provider, model)
+// pair so the frontend can disambiguate models that share the same bare Name
+// across providers, while still displaying the bare Name to the user.
 type ModelInfo struct {
 	Name      string         `json:"name"`
+	Provider  string         `json:"provider"`
 	Family    string         `json:"family"`
 	Reasoning *ReasoningInfo `json:"reasoning,omitempty"` // nil = family doesn't support reasoning
 }

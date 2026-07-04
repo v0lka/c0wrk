@@ -38,8 +38,8 @@ import { useInputModeStore } from '@/stores/inputModeStore'
 vi.mock('@/hooks/useConfigData', () => ({
   useConfigData: () => ({
     allModels: [
-      { name: 'claude-sonnet', family: 'anthropic' },
-      { name: 'gpt-4o', family: 'chatgpt' },
+      { name: 'claude-sonnet', provider: 'anthropic', family: 'anthropic' },
+      { name: 'gpt-4o', provider: 'chatgpt', family: 'chatgpt' },
     ],
     defaultModel: 'claude-sonnet',
     loaded: true,
@@ -135,7 +135,8 @@ describe('ModelCombobox portal', () => {
       options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(useInputModeStore.getState().selectedModel).toBe('gpt-4o')
+    // The selected value is the composite selector "provider/name".
+    expect(useInputModeStore.getState().selectedModel).toBe('chatgpt/gpt-4o')
     expect(document.body.querySelector('[role="listbox"]')).toBeNull()
   })
 })

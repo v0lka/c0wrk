@@ -318,7 +318,9 @@ func (fw *Framework) NewOrchestrator(systemPrompt orchestration.SystemPromptFact
 	plannerCfg.Prompts = planner.PromptSet{} // empty = use embedded defaults
 	plannerCfg.ToolRegistry = fw.tools
 	plannerCfg.ModelRegistry = fw.modelReg
-	plannerCfg.Model = fw.cfg.LLM.DefaultModel
+	// PlannerCfg.Model is used for model metadata resolution only (the registry
+	// keys on the bare model name); strip any provider prefix.
+	plannerCfg.Model = llm.BareModel(fw.cfg.LLM.DefaultModel)
 	plannerCfg.Logger = fw.logger
 	plannerCfg.TokenCounter = tokenCounter
 	plannerCfg.MaxExploreSteps = 7
@@ -351,7 +353,9 @@ func (fw *Framework) NewOrchestrator(systemPrompt orchestration.SystemPromptFact
 		Tools:         fw.tools,
 		ToolRegistry:  fw.tools,
 		TokenCounter:  tokenCounter,
-		Model:         fw.cfg.LLM.DefaultModel,
+		// Config.Model is used for model metadata resolution only (the registry
+		// keys on the bare model name); strip any provider prefix.
+		Model:         llm.BareModel(fw.cfg.LLM.DefaultModel),
 		ModelRegistry: fw.modelReg,
 		ContextFactory: func(sysPrompt string, meta llm.ModelMetadata, compactStrategy string, pruningOverrides ...orchestration.PruningOverride) agent.ContextManager {
 			return fw.buildContextWindow(sysPrompt, meta, compactStrategy, pruningOverrides...)

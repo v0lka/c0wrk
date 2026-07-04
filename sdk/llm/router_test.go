@@ -33,7 +33,8 @@ func (m *mockProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*Ch
 	return m.response, nil
 }
 
-// newTestRouter creates a router with mock providers for testing.
+// newTestRouter creates a router with mock providers for testing. activeModel
+// is treated as the composite selector; the bare model name is derived from it.
 func newTestRouter(providers map[string]*mockProvider, activeProviderName, activeModel string) *Router {
 	providerMap := make(map[string]Provider)
 	for name, p := range providers {
@@ -47,6 +48,7 @@ func newTestRouter(providers map[string]*mockProvider, activeProviderName, activ
 		providers:           providerMap,
 		activeProvider:      activeProvider,
 		activeModel:         activeModel,
+		activeBareModel:     BareModel(activeModel),
 		activeProviderName:  activeProviderName,
 		maxRetries:          3,
 		initialBackoff:      10 * time.Millisecond,
@@ -293,6 +295,7 @@ func TestRouter_Call_FamilyAwareTemperature(t *testing.T) {
 		providers:           map[string]Provider{"primary": mock},
 		activeProvider:      mock,
 		activeModel:         "deepseek-chat",
+		activeBareModel:     "deepseek-chat",
 		activeProviderName:  "primary",
 		maxRetries:          0,
 		initialBackoff:      10 * time.Millisecond,
@@ -345,6 +348,7 @@ func TestRouter_Call_SkipsTemperatureForReasoningModels(t *testing.T) {
 		providers:           map[string]Provider{"primary": mock},
 		activeProvider:      mock,
 		activeModel:         "o3",
+		activeBareModel:     "o3",
 		activeProviderName:  "primary",
 		maxRetries:          0,
 		initialBackoff:      10 * time.Millisecond,
@@ -385,8 +389,11 @@ func TestNewRouter(t *testing.T) {
 		if router == nil {
 			t.Fatal("expected non-nil router")
 		}
-		if router.activeModel != "test-model" {
-			t.Errorf("expected activeModel 'test-model', got %q", router.activeModel)
+		if router.activeModel != "openai/test-model" {
+			t.Errorf("expected activeModel 'openai/test-model', got %q", router.activeModel)
+		}
+		if router.activeBareModel != "test-model" {
+			t.Errorf("expected activeBareModel 'test-model', got %q", router.activeBareModel)
 		}
 		if router.maxRetries != 2 {
 			t.Errorf("expected maxRetries 2, got %d", router.maxRetries)
@@ -552,6 +559,7 @@ func newTestRouterWithRegistry(mock *mockProvider, activeModel string, registry 
 		providers:           map[string]Provider{"primary": mock},
 		activeProvider:      mock,
 		activeModel:         activeModel,
+		activeBareModel:     BareModel(activeModel),
 		activeProviderName:  "primary",
 		maxRetries:          0,
 		initialBackoff:      10 * time.Millisecond,
@@ -708,6 +716,178 @@ func TestRouter_ContextWindowValidation(t *testing.T) {
 				if mock.callCount != 1 {
 					t.Errorf("expected 1 provider call, got %d", mock.callCount)
 				}
+			}
+		})
+	}
+}
+
+// TestNewRouter_TwoProvidersSameModelName verifies that the router's reverse
+// index keeps two providers exposing the same bare model name distinguishable.
+// This is the core multi-provider disambiguation scenario.
+func TestNewRouter_TwoProvidersSameModelName(t *testing.T) {
+	cfg := RouterConfig{
+		Providers: []ProviderEntry{
+			{Name: "openai", ProviderType: "openai", BaseURL: "http://localhost:9999", Models: []string{"gpt-4"}},
+			{Name: "lmstudio", ProviderType: "openai", BaseURL: "http://localhost:1234", Models: []string{"gpt-4"}},
+		},
+	}
+	router, err := NewRouter(context.Background(), cfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both composite keys must be present and map to distinct providers.
+	if got := router.modelToProvider["openai/gpt-4"]; got != "openai" {
+		t.Errorf("modelToProvider[openai/gpt-4] = %q, want openai", got)
+	}
+	if got := router.modelToProvider["lmstudio/gpt-4"]; got != "lmstudio" {
+		t.Errorf("modelToProvider[lmstudio/gpt-4] = %q, want lmstudio", got)
+	}
+	// The bare key must NOT be present (the old collision-prone behaviour).
+	if _, ok := router.modelToProvider["gpt-4"]; ok {
+		t.Error("bare model name should not be a key in modelToProvider")
+	}
+}
+
+// TestRouter_SetModel_CompositeAndBare covers SetModel with composite
+// identifiers (disambiguation) and bare names (backward compatibility,
+// including the ambiguous case).
+func TestRouter_SetModel_CompositeAndBare(t *testing.T) {
+	provA := &mockProvider{name: "openai"}
+	provB := &mockProvider{name: "lmstudio"}
+	router := &Router{
+		providers: map[string]Provider{
+			"openai":    provA,
+			"lmstudio":  provB,
+		},
+		modelToProvider: map[string]string{
+			"openai/gpt-4":   "openai",
+			"lmstudio/gpt-4": "lmstudio",
+		},
+		activeProvider:      provA,
+		activeModel:         "openai/gpt-4",
+		activeBareModel:     "gpt-4",
+		activeProviderName:  "openai",
+		maxRetries:          0,
+	}
+
+	// Composite selector routes to the named provider.
+	if err := router.SetModel(context.Background(), "lmstudio/gpt-4"); err != nil {
+		t.Fatalf("SetModel(composite) error: %v", err)
+	}
+	if router.activeProviderName != "lmstudio" {
+		t.Errorf("activeProviderName = %q, want lmstudio", router.activeProviderName)
+	}
+	if router.activeModel != "lmstudio/gpt-4" {
+		t.Errorf("activeModel = %q, want lmstudio/gpt-4", router.activeModel)
+	}
+	if router.activeBareModel != "gpt-4" {
+		t.Errorf("activeBareModel = %q, want gpt-4", router.activeBareModel)
+	}
+	if router.activeProvider != Provider(provB) {
+		t.Error("activeProvider should be the lmstudio mock")
+	}
+
+	// Switch back via composite.
+	if err := router.SetModel(context.Background(), "openai/gpt-4"); err != nil {
+		t.Fatalf("SetModel(composite) error: %v", err)
+	}
+	if router.activeProviderName != "openai" {
+		t.Errorf("activeProviderName = %q, want openai", router.activeProviderName)
+	}
+
+	// Bare name (backward compatibility) resolves to first match deterministically.
+	if err := router.SetModel(context.Background(), "gpt-4"); err != nil {
+		t.Fatalf("SetModel(bare) error: %v", err)
+	}
+	if router.activeBareModel != "gpt-4" {
+		t.Errorf("activeBareModel = %q, want gpt-4", router.activeBareModel)
+	}
+	// First match by sorted composite id: "lmstudio/gpt-4" < "openai/gpt-4".
+	if router.activeProviderName != "lmstudio" {
+		t.Errorf("activeProviderName = %q, want lmstudio (first sorted match)", router.activeProviderName)
+	}
+
+	// Unknown composite provider.
+	if err := router.SetModel(context.Background(), "nope/gpt-4"); err == nil {
+		t.Error("expected error for unknown composite provider, got nil")
+	}
+	// Unknown bare model.
+	if err := router.SetModel(context.Background(), "does-not-exist"); err == nil {
+		t.Error("expected error for unknown bare model, got nil")
+	}
+}
+
+// TestRouter_Call_SendsBareModelToProvider confirms the provider API receives
+// the bare model name (without provider prefix), not the composite selector.
+func TestRouter_Call_SendsBareModelToProvider(t *testing.T) {
+	mock := &mockProvider{
+		name: "lmstudio",
+		response: &ChatResponse{
+			Message:    Message{Role: "assistant", Content: "OK"},
+			StopReason: "end_turn",
+		},
+	}
+	router := &Router{
+		providers: map[string]Provider{"lmstudio": mock},
+		modelToProvider: map[string]string{
+			"lmstudio/gpt-4": "lmstudio",
+		},
+		activeProvider:      mock,
+		activeModel:         "lmstudio/gpt-4",
+		activeBareModel:     "gpt-4",
+		activeProviderName:  "lmstudio",
+		maxRetries:          0,
+	}
+
+	// Empty Model → router fills the bare model name.
+	resp, err := router.Call(context.Background(), ChatRequest{
+		Messages: []Message{{Role: "user", Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mock.lastReq.Model != "gpt-4" {
+		t.Errorf("provider received Model %q, want bare gpt-4", mock.lastReq.Model)
+	}
+	if resp.Model != "gpt-4" {
+		t.Errorf("response Model = %q, want bare gpt-4", resp.Model)
+	}
+}
+
+// TestParseCompositeModelID covers the split-on-first-slash semantics, including
+// model names that themselves contain a slash.
+func TestParseCompositeModelID(t *testing.T) {
+	tests := []struct {
+		id            string
+		wantProvider  string
+		wantModel     string
+		wantOk        bool
+		wantBare      string
+		wantIsComp    bool
+		wantProviderOf string
+	}{
+		{"openai/gpt-4", "openai", "gpt-4", true, "gpt-4", true, "openai"},
+		{"lmstudio/gpt-4", "lmstudio", "gpt-4", true, "gpt-4", true, "lmstudio"},
+		{"hf/meta-llama/Llama-3-70b", "hf", "meta-llama/Llama-3-70b", true, "meta-llama/Llama-3-70b", true, "hf"},
+		{"gpt-4", "", "gpt-4", false, "gpt-4", false, ""},
+		{"", "", "", false, "", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			prov, model, ok := ParseCompositeModelID(tt.id)
+			if prov != tt.wantProvider || model != tt.wantModel || ok != tt.wantOk {
+				t.Errorf("ParseCompositeModelID(%q) = (%q,%q,%v), want (%q,%q,%v)",
+					tt.id, prov, model, ok, tt.wantProvider, tt.wantModel, tt.wantOk)
+			}
+			if got := BareModel(tt.id); got != tt.wantBare {
+				t.Errorf("BareModel(%q) = %q, want %q", tt.id, got, tt.wantBare)
+			}
+			if got := IsCompositeModelID(tt.id); got != tt.wantIsComp {
+				t.Errorf("IsCompositeModelID(%q) = %v, want %v", tt.id, got, tt.wantIsComp)
+			}
+			if got := ProviderOf(tt.id); got != tt.wantProviderOf {
+				t.Errorf("ProviderOf(%q) = %q, want %q", tt.id, got, tt.wantProviderOf)
 			}
 		})
 	}

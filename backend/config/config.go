@@ -397,13 +397,37 @@ func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
 }
 
 // ResolveDefaultModelProvider looks up the provider that owns DefaultModel.
-// Returns the provider config and model name, or an error if DefaultModel
-// is empty or not found in any provider's Models list.
+// DefaultModel may be a bare model name (resolved to the first matching
+// provider) or a composite identifier "provider/model" (resolved to the named
+// provider). Returns the provider config and the bare model name, or an error
+// if DefaultModel is empty or not found in any provider's Models list.
 func (c *LLMConfig) ResolveDefaultModelProvider() (ProviderWithModels, string, error) {
 	if c.DefaultModel == "" {
 		return ProviderWithModels{}, "", errors.New("default_model is not set")
 	}
 
+	// Composite default_model: resolve to the named provider + bare model.
+	if provider, model, ok := ParseCompositeModelID(c.DefaultModel); ok {
+		for _, p := range c.allProviderEntries() {
+			if p.name != provider {
+				continue
+			}
+			for _, m := range p.models {
+				if m == model {
+					return ProviderWithModels{
+						Name:         p.name,
+						ProviderType: c.providerType(p.name),
+						APIKey:       p.apiKey,
+						BaseURL:      p.baseURL,
+						Models:       p.models,
+					}, m, nil
+				}
+			}
+		}
+		return ProviderWithModels{}, "", fmt.Errorf("default_model %q not found in provider %q enabled models", model, provider)
+	}
+
+	// Bare default_model: first matching provider wins.
 	for _, p := range c.allProviderEntries() {
 		for _, m := range p.models {
 			if m == c.DefaultModel {

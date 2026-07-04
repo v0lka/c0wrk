@@ -331,7 +331,10 @@ func (b *OrchestratorBuilder) Build(
 		PlannerHistoryBudgetTokens:    cfg.Orchestration.PlannerHistoryBudgetTokens,
 		PlannerHistoryKeepRecentRatio: cfg.Orchestration.PlannerHistoryKeepRecentRatio,
 		MaxDependencyContextChars:     cfg.Orchestration.MaxDependencyContextChars,
-		Model:                         cfg.LLM.DefaultModel,
+		// OrchestratorConfig.Model is used for model METADATA resolution
+		// (ModelRegistry.Resolve keys on the bare model name), not for routing —
+		// so strip any provider prefix from a composite DefaultModel.
+		Model:                         llm.BareModel(cfg.LLM.DefaultModel),
 		ReasoningEffort:               reasoningEffort,
 		HITLHandler:                   hitlHandler,
 		PreWarningPercent:             cfg.Executor.Compaction.Thresholds.PreWarningPercent,
@@ -874,6 +877,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		SafetyMarginPercent: cfg.Executor.Compaction.SafetyMarginPercent,
 		OutputTokenReserve:  cfg.Executor.OutputTokenReserve,
 		HTTPClient:          proxyClient,
+		Logger:              b.logger,
 		SamplingFunc: func(family string) *float64 {
 			return prompt.DefaultSampling(family).Temperature
 		},
@@ -930,7 +934,9 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 
 	// Wire planner exploration dependencies
 	corePlanner.Cfg.Logger = logger
-	corePlanner.Cfg.Model = cfg.LLM.DefaultModel
+	// Planner.Cfg.Model is used for model METADATA resolution only, not routing
+	// — strip any provider prefix from a composite DefaultModel.
+	corePlanner.Cfg.Model = llm.BareModel(cfg.LLM.DefaultModel)
 	corePlanner.Cfg.TokenCounter = tokenCounter
 	corePlanner.Cfg.ContextFactory = plannerContextFactoryAdapter(contextFactory)
 	corePlanner.Cfg.Emitter = emitter
@@ -1059,12 +1065,19 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 }
 
 // rebuildJudgeInternal recreates the ToolJudge and sets it on the registry.
+//
+// The judge calls the active provider DIRECTLY (bypassing the Router), so the
+// model it sends must be the bare model name — the provider prefix is stripped
+// from any composite identifier (DefaultModel may be "provider/model").
 func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter *llm.Router) {
 	if b.registry == nil {
 		return
 	}
 
-	defaultModel := cfg.LLM.DefaultModel
+	// The judge sends the model name straight to the provider API, so it must be
+	// the bare model name (no "provider/" prefix).
+	defaultModel := llm.BareModel(cfg.LLM.DefaultModel)
+	judgeModel := llm.BareModel(cfg.Security.JudgeModel)
 
 	var judgeProvider llm.Provider
 	if llmRouter != nil {
@@ -1083,7 +1096,7 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter
 	judgeProvider = newJudgeDumpProvider(judgeProvider, b.logger, cfg.LLM.DefaultProviderName(), debugEnabled)
 
 	judge := sdktools.NewToolJudgeFromConfig(sdktools.JudgeConfig{
-		Model:        cfg.Security.JudgeModel,
+		Model:        judgeModel,
 		DefaultModel: defaultModel,
 		Provider:     judgeProvider,
 		MaxCacheSize: cfg.Orchestration.MaxJudgeCacheSize,

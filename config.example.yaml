@@ -14,6 +14,13 @@ log_level: "DEBUG"
 llm:
   # The single, cross-provider default model — must be enabled in the corresponding
   # provider's models list below.
+  #
+  # The value may be a bare model name (e.g. "claude-sonnet-4-20250514") or a
+  # composite identifier "providerName/modelName" (e.g. "lmstudio/gpt-4"). Use the
+  # composite form when the same bare model name is exposed by more than one
+  # provider, so the agent routes to the intended provider. A bare name that
+  # matches several providers resolves to the first match (alphabetically by
+  # provider name) and logs a warning.
   default_model: "claude-sonnet-4-20250514"
 
   anthropic:

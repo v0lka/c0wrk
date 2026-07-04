@@ -212,6 +212,13 @@ export interface ConfigProviderFull {
 
 export interface ModelInfo {
   name: string
+  /**
+   * Config key of the provider that exposes this model ("anthropic",
+   * "chatgpt", or a named openai_compatible provider). The composite value
+   * "provider/name" is the internal selector; the bare `name` is what is
+   * displayed to the user.
+   */
+  provider: string
   family: string
   reasoning?: {
     options: string[]
