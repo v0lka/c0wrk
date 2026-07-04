@@ -3,6 +3,7 @@
  * Extracted to keep chatUtils.ts under 200 lines.
  */
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
+import { isArrayOf } from '@/types/guards'
 
 /** Build a composite tool key for correlating tool_call ↔ tool_result. */
 export function makeToolKey(
@@ -85,7 +86,20 @@ export function reconstructContent(role: string, rawContent: string, meta: Recor
     case 'tool_confirm': { const t = meta.tool as string | undefined; return t ? `Confirm: ${t}` : rawContent }
     case 'ask_user': return (meta.question as string) || rawContent
     case 'task_cancelled': return 'Task was cancelled'
-    case 'status': return (meta.content as string) || rawContent
+    case 'status': {
+      // skills_activated events are persisted by the Go backend with an empty
+      // content; the persister then writes the raw JSON payload
+      // ({"skills":[...]}) as the message content (see backend/session/
+      // event_persister.go: "skills_activated" → role "status"). Reconstruct
+      // the same human-readable text the live useLifecycleEvents handler
+      // produces ("Skills activated: …") so a reloaded session/project shows
+      // an identical message instead of raw JSON. Type-guard the skills array
+      // at this ingestion point so downstream rendering stays typed.
+      if (isArrayOf(meta.skills, (s): s is string => typeof s === 'string')) {
+        return `Skills activated: ${meta.skills.join(', ')}`
+      }
+      return (meta.content as string) || rawContent
+    }
     case 'task_resumed': return rawContent
     case 'task_failed_resumable':
       return (meta.message as string) || 'Plan execution failed. You can resume to retry from where it left off.'

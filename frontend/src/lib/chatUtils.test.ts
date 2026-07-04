@@ -179,6 +179,37 @@ describe('reconstructContent (via chatMessageToUI)', () => {
     expect(result.content).toBe('Processing...')
   })
 
+  it('status skills_activated reconstructs human-readable text from raw JSON content', () => {
+    // Mirrors what backend/session/event_persister.go persists for a
+    // "skills_activated" event: role "status", content left empty so the
+    // persister writes the raw JSON payload ({"skills":[...]}) as content.
+    const result = chatMessageToUI(makeMsg({
+      role: 'status',
+      content: '{"skills":["go-control-flow"]}',
+      metadata: JSON.stringify({ skills: ['go-control-flow'] }),
+    }))
+    // Must match the live useLifecycleEvents handler output exactly.
+    expect(result.content).toBe('Skills activated: go-control-flow')
+  })
+
+  it('status skills_activated joins multiple skills with commas', () => {
+    const result = chatMessageToUI(makeMsg({
+      role: 'status',
+      content: '{"skills":["go-control-flow","commit"]}',
+      metadata: JSON.stringify({ skills: ['go-control-flow', 'commit'] }),
+    }))
+    expect(result.content).toBe('Skills activated: go-control-flow, commit')
+  })
+
+  it('status skills_activated with empty skills list', () => {
+    const result = chatMessageToUI(makeMsg({
+      role: 'status',
+      content: '{"skills":[]}',
+      metadata: JSON.stringify({ skills: [] }),
+    }))
+    expect(result.content).toBe('Skills activated: ')
+  })
+
   it('task_resumed passes rawContent through', () => {
     const result = chatMessageToUI(makeMsg({
       role: 'task_resumed',
