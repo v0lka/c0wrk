@@ -10,6 +10,7 @@ import (
 
 	chromem "github.com/philippgille/chromem-go"
 
+	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/sdk/embedding"
 )
 
@@ -165,6 +166,32 @@ func (m *Manager) DeleteProjectData(fullPath string) error {
 // detects the git branch, creates an indexer, starts background indexing,
 // and starts a git branch monitor.
 func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath string, cbs ProjectCallbacks) error {
+	// No Project (CHAT mode): the vector index subsystem is fully disabled.
+	// Tear down any previous project's in-flight indexing and reset the
+	// service to an empty in-memory state so stale documents from a
+	// previously-active CODE project cannot leak into search results or RAG
+	// hints. No embedder is loaded, no persistent DB directory is created,
+	// no git branch is detected, and no indexing goroutine or git monitor is
+	// started.
+	if projectID == core.NoProjectID {
+		m.mu.Lock()
+		if m.indexCancel != nil {
+			m.indexCancel()
+			m.indexCancel = nil
+		}
+		if m.gitMonitor != nil {
+			_ = m.gitMonitor.Stop()
+			m.gitMonitor = nil
+		}
+		m.indexer = nil
+		m.mu.Unlock()
+		m.stopDebounce()
+		if err := m.service.SetProject(projectID, ""); err != nil {
+			return fmt.Errorf("resetting vector index for No Project: %w", err)
+		}
+		return nil
+	}
+
 	// Cancel previous indexing and any pending debounced incremental runs.
 	m.mu.Lock()
 	if m.indexCancel != nil {

@@ -18,6 +18,13 @@ const defaultVectorBrowseTopK = 50
 //
 // req.TopK defaults to 50 when <= 0.
 func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, error) {
+	// No Project (CHAT mode): the vector index is disabled. Return empty
+	// results (not an error) so the frontend renders an empty state rather
+	// than attempting a search against a dormant subsystem.
+	if f.isNoProject() {
+		return []VectorStoreEntry{}, nil
+	}
+
 	vm := f.getVectorManager()
 	if vm == nil {
 		return nil, errors.New("vector search not available")
@@ -74,6 +81,13 @@ func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, 
 // GetVectorIndexStatus returns the current state and progress of the
 // vector index for the active project.
 func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
+	// No Project (CHAT mode): the vector index is disabled. Report an
+	// unavailable state so the frontend UI reflects the dormant subsystem
+	// (neither "building" nor "ready").
+	if f.isNoProject() {
+		return VectorIndexStatus{State: "unavailable", Indices: []string{}}
+	}
+
 	result := VectorIndexStatus{}
 
 	vm := f.getVectorManager()

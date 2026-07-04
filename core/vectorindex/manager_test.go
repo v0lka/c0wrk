@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/sdk/embedding"
 )
 
@@ -219,5 +220,80 @@ func TestManagerDeleteProjectData(t *testing.T) {
 
 	if _, err := os.Stat(projectDir); !os.IsNotExist(err) {
 		t.Fatal("project vector dir should have been removed")
+	}
+}
+
+// TestManagerSwitchProject_NoProjectDisabled verifies that switching to the
+// No Project pseudo-project fully disables the vector index: no persistent
+// directory is created, no indexing goroutine runs, the service collection is
+// cleared (so stale CODE-project results cannot leak), and no indexer remains
+// configured.
+func TestManagerSwitchProject_NoProjectDisabled(t *testing.T) {
+	persistDir := t.TempDir()
+
+	svc, err := NewService(ServiceConfig{
+		EmbeddingFunc: fakeEmbeddingFunc(),
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := svc.Close(); err != nil {
+			t.Logf("Service.Close in cleanup: %v", err)
+		}
+	})
+
+	mgr := &Manager{
+		service: svc,
+		logger:  slog.New(slog.DiscardHandler),
+		chunkFn: defaultChunkFn,
+		hashFn:  embedding.ComputeFileHash,
+	}
+
+	// Index a real CODE project first so the service holds a populated
+	// collection; this lets us verify the No Project switch clears it.
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+	codeDir := filepath.Join(persistDir, "project-code")
+	if err := mgr.SwitchProject("project-code", ws, codeDir, ProjectCallbacks{}); err != nil {
+		t.Fatalf("SwitchProject code: %v", err)
+	}
+	if err := svc.WaitReady(context.Background()); err != nil {
+		t.Fatalf("WaitReady code: %v", err)
+	}
+	if col := svc.GetCollection(); col == nil || col.Count() == 0 {
+		t.Fatal("expected CODE project collection to have documents")
+	}
+
+	// Switch to No Project: the guard must short-circuit without building.
+	noProjectDir := filepath.Join(persistDir, core.NoProjectID)
+	if err := mgr.SwitchProject(core.NoProjectID, ws, noProjectDir, ProjectCallbacks{}); err != nil {
+		t.Fatalf("SwitchProject NoProject: %v", err)
+	}
+
+	// No persistent vector directory is created for No Project.
+	if _, err := os.Stat(noProjectDir); !os.IsNotExist(err) {
+		t.Fatalf("No Project vector dir should not be created, got err=%v", err)
+	}
+
+	// The service collection is cleared: no stale CODE results, no build.
+	if col := svc.GetCollection(); col != nil {
+		t.Fatalf("expected nil collection for No Project, got count=%d", col.Count())
+	}
+
+	// No indexer is configured for No Project.
+	mgr.mu.RLock()
+	idx := mgr.indexer
+	mgr.mu.RUnlock()
+	if idx != nil {
+		t.Fatal("expected no indexer configured for No Project")
+	}
+
+	// The service is not marked ready: no indexing goroutine ran for No
+	// Project (SetProject resets readiness to false).
+	if svc.IsReady() {
+		t.Fatal("expected service to be not-ready for No Project (no indexing ran)")
 	}
 }

@@ -281,12 +281,25 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 }
 
 // switchProjectSetupVector configures vector indexing for the new project.
-// For No Project, this still switches the vector index to an empty collection
-// so that stale results from a previously-active CODE project do not leak
-// into CHAT-mode prompts via RAG hint injection.
+// For No Project (CHAT mode), vector indexing is fully disabled: the manager
+// is reset to an empty state (clearing any stale CODE-project collection) and
+// a disabled status is emitted, but no index is built and no embedder is loaded.
 func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 	vm := f.getVectorManager()
 	if vm == nil {
+		return nil
+	}
+
+	// No Project (CHAT mode): vector indexing is disabled. Delegate to the
+	// manager, which short-circuits without running git branch detection,
+	// loading the embedder, creating a persistent index, or starting a
+	// background indexing goroutine. Emit a disabled status so the frontend
+	// reflects the dormant state rather than the previous project's status.
+	if p.IsNoProject {
+		if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, config.ProjectVectorIndexPath(f.agentDir, p.ID), vectorindex.ProjectCallbacks{}); switchErr != nil {
+			return fmt.Errorf("switching vector index project: %w", switchErr)
+		}
+		f.emitEvent(EventVectorIndexStatus, VectorIndexStatus{State: "unavailable", Indices: []string{}})
 		return nil
 	}
 

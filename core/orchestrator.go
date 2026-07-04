@@ -572,8 +572,12 @@ func (o *Orchestrator) buildSkillPolicyOverrides(activeSkills []*skills.Skill) m
 func (o *Orchestrator) injectVectorSearchHints(ctx context.Context, query string) context.Context {
 	var hints *VectorSearchHints
 
-	// Vector search (optional, non-blocking).
-	if o.vectorSearchFunc != nil {
+	// Vector search (optional, non-blocking). Skipped entirely for No
+	// Project (CHAT mode), where the vector index is disabled: no
+	// collection is built, so querying would only yield stale results from
+	// a previously-active CODE project. AGENTS.md injection below is
+	// unaffected (it is workspace-local, not vector-index-dependent).
+	if !o.isNoProject && o.vectorSearchFunc != nil {
 		ragCtx, ragCancel := context.WithTimeout(ctx, 2*time.Second)
 		results, err := o.vectorSearchFunc(ragCtx, builtins.VectorSearchOptions{Query: query, TopK: 5})
 		ragCancel()
