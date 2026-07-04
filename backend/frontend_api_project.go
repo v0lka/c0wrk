@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -188,7 +187,6 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	f.switchProjectTeardown(id)
 	f.switchProjectActivate(p)
 	f.switchProjectSetupWatcher(p)
-	f.recoverPlanReviewSessions(p)
 
 	if err := f.switchProjectSetupVector(p); err != nil {
 		return err
@@ -610,94 +608,3 @@ func (f *FrontendAPI) resolveSavedSessionForProject(projectID, savedSessionID st
 	return ""
 }
 
-// recoverPlanReviewSessions queries sessions in plan review for the given
-// project, restores them, validates the .md file still exists, and re-emits
-// plan_review_ready events so the frontend re-opens the review panel after
-// app restart. Stale state (missing .md file) is cleared to prevent stuck sessions.
-func (f *FrontendAPI) recoverPlanReviewSessions(p *project.ProjectInfo) {
-	if f.store == nil {
-		return
-	}
-	manager := f.app.Manager()
-	if manager == nil {
-		return
-	}
-
-	ctx := f.ctx()
-	sessions, err := f.store.GetSessionsInPlanReview(ctx, p.ID)
-	if err != nil {
-		f.log().Warn("failed to query plan review sessions on recovery", "project", p.ID, "error", err)
-		return
-	}
-
-	for _, info := range sessions {
-		// For awaiting_feedback sessions, emit the feedback prompt instead
-		// of plan_review_ready so the user knows to type a message.
-		if info.PlanReviewPhase == string(session.PlanReviewAwaitingFeedback) {
-			manager.EmitSessionEvent(info.ID, "plan_review_awaiting_feedback",
-				map[string]string{"session_id": info.ID})
-			continue
-		}
-
-		// Plan review path may be empty — stale state without a path.
-		if info.PlanReviewPath == "" {
-			// Stale state without a path — clear it.
-			if clrErr := f.store.UpdateSessionPlanReview(ctx, info.ID, "", ""); clrErr != nil {
-				f.log().Warn("failed to clear stale plan review state", "session", info.ID, "error", clrErr)
-			}
-			continue
-		}
-		if _, statErr := os.Stat(info.PlanReviewPath); os.IsNotExist(statErr) {
-			// Plan file missing — clear stale state.
-			f.log().Info("clearing stale plan review state (plan file missing)", "session", info.ID, "path", info.PlanReviewPath)
-			if clrErr := f.store.UpdateSessionPlanReview(ctx, info.ID, "", ""); clrErr != nil {
-				f.log().Warn("failed to clear stale plan review state", "session", info.ID, "error", clrErr)
-			}
-			continue
-		}
-
-		// Check if the plan was already resolved (accepted or rejected).
-		// A resolved plan_review message in chat history means the plan was
-		// handled and we should not re-emit plan_review_ready.
-		if resolved, rErr := f.store.HasResolvedPlanReviewMessage(ctx, info.ID); rErr != nil {
-			f.log().Warn("failed to check resolved plan review, skipping recovery", "session", info.ID, "error", rErr)
-			continue
-		} else if resolved {
-			f.log().Info("clearing stale plan review state (plan already resolved)", "session", info.ID)
-			if clrErr := f.store.UpdateSessionPlanReview(ctx, info.ID, "", ""); clrErr != nil {
-				f.log().Warn("failed to clear stale plan review state", "session", info.ID, "error", clrErr)
-			}
-			continue
-		}
-
-		// Restore the session into memory (getOrRestoreSession also restores planReviewBB/Route from persistence).
-		sess, ok := manager.GetSession(info.ID)
-		if !ok || sess == nil {
-			f.log().Warn("failed to restore session for plan review recovery", "session", info.ID)
-			continue
-		}
-
-		// Read plan content and emit plan_review_ready as a session-scoped event.
-		planContent, readErr := os.ReadFile(info.PlanReviewPath)
-		if readErr != nil {
-			f.log().Warn("failed to read plan file for recovery", "session", info.ID, "path", info.PlanReviewPath, "error", readErr)
-			// Clear stale state and notify the frontend so the session isn't stuck.
-			if clrErr := f.store.UpdateSessionPlanReview(ctx, info.ID, "", ""); clrErr != nil {
-				f.log().Warn("failed to clear stale plan review state", "session", info.ID, "error", clrErr)
-			}
-			manager.EmitSessionEvent(info.ID, "plan_validation_failed", session.PlanValidationFailedData{
-				SessionID: info.ID,
-				Issues:    []session.ValidationIssue{{Severity: "error", Description: "Plan file could not be read after restart: " + readErr.Error()}},
-			})
-			continue
-		}
-		// Emit plan_review_ready through the session manager's emitFunc
-		// so the event persists and reaches frontend listeners correctly.
-		// Use a session-scoped emit via the manager directly.
-		manager.EmitSessionEvent(info.ID, "plan_review_ready", session.PlanReviewReadyData{
-			SessionID:   info.ID,
-			PlanPath:    info.PlanReviewPath,
-			PlanContent: string(planContent),
-		})
-	}
-}

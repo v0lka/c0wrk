@@ -18,9 +18,7 @@ import (
 	"github.com/v0lka/c0wrk/sdk/agent/reflector"
 	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/llm"
-	sdkmemory "github.com/v0lka/c0wrk/sdk/memory"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/sdk/planner"
 	"github.com/v0lka/c0wrk/sdk/skills"
 	"github.com/v0lka/c0wrk/sdk/strutil"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
@@ -55,12 +53,11 @@ var InjectionDefenseKey = injectionDefenseKeyType{}
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
 	MaxSteps                      int
+	SubagentMaxSteps              int     // max ReAct iterations per delegation (default: 50)
+	MaxRedelegationDepth          int     // cap on recursive delegation when allow_redelegate is true (default: 2)
 	KeepFirst                     int     // for sliding window compaction
 	KeepLast                      int     // for sliding window compaction
-	MaxRetries                    int     // max retry attempts (default: 2, yielding 3 total executions)
-	PlannerHistoryBudgetTokens    int     // max tokens for conversation history sent to planner (default: 4000); triggers summarisation compaction when exceeded
-	PlannerHistoryKeepRecentRatio float64 // fraction of PlannerHistoryBudgetTokens reserved for recent messages during compaction (default: 0.75)
-	MaxDependencyContextChars     int     // max chars for dependency context in step tasks (default: 8000)
+	MaxDependencyContextChars     int     // max chars for dependency context in delegation tasks (default: 8000)
 	Model                         string  // active model name for ModelRegistry.Resolve()
 
 	// ReasoningEffort is the reasoning effort applied to step executors.
@@ -107,12 +104,11 @@ type BlackboardFactory func(taskID string) orchestration.Blackboard
 // instance. The session manager enforces this contract — concurrent requests to the
 // same session are rejected before reaching HandleMessage.
 type Orchestrator struct {
-	engine              *orchestration.Orchestrator // SDK P&E engine
-	planner             *planner.Planner            // for PlanContinuation in P&E continuations
 	router              *router.Router
 	llm                 agent.LLMCaller
 	modelSwitcher       *llm.Router // raw LLM router for per-message model override
 	toolRegistry        *sdktools.ToolRegistry
+	toolExec            agent.ToolExecutor // executor tool surface (per-session policy view)
 	coreToolRegistry    *tools.ToolRegistry // core registry with policy support
 	config              OrchestratorConfig
 	contextFactory      ContextManagerFactory
@@ -128,23 +124,20 @@ type Orchestrator struct {
 	vectorSearchFunc    builtins.VectorSearchFunc
 	skillManager        *skills.SkillManager // for skill discovery and activation
 
+	// Conductor dependencies (stored at construction time for runConductor).
+	reflector        *reflector.Reflector
+	providerName     string
+	stepDumpTracker  *orchestration.StepDumpTracker
+	toolCache        *agent.ToolResultCache
+	perToolTrunc     map[string]agent.ToolTruncationConfig
+	toolResultBudget agent.ToolResultBudget
+	circuitBreaker   agent.CircuitBreakerConfig
+
 	// isNoProject is set to true when this orchestrator runs inside the
 	// "No Project" pseudo-project. When true, the routing domain is
 	// overridden from "code" to "general" so that code-oriented planning
 	// and execution strategies are not applied.
 	isNoProject bool
-
-	// currentRequestCtx captures the ctx produced at the top of HandleMessage
-	// (after WithActiveSkills). coreStepConfigurator's step-local skill narrowing
-	// and plannerSDKAdapter's Replan callback both read from this pointer to
-	// access the router-matched skill pool. One active request per *Orchestrator
-	// is the same concurrency assumption as conversationHistory above.
-	currentRequestCtx atomic.Pointer[context.Context]
-
-	// currentRequestSkills holds the router-matched skill descriptors for the
-	// active request. Read by plannerSDKAdapter.Replan to thread skills into
-	// the planner call back from the SDK engine.
-	currentRequestSkills atomic.Pointer[[]skills.SkillDescriptor]
 
 	// requestInFlight enforces the documented "one active request per
 	// *Orchestrator" invariant. HandleMessage CompareAndSwap's it to true on
@@ -170,7 +163,6 @@ var ErrRequestInFlight = errors.New("orchestrator: request already in flight")
 // is called (one struct literal instead of 19 positional arguments).
 type OrchestratorDeps struct {
 	Router           *router.Router
-	Planner          *planner.Planner
 	LLM              agent.LLMCaller
 	ToolExec         agent.ToolExecutor
 	ToolRegistry     *sdktools.ToolRegistry
@@ -206,7 +198,13 @@ type OrchestratorDeps struct {
 // reflector, logger, and emitter are optional (nil-safe).
 func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrator {
 	if cfg.MaxSteps == 0 {
-		cfg.MaxSteps = orchestration.DefaultOrchestrationConfig().MaxSteps
+		cfg.MaxSteps = 80
+	}
+	if cfg.SubagentMaxSteps == 0 {
+		cfg.SubagentMaxSteps = 50
+	}
+	if cfg.MaxRedelegationDepth == 0 {
+		cfg.MaxRedelegationDepth = 2
 	}
 	if cfg.KeepFirst == 0 {
 		cfg.KeepFirst = 3
@@ -214,170 +212,48 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 	if cfg.KeepLast == 0 {
 		cfg.KeepLast = 10
 	}
-	if cfg.MaxRetries == 0 {
-		cfg.MaxRetries = 2 // default: 3 total attempts
+	if cfg.MaxDependencyContextChars == 0 {
+		cfg.MaxDependencyContextChars = 8000
 	}
 	emitter := deps.Emitter
 	if emitter == nil {
 		emitter = &noopEmitter{}
 	}
 
-	// Pre-construct the Orchestrator so the step configurator and planner adapter
-	// can close over its currentRequestCtx / currentRequestSkills pointers.
 	o := &Orchestrator{
-		planner:          deps.Planner,
 		router:           deps.Router,
 		llm:              deps.LLM,
-		modelSwitcher:    deps.ModelSwitcher,
-		toolRegistry:     deps.ToolRegistry,
-		config:           cfg,
-		contextFactory:   deps.ContextFactory,
-		logger:           deps.Logger,
-		emitter:          emitter,
-		modelRegistry:    deps.ModelRegistry,
-		bbFactory:        deps.BBFactory,
-		trackingCaller:   deps.TrackingCaller,
-		tokenCounter:     deps.TokenCounter,
-		vectorSearchFunc: deps.VectorSearchFunc,
-		skillManager:     deps.SkillManager,
-		coreToolRegistry: deps.CoreToolRegistry,
+		modelSwitcher:     deps.ModelSwitcher,
+		toolRegistry:      deps.ToolRegistry,
+		toolExec:          deps.ToolExec,
+		config:            cfg,
+		contextFactory:    deps.ContextFactory,
+		logger:            deps.Logger,
+		emitter:           emitter,
+		modelRegistry:     deps.ModelRegistry,
+		bbFactory:         deps.BBFactory,
+		trackingCaller:    deps.TrackingCaller,
+		tokenCounter:      deps.TokenCounter,
+		vectorSearchFunc:  deps.VectorSearchFunc,
+		skillManager:      deps.SkillManager,
+		coreToolRegistry:  deps.CoreToolRegistry,
+		reflector:         deps.Reflector,
+		providerName:      deps.ProviderName,
+		stepDumpTracker:   deps.StepDumpTracker,
+		toolCache:         deps.ToolCache,
+		perToolTrunc:      deps.PerToolTruncation,
+		toolResultBudget:  deps.ToolResultBudget,
+		circuitBreaker:    deps.CircuitBreaker,
 	}
 
-	// plannerAdapter adapts core.*Planner (which now takes an additional
-	// availableSkills parameter) to sdk/orchestration.Planner. For Replan it
-	// reads the router-matched skill pool captured at the top of HandleMessage.
-	plannerAdapter := &plannerSDKAdapter{
-		planner: deps.Planner,
-		skillsFor: func() []skills.SkillDescriptor {
-			if ptr := o.currentRequestSkills.Load(); ptr != nil {
-				return *ptr
-			}
-			return nil
-		},
-		historyFor: o.plannerHistory,
-	}
-
-	// taskCtxProvider returns the ctx captured at the top of HandleMessage so
-	// the step configurator can derive a step-local WithActiveSkills ctx.
-	taskCtxProvider := func() context.Context {
-		if ptr := o.currentRequestCtx.Load(); ptr != nil {
-			return *ptr
-		}
-		return context.Background()
-	}
-
-	// Build SDK orchestration config
-	sdkCfg := orchestration.Config{
-		Planner:       plannerAdapter,
-		LLM:           deps.LLM,
-		Tools:         deps.ToolExec,
-		ToolRegistry:  deps.ToolRegistry,
-		TokenCounter:  deps.TokenCounter,
-		Model:         cfg.Model,
-		ModelRegistry: deps.ModelRegistry,
-		ContextFactory: func(sys string, meta llm.ModelMetadata, compact string, pruningOverrides ...orchestration.PruningOverride) agent.ContextManager {
-			return deps.ContextFactory(sys, meta, compact, pruningOverrides...)
-		},
-		ContextSetup: func(cm agent.ContextManager, taskDesc string) {
-			if ccm, ok := cm.(interface{ SetTask(string) }); ok {
-				ccm.SetTask(taskDesc)
-			}
-		},
-		CallerForStep: func(cm agent.ContextManager, stepID string) agent.LLMCaller {
-			if deps.TrackingCaller == nil {
-				return deps.LLM
-			}
-			var caller agent.LLMCaller = deps.TrackingCaller
-			if ctm, ok := cm.(interface {
-				ContextTracker() *llm.ContextTokenTracker
-			}); ok {
-				caller = deps.TrackingCaller.WithContextTracker(ctm.ContextTracker())
-			}
-			// DEBUG-level logging (gated on dump tracker, which only exists when DEBUG is enabled)
-			if deps.StepDumpTracker != nil && deps.ProviderName != "" {
-				caller = agent.NewLoggingLLMCaller(caller, deps.ProviderName, deps.Logger)
-			}
-			// Wrap with per-step LLM dump
-			if deps.StepDumpTracker != nil {
-				if w := deps.StepDumpTracker.OpenStepDump(stepID); w != nil {
-					caller = agent.NewDumpCaller(caller, w, deps.Logger)
-				}
-			}
-			return caller
-		},
-		Events:                    &emitterEventsAdapter{Emitter: emitter, logger: deps.Logger},
-		SystemPrompt:              buildSystemPrompt,
-		MaxRetries:                cfg.MaxRetries,
-		MaxSteps:                  cfg.MaxSteps,
-		MaxDependencyContextChars: cfg.MaxDependencyContextChars,
-		ToolResultBudget:          deps.ToolResultBudget,
-		CircuitBreaker:            deps.CircuitBreaker,
-		PreWarningPercent:         cfg.PreWarningPercent,
-		ToolCache:                 deps.ToolCache,
-		PerToolTruncation:         deps.PerToolTruncation,
-		ReasoningEffort:           cfg.ReasoningEffort,
-		StepConfigurator:          coreStepConfigurator(cfg, deps.ModelRegistry, deps.Logger, buildSystemPrompt, taskCtxProvider, deps.SkillManager),
-		HITLHandler:               cfg.HITLHandler,
-		StepDumpTracker:           deps.StepDumpTracker,
-	}
-
-	// Configure state factory to use core's blackboard factory.
-	// If the factory produces a PersistentBlackboard, wire the emitter so
-	// persistence warnings are surfaced to the user instead of being silently logged.
-	if deps.BBFactory != nil {
-		capturedEmitter := emitter // capture for closure
-		sdkCfg.StateFactory = func(taskID string) orchestration.Blackboard {
-			bb := deps.BBFactory(taskID)
-			if pbb, ok := bb.(PersistableBlackboard); ok {
-				pbb.SetEmitter(capturedEmitter)
-			}
-			return bb
-		}
-	}
-
-	// Wire optional strategies
-	if deps.Reflector != nil {
-		sdkCfg.Reflection = deps.Reflector
-	}
-
-	o.engine = orchestration.New(sdkCfg)
 	return o
 }
 
-// Cleanup releases all resources held by the orchestrator engine (e.g., per-step dump files).
+// Cleanup releases all resources held by the orchestrator (e.g., per-step dump files).
 // Idempotent — safe to call multiple times.
 func (o *Orchestrator) Cleanup() {
-	if o.engine != nil {
-		o.engine.Cleanup()
-	}
-}
-
-// plannerSDKAdapter adapts the core *Planner (whose public methods now take
-// an additional availableSkills parameter) to the stable sdk/orchestration.Planner
-// interface. skillsFor returns the router-matched skill pool for the current
-// request (read from Orchestrator state captured in HandleMessage).
-type plannerSDKAdapter struct {
-	planner   *planner.Planner
-	skillsFor func() []skills.SkillDescriptor
-	// historyFor returns the (compacted) conversation history of the owning
-	// Orchestrator so engine-initiated planning sees the dialogue context.
-	historyFor func() []llm.Message
-}
-
-func (a *plannerSDKAdapter) Plan(ctx context.Context, task string, availableTools []sdktools.ToolDescriptor, reflections []orchestration.Reflection) (*orchestration.Plan, error) {
-	var history []llm.Message
-	if a.historyFor != nil {
-		history = a.historyFor()
-	}
-	return a.planner.Plan(ctx, task, filterPlannerPromptTools(availableTools), reflections, a.skillsFor(), false, history)
-}
-
-func (a *plannerSDKAdapter) Replan(ctx context.Context, plan *orchestration.Plan, completed []orchestration.CompletedStep, failedStep orchestration.CompletedStep, reflection *orchestration.Reflection, reflections []orchestration.Reflection) (*orchestration.Plan, error) {
-	return a.planner.Replan(ctx, plan, completed, failedStep, reflection, reflections, a.skillsFor())
-}
-
-func (a *plannerSDKAdapter) PlanContinuation(ctx context.Context, originalRequest string, existingPlan *orchestration.Plan, completedSteps []orchestration.CompletedStep, newMessage string, availableTools []sdktools.ToolDescriptor, conversationHistory []llm.Message, taskComplete bool) (*orchestration.Plan, error) {
-	return a.planner.PlanContinuation(ctx, originalRequest, existingPlan, completedSteps, newMessage, filterPlannerPromptTools(availableTools), a.skillsFor(), false, conversationHistory, taskComplete)
+	// StepDumpTracker cleanup is owned by the session layer; the orchestrator
+	// only holds a reference for per-step dump wiring. No-op here.
 }
 
 // logInfo logs an INFO level message if logger is not nil.
@@ -452,7 +328,7 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 // limit reached). Callers should check errors.Is(err, orchestration.ErrExecutionIncomplete)
 // and use the returned HandleResult for partial output, plan state, and blackboard.
 // All other errors indicate complete failure; the task is marked failed and nil is returned.
-func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision) (result *HandleResult, err error) {
+func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision, plansDir string) (result *HandleResult, err error) {
 	o.logDebug("orchestrator: resume started")
 
 	// Record the resumed execution's outcome in the in-memory conversation
@@ -473,52 +349,44 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	if pbb, ok := bb.(PersistableBlackboard); ok {
 		pbb.SetEmitter(o.emitter)
 	}
-	plan := bb.GetPlan()
-	if plan == nil {
-		o.logDebug("orchestrator: resume failed, no plan in blackboard")
-		return nil, errors.New("no plan found in restored blackboard")
-	}
 
 	// Emit initial context_fill
 	o.emitInitialContextFill(ctx)
 
 	// Emit routing decision so the frontend can display the resumed context.
 	if routing != nil {
-		o.emitter.Routing("plan_execute", routing.Domain, strconv.Itoa(routing.Complexity))
+		o.emitter.Routing("conductor", routing.Domain, strconv.Itoa(routing.Complexity))
 	}
 
-	o.logInfo("resume_task", "plan_steps", len(plan.Steps), "reflections", len(bb.GetReflections()))
+	o.logInfo("resume_task", "reflections", len(bb.GetReflections()))
 
-	// Delegate to SDK engine
-	o.logDebug("orchestrator: invoking SDK engine for resume", "planSteps", len(plan.Steps))
-	execResult, err := o.engine.Resume(ctx, bb)
+	// Delegate to the Conductor. The restored blackboard carries facts and
+	// step results from the prior run; the Conductor reads them via tools
+	// (search_facts, read_step_output) and continues toward completion.
+	availableTools := o.toolRegistry.List()
+	if o.coreToolRegistry != nil {
+		availableTools = o.toolRegistry.ListFiltered(o.coreToolRegistry.DisabledTools())
+	}
+	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir)
 	var incompleteErr error
-	if err != nil {
-		if errors.Is(err, orchestration.ErrExecutionIncomplete) {
-			if execResult == nil {
-				return nil, fmt.Errorf("orchestrator: ErrExecutionIncomplete with nil result: %w", err)
-			}
-			o.logDebug("orchestrator: SDK engine resume reported incomplete execution", "error", err)
-			incompleteErr = err
-		} else {
-			o.logDebug("orchestrator: SDK engine resume returned error", "error", err)
-			if pbb, ok := bb.(PersistableBlackboard); ok {
-				pbb.FailTask()
-			}
-			return nil, err
+	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
+		if pbb, ok := bb.(PersistableBlackboard); ok {
+			pbb.FailTask()
 		}
+		return nil, err
 	}
-	o.logDebug("orchestrator: SDK engine resume completed", "attemptCount", execResult.AttemptCount)
+	incompleteErr = err
+	if execResult == nil {
+		execResult = &orchestration.ExecutionResult{}
+	}
 
 	result = &HandleResult{
 		Output:          execResult.Output,
 		RoutingDecision: routing,
 		Plan:            execResult.Plan,
 		Blackboard:      execResult.Blackboard,
-		AttemptCount:    execResult.AttemptCount,
 		Reflections:     execResult.Reflections,
 		Status:          execResult.Status,
-		FailedSteps:     execResult.FailedSteps,
 	}
 
 	// Persist the task outcome according to the typed execution status.
@@ -527,7 +395,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 		persistTaskOutcome(pbb, execResult)
 	}
 
-	o.logDebug("orchestrator: resume completed", "attemptCount", result.AttemptCount)
+	o.logDebug("orchestrator: resume completed")
 	// Propagate ErrExecutionIncomplete alongside the best-effort result, as
 	// documented: callers must errors.Is-check and still use the result.
 	return result, incompleteErr
@@ -677,13 +545,6 @@ func (o *Orchestrator) readAgentsMD(path string) (string, error) {
 	return contentStr, nil
 }
 
-// shouldUseSingleStep determines whether to use a single-step plan.
-// Only ExecutionModeNormal mode produces exactly 1 step; everything else
-// (including empty string) defaults to full multi-step Plan&Execute.
-func (o *Orchestrator) shouldUseSingleStep(mode string) bool {
-	return mode == ExecutionModeNormal
-}
-
 // emitInitialContextFill emits a 0% context_fill so the frontend has a baseline.
 func (o *Orchestrator) emitInitialContextFill(ctx context.Context) {
 	var effectiveMax int
@@ -745,14 +606,15 @@ func (o *Orchestrator) LookupSkillDescriptors(names []string) []skills.SkillDesc
 }
 
 // SetReasoningEffort propagates the per-request reasoning effort to all components
-// that make LLM calls: router, planner, the SDK P&E engine, and the direct LLM caller.
+// that make LLM calls: router, reflector, and the direct LLM caller.
 func (o *Orchestrator) SetReasoningEffort(effort string) {
 	o.config.ReasoningEffort = effort
-	o.router.SetReasoningEffort(effort)
-	o.planner.Cfg.ReasoningEffort = effort
-	o.engine.SetReasoningEffort(effort)
-	// Propagate to the direct LLM caller used by SemanticValidatePlan and
-	// other internal LLM calls that bypass router/planner/engine.
+	if o.router != nil {
+		o.router.SetReasoningEffort(effort)
+	}
+	if o.reflector != nil {
+		o.reflector.SetReasoningEffort(effort)
+	}
 	if setter, ok := o.llm.(interface{ SetReasoningEffort(string) }); ok {
 		setter.SetReasoningEffort(effort)
 	}
@@ -776,23 +638,6 @@ func (o *Orchestrator) ConversationHistory() []llm.Message {
 	return o.conversationHistory
 }
 
-// plannerHistory returns the conversation history prepared for planner
-// prompts: compacted to the configured token budget when necessary.
-// The in-memory conversationHistory is never modified; only the planner
-// sees the compacted version.
-func (o *Orchestrator) plannerHistory() []llm.Message {
-	history := o.conversationHistory
-	if o.config.PlannerHistoryBudgetTokens > 0 && o.tokenCounter != nil && len(history) > 0 {
-		compacted, err := sdkmemory.CompactConversationHistory(history, o.config.PlannerHistoryBudgetTokens, o.tokenCounter, o.config.PlannerHistoryKeepRecentRatio)
-		if err != nil {
-			o.logDebug("orchestrator: conversation history compaction failed, using raw history", "error", err)
-			return history
-		}
-		return compacted
-	}
-	return history
-}
-
 // HistoryNoteCancelled is the assistant-side conversation-history note
 // recorded when a task is cancelled before completion. The backend uses the
 // same note when reconstructing history from the message store so live and
@@ -812,7 +657,7 @@ func HistoryNoteFailed(errText string) string {
 
 // recordConversationOutcome appends the current exchange to the in-memory
 // conversation history. It is invoked (via defer) for EVERY terminal outcome
-// of HandleMessage — success, partial success, clarification, plan review,
+// of HandleMessage — success, partial success, failure, cancellation —
 // failure, and cancellation — so the router and continuation planner always
 // see the full dialogue, not just successful exchanges.
 func (o *Orchestrator) recordConversationOutcome(ctx context.Context, message string, result *HandleResult, err error) {
@@ -835,15 +680,6 @@ func (o *Orchestrator) recordConversationOutcome(ctx context.Context, message st
 	switch {
 	case err == nil || errors.Is(err, orchestration.ErrExecutionIncomplete):
 		if result == nil {
-			// Defensive: no output to record; keep the user message so
-			// future routing/planning still sees the request.
-			o.conversationHistory = append(o.conversationHistory, userMsg)
-			return
-		}
-		if result.PlanReviewPhase != "" {
-			// Plan review: the exchange is not complete yet. Record the
-			// user message now; the assistant output is recorded by Resume
-			// once the approved plan finishes executing.
 			o.conversationHistory = append(o.conversationHistory, userMsg)
 			return
 		}
@@ -876,7 +712,7 @@ func (o *Orchestrator) recordConversationOutcome(ctx context.Context, message st
 }
 
 // recordResumeOutcome appends the outcome of a resumed execution (interrupted
-// task or approved plan review) to the in-memory conversation history. The
+// task) to the in-memory conversation history. The
 // user message that spawned the task was recorded when the task first ran (or
 // restored from the message store after a restart), so only the assistant
 // side is appended here.
@@ -917,7 +753,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	defer o.requestInFlight.Store(false)
 
 	// Record the exchange in the in-memory conversation history for EVERY
-	// terminal outcome (success, clarification, plan review, failure,
+	// terminal outcome (success, failure, cancellation) of HandleMessage
 	// cancellation) so future routing and continuation planning always see
 	// the full dialogue. Registered after the single-flight guard so a
 	// rejected concurrent request is not recorded.
@@ -958,27 +794,14 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	}
 	o.logDebug("orchestrator: tools loaded from registry", "total", len(availableTools), "mcp", mcpCount)
 
-	// 3. Route and activate skills; may short-circuit with clarification.
+	// 3. Route and activate skills.
 	// Continuation fast-path: routeOrContinue skips the router when a restored
 	// task has an existing plan + routing (the router is blind to the plan and
-	// would force clarification on continuation messages).
-	ctx, routing, activeSkills, clarification, err := o.routeOrContinue(ctx, message, opts, bb, availableTools)
+	// would misclassify continuation messages).
+	ctx, routing, _, _, err := o.routeOrContinue(ctx, message, opts, bb, availableTools)
 	if err != nil {
 		return nil, err
 	}
-	if clarification != nil {
-		return clarification, nil
-	}
-
-	// Capture ctx and skills for step configurator / planner adapter. Cleared on return.
-	ctxCopy := ctx
-	o.currentRequestCtx.Store(&ctxCopy)
-	skillsCopy := activeSkills
-	o.currentRequestSkills.Store(&skillsCopy)
-	defer func() {
-		o.currentRequestCtx.Store(nil)
-		o.currentRequestSkills.Store(nil)
-	}()
 
 	// 4. Enrich context with domain/complexity/user-skills for execution.
 	ctx = WithDomain(ctx, routing.Domain)
@@ -987,37 +810,22 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		ctx = WithUserSkills(ctx, opts.UserSkills)
 	}
 
-	// 5. Execute (first message or continuation).
-	// Persist the routing decision on the blackboard so executeFirstMessage /
-	// executeContinuation can retrieve it without taking it as a parameter.
+	// 5. Execute via the Conductor (single ReAct loop owning the task).
+	// Persist the routing decision on the blackboard so the Conductor and
+	// finalization can retrieve it.
 	if pbb, ok := bb.(PersistableBlackboard); ok {
 		pbb.SetRouting(routing)
 	}
 
-	// Plan review: bypass normal execution and return early with plan review phase set.
-	if opts.PlanReview && opts.TaskID == "" {
-		reviewResult, reviewErr := o.HandlePlanReview(ctx, message, sessionID, bb, availableTools, activeSkills, opts, routing)
-		if reviewErr != nil {
-			return nil, reviewErr
-		}
-		return reviewResult, nil
-	}
-
-	var execResult *orchestration.ExecutionResult
-	switch opts.TaskID {
-	case "":
-		execResult, err = o.executeFirstMessage(ctx, message, bb, availableTools, activeSkills, opts)
-	default:
-		execResult, err = o.executeContinuation(ctx, message, bb, availableTools, activeSkills, opts)
-	}
+	plansDir := opts.SessionPlansDir
+	execResult, err := o.runConductor(ctx, message, bb, availableTools, plansDir)
 	// C-5: propagate ErrExecutionIncomplete alongside best-effort result.
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
 		return nil, err
 	}
 	incompleteErr := err
 
-	// Guard against nil execResult: executeFirstMessage / executeContinuation may
-	// return (nil, ErrExecutionIncomplete) when the SDK engine returns a nil result.
+	// Guard against nil execResult.
 	if execResult == nil {
 		execResult = &orchestration.ExecutionResult{}
 	}

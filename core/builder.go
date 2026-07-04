@@ -26,7 +26,6 @@ import (
 	"github.com/v0lka/c0wrk/sdk/llm"
 	sdkmemory "github.com/v0lka/c0wrk/sdk/memory"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/sdk/planner"
 	"github.com/v0lka/c0wrk/sdk/prompt"
 	"github.com/v0lka/c0wrk/sdk/skills"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
@@ -80,7 +79,7 @@ func (b *OrchestratorBuilder) log() *slog.Logger {
 // MCP gateway and LLM router initialization happens asynchronously so that
 // this function returns immediately. Callers that need those components
 // (Build, GenerateTitle, etc.) block until the background init finishes.
-func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, logger *slog.Logger) (*OrchestratorBuilder, error) {
+func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, planApprovalFunc tools.ApprovalFunc, logger *slog.Logger) (*OrchestratorBuilder, error) {
 	// Defensive default: if the caller did not provide an env-var expander,
 	// fall back to a no-op so that downstream callers (proxy/MCP/LLM config)
 	// don't panic on a nil function pointer. The real expander is supplied by
@@ -120,6 +119,7 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, l
 
 	toolsCfg := configToBuiltinToolsConfig(cfg)
 	toolsCfg.AskUserFunc = askUserFunc
+	toolsCfg.PlanApprovalFunc = planApprovalFunc
 	toolsCfg.HTTPClient = b.proxyClient
 	if err := tools.RegisterBuiltinTools(b.registry, toolsCfg); err != nil {
 		return nil, fmt.Errorf("registering built-in tools: %w", err)
@@ -311,12 +311,12 @@ func (b *OrchestratorBuilder) Build(
 
 	// Build core agents (router, planner, reflector) with tracking caller
 	tokenCounter := llm.NewSimpleTokenCounter()
-	coreRouter, corePlanner, coreReflector, err := b.buildCoreAgents(trackingCaller, cfg, emitter, logger, modelReg, contextFactory, tokenCounter, dumpWriter, stepDumpTracker)
+	coreRouter, coreReflector, err := b.buildCoreAgents(trackingCaller, cfg, emitter, logger, modelReg, dumpWriter)
 	if err != nil {
 		return nil, fmt.Errorf("building core agents: %w", err)
 	}
-	if coreRouter == nil || corePlanner == nil {
-		return nil, errors.New("orchestrator dependencies not initialized: LLM router, router, or corePlanner is nil")
+	if coreRouter == nil {
+		return nil, errors.New("orchestrator dependencies not initialized: LLM router or router is nil")
 	}
 
 	// Resolve reasoning effort for step executors
@@ -325,11 +325,9 @@ func (b *OrchestratorBuilder) Build(
 	// Build orchestrator config
 	orchConfig := OrchestratorConfig{
 		MaxSteps:                      cfg.Executor.MaxReactSteps,
+		SubagentMaxSteps:              cfg.Executor.MaxReactSteps, // default: same as conductor; tunable later
 		KeepFirst:                     cfg.Executor.Compaction.SlidingWindow.KeepFirst,
 		KeepLast:                      cfg.Executor.Compaction.SlidingWindow.KeepLast,
-		MaxRetries:                    cfg.Executor.MaxRetries,
-		PlannerHistoryBudgetTokens:    cfg.Orchestration.PlannerHistoryBudgetTokens,
-		PlannerHistoryKeepRecentRatio: cfg.Orchestration.PlannerHistoryKeepRecentRatio,
 		MaxDependencyContextChars:     cfg.Orchestration.MaxDependencyContextChars,
 		// OrchestratorConfig.Model is used for model METADATA resolution
 		// (ModelRegistry.Resolve keys on the bare model name), not for routing —
@@ -396,7 +394,6 @@ func (b *OrchestratorBuilder) Build(
 
 	return NewOrchestrator(orchConfig, OrchestratorDeps{
 		Router:            coreRouter,
-		Planner:           corePlanner,
 		LLM:               loggedLLM,
 		ModelSwitcher:     llmRouter,
 		ToolExec:          sessionRegistry,         // ToolExecutor (per-session policy view)
@@ -897,87 +894,32 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	return llmRouter, modelRegistry, nil
 }
 
-// buildCoreAgents creates the core Router, Planner, Reflector.
+// buildCoreAgents creates the core Router and Reflector.
 func (b *OrchestratorBuilder) buildCoreAgents(
 	caller agent.LLMCaller,
 	cfg *BuilderConfig,
 	emitter Emitter,
 	logger *slog.Logger,
 	modelRegistry *llm.ModelRegistry,
-	contextFactory ContextManagerFactory,
-	tokenCounter llm.TokenCounter,
 	dumpWriter io.Writer,
-	stepDumpTracker *orchestration.StepDumpTracker,
-) (*router.Router, *planner.Planner, *reflector.Reflector, error) {
+) (*router.Router, *reflector.Reflector, error) {
 	if caller == nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil
 	}
 	providerName := cfg.LLM.DefaultProviderName()
 	loggedCaller := agent.NewLoggingLLMCaller(caller, providerName, logger)
 	loggedCaller = agent.NewDumpCaller(loggedCaller, dumpWriter, logger)
 	coreRouter := newCoreRouter(loggedCaller, cfg.Router.HistoryWindow)
-	corePlanner, err := newCorePlanner(loggedCaller, b.registry)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("creating planner: %w", err)
-	}
 	coreReflector := newCoreReflector(loggedCaller)
 
 	if modelRegistry != nil {
 		coreRouter.SetModelRegistry(modelRegistry)
-		corePlanner.Cfg.ModelRegistry = modelRegistry
 	}
 
-	// Wire reasoning effort for all agents
 	coreRouter.SetReasoningEffort(b.reasoningEffort)
 	coreReflector.SetReasoningEffort(b.reasoningEffort)
-	corePlanner.Cfg.ReasoningEffort = b.reasoningEffort
 
-	// Wire planner exploration dependencies
-	corePlanner.Cfg.Logger = logger
-	// Planner.Cfg.Model is used for model METADATA resolution only, not routing
-	// — strip any provider prefix from a composite DefaultModel.
-	corePlanner.Cfg.Model = llm.BareModel(cfg.LLM.DefaultModel)
-	corePlanner.Cfg.TokenCounter = tokenCounter
-	corePlanner.Cfg.ContextFactory = plannerContextFactoryAdapter(contextFactory)
-	corePlanner.Cfg.Emitter = emitter
-	corePlanner.Cfg.MaxExploreSteps = cfg.Orchestration.MaxPlannerExploreSteps
-
-	// Wire CallerForStep so exploration's ContextTokenTracker gets corrected by API responses
-	if tc, ok := caller.(*llm.TrackingCaller); ok {
-		corePlanner.Cfg.CallerForStep = func(cm agent.ContextManager, stepID string) agent.LLMCaller {
-			var base agent.LLMCaller = tc
-			if ctm, ok := cm.(interface {
-				ContextTracker() *llm.ContextTokenTracker
-			}); ok {
-				base = tc.WithContextTracker(ctm.ContextTracker())
-			}
-			// DEBUG-level logging (gated on dump tracker, which only exists when DEBUG is enabled)
-			if stepDumpTracker != nil && providerName != "" {
-				base = agent.NewLoggingLLMCaller(base, providerName, logger)
-			}
-			// Wrap with per-step LLM dump
-			if stepDumpTracker != nil {
-				if w := stepDumpTracker.OpenStepDump(stepID); w != nil {
-					base = agent.NewDumpCaller(base, w, logger)
-				}
-			}
-			return base
-		}
-	}
-
-	return coreRouter, corePlanner, coreReflector, nil
-}
-
-// plannerContextFactoryAdapter adapts a core ContextManagerFactory to the planner's
-// ContextManagerFactory signature by dropping the variadic PruningOverride parameter
-// (the planner never uses pruning overrides during exploration).
-func plannerContextFactoryAdapter(cf ContextManagerFactory) planner.ContextManagerFactory {
-	if cf == nil {
-		return nil
-	}
-	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string) agent.ContextManager {
-		return cf(systemPrompt, modelMeta, compactionStrategy)
-	}
+	return coreRouter, coreReflector, nil
 }
 
 // buildContextFactory creates a ContextManagerFactory using the tracking caller for

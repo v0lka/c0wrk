@@ -14,10 +14,6 @@ export function AppendToGitignore(arg1) {
   return window['go']['desktop']['App']['AppendToGitignore'](arg1);
 }
 
-export function ApprovePlan(arg1, arg2) {
-  return window['go']['desktop']['App']['ApprovePlan'](arg1, arg2);
-}
-
 export function ArchiveSession(arg1) {
   return window['go']['desktop']['App']['ArchiveSession'](arg1);
 }
@@ -230,10 +226,6 @@ export function Rebase(arg1) {
   return window['go']['desktop']['App']['Rebase'](arg1);
 }
 
-export function RejectPlan(arg1, arg2) {
-  return window['go']['desktop']['App']['RejectPlan'](arg1, arg2);
-}
-
 export function RenameProject(arg1, arg2) {
   return window['go']['desktop']['App']['RenameProject'](arg1, arg2);
 }
@@ -258,8 +250,8 @@ export function SearchVectorStore(arg1) {
   return window['go']['desktop']['App']['SearchVectorStore'](arg1);
 }
 
-export function SendMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
-  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+export function SendMessage(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function SetLogLevel(arg1) {

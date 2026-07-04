@@ -7,7 +7,7 @@ import { ToolConfirmation } from './ToolConfirmation'
 import { AskUserPanel } from './AskUserPanel'
 import { ResumeActionPanel } from './ResumeActionPanel'
 import { StepLimitPrompt } from './StepLimitPrompt'
-import { PlanReviewPanel } from './PlanReviewPanel'
+import { PlanApprovalPanel } from './PlanApprovalPanel'
 import { cn } from '@/lib/utils'
 import type { DisplayItem } from '@/types/messages'
 
@@ -38,7 +38,7 @@ export function PendingActionsBar() {
             case 'ask_user': return <AskUserPanel key={a.message.id} item={a} />
             case 'resume_action': return <ResumeActionPanel key={a.message.id} item={a} />
             case 'step_limit': return <StepLimitPrompt key={a.message.id} item={a} />
-            case 'plan_review': return <PlanReviewPanel key={a.message.id} item={a} />
+            case 'plan_review': return <PlanApprovalPanel key={a.message.id} item={a} />
           }
         })}
       </div>

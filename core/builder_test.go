@@ -77,7 +77,7 @@ func TestNewOrchestratorBuilder_NilExpandEnvVars(t *testing.T) {
 		// ExpandEnvVars intentionally omitted.
 	}
 
-	b, err := NewOrchestratorBuilder(cfg, nil, nil)
+	b, err := NewOrchestratorBuilder(cfg, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewOrchestratorBuilder failed: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestBuilder_Build_FullPipeline(t *testing.T) {
 		ExpandEnvVars: func(s string) string { return s },
 	}
 
-	b, err := NewOrchestratorBuilder(cfg, nil, nil)
+	b, err := NewOrchestratorBuilder(cfg, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("NewOrchestratorBuilder failed: %v", err)
 	}
@@ -171,12 +171,6 @@ func TestBuilder_Build_FullPipeline(t *testing.T) {
 		// If the local LM Studio happens to be running, verify basic wiring.
 		if orch.router == nil {
 			t.Error("expected non-nil router in orchestrator")
-		}
-		if orch.planner == nil {
-			t.Error("expected non-nil planner in orchestrator")
-		}
-		if orch.engine == nil {
-			t.Error("expected non-nil SDK engine in orchestrator")
 		}
 		t.Log("Build succeeded (LM Studio was reachable)")
 	} else {

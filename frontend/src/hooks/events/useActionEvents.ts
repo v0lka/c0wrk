@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
-import { isAskUserData, isStepLimitData, isTaskFailedResumableData } from '@/types/events'
+import { isAskUserData, isStepLimitData, isTaskFailedResumableData, isPlanReviewReadyData } from '@/types/events'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import { generateMessageId } from '@/lib/ids'
 
@@ -92,6 +92,26 @@ export function useActionEvents(sessionId: string | null): void {
         }
         store.setTaskActive(sessionId, true)
         store.setActivityStatus('Resuming...')
+      }),
+    )
+
+    // --- plan_review_ready (declare_plan await_approval) ---
+    cleanups.push(
+      onSessionEvent(sessionId, 'plan_review_ready', (data) => {
+        if (!isPlanReviewReadyData(data)) { reportDroppedEvent('plan_review_ready', data); return }
+        useChatStore.getState().addMessage(sessionId, {
+          id: `plan-review-${data.request_id}`,
+          sessionId,
+          type: 'plan_review',
+          content: data.plan_content,
+          metadata: {
+            request_id: data.request_id,
+            plan_path: data.plan_path,
+            resolved: false,
+          } as Record<string, unknown>,
+          timestamp: Date.now(),
+        })
+        useChatStore.getState().setActivityStatus('Plan is ready for review...')
       }),
     )
 

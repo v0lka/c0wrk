@@ -170,6 +170,7 @@ export namespace backend {
 	}
 	export class ModelInfo {
 	    name: string;
+	    provider: string;
 	    family: string;
 	    reasoning?: ReasoningInfo;
 	
@@ -180,6 +181,7 @@ export namespace backend {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
+	        this.provider = source["provider"];
 	        this.family = source["family"];
 	        this.reasoning = this.convertValues(source["reasoning"], ReasoningInfo);
 	    }
@@ -793,9 +795,6 @@ export namespace session {
 	    total_output_tokens: number;
 	    model: string;
 	    family: string;
-	    plan_review_phase: string;
-	    plan_review_path: string;
-	    plan_review_context: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
@@ -814,9 +813,6 @@ export namespace session {
 	        this.total_output_tokens = source["total_output_tokens"];
 	        this.model = source["model"];
 	        this.family = source["family"];
-	        this.plan_review_phase = source["plan_review_phase"];
-	        this.plan_review_path = source["plan_review_path"];
-	        this.plan_review_context = source["plan_review_context"];
 	    }
 	}
 	export class SessionRuntimeStatus {

@@ -132,9 +132,8 @@ func (f *FrontendAPI) ArchiveSession(id string) error {
 }
 
 // SendMessage sends a user message to a session (async - results come via events).
-// mode controls execution strategy: "normal" = single-step plan, "advanced" = full multi-step DAG.
 // activeSkills contains skill names explicitly referenced by the user via /skill-name syntax.
-func (f *FrontendAPI) SendMessage(id, text, mode string, activeSkills []string, modelOverride, reasoningEffort string, planReview bool) error {
+func (f *FrontendAPI) SendMessage(id, text string, activeSkills []string, modelOverride, reasoningEffort string) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
@@ -161,7 +160,7 @@ func (f *FrontendAPI) SendMessage(id, text, mode string, activeSkills []string, 
 	// Preprocess text for the orchestrator: strip /skill refs and convert @file refs to fileref:// URIs.
 	processedText := core.PreprocessMessageText(text, activeSkills)
 
-	if err := f.app.Manager().SendMessage(f.ctx(), id, processedText, mode, activeSkills, modelOverride, reasoningEffort, planReview); err != nil {
+	if err := f.app.Manager().SendMessage(f.ctx(), id, processedText, activeSkills, modelOverride, reasoningEffort); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 	return nil

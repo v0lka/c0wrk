@@ -27,9 +27,8 @@ import (
 
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/memory"
+	sdkmemory "github.com/v0lka/c0wrk/sdk/memory"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/sdk/planner"
 	"github.com/v0lka/c0wrk/sdk/tools"
 	"github.com/v0lka/c0wrk/sdk/tools/mcp"
 )
@@ -296,12 +295,18 @@ func New(cfg Config) (*Framework, error) {
 	return fw, nil
 }
 
-// NewOrchestrator creates a new per-session orchestrator wired with the Framework's
+// NewConductor creates a new per-session Conductor wired with the Framework's
 // shared infrastructure (LLM router, tool registry, MCP tools).
 //
-// systemPrompt is a factory that creates system prompts for step executors.
+// systemPrompt is a factory that creates the Conductor's system prompt.
 // events receives lifecycle events; use nil for a no-op emitter.
-func (fw *Framework) NewOrchestrator(systemPrompt orchestration.SystemPromptFactory, events orchestration.Events) (*orchestration.Orchestrator, error) {
+//
+// The Conductor is a single ReAct loop that owns a task end-to-end. The
+// caller is responsible for injecting any Conductor-specific tools (delegate,
+// declare_plan, reflect) into the context before calling Run, if desired.
+// The SDK Conductor primitive itself does not provide those tools; they are
+// an application-layer concern.
+func (fw *Framework) NewConductor(systemPrompt orchestration.SystemPromptFactory, events agent.AgentEvents) (*orchestration.Conductor, error) {
 	if fw.llmRouter == nil {
 		return nil, errors.New("framework not initialized: LLM router is nil")
 	}
@@ -309,88 +314,31 @@ func (fw *Framework) NewOrchestrator(systemPrompt orchestration.SystemPromptFact
 	tokenCounter := llm.NewSimpleTokenCounter()
 	loggedLLM := agent.NewLoggingLLMCaller(agent.LLMCaller(fw.llmRouter), fw.llmRouter.ActiveProviderName(), fw.logger)
 
-	// Create session-level usage tracker + tracking caller for per-step context correction.
+	// Session-level usage tracker + tracking caller for per-step context correction.
 	usageTracker := llm.NewUsageTracker()
 	trackingCaller := llm.NewTrackingCaller(loggedLLM, usageTracker)
 
-	// Build planner config
-	plannerCfg := planner.DefaultPlannerConfig()
-	plannerCfg.Prompts = planner.PromptSet{} // empty = use embedded defaults
-	plannerCfg.ToolRegistry = fw.tools
-	plannerCfg.ModelRegistry = fw.modelReg
-	// PlannerCfg.Model is used for model metadata resolution only (the registry
-	// keys on the bare model name); strip any provider prefix.
-	plannerCfg.Model = llm.BareModel(fw.cfg.LLM.DefaultModel)
-	plannerCfg.Logger = fw.logger
-	plannerCfg.TokenCounter = tokenCounter
-	plannerCfg.MaxExploreSteps = 7
-	plannerCfg.ReasoningEffort = ""
-
-	corePlanner, err := planner.NewPlanner(loggedLLM, plannerCfg)
-	if err != nil {
-		return nil, fmt.Errorf("creating planner: %w", err)
+	conductorCfg := orchestration.ConductorConfig{
+		LLM:               trackingCaller,
+		Tools:             fw.tools,
+		ToolRegistry:      fw.tools,
+		TokenCounter:      tokenCounter,
+		Model:             llm.BareModel(fw.cfg.LLM.DefaultModel),
+		ModelRegistry:     fw.modelReg,
+		ContextFactory:    fw.buildContextWindow,
+		SystemPrompt:      systemPrompt,
+		MaxSteps:          fw.cfg.Execution.MaxSteps,
+		ToolResultBudget:  fw.cfg.Execution.ToolResultBudget,
+		CircuitBreaker:    fw.cfg.Execution.CircuitBreaker,
+		HITLHandler:       fw.cfg.HITL,
+		PreWarningPercent: fw.cfg.Execution.PreWarningPercent,
+		ToolCache:         fw.toolCache,
 	}
 
-	// Build orchestrator config
-	plannerAdapter := &frameworkPlannerAdapter{planner: corePlanner}
-
-	// Per-step caller: wraps with context tracker correction so that API-reported
-	// token counts feed back into per-step ContextTokenTracker instances.
-	callerForStep := func(cm agent.ContextManager, stepID string) agent.LLMCaller {
-		if ctm, ok := cm.(interface {
-			ContextTracker() *llm.ContextTokenTracker
-		}); ok {
-			if tracker := ctm.ContextTracker(); tracker != nil {
-				return trackingCaller.WithContextTracker(tracker)
-			}
-		}
-		return trackingCaller
-	}
-
-	orchCfg := orchestration.Config{
-		Planner:       plannerAdapter,
-		LLM:           trackingCaller,
-		Tools:         fw.tools,
-		ToolRegistry:  fw.tools,
-		TokenCounter:  tokenCounter,
-		// Config.Model is used for model metadata resolution only (the registry
-		// keys on the bare model name); strip any provider prefix.
-		Model:         llm.BareModel(fw.cfg.LLM.DefaultModel),
-		ModelRegistry: fw.modelReg,
-		ContextFactory: func(sysPrompt string, meta llm.ModelMetadata, compactStrategy string, pruningOverrides ...orchestration.PruningOverride) agent.ContextManager {
-			return fw.buildContextWindow(sysPrompt, meta, compactStrategy, pruningOverrides...)
-		},
-		CallerForStep:             callerForStep,
-		Events:                    events,
-		SystemPrompt:              systemPrompt,
-		MaxRetries:                fw.cfg.Execution.MaxRetries,
-		MaxSteps:                  fw.cfg.Execution.MaxSteps,
-		MaxDependencyContextChars: fw.cfg.Execution.MaxDependencyContextChars,
-		ToolResultBudget:          fw.cfg.Execution.ToolResultBudget,
-		CircuitBreaker:            fw.cfg.Execution.CircuitBreaker,
-		HITLHandler:               fw.cfg.HITL,
-		PreWarningPercent:         fw.cfg.Execution.PreWarningPercent,
-		ToolCache:                 fw.toolCache,
-	}
-
-	// Wire Checkpointer if configured — creates CheckpointedBlackboard per task
-	if fw.cfg.Checkpointer != nil {
-		cp := fw.cfg.Checkpointer
-		logger := fw.logger
-		onChanged := fw.cfg.OnBlackboardChanged
-		orchCfg.StateFactory = func(taskID string) orchestration.Blackboard {
-			pb := orchestration.NewCheckpointedBlackboard(taskID, cp, logger, 0)
-			if onChanged != nil {
-				pb.SetOnChanged(onChanged)
-			}
-			return pb
-		}
-	}
-
-	return orchestration.New(orchCfg), nil
+	return orchestration.NewConductor(conductorCfg), nil
 }
 
-// buildContextWindow creates a memory.ContextWindow for a step executor using
+// buildContextWindow creates a sdkmemory.ContextWindow for a step executor using
 // the Framework's compaction, safety margin, and pruning configuration.
 // Extracted for testability.
 func (fw *Framework) buildContextWindow(sysPrompt string, meta llm.ModelMetadata, compactStrategy string, pruningOverrides ...orchestration.PruningOverride) agent.ContextManager {
@@ -400,7 +348,7 @@ func (fw *Framework) buildContextWindow(sysPrompt string, meta llm.ModelMetadata
 	}
 	tracker := llm.NewContextTokenTracker(counter)
 
-	thresholds := memory.DefaultCompactionThresholds()
+	thresholds := sdkmemory.DefaultCompactionThresholds()
 	if fw.cfg.Compaction.PredictivePercent > 0 {
 		thresholds.PredictivePercent = fw.cfg.Compaction.PredictivePercent
 	}
@@ -411,15 +359,15 @@ func (fw *Framework) buildContextWindow(sysPrompt string, meta llm.ModelMetadata
 		thresholds.EmergencyPercent = fw.cfg.Compaction.EmergencyPercent
 	}
 
-	strategy := memory.NewCompactionStrategy(compactStrategy, memory.CompactionConfig{
+	strategy := sdkmemory.NewCompactionStrategy(compactStrategy, sdkmemory.CompactionConfig{
 		SlidingWindow: struct{ KeepFirst, KeepLast int }{KeepFirst: 3, KeepLast: 10},
-	}, memory.CompactionDeps{
+	}, sdkmemory.CompactionDeps{
 		TokenCounter:       counter,
 		MaxSummarizeTokens: 4000,
 		Summarize:          nil, // summarization requires LLM caller; nil = sliding only
 	})
 
-	pruning := memory.DefaultToolOutputPruning()
+	pruning := sdkmemory.DefaultToolOutputPruning()
 	if len(pruningOverrides) > 0 {
 		if pruningOverrides[0].KeepLastN > 0 {
 			pruning.KeepLastN = pruningOverrides[0].KeepLastN
@@ -429,18 +377,23 @@ func (fw *Framework) buildContextWindow(sysPrompt string, meta llm.ModelMetadata
 		}
 	}
 
-	return memory.NewContextWindow(sysPrompt, meta, tracker, thresholds, strategy, fw.cfg.Execution.SafetyMarginPercent, false, pruning)
+	return sdkmemory.NewContextWindow(sysPrompt, meta, tracker, thresholds, strategy, fw.cfg.Execution.SafetyMarginPercent, false, pruning)
 }
 
-// Execute is a convenience method that creates an orchestrator and executes a single user message.
-// Returns the execution result. For repeated use, call NewOrchestrator() once and reuse it.
-func (fw *Framework) Execute(ctx context.Context, systemPrompt orchestration.SystemPromptFactory, events orchestration.Events, userMessage string) (*orchestration.ExecutionResult, error) {
-	orch, err := fw.NewOrchestrator(systemPrompt, events)
+// Execute is a convenience method that creates a Conductor and executes a
+// single user message. Returns the execution result. For repeated use, call
+// NewConductor() once and reuse it.
+func (fw *Framework) Execute(ctx context.Context, systemPrompt orchestration.SystemPromptFactory, events agent.AgentEvents, userMessage string) (*orchestration.ExecutionResult, error) {
+	conductor, err := fw.NewConductor(systemPrompt, events)
 	if err != nil {
 		return nil, err
 	}
-	defer orch.Cleanup()
-	return orch.Execute(ctx, userMessage)
+	defer conductor.Cleanup()
+
+	bb := orchestration.NewMapBlackboard()
+	bb.SetOriginalRequest(userMessage)
+	availableTools := fw.tools.List()
+	return conductor.Run(ctx, userMessage, bb, availableTools, events, "")
 }
 
 // Shutdown releases all resources held by the Framework (MCP connections, etc.).
@@ -470,22 +423,4 @@ func (fw *Framework) ToolRegistry() *tools.ToolRegistry {
 // LLMRouter returns the shared LLM router for model switching at runtime.
 func (fw *Framework) LLMRouter() *llm.Router {
 	return fw.llmRouter
-}
-
-// frameworkPlannerAdapter adapts *planner.Planner to orchestration.Planner
-// by filling in default values for the extra parameters (skills, singleStep).
-type frameworkPlannerAdapter struct {
-	planner *planner.Planner
-}
-
-func (a *frameworkPlannerAdapter) Plan(ctx context.Context, task string, availableTools []tools.ToolDescriptor, reflections []orchestration.Reflection) (*orchestration.Plan, error) {
-	return a.planner.Plan(ctx, task, availableTools, reflections, nil, false, nil)
-}
-
-func (a *frameworkPlannerAdapter) Replan(ctx context.Context, plan *orchestration.Plan, completed []orchestration.CompletedStep, failedStep orchestration.CompletedStep, reflection *orchestration.Reflection, reflections []orchestration.Reflection) (*orchestration.Plan, error) {
-	return a.planner.Replan(ctx, plan, completed, failedStep, reflection, reflections, nil)
-}
-
-func (a *frameworkPlannerAdapter) PlanContinuation(ctx context.Context, originalRequest string, existingPlan *orchestration.Plan, completedSteps []orchestration.CompletedStep, newMessage string, availableTools []tools.ToolDescriptor, conversationHistory []llm.Message, taskComplete bool) (*orchestration.Plan, error) {
-	return a.planner.PlanContinuation(ctx, originalRequest, existingPlan, completedSteps, newMessage, availableTools, nil, false, conversationHistory, taskComplete)
 }

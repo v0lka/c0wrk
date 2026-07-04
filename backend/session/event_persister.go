@@ -155,43 +155,6 @@ func (p *EventPersister) Persist(evt Event) {
 		return // transient — no persistence needed
 	case "plan_review_ready":
 		role = "plan_review"
-	case "plan_validation_failed":
-		role = "status"
-	case "plan_review_awaiting_feedback":
-		role = "status"
-	case "plan_review_accepted":
-		// Persist as plan_review (not status) so the frontend's message
-		// replay treats it as a resolution of the preceding
-		// plan_review_ready message. The resolved metadata signals the
-		// grouping logic to skip this as a pending action.
-		role = "plan_review"
-		if data, ok := evt.Data.(map[string]any); ok {
-			newData := make(map[string]any, len(data)+2)
-			for k, v := range data {
-				newData[k] = v
-			}
-			newData["resolved"] = true
-			newData["decision"] = "accepted"
-			evt.Data = newData
-		} else {
-			evt.Data = map[string]any{"resolved": true, "decision": "accepted"}
-		}
-	case "plan_review_rejected":
-		// Persist as plan_review (same treatment as plan_review_accepted)
-		// so the frontend resolves the preceding plan_review_ready message
-		// after app restart.
-		role = "plan_review"
-		if data, ok := evt.Data.(map[string]any); ok {
-			newData := make(map[string]any, len(data)+2)
-			for k, v := range data {
-				newData[k] = v
-			}
-			newData["resolved"] = true
-			newData["decision"] = "rejected"
-			evt.Data = newData
-		} else {
-			evt.Data = map[string]any{"resolved": true, "decision": "rejected"}
-		}
 	default:
 		// Unknown event types are dropped from history. Log so schema drift
 		// between emitters and the persister is visible instead of silent.

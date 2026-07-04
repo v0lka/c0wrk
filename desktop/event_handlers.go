@@ -237,6 +237,37 @@ func (a *App) handleAskUserResponse(payload map[string]any, log *slog.Logger) {
 	a.pendingAskUser.Delete(requestID)
 }
 
+// handlePlanApprovalResponse is the body of the EventPlanApprovalResponse listener.
+func (a *App) handlePlanApprovalResponse(payload map[string]any, log *slog.Logger) {
+	requestID, ok := stringField(payload, "request_id", "plan_approval response", log)
+	if !ok {
+		return
+	}
+
+	decision, _ := payload["decision"].(string)
+	feedback, _ := payload["feedback"].(string)
+
+	chVal, ok := a.pendingPlanApprovals.Load(requestID)
+	if !ok {
+		log.Warn("no pending plan approval for request_id", "request_id", requestID)
+		return
+	}
+	ch, ok := chVal.(chan planApprovalResponse)
+	if !ok {
+		log.Warn("pending plan approval channel has wrong type", "request_id", requestID)
+		a.pendingPlanApprovals.Delete(requestID)
+		return
+	}
+
+	select {
+	case ch <- planApprovalResponse{Decision: decision, Feedback: feedback}:
+	default:
+		log.Warn("plan approval response dropped: channel full or receiver gone",
+			"request_id", requestID)
+	}
+	a.pendingPlanApprovals.Delete(requestID)
+}
+
 // parseAskUserAnswers extracts the typed answers slice from the untyped JSON
 // payload. Missing or malformed entries are silently skipped — the question
 // IDs are owned by the orchestrator and unrecognized IDs would be rejected

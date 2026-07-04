@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { MiniCodeMirrorField } from './MiniCodeMirrorField'
 import { parsePlanMarkdown, serializePlanMarkdown, type ParsedPlan, type ParsedStep } from '@/lib/planParser'
-import { writeFile } from '@/api/planReview'
+import { writeFile } from '@/api/files'
 import { useSessionStore } from '@/stores/sessionStore'
 
 interface PlanEditorProps {

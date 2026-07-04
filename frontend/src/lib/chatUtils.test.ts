@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { roleToType, chatMessageToUI, rebuildPlanFromHistory } from './chatUtils'
+import { roleToType, chatMessageToUI, rebuildPlanFromHistory, extractPendingActions } from './chatUtils'
 import type { ChatMessage } from '@/types/models'
 import type { ChatMessageUI } from '@/types/messages'
 
@@ -505,5 +505,52 @@ describe('rebuildPlanFromHistory', () => {
     expect(group.items[0].todoItems).toHaveLength(2)
     expect(group.items[0].todoItems[0].checked).toBe(true)
     expect(group.items[0].todoItems[1].checked).toBe(false)
+  })
+})
+
+describe('extractPendingActions — plan_review', () => {
+  function makeUI(overrides: Partial<ChatMessageUI>): ChatMessageUI {
+    return {
+      id: 'msg-1',
+      sessionId: 'sess-1',
+      type: 'plan_review',
+      content: '',
+      metadata: {},
+      timestamp: Date.now(),
+      ...overrides,
+    }
+  }
+
+  it('includes unresolved plan_review', () => {
+    const actions = extractPendingActions([
+      makeUI({ metadata: { resolved: false } }),
+    ])
+    expect(actions).toHaveLength(1)
+    expect(actions[0]!.kind).toBe('plan_review')
+  })
+
+  it('excludes resolved plan_review', () => {
+    const actions = extractPendingActions([
+      makeUI({ metadata: { resolved: true, decision: 'approve' } }),
+    ])
+    expect(actions).toHaveLength(0)
+  })
+
+  it('includes multiple concurrent unresolved plan_review items', () => {
+    const actions = extractPendingActions([
+      makeUI({ id: 'pr-1', metadata: { resolved: false } }),
+      makeUI({ id: 'pr-2', metadata: { resolved: false } }),
+    ])
+    expect(actions).toHaveLength(2)
+    expect(actions.every(a => a.kind === 'plan_review')).toBe(true)
+  })
+
+  it('filters out resolved items among unresolved ones', () => {
+    const actions = extractPendingActions([
+      makeUI({ id: 'pr-1', metadata: { resolved: true, decision: 'approve' } }),
+      makeUI({ id: 'pr-2', metadata: { resolved: false } }),
+    ])
+    expect(actions).toHaveLength(1)
+    expect((actions[0]! as { message: ChatMessageUI }).message.id).toBe('pr-2')
   })
 })

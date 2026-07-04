@@ -333,6 +333,57 @@ func (a *App) buildAskUserCallback(uiEmit func(session.Event)) coretools.AskUser
 	}
 }
 
+// planApprovalResponse carries the user's decision back to the blocked
+// declare_plan tool call.
+type planApprovalResponse struct {
+	Decision string
+	Feedback string
+}
+
+// buildPlanApprovalCallback returns the closure that turns declare_plan's
+// await_approval mode into a Wails event and waits for the frontend response.
+func (a *App) buildPlanApprovalCallback(uiEmit func(session.Event)) coretools.ApprovalFunc {
+	return func(ctx context.Context, planPath, planMarkdown string) (string, string, error) {
+		if a.ctx == nil {
+			return "", "", errors.New("plan approval not available: no UI context")
+		}
+		sessionID := session.SessionIDFromContext(ctx)
+		if sessionID == "" {
+			return "", "", errors.New("plan approval not available: no session context")
+		}
+
+		if planMarkdown == "" && planPath != "" {
+			content, err := os.ReadFile(planPath)
+			if err != nil {
+				return "", "", fmt.Errorf("plan approval: failed to read plan file: %w", err)
+			}
+			planMarkdown = string(content)
+		}
+
+		requestID := uuid.New().String()
+		ch := make(chan planApprovalResponse, 1)
+		a.pendingPlanApprovals.Store(requestID, ch)
+
+		payload := session.PlanApprovalPayload{
+			RequestID:   requestID,
+			PlanPath:    planPath,
+			PlanContent: planMarkdown,
+		}
+		uiEmit(session.Event{SessionID: sessionID, Type: "plan_review_ready", Data: payload})
+
+		select {
+		case resp := <-ch:
+			return resp.Decision, resp.Feedback, nil
+		case <-ctx.Done():
+			a.pendingPlanApprovals.Delete(requestID)
+			return "", "", ctx.Err()
+		case <-a.ctx.Done():
+			a.pendingPlanApprovals.Delete(requestID)
+			return "", "", a.ctx.Err()
+		}
+	}
+}
+
 // buildConfirmCallback returns the tool-confirmation closure. C-4 contract:
 // when no UI context is available we return ConfirmDenyAndStop and log a
 // warning rather than auto-approving — silently allowing in this path would

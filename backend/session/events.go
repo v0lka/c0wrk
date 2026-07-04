@@ -55,14 +55,12 @@ type TaskCompleteData struct {
 	Output          string                     `json:"output"`
 	RoutingDecision *router.RoutingDecision    `json:"routing_decision"`
 	Plan            *orchestration.Plan        `json:"plan,omitempty"`
-	AttemptCount    int                        `json:"attempt_count,omitempty"`
 	Reflections     []orchestration.Reflection `json:"reflections,omitempty"`
 	// Typed success contract: Success is false for partial/failed/aborted
 	// executions that are still delivered as task_complete so the best-effort
 	// output reaches the user. Completion refines the outcome.
 	Success     bool   `json:"success"`
 	Completion  string `json:"completion,omitempty"` // "full" | "partial" | "failed" | "aborted"
-	FailedSteps int    `json:"failed_steps,omitempty"`
 }
 
 // TaskCancelledData is the payload for "task_cancelled" events.
@@ -80,30 +78,6 @@ type TaskFailedResumableData struct {
 type ErrorData struct {
 	SessionID string `json:"session_id"`
 	Error     string `json:"error"`
-}
-
-// --- Plan review event payloads ---
-
-// PlanReviewReadyData is the payload for "plan_review_ready" events.
-type PlanReviewReadyData struct {
-	SessionID   string `json:"session_id"`
-	PlanPath    string `json:"plan_path"`
-	PlanContent string `json:"plan_content"`
-}
-
-// ValidationIssue describes a single validation failure.
-type ValidationIssue struct {
-	StepIndex   int    `json:"step_index,omitempty"`
-	Field       string `json:"field"`
-	Severity    string `json:"severity"` // "error" | "warning"
-	Description string `json:"description"`
-	Suggestion  string `json:"suggestion,omitempty"`
-}
-
-// PlanValidationFailedData is the payload for "plan_validation_failed" events.
-type PlanValidationFailedData struct {
-	SessionID string            `json:"session_id"`
-	Issues    []ValidationIssue `json:"issues"`
 }
 
 // --- Tool confirmation payloads ---
@@ -152,6 +126,24 @@ type StepLimitPayload struct {
 type StepLimitResponsePayload struct {
 	RequestID string `json:"request_id"`
 	Response  string `json:"response"` // "allow_once", "allow_always", or "deny"
+}
+
+// --- Plan approval payloads ---
+
+// PlanApprovalPayload is sent to the frontend when the Conductor calls
+// declare_plan with mode=await_approval and the plan is ready for review.
+type PlanApprovalPayload struct {
+	RequestID   string `json:"request_id"`
+	PlanPath    string `json:"plan_path"`
+	PlanContent string `json:"plan_content"`
+}
+
+// PlanApprovalResponsePayload is received from the frontend when the user
+// decides on a plan awaiting approval.
+type PlanApprovalResponsePayload struct {
+	RequestID string `json:"request_id"`
+	Decision  string `json:"decision"`  // "approve", "request_changes", or "abandon"
+	Feedback  string `json:"feedback"`  // non-empty when decision="request_changes"
 }
 
 // --- Emitter event data types (typed Data field payloads) ---

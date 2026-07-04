@@ -399,46 +399,6 @@ describe('extractPendingActions', () => {
     const result = extractPendingActions(msgs)
     expect(result).toHaveLength(2)
   })
-
-  it('excludes plan_review when most recent is resolved (accepted)', () => {
-    // Simulates completed session with plan review: plan_review_ready followed by plan_review_accepted
-    const msgs = [
-      makeUI({ type: 'plan_review', metadata: { planPath: '/tmp/plan.md', resolved: false } }),
-      makeUI({ type: 'plan_review', metadata: { resolved: true, decision: 'accepted' } }),
-    ]
-    const result = extractPendingActions(msgs)
-    expect(result).toHaveLength(0)
-  })
-
-  it('excludes plan_review when most recent is resolved (rejected)', () => {
-    const msgs = [
-      makeUI({ type: 'plan_review', metadata: { planPath: '/tmp/plan.md', resolved: false } }),
-      makeUI({ type: 'plan_review', metadata: { resolved: true, decision: 'rejected' } }),
-    ]
-    const result = extractPendingActions(msgs)
-    expect(result).toHaveLength(0)
-  })
-
-  it('includes plan_review when not resolved (normal flow)', () => {
-    const msgs = [
-      makeUI({ type: 'plan_review', metadata: { planPath: '/tmp/plan.md', resolved: false } }),
-    ]
-    const result = extractPendingActions(msgs)
-    expect(result).toHaveLength(1)
-    expect(result[0]!.kind).toBe('plan_review')
-  })
-
-  it('handles plan_review after replanning: only last matters', () => {
-    // Simulates: plan → reject → replan → new plan ready (not yet accepted)
-    const msgs = [
-      makeUI({ type: 'plan_review', metadata: { planPath: '/tmp/plan1.md', resolved: false } }),
-      makeUI({ type: 'plan_review', metadata: { resolved: true, decision: 'rejected' } }),
-      makeUI({ type: 'plan_review', metadata: { planPath: '/tmp/plan2.md', resolved: false } }),
-    ]
-    const result = extractPendingActions(msgs)
-    expect(result).toHaveLength(1)
-    expect((result[0]! as Extract<DisplayItem, { kind: 'plan_review' }>).message.metadata?.planPath).toBe('/tmp/plan2.md')
-  })
 })
 
 describe('mergeHistoryMessages', () => {

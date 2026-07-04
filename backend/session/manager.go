@@ -19,7 +19,6 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
-	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 	sdktools "github.com/v0lka/c0wrk/sdk/tools"
@@ -43,16 +42,6 @@ func SessionIDFromContext(ctx context.Context) string {
 	}
 	return ""
 }
-
-// PlanReviewPhase tracks the plan review workflow state.
-type PlanReviewPhase string
-
-const (
-	PlanReviewNone             PlanReviewPhase = ""
-	PlanReviewAwaitingAccept   PlanReviewPhase = "awaiting_accept"
-	PlanReviewAwaitingFeedback PlanReviewPhase = "awaiting_feedback"
-)
-
 // Session represents a running agent session with its own orchestrator.
 type Session struct {
 	ID                  string
@@ -71,16 +60,6 @@ type Session struct {
 	done                chan struct{}      // closed when task goroutine finishes
 	lastCompletedTaskID string             // tracks last completed task for continuations
 	mu                  sync.Mutex
-
-	// Plan review state
-	planReviewPhase  PlanReviewPhase          // guarded by mu
-	planReviewPath   string                   // path to .md plan file, guarded by mu
-	planReviewMsg    string                   // original user message, guarded by mu
-	planReviewMode   string                   // execution mode, guarded by mu
-	planReviewSkills []string                 // active skills, guarded by mu
-	planReviewBB     orchestration.Blackboard // blackboard from planning phase, guarded by mu
-	planReviewRoute  *router.RoutingDecision  // routing decision from planning phase, guarded by mu
-	planReviewCancel context.CancelFunc       // cancel func for in-flight replan, guarded by mu
 }
 
 // sessionTempDir returns the temp directory path for a session.
@@ -114,7 +93,6 @@ type Manager struct {
 	tokenPersist        TokenPersistFunc
 	taskStore           TaskStore           // optional persistent task store
 	sessionStore        SessionStore        // optional persistent session store
-	planReviewStore     PlanReviewStore     // optional plan review persistence (may be same as sessionStore)
 	titleGen            *TitleGenerator     // optional title generator for auto-naming
 	envInfo             *sdktools.EnvInfo   // environment info for context injection
 	stopTimeout         time.Duration       // how long to wait for goroutine on cancel/delete
@@ -225,9 +203,6 @@ func (m *Manager) SetSessionStore(store SessionStore) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessionStore = store
-	if prs, ok := store.(PlanReviewStore); ok {
-		m.planReviewStore = prs
-	}
 }
 
 // SetProjectResolver sets the function used to resolve a project ID to its
@@ -477,41 +452,6 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		lastCompletedTaskID: restoredTaskID,
 	}
 
-	// Restore plan review state from persistence.
-	if info.PlanReviewPhase != "" {
-		sess.planReviewPhase = PlanReviewPhase(info.PlanReviewPhase)
-		sess.planReviewPath = info.PlanReviewPath
-		// Attempt to reconstruct the original plan and routing decision from
-		// the .plan.json sidecar so hidden fields and route survive restart.
-		if info.PlanReviewPath != "" {
-			jsonPath := strings.TrimSuffix(info.PlanReviewPath, ".md") + ".plan.json"
-			if data, readErr := os.ReadFile(jsonPath); readErr == nil {
-				var sidecar struct {
-					Plan  *orchestration.Plan     `json:"plan"`
-					Route *router.RoutingDecision `json:"route,omitempty"`
-				}
-				if json.Unmarshal(data, &sidecar) == nil && sidecar.Plan != nil {
-					// Create a lightweight blackboard carrying the restored plan.
-					sess.planReviewBB = orchestration.NewMapBlackboard()
-					sess.planReviewBB.SetPlan(sidecar.Plan)
-					sess.planReviewRoute = sidecar.Route
-				}
-			}
-		}
-		// Restore plan review context (msg, mode, skills) from JSON column.
-		if info.PlanReviewContext != "" {
-			var ctx struct {
-				Msg    string   `json:"msg"`
-				Mode   string   `json:"mode"`
-				Skills []string `json:"skills"`
-			}
-			if json.Unmarshal([]byte(info.PlanReviewContext), &ctx) == nil {
-				sess.planReviewMsg = ctx.Msg
-				sess.planReviewMode = ctx.Mode
-				sess.planReviewSkills = ctx.Skills
-			}
-		}
-	}
 
 	// Double-check under write lock: another goroutine may have restored the same session.
 	m.mu.Lock()
@@ -926,8 +866,6 @@ func (m *Manager) ListSessions() []SessionInfo {
 			LastActiveAt:    lastActive.Format(time.RFC3339),
 			Archived:        s.Archived,
 			Active:          s.active,
-			PlanReviewPhase: string(s.planReviewPhase),
-			PlanReviewPath:  s.planReviewPath,
 		})
 		s.mu.Unlock()
 	}

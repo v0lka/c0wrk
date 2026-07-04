@@ -24,6 +24,10 @@ var internalTools = map[string]struct{}{
 	"semantic_search":     {},
 	"set_step_status":     {},
 	"store_fact":          {},
+	"delegate":            {},
+	"cancel_delegation":   {},
+	"declare_plan":        {},
+	"reflect":             {},
 	sdktools.ToolBatch:    {},
 }
 

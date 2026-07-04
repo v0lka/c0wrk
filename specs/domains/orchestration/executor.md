@@ -2,47 +2,31 @@
 
 ## Role
 
-Executes individual plan steps via the ReAct loop (Thought → Action → Observation), with circuit breakers for failure detection and context window management for long-running steps.
+The ReAct loop primitive (Thought → Action → Observation) with circuit breakers for failure detection and context window management. The Executor is the load-bearing primitive shared by two callers: the **Conductor** (a top-level `Executor.Run` that owns a task end-to-end) and **subagents** (isolated `Executor.Run` instances launched by the `delegate` tool). The Executor itself is agnostic to which caller invoked it.
 
 ## Key Files
 
 - `sdk/agent/executor.go` — Executor struct (Run method, ReAct loop, non-cacheable tools set, batch dispatch, `DetectToolCallSyntaxInContent` failure-mode detector)
 - `sdk/agent/executor_run.go` — `processSingleToolCall`, `processBatchTool` (batch meta-tool interception), `handleImplicitFinish` (nudge → abort logic)
-- `sdk/agent/subagent.go` — `RunSubAgent` (subagent lifecycle, defense-in-depth success check)
-- `sdk/orchestration/orchestrator.go` — SDK Orchestrator (drives DAG execution, parallel steps)
-- `core/stepconfig.go` — coreStepConfigurator (resolves per-step config)
+- `sdk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (subagent lifecycle, defense-in-depth success check)
 - `sdk/agent/events.go` — AgentEvents interface (lifecycle hooks)
 - `sdk/tools/builtins/batch.go` — batch meta-tool descriptor (intercepted at executor, never directly executed)
+- `core/conductor.go` — Conductor entry point (builds and launches an Executor as the Conductor)
+- `core/tools/delegate.go` — `delegate` tool (builds and launches Executors as subagents via `RunSubAgent`)
 
 ## Behavior
 
-### SDK Orchestration Engine (DAG Driver)
-
-The SDK `orchestration.Orchestrator` drives the plan:
+### Callers
 
 ```
-engine.Resume(ctx, bb)
-│
-├─ Read plan from Blackboard
-├─ Loop until all steps complete or max retries exhausted:
-│   │
-│   ├─ FindReadySteps() — steps with all dependencies satisfied
-│   ├─ For each ready step (parallel goroutines):
-│   │   ├─ StepConfigurator resolves StepConfig
-│   │   ├─ Build step task (description + dependency context)
-│   │   ├─ Create ContextManager for step
-│   │   ├─ Run Executor.Run(ctx, task, tools, systemPrompt)
-│   │   └─ Store result on Blackboard
-│   │
-│   ├─ If step failed:
-│   │   ├─ Reflector.Reflect() → Reflection
-│   │   ├─ Planner.Replan() → new Plan
-│   │   └─ Retry from step 1
-│   │
-│   └─ If all steps succeeded: done
-│
-└─ Return ExecutionResult {Output, Plan, Blackboard, AttemptCount, Reflections}
+Conductor (core/conductor.go)
+  └─ Executor.Run(ctx, conductorTools, cm)         // owns the task
+       └─ tool_call: delegate({ tasks: [...] })
+            └─ RunSubAgent(ctx, ...)                // per task
+                 └─ Executor.Run(ctx, subagentTools, cm)  // isolated ReAct loop
 ```
+
+The Executor is the same primitive in both cases. The difference is the tool set, system prompt, and context — assembled by the caller (Conductor entry point or `delegate` tool), not by the Executor itself. See [conductor.md](conductor.md) and [delegation.md](delegation.md) for how callers configure the Executor.
 
 ### Per-Step Configuration (StepConfigurator)
 
@@ -302,7 +286,8 @@ Key behaviors:
 ## Related Specs
 
 - [README.md](README.md) — orchestration overview
-- [planner.md](planner.md) — plan generation
+- [conductor.md](conductor.md) — Conductor (top-level Executor caller)
+- [delegation.md](delegation.md) — subagent launch via the `delegate` tool
 - [../memory/compaction.md](../memory/compaction.md) — compaction strategies
 - [../tool-system/README.md](../tool-system/README.md) — tool execution pipeline and trust classification
 - [../../architecture/security-model.md](../../architecture/security-model.md) — policy enforcement and injection defense

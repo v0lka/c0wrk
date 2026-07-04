@@ -2,7 +2,7 @@
 
 ## Role
 
-Classifies user requests by domain, complexity, and matched skills to determine execution strategy.
+Classifies user requests by domain, complexity, and matched skills, and selects a model for the Conductor. The Router no longer determines an execution mode or triggers clarification — both are handled inside the Conductor loop via tool calls.
 
 ## Key Files
 
@@ -25,29 +25,32 @@ Classifies user requests by domain, complexity, and matched skills to determine 
 {
   "domain": "code",
   "complexity": 3,
-  "needs_clarification": false,
   "matched_skills": ["go-testing", "go-error-handling"]
 }
 ```
 
+The `needs_clarification` and `mode` fields present in the prior pipeline are removed. Clarification is a Conductor tool call (`ask_user`); execution mode is a Conductor decision (`delegate` or not).
+
 ### Domain Values
 
-| Domain     | Meaning                            | Compaction Strategy                              |
-| ---------- | ---------------------------------- | ------------------------------------------------ |
-| `code`     | File modifications, implementation | sliding_window                                   |
-| `research` | Information gathering, analysis    | summarization                                    |
-| `general`  | Mixed or unclear primary activity  | sliding_window (hierarchical if complexity >= 4) |
-| `mixed`    | Explicitly mixed activities        | sliding_window                                   |
+| Domain | Meaning | Compaction Strategy (Conductor context) |
+| ------ | ------- | --------------------------------------- |
+| `code` | File modifications, implementation | sliding_window |
+| `research` | Information gathering, analysis | summarization |
+| `general` | Mixed or unclear primary activity | sliding_window (hierarchical if complexity >= 4) |
+| `mixed` | Explicitly mixed activities | sliding_window |
 
 ### Complexity Scale
 
-| Level | Meaning                                            | Typical Plan Size |
-| ----- | -------------------------------------------------- | ----------------- |
-| 1     | Trivial (single action)                            | 1 step            |
-| 2     | Simple (few actions, clear path)                   | 1-2 steps         |
-| 3     | Medium (multiple actions, some exploration)        | 2-4 steps         |
-| 4     | Complex (significant exploration + implementation) | 4-7 steps         |
-| 5     | Large (multiple subsystems, extensive work)        | 6-10 steps        |
+The complexity score informs the Conductor's system-prompt guidance on whether to delegate. It is no longer mapped to a fixed step count (the Conductor chooses its own granularity).
+
+| Level | Meaning | Conductor guidance |
+| ----- | ------- | ------------------ |
+| 1 | Trivial (single action) | Handle inline; do not delegate. |
+| 2 | Simple (few actions, clear path) | Handle inline or delegate one task. |
+| 3 | Medium (multiple actions, some exploration) | Delegate coherent units. |
+| 4 | Complex (significant exploration + implementation) | Delegate; consider `declare_plan` first. |
+| 5 | Large (multiple subsystems, extensive work) | Delegate; call `declare_plan` with `await_approval` for large roadmaps. |
 
 ### Skill Matching
 
@@ -59,7 +62,7 @@ The router prompt includes the full list of available skills (name + description
    - Replace `AVAILABLE-TOOLS` with grouped tool list
    - Replace `AVAILABLE-SKILLS` with formatted skill list
 2. Construct messages: system + history (last `historyWindow`) + "Classify this request: {msg}"
-3. Use reasoning effort set by orchestrator via `SetReasoningEffort()` (native string, passed directly to provider)
+3. Use reasoning effort set by orchestrator via `SetReasoningEffort()`
 4. Call LLM
 5. Extract JSON from response (handles markdown code blocks)
 6. Parse RoutingDecision
@@ -69,7 +72,7 @@ The router prompt includes the full list of available skills (name + description
 
 - Domain: must be one of {"code", "research", "general", "mixed"}; invalid → "general"
 - Complexity: clamped to [1, 5]
-- MatchedSkills: deduplicated; unknown skill names are retained in the RoutingDecision but filtered out during orchestrator skill activation (the router itself is pure classification and does not drop entries — see `core/orchestrator_handle.go` `routeAndActivateSkills`)
+- MatchedSkills: deduplicated; unknown skill names are retained in the RoutingDecision but filtered out during orchestrator skill activation
 
 ## Error Handling
 
@@ -84,12 +87,14 @@ The router prompt includes the full list of available skills (name + description
 - Complexity is always in [1, 5] after clamping
 - Skill names in MatchedSkills are always deduplicated
 - User-specified skills (from HandleOptions.UserSkills) are merged with router-matched skills in the orchestrator, not in the router
-- When UserSkills is non-empty, the orchestrator augments the routing message with skill descriptions (via `buildSkillAugmentedRoutingMessage`) so the router classifies domain/complexity based on the skill's purpose, not just the stripped arguments. NeedsClarification is also suppressed as a safety net.
+- When UserSkills is non-empty, the orchestrator augments the routing message with skill descriptions (via `buildSkillAugmentedRoutingMessage`) so the router classifies domain/complexity based on the skill's purpose
 - Router never modifies tool registry or any state (pure classification)
-- The orchestrator's continuation fast-path (`routeOrContinue`) skips the router entirely when `opts.TaskID` is non-empty AND the restored blackboard has an existing plan + routing decision. The restored `RoutingDecision` is reused, skills are reactivated from it, and execution proceeds to `executeContinuation` without a routing LLM call. This avoids spurious `needsClarification` on continuation messages (e.g. "continue step 10"), which the router cannot interpret — it only sees flat conversation history, not the plan.
+- Router never produces a clarification decision — clarification is a Conductor responsibility via `ask_user`
+- The orchestrator's continuation fast-path skips the router entirely when `opts.TaskID` is non-empty AND the restored blackboard has an existing routing decision
 
 ## Related Specs
 
 - [README.md](README.md) — orchestration overview
-- [planner.md](planner.md) — planner uses routing domain for step assignment
+- [conductor.md](conductor.md) — routing decision feeds the Conductor
 - [../memory/compaction.md](../memory/compaction.md) — domain → strategy mapping
+- [../../decisions/012-conductor-orchestration-pipeline.md](../../decisions/012-conductor-orchestration-pipeline.md) — rationale for removing mode/clarification

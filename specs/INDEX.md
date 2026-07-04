@@ -8,10 +8,12 @@
 | Request lifecycle end-to-end             | [architecture/data-flow.md](architecture/data-flow.md)                   |
 | Tool policies, confirmations, judge      | [architecture/security-model.md](architecture/security-model.md)         |
 | Prompt injection defense, content wrapping | [architecture/security-model.md](architecture/security-model.md)         |
+| Orchestration overview (Conductor pipeline) | [domains/orchestration/README.md](domains/orchestration/README.md)    |
+| Conductor (top-level ReAct loop)         | [domains/orchestration/conductor.md](domains/orchestration/conductor.md) |
+| Subagent delegation, async, DAG          | [domains/orchestration/delegation.md](domains/orchestration/delegation.md) |
 | Routing, complexity classification       | [domains/orchestration/router.md](domains/orchestration/router.md)       |
-| Plan generation, DAG, replan             | [domains/orchestration/planner.md](domains/orchestration/planner.md)     |
-| Agent loop, step limits, circuit breaker | [domains/orchestration/executor.md](domains/orchestration/executor.md)   |
-| Orchestration overview (full cycle)      | [domains/orchestration/README.md](domains/orchestration/README.md)       |
+| ReAct loop, circuit breakers, step limits | [domains/orchestration/executor.md](domains/orchestration/executor.md)  |
+| Conductor tool surface (delegate/declare_plan/reflect) | [contracts/conductor-tools.md](contracts/conductor-tools.md) |
 | Adding/modifying built-in tools          | [domains/tool-system/builtins.md](domains/tool-system/builtins.md)       |
 | MCP servers, dynamic tools               | [domains/tool-system/mcp-gateway.md](domains/tool-system/mcp-gateway.md) |
 | Tool registry, execution pipeline        | [domains/tool-system/README.md](domains/tool-system/README.md)           |
@@ -19,7 +21,6 @@
 | Blackboard, facts, persistence           | [domains/memory/blackboard.md](domains/memory/blackboard.md)             |
 | LLM providers, model registry, tokens    | [domains/llm-providers.md](domains/llm-providers.md)                     |
 | Session create/resume/persist            | [domains/session-lifecycle.md](domains/session-lifecycle.md)             |
-| Plan review, user approval, replan with feedback | [domains/session-lifecycle.md](domains/session-lifecycle.md) + [domains/orchestration/planner.md](domains/orchestration/planner.md) |
 | File tree, vector index, workspace       | [domains/workspace.md](domains/workspace.md)                             |
 | Frontend stores, state management        | [domains/frontend/stores.md](domains/frontend/stores.md)                 |
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |
@@ -64,10 +65,11 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 
 ### domains/orchestration/
 
-- [README.md](domains/orchestration/README.md) - Orchestration cycle overview
+- [README.md](domains/orchestration/README.md) - Orchestration domain overview (Conductor pipeline)
+- [conductor.md](domains/orchestration/conductor.md) - Conductor (top-level ReAct loop that owns a task)
+- [delegation.md](domains/orchestration/delegation.md) - delegate tool, async delegation registry, DAG
 - [router.md](domains/orchestration/router.md) - Request classification and skill matching
-- [planner.md](domains/orchestration/planner.md) - DAG plan generation and replan
-- [executor.md](domains/orchestration/executor.md) - ReAct loop, circuit breakers, step config
+- [executor.md](domains/orchestration/executor.md) - ReAct loop primitive (shared by Conductor and subagents)
 
 ### domains/tool-system/
 
@@ -100,6 +102,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [backend-core.md](contracts/backend-core.md) - Backend wrapping of Core
 - [desktop-frontend.md](contracts/desktop-frontend.md) - Wails bindings and RPC surface
 - [event-catalog.md](contracts/event-catalog.md) - Complete event type reference
+- [conductor-tools.md](contracts/conductor-tools.md) - Conductor tool surface (delegate, declare_plan, reflect, cancel_delegation)
 
 ### decisions/
 
@@ -114,3 +117,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [009-backend-domain-logic-extraction.md](decisions/009-backend-domain-logic-extraction.md) - Extraction of domain logic from App/UI layer
 - [010-tool-manager.md](decisions/010-tool-manager.md) - Tool manager for external binary dependencies (rg, rtk, uv, markitdown)
 - [011-sdk-to-core-extraction.md](decisions/011-sdk-to-core-extraction.md) - Move vector index and proxy from SDK to Core
+- [012-conductor-orchestration-pipeline.md](decisions/012-conductor-orchestration-pipeline.md) - Conductor-driven ReAct pipeline replacing system-driven plan-execute-reflect

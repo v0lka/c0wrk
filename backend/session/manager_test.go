@@ -406,7 +406,7 @@ func TestManager_SendMessage_SessionNotFound(t *testing.T) {
 	manager, _, _ := testManager(t)
 
 	ctx := context.Background()
-	err := manager.SendMessage(ctx, "non-existent", "hello", "advanced", nil, "", "", false)
+	err := manager.SendMessage(ctx, "non-existent", "hello", nil, "", "")
 	if err == nil {
 		t.Error("SendMessage should return error for non-existent session")
 	}
@@ -426,7 +426,7 @@ func TestManager_SendMessage_AlreadyActive(t *testing.T) {
 
 	// Try to send message while active
 	ctx := context.Background()
-	err := manager.SendMessage(ctx, info.ID, "hello", "advanced", nil, "", "", false)
+	err := manager.SendMessage(ctx, info.ID, "hello", nil, "", "")
 	if err == nil {
 		t.Error("SendMessage should return error when session is already active")
 	}
@@ -806,7 +806,7 @@ func TestManager_SendMessage_AllowsParallelActiveSessions(t *testing.T) {
 
 	// Sending message to session 1 again should fail (same session double-send)
 	ctx := context.Background()
-	err = manager.SendMessage(ctx, info1.ID, "hello", "advanced", nil, "", "", false)
+	err = manager.SendMessage(ctx, info1.ID, "hello", nil, "", "")
 	if err == nil {
 		t.Fatal("expected error when sending message to already-active session")
 	}
@@ -950,29 +950,26 @@ func TestTaskCompletionInfo(t *testing.T) {
 		result         *core.HandleResult
 		wantSuccess    bool
 		wantCompletion string
-		wantFailed     int
+
 	}{
 		{name: "nil result", result: nil, wantSuccess: true, wantCompletion: "full"},
 		{name: "empty status (legacy)", result: &core.HandleResult{}, wantSuccess: true, wantCompletion: "full"},
 		{name: "success", result: &core.HandleResult{Status: orchestration.ExecutionStatusSuccess}, wantSuccess: true, wantCompletion: "full"},
-		{name: "partial", result: &core.HandleResult{Status: orchestration.ExecutionStatusPartial, FailedSteps: 2}, wantSuccess: false, wantCompletion: "partial", wantFailed: 2},
-		{name: "failed", result: &core.HandleResult{Status: orchestration.ExecutionStatusFailed, FailedSteps: 1}, wantSuccess: false, wantCompletion: "failed", wantFailed: 1},
-		{name: "aborted", result: &core.HandleResult{Status: orchestration.ExecutionStatusAborted, FailedSteps: 3}, wantSuccess: false, wantCompletion: "aborted", wantFailed: 3},
+		{name: "partial", result: &core.HandleResult{Status: orchestration.ExecutionStatusPartial}, wantSuccess: false, wantCompletion: "partial"},
+		{name: "failed", result: &core.HandleResult{Status: orchestration.ExecutionStatusFailed}, wantSuccess: false, wantCompletion: "failed"},
+		{name: "aborted", result: &core.HandleResult{Status: orchestration.ExecutionStatusAborted}, wantSuccess: false, wantCompletion: "aborted"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			success, completion, failed := taskCompletionInfo(tt.result)
+			success, completion := taskCompletionInfo(tt.result)
 			if success != tt.wantSuccess {
 				t.Errorf("success = %v, want %v", success, tt.wantSuccess)
 			}
 			if completion != tt.wantCompletion {
 				t.Errorf("completion = %q, want %q", completion, tt.wantCompletion)
 			}
-			if failed != tt.wantFailed {
-				t.Errorf("failedSteps = %d, want %d", failed, tt.wantFailed)
-			}
-		})
+					})
 	}
 }
 
@@ -1029,8 +1026,7 @@ func TestEmitTaskComplete_PartialEmitsResumable(t *testing.T) {
 	manager.emitTaskComplete("sess-1", &core.HandleResult{
 		Output:      "partial output",
 		Status:      orchestration.ExecutionStatusPartial,
-		FailedSteps: 2,
-	}, nil)
+			}, nil)
 
 	events := collectEvents(eventChan, 2)
 	if len(events) != 2 {
@@ -1043,8 +1039,8 @@ func TestEmitTaskComplete_PartialEmitsResumable(t *testing.T) {
 	if data.Success {
 		t.Error("expected success=false for partial completion")
 	}
-	if data.Completion != "partial" || data.FailedSteps != 2 {
-		t.Errorf("expected completion=partial/failed_steps=2, got %q/%d", data.Completion, data.FailedSteps)
+	if data.Completion != "partial" {
+		t.Errorf("expected completion=partial, got %q", data.Completion)
 	}
 	if events[1].Type != "task_failed_resumable" {
 		t.Errorf("expected task_failed_resumable follow-up, got %s", events[1].Type)

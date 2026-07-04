@@ -1,0 +1,218 @@
+# Delegation
+
+## Role
+
+The `delegate` tool lets the Conductor launch one or more subagents to execute units of work in isolated ReAct loops, with DAG dependencies between them and a choice of blocking or async execution. It replaces the prior system-driven DAG execution (`executePlanWithSteps`) with an agent-driven invocation.
+
+## Key Files
+
+- `core/tools/delegate.go` — `delegate` tool implementation
+- `core/tools/cancel_delegation.go` — `cancel_delegation` tool (async cancellation)
+- `core/delegation_registry.go` — Delegation Registry (active/completed delegations per Conductor run)
+- `sdk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (the primitive that runs an isolated executor in a goroutine)
+- `sdk/orchestration/dag.go` — `FindReadySteps` and DAG traversal (reused for dependency resolution)
+- `sdk/orchestration/types.go` — `Plan` and `PlanStep` types (reused as delegation task descriptors)
+
+## Behavior
+
+### `delegate` Tool
+
+#### Input Schema
+
+```json
+{
+  "tasks": [
+    {
+      "id": "del_1",
+      "summary": "5-7 word UI label",
+      "task": "Full task description with What/How/Where/Acceptance Criteria",
+      "acceptance_criteria": ["criterion 1", "criterion 2"],
+      "tools": ["read_file", "edit_file", "bash_exec"] | "all" | "read-only",
+      "depends_on": ["del_0"],
+      "mode": "blocking" | "async",
+      "model": "openai/gpt-4" | null,
+      "max_steps": 50 | null,
+      "allow_redelegate": false,
+      "role": "coder" | "researcher" | "tester" | "executor"
+    }
+  ]
+}
+```
+
+| Field | Required | Description |
+| ----- | -------- | ----------- |
+| `tasks` | yes | Array of 1+ delegation tasks. Multiple tasks with no `depends_on` between them run in parallel via `RunSubAgentsParallel`. |
+| `tasks[].id` | yes | Unique within this Conductor run. Used by `depends_on`, `read_step_output`, `cancel_delegation`. |
+| `tasks[].summary` | yes | Short label emitted to the UI plan panel. |
+| `tasks[].task` | yes | Full task description. Convention: What/How/Where/Acceptance Criteria (same format as the prior plan-step description, so existing UI rendering works unchanged). |
+| `tasks[].acceptance_criteria` | no | Optional explicit list; if present, the subagent verifies before calling `finish`. |
+| `tasks[].tools` | no | Tool subset for the subagent. `"all"` (default) = full tool set; `"read-only"` = search/read tools only; array = explicit list. Internal tools (`finish`, `store_fact`, `search_facts`, `read_step_output`, `set_step_status`, `semantic_search`) are always included. |
+| `tasks[].depends_on` | no | IDs of delegations that must complete before this one starts. Used to express a DAG across multiple `delegate` calls within one Conductor run. |
+| `tasks[].mode` | no | `"blocking"` (default): the tool result contains the subagent output. `"async"`: the tool result returns immediately with `delegation_id`; the Conductor reads results later via `read_step_output(id)`. |
+| `tasks[].model` | no | Composite model ID override for this subagent. Empty = Conductor's model. |
+| `tasks[].max_steps` | no | Per-subagent ReAct iteration cap. Empty = `config.Conductor.SubagentMaxSteps`. |
+| `tasks[].allow_redelegate` | no | `true` grants the subagent the `delegate` tool with a reduced budget and depth cap. Default `false` (flat). |
+| `tasks[].role` | no | Agent profile (coder/researcher/tester/executor) selecting system-prompt variant and pruning defaults. Empty = `executor`. |
+
+#### Execution Flow
+
+```
+delegate.Execute(ctx, input)
+│
+├─ 1. Parse input into a list of DelegationTask structs.
+│
+├─ 2. Validate:
+│     ├─ IDs unique within the Conductor run
+│     ├─ depends_on references exist (in the Registry or in this batch)
+│     ├─ no cycles in the combined DAG (existing + new tasks)
+│     └─ allow_redelegate depth does not exceed config.Conductor.MaxRedelegationDepth
+│
+├─ 3. Register all tasks in the Delegation Registry as "pending".
+│
+├─ 4. Resolve ready tasks (depends_on satisfied by completed delegations
+│     or tasks in this same batch that are blocking).
+│
+├─ 5. For each ready task, build a SubAgentTask:
+│     ├─ Task description = task + injected context from depends_on outputs
+│     │   (truncated to config.Conductor.MaxDependencyContextChars, shared
+│     │   across dependencies — same logic as the prior step dependency injection)
+│     ├─ Tool set = tools field + internal tools
+│     ├─ System prompt = buildSystemPrompt with role + skill narrowing
+│     ├─ ContextManager via contextFactory (isolated per subagent)
+│     ├─ Executor = agent.NewExecutor with max_steps, circuit breakers, HITL
+│     ├─ Scoped emitter (subagent events flow to UI under the delegation ID)
+│     └─ If allow_redelegate: inject a child Delegation Registry and add
+│         delegate/cancel_delegation to the subagent tool set with reduced budget
+│
+├─ 6. Dispatch:
+│     ├─ RunSubAgentsParallel for all ready tasks in this call
+│     └─ Each subagent runs in its own goroutine with its own context
+│        (child of the Conductor context, cancellable)
+│
+├─ 7. Collect results:
+│     ├─ For each completed subagent:
+│     │   ├─ Store result on the blackboard (SetStepResult)
+│     │   ├─ Update the Registry: status "completed" or "failed"
+│     │   └─ Emit OnStepCompleted (success/failure, duration)
+│     └─ Tasks with depends_on that are now satisfied remain "pending"
+│        until a later delegate call or read_step_output triggers them
+│
+└─ 8. Return tool result:
+       ├─ All blocking: aggregate outputs of blocking tasks
+       ├─ All async: list of { delegation_id, status: "pending" | "running" }
+       └─ Mixed: blocking outputs + async IDs
+```
+
+### `cancel_delegation` Tool
+
+```
+cancel_delegation.Execute(ctx, { "id": "del_3" })
+│
+├─ Look up the delegation in the Registry
+├─ If "completed": return success (no-op)
+├─ If "pending" or "running": cancel the subagent context
+│   └─ context-tree cancellation propagates to the subagent's Executor.Run
+│      and any child delegations
+├─ Update the Registry: status "cancelled"
+└─ Return success
+```
+
+### Delegation Registry
+
+Per-Conductor-run registry tracking all delegations. Injected into the Conductor context; child registries are injected into subagent contexts when `allow_redelegate` is true.
+
+```go
+type DelegationRegistry struct {
+    mu        sync.Mutex
+    delegations map[string]*Delegation
+    cancelFuncs map[string]context.CancelFunc
+    depth       int
+}
+
+type Delegation struct {
+    ID          string
+    Summary     string
+    Status      string  // "pending" | "running" | "completed" | "failed" | "cancelled"
+    Output      string
+    Error       error
+    Steps       []agent.Step
+    DependsOn   []string
+    Mode        string  // "blocking" | "async"
+    StartedAt   time.Time
+    CompletedAt time.Time
+}
+```
+
+Operations:
+
+| Operation | Purpose |
+| --------- | ------- |
+| `Register(task)` | Add a new delegation as "pending" |
+| `Start(id, cancelFunc)` | Mark "running", store the cancellation handle |
+| `Complete(id, result)` | Mark "completed" or "failed", store output/error/steps |
+| `Cancel(id)` | Cancel via the stored CancelFunc, mark "cancelled" |
+| `Get(id)` | Read a delegation (used by `read_step_output`) |
+| `ListPending()` | Return all pending/running delegations (used by `finish` join check) |
+| `NextDepth()` | Return depth+1 for child registries (enforces `MaxRedelegationDepth`) |
+
+### Finish Join Semantics
+
+When the Conductor calls `finish`:
+
+1. The executor's finish handler checks the Delegation Registry for pending or running async delegations.
+2. If any exist and none have been cancelled via `cancel_delegation`:
+   - The finish tool returns an error: "N async delegations are still pending (ids: ...). Call cancel_delegation for each, or wait for them via read_step_output before finishing."
+   - The Conductor continues its loop (this is a soft gate, implemented as a tool error).
+3. If all async delegations are completed, failed, or cancelled: `finish` proceeds normally.
+
+This prevents the Conductor from abandoning background work silently. The gate is a tool-level error, not a pipeline-level structural gate.
+
+### Recursive Delegation
+
+When `allow_redelegate: true`:
+
+- The subagent receives `delegate` and `cancel_delegation` in its tool set.
+- A child Delegation Registry is injected into the subagent context with `depth = parent_depth + 1`.
+- The launcher checks `registry.Depth() >= config.Conductor.MaxRedelegationDepth` (default 2) before building the subagent. At the cap, the delegation fails with a descriptive error.
+- Redelegating subagents are launched individually (not through `RunSubAgentsParallel`) because each needs its own per-task context with the child registry.
+- The subagent's `delegate` calls use the same `max_steps` budget as regular delegations (configurable per-task via `max_steps`).
+
+### Dependency Context Injection
+
+Before a subagent runs, outputs from its `depends_on` delegations are injected into its task description, using the same logic as the prior step dependency injection:
+
+```
+subagent task = task field + "\n\n## Context from previous delegations\n"
+  + For each dep in depends_on:
+      "### {dep.Summary}\n{truncate(dep.Output, budget)}\n"
+```
+
+Budget: `config.Conductor.MaxDependencyContextChars` (default 8000) divided among dependencies.
+
+## Error Handling
+
+- **Subagent returns `Finished: false`**: stored as `Status: "failed"` with the abort reason as the error; the `delegate` tool result for that task has `isError: true` with the abort reason. The Conductor decides whether to retry, reflect, or finish.
+- **Subagent returns error**: same as above.
+- **Subagent context cancelled** (via `cancel_delegation` or parent cancellation): stored as `Status: "cancelled"`; no error propagated to the Conductor (cancellation is intentional).
+- **Validation failure** (duplicate ID, cycle, depth exceeded): the `delegate` tool call returns `isError: true` with a descriptive message; no subagents launch.
+- **Dependency failed**: a task whose `depends_on` includes a failed or cancelled delegation is marked "failed" with reason "dependency del_X failed"; it does not run.
+
+## Invariants
+
+- Delegation IDs are unique within a Conductor run (and within each child registry for recursive delegations).
+- The combined graph of delegations across all `delegate` calls in a Conductor run is always a valid DAG (no cycles).
+- A subagent's context is always a child of the Conductor's context, so cancelling the Conductor cancels all subagents.
+- A subagent never shares its `ContextManager` with the Conductor or with other subagents.
+- Internal tools (`finish`, `store_fact`, `search_facts`, `read_step_output`, `set_step_status`, `semantic_search`, `ask_user`) are always available to subagents regardless of the `tools` field.
+- `delegate`, `cancel_delegation` are available to a subagent only when `allow_redelegate` is true; `declare_plan` and `reflect` remain Conductor-only.
+- Recursive delegation depth never exceeds `config.Conductor.MaxRedelegationDepth`.
+- The Delegation Registry is scoped to a single Conductor run (or a single subagent run for child registries); it does not persist across sessions.
+- `finish` with pending async delegations returns a tool error (via `finishJoinExecutor` wrapping the tool executor) unless each pending delegation has been cancelled or completed.
+- Subagent success requires `result.Finished && !DetectToolCallSyntaxInContent(result.Output)` (defense-in-depth, unchanged from the prior subagent logic).
+
+## Related Specs
+
+- [conductor.md](conductor.md) — the Conductor that invokes `delegate`
+- [executor.md](executor.md) — the ReAct loop primitive shared by Conductor and subagents
+- [README.md](README.md) — orchestration overview
+- [../../contracts/conductor-tools.md](../../contracts/conductor-tools.md) — Conductor tool surface contract

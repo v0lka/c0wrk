@@ -97,6 +97,8 @@ User sends message
 
 ### Plan Review
 
+> **Note:** The plan review workflow described below (system-driven `HandlePlanReview` pipeline stage, `PlanReview` toggle in `HandleOptions`, `PlanReviewStore` persistence) is superseded by ADR-012. Under the Conductor pipeline, plan review becomes a tool call (`declare_plan` with `mode: "await_approval"`) invoked by the Conductor at a point of its own choosing, not a pipeline stage. The `PlanReviewStore` persistence and restart-survival logic may be retained or adapted for `declare_plan` approval state. This section must be rewritten during implementation of ADR-012; it is left in place as a reference for the current behaviour being replaced.
+
 When `PlanReview` is true in HandleOptions, the orchestrator pauses after planning.
 The session enters one of two plan review states (`awaiting_accept` or `awaiting_feedback`).
 

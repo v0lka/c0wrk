@@ -12,7 +12,6 @@ import { useContextEvents } from './events/useContextEvents'
 import { useSubagentEvents } from './events/useSubagentEvents'
 import { useActionEvents } from './events/useActionEvents'
 import { useBlackboardEvents } from './events/useBlackboardEvents'
-import { usePlanReviewEvents } from './events/usePlanReviewEvents'
 
 export function useSessionEvents(sessionId: string | null): void {
   // Reset session state on session change
@@ -47,5 +46,4 @@ export function useSessionEvents(sessionId: string | null): void {
   useSubagentEvents(sessionId)
   useActionEvents(sessionId)
   useBlackboardEvents(sessionId)
-  usePlanReviewEvents(sessionId)
 }

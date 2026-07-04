@@ -282,17 +282,8 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Orchestration.MaxSummaryLength == 0 {
 		cfg.Orchestration.MaxSummaryLength = 500
 	}
-	if cfg.Orchestration.PlannerHistoryBudgetTokens == 0 {
-		cfg.Orchestration.PlannerHistoryBudgetTokens = 8000
-	}
-	if cfg.Orchestration.PlannerHistoryKeepRecentRatio == 0 {
-		cfg.Orchestration.PlannerHistoryKeepRecentRatio = 0.85
-	}
 	if cfg.Orchestration.MaxJudgeCacheSize == 0 {
 		cfg.Orchestration.MaxJudgeCacheSize = 1000
-	}
-	if cfg.Orchestration.MaxPlannerExploreSteps == 0 {
-		cfg.Orchestration.MaxPlannerExploreSteps = 7
 	}
 
 	// Workspace ignore patterns.

@@ -83,10 +83,6 @@ export function resumeResolved(): ResumeResolved {
   return { resolved: true }
 }
 
-export function planReviewResolved(decision: 'accepted' | 'rejected'): Record<string, unknown> {
-  return { resolved: true, decision }
-}
-
 // -- Read-side type guards --
 
 const TOOL_CONFIRM_DECISIONS: ReadonlySet<string> = new Set(['confirmed', 'denied'])

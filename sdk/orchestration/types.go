@@ -1,10 +1,17 @@
 package orchestration
 
 import (
+	"errors"
 	"time"
 
 	"github.com/v0lka/c0wrk/sdk/agent"
 )
+
+// ErrExecutionIncomplete indicates a plan execution ended before all steps
+// completed (e.g. step limit reached, context cancelled). It accompanies a
+// non-nil *ExecutionResult carrying best-effort output. Callers should
+// errors.Is-check and use the returned result for partial output.
+var ErrExecutionIncomplete = errors.New("plan execution incomplete")
 
 // Plan is a DAG of execution steps.
 type Plan struct {

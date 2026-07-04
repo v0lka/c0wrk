@@ -161,6 +161,7 @@ func (a *App) Startup(ctx context.Context) {
 	// ── Phase 5: Callbacks + Application + FrontendAPI ───────────────
 	uiEmitFunc := a.buildUIEmitFunc()
 	askUserFunc := a.buildAskUserCallback(uiEmitFunc)
+	planApprovalFunc := a.buildPlanApprovalCallback(uiEmitFunc)
 	confirmFunc := a.buildConfirmCallback(uiEmitFunc)
 	hitlHandler := a.buildStepLimitCallback(uiEmitFunc)
 
@@ -177,6 +178,7 @@ func (a *App) Startup(ctx context.Context) {
 		TaskStore:            sessStore,
 		UIEmitFunc:           uiEmitFunc,
 		AskUserFunc:          askUserFunc,
+		PlanApprovalFunc:     planApprovalFunc,
 		ConfirmFunc:          confirmFunc,
 		HITLHandler:          hitlHandler,
 		VectorSearchFunc:     vectorSearchFunc,
@@ -292,6 +294,16 @@ func (a *App) Shutdown(ctx context.Context) {
 		a.pendingStepLimit.Delete(key)
 		return true
 	})
+	a.pendingPlanApprovals.Range(func(key, value any) bool {
+		if ch, ok := value.(chan planApprovalResponse); ok {
+			select {
+			case ch <- planApprovalResponse{Decision: "abandon"}:
+			default:
+			}
+		}
+		a.pendingPlanApprovals.Delete(key)
+		return true
+	})
 
 	if a.sessionLogger != nil {
 		_ = a.sessionLogger.Close()
@@ -360,6 +372,14 @@ func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.
 			return
 		}
 		a.handleStepLimitResponse(payload, log)
+	})
+
+	wailsRuntime.EventsOn(a.ctx, backend.EventPlanApprovalResponse, func(data ...any) {
+		payload, ok := extractPayload("plan_approval response", data, log)
+		if !ok {
+			return
+		}
+		a.handlePlanApprovalResponse(payload, log)
 	})
 }
 

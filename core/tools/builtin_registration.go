@@ -36,6 +36,10 @@ type BuiltinToolsConfig struct {
 	// If nil, the ask_user tool is not registered.
 	AskUserFunc AskUserFunc
 
+	// PlanApprovalFunc is the callback for the declare_plan tool's await_approval mode.
+	// If nil, declare_plan is still registered but await_approval mode returns an error.
+	PlanApprovalFunc ApprovalFunc
+
 	// VectorSearchFunc is the callback for the semantic_search tool.
 	// If nil, the semantic_search tool is not registered.
 	VectorSearchFunc builtins.VectorSearchFunc
@@ -106,6 +110,17 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	if cfg.AskUserFunc != nil {
 		registry.Register(NewAskUserTool(cfg.AskUserFunc))
 	}
+
+	// Conductor tools — delegate, cancel_delegation, reflect read their
+	// dependencies from the request context (DelegationLauncher, DelegationRegistry,
+	// ReflectionRunner), so they are safe to register unconditionally. They are
+	// no-ops outside a Conductor run (the context values will be nil).
+	registry.Register(NewDelegateTool())
+	registry.Register(NewCancelDelegationTool())
+	registry.Register(NewReflectTool())
+
+	// Declare plan (approval callback optional; present mode works without it)
+	registry.Register(NewDeclarePlanTool(cfg.PlanApprovalFunc))
 
 	return nil
 }

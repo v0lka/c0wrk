@@ -2,109 +2,100 @@
 
 ## Purpose
 
-The orchestration domain coordinates the full lifecycle of a user request: classifying it, generating an execution plan, running the plan's steps, and reflecting on failures to retry or replan. It is the central nervous system of c0wrk.
+The orchestration domain coordinates the full lifecycle of a user request: classifying it, running a single ReAct loop (the Conductor) that owns the task end-to-end, and delegating subtasks to isolated subagents. The Conductor replaces the prior system-driven plan-execute-reflect pipeline with an agent-driven loop where planning, interaction, and reflection are tool calls, not pipeline phases.
 
 ## Key Files
 
 - `core/orchestrator.go` — top-level Orchestrator (HandleMessage, Resume)
+- `core/orchestrator_handle.go` — HandleMessage body: router → Conductor launch
+- `core/conductor.go` — Conductor entry point: builds system prompt, tool set, launches `Executor.Run`
+- `core/tools/delegate.go` — `delegate` tool (subagent launch with DAG + async)
+- `core/tools/declare_plan.go` — `declare_plan` tool (roadmap publish + approval gate)
+- `core/tools/reflect.go` — `reflect` tool (invokes Reflector on trajectory)
+- `core/tools/cancel_delegation.go` — `cancel_delegation` tool (async cancellation)
+- `core/delegation_registry.go` — Delegation Registry (active/completed delegations per Conductor run)
 - `sdk/agent/router/router.go` — request classification (Route)
 - `core/router_adapter.go` — core adapter wrapping SDK router
-- `sdk/planner/planner.go` — DAG plan generation (Plan, Replan)
-- `core/planner_adapter.go` — core adapter wrapping SDK planner (adds skill threading, PlanContinuation)
-- `sdk/agent/reflector/reflector.go` — failure analysis (Reflect)
-- `core/reflector_adapter.go` — core adapter for SDK reflector
-- `core/stepconfig.go` — per-step configuration resolution
+- `sdk/agent/executor.go` — ReAct loop (Conductor and subagents are both `Executor.Run` instances)
+- `sdk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (isolated executor in goroutine)
+- `sdk/agent/reflector/reflector.go` — failure analysis (Reflect), invoked via the `reflect` tool
+- `sdk/orchestration/dag.go` — DAG data structure (used by `delegate` and `declare_plan`)
+- `core/plan_serializer.go` — Plan ↔ Markdown serialization (used by `declare_plan`)
 - `core/systemprompt.go` — system prompt construction with skill context
-- `sdk/orchestration/orchestrator.go` — SDK Plan&Execute engine (Execute, Resume)
-- `sdk/orchestration/dag.go` — DAG data structure
-- `sdk/agent/executor.go` — ReAct loop (per-step execution)
 - `sdk/prompt/builder.go` — fluent prompt construction with cache-break support
-- `sdk/prompt/sampling.go` — family-aware temperature defaults (SamplingConfig, DefaultSampling)
+- `sdk/prompt/sampling.go` — family-aware temperature defaults
 
 ## Core Types
 
 ```go
 // Top-level orchestrator (core layer)
 type Orchestrator struct {
-    engine               *orchestration.Orchestrator  // SDK P&E engine
-    planner              *planner.Planner              // from sdk/planner (Plan, Replan)
-    router               *router.Router                 // from sdk/agent/router
-    llm                  agent.LLMCaller                 // from sdk/agent
-    modelSwitcher        *llm.Router                    // raw LLM router for per-message model override
-    toolRegistry         *sdktools.ToolRegistry       // SDK registry (basic store)
-    coreToolRegistry     *tools.ToolRegistry          // core registry (policy/judge/hooks)
+    router               *router.Router
+    llm                  agent.LLMCaller
+    modelSwitcher        *llm.Router
+    toolRegistry         *sdktools.ToolRegistry
+    coreToolRegistry     *tools.ToolRegistry
     config               OrchestratorConfig
     contextFactory       ContextManagerFactory
     logger               *slog.Logger
     emitter              Emitter
     modelRegistry        *llm.ModelRegistry
     bbFactory            BlackboardFactory
-    conversationHistory  []llm.Message                // retained history for routing context
-    taskStore            TaskPersistence              // optional, for ContinueTask BB restoration
-    bbRestoreFunc        BlackboardRestoreFunc        // optional, restores BB from store
-    trackingCaller       *llm.TrackingCaller          // per-step context tracker wiring
-    tokenCounter         llm.TokenCounter             // for token counting in planner history compaction
-    vectorSearchFunc     builtins.VectorSearchFunc     // for vector search hints (from sdk/tools/builtins)
-    skillManager         *skills.SkillManager         // skill discovery and activation
-
-    // isNoProject is set to true when this orchestrator runs inside the
-    // "No Project" pseudo-project. When true, the routing domain is
-    // overridden from "code" to "general" so that code-oriented planning
-    // and execution strategies are not applied.
-    isNoProject bool
-
-    currentRequestCtx    atomic.Pointer[context.Context]        // scoped to active HandleMessage
-    currentRequestSkills atomic.Pointer[[]skills.SkillDescriptor] // router-matched skills
+    conversationHistory  []llm.Message
+    taskStore            TaskPersistence
+    bbRestoreFunc        BlackboardRestoreFunc
+    trackingCaller       *llm.TrackingCaller
+    tokenCounter         llm.TokenCounter
+    vectorSearchFunc     builtins.VectorSearchFunc
+    skillManager         *skills.SkillManager
+    isNoProject          bool
+    currentRequestCtx    atomic.Pointer[context.Context]
+    currentRequestSkills atomic.Pointer[[]skills.SkillDescriptor]
 }
 
 // Configuration
 type OrchestratorConfig struct {
-    MaxSteps                  int     // default: 50
-    KeepFirst                 int     // default: 3
-    KeepLast                  int     // default: 10
-    MaxRetries                int     // default: 2 (3 total attempts)
-    PlannerHistoryBudgetTokens int     // max tokens for conversation history sent to planner (default: 4000); triggers summarisation compaction when exceeded
-    PlannerHistoryKeepRecentRatio float64 // fraction of PlannerHistoryBudgetTokens reserved for recent messages (default: 0.75)
-    MaxDependencyContextChars int     // default: 8000
-    PreWarningPercent         int     // default: 75 (context-fill notification threshold)
-    Model                     string
-    ReasoningEffort           string
-    HITLHandler               agent.HITLHandler            // from sdk/agent (OnStepLimit + OnToolCall)
-    InjectionDefenseEnabled   bool   // gates <untrusted-content> wrapping and prompt text
-    AgentsMDMaxBytes          int    // cap on AGENTS.md content; 0 = default (65536), negative = unlimited
+    MaxSteps                    int     // Conductor max ReAct iterations (default: 80)
+    SubagentMaxSteps            int     // per-delegation max ReAct iterations (default: 50)
+    MaxRedelegationDepth        int     // cap on recursive delegation (default: 2)
+    KeepFirst                   int     // context pruning: protected head messages
+    KeepLast                    int     // context pruning: protected tail messages
+    PlannerHistoryBudgetTokens int     // retained for router history compaction
+    PlannerHistoryKeepRecentRatio float64
+    MaxDependencyContextChars   int     // chars from dependency outputs injected into delegation task
+    PreWarningPercent           int     // context-fill notification threshold
+    Model                       string
+    ReasoningEffort             string
+    HITLHandler                 agent.HITLHandler
+    InjectionDefenseEnabled     bool
+    AgentsMDMaxBytes            int
 }
 
-// Routing result
+// Routing result — domain, complexity, skills, model only.
+// No mode, no clarification: the Conductor handles both.
 type RoutingDecision struct {
-    Domain             string   // "code" | "research" | "general" | "mixed"
-    Complexity         int      // 1-5
-    NeedsClarification bool
-    MatchedSkills      []string
+    Domain         string   // "code" | "research" | "general" | "mixed"
+    Complexity     int      // 1-5
+    MatchedSkills  []string
 }
 
 // Handle options
 type HandleOptions struct {
     TaskID          string   // non-empty = continuation of existing task
-    ExecutionMode   string   // "normal" = single-step plan, "advanced" = full multi-step DAG
-    UserSkills      []string // explicitly requested by user via /skill refs (bypass router)
-    ModelOverride   string   // non-empty = use this model for all LLM calls in this request (empty = router default)
-    ReasoningEffort string   // native reasoning effort value for the model family (e.g., "high", "On")
-    PlanReview      bool     // true = pause after planning for user review before execution
-    SessionPlansDir string   // directory for session-scoped plan files; REQUIRED when PlanReview is true
+    UserSkills      []string // explicitly requested by user via /skill refs
+    ModelOverride   string   // non-empty = use this model for the Conductor
+    ReasoningEffort string   // native reasoning effort for the model family
+    SessionPlansDir string   // directory for session-scoped plan files (used by declare_plan)
 }
 
 // Handle result
 type HandleResult struct {
     Output          string
     RoutingDecision *RoutingDecision
-    Plan            *Plan
+    Plan            *Plan               // last plan declared via declare_plan, if any
     Blackboard      Blackboard
-    AttemptCount    int
-    Reflections     []Reflection
-    Status          orchestration.ExecutionStatus  // typed outcome: success | partial | failed | aborted | cancelled
-    FailedSteps     int                            // steps that finished with an error in the final attempt
-    PlanReviewPhase string                         // non-empty = orchestrator paused in plan review
-    PlanReviewPath  string                         // path to the .md plan file for review
+    Status          orchestration.ExecutionStatus  // success | partial | failed | aborted | cancelled
+    Delegations     []DelegationSummary             // active/completed delegations at finish
 }
 ```
 
@@ -113,29 +104,24 @@ type HandleResult struct {
 ```
 HandleMessage(ctx, message, sessionID, opts)
 │
-├─ 0. Set PlanModeKey in context
-├─ 0a. Inject vector search hints (non-blocking, 2s timeout)
-├─ 0b. Emit initial context_fill (0%)
+├─ 0. Inject vector search hints (non-blocking, 2s timeout)
+├─ 0a. Emit initial context_fill (0%)
 │
 ├─ 1. Blackboard lifecycle:
 │     ├─ opts.TaskID == "": create new BB via bbFactory
 │     └─ opts.TaskID != "": restore BB from persistence
 │
-├─ 2. Load available tools from registry (filtered via ListFiltered to
-│     exclude disabled tools in No Project mode)
+├─ 2. Load available tools from registry (filtered via ListFiltered
+│     to exclude disabled tools in No Project mode)
 │
 ├─ 3. ROUTE (or continuation fast-path):
-│     ├─ Continuation fast-path (routeOrContinue): if opts.TaskID != "" AND
-│     │   restored BB has an existing plan + routing decision → skip router
-│     │   entirely, reuse restored RoutingDecision, reactivate skills from it,
-│     │   proceed to step 6. Avoids spurious needsClarification on continuation
-│     │   messages (router only sees flat history, not the plan).
-│     │
+│     ├─ Continuation fast-path: if opts.TaskID != "" AND restored BB
+│     │   has an existing routing decision → reuse it, reactivate skills,
+│     │   skip the router LLM call.
 │     └─ Default: router.Route(ctx, routingMessage, tools, history, skills)
-│         → When opts.UserSkills is non-empty, routingMessage is augmented with
-│           skill descriptions via buildSkillAugmentedRoutingMessage so the router
-│           can classify domain/complexity based on the actual task semantics
-│         → RoutingDecision
+│         → When opts.UserSkills is non-empty, routingMessage is augmented
+│           with skill descriptions via buildSkillAugmentedRoutingMessage.
+│         → RoutingDecision { Domain, Complexity, MatchedSkills }
 │         → Emit Routing event
 │
 ├─ 3a. No Project: override routing.Domain from "code" to "general"
@@ -146,94 +132,90 @@ HandleMessage(ctx, message, sessionID, opts)
 │     → Apply skill policy overrides to tool registry
 │     → Emit SkillsActivated event
 │
-├─ 5. NeedsClarification? → return early with clarification message
-│     (suppressed when opts.UserSkills is non-empty — explicit /skill invocation
-│      means user intent is clear regardless of how the stripped message reads)
+├─ 5. Build Conductor:
+│     ├─ System prompt = orchestrator core + family overlay + verification
+│     │   mandate + workspace + env + active skills (verbatim) +
+│     │   Conductor tool guidance (delegate, declare_plan, reflect, ask_user)
+│     ├─ Tool set = file ops + search + internal tools (ask_user, finish,
+│     │   store_fact, search_facts, set_step_status, read_step_output,
+│     │   semantic_search) + Conductor tools (delegate, declare_plan,
+│     │   reflect, cancel_delegation)
+│     ├─ ContextManager via contextFactory
+│     └─ Delegation Registry injected into context
 │
-├─ 6. Branch:
-│     ├─ First message (TaskID == ""):
-│     │     ├─ opts.ExecutionMode == "normal" → Plan(singleStep=true) → 1 step
-│     │     └─ otherwise → Plan(singleStep=false) → full DAG
-│     │     → Plan receives the (compacted) conversation history
-│     │     → Set plan on BB → engine.Resume(ctx, bb)
-│     │
-│     └─ Continuation (TaskID != ""):
-│           ├─ opts.ExecutionMode == "normal" → PlanContinuation(singleStep=true)
-│           └─ otherwise → PlanContinuation(singleStep=false)
-│           → PlanContinuation receives the (compacted) conversation history
-│           → Merge into existing plan → engine.Resume(ctx, bb)
+├─ 6. Launch Conductor = executor.Run(ctx, conductorTools, cm)
+│     └─ The Conductor owns the task until it calls finish.
+│        Planning, decomposition, interaction, reflection all happen
+│        as tool calls inside this loop.
 │
-├─ 7. SDK engine executes (Plan&Execute loop with retry/replan)
-│
-├─ 8. Persist task outcome on BB per typed status (persistTaskOutcome):
+├─ 7. Persist task outcome on BB per typed status (persistTaskOutcome):
 │     success → completed; partial → left in_progress (resumable);
 │     failed/aborted → failed (resumable)
 │
-└─ 9. Return HandleResult (carries Status + FailedSteps).
+└─ 8. Return HandleResult (carries Status + Delegations summary).
       A recordConversationOutcome defer updates conversationHistory for EVERY
-      terminal outcome (success, clarification, plan review, failure, cancel)
+      terminal outcome (success, failure, cancel).
 ```
 
-## Execution Modes
+## Execution Surface
 
-| Mode     | Condition                              | Behavior                                                  |
-| -------- | -------------------------------------- | --------------------------------------------------------- |
-| Normal   | `opts.ExecutionMode == "normal"`       | Plan(singleStep=true) → exactly 1 step with full ToT     |
-| Advanced | any other value (including "advanced") | Plan(singleStep=false) → full DAG, parallel execution     |
+| Surface | When | Behaviour |
+| ------- | ---- | --------- |
+| Simple task | Conductor never calls `delegate` | One ReAct loop, no subagents. Replaces the former "normal" single-step mode without planner overhead. |
+| Complex task | Conductor calls `delegate` with one or more tasks | Subagents run isolated ReAct loops; Conductor sees only summaries. Replaces the former "advanced" multi-step DAG mode. |
+| Interactive skill | Conductor calls `ask_user` / `declare_plan` mid-loop | Skill instructions are executable because the tools are available inside the loop. No pipeline-level gate. |
+
+There is no `executionMode` toggle. The Conductor chooses its own granularity based on task complexity and its system-prompt guidance.
 
 ## Invariants
 
-- Every FIRST user message passes through Route; continuation messages (opts.TaskID != "") with a restored plan + routing take the continuation fast-path and skip the router
-- Routing always produces a valid domain from {"code", "research", "general", "mixed"}
-- Complexity is always in range [1, 5]
-- MaxRetries bounds total attempts at MaxRetries + 1
-- `ExecutionResult.Status` (`sdk/orchestration.ExecutionStatus`) is the typed
-  success contract: success | partial | failed | aborted | cancelled. Callers
-  must consult it instead of parsing Output suffixes; a nil error does NOT
-  imply success (reflector abort and exhausted retries return nil error with
-  Status failed/aborted)
-- Blackboard is created once per first message and restored for continuations
-- Vector search hints are non-blocking (2s timeout, failure is acceptable)
-- Skills are activated task-wide but rendered per-step by StepConfigurator
-- NeedsClarification is suppressed when UserSkills is non-empty (explicit `/skill` invocation implies clear intent)
-- currentRequestCtx and currentRequestSkills are cleared at end of HandleMessage
-- conversationHistory is updated for every terminal outcome of HandleMessage
-  and Resume (see session-lifecycle.md § Conversation History); failure and
-  cancellation record `[Task failed before completion: …]` /
-  `[Task was cancelled before completion]` assistant notes shared with the
-  backend's history restore (core.HistoryNoteFailed / core.HistoryNoteCancelled)
-- When the assistant output contains tool-call syntax printed as text (failure-mode
-  detected by `agent.DetectToolCallSyntaxInContent`), the history records a
-  `HistoryNoteFailed(...)` note instead of the hallucinated text, so future
-  routing/planning sees an honest failure, not garbage
-- isNoProject: routing domain "code" is overridden to "general" after classification
-- SetNoProjectMode(): disables code tools (ripgrep, glob, edit_file, semantic_search) and adds extended bash command blacklist on the core tool registry
+- Every FIRST user message passes through Route; continuation messages (opts.TaskID != "") with a restored routing decision take the continuation fast-path and skip the router.
+- Routing always produces a valid domain from {"code", "research", "general", "mixed"}.
+- Complexity is always in range [1, 5].
+- Exactly one Conductor `Executor.Run` instance owns a given task from start to finish.
+- The Conductor always has `ask_user`, `declare_plan`, `reflect`, `delegate`, `cancel_delegation`, `finish` available regardless of skill or tool-policy overrides (they are internal tools, bypass policy).
+- `finish` with pending async delegations requires either a prior `cancel_delegation` for each, or an implicit join (the Conductor waits for all pending delegations before finishing).
+- `ExecutionResult.Status` is the typed success contract: success | partial | failed | aborted | cancelled. Callers consult it instead of parsing Output.
+- Blackboard is created once per first message and restored for continuations.
+- Vector search hints are non-blocking (2s timeout, failure is acceptable).
+- Skills are activated task-wide and rendered verbatim in the Conductor system prompt (no truncation).
+- currentRequestCtx and currentRequestSkills are cleared at end of HandleMessage.
+- conversationHistory is updated for every terminal outcome of HandleMessage and Resume.
+- When the assistant output contains tool-call syntax printed as text (failure-mode detected by `agent.DetectToolCallSyntaxInContent`), the history records a `HistoryNoteFailed(...)` note instead of the hallucinated text.
+- isNoProject: routing domain "code" is overridden to "general" after classification.
+- SetNoProjectMode(): disables code tools and adds extended bash command blacklist on the core tool registry.
 
 ## Configuration
 
 From `config.yaml` (via BuilderConfig → OrchestratorConfig):
 
-| Parameter                                 | Default | Description                       |
-| ----------------------------------------- | ------- | --------------------------------- |
-| `executor.max_react_steps`                | 50      | Max ReAct iterations per step     |
-| `executor.max_retries`                    | 2       | Max retry attempts (3 total)      |
-| `orchestration.plannerHistoryBudgetTokens` | 4000   | Max tokens for conversation history sent to planner (triggers summarisation compaction when exceeded) |
+| Parameter | Default | Description |
+| --------- | ------- | ----------- |
+| `conductor.maxSteps` | 80 | Max ReAct iterations for the Conductor |
+| `conductor.subagentMaxSteps` | 50 | Max ReAct iterations per delegation |
+| `conductor.maxRedelegationDepth` | 2 | Cap on recursive delegation when `allow_redelegate` is true |
+| `conductor.maxDependencyContextChars` | 8000 | Max chars from dependency outputs injected into a delegation task |
+| `executor.keepFirst` | 3 | Protected head messages during compaction |
+| `executor.keepLast` | 10 | Protected tail messages during compaction |
+| `orchestration.plannerHistoryBudgetTokens` | 4000 | Max tokens for conversation history sent to router (triggers summarisation compaction when exceeded) |
 | `orchestration.plannerHistoryKeepRecentRatio` | 0.75 | Fraction of budget reserved for recent messages during compaction |
-| `orchestration.maxDependencyContextChars` | 8000    | Max chars from dependency outputs |
 
-Note: yaml key casing is mixed across config sections — `executor.*` keys use `snake_case`, while `orchestration.*` and `toolLimits.*` keys use `camelCase`. This matches the struct tags in `backend/config/config.go`.
+Note: yaml key casing is mixed across config sections — `executor.*` keys use `snake_case`, while `orchestration.*` and `conductor.*` keys use `camelCase`. This matches the struct tags in `backend/config/config.go`.
 
 ## Extension Points
 
-- Custom `ContextManagerFactory` for alternative memory strategies
-- Custom `BlackboardFactory` for alternative persistence
-- Custom `HITLHandler` for step limit and circuit breaker handling
-- System prompt customization via `buildSystemPrompt` function
+- Custom `ContextManagerFactory` for alternative memory strategies.
+- Custom `BlackboardFactory` for alternative persistence.
+- Custom `HITLHandler` for step limit and circuit breaker handling (applies to both Conductor and subagents).
+- System prompt customization via the Conductor prompt builder.
+- New Conductor tools: implement `tools.Tool`, register in `core/tools/builtin_registration.go`, add to the Conductor tool set in `core/conductor.go`. See [../../contracts/conductor-tools.md](../../contracts/conductor-tools.md).
 
 ## Related Specs
 
+- [conductor.md](conductor.md) — Conductor component detail
+- [delegation.md](delegation.md) — delegate tool and async delegation registry
 - [router.md](router.md) — request classification
-- [planner.md](planner.md) — plan generation
-- [executor.md](executor.md) — step execution
+- [executor.md](executor.md) — ReAct loop (shared by Conductor and subagents)
 - [../memory/README.md](../memory/README.md) — context management
-- [../../contracts/core-sdk.md](../../contracts/core-sdk.md) — SDK interface wiring
+- [../../contracts/conductor-tools.md](../../contracts/conductor-tools.md) — Conductor tool surface contract
+- [../../decisions/012-conductor-orchestration-pipeline.md](../../decisions/012-conductor-orchestration-pipeline.md) — architectural decision

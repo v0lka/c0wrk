@@ -2,7 +2,6 @@
 package core
 
 import (
-	"log/slog"
 	"time"
 
 	"github.com/v0lka/c0wrk/sdk/agent"
@@ -103,76 +102,6 @@ func (n *noopEmitter) StepTodoUpdate(_ string, _ []TodoItem)                    
 func (n *noopEmitter) MemoryRead(_ int, _ string)                                   {}
 
 // ---------------------------------------------------------------------------
-// emitterEventsAdapter wraps a core Emitter to implement orchestration.Events.
-// ---------------------------------------------------------------------------
-
-type emitterEventsAdapter struct {
-	Emitter
-	logger *slog.Logger
-}
-
-func (a *emitterEventsAdapter) log() *slog.Logger {
-	if a.logger != nil {
-		return a.logger
-	}
-	return slog.Default()
-}
-
-var _ orchestration.Events = (*emitterEventsAdapter)(nil)
-
-func (a *emitterEventsAdapter) OnPlanGenerated(n int, steps []orchestration.PlanStepEvent) {
-	a.PlanGenerated(n, steps)
-}
-func (a *emitterEventsAdapter) OnStepStarted(id, desc, summary string) {
-	a.PlanStepStart(id, desc, summary)
-}
-func (a *emitterEventsAdapter) OnStepCompleted(id string, ok bool, d time.Duration, errMsg string) {
-	a.PlanStepComplete(id, ok, d, errMsg)
-}
-func (a *emitterEventsAdapter) OnReflected(reflection *orchestration.Reflection, attempt, maxAttempts int) {
-	a.Reflection(reflection, attempt, maxAttempts)
-}
-func (a *emitterEventsAdapter) OnRetry(attempt, maxAttempts int) {
-	a.Retry(attempt, maxAttempts)
-}
-func (a *emitterEventsAdapter) OnStepRetry(stepID string, attempt, maxAttempts int) {
-	a.StepRetry(stepID, attempt, maxAttempts)
-}
-func (a *emitterEventsAdapter) OnService(content string) {
-	a.Service(content)
-}
-func (a *emitterEventsAdapter) OnServiceMeta(content string, meta map[string]any) {
-	a.ServiceWithMeta(content, meta)
-}
-func (a *emitterEventsAdapter) OnReplanFailed(err error) {
-	a.log().Debug("event adapter: replan failed", "error", err)
-	a.ReplanFailed(err)
-}
-func (a *emitterEventsAdapter) OnStepTodoUpdate(stepID string, items []agent.TodoItem) {
-	coreItems := make([]TodoItem, len(items))
-	for i, item := range items {
-		coreItems[i] = TodoItem{Text: item.Text, Checked: item.Checked}
-	}
-	a.StepTodoUpdate(stepID, coreItems)
-}
-
-// WithStepID implements orchestration.StepScopable.
-func (a *emitterEventsAdapter) WithStepID(id string) orchestration.Events {
-	if s, ok := a.Emitter.(PlanStepScopable); ok {
-		return &emitterEventsAdapter{Emitter: s.WithPlanStepID(id), logger: a.logger}
-	}
-	return a
-}
-
-// WithRetryAttempt implements orchestration.RetryScopable.
-func (a *emitterEventsAdapter) WithRetryAttempt(attempt int) orchestration.Events {
-	if r, ok := a.Emitter.(RetryAttemptScopable); ok {
-		return &emitterEventsAdapter{Emitter: r.WithRetryAttempt(attempt), logger: a.logger}
-	}
-	return a
-}
-
-// ---------------------------------------------------------------------------
 // c0wrk-specific types
 // ---------------------------------------------------------------------------
 // ExecutorConfig — configuration for the Executor (AD 4.4).
@@ -188,31 +117,21 @@ type TaskDefinition struct {
 	Tools []sdktools.ToolDescriptor `json:"tools"`
 }
 
-// HandleResult — result of Orchestrator.Handle (Phase 2).
-// Provides rich output for CLI display including routing and plan info.
+// HandleResult — result of Orchestrator.Handle.
 type HandleResult struct {
 	Output          string                   `json:"output"`
 	RoutingDecision *router.RoutingDecision  `json:"routing_decision"`
 	Plan            *orchestration.Plan      `json:"plan,omitempty"`
-	Blackboard      orchestration.Blackboard `json:"-"` // shared state for downstream consumers (not serialized)
-	// Retry-loop fields (Phase 3)
-	AttemptCount int                        `json:"attempt_count,omitempty"` // Number of attempts made (1 = first try)
-	Reflections  []orchestration.Reflection `json:"reflections,omitempty"`   // Reflections from failed attempts
-	// Typed execution outcome (empty = success for legacy/short-circuit paths).
-	Status      orchestration.ExecutionStatus `json:"status,omitempty"`
-	FailedSteps int                           `json:"failed_steps,omitempty"` // steps that finished with an error in the final attempt
-	// Plan review fields
-	PlanReviewPhase string `json:"plan_review_phase,omitempty"` // non-empty = orchestrator paused in plan review
-	PlanReviewPath  string `json:"plan_review_path,omitempty"`  // path to the .md plan file for review
+	Blackboard      orchestration.Blackboard `json:"-"`
+	Reflections     []orchestration.Reflection `json:"reflections,omitempty"`
+	Status          orchestration.ExecutionStatus `json:"status,omitempty"`
 }
 
 // HandleOptions controls how a message is processed by HandleMessage.
 type HandleOptions struct {
 	TaskID          string   // non-empty = continuation of existing task
-	ExecutionMode   string   // "normal" = single-step plan, "advanced" = full multi-step DAG
 	UserSkills      []string // explicitly requested by user via /skill refs (bypass router)
 	ModelOverride   string   // non-empty → use this model for all LLM calls; empty → router default
 	ReasoningEffort string   // non-empty → native reasoning value for all LLM calls; empty → use family default
-	PlanReview      bool     // true = pause after planning for user review before execution
-	SessionPlansDir string   // directory for session-scoped plan files; REQUIRED when PlanReview is true
+	SessionPlansDir string   // directory for session-scoped plan files (used by declare_plan tool)
 }

@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/button'
-import { Play, Square, MessageSquare, Terminal, Sparkles, Loader2, Zap, Workflow, FileCheck } from 'lucide-react'
+import { Play, Square, MessageSquare, Terminal, Sparkles, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { ChatInputController } from '@/hooks/useChatInputController'
 import { ModelCombobox } from './ModelCombobox'
@@ -11,8 +11,8 @@ interface ChatInputToolbarProps {
 
 /**
  * ChatInputToolbar renders the bottom toolbar of the chat input: chat/terminal
- * mode toggles, normal/advanced execution mode toggles, blocking message,
- * optimize-prompt error display, and the optimize/send/cancel buttons.
+ * mode toggles, blocking message, optimize-prompt error display, and the
+ * optimize/send/cancel buttons.
  *
  * All state lives in `controller` (see useChatInputController). This component
  * is purely presentational so it stays small and easy to test in isolation.
@@ -21,10 +21,6 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
   const {
     mode,
     setMode,
-    executionMode,
-    setExecutionMode,
-    planReview,
-    setPlanReview,
     isInputDisabled,
     isNoProject,
     showCancel,
@@ -67,53 +63,6 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
       >
         <Terminal className="size-3.5" />
       </Button>
-      {mode === 'chat' && (
-        <>
-          <div className="w-px h-4 bg-border mx-1" />
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className={cn(
-              'text-muted-foreground hover:text-foreground',
-              executionMode === 'normal' && 'text-primary bg-muted/50',
-            )}
-            onClick={() => setExecutionMode('normal')}
-            title="Normal mode — For regular tasks"
-            aria-label="Switch to normal execution mode"
-            disabled={isInputDisabled}
-          >
-            <Zap className="size-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className={cn(
-              'text-muted-foreground hover:text-foreground',
-              executionMode === 'advanced' && 'text-primary bg-muted/50',
-            )}
-            onClick={() => setExecutionMode('advanced')}
-            title="Advanced mode — For complex multi-step tasks"
-            aria-label="Switch to advanced execution mode"
-            disabled={isInputDisabled}
-          >
-            <Workflow className="size-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className={cn(
-              'text-muted-foreground hover:text-foreground',
-              planReview && 'text-primary bg-muted/50',
-            )}
-            onClick={() => setPlanReview(!planReview)}
-            title="Plan Review — Review and edit the plan before execution"
-            aria-label="Toggle plan review mode"
-            disabled={isInputDisabled}
-          >
-            <FileCheck className="size-3.5" />
-          </Button>
-        </>
-      )}
       {blockingMessage && mode === 'chat' && (
         <span className="text-xs italic text-muted-foreground">{blockingMessage}</span>
       )}

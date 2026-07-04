@@ -29,8 +29,9 @@ specs/
 ├── domains/                        by business domain (NOT file structure)
 │   ├── orchestration/
 │   │   ├── README.md               domain overview (entry point)
+│   │   ├── conductor.md
+│   │   ├── delegation.md
 │   │   ├── router.md
-│   │   ├── planner.md
 │   │   └── executor.md
 │   ├── tool-system/
 │   │   ├── README.md
@@ -53,7 +54,8 @@ specs/
 │   ├── core-sdk.md
 │   ├── backend-core.md
 │   ├── desktop-frontend.md
-│   └── event-catalog.md
+│   ├── event-catalog.md
+│   └── conductor-tools.md
 │
 └── decisions/                      Architecture Decision Records
     ├── _template.md

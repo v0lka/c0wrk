@@ -132,22 +132,6 @@ const EMPTY_PENDING: DisplayItem[] = []
 
 /** Lightweight pending actions scan — avoids full groupMessages pipeline. */
 export function extractPendingActions(messages: ChatMessageUI[]): DisplayItem[] {
-  // Find the most recent (last) plan_review message to determine if plan
-  // review is still pending. A resolved message (accepted/rejected) means
-  // the plan was handled and we should skip all plan_review actions.
-  // Otherwise, only the last unresolved plan_review is included — earlier
-  // ones are implicitly superseded by subsequent accept/reject cycles.
-  let lastPlanReviewIndex = -1
-  let planReviewResolved = false
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]!
-    if (msg.type === 'plan_review') {
-      planReviewResolved = msg.metadata?.resolved === true
-      lastPlanReviewIndex = i
-      break
-    }
-  }
-
   const actions: DisplayItem[] = []
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]!
@@ -156,9 +140,7 @@ export function extractPendingActions(messages: ChatMessageUI[]): DisplayItem[] 
     else if (msg.type === 'ask_user') actions.push({ kind: 'ask_user', message: msg })
     else if (msg.type === 'task_failed_resumable') actions.push({ kind: 'resume_action', message: msg })
     else if (msg.type === 'step_limit') actions.push({ kind: 'step_limit', message: msg })
-    else if (msg.type === 'plan_review' && !planReviewResolved && i === lastPlanReviewIndex) {
-      actions.push({ kind: 'plan_review', message: msg })
-    }
+    else if (msg.type === 'plan_review' && msg.metadata?.resolved !== true) actions.push({ kind: 'plan_review', message: msg })
   }
   return actions.length > 0 ? actions : EMPTY_PENDING
 }

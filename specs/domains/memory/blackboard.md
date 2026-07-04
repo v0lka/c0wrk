@@ -119,5 +119,6 @@ Step results enable:
 
 - [README.md](README.md) — memory overview
 - [../orchestration/executor.md](../orchestration/executor.md) — how executor writes results
-- [../orchestration/planner.md](../orchestration/planner.md) — how planner reads state for replan
+- [../orchestration/conductor.md](../orchestration/conductor.md) — how the Conductor reads blackboard state
+- [../orchestration/delegation.md](../orchestration/delegation.md) — how `delegate` writes subagent results
 - [../../architecture/data-flow.md](../../architecture/data-flow.md) — blackboard flow diagram

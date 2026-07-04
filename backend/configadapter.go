@@ -146,11 +146,8 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			Servers: mcpServers,
 		},
 		Orchestration: core.BuilderOrchestrationConfig{
-			PlannerHistoryBudgetTokens:    cfg.Orchestration.PlannerHistoryBudgetTokens,
-			PlannerHistoryKeepRecentRatio: cfg.Orchestration.PlannerHistoryKeepRecentRatio,
-			MaxDependencyContextChars:     cfg.Orchestration.MaxDependencyContextChars,
-			MaxJudgeCacheSize:             cfg.Orchestration.MaxJudgeCacheSize,
-			MaxPlannerExploreSteps:        cfg.Orchestration.MaxPlannerExploreSteps,
+			MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
+			MaxJudgeCacheSize:         cfg.Orchestration.MaxJudgeCacheSize,
 		},
 		ToolLimits: core.BuilderToolLimitsConfig{
 			ReadDefaultLines:    cfg.ToolLimits.ReadDefaultLines,

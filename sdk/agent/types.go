@@ -151,3 +151,26 @@ const (
 	// StepLimitDeny terminates execution (current behavior).
 	StepLimitDeny StepLimitResponse = "deny"
 )
+
+// TrajectoryStore is a mutable holder for the executor's current trajectory.
+// The executor syncs its step history to the store at each loop iteration so
+// tools (e.g. reflect) can access the trajectory via context.
+type TrajectoryStore interface {
+	Sync(steps []Step)
+	Steps() []Step
+}
+
+type trajectoryStoreKey struct{}
+
+// WithTrajectoryStore injects a TrajectoryStore into the context.
+func WithTrajectoryStore(ctx context.Context, store TrajectoryStore) context.Context {
+	return context.WithValue(ctx, trajectoryStoreKey{}, store)
+}
+
+// TrajectoryStoreFrom extracts the TrajectoryStore from the context, or returns nil.
+func TrajectoryStoreFrom(ctx context.Context) TrajectoryStore {
+	if v, ok := ctx.Value(trajectoryStoreKey{}).(TrajectoryStore); ok {
+		return v
+	}
+	return nil
+}

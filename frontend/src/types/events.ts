@@ -100,9 +100,7 @@ export interface StepTodoUpdateData {
 
 // --- Plan review event payloads ---
 
-export interface PlanReviewReadyData { session_id: string; plan_path: string; plan_content: string }
-export interface ValidationIssueData { step_index?: number; field: string; severity: string; description: string; suggestion?: string }
-export interface PlanValidationFailedData { issues: ValidationIssueData[] }
+export interface PlanReviewReadyData { request_id: string; plan_path: string; plan_content: string }
 
 // --- Tool manager event payloads ---
 
@@ -161,10 +159,6 @@ export interface SessionEventMap {
   readonly blackboard_updated: BlackboardUpdatedData
   readonly step_todo_update: StepTodoUpdateData
   readonly plan_review_ready: PlanReviewReadyData
-  readonly plan_validation_failed: PlanValidationFailedData
-  readonly plan_review_awaiting_feedback: void
-  readonly plan_review_accepted: void
-  readonly plan_review_rejected: void
   readonly memory_read: { readonly step_num: number; readonly content: string }
 }
 
@@ -264,11 +258,7 @@ export function isStepTodoUpdateData(d: unknown): d is StepTodoUpdateData {
 }
 
 export function isPlanReviewReadyData(d: unknown): d is PlanReviewReadyData {
-  return isObj(d) && typeof d.plan_path === 'string' && typeof d.plan_content === 'string'
-}
-
-export function isPlanValidationFailedData(d: unknown): d is PlanValidationFailedData {
-  return isObj(d) && Array.isArray(d.issues)
+  return isObj(d) && typeof d.request_id === 'string' && typeof d.plan_path === 'string' && typeof d.plan_content === 'string'
 }
 
 // --- Global event type guards ---

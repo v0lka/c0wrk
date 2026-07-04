@@ -54,6 +54,10 @@ var nonCacheableTools = map[string]struct{}{
 	"search_facts":      {},
 	"set_step_status":   {},
 	"ask_user":          {},
+	"delegate":          {},
+	"cancel_delegation": {},
+	"declare_plan":      {},
+	"reflect":           {},
 	tools.ToolBatch:     {},
 }
 
@@ -448,6 +452,11 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 	state := &runState{effectiveMaxSteps: e.maxSteps}
 
 	for state.stepNum = 1; state.unlimitedSteps || state.stepNum <= state.effectiveMaxSteps+1; state.stepNum++ {
+		// Sync trajectory to the store so tools (e.g. reflect) can access it.
+		if ts := TrajectoryStoreFrom(ctx); ts != nil {
+			ts.Sync(state.allSteps)
+		}
+
 		// Handle step-limit boundary
 		if action := e.handleStepLimitBoundary(ctx, state, cw); action == actionReturn {
 			return state.finishResult, nil //nolint:nilerr // intentional: callback error means stop, not fatal

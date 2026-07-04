@@ -82,3 +82,7 @@ const EventAskUserResponse = "ask_user_response"
 // EventStepLimitResponse is received from the frontend when the user
 // decides to continue, cancel, or adjust after hitting the step limit.
 const EventStepLimitResponse = "step_limit_response"
+
+// EventPlanApprovalResponse is received from the frontend when the user
+// approves, requests changes to, or abandons a plan awaiting review.
+const EventPlanApprovalResponse = "plan_approval_response"

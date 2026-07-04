@@ -14,8 +14,6 @@ export function AbortRebase():Promise<void>;
 
 export function AppendToGitignore(arg1:string):Promise<void>;
 
-export function ApprovePlan(arg1:string,arg2:string):Promise<void>;
-
 export function ArchiveSession(arg1:string):Promise<void>;
 
 export function CancelTask(arg1:string):Promise<void>;
@@ -122,8 +120,6 @@ export function ReadFile(arg1:string):Promise<string>;
 
 export function Rebase(arg1:string):Promise<void>;
 
-export function RejectPlan(arg1:string,arg2:string):Promise<void>;
-
 export function RenameProject(arg1:string,arg2:string):Promise<void>;
 
 export function RenameSession(arg1:string,arg2:string):Promise<void>;
@@ -136,7 +132,7 @@ export function SaveProjectUIState(arg1:backend.ProjectUIStateRequest):Promise<v
 
 export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<backend.VectorStoreEntry>>;
 
-export function SendMessage(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string,arg6:string,arg7:boolean):Promise<void>;
+export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:string,arg5:string):Promise<void>;
 
 export function SetLogLevel(arg1:string):Promise<void>;
 

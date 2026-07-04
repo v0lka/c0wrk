@@ -23,6 +23,8 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 
 ## Store Catalog
 
+> **Note:** `executionModeStore` and `planReviewStore` are affected by ADR-012. Under the Conductor pipeline there is no execution-mode toggle (the Conductor chooses its own granularity) and no system-driven plan-review toggle (approval is a `declare_plan` tool call). These stores are expected to be removed or repurposed during implementation of ADR-012.
+
 | Store                | Responsibility                                                     | Persistence  |
 | -------------------- | ------------------------------------------------------------------ | ------------ |
 | `chatStore`          | Messages per session, streaming text, activity flags, token counts | No           |
