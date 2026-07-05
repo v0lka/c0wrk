@@ -199,6 +199,66 @@ func TestBuildPromptWithEmptySections(t *testing.T) {
 	}
 }
 
+// TestBuildPromptWithPriorConversation verifies that prior conversation
+// messages appear between the system prompt and the current task content.
+func TestBuildPromptWithPriorConversation(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	strategy := NewSlidingWindowStrategy(5, 5)
+
+	cw := NewContextWindow("You are a helpful assistant.", testModelMeta(128000), tracker, testThresholds(), strategy, 0, false)
+	cw.SetTask("implement variant a")
+
+	cw.SetPriorConversation([]llm.Message{
+		{Role: "user", Content: "analyze the options"},
+		{Role: "assistant", Content: "Options: a, b, or c. Which to implement?"},
+	})
+
+	messages := cw.BuildPrompt()
+
+	// Expected: system (1) + prior conversation (2) + task (1) = 4 messages
+	if len(messages) != 4 {
+		t.Fatalf("Expected 4 messages, got %d", len(messages))
+	}
+
+	if messages[0].Role != "system" || messages[0].Content != "You are a helpful assistant." {
+		t.Errorf("Message 0 should be system prompt, got role=%s", messages[0].Role)
+	}
+	if messages[1].Role != "user" || messages[1].Content != "analyze the options" {
+		t.Errorf("Message 1 should be prior user, got role=%s content=%s", messages[1].Role, messages[1].Content)
+	}
+	if messages[2].Role != "assistant" || messages[2].Content != "Options: a, b, or c. Which to implement?" {
+		t.Errorf("Message 2 should be prior assistant, got role=%s content=%s", messages[2].Role, messages[2].Content)
+	}
+	if messages[3].Role != "user" || messages[3].Content != "implement variant a" {
+		t.Errorf("Message 3 should be current task, got role=%s content=%s", messages[3].Role, messages[3].Content)
+	}
+}
+
+// TestBuildPromptWithoutPriorConversation verifies that BuildPrompt works
+// normally when no prior conversation is set (backward compatibility).
+func TestBuildPromptWithoutPriorConversation(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	strategy := NewSlidingWindowStrategy(5, 5)
+
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), strategy, 0, false)
+	cw.SetTask("do something")
+
+	messages := cw.BuildPrompt()
+
+	// Expected: system (1) + task (1) = 2 messages — no prior conversation gap
+	if len(messages) != 2 {
+		t.Fatalf("Expected 2 messages, got %d", len(messages))
+	}
+	if messages[0].Role != "system" {
+		t.Errorf("Message 0 should be system")
+	}
+	if messages[1].Role != "user" || messages[1].Content != "do something" {
+		t.Errorf("Message 1 should be task")
+	}
+}
+
 // TestSlidingWindowStrategyCompaction verifies SlidingWindowStrategy correctly compacts steps.
 func TestSlidingWindowStrategyCompaction(t *testing.T) {
 	strategy := NewSlidingWindowStrategy(3, 5)

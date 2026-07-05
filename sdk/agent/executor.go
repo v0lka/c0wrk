@@ -50,6 +50,7 @@ var nonCacheableTools = map[string]struct{}{
 	"finish":                {},
 	"read_step_output":      {},
 	"list_step_outputs":     {},
+	"read_final_result":     {},
 	"store_fact":            {},
 	"search_facts":          {},
 	"update_checklist":      {},
@@ -71,6 +72,28 @@ const executorFinishNudge = "[System] You must call the finish tool to complete 
 // mutating tool. This catches the "false success" pattern where the agent reads
 // extensively but finishes without making the required code changes.
 const executorMutationNudge = "[System] You are finishing a step that requires code modifications, but you have not made any file changes (no write_file, edit_file, create_directory, delete_file, or delete_directory calls). If the task genuinely requires no changes, explain why explicitly in your finish answer. Otherwise, make the required changes NOW before calling finish."
+
+// executorChecklistMissingNudge is injected when a non-trivial step finishes
+// without ever calling update_checklist. The checklist tracks sub-tasks within
+// a step and gives the user visibility into progress; skipping it on
+// non-trivial steps is treated as an incomplete workflow.
+const executorChecklistMissingNudge = "[System] You are finishing a non-trivial step without having called update_checklist. A checklist tracks the sub-tasks of your current step and gives the user visibility into progress. Call update_checklist now with the sub-tasks for this step (mark completed ones as '- [x]'), then continue. If this step is genuinely trivial, explain why in your finish answer."
+
+// executorChecklistUncheckedNudge is injected when the last checklist has
+// unchecked items at finish time. The agent must either complete them or
+// explicitly justify skipping them.
+const executorChecklistUncheckedNudge = "[System] Your last checklist has %d unchecked item(s). Either complete the remaining work, or call update_checklist again with all relevant items checked and explain in your finish answer why any were skipped."
+
+// checklistDoneRe extracts the "N/M done" progress from an update_checklist
+// tool result (e.g. "Checklist updated: 2/5 done" or "Checklist updated for
+// step_3: 2/5 done").
+var checklistDoneRe = regexp.MustCompile(`(\d+)/(\d+)\s+done`)
+
+// checklistTrivialThreshold is the maximum number of productive tool calls
+// (excluding finish and nudges) a step may have before the checklist gate
+// activates. Steps at or below this threshold are considered trivial and do
+// not require a checklist.
+const checklistTrivialThreshold = 2
 
 // mutatingTools is the set of tool names that constitute a filesystem mutation.
 // The mutation gate checks whether any of these were successfully executed before
@@ -162,6 +185,14 @@ type Executor struct {
 	mutationRequired       bool
 	mutationNudgeAttempted bool
 
+	// Checklist gate: when enabled (default), a non-trivial step that finishes
+	// without ever calling update_checklist, or with unchecked items in its last
+	// checklist, receives a nudge before finish is accepted. Improves checklist
+	// adoption and incremental updates. Can be disabled via SetChecklistGateEnabled.
+	checklistGateEnabled             bool
+	checklistMissingNudgeAttempted   bool
+	checklistUncheckedNudgeAttempted bool
+
 	// Multi-tool-call response group counter
 	responseGroupCounter int64
 
@@ -202,6 +233,7 @@ func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.Tok
 		toolResultBudget:        toolResultBudget,
 		circuitBreaker:          circuitBreaker,
 		hitl:                    hitl,
+		checklistGateEnabled:    true,
 	}
 }
 
@@ -217,6 +249,13 @@ func (e *Executor) SetReasoningEffort(effort string) { e.reasoningEffort = effor
 // executed during this step. A nudge is injected on the first attempt; on the
 // second attempt the step is marked as not finished (Finished: false).
 func (e *Executor) SetMutationRequired(required bool) { e.mutationRequired = required }
+
+// SetChecklistGateEnabled enables or disables the checklist gate. When enabled
+// (the default), a non-trivial step that finishes without having called
+// update_checklist, or whose last checklist has unchecked items, receives a
+// nudge prompting the agent to maintain or complete its checklist. The gate is
+// a soft nudge: after one nudge attempt, finish is accepted regardless.
+func (e *Executor) SetChecklistGateEnabled(enabled bool) { e.checklistGateEnabled = enabled }
 
 // SetPreWarningPercent sets the context fill percentage that triggers the pre-compaction
 // store_fact nudge. When fill reaches this threshold (but is below the compaction trigger),
@@ -451,6 +490,16 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 	hasTools := len(taskTools) > 0
 
 	state := &runState{effectiveMaxSteps: e.maxSteps}
+
+	// Determine whether update_checklist is available to this executor. The
+	// checklist gate only activates when the agent can actually call it.
+	state.checklistAvailable = false
+	for _, t := range taskTools {
+		if t.Name == "update_checklist" {
+			state.checklistAvailable = true
+			break
+		}
+	}
 
 	for state.stepNum = 1; state.unlimitedSteps || state.stepNum <= state.effectiveMaxSteps+1; state.stepNum++ {
 		// Sync trajectory to the store so tools (e.g. reflect) can access it.

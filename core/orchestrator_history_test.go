@@ -214,3 +214,43 @@ func TestConversationHistory_RetryAfterFailureNotDuplicated(t *testing.T) {
 		t.Errorf("expected retry output, got %q", history[1].Content)
 	}
 }
+
+// TestTruncateHistory verifies that truncateHistory keeps the most recent
+// messages and returns the slice unchanged when within the window.
+func TestTruncateHistory(t *testing.T) {
+	history := []llm.Message{
+		{Role: "user", Content: "msg1"},
+		{Role: "assistant", Content: "resp1"},
+		{Role: "user", Content: "msg2"},
+		{Role: "assistant", Content: "resp2"},
+		{Role: "user", Content: "msg3"},
+		{Role: "assistant", Content: "resp3"},
+	}
+
+	// window >= len: return as-is
+	got := truncateHistory(history, 10)
+	if len(got) != 6 {
+		t.Fatalf("expected 6 messages, got %d", len(got))
+	}
+
+	// window = 2: keep last 2
+	got = truncateHistory(history, 2)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(got))
+	}
+	if got[0].Content != "msg3" || got[1].Content != "resp3" {
+		t.Errorf("expected last 2 messages, got %s, %s", got[0].Content, got[1].Content)
+	}
+
+	// window = 0: return as-is (disabled)
+	got = truncateHistory(history, 0)
+	if len(got) != 6 {
+		t.Fatalf("expected 6 messages (window=0 = disabled), got %d", len(got))
+	}
+
+	// empty history: return empty
+	got = truncateHistory(nil, 20)
+	if len(got) != 0 {
+		t.Fatalf("expected 0 messages, got %d", len(got))
+	}
+}

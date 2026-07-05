@@ -6,8 +6,8 @@ The ReAct loop primitive (Thought → Action → Observation) with circuit break
 
 ## Key Files
 
-- `sdk/agent/executor.go` — Executor struct (Run method, ReAct loop, non-cacheable tools set, batch dispatch, `DetectToolCallSyntaxInContent` failure-mode detector)
-- `sdk/agent/executor_run.go` — `processSingleToolCall`, `processBatchTool` (batch meta-tool interception), `handleImplicitFinish` (nudge → abort logic)
+- `sdk/agent/executor.go` — Executor struct (Run method, ReAct loop, non-cacheable tools set, batch dispatch, `DetectToolCallSyntaxInContent` failure-mode detector, mutation + checklist gate fields and nudge constants)
+- `sdk/agent/executor_run.go` — `processSingleToolCall`, `processBatchTool` (batch meta-tool interception), `handleImplicitFinish` (nudge → abort logic), `hasMutatingToolExecuted`, `hasChecklistUpdate`, `countProductiveToolCalls`, `lastChecklistUnchecked`
 - `sdk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (subagent lifecycle, defense-in-depth success check)
 - `sdk/agent/events.go` — AgentEvents interface (lifecycle hooks)
 - `sdk/tools/builtins/batch.go` — batch meta-tool descriptor (intercepted at executor, never directly executed)
@@ -87,14 +87,20 @@ Executor.Run(ctx, task, tools, systemPrompt)
 │   │      ├─ Add observation to messages (context.go wraps untrusted output in <untrusted-content>)
 │   │      └─ Check context fill → compact if needed
 │   │
- │   ├─ 3. If finish tool called:
- │   │      ├─ Mutation gate (if mutationRequired): check if any mutating tool
- │   │      │   (write_file, edit_file, create_directory, delete_file, delete_directory)
- │   │      │   was successfully executed in this step.
- │   │      │   → No mutation + first attempt: inject mutation nudge, continue loop
- │   │      │   → No mutation + second attempt: return Finished=false (triggers reflection/replan)
- │   │      │   → Mutation present or gate disabled: extract output, return success
- │   │      └─ Extract output, return success (when gate passes)
+  │   ├─ 3. If finish tool called:
+  │   │      ├─ Mutation gate (if mutationRequired): check if any mutating tool
+  │   │      │   (write_file, edit_file, create_directory, delete_file, delete_directory)
+  │   │      │   was successfully executed in this step.
+  │   │      │   → No mutation + first attempt: inject mutation nudge, continue loop
+  │   │      │   → No mutation + second attempt: return Finished=false (triggers reflection/replan)
+  │   │      │   → Mutation present or gate disabled: extract output, return success
+  │   ├─ Checklist gate (if checklistGateEnabled + update_checklist available):
+  │   │      ├─ Missing gate: non-trivial step (> 2 productive tool calls) with no
+  │   │      │   update_checklist call → inject missing-checklist nudge, continue loop
+  │   │      ├─ Unchecked gate: last checklist has unchecked items → inject unchecked
+  │   │      │   nudge, continue loop
+  │   │      └─ Both gates are soft: after one nudge attempt, finish is accepted
+  │   └─ Extract output, return success (when gates pass)
  │   │
  │   ├─ 3a. If no tool calls (implicit finish path — see Implicit Finish & Failure-Mode below):
  │   │      → Failure-mode detector checks for tool-call syntax printed as text
@@ -155,6 +161,34 @@ Purpose: prevents "false success" on code-modification steps where the agent rea
 Rejected tool calls (HITL denial with `Observation` starting `[Tool call rejected`) do **not** count as mutations. `bash_exec` is intentionally excluded from the mutating set — it's ambiguous (could be `pwd && ls` or `go test`), and the gate focuses on structural filesystem mutations.
 
 Source: `sdk/agent/executor.go` `mutatingTools` set, `sdk/agent/executor_run.go` `hasMutatingToolExecuted` + finish branch gate.
+
+### Checklist Gate
+
+When `checklistGateEnabled` is set on the executor (default: `true` via `NewExecutor`), the finish tool call is intercepted after the mutation gate and before completion. The gate enforces incremental checklist adoption. It activates only when `update_checklist` is present in the executor's `taskTools` (the gate is inert when the tool is filtered out, e.g. No Project mode).
+
+Two sub-gates, both soft (one nudge attempt, then finish is accepted):
+
+**Missing-checklist gate (Enf-1):** on a non-trivial step — one with more than `checklistTrivialThreshold` (2) productive tool calls (any tool call except `finish` and nudge-only steps) — if no successful `update_checklist` call was made, inject `executorChecklistMissingNudge` and continue the loop. Trivial steps (≤ 2 tool calls) are exempt.
+
+**Unchecked-items gate (Enf-2):** if the last successful `update_checklist` has unchecked items (parsed from the "N/M done" tool result), inject `executorChecklistUncheckedNudge` (formatted with the unchecked count) and continue the loop. This gate has no triviality threshold — if the agent created a checklist, it must either complete it or justify skipping.
+
+```
+finish called + checklistGateEnabled + update_checklist available
+  │
+  ├─ hasChecklistUpdate?  (scan allSteps for successful update_checklist)
+  │   ├─ NO  + countProductiveToolCalls > 2 + not yet nudged
+  │   │   → inject executorChecklistMissingNudge, set flag, continue loop
+  │   └─ YES or trivial or already nudged → fall through
+  │
+  ├─ lastChecklistUnchecked > 0 + not yet nudged
+  │   → inject executorChecklistUncheckedNudge, set flag, continue loop
+  │
+  └─ accept finish (soft gate: second attempt always accepted)
+```
+
+The gate can be disabled via `SetChecklistGateEnabled(false)`. Nudge flags are per-executor-instance (reset on each `Executor.Run` since the orchestrator creates a fresh executor per step).
+
+Source: `sdk/agent/executor.go` `checklistGateEnabled` field + nudge constants, `sdk/agent/executor_run.go` `hasChecklistUpdate`, `countProductiveToolCalls`, `lastChecklistUnchecked` + finish branch gates.
 
 ### Implicit Finish & Failure-Mode Detection
 
@@ -267,6 +301,9 @@ Key behaviors:
 - `finish` tool is ALWAYS available in every step (never filtered out)
 - When `mutationRequired` is set, finish without a prior mutating tool execution is rejected (nudge → `Finished: false`)
 - Mutation gate only applies to coder steps with `domain == "code"`; researcher/tester/audit steps are unaffected
+- The checklist gate is enabled by default (`checklistGateEnabled=true`); it activates only when `update_checklist` is in the executor's tool set
+- The checklist missing-gate exempts trivial steps (≤ `checklistTrivialThreshold` productive tool calls); the unchecked-items gate applies whenever a checklist exists
+- Both checklist sub-gates are soft: after one nudge attempt, finish is accepted regardless (`Finished: true`)
 - Context window never exceeds model limit (compaction triggers automatically)
 - MaxSteps bounds total iterations (HITLHandler.OnStepLimit may extend)
 - Each step has its own ContextManager (isolated memory)

@@ -263,7 +263,13 @@ that accumulates one user/assistant pair per exchange, without truncation:
   `router.history_window` messages, default 10).
 - History sent to the planner: `PlanContinuation` and first-message `Plan`
   both receive the history (compacted to `PlannerHistoryBudgetTokens`).
-- History NOT sent to executor (executor has its own context window).
+- History sent to the Conductor: `HandleMessage` injects the last
+  `ConductorHistoryWindow` messages (default 20) into the Conductor's
+  ContextManager as prior conversation, so the LLM sees the dialogue context
+  leading up to the current message. Without this, a follow-up like
+  "implement variant a" has no referent. `Resume` does NOT inject history —
+  the Conductor continues the same task and the original request is already
+  the task message.
 
 On lazy session restore (`getOrRestoreSession`), the history is reconstructed
 from the message store via `convertChatMessagesToLLM` to match what the live
@@ -415,7 +421,7 @@ type HandleResult struct {
 
 | Parameter                          | Default                | Description                 |
 | ---------------------------------- | ---------------------- | --------------------------- |
-| `orchestration.maxHistoryMessages` | 20                     | Conversation history window |
+| `orchestration.maxHistoryMessages` | 20                     | Conversation history window (Conductor context injection) |
 | Database path                      | `~/.c0wrk/database.db` | SQLite file location        |
 
 ## Related Specs

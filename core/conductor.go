@@ -68,6 +68,12 @@ type conductorDeps struct {
 	maxDepCtxChars   int
 	reasoningEffort  string
 	preWarningPct    int
+
+	// conversationHistory holds prior user/assistant exchanges from the
+	// session. Injected into the Conductor's ContextManager so the LLM sees
+	// dialogue context for follow-up messages. Nil for Resume (the Conductor
+	// continues the same task — the original request is the task message).
+	conversationHistory []llm.Message
 }
 
 // conductorLauncher implements tools.DelegationLauncher by building a fresh
@@ -524,7 +530,7 @@ func filterToolsByName(all []sdktools.ToolDescriptor, names []string) []sdktools
 			out = append(out, d)
 		}
 	}
-	internal := []string{"finish", "store_fact", "search_facts", "read_step_output", "update_checklist", "declare_step_complete", "semantic_search", "ask_user", "tool_result_read", "list_step_outputs"}
+	internal := []string{"finish", "store_fact", "search_facts", "read_step_output", "read_final_result", "update_checklist", "declare_step_complete", "semantic_search", "ask_user", "tool_result_read", "list_step_outputs"}
 	for _, name := range internal {
 		for _, d := range all {
 			if d.Name == name {
@@ -540,7 +546,7 @@ func filterReadOnlyTools(all []sdktools.ToolDescriptor) []sdktools.ToolDescripto
 	readOnly := map[string]struct{}{
 		"read_file": {}, "list_directory": {}, "glob": {}, "ripgrep": {},
 		"semantic_search": {}, "search_facts": {}, "read_step_output": {},
-		"list_step_outputs": {}, "web_fetch": {}, "web_search": {},
+		"list_step_outputs": {}, "read_final_result": {}, "web_fetch": {}, "web_search": {},
 		"finish": {}, "store_fact": {}, "update_checklist": {}, "declare_step_complete": {}, "ask_user": {},
 		"tool_result_read": {}, "read_skill_resource": {},
 	}
@@ -755,6 +761,16 @@ func RunConductor(
 	ctx = agent.WithStepTodoUpdateFunc(ctx, inlineLifecycle.onChecklistUpdate)
 	ctx = tools.WithStepCompleteFunc(ctx, inlineLifecycle.completeStep)
 
+	// Checklist guard: once a plan is declared, reject standalone (empty
+	// step_id) checklists. A standalone checklist is only valid for plan-less
+	// tasks. With a plan, every update_checklist must target a specific step.
+	ctx = agent.WithChecklistGuard(ctx, func(stepID string) string {
+		if stepID == "" && bb.GetPlan() != nil {
+			return "a plan has been declared; a standalone checklist (without step_id) is only valid for plan-less tasks — pass the step_id of the plan step you are executing, and do not list plan steps as checklist items (a checklist tracks sub-tasks within a single step)"
+		}
+		return ""
+	})
+
 	// Build the system prompt with complexity-based Conductor Guidance.
 	systemPromptFactory := func(ctx context.Context, msg string, modelMeta llm.ModelMetadata) string {
 		prompt := buildSystemPrompt(ctx, msg, modelMeta)
@@ -779,6 +795,7 @@ func RunConductor(
 		PerToolTruncation: deps.perToolTrunc,
 		ReasoningEffort:   deps.reasoningEffort,
 		PreWarningPercent: deps.preWarningPct,
+		ConversationHistory: deps.conversationHistory,
 	}
 
 	var events agent.AgentEvents = &agent.NoopEvents{}
@@ -832,32 +849,38 @@ func adaptContextFactory(cf ContextManagerFactory) orchestration.ContextManagerF
 // (o *Orchestrator) runConductor assembles a conductorDeps from the
 // orchestrator's stored fields and delegates to RunConductor. Used by
 // HandleMessage and Resume.
-func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string) (*orchestration.ExecutionResult, error) {
+//
+// conversationHistory is the prior dialogue to inject into the Conductor's
+// context. For HandleMessage, pass o.conversationHistory so the agent sees
+// previous exchanges. For Resume, pass nil — the Conductor continues the
+// same task and the original request is already the task message.
+func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message) (*orchestration.ExecutionResult, error) {
 	deps := conductorDeps{
-		contextFactory:   o.contextFactory,
-		toolExec:         o.toolExec,
-		toolRegistry:     o.toolRegistry,
-		llm:              o.llm,
-		modelRegistry:    o.modelRegistry,
-		model:            o.config.Model,
-		tokenCounter:     o.tokenCounter,
-		emitter:          o.emitter,
-		logger:           o.logger,
-		trackingCaller:   o.trackingCaller,
-		providerName:     o.providerName,
-		stepDumpTracker:  o.stepDumpTracker,
-		toolCache:        o.toolCache,
-		perToolTrunc:     o.perToolTrunc,
-		toolResultBudget: o.toolResultBudget,
-		circuitBreaker:   o.circuitBreaker,
-		hitlHandler:      o.config.HITLHandler,
-		reflector:        o.reflector,
-		maxSteps:         o.config.MaxSteps,
-		subagentMaxSteps: o.config.SubagentMaxSteps,
-		maxRedelegDepth:  o.config.MaxRedelegationDepth,
-		maxDepCtxChars:   o.config.MaxDependencyContextChars,
-		reasoningEffort:  o.config.ReasoningEffort,
-		preWarningPct:    o.config.PreWarningPercent,
+		contextFactory:      o.contextFactory,
+		toolExec:            o.toolExec,
+		toolRegistry:        o.toolRegistry,
+		llm:                 o.llm,
+		modelRegistry:       o.modelRegistry,
+		model:               o.config.Model,
+		tokenCounter:        o.tokenCounter,
+		emitter:             o.emitter,
+		logger:              o.logger,
+		trackingCaller:      o.trackingCaller,
+		providerName:        o.providerName,
+		stepDumpTracker:     o.stepDumpTracker,
+		toolCache:           o.toolCache,
+		perToolTrunc:        o.perToolTrunc,
+		toolResultBudget:    o.toolResultBudget,
+		circuitBreaker:      o.circuitBreaker,
+		hitlHandler:         o.config.HITLHandler,
+		reflector:           o.reflector,
+		maxSteps:            o.config.MaxSteps,
+		subagentMaxSteps:    o.config.SubagentMaxSteps,
+		maxRedelegDepth:     o.config.MaxRedelegationDepth,
+		maxDepCtxChars:      o.config.MaxDependencyContextChars,
+		reasoningEffort:     o.config.ReasoningEffort,
+		preWarningPct:       o.config.PreWarningPercent,
+		conversationHistory: conversationHistory,
 	}
 	return RunConductor(ctx, message, bb, availableTools, deps, plansDir)
 }

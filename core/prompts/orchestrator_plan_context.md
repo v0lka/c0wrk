@@ -8,3 +8,4 @@ If the summary of a dependency step is insufficient, access full outputs via:
 
 - `read_step_output`: Read the complete output of a specific completed step by its ID
 - `list_step_outputs`: List all available step outputs with previews
+- `read_final_result`: Read the final result of the previously completed task on this blackboard (use this to recover a prior exchange's outcome when it is not visible in the conversation history)

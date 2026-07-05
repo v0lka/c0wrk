@@ -147,7 +147,7 @@ func TestGetToolList_FiltersInternal(t *testing.T) {
 	// Internal tools (finish, tool_result_read, etc.) must never appear in the
 	// returned list. We test the filter predicate directly since constructing a
 	// full Application with registered tools requires heavyweight builder infra.
-	internalTools := []string{"finish", "tool_result_read", "update_checklist", "read_step_output"}
+	internalTools := []string{"finish", "tool_result_read", "update_checklist", "read_step_output", "read_final_result"}
 	for _, tool := range internalTools {
 		if !tools.IsInternalTool(tool) {
 			t.Errorf("IsInternalTool(%q) = false, want true", tool)

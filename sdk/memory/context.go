@@ -75,6 +75,13 @@ type ContextWindow struct {
 	mutation     HistoryMutation
 	safetyMargin int // percentage of context window reserved as safety margin (default: 5)
 
+	// priorConversation holds messages from previous exchanges (prior
+	// user/assistant turns) that should appear in the prompt before the
+	// current task content. This lets a top-level agent (e.g. the Conductor)
+	// see the dialogue context leading up to the current message — without
+	// it, a follow-up like "implement variant a" has no referent.
+	priorConversation []llm.Message
+
 	// injectionDefenseEnabled gates the prompt injection defense wrapping (<untrusted-content> tags).
 	injectionDefenseEnabled bool
 
@@ -220,6 +227,14 @@ func (cw *ContextWindow) SetPlan(planText string) {
 	cw.planContent = planText
 }
 
+// SetPriorConversation sets messages from previous exchanges that should
+// appear in the prompt between the system message(s) and the current task
+// content. This gives the agent dialogue context for follow-up messages.
+// Pass nil or an empty slice to clear prior conversation.
+func (cw *ContextWindow) SetPriorConversation(msgs []llm.Message) {
+	cw.priorConversation = msgs
+}
+
 // AddStep appends a step to the history and updates the token tracker.
 // The token estimate is approximate — it concatenates content strings without
 // accounting for LLM message framing overhead (~4 tokens/message). The
@@ -261,7 +276,13 @@ func (cw *ContextWindow) BuildPrompt() []llm.Message {
 		}
 	}
 
-	// 2. User message with task content (pre-formatted by caller)
+	// 2. Prior conversation (previous user/assistant exchanges).
+	// Inserted before the current task so the agent sees the dialogue context
+	// leading up to the current message. Without this, a follow-up like
+	// "implement variant a" has no referent.
+	messages = append(messages, cw.priorConversation...)
+
+	// 3. User message with task content (pre-formatted by caller)
 	if cw.taskContent != "" {
 		messages = append(messages, llm.Message{
 			Role:    "user",
@@ -269,7 +290,7 @@ func (cw *ContextWindow) BuildPrompt() []llm.Message {
 		})
 	}
 
-	// 3. System message with plan (pre-formatted by caller)
+	// 4. System message with plan (pre-formatted by caller)
 	if cw.planContent != "" {
 		messages = append(messages, llm.Message{
 			Role:    "system",
@@ -277,7 +298,7 @@ func (cw *ContextWindow) BuildPrompt() []llm.Message {
 		})
 	}
 
-	// 4. Step history
+	// 5. Step history
 	stepMessages := cw.buildStepMessages()
 	messages = append(messages, stepMessages...)
 
@@ -711,6 +732,9 @@ func (cw *ContextWindow) Compact(ctx context.Context) *CompactionResult {
 			baseTokens += cw.tracker.EstimateMessages([]llm.Message{
 				{Role: "system", Content: cw.planContent},
 			})
+		}
+		if len(cw.priorConversation) > 0 {
+			baseTokens += cw.tracker.EstimateMessages(cw.priorConversation)
 		}
 		compactedTokens := cw.tracker.EstimateMessages(cw.compactedMessages)
 		afterPercent = float64(baseTokens+compactedTokens) / float64(effectiveMax) * 100

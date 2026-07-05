@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,19 +29,20 @@ const batchIndexBase = 10000
 
 // runState holds all loop-local state for a single Run invocation.
 type runState struct {
-	stepNum                     int
-	allSteps                    []Step
-	implicitFinishNudgeCount    int
-	toolCallSyntaxNudgeCount    int
-	wrapUpNudgeAttempted        bool
-	reactiveCompactAttempted    bool
-	preCompactionNudgeEmitted   bool
-	unlimitedSteps              bool
-	effectiveMaxSteps           int
-	finishResult                *ExecutorResult
-	stepStartTime               time.Time
-	circuitBreakerTriggered     bool
-	responseGroup               int64
+	stepNum                   int
+	allSteps                  []Step
+	implicitFinishNudgeCount  int
+	toolCallSyntaxNudgeCount  int
+	wrapUpNudgeAttempted      bool
+	reactiveCompactAttempted  bool
+	preCompactionNudgeEmitted bool
+	unlimitedSteps            bool
+	effectiveMaxSteps         int
+	finishResult              *ExecutorResult
+	stepStartTime             time.Time
+	circuitBreakerTriggered   bool
+	responseGroup             int64
+	checklistAvailable        bool
 }
 
 // handleStepLimitBoundary handles the step-limit boundary logic (when stepNum > effectiveMaxSteps).
@@ -146,6 +148,51 @@ func (e *Executor) hasMutatingToolExecuted(state *runState) bool {
 		}
 	}
 	return false
+}
+
+// hasChecklistUpdate reports whether update_checklist was successfully called
+// at least once during this execution.
+func (e *Executor) hasChecklistUpdate(state *runState) bool {
+	for _, s := range state.allSteps {
+		if s.Action.Name == "update_checklist" && !s.IsError {
+			return true
+		}
+	}
+	return false
+}
+
+// countProductiveToolCalls returns the number of tool calls (excluding finish,
+// nudges, and meta-steps without an Action) executed so far. Used to determine
+// whether a step is trivial enough to skip the checklist gate.
+func (e *Executor) countProductiveToolCalls(state *runState) int {
+	count := 0
+	for _, s := range state.allSteps {
+		if s.Action.Name == "" || s.Action.Name == "finish" {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+// lastChecklistUnchecked returns the number of unchecked items in the most
+// recent successful update_checklist call. Returns 0 if there is no checklist
+// or all items are checked.
+func (e *Executor) lastChecklistUnchecked(state *runState) int {
+	for i := len(state.allSteps) - 1; i >= 0; i-- {
+		s := state.allSteps[i]
+		if s.Action.Name != "update_checklist" || s.IsError || s.Observation == "" {
+			continue
+		}
+		m := checklistDoneRe.FindStringSubmatch(s.Observation)
+		if len(m) == 3 {
+			done, _ := strconv.Atoi(m[1])
+			total, _ := strconv.Atoi(m[2])
+			return total - done
+		}
+		return 0
+	}
+	return 0
 }
 
 // handleImplicitFinish handles the "no tool calls" branches: syntax-nudge → finish-nudge → implicit finish.
@@ -453,6 +500,51 @@ func (e *Executor) processSingleToolCall(
 				"reason": "finish_without_mutation",
 			})
 			return nil, actionBreak, nil // retry — LLM should now make changes or justify
+		}
+
+		// Checklist gate (Enf-1): a non-trivial step must have at least one
+		// update_checklist call. Trivial steps (≤ checklistTrivialThreshold
+		// productive tool calls) are exempt. The gate is a soft nudge: after
+		// one attempt, finish is accepted regardless.
+		if e.checklistGateEnabled && state.checklistAvailable &&
+			!e.hasChecklistUpdate(state) &&
+			e.countProductiveToolCalls(state) > checklistTrivialThreshold &&
+			!e.checklistMissingNudgeAttempted {
+			e.checklistMissingNudgeAttempted = true
+			nudgeStep := Step{
+				Thought:        thought,
+				UserNudge:      executorChecklistMissingNudge,
+				ReasoningItems: resp.Message.ReasoningItems,
+				TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			}
+			state.allSteps = append(state.allSteps, nudgeStep)
+			cw.AddStep(nudgeStep)
+			e.emitter.ExecutorDiagnostic(state.stepNum, "checklist_gate_nudge", map[string]any{
+				"reason": "finish_without_checklist",
+			})
+			return nil, actionBreak, nil // retry — LLM should call update_checklist or justify
+		}
+
+		// Checklist gate (Enf-2): if the last checklist has unchecked items,
+		// nudge the agent to complete them or explicitly justify skipping.
+		if e.checklistGateEnabled && state.checklistAvailable &&
+			!e.checklistUncheckedNudgeAttempted {
+			if unchecked := e.lastChecklistUnchecked(state); unchecked > 0 {
+				e.checklistUncheckedNudgeAttempted = true
+				nudgeStep := Step{
+					Thought:        thought,
+					UserNudge:      fmt.Sprintf(executorChecklistUncheckedNudge, unchecked),
+					ReasoningItems: resp.Message.ReasoningItems,
+					TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				}
+				state.allSteps = append(state.allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				e.emitter.ExecutorDiagnostic(state.stepNum, "checklist_unchecked_nudge", map[string]any{
+					"reason":    "finish_with_unchecked_checklist",
+					"unchecked": unchecked,
+				})
+				return nil, actionBreak, nil // retry — LLM should complete or justify
+			}
 		}
 
 		stepThought := ""

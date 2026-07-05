@@ -17,6 +17,7 @@ var internalTools = map[string]struct{}{
 	"ask_user":              {},
 	"finish":                {},
 	"list_step_outputs":     {},
+	"read_final_result":     {},
 	"read_skill_resource":   {},
 	"read_step_output":      {},
 	"search_facts":          {},

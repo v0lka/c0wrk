@@ -76,6 +76,34 @@ func FactStoreFromContext(ctx context.Context) FactStore {
 }
 
 // ---------------------------------------------------------------------------
+// FinalResultStore — read-only access to the prior task's final result
+// ---------------------------------------------------------------------------
+
+// FinalResultStore provides read access to the final result of a previously
+// completed task on the blackboard. This lets a continuation agent retrieve
+// the prior exchange's outcome when it isn't visible in the conversation
+// history (e.g. after a restart, or when the result was too large to inject
+// verbatim). Implementations must be safe for concurrent use.
+type FinalResultStore interface {
+	// GetFinalResult returns the final result of the prior task, or ("", false)
+	// if no final result is recorded on the blackboard.
+	GetFinalResult() (string, bool)
+}
+
+type finalResultStoreKey struct{}
+
+// WithFinalResultStore returns a context carrying the given FinalResultStore.
+func WithFinalResultStore(ctx context.Context, store FinalResultStore) context.Context {
+	return context.WithValue(ctx, finalResultStoreKey{}, store)
+}
+
+// FinalResultStoreFromContext returns the FinalResultStore from context, or nil.
+func FinalResultStoreFromContext(ctx context.Context) FinalResultStore {
+	s, _ := ctx.Value(finalResultStoreKey{}).(FinalResultStore)
+	return s
+}
+
+// ---------------------------------------------------------------------------
 // ToolResultCache — read access to cached tool results (for tool_result_read)
 // ---------------------------------------------------------------------------
 
@@ -135,4 +163,32 @@ func WithStepTodoUpdateFunc(ctx context.Context, fn StepTodoUpdateFunc) context.
 func StepTodoUpdateFuncFromContext(ctx context.Context) StepTodoUpdateFunc {
 	fn, _ := ctx.Value(todoUpdateFuncKey).(StepTodoUpdateFunc)
 	return fn
+}
+
+// ---------------------------------------------------------------------------
+// ChecklistGuardFunc — validates update_checklist calls before they take effect
+// ---------------------------------------------------------------------------
+
+// ChecklistGuardFunc validates an update_checklist call for the given step ID.
+// Returning a non-empty string rejects the call with that message as the tool
+// result (an error surfaced to the LLM). Returning an empty string allows the
+// call to proceed. The guard is consulted after parsing succeeds and before
+// the update callback is invoked, so it can enforce invariants such as "no
+// standalone checklist when a plan is declared". stepID is empty for a
+// standalone (plan-less) checklist.
+type ChecklistGuardFunc func(stepID string) string
+
+type checklistGuardKeyType struct{}
+
+var checklistGuardKey = checklistGuardKeyType{}
+
+// WithChecklistGuard returns a context carrying the given checklist guard.
+func WithChecklistGuard(ctx context.Context, guard ChecklistGuardFunc) context.Context {
+	return context.WithValue(ctx, checklistGuardKey, guard)
+}
+
+// ChecklistGuardFromContext returns the ChecklistGuardFunc from context, or nil.
+func ChecklistGuardFromContext(ctx context.Context) ChecklistGuardFunc {
+	g, _ := ctx.Value(checklistGuardKey).(ChecklistGuardFunc)
+	return g
 }

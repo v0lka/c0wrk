@@ -9,6 +9,9 @@ Provides shared state for the Plan&Execute loop: stores the plan, step results, 
 - `sdk/orchestration/blackboard.go` — MapBlackboard (in-memory implementation)
 - `sdk/orchestration/interfaces.go` — Blackboard interface definition
 - `backend/session/persistent_blackboard.go` — PersistentBlackboard (SQLite-backed)
+- `sdk/orchestration/stepoutput_adapter.go` — `NewStepOutputStore` (adapts Blackboard to `agent.StepOutputStore` for `read_step_output`/`list_step_outputs`)
+- `sdk/orchestration/factstore_adapter.go` — `NewFactStore` (adapts Blackboard to `agent.FactStore` for `store_fact`/`search_facts`)
+- `sdk/orchestration/finalresult_adapter.go` — `NewFinalResultStore` (adapts Blackboard to `agent.FinalResultStore` for `read_final_result`)
 - `core/persistent_blackboard.go` — `PersistableBlackboard` interface, `TaskPersistence` store interface (persistence contract types used by orchestrator for BB restoration)
 
 ## Behavior
@@ -73,6 +76,19 @@ type Fact struct {
     Author   string  // step ID that stored it
 }
 ```
+
+### Final Result
+
+The final result is set via `SetFinalResult(output)` after the Conductor
+finishes. It is persisted to the `tasks.final_output` column by
+`CompleteTask` (called separately from `SetFinalResult`). The
+`read_final_result` tool exposes it to a continuation agent via the
+`FinalResultStore` adapter — this lets the agent recover a prior
+exchange's outcome when it is not visible in the conversation history
+(e.g. after a backend restart, or when the result was too large to
+inject verbatim). For inline tasks (no delegations), the final result is
+the only blackboard state besides the plan and facts — there are no step
+results to read via `read_step_output`.
 
 ### PersistentBlackboard
 

@@ -204,3 +204,113 @@ func TestListStepOutputsTool_InvalidJSON(t *testing.T) {
 		t.Errorf("expected IsError=true for invalid JSON")
 	}
 }
+
+// -----------------------------------------------------------------------------
+// read_final_result
+// -----------------------------------------------------------------------------
+
+// mockFinalResultStore implements agent.FinalResultStore for testing.
+type mockFinalResultStore struct {
+	result string
+	exists bool
+}
+
+func (m *mockFinalResultStore) GetFinalResult() (string, bool) {
+	return m.result, m.exists
+}
+
+func ctxWithFinalResultStore(store agent.FinalResultStore) context.Context {
+	return agent.WithFinalResultStore(context.Background(), store)
+}
+
+func TestReadFinalResultTool_Name(t *testing.T) {
+	tool := NewReadFinalResultTool()
+	if tool.Name() != "read_final_result" {
+		t.Errorf("expected Name() = %q, got %q", "read_final_result", tool.Name())
+	}
+}
+
+func TestReadFinalResultTool_DefaultPolicy(t *testing.T) {
+	tool := NewReadFinalResultTool()
+	if tool.DefaultPolicy() != tools.PolicyAlwaysAllow {
+		t.Errorf("expected DefaultPolicy() = PolicyAlwaysAllow, got %v", tool.DefaultPolicy())
+	}
+}
+
+func TestReadFinalResultTool_HappyPath(t *testing.T) {
+	store := &mockFinalResultStore{result: "Options: a, b, or c. Which to implement?", exists: true}
+	ctx := ctxWithFinalResultStore(store)
+	tool := NewReadFinalResultTool()
+
+	result, err := tool.Execute(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected no error, got: %s", result.Content)
+	}
+	if result.Content != "Options: a, b, or c. Which to implement?" {
+		t.Errorf("expected final result content, got %q", result.Content)
+	}
+}
+
+func TestReadFinalResultTool_NoResultRecorded(t *testing.T) {
+	store := &mockFinalResultStore{exists: false}
+	ctx := ctxWithFinalResultStore(store)
+	tool := NewReadFinalResultTool()
+
+	result, err := tool.Execute(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true when no final result recorded")
+	}
+	if !strings.Contains(result.Content, "No final result") {
+		t.Errorf("expected 'No final result' message, got: %s", result.Content)
+	}
+}
+
+func TestReadFinalResultTool_EmptyResult(t *testing.T) {
+	// Empty string is treated as "no result" (GetFinalResult returns false).
+	store := &mockFinalResultStore{result: "", exists: false}
+	ctx := ctxWithFinalResultStore(store)
+	tool := NewReadFinalResultTool()
+
+	result, err := tool.Execute(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true for empty final result")
+	}
+}
+
+func TestReadFinalResultTool_StoreNotInContext(t *testing.T) {
+	tool := NewReadFinalResultTool()
+
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true when store not in context")
+	}
+	if !strings.Contains(result.Content, "not available") {
+		t.Errorf("expected 'not available' message, got: %s", result.Content)
+	}
+}
+
+func TestReadFinalResultTool_InvalidJSON(t *testing.T) {
+	store := &mockFinalResultStore{exists: false}
+	ctx := ctxWithFinalResultStore(store)
+	tool := NewReadFinalResultTool()
+
+	result, err := tool.Execute(ctx, json.RawMessage(`{invalid`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true for invalid JSON")
+	}
+}

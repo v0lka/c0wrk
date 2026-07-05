@@ -33,6 +33,13 @@ type ConductorConfig struct {
 	PerToolTruncation map[string]agent.ToolTruncationConfig
 	ReasoningEffort   string
 	PreWarningPercent int
+
+	// ConversationHistory holds prior user/assistant exchanges from the
+	// session. When non-empty, the Conductor injects it into the
+	// ContextManager so the LLM sees the dialogue context leading up to the
+	// current message. Without this, a follow-up like "implement variant a"
+	// has no referent — the Conductor only sees the current message.
+	ConversationHistory []llm.Message
 }
 
 // Conductor runs a single Executor.Run that owns a task end-to-end.
@@ -106,6 +113,15 @@ func (c *Conductor) Run(
 		ccm.SetTask(message)
 	}
 
+	// Inject prior conversation (previous exchanges) so the LLM sees the
+	// dialogue context leading up to the current message. The ContextManager
+	// must support SetPriorConversation — the SDK's memory.ContextWindow does.
+	if len(c.cfg.ConversationHistory) > 0 {
+		if pcm, ok := cm.(interface{ SetPriorConversation([]llm.Message) }); ok {
+			pcm.SetPriorConversation(c.cfg.ConversationHistory)
+		}
+	}
+
 	// Build the executor caller: wire context tracker correction if the
 	// context manager exposes one.
 	caller := c.cfg.LLM
@@ -151,10 +167,15 @@ func (c *Conductor) Run(
 		executor.SetPreWarningPercent(c.cfg.PreWarningPercent)
 	}
 
-	// Inject step output store + fact store so tools (read_step_output,
-	// store_fact, search_facts) can access the blackboard.
+	// Inject step output store + fact store + final result store so tools
+	// (read_step_output, read_final_result, store_fact, search_facts) can
+	// access the blackboard. The final result store exposes the prior task's
+	// outcome to a continuation agent when the conversation history alone is
+	// insufficient (e.g. after a restart, or when the result was too large
+	// to inject verbatim).
 	ctx = agent.WithStepOutputStore(ctx, NewStepOutputStore(bb))
 	ctx = agent.WithFactStore(ctx, NewFactStore(bb))
+	ctx = agent.WithFinalResultStore(ctx, NewFinalResultStore(bb))
 
 	result, err := executor.Run(ctx, availableTools, cm)
 	status := ExecutionStatusSuccess

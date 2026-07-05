@@ -6,8 +6,10 @@ A single `Executor.Run` instance that owns a user task end-to-end, using the ReA
 
 ## Key Files
 
-- `core/conductor.go` — Conductor entry point: builds system prompt, assembles tool set, injects Delegation Registry into context, manages inlineStepLifecycle, launches `Executor.Run`
+- `core/conductor.go` — Conductor entry point: builds system prompt, assembles tool set, injects Delegation Registry + ChecklistGuard into context, manages inlineStepLifecycle, launches `Executor.Run`
 - `core/tools/declare_step_complete.go` — `declare_step_complete` tool (inline plan-step completion signal)
+- `sdk/agent/workspace.go` — `ChecklistGuardFunc` type + context helpers (`WithChecklistGuard`, `ChecklistGuardFromContext`)
+- `sdk/tools/builtins/checklist.go` — `update_checklist` tool (consults `ChecklistGuardFunc` before emitting update)
 - `core/orchestrator_handle.go` — HandleMessage body that invokes the Conductor after routing
 - `sdk/agent/executor.go` — `Executor.Run` (the ReAct loop; the Conductor is an Executor configured with Conductor-specific tools and prompt)
 - `core/systemprompt.go` — `buildSystemPrompt` and Conductor-specific prompt sections
@@ -36,7 +38,8 @@ Conductor.Run(ctx, message, routing, activeSkills, opts)
 │     ├─ File ops, search, web (filtered by routing domain + No Project)
 │     ├─ Internal tools (always present):
 │     │    ask_user, finish, store_fact, search_facts,
-│     │    update_checklist, declare_step_complete, read_step_output, semantic_search
+│     │    update_checklist, declare_step_complete, read_step_output,
+│     │    list_step_outputs, read_final_result, semantic_search
 │     └─ Conductor tools (always present):
 │          delegate, declare_plan, reflect, cancel_delegation
 │
@@ -93,6 +96,20 @@ The Conductor uses the same `ContextManager` and compaction strategies as the pr
 | `general` | sliding_window (hierarchical if complexity >= 4) |
 | `mixed` | sliding_window |
 
+### Conversation History Injection
+
+When launched from `HandleMessage` (new message or continuation), the
+Conductor receives the recent conversation history (last
+`ConductorHistoryWindow` messages, default 20) via `SetPriorConversation`
+on the ContextManager. The history appears in the prompt between the system
+message(s) and the current task content, giving the LLM dialogue context for
+follow-up messages. Without this, a follow-up like "implement variant a"
+would have no referent — the Conductor would see only the current message.
+
+`Resume` does NOT inject conversation history: the Conductor continues the
+same interrupted task, the original request is the task message, and the
+restored blackboard carries the task state (plan, step results, facts).
+
 ### Step Limit and Circuit Breakers
 
 The Conductor is subject to `config.Conductor.MaxSteps` (default 80) and the same circuit breakers as any `Executor.Run` instance (repeat, truncation, parse error, fruitless, same tool). On step-limit or circuit-breaker abort, `HITLHandler.OnStepLimit` is called with the same three options (AllowOnce, AllowAlways, Deny) as the prior executor. See [executor.md](executor.md) for circuit breaker details.
@@ -114,9 +131,15 @@ When the Conductor executes a declared plan inline (without delegating to subage
 - **PlanStepComplete** is emitted by the `declare_step_complete` tool (explicit signal). The Conductor calls it after finishing an inline step.
 - **Finish fallback**: after `executor.Run` returns, `inlineStepLifecycle.completeAll()` auto-completes any steps that were started but not explicitly completed via `declare_step_complete`. This prevents steps from being stuck in "running" state.
 
-Checklist updates (`update_checklist`) are purely observational — they emit `step_todo_update` events but do not drive plan-step lifecycle. The checklist and plan-step lifecycle are decoupled: the checklist tracks work-in-progress items; `declare_step_complete` marks the step done.
+Checklist updates (`update_checklist`) are purely observational — they emit `step_todo_update` events but do not drive plan-step lifecycle. The checklist and plan-step lifecycle are decoupled: the checklist tracks work-in-progress **sub-tasks within a single step** (e.g. "read file X", "modify function Y", "run tests"); `declare_step_complete` marks the step done. A checklist must NOT list plan steps as its items — the plan panel already tracks plan steps, and duplicating them as checklist items is an error.
 
 A standalone checklist (no `step_id`) is emitted when the Conductor calls `update_checklist` without a declared plan. The `step_todo_update` event carries an empty `step_id`, and the frontend renders it as a first-class `DisplayItem.kind='checklist'` card in the chat (sinking to the end while active).
+
+### Checklist Guard
+
+The Conductor installs a `ChecklistGuardFunc` into the context (`agent.WithChecklistGuard`) that rejects standalone (empty `step_id`) `update_checklist` calls once a plan is declared on the blackboard (`bb.GetPlan() != nil`). The guard returns a rejection message instructing the agent to pass a `step_id` and to not list plan steps as checklist items. This enforces the conceptual separation between plan-level tracking (`declare_plan` / plan panel) and step-level sub-task tracking (`update_checklist`).
+
+The guard is consulted in `UpdateChecklistTool.Execute` after parsing succeeds and before the update callback is invoked. Subagents inherit the guard via context, but it is inert for them because subagent `step_id` is always set (inferred from context by `RunSubAgent`).
 
 ## Error Handling
 
@@ -128,7 +151,8 @@ A standalone checklist (no `step_id`) is emitted when the Conductor calls `updat
 ## Invariants
 
 - Exactly one Conductor `Executor.Run` instance is active per task at any time.
-- The Conductor tool set always includes `delegate`, `declare_plan`, `reflect`, `cancel_delegation`, `ask_user`, `finish`, `update_checklist`, `declare_step_complete`, and `read_step_output`, regardless of routing domain, skill policy overrides, or No Project mode. These are internal tools and bypass policy.
+- The Conductor tool set always includes `delegate`, `declare_plan`, `reflect`, `cancel_delegation`, `ask_user`, `finish`, `update_checklist`, `declare_step_complete`, `read_step_output`, `list_step_outputs`, `read_final_result`, and `search_facts`, regardless of routing domain, skill policy overrides, or No Project mode. These are internal tools and bypass policy.
+- The Conductor installs a `ChecklistGuardFunc` that rejects standalone (empty `step_id`) `update_checklist` calls once a plan is declared; a standalone checklist is only valid for plan-less tasks.
 - Active skill bodies are rendered verbatim in the Conductor system prompt (no truncation).
 - The Conductor context is isolated from subagent contexts: subagents carry their own `ContextManager`, and only their summaries return to the Conductor as tool results.
 - The Delegation Registry is scoped to a single Conductor run; it is injected into the context at launch and does not outlive the run.

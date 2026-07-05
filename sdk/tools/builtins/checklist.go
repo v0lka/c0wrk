@@ -136,6 +136,17 @@ func (t *UpdateChecklistTool) Execute(ctx context.Context, input json.RawMessage
 		stepID = agent.StepIDFromContext(ctx)
 	}
 
+	// Guard: reject calls that violate plan/checklist invariants (e.g. a
+	// standalone checklist when a plan has been declared).
+	if guard := agent.ChecklistGuardFromContext(ctx); guard != nil {
+		if msg := guard(stepID); msg != "" {
+			return tools.ToolResult{
+				Content: msg,
+				IsError: true,
+			}, nil
+		}
+	}
+
 	updateFn := agent.StepTodoUpdateFuncFromContext(ctx)
 	if updateFn != nil {
 		updateFn(stepID, result.Items)
@@ -148,13 +159,19 @@ func (t *UpdateChecklistTool) Execute(ctx context.Context, input json.RawMessage
 		}
 	}
 
+	total := len(result.Items)
+	suffix := ""
+	if completed < total {
+		suffix = " Remember to call update_checklist again after completing the next item — update it incrementally, not all at once."
+	}
+
 	if stepID == "" {
 		return tools.ToolResult{
-			Content: fmt.Sprintf("Checklist updated: %d/%d done", completed, len(result.Items)),
+			Content: fmt.Sprintf("Checklist updated: %d/%d done.%s", completed, total, suffix),
 		}, nil
 	}
 
 	return tools.ToolResult{
-		Content: fmt.Sprintf("Checklist updated for step %s: %d/%d done", stepID, completed, len(result.Items)),
+		Content: fmt.Sprintf("Checklist updated for step %s: %d/%d done.%s", stepID, completed, total, suffix),
 	}, nil
 }

@@ -18,9 +18,10 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 - `sdk/tools/builtins/doc.go` — package documentation
 - `sdk/tools/builtins/limits.go` — limit types (per-tool truncation limits, ripgrep/read-file limits). `BuiltinToolsConfig` is defined in `core/tools/builtin_registration.go`, not here.
 - `sdk/tools/builtins/paths.go` — workspace path resolution
-- `sdk/tools/builtins/workspace.go` — workspace detection
+- `sdk/tools/builtins/workspace.go` — workspace detection, `read_step_output`, `list_step_outputs`, `read_final_result` tools (blackboard-backed)
 - `sdk/tools/builtins/netcheck.go` — network connectivity check for web tools
 - `sdk/tools/builtins/batch.go` — batch meta-tool (sequential sub-call execution intercepted at executor level)
+- `sdk/tools/builtins/checklist.go` — `update_checklist` tool (validates Markdown checkboxes, consults `ChecklistGuardFunc`, emits `step_todo_update` via callback)
 - `core/tools/askuser.go` — ask_user tool implementation (c0wrk-specific, moved from sdk/)
 - `core/tools/askuser_types.go` — AskUser request/response types
 - `sdk/tools/coherence.go` — FileCoherenceChecker interface, FileSig, CoherenceConflict types
@@ -30,7 +31,7 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 
 ### Tool Registration
 
-All built-in tools are registered at startup via `RegisterBuiltinTools(registry, cfg)` (in `core/tools/builtin_registration.go`). Registration is ordered: bash_exec → read_file → write_file → edit_file → list_directory → create_directory → delete_directory → delete_file → finish → web_fetch → web_search → glob → ripgrep → tool_result_read → batch → read_step_output → list_step_outputs → update_checklist → declare_step_complete → … Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_step_output`, `tool_result_read`, `batch`, `search_facts`, `semantic_search`, `store_fact`, `read_skill_resource`, `update_checklist`, `declare_step_complete` — 12 total) always bypass policy checks during execution. `batch` is marked internal (`internalTools` map) but is intercepted at the executor level before reaching the registry — its policy is `always_allow` to ensure the LLM can always use the schema.
+All built-in tools are registered at startup via `RegisterBuiltinTools(registry, cfg)` (in `core/tools/builtin_registration.go`). Registration is ordered: bash_exec → read_file → write_file → edit_file → list_directory → create_directory → delete_directory → delete_file → finish → web_fetch → web_search → glob → ripgrep → tool_result_read → batch → read_step_output → list_step_outputs → read_final_result → update_checklist → declare_step_complete → … Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_final_result`, `read_step_output`, `tool_result_read`, `batch`, `search_facts`, `semantic_search`, `store_fact`, `read_skill_resource`, `update_checklist`, `declare_step_complete` — 13 total) always bypass policy checks during execution. `batch` is marked internal (`internalTools` map) but is intercepted at the executor level before reaching the registry — its policy is `always_allow` to ensure the LLM can always use the schema.
 
 ### Policy Resolution
 
@@ -98,7 +99,8 @@ All built-in tools accept `json.RawMessage` input and return `ToolResult{Content
 | `ask_user`            | Agent     | internal       | no        | Prompt user for information                        |
 | `list_step_outputs`   | Agent     | internal       | no        | List completed step results                        |
 | `read_step_output`    | Agent     | internal       | no        | Read specific step output                          |
-| `update_checklist`    | Agent     | always_allow   | no        | Update checklist for current step or standalone (no plan) |
+| `read_final_result`   | Agent     | internal       | no        | Read the prior task's final result from the blackboard (recovers a prior exchange's outcome when it is not visible in conversation history) |
+| `update_checklist`    | Agent     | always_allow   | no        | Update checklist for current step or standalone (no plan). Rejects standalone (empty step_id) when a plan is declared via a ChecklistGuard in context. Result includes an incremental-update reminder when items remain unchecked. |
 | `declare_step_complete` | Agent   | always_allow   | no        | Signal inline plan step completion (emits plan_step_complete) |
 | `store_fact`          | Agent     | always_allow   | no        | Store fact to blackboard                           |
 | `search_facts`        | Agent     | always_allow   | no        | Search blackboard facts                            |
@@ -116,7 +118,7 @@ RegisterBuiltinTools(registry, cfg):
   4. web_fetch
   5. web_search (optional: needs search provider config)
   6. glob, ripgrep
-  7. read_step_output, list_step_outputs
+  7. read_step_output, list_step_outputs, read_final_result
   8. update_checklist, declare_step_complete
   9. store_fact, search_facts
   10. tool_result_read
@@ -187,6 +189,8 @@ Non-truncation tool limits (timeouts, search limits, etc.)— still in code:
 - `ripgrep` invokes the `rg` binary via `exec.CommandContext`; the binary is a managed runtime dependency provided by the tool-manager (`core/toolmanager/`), downloaded on first run to `~/.c0wrk/tools/bin/`, and PATH-prepended at startup (see ADR-010)
 - `ripgrep` parses the `rg --json` event stream (match/context/end events); exit code 1 means "no matches" and is not an error, exit codes ≥ 2 surface as `IsError` with stderr content
 - Untrusted built-in tools (`bash_exec`, `read_file`, `glob`, `ripgrep`, `web_fetch`, `web_search`) have `Untrusted: true` on `BaseTool`; their output is wrapped in `<untrusted-content>` tags before entering the LLM context
+- `update_checklist` consults a `ChecklistGuardFunc` from context (if present) after parsing and before emitting the update. A non-empty return string rejects the call with that message as an `IsError` tool result. The Conductor installs a guard that rejects standalone (empty `step_id`) checklists once a plan is declared on the blackboard — a standalone checklist is only valid for plan-less tasks
+- `update_checklist` tool result includes an incremental-update reminder ("Remember to call update_checklist again after completing the next item") when items remain unchecked; all-checked checklists produce a plain "N/N done" message
 
 ## Related Specs
 

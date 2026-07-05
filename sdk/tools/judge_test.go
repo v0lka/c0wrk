@@ -759,7 +759,7 @@ func TestAllPathsInWorkspace(t *testing.T) {
 // TestJudge_InternalTools_ReturnsAllowImmediately tests that Judge() returns
 // VerdictAllow immediately for internal tools without calling the LLM.
 func TestJudge_InternalTools_ReturnsAllowImmediately(t *testing.T) {
-	internalTools := []string{"ask_user", "finish", "list_step_outputs", "read_skill_resource", "read_step_output", "search_facts", "semantic_search", "update_checklist", "declare_step_complete", "store_fact", "tool_result_read"}
+	internalTools := []string{"ask_user", "finish", "list_step_outputs", "read_final_result", "read_skill_resource", "read_step_output", "search_facts", "semantic_search", "update_checklist", "declare_step_complete", "store_fact", "tool_result_read"}
 
 	for _, toolName := range internalTools {
 		t.Run(toolName, func(t *testing.T) {
@@ -771,7 +771,7 @@ func TestJudge_InternalTools_ReturnsAllowImmediately(t *testing.T) {
 			}
 			judge := NewToolJudge(mockProvider, "test-model", 0, nil)
 			// Configure internal tool recognition for the test
-			internalSet := map[string]struct{}{"ask_user": {}, "finish": {}, "list_step_outputs": {}, "read_skill_resource": {}, "read_step_output": {}, "search_facts": {}, "semantic_search": {}, "update_checklist": {}, "declare_step_complete": {}, "store_fact": {}, "tool_result_read": {}}
+			internalSet := map[string]struct{}{"ask_user": {}, "finish": {}, "list_step_outputs": {}, "read_final_result": {}, "read_skill_resource": {}, "read_step_output": {}, "search_facts": {}, "semantic_search": {}, "update_checklist": {}, "declare_step_complete": {}, "store_fact": {}, "tool_result_read": {}}
 			judge.SetIsInternalFn(func(name string) bool { _, ok := internalSet[name]; return ok })
 
 			ctx := context.Background()

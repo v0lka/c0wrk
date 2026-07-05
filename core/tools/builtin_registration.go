@@ -93,6 +93,7 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	// Step output tools
 	registry.Register(builtins.NewReadStepOutputTool())
 	registry.Register(builtins.NewListStepOutputsTool())
+	registry.Register(builtins.NewReadFinalResultTool())
 
 	// Checklist tool (update_checklist) + inline step completion (declare_step_complete)
 	registry.Register(builtins.NewUpdateChecklistTool())

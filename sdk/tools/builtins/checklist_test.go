@@ -271,3 +271,100 @@ func TestUpdateChecklistTool_ExecuteInvalidJSON(t *testing.T) {
 		t.Fatal("expected error result for invalid JSON")
 	}
 }
+
+func TestUpdateChecklistTool_GuardRejectsStandaloneWhenPlanDeclared(t *testing.T) {
+	ctx := context.Background()
+	// Guard simulates "plan declared, standalone checklist rejected".
+	ctx = agent.WithChecklistGuard(ctx, func(stepID string) string {
+		if stepID == "" {
+			return "a plan has been declared; pass step_id"
+		}
+		return ""
+	})
+	tool := NewUpdateChecklistTool()
+	input, _ := json.Marshal(UpdateChecklistInput{TodoList: "- [ ] A\n- [ ] B"})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result — guard should reject standalone checklist")
+	}
+	if !strings.Contains(result.Content, "step_id") {
+		t.Errorf("guard rejection message should mention step_id, got %q", result.Content)
+	}
+}
+
+func TestUpdateChecklistTool_GuardAllowsStepScopedWhenPlanDeclared(t *testing.T) {
+	ctx := context.Background()
+	ctx = agent.WithChecklistGuard(ctx, func(stepID string) string {
+		if stepID == "" {
+			return "a plan has been declared; pass step_id"
+		}
+		return ""
+	})
+	ctx = agent.WithStepID(ctx, "step_1")
+	tool := NewUpdateChecklistTool()
+	input, _ := json.Marshal(UpdateChecklistInput{TodoList: "- [ ] A\n- [ ] B"})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("guard should allow step-scoped checklist, got error: %s", result.Content)
+	}
+}
+
+func TestUpdateChecklistTool_GuardNotSet_AcceptsStandalone(t *testing.T) {
+	// No guard in context — standalone checklist should be accepted.
+	ctx := context.Background()
+	tool := NewUpdateChecklistTool()
+	input, _ := json.Marshal(UpdateChecklistInput{TodoList: "- [ ] A"})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success without guard, got: %s", result.Content)
+	}
+}
+
+func TestUpdateChecklistTool_ResultContainsReminderWhenUnchecked(t *testing.T) {
+	ctx := context.Background()
+	tool := NewUpdateChecklistTool()
+	input, _ := json.Marshal(UpdateChecklistInput{TodoList: "- [x] A\n- [ ] B"})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "1/2 done") {
+		t.Errorf("result should show 1/2 done, got %q", result.Content)
+	}
+	if !strings.Contains(result.Content, "Remember to call update_checklist again") {
+		t.Errorf("result should contain incremental-update reminder, got %q", result.Content)
+	}
+}
+
+func TestUpdateChecklistTool_ResultNoReminderWhenAllChecked(t *testing.T) {
+	ctx := context.Background()
+	tool := NewUpdateChecklistTool()
+	input, _ := json.Marshal(UpdateChecklistInput{TodoList: "- [x] A\n- [x] B"})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content)
+	}
+	if strings.Contains(result.Content, "Remember to call") {
+		t.Errorf("all-checked checklist should not contain reminder, got %q", result.Content)
+	}
+}

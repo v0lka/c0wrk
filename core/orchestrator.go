@@ -81,6 +81,12 @@ type OrchestratorConfig struct {
 	// 0 means use the default (DefaultAgentsMDMaxBytes = 65536).
 	// A negative value disables the cap entirely.
 	AgentsMDMaxBytes int
+
+	// ConductorHistoryWindow is the maximum number of recent conversation
+	// messages injected into the Conductor's context. 0 = use default (20).
+	// Keeps the prompt bounded for long sessions while preserving enough
+	// dialogue context for the agent to understand follow-up references.
+	ConductorHistoryWindow int
 }
 
 // ContextManagerFactory creates a ContextManager for a new task.
@@ -214,6 +220,9 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 	}
 	if cfg.MaxDependencyContextChars == 0 {
 		cfg.MaxDependencyContextChars = 8000
+	}
+	if cfg.ConductorHistoryWindow == 0 {
+		cfg.ConductorHistoryWindow = 20
 	}
 	emitter := deps.Emitter
 	if emitter == nil {
@@ -367,7 +376,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	if o.coreToolRegistry != nil {
 		availableTools = o.toolRegistry.ListFiltered(o.coreToolRegistry.DisabledTools())
 	}
-	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir)
+	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, nil)
 	var incompleteErr error
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
 		if pbb, ok := bb.(PersistableBlackboard); ok {
@@ -739,6 +748,19 @@ func (o *Orchestrator) SetBlackboardRestoreFunc(fn BlackboardRestoreFunc) {
 	o.bbRestoreFunc = fn
 }
 
+// truncateHistory returns the last window messages of history. If window <= 0
+// or len(history) <= window, history is returned as-is. The most recent
+// messages are preserved so the agent sees the dialogue context leading up to
+// the current message.
+func truncateHistory(history []llm.Message, window int) []llm.Message {
+	if window <= 0 || len(history) <= window {
+		return history
+	}
+	truncated := make([]llm.Message, window)
+	copy(truncated, history[len(history)-window:])
+	return truncated
+}
+
 // HandleMessage is the unified entry point for processing user messages.
 // It supports two flows: first message and continuation.
 // For first messages, a plan is always generated first, then executed via Plan&Execute.
@@ -819,8 +841,14 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		pbb.SetRouting(routing)
 	}
 
+	// Truncate conversation history to the configured window so long
+	// sessions don't overflow the Conductor's context. The most recent
+	// messages are kept — they carry the dialogue context the agent needs
+	// to understand follow-up references (e.g. "implement variant a").
+	conductorHistory := truncateHistory(o.conversationHistory, o.config.ConductorHistoryWindow)
+
 	plansDir := opts.SessionPlansDir
-	execResult, err := o.runConductor(ctx, message, bb, availableTools, plansDir)
+	execResult, err := o.runConductor(ctx, message, bb, availableTools, plansDir, conductorHistory)
 	// C-5: propagate ErrExecutionIncomplete alongside best-effort result.
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
 		return nil, err

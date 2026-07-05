@@ -16,6 +16,7 @@ const (
 	ToolDeclareStepComplete = "declare_step_complete"
 	ToolReadStepOutput      = "read_step_output"
 	ToolListStepOutput      = "list_step_outputs"
+	ToolReadFinalResult     = "read_final_result"
 	ToolToolResultRead      = "tool_result_read"
 	ToolReadSkillRes        = "read_skill_resource"
 	ToolBatch               = "batch"
