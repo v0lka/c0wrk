@@ -64,7 +64,7 @@ var NoProjectDisabledTools = map[string]bool{
 // inside a real project workspace.
 var NoProjectBashBlacklist = []string{
 	`^(git|npm|npx|yarn|pnpm|go|rustc|cargo|make|cmake|gcc|g\+\+|cc|clang)\b`,
-	`^(pip|pip3|python|python3|gem|bundle|dotnet|msbuild|docker|kubectl)\b`,
+	`^(gem|bundle|dotnet|msbuild|docker|kubectl)\b`,
 	`^(helm|terraform|vagrant|ansible|gradle|mvn|sbt|stack|cabal)\b`,
 	`^(nuget|choco|brew|port|apt|apt-get|yum|dnf|pacman|zypper|snap)\b`,
 }
