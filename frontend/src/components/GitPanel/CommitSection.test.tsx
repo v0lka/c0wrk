@@ -121,7 +121,7 @@ describe('CommitSection — AI generate button', () => {
     expect(generateBtn().disabled).toBe(false)
   })
 
-  it('collects staged diffs and inserts the generated message', async () => {
+  it('triggers generation and inserts the generated message', async () => {
     useGitPanelStore.setState({
       entries: [
         makeEntry({ path: 'a.ts', staged: true }),
@@ -129,9 +129,6 @@ describe('CommitSection — AI generate button', () => {
         makeEntry({ path: 'c.ts', staged: false }), // unstaged — ignored
       ],
     })
-    workspaceMocks.getFileDiff.mockImplementation((p: string) =>
-      Promise.resolve(`diff for ${p}`),
-    )
     gitMocks.generateCommitMessage.mockResolvedValue('feat: add files')
 
     render()
@@ -141,14 +138,11 @@ describe('CommitSection — AI generate button', () => {
     })
     await flush()
 
-    // Only staged files were diffed.
-    expect(workspaceMocks.getFileDiff).toHaveBeenCalledWith('a.ts')
-    expect(workspaceMocks.getFileDiff).toHaveBeenCalledWith('b.ts')
-    expect(workspaceMocks.getFileDiff).not.toHaveBeenCalledWith('c.ts')
-    // The combined diff (joined) was passed to the generator.
-    expect(gitMocks.generateCommitMessage).toHaveBeenCalledWith(
-      'diff for a.ts\ndiff for b.ts',
-    )
+    // The backend runs `git diff --staged` itself, so the frontend only
+    // triggers generation — no per-file diff collection.
+    expect(workspaceMocks.getFileDiff).not.toHaveBeenCalled()
+    expect(gitMocks.generateCommitMessage).toHaveBeenCalledTimes(1)
+    expect(gitMocks.generateCommitMessage).toHaveBeenCalledWith()
     // The result was written into the store (and thus the textarea).
     expect(useGitPanelStore.getState().commitMessage).toBe('feat: add files')
   })
@@ -157,7 +151,6 @@ describe('CommitSection — AI generate button', () => {
     useGitPanelStore.setState({
       entries: [makeEntry({ path: 'a.ts', staged: true })],
     })
-    workspaceMocks.getFileDiff.mockResolvedValue('diff for a.ts')
     gitMocks.generateCommitMessage.mockRejectedValue(
       new Error('llm router not available'),
     )
@@ -173,12 +166,15 @@ describe('CommitSection — AI generate button', () => {
     expect(useGitPanelStore.getState().isGeneratingCommit).toBe(false)
   })
 
-  it('shows an error when there is no staged diff to generate from', async () => {
+  it('shows an error when the backend reports no staged changes', async () => {
     useGitPanelStore.setState({
       entries: [makeEntry({ path: 'a.ts', staged: true })],
     })
-    // Every diff returns empty → nothing to generate from.
-    workspaceMocks.getFileDiff.mockResolvedValue('')
+    // The backend runs `git diff --staged` and returns this error when
+    // the staged changeset is empty (e.g. stale panel entries).
+    gitMocks.generateCommitMessage.mockRejectedValue(
+      new Error('no staged changes to generate a commit message from'),
+    )
 
     render()
     const btn = generateBtn()
@@ -187,34 +183,9 @@ describe('CommitSection — AI generate button', () => {
     })
     await flush()
 
-    expect(gitMocks.generateCommitMessage).not.toHaveBeenCalled()
+    expect(gitMocks.generateCommitMessage).toHaveBeenCalled()
     expect(container.textContent).toContain(
-      'No staged changes to generate a commit message from',
+      'no staged changes to generate a commit message from',
     )
-  })
-
-  it('swallows per-file diff failures and still generates', async () => {
-    useGitPanelStore.setState({
-      entries: [
-        makeEntry({ path: 'bad.ts', staged: true }),
-        makeEntry({ path: 'good.ts', staged: true }),
-      ],
-    })
-    workspaceMocks.getFileDiff.mockImplementation((p: string) =>
-      p === 'bad.ts'
-        ? Promise.reject(new Error('boom'))
-        : Promise.resolve('diff for good.ts'),
-    )
-    gitMocks.generateCommitMessage.mockResolvedValue('fix: thing')
-
-    render()
-    const btn = generateBtn()
-    await act(async () => {
-      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-    await flush()
-
-    expect(gitMocks.generateCommitMessage).toHaveBeenCalledWith('diff for good.ts')
-    expect(useGitPanelStore.getState().commitMessage).toBe('fix: thing')
   })
 })

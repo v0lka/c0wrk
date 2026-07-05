@@ -492,7 +492,7 @@ func taskCompletionInfo(result *core.HandleResult) (success bool, completion str
 		return true, "full"
 	}
 	switch result.Status {
-	case orchestration.ExecutionStatusPartial:
+	case orchestration.ExecutionStatusPartial, orchestration.ExecutionStatusCancelled:
 		return false, "partial"
 	case orchestration.ExecutionStatusFailed:
 		return false, "failed"
@@ -626,7 +626,6 @@ func (m *Manager) GetBlackboardState(sessionID string) (*BlackboardState, error)
 
 	return &BlackboardState{TaskState: state}, nil
 }
-
 
 // BlackboardState wraps a core.TaskState for the GetBlackboardState API.
 type BlackboardState struct {

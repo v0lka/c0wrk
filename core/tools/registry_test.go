@@ -945,6 +945,7 @@ func TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace_ReasoningSurfaced(t
 		t.Errorf("expected reasoning to mention 'outside', got: %s", receivedReasoning)
 	}
 }
+
 // even when all paths in the input are within the session temp directory.
 func TestAutoApproval_TempDir(t *testing.T) {
 	registry := NewToolRegistry()

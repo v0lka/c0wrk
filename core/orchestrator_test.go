@@ -62,8 +62,6 @@ func testContextFactory(systemPrompt string, modelMeta llm.ModelMetadata, compac
 	}
 }
 
-
-
 // TestOrchestrator_HandleResultContainsRoutingDecision verifies HandleResult always has routing info.
 func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 	callIdx := 0
@@ -114,8 +112,6 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 	}
 }
 
-
-
 // TestFinishTool_DefaultPolicy tests the finish tool default policy.
 func TestFinishTool_DefaultPolicy(t *testing.T) {
 	ft := agent.NewFinishTool()
@@ -155,8 +151,6 @@ func TestFinishTool_Execute(t *testing.T) {
 	}
 }
 
-
-
 type mockTaskStore struct {
 	taskState *TaskState
 	loadErr   error
@@ -192,10 +186,6 @@ func (m *mockTaskStore) GetUnfinishedTaskID(sessionID string) (string, error) {
 	return "", nil
 }
 func (m *mockTaskStore) ReactivateTask(taskID string) error { return nil }
-
-
-
-
 
 // TestHandleMessage_ReactivatesTask verifies that ReactivateTask is called on any continuation.
 func TestHandleMessage_ReactivatesTask(t *testing.T) {
@@ -332,8 +322,6 @@ func (m *mockTaskStoreWithReactivate) ReactivateTask(taskID string) error {
 	}
 	return nil
 }
-
-
 
 // TestBuildSkillAugmentedRoutingMessage verifies the message augmentation logic.
 func TestBuildSkillAugmentedRoutingMessage(t *testing.T) {
@@ -909,8 +897,8 @@ func TestOrchestrator_AgentsMD_RouterPromptInjection(t *testing.T) {
 				Message: llm.Message{
 					Role: "assistant",
 					ToolCalls: []llm.ToolCall{{
-						ID:   "call_1",
-						Name: "finish",
+						ID:    "call_1",
+						Name:  "finish",
 						Input: json.RawMessage(`{"answer":"done"}`),
 					}},
 				},
@@ -1013,7 +1001,6 @@ func TestOrchestrator_AgentsMD_RouterPromptAbsentWhenNoWorkspace(t *testing.T) {
 // Per-step skills & tools — Normal-mode invariant and narrowing tests (Task 6)
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // Conversation History Tests — full history, no truncation, planner compaction
 // ---------------------------------------------------------------------------
@@ -1090,7 +1077,7 @@ func TestConversationHistory_NoTruncation(t *testing.T) {
 	r := newCoreRouter(mockLLM, 5)
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{
-		MaxSteps:                   10,
+		MaxSteps: 10,
 	}, OrchestratorDeps{
 		Router:         r,
 		LLM:            mockLLM,
@@ -1164,7 +1151,6 @@ func TestConversationHistory_NoTruncation(t *testing.T) {
 		t.Errorf("expected third user message 'add tests', got %q", userMsgs[2])
 	}
 }
-
 
 // TestConversationHistory_RouterHistoryUnchanged verifies that the router still
 // uses its own HistoryWindow (not the full history) and is unaffected by this change.

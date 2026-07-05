@@ -41,10 +41,10 @@ type Delegation struct {
 // does not outlive the run. Child registries (for allow_redelegate) are
 // created with an incremented depth to enforce the recursion cap.
 type DelegationRegistry struct {
-	mu         sync.Mutex
+	mu          sync.Mutex
 	delegations map[string]*Delegation
 	cancelFuncs map[string]context.CancelFunc
-	depth      int
+	depth       int
 }
 
 // NewDelegationRegistry creates a root registry (depth 0).

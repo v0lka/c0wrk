@@ -59,8 +59,8 @@ type TaskCompleteData struct {
 	// Typed success contract: Success is false for partial/failed/aborted
 	// executions that are still delivered as task_complete so the best-effort
 	// output reaches the user. Completion refines the outcome.
-	Success     bool   `json:"success"`
-	Completion  string `json:"completion,omitempty"` // "full" | "partial" | "failed" | "aborted"
+	Success    bool   `json:"success"`
+	Completion string `json:"completion,omitempty"` // "full" | "partial" | "failed" | "aborted"
 }
 
 // TaskCancelledData is the payload for "task_cancelled" events.
@@ -142,8 +142,8 @@ type PlanApprovalPayload struct {
 // decides on a plan awaiting approval.
 type PlanApprovalResponsePayload struct {
 	RequestID string `json:"request_id"`
-	Decision  string `json:"decision"`  // "approve", "request_changes", or "abandon"
-	Feedback  string `json:"feedback"`  // non-empty when decision="request_changes"
+	Decision  string `json:"decision"` // "approve", "request_changes", or "abandon"
+	Feedback  string `json:"feedback"` // non-empty when decision="request_changes"
 }
 
 // --- Emitter event data types (typed Data field payloads) ---

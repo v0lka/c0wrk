@@ -279,7 +279,7 @@ func (m *mockEmitter) StepTodoUpdate(stepID string, items []agent.TodoItem) {
 		items  []agent.TodoItem
 	}{stepID, items})
 }
-func (m *mockEmitter) MemoryRead(_ int, _ string)                           {}
+func (m *mockEmitter) MemoryRead(_ int, _ string) {}
 
 // ---------------------------------------------------------------------------
 // testPersistableBlackboard — a minimal PersistableBlackboard for core tests

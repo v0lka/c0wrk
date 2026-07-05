@@ -435,28 +435,28 @@ describe('generateCommitMessage', () => {
     mockApp.GenerateCommitMessage = vi.fn().mockResolvedValue(
       'feat(api): add commit message generation',
     )
-    const result = await generateCommitMessage('diff --git ...')
+    const result = await generateCommitMessage()
     expect(result).toBe('feat(api): add commit message generation')
-    expect(mockApp.GenerateCommitMessage).toHaveBeenCalledWith('diff --git ...')
+    expect(mockApp.GenerateCommitMessage).toHaveBeenCalledWith()
   })
 
   it('throws when backend returns non-string', async () => {
     mockApp.GenerateCommitMessage = vi.fn().mockResolvedValue({ message: 'x' })
-    await expect(generateCommitMessage('diff')).rejects.toThrow(
+    await expect(generateCommitMessage()).rejects.toThrow(
       'backend returned non-string data',
     )
   })
 
   it('throws when backend returns null', async () => {
     mockApp.GenerateCommitMessage = vi.fn().mockResolvedValue(null)
-    await expect(generateCommitMessage('diff')).rejects.toThrow(
+    await expect(generateCommitMessage()).rejects.toThrow(
       'backend returned non-string data',
     )
   })
 
   it('throws when backend returns number', async () => {
     mockApp.GenerateCommitMessage = vi.fn().mockResolvedValue(42)
-    await expect(generateCommitMessage('diff')).rejects.toThrow(
+    await expect(generateCommitMessage()).rejects.toThrow(
       'backend returned non-string data',
     )
   })
@@ -465,7 +465,7 @@ describe('generateCommitMessage', () => {
     mockApp.GenerateCommitMessage = vi.fn().mockRejectedValue(
       new Error('llm router not available'),
     )
-    await expect(generateCommitMessage('diff')).rejects.toThrow(
+    await expect(generateCommitMessage()).rejects.toThrow(
       'llm router not available',
     )
   })

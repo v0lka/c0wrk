@@ -950,7 +950,6 @@ func TestTaskCompletionInfo(t *testing.T) {
 		result         *core.HandleResult
 		wantSuccess    bool
 		wantCompletion string
-
 	}{
 		{name: "nil result", result: nil, wantSuccess: true, wantCompletion: "full"},
 		{name: "empty status (legacy)", result: &core.HandleResult{}, wantSuccess: true, wantCompletion: "full"},
@@ -969,7 +968,7 @@ func TestTaskCompletionInfo(t *testing.T) {
 			if completion != tt.wantCompletion {
 				t.Errorf("completion = %q, want %q", completion, tt.wantCompletion)
 			}
-					})
+		})
 	}
 }
 
@@ -1024,9 +1023,9 @@ func TestEmitTaskComplete_PartialEmitsResumable(t *testing.T) {
 	drainEvents(eventChan)
 
 	manager.emitTaskComplete("sess-1", &core.HandleResult{
-		Output:      "partial output",
-		Status:      orchestration.ExecutionStatusPartial,
-			}, nil)
+		Output: "partial output",
+		Status: orchestration.ExecutionStatusPartial,
+	}, nil)
 
 	events := collectEvents(eventChan, 2)
 	if len(events) != 2 {

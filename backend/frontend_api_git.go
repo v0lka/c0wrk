@@ -580,27 +580,60 @@ func isBranchAlreadyExists(err error) bool {
 
 // commitMsgGenTimeout caps the LLM request used to generate a commit
 // message so the UI does not hang on a slow or unresponsive provider.
-const commitMsgGenTimeout = 15 * time.Second
+// A large staged diff can take a while for the model to process, and the
+// router may retry on transient provider errors (429/502/503) with
+// exponential backoff, so the budget is generous.
+const commitMsgGenTimeout = 120 * time.Second
 
 // GenerateCommitMessage asks the configured LLM to produce a Conventional
-// Commits-formatted commit message from the given staged diff (typically
-// the output of `git diff --staged`). The LLM request is bounded by a
-// 15-second timeout. Returns an error when the application is not
-// initialised, the diff is empty, or the LLM call fails.
-func (f *FrontendAPI) GenerateCommitMessage(diff string) (string, error) {
+// Commits-formatted commit message from the active project's staged
+// changes. The staged diff is obtained with a single `git diff --staged`
+// invocation (rather than per-file diffs assembled by the caller), which
+// avoids redundant work and keeps the diff size proportional to the real
+// staged changeset. The LLM request is bounded by commitMsgGenTimeout.
+// Returns an error when the application is not initialised, no project is
+// active, there are no staged changes, or the LLM call fails.
+func (f *FrontendAPI) GenerateCommitMessage() (string, error) {
 	b := f.builder()
 	if b == nil {
+		f.log().Warn("GenerateCommitMessage: application not initialized (builder is nil)")
 		return "", errors.New("application not initialized")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		f.log().Warn("GenerateCommitMessage: no active project", "err", err)
+		return "", err
+	}
+
+	// Obtain the full staged diff in a single git invocation. Using
+	// `git diff --staged` (rather than concatenating per-file diffs)
+	// gives the model an accurate, deduplicated view of the staged
+	// changeset and avoids the unstaged portions that per-file diff
+	// would otherwise include.
+	diff, err := f.runGitCmd(repoPath, "diff", "--staged")
+	if err != nil {
+		f.log().Error("GenerateCommitMessage: git diff --staged failed",
+			"err", err, "repo", repoPath)
+		return "", fmt.Errorf("git diff --staged: %w", err)
 	}
 
 	trimmed := strings.TrimSpace(diff)
 	if trimmed == "" {
+		f.log().Debug("GenerateCommitMessage: no staged changes to generate from",
+			"repo", repoPath)
 		return "", errors.New("no staged changes to generate a commit message from")
 	}
+
+	f.log().Debug("GenerateCommitMessage: sending staged diff to LLM",
+		"diff_bytes", len(trimmed), "repo", repoPath)
 
 	ctx, cancel := context.WithTimeout(f.ctx(), commitMsgGenTimeout)
 	defer cancel()
 
+	// The core layer logs the detailed LLM-side cause (context window,
+	// timeout, provider error); this boundary only logs its own
+	// preconditions and passes the core error through to the frontend.
 	return b.GenerateCommitMessage(ctx, trimmed)
 }
 

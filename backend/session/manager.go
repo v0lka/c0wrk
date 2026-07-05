@@ -42,6 +42,7 @@ func SessionIDFromContext(ctx context.Context) string {
 	}
 	return ""
 }
+
 // Session represents a running agent session with its own orchestrator.
 type Session struct {
 	ID                  string
@@ -451,7 +452,6 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		lastCompletedTaskID: restoredTaskID,
 	}
 
-
 	// Double-check under write lock: another goroutine may have restored the same session.
 	m.mu.Lock()
 	if existing, ok := m.sessions[id]; ok {
@@ -858,13 +858,13 @@ func (m *Manager) ListSessions() []SessionInfo {
 			lastActive = s.CreatedAt
 		}
 		sessions = append(sessions, SessionInfo{
-			ID:              s.ID,
-			ProjectID:       s.ProjectID,
-			Name:            s.Name,
-			CreatedAt:       s.CreatedAt.Format(time.RFC3339),
-			LastActiveAt:    lastActive.Format(time.RFC3339),
-			Archived:        s.Archived,
-			Active:          s.active,
+			ID:           s.ID,
+			ProjectID:    s.ProjectID,
+			Name:         s.Name,
+			CreatedAt:    s.CreatedAt.Format(time.RFC3339),
+			LastActiveAt: lastActive.Format(time.RFC3339),
+			Archived:     s.Archived,
+			Active:       s.active,
 		})
 		s.mu.Unlock()
 	}

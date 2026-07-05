@@ -2,15 +2,18 @@ package backend
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/skills"
+	_ "modernc.org/sqlite"
 )
 
 // mockBuilder records calls to appBuilder methods for test assertions.
@@ -38,6 +41,7 @@ type mockBuilder struct {
 	optimizePromptErr     error
 	generateCommitMsgRes  string
 	generateCommitMsgErr  error
+	generateCommitMsgDiff string
 }
 
 func (m *mockBuilder) RebuildJudge(_ *core.BuilderConfig) {
@@ -90,9 +94,10 @@ func (m *mockBuilder) OptimizePrompt(_ context.Context, _ string) (*core.Optimiz
 	m.mu.Unlock()
 	return m.optimizePromptRes, m.optimizePromptErr
 }
-func (m *mockBuilder) GenerateCommitMessage(_ context.Context, _ string) (string, error) {
+func (m *mockBuilder) GenerateCommitMessage(_ context.Context, diff string) (string, error) {
 	m.mu.Lock()
 	m.generateCommitMsgCalls++
+	m.generateCommitMsgDiff = diff
 	m.mu.Unlock()
 	return m.generateCommitMsgRes, m.generateCommitMsgErr
 }
@@ -439,5 +444,164 @@ func TestListProviderModels_Delegates(t *testing.T) {
 	}
 	if len(models) != 2 || models[0] != "model-a" || models[1] != "model-b" {
 		t.Errorf("models = %v, want [model-a model-b]", models)
+	}
+}
+
+// --- UpdateLLMConfig: project-switch regression ---
+
+// eventRecorder captures emitted event names in order.
+type eventRecorder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *eventRecorder) emit(name string, _ ...any) {
+	r.mu.Lock()
+	r.events = append(r.events, name)
+	r.mu.Unlock()
+}
+
+func (r *eventRecorder) has(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.events {
+		if e == name {
+			return true
+		}
+	}
+	return false
+}
+
+// newUpdateLLMConfigProjectHarness builds a FrontendAPI wired to a real
+// project store + manager, a temp config file, a mock builder, and an
+// event recorder. The returned project is a freshly created real project
+// (not No Project). activeProjectID is left unset; callers set it as needed.
+func newUpdateLLMConfigProjectHarness(t *testing.T) (*FrontendAPI, *project.ProjectInfo, *eventRecorder, *sql.DB) {
+	t.Helper()
+	ctx := context.Background()
+	db := openProjectSwitchTestDB(t)
+
+	projStore, err := project.NewSQLiteProjectStore(db)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("failed to create project store: %v", err)
+	}
+	agentDir := t.TempDir()
+	projectManager := project.NewManager(projStore, agentDir)
+	createdProject, err := projectManager.CreateProject("Active Project", "")
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("failed to create test project: %v", err)
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfg := &config.Config{}
+	config.ApplyDefaults(cfg)
+	cfg.LLM.DefaultModel = "claude-3-opus"
+
+	rec := &eventRecorder{}
+	f := &FrontendAPI{
+		config:          cfg,
+		configPath:      cfgPath,
+		builderOverride: &mockBuilder{},
+		projectManager:  projectManager,
+		projStore:       projStore,
+		agentDir:        agentDir,
+		emitEvent:       rec.emit,
+		appCtx:          func() context.Context { return ctx },
+	}
+	_ = ctx
+	return f, createdProject, rec, db
+}
+
+// activeProjectIDOf reads f.activeProjectID under its lock.
+func activeProjectIDOf(f *FrontendAPI) string {
+	f.activeProjectMu.RLock()
+	defer f.activeProjectMu.RUnlock()
+	return f.activeProjectID
+}
+
+// TestUpdateLLMConfig_DoesNotSwitchAwayFromActiveProject verifies that
+// saving LLM config while a real project is active never tears it down
+// or emits project:switched. Previously UpdateLLMConfig unconditionally
+// called SwitchProject(NoProjectID), yanking the user out of CODE mode
+// mid-session on every debounced save.
+func TestUpdateLLMConfig_DoesNotSwitchAwayFromActiveProject(t *testing.T) {
+	f, activeProj, rec, db := newUpdateLLMConfigProjectHarness(t)
+	defer func() { _ = db.Close() }()
+
+	f.activeProjectMu.Lock()
+	f.activeProjectID = activeProj.ID
+	f.activeProjectPath = activeProj.WorkspacePath
+	f.activeProjectMu.Unlock()
+
+	if err := f.UpdateLLMConfig(LLMFullConfigRequest{DefaultModel: "claude-3-opus"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := activeProjectIDOf(f); got != activeProj.ID {
+		t.Fatalf("active project switched: got %q, want %q (must stay on the active real project)", got, activeProj.ID)
+	}
+	if rec.has(EventProjectSwitched) {
+		t.Fatal("project:switched must not be emitted when a real project is active")
+	}
+}
+
+// TestUpdateLLMConfig_EmitsBackendReadyOnlyWhenNoProjectFirstCreated
+// verifies the first-run provisioning path: when No Project does not yet
+// exist and no project is active, saving a valid LLM config emits
+// backend:ready so the frontend can auto-select No Project — but still
+// does not force a project:switched event.
+func TestUpdateLLMConfig_EmitsBackendReadyOnlyWhenNoProjectFirstCreated(t *testing.T) {
+	f, _, rec, db := newUpdateLLMConfigProjectHarness(t)
+	defer func() { _ = db.Close() }()
+
+	// No project active and No Project does not exist yet → first-run.
+	if err := f.UpdateLLMConfig(LLMFullConfigRequest{DefaultModel: "claude-3-opus"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !rec.has(EventBackendReady) {
+		t.Fatal("expected backend:ready on first-run No Project creation")
+	}
+	if rec.has(EventProjectSwitched) {
+		t.Fatal("project:switched must not be emitted; frontend auto-selects via loadAndActivate")
+	}
+	if got := activeProjectIDOf(f); got != "" {
+		t.Fatalf("active project unexpectedly changed to %q; backend must not force-switch", got)
+	}
+}
+
+// TestUpdateLLMConfig_NoEmitWhenNoProjectAlreadyExists verifies that
+// mid-session config edits emit nothing once No Project already exists:
+// the project list is unchanged, so re-emitting backend:ready would just
+// cause redundant frontend work.
+func TestUpdateLLMConfig_NoEmitWhenNoProjectAlreadyExists(t *testing.T) {
+	f, activeProj, rec, db := newUpdateLLMConfigProjectHarness(t)
+	defer func() { _ = db.Close() }()
+
+	// Provision No Project up front so the config-save path has nothing to create.
+	if _, err := f.projectManager.EnsureNoProject(); err != nil {
+		t.Fatalf("failed to seed No Project: %v", err)
+	}
+
+	f.activeProjectMu.Lock()
+	f.activeProjectID = activeProj.ID
+	f.activeProjectPath = activeProj.WorkspacePath
+	f.activeProjectMu.Unlock()
+
+	if err := f.UpdateLLMConfig(LLMFullConfigRequest{DefaultModel: "claude-3-opus"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if rec.has(EventBackendReady) {
+		t.Fatal("backend:ready must not be re-emitted when No Project already exists")
+	}
+	if rec.has(EventProjectSwitched) {
+		t.Fatal("project:switched must not be emitted on mid-session config edits")
+	}
+	if got := activeProjectIDOf(f); got != activeProj.ID {
+		t.Fatalf("active project switched: got %q, want %q", got, activeProj.ID)
 	}
 }

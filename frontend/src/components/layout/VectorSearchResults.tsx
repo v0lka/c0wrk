@@ -133,10 +133,10 @@ function VectorStoreEntryItem({ entry, showScore }: { entry: VectorStoreEntry; s
       </div>
 
       {/* Directory path */}
-      {dirPath && <div className="truncate text-[10px] text-muted-foreground mt-0.5 `pl-4.5">{dirPath}</div>}
+      {dirPath && <div className="truncate text-[10px] text-muted-foreground mt-0.5 pl-4.5">{dirPath}</div>}
 
       {/* Content preview */}
-      <pre className="mt-1 `pl-4.5 text-[10px] leading-4 text-muted-foreground whitespace-pre-wrap break-all line-clamp-4">
+      <pre className="mt-1 pl-4.5 text-[10px] leading-4 text-muted-foreground whitespace-pre-wrap break-all line-clamp-4">
         {preview}
       </pre>
     </button>

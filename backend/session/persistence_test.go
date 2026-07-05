@@ -1764,4 +1764,3 @@ func TestGetLatestTaskID_NoTasks(t *testing.T) {
 		t.Errorf("expected empty string, got %q", got)
 	}
 }
-

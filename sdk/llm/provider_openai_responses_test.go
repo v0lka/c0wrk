@@ -236,7 +236,7 @@ func TestConvertToResponsesInput(t *testing.T) {
 			name: "assistant with reasoning items but no text or tool calls",
 			messages: []Message{
 				{
-					Role:    "assistant",
+					Role: "assistant",
 					ReasoningItems: []ReasoningItem{
 						{ID: "rs_002", Summary: "Thinking step."},
 					},
@@ -256,7 +256,7 @@ func TestConvertToResponsesInput(t *testing.T) {
 			name: "assistant with multiple reasoning items",
 			messages: []Message{
 				{
-					Role:    "assistant",
+					Role: "assistant",
 					ReasoningItems: []ReasoningItem{
 						{ID: "rs_a", Summary: "First block."},
 						{ID: "rs_b", Summary: "Second block."},

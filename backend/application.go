@@ -34,11 +34,11 @@ type ApplicationConfig struct {
 	TaskStore    session.TaskStore
 
 	// UI callbacks provided by the desktop adapter.
-	UIEmitFunc       func(session.Event)       // Wails event emission
-	AskUserFunc      coretools.AskUserFunc      // ask_user tool callback
-	PlanApprovalFunc coretools.ApprovalFunc     // declare_plan await_approval callback
-	ConfirmFunc      sdktools.ConfirmFunc       // tool confirmation callback
-	HITLHandler      agent.HITLHandler          // step limit and tool confirmation callback
+	UIEmitFunc       func(session.Event)    // Wails event emission
+	AskUserFunc      coretools.AskUserFunc  // ask_user tool callback
+	PlanApprovalFunc coretools.ApprovalFunc // declare_plan await_approval callback
+	ConfirmFunc      sdktools.ConfirmFunc   // tool confirmation callback
+	HITLHandler      agent.HITLHandler      // step limit and tool confirmation callback
 
 	// Vector search callbacks (optional — nil disables semantic_search tool).
 	VectorSearchFunc     builtins.VectorSearchFunc

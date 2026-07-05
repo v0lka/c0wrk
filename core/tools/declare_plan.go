@@ -24,10 +24,10 @@ type PlanPublisher interface {
 // PlanTaskInput is the user-facing shape of a single roadmap task.
 // The publisher converts these into the internal Plan/PlanStep types.
 type PlanTaskInput struct {
-	ID             string   `json:"id"`
-	Summary        string   `json:"summary"`
-	Description    string   `json:"description"`
-	DependsOn      []string `json:"depends_on,omitempty"`
+	ID          string   `json:"id"`
+	Summary     string   `json:"summary"`
+	Description string   `json:"description"`
+	DependsOn   []string `json:"depends_on,omitempty"`
 }
 
 // DeclarePlanTool publishes a roadmap and optionally blocks for user approval.
@@ -76,7 +76,7 @@ func NewDeclarePlanTool(approvalFunc ApprovalFunc) *DeclarePlanTool {
 }
 
 type declarePlanInput struct {
-	Mode  string         `json:"mode"`
+	Mode  string          `json:"mode"`
 	Tasks []PlanTaskInput `json:"tasks"`
 }
 

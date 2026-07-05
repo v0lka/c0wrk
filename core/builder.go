@@ -325,20 +325,20 @@ func (b *OrchestratorBuilder) Build(
 
 	// Build orchestrator config
 	orchConfig := OrchestratorConfig{
-		MaxSteps:                      cfg.Executor.MaxReactSteps,
-		SubagentMaxSteps:              cfg.Executor.MaxReactSteps, // default: same as conductor; tunable later
-		KeepFirst:                     cfg.Executor.Compaction.SlidingWindow.KeepFirst,
-		KeepLast:                      cfg.Executor.Compaction.SlidingWindow.KeepLast,
-		MaxDependencyContextChars:     cfg.Orchestration.MaxDependencyContextChars,
+		MaxSteps:                  cfg.Executor.MaxReactSteps,
+		SubagentMaxSteps:          cfg.Executor.MaxReactSteps, // default: same as conductor; tunable later
+		KeepFirst:                 cfg.Executor.Compaction.SlidingWindow.KeepFirst,
+		KeepLast:                  cfg.Executor.Compaction.SlidingWindow.KeepLast,
+		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 		// OrchestratorConfig.Model is used for model METADATA resolution
 		// (ModelRegistry.Resolve keys on the bare model name), not for routing —
 		// so strip any provider prefix from a composite DefaultModel.
-		Model:                         llm.BareModel(cfg.LLM.DefaultModel),
-		ReasoningEffort:               reasoningEffort,
-		HITLHandler:                   hitlHandler,
-		PreWarningPercent:             cfg.Executor.Compaction.Thresholds.PreWarningPercent,
-		InjectionDefenseEnabled:       cfg.Security.InjectionDefenseEnabled,
-		AgentsMDMaxBytes:              cfg.Security.AgentsMDMaxBytes,
+		Model:                   llm.BareModel(cfg.LLM.DefaultModel),
+		ReasoningEffort:         reasoningEffort,
+		HITLHandler:             hitlHandler,
+		PreWarningPercent:       cfg.Executor.Compaction.Thresholds.PreWarningPercent,
+		InjectionDefenseEnabled: cfg.Security.InjectionDefenseEnabled,
+		AgentsMDMaxBytes:        cfg.Security.AgentsMDMaxBytes,
 	}
 
 	// Create tool result cache (per-session lifetime).
@@ -597,6 +597,8 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 // for enforcing any request timeout via the supplied context.
 func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff string) (string, error) {
 	if err := b.waitReady(ctx); err != nil {
+		b.log().Warn("commit message generation aborted: builder not ready",
+			"err", err, "diff_bytes", len(diff))
 		return "", err
 	}
 
@@ -606,6 +608,8 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 	b.mu.RUnlock()
 
 	if llmRouter == nil {
+		b.log().Error("commit message generation failed: llm router not available",
+			"diff_bytes", len(diff))
 		return "", errors.New("llm router not available")
 	}
 
@@ -624,11 +628,32 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 		caller = agent.NewLoggingLLMCaller(caller, llmRouter.ActiveProviderName(), b.logger)
 		caller = agent.NewDumpCaller(caller, dw, b.logger)
 	}
+	providerName := llmRouter.ActiveProviderName()
+	b.log().Debug("generating commit message",
+		"provider", providerName, "diff_bytes", len(diff))
 	resp, err := caller.Call(ctx, req)
 	if err != nil {
+		// Classify the failure so operators can distinguish a too-large
+		// staged diff (context window) from a slow or unresponsive
+		// provider (deadline) or a provider-side error. This is the
+		// single place the LLM-side cause is logged; the backend RPC
+		// layer only logs its own preconditions and passes this through.
+		switch {
+		case errors.Is(err, llm.ErrContextWindowExceeded):
+			b.log().Error("commit message generation failed: staged diff exceeds model context window",
+				"err", err, "diff_bytes", len(diff), "provider", providerName)
+		case errors.Is(err, context.DeadlineExceeded):
+			b.log().Error("commit message generation failed: LLM call timed out",
+				"err", err, "diff_bytes", len(diff), "provider", providerName)
+		default:
+			b.log().Error("commit message generation failed: LLM call error",
+				"err", err, "diff_bytes", len(diff), "provider", providerName)
+		}
 		return "", err
 	}
 	if resp == nil {
+		b.log().Warn("commit message generation returned empty response",
+			"diff_bytes", len(diff), "provider", providerName)
 		return "", nil
 	}
 	return strings.TrimSpace(resp.Message.Content), nil

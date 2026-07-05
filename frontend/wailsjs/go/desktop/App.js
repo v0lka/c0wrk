@@ -66,8 +66,8 @@ export function Fetch(arg1) {
   return window['go']['desktop']['App']['Fetch'](arg1);
 }
 
-export function GenerateCommitMessage(arg1) {
-  return window['go']['desktop']['App']['GenerateCommitMessage'](arg1);
+export function GenerateCommitMessage() {
+  return window['go']['desktop']['App']['GenerateCommitMessage']();
 }
 
 export function GetBlackboardState(arg1) {

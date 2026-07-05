@@ -52,13 +52,13 @@ var InjectionDefenseKey = injectionDefenseKeyType{}
 
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
-	MaxSteps                      int
-	SubagentMaxSteps              int     // max ReAct iterations per delegation (default: 50)
-	MaxRedelegationDepth          int     // cap on recursive delegation when allow_redelegate is true (default: 2)
-	KeepFirst                     int     // for sliding window compaction
-	KeepLast                      int     // for sliding window compaction
-	MaxDependencyContextChars     int     // max chars for dependency context in delegation tasks (default: 8000)
-	Model                         string  // active model name for ModelRegistry.Resolve()
+	MaxSteps                  int
+	SubagentMaxSteps          int    // max ReAct iterations per delegation (default: 50)
+	MaxRedelegationDepth      int    // cap on recursive delegation when allow_redelegate is true (default: 2)
+	KeepFirst                 int    // for sliding window compaction
+	KeepLast                  int    // for sliding window compaction
+	MaxDependencyContextChars int    // max chars for dependency context in delegation tasks (default: 8000)
+	Model                     string // active model name for ModelRegistry.Resolve()
 
 	// ReasoningEffort is the reasoning effort applied to step executors.
 	// When non-empty, each executor gets this value directly (no role adaptation).
@@ -114,7 +114,7 @@ type Orchestrator struct {
 	llm                 agent.LLMCaller
 	modelSwitcher       *llm.Router // raw LLM router for per-message model override
 	toolRegistry        *sdktools.ToolRegistry
-	toolExec            agent.ToolExecutor // executor tool surface (per-session policy view)
+	toolExec            agent.ToolExecutor  // executor tool surface (per-session policy view)
 	coreToolRegistry    *tools.ToolRegistry // core registry with policy support
 	config              OrchestratorConfig
 	contextFactory      ContextManagerFactory
@@ -232,27 +232,27 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 	o := &Orchestrator{
 		router:           deps.Router,
 		llm:              deps.LLM,
-		modelSwitcher:     deps.ModelSwitcher,
-		toolRegistry:      deps.ToolRegistry,
-		toolExec:          deps.ToolExec,
-		config:            cfg,
-		contextFactory:    deps.ContextFactory,
-		logger:            deps.Logger,
-		emitter:           emitter,
-		modelRegistry:     deps.ModelRegistry,
-		bbFactory:         deps.BBFactory,
-		trackingCaller:    deps.TrackingCaller,
-		tokenCounter:      deps.TokenCounter,
-		vectorSearchFunc:  deps.VectorSearchFunc,
-		skillManager:      deps.SkillManager,
-		coreToolRegistry:  deps.CoreToolRegistry,
-		reflector:         deps.Reflector,
-		providerName:      deps.ProviderName,
-		stepDumpTracker:   deps.StepDumpTracker,
-		toolCache:         deps.ToolCache,
-		perToolTrunc:      deps.PerToolTruncation,
-		toolResultBudget:  deps.ToolResultBudget,
-		circuitBreaker:    deps.CircuitBreaker,
+		modelSwitcher:    deps.ModelSwitcher,
+		toolRegistry:     deps.ToolRegistry,
+		toolExec:         deps.ToolExec,
+		config:           cfg,
+		contextFactory:   deps.ContextFactory,
+		logger:           deps.Logger,
+		emitter:          emitter,
+		modelRegistry:    deps.ModelRegistry,
+		bbFactory:        deps.BBFactory,
+		trackingCaller:   deps.TrackingCaller,
+		tokenCounter:     deps.TokenCounter,
+		vectorSearchFunc: deps.VectorSearchFunc,
+		skillManager:     deps.SkillManager,
+		coreToolRegistry: deps.CoreToolRegistry,
+		reflector:        deps.Reflector,
+		providerName:     deps.ProviderName,
+		stepDumpTracker:  deps.StepDumpTracker,
+		toolCache:        deps.ToolCache,
+		perToolTrunc:     deps.PerToolTruncation,
+		toolResultBudget: deps.ToolResultBudget,
+		circuitBreaker:   deps.CircuitBreaker,
 	}
 
 	return o

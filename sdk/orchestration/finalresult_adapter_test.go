@@ -15,13 +15,15 @@ type mockBlackboardForFinalResult struct {
 func (m *mockBlackboardForFinalResult) GetFinalResult() string { return m.finalResult }
 
 // Stub the rest of the Blackboard interface so the mock compiles.
-func (m *mockBlackboardForFinalResult) GetOriginalRequest() string                  { return "" }
-func (m *mockBlackboardForFinalResult) SetOriginalRequest(string)                   {}
-func (m *mockBlackboardForFinalResult) GetPlan() *Plan                              { return nil }
-func (m *mockBlackboardForFinalResult) SetPlan(*Plan)                               {}
-func (m *mockBlackboardForFinalResult) GetStepResult(string) (StepResult, bool)     { return StepResult{}, false }
-func (m *mockBlackboardForFinalResult) GetStepSummary(string) string                { return "" }
-func (m *mockBlackboardForFinalResult) GetAllStepResults() map[string]StepResult    { return nil }
+func (m *mockBlackboardForFinalResult) GetOriginalRequest() string { return "" }
+func (m *mockBlackboardForFinalResult) SetOriginalRequest(string)  {}
+func (m *mockBlackboardForFinalResult) GetPlan() *Plan             { return nil }
+func (m *mockBlackboardForFinalResult) SetPlan(*Plan)              {}
+func (m *mockBlackboardForFinalResult) GetStepResult(string) (StepResult, bool) {
+	return StepResult{}, false
+}
+func (m *mockBlackboardForFinalResult) GetStepSummary(string) string             { return "" }
+func (m *mockBlackboardForFinalResult) GetAllStepResults() map[string]StepResult { return nil }
 func (m *mockBlackboardForFinalResult) SetStepResult(string, string, error, []agent.Step) {
 }
 func (m *mockBlackboardForFinalResult) AddReflection(Reflection)        {}

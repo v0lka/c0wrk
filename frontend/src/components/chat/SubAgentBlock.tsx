@@ -17,10 +17,9 @@ const statusConfig = {
 export function SubAgentBlock({ item }: { item: SubAgentItem }) {
   const { title, description, status, duration, error, children } = item
 
-  // Auto-open when running (mirrors PlanStepBlock), with user override.
-  const isAutoOpen = status === 'running'
+  // Collapsed by default; user can expand. Auto-collapses again on status change.
   const [userOverride, setUserOverride] = useState<boolean | null>(null)
-  const isOpen = userOverride ?? isAutoOpen
+  const isOpen = userOverride ?? false
   useEffect(() => { setUserOverride(null) }, [status])
 
   const cfg = statusConfig[status] ?? statusConfig.running

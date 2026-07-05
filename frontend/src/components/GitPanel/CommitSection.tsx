@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { Loader2, Sparkles, Check } from 'lucide-react'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { commit, generateCommitMessage } from '@/api/git'
-import { getFileDiff } from '@/api/workspace'
 import { cn } from '@/lib/utils'
 
 export function CommitSection() {
@@ -81,18 +80,11 @@ export function CommitSection() {
     setGenerating(true)
     setError(null)
     try {
-      // Collect the diff for each staged file. getFileDiff returns the
-      // staged + unstaged diff for a path; failures for individual files
-      // are swallowed so one bad file does not abort the whole request.
-      const diffs = await Promise.all(
-        stagedEntries.map((e) => getFileDiff(e.path).catch(() => '')),
-      )
-      const diff = diffs.filter((d) => d.trim().length > 0).join('\n')
-      if (!diff.trim()) {
-        setError('No staged changes to generate a commit message from')
-        return
-      }
-      const message = await generateCommitMessage(diff)
+      // The backend obtains the staged diff itself via a single
+      // `git diff --staged` invocation, so no diff is collected here.
+      // An empty staged diff (e.g. stale entries) is reported by the
+      // backend as an error and surfaced below.
+      const message = await generateCommitMessage()
       setCommitMessage(message)
     } catch (err) {
       setError(

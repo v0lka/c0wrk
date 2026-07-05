@@ -773,18 +773,18 @@ func TestRouter_SetModel_CompositeAndBare(t *testing.T) {
 	provB := &mockProvider{name: "lmstudio"}
 	router := &Router{
 		providers: map[string]Provider{
-			"openai":    provA,
-			"lmstudio":  provB,
+			"openai":   provA,
+			"lmstudio": provB,
 		},
 		modelToProvider: map[string]string{
 			"openai/gpt-4":   "openai",
 			"lmstudio/gpt-4": "lmstudio",
 		},
-		activeProvider:      provA,
-		activeModel:         "openai/gpt-4",
-		activeBareModel:     "gpt-4",
-		activeProviderName:  "openai",
-		maxRetries:          0,
+		activeProvider:     provA,
+		activeModel:        "openai/gpt-4",
+		activeBareModel:    "gpt-4",
+		activeProviderName: "openai",
+		maxRetries:         0,
 	}
 
 	// Composite selector routes to the named provider.
@@ -849,11 +849,11 @@ func TestRouter_Call_SendsBareModelToProvider(t *testing.T) {
 		modelToProvider: map[string]string{
 			"lmstudio/gpt-4": "lmstudio",
 		},
-		activeProvider:      mock,
-		activeModel:         "lmstudio/gpt-4",
-		activeBareModel:     "gpt-4",
-		activeProviderName:  "lmstudio",
-		maxRetries:          0,
+		activeProvider:     mock,
+		activeModel:        "lmstudio/gpt-4",
+		activeBareModel:    "gpt-4",
+		activeProviderName: "lmstudio",
+		maxRetries:         0,
 	}
 
 	// Empty Model → router fills the bare model name.
@@ -875,12 +875,12 @@ func TestRouter_Call_SendsBareModelToProvider(t *testing.T) {
 // model names that themselves contain a slash.
 func TestParseCompositeModelID(t *testing.T) {
 	tests := []struct {
-		id            string
-		wantProvider  string
-		wantModel     string
-		wantOk        bool
-		wantBare      string
-		wantIsComp    bool
+		id             string
+		wantProvider   string
+		wantModel      string
+		wantOk         bool
+		wantBare       string
+		wantIsComp     bool
 		wantProviderOf string
 	}{
 		{"openai/gpt-4", "openai", "gpt-4", true, "gpt-4", true, "openai"},

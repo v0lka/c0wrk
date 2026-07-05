@@ -195,10 +195,29 @@ func (l *conductorLauncher) runBlocking(ctx context.Context, tasks []tools.Deleg
 	return results
 }
 
+// subagentCtx strips the Conductor-only context values (DelegationRegistry,
+// DelegationLauncher, PlanPublisher, ReflectionRunner) from ctx. It must be
+// used for any subagent that is NOT explicitly granted allow_redelegate:
+// resolveTaskTools already filters delegate/cancel_delegation/declare_plan/
+// reflect out of the subagent's tool descriptor list, but that alone is not
+// sufficient defense-in-depth since a subagent's tool set can also be
+// influenced by explicit task.Tools lists — stripping the context values
+// ensures those tools are inert (return "not running inside a Conductor")
+// even if a descriptor for them ever reaches the subagent.
+func subagentCtx(ctx context.Context) context.Context {
+	ctx = tools.WithDelegationRegistry(ctx, nil)
+	ctx = tools.WithDelegationLauncher(ctx, nil)
+	ctx = tools.WithPlanPublisher(ctx, nil)
+	ctx = tools.WithReflectionRunner(ctx, nil)
+	ctx = orchestration.WithDelegationRegistry(ctx, nil)
+	return ctx
+}
+
 func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tools.DelegationTask, registry *tools.DelegationRegistry) []tools.DelegationResult {
+	subCtx := subagentCtx(ctx)
 	subTasks := make([]agent.SubAgentTask, 0, len(tasks))
 	for _, t := range tasks {
-		st, err := l.buildSubAgentTask(ctx, t, registry)
+		st, err := l.buildSubAgentTask(subCtx, t, registry)
 		if err != nil {
 			registry.Complete(t.ID, "", err, nil)
 			continue
@@ -215,7 +234,7 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 		return out
 	}
 
-	subResults := agent.RunSubAgentsParallel(ctx, subTasks)
+	subResults := agent.RunSubAgentsParallel(subCtx, subTasks)
 	out := make([]tools.DelegationResult, 0, len(subResults))
 	for _, sr := range subResults {
 		var execErr error
@@ -258,13 +277,20 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 		return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusFailed, Error: err}
 	}
 
-	// Add delegate + cancel_delegation to the subagent's tool set.
+	// Add delegate + cancel_delegation to the subagent's tool set, with their
+	// real schema (resolveTaskTools always strips these for the redelegating
+	// path too, so they must be re-added here explicitly). Looking them up
+	// from the shared registry — rather than constructing bare
+	// ToolDescriptor{} literals — ensures the subagent's LLM sees the actual
+	// input schema (e.g. delegate's "tasks" array), not an empty schema that
+	// providers would otherwise fall back to a generic object type for.
 	redelegTools := make([]sdktools.ToolDescriptor, 0, len(st.TaskTools)+2)
 	redelegTools = append(redelegTools, st.TaskTools...)
-	redelegTools = append(redelegTools,
-		sdktools.ToolDescriptor{Name: "delegate", Description: "Delegate subtasks to further subagents"},
-		sdktools.ToolDescriptor{Name: "cancel_delegation", Description: "Cancel a pending async delegation"},
-	)
+	for _, name := range []string{"delegate", "cancel_delegation"} {
+		if d, ok := l.toolDescriptorByName(name); ok {
+			redelegTools = append(redelegTools, d)
+		}
+	}
 
 	registry.Start(t.ID, nil)
 	ch := agent.RunSubAgent(taskCtx, t.ID, st.Executor, st.CM, redelegTools, st.TaskDesc, st.Emitter, st.TodoUpdateFunc)
@@ -284,6 +310,10 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 }
 
 func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationTask, registry *tools.DelegationRegistry) tools.DelegationResult {
+	// Async delegations always take the non-redelegating path today (runWave
+	// dispatches all async tasks here regardless of AllowRedelegate), so the
+	// Conductor-only context values must always be stripped — see subagentCtx.
+	ctx = subagentCtx(ctx)
 	subTask, err := l.buildSubAgentTask(ctx, t, registry)
 	if err != nil {
 		registry.Complete(t.ID, "", err, nil)
@@ -357,26 +387,48 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}, nil
 }
 
+// conductorOnlyToolNames are tools that must never be handed to a regular
+// (non-redelegating) subagent: delegate/cancel_delegation would let it spawn
+// further subagents outside the allow_redelegate/depth-cap machinery, and
+// declare_plan/reflect operate on the Conductor's own blackboard/trajectory.
+var conductorOnlyToolNames = map[string]struct{}{
+	"delegate":          {},
+	"cancel_delegation": {},
+	"declare_plan":      {},
+	"reflect":           {},
+}
+
+func stripConductorOnlyTools(descs []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
+	out := make([]sdktools.ToolDescriptor, 0, len(descs))
+	for _, d := range descs {
+		if _, ok := conductorOnlyToolNames[d.Name]; ok {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
 func (l *conductorLauncher) resolveTaskTools(t tools.DelegationTask) []sdktools.ToolDescriptor {
 	all := l.allToolDescriptors()
 	if t.Tools == nil {
-		return all
+		return stripConductorOnlyTools(all)
 	}
 	switch v := t.Tools.(type) {
 	case string:
 		switch v {
 		case "all", "":
-			return all
+			return stripConductorOnlyTools(all)
 		case "read-only":
 			return filterReadOnlyTools(all)
 		default:
-			return all
+			return stripConductorOnlyTools(all)
 		}
 	default:
 		if names, ok := parseToolNames(t.Tools); ok {
-			return filterToolsByName(all, names)
+			return stripConductorOnlyTools(filterToolsByName(all, names))
 		}
-		return all
+		return stripConductorOnlyTools(all)
 	}
 }
 
@@ -385,6 +437,17 @@ func (l *conductorLauncher) allToolDescriptors() []sdktools.ToolDescriptor {
 		return l.deps.toolRegistry.List()
 	}
 	return nil
+}
+
+// toolDescriptorByName looks up a single tool's full descriptor (including
+// its InputSchema) from the shared registry.
+func (l *conductorLauncher) toolDescriptorByName(name string) (sdktools.ToolDescriptor, bool) {
+	for _, d := range l.allToolDescriptors() {
+		if d.Name == name {
+			return d, true
+		}
+	}
+	return sdktools.ToolDescriptor{}, false
 }
 
 func (l *conductorLauncher) buildTaskDescription(t tools.DelegationTask, registry *tools.DelegationRegistry) string {
@@ -804,22 +867,22 @@ func RunConductor(
 	}
 
 	cfg := orchestration.ConductorConfig{
-		LLM:               callerForConductor(deps),
-		Tools:             deps.toolExec,
-		ToolRegistry:      deps.toolRegistry,
-		TokenCounter:      deps.tokenCounter,
-		Model:             deps.model,
-		ModelRegistry:     deps.modelRegistry,
-		ContextFactory:    adaptContextFactory(deps.contextFactory),
-		SystemPrompt:      systemPromptFactory,
-		MaxSteps:          deps.maxSteps,
-		ToolResultBudget:  deps.toolResultBudget,
-		CircuitBreaker:    deps.circuitBreaker,
-		HITLHandler:       deps.hitlHandler,
-		ToolCache:         deps.toolCache,
-		PerToolTruncation: deps.perToolTrunc,
-		ReasoningEffort:   deps.reasoningEffort,
-		PreWarningPercent: deps.preWarningPct,
+		LLM:                 callerForConductor(deps),
+		Tools:               deps.toolExec,
+		ToolRegistry:        deps.toolRegistry,
+		TokenCounter:        deps.tokenCounter,
+		Model:               deps.model,
+		ModelRegistry:       deps.modelRegistry,
+		ContextFactory:      adaptContextFactory(deps.contextFactory),
+		SystemPrompt:        systemPromptFactory,
+		MaxSteps:            deps.maxSteps,
+		ToolResultBudget:    deps.toolResultBudget,
+		CircuitBreaker:      deps.circuitBreaker,
+		HITLHandler:         deps.hitlHandler,
+		ToolCache:           deps.toolCache,
+		PerToolTruncation:   deps.perToolTrunc,
+		ReasoningEffort:     deps.reasoningEffort,
+		PreWarningPercent:   deps.preWarningPct,
 		ConversationHistory: deps.conversationHistory,
 	}
 

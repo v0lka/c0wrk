@@ -362,10 +362,14 @@ export async function getDiffStats(): Promise<Record<string, DiffStat>> {
 
 // --- AI commit message generation ---
 
-export async function generateCommitMessage(diff: string): Promise<string> {
+// generateCommitMessage asks the backend to produce a Conventional
+// Commits-formatted message from the active project's staged changes.
+// The backend runs `git diff --staged` itself, so no diff needs to be
+// supplied by the caller.
+export async function generateCommitMessage(): Promise<string> {
   try {
     const app = getApp()
-    const result = await app.GenerateCommitMessage(diff)
+    const result = await app.GenerateCommitMessage()
     if (typeof result !== 'string') {
       throw new Error('generateCommitMessage: backend returned non-string data')
     }

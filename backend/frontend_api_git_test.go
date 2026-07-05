@@ -1176,45 +1176,82 @@ func TestCreateBranch_AlreadyExists(t *testing.T) {
 
 func TestGenerateCommitMessage_NoBuilder(t *testing.T) {
 	f := &FrontendAPI{}
-	if _, err := f.GenerateCommitMessage("diff"); err == nil {
+	if _, err := f.GenerateCommitMessage(); err == nil {
 		t.Fatal("expected error when application not initialized")
 	}
 }
 
-func TestGenerateCommitMessage_EmptyDiff(t *testing.T) {
+func TestGenerateCommitMessage_NoProject(t *testing.T) {
 	f := &FrontendAPI{builderOverride: &mockBuilder{}}
-	if _, err := f.GenerateCommitMessage("   "); err == nil {
-		t.Fatal("expected error for empty diff")
+	if _, err := f.GenerateCommitMessage(); err == nil {
+		t.Fatal("expected error when no active project")
 	}
+}
+
+func TestGenerateCommitMessage_NoStagedChanges(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		f.builderOverride = &mockBuilder{}
+		_, err := f.GenerateCommitMessage()
+		if err == nil {
+			t.Fatal("expected error when there are no staged changes")
+		}
+		if !strings.Contains(err.Error(), "no staged changes") {
+			t.Errorf("expected 'no staged changes' error, got: %v", err)
+		}
+	})
 }
 
 func TestGenerateCommitMessage_Delegates(t *testing.T) {
-	mock := &mockBuilder{
-		generateCommitMsgRes: "feat: add new thing",
-	}
-	f := &FrontendAPI{builderOverride: mock}
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// Stage a change so `git diff --staged` produces a non-empty diff.
+		if err := os.WriteFile(filepath.Join(dir, "newfile.txt"), []byte("hello\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		runGit(t, dir, "add", "newfile.txt")
 
-	out, err := f.GenerateCommitMessage("diff --staged ...")
-	if err != nil {
-		t.Fatalf("GenerateCommitMessage: %v", err)
-	}
-	if out != "feat: add new thing" {
-		t.Errorf("got %q, want %q", out, "feat: add new thing")
-	}
-	if mock.generateCommitMsgCalls != 1 {
-		t.Errorf("expected 1 builder call, got %d", mock.generateCommitMsgCalls)
-	}
+		mock := &mockBuilder{
+			generateCommitMsgRes: "feat: add new thing",
+		}
+		f.builderOverride = mock
+
+		out, err := f.GenerateCommitMessage()
+		if err != nil {
+			t.Fatalf("GenerateCommitMessage: %v", err)
+		}
+		if out != "feat: add new thing" {
+			t.Errorf("got %q, want %q", out, "feat: add new thing")
+		}
+		if mock.generateCommitMsgCalls != 1 {
+			t.Errorf("expected 1 builder call, got %d", mock.generateCommitMsgCalls)
+		}
+		// The diff passed to the builder must be the staged diff and
+		// contain the new file's content.
+		if !strings.Contains(mock.generateCommitMsgDiff, "newfile.txt") {
+			t.Errorf("expected staged diff to mention newfile.txt, got: %q", mock.generateCommitMsgDiff)
+		}
+		if !strings.Contains(mock.generateCommitMsgDiff, "+hello") {
+			t.Errorf("expected staged diff to contain the added line, got: %q", mock.generateCommitMsgDiff)
+		}
+	})
 }
 
 func TestGenerateCommitMessage_PropagatesError(t *testing.T) {
-	mock := &mockBuilder{
-		generateCommitMsgErr: errors.New("llm router not available"),
-	}
-	f := &FrontendAPI{builderOverride: mock}
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// Stage a change so generation reaches the builder.
+		if err := os.WriteFile(filepath.Join(dir, "newfile.txt"), []byte("hello\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		runGit(t, dir, "add", "newfile.txt")
 
-	if _, err := f.GenerateCommitMessage("diff"); err == nil {
-		t.Fatal("expected error to propagate")
-	}
+		mock := &mockBuilder{
+			generateCommitMsgErr: errors.New("llm router not available"),
+		}
+		f.builderOverride = mock
+
+		if _, err := f.GenerateCommitMessage(); err == nil {
+			t.Fatal("expected error to propagate")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

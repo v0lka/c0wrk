@@ -59,7 +59,6 @@ func executorFinishResponse(answer string) *llm.ChatResponse {
 	}
 }
 
-
 // TestConversationHistory_PlanningFailureRecorded verifies that a hard
 // planning failure records the user message plus a failure note so the
 // rejected request stays visible to future routing and planning.
@@ -92,7 +91,6 @@ func TestConversationHistory_PlanningFailureRecorded(t *testing.T) {
 		t.Errorf("expected failure note in assistant message, got %+v", history[1])
 	}
 }
-
 
 // TestConversationHistory_CancellationRecorded verifies that a cancelled
 // request records the user message plus the cancellation note.
@@ -163,8 +161,6 @@ func TestConversationHistory_ResumeAppendsAssistant(t *testing.T) {
 		t.Errorf("expected resumed output in history, got %+v", history[1])
 	}
 }
-
-
 
 // TestConversationHistory_RetryAfterFailureNotDuplicated verifies that when a
 // failed attempt is retried with the same message (the session manager's

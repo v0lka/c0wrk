@@ -77,7 +77,6 @@ type SessionStore interface {
 	Close() error
 }
 
-
 // SQLiteSessionStore implements SessionStore using SQLite.
 type SQLiteSessionStore struct {
 	db     *sql.DB
@@ -405,10 +404,6 @@ func (s *SQLiteSessionStore) UpdateSessionActivity(ctx context.Context, id strin
 	}
 	return nil
 }
-
-
-
-
 
 // SaveMessage saves a chat message.
 func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) error {
