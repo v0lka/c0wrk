@@ -42,17 +42,17 @@ type CreateDirectoryInput struct {
 	Path string `json:"path"`
 }
 
-// Judge uses workspace check for write operations.
+// Judge uses session roots check for write operations.
 func (t *CreateDirectoryTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
 	var params CreateDirectoryInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return false, ""
 	}
 	params.Path = resolvePath(ctx, params.Path)
-	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+	if err := validateResolvedPath(params.Path); err != nil {
 		return false, err.Error()
 	}
-	return judgeWriteInWorkspace(ctx, params.Path)
+	return judgeWriteInSessionRoots(ctx, params.Path)
 }
 
 // Execute creates a directory and all parent directories.
@@ -67,7 +67,7 @@ func (t *CreateDirectoryTool) Execute(ctx context.Context, input json.RawMessage
 	}
 
 	params.Path = resolvePath(ctx, params.Path)
-	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+	if err := validateResolvedPath(params.Path); err != nil {
 		return tools.ToolResult{Content: err.Error(), IsError: true}, nil //nolint:nilerr // error embedded in ToolResult by design
 	}
 

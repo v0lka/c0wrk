@@ -1204,7 +1204,7 @@ func (e *Executor) checkFruitlessResult(
 		e.emitter.ExecutorDiagnostic(state.stepNum, "fruitless_nudge", map[string]any{"consecutive": e.consecutiveFruitlessCount})
 		e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, false)
 		nudgeStep := Step{
-			Observation: fmt.Sprintf(executorFruitlessNudge, e.consecutiveFruitlessCount),
+			UserNudge: fmt.Sprintf(executorFruitlessNudge, e.consecutiveFruitlessCount),
 		}
 		state.allSteps = append(state.allSteps, nudgeStep)
 		cw.AddStep(nudgeStep)
@@ -1296,7 +1296,7 @@ func (e *Executor) checkSameToolRepetition(
 			e.emitter.ExecutorDiagnostic(state.stepNum, "same_tool_repeat_nudge", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
 			e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, false)
 			nudgeStep := Step{
-				Observation: fmt.Sprintf(executorSameToolRepeatNudge, action.Name, e.sameToolConsecutiveCount),
+				UserNudge: fmt.Sprintf(executorSameToolRepeatNudge, action.Name, e.sameToolConsecutiveCount),
 			}
 			state.allSteps = append(state.allSteps, nudgeStep)
 			cw.AddStep(nudgeStep)
@@ -1391,9 +1391,7 @@ func (e *Executor) handleWrapUpNudge(state *runState, cw ContextManager) {
 		state.wrapUpNudgeAttempted = true
 		wrapUpMsg := fmt.Sprintf(executorWrapUpNudge, state.effectiveMaxSteps-state.stepNum)
 		wrapUpStep := Step{
-			Thought:     "",
-			Observation: wrapUpMsg,
-			TokensUsed:  0,
+			UserNudge: wrapUpMsg,
 		}
 		state.allSteps = append(state.allSteps, wrapUpStep)
 		cw.AddStep(wrapUpStep)

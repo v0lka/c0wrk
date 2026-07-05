@@ -1,10 +1,10 @@
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
-import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
-import { FileTreePanel } from './FileTreePanel'
-import { VectorStorePanel } from './VectorStorePanel'
-import { GitPanel } from '@/components/GitPanel'
-import { useProjectStore } from '@/stores/projectStore'
-import { FolderTree, GitBranch, Database } from 'lucide-react'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
+import { FileTreePanel } from "./FileTreePanel";
+import { VectorStorePanel } from "./VectorStorePanel";
+import { GitPanel } from "@/components/GitPanel";
+import { useProjectStore } from "@/stores/projectStore";
+import { FolderTree, GitBranch, Search } from "lucide-react";
 
 export function WorkspacePanel() {
   const isNoProject = useProjectStore((s) => {
@@ -13,10 +13,10 @@ export function WorkspacePanel() {
     // The tabs will show as enabled during loading; if the active project
     // turns out to be No Project, they'll disable on the next render —
     // which is a less noticeable transition than enabled → disabled.
-    if (s.projects === null) return false
-    const active = s.projects.find((p) => p.id === s.activeProjectId)
-    return active?.is_no_project === true
-  })
+    if (s.projects === null) return false;
+    const active = s.projects.find((p) => p.id === s.activeProjectId);
+    return active?.is_no_project === true;
+  });
 
   // In CHAT (No Project) mode, hide the tab strip entirely — only show the file
   // explorer with file-name search. Git and Semantics are unavailable anyway.
@@ -27,7 +27,7 @@ export function WorkspacePanel() {
           <FileTreePanel />
         </div>
       </TooltipProvider>
-    )
+    );
   }
 
   return (
@@ -36,7 +36,9 @@ export function WorkspacePanel() {
         <TabsList className="mx-1 h-8 shrink-0" variant="line">
           <Tooltip>
             <TooltipTrigger asChild>
-              <TabsTrigger value="explorer" className="px-2"><FolderTree className="size-4" /></TabsTrigger>
+              <TabsTrigger value="explorer" className="px-2">
+                <FolderTree className="size-4" />
+              </TabsTrigger>
             </TooltipTrigger>
             <TooltipContent side="bottom">Explorer</TooltipContent>
           </Tooltip>
@@ -51,10 +53,10 @@ export function WorkspacePanel() {
           <Tooltip>
             <TooltipTrigger asChild>
               <TabsTrigger value="semantics" className="px-2">
-                <Database className="size-4" />
+                <Search className="size-4" />
               </TabsTrigger>
             </TooltipTrigger>
-            <TooltipContent side="bottom">Semantics</TooltipContent>
+            <TooltipContent side="bottom">Search</TooltipContent>
           </Tooltip>
         </TabsList>
 
@@ -71,5 +73,5 @@ export function WorkspacePanel() {
         </TabsContent>
       </Tabs>
     </TooltipProvider>
-  )
+  );
 }

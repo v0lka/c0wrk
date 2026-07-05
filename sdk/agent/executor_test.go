@@ -1282,13 +1282,13 @@ func TestExecutor_WrapUpNudge(t *testing.T) {
 	// Find the wrap-up nudge step
 	foundNudge := false
 	for _, s := range result.Steps {
-		if strings.Contains(s.Observation, "running low on tool call iterations") {
+		if strings.Contains(s.UserNudge, "running low on tool call iterations") {
 			foundNudge = true
 			break
 		}
 	}
 	if !foundNudge {
-		t.Error("expected wrap-up nudge observation containing 'running low on tool call iterations'")
+		t.Error("expected wrap-up nudge user nudge containing 'running low on tool call iterations'")
 	}
 }
 
@@ -1319,7 +1319,7 @@ func TestExecutor_WrapUpNudge_OnlyOnce(t *testing.T) {
 	// Count nudge occurrences
 	nudgeCount := 0
 	for _, s := range result.Steps {
-		if strings.Contains(s.Observation, "running low on tool call iterations") {
+		if strings.Contains(s.UserNudge, "running low on tool call iterations") {
 			nudgeCount++
 		}
 	}
@@ -1606,7 +1606,7 @@ func TestExecutor_Run_FruitlessDetector_Nudge(t *testing.T) {
 	// Verify the nudge step appears
 	foundNudge := false
 	for _, s := range result.Steps {
-		if strings.Contains(s.Observation, "tool calls returned empty or minimal results") {
+		if strings.Contains(s.UserNudge, "tool calls returned empty or minimal results") {
 			foundNudge = true
 			break
 		}
@@ -1851,7 +1851,7 @@ func TestExecutor_Run_SameToolRepeat_Nudge(t *testing.T) {
 	// Verify the nudge step appears
 	foundNudge := false
 	for _, s := range result.Steps {
-		if strings.Contains(s.Observation, "consistently similar results") {
+		if strings.Contains(s.UserNudge, "consistently similar results") {
 			foundNudge = true
 			break
 		}

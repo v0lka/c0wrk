@@ -4,6 +4,8 @@
 
 The `delegate` tool lets the Conductor launch one or more subagents to execute units of work in isolated ReAct loops, with DAG dependencies between them and a choice of blocking or async execution. It replaces the prior system-driven DAG execution (`executePlanWithSteps`) with an agent-driven invocation.
 
+Delegation is an **execution** mechanism, not a planning one. It has its own UI progress tracking via `SubAgentLaunch`/`SubAgentComplete` events emitted by the SDK's `RunSubAgent`. The Conductor should NOT call `declare_plan` to display or mirror delegated tasks — `declare_plan` is for user roadmaps and approval gates only.
+
 ## Key Files
 
 - `core/tools/delegate.go` — `delegate` tool implementation
@@ -93,7 +95,8 @@ delegate.Execute(ctx, input)
 │     ├─ For each completed subagent:
 │     │   ├─ Store result on the blackboard (SetStepResult)
 │     │   ├─ Update the Registry: status "completed" or "failed"
-│     │   └─ Emit OnStepCompleted (success/failure, duration)
+│     │   └─ SubAgentComplete emitted by RunSubAgent (SDK) — the sole
+│     │      progress signal for delegations; no PlanStepStart/Complete
 │     └─ Tasks with depends_on that are now satisfied remain "pending"
 │        until a later delegate call or read_step_output triggers them
 │

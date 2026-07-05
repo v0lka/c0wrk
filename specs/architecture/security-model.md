@@ -47,18 +47,47 @@ Source: `core/tools/registry.go` `internalTools` map
 
 Rationale: these tools are agent-infrastructure, not user-facing operations. Blocking them would break the execution loop.
 
+## Session Roots: Workspace and Temp Directory
+
+The session has two equal-peer root directories:
+
+1. **Workspace** (`WorkspacePathFrom(ctx)`) — the project workspace directory. In CODE mode this is the project path; in CHAT (No Project) mode this is the per-session isolated workspace.
+2. **Session temp directory** (`TempDirFrom(ctx)`) — a per-session directory under `~/.c0wrk/projects/<projectID>/<sessionID>/temp/` used for scratch files, intermediate outputs, and plan review artifacts.
+
+Both roots are treated as **equal peers**: any operation (read or write) permitted inside the workspace is permitted inside the temp directory and vice versa. The agent can do anything in the temp directory that it can do in the workspace. There are no second-class roots.
+
+The system temp directory (`os.TempDir()`) is NOT a session root. It is allowed as a `bash_exec` working directory (see `validateWorkDir` in `sdk/tools/builtins/bash.go`) but does not participate in auto-approval or session-root containment checks.
+
+## Operations Outside Session Roots
+
+File operations (both read and write) targeting paths **outside** the session roots are allowed, but **only after explicit user confirmation** — regardless of the tool's resolved policy:
+
+- `always_allow` tools (e.g., `read_file`, `list_directory`): the tool's `ToolJudger.Judge()` returns `allow=false` with a reason, which the registry routes to `confirmAndExecute`.
+- `user_confirm` tools (e.g., `write_file`, `edit_file`): confirmation is already required by policy; the Judge reason is surfaced in the confirmation dialog.
+- `always_deny` tools: blocked immediately, never reach confirmation.
+
+This means reading or writing arbitrary files on the filesystem (e.g., `/etc/hosts`, `~/Documents/notes.txt`) is possible, but the user always sees a confirmation prompt first. The only exception is relative paths that escape the workspace via `..` components — these are rejected by `resolvePath` as invalid input (relative paths cannot escape the workspace).
+
+## PolicyAlwaysAllow Judge Gate
+
+For tools with `PolicyAlwaysAllow` that implement the `ToolJudger` interface, the tool-specific Judge runs **before** workspace/temp auto-approval. This ordering is a security invariant: safety checks (bash blacklist, SSRF protection, path containment) must NEVER be bypassed by path-locality heuristics.
+
+Without this ordering, a command like `rm -rf /workspace/.git` would have all paths inside the workspace (triggering auto-approval) but still match the bash_exec blacklist — auto-approval would execute the blacklisted command without confirmation. Running the Judge first ensures flagged calls escalate to confirmation regardless of where the paths point.
+
+Only calls where the Judge returns `allow=false` **with non-empty reasoning** are escalated. `allow=false` with empty reasoning (e.g., bash_exec without a blacklist match) is treated as "no concern to report" and proceeds to auto-approval / direct execution.
+
 ## Workspace Auto-Approval
 
-Before applying the resolved policy, the registry checks if ALL file paths in the tool input fall within either:
+After the PolicyAlwaysAllow Judge gate (if applicable), the registry checks if ALL file paths in the tool input fall within either session root (workspace or temp directory):
 
 1. The session's temporary directory (`TempDirFrom(ctx)`)
-2. The current workspace directory
+2. The current workspace directory (`WorkspacePathFrom(ctx)`)
 
 If yes AND policy is NOT `always_deny`: tool executes without confirmation.
 
-Rationale: operations within the user's project workspace are the normal working mode. Requiring confirmation for every file read/write within the project would be unusable.
+Rationale: operations within the session roots are the normal working mode. Requiring confirmation for every file read/write within the project or temp directory would be unusable.
 
-Important: `always_deny` is NEVER bypassed by auto-approval.
+Important: `always_deny` is NEVER bypassed by auto-approval. Judge-flagged `always_allow` calls (with non-empty reasoning) are escalated to confirmation before auto-approval is considered.
 
 ## Judge System
 
@@ -66,6 +95,7 @@ The `ToolJudge` (`sdk/tools/judge.go`) provides LLM-based safety evaluation:
 
 - NOT automatic gating — it is invoked on-demand via the frontend "Ask agent" button
 - When a tool has `PolicyAlwaysAllow` but implements the `ToolJudger` interface, the tool-specific judge may flag suspicious calls and escalate to user confirmation
+- File tools use `judgeReadInSessionRoots` / `judgeWriteInSessionRoots` (in `sdk/tools/builtins/file_judge.go`) to check whether the target path is inside the session workspace or temp directory. Operations outside both roots return `allow=false` with a reason, escalating to user confirmation.
 - The judge provides reasoning that is displayed to the user in the confirmation dialog
 
 ## Confirmation Flow
@@ -151,7 +181,7 @@ If the input contains suspicious (unexpandable) shell expressions, a warning is 
 
 ## Bash Blacklist
 
-The `bash_exec` tool has a regex-based blacklist (`config.yaml Security.BashBlacklist`) that blocks dangerous command patterns (e.g., `rm -rf /`, `chmod 777`, `curl | sh`). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's policy resolves to `AlwaysAllow`, `BashExecTool.Judge()` evaluates the command against compiled blacklist regexes. A match escalates to user confirmation (same flow as any judge-flagged call).
+The `bash_exec` tool has a regex-based blacklist (`config.yaml Security.BashBlacklist`) that blocks dangerous command patterns (e.g., `rm -rf /`, `chmod 777`, `curl | sh`). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's policy resolves to `AlwaysAllow`, `BashExecTool.Judge()` evaluates the command against compiled blacklist regexes. A match returns `allow=false` with a non-empty reasoning identifying the matched pattern, which escalates to user confirmation via the PolicyAlwaysAllow Judge Gate (above). The gate runs **before** workspace/temp auto-approval, so a blacklisted command with paths inside the workspace (e.g., `rm -rf /workspace/.git`) is still routed to confirmation.
 
 ## Indirect Prompt Injection Defense
 
@@ -207,7 +237,11 @@ Source: `sdk/security/wrap.go` (wrapping), `core/prompts/injection_defense.md` (
 - Symlink detection ALWAYS runs for all non-internal tools, before policy resolution
 - When symlinks are detected, the call ALWAYS forces user confirmation (unless policy is `always_deny`)
 - `always_deny` is NEVER bypassed (not by auto-approval, not by judge, not by symlink check, not by any mechanism)
-- Workspace auto-approval only applies when ALL paths in the input are within workspace/temp
+- For `PolicyAlwaysAllow` tools implementing `ToolJudger`, the Judge runs BEFORE workspace/temp auto-approval — safety checks (blacklist, SSRF, path containment) NEVER bypassed by path-locality
+- The session workspace and session temp directory are equal peers — any operation permitted in one is permitted in the other
+- Operations outside session roots (workspace + temp) ALWAYS require user confirmation, regardless of the tool's resolved policy (except `always_deny`)
+- Relative paths that escape the workspace via `..` components are rejected by `resolvePath` — they cannot target paths outside the workspace
+- Auto-approval only applies when ALL paths in the input are within session roots (workspace or temp) AND the PolicyAlwaysAllow Judge gate (if any) did not flag the call
 - Confirmation blocks the executor goroutine until the user responds (no timeout)
 - A denied tool returns an error ToolResult to the LLM (agent can adapt its strategy)
 - `ConfirmDenyAndStop` cancels the entire context (unrecoverable for the current task)

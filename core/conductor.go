@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 	"unicode/utf8"
 
 	"github.com/v0lka/c0wrk/core/tools"
@@ -205,7 +204,6 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 			continue
 		}
 		registry.Start(t.ID, nil)
-		emitPlanStepStart(l.deps.emitter, l.bb, t.ID)
 		subTasks = append(subTasks, st)
 	}
 
@@ -226,7 +224,6 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 		}
 		registry.Complete(sr.StepID, sr.Output, execErr, sr.Steps)
 		l.bb.SetStepResult(sr.StepID, sr.Output, execErr, sr.Steps)
-		emitPlanStepComplete(l.deps.emitter, sr.StepID, execErr == nil, 0, execErr)
 		status := tools.DelegationStatusCompleted
 		if execErr != nil {
 			status = tools.DelegationStatusFailed
@@ -270,7 +267,6 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	)
 
 	registry.Start(t.ID, nil)
-	emitPlanStepStart(l.deps.emitter, l.bb, t.ID)
 	ch := agent.RunSubAgent(taskCtx, t.ID, st.Executor, st.CM, redelegTools, st.TaskDesc, st.Emitter, st.TodoUpdateFunc)
 	sr := <-ch
 
@@ -280,7 +276,6 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	}
 	registry.Complete(t.ID, sr.Output, execErr, sr.Steps)
 	l.bb.SetStepResult(t.ID, sr.Output, execErr, sr.Steps)
-	emitPlanStepComplete(l.deps.emitter, t.ID, execErr == nil, 0, execErr)
 	status := tools.DelegationStatusCompleted
 	if execErr != nil {
 		status = tools.DelegationStatusFailed
@@ -297,7 +292,6 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 
 	asyncCtx, cancel := context.WithCancel(ctx)
 	registry.Start(t.ID, cancel)
-	emitPlanStepStart(l.deps.emitter, l.bb, t.ID)
 
 	go func() {
 		defer cancel()
@@ -310,10 +304,8 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 			}
 			registry.Complete(t.ID, sr.Output, execErr, sr.Steps)
 			l.bb.SetStepResult(t.ID, sr.Output, execErr, sr.Steps)
-			emitPlanStepComplete(l.deps.emitter, t.ID, execErr == nil, 0, execErr)
 		case <-asyncCtx.Done():
 			registry.Complete(t.ID, "", asyncCtx.Err(), nil)
-			emitPlanStepComplete(l.deps.emitter, t.ID, false, 0, asyncCtx.Err())
 		}
 	}()
 
@@ -717,6 +709,14 @@ func compactionStrategyForDomain(domain string, complexity int) string {
 // conductorGuidanceForComplexity returns a system-prompt section that guides
 // the Conductor on when to delegate, declare_plan, or handle inline, based on
 // the routing complexity.
+//
+// declare_plan and delegate serve DIFFERENT purposes:
+//   - declare_plan publishes a roadmap to the USER and optionally blocks for
+//     approval. Use it ONLY when user sign-off is needed before a large/risky
+//     change, or when an active skill prescribes an approval gate.
+//   - delegate launches subagents to execute work. It has its own UI progress
+//     tracking (subagent blocks in chat). delegate does NOT require a plan —
+//     calling declare_plan to "display" delegated tasks is an error.
 func conductorGuidanceForComplexity(complexity int) string {
 	switch {
 	case complexity <= 1:
@@ -726,9 +726,9 @@ func conductorGuidanceForComplexity(complexity int) string {
 	case complexity <= 3:
 		return "## Conductor Guidance\nYou are the Conductor: you own this task end-to-end. For tasks involving multiple actions or some exploration, consider calling delegate to break coherent units of work into isolated subagents. Call finish when the task is complete.\n"
 	case complexity <= 4:
-		return "## Conductor Guidance\nYou are the Conductor: you own this task end-to-end. This is a complex task — call delegate to break it into subtasks, and consider calling declare_plan to surface a roadmap before implementing. When an active skill prescribes an approval gate, call declare_plan with mode=await_approval before implementing. Call finish when the task is complete.\n"
+		return "## Conductor Guidance\nYou are the Conductor: you own this task end-to-end. This is a complex task — call delegate to break it into subtasks. Each delegation has its own progress tracking in the UI; do NOT call declare_plan to display delegated tasks. Call declare_plan with mode=await_approval ONLY when an active skill prescribes an approval gate, or when the change is large enough that user sign-off is needed before implementing. Call finish when the task is complete.\n"
 	default:
-		return "## Conductor Guidance\nYou are the Conductor: you own this task end-to-end. This is a large task — call declare_plan with mode=await_approval to present a roadmap for user approval before implementing, then call delegate to break the approved plan into subtasks. When the trajectory looks wrong, call reflect. Call finish when the task is complete.\n"
+		return "## Conductor Guidance\nYou are the Conductor: you own this task end-to-end. This is a large task that warrants user sign-off — call declare_plan with mode=await_approval to present a roadmap for user approval. After approval, call delegate to break the work into subtasks. Do NOT call declare_plan just to mirror delegated tasks — delegate has its own UI progress tracking. When the trajectory looks wrong, call reflect. Call finish when the task is complete.\n"
 	}
 }
 
@@ -1025,8 +1025,8 @@ func lookupStepDesc(bb orchestration.Blackboard, stepID string) (desc, summary s
 }
 
 // subagentTodoCallback returns a StepTodoUpdateFunc for subagent execution.
-// It only emits StepTodoUpdate — PlanStepStart/Complete are emitted by the
-// launcher when the subagent starts/finishes.
+// It only emits StepTodoUpdate — delegation progress is tracked via
+// SubAgentLaunch/SubAgentComplete events from the SDK, not plan-step events.
 func subagentTodoCallback(emitter Emitter) agent.StepTodoUpdateFunc {
 	if emitter == nil {
 		return nil
@@ -1034,38 +1034,4 @@ func subagentTodoCallback(emitter Emitter) agent.StepTodoUpdateFunc {
 	return func(stepID string, items []agent.TodoItem) {
 		emitter.StepTodoUpdate(stepID, items)
 	}
-}
-
-// emitPlanStepStart looks up the step in the blackboard's plan and emits
-// PlanStepStart with the step's description and summary.
-func emitPlanStepStart(emitter Emitter, bb orchestration.Blackboard, stepID string) {
-	if emitter == nil {
-		return
-	}
-	var desc, summary string
-	if plan := bb.GetPlan(); plan != nil {
-		for _, step := range plan.Steps {
-			if step.ID == stepID {
-				desc = step.Description
-				summary = step.Summary
-				break
-			}
-		}
-	}
-	emitter.PlanStepStart(stepID, desc, summary)
-}
-
-// emitPlanStepComplete emits PlanStepComplete, nil-safe.
-func emitPlanStepComplete(emitter Emitter, stepID string, success bool, duration time.Duration, err error) {
-	if emitter == nil {
-		return
-	}
-	emitter.PlanStepComplete(stepID, success, duration, errMsgOrEmpty(err))
-}
-
-func errMsgOrEmpty(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }

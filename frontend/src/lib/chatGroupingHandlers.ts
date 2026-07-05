@@ -97,20 +97,8 @@ export function handleSubAgentLaunch(
 ) {
   const stepId = (meta?.step_id as string) || ''
   const description = (meta?.description as string) || ''
-  const existing = openSteps.get(stepId)
-  if (existing) {
-    // Convert the plan_step into a subagent block in place.
-    // The same object reference stays in the items tree and openSteps,
-    // so children keep nesting under it.
-    const converted = existing as unknown as SubAgentItem
-    converted.kind = 'subagent'
-    if (description) {
-      converted.title = description
-      converted.description = description
-    }
-    return
-  }
-  // No prior plan_step_start — create a fresh top-level subagent block.
+  // Delegated steps do not receive plan_step_start, so there is never a
+  // pre-existing plan_step to convert — always create a fresh subagent block.
   const subItem: SubAgentItem = {
     kind: 'subagent', id: msg.id, stepId,
     title: description || stepId,

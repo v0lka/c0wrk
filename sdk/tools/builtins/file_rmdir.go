@@ -47,17 +47,17 @@ type DeleteDirectoryInput struct {
 	Recursive bool   `json:"recursive"`
 }
 
-// Judge uses workspace check for write operations.
+// Judge uses session roots check for write operations.
 func (t *DeleteDirectoryTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
 	var params DeleteDirectoryInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return false, ""
 	}
 	params.Path = resolvePath(ctx, params.Path)
-	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+	if err := validateResolvedPath(params.Path); err != nil {
 		return false, err.Error()
 	}
-	return judgeWriteInWorkspace(ctx, params.Path)
+	return judgeWriteInSessionRoots(ctx, params.Path)
 }
 
 // Execute deletes a directory. If recursive is true, it removes all contents.
@@ -72,7 +72,7 @@ func (t *DeleteDirectoryTool) Execute(ctx context.Context, input json.RawMessage
 	}
 
 	params.Path = resolvePath(ctx, params.Path)
-	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+	if err := validateResolvedPath(params.Path); err != nil {
 		return tools.ToolResult{Content: err.Error(), IsError: true}, nil //nolint:nilerr // error embedded in ToolResult by design
 	}
 

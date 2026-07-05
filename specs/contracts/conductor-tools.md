@@ -66,7 +66,8 @@ delegate.Execute(ctx, input)
   ├─ For each result:
   │    ├─ Store on blackboard (SetStepResult)
   │    ├─ Update Registry (status, output, error, steps)
-  │    └─ Emit OnStepCompleted via scoped emitter
+  │    └─ SubAgentComplete emitted by RunSubAgent (SDK) — sole progress signal;
+  │       no PlanStepStart/Complete emitted for delegations
   │
   └─ Return tool result:
        ├─ blocking tasks: aggregated outputs

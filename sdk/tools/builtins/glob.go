@@ -55,10 +55,10 @@ type GlobInput struct {
 	Type    string `json:"type"`
 }
 
-// Judge checks whether the glob targets a path within the workspace.
-// Paths outside workspace require user confirmation.
+// Judge checks whether the glob targets a path inside the session roots.
+// Paths outside workspace/temp require user confirmation.
 func (t *GlobTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
-	return judgeReadInWorkspace(ctx, input)
+	return judgeReadInSessionRoots(ctx, input)
 }
 
 // Execute runs the glob pattern search and returns matching file paths.
@@ -79,7 +79,7 @@ func (t *GlobTool) Execute(ctx context.Context, input json.RawMessage) (tools.To
 		}
 	} else {
 		params.Path = resolvePath(ctx, params.Path)
-		if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+		if err := validateResolvedPath(params.Path); err != nil {
 			return tools.ToolResult{Content: err.Error(), IsError: true}, nil //nolint:nilerr // error embedded in ToolResult by design
 		}
 	}

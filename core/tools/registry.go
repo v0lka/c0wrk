@@ -229,10 +229,13 @@ func (r *ToolRegistry) SetDefaultPolicy(p sdktools.ToolPolicy) {
 	r.hasDefaultPolicy = true
 }
 
-// SetAutoApproveWorkspaceWrites enables or disables workspace-based auto-approval
-// for file write tools with PolicyUserConfirm. When enabled, write_file, edit_file,
-// delete_file, delete_directory, and create_directory auto-execute without confirmation
-// when all paths in their input are within the session workspace.
+// SetAutoApproveWorkspaceWrites enables or disables session-root-based
+// auto-approval for file write tools with PolicyUserConfirm. When enabled,
+// write_file, edit_file, delete_file, delete_directory, and create_directory
+// auto-execute without confirmation when all paths in their input are within
+// the session workspace or the session temp directory (both treated as equal
+// peers). Symlink traversals out of session roots are still forced to
+// confirmation regardless.
 func (r *ToolRegistry) SetAutoApproveWorkspaceWrites(enabled bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -379,14 +382,35 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 
 	policy := r.resolvePolicy(name, tool)
 
+	// PolicyAlwaysAllow safety filter: run the tool-specific Judge BEFORE
+	// workspace/temp auto-approval. A command like "rm -rf /workspace/.git"
+	// has all paths inside the workspace but must still hit the bash_exec
+	// blacklist; a web_fetch to a private IP must still hit SSRF protection.
+	// Path-locality must NEVER bypass safety checks implemented via ToolJudger.
+	// Only tools that implement ToolJudger are affected; tools without one
+	// fall through to auto-approval / direct execution unchanged.
+	if policy == sdktools.PolicyAlwaysAllow {
+		if judger, ok := tool.(sdktools.ToolJudger); ok {
+			allow, reasoning := judger.Judge(ctx, input)
+			if !allow && reasoning != "" {
+				r.log().Debug("sdktools.PolicyAlwaysAllow: tool-specific judge flagged call", "tool", name, "reasoning", reasoning)
+				return r.confirmAndExecute(ctx, tool, name, input, reasoning)
+			}
+		}
+	}
+
 	// Workspace/temp auto-approval: if all paths in the input are within the
-	// session workspace or temp directory, execute without confirmation.
+	// session workspace or the session temp directory (equal peers), execute
+	// without confirmation.
 	// Auto-approval ONLY applies to sdktools.PolicyAlwaysAllow (or no explicit policy
 	// when the tool's own default permits it). sdktools.PolicyUserConfirm and
 	// sdktools.PolicyAlwaysDeny are NEVER weakened by path-locality heuristics — a
 	// user-controlled `working_directory` argument must not bypass an explicit
 	// confirm policy (e.g., bash_exec running ./scripts/x.sh inside the
-	// workspace).
+	// workspace). PolicyUserConfirm auto-approval for write tools is handled
+	// below via the tool's ToolJudger + autoApproveWorkspaceWrites flag.
+	// Judge-flagged calls (above) have already escalated to confirmation and
+	// never reach this point.
 	if policy == sdktools.PolicyAlwaysAllow {
 		if tempDir := sdktools.TempDirFrom(ctx); tempDir != "" && sdktools.AllPathsInDir(input, tempDir) {
 			r.log().Debug("auto-approved: all paths within session temp directory", "tool", name)
@@ -400,14 +424,9 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 
 	switch policy {
 	case sdktools.PolicyAlwaysAllow:
-		// Safety filter: if the tool implements ToolJudger and flags the call, escalate to user confirmation.
-		if judger, ok := tool.(sdktools.ToolJudger); ok {
-			allow, reasoning := judger.Judge(ctx, input)
-			if !allow && reasoning != "" {
-				r.log().Debug("sdktools.PolicyAlwaysAllow: tool-specific judge flagged call", "tool", name, "reasoning", reasoning)
-				return r.confirmAndExecute(ctx, tool, name, input, reasoning)
-			}
-		}
+		// Judge-escalated calls were handled above; non-Judge or Judge-cleared
+		// calls execute directly. Workspace/temp auto-approval (above) already
+		// returned for path-local AlwaysAllow calls.
 		return tool.Execute(ctx, input)
 
 	case sdktools.PolicyAlwaysDeny:
@@ -417,8 +436,9 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		}, nil
 
 	case sdktools.PolicyUserConfirm:
-		// Workspace auto-approval: when enabled, allow file write tools to execute
-		// without confirmation if all paths are within the session workspace.
+		// Session-root auto-approval: when enabled, allow file write tools to
+		// execute without confirmation if the tool's Judge reports the target
+		// is within the session workspace or temp directory (equal peers).
 		// Symlinks are already intercepted by checkSymlinksAndConfirm above,
 		// so any path that reached this point is a real (non-symlink) path.
 		r.mu.RLock()
@@ -431,6 +451,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 					r.log().Debug("workspace auto-approve: Judge allows", "tool", name, "reason", reason)
 					return tool.Execute(ctx, input)
 				}
+				return r.confirmAndExecute(ctx, tool, name, input, reason)
 			}
 		}
 		return r.confirmAndExecute(ctx, tool, name, input, "")

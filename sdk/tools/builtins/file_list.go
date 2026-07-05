@@ -43,10 +43,10 @@ type ListDirectoryInput struct {
 	Path string `json:"path"`
 }
 
-// Judge checks whether the list targets a path within the workspace.
-// Directories outside workspace require user confirmation.
+// Judge checks whether the list targets a path inside the session roots.
+// Directories outside workspace/temp require user confirmation.
 func (t *ListDirectoryTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
-	return judgeReadInWorkspace(ctx, input)
+	return judgeReadInSessionRoots(ctx, input)
 }
 
 // Execute lists the contents of a directory.
@@ -61,7 +61,7 @@ func (t *ListDirectoryTool) Execute(ctx context.Context, input json.RawMessage) 
 	}
 
 	params.Path = resolvePath(ctx, params.Path)
-	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+	if err := validateResolvedPath(params.Path); err != nil {
 		return tools.ToolResult{Content: err.Error(), IsError: true}, nil //nolint:nilerr // error embedded in ToolResult by design
 	}
 

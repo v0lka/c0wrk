@@ -53,17 +53,17 @@ type EditFileInput struct {
 	NewString string `json:"new_string"`
 }
 
-// Judge uses workspace check for write operations.
+// Judge uses session roots check for write operations.
 func (t *EditFileTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
 	var params EditFileInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return false, ""
 	}
 	params.Path = resolvePath(ctx, params.Path)
-	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+	if err := validateResolvedPath(params.Path); err != nil {
 		return false, err.Error()
 	}
-	return judgeWriteInWorkspace(ctx, params.Path)
+	return judgeWriteInSessionRoots(ctx, params.Path)
 }
 
 // Execute performs ACI-style find-and-replace in a file.
@@ -81,7 +81,7 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 	}
 
 	params.Path = resolvePath(ctx, params.Path)
-	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+	if err := validateResolvedPath(params.Path); err != nil {
 		return tools.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
 

@@ -62,10 +62,10 @@ type ReadFileInput struct {
 	EndLine   int    `json:"end_line"`
 }
 
-// Judge checks whether the read targets a path within the workspace.
-// Files outside workspace require user confirmation.
+// Judge checks whether the read targets a path inside the session roots.
+// Reads outside workspace/temp require user confirmation.
 func (t *ReadFileTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
-	return judgeReadInWorkspace(ctx, input)
+	return judgeReadInSessionRoots(ctx, input)
 }
 
 // Execute reads and returns the content of a file with pagination support.
@@ -89,7 +89,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 	}
 
 	params.Path = resolvePath(ctx, params.Path)
-	if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+	if err := validateResolvedPath(params.Path); err != nil {
 		return tools.ToolResult{Content: err.Error(), IsError: true}, nil //nolint:nilerr // error embedded in ToolResult by design
 	}
 

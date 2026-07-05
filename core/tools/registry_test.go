@@ -907,7 +907,44 @@ func TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace(t *testing.T) {
 	}
 }
 
-// TestAutoApproval_TempDir verifies that PolicyUserConfirm is NOT bypassed
+// TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace_ReasoningSurfaced
+// verifies that when auto-approve is enabled and the Judge denies with a
+// non-empty reason (e.g., "path is outside the session workspace and temp
+// directory: /etc/passwd"), that reason is surfaced to the user via
+// ConfirmationRequest.JudgeReasoning rather than being discarded.
+//
+// The security-model spec states: "user_confirm tools: confirmation is
+// already required by policy; the Judge reason is surfaced in the
+// confirmation dialog." Without surfacing, the user sees a confirm prompt
+// with no explanation of why the call was escalated.
+func TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace_ReasoningSurfaced(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.SetAutoApproveWorkspaceWrites(true)
+
+	tool := newMockConfirmJudgerTool("write_file", sdktools.PolicyUserConfirm, false, "path is outside the session workspace and temp directory: /etc/passwd")
+	registry.Register(tool)
+
+	var receivedReasoning string
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		receivedReasoning = req.JudgeReasoning
+		return sdktools.ConfirmDeny, nil
+	})
+
+	ctx := context.Background()
+	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
+	input := json.RawMessage(`{"path": "/etc/passwd"}`)
+
+	_, err := registry.Execute(ctx, "write_file", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedReasoning == "" {
+		t.Error("expected Judge reasoning to be surfaced in ConfirmationRequest when auto-approve denies, got empty string")
+	}
+	if !strings.Contains(receivedReasoning, "outside") {
+		t.Errorf("expected reasoning to mention 'outside', got: %s", receivedReasoning)
+	}
+}
 // even when all paths in the input are within the session temp directory.
 func TestAutoApproval_TempDir(t *testing.T) {
 	registry := NewToolRegistry()
@@ -960,6 +997,106 @@ func TestAutoApproval_AlwaysAllow_WorkspacePath(t *testing.T) {
 	}
 	if confirmCalled {
 		t.Error("expected confirmFunc NOT to be called for PolicyAlwaysAllow tools")
+	}
+}
+
+// TestAutoApproval_AlwaysAllow_JudgerFlagsBeforeAutoApprove is a regression
+// test for a security hole: when a PolicyAlwaysAllow tool implements ToolJudger
+// and the Judge flags the call (allow=false with non-empty reasoning), the call
+// MUST escalate to user confirmation even if all paths in the input are inside
+// the session workspace or temp directory.
+//
+// Previously, workspace/temp auto-approval ran BEFORE the Judge check, so a
+// command like "rm -rf /workspace/.git" (paths inside workspace, but matches
+// the bash_exec blacklist) would execute without confirmation. Now the Judge
+// runs first and short-circuits to confirmation on flagged calls.
+func TestAutoApproval_AlwaysAllow_JudgerFlagsBeforeAutoApprove(t *testing.T) {
+	registry := NewToolRegistry()
+	// Tool with AlwaysAllow + ToolJudger that flags the call (simulates
+	// bash_exec with a blacklisted command like "rm -rf /workspace/.git").
+	tool := newMockJudgerTool("bash_exec", false, "command matches blacklist pattern: rm -rf")
+	registry.Register(tool)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmAllowOnce, nil
+	})
+
+	ctx := context.Background()
+	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
+	// Input has paths inside the workspace — would trigger auto-approval
+	// if the Judge check ran after. The Judge must run first.
+	input := json.RawMessage(`{"command": "rm -rf /workspace/.git"}`)
+
+	_, err := registry.Execute(ctx, "bash_exec", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !confirmCalled {
+		t.Error("expected confirmFunc to be called: Judge-flagged calls must escalate to confirmation even when paths are inside workspace")
+	}
+}
+
+// TestAutoApproval_AlwaysAllow_JudgerAllowsWithWorkspacePath verifies that a
+// PolicyAlwaysAllow tool whose Judge returns allow=true still auto-approves
+// when paths are inside the workspace (Judge ran first, cleared the call,
+// then workspace auto-approval applied).
+func TestAutoApproval_AlwaysAllow_JudgerAllowsWithWorkspacePath(t *testing.T) {
+	registry := NewToolRegistry()
+	// Tool with AlwaysAllow + ToolJudger that allows (simulates read_file
+	// reading inside workspace).
+	tool := newMockJudgerTool("read_file", true, "within workspace")
+	registry.Register(tool)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmAllowOnce, nil
+	})
+
+	ctx := context.Background()
+	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
+	input := json.RawMessage(`{"path": "/workspace/file.txt"}`)
+
+	_, err := registry.Execute(ctx, "read_file", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if confirmCalled {
+		t.Error("expected confirmFunc NOT to be called when Judge allows and path is inside workspace")
+	}
+}
+
+// TestAutoApproval_AlwaysAllow_JudgerEmptyReasoningWithWorkspacePath verifies
+// that a PolicyAlwaysAllow tool whose Judge returns allow=false with EMPTY
+// reasoning (e.g., bash_exec without blacklist match) still auto-approves
+// when paths are inside the workspace. Empty reasoning means "no concern to
+// report" — the call is not escalated, only flagged calls with non-empty
+// reasoning trigger confirmation.
+func TestAutoApproval_AlwaysAllow_JudgerEmptyReasoningWithWorkspacePath(t *testing.T) {
+	registry := NewToolRegistry()
+	// Tool with AlwaysAllow + ToolJudger that returns allow=false, reasoning=""
+	// (simulates bash_exec without blacklist match).
+	tool := newMockJudgerTool("bash_exec", false, "")
+	registry.Register(tool)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmAllowOnce, nil
+	})
+
+	ctx := context.Background()
+	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
+	input := json.RawMessage(`{"command": "ls /workspace"}`)
+
+	_, err := registry.Execute(ctx, "bash_exec", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if confirmCalled {
+		t.Error("expected confirmFunc NOT to be called when Judge returns empty reasoning (no concern) and path is inside workspace")
 	}
 }
 

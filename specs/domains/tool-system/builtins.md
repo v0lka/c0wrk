@@ -44,8 +44,8 @@ Each tool's effective policy is resolved at execution time:
 
 ### File Safety Judging
 
-Eleven built-in tools implement `ToolJudger`: `write_file`, `edit_file`, `delete_file`, `delete_directory`, `create_directory`, `bash_exec` (all `PolicyUserConfirm` — judged before policy check), plus `read_file`, `list_directory`, `glob`, `ripgrep`, `web_fetch` (all `PolicyAlwaysAllow` — judge can escalate to user confirmation). The judge inspects the target path and escalates to `PolicyUserConfirm` if the path:
-- Is outside the workspace root
+Eleven built-in tools implement `ToolJudger`: `write_file`, `edit_file`, `delete_file`, `delete_directory`, `create_directory`, `bash_exec` (all `PolicyUserConfirm` — judged before policy check), plus `read_file`, `list_directory`, `glob`, `ripgrep`, `web_fetch` (all `PolicyAlwaysAllow` — judge can escalate to user confirmation). File tools use `judgeReadInSessionRoots` / `judgeWriteInSessionRoots` (in `sdk/tools/builtins/file_judge.go`) to check whether the target path is inside the session workspace or temp directory (equal peers). The judge escalates to user confirmation if the path:
+- Is outside both session roots (workspace AND temp directory)
 - References system directories (`/etc`, `/usr`, `/System`, etc.)
 - Contains path traversal sequences (`../`)
 
@@ -70,7 +70,7 @@ All built-in tools accept `json.RawMessage` input and return `ToolResult{Content
 ## Error Handling
 
 - **Tool not found**: `ToolRegistry.Execute()` returns `ToolResult{IsError: true}` with an "unknown tool" message — does not panic
-- **Path validation**: file tools reject paths outside workspace with a descriptive error before any I/O. This includes absolute paths that point outside the workspace root — previously returned as-is, now rejected for security hardening.
+- **Path validation**: file tools resolve paths via `resolvePath` (relative paths joined with workspace root and must stay within it; absolute paths symlink-resolved and returned regardless of containment). Containment within session roots (workspace or temp) is checked by the Judge layer, not by `Execute` — operations outside session roots are allowed after user confirmation. Relative paths that escape the workspace via `..` are rejected as invalid input.
 - **Bash blacklist**: commands matching blacklist patterns are rejected with `IsError: true` and a "blocked by security policy" message
 - **Ripgrep**: exit code 1 ("no matches") is NOT an error; exit codes ≥ 2 produce `IsError` with stderr content
 - **Web tools**: network errors surface as `IsError` with a descriptive message; timeout errors include the configured timeout value
@@ -131,7 +131,7 @@ Note: `read_skill_resource` is registered separately in `NewOrchestratorBuilder`
 
 ## File Tools — ToolJudger
 
-Eleven built-in tools implement `ToolJudger` (see File Safety Judging above). When a tool with `PolicyAlwaysAllow` has a judge and the target path looks risky (outside workspace, system files), the judge escalates to user confirmation.
+Eleven built-in tools implement `ToolJudger` (see File Safety Judging above). When a tool with `PolicyAlwaysAllow` has a judge and the target path looks risky (outside session roots, system files), the judge escalates to user confirmation. The judge runs **before** workspace/temp auto-approval (see PolicyAlwaysAllow Judge Gate in [security-model.md](../../architecture/security-model.md)) — safety checks are never bypassed by path-locality.
 
 ## Limits Configuration
 

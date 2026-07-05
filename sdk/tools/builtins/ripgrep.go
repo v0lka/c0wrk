@@ -114,10 +114,10 @@ type rgContextData struct {
 	LineNumber int    `json:"line_number"`
 }
 
-// Judge checks whether the search targets a path within the workspace.
-// Paths outside workspace require user confirmation.
+// Judge checks whether the search targets a path inside the session roots.
+// Paths outside workspace/temp require user confirmation.
 func (t *RipgrepTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
-	return judgeReadInWorkspace(ctx, input)
+	return judgeReadInSessionRoots(ctx, input)
 }
 
 // Execute performs the ripgrep search and returns formatted results.
@@ -138,7 +138,7 @@ func (t *RipgrepTool) Execute(ctx context.Context, input json.RawMessage) (tools
 		}
 	} else {
 		params.Path = resolvePath(ctx, params.Path)
-		if err := validatePathInWorkspace(ctx, params.Path); err != nil {
+		if err := validateResolvedPath(params.Path); err != nil {
 			return tools.ToolResult{Content: err.Error(), IsError: true}, nil
 		}
 	}

@@ -362,22 +362,6 @@ describe('groupMessages', () => {
     expect(sub.children).toEqual([])
   })
 
-  it('converts plan_step to subagent on subagent_launch', () => {
-    const stepStart = makeUI({
-      type: 'plan_step_start',
-      metadata: { step_id: 'sa1', description: 'Step 1' },
-    })
-    const launch = makeUI({
-      type: 'subagent_launch',
-      metadata: { step_id: 'sa1', description: 'Research code' },
-    })
-    const result = groupMessages([stepStart, launch])
-    expect(result.items).toHaveLength(1)
-    const sub = result.items[0]! as DisplayItem & { kind: 'subagent' }
-    expect(sub.kind).toBe('subagent')
-    expect(sub.title).toBe('Research code')
-  })
-
   it('nests subagent children under the subagent block', () => {
     const launch = makeUI({
       type: 'subagent_launch',
@@ -411,11 +395,7 @@ describe('groupMessages', () => {
     expect(sub.duration).toBe(5000)
   })
 
-  it('preserves subagent duration from subagent_complete when plan_step_complete fires with 0', () => {
-    const stepStart = makeUI({
-      type: 'plan_step_start',
-      metadata: { step_id: 'sa1', description: 'Step 1' },
-    })
+  it('preserves subagent duration from subagent_complete', () => {
     const launch = makeUI({
       type: 'subagent_launch',
       metadata: { step_id: 'sa1', description: 'Research code' },
@@ -424,11 +404,8 @@ describe('groupMessages', () => {
       type: 'subagent_complete',
       metadata: { step_id: 'sa1', success: true, duration: 3000 },
     })
-    const stepComplete = makeUI({
-      type: 'plan_step_complete',
-      metadata: { step_id: 'sa1', success: true, duration: 0 },
-    })
-    const result = groupMessages([stepStart, launch, complete, stepComplete])
+    const result = groupMessages([launch, complete])
+    expect(result.items).toHaveLength(1)
     const sub = result.items[0]! as DisplayItem & { kind: 'subagent' }
     expect(sub.status).toBe('completed')
     expect(sub.duration).toBe(3000)

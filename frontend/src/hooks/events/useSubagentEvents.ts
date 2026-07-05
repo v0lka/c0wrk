@@ -1,10 +1,14 @@
 // Subagent events: subagent_launch, subagent_complete
+//
+// Delegated steps are NOT tracked in the plan panel (Execution panel). They
+// are an execution mechanism, not a planning one. Their progress is shown
+// only as subagent blocks in chat with an inline checklist updated via
+// step_todo_update events. The plan store is never touched here.
 
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isSubAgentLaunchData, isSubAgentCompleteData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
-import { usePlanStore } from '@/stores/planStore'
 
 export function useSubagentEvents(sessionId: string | null): void {
   useEffect(() => {
@@ -40,13 +44,6 @@ export function useSubagentEvents(sessionId: string | null): void {
           metadata: { step_id: data.step_id, success: data.success, duration: data.duration, plan_step_id: data.plan_step_id },
           timestamp: Date.now(),
         })
-        // Update plan store immediately so steps reflect completion
-        // without waiting for the batched plan_step_complete event.
-        usePlanStore.getState().updateStepStatus(
-          data.step_id,
-          data.success ? 'completed' : 'failed',
-          data.duration,
-        )
       }),
     )
 

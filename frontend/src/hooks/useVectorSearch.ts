@@ -38,8 +38,10 @@ export function useVectorSearch(): UseVectorSearchResult {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const prevProjectRef = useRef(activeProjectId)
 
-  // Fetch entries (browse or search). Stable reference because all setters
-  // come from Zustand and are stable.
+  // Fetch entries for an active search. Empty query is intentionally not
+  // fetched — the panel shows an empty-state placeholder when the user has
+  // not entered a search (see VectorSearchResults). Stable reference because
+  // all setters come from Zustand and are stable.
   const fetchEntries = useCallback(async (
     q: string,
     k: number,
@@ -47,6 +49,11 @@ export function useVectorSearch(): UseVectorSearchResult {
     tokens: string[],
     m: SearchMode,
   ) => {
+    if (q === '') {
+      setEntries([])
+      setLoading(false)
+      return
+    }
     setLoading(true)
     try {
       const results = await searchVectorStore({
@@ -54,7 +61,7 @@ export function useVectorSearch(): UseVectorSearchResult {
         top_k: k,
         file_pattern: pattern,
         must_match: tokens,
-        mode: q === '' ? '' : m,
+        mode: m,
       })
       setEntries(results)
     } catch {
@@ -64,12 +71,21 @@ export function useVectorSearch(): UseVectorSearchResult {
     }
   }, [setEntries, setLoading])
 
-  // Auto-browse on mount and when index becomes ready
+  // Auto-search on mount and when inputs change — but only with an active
+  // query. Empty query leaves the panel in the placeholder state.
   useEffect(() => {
-    if (status.state === 'ready' && activeProjectId) {
+    if (status.state === 'ready' && activeProjectId && query !== '') {
       fetchEntries(query, topK, filePattern, mustMatch, mode)
     }
   }, [status.state, activeProjectId, fetchEntries, query, topK, filePattern, mustMatch, mode])
+
+  // Clear entries whenever query becomes empty so stale results do not
+  // persist after the user deletes their search text or calls handleClear.
+  useEffect(() => {
+    if (query === '') {
+      setEntries([])
+    }
+  }, [query, setEntries])
 
   // Reset entries when project changes
   useEffect(() => {
@@ -80,15 +96,18 @@ export function useVectorSearch(): UseVectorSearchResult {
     }
   }, [activeProjectId, setEntries, clearFilter])
 
-  // Re-fetch on vector_index:status ready event
+  // Refresh the active search when the index reports it is ready (e.g. after
+  // initial indexing or an incremental reindex). Without an active query this
+  // is a no-op — we never auto-browse, so the empty-query placeholder stays.
   useEffect(() => {
     const unsub = subscribe('vector_index:status', (data: unknown) => {
-      if (isVectorIndexPayload(data) && data.state === 'ready') {
-        fetchEntries('', topK, '', [], mode)
-      }
+      if (!isVectorIndexPayload(data) || data.state !== 'ready') return
+      const s = useVectorIndexStore.getState()
+      if (s.query === '') return
+      fetchEntries(s.query, s.topK, s.filePattern, s.mustMatch, s.mode)
     })
     return unsub
-  }, [fetchEntries, topK, mode])
+  }, [fetchEntries])
 
   const handleSearch = useCallback(() => {
     // Strip +tokens from query and merge into mustMatch before search
@@ -108,8 +127,8 @@ export function useVectorSearch(): UseVectorSearchResult {
 
   const handleClear = useCallback(() => {
     clearFilter()
-    fetchEntries('', topK, '', [], mode)
-  }, [clearFilter, fetchEntries, topK, mode])
+    setEntries([])
+  }, [clearFilter, setEntries])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -120,9 +139,9 @@ export function useVectorSearch(): UseVectorSearchResult {
   const isSearchMode = query !== ''
 
   const statusMetaText =
-    status.state !== 'ready'
+    status.state !== 'ready' || !isSearchMode
       ? null
-      : `${entries.length} entries · ${isSearchMode ? `Search (${mode})` : 'Browse'}`
+      : `${entries.length} entries · Search (${mode})`
 
   return { isSearchMode, statusMetaText, handleSearch, handleClear, handleKeyDown }
 }

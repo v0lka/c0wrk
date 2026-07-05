@@ -192,8 +192,9 @@ security:
 
   # When true, file write tools (write_file, edit_file, delete_file,
   # delete_directory, create_directory) execute without confirmation when
-  # all paths in their input are within the session workspace. Symlink
-  # traversals out of workspace are still forced to confirmation regardless.
+  # all paths in their input are within the session workspace OR the session
+  # temp directory (both treated as equal peers). Symlink traversals out of
+  # session roots are still forced to confirmation regardless.
   # Default: false. Set to true if you prefer convenience over safety for
   # write operations within your own projects.
   auto_approve_workspace_writes: false

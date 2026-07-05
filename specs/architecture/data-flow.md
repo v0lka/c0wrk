@@ -195,9 +195,10 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
   ├─ 4. ParamManager? → transform input
   ├─ 5. Symlink gate: detect symlinks in input paths → force confirmation
   ├─ 6. Resolve policy: per-tool > skill > default > tool's own
-  ├─ 7. Auto-approval check: paths in workspace/temp? → execute
-  └─ 8. Apply policy:
-       ├─ AlwaysAllow → execute (unless ToolJudger flags it)
+  ├─ 7. PolicyAlwaysAllow Judge gate: ToolJudger flags call? → confirmation
+  ├─ 8. Auto-approval check: paths in workspace/temp? → execute
+  └─ 9. Apply policy:
+       ├─ AlwaysAllow → execute (Judge gate already ran above)
        ├─ AlwaysDeny → return error result
        └─ UserConfirm → confirmFunc() blocks until user responds
                 │

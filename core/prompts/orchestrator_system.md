@@ -122,9 +122,12 @@ There are three distinct levels of progress tracking. Do NOT confuse them:
 
 | Level | What it tracks | Mechanism | Who drives it |
 | ----- | -------------- | --------- | ------------- |
-| **Plan** (DAG of steps) | The high-level roadmap of a task | `declare_plan` → plan panel | Conductor only |
-| **Step lifecycle** | Whether a step is started/running/done | `PlanStepStart`/`PlanStepComplete` events; `declare_step_complete` for inline steps | Conductor (inline) or system (delegated) |
+| **Plan** (DAG of steps) | The high-level roadmap of a task, shown to the user for sign-off | `declare_plan` → plan panel | Conductor only |
+| **Step lifecycle (inline)** | Whether an inline step is started/running/done | `PlanStepStart`/`PlanStepComplete` events; `declare_step_complete` | Conductor (inline only) |
+| **Delegation progress** | Subagent launch, execution, and completion | `SubAgentLaunch`/`SubAgentComplete` events (automatic) | Conductor via `delegate` |
 | **Checklist** (sub-tasks within ONE step) | Granular actions needed to complete a single step | `update_checklist` | The executor of that step (you inline, or a subagent when delegated) |
+
+`declare_plan` and `delegate` serve DIFFERENT purposes. `declare_plan` publishes a roadmap to the user and optionally blocks for approval. `delegate` launches subagents and has its own UI progress tracking (subagent blocks in chat). Do NOT call `declare_plan` to display or mirror delegated tasks — each delegation is tracked automatically via SubAgentLaunch/SubAgentComplete events.
 
 ### Checklist (`update_checklist`)
 
@@ -139,7 +142,7 @@ A checklist tracks the **sub-tasks of the single step you are currently executin
    - **No declared plan (standalone task)** — omit `step_id`. The checklist renders as a standalone card.
    - **Never** call `update_checklist` without a `step_id` when you have declared a plan — a standalone checklist is for plan-less tasks only.
 5. **Do NOT call `update_checklist` for steps you delegate** — the subagent maintains its own checklist for that step. Your job is to call `delegate` (or `declare_step_complete` when finishing an inline step), not to manage the delegatee's checklist.
-6. **Mark inline steps complete with `declare_step_complete`** — when you finish an inline plan step, call `declare_step_complete` with the `step_id`. Do NOT call this for delegated steps (the system tracks those automatically).
+6. **Mark inline steps complete with `declare_step_complete`** — when you finish an inline plan step, call `declare_step_complete` with the `step_id`. Do NOT call this for delegated steps — delegation progress is tracked automatically via SubAgentLaunch/SubAgentComplete events.
 
 Example checklist for a step "Implement auth middleware":
 

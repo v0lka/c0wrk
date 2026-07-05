@@ -464,8 +464,8 @@ func TestWriteFileTool_Judge_WriteActionNoWorkspace(t *testing.T) {
 	if allow {
 		t.Error("expected Judge to return allow=false when no workspace in context")
 	}
-	if reasoning != "" {
-		t.Errorf("expected empty reasoning when no workspace, got: %s", reasoning)
+	if !strings.Contains(reasoning, "outside") {
+		t.Errorf("expected reasoning to mention 'outside' when no workspace, got: %s", reasoning)
 	}
 }
 
@@ -1502,18 +1502,22 @@ func TestEditFileTool_Execute_MissingOldString(t *testing.T) {
 	}
 }
 
-func TestEditFileTool_Execute_OutsideWorkspace(t *testing.T) {
+func TestEditFileTool_Execute_OutsideSessionRoots(t *testing.T) {
 	tool := NewEditFileTool()
-	ctx := tools.WithWorkspacePath(context.Background(), t.TempDir())
-	result, err := tool.Execute(ctx, json.RawMessage(`{"path":"/etc/hosts","old_string":"x","new_string":"y"}`))
+	ws := t.TempDir()
+	otherDir := t.TempDir()
+	target := filepath.Join(otherDir, "file.txt")
+	if err := os.WriteFile(target, []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tools.WithWorkspacePath(context.Background(), ws)
+	input, _ := json.Marshal(EditFileInput{Path: target, OldString: "hello", NewString: "goodbye"})
+	result, err := tool.Execute(ctx, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.IsError {
-		t.Error("expected IsError=true for path outside workspace")
-	}
-	if !strings.Contains(result.Content, "outside") {
-		t.Errorf("expected 'outside' in error, got: %s", result.Content)
+	if result.IsError {
+		t.Errorf("expected Execute to edit file outside session roots (containment check removed), got: %s", result.Content)
 	}
 }
 
@@ -1540,9 +1544,8 @@ func TestResolvePath_AbsoluteInsideWorkspace(t *testing.T) {
 	}
 }
 
-func TestValidatePathInWorkspace_EmptyResolved(t *testing.T) {
-	ctx := tools.WithWorkspacePath(context.Background(), "/ws")
-	err := validatePathInWorkspace(ctx, "")
+func TestValidateResolvedPath_EmptyResolved(t *testing.T) {
+	err := validateResolvedPath("")
 	if err == nil {
 		t.Error("expected error for empty resolved path")
 	}
@@ -1551,22 +1554,20 @@ func TestValidatePathInWorkspace_EmptyResolved(t *testing.T) {
 	}
 }
 
-func TestValidatePathInWorkspace_NoWorkspace(t *testing.T) {
-	ctx := context.Background()
-	err := validatePathInWorkspace(ctx, "/some/path")
+func TestValidateResolvedPath_NonEmpty(t *testing.T) {
+	err := validateResolvedPath("/some/absolute/path")
 	if err != nil {
-		t.Errorf("expected nil error when no workspace, got: %v", err)
+		t.Errorf("expected nil error for non-empty resolved path, got: %v", err)
 	}
 }
 
-func TestValidatePathInWorkspace_InsideWorkspace(t *testing.T) {
+func TestValidateResolvedPath_InsideWorkspace(t *testing.T) {
 	tmpDir := t.TempDir()
 	subFile := filepath.Join(tmpDir, "file.txt")
 	if err := os.WriteFile(subFile, []byte("data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ctx := tools.WithWorkspacePath(context.Background(), tmpDir)
-	err := validatePathInWorkspace(ctx, subFile)
+	err := validateResolvedPath(subFile)
 	if err != nil {
 		t.Errorf("expected nil error for path inside workspace, got: %v", err)
 	}
@@ -1630,18 +1631,21 @@ func TestReadFileTool_Execute_StartAfterEnd(t *testing.T) {
 	}
 }
 
-func TestReadFileTool_Execute_OutsideWorkspace(t *testing.T) {
+func TestReadFileTool_Execute_OutsideSessionRoots(t *testing.T) {
 	tool := NewReadFileTool()
-	ctx := tools.WithWorkspacePath(context.Background(), t.TempDir())
-	result, err := tool.Execute(ctx, json.RawMessage(`{"path":"/etc/hosts"}`))
+	ws := t.TempDir()
+	otherDir := t.TempDir()
+	target := filepath.Join(otherDir, "file.txt")
+	if err := os.WriteFile(target, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tools.WithWorkspacePath(context.Background(), ws)
+	result, err := tool.Execute(ctx, json.RawMessage(`{"path":"`+target+`"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.IsError {
-		t.Error("expected IsError=true for path outside workspace")
-	}
-	if !strings.Contains(result.Content, "outside") {
-		t.Errorf("expected 'outside' in error, got: %s", result.Content)
+	if result.IsError {
+		t.Errorf("expected Execute to read file outside session roots (containment check removed), got: %s", result.Content)
 	}
 }
 
@@ -1661,18 +1665,22 @@ func TestDeleteFileTool_Execute_MissingPath(t *testing.T) {
 	}
 }
 
-func TestDeleteFileTool_Execute_OutsideWorkspace(t *testing.T) {
+func TestDeleteFileTool_Execute_OutsideSessionRoots(t *testing.T) {
 	tool := NewDeleteFileTool()
-	ctx := tools.WithWorkspacePath(context.Background(), t.TempDir())
-	result, err := tool.Execute(ctx, json.RawMessage(`{"path":"/etc/hosts"}`))
+	ws := t.TempDir()
+	otherDir := t.TempDir()
+	target := filepath.Join(otherDir, "file.txt")
+	if err := os.WriteFile(target, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tools.WithWorkspacePath(context.Background(), ws)
+	input, _ := json.Marshal(DeleteFileInput{Path: target})
+	result, err := tool.Execute(ctx, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.IsError {
-		t.Error("expected IsError=true for path outside workspace")
-	}
-	if !strings.Contains(result.Content, "outside") {
-		t.Errorf("expected 'outside' in error, got: %s", result.Content)
+	if result.IsError {
+		t.Errorf("expected Execute to delete file outside session roots (containment check removed), got: %s", result.Content)
 	}
 }
 
@@ -1692,18 +1700,19 @@ func TestCreateDirectoryTool_Execute_MissingPath(t *testing.T) {
 	}
 }
 
-func TestCreateDirectoryTool_Execute_OutsideWorkspace(t *testing.T) {
+func TestCreateDirectoryTool_Execute_OutsideSessionRoots(t *testing.T) {
 	tool := NewCreateDirectoryTool()
-	ctx := tools.WithWorkspacePath(context.Background(), t.TempDir())
-	result, err := tool.Execute(ctx, json.RawMessage(`{"path":"/etc/newdir"}`))
+	ws := t.TempDir()
+	otherDir := t.TempDir()
+	target := filepath.Join(otherDir, "newdir")
+	ctx := tools.WithWorkspacePath(context.Background(), ws)
+	input, _ := json.Marshal(CreateDirectoryInput{Path: target})
+	result, err := tool.Execute(ctx, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.IsError {
-		t.Error("expected IsError=true for path outside workspace")
-	}
-	if !strings.Contains(result.Content, "outside") {
-		t.Errorf("expected 'outside' in error, got: %s", result.Content)
+	if result.IsError {
+		t.Errorf("expected Execute to create directory outside session roots (containment check removed), got: %s", result.Content)
 	}
 }
 
@@ -1744,18 +1753,22 @@ func TestDeleteDirectoryTool_Execute_NotADirectory(t *testing.T) {
 	}
 }
 
-func TestDeleteDirectoryTool_Execute_OutsideWorkspace(t *testing.T) {
+func TestDeleteDirectoryTool_Execute_OutsideSessionRoots(t *testing.T) {
 	tool := NewDeleteDirectoryTool()
-	ctx := tools.WithWorkspacePath(context.Background(), t.TempDir())
-	result, err := tool.Execute(ctx, json.RawMessage(`{"path":"/etc/somedir","recursive":false}`))
+	ws := t.TempDir()
+	otherDir := t.TempDir()
+	target := filepath.Join(otherDir, "somedir")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tools.WithWorkspacePath(context.Background(), ws)
+	input, _ := json.Marshal(DeleteDirectoryInput{Path: target, Recursive: false})
+	result, err := tool.Execute(ctx, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.IsError {
-		t.Error("expected IsError=true for path outside workspace")
-	}
-	if !strings.Contains(result.Content, "outside") {
-		t.Errorf("expected 'outside' in error, got: %s", result.Content)
+	if result.IsError {
+		t.Errorf("expected Execute to delete directory outside session roots (containment check removed), got: %s", result.Content)
 	}
 }
 
@@ -1775,18 +1788,19 @@ func TestWriteFileTool_Execute_MissingPath(t *testing.T) {
 	}
 }
 
-func TestWriteFileTool_Execute_OutsideWorkspace(t *testing.T) {
+func TestWriteFileTool_Execute_OutsideSessionRoots(t *testing.T) {
 	tool := NewWriteFileTool()
-	ctx := tools.WithWorkspacePath(context.Background(), t.TempDir())
-	result, err := tool.Execute(ctx, json.RawMessage(`{"path":"/etc/newfile","content":"test"}`))
+	ws := t.TempDir()
+	otherDir := t.TempDir()
+	target := filepath.Join(otherDir, "newfile")
+	ctx := tools.WithWorkspacePath(context.Background(), ws)
+	input, _ := json.Marshal(WriteFileInput{Path: target, Content: "test"})
+	result, err := tool.Execute(ctx, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.IsError {
-		t.Error("expected IsError=true for path outside workspace")
-	}
-	if !strings.Contains(result.Content, "outside") {
-		t.Errorf("expected 'outside' in error, got: %s", result.Content)
+	if result.IsError {
+		t.Errorf("expected Execute to write file outside session roots (containment check removed), got: %s", result.Content)
 	}
 }
 
@@ -1841,5 +1855,224 @@ func TestToolResultReadTool_Execute_NoCache(t *testing.T) {
 	}
 	if !strings.Contains(result.Content, "Tool result cache not available") {
 		t.Errorf("expected cache error, got: %s", result.Content)
+	}
+}
+
+// ── Session roots: temp directory equal-peer tests ──────────────────────────
+//
+// The session workspace and session temp directory are equal peers. File
+// operations (read and write) inside either root auto-approve (when
+// auto_approve_workspace_writes is enabled for write tools, or always for
+// read tools with PolicyAlwaysAllow). Operations outside both roots require
+// user confirmation. These tests verify the temp directory is treated as a
+// first-class root, not a second-class citizen.
+
+func TestWriteFileTool_Judge_InsideTempDir(t *testing.T) {
+	tool := NewWriteFileTool()
+	ws := t.TempDir()
+	tempDir := t.TempDir()
+	ctx := tools.WithWorkspacePath(tools.WithTempDir(context.Background(), tempDir), ws)
+
+	testFile := filepath.Join(tempDir, "output.txt")
+	input, _ := json.Marshal(WriteFileInput{Path: testFile, Content: "data"})
+
+	allow, reasoning := tool.Judge(ctx, input)
+	if !allow {
+		t.Errorf("expected Judge to return allow=true for write inside temp dir, got reasoning: %s", reasoning)
+	}
+	if !strings.Contains(reasoning, "temp") {
+		t.Errorf("expected reasoning to mention 'temp', got: %s", reasoning)
+	}
+}
+
+func TestEditFileTool_Judge_InsideTempDir(t *testing.T) {
+	tool := NewEditFileTool()
+	ws := t.TempDir()
+	tempDir := t.TempDir()
+	ctx := tools.WithWorkspacePath(tools.WithTempDir(context.Background(), tempDir), ws)
+
+	target := filepath.Join(tempDir, "edit.txt")
+	if err := os.WriteFile(target, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := json.Marshal(EditFileInput{Path: target, OldString: "hello", NewString: "world"})
+
+	allow, reasoning := tool.Judge(ctx, input)
+	if !allow {
+		t.Errorf("expected Judge to return allow=true for edit inside temp dir, got reasoning: %s", reasoning)
+	}
+}
+
+func TestDeleteFileTool_Judge_InsideTempDir(t *testing.T) {
+	tool := NewDeleteFileTool()
+	ws := t.TempDir()
+	tempDir := t.TempDir()
+	ctx := tools.WithWorkspacePath(tools.WithTempDir(context.Background(), tempDir), ws)
+
+	target := filepath.Join(tempDir, "file.txt")
+	if err := os.WriteFile(target, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := json.Marshal(DeleteFileInput{Path: target})
+
+	allow, _ := tool.Judge(ctx, input)
+	if !allow {
+		t.Error("expected Judge to return allow=true for delete_file inside temp dir")
+	}
+}
+
+func TestCreateDirectoryTool_Judge_InsideTempDir(t *testing.T) {
+	tool := NewCreateDirectoryTool()
+	ws := t.TempDir()
+	tempDir := t.TempDir()
+	ctx := tools.WithWorkspacePath(tools.WithTempDir(context.Background(), tempDir), ws)
+
+	target := filepath.Join(tempDir, "newdir")
+	input, _ := json.Marshal(CreateDirectoryInput{Path: target})
+
+	allow, _ := tool.Judge(ctx, input)
+	if !allow {
+		t.Error("expected Judge to return allow=true for create_directory inside temp dir")
+	}
+}
+
+func TestDeleteDirectoryTool_Judge_InsideTempDir(t *testing.T) {
+	tool := NewDeleteDirectoryTool()
+	ws := t.TempDir()
+	tempDir := t.TempDir()
+	ctx := tools.WithWorkspacePath(tools.WithTempDir(context.Background(), tempDir), ws)
+
+	target := filepath.Join(tempDir, "somedir")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := json.Marshal(DeleteDirectoryInput{Path: target, Recursive: false})
+
+	allow, _ := tool.Judge(ctx, input)
+	if !allow {
+		t.Error("expected Judge to return allow=true for delete_directory inside temp dir")
+	}
+}
+
+func TestReadFileTool_Judge_InsideTempDir_WithWorkspace(t *testing.T) {
+	tool := NewReadFileTool()
+	ws := t.TempDir()
+	tempDir := t.TempDir()
+	ctx := tools.WithWorkspacePath(tools.WithTempDir(context.Background(), tempDir), ws)
+
+	target := filepath.Join(tempDir, "file.txt")
+	if err := os.WriteFile(target, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := json.Marshal(map[string]string{"path": target})
+
+	allow, _ := tool.Judge(ctx, input)
+	if !allow {
+		t.Error("expected Judge to return allow=true for read inside temp dir (with workspace set)")
+	}
+}
+
+func TestListDirectoryTool_Judge_InsideTempDir(t *testing.T) {
+	tool := NewListDirectoryTool()
+	ws := t.TempDir()
+	tempDir := t.TempDir()
+	ctx := tools.WithWorkspacePath(tools.WithTempDir(context.Background(), tempDir), ws)
+
+	input, _ := json.Marshal(ListDirectoryInput{Path: tempDir})
+
+	allow, _ := tool.Judge(ctx, input)
+	if !allow {
+		t.Error("expected Judge to return allow=true for list_directory inside temp dir")
+	}
+}
+
+// ── Session roots: operations outside both roots require confirmation ───────
+
+func TestWriteFileTool_Judge_OutsideBothRoots(t *testing.T) {
+	tool := NewWriteFileTool()
+	ws := t.TempDir()
+	tempDir := t.TempDir()
+	otherDir := t.TempDir()
+	ctx := tools.WithWorkspacePath(tools.WithTempDir(context.Background(), tempDir), ws)
+
+	target := filepath.Join(otherDir, "file.txt")
+	input, _ := json.Marshal(WriteFileInput{Path: target, Content: "data"})
+
+	allow, reasoning := tool.Judge(ctx, input)
+	if allow {
+		t.Error("expected Judge to return allow=false for write outside both roots")
+	}
+	if !strings.Contains(reasoning, "outside") {
+		t.Errorf("expected reasoning to mention 'outside', got: %s", reasoning)
+	}
+}
+
+func TestReadFileTool_Judge_OutsideBothRoots(t *testing.T) {
+	tool := NewReadFileTool()
+	ws := t.TempDir()
+	tempDir := t.TempDir()
+	otherDir := t.TempDir()
+	ctx := tools.WithWorkspacePath(tools.WithTempDir(context.Background(), tempDir), ws)
+
+	target := filepath.Join(otherDir, "file.txt")
+	if err := os.WriteFile(target, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := json.Marshal(map[string]string{"path": target})
+
+	allow, reasoning := tool.Judge(ctx, input)
+	if allow {
+		t.Error("expected Judge to return allow=false for read outside both roots")
+	}
+	if !strings.Contains(reasoning, "outside") {
+		t.Errorf("expected reasoning to mention 'outside', got: %s", reasoning)
+	}
+}
+
+// ── isPathInSessionRoots unit tests ──────────────────────────────────────────
+
+func TestIsPathInSessionRoots_Workspace(t *testing.T) {
+	ws := t.TempDir()
+	ctx := tools.WithWorkspacePath(context.Background(), ws)
+	target := filepath.Join(ws, "subdir", "file.txt")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !isPathInSessionRoots(ctx, target) {
+		t.Error("expected path inside workspace to be in session roots")
+	}
+}
+
+func TestIsPathInSessionRoots_TempDir(t *testing.T) {
+	ws := t.TempDir()
+	tempDir := t.TempDir()
+	ctx := tools.WithWorkspacePath(tools.WithTempDir(context.Background(), tempDir), ws)
+	target := filepath.Join(tempDir, "file.txt")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !isPathInSessionRoots(ctx, target) {
+		t.Error("expected path inside temp dir to be in session roots")
+	}
+}
+
+func TestIsPathInSessionRoots_Outside(t *testing.T) {
+	ws := t.TempDir()
+	tempDir := t.TempDir()
+	otherDir := t.TempDir()
+	ctx := tools.WithWorkspacePath(tools.WithTempDir(context.Background(), tempDir), ws)
+	target := filepath.Join(otherDir, "file.txt")
+	if isPathInSessionRoots(ctx, target) {
+		t.Error("expected path outside both roots to NOT be in session roots")
+	}
+}
+
+func TestIsPathInSessionRoots_NoRoots(t *testing.T) {
+	ctx := context.Background()
+	if isPathInSessionRoots(ctx, "/some/path") {
+		t.Error("expected false when no roots configured")
 	}
 }
