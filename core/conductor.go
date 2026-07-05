@@ -979,18 +979,27 @@ func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orch
 // (observational progress); PlanStepStart is inferred from the first checklist
 // update for a step; PlanStepComplete is emitted by declare_step_complete or
 // the finish fallback.
+//
+// Invariants:
+//   - started holds step IDs that received PlanStepStart but not yet
+//     PlanStepComplete.
+//   - completed holds step IDs that have reached a terminal PlanStepComplete
+//     (via completeStep or completeAll). It prevents double-completion and
+//     re-Start from a late checklist update after completion.
 type inlineStepLifecycle struct {
-	emitter Emitter
-	bb      orchestration.Blackboard
-	mu      sync.Mutex
-	started map[string]bool // stepIDs that received PlanStepStart but not PlanStepComplete
+	emitter   Emitter
+	bb        orchestration.Blackboard
+	mu        sync.Mutex
+	started   map[string]bool // stepIDs that received PlanStepStart but not PlanStepComplete
+	completed map[string]bool // stepIDs that already reached PlanStepComplete
 }
 
 func newInlineStepLifecycle(emitter Emitter, bb orchestration.Blackboard) *inlineStepLifecycle {
 	return &inlineStepLifecycle{
-		emitter: emitter,
-		bb:      bb,
-		started: make(map[string]bool),
+		emitter:   emitter,
+		bb:        bb,
+		started:   make(map[string]bool),
+		completed: make(map[string]bool),
 	}
 }
 
@@ -1015,7 +1024,8 @@ func (l *inlineStepLifecycle) onChecklistUpdate(stepID string, items []agent.Tod
 	}
 
 	l.mu.Lock()
-	first := !l.started[stepID]
+	alreadyCompleted := l.completed[stepID]
+	first := !l.started[stepID] && !alreadyCompleted
 	if first {
 		l.started[stepID] = true
 	}
@@ -1023,7 +1033,9 @@ func (l *inlineStepLifecycle) onChecklistUpdate(stepID string, items []agent.Tod
 
 	// Emit PlanStepStart before StepTodoUpdate so the frontend's openSteps
 	// map contains the step when the checklist update arrives, enabling
-	// nesting inside the plan-step block.
+	// nesting inside the plan-step block. A step that was already completed
+	// is not re-started (defensive against a late checklist update after
+	// declare_step_complete).
 	if first {
 		desc, summary := lookupStepDesc(l.bb, stepID)
 		l.emitter.PlanStepStart(stepID, desc, summary)
@@ -1033,8 +1045,15 @@ func (l *inlineStepLifecycle) onChecklistUpdate(stepID string, items []agent.Tod
 }
 
 // completeStep is the StepCompleteFunc for declare_step_complete. It emits
-// PlanStepComplete and removes the step from the started set so that
-// completeAll does not double-complete it.
+// PlanStepComplete and moves the step to the completed set so that completeAll
+// does not double-complete it.
+//
+// If the Conductor skipped update_checklist for this step (so PlanStepStart
+// was never inferred), a PlanStepStart is synthesized first — but only for
+// steps that are in the declared plan, so that the step transitions
+// pending→running→completed in the plan panel instead of being stuck in
+// pending. For plan-less/unknown IDs there is no plan panel entry to update,
+// so the call is a no-op.
 func (l *inlineStepLifecycle) completeStep(stepID string, success bool, errMsg string) {
 	if l == nil || l.emitter == nil || stepID == "" {
 		return
@@ -1042,29 +1061,77 @@ func (l *inlineStepLifecycle) completeStep(stepID string, success bool, errMsg s
 	l.mu.Lock()
 	wasStarted := l.started[stepID]
 	delete(l.started, stepID)
+	l.completed[stepID] = true
 	l.mu.Unlock()
-	if wasStarted {
-		l.emitter.PlanStepComplete(stepID, success, 0, errMsg)
+
+	if !wasStarted {
+		if !planStepExists(l.bb, stepID) {
+			return
+		}
+		desc, summary := lookupStepDesc(l.bb, stepID)
+		l.emitter.PlanStepStart(stepID, desc, summary)
 	}
+	l.emitter.PlanStepComplete(stepID, success, 0, errMsg)
 }
 
-// completeAll auto-completes any inline steps that were started but not
-// explicitly completed via declare_step_complete. Called as a finish fallback
-// after the Conductor's executor.Run returns. errMsg is propagated to each
-// auto-completed step's PlanStepComplete so the UI can show why the step
-// failed (empty string on success).
+// completeAll auto-completes any plan steps that have not reached a terminal
+// state. Called as a finish fallback after the Conductor's executor.Run
+// returns. errMsg is propagated to each auto-completed step's PlanStepComplete
+// so the UI can show why the step failed (empty string on success).
+//
+// It sweeps every step in the declared plan that is not in the completed set:
+//   - steps that were started (running) get a PlanStepComplete directly;
+//   - steps that were never started (the Conductor forgot update_checklist or
+//     the step was delegated and not marked inline) get a synthesized
+//     PlanStepStart followed by PlanStepComplete.
+//
+// This guarantees no plan step is left stuck in "pending" or "running" once
+// the Conductor finishes. For plan-less tasks (no declared plan) it only
+// completes steps currently in the started set, matching prior behavior.
 func (l *inlineStepLifecycle) completeAll(success bool, errMsg string) {
 	if l == nil || l.emitter == nil {
 		return
 	}
+
+	// Collect declared plan step IDs (if any). Read outside the lifecycle
+	// lock — the blackboard is independently synchronized.
+	var planStepIDs []string
+	if plan := l.bb.GetPlan(); plan != nil {
+		planStepIDs = make([]string, 0, len(plan.Steps))
+		for _, s := range plan.Steps {
+			planStepIDs = append(planStepIDs, s.ID)
+		}
+	}
+
 	l.mu.Lock()
-	pending := make([]string, 0, len(l.started))
+	startedPending := make([]string, 0, len(l.started))
+	startedSet := make(map[string]bool, len(l.started))
 	for id := range l.started {
-		pending = append(pending, id)
+		startedPending = append(startedPending, id)
+		startedSet[id] = true
 	}
 	l.started = make(map[string]bool)
+
+	// neverStarted = plan steps that are neither completed nor currently
+	// running. These need a synthesized PlanStepStart before the complete.
+	neverStarted := make([]string, 0)
+	for _, id := range planStepIDs {
+		if !l.completed[id] && !startedSet[id] {
+			neverStarted = append(neverStarted, id)
+		}
+	}
+	// Mark all plan steps as completed to prevent any future double-completion.
+	for _, id := range planStepIDs {
+		l.completed[id] = true
+	}
 	l.mu.Unlock()
-	for _, id := range pending {
+
+	for _, id := range startedPending {
+		l.emitter.PlanStepComplete(id, success, 0, errMsg)
+	}
+	for _, id := range neverStarted {
+		desc, summary := lookupStepDesc(l.bb, id)
+		l.emitter.PlanStepStart(id, desc, summary)
 		l.emitter.PlanStepComplete(id, success, 0, errMsg)
 	}
 }
@@ -1085,6 +1152,23 @@ func lookupStepDesc(bb orchestration.Blackboard, stepID string) (desc, summary s
 		}
 	}
 	return
+}
+
+// planStepExists reports whether stepID matches a step in the declared plan.
+func planStepExists(bb orchestration.Blackboard, stepID string) bool {
+	if bb == nil {
+		return false
+	}
+	plan := bb.GetPlan()
+	if plan == nil {
+		return false
+	}
+	for _, step := range plan.Steps {
+		if step.ID == stepID {
+			return true
+		}
+	}
+	return false
 }
 
 // subagentTodoCallback returns a StepTodoUpdateFunc for subagent execution.
