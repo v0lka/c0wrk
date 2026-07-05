@@ -117,6 +117,7 @@ llm.Router.Call(ctx, ChatRequest)
 | `gemini`                         | provider_gemini.go                                | Safety settings, large context                    |
 | `lmstudio`                       | provider_lmstudio.go                              | Any local model, OpenAI-compatible API            |
 | `openai_compatible`              | provider_openai.go + provider_openai_responses.go | Generic OpenAI-compatible API endpoint. `openai_codex` family routes to Responses API automatically. Reasoning items round-tripped (see below). |
+| `anthropic_compatible`           | provider_anthropic.go                             | Generic Anthropic Messages-API-compatible endpoint. Same transport as the fixed `anthropic` provider but with a custom `base_url` and logical name. Reuses Anthropic prompt caching, thinking, and tool-use conversion. |
 | `chatgpt`                        | provider_openai.go                                | Simplified OpenAI mode (Chat Completions only)    |
 
 ### Responses API Reasoning Round-Trip
@@ -196,12 +197,17 @@ llm:
     base_url: ""
     models: []
 
+  anthropic_compatible:
+    api_key: "${ANTHROPIC_API_KEY}"
+    base_url: ""
+    models: []
+
   chatgpt:
     api_key: "${OPENAI_API_KEY}"
     models: []
 ```
 
-> **Note**: `config.example.yaml` shows only `anthropic`, `openai_compatible`, and `chatgpt` blocks. `gemini` and `lmstudio` providers are supported (see provider table above) but not included in the example config — add them following the same structure when needed.
+> **Note**: `config.example.yaml` shows `anthropic`, `openai_compatible`, `anthropic_compatible`, and `chatgpt` blocks. `gemini` and `lmstudio` providers are supported (see provider table above) but not included in the example config — add them following the same structure when needed.
 
 Default-model validation: `default_model` must be non-empty and must appear in at least one provider's `models` list. Only providers with non-empty `models` are registered in the Router. There is no `active_provider` field — the Router resolves which provider to use by looking up the model name in its `modelToProvider` reverse index.
 

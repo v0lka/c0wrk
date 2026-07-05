@@ -63,6 +63,7 @@ type EventEmitter struct {
 	// Plan progress tracking (guarded by mu)
 	planTotalSteps    int
 	planCompletedSet  map[string]bool // set of completed step IDs
+	planStartedSet    map[string]bool // set of step IDs whose PlanStepStart was already emitted
 	planCurrentStepID string          // currently running step ID
 
 	// Streaming content accumulation (guarded by mu)
@@ -182,6 +183,7 @@ func (e *EventEmitter) PlanGenerated(stepCount int, steps []orchestration.PlanSt
 	// Initialize plan progress tracking
 	e.planTotalSteps = stepCount
 	e.planCompletedSet = make(map[string]bool, stepCount)
+	e.planStartedSet = make(map[string]bool, stepCount)
 	e.planCurrentStepID = ""
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
@@ -198,10 +200,23 @@ func (e *EventEmitter) PlanGenerated(stepCount int, steps []orchestration.PlanSt
 }
 
 // PlanStepStart emits a plan step start event with progress info.
+// Duplicate calls for the same step ID are suppressed — the event is emitted
+// only the first time a step starts. This lets both the Conductor's inline
+// todo callback and the subagent launcher call PlanStepStart without worrying
+// about double-emission.
 func (e *EventEmitter) PlanStepStart(stepID, description, summary string) {
 	e.log().Debug("emitter: plan step start", "sessionID", e.sessionID, "stepID", stepID, "description", description, "summary", summary)
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.planStartedSet != nil && e.planStartedSet[stepID] {
+		// Already started — update current step but don't re-emit.
+		e.planCurrentStepID = stepID
+		return
+	}
+	if e.planStartedSet == nil {
+		e.planStartedSet = make(map[string]bool)
+	}
+	e.planStartedSet[stepID] = true
 	e.planCurrentStepID = stepID
 	completedCount := len(e.planCompletedSet)
 	e.emitEvent(Event{

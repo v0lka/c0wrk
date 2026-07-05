@@ -38,6 +38,18 @@ llm:
         - "gpt-4"
         - "deepseek-chat"
 
+  anthropic_compatible:
+    # Each key is a named provider speaking Anthropic's Messages API
+    # (e.g. a proxy, gateway, or local Anthropic-compatible server).
+    # The provider name is used in composite model IDs: "my-proxy/claude-sonnet-4-20250514".
+    # base_url should point at the endpoint root (with or without a trailing /v1).
+    # api_key is optional — local servers may not require authentication.
+    # my-proxy:
+    #   base_url: "https://my-anthropic-proxy.example.com"
+    #   api_key: "${ANTHROPIC_PROXY_KEY}"
+    #   models:
+    #     - "claude-sonnet-4-20250514"
+
   chatgpt:
     api_key: "${OPENAI_API_KEY}"
     models: []
@@ -143,6 +155,16 @@ executor:
     keepLastN: 3 # Recent tool outputs to keep intact (role-based per-step defaults override this)
     protectedTools: ["store_fact", "search_facts"] # Tools whose outputs are never pruned
     thresholdPercent: 50 # Context fill % below which pruning is skipped entirely (0 = always prune)
+
+  # --- History Mutation (regular, non-emergency) ----------------------------
+  # Reduces O(n²) replay cost by replacing old tool results with cache
+  # references. Information is preserved via ToolResultCache — the LLM can
+  # retrieve evicted content via tool_result_read. Independent of emergency
+  # compaction (which triggers at fill % thresholds).
+  historyMutation:
+    toolResultEvictionStep: 10 # Evict tool results to cache refs after N steps (0 = disabled)
+    evictStepStatus: false # Evict set_step_status results immediately (pure bookkeeping)
+    dedupRepeatedReads: false # Replace duplicate file reads with cache reference
 
   # --- Circuit Breaker (loop protection) ------------------------------------
   circuitBreaker:

@@ -46,17 +46,6 @@ func boolString(b bool) string {
 	return "false"
 }
 
-// plannerResponse returns a canned single-step plan response.
-func plannerResponse() *llm.ChatResponse {
-	return &llm.ChatResponse{
-		Message: llm.Message{
-			Role:    "assistant",
-			Content: `{"steps": [{"id": "step_1", "summary": "Test", "description": "What: test\nHow: test\nWhere: test\nAcceptance Criteria: pass", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`,
-		},
-		StopReason: "end_turn",
-	}
-}
-
 // executorFinishResponse returns a canned executor response that finishes with
 // the given answer.
 func executorFinishResponse(answer string) *llm.ChatResponse {
@@ -183,31 +172,29 @@ func TestConversationHistory_ResumeAppendsAssistant(t *testing.T) {
 // instead of duplicating the user message.
 func TestConversationHistory_RetryAfterFailureNotDuplicated(t *testing.T) {
 	callIdx := 0
-	failFirstPlanning := true
+	failFirstAttempt := true
 	mockLLM := &mockLLMCaller{
 		callFn: func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
 			callIdx++
 			switch callIdx {
 			case 1: // Router — failing attempt
 				return routerResponse(false), nil
-			case 2: // Planner — fail once
-				if failFirstPlanning {
-					failFirstPlanning = false
-					return nil, errors.New("planner LLM unavailable")
+			case 2: // Conductor — fail once
+				if failFirstAttempt {
+					failFirstAttempt = false
+					return nil, errors.New("conductor LLM unavailable")
 				}
-				return plannerResponse(), nil
+				return executorFinishResponse("Done after retry"), nil
 			case 3: // Router — retry
 				return routerResponse(false), nil
-			case 4: // Planner — retry succeeds
-				return plannerResponse(), nil
-			default: // Executor — finish
+			default: // Conductor — retry succeeds with finish tool
 				return executorFinishResponse("Done after retry"), nil
 			}
 		},
 	}
 	orchestrator := newHistoryTestOrchestrator(mockLLM)
 
-	// First attempt fails at planning.
+	// First attempt fails.
 	if _, err := orchestrator.HandleMessage(context.Background(), "retry me", "session-1", HandleOptions{}); err == nil {
 		t.Fatal("expected first attempt to fail")
 	}

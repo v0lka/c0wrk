@@ -766,6 +766,8 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	if opts.ModelOverride != "" && o.modelSwitcher != nil {
 		if err := o.modelSwitcher.SetModel(ctx, opts.ModelOverride); err != nil {
 			o.logger.Warn("failed to apply model override", "model", opts.ModelOverride, "error", err)
+		} else {
+			o.config.Model = llm.BareModel(opts.ModelOverride)
 		}
 	}
 

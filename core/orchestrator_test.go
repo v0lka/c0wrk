@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/agent/router"
 	"github.com/v0lka/c0wrk/sdk/llm"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/c0wrk/sdk/prompt"
 	"github.com/v0lka/c0wrk/sdk/skills"
 	tools "github.com/v0lka/c0wrk/sdk/tools"
 	"github.com/v0lka/c0wrk/sdk/tools/builtins"
@@ -528,6 +530,62 @@ func TestBuildSystemPrompt_NoActiveSkills(t *testing.T) {
 				t.Errorf("%s mode prompt should NOT contain Active Skills section when no skills are active", name)
 			}
 		})
+	}
+}
+
+// TestBuildSystemPrompt_SkillsInStablePart verifies that active skills and
+// AGENTS.md are placed in the stable (cacheable) prefix before the
+// CacheBreakMarker, so provider-side prompt caching can reuse them across
+// ReAct iterations.
+func TestBuildSystemPrompt_SkillsInStablePart(t *testing.T) {
+	ctx := tools.WithWorkspacePath(context.Background(), "/test/workspace")
+	ctx = tools.WithEnvInfo(ctx, &tools.EnvInfo{
+		OS:   "darwin",
+		Arch: "arm64",
+	})
+	ctx = WithAgentsMD(ctx, &AgentsMD{Content: "project conventions"})
+	ctx = WithActiveSkills(ctx, &ActiveSkills{
+		Skills: []*skills.Skill{{
+			Metadata: skills.SkillMetadata{Name: "test-skill"},
+			Body:     "skill body content",
+		}},
+	})
+	// Vector hints ensure the volatile tail is non-empty so CacheBreakMarker
+	// is preserved by Builder.Build().
+	ctx = WithVectorSearchHints(ctx, &VectorSearchHints{
+		Files: []VectorSearchHint{{FilePath: "hint.go", Summary: "hint"}},
+	})
+
+	modelMeta := llm.ModelMetadata{Family: "glm"}
+	result := buildSystemPrompt(ctx, "test", modelMeta)
+
+	parts := strings.SplitN(result, prompt.CacheBreakMarker, 2)
+	if len(parts) != 2 {
+		t.Fatalf("expected CacheBreakMarker to split prompt, got %d parts", len(parts))
+	}
+	stable, volatile := parts[0], parts[1]
+	if !strings.Contains(stable, "test-skill") {
+		t.Error("skills should be in stable (cacheable) part")
+	}
+	if !strings.Contains(stable, "project conventions") {
+		t.Error("AGENTS.md content should be in stable (cacheable) part")
+	}
+	if !strings.Contains(stable, "## Workspace") {
+		t.Error("workspace context should be in stable (cacheable) part")
+	}
+	if !strings.Contains(stable, "## Environment") {
+		t.Error("env block should be in stable (cacheable) part")
+	}
+	// Volatile part should not contain skills or AGENTS.md.
+	if strings.Contains(volatile, "test-skill") {
+		t.Error("skills should NOT be in volatile part")
+	}
+	if strings.Contains(volatile, "project conventions") {
+		t.Error("AGENTS.md content should NOT be in volatile part")
+	}
+	// Vector hints should be in volatile part.
+	if !strings.Contains(volatile, "Relevant Project Files") {
+		t.Error("vector hints should be in volatile part")
 	}
 }
 
@@ -1170,5 +1228,154 @@ func TestConversationHistory_RouterHistoryUnchanged(t *testing.T) {
 	history := orchestrator.ConversationHistory()
 	if len(history) != 12 {
 		t.Errorf("expected 12 messages in history (10 pre-populated + 2 new), got %d", len(history))
+	}
+}
+
+// TestHandleMessage_ModelOverride_UpdatesConfigModel verifies that when a
+// ModelOverride is provided, o.config.Model is updated to the bare name of
+// the override. This ensures ContextWindow, buildSystemPrompt (family
+// selection), and TokenizerType all reflect the active model rather than the
+// default.
+func TestHandleMessage_ModelOverride_UpdatesConfigModel(t *testing.T) {
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			if callIdx == 1 {
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "general", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			}
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": [{"id": "step_1", "summary": "Test", "description": "What: test\nHow: test\nWhere: test\nAcceptance Criteria: pass", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	// Build an LLM Router with two models so SetModel has a target to switch to.
+	llmRouter, err := llm.NewRouter(context.Background(), llm.RouterConfig{
+		Providers: []llm.ProviderEntry{
+			{Name: "openai", ProviderType: "openai", BaseURL: "http://localhost:9999", Models: []string{"default-model", "override-model"}},
+		},
+		MaxRetries:     1,
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     100 * time.Millisecond,
+	}, nil)
+	if err != nil {
+		t.Fatalf("failed to build llm router: %v", err)
+	}
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{
+		MaxSteps: 10,
+		Model:    "default-model",
+	}, OrchestratorDeps{
+		Router:         newCoreRouter(mockLLM, 5),
+		LLM:            mockLLM,
+		ModelSwitcher:  llmRouter,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+
+	if orchestrator.config.Model != "default-model" {
+		t.Fatalf("expected initial config.Model 'default-model', got %q", orchestrator.config.Model)
+	}
+
+	_, err = orchestrator.HandleMessage(context.Background(), "test", "", HandleOptions{
+		ModelOverride: "override-model",
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	if orchestrator.config.Model != "override-model" {
+		t.Errorf("expected config.Model updated to 'override-model', got %q", orchestrator.config.Model)
+	}
+}
+
+// TestHandleMessage_ModelOverride_CompositeID_UpdatesConfigModel verifies that
+// a composite model override (e.g. "Zen/glm-5.2") is reduced to the bare model
+// name when stored in config.Model.
+func TestHandleMessage_ModelOverride_CompositeID_UpdatesConfigModel(t *testing.T) {
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			if callIdx == 1 {
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "general", "complexity": 2, "compaction_strategy": "sliding_window", "suggested_tools": [], "needs_clarification": false}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			}
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: `{"steps": [{"id": "step_1", "summary": "Test", "description": "What: test\nHow: test\nWhere: test\nAcceptance Criteria: pass", "depends_on": [], "parallelizable": false, "estimated_tools": []}]}`,
+				},
+				StopReason: "end_turn",
+			}, nil
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	llmRouter, err := llm.NewRouter(context.Background(), llm.RouterConfig{
+		Providers: []llm.ProviderEntry{
+			{Name: "Zen", ProviderType: "openai", BaseURL: "http://localhost:9999", Models: []string{"glm-5.2"}},
+			{Name: "DeepSeek", ProviderType: "openai", BaseURL: "http://localhost:9998", Models: []string{"deepseek-v4-pro"}},
+		},
+		MaxRetries:     1,
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     100 * time.Millisecond,
+	}, nil)
+	if err != nil {
+		t.Fatalf("failed to build llm router: %v", err)
+	}
+	// Default to the DeepSeek model.
+	if err := llmRouter.SetModel(context.Background(), "DeepSeek/deepseek-v4-pro"); err != nil {
+		t.Fatalf("failed to set default model: %v", err)
+	}
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{
+		MaxSteps: 10,
+		Model:    "deepseek-v4-pro",
+	}, OrchestratorDeps{
+		Router:         newCoreRouter(mockLLM, 5),
+		LLM:            mockLLM,
+		ModelSwitcher:  llmRouter,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+
+	_, err = orchestrator.HandleMessage(context.Background(), "test", "", HandleOptions{
+		ModelOverride: "Zen/glm-5.2",
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	// config.Model should be the BARE name, not the composite id.
+	if orchestrator.config.Model != "glm-5.2" {
+		t.Errorf("expected config.Model 'glm-5.2' (bare), got %q", orchestrator.config.Model)
 	}
 }

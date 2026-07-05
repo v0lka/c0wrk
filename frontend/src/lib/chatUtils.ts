@@ -2,9 +2,10 @@ import type { ChatMessageUI, MessageType, DisplayItem, GroupedMessages } from '@
 import type { ChatMessage, PlanGroup, PlanItem } from '@/types/models'
 import { reconstructContent, buildHistoryId, collapseThoughts, extractMeta } from './chatUtilsHelpers'
 import {
-  handlePlanStepStart, handlePlanStepComplete, handleReflection,
+  handlePlanStepStart, handlePlanStepComplete, handleSubAgentLaunch, handleSubAgentComplete,
+  handleReflection,
   handleToolCall, handleToolResult, handleActionMessage,
-  type ToolLike, type PlanStep,
+  type ToolLike, type StepLikeItem,
 } from './chatGroupingHandlers'
 
 export { collapseThoughts } from './chatUtilsHelpers'
@@ -69,7 +70,7 @@ export function chatMessageToUI(msg: ChatMessage): ChatMessageUI {
 export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   const items: DisplayItem[] = []
   const pendingActions: DisplayItem[] = []
-  const openSteps = new Map<string, PlanStep>()
+  const openSteps = new Map<string, StepLikeItem>()
   const stepIdCounts = new Map<string, number>()
   const stepIndexMap = new Map<string, { num: number; title: string; description: string }>()
   const toolItemsByKey = new Map<string, ToolLike>()
@@ -93,6 +94,8 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
     }
     if (msg.type === 'plan_step_start') { handlePlanStepStart(msg, meta, stepIndexMap, stepIdCounts, openSteps, items); continue }
     if (msg.type === 'plan_step_complete') { handlePlanStepComplete(meta, openSteps); continue }
+    if (msg.type === 'subagent_launch') { handleSubAgentLaunch(msg, meta, openSteps, items); continue }
+    if (msg.type === 'subagent_complete') { handleSubAgentComplete(meta, openSteps); continue }
     if (msg.type === 'reflection') { handleReflection(msg, meta, openSteps, items); continue }
 
     switch (msg.type) {
@@ -119,12 +122,16 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         pushItem({ kind: 'service', id: msg.id, variant: msg.type as 'routing' | 'retry' | 'step_retry', content: msg.content, metadata: meta }, planStepId); break
       case 'status':
         pushItem({ kind: 'service', id: msg.id, variant: 'status', content: msg.content, metadata: meta }, planStepId); break
-      case 'step_done': case 'thinking': case 'subagent_launch': case 'subagent_complete': case 'task_resumed': case 'step_todo_update': break
+      case 'step_done': case 'thinking': case 'task_resumed': case 'step_todo_update': break
       default: break
     }
   }
 
-  for (const item of items) { if (item.kind === 'plan_step') item.children = collapseThoughts(item.children) }
+  for (const item of items) {
+    if (item.kind === 'plan_step' || item.kind === 'subagent') {
+      item.children = collapseThoughts(item.children)
+    }
+  }
   return { items: collapseThoughts(items), pendingActions }
 }
 

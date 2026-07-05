@@ -70,6 +70,11 @@ func TestModelRegistry_BuiltInResolution(t *testing.T) {
 		// Grok models
 		{"grok-4.20", 2000000, 32768, "approximate"},
 		{"grok-3-mini", 131072, 32768, "approximate"},
+
+		// GLM models (Zhipu AI)
+		{"glm-5.2", 1000000, 16384, "approximate"},
+		{"glm-5.1", 200000, 16384, "approximate"},
+		{"glm-5", 200000, 16384, "approximate"},
 	}
 
 	for _, tt := range tests {

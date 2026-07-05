@@ -15,25 +15,64 @@ func TestAnthropicProvider_ImplementsInterface(t *testing.T) {
 	var _ Provider = (*AnthropicProvider)(nil)
 }
 
-// TestAnthropicProvider_NewRequiresAPIKey verifies that NewAnthropicProvider fails without an API key.
-func TestAnthropicProvider_NewRequiresAPIKey(t *testing.T) {
-	_, err := NewAnthropicProvider(AnthropicProviderConfig{})
-	if err == nil {
-		t.Error("expected error when API key is empty")
+// TestAnthropicProvider_NewAllowsEmptyAPIKey verifies that NewAnthropicProvider
+// does not require an API key, mirroring NewOpenAIProvider so that local
+// Anthropic-compatible servers (which may not need auth) are supported. The
+// official endpoint will fail at call time with a 401 when the key is empty.
+func TestAnthropicProvider_NewAllowsEmptyAPIKey(t *testing.T) {
+	provider, err := NewAnthropicProvider(AnthropicProviderConfig{})
+	if err != nil {
+		t.Fatalf("unexpected error on empty API key: %v", err)
+	}
+	if provider == nil {
+		t.Fatal("expected non-nil provider")
 	}
 }
 
-// TestAnthropicProvider_Name verifies that Name() returns "anthropic".
+// TestAnthropicProvider_Name verifies that Name() returns "anthropic" by default
+// and the configured custom name when set.
 func TestAnthropicProvider_Name(t *testing.T) {
+	t.Run("default name", func(t *testing.T) {
+		provider, err := NewAnthropicProvider(AnthropicProviderConfig{
+			APIKey: "test-key",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if provider.Name() != "anthropic" {
+			t.Errorf("expected name 'anthropic', got %q", provider.Name())
+		}
+	})
+
+	t.Run("custom name", func(t *testing.T) {
+		provider, err := NewAnthropicProvider(AnthropicProviderConfig{
+			Name:   "my-anthropic-proxy",
+			APIKey: "test-key",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if provider.Name() != "my-anthropic-proxy" {
+			t.Errorf("expected name 'my-anthropic-proxy', got %q", provider.Name())
+		}
+	})
+}
+
+// TestAnthropicProvider_CustomBaseURL verifies that a custom BaseURL is accepted
+// at construction (Anthropic-compatible endpoint) without error.
+func TestAnthropicProvider_CustomBaseURL(t *testing.T) {
 	provider, err := NewAnthropicProvider(AnthropicProviderConfig{
-		APIKey: "test-key",
+		Name:    "my-proxy",
+		APIKey:  "test-key",
+		BaseURL: "https://my-anthropic-proxy.example.com",
 	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("unexpected error with custom BaseURL: %v", err)
 	}
-
-	if provider.Name() != "anthropic" {
-		t.Errorf("expected name 'anthropic', got %q", provider.Name())
+	if provider.Name() != "my-proxy" {
+		t.Errorf("expected name 'my-proxy', got %q", provider.Name())
 	}
 }
 

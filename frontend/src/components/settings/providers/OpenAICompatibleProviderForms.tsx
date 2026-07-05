@@ -10,6 +10,8 @@ interface OpenAICompatibleProviderFormProps {
   onToggleModel: (provider: string, model: string) => void
   onDelete: (provider: string) => void
   defaultModel: string
+  /** Label prefix shown for each provider accordion. Defaults to "OpenAI Compatible". */
+  labelPrefix?: string
 }
 
 export function OpenAICompatibleProviderForms({
@@ -21,6 +23,7 @@ export function OpenAICompatibleProviderForms({
   onToggleModel,
   onDelete,
   defaultModel,
+  labelPrefix = 'OpenAI Compatible',
 }: OpenAICompatibleProviderFormProps) {
   return (
     <>
@@ -28,7 +31,7 @@ export function OpenAICompatibleProviderForms({
         const config = providerConfigs[name]
         if (!config) return null
         const isExpanded = expandedProviders.has(name)
-        const label = `OpenAI Compatible: ${name}`
+        const label = `${labelPrefix}: ${name}`
 
         return (
           <ProviderAccordion

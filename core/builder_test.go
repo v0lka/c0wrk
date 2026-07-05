@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -181,5 +183,79 @@ func TestBuilder_Build_FullPipeline(t *testing.T) {
 	// Verify registry is properly set up regardless of Build outcome.
 	if b.ToolRegistry() == nil {
 		t.Error("expected non-nil tool registry")
+	}
+}
+
+// TestListAnthropicModels_Success verifies that listAnthropicModels parses a
+// standard {"data":[{"id":...}]} response from an Anthropic-compatible
+// endpoint and returns sorted, non-empty model IDs.
+func TestListAnthropicModels_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("unexpected path %q, want /v1/models", r.URL.Path)
+		}
+		if r.Header.Get("x-api-key") != "proxy-key" {
+			t.Errorf("x-api-key header = %q, want 'proxy-key'", r.Header.Get("x-api-key"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-4-20250514"},{"id":"claude-opus-4-20250514"}]}`))
+	}))
+	defer srv.Close()
+
+	names, err := listAnthropicModels(context.Background(), srv.URL, "proxy-key", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"claude-opus-4-20250514", "claude-sonnet-4-20250514"}
+	if len(names) != 2 || names[0] != want[0] || names[1] != want[1] {
+		t.Errorf("names = %v, want %v", names, want)
+	}
+}
+
+// TestListAnthropicModels_BaseURLWithV1 verifies URL normalization when the
+// base URL already ends with "/v1".
+func TestListAnthropicModels_BaseURLWithV1(t *testing.T) {
+	var hitPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-4-20250514"}]}`))
+	}))
+	defer srv.Close()
+
+	_, err := listAnthropicModels(context.Background(), srv.URL+"/v1", "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hitPath != "/v1/models" {
+		t.Errorf("request path = %q, want /v1/models", hitPath)
+	}
+}
+
+// TestListAnthropicModels_FallbackOnError verifies that an error response is
+// returned (the caller — ListProviderModels — maps it to the built-in list).
+func TestListAnthropicModels_FallbackOnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	_, err := listAnthropicModels(context.Background(), srv.URL, "proxy-key", nil)
+	if err == nil {
+		t.Fatal("expected error for 404 response, got nil")
+	}
+}
+
+// TestListAnthropicModels_MalformedBody verifies a non-JSON body errors out.
+func TestListAnthropicModels_MalformedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`not-json`))
+	}))
+	defer srv.Close()
+
+	_, err := listAnthropicModels(context.Background(), srv.URL, "", nil)
+	if err == nil {
+		t.Fatal("expected error for malformed response, got nil")
 	}
 }

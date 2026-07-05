@@ -148,7 +148,7 @@ func (e *Executor) hasMutatingToolExecuted(state *runState) bool {
 	return false
 }
 
-// handleImplicitFinish handles the "no tool calls" branches: nudge → finish-nudge → implicit finish.
+// handleImplicitFinish handles the "no tool calls" branches: syntax-nudge → finish-nudge → implicit finish.
 //
 // The model can enter a failure-mode where it prints tool-call syntax
 // (```bash_exec, ```read_file) as text instead of emitting a tool_use block.
@@ -156,8 +156,18 @@ func (e *Executor) hasMutatingToolExecuted(state *runState) bool {
 // catches this; we apply a dedicated nudge up to 3 times, then abort with
 // Finished=false so the caller (subagent) treats it as a failure, not a success.
 //
-// For the general "no tool calls with end_turn" case, we nudge up to 2 times
-// before accepting an implicit finish.
+// For the general "no tool calls with end_turn" case, a text-only end_turn is
+// always treated as a deliberate conversational turn: the model chose to respond
+// with text instead of using tools. This is the expected behavior for
+// conversational skills (explore, etc.) where the agent asks clarifying questions
+// and yields control to the user. The text is emitted as a permanent assistant
+// message via AssistantChunk/AssistantDone (when not suppressed), and the
+// executor returns Finished=true so the orchestrator waits for the next user
+// message.
+//
+// For "no tool calls but NOT end_turn" (max_tokens, stop_sequence), the model
+// did not intentionally stop — we nudge up to 2 times before accepting an
+// implicit finish.
 func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, state *runState, cw ContextManager, hasTools bool) (*ExecutorResult, loopAction) {
 	// Failure-mode: model printed tool-call syntax as text. This is not an
 	// implicit finish — the model is stuck. Apply a dedicated nudge up to 3
@@ -184,24 +194,14 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 		}, actionNone
 	}
 
-	// Check for implicit finish (no tool calls with end_turn)
+	// Check for implicit finish (no tool calls with end_turn).
+	//
+	// A text-only end_turn is always accepted as a deliberate finish — the
+	// model chose to respond with text. This allows conversational skills
+	// (explore, etc.) to ask questions and yield control to the user.
+	// The "model printed tool-call syntax as text" failure mode is already
+	// caught by DetectToolCallSyntaxInContent above.
 	if resp.StopReason == "end_turn" {
-		// Nudge mechanism: if this is early in execution and tools are available,
-		// give the LLM up to 2 chances to use tools before accepting implicit finish
-		if hasTools && state.implicitFinishNudgeCount < 2 {
-			state.implicitFinishNudgeCount++
-			nudgeStep := Step{
-				Thought:        thought,
-				UserNudge:      executorNudge,
-				ReasoningItems: resp.Message.ReasoningItems,
-				TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
-			}
-			state.allSteps = append(state.allSteps, nudgeStep)
-			cw.AddStep(nudgeStep)
-			e.emitter.ExecutorDiagnostic(state.stepNum, "executor_nudge", map[string]any{"reason": "no_tools_used_on_step_1", "attempt": state.implicitFinishNudgeCount})
-			return nil, actionContinue // retry with nudge in context
-		}
-
 		// Finish nudge: require explicit finish tool call before accepting completion
 		// Only needed in plan-step execution where output needs structured capture
 		if e.suppressAssistantEvents && !e.finishNudgeAttempted {
@@ -597,7 +597,8 @@ func (e *Executor) processSingleToolCall(
 	// --- End parse error tracker ---
 
 	// Stage 1 + 2: truncation, caching, token budget (shared helper).
-	observation = e.processToolResult(execCtx, observation, result.Content, action.Name, action.Input, cw)
+	var cacheHash string
+	observation, cacheHash = e.processToolResult(execCtx, observation, result.Content, action.Name, action.Input, cw)
 
 	// Emit tool result
 	e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, result.IsError)
@@ -637,6 +638,7 @@ func (e *Executor) processSingleToolCall(
 		Observation:      observation,
 		IsUntrusted:      isUntrusted,
 		IsError:          result.IsError,
+		CacheHash:        cacheHash,
 		TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		ResponseGroup:    responseGroup,
 	}
@@ -812,7 +814,8 @@ func (e *Executor) processBatchTool(
 		isUntrusted := e.tools.IsToolUntrusted(subCall.Name)
 
 		// Stage 1 + 2: truncation, caching, token budget (shared helper).
-		observation = e.processToolResult(execCtx, observation, result.Content, subCall.Name, subCall.Input, cw)
+		var batchCacheHash string
+		observation, batchCacheHash = e.processToolResult(execCtx, observation, result.Content, subCall.Name, subCall.Input, cw)
 
 		// Emit tool result.
 		e.emitter.ToolResult(state.stepNum, effectiveIdx, len(observation), observation, result.IsError)
@@ -845,6 +848,7 @@ func (e *Executor) processBatchTool(
 			Action:           subCall,
 			Observation:      observation,
 			IsUntrusted:      isUntrusted,
+			CacheHash:        batchCacheHash,
 			TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			ResponseGroup:    responseGroup,
 		}
@@ -858,7 +862,8 @@ func (e *Executor) processBatchTool(
 // processToolResult applies Stage 1 (per-tool truncation + caching +
 // fragmentation nudge) and Stage 2 (token-budget truncation preserving
 // the Stage 1 nudge). Shared by processSingleToolCall and processBatchTool
-// to avoid duplicated pipeline logic.
+// to avoid duplicated pipeline logic. Returns the processed observation and
+// the ToolResultCache hash (empty if the tool is non-cacheable or cache is nil).
 func (e *Executor) processToolResult(
 	execCtx context.Context,
 	observation string,
@@ -866,14 +871,13 @@ func (e *Executor) processToolResult(
 	toolName string,
 	input json.RawMessage,
 	cw ContextManager,
-) string {
+) (processedObservation, cacheHash string) {
 	// --- Stage 1: Per-tool truncation + optional caching ---
 	truncated, wasTruncated := e.applyPerToolTruncation(observation, toolName)
 	if wasTruncated {
 		observation = truncated
 	}
 
-	var cacheHash string
 	if e.toolCache != nil {
 		if _, isNonCacheable := nonCacheableTools[toolName]; !isNonCacheable {
 			meta := e.buildCacheMeta(execCtx, toolName, input)
@@ -909,7 +913,8 @@ func (e *Executor) processToolResult(
 	observation = e.applyToolResultBudget(observation, cw, toolName, budgetHash)
 	observation += stage1Nudge
 
-	return observation
+	processedObservation = observation
+	return
 }
 
 // checkRepeatIdenticalTool detects repeated identical tool calls and applies

@@ -11,7 +11,7 @@ import (
 	"github.com/v0lka/c0wrk/sdk/tools"
 )
 
-const toolSetStepStatusDescription = "Update the to-do checklist for the current step. Call this as your FIRST tool call to initialize the checklist, and again after completing each item (mark it as '- [x]'). Use ONLY ASCII checkboxes: '- [ ]' for unchecked, '- [x]' for checked. No nested lists, no Unicode checkboxes."
+const toolSetStepStatusDescription = "Update the to-do checklist for the current step. Call this as your FIRST tool call to initialize the checklist, and again after completing each item (mark it as '- [x]'). Use ONLY ASCII checkboxes: '- [ ]' for unchecked, '- [x]' for checked. No nested lists, no Unicode checkboxes. When executing a plan inline (as the Conductor), pass step_id to associate the checklist with a specific plan step."
 
 var (
 	// Strict regex: line must start with "- [ ] " or "- [x] " followed by text.
@@ -37,6 +37,10 @@ func NewSetStepStatusTool() *SetStepStatusTool {
 			"todo_list": {
 				"type": "string",
 				"description": "The to-do list as Markdown checkboxes, one per line. Example:\n- [ ] First task\n- [x] Completed task\n- [ ] Remaining task"
+			},
+			"step_id": {
+				"type": "string",
+				"description": "Optional: the plan step ID this to-do list belongs to. Pass this when executing a declared plan inline (as the Conductor) to track which plan step you are working on. Subagents should omit this — the step ID is inferred from the execution context."
 			}
 		},
 		"required": ["todo_list"]
@@ -48,6 +52,7 @@ func NewSetStepStatusTool() *SetStepStatusTool {
 // SetStepStatusInput represents the input parameters for set_step_status.
 type SetStepStatusInput struct {
 	TodoList string `json:"todo_list"`
+	StepID   string `json:"step_id,omitempty"`
 }
 
 // TodoParseResult holds the outcome of parsing a to-do list.
@@ -123,7 +128,10 @@ func (t *SetStepStatusTool) Execute(ctx context.Context, input json.RawMessage) 
 		}, nil
 	}
 
-	stepID := agent.StepIDFromContext(ctx)
+	stepID := params.StepID
+	if stepID == "" {
+		stepID = agent.StepIDFromContext(ctx)
+	}
 	if stepID == "" {
 		// No plan step context — silently succeed (e.g., planner exploration)
 		return tools.ToolResult{Content: "To-do list accepted (no active plan step)"}, nil

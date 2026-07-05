@@ -63,6 +63,16 @@ Before triggering a full compaction strategy, the system prunes verbose tool out
 
 This runs at the predictive threshold (85%), before strategy compaction (92%).
 
+### Regular History Mutation (separate mechanism)
+
+Independent of emergency compaction, regular history mutation runs on every `BuildPrompt` call to reduce O(n²) replay cost. It replaces old tool results with cache references, evicts bookkeeping outputs, and deduplicates repeated reads — preserving information via `ToolResultCache` (the LLM can retrieve evicted content via `tool_result_read`).
+
+- **Tool result eviction**: after N steps (configurable `toolResultEvictionStep`), a tool result is replaced with `[Result evicted to cache. Use tool_result_read(hash=..., start_line=1, num_lines=N) to retrieve.]`
+- **Step status eviction**: `set_step_status` results (pure bookkeeping) are evicted immediately to `[step status update — evicted]`
+- **Dedup repeated reads**: if the same file (same path + mtime → same cache hash) was read earlier, the later result is replaced with a cache reference
+
+Mutation runs BEFORE pruning in `buildToolMsg`. Protected tools are exempt from mutation (same list as pruning). Unlike emergency compaction, mutation does NOT use LLM summarization — it only replaces content with dereferenceable references.
+
 ## Trigger Thresholds
 
 ```
@@ -72,6 +82,11 @@ Context fill %:
               ▼           ▼        ▼
          Tool output   Strategy  Emergency
           pruning     compaction  compaction
+
+Regular history mutation: runs on EVERY BuildPrompt (not fill-triggered)
+  Step age > toolResultEvictionStep → replace with cache reference
+  set_step_status → evict immediately
+  Duplicate read (same hash) → replace with cache reference
 ```
 
 ## Per-Step Pruning Overrides

@@ -7,11 +7,13 @@ import { resolveToolKey } from './chatUtilsHelpers'
 
 export type ToolLike = DisplayItem & { kind: 'tool' }
 export type PlanStep = DisplayItem & { kind: 'plan_step' }
+export type SubAgentItem = DisplayItem & { kind: 'subagent' }
+export type StepLikeItem = PlanStep | SubAgentItem
 
 export function handlePlanStepStart(
   msg: ChatMessageUI, meta: Record<string, unknown> | undefined,
   stepIndexMap: Map<string, { num: number; title: string; description: string }>,
-  stepIdCounts: Map<string, number>, openSteps: Map<string, PlanStep>, items: DisplayItem[],
+  stepIdCounts: Map<string, number>, openSteps: Map<string, StepLikeItem>, items: DisplayItem[],
 ) {
   const stepId = (meta?.step_id as string) || ''
   const fallbackDesc = (meta?.description as string) || stepId
@@ -27,19 +29,62 @@ export function handlePlanStepStart(
   items.push(stepItem)
 }
 
-export function handlePlanStepComplete(meta: Record<string, unknown> | undefined, openSteps: Map<string, PlanStep>) {
+export function handlePlanStepComplete(meta: Record<string, unknown> | undefined, openSteps: Map<string, StepLikeItem>) {
+  const stepId = (meta?.step_id as string) || ''
+  const step = openSteps.get(stepId)
+  if (!step) return
+  step.status = (meta?.success as boolean) ? 'completed' : 'failed'
+  // Subagents receive their duration from subagent_complete; the subsequent
+  // plan_step_complete fires with duration=0, so don't overwrite.
+  if (step.kind === 'plan_step' && meta?.duration !== undefined) step.duration = meta.duration as number
+  if (!meta?.success && meta?.error) step.error = meta.error as string
+  openSteps.delete(stepId)
+}
+
+export function handleSubAgentLaunch(
+  msg: ChatMessageUI, meta: Record<string, unknown> | undefined,
+  openSteps: Map<string, StepLikeItem>, items: DisplayItem[],
+) {
+  const stepId = (meta?.step_id as string) || ''
+  const description = (meta?.description as string) || ''
+  const existing = openSteps.get(stepId)
+  if (existing) {
+    // Convert the plan_step into a subagent block in place.
+    // The same object reference stays in the items tree and openSteps,
+    // so children keep nesting under it.
+    const converted = existing as unknown as SubAgentItem
+    converted.kind = 'subagent'
+    if (description) {
+      converted.title = description
+      converted.description = description
+    }
+    return
+  }
+  // No prior plan_step_start — create a fresh top-level subagent block.
+  const subItem: SubAgentItem = {
+    kind: 'subagent', id: msg.id, stepId,
+    title: description || stepId,
+    description: description || undefined,
+    status: 'running', children: [],
+  }
+  openSteps.set(stepId, subItem)
+  items.push(subItem)
+}
+
+export function handleSubAgentComplete(
+  meta: Record<string, unknown> | undefined,
+  openSteps: Map<string, StepLikeItem>,
+) {
   const stepId = (meta?.step_id as string) || ''
   const step = openSteps.get(stepId)
   if (!step) return
   step.status = (meta?.success as boolean) ? 'completed' : 'failed'
   if (meta?.duration !== undefined) step.duration = meta.duration as number
-  if (!meta?.success && meta?.error) step.error = meta.error as string
-  openSteps.delete(stepId)
 }
 
 export function handleReflection(
   msg: ChatMessageUI, meta: Record<string, unknown> | undefined,
-  openSteps: Map<string, PlanStep>, items: DisplayItem[],
+  openSteps: Map<string, StepLikeItem>, items: DisplayItem[],
 ) {
   const item: DisplayItem = {
     kind: 'reflection', id: msg.id, summary: (meta?.summary as string) || '',

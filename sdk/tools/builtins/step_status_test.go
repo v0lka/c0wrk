@@ -137,6 +137,60 @@ func TestSetStepStatusTool_ExecuteNoStepID(t *testing.T) {
 	}
 }
 
+func TestSetStepStatusTool_ExecuteWithExplicitStepID(t *testing.T) {
+	var capturedStepID string
+	var capturedItems []agent.TodoItem
+
+	// No step ID in context — the explicit step_id parameter should be used instead.
+	ctx := context.Background()
+	ctx = agent.WithStepTodoUpdateFunc(ctx, func(stepID string, items []agent.TodoItem) {
+		capturedStepID = stepID
+		capturedItems = items
+	})
+
+	tool := NewSetStepStatusTool()
+	input, _ := json.Marshal(SetStepStatusInput{TodoList: "- [ ] A\n- [x] B", StepID: "step_99"})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", result.Content)
+	}
+	if capturedStepID != "step_99" {
+		t.Errorf("expected step_id 'step_99', got %q", capturedStepID)
+	}
+	if len(capturedItems) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(capturedItems))
+	}
+	if !strings.Contains(result.Content, "step_99") {
+		t.Errorf("result should mention step_id, got %q", result.Content)
+	}
+}
+
+func TestSetStepStatusTool_ExecuteExplicitStepIDOverridesContext(t *testing.T) {
+	var capturedStepID string
+
+	// Context has step_42, but explicit step_id parameter should win.
+	ctx := context.Background()
+	ctx = agent.WithStepID(ctx, "step_42")
+	ctx = agent.WithStepTodoUpdateFunc(ctx, func(stepID string, items []agent.TodoItem) {
+		capturedStepID = stepID
+	})
+
+	tool := NewSetStepStatusTool()
+	input, _ := json.Marshal(SetStepStatusInput{TodoList: "- [ ] A", StepID: "step_override"})
+
+	_, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedStepID != "step_override" {
+		t.Errorf("expected step_id 'step_override' to override context, got %q", capturedStepID)
+	}
+}
+
 func TestSetStepStatusTool_ExecuteNoUpdateFunc(t *testing.T) {
 	ctx := context.Background()
 	ctx = agent.WithStepID(ctx, "step_1")

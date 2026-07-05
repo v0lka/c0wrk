@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -667,7 +668,23 @@ func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider s
 			}
 			return listOpenAIModels(ctx, baseURL, apiKey)
 		case "anthropic":
-			return llm.BuiltInModelNames("anthropic-api"), nil
+			baseURL := cfg.ExpandEnvVars(pc.BaseURL)
+			// Fixed "anthropic" provider (no BaseURL): return the built-in
+			// Claude model list. An anthropic_compatible entry (non-empty
+			// BaseURL) queries the custom endpoint's /v1/models and falls
+			// back to the built-in list on any error so the UI degrades
+			// gracefully when the endpoint is unreachable or non-standard.
+			if baseURL == "" {
+				return llm.BuiltInModelNames("anthropic-api"), nil
+			}
+			apiKey := cfg.ExpandEnvVars(pc.APIKey)
+			names, err := listAnthropicModels(ctx, baseURL, apiKey, b.proxyClient)
+			if err != nil {
+				b.log().Warn("anthropic-compatible model listing failed; falling back to built-in list",
+					"provider", provider, "base_url", baseURL, "error", err)
+				return llm.BuiltInModelNames("anthropic-api"), nil
+			}
+			return names, nil
 		default:
 			return nil, fmt.Errorf("unsupported provider type %q for provider %q", pc.ProviderType, provider)
 		}
@@ -1002,6 +1019,12 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 		}
 
 		cw := sdkmemory.NewContextWindow(systemPrompt, modelMeta, tracker, thresholds, strategy, cfg.Executor.Compaction.SafetyMarginPercent, cfg.Security.InjectionDefenseEnabled, pruning)
+		cw.SetHistoryMutation(sdkmemory.HistoryMutation{
+			ToolResultEvictionStep: cfg.Executor.HistoryMutation.ToolResultEvictionStep,
+			EvictStepStatus:        cfg.Executor.HistoryMutation.EvictStepStatus,
+			DedupRepeatedReads:     cfg.Executor.HistoryMutation.DedupRepeatedReads,
+			Logger:                 b.logger,
+		})
 		return NewCoreContextManager(cw)
 	}
 }
@@ -1167,6 +1190,72 @@ func listOpenAIModels(ctx context.Context, baseURL, apiKey string) ([]string, er
 	names := make([]string, 0, len(modelList.Data))
 	for _, m := range modelList.Data {
 		names = append(names, m.ID)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// listAnthropicModels fetches model names from an Anthropic-compatible API by
+// performing a raw HTTP GET to {baseURL}/v1/models (the go-anthropic SDK does
+// not expose a ListModels method). baseURL may or may not end with "/v1"; the
+// path is normalized. An optional proxy-configured httpClient is honored. The
+// "x-api-key" and "anthropic-version" headers are sent when apiKey is non-empty.
+func listAnthropicModels(ctx context.Context, baseURL, apiKey string, httpClient *http.Client) ([]string, error) {
+	// Normalize the URL: ensure it ends with "/v1/models".
+	endpoint := strings.TrimRight(baseURL, "/")
+	if strings.HasSuffix(endpoint, "/v1") {
+		endpoint += "/models"
+	} else {
+		endpoint += "/v1/models"
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build models request: %w", err)
+	}
+	if apiKey != "" {
+		req.Header.Set("x-api-key", apiKey)
+	}
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Accept", "application/json")
+
+	client := httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list models: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("anthropic-compatible models endpoint returned %s", resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read models response: %w", err)
+	}
+
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("failed to parse models response: %w", err)
+	}
+
+	names := make([]string, 0, len(payload.Data))
+	for _, m := range payload.Data {
+		if m.ID != "" {
+			names = append(names, m.ID)
+		}
 	}
 	sort.Strings(names)
 	return names, nil

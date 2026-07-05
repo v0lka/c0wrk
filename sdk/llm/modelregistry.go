@@ -523,15 +523,22 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 		},
 
 		// GLM models (Zhipu AI)
+		"glm-5.2": {
+			ContextWindow: 1000000,
+			OutputLimit:   16384,
+			TokenizerType: "approximate",
+			Family:        "glm",
+			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
+		},
 		"glm-5.1": {
-			ContextWindow: 128000,
+			ContextWindow: 200000,
 			OutputLimit:   16384,
 			TokenizerType: "approximate",
 			Family:        "glm",
 			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"glm-5": {
-			ContextWindow: 128000,
+			ContextWindow: 200000,
 			OutputLimit:   16384,
 			TokenizerType: "approximate",
 			Family:        "glm",

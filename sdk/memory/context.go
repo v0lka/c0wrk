@@ -31,6 +31,35 @@ type ToolOutputPruning struct {
 	Logger           *slog.Logger // Optional logger for pruning diagnostics
 }
 
+// HistoryMutation configures regular (non-emergency) mutation of step history
+// to reduce O(n²) replay cost. Unlike emergency compaction (triggered by fill
+// %), history mutation runs on every BuildPrompt call and replaces old tool
+// results with cache references, evicts bookkeeping outputs, and deduplicates
+// repeated reads. Information is preserved via ToolResultCache — the LLM can
+// retrieve evicted content via tool_result_read.
+type HistoryMutation struct {
+	// ToolResultEvictionStep is the number of steps after which a tool result
+	// is replaced with a cache reference. 0 disables eviction (full results
+	// kept indefinitely, subject to pruning/compaction).
+	ToolResultEvictionStep int
+	// EvictStepStatus enables immediate eviction of set_step_status results
+	// (pure bookkeeping, no information loss).
+	EvictStepStatus bool
+	// DedupRepeatedReads replaces duplicate file-read results (same path +
+	// mtime) with a reference to the earlier result's cache hash.
+	DedupRepeatedReads bool
+	// Logger is an optional logger for mutation diagnostics.
+	Logger *slog.Logger
+}
+
+// evictionReferenceText returns the placeholder text for an evicted tool result.
+func evictionReferenceText(hash string) string {
+	return fmt.Sprintf("[Result evicted to cache. Use tool_result_read(hash=%q, start_line=1, num_lines=N) to retrieve the full content.]", hash)
+}
+
+// stepStatusEvictedText is the placeholder for evicted set_step_status results.
+const stepStatusEvictedText = "[step status update — evicted]"
+
 // ContextWindow — managed representation of the LLM context window.
 type ContextWindow struct {
 	systemPrompt string
@@ -42,6 +71,7 @@ type ContextWindow struct {
 	modelMeta    llm.ModelMetadata
 	thresholds   CompactionThresholds
 	pruning      ToolOutputPruning
+	mutation     HistoryMutation
 	safetyMargin int // percentage of context window reserved as safety margin (default: 5)
 
 	// injectionDefenseEnabled gates the prompt injection defense wrapping (<untrusted-content> tags).
@@ -72,6 +102,7 @@ const defaultSafetyMargin = 5 // 5% of context window
 
 // NewContextWindow creates a new ContextWindow.
 // safetyMarginPercent is the percentage of context window reserved as safety margin (default: 5 if 0).
+// Optional pruning (first element) and mutation (second element) configs can be provided.
 func NewContextWindow(systemPrompt string, modelMeta llm.ModelMetadata, tracker *llm.ContextTokenTracker, thresholds CompactionThresholds, strategy sdkagent.CompactionStrategy, safetyMarginPercent int, injectionDefenseEnabled bool, pruning ...ToolOutputPruning) *ContextWindow {
 	if tracker == nil {
 		// Use a discard tracker to prevent nil dereference panics downstream.
@@ -99,6 +130,12 @@ func NewContextWindow(systemPrompt string, modelMeta llm.ModelMetadata, tracker 
 	// ThresholdPercent is left at zero-value (disabled) unless explicitly set.
 	// The config layer sets the default (e.g. 50%) via config.yaml.
 	return cw
+}
+
+// SetHistoryMutation configures regular history mutation (tool result eviction,
+// step status eviction, dedup). Must be called before the first BuildPrompt.
+func (cw *ContextWindow) SetHistoryMutation(m HistoryMutation) {
+	cw.mutation = m
 }
 
 // EffectiveMax returns the effective maximum token count for the context window,
@@ -381,11 +418,20 @@ func (cw *ContextWindow) buildAssistantMsg(thought, reasoningContent string, rea
 	return msg
 }
 
-// buildToolMsg creates a tool-role message with pruning and injection defense applied.
+// buildToolMsg creates a tool-role message with history mutation, pruning,
+// and injection defense applied. History mutation (eviction to cache reference,
+// step-status eviction, dedup) runs first, then pruning (fill-based placeholder),
+// then injection defense wrapping.
 func (cw *ContextWindow) buildToolMsg(step sdkagent.Step, idx int, protectedIndices map[int]struct{}) llm.Message {
 	observation := strings.TrimRight(step.Observation, invisibleChars)
 	if observation == "" {
 		observation = "(no output)"
+	}
+
+	// Apply history mutation first (age-based, preserves info via cache).
+	// Skip mutation for protected indices (they are explicitly kept).
+	if _, protected := protectedIndices[idx]; !protected {
+		observation = cw.applyHistoryMutation(step, idx, observation)
 	}
 
 	// Apply pruning: use placeholder for non-protected tool outputs
@@ -403,6 +449,71 @@ func (cw *ContextWindow) buildToolMsg(step sdkagent.Step, idx int, protectedIndi
 		Content:    observation,
 		ToolCallID: step.Action.ID,
 	}
+}
+
+// applyHistoryMutation replaces old tool results with cache references,
+// evicts bookkeeping outputs, and deduplicates repeated reads.
+// Returns the (possibly mutated) observation string.
+func (cw *ContextWindow) applyHistoryMutation(step sdkagent.Step, idx int, observation string) string {
+	// Protected tools are exempt from mutation.
+	if cw.isProtectedTool(step.Action.Name) {
+		return observation
+	}
+
+	toolName := step.Action.Name
+
+	// Evict set_step_status results immediately (pure bookkeeping).
+	if cw.mutation.EvictStepStatus && toolName == "set_step_status" {
+		return stepStatusEvictedText
+	}
+
+	// Age-based eviction: replace old tool results with cache reference.
+	if cw.mutation.ToolResultEvictionStep > 0 && step.CacheHash != "" {
+		age := len(cw.steps) - idx
+		if age > cw.mutation.ToolResultEvictionStep {
+			if cw.mutation.Logger != nil {
+				cw.mutation.Logger.Debug("tool result evicted to cache reference",
+					"stepIndex", idx, "age", age, "tool", toolName, "hash", step.CacheHash,
+				)
+			}
+			return evictionReferenceText(step.CacheHash)
+		}
+	}
+
+	// Dedup repeated reads: if the same file (path+mtime) was read earlier,
+	// replace this result with a reference. Detection is via cache hash —
+	// identical content produces the same hash, so a repeated read of an
+	// unchanged file will have the same CacheHash as the earlier step.
+	if cw.mutation.DedupRepeatedReads && step.CacheHash != "" && cw.isEarlierDuplicateHash(idx, step.CacheHash) {
+		if cw.mutation.Logger != nil {
+			cw.mutation.Logger.Debug("duplicate tool result replaced with reference",
+				"stepIndex", idx, "tool", toolName, "hash", step.CacheHash,
+			)
+		}
+		return evictionReferenceText(step.CacheHash)
+	}
+
+	return observation
+}
+
+// isProtectedTool checks if the tool name is in the pruning ProtectedTools list.
+func (cw *ContextWindow) isProtectedTool(toolName string) bool {
+	for _, t := range cw.pruning.ProtectedTools {
+		if t == toolName {
+			return true
+		}
+	}
+	return false
+}
+
+// isEarlierDuplicateHash checks if a step before idx has the same CacheHash.
+func (cw *ContextWindow) isEarlierDuplicateHash(idx int, hash string) bool {
+	for i := 0; i < idx; i++ {
+		if cw.steps[i].CacheHash == hash && cw.steps[i].CacheHash != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // buildNudgeMsg creates a user message for step-limit/retry nudges.

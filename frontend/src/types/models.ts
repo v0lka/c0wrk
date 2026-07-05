@@ -230,6 +230,7 @@ export interface ConfigLLMResponse {
   default_model: string  // single, global, cross-provider
   anthropic: ConfigProviderFull
   openai_compatible: Record<string, ConfigProviderFull>
+  anthropic_compatible: Record<string, ConfigProviderFull>
   chatgpt: ConfigProviderFull
   all_models: ModelInfo[]
   models_ready: boolean
@@ -259,6 +260,7 @@ export interface LLMFullConfigRequest {
   default_model?: string
   anthropic?: ProviderConfigRequest
   openai_compatible?: Record<string, ProviderConfigRequest>
+  anthropic_compatible?: Record<string, ProviderConfigRequest>
   chatgpt?: ProviderConfigRequest
 }
 

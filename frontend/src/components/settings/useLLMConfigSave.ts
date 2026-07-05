@@ -2,7 +2,7 @@ import { useCallback, useRef, useEffect } from 'react'
 import { updateLLMConfig, MASKED_API_KEY } from '@/api/config'
 import { invalidateConfigCache } from '@/hooks/useConfigData'
 import { logger } from '@/lib/logger'
-import { isOpenAICompatibleProvider, PROVIDERS_WITH_BASE_URL } from '@/lib/llm-providers'
+import { isCompatibleProvider, PROVIDERS_WITH_BASE_URL } from '@/lib/llm-providers'
 import type { LLMFullConfigRequest } from '@/types/models'
 import type { ProviderConfig } from './useLLMConfig'
 
@@ -32,6 +32,7 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
     (defModel: string, configs: Record<string, ProviderConfig>) => {
       const req: LLMFullConfigRequest & Record<string, unknown> = { default_model: defModel }
       const openaiCompatible: Record<string, { api_key: string; base_url?: string; models: string[] }> = {}
+      const anthropicCompatible: Record<string, { api_key: string; base_url?: string; models: string[] }> = {}
 
       for (const [p, cfg] of Object.entries(configs)) {
         if (!cfg) continue
@@ -42,8 +43,15 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
         if (PROVIDERS_WITH_BASE_URL.has(p)) {
           entry.base_url = cfg.base_url
         }
-        if (isOpenAICompatibleProvider(p)) {
-          openaiCompatible[p] = entry
+        if (isCompatibleProvider(p)) {
+          // Route to the correct backend map by transport type. Default to
+          // 'openai' for compatible providers that lack an explicit type
+          // (preserves behavior for any pre-existing compatible entries).
+          if (cfg.type === 'anthropic') {
+            anthropicCompatible[p] = entry
+          } else {
+            openaiCompatible[p] = entry
+          }
         } else {
           req[p] = entry
         }
@@ -51,6 +59,9 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
 
       if (Object.keys(openaiCompatible).length > 0) {
         req.openai_compatible = openaiCompatible
+      }
+      if (Object.keys(anthropicCompatible).length > 0) {
+        req.anthropic_compatible = anthropicCompatible
       }
 
       updateLLMConfig(req as LLMFullConfigRequest)

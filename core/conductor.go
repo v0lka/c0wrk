@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
@@ -197,6 +198,7 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 			continue
 		}
 		registry.Start(t.ID, nil)
+		emitPlanStepStart(l.deps.emitter, l.bb, t.ID)
 		subTasks = append(subTasks, st)
 	}
 
@@ -217,6 +219,7 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 		}
 		registry.Complete(sr.StepID, sr.Output, execErr, sr.Steps)
 		l.bb.SetStepResult(sr.StepID, sr.Output, execErr, sr.Steps)
+		emitPlanStepComplete(l.deps.emitter, sr.StepID, execErr == nil, 0, execErr)
 		status := tools.DelegationStatusCompleted
 		if execErr != nil {
 			status = tools.DelegationStatusFailed
@@ -260,6 +263,7 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	)
 
 	registry.Start(t.ID, nil)
+	emitPlanStepStart(l.deps.emitter, l.bb, t.ID)
 	ch := agent.RunSubAgent(taskCtx, t.ID, st.Executor, st.CM, redelegTools, st.TaskDesc, st.Emitter, st.TodoUpdateFunc)
 	sr := <-ch
 
@@ -269,6 +273,7 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	}
 	registry.Complete(t.ID, sr.Output, execErr, sr.Steps)
 	l.bb.SetStepResult(t.ID, sr.Output, execErr, sr.Steps)
+	emitPlanStepComplete(l.deps.emitter, t.ID, execErr == nil, 0, execErr)
 	status := tools.DelegationStatusCompleted
 	if execErr != nil {
 		status = tools.DelegationStatusFailed
@@ -285,6 +290,7 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 
 	asyncCtx, cancel := context.WithCancel(ctx)
 	registry.Start(t.ID, cancel)
+	emitPlanStepStart(l.deps.emitter, l.bb, t.ID)
 
 	go func() {
 		defer cancel()
@@ -297,8 +303,10 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 			}
 			registry.Complete(t.ID, sr.Output, execErr, sr.Steps)
 			l.bb.SetStepResult(t.ID, sr.Output, execErr, sr.Steps)
+			emitPlanStepComplete(l.deps.emitter, t.ID, execErr == nil, 0, execErr)
 		case <-asyncCtx.Done():
 			registry.Complete(t.ID, "", asyncCtx.Err(), nil)
+			emitPlanStepComplete(l.deps.emitter, t.ID, false, 0, asyncCtx.Err())
 		}
 	}()
 
@@ -340,12 +348,13 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	l.configureExecutor(executor)
 
 	return agent.SubAgentTask{
-		StepID:    t.ID,
-		Executor:  executor,
-		CM:        cm,
-		TaskTools: taskTools,
-		TaskDesc:  taskDesc,
-		Emitter:   l.scopeEvents(t.ID),
+		StepID:         t.ID,
+		Executor:       executor,
+		CM:             cm,
+		TaskTools:      taskTools,
+		TaskDesc:       taskDesc,
+		Emitter:        l.scopeEvents(t.ID),
+		TodoUpdateFunc: subagentTodoCallback(l.deps.emitter),
 	}, nil
 }
 
@@ -738,6 +747,12 @@ func RunConductor(
 	ctx = agent.WithTrajectoryStore(ctx, trajHolder)
 	ctx = orchestration.WithDelegationRegistry(ctx, registry)
 
+	// Inject a to-do update callback so set_step_status can emit
+	// StepTodoUpdate + PlanStepStart/Complete events when the Conductor
+	// executes a declared plan inline (without delegating to subagents).
+	// Subagents get their own callback via buildSubAgentTask.TodoUpdateFunc.
+	ctx = agent.WithStepTodoUpdateFunc(ctx, conductorTodoCallback(deps.emitter, bb))
+
 	// Build the system prompt with complexity-based Conductor Guidance.
 	systemPromptFactory := func(ctx context.Context, msg string, modelMeta llm.ModelMetadata) string {
 		prompt := buildSystemPrompt(ctx, msg, modelMeta)
@@ -831,4 +846,96 @@ func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orch
 		preWarningPct:    o.config.PreWarningPercent,
 	}
 	return RunConductor(ctx, message, bb, availableTools, deps, plansDir)
+}
+
+// conductorTodoCallback returns a StepTodoUpdateFunc for the Conductor's inline
+// execution path. When the Conductor calls set_step_status with a step_id, this
+// callback emits StepTodoUpdate (to refresh the plan panel's todo list),
+// PlanStepStart (to mark the step as "running"), and PlanStepComplete when all
+// items are checked (to mark the step as "completed").
+func conductorTodoCallback(emitter Emitter, bb orchestration.Blackboard) agent.StepTodoUpdateFunc {
+	if emitter == nil {
+		return nil
+	}
+	return func(stepID string, items []agent.TodoItem) {
+		coreItems := make([]TodoItem, len(items))
+		for i, item := range items {
+			coreItems[i] = TodoItem{Text: item.Text, Checked: item.Checked}
+		}
+
+		var desc, summary string
+		if plan := bb.GetPlan(); plan != nil {
+			for _, step := range plan.Steps {
+				if step.ID == stepID {
+					desc = step.Description
+					summary = step.Summary
+					break
+				}
+			}
+		}
+
+		emitter.StepTodoUpdate(stepID, coreItems)
+		emitter.PlanStepStart(stepID, desc, summary)
+
+		allDone := len(items) > 0
+		for _, item := range items {
+			if !item.Checked {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			emitter.PlanStepComplete(stepID, true, 0, "")
+		}
+	}
+}
+
+// subagentTodoCallback returns a StepTodoUpdateFunc for subagent execution.
+// It only emits StepTodoUpdate — PlanStepStart/Complete are emitted by the
+// launcher when the subagent starts/finishes.
+func subagentTodoCallback(emitter Emitter) agent.StepTodoUpdateFunc {
+	if emitter == nil {
+		return nil
+	}
+	return func(stepID string, items []agent.TodoItem) {
+		coreItems := make([]TodoItem, len(items))
+		for i, item := range items {
+			coreItems[i] = TodoItem{Text: item.Text, Checked: item.Checked}
+		}
+		emitter.StepTodoUpdate(stepID, coreItems)
+	}
+}
+
+// emitPlanStepStart looks up the step in the blackboard's plan and emits
+// PlanStepStart with the step's description and summary.
+func emitPlanStepStart(emitter Emitter, bb orchestration.Blackboard, stepID string) {
+	if emitter == nil {
+		return
+	}
+	var desc, summary string
+	if plan := bb.GetPlan(); plan != nil {
+		for _, step := range plan.Steps {
+			if step.ID == stepID {
+				desc = step.Description
+				summary = step.Summary
+				break
+			}
+		}
+	}
+	emitter.PlanStepStart(stepID, desc, summary)
+}
+
+// emitPlanStepComplete emits PlanStepComplete, nil-safe.
+func emitPlanStepComplete(emitter Emitter, stepID string, success bool, duration time.Duration, err error) {
+	if emitter == nil {
+		return
+	}
+	emitter.PlanStepComplete(stepID, success, duration, errMsgOrEmpty(err))
+}
+
+func errMsgOrEmpty(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

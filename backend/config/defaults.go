@@ -133,6 +133,13 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Executor.ToolOutputPruning.ThresholdPercent = 50
 	}
 
+	// History mutation defaults
+	if cfg.Executor.HistoryMutation.ToolResultEvictionStep == 0 {
+		cfg.Executor.HistoryMutation.ToolResultEvictionStep = 10
+	}
+	// EvictStepStatus and DedupRepeatedReads default to false (zero-value).
+	// Users opt in via config.yaml.
+
 	// Circuit breaker defaults
 	if cfg.Executor.CircuitBreaker.RepeatNudgeThreshold == 0 {
 		cfg.Executor.CircuitBreaker.RepeatNudgeThreshold = 3

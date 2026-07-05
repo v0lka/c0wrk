@@ -4,6 +4,7 @@ import { useInputModeStore } from '@/stores/inputModeStore'
 import { useConfigData } from '@/hooks/useConfigData'
 import { useDropdown } from '@/hooks/useDropdown'
 import { computeDropdownPosition, type DropdownPosition } from '@/lib/dropdownPosition'
+import { compositeModelId, bareModel, findModelInfo } from '@/lib/modelId'
 
 interface ModelEntry {
   /** Composite selector "provider/name" — the value sent to the backend. */
@@ -14,19 +15,6 @@ interface ModelEntry {
   provider: string
   /** Human-readable provider label for grouping headers. */
   providerLabel: string
-}
-
-/** Build the composite selector value from a provider config key + bare model
- *  name. Mirrors the backend llm.CompositeModelID / config.CompositeModelID. */
-function compositeModelId(provider: string, model: string): string {
-  return `${provider}/${model}`
-}
-
-/** Return the bare model name portion of a composite id (everything after the
- *  first "/"). Mirrors the backend llm.BareModel. */
-function bareModel(id: string): string {
-  const idx = id.indexOf('/')
-  return idx >= 0 ? id.slice(idx + 1) : id
 }
 
 /** Human-readable label for a provider config key. Fixed providers have
@@ -94,10 +82,12 @@ export function ModelCombobox() {
   }, [modelInfos])
 
   // Build display label. selectedModel is a composite id (or null = default).
+  // The global default_model may itself be a composite "provider/name" or a
+  // legacy bare name — show only the bare model name to the user.
   const displayLabel = selectedModel
     ? bareModel(selectedModel)
     : defaultModel
-      ? `Default: ${defaultModel}`
+      ? `Default: ${bareModel(defaultModel)}`
       : 'Select model…'
 
   const effectiveEntry = allModels.find((e) => e.id === (selectedModel ?? ''))
@@ -112,6 +102,17 @@ export function ModelCombobox() {
     }
     return map
   }, [allModels])
+
+  // Resolve the global default_model (which may be a composite "provider/name"
+  // or a legacy bare name) to the composite id of the entry it actually points
+  // at, so the "default" badge lands on exactly one provider's entry — even
+  // when the same bare name is exposed by multiple providers. Mirrors the
+  // backend's bare-name resolution (first match in deterministic order).
+  const effectiveDefaultId = useMemo(() => {
+    if (!defaultModel) return null
+    const info = findModelInfo(modelInfos, defaultModel)
+    return info ? compositeModelId(info.provider, info.name) : null
+  }, [modelInfos, defaultModel])
 
   const isLoading = !loaded
 
@@ -203,7 +204,7 @@ export function ModelCombobox() {
                 onClick={() => { setSelectedModel(null); setIsOpen(false) }}
               >
                 <span className="flex-1 text-left">
-                  Default{defaultModel ? ` (${defaultModel})` : ''}
+                  Default{defaultModel ? ` (${bareModel(defaultModel)})` : ''}
                 </span>
                 {!selectedModel && (
                   <span className="text-[10px] text-primary">active</span>
@@ -218,11 +219,13 @@ export function ModelCombobox() {
                   </div>
                   {models.map((entry) => {
                     const isSelected = selectedModel === entry.id
-                    // "default" badge is a display hint: marks entries whose
-                    // bare name matches the global default_model. When the bare
-                    // name is shared across providers this may badge more than
-                    // one entry; it is purely cosmetic.
-                    const isDefault = !selectedModel && entry.model === defaultModel
+                    // "default" badge marks the single entry the global
+                    // default_model resolves to. default_model may be a
+                    // composite "provider/name" or a legacy bare name, so
+                    // compare against the resolved composite id — this pins
+                    // the badge to exactly one provider even when the same
+                    // bare name is exposed by multiple providers.
+                    const isDefault = !selectedModel && entry.id === effectiveDefaultId
                     return (
                       <button
                         key={entry.id}

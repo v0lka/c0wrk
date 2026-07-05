@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
@@ -1608,5 +1609,191 @@ func TestVulnerableOutputsAllWithinKeepLastN(t *testing.T) {
 	vulnerable := cw.VulnerableOutputs()
 	if len(vulnerable) != 0 {
 		t.Errorf("Expected no vulnerable outputs when all steps within KeepLastN, got %d: %+v", len(vulnerable), vulnerable)
+	}
+}
+
+// makeStepWithCacheHash creates a test step with a CacheHash field set.
+func makeStepWithCacheHash(thought, observation, toolName, cacheHash string, toolID int) sdkagent.Step {
+	return sdkagent.Step{
+		Thought: thought,
+		Action: llm.ToolCall{
+			ID:    fmt.Sprintf("call_%d", toolID),
+			Name:  toolName,
+			Input: json.RawMessage(`{"arg": "value"}`),
+		},
+		Observation: observation,
+		CacheHash:   cacheHash,
+		TokensUsed:  100,
+	}
+}
+
+// TestHistoryMutation_ToolResultEviction verifies that tool results older
+// than ToolResultEvictionStep are replaced with a cache reference containing
+// the hash, while recent results stay full.
+func TestHistoryMutation_ToolResultEviction(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true)
+	cw.SetHistoryMutation(HistoryMutation{
+		ToolResultEvictionStep: 3,
+	})
+
+	// Add 5 steps with cache hashes.
+	for i := 1; i <= 5; i++ {
+		step := makeStepWithCacheHash(
+			fmt.Sprintf("Thought %d", i),
+			fmt.Sprintf("Full observation %d", i),
+			"read_file",
+			fmt.Sprintf("hash_%d", i),
+			i,
+		)
+		cw.AddStep(step)
+	}
+
+	messages := cw.BuildPrompt()
+
+	// Find tool messages (indices 2, 4, 6, 8, 10).
+	toolMsgs := []int{2, 4, 6, 8, 10}
+
+	// Steps 1-2 (age 5, 4 > 3) should be evicted → cache reference.
+	for i := 0; i < 2; i++ {
+		msg := messages[toolMsgs[i]]
+		if !strings.Contains(msg.Content, "Result evicted to cache") {
+			t.Errorf("step %d (age %d) should be evicted, got %q", i+1, 5-i, msg.Content)
+		}
+		if !strings.Contains(msg.Content, fmt.Sprintf("hash_%d", i+1)) {
+			t.Errorf("evicted reference should contain hash_%d, got %q", i+1, msg.Content)
+		}
+	}
+
+	// Steps 3-5 (age 3, 2, 1 — age 3 is NOT > 3) should have full content.
+	// Wait: age = len(steps) - idx. len=5, idx for step 3 (0-based 2) = 5-2=3. 3 > 3 is false.
+	// So steps 3, 4, 5 should be full.
+	for i := 2; i < 5; i++ {
+		msg := messages[toolMsgs[i]]
+		expected := fmt.Sprintf("Full observation %d", i+1)
+		if msg.Content != expected {
+			t.Errorf("step %d (age %d) should have full content %q, got %q", i+1, 5-i, expected, msg.Content)
+		}
+	}
+}
+
+// TestHistoryMutation_StepStatusEviction verifies that set_step_status results
+// are replaced with a minimal marker when EvictStepStatus is true.
+func TestHistoryMutation_StepStatusEviction(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true)
+	cw.SetHistoryMutation(HistoryMutation{
+		EvictStepStatus: true,
+	})
+
+	cw.AddStep(makeStepWithTool("Thought 1", "OK", "set_step_status", 1))
+	cw.AddStep(makeStepWithTool("Thought 2", "file content", "read_file", 2))
+
+	messages := cw.BuildPrompt()
+
+	// set_step_status result (index 2) should be evicted.
+	if messages[2].Content != stepStatusEvictedText {
+		t.Errorf("set_step_status should be evicted, got %q", messages[2].Content)
+	}
+	// read_file result (index 4) should remain full.
+	if messages[4].Content != "file content" {
+		t.Errorf("read_file should remain full, got %q", messages[4].Content)
+	}
+}
+
+// TestHistoryMutation_DedupRepeatedReads verifies that a repeated read of
+// the same file (same cache hash) is replaced with a reference.
+func TestHistoryMutation_DedupRepeatedReads(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true)
+	cw.SetHistoryMutation(HistoryMutation{
+		DedupRepeatedReads:     true,
+		ToolResultEvictionStep: 100, // high threshold so age-based eviction doesn't interfere
+	})
+
+	// Step 1: read_file with hash "abc"
+	cw.AddStep(makeStepWithCacheHash("Thought 1", "original content", "read_file", "abc", 1))
+	// Step 2: read_file same file → same hash "abc"
+	cw.AddStep(makeStepWithCacheHash("Thought 2", "same content", "read_file", "abc", 2))
+
+	messages := cw.BuildPrompt()
+
+	// First read (index 2) should have full content.
+	if messages[2].Content != "original content" {
+		t.Errorf("first read should have full content, got %q", messages[2].Content)
+	}
+	// Second read (index 4) should be a dedup reference.
+	if !strings.Contains(messages[4].Content, "Result evicted to cache") {
+		t.Errorf("duplicate read should be replaced with reference, got %q", messages[4].Content)
+	}
+	if !strings.Contains(messages[4].Content, "abc") {
+		t.Errorf("dedup reference should contain hash 'abc', got %q", messages[4].Content)
+	}
+}
+
+// TestHistoryMutation_DisabledByDefault verifies that with no mutation config,
+// tool results remain full (no eviction, no dedup).
+func TestHistoryMutation_DisabledByDefault(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true)
+	// No SetHistoryMutation — defaults to zero-value (all disabled).
+
+	for i := 1; i <= 5; i++ {
+		cw.AddStep(makeStepWithCacheHash(
+			fmt.Sprintf("Thought %d", i),
+			fmt.Sprintf("Full observation %d", i),
+			"read_file",
+			fmt.Sprintf("hash_%d", i),
+			i,
+		))
+	}
+
+	messages := cw.BuildPrompt()
+
+	// All tool messages should have full content.
+	toolMsgs := []int{2, 4, 6, 8, 10}
+	for i, msgIdx := range toolMsgs {
+		expected := fmt.Sprintf("Full observation %d", i+1)
+		if messages[msgIdx].Content != expected {
+			t.Errorf("step %d should have full content %q, got %q", i+1, expected, messages[msgIdx].Content)
+		}
+	}
+}
+
+// TestHistoryMutation_ProtectedToolsExempt verifies that protected tools are
+// not subject to history mutation.
+func TestHistoryMutation_ProtectedToolsExempt(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+
+	pruning := ToolOutputPruning{
+		KeepLastN:      100, // keep all (no pruning interference)
+		ProtectedTools: []string{"store_fact"},
+	}
+	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
+	cw.SetHistoryMutation(HistoryMutation{
+		ToolResultEvictionStep: 1, // aggressive eviction
+	})
+
+	cw.AddStep(makeStepWithCacheHash("Thought 1", "fact content", "store_fact", "hash_fact", 1))
+	cw.AddStep(makeStepWithCacheHash("Thought 2", "file content", "read_file", "hash_file", 2))
+
+	messages := cw.BuildPrompt()
+
+	// store_fact (protected) should remain full despite eviction threshold.
+	if messages[2].Content != "fact content" {
+		t.Errorf("protected tool store_fact should be exempt from eviction, got %q", messages[2].Content)
+	}
+	// read_file (age 1, not > 1) should also remain full (age threshold not met).
+	if messages[4].Content != "file content" {
+		t.Errorf("read_file with age 1 should remain full (threshold > 1), got %q", messages[4].Content)
 	}
 }

@@ -137,14 +137,10 @@ func TestExecutor_Run_MaxStepsExhausted(t *testing.T) {
 	}
 }
 
-func TestExecutor_Run_NudgeOnImplicitFinish(t *testing.T) {
-	// First call: end_turn without tools → nudge (attempt 1)
-	// Second call: end_turn again → nudge (attempt 2)
-	// Third call: end_turn again → accept (nudge budget exhausted)
+func TestExecutor_Run_TextOnlyEndTurn_ImmediateFinish(t *testing.T) {
+	// end_turn without tools → immediate implicit finish (no nudge)
 	mockLLM := &mockLLMCaller{
 		responses: []*llm.ChatResponse{
-			llmResponseEndTurn("I think I know"),
-			llmResponseEndTurn("still thinking"),
 			llmResponseEndTurn("The answer is yes"),
 		},
 	}
@@ -158,14 +154,14 @@ func TestExecutor_Run_NudgeOnImplicitFinish(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.Finished {
-		t.Error("expected Finished=true after nudges")
+		t.Error("expected Finished=true (immediate yield)")
 	}
 	if result.Output != "The answer is yes" {
 		t.Errorf("Output = %q, want %q", result.Output, "The answer is yes")
 	}
-	// Should have 2 nudge steps + final step
-	if len(result.Steps) < 3 {
-		t.Errorf("expected at least 3 steps (2 nudges + final), got %d", len(result.Steps))
+	// Should have 1 step (the implicit finish, no nudge steps)
+	if len(result.Steps) != 1 {
+		t.Errorf("expected 1 step (immediate finish), got %d", len(result.Steps))
 	}
 }
 

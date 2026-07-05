@@ -584,6 +584,53 @@ func TestEventEmitterPlanStepComplete(t *testing.T) {
 	}
 }
 
+// TestEventEmitterPlanStepStartDuplicateSuppressed verifies that calling
+// PlanStepStart twice for the same step only emits one event.
+func TestEventEmitterPlanStepStartDuplicateSuppressed(t *testing.T) {
+	var events []Event
+	emit := func(e Event) {
+		events = append(events, e)
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.PlanStepStart("step-1", "Do thing", "Do")
+	emitter.PlanStepStart("step-1", "Do thing again", "Do2")
+
+	planStarts := 0
+	for _, e := range events {
+		if e.Type == "plan_step_start" {
+			planStarts++
+		}
+	}
+	if planStarts != 1 {
+		t.Errorf("expected 1 plan_step_start event, got %d", planStarts)
+	}
+}
+
+// TestEventEmitterPlanStepStartAfterPlanGenerated verifies that PlanGenerated
+// resets the started-set so steps can start again after a new plan.
+func TestEventEmitterPlanStepStartAfterPlanGenerated(t *testing.T) {
+	var events []Event
+	emit := func(e Event) {
+		events = append(events, e)
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.PlanStepStart("step-1", "First", "F")
+	emitter.PlanGenerated(1, nil)
+	emitter.PlanStepStart("step-1", "Second", "S")
+
+	planStarts := 0
+	for _, e := range events {
+		if e.Type == "plan_step_start" {
+			planStarts++
+		}
+	}
+	if planStarts != 2 {
+		t.Errorf("expected 2 plan_step_start events (before and after PlanGenerated), got %d", planStarts)
+	}
+}
+
 // TestEventEmitterAssistantChunk verifies AssistantChunk emits correct event.
 func TestEventEmitterAssistantChunk(t *testing.T) {
 	var received Event

@@ -76,6 +76,87 @@ llm:
 	}
 }
 
+// TestLoadAnthropicCompatible tests loading an anthropic_compatible provider from YAML.
+func TestLoadAnthropicCompatible(t *testing.T) {
+	content := `
+llm:
+  default_model: claude-sonnet-4-20250514
+  anthropic:
+    api_key: "anthropic-key"
+    models:
+      - claude-3-haiku
+  anthropic_compatible:
+    my-proxy:
+      base_url: "https://my-anthropic-proxy.example.com"
+      api_key: "proxy-key"
+      models:
+        - claude-sonnet-4-20250514
+    another-proxy:
+      base_url: "https://another.example.com"
+      api_key: ""
+      models:
+        - claude-opus-4-20250514
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	if len(cfg.LLM.AnthropicCompatible) != 2 {
+		t.Fatalf("Expected 2 anthropic_compatible providers, got %d", len(cfg.LLM.AnthropicCompatible))
+	}
+
+	proxy, ok := cfg.LLM.AnthropicCompatible["my-proxy"]
+	if !ok {
+		t.Fatal("Expected 'my-proxy' entry in anthropic_compatible")
+	}
+	if proxy.BaseURL != "https://my-anthropic-proxy.example.com" {
+		t.Errorf("my-proxy base_url = %q, want 'https://my-anthropic-proxy.example.com'", proxy.BaseURL)
+	}
+	if proxy.APIKey != "proxy-key" {
+		t.Errorf("my-proxy api_key = %q, want 'proxy-key'", proxy.APIKey)
+	}
+	if len(proxy.Models) != 1 || proxy.Models[0] != "claude-sonnet-4-20250514" {
+		t.Errorf("my-proxy models = %v, want [claude-sonnet-4-20250514]", proxy.Models)
+	}
+
+	// Verify providerType resolves anthropic_compatible keys to "anthropic".
+	if pt := cfg.LLM.providerType("my-proxy"); pt != "anthropic" {
+		t.Errorf("providerType(my-proxy) = %q, want 'anthropic'", pt)
+	}
+	if pt := cfg.LLM.providerType("another-proxy"); pt != "anthropic" {
+		t.Errorf("providerType(another-proxy) = %q, want 'anthropic'", pt)
+	}
+	// Empty key is allowed (local Anthropic-compatible servers).
+	if cfg.LLM.AnthropicCompatible["another-proxy"].APIKey != "" {
+		t.Errorf("another-proxy api_key should be empty, got %q", cfg.LLM.AnthropicCompatible["another-proxy"].APIKey)
+	}
+}
+
+// TestLoadAnthropicCompatible_Omitted tests that a config without the
+// anthropic_compatible section loads cleanly (nil map → no entries).
+func TestLoadAnthropicCompatible_Omitted(t *testing.T) {
+	content := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if len(cfg.LLM.AnthropicCompatible) != 0 {
+		t.Errorf("Expected 0 anthropic_compatible providers when section omitted, got %d", len(cfg.LLM.AnthropicCompatible))
+	}
+}
+
 // TestInvalidProviderError tests that invalid default_model (not in any provider's models) returns an error.
 func TestInvalidProviderError(t *testing.T) {
 	content := `
@@ -279,11 +360,18 @@ func TestGetAllProviderConfigs(t *testing.T) {
 				Models:  []string{"openai/gpt-4o"},
 			},
 		},
+		AnthropicCompatible: map[string]AnthropicCompatibleConfig{
+			"my-proxy": {
+				APIKey:  "proxy-key",
+				BaseURL: "https://my-anthropic-proxy.example.com",
+				Models:  []string{"claude-sonnet-4-20250514"},
+			},
+		},
 	}
 
 	providers := cfg.GetAllProviderConfigs()
-	if len(providers) != 4 {
-		t.Fatalf("Expected 4 providers (anthropic + 2 openai_compatible + chatgpt), got %d", len(providers))
+	if len(providers) != 5 {
+		t.Fatalf("Expected 5 providers (anthropic + 2 openai_compatible + 1 anthropic_compatible + chatgpt), got %d", len(providers))
 	}
 
 	// Check first provider
@@ -322,6 +410,20 @@ func TestGetAllProviderConfigs(t *testing.T) {
 	}
 	if providers[3].ProviderType != "openai" {
 		t.Errorf("Fourth provider type = %q, want 'openai'", providers[3].ProviderType)
+	}
+
+	// Check fifth provider (my-proxy — anthropic_compatible, sorted after openai_compatible)
+	if providers[4].Name != "my-proxy" {
+		t.Errorf("Fifth provider name = %q, want 'my-proxy'", providers[4].Name)
+	}
+	if providers[4].ProviderType != "anthropic" {
+		t.Errorf("Fifth provider type = %q, want 'anthropic'", providers[4].ProviderType)
+	}
+	if providers[4].BaseURL != "https://my-anthropic-proxy.example.com" {
+		t.Errorf("Fifth provider BaseURL = %q, want 'https://my-anthropic-proxy.example.com'", providers[4].BaseURL)
+	}
+	if len(providers[4].Models) != 1 || providers[4].Models[0] != "claude-sonnet-4-20250514" {
+		t.Errorf("Fifth provider Models = %v, want [claude-sonnet-4-20250514]", providers[4].Models)
 	}
 }
 

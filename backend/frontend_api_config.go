@@ -70,10 +70,18 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 			APIKey: maskAPIKey(f.config.LLM.ChatGPT.APIKey),
 			Models: f.config.LLM.ChatGPT.Models,
 		},
-		OpenAICompatible: make(map[string]ConfigProviderFull, len(f.config.LLM.OpenAICompatible)),
+		OpenAICompatible:    make(map[string]ConfigProviderFull, len(f.config.LLM.OpenAICompatible)),
+		AnthropicCompatible: make(map[string]ConfigProviderFull, len(f.config.LLM.AnthropicCompatible)),
 	}
 	for name, cfg := range f.config.LLM.OpenAICompatible {
 		resp.OpenAICompatible[name] = ConfigProviderFull{
+			APIKey:  maskAPIKey(cfg.APIKey),
+			BaseURL: cfg.BaseURL,
+			Models:  cfg.Models,
+		}
+	}
+	for name, cfg := range f.config.LLM.AnthropicCompatible {
+		resp.AnthropicCompatible[name] = ConfigProviderFull{
 			APIKey:  maskAPIKey(cfg.APIKey),
 			BaseURL: cfg.BaseURL,
 			Models:  cfg.Models,
@@ -93,7 +101,7 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 // displaying the bare model name.
 func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 	// GetAllProviderConfigs returns providers in deterministic order
-	// (anthropic, chatgpt, then openai_compatible keys sorted).
+	// (anthropic, chatgpt, then sorted openai_compatible, then sorted anthropic_compatible).
 	providers := f.config.LLM.GetAllProviderConfigs()
 
 	seen := make(map[string]bool) // dedupe by composite "provider/model"
@@ -173,6 +181,23 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 			}
 		}
 		f.config.LLM.OpenAICompatible = newMap
+	}
+	if req.AnthropicCompatible != nil {
+		newMap := make(map[string]config.AnthropicCompatibleConfig, len(req.AnthropicCompatible))
+		for name, acReq := range req.AnthropicCompatible {
+			apiKey := acReq.APIKey
+			if apiKey == maskedAPIKey || apiKey == "" {
+				if existing, ok := f.config.LLM.AnthropicCompatible[name]; ok {
+					apiKey = existing.APIKey
+				}
+			}
+			newMap[name] = config.AnthropicCompatibleConfig{
+				APIKey:  apiKey,
+				BaseURL: acReq.BaseURL,
+				Models:  acReq.Models,
+			}
+		}
+		f.config.LLM.AnthropicCompatible = newMap
 	}
 	if req.ChatGPT != nil {
 		if req.ChatGPT.Models != nil {

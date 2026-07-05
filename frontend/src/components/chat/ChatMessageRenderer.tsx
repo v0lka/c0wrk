@@ -5,6 +5,7 @@ import { AssistantMessage } from './AssistantMessage'
 import { ThoughtBlock } from './ThoughtBlock'
 import { ToolCard } from './toolCards'
 import { PlanStepBlock } from './PlanStepBlock'
+import { SubAgentBlock } from './SubAgentBlock'
 import { ToolConfirmation } from './ToolConfirmation'
 import { AskUserPanel } from './AskUserPanel'
 import { ResumeActionPanel } from './ResumeActionPanel'
@@ -63,6 +64,7 @@ const renderers: Record<DisplayItemKind, ItemRenderer> = {
   error: ErrorBlock as ItemRenderer,
   service: ServiceMessage as ItemRenderer,
   plan_step: PlanStepBlock as ItemRenderer,
+  subagent: SubAgentBlock as ItemRenderer,
   reflection: ReflectionBlock as ItemRenderer,
   step_finish: StepFinishMarker as ItemRenderer,
   action_placeholder: ActionPlaceholder as ItemRenderer,

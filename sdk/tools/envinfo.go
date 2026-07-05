@@ -259,7 +259,7 @@ func FormatFullEnvBlock(info *EnvInfo, opts EnvFormatOptions) string {
 	if !opts.HideHomeDir {
 		fmt.Fprintf(&b, "- Home directory: %s\n", info.HomeDir)
 	}
-	fmt.Fprintf(&b, "- Current time: %s\n", now.Format(time.RFC3339))
+	fmt.Fprintf(&b, "- Date: %s\n", now.Format("2006-01-02"))
 	fmt.Fprintf(&b, "- Timezone: %s\n", tzLabel)
 	fmt.Fprintf(&b, "- Node.js: %s\n", runtimeOrNotInstalled(info.NodeVersion))
 	fmt.Fprintf(&b, "- Python: %s\n", runtimeOrNotInstalled(info.PythonVersion))
@@ -272,7 +272,7 @@ func FormatFullEnvBlock(info *EnvInfo, opts EnvFormatOptions) string {
 }
 
 // FormatCompactEnvBlock returns a minimal environment block for evaluator/judge/reflector prompts.
-// Includes OS, current time, and timezone. Returns "" if info is nil.
+// Includes OS, date, and timezone. Returns "" if info is nil.
 func FormatCompactEnvBlock(info *EnvInfo) string {
 	if info == nil {
 		return ""
@@ -286,7 +286,7 @@ func FormatCompactEnvBlock(info *EnvInfo) string {
 	var b strings.Builder
 	b.WriteString("## Environment\n")
 	fmt.Fprintf(&b, "- OS: %s\n", info.OS)
-	fmt.Fprintf(&b, "- Current time: %s\n", now.Format(time.RFC3339))
+	fmt.Fprintf(&b, "- Date: %s\n", now.Format("2006-01-02"))
 	fmt.Fprintf(&b, "- Timezone: %s\n", tzLabel)
 
 	return b.String()

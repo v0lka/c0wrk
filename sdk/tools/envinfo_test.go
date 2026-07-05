@@ -57,7 +57,7 @@ func TestFormatFullEnvBlock(t *testing.T) {
 		"Go: 1.23.1",
 		"Node.js: 22.5.0",
 		"Python: 3.12.4",
-		"Current time:",
+		"Date:",
 		"Timezone:",
 	}
 	for _, s := range expected {
@@ -81,7 +81,7 @@ func TestFormatCompactEnvBlock(t *testing.T) {
 	out := FormatCompactEnvBlock(info)
 
 	// Should contain.
-	for _, s := range []string{"## Environment", "OS: Linux 6.1.0", "Current time:", "Timezone:"} {
+	for _, s := range []string{"## Environment", "OS: Linux 6.1.0", "Date:", "Timezone:"} {
 		if !strings.Contains(out, s) {
 			t.Errorf("output missing %q\nGot:\n%s", s, out)
 		}

@@ -74,12 +74,13 @@ type VectorIndexConfig struct {
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.
 type LLMConfig struct {
-	DefaultModel     string                            `yaml:"default_model"` // cross-provider default model (must exist in some provider's Models list)
-	Anthropic        AnthropicConfig                   `yaml:"anthropic"`
-	OpenAICompatible map[string]OpenAICompatibleConfig `yaml:"openai_compatible"`
-	ChatGPT          ChatGPTConfig                     `yaml:"chatgpt"`
-	Models           map[string]ModelOverride          `yaml:"models"`
-	Retry            LLMRetryConfig                    `yaml:"retry"`
+	DefaultModel        string                                `yaml:"default_model"` // cross-provider default model (must exist in some provider's Models list)
+	Anthropic           AnthropicConfig                       `yaml:"anthropic"`
+	OpenAICompatible    map[string]OpenAICompatibleConfig     `yaml:"openai_compatible"`
+	AnthropicCompatible map[string]AnthropicCompatibleConfig  `yaml:"anthropic_compatible"`
+	ChatGPT             ChatGPTConfig                         `yaml:"chatgpt"`
+	Models              map[string]ModelOverride              `yaml:"models"`
+	Retry               LLMRetryConfig                        `yaml:"retry"`
 }
 
 // AnthropicConfig holds Anthropic provider configuration.
@@ -90,6 +91,14 @@ type AnthropicConfig struct {
 
 // OpenAICompatibleConfig holds OpenAI-compatible provider configuration.
 type OpenAICompatibleConfig struct {
+	BaseURL string   `yaml:"base_url"`
+	APIKey  string   `yaml:"api_key"`
+	Models  []string `yaml:"models"` // enabled models for this provider
+}
+
+// AnthropicCompatibleConfig holds Anthropic-compatible provider configuration
+// (custom endpoints speaking Anthropic's Messages API, e.g. a proxy or gateway).
+type AnthropicCompatibleConfig struct {
 	BaseURL string   `yaml:"base_url"`
 	APIKey  string   `yaml:"api_key"`
 	Models  []string `yaml:"models"` // enabled models for this provider
@@ -153,6 +162,15 @@ type ToolOutputPruningConfig struct {
 	ThresholdPercent float64  `yaml:"thresholdPercent"` // Context fill % below which pruning is skipped (default: 50)
 }
 
+// HistoryMutationConfig configures regular (non-emergency) history mutation
+// to reduce O(n²) replay cost. Unlike emergency compaction, mutation runs on
+// every BuildPrompt call and replaces old tool results with cache references.
+type HistoryMutationConfig struct {
+	ToolResultEvictionStep int  `yaml:"toolResultEvictionStep"` // evict tool results to cache refs after N steps (0 = disabled)
+	EvictStepStatus        bool `yaml:"evictStepStatus"`         // evict set_step_status results immediately
+	DedupRepeatedReads     bool `yaml:"dedupRepeatedReads"`     // replace duplicate file reads with reference
+}
+
 // CircuitBreakerConfig holds circuit breaker thresholds for executor protection.
 type CircuitBreakerConfig struct {
 	RepeatNudgeThreshold         int `yaml:"repeatNudgeThreshold"`         // consecutive identical tool calls before nudge
@@ -175,6 +193,7 @@ type ExecutorConfig struct {
 	Compaction         CompactionConfig        `yaml:"compaction"`
 	ToolResultBudget   ToolResultBudgetConfig  `yaml:"tool_result_budget"`
 	ToolOutputPruning  ToolOutputPruningConfig `yaml:"toolOutputPruning"`
+	HistoryMutation    HistoryMutationConfig   `yaml:"historyMutation"`
 	CircuitBreaker     CircuitBreakerConfig    `yaml:"circuitBreaker"`
 }
 
@@ -349,13 +368,23 @@ func (c *LLMConfig) allProviderEntries() []providerEntry {
 		openaiKeys = append(openaiKeys, k)
 	}
 	sort.Strings(openaiKeys)
-	entries := make([]providerEntry, 0, 2+len(openaiKeys))
+	// Sort anthropic_compatible keys for deterministic order
+	anthropicKeys := make([]string, 0, len(c.AnthropicCompatible))
+	for k := range c.AnthropicCompatible {
+		anthropicKeys = append(anthropicKeys, k)
+	}
+	sort.Strings(anthropicKeys)
+	entries := make([]providerEntry, 0, 2+len(openaiKeys)+len(anthropicKeys))
 	entries = append(entries,
 		providerEntry{"anthropic", c.Anthropic.APIKey, "", c.Anthropic.Models},
 		providerEntry{"chatgpt", c.ChatGPT.APIKey, "", c.ChatGPT.Models},
 	)
 	for _, name := range openaiKeys {
 		cfg := c.OpenAICompatible[name]
+		entries = append(entries, providerEntry{name, cfg.APIKey, cfg.BaseURL, cfg.Models})
+	}
+	for _, name := range anthropicKeys {
+		cfg := c.AnthropicCompatible[name]
 		entries = append(entries, providerEntry{name, cfg.APIKey, cfg.BaseURL, cfg.Models})
 	}
 	return entries
@@ -371,6 +400,9 @@ func (c *LLMConfig) providerType(name string) string {
 	default:
 		if _, ok := c.OpenAICompatible[name]; ok {
 			return "openai"
+		}
+		if _, ok := c.AnthropicCompatible[name]; ok {
+			return "anthropic"
 		}
 		return ""
 	}

@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback } from 'react'
 import { useLLMConfig } from './useLLMConfig'
 import { Plus, X } from 'lucide-react'
 import { FIXED_PROVIDERS } from '@/lib/llm-providers'
+import { compositeModelId } from '@/lib/modelId'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { FixedProviderForms } from './providers/FixedProviderForms'
@@ -51,6 +52,7 @@ export function LLMSettings({
     defaultModel,
     providerConfigs,
     openaiCompatibleProviderNames,
+    anthropicCompatibleProviderNames,
     isLoading,
     setDefaultModel,
     updateProviderConfig,
@@ -66,6 +68,8 @@ export function LLMSettings({
   const [addFormName, setAddFormName] = useState('')
   const [addFormBaseUrl, setAddFormBaseUrl] = useState('')
   const [addFormApiKey, setAddFormApiKey] = useState('')
+  // Transport type for the new compatible provider: 'openai' (default) or 'anthropic'.
+  const [addFormType, setAddFormType] = useState<'openai' | 'anthropic'>('openai')
   const [addFormErrors, setAddFormErrors] = useState<AddFormErrors>({})
   const [addFormSubmitting, setAddFormSubmitting] = useState(false)
 
@@ -74,11 +78,18 @@ export function LLMSettings({
     setAddFormName('')
     setAddFormBaseUrl('')
     setAddFormApiKey('')
+    setAddFormType('openai')
     setAddFormErrors({})
   }, [])
 
+  // All compatible provider names (both transports) for uniqueness validation.
+  const allCompatibleNames = useMemo(
+    () => new Set([...openaiCompatibleProviderNames, ...anthropicCompatibleProviderNames]),
+    [openaiCompatibleProviderNames, anthropicCompatibleProviderNames],
+  )
+
   const handleAddProvider = useCallback(() => {
-    const nameErr = validateProviderName(addFormName, openaiCompatibleProviderNames)
+    const nameErr = validateProviderName(addFormName, allCompatibleNames)
     const errors: AddFormErrors = {}
     if (nameErr) errors.name = nameErr
     setAddFormErrors(errors)
@@ -90,6 +101,7 @@ export function LLMSettings({
       api_key: addFormApiKey,
       base_url: addFormBaseUrl,
       models: [],
+      type: addFormType,
     })
     // Expand the new provider immediately.
     setExpandedProviders((prev) => new Set(prev).add(name))
@@ -99,7 +111,8 @@ export function LLMSettings({
     addFormName,
     addFormBaseUrl,
     addFormApiKey,
-    openaiCompatibleProviderNames,
+    addFormType,
+    allCompatibleNames,
     addProvider,
     resetAddForm,
   ])
@@ -114,19 +127,37 @@ export function LLMSettings({
     })
   }
 
-  // Collect all enabled models across all providers for the global default dropdown.
+  // Collect all enabled models across all providers for the global default
+  // dropdown. Each entry carries its composite "provider/name" selector (the
+  // value sent to the backend) plus the bare name shown to the user. When the
+  // same bare name is exposed by more than one provider, the option label is
+  // disambiguated with the provider key so the user can tell them apart.
   const allEnabledModels = useMemo(() => {
-    const result: { model: string; provider: string }[] = []
+    const result: { id: string; model: string; provider: string }[] = []
     for (const p of Object.keys(providerConfigs)) {
       const cfg = providerConfigs[p]
       if (cfg) {
         for (const m of cfg.models) {
-          result.push({ model: m, provider: p })
+          result.push({ id: compositeModelId(p, m), model: m, provider: p })
         }
       }
     }
     return result
   }, [providerConfigs])
+
+  // Bare names that appear under more than one provider — their dropdown
+  // options are suffixed with the provider key for disambiguation.
+  const duplicateBareNames = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const { model } of allEnabledModels) {
+      counts.set(model, (counts.get(model) ?? 0) + 1)
+    }
+    const dupes = new Set<string>()
+    for (const [model, count] of counts) {
+      if (count > 1) dupes.add(model)
+    }
+    return dupes
+  }, [allEnabledModels])
 
   if (isLoading) {
     return (
@@ -147,9 +178,9 @@ export function LLMSettings({
           onChange={(e) => setDefaultModel(e.target.value)}
         >
           <option value="">— Select a default model —</option>
-          {allEnabledModels.map(({ model, provider }) => (
-            <option key={`${provider}:${model}`} value={model}>
-              {model}
+          {allEnabledModels.map(({ id, model, provider }) => (
+            <option key={id} value={id}>
+              {duplicateBareNames.has(model) ? `${model} (${provider})` : model}
             </option>
           ))}
         </select>
@@ -179,9 +210,23 @@ export function LLMSettings({
         onToggleModel={toggleModel}
         onDelete={deleteProvider}
         defaultModel={defaultModel}
+        labelPrefix="OpenAI Compatible"
       />
 
-      {/* Add OpenAI-compatible provider */}
+      {/* Anthropic-Compatible Provider Accordions */}
+      <OpenAICompatibleProviderForms
+        providerNames={anthropicCompatibleProviderNames}
+        providerConfigs={providerConfigs}
+        expandedProviders={expandedProviders}
+        onToggle={toggleExpanded}
+        onConfigChange={updateProviderConfig}
+        onToggleModel={toggleModel}
+        onDelete={deleteProvider}
+        defaultModel={defaultModel}
+        labelPrefix="Anthropic Compatible"
+      />
+
+      {/* Add compatible provider */}
       <div className="flex flex-col gap-3">
         {!showAddForm && (
           <Button
@@ -191,14 +236,14 @@ export function LLMSettings({
             onClick={() => setShowAddForm(true)}
           >
             <Plus className="h-4 w-4" />
-            Add OpenAI-compatible provider
+            Add compatible provider
           </Button>
         )}
 
         {showAddForm && (
           <div className="rounded-lg border p-4">
             <div className="mb-3 flex items-center justify-between">
-              <h4 className="text-sm font-medium">New OpenAI-compatible provider</h4>
+              <h4 className="text-sm font-medium">New compatible provider</h4>
               <Button
                 variant="ghost"
                 size="icon"
@@ -210,6 +255,22 @@ export function LLMSettings({
             </div>
 
             <div className="flex flex-col gap-3">
+              {/* Transport type */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">API type</label>
+                <select
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={addFormType}
+                  onChange={(e) => setAddFormType(e.target.value as 'openai' | 'anthropic')}
+                >
+                  <option value="openai">OpenAI-compatible (Chat Completions)</option>
+                  <option value="anthropic">Anthropic-compatible (Messages API)</option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Choose the API protocol spoken by the custom endpoint.
+                </p>
+              </div>
+
               {/* Name */}
               <div className="flex flex-col gap-1">
                 <label className="text-xs text-muted-foreground">Name</label>
@@ -228,7 +289,7 @@ export function LLMSettings({
               <div className="flex flex-col gap-1">
                 <label className="text-xs text-muted-foreground">Base URL</label>
                 <Input
-                  placeholder="http://localhost:1234"
+                  placeholder={addFormType === 'anthropic' ? 'https://my-anthropic-proxy.example.com' : 'http://localhost:1234'}
                   value={addFormBaseUrl}
                   onChange={(e) => setAddFormBaseUrl(e.target.value)}
                   className="h-9 text-sm"
@@ -240,7 +301,7 @@ export function LLMSettings({
                 <label className="text-xs text-muted-foreground">API Key</label>
                 <Input
                   type={addFormApiKey.startsWith('${') ? 'text' : 'password'}
-                  placeholder="Enter API key"
+                  placeholder="Enter API key (optional for local servers)"
                   value={addFormApiKey}
                   onChange={(e) => setAddFormApiKey(e.target.value)}
                   className="h-9 text-sm"

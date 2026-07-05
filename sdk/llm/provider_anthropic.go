@@ -21,7 +21,9 @@ func sanitizeAnthropicToolID(id string) string {
 
 // AnthropicProviderConfig holds configuration for Anthropic provider.
 type AnthropicProviderConfig struct {
+	Name       string       // logical provider name ("anthropic" default; custom name for Anthropic-compatible providers)
 	APIKey     string
+	BaseURL    string       // empty = default Anthropic; otherwise custom endpoint (Anthropic-compatible proxy)
 	HTTPClient *http.Client // optional proxy-configured HTTP client (nil = default)
 }
 
@@ -32,20 +34,32 @@ type AnthropicProvider struct {
 }
 
 // NewAnthropicProvider creates a new Anthropic provider with the given configuration.
+//
+// If BaseURL is empty, uses the default Anthropic endpoint; otherwise uses the
+// custom endpoint (an Anthropic-compatible proxy or gateway).
+//
+// Note: APIKey is intentionally not validated here. The official Anthropic API
+// always requires a key, but local Anthropic-compatible servers may not. An
+// empty key for the official endpoint fails at call time with a 401, consistent
+// with NewOpenAIProvider's handling of local OpenAI-compatible backends.
 func NewAnthropicProvider(cfg AnthropicProviderConfig) (*AnthropicProvider, error) {
-	if cfg.APIKey == "" {
-		return nil, errors.New("anthropic: API key is required")
-	}
-
 	var opts []anthropic.ClientOption
+	if cfg.BaseURL != "" {
+		opts = append(opts, anthropic.WithBaseURL(cfg.BaseURL))
+	}
 	if cfg.HTTPClient != nil {
 		opts = append(opts, anthropic.WithHTTPClient(cfg.HTTPClient))
 	}
 	client := anthropic.NewClient(cfg.APIKey, opts...)
 
+	name := cfg.Name
+	if name == "" {
+		name = "anthropic"
+	}
+
 	return &AnthropicProvider{
 		client: client,
-		name:   "anthropic",
+		name:   name,
 	}, nil
 }
 

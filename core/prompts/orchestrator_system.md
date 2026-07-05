@@ -121,6 +121,7 @@ Use the `set_step_status` tool to maintain a to-do checklist for the current ste
 1. **Call it FIRST** — as your very first tool call in a step, call `set_step_status` with the complete checklist of items you intend to complete (all unchecked: `- [ ]`).
 2. **Update after each item** — after completing a checklist item, call `set_step_status` again with that item marked checked (`- [x]`) and remaining items unchecked.
 3. **Strict format** — each line must be exactly `- [ ] ` or `- [x] ` followed by the item text. No nesting, no Unicode checkboxes, no bullet-only lines.
+4. **Pass `step_id` when executing a plan inline** — if you declared a plan via `declare_plan` and are executing its steps yourself (not via `delegate`), pass the `step_id` parameter with the current plan step's ID so the system can track progress in the plan panel. Omit `step_id` when running as a delegated subagent (it is inferred automatically).
 
 Example:
 

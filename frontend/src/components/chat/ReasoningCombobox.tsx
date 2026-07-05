@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useConfigData } from '@/hooks/useConfigData'
 import { useDropdown } from '@/hooks/useDropdown'
+import { findModelInfo } from '@/lib/modelId'
 
 /**
  * ReasoningCombobox renders a compact dropdown in the chat toolbar for selecting
@@ -19,19 +20,23 @@ export function ReasoningCombobox() {
   const { isOpen, setIsOpen, containerRef } = useDropdown()
 
   // When selectedModel changes, reset reasoning if the new model's family doesn't support it.
+  // selectedModel may be a composite "provider/name" id (see ModelCombobox) or
+  // null (use the global default_model, which may itself be bare or composite),
+  // so resolve via findModelInfo which handles both forms.
   useEffect(() => {
     if (!selectedReasoning) return
     const effectiveModel = selectedModel ?? defaultModel
-    const info = allModels.find((m) => m.name === effectiveModel)
-    if (!info?.reasoning || !info.reasoning.options.includes(selectedReasoning)) {
+    const info = findModelInfo(allModels, effectiveModel)
+    const reasoning = info?.reasoning
+    if (!reasoning || !reasoning.options.includes(selectedReasoning)) {
       setSelectedReasoning(null)
     }
   }, [selectedModel, defaultModel, allModels, selectedReasoning, setSelectedReasoning])
 
   // Find reasoning info for the effective model.
   const effectiveModel = selectedModel ?? defaultModel
-  const modelInfo = allModels.find((m) => m.name === effectiveModel)
-  const reasoning = modelInfo?.reasoning
+  const modelInfo = findModelInfo(allModels, effectiveModel)
+  const reasoning = modelInfo?.reasoning ?? null
 
   // If still loading config, render nothing (matches pre-loaded behavior).
   if (!loaded) return null

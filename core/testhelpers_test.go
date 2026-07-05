@@ -220,6 +220,10 @@ type mockEmitter struct {
 		success  bool
 		duration time.Duration
 	}
+	stepTodoUpdates []struct {
+		stepID string
+		items  []TodoItem
+	}
 }
 
 func (m *mockEmitter) Routing(_, _, _ string)                               {}
@@ -263,7 +267,12 @@ func (m *mockEmitter) ReplanFailed(_ error)                                 {}
 func (m *mockEmitter) SkillsActivated(_ []string)                           {}
 func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
 func (m *mockEmitter) Finishing(_ int, _ string)                            {}
-func (m *mockEmitter) StepTodoUpdate(_ string, _ []TodoItem)                {}
+func (m *mockEmitter) StepTodoUpdate(stepID string, items []TodoItem) {
+	m.stepTodoUpdates = append(m.stepTodoUpdates, struct {
+		stepID string
+		items  []TodoItem
+	}{stepID, items})
+}
 func (m *mockEmitter) MemoryRead(_ int, _ string)                           {}
 
 // ---------------------------------------------------------------------------

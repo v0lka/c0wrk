@@ -93,7 +93,16 @@ type BuilderExecutorConfig struct {
 	Compaction         BuilderCompactionConfig
 	ToolResultBudget   BuilderToolResultBudget
 	ToolOutputPruning  BuilderToolOutputPruning
+	HistoryMutation    BuilderHistoryMutation
 	CircuitBreaker     BuilderCircuitBreaker
+}
+
+// BuilderHistoryMutation configures regular history mutation (tool result
+// eviction to cache references, step-status eviction, dedup).
+type BuilderHistoryMutation struct {
+	ToolResultEvictionStep int
+	EvictStepStatus        bool
+	DedupRepeatedReads     bool
 }
 
 // BuilderCompactionConfig holds compaction settings.

@@ -477,8 +477,10 @@ func TestNewRouter(t *testing.T) {
 		}
 	})
 
-	// Test with anthropic provider (no key = error)
-	t.Run("anthropic without key fails", func(t *testing.T) {
+	// Test with anthropic provider (no key = ok; the official endpoint will 401
+	// at call time, but construction succeeds to support local
+	// Anthropic-compatible servers that need no auth — parity with OpenAI).
+	t.Run("anthropic without key succeeds", func(t *testing.T) {
 		cfg := RouterConfig{
 			Providers: []ProviderEntry{
 				{Name: "anthropic", ProviderType: "anthropic", Models: []string{"claude-3-sonnet"}},
@@ -486,57 +488,68 @@ func TestNewRouter(t *testing.T) {
 		}
 
 		_, err := NewRouter(context.Background(), cfg, nil)
-		if err == nil {
-			t.Fatal("expected error for anthropic without API key")
+		if err != nil {
+			t.Fatalf("unexpected error for anthropic without API key: %v", err)
 		}
 	})
 }
 
 func TestCreateProviderFromConfig(t *testing.T) {
 	tests := []struct {
-		name     string
-		provType string
-		apiKey   string
-		baseURL  string
-		wantErr  bool
-		wantName string
+		name         string
+		providerName string
+		provType     string
+		apiKey       string
+		baseURL      string
+		wantErr      bool
+		wantName     string
 	}{
 		{
-			name:     "openai provider",
-			provType: "openai",
-			apiKey:   "test-key",
-			baseURL:  "http://localhost:1234",
-			wantErr:  false,
+			name:         "openai provider with named config key",
+			providerName: "lmstudio",
+			provType:     "openai",
+			apiKey:       "test-key",
+			baseURL:      "http://localhost:1234",
+			wantErr:      false,
+			wantName:     "lmstudio",
 		},
 		{
-			name:     "openai provider",
-			provType: "openai",
-			apiKey:   "test-key",
-			baseURL:  "https://api.openai.com/v1",
-			wantErr:  false,
+			name:         "openai provider with default name",
+			providerName: "openai",
+			provType:     "openai",
+			apiKey:       "test-key",
+			baseURL:      "https://api.openai.com/v1",
+			wantErr:      false,
+			wantName:     "openai",
 		},
 		{
-			name:     "anthropic provider",
-			provType: "anthropic",
-			apiKey:   "test-key",
-			wantErr:  false,
+			name:         "anthropic provider with named config key and custom base url",
+			providerName: "my-anthropic-proxy",
+			provType:     "anthropic",
+			apiKey:       "test-key",
+			baseURL:      "https://my-anthropic-proxy.example.com",
+			wantErr:      false,
+			wantName:     "my-anthropic-proxy",
 		},
 		{
-			name:     "anthropic provider without key",
-			provType: "anthropic",
-			apiKey:   "",
-			wantErr:  true,
+			name:         "anthropic provider without key succeeds",
+			providerName: "anthropic",
+			provType:     "anthropic",
+			apiKey:       "",
+			wantErr:      false,
+			wantName:     "anthropic",
 		},
 		{
-			name:     "unknown provider",
-			provType: "unknown",
-			wantErr:  true,
+			name:         "unknown provider",
+			providerName: "whatever",
+			provType:     "unknown",
+			wantErr:      true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := createProviderFromConfig(context.Background(), tt.provType, tt.apiKey, tt.baseURL, nil)
+			p, err := createProviderFromConfig(context.Background(), tt.providerName, tt.provType, tt.apiKey, tt.baseURL, nil)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected error, got nil")
@@ -548,6 +561,9 @@ func TestCreateProviderFromConfig(t *testing.T) {
 			}
 			if p == nil {
 				t.Fatal("expected non-nil provider")
+			}
+			if tt.wantName != "" && p.Name() != tt.wantName {
+				t.Errorf("expected name %q, got %q", tt.wantName, p.Name())
 			}
 		})
 	}

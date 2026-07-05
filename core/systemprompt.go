@@ -175,26 +175,64 @@ func formatActiveSkills(ctx context.Context, preamble string) string {
 	return sb.String()
 }
 
-// appendPlannerContextSections appends the standard env/vector/AGENTS.md/skills
-// sections used by all planner system prompts.
+// appendPlannerContextSections inserts the standard env/AGENTS.md/skills
+// sections into the stable (cacheable) part of the planner system prompt,
+// before the CacheBreakMarker. Vector search hints remain in the volatile
+// tail. This ensures provider-side prompt caching can reuse the full
+// session-invariant prefix across planner calls.
 func appendPlannerContextSections(ctx context.Context, base string) string {
-	result := base
+	// Build the stable sections to insert.
+	var stableSections []string
 
-	// Append environment context if available.
 	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx), tools.EnvFormatOptions{HideHomeDir: coretools.IsNoProject(ctx)}); envBlock != "" {
-		result += "\n\n" + envBlock
+		stableSections = append(stableSections, envBlock)
+	}
+	if amd := formatAgentsMD(ctx); amd != "" {
+		stableSections = append(stableSections, amd)
+	}
+	if skillsBlock := formatActiveSkills(ctx,
+		"The following skills have been matched to this task. When formulating steps, incorporate their guidance into the plan.",
+	); skillsBlock != "" {
+		stableSections = append(stableSections, skillsBlock)
 	}
 
-	result += formatVectorSearchHints(ctx, "")
-	result += formatAgentsMD(ctx)
-	result += formatActiveSkills(ctx,
-		"The following skills have been matched to this task. When formulating steps, incorporate their guidance into the plan.",
-	)
+	stableInsert := strings.Join(stableSections, "\n\n")
 
+	// Split on CacheBreakMarker; insert stable content before the marker.
+	parts := strings.SplitN(base, prompt.CacheBreakMarker, 2)
+	if len(parts) == 2 {
+		// Insert stable sections before the CacheBreakMarker.
+		if stableInsert != "" {
+			parts[0] = parts[0] + "\n\n" + stableInsert
+		}
+		// Vector hints go after the marker (volatile tail).
+		vectorHints := formatVectorSearchHints(ctx, "")
+		if vectorHints != "" {
+			parts[1] = parts[1] + "\n\n" + vectorHints
+		}
+		return parts[0] + prompt.CacheBreakMarker + parts[1]
+	}
+
+	// No CacheBreakMarker — append everything to the base.
+	result := base
+	if stableInsert != "" {
+		result += "\n\n" + stableInsert
+	}
+	if vectorHints := formatVectorSearchHints(ctx, ""); vectorHints != "" {
+		result += "\n\n" + vectorHints
+	}
 	return result
 }
 
 // buildSystemPrompt creates the system prompt for executors.
+//
+// The prompt is split by CacheBreak into a stable (cacheable) prefix and a
+// volatile tail. The stable prefix contains all session-invariant content
+// (core directives, family overlay, workspace, env, AGENTS.md, skills) so
+// provider-side prompt caching (Anthropic ephemeral, DeepSeek automatic
+// prefix cache) can reuse it across ReAct iterations. Only vector search
+// hints — which may change between steps as the index warms up — remain in
+// the volatile tail.
 func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.ModelMetadata) string {
 	// Build workspace context string
 	var workspaceCtxStr string
@@ -211,8 +249,9 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 		family = "default"
 	}
 
-	// Build base prompt: system core + family-specific overlay + verification mandate (stable).
-	// CacheBreak separates stable content from dynamic per-session context below.
+	// Build stable prefix: core directives + family overlay + verification +
+	// injection defense + workspace + mode + env + AGENTS.md + skills.
+	// All of this is session-invariant and benefits from prompt caching.
 	b := prompt.NewBuilder().
 		Core(prompts.OrchestratorSystem).
 		Core(prompts.FamilyPrompt("orchestrator", family)).
@@ -220,32 +259,31 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 	if ctx.Value(InjectionDefenseKey) != nil {
 		b.Core(prompts.InjectionDefense)
 	}
+	b.Core(workspaceCtxStr)
+
+	// Mode-specific context (stable within a session).
+	if ctx.Value(PlanModeKey) != nil {
+		b.Core(prompts.OrchestratorPlanContext)
+	} else {
+		b.Core("## Completion\nYou are operating in single-step mode. When you have completed your work, you MUST call the `finish` tool with your final answer. Do not simply respond with text — the system only recognizes task completion through an explicit `finish` tool call.")
+	}
+
+	// Environment block (stable: date doesn't change within a session).
+	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx), tools.EnvFormatOptions{HideHomeDir: coretools.IsNoProject(ctx)}); envBlock != "" {
+		b.Core(envBlock)
+	}
+
+	// AGENTS.md and active skills — session-invariant, cacheable.
+	b.Core(formatAgentsMD(ctx))
+	b.Core(formatActiveSkills(ctx,
+		"The following skills have been activated for this task. Follow their instructions carefully.",
+	))
+
+	// CacheBreak: only vector hints remain in the volatile tail.
 	result := b.
 		CacheBreak().
-		Replace("WORKSPACE-CONTEXT", workspaceCtxStr).
+		Core(formatVectorSearchHints(ctx, "\nUse semantic_search tool for deeper investigation.")).
 		Build()
-
-	// Append mode-specific context.
-	if ctx.Value(PlanModeKey) != nil {
-		result += "\n\n" + prompts.OrchestratorPlanContext
-	} else {
-		// ReAct mode: reinforce finish tool requirement since there's no plan context
-		// to naturally motivate its use.
-		result += "\n\n## Completion\nYou are operating in single-step mode. When you have completed your work, you MUST call the `finish` tool with your final answer. Do not simply respond with text — the system only recognizes task completion through an explicit `finish` tool call."
-	}
-
-	// Append environment context if available.
-	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx), tools.EnvFormatOptions{HideHomeDir: coretools.IsNoProject(ctx)}); envBlock != "" {
-		result += "\n\n" + envBlock
-	}
-
-	// Append auto-RAG vector search hints (with semantic_search guidance for executors).
-	result += formatVectorSearchHints(ctx, "\nUse semantic_search tool for deeper investigation.")
-
-	// Append active Agent Skills.
-	result += formatActiveSkills(ctx,
-		"The following skills have been activated for this task. Follow their instructions carefully.",
-	)
 
 	return result
 }

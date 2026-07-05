@@ -179,6 +179,59 @@ func TestUpdateLLMConfig_MaskedKeyNotOverwritten(t *testing.T) {
 	}
 }
 
+func TestUpdateLLMConfig_AnthropicCompatible(t *testing.T) {
+	t.Run("adds provider and persists", func(t *testing.T) {
+		f, _, _ := newTestAPI(t)
+
+		err := f.UpdateLLMConfig(LLMFullConfigRequest{
+			DefaultModel: "claude-sonnet-4-20250514",
+			AnthropicCompatible: map[string]ProviderConfigRequest{
+				"my-proxy": {
+					BaseURL: "https://my-anthropic-proxy.example.com",
+					APIKey:  "proxy-key",
+					Models:  []string{"claude-sonnet-4-20250514"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got, ok := f.config.LLM.AnthropicCompatible["my-proxy"]
+		if !ok {
+			t.Fatal("expected 'my-proxy' in anthropic_compatible after update")
+		}
+		if got.BaseURL != "https://my-anthropic-proxy.example.com" {
+			t.Errorf("base_url = %q, want 'https://my-anthropic-proxy.example.com'", got.BaseURL)
+		}
+		if got.APIKey != "proxy-key" {
+			t.Errorf("api_key = %q, want 'proxy-key'", got.APIKey)
+		}
+		if len(got.Models) != 1 || got.Models[0] != "claude-sonnet-4-20250514" {
+			t.Errorf("models = %v, want [claude-sonnet-4-20250514]", got.Models)
+		}
+	})
+
+	t.Run("masked key preserves existing value", func(t *testing.T) {
+		f, _, _ := newTestAPI(t)
+		// Seed an existing anthropic_compatible provider with a real key.
+		f.config.LLM.AnthropicCompatible = map[string]config.AnthropicCompatibleConfig{
+			"my-proxy": {APIKey: "real-proxy-key", BaseURL: "https://proxy.example.com", Models: []string{"claude-sonnet-4-20250514"}},
+		}
+
+		err := f.UpdateLLMConfig(LLMFullConfigRequest{
+			AnthropicCompatible: map[string]ProviderConfigRequest{
+				"my-proxy": {APIKey: maskedAPIKey, BaseURL: "https://proxy.example.com", Models: []string{"claude-sonnet-4-20250514"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if f.config.LLM.AnthropicCompatible["my-proxy"].APIKey != "real-proxy-key" {
+			t.Errorf("api key overwritten by masked sentinel: got %q", f.config.LLM.AnthropicCompatible["my-proxy"].APIKey)
+		}
+	})
+}
+
 func TestUpdateLLMConfig_PerProviderFields(t *testing.T) {
 	tests := []struct {
 		provider string
@@ -303,6 +356,30 @@ func TestGetConfig_MasksAPIKeys(t *testing.T) {
 	}
 	if resp.LLM.Anthropic.APIKey != maskedAPIKey {
 		t.Errorf("API key not masked: got %q", resp.LLM.Anthropic.APIKey)
+	}
+}
+
+func TestGetConfig_AnthropicCompatibleExposed(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	f.config.LLM.AnthropicCompatible = map[string]config.AnthropicCompatibleConfig{
+		"my-proxy": {APIKey: "real-proxy-key", BaseURL: "https://proxy.example.com", Models: []string{"claude-sonnet-4-20250514"}},
+	}
+	resp := f.GetConfig()
+	if resp.LLM.AnthropicCompatible == nil {
+		t.Fatal("expected non-nil anthropic_compatible map in response")
+	}
+	got, ok := resp.LLM.AnthropicCompatible["my-proxy"]
+	if !ok {
+		t.Fatal("expected 'my-proxy' in anthropic_compatible response")
+	}
+	if got.APIKey != maskedAPIKey {
+		t.Errorf("anthropic_compatible API key not masked: got %q", got.APIKey)
+	}
+	if got.BaseURL != "https://proxy.example.com" {
+		t.Errorf("anthropic_compatible base_url = %q, want 'https://proxy.example.com'", got.BaseURL)
+	}
+	if len(got.Models) != 1 || got.Models[0] != "claude-sonnet-4-20250514" {
+		t.Errorf("anthropic_compatible models = %v, want [claude-sonnet-4-20250514]", got.Models)
 	}
 }
 

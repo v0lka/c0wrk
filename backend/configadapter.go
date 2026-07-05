@@ -109,11 +109,16 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 				MaxFillFraction: cfg.Executor.ToolResultBudget.MaxFillFraction,
 				CacheTTLSeconds: cfg.Executor.ToolResultBudget.CacheTTLSeconds,
 			},
-			ToolOutputPruning: core.BuilderToolOutputPruning{
-				KeepLastN:        cfg.Executor.ToolOutputPruning.KeepLastN,
-				ProtectedTools:   cfg.Executor.ToolOutputPruning.ProtectedTools,
-				ThresholdPercent: cfg.Executor.ToolOutputPruning.ThresholdPercent,
-			},
+		ToolOutputPruning: core.BuilderToolOutputPruning{
+			KeepLastN:        cfg.Executor.ToolOutputPruning.KeepLastN,
+			ProtectedTools:   cfg.Executor.ToolOutputPruning.ProtectedTools,
+			ThresholdPercent: cfg.Executor.ToolOutputPruning.ThresholdPercent,
+		},
+		HistoryMutation: core.BuilderHistoryMutation{
+			ToolResultEvictionStep: cfg.Executor.HistoryMutation.ToolResultEvictionStep,
+			EvictStepStatus:        cfg.Executor.HistoryMutation.EvictStepStatus,
+			DedupRepeatedReads:     cfg.Executor.HistoryMutation.DedupRepeatedReads,
+		},
 			CircuitBreaker: core.BuilderCircuitBreaker{
 				RepeatNudgeThreshold:         cfg.Executor.CircuitBreaker.RepeatNudgeThreshold,
 				RepeatAbortThreshold:         cfg.Executor.CircuitBreaker.RepeatAbortThreshold,

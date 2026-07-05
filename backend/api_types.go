@@ -38,12 +38,13 @@ type ModelInfo struct {
 
 // ConfigLLMResponse holds sanitised LLM provider info.
 type ConfigLLMResponse struct {
-	DefaultModel     string                        `json:"default_model"` // global, cross-provider
-	Anthropic        ConfigProviderFull            `json:"anthropic"`
-	OpenAICompatible map[string]ConfigProviderFull `json:"openai_compatible"`
-	ChatGPT          ConfigProviderFull            `json:"chatgpt"`
-	AllModels        []ModelInfo                   `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
-	ModelsReady      bool                          `json:"models_ready"` // false during async LLM init; true once registry is wired
+	DefaultModel        string                        `json:"default_model"` // global, cross-provider
+	Anthropic           ConfigProviderFull            `json:"anthropic"`
+	OpenAICompatible    map[string]ConfigProviderFull `json:"openai_compatible"`
+	AnthropicCompatible map[string]ConfigProviderFull `json:"anthropic_compatible"`
+	ChatGPT             ConfigProviderFull            `json:"chatgpt"`
+	AllModels           []ModelInfo                   `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
+	ModelsReady         bool                          `json:"models_ready"` // false during async LLM init; true once registry is wired
 }
 
 // ConfigProviderFull is a provider with api_key, optional base_url, and enabled models list.
@@ -67,10 +68,11 @@ type LLMSettingsRequest struct {
 
 // LLMFullConfigRequest is the full LLM configuration payload for UpdateLLMConfig.
 type LLMFullConfigRequest struct {
-	DefaultModel     string                           `json:"default_model"`
-	Anthropic        *ProviderConfigRequest           `json:"anthropic,omitempty"`
-	OpenAICompatible map[string]ProviderConfigRequest `json:"openai_compatible,omitempty"`
-	ChatGPT          *ProviderConfigRequest           `json:"chatgpt,omitempty"`
+	DefaultModel        string                           `json:"default_model"`
+	Anthropic           *ProviderConfigRequest           `json:"anthropic,omitempty"`
+	OpenAICompatible    map[string]ProviderConfigRequest `json:"openai_compatible,omitempty"`
+	AnthropicCompatible map[string]ProviderConfigRequest `json:"anthropic_compatible,omitempty"`
+	ChatGPT             *ProviderConfigRequest           `json:"chatgpt,omitempty"`
 }
 
 // ProviderConfigRequest holds a single provider's configuration.

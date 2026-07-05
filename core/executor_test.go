@@ -1,7 +1,6 @@
 package core
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -461,60 +460,29 @@ func TestExecutor_NoDuplicateFinishTool(t *testing.T) {
 	}
 }
 
-// === Nudge Mechanism Tests ===
+// === Text-Only End Turn Tests ===
 
-// TestExecutor_NudgeMechanism_RetriesOnNoToolsStep1 tests that when LLM returns no tool calls
-// on step 1 with tools available, the executor adds a nudge message and retries.
-func TestExecutor_NudgeMechanism_RetriesOnNoToolsStep1(t *testing.T) {
+// TestExecutor_TextOnlyEndTurn_YieldsImmediately tests that when LLM returns no tool calls
+// with end_turn on step 1 and tools are available, the executor immediately accepts implicit
+// finish (yields to user) without nudging.
+func TestExecutor_TextOnlyEndTurn_YieldsImmediately(t *testing.T) {
 	callCount := 0
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callCount++
-			if callCount == 1 {
-				// First call: return no tools (will trigger nudge)
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "I cannot determine this"},
-					StopReason: "end_turn",
-					Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
-				}, nil
-			}
-			if callCount == 2 {
-				// Second call (after nudge): use tools and then finish
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: "Let me search for that",
-						ToolCalls: []llm.ToolCall{
-							{ID: "call_1", Name: "search", Input: json.RawMessage(`{"query":"test"}`)},
-						},
-					},
-					StopReason: "tool_use",
-					Usage:      llm.TokenUsage{InputTokens: 150, OutputTokens: 60},
-				}, nil
-			}
-			// Third call: finish with answer
 			return &llm.ChatResponse{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: "Found the answer",
-					ToolCalls: []llm.ToolCall{
-						{ID: "call_2", Name: "finish", Input: json.RawMessage(`{"answer":"The answer is 42"}`)},
-					},
-				},
-				StopReason: "tool_use",
-				Usage:      llm.TokenUsage{InputTokens: 200, OutputTokens: 70},
+				Message:    llm.Message{Role: "assistant", Content: "What are you trying to achieve?"},
+				StopReason: "end_turn",
+				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
 			}, nil
 		},
 	}
 
-	mockTools := &mockToolExecutor{
-		results: map[string]tools.ToolResult{
-			"search": {Content: "Found the answer: 42", IsError: false},
-		},
-	}
+	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
+	mockEm := &mockEmitter{}
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, mockEm, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
 
 	task := TaskDefinition{
 		Task: "Find the answer",
@@ -528,54 +496,44 @@ func TestExecutor_NudgeMechanism_RetriesOnNoToolsStep1(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify LLM was called 3 times (first + nudge retry + after tool)
-	if callCount != 3 {
-		t.Errorf("expected 3 LLM calls (first + nudge retry + after tool), got %d", callCount)
+	if callCount != 1 {
+		t.Errorf("expected 1 LLM call (immediate finish, no nudge), got %d", callCount)
 	}
 
-	// Verify a nudge step was added to context manager
-	if len(mockCW.steps) == 0 {
-		t.Fatal("expected at least one step to be added to context manager")
+	for _, step := range mockCW.steps {
+		if step.UserNudge != "" {
+			t.Errorf("expected no nudge steps, found one with nudge: %s", step.UserNudge)
+		}
 	}
 
-	// The first step should be the nudge step. The nudge is stored as a user
-	// nudge (rendered as a user message via buildNudgeMsg), not an Observation
-	// (which buildStandaloneMessages only renders for steps with an Action).
-	nudgeStep := mockCW.steps[0]
-	if nudgeStep.UserNudge == "" {
-		t.Error("expected nudge step to have user nudge")
-	}
-	if !containsIgnoreCase(nudgeStep.UserNudge, "tools available") {
-		t.Errorf("expected nudge user nudge to mention tools, got: %s", nudgeStep.UserNudge)
+	if len(mockTools.calls) != 0 {
+		t.Errorf("expected no tool calls, got: %v", mockTools.calls)
 	}
 
-	// Verify the search tool was executed
-	if len(mockTools.calls) != 1 || mockTools.calls[0] != "search" {
-		t.Errorf("expected search tool to be called once, got: %v", mockTools.calls)
-	}
-
-	// Result should be finished
 	if !result.Finished {
-		t.Error("expected Finished to be true")
+		t.Error("expected Finished to be true (yield to user)")
 	}
 
-	// Output should be from finish tool
-	if result.Output != "The answer is 42" {
-		t.Errorf("expected output 'The answer is 42', got '%s'", result.Output)
+	if result.Output != "What are you trying to achieve?" {
+		t.Errorf("expected output 'What are you trying to achieve?', got '%s'", result.Output)
+	}
+
+	if len(mockEm.assistantDones) != 1 {
+		t.Errorf("expected 1 AssistantDone event, got %d", len(mockEm.assistantDones))
+	} else if mockEm.assistantDones[0].content != "What are you trying to achieve?" {
+		t.Errorf("expected AssistantDone content to match, got '%s'", mockEm.assistantDones[0].content)
 	}
 }
 
-// TestExecutor_NudgeMechanism_AcceptsImplicitFinishAfterRetry tests that if the retry
-// after nudge also returns no tool calls, implicit_finish is accepted.
-func TestExecutor_NudgeMechanism_AcceptsImplicitFinishAfterRetry(t *testing.T) {
+// TestExecutor_TextOnlyEndTurn_NoNudgeRetry tests that a text-only end_turn is accepted
+// on the first attempt — no nudge retries, single LLM call, single step.
+func TestExecutor_TextOnlyEndTurn_NoNudgeRetry(t *testing.T) {
 	callCount := 0
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 			callCount++
-			// All calls return no tool calls - third should accept implicit finish
-			// (2 nudges before accepting, per the implicitFinishNudgeCount < 2 guard)
 			return &llm.ChatResponse{
-				Message:    llm.Message{Role: "assistant", Content: "I really cannot do this"},
+				Message:    llm.Message{Role: "assistant", Content: "I need more context"},
 				StopReason: "end_turn",
 				Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
 			}, nil
@@ -599,115 +557,20 @@ func TestExecutor_NudgeMechanism_AcceptsImplicitFinishAfterRetry(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify LLM was called 3 times (first attempt + 2 nudges + accept)
-	if callCount != 3 {
-		t.Errorf("expected 3 LLM calls, got %d", callCount)
+	if callCount != 1 {
+		t.Errorf("expected 1 LLM call, got %d", callCount)
 	}
 
-	// Verify result is finished (implicit finish accepted after nudge retry)
 	if !result.Finished {
-		t.Error("expected Finished to be true (implicit finish after nudge retry)")
+		t.Error("expected Finished to be true (immediate yield)")
 	}
 
-	// Output should be the last response content
-	if result.Output != "I really cannot do this" {
-		t.Errorf("expected output 'I really cannot do this', got '%s'", result.Output)
+	if result.Output != "I need more context" {
+		t.Errorf("expected output 'I need more context', got '%s'", result.Output)
 	}
 
-	// Should have 3 steps: 2 nudge steps + final implicit finish step
-	if len(result.Steps) != 3 {
-		t.Errorf("expected 3 steps (2 nudges + implicit finish), got %d", len(result.Steps))
-	}
-}
-
-// TestExecutor_NudgeMechanism_ProducesToolCallsOnRetry tests that when the retry
-// after nudge produces tool calls, they are executed normally.
-func TestExecutor_NudgeMechanism_ProducesToolCallsOnRetry(t *testing.T) {
-	callCount := 0
-	mockLLM := &mockLLMCaller{
-		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
-			callCount++
-			if callCount == 1 {
-				// First call: return no tools
-				return &llm.ChatResponse{
-					Message:    llm.Message{Role: "assistant", Content: "Thinking..."},
-					StopReason: "end_turn",
-					Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
-				}, nil
-			}
-			if callCount == 2 {
-				// Second call (after nudge): use the search tool
-				return &llm.ChatResponse{
-					Message: llm.Message{
-						Role:    "assistant",
-						Content: "Searching for answer",
-						ToolCalls: []llm.ToolCall{
-							{ID: "call_1", Name: "search", Input: json.RawMessage(`{"query":"answer"}`)},
-						},
-					},
-					StopReason: "tool_use",
-					Usage:      llm.TokenUsage{InputTokens: 150, OutputTokens: 60},
-				}, nil
-			}
-			// Third call: finish with answer
-			return &llm.ChatResponse{
-				Message: llm.Message{
-					Role:    "assistant",
-					Content: "Found it!",
-					ToolCalls: []llm.ToolCall{
-						{ID: "call_2", Name: "finish", Input: json.RawMessage(`{"answer":"The answer is 42"}`)},
-					},
-				},
-				StopReason: "tool_use",
-				Usage:      llm.TokenUsage{InputTokens: 200, OutputTokens: 70},
-			}, nil
-		},
-	}
-
-	mockTools := &mockToolExecutor{
-		results: map[string]tools.ToolResult{
-			"search": {Content: "Found: 42", IsError: false},
-		},
-	}
-	mockCW := &mockContextManager{}
-
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
-
-	task := TaskDefinition{
-		Task: "Find the answer",
-		Tools: []tools.ToolDescriptor{
-			{Name: "search", Description: "Search for information"},
-		},
-	}
-
-	result, err := executor.Run(context.Background(), task.Tools, mockCW)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Verify LLM was called 3 times (first + nudge retry + after tool)
-	if callCount != 3 {
-		t.Errorf("expected 3 LLM calls, got %d", callCount)
-	}
-
-	// Verify search tool was called
-	if len(mockTools.calls) != 1 || mockTools.calls[0] != "search" {
-		t.Errorf("expected search tool to be called once, got: %v", mockTools.calls)
-	}
-
-	// Verify result is finished
-	if !result.Finished {
-		t.Error("expected Finished to be true")
-	}
-
-	// Output should be from finish tool
-	if result.Output != "The answer is 42" {
-		t.Errorf("expected output 'The answer is 42', got '%s'", result.Output)
-	}
-
-	// Should have 3 steps: nudge + search + finish
-	if len(result.Steps) != 3 {
-		t.Errorf("expected 3 steps, got %d", len(result.Steps))
+	if len(result.Steps) != 1 {
+		t.Errorf("expected 1 step (implicit finish), got %d", len(result.Steps))
 	}
 }
 
@@ -758,9 +621,9 @@ func TestExecutor_NudgeMechanism_NoNudgeWithoutTools(t *testing.T) {
 	}
 }
 
-// TestExecutor_NudgeMechanism_NudgeOnLaterSteps tests that nudge IS triggered
-// on later steps when tools are available but not used.
-func TestExecutor_NudgeMechanism_NudgeOnLaterSteps(t *testing.T) {
+// TestExecutor_TextOnlyEndTurn_AfterToolCall_Yields tests that a text-only end_turn
+// after a tool call yields immediately — no nudge on later steps either.
+func TestExecutor_TextOnlyEndTurn_AfterToolCall_Yields(t *testing.T) {
 	callCount := 0
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
@@ -779,9 +642,7 @@ func TestExecutor_NudgeMechanism_NudgeOnLaterSteps(t *testing.T) {
 					Usage:      llm.TokenUsage{InputTokens: 100, OutputTokens: 50},
 				}, nil
 			}
-			// Calls 2, 3, 4: return no tools
-			// Calls 2 and 3 will trigger nudge, call 4 will be implicit finish
-			// (2 nudges before accepting, per the implicitFinishNudgeCount < 2 guard)
+			// Second call: text-only end_turn → immediate yield (no nudge)
 			return &llm.ChatResponse{
 				Message:    llm.Message{Role: "assistant", Content: "No more tools needed"},
 				StopReason: "end_turn",
@@ -811,19 +672,18 @@ func TestExecutor_NudgeMechanism_NudgeOnLaterSteps(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify LLM was called 4 times (tool + 2 nudges + accept)
-	if callCount != 4 {
-		t.Errorf("expected 4 LLM calls (tool + 2 nudges + accept), got %d", callCount)
+	// Verify LLM was called 2 times (tool call + immediate finish on end_turn)
+	if callCount != 2 {
+		t.Errorf("expected 2 LLM calls (tool + immediate finish), got %d", callCount)
 	}
 
-	// Verify result is finished
 	if !result.Finished {
 		t.Error("expected Finished to be true")
 	}
 
-	// Should have 4 steps: tool call + 2 nudges + implicit finish
-	if len(result.Steps) != 4 {
-		t.Errorf("expected 4 steps, got %d", len(result.Steps))
+	// Should have 2 steps: tool call + implicit finish (no nudge steps)
+	if len(result.Steps) != 2 {
+		t.Errorf("expected 2 steps (tool + implicit finish), got %d", len(result.Steps))
 	}
 }
 
@@ -1089,37 +949,6 @@ func TestExecutor_ReactiveCompaction_NonContextErrorNotIntercepted(t *testing.T)
 	if callCount != 1 {
 		t.Errorf("expected 1 LLM call, got %d", callCount)
 	}
-}
-
-// containsIgnoreCase is a helper function that checks if s contains substr (case-insensitive)
-func containsIgnoreCase(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr ||
-		(s != "" && containsIgnoreCaseHelper(s, substr)))
-}
-
-func containsIgnoreCaseHelper(s, substr string) bool {
-	lowerS := make([]byte, len(s))
-	lowerSubstr := make([]byte, len(substr))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 32
-		}
-		lowerS[i] = c
-	}
-	for i := 0; i < len(substr); i++ {
-		c := substr[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 32
-		}
-		lowerSubstr[i] = c
-	}
-	for i := 0; i <= len(lowerS)-len(lowerSubstr); i++ {
-		if bytes.Equal(lowerS[i:i+len(lowerSubstr)], lowerSubstr) {
-			return true
-		}
-	}
-	return false
 }
 
 // === SuppressAssistantEvents Tests ===

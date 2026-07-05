@@ -20,9 +20,9 @@ export function useSubagentEvents(sessionId: string | null): void {
         useChatStore.getState().addMessage(sessionId, {
           id: `subagent-${data.step_id}-launch`,
           sessionId,
-          type: 'tool_call',
+          type: 'subagent_launch',
           content: `SubAgent: ${data.description}`,
-          metadata: { tool: 'subagent', args: data.description, step: data.step_id, plan_step_id: data.plan_step_id },
+          metadata: { step_id: data.step_id, description: data.description, plan_step_id: data.plan_step_id },
           timestamp: Date.now(),
         })
       }),
@@ -32,15 +32,13 @@ export function useSubagentEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'subagent_complete', (data) => {
         if (!isSubAgentCompleteData(data)) { reportDroppedEvent('subagent_complete', data); return }
-        useChatStore.getState().updateMessage(sessionId, `subagent-${data.step_id}-launch`, {
-          metadata: {
-            tool: 'subagent',
-            completed: true,
-            error: data.success ? undefined : 'SubAgent failed',
-            result_preview: data.success ? `Completed in ${data.duration}ms` : `Failed after ${data.duration}ms`,
-            result_len: 0,
-            plan_step_id: data.plan_step_id,
-          },
+        useChatStore.getState().addMessage(sessionId, {
+          id: `subagent-${data.step_id}-complete`,
+          sessionId,
+          type: 'subagent_complete',
+          content: '',
+          metadata: { step_id: data.step_id, success: data.success, duration: data.duration, plan_step_id: data.plan_step_id },
+          timestamp: Date.now(),
         })
         // Update plan store immediately so steps reflect completion
         // without waiting for the batched plan_step_complete event.

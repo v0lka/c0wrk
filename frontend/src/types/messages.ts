@@ -25,7 +25,7 @@ export interface ChatMessageUI {
 export type DisplayItemKind =
   | 'user' | 'assistant' | 'thought' | 'thought_group' | 'tool' | 'tool_confirm'
   | 'ask_user' | 'step_limit' | 'resume_action' | 'error' | 'service' | 'plan_step'
-  | 'reflection' | 'step_finish' | 'action_placeholder'
+  | 'subagent' | 'reflection' | 'step_finish' | 'action_placeholder'
   | 'context_compaction' | 'memory_read' | 'plan_review'
 
 export type DisplayItem =
@@ -41,6 +41,7 @@ export type DisplayItem =
   | { kind: 'error'; message: ChatMessageUI }
   | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'step_retry' | 'status'; content: string; metadata?: Record<string, unknown> }
   | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; description?: string; status: 'running' | 'completed' | 'failed'; duration?: number; error?: string; isRetry?: boolean; children: DisplayItem[] }
+  | { kind: 'subagent'; id: string; stepId: string; title: string; description?: string; status: 'running' | 'completed' | 'failed'; duration?: number; error?: string; children: DisplayItem[] }
   | { kind: 'reflection'; id: string; summary: string; suggestedAction: string; rootCause: string; failureAnalysis: string; actionPlan: string; reasoning: string; hypotheses: string[]; attempt: number; maxAttempts: number }
   | { kind: 'step_finish'; id: string; stepNum?: number }
   | { kind: 'action_placeholder'; id: string; label: string }

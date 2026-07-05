@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { ProviderConfigForm } from '../ProviderConfigForm'
 import { useModelFetch } from '../useModelFetch'
+import { compositeModelId, bareModel } from '@/lib/modelId'
 import { ChevronDown, ChevronRight, X } from 'lucide-react'
 
 export interface ProviderConfig {
@@ -54,8 +55,15 @@ export function ProviderAccordion({
   const isEmpty = displayModels.length === 0
 
   // Deletion confirmation: warn when the provider owns the default model.
+  // `defaultModel` is a composite "provider/name" selector (normalized by
+  // useLLMConfig), so compare against the composite id built from this
+  // provider's enabled models rather than the bare name — this avoids both
+  // false positives (another provider exposing the same bare name) and false
+  // negatives (a composite default never matching a bare-name list).
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const ownsDefaultModel = config.models.includes(defaultModel)
+  const ownsDefaultModel = config.models.some(
+    (m) => compositeModelId(provider, m) === defaultModel,
+  )
 
   const handleDeleteClick = () => {
     if (ownsDefaultModel && !confirmDelete) {
@@ -114,7 +122,7 @@ export function ProviderAccordion({
 
       {confirmDelete && (
         <div className="border-t px-4 py-2 text-xs text-destructive">
-          This provider contains the default model &ldquo;{defaultModel}&rdquo;.
+          This provider contains the default model &ldquo;{bareModel(defaultModel)}&rdquo;.
           Click the X again to confirm deletion.
         </div>
       )}
@@ -150,7 +158,11 @@ export function ProviderAccordion({
               )}
               {displayModels.map((model) => {
                 const isEnabled = config.models.includes(model)
-                const isDefault = model === defaultModel
+                // `defaultModel` is a composite "provider/name" selector, so
+                // badge the entry whose composite id matches — this pins the
+                // badge to the single provider that owns the default even when
+                // the same bare name is exposed by multiple providers.
+                const isDefault = compositeModelId(provider, model) === defaultModel
                 return (
                   <label
                     key={model}

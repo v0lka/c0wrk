@@ -327,16 +327,102 @@ describe('groupMessages', () => {
     expect(cc.afterPercent).toBe(42)
   })
 
-  it('skips step_done, thinking, subagent_launch, subagent_complete, task_resumed', () => {
+  it('skips step_done, thinking, subagent_complete, task_resumed', () => {
     const msgs = [
       makeUI({ type: 'step_done' }),
       makeUI({ type: 'thinking' }),
-      makeUI({ type: 'subagent_launch' }),
-      makeUI({ type: 'subagent_complete' }),
+      makeUI({ type: 'subagent_complete', metadata: { step_id: 'sa1', success: true, duration: 100 } }),
       makeUI({ type: 'task_resumed' }),
     ]
     const result = groupMessages(msgs)
     expect(result.items).toHaveLength(0)
+  })
+
+  it('renders subagent_launch as a subagent block', () => {
+    const msg = makeUI({
+      type: 'subagent_launch',
+      metadata: { step_id: 'sa1', description: 'Research code' },
+    })
+    const result = groupMessages([msg])
+    expect(result.items).toHaveLength(1)
+    const sub = result.items[0]! as DisplayItem & { kind: 'subagent' }
+    expect(sub.kind).toBe('subagent')
+    expect(sub.stepId).toBe('sa1')
+    expect(sub.title).toBe('Research code')
+    expect(sub.status).toBe('running')
+    expect(sub.children).toEqual([])
+  })
+
+  it('converts plan_step to subagent on subagent_launch', () => {
+    const stepStart = makeUI({
+      type: 'plan_step_start',
+      metadata: { step_id: 'sa1', description: 'Step 1' },
+    })
+    const launch = makeUI({
+      type: 'subagent_launch',
+      metadata: { step_id: 'sa1', description: 'Research code' },
+    })
+    const result = groupMessages([stepStart, launch])
+    expect(result.items).toHaveLength(1)
+    const sub = result.items[0]! as DisplayItem & { kind: 'subagent' }
+    expect(sub.kind).toBe('subagent')
+    expect(sub.title).toBe('Research code')
+  })
+
+  it('nests subagent children under the subagent block', () => {
+    const launch = makeUI({
+      type: 'subagent_launch',
+      metadata: { step_id: 'sa1', description: 'Research code' },
+    })
+    const child = makeUI({
+      type: 'assistant',
+      content: 'Working...',
+      metadata: { plan_step_id: 'sa1' },
+    })
+    const result = groupMessages([launch, child])
+    expect(result.items).toHaveLength(1)
+    const sub = result.items[0]! as DisplayItem & { kind: 'subagent' }
+    expect(sub.children).toHaveLength(1)
+    expect(sub.children[0]!.kind).toBe('assistant')
+  })
+
+  it('updates subagent status on subagent_complete', () => {
+    const launch = makeUI({
+      type: 'subagent_launch',
+      metadata: { step_id: 'sa1', description: 'Research code' },
+    })
+    const complete = makeUI({
+      type: 'subagent_complete',
+      metadata: { step_id: 'sa1', success: false, duration: 5000 },
+    })
+    const result = groupMessages([launch, complete])
+    expect(result.items).toHaveLength(1)
+    const sub = result.items[0]! as DisplayItem & { kind: 'subagent' }
+    expect(sub.status).toBe('failed')
+    expect(sub.duration).toBe(5000)
+  })
+
+  it('preserves subagent duration from subagent_complete when plan_step_complete fires with 0', () => {
+    const stepStart = makeUI({
+      type: 'plan_step_start',
+      metadata: { step_id: 'sa1', description: 'Step 1' },
+    })
+    const launch = makeUI({
+      type: 'subagent_launch',
+      metadata: { step_id: 'sa1', description: 'Research code' },
+    })
+    const complete = makeUI({
+      type: 'subagent_complete',
+      metadata: { step_id: 'sa1', success: true, duration: 3000 },
+    })
+    const stepComplete = makeUI({
+      type: 'plan_step_complete',
+      metadata: { step_id: 'sa1', success: true, duration: 0 },
+    })
+    const result = groupMessages([stepStart, launch, complete, stepComplete])
+    const sub = result.items[0]! as DisplayItem & { kind: 'subagent' }
+    expect(sub.status).toBe('completed')
+    expect(sub.duration).toBe(3000)
   })
 })
 
