@@ -244,7 +244,7 @@ export function FileTreePanel() {
       cancelled = true
       unwatchDirectory(workspacePath).catch(() => { })
     }
-  }, [workspacePath, isNoProject, activeProjectId, projects, clearTree, setRootPath, setEntries, setGitStatus])
+  }, [workspacePath, isNoProject, activeProjectId, clearTree, setRootPath, setEntries, setGitStatus])
 
   // Refresh on workspace:tree_changed
   useEffect(() => {

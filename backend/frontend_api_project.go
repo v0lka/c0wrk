@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -57,10 +58,12 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 	}
 
 	// Stop watcher if this was the active project
+	f.watcherMu.Lock()
 	if wasActive && f.watcher != nil {
 		_ = f.watcher.Close() // Best-effort cleanup; error is non-critical.
 		f.watcher = nil
 	}
+	f.watcherMu.Unlock()
 
 	f.emitEvent(EventProjectDeleted, id)
 	return nil
@@ -241,41 +244,99 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 }
 
 // switchProjectSetupWatcher creates a file watcher for the new project workspace.
-// For No Project, the watcher is scoped to the most recently active session's
-// workspace directory to avoid cross-session tree_changed noise. Falls back to
-// the project workspace path if no session workspace can be determined.
+// For No Project (CHAT mode), each session has an isolated workspace
+// (~/.c0wrk/projects/__no_project__/<sid>/workspace/). The watcher is scoped to
+// the active session's workspace so only that session's file changes emit
+// workspace:tree_changed — other sessions and session-infra directories
+// (plans/, temp/, logs) that live outside workspace/ are excluded. Because
+// fsnotify/FSEvents watches recursively on macOS, scoping to the session
+// workspace (rather than the shared project dir) is what prevents cross-session
+// noise.
+//
+// The watcher root must follow the active session. It is created here for the
+// most recently active session (if any) and re-scoped on every session switch
+// via WatchDirectory. When no session exists yet (fresh start), creation is
+// deferred until the first session is activated — WatchDirectory creates the
+// watcher lazily.
 func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
-	// Always tear down the previous watcher, regardless of target project.
+	// For No Project, resolve the session workspace before acquiring the lock
+	// to avoid holding watcherMu during session-manager queries.
+	if p.IsNoProject {
+		sessionWS := f.resolveNoProjectSessionWorkspace()
+		f.watcherMu.Lock()
+		defer f.watcherMu.Unlock()
+		if sessionWS == "" {
+			// No session yet: tear down any previous watcher and defer
+			// creation until the first session is activated (WatchDirectory
+			// re-scopes then).
+			if f.watcher != nil {
+				_ = f.watcher.Close()
+				f.watcher = nil
+			}
+			return
+		}
+		if err := f.reScopeNoProjectWatcherLocked(sessionWS); err != nil {
+			f.log().Warn("failed to start workspace file watcher", "project", p.ID, "error", err)
+		}
+		return
+	}
+
+	// CODE mode: tear down the previous watcher and create a new one scoped
+	// to the project workspace.
+	f.watcherMu.Lock()
+	defer f.watcherMu.Unlock()
 	if f.watcher != nil {
-		_ = f.watcher.Close() // Best-effort cleanup; error is non-critical.
+		_ = f.watcher.Close()
 		f.watcher = nil
 	}
-
-	// Determine the watcher root. For No Project, scope to the active
-	// session's workspace directory so file changes in session A don't
-	// trigger tree refreshes while viewing session B.
-	watcherRoot := p.WorkspacePath
-	if p.IsNoProject {
-		if sessionWS := f.resolveNoProjectSessionWorkspace(); sessionWS != "" {
-			watcherRoot = sessionWS
-		}
-	}
-
-	watcher, err := workspace.NewWatcher(watcherRoot, func() {
+	watcher, err := workspace.NewWatcher(p.WorkspacePath, func() {
 		f.emitEvent(EventWorkspaceTreeChanged, nil)
 
-		// No Project: skip vector index notification (no indexing).
-		if !p.IsNoProject {
-			if vm := f.getVectorManager(); vm != nil {
-				vm.NotifyFileChange(p.WorkspacePath)
-			}
+		if vm := f.getVectorManager(); vm != nil {
+			vm.NotifyFileChange(p.WorkspacePath)
 		}
 	})
 	if err != nil {
 		f.log().Warn("failed to start workspace file watcher", "project", p.ID, "error", err)
-	} else {
-		f.watcher = watcher
+		return
 	}
+	f.watcher = watcher
+}
+
+// reScopeNoProjectWatcher tears down the current watcher (if any) and creates a
+// new one scoped to root, which must be a No Project session workspace. Each
+// chat session has an isolated workspace, so the watcher root must follow the
+// active session to detect its file changes while ignoring other sessions and
+// session-infra directories. The directory is created if missing so the watcher
+// can be set up even before the session workspace exists on disk (e.g. fresh
+// start, or a session whose workspace has not been materialized yet).
+func (f *FrontendAPI) reScopeNoProjectWatcher(root string) error {
+	f.watcherMu.Lock()
+	defer f.watcherMu.Unlock()
+	return f.reScopeNoProjectWatcherLocked(root)
+}
+
+// reScopeNoProjectWatcherLocked is the lock-held implementation of
+// reScopeNoProjectWatcher. The caller must hold f.watcherMu.
+func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
+	if root == "" {
+		return errors.New("cannot re-scope watcher to empty path")
+	}
+	if f.watcher != nil {
+		_ = f.watcher.Close()
+		f.watcher = nil
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("failed to create session workspace for watcher: %w", err)
+	}
+	watcher, err := workspace.NewWatcher(root, func() {
+		f.emitEvent(EventWorkspaceTreeChanged, nil)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to start workspace file watcher: %w", err)
+	}
+	f.watcher = watcher
+	return nil
 }
 
 // switchProjectSetupVector configures vector indexing for the new project.
@@ -607,4 +668,3 @@ func (f *FrontendAPI) resolveSavedSessionForProject(projectID, savedSessionID st
 
 	return ""
 }
-

@@ -292,7 +292,20 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 }
 
 // WatchDirectory adds a directory to the file watcher.
+//
+// For No Project (CHAT mode), it re-scopes the watcher to the given session
+// workspace: each chat session is isolated, so the watcher root must follow the
+// active session to detect its file changes. The frontend calls this with the
+// active session's workspace on every session switch, so re-scoping here keeps
+// the watcher in sync without requiring a separate RPC or frontend/binding
+// changes. For CODE mode, the directory is added to the existing project
+// watcher.
 func (f *FrontendAPI) WatchDirectory(dirPath string) error {
+	if f.isNoProject() {
+		return f.reScopeNoProjectWatcher(dirPath)
+	}
+	f.watcherMu.Lock()
+	defer f.watcherMu.Unlock()
 	if f.watcher == nil {
 		return errors.New("no active file watcher")
 	}
@@ -300,7 +313,17 @@ func (f *FrontendAPI) WatchDirectory(dirPath string) error {
 }
 
 // UnwatchDirectory removes a directory from the file watcher.
+//
+// For No Project this is a no-op: the watcher is re-scoped (torn down and
+// recreated) by WatchDirectory on session switch, so explicit unwatching is
+// unnecessary and would otherwise remove the active session's workspace root
+// mid-session. For CODE mode, the directory is removed from the project watcher.
 func (f *FrontendAPI) UnwatchDirectory(dirPath string) error {
+	if f.isNoProject() {
+		return nil
+	}
+	f.watcherMu.Lock()
+	defer f.watcherMu.Unlock()
 	if f.watcher == nil {
 		return errors.New("no active file watcher")
 	}

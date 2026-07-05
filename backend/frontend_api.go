@@ -38,6 +38,7 @@ type FrontendAPI struct {
 
 	// Workspace
 	watcher        *workspace.Watcher
+	watcherMu      sync.Mutex
 	gitRepoCache   map[string]gitRepoCacheEntry
 	gitRepoCacheMu sync.Mutex
 	// remoteOpMu serializes remote git operations (pull/push/fetch) so that
@@ -241,12 +242,14 @@ func (l *FrontendAPILifecycle) Cleanup() {
 	if vm := f.getVectorManager(); vm != nil {
 		vm.Shutdown()
 	}
+	f.watcherMu.Lock()
 	if f.watcher != nil {
 		if err := f.watcher.Close(); err != nil {
 			f.log().Error("failed to close workspace watcher", "error", err)
 		}
 		f.watcher = nil
 	}
+	f.watcherMu.Unlock()
 	if f.store != nil {
 		if err := f.store.Close(); err != nil {
 			f.log().Error("failed to close session store", "error", err)
