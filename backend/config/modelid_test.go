@@ -2,38 +2,6 @@ package config
 
 import "testing"
 
-// TestCompositeModelID_Helpers covers the pure string helpers.
-func TestCompositeModelID_Helpers(t *testing.T) {
-	if got := CompositeModelID("openai", "gpt-4"); got != "openai/gpt-4" {
-		t.Errorf("CompositeModelID = %q, want openai/gpt-4", got)
-	}
-	// Model names containing a slash are preserved after the first slash.
-	if got := CompositeModelID("hf", "meta-llama/Llama-3-70b"); got != "hf/meta-llama/Llama-3-70b" {
-		t.Errorf("CompositeModelID = %q, want hf/meta-llama/Llama-3-70b", got)
-	}
-
-	prov, model, ok := ParseCompositeModelID("openai/gpt-4")
-	if !ok || prov != "openai" || model != "gpt-4" {
-		t.Errorf("ParseCompositeModelID(openai/gpt-4) = (%q,%q,%v), want (openai,gpt-4,true)", prov, model, ok)
-	}
-	prov, model, ok = ParseCompositeModelID("gpt-4")
-	if ok || prov != "" || model != "gpt-4" {
-		t.Errorf("ParseCompositeModelID(gpt-4) = (%q,%q,%v), want (\"\",gpt-4,false)", prov, model, ok)
-	}
-	if !IsCompositeModelID("openai/gpt-4") {
-		t.Error("IsCompositeModelID(openai/gpt-4) = false, want true")
-	}
-	if IsCompositeModelID("gpt-4") {
-		t.Error("IsCompositeModelID(gpt-4) = true, want false")
-	}
-	if got := BareModel("openai/gpt-4"); got != "gpt-4" {
-		t.Errorf("BareModel = %q, want gpt-4", got)
-	}
-	if got := ProviderOf("openai/gpt-4"); got != "openai" {
-		t.Errorf("ProviderOf = %q, want openai", got)
-	}
-}
-
 // TestResolveModelID_TwoProvidersSameName is the core disambiguation test at
 // the config layer: two OpenAI-compatible providers exposing "gpt-4" must
 // resolve to distinct composite identifiers.

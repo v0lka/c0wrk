@@ -156,6 +156,15 @@ func (f *FrontendAPI) ctx() context.Context {
 	return context.Background()
 }
 
+// EmitSessionEvent emits a session-scoped event through the combined UI +
+// persistence path (delegates to Application). Used by desktop-layer
+// callbacks (e.g. plan approval) so events survive app restarts.
+func (f *FrontendAPI) EmitSessionEvent(evt session.Event) {
+	if f.app != nil {
+		f.app.EmitSessionEvent(evt)
+	}
+}
+
 const gitRepoCacheTTL = 30 * time.Second
 
 const gitRepoCacheMaxSize = 100

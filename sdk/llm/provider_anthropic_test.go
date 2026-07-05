@@ -190,6 +190,72 @@ func TestAnthropicProvider_BuildRequest_NoSystemNoToolsNoTemp(t *testing.T) {
 	}
 }
 
+// TestAnthropicProvider_BuildRequest_DefaultMaxTokens verifies that the
+// provider defaults MaxTokens to defaultAnthropicMaxTokens when the caller
+// does not set it (zero). The Anthropic Messages API requires max_tokens > 0;
+// omitting it causes a 400 "Missing key ['max_tokens']" error. Internal
+// callers (classification router, planner, reflector, context-compaction)
+// rely on this default.
+func TestAnthropicProvider_BuildRequest_DefaultMaxTokens(t *testing.T) {
+	p, _ := NewAnthropicProvider(AnthropicProviderConfig{APIKey: "test-key"})
+
+	t.Run("zero MaxTokens defaults to safe value", func(t *testing.T) {
+		req := ChatRequest{
+			Model: "claude-3-sonnet",
+			Messages: []Message{
+				{Role: "user", Content: "Hello"},
+			},
+		}
+
+		anthropicReq, err := p.buildRequest(req)
+		if err != nil {
+			t.Fatalf("buildRequest failed: %v", err)
+		}
+
+		if anthropicReq.MaxTokens != defaultAnthropicMaxTokens {
+			t.Errorf("expected MaxTokens %d, got %d", defaultAnthropicMaxTokens, anthropicReq.MaxTokens)
+		}
+	})
+
+	t.Run("negative MaxTokens defaults to safe value", func(t *testing.T) {
+		req := ChatRequest{
+			Model:     "claude-3-sonnet",
+			MaxTokens: -1,
+			Messages: []Message{
+				{Role: "user", Content: "Hello"},
+			},
+		}
+
+		anthropicReq, err := p.buildRequest(req)
+		if err != nil {
+			t.Fatalf("buildRequest failed: %v", err)
+		}
+
+		if anthropicReq.MaxTokens != defaultAnthropicMaxTokens {
+			t.Errorf("expected MaxTokens %d, got %d", defaultAnthropicMaxTokens, anthropicReq.MaxTokens)
+		}
+	})
+
+	t.Run("explicit MaxTokens is preserved", func(t *testing.T) {
+		req := ChatRequest{
+			Model:     "claude-3-sonnet",
+			MaxTokens: 2048,
+			Messages: []Message{
+				{Role: "user", Content: "Hello"},
+			},
+		}
+
+		anthropicReq, err := p.buildRequest(req)
+		if err != nil {
+			t.Fatalf("buildRequest failed: %v", err)
+		}
+
+		if anthropicReq.MaxTokens != 2048 {
+			t.Errorf("expected MaxTokens 2048, got %d", anthropicReq.MaxTokens)
+		}
+	})
+}
+
 func TestAnthropicProvider_ConvertMessage(t *testing.T) {
 	p, _ := NewAnthropicProvider(AnthropicProviderConfig{APIKey: "test-key"})
 

@@ -29,7 +29,7 @@ export function GitStashButtons({ onError }: GitStashButtonsProps) {
   const [busyIndex, setBusyIndex] = useState<number | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const isStashBusy = isStashing || isPopping
+  const isStashBusy = isStashing || isPopping || busyIndex !== null
 
   const loadList = useCallback(async () => {
     setIsLoadingList(true)

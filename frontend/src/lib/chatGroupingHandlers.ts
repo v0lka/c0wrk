@@ -130,6 +130,13 @@ export function handleSubAgentComplete(
   if (!step) return
   step.status = (meta?.success as boolean) ? 'completed' : 'failed'
   if (meta?.duration !== undefined) step.duration = meta.duration as number
+  // Remove from openSteps so late-arriving children no longer nest under a
+  // completed subagent. In the plan_step→subagent conversion flow the
+  // subsequent plan_step_complete becomes a no-op for openSteps (the step is
+  // already removed), which is fine — the status/duration are authoritative
+  // from subagent_complete. Standalone subagents (no plan_step_start) have no
+  // later plan_step_complete, so without this delete they would leak.
+  openSteps.delete(stepId)
 }
 
 export function handleReflection(

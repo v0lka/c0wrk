@@ -24,6 +24,7 @@ type OpenAIProvider struct {
 	client          *oai.Client // official SDK for Chat Completions API
 	responsesClient *oai.Client // official SDK for Responses API
 	name            string
+	baseURL         string // empty = default OpenAI; non-empty = compatible provider
 }
 
 // NewOpenAIProvider creates a new OpenAI provider.
@@ -52,6 +53,7 @@ func NewOpenAIProvider(cfg OpenAIProviderConfig) (*OpenAIProvider, error) {
 		client:          &client,
 		responsesClient: responsesClient,
 		name:            cfg.Name,
+		baseURL:         cfg.BaseURL,
 	}, nil
 }
 
@@ -62,8 +64,14 @@ func (p *OpenAIProvider) Name() string {
 
 // ChatCompletion sends a request and returns the full response.
 func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	if needsResponsesAPI(req.Model) {
-		return responsesAPICompletion(ctx, p.responsesClient, p.name, req)
+	// The Responses API (/v1/responses) is an OpenAI-specific endpoint, not
+	// part of the "OpenAI-compatible" standard. Compatible providers (custom
+	// baseURL) implement Chat Completions, not the Responses API. Only route
+	// to the Responses API for the official OpenAI endpoint where codex-family
+	// models require it. Compatible providers serve codex models via Chat
+	// Completions instead.
+	if p.baseURL == "" && needsResponsesAPI(req.Model) {
+		return responsesAPICompletion(ctx, p.responsesClient, p.name, p.baseURL, req)
 	}
 
 	params := p.buildChatParams(req)

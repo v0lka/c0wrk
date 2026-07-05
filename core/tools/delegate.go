@@ -205,9 +205,19 @@ func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistr
 			}
 			// An async task cannot be a dependency — it returns immediately
 			// and runs in the background, so dependents would never see it
-			// "completed" within the Launch wave loop.
+			// "completed" within the Launch wave loop. Check both the current
+			// batch and the registry (cross-batch: the async task may have
+			// been registered in a previous delegate call).
 			if depTask, ok := findTaskByID(tasks, dep); ok {
 				depMode := depTask.Mode
+				if depMode == "" {
+					depMode = "blocking"
+				}
+				if depMode == "async" {
+					return fmt.Errorf("task %q: depends_on references async task %q — async delegations cannot be depended upon; read their results via read_step_output instead", task.ID, dep)
+				}
+			} else if regDep := registry.Get(dep); regDep != nil {
+				depMode := regDep.Mode
 				if depMode == "" {
 					depMode = "blocking"
 				}

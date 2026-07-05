@@ -31,8 +31,9 @@ func newResponsesClient(apiKey, baseURL string, httpClient *http.Client) *oai.Cl
 }
 
 // responsesAPICompletion performs a non-streaming Responses API call.
-func responsesAPICompletion(ctx context.Context, client *oai.Client, providerName string, req ChatRequest) (*ChatResponse, error) {
-	params := buildResponsesParams(req)
+// baseURL is the provider's configured base URL (empty = official OpenAI).
+func responsesAPICompletion(ctx context.Context, client *oai.Client, providerName, baseURL string, req ChatRequest) (*ChatResponse, error) {
+	params := buildResponsesParams(req, baseURL)
 
 	resp, err := client.Responses.New(ctx, params)
 	if err != nil {
@@ -43,7 +44,9 @@ func responsesAPICompletion(ctx context.Context, client *oai.Client, providerNam
 }
 
 // buildResponsesParams constructs ResponseNewParams from a ChatRequest.
-func buildResponsesParams(req ChatRequest) responses.ResponseNewParams {
+// baseURL is the provider's configured base URL (empty = official OpenAI);
+// it controls whether OpenAI-specific fields like `store` are included.
+func buildResponsesParams(req ChatRequest, baseURL string) responses.ResponseNewParams {
 	systemPrompt, filteredMsgs := ExtractSystemPrompt(req.Messages)
 
 	params := responses.ResponseNewParams{
@@ -51,7 +54,14 @@ func buildResponsesParams(req ChatRequest) responses.ResponseNewParams {
 		Input: responses.ResponseNewParamsInputUnion{
 			OfInputItemList: convertToResponsesInput(filteredMsgs),
 		},
-		Store: param.NewOpt(false),
+	}
+
+	// `store` is an OpenAI-specific Responses API parameter. Compatible
+	// providers (custom baseURL) may not support it and return 400. Only
+	// send it for the official OpenAI endpoint where it disables server-side
+	// response storage for privacy.
+	if baseURL == "" {
+		params.Store = param.NewOpt(false)
 	}
 
 	if systemPrompt != "" {
@@ -66,7 +76,10 @@ func buildResponsesParams(req ChatRequest) responses.ResponseNewParams {
 		params.Temperature = param.NewOpt(*req.Temperature)
 	}
 
-	if req.ReasoningEffort != "" {
+	// Only send reasoning if the effort value is valid for the OpenAI
+	// Responses API. Invalid values (e.g. "On" from Anthropic/GLM families)
+	// cause a 400 error. Valid values: minimal, low, medium, high, max.
+	if isValidResponsesReasoningEffort(req.ReasoningEffort) {
 		params.Reasoning = shared.ReasoningParam{
 			Effort:  shared.ReasoningEffort(req.ReasoningEffort),
 			Summary: shared.ReasoningSummaryAuto,
@@ -78,6 +91,20 @@ func buildResponsesParams(req ChatRequest) responses.ResponseNewParams {
 	}
 
 	return params
+}
+
+// isValidResponsesReasoningEffort returns true if the effort string is a valid
+// value for the OpenAI Responses API reasoning.effort parameter. The Responses
+// API accepts: "minimal", "low", "medium", "high", "max" (max for Codex models).
+// Other family-specific values like "On"/"Off" (Anthropic, GLM, Qwen) or
+// "Max"/"High" (DeepSeek) are not accepted by the Responses API.
+func isValidResponsesReasoningEffort(effort string) bool {
+	switch effort {
+	case "minimal", "low", "medium", "high", "max":
+		return true
+	default:
+		return false
+	}
 }
 
 // convertToResponsesInput converts internal messages to Responses API input items.

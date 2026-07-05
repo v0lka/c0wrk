@@ -207,6 +207,12 @@ type Executor struct {
 	// Pre-compaction nudge: context fill % that triggers store_fact warning (0 = disabled)
 	preWarningPercent int
 
+	// FinishGuard is an optional callback invoked before finish is accepted.
+	// If it returns a non-nil error, finish is rejected with a nudge containing
+	// the error message. Used by the SDK Conductor to prevent abandoning pending
+	// async delegations.
+	finishGuard func(ctx context.Context) error
+
 	logger *slog.Logger
 }
 
@@ -261,6 +267,12 @@ func (e *Executor) SetChecklistGateEnabled(enabled bool) { e.checklistGateEnable
 // store_fact nudge. When fill reaches this threshold (but is below the compaction trigger),
 // a warning listing vulnerable tool outputs is appended to the observation.
 func (e *Executor) SetPreWarningPercent(percent int) { e.preWarningPercent = percent }
+
+// SetFinishGuard sets an optional callback invoked before finish is accepted.
+// If the callback returns a non-nil error, finish is rejected with a nudge
+// containing the error message. Used by the SDK Conductor to prevent
+// abandoning pending async delegations.
+func (e *Executor) SetFinishGuard(fn func(ctx context.Context) error) { e.finishGuard = fn }
 
 // log returns the executor's logger or a discard logger if none was set.
 func (e *Executor) log() *slog.Logger {
@@ -599,11 +611,20 @@ func (e *Executor) Run(ctx context.Context, taskTools []tools.ToolDescriptor, cw
 func (e *Executor) buildToolDefinitions(taskTools []tools.ToolDescriptor) []llm.ToolDefinition {
 	defs := make([]llm.ToolDefinition, 0, len(taskTools)+1)
 
+	// seen deduplicates by tool name, keeping the first occurrence. Some
+	// providers (DeepSeek) reject requests with HTTP 400 "Tool names must
+	// be unique." — this guards against any upstream source of duplicates.
+	seen := make(map[string]struct{}, len(taskTools)+1)
+
 	// Track if finish tool is already present
 	hasFinish := false
 
 	// Add task tools
 	for _, t := range taskTools {
+		if _, ok := seen[t.Name]; ok {
+			continue
+		}
+		seen[t.Name] = struct{}{}
 		desc := t.Description
 		if t.SourceCategory == tools.SourceCategoryMCP {
 			desc = "[MCP] " + t.Description

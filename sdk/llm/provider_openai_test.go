@@ -707,6 +707,48 @@ func TestOpenAIProvider_ResponsesClientInitialized_CustomBaseURL(t *testing.T) {
 	}
 }
 
+// TestOpenAIProvider_CompatibleProviderDoesNotUseResponsesAPI verifies that
+// codex-family models routed through a compatible provider (non-empty baseURL)
+// use Chat Completions, NOT the Responses API. The Responses API
+// (/v1/responses) is an OpenAI-specific endpoint; "OpenAI-compatible"
+// providers implement Chat Completions (/v1/chat/completions) only.
+func TestOpenAIProvider_CompatibleProviderDoesNotUseResponsesAPI(t *testing.T) {
+	t.Run("compatible provider with codex model uses chat completions", func(t *testing.T) {
+		p, err := NewOpenAIProvider(OpenAIProviderConfig{
+			Name:    "Zen",
+			APIKey:  "test-key",
+			BaseURL: "https://opencode.ai/zen/v1",
+		})
+		if err != nil {
+			t.Fatalf("NewOpenAIProvider failed: %v", err)
+		}
+		if p.baseURL == "" {
+			t.Fatal("expected non-empty baseURL for compatible provider")
+		}
+		// The routing decision: baseURL != "" means Chat Completions even for codex
+		if p.baseURL == "" && needsResponsesAPI("gpt-5.3-codex") {
+			t.Fatal("compatible provider should NOT route codex models to Responses API")
+		}
+	})
+
+	t.Run("official OpenAI with codex model uses responses API", func(t *testing.T) {
+		p, err := NewOpenAIProvider(OpenAIProviderConfig{
+			Name:   "chatgpt",
+			APIKey: "test-key",
+		})
+		if err != nil {
+			t.Fatalf("NewOpenAIProvider failed: %v", err)
+		}
+		if p.baseURL != "" {
+			t.Fatal("expected empty baseURL for official OpenAI")
+		}
+		// The routing decision: baseURL == "" + codex model → Responses API
+		if p.baseURL == "" && !needsResponsesAPI("gpt-5.3-codex") {
+			t.Fatal("official OpenAI should route codex models to Responses API")
+		}
+	})
+}
+
 func TestOpenAIProvider_EndToEnd_ReasoningContent(t *testing.T) {
 	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "deepseek", APIKey: "k"})
 

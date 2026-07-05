@@ -15,6 +15,7 @@ export function PlanApprovalPanel({ item }: PlanApprovalPanelProps) {
   const sessionId = useSessionStore((s) => s.activeSessionId)
   const requestId = item.message.metadata?.request_id as string | undefined
   const planPath = item.message.metadata?.plan_path as string | undefined
+  const error = item.message.metadata?.error as string | undefined
   const [showFeedback, setShowFeedback] = useState(false)
   const [feedback, setFeedback] = useState('')
 
@@ -64,6 +65,11 @@ export function PlanApprovalPanel({ item }: PlanApprovalPanelProps) {
 
   return (
     <div className="space-y-2">
+      {error && (
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 p-2">
+          <p className="text-xs text-destructive">{error}</p>
+        </div>
+      )}
       {item.message.content && (
         <div className="max-h-48 overflow-y-auto custom-scrollbar rounded-md border border-border bg-background p-3">
           <pre className="text-xs whitespace-pre-wrap font-mono">{item.message.content}</pre>

@@ -469,6 +469,25 @@ func (e *Executor) processSingleToolCall(
 
 	// Check for finish tool (also before ToolCall emission).
 	if action.Name == "finish" {
+		// Finish guard: allow the caller (e.g. SDK Conductor) to reject
+		// finish when preconditions are not met (e.g. pending async
+		// delegations). If the guard returns an error, inject a nudge and
+		// retry instead of accepting finish.
+		if e.finishGuard != nil {
+			if guardErr := e.finishGuard(ctx); guardErr != nil {
+				nudgeStep := Step{
+					Thought:        thought,
+					UserNudge:      guardErr.Error(),
+					ReasoningItems: resp.Message.ReasoningItems,
+					TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				}
+				state.allSteps = append(state.allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				e.emitter.ExecutorDiagnostic(state.stepNum, "finish_guard_rejected", map[string]any{"reason": guardErr.Error()})
+				return nil, actionBreak, nil //nolint:nilerr // guard rejection is a nudge, not a propagated error
+			}
+		}
+
 		// Parse answer from input
 		var params struct {
 			Answer string `json:"answer"`

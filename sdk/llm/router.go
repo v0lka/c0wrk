@@ -66,8 +66,8 @@ type Router struct {
 	registry            *ModelRegistry
 	tokenCounter        TokenCounter
 	sampling            SamplingFunc
-	safetyMarginPercent int  // percentage of context window reserved as safety margin (default: 5)
-	outputTokenReserve  int  // default output token reserve when model metadata doesn't specify (default: 4096)
+	safetyMarginPercent int // percentage of context window reserved as safety margin (default: 5)
+	outputTokenReserve  int // default output token reserve when model metadata doesn't specify (default: 4096)
 	logger              *slog.Logger
 }
 

@@ -108,7 +108,7 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 	var result []ModelInfo
 	for _, p := range providers {
 		for _, modelName := range p.Models {
-			compositeID := config.CompositeModelID(p.Name, modelName)
+			compositeID := llm.CompositeModelID(p.Name, modelName)
 			if seen[compositeID] {
 				continue
 			}

@@ -9,8 +9,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
+
+// unquoteGitPath strips surrounding double-quotes and unescapes C-style
+// escapes from a git output path. git quotes paths containing special
+// characters (spaces, tabs, non-ASCII) when core.quotePath is true (the
+// default). Returns the path unchanged if it is not quoted.
+func unquoteGitPath(path string) string {
+	if len(path) >= 2 && path[0] == '"' && path[len(path)-1] == '"' {
+		if unquoted, err := strconv.Unquote(path); err == nil {
+			return unquoted
+		}
+	}
+	return path
+}
 
 // errNotGitRepo reports whether a git command failure is due to the target
 // directory not being a git repository (as opposed to a real operational
@@ -83,7 +97,7 @@ func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry,
 
 		if x == '?' && y == '?' {
 			// Untracked file — not in index, present in work tree.
-			path := filepath.Join(repoPath, rawPath)
+			path := filepath.Join(repoPath, unquoteGitPath(rawPath))
 			result[path] = GitStatusEntry{
 				Status:         "A",
 				Staged:         false,
@@ -106,7 +120,7 @@ func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry,
 			continue
 		}
 
-		path := filepath.Join(repoPath, rawPath)
+		path := filepath.Join(repoPath, unquoteGitPath(rawPath))
 		result[path] = GitStatusEntry{
 			Status:         legacyStatus,
 			Staged:         legacyStaged,

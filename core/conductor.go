@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/sdk/agent"
@@ -129,7 +130,7 @@ func (l *conductorLauncher) depsReady(t tools.DelegationTask, registry *tools.De
 			return false
 		}
 		d := registry.Get(dep)
-		if d != nil && d.Status == tools.DelegationStatusFailed {
+		if d != nil && (d.Status == tools.DelegationStatusFailed || d.Status == tools.DelegationStatusCancelled) {
 			return false
 		}
 	}
@@ -424,7 +425,14 @@ func (l *conductorLauncher) buildTaskDescription(t tools.DelegationTask, registr
 			maxDepChars = 8000
 		}
 		if len(depContext) > maxDepChars {
-			depContext = depContext[len(depContext)-maxDepChars:]
+			start := len(depContext) - maxDepChars
+			// Walk forward to the next UTF-8 rune boundary so the tail does
+			// not begin inside a multi-byte sequence (which would inject
+			// invalid UTF-8 into the subagent's task description).
+			for start < len(depContext) && !utf8.RuneStart(depContext[start]) {
+				start++
+			}
+			depContext = depContext[start:]
 		}
 		if depContext != "" {
 			b.WriteString("\n## Context from previous delegations\n")
@@ -445,17 +453,25 @@ func (l *conductorLauncher) effectiveMaxSteps(t tools.DelegationTask) int {
 }
 
 func (l *conductorLauncher) resolveModelMeta(ctx context.Context) llm.ModelMetadata {
+	// Resolve always returns usable metadata — the ok flag indicates whether
+	// the model was found in a known source, but the fallback
+	// (ContextWindow=128000, OutputLimit=4096) is always usable. A zero
+	// ContextWindow disables compaction, causing unbounded conversation growth.
 	if l.deps.modelRegistry != nil && l.deps.model != "" {
-		if meta, ok := l.deps.modelRegistry.Resolve(ctx, l.deps.model); ok {
+		if meta, _ := l.deps.modelRegistry.Resolve(ctx, l.deps.model); meta.ContextWindow > 0 {
 			return meta
 		}
 	}
 	if l.deps.modelRegistry != nil {
-		if meta, ok := l.deps.modelRegistry.Resolve(ctx, ""); ok {
+		if meta, _ := l.deps.modelRegistry.Resolve(ctx, ""); meta.ContextWindow > 0 {
 			return meta
 		}
 	}
-	return llm.ModelMetadata{}
+	return llm.ModelMetadata{
+		ContextWindow: 128000,
+		OutputLimit:   4096,
+		TokenizerType: "approximate",
+	}
 }
 
 func (l *conductorLauncher) callerForStep(cm agent.ContextManager, stepID string) agent.LLMCaller {
@@ -524,17 +540,26 @@ func filterToolsByName(all []sdktools.ToolDescriptor, names []string) []sdktools
 	for _, n := range names {
 		nameSet[n] = struct{}{}
 	}
-	out := make([]sdktools.ToolDescriptor, 0, len(names))
+	out := make([]sdktools.ToolDescriptor, 0, len(names)+16)
+	// added prevents duplicate tool names when an internal tool (e.g.
+	// semantic_search) is already in names; duplicates make DeepSeek
+	// reject the request with HTTP 400 "Tool names must be unique."
+	added := make(map[string]struct{}, len(names)+16)
 	for _, d := range all {
 		if _, ok := nameSet[d.Name]; ok {
 			out = append(out, d)
+			added[d.Name] = struct{}{}
 		}
 	}
 	internal := []string{"finish", "store_fact", "search_facts", "read_step_output", "read_final_result", "update_checklist", "declare_step_complete", "semantic_search", "ask_user", "tool_result_read", "list_step_outputs"}
 	for _, name := range internal {
+		if _, ok := added[name]; ok {
+			continue
+		}
 		for _, d := range all {
 			if d.Name == name {
 				out = append(out, d)
+				added[d.Name] = struct{}{}
 				break
 			}
 		}

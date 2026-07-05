@@ -2,7 +2,6 @@ package orchestration
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -97,13 +96,19 @@ func (c *Conductor) Run(
 	}
 
 	// Resolve model metadata for the system prompt and context window.
-	modelMeta := llm.ModelMetadata{}
+	// Resolve always returns usable metadata — the ok flag indicates whether
+	// the model was found in a known source, but the fallback (ContextWindow=128000,
+	// OutputLimit=4096) is always usable. Using the fallback when ok=false is
+	// critical: a zero ContextWindow disables compaction entirely, causing the
+	// conversation to grow unbounded until the API rejects it.
+	var modelMeta llm.ModelMetadata
 	if c.cfg.ModelRegistry != nil {
-		if meta, ok := c.cfg.ModelRegistry.Resolve(ctx, c.cfg.Model); ok {
-			modelMeta = meta
-		} else if meta, ok := c.cfg.ModelRegistry.Resolve(ctx, ""); ok {
-			modelMeta = meta
-		}
+		modelMeta, _ = c.cfg.ModelRegistry.Resolve(ctx, c.cfg.Model)
+	}
+	if modelMeta.ContextWindow == 0 {
+		modelMeta.ContextWindow = 128000
+		modelMeta.OutputLimit = 4096
+		modelMeta.TokenizerType = "approximate"
 	}
 
 	systemPrompt := c.cfg.SystemPrompt(ctx, message, modelMeta)
@@ -135,17 +140,14 @@ func (c *Conductor) Run(
 		}
 	}
 
-	// Wrap the tool executor with a finish-join guard: if a
-	// DelegationRegistry is in the context and has pending async
-	// delegations, finish returns a tool error instead of executing.
-	// This prevents the Conductor from abandoning background work silently.
-	// When no registry is in context (e.g. SDK standalone usage without
-	// delegate tool), the guard is a transparent passthrough.
-	toolExec := &finishJoinExecutor{inner: c.cfg.Tools}
-
+	// The finish-join guard is implemented via a FinishGuard callback on the
+	// Executor (see SetFinishGuard below) rather than wrapping the tool
+	// executor, because finish is handled inline by the executor and never
+	// reaches tools.Execute(). The callback checks for pending async
+	// delegations and rejects finish with a nudge when any are still running.
 	executor := agent.NewExecutor(
 		caller,
-		toolExec,
+		c.cfg.Tools,
 		c.cfg.TokenCounter,
 		c.cfg.MaxSteps,
 		events,
@@ -166,6 +168,17 @@ func (c *Conductor) Run(
 	if c.cfg.PreWarningPercent > 0 {
 		executor.SetPreWarningPercent(c.cfg.PreWarningPercent)
 	}
+
+	// Finish-join guard: reject finish when pending async delegations exist,
+	// preventing the Conductor from abandoning background work silently.
+	executor.SetFinishGuard(func(ctx context.Context) error {
+		if reg := delegationRegistryFromContext(ctx); reg != nil {
+			if pending := reg.ListPending(); len(pending) > 0 {
+				return fmt.Errorf("you have %d pending async delegation(s): %s. Call cancel_delegation for each if you no longer need them, or wait for them to complete via read_step_output before calling finish", len(pending), strings.Join(pending, ", "))
+			}
+		}
+		return nil
+	})
 
 	// Inject step output store + fact store + final result store so tools
 	// (read_step_output, read_final_result, store_fact, search_facts) can
@@ -212,37 +225,6 @@ func (c *Conductor) Run(
 // Cleanup releases resources held by the conductor. Currently a no-op;
 // per-step dump cleanup is owned by the session layer.
 func (c *Conductor) Cleanup() {}
-
-// finishJoinExecutor wraps agent.ToolExecutor to intercept finish calls when
-// the Conductor has pending async delegations. If finish is called while
-// delegations are still pending (not cancelled or completed), the wrapper
-// returns a tool error instead of executing finish — preventing the Conductor
-// from abandoning background work silently.
-type finishJoinExecutor struct {
-	inner agent.ToolExecutor
-}
-
-func (f *finishJoinExecutor) Execute(ctx context.Context, name string, input json.RawMessage) (tools.ToolResult, error) {
-	if name == "finish" {
-		if reg := delegationRegistryFromContext(ctx); reg != nil {
-			if pending := reg.ListPending(); len(pending) > 0 {
-				return tools.ToolResult{
-					Content: fmt.Sprintf("You have %d pending async delegation(s): %s. Call cancel_delegation for each if you no longer need them, or wait for them to complete via read_step_output before calling finish.", len(pending), strings.Join(pending, ", ")),
-					IsError: true,
-				}, nil
-			}
-		}
-	}
-	return f.inner.Execute(ctx, name, input)
-}
-
-func (f *finishJoinExecutor) GetToolSource(name string) string {
-	return f.inner.GetToolSource(name)
-}
-
-func (f *finishJoinExecutor) IsToolUntrusted(name string) bool {
-	return f.inner.IsToolUntrusted(name)
-}
 
 // --- Minimal DelegationRegistry interface for finish-join ---
 //

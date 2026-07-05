@@ -787,7 +787,9 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	o.SetReasoningEffort(opts.ReasoningEffort)
 	if opts.ModelOverride != "" && o.modelSwitcher != nil {
 		if err := o.modelSwitcher.SetModel(ctx, opts.ModelOverride); err != nil {
-			o.logger.Warn("failed to apply model override", "model", opts.ModelOverride, "error", err)
+			if o.logger != nil {
+				o.logger.Warn("failed to apply model override", "model", opts.ModelOverride, "error", err)
+			}
 		} else {
 			o.config.Model = llm.BareModel(opts.ModelOverride)
 		}

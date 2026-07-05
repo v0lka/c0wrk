@@ -197,8 +197,7 @@ func (m *Manager) SetTitleGenerator(gen *TitleGenerator) {
 	m.titleGen = gen
 }
 
-// SetSessionStore sets the persistent session store. If the store also
-// implements PlanReviewStore, it is set as the plan review store as well.
+// SetSessionStore sets the persistent session store.
 func (m *Manager) SetSessionStore(store SessionStore) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

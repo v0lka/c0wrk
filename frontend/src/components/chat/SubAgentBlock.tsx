@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Bot, Loader2, CheckCircle2, XCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
@@ -16,6 +16,12 @@ const statusConfig = {
 
 export function SubAgentBlock({ item }: { item: SubAgentItem }) {
   const { title, description, status, duration, error, children } = item
+
+  // Auto-open when running (mirrors PlanStepBlock), with user override.
+  const isAutoOpen = status === 'running'
+  const [userOverride, setUserOverride] = useState<boolean | null>(null)
+  const isOpen = userOverride ?? isAutoOpen
+  useEffect(() => { setUserOverride(null) }, [status])
 
   const cfg = statusConfig[status] ?? statusConfig.running
   const StatusIcon = cfg.Icon
@@ -52,9 +58,10 @@ export function SubAgentBlock({ item }: { item: SubAgentItem }) {
     <CollapsibleBlock
       icon={icon}
       label={label}
+      open={isOpen}
+      onOpenChange={(open) => setUserOverride(open)}
       statusIcon={statusIcon}
       headerExtra={headerExtra}
-      defaultOpen={false}
     >
       <div className="mt-2 border-l-2 border-border rounded pl-3 py-2 space-y-3 min-w-0">
         <ChatMessageRenderer items={children} />

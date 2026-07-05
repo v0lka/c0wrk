@@ -359,12 +359,6 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 	return nil
 }
 
-
-
-// handleReplanWithFeedback implements the replan-with-feedback flow shared by
-// RejectPlan (with feedback) and SendMessage (awaiting_feedback message).
-
-
 // CancelUnfinishedTask discards any unfinished task in the given session by
 // marking it as cancelled in the task store. After this returns successfully,
 // the session no longer has a resumable task and emitResumableIfUnfinished

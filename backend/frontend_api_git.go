@@ -212,10 +212,23 @@ func parseDiffStats(output, repoPath string) map[string]DiffStat {
 		if err != nil {
 			continue
 		}
-		absPath := filepath.Join(repoPath, fields[2])
+		absPath := filepath.Join(repoPath, unquoteGitPath(fields[2]))
 		stats[absPath] = DiffStat{Added: added, Deleted: deleted}
 	}
 	return stats
+}
+
+// unquoteGitPath strips surrounding double-quotes and unescapes C-style
+// escapes from a git output path. git quotes paths containing special
+// characters (spaces, tabs, non-ASCII) when core.quotePath is true (the
+// default). Returns the path unchanged if it is not quoted.
+func unquoteGitPath(path string) string {
+	if len(path) >= 2 && path[0] == '"' && path[len(path)-1] == '"' {
+		if unquoted, err := strconv.Unquote(path); err == nil {
+			return unquoted
+		}
+	}
+	return path
 }
 
 // ---------------------------------------------------------------------------

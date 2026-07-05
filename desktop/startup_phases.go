@@ -369,7 +369,15 @@ func (a *App) buildPlanApprovalCallback(uiEmit func(session.Event)) coretools.Ap
 			PlanPath:    planPath,
 			PlanContent: planMarkdown,
 		}
-		uiEmit(session.Event{SessionID: sessionID, Type: "plan_review_ready", Data: payload})
+		// Emit through the Application's combined UI + persistence path so
+		// the plan_review_ready event survives app restarts. Fall back to
+		// the raw UI emitter when the Application is not yet initialized.
+		evt := session.Event{SessionID: sessionID, Type: "plan_review_ready", Data: payload}
+		if a.app != nil {
+			a.app.EmitSessionEvent(evt)
+		} else {
+			uiEmit(evt)
+		}
 
 		select {
 		case resp := <-ch:

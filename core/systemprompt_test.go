@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/prompt"
 	"github.com/v0lka/c0wrk/sdk/skills"
 )
 
@@ -116,85 +115,5 @@ func TestFormatAgentsMD_Untrusted(t *testing.T) {
 	// Regression guard: must NOT use the old "MUST strictly follow" wording.
 	if strings.Contains(got, "MUST strictly follow") {
 		t.Error("AGENTS.md prompt section reverted to authoritative wording")
-	}
-}
-
-func TestAppendPlannerContextSections_Empty(t *testing.T) {
-	out := appendPlannerContextSections(context.Background(), "BASE")
-	if out != "BASE" {
-		t.Errorf("expected unchanged base, got %q", out)
-	}
-}
-
-func TestAppendPlannerContextSections_AllSections(t *testing.T) {
-	ctx := context.Background()
-	ctx = WithVectorSearchHints(ctx, &VectorSearchHints{
-		Files: []VectorSearchHint{{FilePath: "x.go", Summary: "x summary"}},
-	})
-	ctx = WithAgentsMD(ctx, &AgentsMD{Content: "Use INFO log level."})
-	ctx = WithActiveSkills(ctx, &ActiveSkills{
-		Skills: []*skills.Skill{{
-			Metadata: skills.SkillMetadata{Name: "test-skill"},
-			Body:     "skill body",
-		}},
-	})
-
-	out := appendPlannerContextSections(ctx, "BASE")
-	if !strings.HasPrefix(out, "BASE") {
-		t.Error("expected base to remain at the start")
-	}
-	if !strings.Contains(out, "Relevant Project Files") {
-		t.Error("missing vector hints section")
-	}
-	if !strings.Contains(out, "x.go: x summary") {
-		t.Error("missing vector hint file")
-	}
-	if !strings.Contains(out, `<untrusted-content source="AGENTS.md">`) {
-		t.Error("missing untrusted-tagged AGENTS.md section")
-	}
-	if !strings.Contains(out, "Active Skills") {
-		t.Error("missing skills section")
-	}
-	if !strings.Contains(out, "test-skill") {
-		t.Error("missing skill name")
-	}
-}
-
-// TestAppendPlannerContextSections_CacheBreakPlacement verifies that AGENTS.md
-// and skills are inserted into the stable (cacheable) prefix before
-// CacheBreakMarker, while vector hints remain in the volatile tail.
-func TestAppendPlannerContextSections_CacheBreakPlacement(t *testing.T) {
-	ctx := context.Background()
-	ctx = WithVectorSearchHints(ctx, &VectorSearchHints{
-		Files: []VectorSearchHint{{FilePath: "x.go", Summary: "x summary"}},
-	})
-	ctx = WithAgentsMD(ctx, &AgentsMD{Content: "Use INFO log level."})
-	ctx = WithActiveSkills(ctx, &ActiveSkills{
-		Skills: []*skills.Skill{{
-			Metadata: skills.SkillMetadata{Name: "test-skill"},
-			Body:     "skill body",
-		}},
-	})
-
-	base := "BASE" + prompt.CacheBreakMarker + "DYNAMIC"
-	out := appendPlannerContextSections(ctx, base)
-
-	parts := strings.SplitN(out, prompt.CacheBreakMarker, 2)
-	if len(parts) != 2 {
-		t.Fatalf("expected CacheBreakMarker to split output into 2 parts, got %d", len(parts))
-	}
-
-	stable, volatile := parts[0], parts[1]
-	if !strings.HasPrefix(stable, "BASE") {
-		t.Errorf("stable part should start with BASE, got %q", stable[:min(len(stable), 20)])
-	}
-	if !strings.Contains(stable, `<untrusted-content source="AGENTS.md">`) {
-		t.Error("AGENTS.md should be in stable (cacheable) part")
-	}
-	if !strings.Contains(stable, "test-skill") {
-		t.Error("skills should be in stable (cacheable) part")
-	}
-	if !strings.Contains(volatile, "Relevant Project Files") {
-		t.Error("vector hints should be in volatile part")
 	}
 }

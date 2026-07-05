@@ -166,6 +166,21 @@ export function extractPendingActions(messages: ChatMessageUI[]): DisplayItem[] 
     else if (msg.type === 'step_limit') actions.push({ kind: 'step_limit', message: msg })
     else if (msg.type === 'plan_review' && msg.metadata?.resolved !== true) actions.push({ kind: 'plan_review', message: msg })
   }
+
+  // Keep only the last unresolved plan_review — earlier ones are superseded
+  // by a replan cycle (plan → reject → replan → new plan). Showing all of
+  // them would stack stale approval panels in the PendingActionsBar.
+  let lastPlanReviewIdx = -1
+  for (let i = actions.length - 1; i >= 0; i--) {
+    if (actions[i]!.kind === 'plan_review') {
+      lastPlanReviewIdx = i
+      break
+    }
+  }
+  if (lastPlanReviewIdx >= 0) {
+    return actions.filter((a, i) => a.kind !== 'plan_review' || i === lastPlanReviewIdx)
+  }
+
   return actions.length > 0 ? actions : EMPTY_PENDING
 }
 

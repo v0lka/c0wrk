@@ -894,6 +894,42 @@ func TestBuildToolDefinitions_EmptyInput(t *testing.T) {
 	}
 }
 
+func TestBuildToolDefinitions_DeduplicatesByName(t *testing.T) {
+	// Guards against upstream sources of duplicate tool names (e.g. the
+	// delegate tool's filterToolsByName). DeepSeek rejects requests whose
+	// tool names are not unique with HTTP 400 "Tool names must be unique."
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	defs := exec.buildToolDefinitions([]tools.ToolDescriptor{
+		{Name: "semantic_search", Description: "first"},
+		{Name: "bash_exec", Description: "bash"},
+		{Name: "semantic_search", Description: "second"},
+		{Name: "tool_result_read", Description: "trr"},
+		{Name: "bash_exec", Description: "dup bash"},
+	})
+
+	seen := make(map[string]int, len(defs))
+	for _, d := range defs {
+		seen[d.Name]++
+	}
+	if seen["semantic_search"] != 1 {
+		t.Errorf("semantic_search should appear once, got %d", seen["semantic_search"])
+	}
+	if seen["bash_exec"] != 1 {
+		t.Errorf("bash_exec should appear once, got %d", seen["bash_exec"])
+	}
+	if seen["tool_result_read"] != 1 {
+		t.Errorf("tool_result_read should appear once, got %d", seen["tool_result_read"])
+	}
+	if seen["finish"] != 1 {
+		t.Errorf("finish should be injected once, got %d", seen["finish"])
+	}
+	for _, d := range defs {
+		if d.Name == "semantic_search" && d.Description == "second" {
+			t.Error("dedup should keep the first occurrence, not the duplicate")
+		}
+	}
+}
+
 func TestExecutor_Run_CircuitBreaker_JSONNormalization(t *testing.T) {
 	// Tool calls with semantically identical JSON but different whitespace
 	// should be detected as identical by the circuit breaker.

@@ -55,6 +55,11 @@ type Application struct {
 	envInfo   *sdktools.EnvInfo
 	logger    *slog.Logger
 
+	// emitFunc is the combined session-event emitter (UI + persistence).
+	// Exposed via EmitSessionEvent so desktop-layer callbacks (e.g. plan
+	// approval) can emit events that survive app restarts.
+	emitFunc func(session.Event)
+
 	// hitlHandler is captured for the orchestrator factory closure.
 	hitlHandler agent.HITLHandler
 }
@@ -89,6 +94,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 		}
 		app.persister.Persist(evt)
 	}
+	app.emitFunc = emitFunc
 
 	// 3. OrchestratorBuilder (owns registry, gateway, router, judge).
 	builderCfg := ToBuilderConfig(cfg.Config)
@@ -281,4 +287,13 @@ func expandTilde(p, home string) string {
 		return filepath.Join(home, p[2:])
 	}
 	return p
+}
+
+// EmitSessionEvent emits a session event through the combined UI + persistence
+// path. Desktop-layer callbacks (e.g. plan approval) use this instead of the
+// raw UI emitter so events survive app restarts.
+func (app *Application) EmitSessionEvent(evt session.Event) {
+	if app.emitFunc != nil {
+		app.emitFunc(evt)
+	}
 }

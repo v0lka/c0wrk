@@ -670,13 +670,14 @@ describe('extractPendingActions — plan_review', () => {
     expect(actions).toHaveLength(0)
   })
 
-  it('includes multiple concurrent unresolved plan_review items', () => {
+  it('keeps only the last unresolved plan_review (replan cycle)', () => {
     const actions = extractPendingActions([
       makeUI({ id: 'pr-1', metadata: { resolved: false } }),
       makeUI({ id: 'pr-2', metadata: { resolved: false } }),
     ])
-    expect(actions).toHaveLength(2)
+    expect(actions).toHaveLength(1)
     expect(actions.every(a => a.kind === 'plan_review')).toBe(true)
+    expect((actions[0]! as { message: ChatMessageUI }).message.id).toBe('pr-2')
   })
 
   it('filters out resolved items among unresolved ones', () => {

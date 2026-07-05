@@ -220,36 +220,56 @@ func (r *ModelRegistry) fetchFromHuggingFace(ctx context.Context, model string) 
 }
 
 // makeBuiltInRegistry creates the hardcoded model metadata table.
+//
+// Values verified against official provider documentation (July 2026):
+//   - OpenAI:    https://platform.openai.com/docs/models
+//   - Anthropic: https://platform.claude.com/docs/en/about-claude/models/overview
+//   - Google:    https://ai.google.dev/gemini-api/docs/models
+//   - DeepSeek:  https://api-docs.deepseek.com/quick_start/pricing
+//   - Qwen:      https://www.alibabacloud.com/help/en/model-studio/text-generation-model
+//   - GLM:       https://docs.z.ai/guides/llm/glm-5.2 + https://docs.bigmodel.cn
+//   - Kimi:      https://platform.moonshot.ai/docs/models.md
+//   - xAI:       https://docs.x.ai/docs/models
 func makeBuiltInRegistry() map[string]ModelMetadata {
 	return map[string]ModelMetadata{
-		// OpenAI models
-		"gpt-5.4": {
+		// ── OpenAI models ───────────────────────────────────────────────
+		// GPT-5.x flagships: 1.05M context, 128K max output.
+		// GPT-5.x mini/nano: 400K context, 128K max output.
+		// GPT-5: 400K context, 128K max output.
+		"gpt-5.5": {
 			ContextWindow: 1050000,
-			OutputLimit:   32768,
+			OutputLimit:   128000,
 			TokenizerType: "tiktoken/o200k_base",
 			Family:        "openai_flagship",
-			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, ToolCall: true},
+		},
+		"gpt-5.4": {
+			ContextWindow: 1050000,
+			OutputLimit:   128000,
+			TokenizerType: "tiktoken/o200k_base",
+			Family:        "openai_flagship",
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, ToolCall: true},
 		},
 		"gpt-5.4-mini": {
 			ContextWindow: 400000,
-			OutputLimit:   16384,
+			OutputLimit:   128000,
 			TokenizerType: "tiktoken/o200k_base",
 			Family:        "openai_flagship",
-			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, ToolCall: true},
 		},
 		"gpt-5.4-nano": {
 			ContextWindow: 400000,
-			OutputLimit:   16384,
+			OutputLimit:   128000,
 			TokenizerType: "tiktoken/o200k_base",
 			Family:        "openai_flagship",
-			Capabilities:  ModelCapabilities{Temperature: true, ToolCall: true},
+			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
 		},
 		"gpt-5": {
 			ContextWindow: 400000,
-			OutputLimit:   32768,
+			OutputLimit:   128000,
 			TokenizerType: "tiktoken/o200k_base",
 			Family:        "openai_flagship",
-			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, ToolCall: true},
 		},
 		"gpt-4.1": {
 			ContextWindow: 1047576,
@@ -321,73 +341,93 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			Family:        "openai_flagship",
 			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
+		// Codex models — use the OpenAI Responses API (/v1/responses).
 		"codex-mini-latest": {
-			ContextWindow: 192000,
-			OutputLimit:   16384,
+			ContextWindow: 200000,
+			OutputLimit:   100000,
 			TokenizerType: "tiktoken/o200k_base",
 			Family:        "openai_codex",
-			Capabilities: ModelCapabilities{
-				ToolCall:  true,
-				Reasoning: true,
-			},
+			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
 		},
 		"gpt-5.3-codex": {
-			ContextWindow: 192000,
-			OutputLimit:   16384,
+			ContextWindow: 400000,
+			OutputLimit:   128000,
 			TokenizerType: "tiktoken/o200k_base",
 			Family:        "openai_codex",
-			Capabilities: ModelCapabilities{
-				ToolCall:  true,
-				Reasoning: true,
-			},
+			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
 		},
 
-		// Anthropic models
-		"claude-opus-4.6": {
+		// ── Anthropic models ────────────────────────────────────────────
+		// Generation 5 + 4.6+: 1M context, 128K max output.
+		// Generation 4.5: 200K context, 64K max output.
+		// Generation 4: 200K context, 32K (Opus) / 64K (Sonnet) max output.
+		// Generation 3.5: 200K context, 8K max output.
+		"claude-opus-4-8": {
 			ContextWindow: 1000000,
-			OutputLimit:   32768,
+			OutputLimit:   128000,
 			TokenizerType: "anthropic-api",
 			Family:        "anthropic",
-			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
+		},
+		"claude-sonnet-5": {
+			ContextWindow: 1000000,
+			OutputLimit:   128000,
+			TokenizerType: "anthropic-api",
+			Family:        "anthropic",
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
+		},
+		"claude-fable-5": {
+			ContextWindow: 1000000,
+			OutputLimit:   128000,
+			TokenizerType: "anthropic-api",
+			Family:        "anthropic",
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
+		},
+		"claude-opus-4.6": {
+			ContextWindow: 1000000,
+			OutputLimit:   128000,
+			TokenizerType: "anthropic-api",
+			Family:        "anthropic",
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"claude-sonnet-4.6": {
 			ContextWindow: 1000000,
-			OutputLimit:   32768,
+			OutputLimit:   128000,
 			TokenizerType: "anthropic-api",
 			Family:        "anthropic",
-			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"claude-haiku-4.5": {
 			ContextWindow: 200000,
-			OutputLimit:   8192,
+			OutputLimit:   64000,
 			TokenizerType: "anthropic-api",
 			Family:        "anthropic",
-			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
+			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"claude-sonnet-4.5": {
 			ContextWindow: 200000,
-			OutputLimit:   16384,
+			OutputLimit:   64000,
 			TokenizerType: "anthropic-api",
 			Family:        "anthropic",
 			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"claude-opus-4.5": {
 			ContextWindow: 200000,
-			OutputLimit:   32768,
+			OutputLimit:   64000,
 			TokenizerType: "anthropic-api",
 			Family:        "anthropic",
 			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"claude-sonnet-4": {
 			ContextWindow: 200000,
-			OutputLimit:   16384,
+			OutputLimit:   64000,
 			TokenizerType: "anthropic-api",
 			Family:        "anthropic",
 			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"claude-opus-4": {
 			ContextWindow: 200000,
-			OutputLimit:   32768,
+			OutputLimit:   32000,
 			TokenizerType: "anthropic-api",
 			Family:        "anthropic",
 			Capabilities:  ModelCapabilities{Attachment: true, Reasoning: true, Temperature: true, ToolCall: true},
@@ -407,8 +447,11 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
 
-		// Google Gemini models — accessed via the openai_compatible provider
-		// (Google's Gemini API supports the OpenAI /v1/chat/completions protocol).
+		// ── Google Gemini models ────────────────────────────────────────
+		// Accessed via the openai_compatible provider (Gemini API supports
+		// the OpenAI /v1/chat/completions protocol).
+		// Gemini 3.x / 2.5: 1M context, 65K max output.
+		// Gemini 2.0: 1M context, 8K max output (deprecated).
 		"gemini-3.1-pro": {
 			ContextWindow: 1048576,
 			OutputLimit:   65536,
@@ -458,16 +501,19 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			Family:        "google",
 			Capabilities:  ModelCapabilities{Attachment: true, Temperature: true, ToolCall: true},
 		},
-		// Google Gemma models
+		// Google Gemma models — open-weights, context from model card.
 		"gemma-4-31b-it": {
-			ContextWindow: 128000,
+			ContextWindow: 256000,
 			OutputLimit:   8192,
 			TokenizerType: "approximate",
 			Family:        "google",
 			Capabilities:  ModelCapabilities{Temperature: true, ToolCall: true},
 		},
 
-		// DeepSeek V4 models
+		// ── DeepSeek models ─────────────────────────────────────────────
+		// Source: https://api-docs.deepseek.com/quick_start/pricing
+		// V4: 1M context, max output up to 384K (hard ceiling).
+		// OutputLimit set conservatively to 16384 for practical use.
 		"deepseek-v4-pro": {
 			ContextWindow: 1000000,
 			OutputLimit:   16384,
@@ -483,7 +529,8 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
 		},
 
-		// Kimi models (Moonshot AI)
+		// ── Kimi models (Moonshot AI) ───────────────────────────────────
+		// Note: kimi-k2 series deprecated May 2026; kept for backward compat.
 		"kimi-k2": {
 			ContextWindow: 131072,
 			OutputLimit:   8192,
@@ -499,58 +546,64 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
 		},
 
-		// Qwen models (Alibaba)
+		// ── Qwen models (Alibaba) ───────────────────────────────────────
+		// Source: https://www.alibabacloud.com/help/en/model-studio/text-generation-model
+		// Listed under "Legacy Qwen" in current docs.
 		"qwen-plus": {
-			ContextWindow: 131072,
+			ContextWindow: 1000000,
 			OutputLimit:   8192,
 			TokenizerType: "approximate",
 			Family:        "qwen",
 			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"qwen-max": {
-			ContextWindow: 131072,
+			ContextWindow: 128000,
 			OutputLimit:   8192,
 			TokenizerType: "approximate",
 			Family:        "qwen",
 			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"qwq-plus": {
-			ContextWindow: 131072,
+			ContextWindow: 128000,
 			OutputLimit:   16384,
 			TokenizerType: "approximate",
 			Family:        "qwen",
 			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
 		},
 
-		// GLM models (Zhipu AI)
+		// ── GLM models (Zhipu AI) ───────────────────────────────────────
+		// Source: https://docs.z.ai + https://docs.bigmodel.cn
+		// GLM 5.x: 1M/200K context, 128K max output.
+		// GLM 4.7: 200K context, 128K max output.
 		"glm-5.2": {
 			ContextWindow: 1000000,
-			OutputLimit:   16384,
+			OutputLimit:   128000,
 			TokenizerType: "approximate",
 			Family:        "glm",
 			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"glm-5.1": {
 			ContextWindow: 200000,
-			OutputLimit:   16384,
+			OutputLimit:   128000,
 			TokenizerType: "approximate",
 			Family:        "glm",
 			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"glm-5": {
 			ContextWindow: 200000,
-			OutputLimit:   16384,
+			OutputLimit:   128000,
 			TokenizerType: "approximate",
 			Family:        "glm",
 			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
 		},
 		"glm-4.7": {
-			ContextWindow: 128000,
-			OutputLimit:   16384,
+			ContextWindow: 200000,
+			OutputLimit:   128000,
 			TokenizerType: "approximate",
 			Family:        "glm",
 			Capabilities:  ModelCapabilities{Reasoning: true, Temperature: true, ToolCall: true},
 		},
+		// glm-z1-32b deprecated Nov 2025; kept for backward compat.
 		"glm-z1-32b": {
 			ContextWindow: 128000,
 			OutputLimit:   16384,
@@ -559,9 +612,11 @@ func makeBuiltInRegistry() map[string]ModelMetadata {
 			Capabilities:  ModelCapabilities{Reasoning: true, ToolCall: true},
 		},
 
-		// xAI Grok models
+		// ── xAI Grok models ─────────────────────────────────────────────
+		// Source: https://docs.x.ai/docs/models
+		// grok-4.20: 1M context. Older models deprecated but kept for compat.
 		"grok-4.20": {
-			ContextWindow: 2000000,
+			ContextWindow: 1000000,
 			OutputLimit:   32768,
 			TokenizerType: "approximate",
 			Family:        "default",

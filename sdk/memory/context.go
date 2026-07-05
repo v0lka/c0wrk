@@ -111,7 +111,18 @@ const defaultSafetyMargin = 5 // 5% of context window
 // NewContextWindow creates a new ContextWindow.
 // safetyMarginPercent is the percentage of context window reserved as safety margin (default: 5 if 0).
 // Optional pruning (first element) and mutation (second element) configs can be provided.
+//
+// If modelMeta.ContextWindow is 0 (unknown model), a fallback of 128000 is
+// used. A zero ContextWindow would disable compaction entirely (EffectiveMax
+// returns 0, CheckFill returns "ok"), causing unbounded conversation growth
+// until the API rejects the request.
 func NewContextWindow(systemPrompt string, modelMeta llm.ModelMetadata, tracker *llm.ContextTokenTracker, thresholds CompactionThresholds, strategy sdkagent.CompactionStrategy, safetyMarginPercent int, injectionDefenseEnabled bool, pruning ...ToolOutputPruning) *ContextWindow {
+	if modelMeta.ContextWindow == 0 {
+		modelMeta.ContextWindow = 128000
+	}
+	if modelMeta.OutputLimit == 0 {
+		modelMeta.OutputLimit = 4096
+	}
 	if tracker == nil {
 		// Use a discard tracker to prevent nil dereference panics downstream.
 		// Token accounting (compaction, fill warnings) will be silently disabled.
@@ -452,12 +463,21 @@ func (cw *ContextWindow) buildToolMsg(step sdkagent.Step, idx int, protectedIndi
 
 	// Apply history mutation first (age-based, preserves info via cache).
 	// Skip mutation for protected indices (they are explicitly kept).
+	mutated := false
 	if _, protected := protectedIndices[idx]; !protected {
+		original := observation
 		observation = cw.applyHistoryMutation(step, idx, observation)
+		mutated = observation != original
 	}
 
-	// Apply pruning: use placeholder for non-protected tool outputs
-	if _, protected := protectedIndices[idx]; !protected && cw.pruning.KeepLastN > 0 {
+	// Apply pruning: use placeholder for non-protected tool outputs.
+	// Skip pruning when history mutation already replaced the content with
+	// a cache reference or step-status eviction text — those are compact
+	// placeholders that preserve recoverability (the cache hash lets the LLM
+	// retrieve evicted content via tool_result_read). Overwriting them with
+	// the generic pruning placeholder would destroy the hash and break the
+	// information-preservation guarantee of history mutation.
+	if _, protected := protectedIndices[idx]; !protected && cw.pruning.KeepLastN > 0 && !mutated {
 		observation = cw.pruning.PlaceholderText
 	}
 

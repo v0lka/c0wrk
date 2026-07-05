@@ -325,9 +325,8 @@ func TestHybridSearch_NoiseCorpusRRF(t *testing.T) {
 			for _, r := range results {
 				names = append(names, r.FileName)
 			}
-			t.Logf("top-K with thresholds disabled: %v", names)
-			t.Skip("noise did not dominate top-K with thresholds disabled; " +
-				"corpus may need recalibration for this embedding model")
+			t.Fatalf("noise did not dominate top-K with thresholds disabled (results: %v); "+
+				"corpus may need recalibration for this embedding model", names)
 		}
 
 		// Sort by score descending for diagnostics.

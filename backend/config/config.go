@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/sdk/llm"
 
 	"gopkg.in/yaml.v3"
 )
@@ -185,7 +186,7 @@ type ToolOutputPruningConfig struct {
 // to reduce O(n²) replay cost. Unlike emergency compaction, mutation runs on
 // every BuildPrompt call and replaces old tool results with cache references.
 type HistoryMutationConfig struct {
-	ToolResultEvictionStep int  `yaml:"toolResultEvictionStep"` // evict tool results to cache refs after N steps (0 = disabled)
+	ToolResultEvictionStep int  `yaml:"toolResultEvictionStep"` // evict tool results to cache refs after N steps (default: 10)
 	EvictStepStatus        bool `yaml:"evictStepStatus"`        // evict update_checklist results immediately
 	DedupRepeatedReads     bool `yaml:"dedupRepeatedReads"`     // replace duplicate file reads with reference
 }
@@ -455,7 +456,7 @@ func (c *LLMConfig) ResolveDefaultModelProvider() (ProviderWithModels, string, e
 	}
 
 	// Composite default_model: resolve to the named provider + bare model.
-	if provider, model, ok := ParseCompositeModelID(c.DefaultModel); ok {
+	if provider, model, ok := llm.ParseCompositeModelID(c.DefaultModel); ok {
 		for _, p := range c.allProviderEntries() {
 			if p.name != provider {
 				continue

@@ -116,13 +116,13 @@ llm.Router.Call(ctx, ChatRequest)
 | `anthropic`                | provider_anthropic.go                             | Prompt caching (CacheBreak + ephemeral), thinking |
 | `gemini`                         | provider_gemini.go                                | Safety settings, large context                    |
 | `lmstudio`                       | provider_lmstudio.go                              | Any local model, OpenAI-compatible API            |
-| `openai_compatible`              | provider_openai.go + provider_openai_responses.go | Generic OpenAI-compatible API endpoint. `openai_codex` family routes to Responses API automatically. Reasoning items round-tripped (see below). |
-| `anthropic_compatible`           | provider_anthropic.go                             | Generic Anthropic Messages-API-compatible endpoint. Same transport as the fixed `anthropic` provider but with a custom `base_url` and logical name. Reuses Anthropic prompt caching, thinking, and tool-use conversion. |
-| `chatgpt`                        | provider_openai.go                                | Simplified OpenAI mode (Chat Completions only)    |
+| `openai_compatible`              | provider_openai.go                                | Generic OpenAI-compatible API endpoint. Uses Chat Completions for all models. The Responses API is NOT used — it is an OpenAI-specific endpoint, not part of the "OpenAI-compatible" standard. |
+| `anthropic_compatible`           | provider_anthropic.go                             | Generic Anthropic Messages-API-compatible endpoint. Same transport as the fixed `anthropic` provider but with a custom `base_url` and logical name. Reuses Anthropic prompt caching, thinking, and tool-use conversion. `max_tokens` defaults to 8192 when caller does not set it (Anthropic API requires it > 0). |
+| `chatgpt`                        | provider_openai.go + provider_openai_responses.go | Official OpenAI endpoint. `openai_codex` family routes to Responses API automatically (codex models require `/v1/responses`). Reasoning items round-tripped (see below). |
 
 ### Responses API Reasoning Round-Trip
 
-The `openai_codex` model family (e.g. `gpt-5.3-codex`) uses the OpenAI Responses API instead of Chat Completions. Reasoning models on this transport return reasoning output items (type `"reasoning"`) alongside function calls. These items carry an `ID` and a `Summary` text.
+The `openai_codex` model family (e.g. `gpt-5.3-codex`) uses the OpenAI Responses API instead of Chat Completions **on the official OpenAI endpoint only** (`chatgpt` provider). The Responses API (`/v1/responses`) is an OpenAI-specific endpoint, not part of the "OpenAI-compatible" standard — compatible providers (`openai_compatible`) use Chat Completions for all models including codex.
 
 **Without round-tripping**, the model's committed plan (e.g. "I have enough info, now I'll edit line 42") exists only in reasoning tokens that are dropped between ReAct iterations. This causes the agent to revert to read-only exploration every turn, never escalating to mutations.
 

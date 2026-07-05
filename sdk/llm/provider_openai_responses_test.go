@@ -674,3 +674,99 @@ func TestNewResponsesClient(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildResponsesParams_Store verifies that the `store` parameter is only
+// sent for the official OpenAI endpoint (empty baseURL). Compatible providers
+// may not support `store` and return 400.
+func TestBuildResponsesParams_Store(t *testing.T) {
+	req := ChatRequest{
+		Model: "gpt-5.3-codex",
+		Messages: []Message{
+			{Role: "user", Content: "Hello"},
+		},
+	}
+
+	t.Run("official OpenAI sends store=false", func(t *testing.T) {
+		params := buildResponsesParams(req, "")
+		if !params.Store.Valid() {
+			t.Fatal("expected Store to be set for official OpenAI endpoint")
+		}
+		if params.Store.Value != false {
+			t.Errorf("expected Store=false, got %v", params.Store.Value)
+		}
+	})
+
+	t.Run("compatible provider does not send store", func(t *testing.T) {
+		params := buildResponsesParams(req, "https://proxy.example.com/v1")
+		if params.Store.Valid() {
+			t.Errorf("expected Store to be omitted for compatible provider, got %v", params.Store.Value)
+		}
+	})
+}
+
+// TestBuildResponsesParams_ReasoningEffort verifies that reasoning.effort is
+// only sent when the value is valid for the OpenAI Responses API. Invalid
+// values from other families (e.g. "On" from Anthropic) cause 400 errors.
+func TestBuildResponsesParams_ReasoningEffort(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "Hello"},
+	}
+
+	validEfforts := []string{"minimal", "low", "medium", "high", "max"}
+	for _, effort := range validEfforts {
+		t.Run("valid effort: "+effort, func(t *testing.T) {
+			req := ChatRequest{
+				Model:           "gpt-5.3-codex",
+				Messages:        messages,
+				ReasoningEffort: effort,
+			}
+			params := buildResponsesParams(req, "")
+			if params.Reasoning.Effort == "" {
+				t.Errorf("expected reasoning.effort to be set for valid value %q", effort)
+			}
+		})
+	}
+
+	invalidEfforts := []string{"On", "Off", "Max", "High", "HIGH", "MINIMAL"}
+	for _, effort := range invalidEfforts {
+		t.Run("invalid effort: "+effort, func(t *testing.T) {
+			req := ChatRequest{
+				Model:           "gpt-5.3-codex",
+				Messages:        messages,
+				ReasoningEffort: effort,
+			}
+			params := buildResponsesParams(req, "")
+			if params.Reasoning.Effort != "" {
+				t.Errorf("expected reasoning.effort to be omitted for invalid value %q, got %q", effort, params.Reasoning.Effort)
+			}
+		})
+	}
+
+	t.Run("empty effort omits reasoning", func(t *testing.T) {
+		req := ChatRequest{
+			Model:    "gpt-5.3-codex",
+			Messages: messages,
+		}
+		params := buildResponsesParams(req, "")
+		if params.Reasoning.Effort != "" {
+			t.Errorf("expected reasoning to be omitted for empty effort, got %q", params.Reasoning.Effort)
+		}
+	})
+}
+
+// TestIsValidResponsesReasoningEffort verifies the validation helper.
+func TestIsValidResponsesReasoningEffort(t *testing.T) {
+	valid := []string{"minimal", "low", "medium", "high", "max"}
+	for _, v := range valid {
+		if !isValidResponsesReasoningEffort(v) {
+			t.Errorf("expected %q to be valid", v)
+		}
+	}
+
+	invalid := []string{"On", "Off", "Max", "High", "HIGH", "MINIMAL", "", "auto"}
+	for _, v := range invalid {
+		if isValidResponsesReasoningEffort(v) {
+			t.Errorf("expected %q to be invalid", v)
+		}
+	}
+}

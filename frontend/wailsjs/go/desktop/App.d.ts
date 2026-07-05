@@ -36,6 +36,8 @@ export function DeleteSession(arg1:string):Promise<void>;
 
 export function DiscardChanges(arg1:string):Promise<void>;
 
+export function EmitSessionEvent(arg1:session.Event):Promise<void>;
+
 export function Fetch(arg1:string):Promise<string>;
 
 export function GenerateCommitMessage(arg1:string):Promise<string>;

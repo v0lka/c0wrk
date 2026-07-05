@@ -1449,15 +1449,6 @@ func (m *mockSessionStoreForRestore) LoadTerminalCommands(_ context.Context, _ s
 	return []TerminalCommand{}, nil
 }
 func (m *mockSessionStoreForRestore) Close() error { return nil }
-func (m *mockSessionStoreForRestore) UpdateSessionPlanReview(_ context.Context, _, _, _ string) error {
-	return nil
-}
-func (m *mockSessionStoreForRestore) UpdateSessionPlanReviewContext(_ context.Context, _, _, _, _ string) error {
-	return nil
-}
-func (m *mockSessionStoreForRestore) GetSessionsInPlanReview(_ context.Context, _ string) ([]SessionInfo, error) {
-	return []SessionInfo{}, nil
-}
 
 // restoreTestManager creates a Manager pre-wired with a mock session store and
 // project resolver for restoration tests. It returns the manager, event channel,

@@ -10,6 +10,16 @@ import (
 	"github.com/liushuangls/go-anthropic/v2"
 )
 
+// defaultAnthropicMaxTokens is the fallback max_tokens sent to the Anthropic
+// Messages API when the caller does not specify one. The Anthropic API
+// requires max_tokens to be present and > 0 — omitting it (or sending 0)
+// results in a 400 "Missing key ['max_tokens']" error. Several internal
+// callers (classification router, planner, reflector, context-compaction)
+// build ChatRequests without MaxTokens, relying on the provider to supply a
+// safe default. 8192 is the minimum OutputLimit across all Anthropic models
+// in the built-in registry, so it is accepted by every supported model.
+const defaultAnthropicMaxTokens = 8192
+
 // anthropicToolIDPattern matches characters not allowed in Anthropic tool call IDs.
 // Anthropic only allows [a-zA-Z0-9_-] in tool call IDs.
 var anthropicToolIDPattern = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
@@ -21,7 +31,7 @@ func sanitizeAnthropicToolID(id string) string {
 
 // AnthropicProviderConfig holds configuration for Anthropic provider.
 type AnthropicProviderConfig struct {
-	Name       string       // logical provider name ("anthropic" default; custom name for Anthropic-compatible providers)
+	Name       string // logical provider name ("anthropic" default; custom name for Anthropic-compatible providers)
 	APIKey     string
 	BaseURL    string       // empty = default Anthropic; otherwise custom endpoint (Anthropic-compatible proxy)
 	HTTPClient *http.Client // optional proxy-configured HTTP client (nil = default)
@@ -105,6 +115,9 @@ func (p *AnthropicProvider) buildRequest(req ChatRequest) (*anthropic.MessagesRe
 		Model:     anthropic.Model(req.Model),
 		Messages:  messages,
 		MaxTokens: req.MaxTokens,
+	}
+	if anthropicReq.MaxTokens <= 0 {
+		anthropicReq.MaxTokens = defaultAnthropicMaxTokens
 	}
 
 	// Set system prompt: use MultiSystem with cache control when multiple parts exist

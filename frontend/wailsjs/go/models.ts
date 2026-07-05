@@ -787,6 +787,22 @@ export namespace session {
 	        this.created_at = source["created_at"];
 	    }
 	}
+	export class Event {
+	    session_id: string;
+	    type: string;
+	    data: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new Event(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.session_id = source["session_id"];
+	        this.type = source["type"];
+	        this.data = source["data"];
+	    }
+	}
 	export class SessionInfo {
 	    id: string;
 	    project_id: string;

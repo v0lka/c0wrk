@@ -175,55 +175,6 @@ func formatActiveSkills(ctx context.Context, preamble string) string {
 	return sb.String()
 }
 
-// appendPlannerContextSections inserts the standard env/AGENTS.md/skills
-// sections into the stable (cacheable) part of the planner system prompt,
-// before the CacheBreakMarker. Vector search hints remain in the volatile
-// tail. This ensures provider-side prompt caching can reuse the full
-// session-invariant prefix across planner calls.
-func appendPlannerContextSections(ctx context.Context, base string) string {
-	// Build the stable sections to insert.
-	var stableSections []string
-
-	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx), tools.EnvFormatOptions{HideHomeDir: coretools.IsNoProject(ctx)}); envBlock != "" {
-		stableSections = append(stableSections, envBlock)
-	}
-	if amd := formatAgentsMD(ctx); amd != "" {
-		stableSections = append(stableSections, amd)
-	}
-	if skillsBlock := formatActiveSkills(ctx,
-		"The following skills have been matched to this task. When formulating steps, incorporate their guidance into the plan.",
-	); skillsBlock != "" {
-		stableSections = append(stableSections, skillsBlock)
-	}
-
-	stableInsert := strings.Join(stableSections, "\n\n")
-
-	// Split on CacheBreakMarker; insert stable content before the marker.
-	parts := strings.SplitN(base, prompt.CacheBreakMarker, 2)
-	if len(parts) == 2 {
-		// Insert stable sections before the CacheBreakMarker.
-		if stableInsert != "" {
-			parts[0] = parts[0] + "\n\n" + stableInsert
-		}
-		// Vector hints go after the marker (volatile tail).
-		vectorHints := formatVectorSearchHints(ctx, "")
-		if vectorHints != "" {
-			parts[1] = parts[1] + "\n\n" + vectorHints
-		}
-		return parts[0] + prompt.CacheBreakMarker + parts[1]
-	}
-
-	// No CacheBreakMarker — append everything to the base.
-	result := base
-	if stableInsert != "" {
-		result += "\n\n" + stableInsert
-	}
-	if vectorHints := formatVectorSearchHints(ctx, ""); vectorHints != "" {
-		result += "\n\n" + vectorHints
-	}
-	return result
-}
-
 // buildSystemPrompt creates the system prompt for executors.
 //
 // The prompt is split by CacheBreak into a stable (cacheable) prefix and a
