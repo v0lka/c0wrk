@@ -4,41 +4,28 @@ import type { PlanItem } from '@/types/models'
 
 const LANE_WIDTH = 6
 const BASE_ROW_HEIGHT = 24
-const TODO_ITEM_HEIGHT = 14
 const PADDING = 4
 const STROKE_COLOR = 'var(--color-muted-foreground)'
 const STROKE_WIDTH = 1
 
-function computeRowHeight(item: PlanItem, isExpanded: boolean): number {
-  if (!isExpanded || !item.todoItems || item.todoItems.length === 0) return BASE_ROW_HEIGHT
-  return BASE_ROW_HEIGHT + item.todoItems.length * TODO_ITEM_HEIGHT + 4
-}
-
 interface DAGGraphProps {
   items: PlanItem[]
-  expandedItems: ReadonlySet<string>
 }
 
-export function DAGGraph({ items, expandedItems }: DAGGraphProps) {
+export function DAGGraph({ items }: DAGGraphProps) {
   const layout = useMemo(() => computeDAGLayout(items), [items])
-  const rowHeights = useMemo(
-    () => items.map(item => computeRowHeight(item, expandedItems.has(item.id))),
-    [items, expandedItems],
-  )
   const rowOffsets = useMemo(() => {
     const offsets: number[] = []
-    let offset = 0
-    for (let i = 0; i < rowHeights.length; i++) {
-      offsets.push(offset + BASE_ROW_HEIGHT / 2)
-      offset += rowHeights[i]!
+    for (let i = 0; i < items.length; i++) {
+      offsets.push(i * BASE_ROW_HEIGHT + BASE_ROW_HEIGHT / 2)
     }
     return offsets
-  }, [rowHeights])
+  }, [items.length])
 
   if (layout.maxLane === -1) return null
 
   const width = (layout.maxLane + 1) * LANE_WIDTH + PADDING * 2
-  const height = rowHeights.reduce((a, b) => a + b, 0)
+  const height = items.length * BASE_ROW_HEIGHT
   const laneX = (lane: number) => lane * LANE_WIDTH + PADDING + LANE_WIDTH / 2
   const rowY = (row: number) => rowOffsets[row] ?? 0
 

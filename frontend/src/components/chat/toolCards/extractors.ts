@@ -60,7 +60,8 @@ export function extractUrlTitle(args: Args, rawArgs: string): string {
 
 export function extractMemoTitle(toolName: string, args: Args, rawArgs: string): string {
   const parsed = safeParseArgs(args, rawArgs)
-  if (toolName === 'set_step_status') return 'step status'
+  if (toolName === 'update_checklist') return 'checklist'
+  if (toolName === 'declare_step_complete') return 'step complete'
   if (toolName === 'store_fact') {
     const keywords = parsed.keywords
     if (Array.isArray(keywords) && keywords.length > 0) return `fact: ${keywords.join(', ')}`

@@ -30,7 +30,7 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 
 ### Tool Registration
 
-All built-in tools are registered at startup via `RegisterBuiltinTools(registry, cfg)` (in `core/tools/builtin_registration.go`). Registration is ordered: bash_exec → read_file → write_file → edit_file → list_directory → create_directory → delete_directory → delete_file → finish → web_fetch → web_search → glob → ripgrep → tool_result_read → batch → read_step_output → list_step_outputs → set_step_status → … Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_step_output`, `tool_result_read`, `batch`, `search_facts`, `semantic_search`, `store_fact`, `read_skill_resource`, `set_step_status` — 11 total) always bypass policy checks during execution. `batch` is marked internal (`internalTools` map) but is intercepted at the executor level before reaching the registry — its policy is `always_allow` to ensure the LLM can always use the schema.
+All built-in tools are registered at startup via `RegisterBuiltinTools(registry, cfg)` (in `core/tools/builtin_registration.go`). Registration is ordered: bash_exec → read_file → write_file → edit_file → list_directory → create_directory → delete_directory → delete_file → finish → web_fetch → web_search → glob → ripgrep → tool_result_read → batch → read_step_output → list_step_outputs → update_checklist → declare_step_complete → … Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_step_output`, `tool_result_read`, `batch`, `search_facts`, `semantic_search`, `store_fact`, `read_skill_resource`, `update_checklist`, `declare_step_complete` — 12 total) always bypass policy checks during execution. `batch` is marked internal (`internalTools` map) but is intercepted at the executor level before reaching the registry — its policy is `always_allow` to ensure the LLM can always use the schema.
 
 ### Policy Resolution
 
@@ -98,7 +98,8 @@ All built-in tools accept `json.RawMessage` input and return `ToolResult{Content
 | `ask_user`            | Agent     | internal       | no        | Prompt user for information                        |
 | `list_step_outputs`   | Agent     | internal       | no        | List completed step results                        |
 | `read_step_output`    | Agent     | internal       | no        | Read specific step output                          |
-| `set_step_status`     | Agent     | always_allow   | no        | Update step status/checklist                       |
+| `update_checklist`    | Agent     | always_allow   | no        | Update checklist for current step or standalone (no plan) |
+| `declare_step_complete` | Agent   | always_allow   | no        | Signal inline plan step completion (emits plan_step_complete) |
 | `store_fact`          | Agent     | always_allow   | no        | Store fact to blackboard                           |
 | `search_facts`        | Agent     | always_allow   | no        | Search blackboard facts                            |
 | `batch`               | Agent     | always_allow   | no        | Execute multiple tool calls sequentially in one turn (intercepted at executor level) |
@@ -116,7 +117,7 @@ RegisterBuiltinTools(registry, cfg):
   5. web_search (optional: needs search provider config)
   6. glob, ripgrep
   7. read_step_output, list_step_outputs
-  8. set_step_status
+  8. update_checklist, declare_step_complete
   9. store_fact, search_facts
   10. tool_result_read
   11. batch

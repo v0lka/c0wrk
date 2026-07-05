@@ -183,7 +183,6 @@ export interface PlanItem {
   status: 'pending' | 'running' | 'completed' | 'failed'
   duration?: number
   dependsOn: string[]
-  todoItems?: TodoItem[]
 }
 
 export interface PlanGroup {

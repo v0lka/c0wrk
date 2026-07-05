@@ -30,7 +30,7 @@ type SubAgentTask struct {
 	TaskTools      []tools.ToolDescriptor
 	TaskDesc       string             // task description (for SubAgentLaunch event)
 	Emitter        AgentEvents        // event emitter (nil-safe)
-	TodoUpdateFunc StepTodoUpdateFunc // optional callback for set_step_status tool
+	TodoUpdateFunc StepTodoUpdateFunc // optional callback for update_checklist tool
 }
 
 // RunSubAgent starts the executor in a goroutine and returns a channel for the result.
@@ -57,7 +57,7 @@ func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm Cont
 		// Set step ID so file tracker and other context-aware tools know the current step
 		ctx = WithStepID(ctx, stepID)
 
-		// Set to-do update callback for set_step_status tool
+		// Set checklist update callback for update_checklist tool
 		if todoUpdateFunc != nil {
 			ctx = WithStepTodoUpdateFunc(ctx, todoUpdateFunc)
 		}

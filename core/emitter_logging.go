@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
@@ -184,7 +185,7 @@ func (l *loggingEmitter) SkillsActivated(skillNames []string) {
 	l.inner.SkillsActivated(skillNames)
 }
 
-func (l *loggingEmitter) StepTodoUpdate(stepID string, items []TodoItem) {
+func (l *loggingEmitter) StepTodoUpdate(stepID string, items []agent.TodoItem) {
 	l.logger.Debug("step todo update", "stepID", stepID, "itemCount", len(items))
 	l.inner.StepTodoUpdate(stepID, items)
 }

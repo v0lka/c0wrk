@@ -106,6 +106,15 @@ describe('groupMessages', () => {
     expect(result.items[0]!.kind).toBe('step_finish')
   })
 
+  it('skips plan_step_start for ad-hoc step_id not in declared plan (e.g. Conductor "main")', () => {
+    const stepStart = makeUI({
+      type: 'plan_step_start',
+      metadata: { step_id: 'main', description: '', summary: '' },
+    })
+    const result = groupMessages([stepStart])
+    expect(result.items).toHaveLength(0)
+  })
+
   it('renders memory tools as tool with tool metadata', () => {
     const msg = makeUI({
       type: 'tool_call',

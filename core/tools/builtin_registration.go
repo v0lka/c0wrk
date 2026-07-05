@@ -94,8 +94,9 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	registry.Register(builtins.NewReadStepOutputTool())
 	registry.Register(builtins.NewListStepOutputsTool())
 
-	// Step status / to-do checklist tool
-	registry.Register(builtins.NewSetStepStatusTool())
+	// Checklist tool (update_checklist) + inline step completion (declare_step_complete)
+	registry.Register(builtins.NewUpdateChecklistTool())
+	registry.Register(NewDeclareStepCompleteTool())
 
 	// Fact memory tools
 	registry.Register(builtins.NewStoreFactTool())

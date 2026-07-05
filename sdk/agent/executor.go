@@ -46,19 +46,20 @@ func DetectToolCallSyntaxInContent(content string) bool {
 // both caching and hash hints is a deliberate dual-purpose: if a tool's results
 // are not worth caching, they are also not worth offering for fragment retrieval.
 var nonCacheableTools = map[string]struct{}{
-	"tool_result_read":  {},
-	"finish":            {},
-	"read_step_output":  {},
-	"list_step_outputs": {},
-	"store_fact":        {},
-	"search_facts":      {},
-	"set_step_status":   {},
-	"ask_user":          {},
-	"delegate":          {},
-	"cancel_delegation": {},
-	"declare_plan":      {},
-	"reflect":           {},
-	tools.ToolBatch:     {},
+	"tool_result_read":      {},
+	"finish":                {},
+	"read_step_output":      {},
+	"list_step_outputs":     {},
+	"store_fact":            {},
+	"search_facts":          {},
+	"update_checklist":      {},
+	"declare_step_complete": {},
+	"ask_user":              {},
+	"delegate":              {},
+	"cancel_delegation":     {},
+	"declare_plan":          {},
+	"reflect":               {},
+	tools.ToolBatch:         {},
 }
 
 const executorWrapUpNudge = "[System] You are running low on tool call iterations. You have %d iteration(s) remaining. Wrap up your work NOW: summarize your findings and finish. Do not start new explorations."
@@ -75,11 +76,11 @@ const executorMutationNudge = "[System] You are finishing a step that requires c
 // The mutation gate checks whether any of these were successfully executed before
 // accepting finish on a step flagged as mutation-required.
 var mutatingTools = map[string]struct{}{
-	"write_file":        {},
-	"edit_file":         {},
-	"create_directory":  {},
-	"delete_file":       {},
-	"delete_directory":  {},
+	"write_file":       {},
+	"edit_file":        {},
+	"create_directory": {},
+	"delete_file":      {},
+	"delete_directory": {},
 }
 
 // Circuit-breaker nudge messages. Kept as Go constants because they use fmt.Sprintf
@@ -158,7 +159,7 @@ type Executor struct {
 	// Mutation gate: when true, finish is rejected if no mutating tool was
 	// successfully executed during this step. Prevents "false success" where
 	// the agent reads extensively but finishes without making required changes.
-	mutationRequired      bool
+	mutationRequired       bool
 	mutationNudgeAttempted bool
 
 	// Multi-tool-call response group counter

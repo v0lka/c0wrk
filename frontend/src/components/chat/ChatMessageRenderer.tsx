@@ -15,6 +15,7 @@ import { ServiceMessage } from './ServiceMessage'
 import { ReflectionBlock } from './ReflectionBlock'
 import { ActionPlaceholder } from './ActionPlaceholder'
 import { ThoughtGroupBlock } from './ThoughtGroupBlock'
+import { ChecklistCard } from './ChecklistCard'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { CheckCircle2, Minimize2, BookOpen } from 'lucide-react'
 
@@ -71,6 +72,7 @@ const renderers: Record<DisplayItemKind, ItemRenderer> = {
   context_compaction: ContextCompactionBlock as ItemRenderer,
   memory_read: MemoryReadBlock as ItemRenderer,
   plan_review: (() => null) as ItemRenderer,
+  checklist: ChecklistCard as ItemRenderer,
 }
 
 export function CompactErrorFallback() {

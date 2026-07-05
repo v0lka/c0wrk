@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [013](./013-rrf-pre-fusion-score-thresholds.md)
 
 ## Context
 

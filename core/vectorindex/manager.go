@@ -25,6 +25,7 @@ type ManagerConfig struct {
 	IgnoreDirs       []string              // user-configured dirs to skip (merged with defaults)
 	IgnoreExtensions []string              // user-configured extensions to skip
 	IgnoreFileNames  []string              // user-configured file names to skip
+	HybridConfig     HybridConfig          // RRF tuning + pre-fusion score thresholds (zero = defaults, thresholds off)
 	Logger           *slog.Logger
 }
 
@@ -96,6 +97,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		IgnoreDirs:       ignoreDirs,
 		IgnoreExtensions: ignoreExts,
 		IgnoreFileNames:  ignoreNames,
+		HybridConfig:     cfg.HybridConfig,
 	})
 	if err != nil {
 		return nil, err

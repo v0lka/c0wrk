@@ -1,9 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Loader2, CheckCircle2, XCircle, RefreshCw, Square, CheckSquare, Circle } from 'lucide-react'
+import { Loader2, CheckCircle2, XCircle, RefreshCw, Circle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
 import { useChatStore } from '@/stores/chatStore'
-import { usePlanStore } from '@/stores/planStore'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
 import { StepTooltip } from './StepTooltip'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
@@ -18,12 +17,6 @@ interface PlanStepBlockProps {
 export function PlanStepBlock({ item }: PlanStepBlockProps) {
   const { stepId, stepNum, title, description, status, duration, error, isRetry, children } = item
   const stepContextFill = useChatStore(s => s.stepContextFill[stepId])
-  const todoItems = usePlanStore(s => {
-    const latest = s.planGroups[0]
-    if (!latest) return undefined
-    const planItem = latest.items.find(it => it.id === stepId)
-    return planItem?.todoItems
-  })
 
   // Derived open state — auto-opens when running, auto-closes otherwise
   const isAutoOpen = status === 'running'
@@ -86,20 +79,6 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
         headerExtra={headerExtra}
       >
         <div className={cn('mt-2 border-l-2 rounded pl-3 py-2 space-y-3 min-w-0', borderColor)}>
-          {todoItems && todoItems.length > 0 && (
-            <ul className="space-y-1">
-              {todoItems.map((todo) => (
-                <li key={todo.text} className="flex items-center gap-2 text-xs text-muted-foreground">
-                  {todo.checked ? (
-                    <CheckSquare className="h-3.5 w-3.5 text-success shrink-0" />
-                  ) : (
-                    <Square className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                  )}
-                  <span className={cn(todo.checked && 'line-through opacity-60')}>{todo.text}</span>
-                </li>
-              ))}
-            </ul>
-          )}
           <ChatMessageRenderer items={children} />
         </div>
       </CollapsibleBlock>

@@ -54,16 +54,11 @@ type Emitter interface {
 	ReplanFailed(err error)
 	// SkillsActivated reports the skills matched and activated for the current task.
 	SkillsActivated(skillNames []string)
-	// StepTodoUpdate emits a to-do list update for a plan step.
-	StepTodoUpdate(stepID string, items []TodoItem)
+	// StepTodoUpdate emits a checklist update. stepID may be empty for a
+	// standalone checklist (Conductor without a declared plan).
+	StepTodoUpdate(stepID string, items []agent.TodoItem)
 	// MemoryRead emits an event when the agent reads from its persistent memory (facts, reflections, etc.).
 	MemoryRead(stepNum int, content string)
-}
-
-// TodoItem represents a single checklist item in a step's to-do list.
-type TodoItem struct {
-	Text    string
-	Checked bool
 }
 
 // PlanStepScopable is an optional interface that Emitter implementations
@@ -98,7 +93,7 @@ func (n *noopEmitter) Service(_ string)                                         
 func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)                   {}
 func (n *noopEmitter) ReplanFailed(_ error)                                         {}
 func (n *noopEmitter) SkillsActivated(_ []string)                                   {}
-func (n *noopEmitter) StepTodoUpdate(_ string, _ []TodoItem)                        {}
+func (n *noopEmitter) StepTodoUpdate(_ string, _ []agent.TodoItem)                  {}
 func (n *noopEmitter) MemoryRead(_ int, _ string)                                   {}
 
 // ---------------------------------------------------------------------------
@@ -119,11 +114,11 @@ type TaskDefinition struct {
 
 // HandleResult — result of Orchestrator.Handle.
 type HandleResult struct {
-	Output          string                   `json:"output"`
-	RoutingDecision *router.RoutingDecision  `json:"routing_decision"`
-	Plan            *orchestration.Plan      `json:"plan,omitempty"`
-	Blackboard      orchestration.Blackboard `json:"-"`
-	Reflections     []orchestration.Reflection `json:"reflections,omitempty"`
+	Output          string                        `json:"output"`
+	RoutingDecision *router.RoutingDecision       `json:"routing_decision"`
+	Plan            *orchestration.Plan           `json:"plan,omitempty"`
+	Blackboard      orchestration.Blackboard      `json:"-"`
+	Reflections     []orchestration.Reflection    `json:"reflections,omitempty"`
 	Status          orchestration.ExecutionStatus `json:"status,omitempty"`
 }
 

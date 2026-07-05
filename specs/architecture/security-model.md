@@ -38,7 +38,7 @@ These tools bypass ALL policy checks, judge evaluation, and confirmation flow:
 - `read_step_output` — reads a specific step's output
 - `search_facts` — searches stored facts by keywords
 - `semantic_search` — searches the project codebase by semantic similarity
-- `set_step_status` — updates the to-do checklist for the current step
+- `update_checklist` — updates the checklist for the current step or standalone
 - `store_fact` — stores a fact for later retrieval
 - `tool_result_read` — reads a previously cached tool result in fragments
 - `batch` — executes multiple tool calls sequentially

@@ -1679,7 +1679,7 @@ func TestHistoryMutation_ToolResultEviction(t *testing.T) {
 	}
 }
 
-// TestHistoryMutation_StepStatusEviction verifies that set_step_status results
+// TestHistoryMutation_StepStatusEviction verifies that update_checklist results
 // are replaced with a minimal marker when EvictStepStatus is true.
 func TestHistoryMutation_StepStatusEviction(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
@@ -1690,14 +1690,14 @@ func TestHistoryMutation_StepStatusEviction(t *testing.T) {
 		EvictStepStatus: true,
 	})
 
-	cw.AddStep(makeStepWithTool("Thought 1", "OK", "set_step_status", 1))
+	cw.AddStep(makeStepWithTool("Thought 1", "OK", "update_checklist", 1))
 	cw.AddStep(makeStepWithTool("Thought 2", "file content", "read_file", 2))
 
 	messages := cw.BuildPrompt()
 
-	// set_step_status result (index 2) should be evicted.
+	// update_checklist result (index 2) should be evicted.
 	if messages[2].Content != stepStatusEvictedText {
-		t.Errorf("set_step_status should be evicted, got %q", messages[2].Content)
+		t.Errorf("update_checklist should be evicted, got %q", messages[2].Content)
 	}
 	// read_file result (index 4) should remain full.
 	if messages[4].Content != "file content" {

@@ -3,6 +3,7 @@
  * Extracted to keep the main module under 200 lines.
  */
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
+import type { TodoItem } from '@/types/models'
 import { resolveToolKey } from './chatUtilsHelpers'
 
 export type ToolLike = DisplayItem & { kind: 'tool' }
@@ -10,20 +11,69 @@ export type PlanStep = DisplayItem & { kind: 'plan_step' }
 export type SubAgentItem = DisplayItem & { kind: 'subagent' }
 export type StepLikeItem = PlanStep | SubAgentItem
 
+/**
+ * handleStepTodoUpdate processes a step_todo_update message into a
+ * DisplayItem.kind='checklist'. Each update supersedes the previous one for
+ * the same key (stepId || '' for standalone): the old checklist is removed
+ * from its container and replaced by the new one at the current stream
+ * position. The sinking post-pass in groupMessages moves active (incomplete)
+ * checklists to the end of their container.
+ */
+export function handleStepTodoUpdate(
+  msg: ChatMessageUI, meta: Record<string, unknown> | undefined,
+  openSteps: Map<string, StepLikeItem>, items: DisplayItem[],
+  checklistsByKey: Map<string, { item: DisplayItem & { kind: 'checklist' }; container: DisplayItem[] }>,
+) {
+  const stepId = (meta?.step_id as string) || ''
+  const rawItems = meta?.items as Array<{ text: string; checked: boolean }> | undefined
+  if (!rawItems || rawItems.length === 0) return
+
+  const todoItems: TodoItem[] = rawItems.map((it) => ({ text: it.text, checked: it.checked }))
+  const active = todoItems.some((it) => !it.checked)
+  const key = stepId // '' for standalone
+
+  // Supersede the previous checklist for this key — remove it from its container.
+  const prev = checklistsByKey.get(key)
+  if (prev) {
+    const idx = prev.container.indexOf(prev.item)
+    if (idx !== -1) prev.container.splice(idx, 1)
+  }
+
+  const checklistItem: DisplayItem & { kind: 'checklist' } = {
+    kind: 'checklist', id: msg.id, stepId: stepId || null, items: todoItems, active,
+  }
+
+  // Push into the step's children if stepId matches an open step, otherwise root.
+  const container = stepId ? openSteps.get(stepId) : null
+  if (container) {
+    container.children.push(checklistItem)
+  } else {
+    items.push(checklistItem)
+  }
+
+  checklistsByKey.set(key, { item: checklistItem, container: container ? container.children : items })
+}
+
 export function handlePlanStepStart(
   msg: ChatMessageUI, meta: Record<string, unknown> | undefined,
   stepIndexMap: Map<string, { num: number; title: string; description: string }>,
   stepIdCounts: Map<string, number>, openSteps: Map<string, StepLikeItem>, items: DisplayItem[],
 ) {
   const stepId = (meta?.step_id as string) || ''
-  const fallbackDesc = (meta?.description as string) || stepId
-  const fallbackSummary = (meta?.summary as string)?.trim() || fallbackDesc
-  const info = stepIndexMap.get(stepId) || { num: 0, title: fallbackSummary, description: fallbackDesc }
+  const description = (meta?.description as string) || ''
+  const summary = (meta?.summary as string)?.trim() || ''
+  const info = stepIndexMap.get(stepId)
+  // Skip plan_step blocks for ad-hoc step_ids not in a declared plan
+  // (e.g. the Conductor's own update_checklist with step_id "main").
+  // Their checklist updates still flow to the chat as DisplayItem.kind='checklist';
+  // only the plan_step block is suppressed.
+  if (!info && !description && !summary) return
+  const resolvedInfo = info || { num: 0, title: summary || description || stepId, description: description || stepId }
   const count = (stepIdCounts.get(stepId) ?? 0) + 1
   stepIdCounts.set(stepId, count)
   const stepItem: PlanStep = {
-    kind: 'plan_step', id: msg.id, stepId, stepNum: info.num, title: info.title,
-    description: info.description, status: 'running', children: [], ...(count > 1 ? { isRetry: true } : {}),
+    kind: 'plan_step', id: msg.id, stepId, stepNum: resolvedInfo.num, title: resolvedInfo.title,
+    description: resolvedInfo.description, status: 'running', children: [], ...(count > 1 ? { isRetry: true } : {}),
   }
   openSteps.set(stepId, stepItem)
   items.push(stepItem)

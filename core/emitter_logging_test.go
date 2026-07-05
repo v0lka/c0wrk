@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
@@ -68,7 +69,7 @@ func (s *spyEmitter) SkillsActivated(skills []string)            { s.record("Ski
 func (s *spyEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
 	s.record("EmitSessionTokens", totalIn, totalOut, model, family)
 }
-func (s *spyEmitter) StepTodoUpdate(stepID string, items []TodoItem) {
+func (s *spyEmitter) StepTodoUpdate(stepID string, items []agent.TodoItem) {
 	s.record("StepTodoUpdate", stepID, items)
 }
 func (s *spyEmitter) MemoryRead(stepNum int, content string) {

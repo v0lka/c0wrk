@@ -110,7 +110,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [002-sdk-isolation.md](decisions/002-sdk-isolation.md) - SDK imports confined to core → Superseded by ADR-008
 - [003-cgo-free-sqlite.md](decisions/003-cgo-free-sqlite.md) - CGO-free SQLite choice
 - [004-external-binary-dependencies.md](decisions/004-external-binary-dependencies.md) - git and rg as hard runtime dependencies
-- [005-bleve-rrf-hybrid-search.md](decisions/005-bleve-rrf-hybrid-search.md) - Bleve BM25 + Reciprocal Rank Fusion hybrid search
+- [005-bleve-rrf-hybrid-search.md](decisions/005-bleve-rrf-hybrid-search.md) - Bleve BM25 + Reciprocal Rank Fusion hybrid search → Superseded by ADR-013
 - [006-skills-mcp-layer.md](decisions/006-skills-mcp-layer.md) - Skills integration with MCP tool layer
 - [007-shell-parser-dependency.md](decisions/007-shell-parser-dependency.md) - mvdan.cc/sh shell parser for symlink detection
 - [008-backend-sdk-direct-import.md](decisions/008-backend-sdk-direct-import.md) - Backend allowed to import sdk directly
@@ -118,3 +118,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [010-tool-manager.md](decisions/010-tool-manager.md) - Tool manager for external binary dependencies (rg, rtk, uv, markitdown)
 - [011-sdk-to-core-extraction.md](decisions/011-sdk-to-core-extraction.md) - Move vector index and proxy from SDK to Core
 - [012-conductor-orchestration-pipeline.md](decisions/012-conductor-orchestration-pipeline.md) - Conductor-driven ReAct pipeline replacing system-driven plan-execute-reflect
+- [013-rrf-pre-fusion-score-thresholds.md](decisions/013-rrf-pre-fusion-score-thresholds.md) - Pre-fusion score thresholds and configurable RRF parameters for hybrid search

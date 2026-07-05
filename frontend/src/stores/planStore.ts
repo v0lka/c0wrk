@@ -18,7 +18,6 @@ interface PlanState {
 interface PlanActions {
   setPlan: (plan: PlanGroup) => void
   updateStepStatus: (stepId: string, status: PlanItem['status'], duration?: number) => void
-  updateStepTodo: (stepId: string, todoItems: PlanItem['todoItems']) => void
   setSessionStats: (sessionId: string, stats: Partial<SessionStats>) => void
   clearPlan: () => void
   clearAll: () => void
@@ -88,18 +87,6 @@ export const usePlanStore = create<PlanState & PlanActions>((set) => ({
     const failedCount = updatedItems.filter((item) => item.status === 'failed').length
     return {
       planGroups: [{ ...latest, items: updatedItems, completedCount, failedCount }, ...rest],
-    }
-  }),
-
-  updateStepTodo: (stepId, todoItems) => set((s) => {
-    if (s.planGroups.length === 0) return s
-    const latest = s.planGroups[0]!
-    const rest = s.planGroups.slice(1)
-    const updatedItems = latest.items.map((item) =>
-      item.id === stepId ? { ...item, todoItems } : item
-    )
-    return {
-      planGroups: [{ ...latest, items: updatedItems }, ...rest],
     }
   }),
 

@@ -26,7 +26,7 @@ export type DisplayItemKind =
   | 'user' | 'assistant' | 'thought' | 'thought_group' | 'tool' | 'tool_confirm'
   | 'ask_user' | 'step_limit' | 'resume_action' | 'error' | 'service' | 'plan_step'
   | 'subagent' | 'reflection' | 'step_finish' | 'action_placeholder'
-  | 'context_compaction' | 'memory_read' | 'plan_review'
+  | 'context_compaction' | 'memory_read' | 'plan_review' | 'checklist'
 
 export type DisplayItem =
   | { kind: 'user'; message: ChatMessageUI }
@@ -48,6 +48,7 @@ export type DisplayItem =
   | { kind: 'context_compaction'; id: string; beforePercent: number; afterPercent: number }
   | { kind: 'memory_read'; id: string; content: string; stepNum?: number }
   | { kind: 'plan_review'; message: ChatMessageUI }
+  | { kind: 'checklist'; id: string; stepId: string | null; items: Array<{ text: string; checked: boolean }>; active: boolean }
 
 export interface GroupedMessages {
   items: DisplayItem[]

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { roleToType, chatMessageToUI, rebuildPlanFromHistory, extractPendingActions } from './chatUtils'
+import { roleToType, chatMessageToUI, rebuildPlanFromHistory, extractPendingActions, groupMessages } from './chatUtils'
 import type { ChatMessage } from '@/types/models'
 import type { ChatMessageUI } from '@/types/messages'
 
@@ -474,7 +474,7 @@ describe('rebuildPlanFromHistory', () => {
     expect(setPlan).not.toHaveBeenCalled()
   })
 
-  it('handles step_todo_update messages', () => {
+  it('ignores step_todo_update messages (checklists are handled by groupMessages, not planStore)', () => {
     const clearPlan = vi.fn()
     const setPlan = vi.fn()
 
@@ -502,9 +502,143 @@ describe('rebuildPlanFromHistory', () => {
     rebuildPlanFromHistory(messages, { clearPlan, setPlan })
 
     const group = setPlan.mock.calls[0]![0]
-    expect(group.items[0].todoItems).toHaveLength(2)
-    expect(group.items[0].todoItems[0].checked).toBe(true)
-    expect(group.items[0].todoItems[1].checked).toBe(false)
+    // PlanItem no longer has todoItems — checklists are DisplayItem.kind='checklist'
+    expect(group.items[0].todoItems).toBeUndefined()
+  })
+})
+
+describe('groupMessages — checklist', () => {
+  function makeUI(overrides: Partial<ChatMessageUI>): ChatMessageUI {
+    return {
+      id: 'msg-1',
+      sessionId: 'sess-1',
+      type: 'step_todo_update',
+      content: '',
+      metadata: {},
+      timestamp: Date.now(),
+      ...overrides,
+    }
+  }
+
+  it('creates a checklist DisplayItem from step_todo_update', () => {
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'cl-1',
+        type: 'step_todo_update',
+        metadata: {
+          step_id: 'step_1',
+          items: [
+            { text: 'Task A', checked: false },
+            { text: 'Task B', checked: false },
+          ],
+        },
+      }),
+    ]
+
+    const result = groupMessages(messages)
+    const checklist = result.items.find(i => i.kind === 'checklist')
+    expect(checklist).toBeDefined()
+    expect(checklist!.kind).toBe('checklist')
+    if (checklist!.kind === 'checklist') {
+      expect(checklist!.stepId).toBe('step_1')
+      expect(checklist!.items).toHaveLength(2)
+      expect(checklist!.active).toBe(true)
+    }
+  })
+
+  it('marks checklist as settled (active=false) when all items are checked', () => {
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'cl-1',
+        type: 'step_todo_update',
+        metadata: {
+          step_id: 'step_1',
+          items: [
+            { text: 'Task A', checked: true },
+            { text: 'Task B', checked: true },
+          ],
+        },
+      }),
+    ]
+
+    const result = groupMessages(messages)
+    const checklist = result.items.find(i => i.kind === 'checklist')
+    if (checklist?.kind === 'checklist') {
+      expect(checklist.active).toBe(false)
+    }
+  })
+
+  it('creates a standalone checklist when step_id is empty', () => {
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'cl-1',
+        type: 'step_todo_update',
+        metadata: {
+          step_id: '',
+          items: [{ text: 'Standalone task', checked: false }],
+        },
+      }),
+    ]
+
+    const result = groupMessages(messages)
+    const checklist = result.items.find(i => i.kind === 'checklist')
+    if (checklist?.kind === 'checklist') {
+      expect(checklist.stepId).toBeNull()
+      expect(checklist.active).toBe(true)
+    }
+  })
+
+  it('supersedes previous checklist for the same step', () => {
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'cl-1',
+        type: 'step_todo_update',
+        metadata: {
+          step_id: 'step_1',
+          items: [{ text: 'Task A', checked: false }],
+        },
+      }),
+      makeUI({
+        id: 'cl-2',
+        type: 'step_todo_update',
+        metadata: {
+          step_id: 'step_1',
+          items: [{ text: 'Task A', checked: true }],
+        },
+      }),
+    ]
+
+    const result = groupMessages(messages)
+    const checklists = result.items.filter(i => i.kind === 'checklist')
+    expect(checklists).toHaveLength(1)
+    if (checklists[0]!.kind === 'checklist') {
+      expect(checklists[0]!.id).toBe('cl-2')
+      expect(checklists[0]!.items[0]!.checked).toBe(true)
+    }
+  })
+
+  it('sinks active checklist to the end of the root container', () => {
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'cl-1',
+        type: 'step_todo_update',
+        metadata: {
+          step_id: '',
+          items: [{ text: 'Active task', checked: false }],
+        },
+      }),
+      makeUI({
+        id: 'msg-after',
+        type: 'assistant',
+        content: 'Working on it...',
+        metadata: {},
+      }),
+    ]
+
+    const result = groupMessages(messages)
+    // Active checklist should be last (sunk below the assistant message)
+    const lastItem = result.items[result.items.length - 1]
+    expect(lastItem?.kind).toBe('checklist')
   })
 })
 

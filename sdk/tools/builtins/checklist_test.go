@@ -85,10 +85,10 @@ func TestParseAndValidateTodoList_BlankLinesIgnored(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// SetStepStatusTool.Execute
+// UpdateChecklistTool.Execute
 // ---------------------------------------------------------------------------
 
-func TestSetStepStatusTool_ExecuteValid(t *testing.T) {
+func TestUpdateChecklistTool_ExecuteValid(t *testing.T) {
 	var capturedStepID string
 	var capturedItems []agent.TodoItem
 
@@ -99,8 +99,8 @@ func TestSetStepStatusTool_ExecuteValid(t *testing.T) {
 		capturedItems = items
 	})
 
-	tool := NewSetStepStatusTool()
-	input, _ := json.Marshal(SetStepStatusInput{TodoList: "- [ ] A\n- [x] B"})
+	tool := NewUpdateChecklistTool()
+	input, _ := json.Marshal(UpdateChecklistInput{TodoList: "- [ ] A\n- [x] B"})
 
 	result, err := tool.Execute(ctx, input)
 	if err != nil {
@@ -120,10 +120,18 @@ func TestSetStepStatusTool_ExecuteValid(t *testing.T) {
 	}
 }
 
-func TestSetStepStatusTool_ExecuteNoStepID(t *testing.T) {
+func TestUpdateChecklistTool_ExecuteStandaloneNoStepID(t *testing.T) {
+	var capturedStepID string
+	var capturedItems []agent.TodoItem
+
 	ctx := context.Background()
-	tool := NewSetStepStatusTool()
-	input, _ := json.Marshal(SetStepStatusInput{TodoList: "- [ ] A\n- [x] B"})
+	ctx = agent.WithStepTodoUpdateFunc(ctx, func(stepID string, items []agent.TodoItem) {
+		capturedStepID = stepID
+		capturedItems = items
+	})
+
+	tool := NewUpdateChecklistTool()
+	input, _ := json.Marshal(UpdateChecklistInput{TodoList: "- [ ] A\n- [x] B"})
 
 	result, err := tool.Execute(ctx, input)
 	if err != nil {
@@ -132,12 +140,20 @@ func TestSetStepStatusTool_ExecuteNoStepID(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %s", result.Content)
 	}
-	if !strings.Contains(result.Content, "no active plan step") {
-		t.Errorf("expected no-active-step message, got %q", result.Content)
+	// Standalone: stepID is empty, but the callback is still invoked so the
+	// UI can render a standalone checklist card.
+	if capturedStepID != "" {
+		t.Errorf("expected empty step_id for standalone, got %q", capturedStepID)
+	}
+	if len(capturedItems) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(capturedItems))
+	}
+	if strings.Contains(result.Content, "step") {
+		t.Errorf("standalone result should not mention step, got %q", result.Content)
 	}
 }
 
-func TestSetStepStatusTool_ExecuteWithExplicitStepID(t *testing.T) {
+func TestUpdateChecklistTool_ExecuteWithExplicitStepID(t *testing.T) {
 	var capturedStepID string
 	var capturedItems []agent.TodoItem
 
@@ -148,8 +164,8 @@ func TestSetStepStatusTool_ExecuteWithExplicitStepID(t *testing.T) {
 		capturedItems = items
 	})
 
-	tool := NewSetStepStatusTool()
-	input, _ := json.Marshal(SetStepStatusInput{TodoList: "- [ ] A\n- [x] B", StepID: "step_99"})
+	tool := NewUpdateChecklistTool()
+	input, _ := json.Marshal(UpdateChecklistInput{TodoList: "- [ ] A\n- [x] B", StepID: "step_99"})
 
 	result, err := tool.Execute(ctx, input)
 	if err != nil {
@@ -169,7 +185,7 @@ func TestSetStepStatusTool_ExecuteWithExplicitStepID(t *testing.T) {
 	}
 }
 
-func TestSetStepStatusTool_ExecuteExplicitStepIDOverridesContext(t *testing.T) {
+func TestUpdateChecklistTool_ExecuteExplicitStepIDOverridesContext(t *testing.T) {
 	var capturedStepID string
 
 	// Context has step_42, but explicit step_id parameter should win.
@@ -179,8 +195,8 @@ func TestSetStepStatusTool_ExecuteExplicitStepIDOverridesContext(t *testing.T) {
 		capturedStepID = stepID
 	})
 
-	tool := NewSetStepStatusTool()
-	input, _ := json.Marshal(SetStepStatusInput{TodoList: "- [ ] A", StepID: "step_override"})
+	tool := NewUpdateChecklistTool()
+	input, _ := json.Marshal(UpdateChecklistInput{TodoList: "- [ ] A", StepID: "step_override"})
 
 	_, err := tool.Execute(ctx, input)
 	if err != nil {
@@ -191,11 +207,11 @@ func TestSetStepStatusTool_ExecuteExplicitStepIDOverridesContext(t *testing.T) {
 	}
 }
 
-func TestSetStepStatusTool_ExecuteNoUpdateFunc(t *testing.T) {
+func TestUpdateChecklistTool_ExecuteNoUpdateFunc(t *testing.T) {
 	ctx := context.Background()
 	ctx = agent.WithStepID(ctx, "step_1")
-	tool := NewSetStepStatusTool()
-	input, _ := json.Marshal(SetStepStatusInput{TodoList: "- [ ] A"})
+	tool := NewUpdateChecklistTool()
+	input, _ := json.Marshal(UpdateChecklistInput{TodoList: "- [ ] A"})
 
 	result, err := tool.Execute(ctx, input)
 	if err != nil {
@@ -209,11 +225,29 @@ func TestSetStepStatusTool_ExecuteNoUpdateFunc(t *testing.T) {
 	}
 }
 
-func TestSetStepStatusTool_ExecuteInvalidFormat(t *testing.T) {
+func TestUpdateChecklistTool_ExecuteStandaloneNoUpdateFunc(t *testing.T) {
+	ctx := context.Background()
+	tool := NewUpdateChecklistTool()
+	input, _ := json.Marshal(UpdateChecklistInput{TodoList: "- [ ] A\n- [x] B"})
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", result.Content)
+	}
+	// No update func, no step ID — should still succeed (standalone, headless).
+	if !strings.Contains(result.Content, "Checklist updated") {
+		t.Errorf("result should mention checklist updated, got %q", result.Content)
+	}
+}
+
+func TestUpdateChecklistTool_ExecuteInvalidFormat(t *testing.T) {
 	ctx := context.Background()
 	ctx = agent.WithStepID(ctx, "step_1")
-	tool := NewSetStepStatusTool()
-	input, _ := json.Marshal(SetStepStatusInput{TodoList: "bad format"})
+	tool := NewUpdateChecklistTool()
+	input, _ := json.Marshal(UpdateChecklistInput{TodoList: "bad format"})
 
 	result, err := tool.Execute(ctx, input)
 	if err != nil {
@@ -222,13 +256,13 @@ func TestSetStepStatusTool_ExecuteInvalidFormat(t *testing.T) {
 	if !result.IsError {
 		t.Fatal("expected error result for invalid format")
 	}
-	if !strings.Contains(result.Content, "Invalid to-do list format") {
+	if !strings.Contains(result.Content, "Invalid checklist format") {
 		t.Errorf("expected format error message, got %q", result.Content)
 	}
 }
 
-func TestSetStepStatusTool_ExecuteInvalidJSON(t *testing.T) {
-	tool := NewSetStepStatusTool()
+func TestUpdateChecklistTool_ExecuteInvalidJSON(t *testing.T) {
+	tool := NewUpdateChecklistTool()
 	result, err := tool.Execute(context.Background(), []byte(`{invalid`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

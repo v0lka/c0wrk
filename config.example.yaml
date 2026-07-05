@@ -366,8 +366,52 @@ orchestration:
 # Set hybrid: false to disable lexical search entirely — the bleve
 # directory will still be opened but never consulted at query time.
 #
+# Hybrid RRF tuning knobs (all optional; omitted values use built-in
+# defaults). These control how the vector and lexical ranked lists are
+# fused into a single result set.
+#
+#   hybrid_rrf_k: 60
+#     Reciprocal Rank Fusion constant k. Lower k makes top ranks weigh
+#     more (steeper curve); higher k flattens the curve. 60 is the
+#     conventional default (Cormack/Clarke/Buettcher, TREC 2009).
+#
+#   hybrid_fanout_multiplier: 4
+#     Per-side candidate pool = max(topK * multiplier, fanout_min). A
+#     larger pool improves recall but feeds more noise into RRF.
+#
+#   hybrid_fanout_min: 100
+#     Minimum per-side fanout, applied when topK * multiplier is small.
+#
+# Pre-fusion score thresholds (suppress noise-tail promotion). Hits
+# below these cutoffs are discarded BEFORE RRF fusion, so weakly
+# semantic chunks that merely contain a query term cannot earn a double
+# RRF boost and jump above genuinely relevant one-sided hits. Set a
+# threshold to 0 to disable it.
+#
+#   hybrid_vector_score_floor: 0.0
+#     Absolute cosine-similarity floor. Vector hits with similarity
+#     below this value are discarded before fusion. 0 disables the
+#     absolute floor (default).
+#
+#   hybrid_vector_score_ratio: 0.25
+#     Relative cosine cutoff. A vector hit is discarded when its
+#     similarity is below ratio × top similarity among the post-filter
+#     vector hits. 0.25 keeps hits within 25% of the best match.
+#
+#   hybrid_lexical_score_ratio: 0.1
+#     Relative BM25 cutoff. A lexical hit is discarded when its BM25
+#     score is below ratio × top BM25 among the post-filter lexical
+#     hits. BM25 magnitudes vary widely across queries, so a relative
+#     threshold is more robust than an absolute one.
+#
 # vector_index:
 #   hybrid: true
+#   hybrid_rrf_k: 60
+#   hybrid_fanout_multiplier: 4
+#   hybrid_fanout_min: 100
+#   hybrid_vector_score_floor: 0.0
+#   hybrid_vector_score_ratio: 0.25
+#   hybrid_lexical_score_ratio: 0.1
 
 # ---------------------------------------------------------------------------
 # Proxy — HTTP/HTTPS proxy for all outbound connections.

@@ -188,7 +188,8 @@ These tools are always available regardless of step's AllowedTools filter:
 - `store_fact` — save findings to blackboard
 - `search_facts` — retrieve stored facts
 - `ask_user` — prompt user for information
-- `set_step_status` — update step status/checklist
+- `update_checklist` — update checklist for current step or standalone
+- `declare_step_complete` — signal inline plan step completion
 - `read_step_output` — read a specific step's output
 - `tool_result_read` — read cached tool result fragments by hash
 
@@ -217,7 +218,7 @@ Every non-infrastructure tool result is cached and truncated in two stages:
 
 - File tools (`read_file`, `write_file`, `edit_file`, `delete_file`): cache entries tagged with file path + mtime + size. On `tool_result_read`, the executor checks current file metadata against cached signature. If changed, returns an error instructing the LLM to re-read.
 - MCP tools: cache entries carry a TTL. Expired entries are evicted on access.
-- Non-cacheable tools (`batch`, `tool_result_read`, `finish`, `read_step_output`, `list_step_outputs`, `store_fact`, `search_facts`, `set_step_status`, `ask_user`): excluded from both caching and Stage 1 truncation.
+- Non-cacheable tools (`batch`, `tool_result_read`, `finish`, `read_step_output`, `list_step_outputs`, `store_fact`, `search_facts`, `update_checklist`, `declare_step_complete`, `ask_user`): excluded from both caching and Stage 1 truncation.
 
 **Cache TTL:** `toolResultBudget.cacheTTLSeconds` (default: 300). Eviction runs on access.
 

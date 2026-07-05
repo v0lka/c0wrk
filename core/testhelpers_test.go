@@ -219,24 +219,29 @@ type mockEmitter struct {
 		stepID   string
 		success  bool
 		duration time.Duration
+		errMsg   string
 	}
 	stepTodoUpdates []struct {
 		stepID string
-		items  []TodoItem
+		items  []agent.TodoItem
 	}
+	eventOrder []string // records event type names ("plan_step_start", "step_todo_update", ...) in call order
 }
 
 func (m *mockEmitter) Routing(_, _, _ string)                               {}
 func (m *mockEmitter) PlanGenerated(_ int, _ []orchestration.PlanStepEvent) {}
 func (m *mockEmitter) PlanStepStart(stepID, description, summary string) {
+	m.eventOrder = append(m.eventOrder, "plan_step_start")
 	m.planStepStarts = append(m.planStepStarts, struct{ stepID, description, summary string }{stepID, description, summary})
 }
 func (m *mockEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string) {
+	m.eventOrder = append(m.eventOrder, "plan_step_complete")
 	m.planStepCompletes = append(m.planStepCompletes, struct {
 		stepID   string
 		success  bool
 		duration time.Duration
-	}{stepID, success, duration})
+		errMsg   string
+	}{stepID, success, duration, errMsg})
 }
 func (m *mockEmitter) StepStart(_ int)                                    {}
 func (m *mockEmitter) Thought(_ int, _, _ string)                         {}
@@ -267,10 +272,11 @@ func (m *mockEmitter) ReplanFailed(_ error)                                 {}
 func (m *mockEmitter) SkillsActivated(_ []string)                           {}
 func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
 func (m *mockEmitter) Finishing(_ int, _ string)                            {}
-func (m *mockEmitter) StepTodoUpdate(stepID string, items []TodoItem) {
+func (m *mockEmitter) StepTodoUpdate(stepID string, items []agent.TodoItem) {
+	m.eventOrder = append(m.eventOrder, "step_todo_update")
 	m.stepTodoUpdates = append(m.stepTodoUpdates, struct {
 		stepID string
-		items  []TodoItem
+		items  []agent.TodoItem
 	}{stepID, items})
 }
 func (m *mockEmitter) MemoryRead(_ int, _ string)                           {}

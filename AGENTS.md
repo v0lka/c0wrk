@@ -80,7 +80,6 @@ Frontend-only: `cd frontend && npm run lint | build | dev | test`. Frontend test
 - Don't add a new frontend test framework; vitest is already configured. Add tests as `*.test.ts` alongside the source file.
 - Don't `go install` the ONNX runtime differently per-machine — always go through `make fetch-onnx` so `.cache/` stays consistent.
 - Don't commit `coverage*.out`, `*_cov.out`, `config.local.yaml`, `.cache/`, `build/bin/`, or anything matched in `.gitignore`.
-- Don't rely on `.qoder/` — it's gitignored, developer-local only.
 - Don't create new arrays or objects inside Zustand selectors (e.g. `useStore(s => s.items.map(…))` or `useStore(s => condition ? derive(s) : [])`). React 19's `useSyncExternalStore` compares snapshots by reference — a new object/array on every call causes an infinite re-render loop (React error #185). Return direct store references from selectors and derive values with `useMemo` in a custom hook. See `.qoder/specs/frontend-anti-patterns.md §2.7`.
 
 ## Frontend architecture

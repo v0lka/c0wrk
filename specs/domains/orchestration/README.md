@@ -137,9 +137,9 @@ HandleMessage(ctx, message, sessionID, opts)
 │     │   mandate + workspace + env + active skills (verbatim) +
 │     │   Conductor tool guidance (delegate, declare_plan, reflect, ask_user)
 │     ├─ Tool set = file ops + search + internal tools (ask_user, finish,
-│     │   store_fact, search_facts, set_step_status, read_step_output,
-│     │   semantic_search) + Conductor tools (delegate, declare_plan,
-│     │   reflect, cancel_delegation)
+│     │   store_fact, search_facts, update_checklist, declare_step_complete,
+│     │   read_step_output, semantic_search) + Conductor tools (delegate,
+│     │   declare_plan, reflect, cancel_delegation)
 │     ├─ ContextManager via contextFactory
 │     └─ Delegation Registry injected into context
 │

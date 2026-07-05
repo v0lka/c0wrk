@@ -80,9 +80,15 @@ const LIST_DIR_CONFIG: CardConfig = {
   Body: ListDirBody,
 }
 
-const STEP_STATUS_CONFIG: CardConfig = {
+const CHECKLIST_CONFIG: CardConfig = {
   icon: ClipboardCheck, verb: 'Updated',
-  extractTitle: () => 'step status',
+  extractTitle: () => 'checklist',
+  Body: MemoBody,
+}
+
+const DECLARE_STEP_COMPLETE_CONFIG: CardConfig = {
+  icon: ClipboardCheck, verb: 'Marked',
+  extractTitle: () => 'step complete',
   Body: MemoBody,
 }
 
@@ -126,7 +132,8 @@ const TOOL_CONFIGS: Record<string, CardConfig> = {
   search_facts: SEARCH_CONFIG,
   web_search: SEARCH_CONFIG,
   list_directory: LIST_DIR_CONFIG,
-  set_step_status: STEP_STATUS_CONFIG,
+  update_checklist: CHECKLIST_CONFIG,
+  declare_step_complete: DECLARE_STEP_COMPLETE_CONFIG,
   store_fact: STORE_FACT_CONFIG,
   web_fetch: WEB_FETCH_CONFIG,
   read_evidence: SEARCH_CONFIG,

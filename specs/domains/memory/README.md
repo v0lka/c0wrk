@@ -94,7 +94,7 @@ From `config.yaml` (values are percentages, not fractions):
 | `executor.compaction.sliding_window.keep_first`     | 3       | Messages to always retain at start |
 | `executor.compaction.sliding_window.keep_last`      | 10      | Messages to always retain at end   |
 | `executor.historyMutation.toolResultEvictionStep`   | 10      | Evict tool results to cache refs after N steps (0 = disabled) |
-| `executor.historyMutation.evictStepStatus`          | false   | Evict set_step_status results immediately |
+| `executor.historyMutation.evictStepStatus`          | false   | Evict update_checklist results immediately |
 | `executor.historyMutation.dedupRepeatedReads`       | false   | Replace duplicate file reads with cache reference |
 
 ## Extension Points

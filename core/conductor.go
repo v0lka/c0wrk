@@ -73,8 +73,8 @@ type conductorDeps struct {
 // conductorLauncher implements tools.DelegationLauncher by building a fresh
 // Executor + ContextManager per task and dispatching via RunSubAgent.
 type conductorLauncher struct {
-	deps   conductorDeps
-	bb     orchestration.Blackboard
+	deps conductorDeps
+	bb   orchestration.Blackboard
 }
 
 func (l *conductorLauncher) Launch(ctx context.Context, tasks []tools.DelegationTask, registry *tools.DelegationRegistry) []tools.DelegationResult {
@@ -524,7 +524,7 @@ func filterToolsByName(all []sdktools.ToolDescriptor, names []string) []sdktools
 			out = append(out, d)
 		}
 	}
-	internal := []string{"finish", "store_fact", "search_facts", "read_step_output", "set_step_status", "semantic_search", "ask_user", "tool_result_read", "list_step_outputs"}
+	internal := []string{"finish", "store_fact", "search_facts", "read_step_output", "update_checklist", "declare_step_complete", "semantic_search", "ask_user", "tool_result_read", "list_step_outputs"}
 	for _, name := range internal {
 		for _, d := range all {
 			if d.Name == name {
@@ -541,7 +541,7 @@ func filterReadOnlyTools(all []sdktools.ToolDescriptor) []sdktools.ToolDescripto
 		"read_file": {}, "list_directory": {}, "glob": {}, "ripgrep": {},
 		"semantic_search": {}, "search_facts": {}, "read_step_output": {},
 		"list_step_outputs": {}, "web_fetch": {}, "web_search": {},
-		"finish": {}, "store_fact": {}, "set_step_status": {}, "ask_user": {},
+		"finish": {}, "store_fact": {}, "update_checklist": {}, "declare_step_complete": {}, "ask_user": {},
 		"tool_result_read": {}, "read_skill_resource": {},
 	}
 	out := make([]sdktools.ToolDescriptor, 0, len(all))
@@ -747,11 +747,13 @@ func RunConductor(
 	ctx = agent.WithTrajectoryStore(ctx, trajHolder)
 	ctx = orchestration.WithDelegationRegistry(ctx, registry)
 
-	// Inject a to-do update callback so set_step_status can emit
-	// StepTodoUpdate + PlanStepStart/Complete events when the Conductor
-	// executes a declared plan inline (without delegating to subagents).
-	// Subagents get their own callback via buildSubAgentTask.TodoUpdateFunc.
-	ctx = agent.WithStepTodoUpdateFunc(ctx, conductorTodoCallback(deps.emitter, bb))
+	// Inject the inline-step lifecycle so update_checklist can emit
+	// StepTodoUpdate + inferred PlanStepStart, and declare_step_complete can
+	// emit PlanStepComplete. Subagents get their own (observation-only)
+	// callback via buildSubAgentTask.TodoUpdateFunc.
+	inlineLifecycle := newInlineStepLifecycle(deps.emitter, bb)
+	ctx = agent.WithStepTodoUpdateFunc(ctx, inlineLifecycle.onChecklistUpdate)
+	ctx = tools.WithStepCompleteFunc(ctx, inlineLifecycle.completeStep)
 
 	// Build the system prompt with complexity-based Conductor Guidance.
 	systemPromptFactory := func(ctx context.Context, msg string, modelMeta llm.ModelMetadata) string {
@@ -785,7 +787,19 @@ func RunConductor(
 	}
 
 	conductor := orchestration.NewConductor(cfg)
-	return conductor.Run(ctx, message, bb, availableTools, events, compactionStrategy)
+	result, err := conductor.Run(ctx, message, bb, availableTools, events, compactionStrategy)
+	// Finish fallback: auto-complete any inline steps that were started but
+	// not explicitly completed via declare_step_complete. This prevents
+	// steps from being stuck in "running" state if the Conductor forgot to
+	// call declare_step_complete before finishing. On failure, propagate the
+	// conductor error so the UI can show why each pending step failed.
+	success := err == nil && result != nil && result.Status == orchestration.ExecutionStatusSuccess
+	errMsg := ""
+	if err != nil {
+		errMsg = err.Error()
+	}
+	inlineLifecycle.completeAll(success, errMsg)
+	return result, err
 }
 
 func callerForConductor(deps conductorDeps) agent.LLMCaller {
@@ -848,46 +862,118 @@ func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orch
 	return RunConductor(ctx, message, bb, availableTools, deps, plansDir)
 }
 
-// conductorTodoCallback returns a StepTodoUpdateFunc for the Conductor's inline
-// execution path. When the Conductor calls set_step_status with a step_id, this
-// callback emits StepTodoUpdate (to refresh the plan panel's todo list),
-// PlanStepStart (to mark the step as "running"), and PlanStepComplete when all
-// items are checked (to mark the step as "completed").
-func conductorTodoCallback(emitter Emitter, bb orchestration.Blackboard) agent.StepTodoUpdateFunc {
-	if emitter == nil {
-		return nil
+// inlineStepLifecycle manages the lifecycle of plan steps that the Conductor
+// executes inline (without delegating to subagents). It decouples checklist
+// updates from plan-step lifecycle: update_checklist emits only StepTodoUpdate
+// (observational progress); PlanStepStart is inferred from the first checklist
+// update for a step; PlanStepComplete is emitted by declare_step_complete or
+// the finish fallback.
+type inlineStepLifecycle struct {
+	emitter Emitter
+	bb      orchestration.Blackboard
+	mu      sync.Mutex
+	started map[string]bool // stepIDs that received PlanStepStart but not PlanStepComplete
+}
+
+func newInlineStepLifecycle(emitter Emitter, bb orchestration.Blackboard) *inlineStepLifecycle {
+	return &inlineStepLifecycle{
+		emitter: emitter,
+		bb:      bb,
+		started: make(map[string]bool),
 	}
-	return func(stepID string, items []agent.TodoItem) {
-		coreItems := make([]TodoItem, len(items))
-		for i, item := range items {
-			coreItems[i] = TodoItem{Text: item.Text, Checked: item.Checked}
-		}
+}
 
-		var desc, summary string
-		if plan := bb.GetPlan(); plan != nil {
-			for _, step := range plan.Steps {
-				if step.ID == stepID {
-					desc = step.Description
-					summary = step.Summary
-					break
-				}
-			}
-		}
+// onChecklistUpdate is the StepTodoUpdateFunc for the Conductor. It emits
+// StepTodoUpdate (always — even for a standalone checklist with empty stepID)
+// and infers PlanStepStart on the first checklist update for a given step.
+// It never emits PlanStepComplete — that is the responsibility of
+// declare_step_complete or the finish fallback.
+//
+// For step-associated checklists, PlanStepStart is emitted BEFORE
+// StepTodoUpdate so the frontend opens the plan-step container before the
+// checklist arrives, allowing the checklist to nest inside the step block.
+func (l *inlineStepLifecycle) onChecklistUpdate(stepID string, items []agent.TodoItem) {
+	if l == nil || l.emitter == nil {
+		return
+	}
 
-		emitter.StepTodoUpdate(stepID, coreItems)
-		emitter.PlanStepStart(stepID, desc, summary)
+	if stepID == "" {
+		// Standalone checklist (Conductor without a declared plan) — no step lifecycle.
+		l.emitter.StepTodoUpdate(stepID, items)
+		return
+	}
 
-		allDone := len(items) > 0
-		for _, item := range items {
-			if !item.Checked {
-				allDone = false
-				break
-			}
-		}
-		if allDone {
-			emitter.PlanStepComplete(stepID, true, 0, "")
+	l.mu.Lock()
+	first := !l.started[stepID]
+	if first {
+		l.started[stepID] = true
+	}
+	l.mu.Unlock()
+
+	// Emit PlanStepStart before StepTodoUpdate so the frontend's openSteps
+	// map contains the step when the checklist update arrives, enabling
+	// nesting inside the plan-step block.
+	if first {
+		desc, summary := lookupStepDesc(l.bb, stepID)
+		l.emitter.PlanStepStart(stepID, desc, summary)
+	}
+
+	l.emitter.StepTodoUpdate(stepID, items)
+}
+
+// completeStep is the StepCompleteFunc for declare_step_complete. It emits
+// PlanStepComplete and removes the step from the started set so that
+// completeAll does not double-complete it.
+func (l *inlineStepLifecycle) completeStep(stepID string, success bool, errMsg string) {
+	if l == nil || l.emitter == nil || stepID == "" {
+		return
+	}
+	l.mu.Lock()
+	wasStarted := l.started[stepID]
+	delete(l.started, stepID)
+	l.mu.Unlock()
+	if wasStarted {
+		l.emitter.PlanStepComplete(stepID, success, 0, errMsg)
+	}
+}
+
+// completeAll auto-completes any inline steps that were started but not
+// explicitly completed via declare_step_complete. Called as a finish fallback
+// after the Conductor's executor.Run returns. errMsg is propagated to each
+// auto-completed step's PlanStepComplete so the UI can show why the step
+// failed (empty string on success).
+func (l *inlineStepLifecycle) completeAll(success bool, errMsg string) {
+	if l == nil || l.emitter == nil {
+		return
+	}
+	l.mu.Lock()
+	pending := make([]string, 0, len(l.started))
+	for id := range l.started {
+		pending = append(pending, id)
+	}
+	l.started = make(map[string]bool)
+	l.mu.Unlock()
+	for _, id := range pending {
+		l.emitter.PlanStepComplete(id, success, 0, errMsg)
+	}
+}
+
+// lookupStepDesc returns the description and summary for a step ID from the
+// blackboard's plan, or empty strings if the step is not found.
+func lookupStepDesc(bb orchestration.Blackboard, stepID string) (desc, summary string) {
+	if bb == nil {
+		return
+	}
+	plan := bb.GetPlan()
+	if plan == nil {
+		return
+	}
+	for _, step := range plan.Steps {
+		if step.ID == stepID {
+			return step.Description, step.Summary
 		}
 	}
+	return
 }
 
 // subagentTodoCallback returns a StepTodoUpdateFunc for subagent execution.
@@ -898,11 +984,7 @@ func subagentTodoCallback(emitter Emitter) agent.StepTodoUpdateFunc {
 		return nil
 	}
 	return func(stepID string, items []agent.TodoItem) {
-		coreItems := make([]TodoItem, len(items))
-		for i, item := range items {
-			coreItems[i] = TodoItem{Text: item.Text, Checked: item.Checked}
-		}
-		emitter.StepTodoUpdate(stepID, coreItems)
+		emitter.StepTodoUpdate(stepID, items)
 	}
 }
 

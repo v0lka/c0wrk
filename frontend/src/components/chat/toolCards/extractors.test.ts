@@ -75,8 +75,11 @@ describe('extractUrlTitle', () => {
 })
 
 describe('extractMemoTitle', () => {
-  it('returns step status for set_step_status', () => {
-    expect(extractMemoTitle('set_step_status', {}, '')).toBe('step status')
+  it('returns checklist for update_checklist', () => {
+    expect(extractMemoTitle('update_checklist', {}, '')).toBe('checklist')
+  })
+  it('returns step complete for declare_step_complete', () => {
+    expect(extractMemoTitle('declare_step_complete', {}, '')).toBe('step complete')
   })
   it('returns fact with keywords for store_fact', () => {
     expect(extractMemoTitle('store_fact', { keywords: ['auth', 'jwt'] }, '')).toBe('fact: auth, jwt')

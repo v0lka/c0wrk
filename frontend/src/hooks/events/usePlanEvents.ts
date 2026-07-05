@@ -101,10 +101,17 @@ export function usePlanEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'step_todo_update', (data) => {
         if (!isStepTodoUpdateData(data)) { reportDroppedEvent('step_todo_update', data); return }
-        usePlanStore.getState().updateStepTodo(
-          data.step_id,
-          data.items.map((item) => ({ text: item.text, checked: item.checked })),
-        )
+        useChatStore.getState().addMessage(sessionId, {
+          id: generateMessageId(),
+          sessionId,
+          type: 'step_todo_update',
+          content: '',
+          metadata: {
+            step_id: data.step_id ?? '',
+            items: data.items.map((item) => ({ text: item.text, checked: item.checked })),
+          },
+          timestamp: Date.now(),
+        })
       }),
     )
 

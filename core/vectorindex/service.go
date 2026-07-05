@@ -28,6 +28,12 @@ type ServiceConfig struct {
 	IgnoreExtensions map[string]bool
 	IgnoreFileNames  map[string]bool
 
+	// HybridConfig tunes Reciprocal Rank Fusion (RRF k, fanout, and
+	// pre-fusion score thresholds). A zero value disables score
+	// thresholds and uses built-in defaults for k/fanout; production
+	// wiring sets thresholds via config.VectorIndexConfig.
+	HybridConfig HybridConfig
+
 	// Logger for structured logging.
 	Logger *slog.Logger
 }
@@ -50,6 +56,10 @@ type Service struct {
 	readyMu       sync.Mutex    // protects readyCh swaps
 	logger        *slog.Logger
 
+	// hybridConfig holds resolved RRF tuning + pre-fusion score
+	// thresholds. Threshold fields of 0 mean "disabled".
+	hybridConfig HybridConfig
+
 	// Extra ignore patterns for ValidateCollection file filtering.
 	ignoreDirs       map[string]bool
 	ignoreExtensions map[string]bool
@@ -71,6 +81,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		embeddingFunc:    cfg.EmbeddingFunc,
 		readyCh:          make(chan struct{}),
 		logger:           logger,
+		hybridConfig:     ResolveHybridConfig(cfg.HybridConfig),
 		ignoreDirs:       cfg.IgnoreDirs,
 		ignoreExtensions: cfg.IgnoreExtensions,
 		ignoreFileNames:  cfg.IgnoreFileNames,

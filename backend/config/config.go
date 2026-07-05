@@ -68,19 +68,38 @@ type WorkspaceConfig struct {
 // to true) from "explicitly disabled" (false). When Hybrid is false the
 // service only writes and reads the chromem vector index; bleve is
 // still opened but not consulted at query time.
+//
+// The HybridRRFK / HybridFanoutMultiplier / HybridFanoutMin fields tune
+// Reciprocal Rank Fusion. A zero value falls back to the built-in
+// default (60 / 4 / 100).
+//
+// The HybridVectorScoreFloor / HybridVectorScoreRatio /
+// HybridLexicalScoreRatio fields are pointer-float64 so callers can
+// distinguish "unset" (defaults applied) from "explicitly zero"
+// (threshold disabled). They suppress noise-tail hits before fusion:
+//   - VectorScoreFloor: absolute cosine-similarity floor.
+//   - VectorScoreRatio: relative cutoff (sim < ratio × top sim rejected).
+//   - LexicalScoreRatio: relative BM25 cutoff (score < ratio × top rejected).
 type VectorIndexConfig struct {
 	Hybrid *bool `yaml:"hybrid"`
+
+	HybridRRFK              int      `yaml:"hybrid_rrf_k"`
+	HybridFanoutMultiplier  int      `yaml:"hybrid_fanout_multiplier"`
+	HybridFanoutMin         int      `yaml:"hybrid_fanout_min"`
+	HybridVectorScoreFloor  *float64 `yaml:"hybrid_vector_score_floor"`
+	HybridVectorScoreRatio  *float64 `yaml:"hybrid_vector_score_ratio"`
+	HybridLexicalScoreRatio *float64 `yaml:"hybrid_lexical_score_ratio"`
 }
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.
 type LLMConfig struct {
-	DefaultModel        string                                `yaml:"default_model"` // cross-provider default model (must exist in some provider's Models list)
-	Anthropic           AnthropicConfig                       `yaml:"anthropic"`
-	OpenAICompatible    map[string]OpenAICompatibleConfig     `yaml:"openai_compatible"`
-	AnthropicCompatible map[string]AnthropicCompatibleConfig  `yaml:"anthropic_compatible"`
-	ChatGPT             ChatGPTConfig                         `yaml:"chatgpt"`
-	Models              map[string]ModelOverride              `yaml:"models"`
-	Retry               LLMRetryConfig                        `yaml:"retry"`
+	DefaultModel        string                               `yaml:"default_model"` // cross-provider default model (must exist in some provider's Models list)
+	Anthropic           AnthropicConfig                      `yaml:"anthropic"`
+	OpenAICompatible    map[string]OpenAICompatibleConfig    `yaml:"openai_compatible"`
+	AnthropicCompatible map[string]AnthropicCompatibleConfig `yaml:"anthropic_compatible"`
+	ChatGPT             ChatGPTConfig                        `yaml:"chatgpt"`
+	Models              map[string]ModelOverride             `yaml:"models"`
+	Retry               LLMRetryConfig                       `yaml:"retry"`
 }
 
 // AnthropicConfig holds Anthropic provider configuration.
@@ -167,7 +186,7 @@ type ToolOutputPruningConfig struct {
 // every BuildPrompt call and replaces old tool results with cache references.
 type HistoryMutationConfig struct {
 	ToolResultEvictionStep int  `yaml:"toolResultEvictionStep"` // evict tool results to cache refs after N steps (0 = disabled)
-	EvictStepStatus        bool `yaml:"evictStepStatus"`         // evict set_step_status results immediately
+	EvictStepStatus        bool `yaml:"evictStepStatus"`        // evict update_checklist results immediately
 	DedupRepeatedReads     bool `yaml:"dedupRepeatedReads"`     // replace duplicate file reads with reference
 }
 

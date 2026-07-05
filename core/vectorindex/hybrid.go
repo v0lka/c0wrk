@@ -41,6 +41,83 @@ const rrfK = 60
 // slightly more CPU.
 const defaultHybridFanout = 100
 
+// defaultFanoutMultiplier scales topK into a per-side candidate pool.
+const defaultFanoutMultiplier = 4
+
+// defaultVectorScoreRatio is the relative cosine cutoff below which
+// vector hits are discarded before fusion. A hit survives when its
+// similarity is at least this fraction of the top similarity in the
+// (post-filter) vector result set. 0 disables the relative cutoff.
+const defaultVectorScoreRatio = 0.25
+
+// defaultLexicalScoreRatio is the relative BM25 cutoff below which
+// lexical hits are discarded before fusion. BM25 magnitudes vary widely
+// across queries, so a relative threshold is more robust than an
+// absolute one. 0 disables the cutoff.
+const defaultLexicalScoreRatio = 0.1
+
+// HybridConfig holds tunable parameters for Reciprocal Rank Fusion.
+//
+// Zero-valued integer fields (RRFK, FanoutMultiplier, FanoutMin) fall
+// back to built-in defaults via ResolveHybridConfig. Zero-valued
+// threshold fields mean "disabled" — every hit passes the score gate —
+// so callers that construct a zero HybridConfig (e.g. tests) get no
+// score filtering. Production config sets non-zero thresholds via
+// config.VectorIndexConfig.
+type HybridConfig struct {
+	// RRFK is the RRF constant k (default 60).
+	RRFK int
+	// FanoutMultiplier scales topK into the per-side candidate pool
+	// (default 4). The effective fanout is max(topK*FanoutMultiplier,
+	// FanoutMin).
+	FanoutMultiplier int
+	// FanoutMin is the minimum per-side fanout (default 100).
+	FanoutMin int
+	// VectorScoreFloor is an absolute cosine-similarity floor. Hits
+	// with similarity below this value are discarded before fusion.
+	// 0 disables the absolute floor.
+	VectorScoreFloor float64
+	// VectorScoreRatio is a relative cosine cutoff: a hit is discarded
+	// when its similarity is below VectorScoreRatio × top similarity
+	// among the post-filter vector hits. 0 disables the relative
+	// cutoff. This suppresses noise-tail hits that are weakly semantic
+	// yet still receive an RRF contribution.
+	VectorScoreRatio float64
+	// LexicalScoreRatio is a relative BM25 cutoff: a hit is discarded
+	// when its BM25 score is below LexicalScoreRatio × top BM25 among
+	// the post-filter lexical hits. 0 disables the cutoff.
+	LexicalScoreRatio float64
+}
+
+// DefaultHybridConfig returns the built-in default HybridConfig. The
+// threshold defaults (VectorScoreRatio, LexicalScoreRatio) are enabled
+// to suppress noise-tail promotion in RRF; set them to 0 to disable.
+func DefaultHybridConfig() HybridConfig {
+	return HybridConfig{
+		RRFK:              rrfK,
+		FanoutMultiplier:  defaultFanoutMultiplier,
+		FanoutMin:         defaultHybridFanout,
+		VectorScoreFloor:  0,
+		VectorScoreRatio:  defaultVectorScoreRatio,
+		LexicalScoreRatio: defaultLexicalScoreRatio,
+	}
+}
+
+// ResolveHybridConfig fills zero-valued integer fields with built-in
+// defaults. Threshold fields are returned as-is: 0 means "disabled".
+func ResolveHybridConfig(hc HybridConfig) HybridConfig {
+	if hc.RRFK == 0 {
+		hc.RRFK = rrfK
+	}
+	if hc.FanoutMultiplier == 0 {
+		hc.FanoutMultiplier = defaultFanoutMultiplier
+	}
+	if hc.FanoutMin == 0 {
+		hc.FanoutMin = defaultHybridFanout
+	}
+	return hc
+}
+
 // SearchOptions controls HybridSearch behavior.
 //
 // Query may contain `+token` sugar (e.g. "pattern +MatcherFactory") to
@@ -174,7 +251,7 @@ func (s *Service) vectorOnlySearch(
 	filePattern string,
 	mustMatch []string,
 ) ([]SearchResult, error) {
-	fanout := hybridFanout(topK)
+	fanout := hybridFanout(topK, s.hybridConfig)
 	count := col.Count()
 	if count == 0 {
 		return []SearchResult{}, nil
@@ -217,7 +294,7 @@ func (s *Service) lexicalOnlySearch(
 	filePattern string,
 	mustMatch []string,
 ) ([]SearchResult, error) {
-	fanout := hybridFanout(topK)
+	fanout := hybridFanout(topK, s.hybridConfig)
 	hits, err := lex.Query(ctx, query, fanout)
 	if err != nil {
 		return nil, fmt.Errorf("lexical search: %w", err)
@@ -272,7 +349,7 @@ func (s *Service) hybridSearchRRF(
 	filePattern string,
 	mustMatch []string,
 ) ([]SearchResult, error) {
-	fanout := hybridFanout(topK)
+	fanout := hybridFanout(topK, s.hybridConfig)
 
 	vecCount := col.Count()
 	vecFanout := fanout
@@ -314,8 +391,8 @@ func (s *Service) hybridSearchRRF(
 	// applied pre-fusion (see "Design invariants").
 	agg := make(map[string]*fusedEntry, len(vecResults)+len(lexHits))
 
-	aggregateVectorHits(agg, vecResults, filePattern, mustMatch, s.logger)
-	aggregateLexicalHits(ctx, col, agg, lexHits, filePattern, mustMatch, s.logger)
+	aggregateVectorHits(agg, vecResults, filePattern, mustMatch, s.hybridConfig, s.logger)
+	aggregateLexicalHits(ctx, col, agg, lexHits, filePattern, mustMatch, s.hybridConfig, s.logger)
 
 	out := make([]SearchResult, 0, len(agg))
 	for _, e := range agg {
@@ -339,18 +416,42 @@ func (s *Service) hybridSearchRRF(
 }
 
 // aggregateVectorHits adds vector results into the RRF aggregation map.
-// Filtered results are skipped; each contributing entry gets a vector
-// rank and the corresponding RRF score component.
+//
+// Two passes keep rank spaces comparable while suppressing noise:
+//  1. Apply path/mustmatch filters and collect survivors with the top
+//     similarity among them.
+//  2. Apply the score floor (the stricter of VectorScoreFloor and
+//     VectorScoreRatio × top similarity), assign 1-based ranks over the
+//     scored survivors, and add the RRF contribution 1/(RRFK+rank).
+//
+// Hits that fail the score gate are never inserted into agg, so they
+// receive no RRF contribution from the vector side. This prevents weak
+// tail hits that also appear lexically from earning a double RRF boost.
 func aggregateVectorHits(
 	agg map[string]*fusedEntry,
 	vecResults []chromem.Result,
 	filePattern string,
 	mustMatch []string,
+	hc HybridConfig,
 	logger *slog.Logger,
 ) {
-	vecRank := 0
+	// First pass: path/mustmatch filter, collect survivors + top sim.
+	survivors := make([]chromem.Result, 0, len(vecResults))
+	var maxSim float32
 	for _, r := range vecResults {
 		if !passesFilters(r, filePattern, mustMatch, logger) {
+			continue
+		}
+		survivors = append(survivors, r)
+		if r.Similarity > maxSim {
+			maxSim = r.Similarity
+		}
+	}
+
+	// Second pass: score gate, rank, aggregate.
+	vecRank := 0
+	for _, r := range survivors {
+		if !passesVectorScoreGate(r.Similarity, maxSim, hc) {
 			continue
 		}
 		vecRank++
@@ -361,13 +462,24 @@ func aggregateVectorHits(
 		}
 		entry.vectorScore = r.Similarity
 		entry.vectorRank = vecRank
-		entry.score += 1.0 / float64(rrfK+vecRank)
+		entry.score += 1.0 / float64(hc.RRFK+vecRank)
 	}
 }
 
 // aggregateLexicalHits adds lexical results into the RRF aggregation map.
-// Hits missing from chromem are looked up via GetByID; hits that cannot be
-// found or that fail post-filters are skipped.
+//
+// Two passes, mirroring aggregateVectorHits:
+//  1. Resolve each hit via chromem.GetByID (creating a fusedEntry when
+//     the document is not already present), apply path/must-match
+//     filters, and collect survivors with their BM25 scores; track the
+//     maximum BM25 among survivors.
+//  2. Apply the relative BM25 ratio gate and assign a 1-based lexical
+//     rank to each surviving hit, adding its RRF contribution.
+//
+// Hits missing from chromem or failing filters are skipped. Hits below
+// the score gate are skipped so noise-tail documents that merely contain
+// a query term cannot receive an RRF contribution. When the threshold is
+// zero the gate is a no-op.
 func aggregateLexicalHits(
 	ctx context.Context,
 	col *chromem.Collection,
@@ -375,11 +487,19 @@ func aggregateLexicalHits(
 	lexHits []lexical.Hit,
 	filePattern string,
 	mustMatch []string,
+	hc HybridConfig,
 	logger *slog.Logger,
 ) {
-	lexRank := 0
+	type survivor struct {
+		h       lexical.Hit
+		entry   *fusedEntry
+		created bool
+	}
+	survivors := make([]survivor, 0, len(lexHits))
+	var maxScore float32
 	for _, h := range lexHits {
 		entry := agg[h.ID]
+		created := false
 		if entry == nil {
 			doc, getErr := col.GetByID(ctx, h.ID)
 			if getErr != nil {
@@ -392,20 +512,36 @@ func aggregateLexicalHits(
 			}
 			entry = &fusedEntry{result: r}
 			agg[h.ID] = entry
+			created = true
+		}
+		survivors = append(survivors, survivor{h: h, entry: entry, created: created})
+		if h.Score > maxScore {
+			maxScore = h.Score
+		}
+	}
+
+	lexRank := 0
+	for _, sv := range survivors {
+		if !passesLexicalScoreGate(sv.h.Score, maxScore, hc) {
+			if sv.created {
+				delete(agg, sv.h.ID)
+			}
+			continue
 		}
 		lexRank++
-		entry.lexicalScore = h.Score
-		entry.lexicalRank = lexRank
-		entry.score += 1.0 / float64(rrfK+lexRank)
+		sv.entry.lexicalScore = sv.h.Score
+		sv.entry.lexicalRank = lexRank
+		sv.entry.score += 1.0 / float64(hc.RRFK+lexRank)
 	}
 }
 
 // hybridFanout returns the per-side fanout for RRF. Using a larger
-// candidate pool than topK significantly improves recall.
-func hybridFanout(topK int) int {
-	fanout := topK * 4
-	if fanout < defaultHybridFanout {
-		fanout = defaultHybridFanout
+// candidate pool than topK significantly improves recall. The pool size
+// is max(topK*FanoutMultiplier, FanoutMin) from the resolved HybridConfig.
+func hybridFanout(topK int, hc HybridConfig) int {
+	fanout := topK * hc.FanoutMultiplier
+	if fanout < hc.FanoutMin {
+		fanout = hc.FanoutMin
 	}
 	return fanout
 }
@@ -433,4 +569,45 @@ func passesFilters(r chromem.Result, filePattern string, mustMatch []string, log
 		}
 	}
 	return true
+}
+
+// passesVectorScoreGate reports whether a vector hit with similarity
+// sim survives the pre-fusion score gate given the top similarity
+// maxSim among the post-filter vector hits.
+//
+// A hit is rejected when its similarity is below the absolute floor
+// (VectorScoreFloor) OR below the relative cutoff
+// (VectorScoreRatio × maxSim). When both thresholds are zero the gate
+// is disabled and every hit passes. A zero maxSim disables the relative
+// cutoff (avoids rejecting everything when the vector list is
+// degenerate).
+func passesVectorScoreGate(sim, maxSim float32, hc HybridConfig) bool {
+	if hc.VectorScoreFloor == 0 && hc.VectorScoreRatio == 0 {
+		return true
+	}
+	if hc.VectorScoreFloor > 0 && float64(sim) < hc.VectorScoreFloor {
+		return false
+	}
+	if hc.VectorScoreRatio > 0 && maxSim > 0 && float64(sim) < hc.VectorScoreRatio*float64(maxSim) {
+		return false
+	}
+	return true
+}
+
+// passesLexicalScoreGate reports whether a lexical hit with BM25 score
+// score survives the pre-fusion score gate given the top BM25 maxScore
+// among the post-filter lexical hits.
+//
+// A hit is rejected when its score is below the relative cutoff
+// (LexicalScoreRatio × maxScore). When the threshold is zero the gate
+// is disabled and every hit passes. A zero maxScore disables the gate
+// (avoids rejecting everything when the lexical list is degenerate).
+func passesLexicalScoreGate(score, maxScore float32, hc HybridConfig) bool {
+	if hc.LexicalScoreRatio == 0 {
+		return true
+	}
+	if maxScore <= 0 {
+		return true
+	}
+	return float64(score) >= hc.LexicalScoreRatio*float64(maxScore)
 }

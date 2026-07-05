@@ -110,7 +110,7 @@ func PerToolTruncationFromContext(ctx context.Context) map[string]ToolTruncation
 }
 
 // ---------------------------------------------------------------------------
-// StepTodoUpdateFunc — callback for set_step_status tool to emit events
+// StepTodoUpdateFunc — callback for update_checklist tool to emit events
 // ---------------------------------------------------------------------------
 
 // TodoItem represents a single checklist item parsed from the LLM's to-do list.

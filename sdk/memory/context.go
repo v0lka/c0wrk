@@ -42,8 +42,9 @@ type HistoryMutation struct {
 	// is replaced with a cache reference. 0 disables eviction (full results
 	// kept indefinitely, subject to pruning/compaction).
 	ToolResultEvictionStep int
-	// EvictStepStatus enables immediate eviction of set_step_status results
-	// (pure bookkeeping, no information loss).
+	// EvictStepStatus enables immediate eviction of update_checklist results
+	// (pure bookkeeping, no information loss). Also matches the legacy
+	// set_step_status name for old session history.
 	EvictStepStatus bool
 	// DedupRepeatedReads replaces duplicate file-read results (same path +
 	// mtime) with a reference to the earlier result's cache hash.
@@ -57,8 +58,8 @@ func evictionReferenceText(hash string) string {
 	return fmt.Sprintf("[Result evicted to cache. Use tool_result_read(hash=%q, start_line=1, num_lines=N) to retrieve the full content.]", hash)
 }
 
-// stepStatusEvictedText is the placeholder for evicted set_step_status results.
-const stepStatusEvictedText = "[step status update — evicted]"
+// stepStatusEvictedText is the placeholder for evicted checklist results.
+const stepStatusEvictedText = "[checklist update — evicted]"
 
 // ContextWindow — managed representation of the LLM context window.
 type ContextWindow struct {
@@ -462,8 +463,9 @@ func (cw *ContextWindow) applyHistoryMutation(step sdkagent.Step, idx int, obser
 
 	toolName := step.Action.Name
 
-	// Evict set_step_status results immediately (pure bookkeeping).
-	if cw.mutation.EvictStepStatus && toolName == "set_step_status" {
+	// Evict update_checklist results immediately (pure bookkeeping).
+	// Also matches the legacy set_step_status name for old session history.
+	if cw.mutation.EvictStepStatus && (toolName == "update_checklist" || toolName == "set_step_status") {
 		return stepStatusEvictedText
 	}
 

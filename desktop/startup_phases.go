@@ -705,7 +705,15 @@ func (a *App) startVectorIndexBackground(
 			IgnoreDirs:       cfg.Workspace.IgnoreDirs,
 			IgnoreExtensions: cfg.Workspace.IgnoreExtensions,
 			IgnoreFileNames:  cfg.Workspace.IgnoreFileNames,
-			Logger:           log,
+			HybridConfig: vectorindex.HybridConfig{
+				RRFK:              cfg.VectorIndex.HybridRRFK,
+				FanoutMultiplier:  cfg.VectorIndex.HybridFanoutMultiplier,
+				FanoutMin:         cfg.VectorIndex.HybridFanoutMin,
+				VectorScoreFloor:  derefFloat(cfg.VectorIndex.HybridVectorScoreFloor),
+				VectorScoreRatio:  derefFloat(cfg.VectorIndex.HybridVectorScoreRatio),
+				LexicalScoreRatio: derefFloat(cfg.VectorIndex.HybridLexicalScoreRatio),
+			},
+			Logger: log,
 		})
 		if err != nil {
 			log.Warn("vector search unavailable", "error", err)
@@ -725,4 +733,14 @@ func (a *App) startVectorIndexBackground(
 		a.Lifecycle().SetVectorManager(vectorMgr)
 		log.Info("background init complete", "phase", "vector_index", "elapsed_ms", time.Since(startTime).Milliseconds())
 	}()
+}
+
+// derefFloat returns *p when p is non-nil, else 0. Used to convert the
+// pointer-float64 hybrid thresholds from config into the value-based
+// vectorindex.HybridConfig.
+func derefFloat(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }

@@ -8,16 +8,17 @@ package core
 // and the internal-tool list in core/tools/registry.go.
 const (
 	// Internal infrastructure tools (always allowed, bypass policy).
-	ToolFinish         = "finish"
-	ToolStoreFact      = "store_fact"
-	ToolSearchFacts    = "search_facts"
-	ToolAskUser        = "ask_user"
-	ToolSetStepStatus  = "set_step_status"
-	ToolReadStepOutput = "read_step_output"
-	ToolListStepOutput = "list_step_outputs"
-	ToolToolResultRead = "tool_result_read"
-	ToolReadSkillRes   = "read_skill_resource"
-	ToolBatch          = "batch"
+	ToolFinish              = "finish"
+	ToolStoreFact           = "store_fact"
+	ToolSearchFacts         = "search_facts"
+	ToolAskUser             = "ask_user"
+	ToolUpdateChecklist     = "update_checklist"
+	ToolDeclareStepComplete = "declare_step_complete"
+	ToolReadStepOutput      = "read_step_output"
+	ToolListStepOutput      = "list_step_outputs"
+	ToolToolResultRead      = "tool_result_read"
+	ToolReadSkillRes        = "read_skill_resource"
+	ToolBatch               = "batch"
 
 	// Read-only file/code exploration tools.
 	ToolReadFile       = "read_file"

@@ -114,14 +114,15 @@ preferences, confirmations, or open-ended questions — you MUST use the `ask_us
 
 If you have multiple questions, batch them into a single `ask_user` call.
 
-## Step Status Tracking
+## Checklist Tracking
 
-Use the `set_step_status` tool to maintain a to-do checklist for the current step:
+Use the `update_checklist` tool to maintain a checklist for your current work:
 
-1. **Call it FIRST** — as your very first tool call in a step, call `set_step_status` with the complete checklist of items you intend to complete (all unchecked: `- [ ]`).
-2. **Update after each item** — after completing a checklist item, call `set_step_status` again with that item marked checked (`- [x]`) and remaining items unchecked.
+1. **Call it FIRST** — as your very first tool call, call `update_checklist` with the complete checklist of items you intend to complete (all unchecked: `- [ ]`).
+2. **Update after each item** — after completing a checklist item, call `update_checklist` again with that item marked checked (`- [x]`) and remaining items unchecked.
 3. **Strict format** — each line must be exactly `- [ ] ` or `- [x] ` followed by the item text. No nesting, no Unicode checkboxes, no bullet-only lines.
-4. **Pass `step_id` when executing a plan inline** — if you declared a plan via `declare_plan` and are executing its steps yourself (not via `delegate`), pass the `step_id` parameter with the current plan step's ID so the system can track progress in the plan panel. Omit `step_id` when running as a delegated subagent (it is inferred automatically).
+4. **Pass `step_id` when executing a plan inline** — if you declared a plan via `declare_plan` and are executing its steps yourself (not via `delegate`), pass the `step_id` parameter with the current plan step's ID so the system can track progress in the plan panel. Omit `step_id` when running as a delegated subagent (it is inferred automatically) or when working without a declared plan (standalone checklist).
+5. **Mark steps complete with `declare_step_complete`** — when you finish an inline plan step, call `declare_step_complete` with the `step_id` to mark it as completed in the plan panel. Do NOT call this for delegated steps (the system tracks those automatically).
 
 Example:
 

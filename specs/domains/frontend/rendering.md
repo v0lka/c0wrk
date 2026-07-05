@@ -32,13 +32,13 @@ Backend persists: ChatMessage[] (flat, role-based)
 Frontend converts: ChatMessageUI[] (semantic type, metadata)
          │
          ▼
-groupMessages(): GroupedMessages { items: DisplayItem[], pendingActions: ... } (tree structure, 18 kinds)
+groupMessages(): GroupedMessages { items: DisplayItem[], pendingActions: ... } (tree structure, 19 kinds)
          │
          ▼
 ChatMessageRenderer: renders each DisplayItem by type
 ```
 
-### Display Item Types (18 kinds)
+### Display Item Types (19 kinds)
 
 | Type                 | Description               | Visual Treatment                                                              |
 | -------------------- | ------------------------- | ----------------------------------------------------------------------------- |
@@ -60,6 +60,7 @@ ChatMessageRenderer: renders each DisplayItem by type
 | `memory_read`        | Memory read notice        | Info badge (agent read from persistent memory)                                |
 | `action_placeholder` | Pending action indicator  | Placeholder with label                                                        |
 | `context_compaction` | Compaction notice         | Info badge (shows before/after fill %)                                        |
+| `checklist`          | Checklist card            | Checkbox list with progress count; **sinks** to end of parent container while active (unchecked items), settles at stream position when all items checked. Renders standalone (no plan step) or nested in a `plan_step` block. |
 
 ### Grouping Logic
 
@@ -71,6 +72,7 @@ Key transformations in `groupMessages()`:
 4. **Pending action extraction**: unresolved confirmations/questions extracted to PendingActionsBar
 5. **Subagent handling**: subagent messages (`subagent_launch`/`subagent_complete`) are skipped entirely (not rendered as display items)
 6. **Special tool handling**: `finish` tool call → `step_finish` item; `memory_read` event → `memory_read` item; `plan_review_*` events → `plan_review` item; `context_compaction` event → `context_compaction` item (with before/after fill %); `routing`/`retry`/`status` events → `service` item
+7. **Checklist sinking**: `step_todo_update` messages → `checklist` DisplayItem; latest per key (stepId || standalone) supersedes previous; active (unchecked items) checklists are moved to the end of their container (root items for standalone, step children for step-associated) so they stay visible at the bottom while new content streams in above; settled (all-checked) checklists remain at their stream position
 
 ### Smart Auto-Scroll
 

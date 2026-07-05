@@ -3,7 +3,7 @@ import type { ChatMessage, PlanGroup, PlanItem } from '@/types/models'
 import { reconstructContent, buildHistoryId, collapseThoughts, extractMeta } from './chatUtilsHelpers'
 import {
   handlePlanStepStart, handlePlanStepComplete, handleSubAgentLaunch, handleSubAgentComplete,
-  handleReflection,
+  handleReflection, handleStepTodoUpdate,
   handleToolCall, handleToolResult, handleActionMessage,
   type ToolLike, type StepLikeItem,
 } from './chatGroupingHandlers'
@@ -75,6 +75,10 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   const stepIndexMap = new Map<string, { num: number; title: string; description: string }>()
   const toolItemsByKey = new Map<string, ToolLike>()
   const pendingResults = new Map<string, { result?: string; resultLen?: number; error?: boolean }>()
+  // Track the latest checklist per key (stepId || '' for standalone) so
+  // earlier superseded updates can be removed from their container, and
+  // active (incomplete) checklists can be sunk to the end of their container.
+  const checklistsByKey = new Map<string, { item: DisplayItem & { kind: 'checklist' }; container: DisplayItem[] }>()
 
   const pushItem = (item: DisplayItem, planStepId?: string) => {
     const container = planStepId ? openSteps.get(planStepId) : null
@@ -97,6 +101,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
     if (msg.type === 'subagent_launch') { handleSubAgentLaunch(msg, meta, openSteps, items); continue }
     if (msg.type === 'subagent_complete') { handleSubAgentComplete(meta, openSteps); continue }
     if (msg.type === 'reflection') { handleReflection(msg, meta, openSteps, items); continue }
+    if (msg.type === 'step_todo_update') { handleStepTodoUpdate(msg, meta, openSteps, items, checklistsByKey); continue }
 
     switch (msg.type) {
       case 'user': pushItem({ kind: 'user', message: msg }, planStepId); break
@@ -122,8 +127,20 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
         pushItem({ kind: 'service', id: msg.id, variant: msg.type as 'routing' | 'retry' | 'step_retry', content: msg.content, metadata: meta }, planStepId); break
       case 'status':
         pushItem({ kind: 'service', id: msg.id, variant: 'status', content: msg.content, metadata: meta }, planStepId); break
-      case 'step_done': case 'thinking': case 'task_resumed': case 'step_todo_update': break
+      case 'step_done': case 'thinking': case 'task_resumed': break
       default: break
+    }
+  }
+
+  // Sinking: move active (incomplete) checklists to the end of their container
+  // so they stay visible at the bottom while new content streams in above them.
+  // Settled (all-checked) checklists remain at their stream position.
+  for (const { item, container } of checklistsByKey.values()) {
+    if (!item.active) continue
+    const idx = container.indexOf(item)
+    if (idx !== -1) {
+      container.splice(idx, 1)
+      container.push(item)
     }
   }
 
@@ -208,13 +225,6 @@ export function rebuildPlanFromHistory(messages: ChatMessageUI[], store: PlanSto
       if (item) {
         item.status = success ? 'completed' : 'failed'
         if (duration != null) item.duration = duration
-      }
-    } else if (msg.type === 'step_todo_update') {
-      const stepId = msgMeta?.step_id as string | undefined
-      const items = msgMeta?.items as Array<{ text: string; checked: boolean }> | undefined
-      const stepItem = stepId ? group.items.find(it => it.id === stepId) : undefined
-      if (stepItem && items) {
-        stepItem.todoItems = items.map((it) => ({ text: it.text, checked: it.checked }))
       }
     }
   }

@@ -1,6 +1,10 @@
 package config
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/v0lka/c0wrk/core/vectorindex"
+)
 
 // defaultProtectedTools is the default list of tools whose output is always preserved during pruning.
 var defaultProtectedTools = []string{"store_fact", "search_facts"}
@@ -316,6 +320,24 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.VectorIndex.Hybrid == nil {
 		trueVal := true
 		cfg.VectorIndex.Hybrid = &trueVal
+	}
+
+	// Hybrid RRF tuning: zero-valued ints fall back to built-in defaults
+	// in vectorindex.ResolveHybridConfig, so only set them when the user
+	// provided an explicit non-zero value. The pointer-float thresholds
+	// default to the built-in score-gate values when unset.
+	hybridDefaults := vectorindex.DefaultHybridConfig()
+	if cfg.VectorIndex.HybridVectorScoreFloor == nil {
+		floor := hybridDefaults.VectorScoreFloor
+		cfg.VectorIndex.HybridVectorScoreFloor = &floor
+	}
+	if cfg.VectorIndex.HybridVectorScoreRatio == nil {
+		ratio := hybridDefaults.VectorScoreRatio
+		cfg.VectorIndex.HybridVectorScoreRatio = &ratio
+	}
+	if cfg.VectorIndex.HybridLexicalScoreRatio == nil {
+		ratio := hybridDefaults.LexicalScoreRatio
+		cfg.VectorIndex.HybridLexicalScoreRatio = &ratio
 	}
 
 	// Proxy defaults

@@ -115,7 +115,7 @@ ToolRegistry.Execute(ctx, name, input)
 ## Invariants
 
 - Tool names are unique within the registry
-- Internal tools (ask_user, batch, finish, list_step_outputs, read_step_output, read_skill_resource, search_facts, semantic_search, set_step_status, store_fact, tool_result_read) bypass policy and judge checks. The disabled-tool check (No Project mode) applies to all tools including internal ones, but the extra-bash-blacklist check runs AFTER the internal-tool bypass (so internal tools are never bash-blacklisted). `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
+- Internal tools (ask_user, batch, finish, list_step_outputs, read_step_output, read_skill_resource, search_facts, semantic_search, update_checklist, declare_step_complete, store_fact, tool_result_read) bypass policy and judge checks. The disabled-tool check (No Project mode) applies to all tools including internal ones, but the extra-bash-blacklist check runs AFTER the internal-tool bypass (so internal tools are never bash-blacklisted). `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
 - The symlink gate runs before policy resolution for every non-internal tool call
 - Symlinks in workspace or temp dir that are OS-level infrastructure (e.g., macOS /tmp → /private/tmp) are filtered out and do not trigger confirmation
 - MCP tools are tagged with source `mcp`

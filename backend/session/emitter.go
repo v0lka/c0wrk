@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/sdk/agent"
 	"github.com/v0lka/c0wrk/sdk/orchestration"
 )
 
@@ -685,8 +686,9 @@ func (e *EventEmitter) SkillsActivated(skillNames []string) {
 	})
 }
 
-// StepTodoUpdate emits a step_todo_update event with the current to-do list for a plan step.
-func (e *EventEmitter) StepTodoUpdate(stepID string, items []core.TodoItem) {
+// StepTodoUpdate emits a step_todo_update event with the current checklist.
+// stepID may be empty for a standalone checklist (Conductor without a plan).
+func (e *EventEmitter) StepTodoUpdate(stepID string, items []agent.TodoItem) {
 	e.log().Debug("emitter: step todo update", "sessionID", e.sessionID, "stepID", stepID, "itemCount", len(items))
 	e.mu.Lock()
 	defer e.mu.Unlock()

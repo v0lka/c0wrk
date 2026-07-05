@@ -6,7 +6,8 @@ A single `Executor.Run` instance that owns a user task end-to-end, using the ReA
 
 ## Key Files
 
-- `core/conductor.go` — Conductor entry point: builds system prompt, assembles tool set, injects Delegation Registry into context, launches `Executor.Run`
+- `core/conductor.go` — Conductor entry point: builds system prompt, assembles tool set, injects Delegation Registry into context, manages inlineStepLifecycle, launches `Executor.Run`
+- `core/tools/declare_step_complete.go` — `declare_step_complete` tool (inline plan-step completion signal)
 - `core/orchestrator_handle.go` — HandleMessage body that invokes the Conductor after routing
 - `sdk/agent/executor.go` — `Executor.Run` (the ReAct loop; the Conductor is an Executor configured with Conductor-specific tools and prompt)
 - `core/systemprompt.go` — `buildSystemPrompt` and Conductor-specific prompt sections
@@ -35,7 +36,7 @@ Conductor.Run(ctx, message, routing, activeSkills, opts)
 │     ├─ File ops, search, web (filtered by routing domain + No Project)
 │     ├─ Internal tools (always present):
 │     │    ask_user, finish, store_fact, search_facts,
-│     │    set_step_status, read_step_output, semantic_search
+│     │    update_checklist, declare_step_complete, read_step_output, semantic_search
 │     └─ Conductor tools (always present):
 │          delegate, declare_plan, reflect, cancel_delegation
 │
@@ -105,6 +106,18 @@ A generalization of the existing `handleWrapUpNudge` heuristic nudges the Conduc
 
 These are soft nudges, not enforcement.
 
+### Inline Step Lifecycle
+
+When the Conductor executes a declared plan inline (without delegating to subagents), plan-step lifecycle is managed by `inlineStepLifecycle` in `core/conductor.go`:
+
+- **PlanStepStart** is inferred from the first `update_checklist(step_id=X)` call. No separate start tool is needed.
+- **PlanStepComplete** is emitted by the `declare_step_complete` tool (explicit signal). The Conductor calls it after finishing an inline step.
+- **Finish fallback**: after `executor.Run` returns, `inlineStepLifecycle.completeAll()` auto-completes any steps that were started but not explicitly completed via `declare_step_complete`. This prevents steps from being stuck in "running" state.
+
+Checklist updates (`update_checklist`) are purely observational — they emit `step_todo_update` events but do not drive plan-step lifecycle. The checklist and plan-step lifecycle are decoupled: the checklist tracks work-in-progress items; `declare_step_complete` marks the step done.
+
+A standalone checklist (no `step_id`) is emitted when the Conductor calls `update_checklist` without a declared plan. The `step_todo_update` event carries an empty `step_id`, and the frontend renders it as a first-class `DisplayItem.kind='checklist'` card in the chat (sinking to the end while active).
+
 ## Error Handling
 
 - **LLM call failure** in the Conductor loop: propagated as an `Executor.Run` error; the orchestrator records the failure on the blackboard.
@@ -115,7 +128,7 @@ These are soft nudges, not enforcement.
 ## Invariants
 
 - Exactly one Conductor `Executor.Run` instance is active per task at any time.
-- The Conductor tool set always includes `delegate`, `declare_plan`, `reflect`, `cancel_delegation`, `ask_user`, and `finish`, regardless of routing domain, skill policy overrides, or No Project mode. These are internal tools and bypass policy.
+- The Conductor tool set always includes `delegate`, `declare_plan`, `reflect`, `cancel_delegation`, `ask_user`, `finish`, `update_checklist`, `declare_step_complete`, and `read_step_output`, regardless of routing domain, skill policy overrides, or No Project mode. These are internal tools and bypass policy.
 - Active skill bodies are rendered verbatim in the Conductor system prompt (no truncation).
 - The Conductor context is isolated from subagent contexts: subagents carry their own `ContextManager`, and only their summaries return to the Conductor as tool results.
 - The Delegation Registry is scoped to a single Conductor run; it is injected into the context at launch and does not outlive the run.

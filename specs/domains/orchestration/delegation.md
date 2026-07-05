@@ -46,7 +46,7 @@ The `delegate` tool lets the Conductor launch one or more subagents to execute u
 | `tasks[].summary` | yes | Short label emitted to the UI plan panel. |
 | `tasks[].task` | yes | Full task description. Convention: What/How/Where/Acceptance Criteria (same format as the prior plan-step description, so existing UI rendering works unchanged). |
 | `tasks[].acceptance_criteria` | no | Optional explicit list; if present, the subagent verifies before calling `finish`. |
-| `tasks[].tools` | no | Tool subset for the subagent. `"all"` (default) = full tool set; `"read-only"` = search/read tools only; array = explicit list. Internal tools (`finish`, `store_fact`, `search_facts`, `read_step_output`, `set_step_status`, `semantic_search`) are always included. |
+| `tasks[].tools` | no | Tool subset for the subagent. `"all"` (default) = full tool set; `"read-only"` = search/read tools only; array = explicit list. Internal tools (`finish`, `store_fact`, `search_facts`, `read_step_output`, `update_checklist`, `semantic_search`) are always included. |
 | `tasks[].depends_on` | no | IDs of delegations that must complete before this one starts. Used to express a DAG across multiple `delegate` calls within one Conductor run. |
 | `tasks[].mode` | no | `"blocking"` (default): the tool result contains the subagent output. `"async"`: the tool result returns immediately with `delegation_id`; the Conductor reads results later via `read_step_output(id)`. |
 | `tasks[].model` | no | Composite model ID override for this subagent. Empty = Conductor's model. |
@@ -203,7 +203,7 @@ Budget: `config.Conductor.MaxDependencyContextChars` (default 8000) divided amon
 - The combined graph of delegations across all `delegate` calls in a Conductor run is always a valid DAG (no cycles).
 - A subagent's context is always a child of the Conductor's context, so cancelling the Conductor cancels all subagents.
 - A subagent never shares its `ContextManager` with the Conductor or with other subagents.
-- Internal tools (`finish`, `store_fact`, `search_facts`, `read_step_output`, `set_step_status`, `semantic_search`, `ask_user`) are always available to subagents regardless of the `tools` field.
+- Internal tools (`finish`, `store_fact`, `search_facts`, `read_step_output`, `update_checklist`, `semantic_search`, `ask_user`) are always available to subagents regardless of the `tools` field.
 - `delegate`, `cancel_delegation` are available to a subagent only when `allow_redelegate` is true; `declare_plan` and `reflect` remain Conductor-only.
 - Recursive delegation depth never exceeds `config.Conductor.MaxRedelegationDepth`.
 - The Delegation Registry is scoped to a single Conductor run (or a single subagent run for child registries); it does not persist across sessions.

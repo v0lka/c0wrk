@@ -112,7 +112,7 @@ session exists). Git operations and vector indexing remain skipped.
 - Storage location: `~/.c0wrk/projects/<projectID>/vector_index/` (per-project, co-located with session data)
 - Branch detection on project switch uses `vectorindex.CurrentBranch`; detection failure propagates and aborts the switch rather than silently degrading
 - A `GitMonitor` watches `.git/HEAD` via fsnotify and triggers re-partitioning on branch change
-- Hybrid search fuses the two ranked lists via Reciprocal Rank Fusion (`score = Σ 1/(k+rank)`, `k=60`). Per-side fanout is `max(topK*4, 100)`; `FilePattern` (doublestar glob) and `MustMatch` post-filters are applied **before** fusion so rank spaces are comparable.
+- Hybrid search fuses the two ranked lists via Reciprocal Rank Fusion (`score = Σ 1/(k+rank)`, `k=60` by default). Per-side fanout is `max(topK × fanout_multiplier, fanout_min)` (defaults 4 / 100); `FilePattern` (doublestar glob) and `MustMatch` post-filters are applied **before** fusion so rank spaces are comparable. Pre-fusion **score thresholds** discard noise-tail hits before fusion: vector hits below `hybrid_vector_score_floor` (absolute) or `hybrid_vector_score_ratio × top similarity` (relative, default 0.25) are dropped; lexical hits below `hybrid_lexical_score_ratio × top BM25` (relative, default 0.1) are dropped. This prevents weakly semantic chunks that merely contain a query term from earning a double RRF contribution and jumping above one-sided relevant hits. Thresholds apply only in the hybrid path; vector-only and lexical-only modes return raw top-K without score gating. See ADR-013.
 - Auto-fallback: `ModeHybrid` silently degrades to `ModeVector` when the lexical index is empty or unavailable; `ModeLexical` returns empty (or an error if no lexical index has been opened at all).
 - Dual-write invariant: chromem commits first (source of truth); lexical upsert/delete is best-effort and drift is repaired by `Indexer.RebuildLexical`, which the manager invokes during `SwitchProject` when `chromem.Count() > 0 && lexical.Count() == 0`.
 - Indexing progress is phased: `PhaseBoth` (parallel full index of a fresh project), `PhaseEmbedding` (chromem-only chunk), `PhaseLexical` (bleve backfill). The phase is surfaced to the frontend via the `vector_index:status` event `phase` field.
@@ -155,6 +155,7 @@ Filename search is available via the `glob` built-in tool (`sdk/tools/builtins/g
 - Vector index collection is partitioned by git branch and rebuilt when the branch changes
 - Chromem is the source of truth; lexical is a best-effort mirror reconciled via `RebuildLexical`
 - Per-side filters (FilePattern, MustMatch) are applied BEFORE RRF fusion so vector and lexical rank spaces remain comparable
+- Pre-fusion score thresholds discard noise-tail hits (low cosine similarity or low BM25) before RRF fusion so they cannot earn a double RRF contribution; thresholds apply only in the hybrid path, not vector-only or lexical-only modes
 - A single `ready atomic.Bool` on `Service`; hybrid auto-falls-back to vector-only when `lexical.Count() == 0`
 - Binary files detected by null byte presence in first 8KB
 - File operations are sandboxed to workspace path (no directory traversal)
@@ -173,6 +174,11 @@ Filename search is available via the `glob` built-in tool (`sdk/tools/builtins/g
 | Workspace path   | Active project config | Root directory for file operations |
 | Ignore patterns  | config.yaml           | Patterns excluded from tree/index  |
 | Index chunk size | Internal (hardcoded)  | Characters per embedding chunk     |
+| Hybrid RRF k     | `vector_index.hybrid_rrf_k` (default 60) | Reciprocal Rank Fusion constant k |
+| Hybrid fanout    | `vector_index.hybrid_fanout_multiplier` (default 4) / `hybrid_fanout_min` (default 100) | Per-side candidate pool size for RRF |
+| Vector score floor | `vector_index.hybrid_vector_score_floor` (default 0.0) | Absolute cosine-similarity floor; vector hits below this are discarded before fusion |
+| Vector score ratio | `vector_index.hybrid_vector_score_ratio` (default 0.25) | Relative cosine cutoff; vector hits below ratio × top similarity are discarded before fusion |
+| Lexical score ratio | `vector_index.hybrid_lexical_score_ratio` (default 0.1) | Relative BM25 cutoff; lexical hits below ratio × top BM25 are discarded before fusion |
 
 ## Extension Points
 
