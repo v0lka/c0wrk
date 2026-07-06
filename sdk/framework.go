@@ -10,7 +10,6 @@
 //	            Name: "anthropic", ProviderType: "anthropic",
 //	            APIKey: os.Getenv("ANTHROPIC_API_KEY"), Models: []string{"claude-sonnet-4-5"},
 //	        }},
-//	        DefaultModel: "claude-sonnet-4-5",
 //	    },
 //	})
 //	defer fw.Shutdown()
@@ -83,7 +82,11 @@ type LLMConfig struct {
 	// Providers lists all enabled LLM providers. At least one is required.
 	Providers []llm.ProviderEntry
 
-	// DefaultModel is the model name to use by default.
+	// DefaultModel optionally overrides the auto-selected default model.
+	// When empty, the Router auto-selects the first provider's first model.
+	// When set, it must be a bare model name ("claude-sonnet-4-5") or a
+	// composite identifier ("anthropic/claude-sonnet-4-5") that exists in
+	// some provider's Models list.
 	DefaultModel string
 
 	// MaxRetries sets the number of retry attempts for transient errors.
@@ -323,7 +326,7 @@ func (fw *Framework) NewConductor(systemPrompt orchestration.SystemPromptFactory
 		Tools:             fw.tools,
 		ToolRegistry:      fw.tools,
 		TokenCounter:      tokenCounter,
-		Model:             llm.BareModel(fw.cfg.LLM.DefaultModel),
+		Model:             llm.BareModel(fw.llmRouter.ActiveModel()),
 		ModelRegistry:     fw.modelReg,
 		ContextFactory:    fw.buildContextWindow,
 		SystemPrompt:      systemPrompt,

@@ -312,22 +312,27 @@ func (f *FrontendAPI) WatchDirectory(dirPath string) error {
 	return f.watcher.WatchDir(dirPath)
 }
 
-// UnwatchDirectory removes a directory from the file watcher.
+// UnwatchDirectory is a no-op in both CHAT and CODE modes.
 //
-// For No Project this is a no-op: the watcher is re-scoped (torn down and
-// recreated) by WatchDirectory on session switch, so explicit unwatching is
-// unnecessary and would otherwise remove the active session's workspace root
-// mid-session. For CODE mode, the directory is removed from the project watcher.
-func (f *FrontendAPI) UnwatchDirectory(dirPath string) error {
-	if f.isNoProject() {
-		return nil
-	}
-	f.watcherMu.Lock()
-	defer f.watcherMu.Unlock()
-	if f.watcher == nil {
-		return errors.New("no active file watcher")
-	}
-	return f.watcher.UnwatchDir(dirPath)
+// The workspace watcher is fully managed by the backend: it is created and
+// scoped to the project workspace (CODE mode) or the active session's workspace
+// (CHAT mode) by switchProjectSetupWatcher / WatchDirectory, and torn down on
+// project switch. The frontend calls this from FileTreePanel's effect cleanup,
+// which runs whenever FileTreePanel unmounts — and in CODE mode FileTreePanel
+// unmounts when the user switches the sidebar tab (Explorer → Git/Search),
+// collapses the sidebar, or during React StrictMode's mount/unmount/remount
+// cycle in development.
+//
+// Removing the watched workspace root here would tear down the backend-managed
+// watcher and break file-change detection until the panel remounts. In CODE
+// mode this is exactly what happened: switching to the Git tab unmounted
+// FileTreePanel, UnwatchDirectory removed the project root, and the file tree
+// stopped updating. A StrictMode race between the async unwatch/watch RPCs
+// could even leave the root permanently un-watched. CHAT mode was already a
+// no-op; this extends the same treatment to CODE mode so the tree auto-refreshes
+// in both modes.
+func (f *FrontendAPI) UnwatchDirectory(_ string) error {
+	return nil
 }
 
 // WriteFile writes content to a file within the session's workspace.

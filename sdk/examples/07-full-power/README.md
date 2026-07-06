@@ -5,7 +5,7 @@ The "kitchen sink" example: every major SDK subsystem combined into one agent.
 ## What you will learn
 
 - How to combine all SDK features in a single application
-- Multi-provider LLM configuration with runtime model switching
+- Multi-provider LLM configuration with runtime model switching (Claude for planning/reflection, GPT-4o for execution)
 - Custom + built-in + MCP tools in one registry
 - Skills discovery, fact memory, and blackboard callbacks
 - Full Plan → Execute → Reflect orchestration with events
@@ -14,7 +14,7 @@ The "kitchen sink" example: every major SDK subsystem combined into one agent.
 
 | Subsystem          | Configuration                                    |
 |--------------------|--------------------------------------------------|
-| Multi-provider LLM | Anthropic + OpenAI (if `OPENAI_API_KEY` is set)  |
+| Multi-provider LLM | Anthropic (planning/reflection) + OpenAI (execution, if `OPENAI_API_KEY` is set) — runtime switching via `router.SetModel` |
 | Custom tools       | `timestamp` tool (implements `tools.Tool`)       |
 | Built-in tools     | read_file, write_file, edit_file, glob, …        |
 | MCP integration    | `@modelcontextprotocol/server-filesystem` (stdio)|
@@ -61,6 +61,25 @@ example's README for detailed explanations:
 - **Planner + Reflector** → full DAG execution loop (example 06)
 
 ### New concepts in this example
+
+#### Runtime model switching
+
+```go
+// Two providers: Claude for planning/reflection, GPT-4o for execution.
+router := fw.LLMRouter()
+router.SetModel(ctx, "openai/gpt-4o")   // switch before execution
+// … Conductor runs steps on GPT-4o …
+router.SetModel(ctx, "claude-sonnet-4-5") // switch back for reflection
+```
+
+The `Framework` exposes the shared LLM router via `fw.LLMRouter()`. Because
+every LLM-calling component (Planner, Conductor, Reflector) routes through
+this single router, calling `SetModel` switches the active provider+model
+for all subsequent calls. The example uses Claude for planning and
+reflection (strong reasoning) and GPT-4o for step execution — switching
+before the execution loop and temporarily switching back during reflection.
+When `OPENAI_API_KEY` is unset, execution falls back to the single
+Anthropic model and switching is skipped.
 
 #### Skills discovery
 
@@ -138,6 +157,9 @@ go run main.go
 Workspace: /tmp/c0wrk-example-07-123456
 Skills dir: /tmp/c0wrk-example-07-123456/.agents/skills
 
+Active LLM: anthropic/claude-sonnet-4-5 (provider: anthropic)
+Runtime model switching enabled: claude-sonnet-4-5 → openai/gpt-4o for execution
+
 Available tools:
   [core] timestamp
   [core] read_file
@@ -163,6 +185,8 @@ Plan: 4 steps
    • step_3: Verify file contents
    • step_4: Store summary fact
 
+🔄 Switched executor to openai/gpt-4o (provider: openai)
+
 ▶ step_1: Create project directory
   ▶ step 1
     🔧 create_directory(…) [core]
@@ -184,6 +208,7 @@ Plan: 4 steps
 
 ═══════════════════════════════════════════
 Steps: 4/4 | Reflections: 0 | Facts: 1
+Models: planning=claude-sonnet-4-5 | execution=openai/gpt-4o
 
 Final output:
 Created myproject/main.go that prints the current timestamp and a greeting…

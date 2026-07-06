@@ -25,18 +25,18 @@ import (
 	"github.com/v0lka/c0wrk/sdk/tools/mcp"
 )
 
-func main() {
+func run() error {
 	// Create a directory the MCP filesystem server will expose.
 	mcpRoot, err := os.MkdirTemp("", "c0wrk-mcp-root-*")
 	if err != nil {
-		log.Fatalf("failed to create MCP root: %v", err)
+		return fmt.Errorf("failed to create MCP root: %w", err)
 	}
-	defer os.RemoveAll(mcpRoot)
+	defer func() { _ = os.RemoveAll(mcpRoot) }()
 
 	// Seed it with a sample file so the agent has something to read.
 	seedPath := mcpRoot + "/greeting.txt"
 	if err := os.WriteFile(seedPath, []byte("Hello from MCP filesystem server!\n"), 0o644); err != nil {
-		log.Fatalf("failed to seed MCP root: %v", err)
+		return fmt.Errorf("failed to seed MCP root: %w", err)
 	}
 
 	fmt.Println("MCP filesystem root:", mcpRoot)
@@ -52,7 +52,6 @@ func main() {
 				APIKey:       os.Getenv("ANTHROPIC_API_KEY"),
 				Models:       []string{"claude-sonnet-4-5"},
 			}},
-			DefaultModel: "claude-sonnet-4-5",
 		},
 		MCP: &sdk.MCPConfig{
 			Servers: map[string]mcp.ServerEntry{
@@ -77,9 +76,9 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatalf("failed to create framework: %v", err)
+		return fmt.Errorf("failed to create framework: %w", err)
 	}
-	defer fw.Shutdown()
+	defer func() { _ = fw.Shutdown() }()
 
 	// Register built-in tools alongside the MCP-discovered tools.
 	registry := fw.ToolRegistry()
@@ -108,13 +107,20 @@ func main() {
 
 	result, err := fw.Execute(ctx, systemPrompt, &agent.NoopEvents{}, task)
 	if err != nil {
-		log.Fatalf("execution failed: %v", err)
+		return fmt.Errorf("execution failed: %w", err)
 	}
 
 	fmt.Println("═══════════════════════════════════════════")
 	fmt.Println("Status:", result.Status)
 	fmt.Println("Output:", result.Output)
 	fmt.Println("═══════════════════════════════════════════")
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatalf("%v", err)
+	}
 }
 
 func truncate(s string, maxLen int) string {

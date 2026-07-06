@@ -49,7 +49,7 @@ func (s *trajectoryStore) Steps() []agent.Step {
 	return s.steps
 }
 
-func main() {
+func run() error {
 	fw, err := sdk.New(sdk.Config{
 		LLM: sdk.LLMConfig{
 			Providers: []llm.ProviderEntry{{
@@ -58,7 +58,6 @@ func main() {
 				APIKey:       os.Getenv("ANTHROPIC_API_KEY"),
 				Models:       []string{"claude-sonnet-4-5"},
 			}},
-			DefaultModel: "claude-sonnet-4-5",
 		},
 		Execution: sdk.ExecutionConfig{
 			MaxSteps:   15, // per-step ReAct budget
@@ -66,9 +65,9 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatalf("failed to create framework: %v", err)
+		return fmt.Errorf("failed to create framework: %w", err)
 	}
-	defer fw.Shutdown()
+	defer func() { _ = fw.Shutdown() }()
 
 	// --- Register tools ---
 	registry := fw.ToolRegistry()
@@ -82,9 +81,9 @@ func main() {
 
 	workspaceDir, err := os.MkdirTemp("", "c0wrk-example-06-*")
 	if err != nil {
-		log.Fatalf("failed to create temp dir: %v", err)
+		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	defer os.RemoveAll(workspaceDir)
+	defer func() { _ = os.RemoveAll(workspaceDir) }()
 
 	fmt.Println("Workspace:", workspaceDir)
 
@@ -117,7 +116,7 @@ MODE-JSON-EXAMPLE`,
 
 	pl, err := planner.NewPlanner(fw.LLMRouter(), plannerCfg)
 	if err != nil {
-		log.Fatalf("failed to create planner: %v", err)
+		return fmt.Errorf("failed to create planner: %w", err)
 	}
 
 	// --- Create the Reflector ---
@@ -155,7 +154,7 @@ Return a JSON object with:
 	}
 	conductor, err := fw.NewConductor(systemPromptFactory, &agent.NoopEvents{})
 	if err != nil {
-		log.Fatalf("failed to create conductor: %v", err)
+		return fmt.Errorf("failed to create conductor: %w", err)
 	}
 	defer conductor.Cleanup()
 
@@ -175,7 +174,7 @@ Return a JSON object with:
 
 	plan, err := pl.Plan(ctx, task, availableTools, nil, nil, false, nil)
 	if err != nil {
-		log.Fatalf("planning failed: %v", err)
+		return fmt.Errorf("planning failed: %w", err)
 	}
 
 	fmt.Printf("Plan generated with %d steps:\n", len(plan.Steps))
@@ -288,4 +287,11 @@ Return a JSON object with:
 	fmt.Println("\nFinal output:")
 	fmt.Println(finalOutput)
 	fmt.Println("═══════════════════════════════════════════")
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatalf("%v", err)
+	}
 }

@@ -16,7 +16,7 @@ import (
 	"github.com/v0lka/c0wrk/sdk/llm"
 )
 
-func main() {
+func run() error {
 	// 1. Create the Framework with a single Anthropic provider.
 	//    The Framework owns shared infrastructure: LLM router, tool registry,
 	//    and (optionally) an MCP gateway. At least one provider is required.
@@ -28,13 +28,12 @@ func main() {
 				APIKey:       os.Getenv("ANTHROPIC_API_KEY"),
 				Models:       []string{"claude-sonnet-4-5"},
 			}},
-			DefaultModel: "claude-sonnet-4-5",
 		},
 	})
 	if err != nil {
-		log.Fatalf("failed to create framework: %v", err)
+		return fmt.Errorf("failed to create framework: %w", err)
 	}
-	defer fw.Shutdown()
+	defer func() { _ = fw.Shutdown() }()
 
 	// 2. Register the finish tool.
 	//    The agent MUST be able to call "finish" to signal task completion.
@@ -62,10 +61,17 @@ func main() {
 		"What is the capital of France?",
 	)
 	if err != nil {
-		log.Fatalf("execution failed: %v", err)
+		return fmt.Errorf("execution failed: %w", err)
 	}
 
 	// 5. Inspect the result.
 	fmt.Println("Status:", result.Status)
 	fmt.Println("Output:", result.Output)
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatalf("%v", err)
+	}
 }

@@ -211,10 +211,13 @@ llm:
 
 Default-model validation: `default_model` must be non-empty and must appear in at least one provider's `models` list. Only providers with non-empty `models` are registered in the Router. There is no `active_provider` field — the Router resolves which provider to use by looking up the model name in its `modelToProvider` reverse index.
 
+> **SDK vs desktop config**: The SDK's `sdk.LLMConfig.DefaultModel` is **optional** — when empty, the Router auto-selects the first provider's first model. The desktop app's `config.yaml` `default_model` remains **required** (validated by `backend/config/config.go`); this validation is a desktop-app concern, not an SDK contract.
+
 ## Invariants
 
 - The Router maintains a `modelToProvider` reverse index mapping each enabled model name to its owning provider
 - The `default_model` is a single cross-provider value; it resolves to whichever provider owns that model name
+- When `DefaultModel` is empty, the Router auto-selects the first provider's first model as the active model. `NewConductor` and `Build` read the active model from the Router (runtime source of truth), not from the config snapshot
 - Per-message model override (`ModelOverride`) selects a different model for a single request without changing the Router's active model
 - Rate limit errors trigger retry with backoff (not immediate failure)
 - Context window exceeded errors are returned to caller (not retried)

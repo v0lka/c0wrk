@@ -66,7 +66,7 @@ func (t *CalculatorTool) Execute(_ context.Context, input json.RawMessage) (tool
 	return tools.ToolResult{Content: fmt.Sprintf("%s = %g", params.Expression, result)}, nil
 }
 
-func main() {
+func run() error {
 	fw, err := sdk.New(sdk.Config{
 		LLM: sdk.LLMConfig{
 			Providers: []llm.ProviderEntry{{
@@ -75,13 +75,12 @@ func main() {
 				APIKey:       os.Getenv("ANTHROPIC_API_KEY"),
 				Models:       []string{"claude-sonnet-4-5"},
 			}},
-			DefaultModel: "claude-sonnet-4-5",
 		},
 	})
 	if err != nil {
-		log.Fatalf("failed to create framework: %v", err)
+		return fmt.Errorf("failed to create framework: %w", err)
 	}
-	defer fw.Shutdown()
+	defer func() { _ = fw.Shutdown() }()
 
 	// Register tools — the agent can only use tools that are in the registry.
 	registry := fw.ToolRegistry()
@@ -100,9 +99,9 @@ func main() {
 	// Set up a workspace directory so file tools know where to read/write.
 	workspaceDir, err := os.MkdirTemp("", "c0wrk-example-02-*")
 	if err != nil {
-		log.Fatalf("failed to create temp dir: %v", err)
+		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	defer os.RemoveAll(workspaceDir)
+	defer func() { _ = os.RemoveAll(workspaceDir) }()
 
 	fmt.Println("Workspace:", workspaceDir)
 
@@ -125,7 +124,7 @@ When you have completed the task, call the finish tool with a summary.`, workspa
 
 	result, err := fw.Execute(ctx, systemPrompt, &agent.NoopEvents{}, task)
 	if err != nil {
-		log.Fatalf("execution failed: %v", err)
+		return fmt.Errorf("execution failed: %w", err)
 	}
 
 	fmt.Println("\nStatus:", result.Status)
@@ -137,5 +136,12 @@ When you have completed the task, call the finish tool with a summary.`, workspa
 		fmt.Printf("\nFile %s contains:\n%s\n", resultPath, string(content))
 	} else {
 		fmt.Printf("\nFile %s was not created: %v\n", resultPath, err)
+	}
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
 	}
 }

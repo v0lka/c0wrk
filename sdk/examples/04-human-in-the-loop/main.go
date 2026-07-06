@@ -114,7 +114,7 @@ func formatJSON(raw json.RawMessage) string {
 	return string(pretty)
 }
 
-func main() {
+func run() error {
 	// Create the Framework with our custom HITL handler.
 	// The handler is passed via Config.HITL.
 	fw, err := sdk.New(sdk.Config{
@@ -125,7 +125,6 @@ func main() {
 				APIKey:       os.Getenv("ANTHROPIC_API_KEY"),
 				Models:       []string{"claude-sonnet-4-5"},
 			}},
-			DefaultModel: "claude-sonnet-4-5",
 		},
 		Execution: sdk.ExecutionConfig{
 			MaxSteps: 10, // low limit to demonstrate OnStepLimit
@@ -139,9 +138,9 @@ func main() {
 		}),
 	})
 	if err != nil {
-		log.Fatalf("failed to create framework: %v", err)
+		return fmt.Errorf("failed to create framework: %w", err)
 	}
-	defer fw.Shutdown()
+	defer func() { _ = fw.Shutdown() }()
 
 	// Register tools — including dangerous ones that will trigger confirmation.
 	registry := fw.ToolRegistry()
@@ -155,9 +154,9 @@ func main() {
 	// Set up workspace
 	workspaceDir, err := os.MkdirTemp("", "c0wrk-example-04-*")
 	if err != nil {
-		log.Fatalf("failed to create temp dir: %v", err)
+		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	defer os.RemoveAll(workspaceDir)
+	defer func() { _ = os.RemoveAll(workspaceDir) }()
 
 	fmt.Printf("Workspace: %s\n", workspaceDir)
 	fmt.Println("This example is INTERACTIVE — you will be asked to approve tool calls.")
@@ -176,11 +175,18 @@ Use the available file tools. Call finish when done.`, workspaceDir)
 
 	result, err := fw.Execute(ctx, systemPrompt, &agent.NoopEvents{}, task)
 	if err != nil {
-		log.Fatalf("execution failed: %v", err)
+		return fmt.Errorf("execution failed: %w", err)
 	}
 
 	fmt.Println("\n═══════════════════════════════════════════")
 	fmt.Println("Status:", result.Status)
 	fmt.Println("Output:", result.Output)
 	fmt.Println("═══════════════════════════════════════════")
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatalf("%v", err)
+	}
 }

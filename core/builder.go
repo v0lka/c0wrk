@@ -332,8 +332,8 @@ func (b *OrchestratorBuilder) Build(
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 		// OrchestratorConfig.Model is used for model METADATA resolution
 		// (ModelRegistry.Resolve keys on the bare model name), not for routing —
-		// so strip any provider prefix from a composite DefaultModel.
-		Model:                   llm.BareModel(cfg.LLM.DefaultModel),
+		// so strip any provider prefix from the router's composite active model.
+		Model:                   llm.BareModel(llmRouter.ActiveModel()),
 		ReasoningEffort:         reasoningEffort,
 		HITLHandler:             hitlHandler,
 		PreWarningPercent:       cfg.Executor.Compaction.Thresholds.PreWarningPercent,
@@ -1067,6 +1067,9 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter
 	// The judge sends the model name straight to the provider API, so it must be
 	// the bare model name (no "provider/" prefix).
 	defaultModel := llm.BareModel(cfg.LLM.DefaultModel)
+	if llmRouter != nil {
+		defaultModel = llm.BareModel(llmRouter.ActiveModel())
+	}
 	judgeModel := llm.BareModel(cfg.Security.JudgeModel)
 
 	var judgeProvider llm.Provider

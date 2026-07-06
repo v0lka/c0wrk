@@ -162,7 +162,7 @@ func (p *parser) parsePrimary() float64 {
 		}
 		return val
 	default:
-		panic(fmt.Sprintf("unexpected token: %s", tokenKindName(t.kind)))
+		panic("unexpected token: " + tokenKindName(t.kind))
 	}
 }
 

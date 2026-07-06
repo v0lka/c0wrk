@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -73,8 +74,8 @@ func (e *consoleEvents) OnStepCompleted(id string, ok bool, d time.Duration, err
 		fmt.Printf("  ❌ %s failed (%v): %s\n", id, d, errMsg)
 	}
 }
-func (e *consoleEvents) OnReflected(r *orchestration.Reflection, attempt, max int) {
-	fmt.Printf("  🔍 reflection (attempt %d/%d): %s → %s\n", attempt, max, r.Summary, r.SuggestedAction)
+func (e *consoleEvents) OnReflected(r *orchestration.Reflection, attempt, maxAttempts int) {
+	fmt.Printf("  🔍 reflection (attempt %d/%d): %s → %s\n", attempt, maxAttempts, r.Summary, r.SuggestedAction)
 }
 
 // ─── Custom HITL handler (from example 04, auto-approve mode) ──────────────
@@ -118,34 +119,47 @@ func (t *timestampTool) Execute(_ context.Context, _ json.RawMessage) (tools.Too
 	return tools.ToolResult{Content: time.Now().Format(time.RFC3339)}, nil
 }
 
-func main() {
+func run() error {
 	// ── 1. Multi-provider LLM config ──
+	//
+	// Two providers are configured so we can demonstrate runtime model
+	// switching: Claude for planning/reflection (strong reasoning) and
+	// GPT-4o for step execution. The shared router is switched between
+	// phases via fw.LLMRouter().SetModel — see sections 10 and 11.
+	const (
+		plannerModel  = "claude-sonnet-4-5" // Anthropic — planning & reflection
+		executorModel = "openai/gpt-4o"     // composite ID — step execution
+	)
+
 	providers := []llm.ProviderEntry{{
 		Name:         "anthropic",
 		ProviderType: "anthropic",
 		APIKey:       os.Getenv("ANTHROPIC_API_KEY"),
-		Models:       []string{"claude-sonnet-4-5"},
+		Models:       []string{plannerModel},
 	}}
-	// Add OpenAI if a key is available (multi-provider demonstration)
+	// Add OpenAI if a key is available (multi-provider demonstration).
+	// When absent, execution falls back to the Anthropic model.
+	openaiAvailable := false
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		providers = append(providers, llm.ProviderEntry{
 			Name:         "openai",
 			ProviderType: "openai",
 			APIKey:       key,
-			Models:       []string{"gpt-4o"},
+			Models:       []string{llm.BareModel(executorModel)},
 		})
+		openaiAvailable = true
 	}
 
 	// ── 2. Workspace + skills directory ──
 	workspaceDir, err := os.MkdirTemp("", "c0wrk-example-07-*")
 	if err != nil {
-		log.Fatalf("temp dir: %v", err)
+		return fmt.Errorf("temp dir: %w", err)
 	}
-	defer os.RemoveAll(workspaceDir)
+	defer func() { _ = os.RemoveAll(workspaceDir) }()
 
 	skillsDir := filepath.Join(workspaceDir, ".agents", "skills")
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
-		log.Fatalf("skills dir: %v", err)
+		return fmt.Errorf("skills dir: %w", err)
 	}
 	// Seed a sample skill
 	seedSkill(skillsDir)
@@ -154,7 +168,7 @@ func main() {
 	fw, err := sdk.New(sdk.Config{
 		LLM: sdk.LLMConfig{
 			Providers:          providers,
-			DefaultModel:       "claude-sonnet-4-5",
+			DefaultModel:       plannerModel,
 			MaxRetries:         3,
 			OutputTokenReserve: 4096,
 		},
@@ -190,9 +204,9 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatalf("framework: %v", err)
+		return fmt.Errorf("framework: %w", err)
 	}
-	defer fw.Shutdown()
+	defer func() { _ = fw.Shutdown() }()
 
 	// ── 4. Register tools: custom + built-in + finish ──
 	registry := fw.ToolRegistry()
@@ -215,6 +229,13 @@ func main() {
 		fmt.Printf("  [%s] %s\n", td.Source, td.Name)
 	}
 
+	fmt.Printf("\nActive LLM: %s (provider: %s)\n", fw.LLMRouter().ActiveModel(), fw.LLMRouter().ActiveProviderName())
+	if openaiAvailable {
+		fmt.Printf("Runtime model switching enabled: %s → %s for execution\n", plannerModel, executorModel)
+	} else {
+		fmt.Println("Runtime model switching disabled (set OPENAI_API_KEY to enable a second provider)")
+	}
+
 	// ── 5. Discover skills ──
 	skillMgr := skills.NewSkillManager([]string{skillsDir}, nil)
 	if err := skillMgr.Scan(); err != nil {
@@ -229,10 +250,10 @@ func main() {
 	// ── 6. Create Planner ──
 	plannerCfg := planner.DefaultPlannerConfig()
 	plannerCfg.Prompts = makePlannerPromptSet()
-	plannerCfg.Model = "claude-sonnet-4-5"
+	plannerCfg.Model = plannerModel
 	pl, err := planner.NewPlanner(fw.LLMRouter(), plannerCfg)
 	if err != nil {
-		log.Fatalf("planner: %v", err)
+		return fmt.Errorf("planner: %w", err)
 	}
 
 	// ── 7. Create Reflector ──
@@ -250,7 +271,7 @@ Call finish with a summary when done.`, workspaceDir)
 	}
 	conductor, err := fw.NewConductor(systemPromptFactory, events)
 	if err != nil {
-		log.Fatalf("conductor: %v", err)
+		return fmt.Errorf("conductor: %w", err)
 	}
 	defer conductor.Cleanup()
 
@@ -271,11 +292,28 @@ Call finish with a summary when done.`, workspaceDir)
 
 	plan, err := pl.Plan(ctx, task, availableTools, nil, discoveredSkills, false, nil)
 	if err != nil {
-		log.Fatalf("plan: %v", err)
+		return fmt.Errorf("plan: %w", err)
 	}
 	events.OnPlanGenerated(len(plan.Steps), planStepsToEvents(plan))
 
 	// ── 11. Execute the DAG with retry + reflect ──
+	//
+	// Runtime model switching: planning used Claude (plannerModel). For step
+	// execution we switch the shared router to GPT-4o (executorModel) so the
+	// Conductor's ReAct loop runs on a different provider. Reflection — which
+	// needs strong reasoning — switches back to Claude temporarily, then
+	// restores the executor model for the next attempt.
+	router := fw.LLMRouter()
+	executorActive := false
+	if openaiAvailable {
+		if err := router.SetModel(ctx, executorModel); err != nil {
+			log.Printf("switch to executor model %s failed: %v — staying on %s", executorModel, err, plannerModel)
+		} else {
+			executorActive = true
+			fmt.Printf("\n🔄 Switched executor to %s (provider: %s)\n", router.ActiveModel(), router.ActiveProviderName())
+		}
+	}
+
 	completed := make(map[string]orchestration.CompletedStep)
 	var reflections []orchestration.Reflection
 	maxRetries := 2
@@ -308,28 +346,52 @@ Call finish with a summary when done.`, workspaceDir)
 					errMsg = result.Output
 				}
 				if attempt <= maxRetries {
+					// Reflect on Claude (plannerModel) for stronger reasoning,
+					// then restore the executor model for the retry attempt.
+					if executorActive {
+						_ = router.SetModel(stepCtx, plannerModel)
+					}
 					if r, e := rf.Reflect(stepCtx, trajectory, plan, reflections); e == nil && r != nil {
 						bb.AddReflection(*r)
 						reflections = append(reflections, *r)
 						events.OnReflected(r, attempt, maxRetries)
 						if r.SuggestedAction == "abort" {
+							if executorActive {
+								_ = router.SetModel(stepCtx, executorModel)
+							}
 							break
 						}
+					}
+					if executorActive {
+						_ = router.SetModel(stepCtx, executorModel)
 					}
 				}
 				_ = errMsg
 			}
 			if !success {
 				events.OnStepCompleted(step.ID, false, 0, "max retries exceeded")
-				completed[step.ID] = orchestration.CompletedStep{StepID: step.ID, Error: fmt.Errorf("failed after retries")}
+				completed[step.ID] = orchestration.CompletedStep{StepID: step.ID, Error: errors.New("failed after retries")}
 			}
 		}
+	}
+
+	// Restore the planner model after execution so any subsequent LLM calls
+	// (e.g. a follow-up plan) use Claude rather than the executor model.
+	if executorActive {
+		_ = router.SetModel(ctx, plannerModel)
 	}
 
 	// ── 12. Aggregate + report ──
 	finalOutput := orchestration.AggregateOutput(completed, plan, nil)
 	fmt.Println("\n═══════════════════════════════════════════")
 	fmt.Printf("Steps: %d/%d | Reflections: %d | Facts: %d\n", len(completed), len(plan.Steps), len(reflections), len(bb.GetFacts()))
+	fmt.Printf("Models: planning=%s", plannerModel)
+	if executorActive {
+		fmt.Printf(" | execution=%s", executorModel)
+	} else {
+		fmt.Print(" | execution=same as planning (single provider)")
+	}
+	fmt.Println()
 	fmt.Println("\nFinal output:")
 	fmt.Println(finalOutput)
 	fmt.Println("\nFacts stored:")
@@ -337,6 +399,13 @@ Call finish with a summary when done.`, workspaceDir)
 		fmt.Printf("  [%s] %s\n", strings.Join(f.Keywords, ", "), trunc(f.Content, 80))
 	}
 	fmt.Println("═══════════════════════════════════════════")
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatalf("%v", err)
+	}
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────

@@ -75,7 +75,7 @@ func (e *PrintingEvents) AssistantDone(content string, inputTokens, outputTokens
 
 // --- Context window ---
 
-func (e *PrintingEvents) ContextFill(fillPercent float64, usedTokens, maxTokens int, status string, stepID string) {
+func (e *PrintingEvents) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {
 	fmt.Printf("│ 📊 Context: %.1f%% (%d/%d tokens) — %s\n", fillPercent, usedTokens, maxTokens, status)
 }
 
@@ -118,7 +118,7 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-1] + "…"
 }
 
-func main() {
+func run() error {
 	fw, err := sdk.New(sdk.Config{
 		LLM: sdk.LLMConfig{
 			Providers: []llm.ProviderEntry{{
@@ -127,13 +127,12 @@ func main() {
 				APIKey:       os.Getenv("ANTHROPIC_API_KEY"),
 				Models:       []string{"claude-sonnet-4-5"},
 			}},
-			DefaultModel: "claude-sonnet-4-5",
 		},
 	})
 	if err != nil {
-		log.Fatalf("failed to create framework: %v", err)
+		return fmt.Errorf("failed to create framework: %w", err)
 	}
-	defer fw.Shutdown()
+	defer func() { _ = fw.Shutdown() }()
 
 	// Register tools
 	registry := fw.ToolRegistry()
@@ -164,11 +163,18 @@ func main() {
 
 	result, err := fw.Execute(ctx, systemPrompt, events, task)
 	if err != nil {
-		log.Fatalf("execution failed: %v", err)
+		return fmt.Errorf("execution failed: %w", err)
 	}
 
 	fmt.Println("\n═══════════════════════════════════════════════════════════")
 	fmt.Println("Final Status:", result.Status)
 	fmt.Println("Final Output:", result.Output)
 	fmt.Println("═══════════════════════════════════════════════════════════")
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatalf("%v", err)
+	}
 }

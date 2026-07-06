@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/core/workspace"
 )
 
 // markNoProjectActive sets the active project to No Project on a FrontendAPI.
@@ -150,6 +151,73 @@ func TestUnwatchDirectory_NoProject_IsNoOp(t *testing.T) {
 	}
 	if f.watcher == nil {
 		t.Error("UnwatchDirectory should not tear down the watcher in No Project mode")
+	}
+}
+
+// TestUnwatchDirectory_CodeMode_IsNoOp verifies that UnwatchDirectory does not
+// remove the workspace root from the watcher in CODE mode. The frontend's
+// FileTreePanel calls UnwatchDirectory from its effect cleanup, which runs on
+// unmount — and FileTreePanel unmounts when the user switches the sidebar tab
+// (Explorer → Git/Search), collapses the sidebar, or during React StrictMode's
+// mount/unmount/remount cycle. Removing the root there would tear down the
+// backend-managed watcher and break file-change detection, which is exactly the
+// regression that stopped the file tree from auto-updating in CODE mode.
+func TestUnwatchDirectory_CodeMode_IsNoOp(t *testing.T) {
+	base := t.TempDir()
+	ws := filepath.Join(base, "project", "workspace")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	var emitted atomic.Int32
+	f := &FrontendAPI{
+		agentDir:  base,
+		emitEvent: func(string, ...any) { emitted.Add(1) },
+	}
+	// CODE mode: the active project is a real (non-No-Project) project.
+	f.activeProjectMu.Lock()
+	f.activeProjectID = "real-project"
+	f.activeProjectPath = ws
+	f.activeProjectMu.Unlock()
+	t.Cleanup(func() {
+		if f.watcher != nil {
+			_ = f.watcher.Close()
+		}
+	})
+
+	// Create the watcher scoped to the project workspace, mirroring what
+	// switchProjectSetupWatcher does in CODE mode (without the vector-manager
+	// callback to keep the test isolated).
+	watcher, err := workspace.NewWatcher(ws, func() { f.emitEvent(EventWorkspaceTreeChanged, nil) })
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	f.watcherMu.Lock()
+	f.watcher = watcher
+	f.watcherMu.Unlock()
+
+	// Sanity check: a file change emits workspace:tree_changed before unwatch.
+	if err := os.WriteFile(filepath.Join(ws, "a.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatalf("WriteFile a: %v", err)
+	}
+	if !waitForEmission(&emitted, 1, 2*time.Second) {
+		t.Fatal("expected workspace:tree_changed emission before unwatch")
+	}
+
+	// UnwatchDirectory must NOT remove the root in CODE mode.
+	emitted.Store(0)
+	if err := f.UnwatchDirectory(ws); err != nil {
+		t.Fatalf("UnwatchDirectory: %v", err)
+	}
+
+	// A file change must still emit after unwatch — this is the regression
+	// test: previously UnwatchDirectory removed the root and the tree stopped
+	// updating.
+	if err := os.WriteFile(filepath.Join(ws, "b.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatalf("WriteFile b: %v", err)
+	}
+	if !waitForEmission(&emitted, 1, 2*time.Second) {
+		t.Fatal("expected workspace:tree_changed emission after unwatch; UnwatchDirectory must not remove the root in CODE mode")
 	}
 }
 
