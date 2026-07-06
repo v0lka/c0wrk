@@ -71,6 +71,21 @@ function gitColorClass(s: GitStatusEntry | undefined): string {
   return ''
 }
 
+/**
+ * Collect the directory paths that must be reloaded when the workspace tree
+ * changes: the root plus every expanded subdirectory, deduplicated. Reloading
+ * only the root leaves expanded folders stale — new/removed/renamed files
+ * inside an open folder never appear until the user collapses and re-expands
+ * it.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function collectDirsToReload(
+  rootPath: string,
+  expandedDirs: Record<string, true>,
+): string[] {
+  return Array.from(new Set([rootPath, ...Object.keys(expandedDirs)]))
+}
+
 function TreeNode({ entry, depth, gitStatus, propagatedPaths }: TreeNodeProps) {
   const expanded = useFileTreeStore((s) => s.expandedDirs[entry.path] === true)
   const loading = useFileTreeStore((s) => s.loadingDirs[entry.path] === true)
@@ -246,12 +261,23 @@ export function FileTreePanel() {
     }
   }, [workspacePath, isNoProject, activeProjectId, clearTree, setRootPath, setEntries, setGitStatus])
 
-  // Refresh on workspace:tree_changed
+  // Refresh on workspace:tree_changed — reload the root AND every expanded
+  // subdirectory so changes inside open folders are reflected, not just the
+  // top level. Previously only the root was reloaded, leaving expanded
+  // subdirectories stale: new/removed/renamed files inside an open folder
+  // never appeared until the user collapsed and re-expanded it.
   useEffect(() => {
     const unsub = subscribe('workspace:tree_changed', () => {
-      const rp = useFileTreeStore.getState().rootPath
+      const state = useFileTreeStore.getState()
+      const rp = state.rootPath
       if (!rp) return
-      listDirectory(rp).then((entries) => setEntries(rp, entries)).catch(() => { })
+      // Root plus every expanded directory path, deduplicated.
+      const dirs = collectDirsToReload(rp, state.expandedDirs)
+      for (const dir of dirs) {
+        listDirectory(dir)
+          .then((entries) => setEntries(dir, entries))
+          .catch(() => { /* dir may have been removed — ignore */ })
+      }
       const activeProject = useProjectStore.getState().projects?.find(
         (p) => p.id === useProjectStore.getState().activeProjectId
       )

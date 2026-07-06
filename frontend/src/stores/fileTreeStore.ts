@@ -57,14 +57,40 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
   })),
 
   toggleDir: (path) => {
-    const { expandedDirs } = get()
+    const { expandedDirs, tree, loadingDirs } = get()
     const next = { ...expandedDirs }
     if (next[path]) {
+      // Collapse: remove from expandedDirs and invalidate the cached children
+      // for this directory AND all descendants. Without this, re-expanding
+      // reuses stale cached data — newly added/removed/renamed entries inside
+      // the folder never appear until a full project switch (clearTree).
+      // Descendant caches must also be cleared because collapsing a parent
+      // hides its children; leaving their caches stale means re-expanding the
+      // parent and then a child shows outdated contents.
       delete next[path]
+      const prefix = path + '/'
+      const nextTree = { ...tree }
+      const nextLoading = { ...loadingDirs }
+      for (const key of Object.keys(nextTree)) {
+        if (key === path || key.startsWith(prefix)) {
+          delete nextTree[key]
+        }
+      }
+      for (const key of Object.keys(next)) {
+        if (key.startsWith(prefix)) {
+          delete next[key]
+        }
+      }
+      for (const key of Object.keys(nextLoading)) {
+        if (key === path || key.startsWith(prefix)) {
+          delete nextLoading[key]
+        }
+      }
+      set({ expandedDirs: next, tree: nextTree, loadingDirs: nextLoading })
     } else {
       next[path] = true
+      set({ expandedDirs: next })
     }
-    set({ expandedDirs: next })
   },
 
   setLoading: (path, loading) => set((s) => {
