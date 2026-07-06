@@ -34,7 +34,10 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
         (p) => p.id === useProjectStore.getState().activeProjectId
       )
       if (activeProject?.is_no_project !== true) {
-        try { const diff = await getFileDiff(path); if (diff) setFileDiff(path, diff) } catch { /* optional */ }
+        // Always set the diff — even when empty — so stale diffs from a
+        // previous load (e.g. changes reverted, or file moved to a non-git
+        // context) are cleared and the hunk-staging panel does not linger.
+        try { const diff = await getFileDiff(path); setFileDiff(path, diff) } catch { /* optional */ }
       }
     } catch (err) { setFileError(path, err instanceof Error ? err.message : String(err)) }
   }, [setFileLoading, setFileBinary, setFileContent, setFileDiff, setFileError])

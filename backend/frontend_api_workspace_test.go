@@ -169,17 +169,15 @@ func TestGetFileDiff_NotGitRepo(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
-	// With --no-index fallback, even a non-git directory produces a diff
-	// showing the file as entirely added.
+	// Non-git paths have no git baseline to diff against, so GetFileDiff
+	// returns an empty string — no synthetic --no-index diff, no hunk-staging
+	// panel in the file viewer.
 	diff, err := f.GetFileDiff(filePath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if diff == "" {
-		t.Error("expected non-empty diff for untracked file via --no-index")
-	}
-	if !strings.Contains(diff, "+++ b/test.txt") {
-		t.Errorf("expected diff to contain +++ b/test.txt, got %q", diff)
+	if diff != "" {
+		t.Errorf("expected empty diff for non-git path, got %q", diff)
 	}
 }
 

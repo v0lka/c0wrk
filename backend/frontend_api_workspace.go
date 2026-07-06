@@ -191,9 +191,12 @@ func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
 
 // GetFileDiff returns the unified diff of uncommitted changes for a single file
 // within the active project workspace. Uses the cached isGitRepo check to
-// avoid redundant git rev-parse calls, then delegates to the appropriate
-// core/workspace variant.
-// Returns an empty string for No Project (no git operations).
+// avoid redundant git rev-parse calls, then delegates to GetFileDiffInRepo for
+// git repositories.
+// Returns an empty string for No Project (no git operations) and for non-git
+// paths (non-git workspaces, session-infra directories) — a diff requires a
+// git baseline, so the hunk-staging panel and synthetic diff view are not
+// shown for files outside a git repository.
 func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 	// No Project: git diff is not available. Check before resolveWorkspacePath
 	// to avoid misleading path-resolution errors.
@@ -215,7 +218,10 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 	}
 
 	if !f.isGitRepo(absRoot) {
-		return workspace.GetFileDiffNoRepo(f.ctx(), absRoot, relPath)
+		// Non-git paths (non-git workspaces, session-infra directories) have no
+		// git baseline to diff against. Return an empty string so the frontend
+		// does not render a synthetic diff or the hunk-staging panel.
+		return "", nil
 	}
 	return workspace.GetFileDiffInRepo(f.ctx(), absRoot, relPath)
 }
