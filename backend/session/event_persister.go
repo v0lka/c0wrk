@@ -15,12 +15,20 @@ type EventPersister struct {
 	store  SessionStore
 	mu     sync.RWMutex
 	logger *slog.Logger
+
+	// assistantMu guards lastAssistantContent: per-session tracking of the most
+	// recent assistant_done content. Used to dedup task_complete against the
+	// streamed answer in the implicit text-only finish path (where the executor
+	// emits assistant_done AND sets Output), so the final answer is not
+	// persisted — and therefore not rendered — twice on session reload.
+	assistantMu          sync.Mutex
+	lastAssistantContent map[string]string
 }
 
 // NewEventPersister creates a new EventPersister backed by the given store.
 // If store is nil, Persist is a no-op.
 func NewEventPersister(store SessionStore) *EventPersister {
-	return &EventPersister{store: store}
+	return &EventPersister{store: store, lastAssistantContent: make(map[string]string)}
 }
 
 // log returns the persister's logger, falling back to slog.Default().
@@ -50,6 +58,17 @@ func (p *EventPersister) Persist(evt Event) {
 
 	var role, content string
 
+	// Reset per-session assistant tracking on a new user message or session
+	// deletion so the task_complete dedup (below) is scoped to the current
+	// task only and cannot false-positive against a prior task's streamed
+	// answer. session_deleted also prevents unbounded growth of the
+	// lastAssistantContent map in the long-lived persister singleton.
+	if evt.Type == "message_received" || evt.Type == "session_deleted" {
+		p.assistantMu.Lock()
+		delete(p.lastAssistantContent, evt.SessionID)
+		p.assistantMu.Unlock()
+	}
+
 	switch evt.Type {
 	case "routing":
 		role = "routing"
@@ -75,28 +94,45 @@ func (p *EventPersister) Persist(evt Event) {
 				content = c
 			}
 		}
+		// Track the streamed content so task_complete can dedup against it.
+		p.assistantMu.Lock()
+		p.lastAssistantContent[evt.SessionID] = content
+		p.assistantMu.Unlock()
 	case "task_complete":
+		var output string
 		switch d := evt.Data.(type) {
 		case TaskCompleteData:
-			role = "assistant"
-			content = d.Output
-			// Guard against empty output: a task that completes with
-			// no content must still persist a message so that session
-			// continuations can see the full conversation history.
-			// Without this, an empty-output completion is silently
-			// dropped from the message store, breaking continuation
-			// context.
-			if content == "" {
-				content = "[Task completed]"
-			}
+			output = d.Output
 		case map[string]any:
-			if output, ok := d["output"].(string); ok {
-				role = "assistant"
-				content = output
-				if content == "" {
-					content = "[Task completed]"
-				}
+			if o, ok := d["output"].(string); ok {
+				output = o
+			} else {
+				return // no output field — nothing to persist
 			}
+		}
+		// Dedup: in the implicit text-only finish path the executor streams
+		// the answer via assistant_done (persisted above) AND sets it as
+		// Output, so task_complete would otherwise persist a duplicate
+		// assistant row — rendering the final answer twice on reload. Skip
+		// when the output matches the last streamed assistant content.
+		if output != "" {
+			p.assistantMu.Lock()
+			last := p.lastAssistantContent[evt.SessionID]
+			p.assistantMu.Unlock()
+			if output == last {
+				return
+			}
+		}
+		role = "assistant"
+		content = output
+		// Guard against empty output: a task that completes with
+		// no content must still persist a message so that session
+		// continuations can see the full conversation history.
+		// Without this, an empty-output completion is silently
+		// dropped from the message store, breaking continuation
+		// context.
+		if content == "" {
+			content = "[Task completed]"
 		}
 	case "thought":
 		role = "thought"

@@ -4,8 +4,30 @@
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isAssistantChunkData, isThoughtData, isErrorData, isTaskCompleteData, isReflectionData } from '@/types/events'
-import { useChatStore } from '@/stores/chatStore'
+import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import { generateMessageId } from '@/lib/ids'
+import type { ChatMessageUI } from '@/types/messages'
+
+/**
+ * Decide whether a task_complete.output should be added as a new assistant
+ * message. In the implicit text-only finish path the executor streams the
+ * answer via assistant_done (already flushed to a permanent assistant message)
+ * AND sets it as Output, so task_complete would otherwise add a duplicate —
+ * rendering the final answer twice. Returns false (skip) when the output
+ * matches the most recent assistant message scoped after the last user message.
+ *
+ * Pure + exported so it is unit-testable without the Wails runtime.
+ */
+export function shouldAddTaskCompleteOutput(messages: ChatMessageUI[], output: string): boolean {
+  if (!output) return false
+  let lastAssistant: ChatMessageUI | undefined
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!
+    if (m.type === 'user') break
+    if (m.type === 'assistant') { lastAssistant = m; break }
+  }
+  return !lastAssistant || lastAssistant.content !== output
+}
 
 export function useChatEvents(sessionId: string | null): void {
   useEffect(() => {
@@ -93,11 +115,34 @@ export function useChatEvents(sessionId: string | null): void {
         store.setActivityStatus(null)
         store.setTaskActive(sessionId, false)
         if (data.output) {
+          // Dedup: in the implicit text-only finish path the executor streams
+          // the answer via assistant_done (already flushed to a permanent
+          // assistant message) AND sets it as Output, so task_complete would
+          // otherwise add a duplicate assistant message — rendering the final
+          // answer twice. Skip when the output matches the most recent
+          // assistant message (scoped after the last user message).
+          // Imperative read (not a reactive selector) — safe despite the ⚠️
+          // in selectSessionMessages, which only applies to useStore(selector).
+          const msgs = selectSessionMessages(store, sessionId)
+          if (shouldAddTaskCompleteOutput(msgs, data.output)) {
+            store.addMessage(sessionId, {
+              id: generateMessageId(),
+              sessionId,
+              type: 'assistant',
+              content: data.output,
+              timestamp: Date.now(),
+            })
+          }
+        } else {
+          // No output — add a "[Task completed]" placeholder to match the
+          // backend persister, which persists the same placeholder for empty
+          // output. Without this, an empty-output completion is invisible in
+          // the live render but appears as "[Task completed]" after reload.
           store.addMessage(sessionId, {
             id: generateMessageId(),
             sessionId,
             type: 'assistant',
-            content: data.output,
+            content: '[Task completed]',
             timestamp: Date.now(),
           })
         }
