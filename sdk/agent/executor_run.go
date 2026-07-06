@@ -990,7 +990,7 @@ func (e *Executor) processToolResult(
 	}
 
 	if e.toolCache != nil {
-		if _, isNonCacheable := nonCacheableTools[toolName]; !isNonCacheable {
+		if _, isNonCacheable := e.nonCacheableTools[toolName]; !isNonCacheable {
 			meta := e.buildCacheMeta(execCtx, toolName, input)
 			cacheHash = e.toolCache.Store(toolName, fullResult, meta)
 

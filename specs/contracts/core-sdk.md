@@ -6,6 +6,8 @@
 
 `core/`, `backend/`, and `desktop/` all import `sdk/` packages directly. No convenience re-export layers exist. See ADR-008.
 
+`sdk/` is a separate Go module (`github.com/v0lka/c0wrk/sdk`, per ADR-014). The root module depends on it via `replace github.com/v0lka/c0wrk/sdk => ./sdk`. The module boundary provides compile-time enforcement of the import prohibition: `sdk/` cannot import `core/`, `backend/`, or `desktop/`. External consumers can import `github.com/v0lka/c0wrk/sdk` independently.
+
 ## Interfaces
 
 ### Consumed from `sdk/agent`
@@ -26,6 +28,8 @@
 | `ToolTruncationConfig` | sdk/agent | core/orchestrator config          | Per-tool Stage 1 truncation limits   |
 | `ToolCacheMeta`        | sdk/agent | sdk/agent (executor)              | Cache entry metadata (paths, mtime)  |
 | `TodoItem`             | sdk/agent | core/types (adapter)             | Step todo item                        |
+| `Executor.AddNonCacheableTools` | sdk/agent | core/conductor | Extends the non-cacheable tool set with consumer-specific meta-tools (delegate, declare_plan, reflect, etc.) |
+| `ConductorConfig.NonCacheableTools` | sdk/orchestration | core/conductor | Lists consumer-specific non-cacheable tool names passed to the SDK Conductor's executor |
 
 ### Consumed from `sdk/orchestration`
 

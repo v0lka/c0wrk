@@ -38,29 +38,29 @@ func DetectToolCallSyntaxInContent(content string) bool {
 	return toolCallSyntaxRe.MatchString(content)
 }
 
-// nonCacheableTools is the set of tool names whose results are NOT cached.
-// These are internal meta-tools or produce tiny outputs where caching adds overhead.
+// defaultNonCacheableTools is the set of SDK-provided tool names whose results
+// are NOT cached. These are internal meta-tools or produce tiny outputs where
+// caching adds overhead.
 //
 // NOTE: Tools listed here will not receive Stage‑2 hash hints either, because
 // the caching step (which produces the hash) is skipped. The exclusion from
 // both caching and hash hints is a deliberate dual-purpose: if a tool's results
 // are not worth caching, they are also not worth offering for fragment retrieval.
-var nonCacheableTools = map[string]struct{}{
-	"tool_result_read":      {},
-	"finish":                {},
-	"read_step_output":      {},
-	"list_step_outputs":     {},
-	"read_final_result":     {},
-	"store_fact":            {},
-	"search_facts":          {},
-	"update_checklist":      {},
-	"declare_step_complete": {},
-	"ask_user":              {},
-	"delegate":              {},
-	"cancel_delegation":     {},
-	"declare_plan":          {},
-	"reflect":               {},
-	tools.ToolBatch:         {},
+//
+// This set contains only tools that the SDK itself provides. Consumers that
+// register additional non-cacheable tools (e.g. application-layer meta-tools
+// like delegate, declare_plan, reflect) should add them via
+// Executor.AddNonCacheableTools.
+var defaultNonCacheableTools = map[string]struct{}{
+	"tool_result_read":  {},
+	"finish":            {},
+	"read_step_output":  {},
+	"list_step_outputs": {},
+	"read_final_result": {},
+	"store_fact":        {},
+	"search_facts":      {},
+	"update_checklist":  {},
+	tools.ToolBatch:     {},
 }
 
 const executorWrapUpNudge = "[System] You are running low on tool call iterations. You have %d iteration(s) remaining. Wrap up your work NOW: summarize your findings and finish. Do not start new explorations."
@@ -154,6 +154,11 @@ type Executor struct {
 	toolCache         *ToolResultCache
 	perToolTruncation map[string]ToolTruncationConfig
 
+	// nonCacheableTools is the set of tool names whose results are NOT cached.
+	// Initialized from defaultNonCacheableTools in NewExecutor; extended via
+	// AddNonCacheableTools by consumers that register additional meta-tools.
+	nonCacheableTools map[string]struct{}
+
 	// Circuit breaker: detect repeated identical tool calls
 	consecutiveRepeatCount int
 	lastToolKey            string // "name:" + compactJSON(input) for dedup
@@ -240,6 +245,7 @@ func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.Tok
 		circuitBreaker:          circuitBreaker,
 		hitl:                    hitl,
 		checklistGateEnabled:    true,
+		nonCacheableTools:       copyNonCacheableTools(defaultNonCacheableTools),
 	}
 }
 
@@ -307,6 +313,30 @@ func (e *Executor) SetToolCache(cache *ToolResultCache) {
 // SetPerToolTruncation sets per-tool truncation defaults for Stage 1 (line/byte-based).
 func (e *Executor) SetPerToolTruncation(cfg map[string]ToolTruncationConfig) {
 	e.perToolTruncation = cfg
+}
+
+// AddNonCacheableTools adds tool names to the set of tools whose results are
+// not cached. This extends the SDK-provided defaults (see defaultNonCacheableTools)
+// with consumer-specific meta-tools. Tools already in the set are no-ops.
+// Must be called before Run.
+func (e *Executor) AddNonCacheableTools(names ...string) {
+	if e.nonCacheableTools == nil {
+		e.nonCacheableTools = copyNonCacheableTools(defaultNonCacheableTools)
+	}
+	for _, n := range names {
+		e.nonCacheableTools[n] = struct{}{}
+	}
+}
+
+// copyNonCacheableTools returns a shallow copy of the given map so that each
+// Executor owns an independent set that can be extended via AddNonCacheableTools
+// without mutating the package-level default.
+func copyNonCacheableTools(src map[string]struct{}) map[string]struct{} {
+	dst := make(map[string]struct{}, len(src))
+	for k := range src {
+		dst[k] = struct{}{}
+	}
+	return dst
 }
 
 // applyToolResultBudget truncates a tool result if it exceeds the budget.

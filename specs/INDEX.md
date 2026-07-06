@@ -42,14 +42,14 @@
 ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌─────┐
 │ desktop  │───▶│ backend  │───▶│   core   │───▶│ sdk │
 └──────────┘    └────┬─────┘    └──────────┘    └─────┘
-                     │ direct import
-                     ▼
-                   ┌─────┐
-                   │ sdk │
+                     │ direct import               ▲
+                     ▼                             │
+                   ┌─────┐                         │ separate Go module
+                   │ sdk │─────────────────────────┘
                    └─────┘
 ```
 
-Import rule: each arrow is one-way. `backend` imports `core` AND `sdk` directly (per ADR-008). `core` remains the primary sdk consumer.
+Import rule: each arrow is one-way. `backend` imports `core` AND `sdk` directly (per ADR-008). `core` remains the primary sdk consumer. `sdk/` is a separate Go module (`github.com/v0lka/c0wrk/sdk`, per ADR-014); the root module depends on it via a `replace` directive for local development.
 
 ## Spec Workflow and Format Reference
 
@@ -119,3 +119,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [011-sdk-to-core-extraction.md](decisions/011-sdk-to-core-extraction.md) - Move vector index and proxy from SDK to Core
 - [012-conductor-orchestration-pipeline.md](decisions/012-conductor-orchestration-pipeline.md) - Conductor-driven ReAct pipeline replacing system-driven plan-execute-reflect
 - [013-rrf-pre-fusion-score-thresholds.md](decisions/013-rrf-pre-fusion-score-thresholds.md) - Pre-fusion score thresholds and configurable RRF parameters for hybrid search
+- [014-sdk-separate-module.md](decisions/014-sdk-separate-module.md) - SDK as a separate Go module → Supersedes ADR-001

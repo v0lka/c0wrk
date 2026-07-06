@@ -398,6 +398,19 @@ var conductorOnlyToolNames = map[string]struct{}{
 	"reflect":           {},
 }
 
+// coreNonCacheableToolNames are c0wrk-specific meta-tools whose results should
+// not be cached. These are registered by core/tools and extend the SDK-provided
+// defaultNonCacheableTools set via Executor.AddNonCacheableTools. They produce
+// tiny or stateful outputs where caching adds overhead.
+var coreNonCacheableToolNames = []string{
+	"delegate",
+	"cancel_delegation",
+	"declare_plan",
+	"reflect",
+	"declare_step_complete",
+	"ask_user",
+}
+
 func stripConductorOnlyTools(descs []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
 	out := make([]sdktools.ToolDescriptor, 0, len(descs))
 	for _, d := range descs {
@@ -575,6 +588,7 @@ func (l *conductorLauncher) configureExecutor(executor *agent.Executor) {
 	if l.deps.reasoningEffort != "" {
 		executor.SetReasoningEffort(l.deps.reasoningEffort)
 	}
+	executor.AddNonCacheableTools(coreNonCacheableToolNames...)
 }
 
 func parseToolNames(v any) ([]string, bool) {
@@ -883,6 +897,7 @@ func RunConductor(
 		PerToolTruncation:   deps.perToolTrunc,
 		ReasoningEffort:     deps.reasoningEffort,
 		PreWarningPercent:   deps.preWarningPct,
+		NonCacheableTools:   coreNonCacheableToolNames,
 		ConversationHistory: deps.conversationHistory,
 	}
 

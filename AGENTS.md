@@ -14,9 +14,9 @@ Detailed system specs live in `specs/`. Before making structural changes, read t
 
 ## Project shape
 
-- Single Go module: `github.com/v0lka/c0wrk`. Binary/app name is `c0wrk-desktop` (see `wails.json`).
+- Two Go modules: `github.com/v0lka/c0wrk` (root: `core/`, `backend/`, `desktop/`, `frontend/`) and `github.com/v0lka/c0wrk/sdk` (`sdk/`). The root module depends on the SDK via `replace github.com/v0lka/c0wrk/sdk => ./sdk` for local development. See ADR-014. Binary/app name is `c0wrk-desktop` (see `wails.json`).
 - Entry point: `main.go` → `desktop.NewApp()` → Wails runs with `OnStartup = app.Startup` (`desktop/startup.go`).
-- Go `1.26.3` (`go.mod`). Frontend uses React 19, Tailwind v4, Vite 6, TS ~5.7.
+- Go `1.26.3` (`go.mod` in both modules). Frontend uses React 19, Tailwind v4, Vite 6, TS ~5.7.
 
 ### Layered architecture (import direction matters)
 
@@ -32,10 +32,10 @@ Rule enforced by layout: `backend/` and `desktop/` import `core` and `sdk/` dire
 
 ## Commands
 
-Use the Makefile; it handles platform-specific ONNX Runtime bootstrap:
+Use the Makefile; it handles platform-specific ONNX Runtime bootstrap and runs both Go modules:
 
-- `make test` — `go test ./...` + `cd frontend && npm test` (vitest)
-- `make lint` — `golangci-lint run` + `cd frontend && npm run lint` (config at `.golangci.yml`, v2 schema)
+- `make test` — `go test ./...` (root) + `cd sdk && go test ./...` + `cd frontend && npm test` (vitest)
+- `make lint` — `golangci-lint run` (root) + `cd sdk && golangci-lint run` + `cd frontend && npm run lint` (config at `.golangci.yml`, v2 schema)
 - `make build` — installs frontend deps, runs `wails build`, then `make fetch-onnx` + `make fetch-embedding-model`
 - `make dev-desktop` — Vite dev server only (`cd frontend && npm run dev`); for full hot-reload use `wails dev` from repo root
 - `make fetch-onnx` — downloads ONNX Runtime 1.24.1 into `.cache/` and copies into `build/bin/c0wrk-desktop.app/Contents/MacOS/`. **Required after every `wails build`** or the app won't launch.
@@ -45,8 +45,10 @@ Frontend-only: `cd frontend && npm run lint | build | dev | test`. Frontend test
 
 ### Focused Go workflows
 
-- Single package: `go test ./sdk/agent/...`
-- Single test: `go test ./core -run TestOrchestrator_PlanExecuteMode -v`
+- Single package (root module): `go test ./sdk/agent/...` — note: `sdk/` is a separate module, so run from `sdk/` dir: `cd sdk && go test ./agent/...`
+- Single package (sdk module): `cd sdk && go test ./agent/...`
+- Single test (root module): `go test ./core -run TestOrchestrator_PlanExecuteMode -v`
+- Single test (sdk module): `cd sdk && go test ./agent -run TestExecutor -v`
 - Tests use in-package style (`package agent`, not `agent_test`); many packages have a `testhelpers_test.go`.
 
 ## Config & runtime
@@ -75,8 +77,8 @@ Frontend-only: `cd frontend && npm run lint | build | dev | test`. Frontend test
 
 ## Things NOT to do
 
-- Don't add `go.work` — ignored and unused. The repo is a single module on purpose.
-- Don't add `vendor/` or change the module path.
+- Don't add `go.work` — the two-module setup uses `replace` directives in the root `go.mod`, not `go.work`. `go.work` is a local-development tool that is not published and would conflict with the `replace` directive. See ADR-014.
+- Don't add `vendor/` or change the module path (either module).
 - Don't add a new frontend test framework; vitest is already configured. Add tests as `*.test.ts` alongside the source file.
 - Don't `go install` the ONNX runtime differently per-machine — always go through `make fetch-onnx` so `.cache/` stays consistent.
 - Don't commit `coverage*.out`, `*_cov.out`, `config.local.yaml`, `.cache/`, `build/bin/`, or anything matched in `.gitignore`.

@@ -6,7 +6,7 @@ The ReAct loop primitive (Thought → Action → Observation) with circuit break
 
 ## Key Files
 
-- `sdk/agent/executor.go` — Executor struct (Run method, ReAct loop, non-cacheable tools set, batch dispatch, `DetectToolCallSyntaxInContent` failure-mode detector, mutation + checklist gate fields and nudge constants)
+- `sdk/agent/executor.go` — Executor struct (Run method, ReAct loop, configurable non-cacheable tools set via `AddNonCacheableTools`, batch dispatch, `DetectToolCallSyntaxInContent` failure-mode detector, mutation + checklist gate fields and nudge constants)
 - `sdk/agent/executor_run.go` — `processSingleToolCall`, `processBatchTool` (batch meta-tool interception), `handleImplicitFinish` (nudge → abort logic), `hasMutatingToolExecuted`, `hasChecklistUpdate`, `countProductiveToolCalls`, `lastChecklistUnchecked`
 - `sdk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (subagent lifecycle, defense-in-depth success check)
 - `sdk/agent/events.go` — AgentEvents interface (lifecycle hooks)
@@ -288,7 +288,7 @@ Key behaviors:
 - Circuit breakers (repeat, fruitless, same-tool) are checked per sub-call; if triggered, the batch aborts and returns the circuit breaker action
 - Each sub-call is emitted to the frontend with the suffix `" (batched)"` (e.g., `read_file (batched)`)
 - Only the first sub-call in the first response group carries `Thought` and `ReasoningContent`
-- The `batch` tool itself is in the `nonCacheableTools` set — its result is never cached, and the tool never reaches the registry's `Execute()` path (its `Execute()` method returns an error)
+- The `batch` tool itself is in the default non-cacheable tools set (`defaultNonCacheableTools`) — its result is never cached, and the tool never reaches the registry's `Execute()` path (its `Execute()` method returns an error). Consumer-specific meta-tools are added via `Executor.AddNonCacheableTools`.
 
 ## Error Handling
 
@@ -317,7 +317,7 @@ Key behaviors:
 - `Step.CacheHash` is populated with the ToolResultCache hash for cacheable tools (empty for non-cacheable tools); used by ContextWindow for regular history mutation (eviction to cache references)
 - `tool_result_read` validates cache coherence on every read: for file tools, it compares current file mtime+size with the cached signature; for MCP tools, it checks TTL expiry
 - `batch` is intercepted in `processBatchTool()` before reaching the registry; its own `Execute()` returns an error. Sub-calls within a batch go through the full policy + truncation + caching pipeline and are emitted as `"<tool_name> (batched)"`
-- The `batch` tool is marked in `nonCacheableTools`; its sub-calls are cached individually per normal tool rules
+- The `batch` tool is marked in the default non-cacheable tools set; its sub-calls are cached individually per normal tool rules
 - `batch` sub-call errors do not abort the batch — errors are captured inline and processing continues to the next sub-call
 - The general implicit-finish nudge budget is 2 attempts before accepting `Finished: true`
 - `DetectToolCallSyntaxInContent` catches failure-mode where the model prints tool-call syntax (`` ```\w+_\w+ ``) as text; 3 dedicated nudges are injected before aborting with `Finished: false`

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-014](./014-sdk-separate-module.md)
 
 ## Context
 

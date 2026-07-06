@@ -74,10 +74,12 @@ build: frontend-deps
 
 test:
 	go test ./...
+	cd sdk && go test ./...
 	cd frontend && npm test
 
 lint:
 	golangci-lint run
+	cd sdk && golangci-lint run
 	cd frontend && npm run lint
 
 dev-desktop:

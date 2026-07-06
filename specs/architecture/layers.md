@@ -52,6 +52,8 @@ c0wrk enforces a strict layered architecture. Each layer has a single responsibi
 | `core/`     | `sdk`                                | `backend`, `desktop`         |
 | `sdk/`      | External libs only                   | `core`, `backend`, `desktop` |
 
+> **Module boundary** (ADR-014): `sdk/` is a separate Go module (`github.com/v0lka/c0wrk/sdk`). The root module (`github.com/v0lka/c0wrk`) depends on it via `replace github.com/v0lka/c0wrk/sdk => ./sdk`. The import prohibition on `sdk/` is now enforced at the module level — `sdk/` cannot import `core/`, `backend/`, or `desktop/` because they live in a different module.
+
 > **depguard enforcement** (`.golangci.yml`): the linter currently enforces a subset of the above — `sdk` may not import `core`/`backend`, and `core` may not import `backend`. The `→desktop` prohibitions are maintained by convention (and by the import cycles they would create), not by the linter.
 
 ## Layer Responsibilities
@@ -103,6 +105,7 @@ No direct Go imports. Auto-generated bindings at `frontend/wailsjs/go/desktop/Ap
 - `backend` may import `sdk/` packages directly for type definitions
 - `core` never imports `backend` or `desktop`
 - `sdk` has zero knowledge of c0wrk-specific concepts
+- `sdk/` is a separate Go module; the import prohibition on `core/`/`backend/`/`desktop/` is enforced at the module level (ADR-014)
 - All inter-layer communication between frontend and Go goes through Wails
 
 ## Anti-Patterns

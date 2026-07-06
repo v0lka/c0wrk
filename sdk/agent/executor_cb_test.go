@@ -48,6 +48,48 @@ func TestSetToolCache(t *testing.T) {
 	}
 }
 
+func TestAddNonCacheableTools(t *testing.T) {
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+
+	// NewExecutor initialises the set from defaultNonCacheableTools.
+	if exec.nonCacheableTools == nil {
+		t.Fatal("nonCacheableTools should be initialised from defaults in NewExecutor")
+	}
+	for _, name := range []string{"finish", "store_fact", tools.ToolBatch} {
+		if _, ok := exec.nonCacheableTools[name]; !ok {
+			t.Errorf("default nonCacheableTools missing %q", name)
+		}
+	}
+
+	// AddNonCacheableTools extends the set without removing defaults.
+	exec.AddNonCacheableTools("delegate", "reflect")
+	for _, name := range []string{"delegate", "reflect", "finish"} {
+		if _, ok := exec.nonCacheableTools[name]; !ok {
+			t.Errorf("nonCacheableTools missing %q after AddNonCacheableTools", name)
+		}
+	}
+
+	// Adding an already-present tool is a no-op (no panic, still present).
+	exec.AddNonCacheableTools("finish")
+	if _, ok := exec.nonCacheableTools["finish"]; !ok {
+		t.Error("finish should still be present after re-adding")
+	}
+}
+
+func TestAddNonCacheableTools_DoesNotMutateDefault(t *testing.T) {
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	exec.AddNonCacheableTools("my_custom_tool")
+
+	// The package-level default must not be polluted.
+	if _, ok := defaultNonCacheableTools["my_custom_tool"]; ok {
+		t.Error("AddNonCacheableTools must not mutate the package-level defaultNonCacheableTools")
+	}
+	// The executor's own set should contain the custom tool.
+	if _, ok := exec.nonCacheableTools["my_custom_tool"]; !ok {
+		t.Error("executor's nonCacheableTools should contain the custom tool")
+	}
+}
+
 func TestSetPreWarningPercent(t *testing.T) {
 	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
 	if exec.preWarningPercent != 0 {

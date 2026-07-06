@@ -3,12 +3,12 @@ module github.com/v0lka/c0wrk
 go 1.26.3
 
 require (
-	github.com/JohannesKaufmann/html-to-markdown v1.6.0
+	github.com/JohannesKaufmann/html-to-markdown v1.6.0 // indirect
 	github.com/google/uuid v1.6.0
-	github.com/liushuangls/go-anthropic/v2 v2.17.3
-	github.com/mark3labs/mcp-go v0.45.0
+	github.com/liushuangls/go-anthropic/v2 v2.17.3 // indirect
+	github.com/mark3labs/mcp-go v0.45.0 // indirect
 	github.com/openai/openai-go v1.12.0
-	github.com/pkoukk/tiktoken-go v0.1.8
+	github.com/pkoukk/tiktoken-go v0.1.8 // indirect
 	github.com/wailsapp/wails/v2 v2.12.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.47.0
@@ -22,9 +22,6 @@ require (
 	github.com/epilande/go-devicons v0.0.0-20250505162540-0661cab71a28
 	github.com/google/go-cmp v0.7.0
 	github.com/philippgille/chromem-go v0.7.0
-	github.com/sugarme/tokenizer v0.3.0
-	github.com/yalue/onnxruntime_go v1.27.0
-	mvdan.cc/sh/v3 v3.7.0
 )
 
 require (
@@ -62,17 +59,20 @@ require (
 	github.com/mschoch/smat v0.2.0 // indirect
 	github.com/rogpeppe/go-internal v1.13.1 // indirect
 	github.com/sergi/go-diff v1.4.0 // indirect
+	github.com/sugarme/tokenizer v0.3.0 // indirect
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
+	github.com/yalue/onnxruntime_go v1.27.0 // indirect
 	go.etcd.io/bbolt v1.4.0 // indirect
+	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
 
 require (
 	github.com/araddon/dateparse v0.0.0-20210429162001-6b43995a97de // indirect
 	github.com/go-shiori/dom v0.0.0-20230515143342-73569d674e1c // indirect
-	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
+	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0 // indirect
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
 )
 
@@ -108,6 +108,7 @@ require (
 	github.com/samber/lo v1.49.1 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/tkrajina/go-reflector v0.5.8 // indirect
+	github.com/v0lka/c0wrk/sdk v0.0.0
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
@@ -115,7 +116,7 @@ require (
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
-	golang.org/x/net v0.53.0
+	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
@@ -123,3 +124,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/v0lka/c0wrk/sdk => ./sdk

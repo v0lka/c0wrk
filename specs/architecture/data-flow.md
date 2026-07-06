@@ -211,7 +211,7 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
                 ▼ (back in executor)
 sdk/agent/executor.go: cache + two-stage truncation
   │
-  ├─ Skip if tool is non-cacheable (tool_result_read, finish, ask_user, etc.)
+  ├─ Skip if tool is non-cacheable (SDK defaults: tool_result_read, finish, batch, etc.; extended via AddNonCacheableTools)
   ├─ Store full result in ToolResultCache keyed by SHA256(toolName + content)
   │    └─ Metadata: file path+mtime+size (file tools) or TTL (MCP tools)
   ├─ Stage 1: Apply per-tool line/byte truncation (configurable per tool)

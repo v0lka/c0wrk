@@ -33,6 +33,11 @@ type ConductorConfig struct {
 	ReasoningEffort   string
 	PreWarningPercent int
 
+	// NonCacheableTools lists additional tool names whose results should not be
+	// cached. These are consumer-specific meta-tools (e.g. delegate, declare_plan)
+	// that extend the SDK-provided defaults. Empty = SDK defaults only.
+	NonCacheableTools []string
+
 	// ConversationHistory holds prior user/assistant exchanges from the
 	// session. When non-empty, the Conductor injects it into the
 	// ContextManager so the LLM sees the dialogue context leading up to the
@@ -167,6 +172,9 @@ func (c *Conductor) Run(
 	}
 	if c.cfg.PreWarningPercent > 0 {
 		executor.SetPreWarningPercent(c.cfg.PreWarningPercent)
+	}
+	if len(c.cfg.NonCacheableTools) > 0 {
+		executor.AddNonCacheableTools(c.cfg.NonCacheableTools...)
 	}
 
 	// Finish-join guard: reject finish when pending async delegations exist,
