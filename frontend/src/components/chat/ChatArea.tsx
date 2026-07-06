@@ -48,7 +48,10 @@ export function ChatArea() {
 
   const maxPinnedHeight = containerHeight / 7
 
-  // Load persisted history on session change
+  // Load persisted history on session change.
+  // Uses `wrap` for stale-async protection: if the user switches sessions
+  // before the RPC resolves, the stale result is discarded (returns undefined)
+  // to prevent clobbering the new session's messages with old data.
   useEffect(() => {
     if (!activeSessionId) {
       usePlanStore.getState().clearPlan()
@@ -56,7 +59,7 @@ export function ChatArea() {
     }
     usePlanStore.getState().clearPlan()
     const loadStartedAt = Date.now()
-    wrap(getSessionHistory(activeSessionId)).then(async (history) => {
+    wrap(getSessionHistory(activeSessionId)).then((history) => {
       if (!history) return // stale — superseded by a newer session switch
       if (history.length > 0) {
         const uiMessages = history.map((msg) => chatMessageToUI(msg))
@@ -65,11 +68,6 @@ export function ChatArea() {
         useChatStore.getState().mergeHistoryMessages(activeSessionId, uiMessages, loadStartedAt)
         rebuildPlanFromHistory(uiMessages, usePlanStore.getState())
       }
-      // Reconcile visual state with the backend runtime status: restores the
-      // running flag after reload and surfaces unfinished (resumable) tasks
-      // instead of defaulting to "idle/completed".
-      const status = await wrap(getSessionRuntimeStatus(activeSessionId))
-      if (status) reconcileRuntimeStatus(activeSessionId, status)
     }).catch((err) => {
       logger.error('Failed to load session history:', err)
       useChatStore.getState().addMessage(activeSessionId, {
@@ -82,6 +80,26 @@ export function ChatArea() {
       })
     })
   }, [activeSessionId, wrap])
+
+  // Reconcile visual state with the backend runtime status — INDEPENDENT of
+  // history loading so a stale history RPC cannot prevent the taskActive flag
+  // from being reset. This is critical for background sessions: when a session
+  // completes in the background and the user switches to it, the history RPC
+  // and the status RPC are separate concerns. If they shared a single `wrap`
+  // counter (as in the previous implementation), a stale history result would
+  // cause an early return that skipped the status reconciliation entirely —
+  // leaving taskActive=true (red "stop" button) even though the task finished.
+  useEffect(() => {
+    if (!activeSessionId) return
+    let cancelled = false
+    getSessionRuntimeStatus(activeSessionId).then((status) => {
+      if (cancelled) return
+      if (status) reconcileRuntimeStatus(activeSessionId, status)
+    }).catch((err) => {
+      logger.error('Failed to get session runtime status:', err)
+    })
+    return () => { cancelled = true }
+  }, [activeSessionId])
 
   const { items: displayItems } = useMemo(() => groupMessages(messages), [messages])
 

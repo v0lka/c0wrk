@@ -10,6 +10,7 @@ import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useProjectLoader } from '@/hooks/useProjectLoader'
 import { useSessionLoader } from '@/hooks/useSessionLoader'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
+import { useBackgroundSessionWatcher } from '@/hooks/useBackgroundSessionWatcher'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import type { ToolManagerToolInfo, ToolManagerProgressData } from '@/types/events'
@@ -30,6 +31,7 @@ function App() {
   useProjectLoader()
   useSessionLoader()
   useSessionEvents(activeSessionId)
+  useBackgroundSessionWatcher()
 
   // ── Tool manager lifecycle ────────────────────────────────────────────
 

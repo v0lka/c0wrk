@@ -19,12 +19,16 @@ export function useSessionEvents(sessionId: string | null): void {
     if (!sessionId) return
     let cancelled = false
 
-    // Clear previous session UI state (batched to avoid cascading re-renders)
+    // Clear previous session UI state (batched to avoid cascading re-renders).
+    // taskActive is reset to false here so the send button doesn't render as
+    // a red "stop" immediately on switch — the reconcile effect in ChatArea
+    // will set it back to true if the session is genuinely still running.
     useChatStore.setState({
       streamingText: null,
       streamingSessionId: null,
       activityStatus: null,
       stepContextFill: {},
+      taskActive: { ...useChatStore.getState().taskActive, [sessionId]: false },
     })
     usePlanStore.setState({ planGroups: [] })
 
