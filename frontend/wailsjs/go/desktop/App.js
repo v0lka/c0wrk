@@ -130,6 +130,10 @@ export function GetMCPStatus() {
   return window['go']['desktop']['App']['GetMCPStatus']();
 }
 
+export function GetPendingActions(arg1) {
+  return window['go']['desktop']['App']['GetPendingActions'](arg1);
+}
+
 export function GetProjectSwitchState(arg1) {
   return window['go']['desktop']['App']['GetProjectSwitchState'](arg1);
 }
@@ -152,10 +156,6 @@ export function GetSecuritySettings() {
 
 export function GetSessionHistory(arg1) {
   return window['go']['desktop']['App']['GetSessionHistory'](arg1);
-}
-
-export function GetPendingActions(arg1) {
-  return window['go']['desktop']['App']['GetPendingActions'](arg1);
 }
 
 export function GetSessionRuntimeStatus(arg1) {

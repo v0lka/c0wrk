@@ -35,7 +35,7 @@ sdk.New(Config{
     LLM:         multi-provider,
     MCP:         filesystem server,
     Execution:   { MaxSteps, PreWarning, ToolCache },
-    Compaction:  { sliding, 85/92/98% },
+    Compaction:  { sliding_window, 85/92/98% },
     HITL:        autoApproveHITL,
     OnBlackboardChanged: callback,
 })
@@ -106,7 +106,7 @@ Fires after every successful blackboard write (`plan`, `step_result`, `fact`, `r
 
 ```go
 Compaction: sdk.CompactionConfig{
-    Strategy:          "sliding",
+    Strategy:          "sliding_window",
     PredictivePercent: 85,
     WarningPercent:    92,
     EmergencyPercent:  98,

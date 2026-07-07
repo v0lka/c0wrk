@@ -1,6 +1,6 @@
 # Events
 
-The SDK emits lifecycle events throughout agent execution so applications can observe progress in real time — streaming thoughts, tool calls, context-window pressure, and internal diagnostics. This document covers the `AgentEvents` interface (the executor-level contract), the `NoopEvents` embedding pattern, streaming, diagnostics, and the `orchestration.Events` extension used by the planner/conductor layer.
+The SDK emits lifecycle events throughout agent execution so applications can observe progress in real time — streaming thoughts, tool calls, context-window pressure, and internal diagnostics. This document covers the `Events` interface (the executor-level contract), the `NoopEvents` embedding pattern, streaming, diagnostics, and the `orchestration.Events` extension used by the planner/conductor layer.
 
 ```go
 import (
@@ -11,12 +11,12 @@ import (
 )
 ```
 
-## AgentEvents
+## Events
 
-`AgentEvents` defines universal agent lifecycle events. Any agent system can implement this interface — it is not tied to a specific orchestration strategy.
+`Events` defines universal agent lifecycle events. Any agent system can implement this interface — it is not tied to a specific orchestration strategy.
 
 ```go
-type AgentEvents interface {
+type Events interface {
     StepStart(stepNum int)
     Thought(stepNum int, content, reasoning string)
     ToolCall(stepNum, callIdx int, toolName, argsPreview, source string)
@@ -52,7 +52,7 @@ type AgentEvents interface {
 
 | Method | Description |
 |--------|-------------|
-| `ToolCall(stepNum, callIdx, toolName, argsPreview, source)` | Fired before a tool executes. `callIdx` is the index of the call within the step (0-based). `argsPreview` is a truncated string preview of the arguments. `source` identifies where the tool came from (e.g. `"core"`, `"mcp:<server>"`). |
+| `ToolCall(stepNum, callIdx, toolName, argsPreview, source)` | Fired before a tool executes. `callIdx` is the index of the call within the step (0-based). `argsPreview` is a truncated string preview of the arguments. `source` identifies where the tool came from (e.g. `"core"`, the MCP server name like `"filesystem"`). |
 | `ToolResult(stepNum, callIdx, resultLen, preview, isError)` | Fired after a tool executes. `resultLen` is the full result length in characters; `preview` is a truncated preview. `isError` is `true` when the tool returned an error result. |
 
 #### Sub-agent events
@@ -90,15 +90,15 @@ type AgentEvents interface {
 
 ## NoopEvents and the embedding pattern
 
-`NoopEvents` is a no-op implementation of `AgentEvents` — every method has an empty body. It satisfies the interface and serves as a base for the recommended **embed-and-override** pattern: embed `NoopEvents` in your own struct and override only the methods you care about. The embedded no-ops handle the rest, so you never need to implement the full interface.
+`NoopEvents` is a no-op implementation of `Events` — every method has an empty body. It satisfies the interface and serves as a base for the recommended **embed-and-override** pattern: embed `NoopEvents` in your own struct and override only the methods you care about. The embedded no-ops handle the rest, so you never need to implement the full interface.
 
 ```go
 type NoopEvents struct{}
 
-var _ AgentEvents = (*NoopEvents)(nil)
+var _ Events = (*NoopEvents)(nil)
 ```
 
-This is especially useful because `AgentEvents` is a large interface. Without embedding, adding a new method would break every implementation. With embedding, only implementations that care about the new method need updating.
+This is especially useful because `Events` is a large interface. Without embedding, adding a new method would break every implementation. With embedding, only implementations that care about the new method need updating.
 
 ```go
 // PrintingEvents observes step lifecycle, tool calls, and streaming.
@@ -198,7 +198,7 @@ import (
     "github.com/v0lka/sp4rk/tools/builtins"
 )
 
-// PrintingEvents implements agent.AgentEvents by embedding agent.NoopEvents
+// PrintingEvents implements agent.Events by embedding agent.NoopEvents
 // (which provides no-op stubs for every method) and overriding the methods
 // we want to observe. This is the recommended pattern: embed NoopEvents,
 // override only what you need.
@@ -351,11 +351,11 @@ func main() {
 
 ## orchestration.Events
 
-The orchestration layer (planner → DAG → conductor → reflector) extends `AgentEvents` with additional hooks for plan-level lifecycle events. `orchestration.Events` embeds `agent.AgentEvents`, so any implementation must satisfy both interfaces.
+The orchestration layer (planner → DAG → conductor → reflector) extends `Events` with additional hooks for plan-level lifecycle events. `orchestration.Events` embeds `agent.Events`, so any implementation must satisfy both interfaces.
 
 ```go
 type Events interface {
-    agent.AgentEvents
+    agent.Events
     OnPlanGenerated(stepCount int, steps []PlanStepEvent)
     OnStepStarted(stepID, description, summary string)
     OnStepCompleted(stepID string, success bool, duration time.Duration, errMsg string)
@@ -384,7 +384,7 @@ type Events interface {
 
 ### Implementing orchestration.Events
 
-Because `orchestration.Events` embeds `agent.AgentEvents`, the embed-and-override pattern works here too — but you need a no-op base for the orchestration methods as well. A common approach is to embed both `agent.NoopEvents` and provide no-op stubs for the orchestration-specific methods, then override what you need:
+Because `orchestration.Events` embeds `agent.Events`, the embed-and-override pattern works here too — but you need a no-op base for the orchestration methods as well. A common approach is to embed both `agent.NoopEvents` and provide no-op stubs for the orchestration-specific methods, then override what you need:
 
 ```go
 type consoleEvents struct {
@@ -416,7 +416,7 @@ func (e *consoleEvents) OnReflected(r *orchestration.Reflection, attempt, maxAtt
 }
 ```
 
-> The `agent.NoopEvents` embedding covers all `AgentEvents` methods. The orchestration-specific methods (`OnPlanGenerated`, `OnStepStarted`, etc.) must be implemented or stubbed by your type to satisfy `orchestration.Events`.
+> The `agent.NoopEvents` embedding covers all `Events` methods. The orchestration-specific methods (`OnPlanGenerated`, `OnStepStarted`, etc.) must be implemented or stubbed by your type to satisfy `orchestration.Events`.
 
 ## Optional interfaces: StepScopable and RetryScopable
 

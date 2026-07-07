@@ -40,14 +40,11 @@ fw, err := sdk.New(sdk.Config{
             APIKey:       os.Getenv("ANTHROPIC_API_KEY"),
             Models:       []string{"claude-sonnet-4-5"},
         }},
-        DefaultModel: "claude-sonnet-4-5",
     },
 })
 ```
 
 `sdk.Config.LLM.Providers` is a slice — you can register multiple providers (see example 07). Each `ProviderEntry` has a logical `Name`, a `ProviderType` (`"anthropic"` or `"openai"`), an `APIKey`, and a list of `Models`.
-
-`DefaultModel` sets the model the router uses for all calls. You can switch models at runtime via `fw.LLMRouter().SetModel()`.
 
 ### 2. The finish tool
 
@@ -84,7 +81,7 @@ result, err := fw.Execute(ctx, systemPrompt, &agent.NoopEvents{}, "What is the c
 
 `Execute` is a convenience method that creates a `Conductor`, runs one ReAct loop, and returns an `*orchestration.ExecutionResult`. For repeated calls, use `fw.NewConductor()` once and call `conductor.Run()` multiple times.
 
-The second argument (`&agent.NoopEvents{}`) is the event sink. `NoopEvents` discards all lifecycle events — see **example 03** for a custom implementation that prints a live trace.
+The third argument (`&agent.NoopEvents{}`) is the event sink. `NoopEvents` discards all lifecycle events — see **example 03** for a custom implementation that prints a live trace.
 
 ### 5. Result
 
@@ -95,11 +92,13 @@ fmt.Println("Output:", result.Output)
 
 `ExecutionStatus` values:
 
-| Status    | Meaning                                              |
-|-----------|------------------------------------------------------|
-| `success` | The agent called `finish` — task complete            |
-| `partial` | Step budget exhausted before `finish` was called     |
-| `failed`  | An error occurred during execution                   |
+| Status      | Meaning                                              |
+|-------------|------------------------------------------------------|
+| `success`   | The agent called `finish` — task complete            |
+| `partial`   | Step budget exhausted before `finish` was called     |
+| `failed`    | An error occurred during execution                   |
+| `aborted`   | The reflector recommended aborting after step failures |
+| `cancelled` | The context was cancelled mid-execution              |
 
 ## Prerequisites
 

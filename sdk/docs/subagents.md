@@ -41,7 +41,7 @@ type SubAgentTask struct {
     CM             ContextManager
     TaskTools      []tools.ToolDescriptor
     TaskDesc       string             // task description (for SubAgentLaunch event)
-    Emitter        AgentEvents        // event emitter (nil-safe)
+    Emitter        Events        // event emitter (nil-safe)
     TodoUpdateFunc StepTodoUpdateFunc // optional callback for update_checklist tool
 }
 ```
@@ -53,7 +53,7 @@ type SubAgentTask struct {
 | `CM` | The `ContextManager` owning this step's prompt history and compaction. |
 | `TaskTools` | The tools available to this step. The `finish` tool is appended automatically. |
 | `TaskDesc` | A human-readable task description, emitted in the `SubAgentLaunch` event. |
-| `Emitter` | The `AgentEvents` sink for this subagent. `nil` is replaced with `NoopEvents`. |
+| `Emitter` | The `Events` sink for this subagent. `nil` is replaced with `NoopEvents`. |
 | `TodoUpdateFunc` | Optional callback invoked when the step's checklist is updated. Wired into the context for the `update_checklist` tool. |
 
 ## RunSubAgent
@@ -68,7 +68,7 @@ func RunSubAgent(
     cm ContextManager,
     taskTools []tools.ToolDescriptor,
     taskDesc string,
-    emitter AgentEvents,
+    emitter Events,
     todoUpdateFunc StepTodoUpdateFunc,
 ) (resultCh <-chan SubAgentResult)
 ```
@@ -150,7 +150,7 @@ These are the same helpers used in standalone executor runs (see [Agent Executor
 
 ## Event emission
 
-Subagents emit two events through the provided `AgentEvents` sink:
+Subagents emit two events through the provided `Events` sink:
 
 - **`SubAgentLaunch(stepID, description)`** — fired when the goroutine starts, before the executor runs.
 - **`SubAgentComplete(stepID, success, duration)`** — fired when the goroutine finishes, with the success flag and wall-clock duration.
@@ -184,7 +184,7 @@ if agent.DetectToolCallSyntaxInContent(output) {
 func RunSubAgentsParallel(ctx context.Context, agents []SubAgentTask) []SubAgentResult
 ```
 
-Results are collected as each subagent completes. The function blocks until all subagents have reported. If `agents` is empty, it returns `nil`.
+Results are collected in input order (not completion order); a slow agent blocks all subsequent results from being returned. The function blocks until all subagents have reported. If `agents` is empty, it returns `nil`.
 
 ```go
 tasks := []agent.SubAgentTask{

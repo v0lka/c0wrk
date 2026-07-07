@@ -137,9 +137,12 @@ This is the recommended replacement for byte-slice truncation expressions like `
 // A 4-byte emoji followed by ASCII.
 s := "🎉 Hello, world!"
 
-// Naive byte cut would split the emoji (4 bytes) and produce invalid UTF-8.
-truncated := strutil.TruncateUTF8(s, 5)
-// "🎉 H" — the cut backs up to a rune boundary, so the result is valid UTF-8.
+// TruncateUTF8 respects rune boundaries — the result is always valid UTF-8.
+truncated := strutil.TruncateUTF8(s, 6)
+// "🎉 H" — 4 bytes (emoji) + 1 byte (space) + 1 byte ('H') = 6 bytes.
+
+// When maxBytes falls inside a multi-byte rune, the cut backs up.
+// E.g. TruncateUTF8(s, 3) returns "" — a naive s[:3] would split the emoji.
 
 // No-op when the string is already short enough.
 strutil.TruncateUTF8("short", 100) // → "short"
@@ -149,6 +152,21 @@ strutil.TruncateUTF8("anything", 0) // → "anything"
 ```
 
 The implementation decrements `maxBytes` until `utf8.RuneStart(s[maxBytes])` is true, ensuring the cut never lands in the middle of a multi-byte rune.
+
+### TruncateUTF8AtLineBoundary
+
+```go
+func TruncateUTF8AtLineBoundary(s string, maxBytes int) string
+```
+
+`TruncateUTF8AtLineBoundary` truncates `s` to at most `maxBytes` bytes using `TruncateUTF8`, then snaps the result back to the last newline so the returned string ends on a complete line. If the truncated string contains no newline, or the only newline is at index 0, the UTF-8-safe truncated value is returned unchanged.
+
+Use this when downstream consumers expect line-oriented output (e.g. log lines, plan exploration summaries) and a cut mid-line would be confusing.
+
+```go
+// Truncate to ~4000 bytes, ending on a line boundary.
+summary := strutil.TruncateUTF8AtLineBoundary(longText, 4000)
+```
 
 ### Complete strutil example
 

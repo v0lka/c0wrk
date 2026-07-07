@@ -34,7 +34,6 @@ import "github.com/v0lka/sp4rk/orchestration"
 - [Plan data model](#plan-data-model)
   - [Plan](#plan)
   - [PlanStep](#planstep)
-  - [StepProfile](#stepprofile)
   - [CompletedStep](#completedstep)
   - [StepResult](#stepresult)
   - [PlanStepEvent](#planstepevent)
@@ -52,7 +51,6 @@ import "github.com/v0lka/sp4rk/orchestration"
   - [AggregateOutput](#aggregateoutput)
 - [Persistence](#persistence)
   - [Checkpointer](#checkpointer)
-  - [NoopCheckpointer](#noopcheckpointer)
   - [CheckpointedBlackboard](#checkpointedblackboard)
   - [RestoreBlackboard](#restoreblackboard)
 - [Adapters](#adapters)
@@ -151,7 +149,7 @@ func (c *Conductor) Run(
     message string,
     bb Blackboard,
     availableTools []tools.ToolDescriptor,
-    events agent.AgentEvents,
+    events agent.Events,
     compactionStrategy string,
 ) (*ExecutionResult, error)
 ```
@@ -230,13 +228,13 @@ result, err := conductor.Run(ctx, task, bb, tools, events, "sliding_window")
 
 ```go
 type Planner interface {
-    Plan(ctx context.Context, task string, tools []tools.ToolDescriptor, reflections []Reflection) (*Plan, error)
-    Replan(ctx context.Context, plan *Plan, completed []CompletedStep, failedStep CompletedStep, reflection *Reflection, reflections []Reflection) (*Plan, error)
-    PlanContinuation(ctx context.Context, originalRequest string, existingPlan *Plan, completedSteps []CompletedStep, newMessage string, availableTools []tools.ToolDescriptor, conversationHistory []llm.Message, taskComplete bool) (*Plan, error)
+    Plan(ctx context.Context, task string, availableTools []tools.ToolDescriptor, reflections []Reflection, availableSkills []skills.SkillDescriptor, singleStep bool, conversationHistory []llm.Message) (*Plan, error)
+    Replan(ctx context.Context, originalPlan *Plan, completed []CompletedStep, failedStep CompletedStep, reflection *Reflection, sessionReflections []Reflection, availableSkills []skills.SkillDescriptor) (*Plan, error)
+    PlanContinuation(ctx context.Context, originalRequest string, existingPlan *Plan, completedSteps []CompletedStep, newMessage string, availableTools []tools.ToolDescriptor, availableSkills []skills.SkillDescriptor, singleStep bool, conversationHistory []llm.Message, taskComplete bool) (*Plan, error)
 }
 ```
 
-Generates and regenerates DAG execution plans. See [planner.md](planner.md) for the reference implementation.
+Generates and regenerates DAG execution plans. The reference implementation `planner.Planner` satisfies this interface (verified by a compile-time `var _ orchestration.Planner = (*Planner)(nil)` check in the `planner` package). See [planner.md](planner.md) for the reference implementation.
 
 ### Reflector
 
@@ -250,11 +248,11 @@ Analyzes failures and produces corrective insights. See [reflector.md](reflector
 
 ### Events
 
-`Events` extends `agent.AgentEvents` with orchestration-lifecycle hooks. All methods are called by the orchestrator (not the Conductor directly) as it drives the plan.
+`Events` extends `agent.Events` with orchestration-lifecycle hooks. All methods are called by the orchestrator (not the Conductor directly) as it drives the plan.
 
 ```go
 type Events interface {
-    agent.AgentEvents
+    agent.Events
     OnPlanGenerated(stepCount int, steps []PlanStepEvent)
     OnStepStarted(stepID, description, summary string)
     OnStepCompleted(stepID string, success bool, duration time.Duration, errMsg string)
@@ -474,17 +472,7 @@ type PlanStep struct {
 | `DependsOn` | IDs of steps that must complete successfully before this one can start. |
 | `Parallelizable` | Hint that this step can run concurrently with its siblings. |
 | `EstimatedTools` | Tools the step is expected to use. |
-| `Profile` | Optional step-level configuration. During JSON deserialization this is `map[string]any`; consumers convert it to a domain-specific `StepProfile` (e.g. `*planner.AgentProfile`). |
-
-### StepProfile
-
-```go
-type StepProfile interface {
-    isStepProfile()
-}
-```
-
-A marker interface for step-level configuration profiles. Implementations define step-specific behaviour such as tool sets, domain routing, compaction parameters, and step budgets. The planner's `AgentProfile` is the canonical implementation.
+| `Profile` | Optional step-level configuration. During JSON deserialization this is `map[string]any`; consumers convert it to a domain-specific profile (e.g. `*planner.AgentProfile`). The field type is `any`. |
 
 ### CompletedStep
 
@@ -722,11 +710,7 @@ type Checkpointer interface {
 }
 ```
 
-Provides persistence for blackboard state. Implementations are responsible for the serialization format and backend storage. All methods must be safe for concurrent use. `LoadCheckpoint` returns `nil, nil` when the checkpoint does not exist.
-
-### NoopCheckpointer
-
-`NoopCheckpointer` is a no-op implementation that discards saves and returns `nil` for loads. Use it when persistence is disabled or in tests.
+Provides persistence for blackboard state. Implementations are responsible for the serialization format and backend storage. All methods must be safe for concurrent use. `LoadCheckpoint` returns `nil, nil` when the checkpoint does not exist. When no `Checkpointer` is configured, persistence is simply disabled — the `Framework.RestoreBlackboard` method returns an error if called without one.
 
 ### CheckpointedBlackboard
 
@@ -922,7 +906,7 @@ MODE-JSON-EXAMPLE`,
 	}
 
 	// --- Reflector ---
-	rf := reflector.NewReflector(fw.LLMRouter(), reflector.Config{
+	rf := reflector.New(fw.LLMRouter(), reflector.Config{
 		SystemPrompt: `You are a reflection agent. Analyze the failed execution.
 Return JSON with "summary", "root_cause", "suggested_action" (retry/replan/abort), and "action_plan".`,
 	})

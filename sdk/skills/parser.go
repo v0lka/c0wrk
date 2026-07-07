@@ -11,7 +11,7 @@ import (
 )
 
 // skillNamePattern validates the skill name field per the agentskills.io spec:
-// 1-64 chars, lowercase alphanumeric and hyphens, no leading/trailing/consecutive hyphens.
+// 1-64 chars, lowercase alphanumeric and hyphens, no leading/trailing hyphens.
 var skillNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // ParseError describes a validation failure in a SKILL.md file.

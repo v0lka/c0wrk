@@ -180,7 +180,11 @@ Returns the SHA-256 hex digest of the content, useful for change detection (re-e
 
 ## VectorSearchTool
 
-`VectorSearchTool` is a built-in tool (registered under the name `semantic_search`) that searches the project codebase using hybrid (vector + BM25) similarity matching. It finds code by meaning and intent as well as by literal symbol/keyword match.
+`VectorSearchTool` is a built-in tool (registered under the name `semantic_search`) that searches the project codebase using hybrid (vector + BM25) similarity matching. It finds code by meaning and intent as well as by literal symbol/keyword match. The tool and its supporting types live in the `tools/builtins` package, not `embedding`:
+
+```go
+import "github.com/v0lka/sp4rk/tools/builtins"
+```
 
 ```go
 func NewVectorSearchTool(searchFunc VectorSearchFunc, waitFunc VectorSearchWaitFunc) *VectorSearchTool

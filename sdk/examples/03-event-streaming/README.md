@@ -1,10 +1,10 @@
 # Example 03 — Event Streaming
 
-Observe the agent's execution in real time by implementing the `agent.AgentEvents` interface. A custom `PrintingEvents` sink formats each lifecycle event — thoughts, tool calls, results, context fill — and prints it to stdout.
+Observe the agent's execution in real time by implementing the `agent.Events` interface. A custom `PrintingEvents` sink formats each lifecycle event — thoughts, tool calls, results, context fill — and prints it to stdout.
 
 ## What you will learn
 
-- The `AgentEvents` interface and its 14 methods
+- The `Events` interface and its 13 methods
 - How to embed `NoopEvents` and override only the methods you need
 - What events fire during a ReAct loop and in what order
 - How to track token usage and context-window fill
@@ -33,10 +33,10 @@ Executor.Run()
 
 ## Code walkthrough
 
-### 1. The AgentEvents interface
+### 1. The Events interface
 
 ```go
-type AgentEvents interface {
+type Events interface {
     StepStart(stepNum int)
     Thought(stepNum int, content, reasoning string)
     ToolCall(stepNum, callIdx int, toolName, argsPreview, source string)
@@ -55,11 +55,11 @@ type AgentEvents interface {
 
 ### 2. Embed NoopEvents
 
-Implementing all 14 methods is tedious. The SDK provides `agent.NoopEvents` with no-op stubs for every method. Embed it and override only what you need:
+Implementing all 13 methods is tedious. The SDK provides `agent.NoopEvents` with no-op stubs for every method. Embed it and override only what you need:
 
 ```go
 type PrintingEvents struct {
-    agent.NoopEvents  // provides no-op stubs for all 14 methods
+    agent.NoopEvents  // provides no-op stubs for all 13 methods
 }
 
 func (e *PrintingEvents) StepStart(stepNum int) {
@@ -68,7 +68,7 @@ func (e *PrintingEvents) StepStart(stepNum int) {
 // override only the methods you care about…
 ```
 
-This is the **recommended pattern** for custom event sinks. It also future-proofs your code: if new methods are added to `AgentEvents`, the embedded `NoopEvents` provides a default.
+This is the **recommended pattern** for custom event sinks. It also future-proofs your code: if new methods are added to `Events`, the embedded `NoopEvents` provides a default.
 
 ### 3. Event reference
 
@@ -102,7 +102,7 @@ The `status` field in `ContextFill` can be:
 
 ### 5. Tool source
 
-`ToolCall` includes a `source` field that identifies where the tool came from: `"core"` for built-in tools, `"mcp:<server>"` for MCP-sourced tools (see example 05).
+`ToolCall` includes a `source` field that identifies where the tool came from: `"core"` for built-in tools, the MCP server name (e.g. `"filesystem"`) for MCP-sourced tools (see example 05).
 
 ## Prerequisites
 

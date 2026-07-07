@@ -52,7 +52,7 @@ type ToolDescriptor struct {
 	Name           string             `json:"name"`
 	Description    string             `json:"description"`
 	InputSchema    json.RawMessage    `json:"input_schema"`
-	Source         string             `json:"source"` // "core" | "mcp:<server>"
+	Source         string             `json:"source"` // "core" or the MCP server name for MCP-sourced tools
 	SourceCategory ToolSourceCategory `json:"-"`      // cached category for fast checks
 }
 

@@ -14,7 +14,7 @@ Detailed system specs live in `specs/`. Before making structural changes, read t
 
 ## Project shape
 
-- Two Go modules: `github.com/v0lka/c0wrk` (root: `core/`, `backend/`, `desktop/`, `frontend/`) and `github.com/v0lka/c0wrk/sdk` (`sdk/`). The root module depends on the SDK via `replace github.com/v0lka/c0wrk/sdk => ./sdk` for local development. See ADR-014. Binary/app name is `c0wrk-desktop` (see `wails.json`).
+- Two Go modules: `github.com/v0lka/c0wrk` (root: `core/`, `backend/`, `desktop/`, `frontend/`) and `github.com/v0lka/sp4rk` (`sdk/`). The root module depends on the SDK via `replace github.com/v0lka/sp4rk => ./sdk` for local development. See ADR-014. Binary/app name is `c0wrk-desktop` (see `wails.json`).
 - Entry point: `main.go` → `desktop.NewApp()` → Wails runs with `OnStartup = app.Startup` (`desktop/startup.go`).
 - Go `1.26.3` (`go.mod` in both modules). Frontend uses React 19, Tailwind v4, Vite 6, TS ~5.7.
 

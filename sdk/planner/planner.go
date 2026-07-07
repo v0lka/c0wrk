@@ -76,6 +76,9 @@ type Planner struct {
 	Cfg Config // public so the builder can wire dependencies after creation
 }
 
+// Compile-time check: Planner implements orchestration.Planner.
+var _ orchestration.Planner = (*Planner)(nil)
+
 // NewPlanner creates a new Planner with the given LLM caller and configuration.
 // Returns an error if caller is nil (required dependency).
 func NewPlanner(caller agent.LLMCaller, cfg Config) (*Planner, error) {

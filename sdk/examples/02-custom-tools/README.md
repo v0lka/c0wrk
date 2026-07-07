@@ -6,7 +6,7 @@ Build a custom tool that implements the `tools.Tool` interface, register it alon
 
 - How to implement the `tools.Tool` interface
 - How `tools.BaseTool` reduces boilerplate
-- How to register built-in tools from `sdk/tools/builtins`
+- How to register built-in tools from `github.com/v0lka/sp4rk/tools/builtins`
 - How to inject a workspace path via context
 
 ## Architecture
@@ -84,7 +84,7 @@ The calculator uses `PolicyAlwaysAllow` because it's read-only and safe. Destruc
 
 ### 4. Registering built-in tools
 
-The SDK ships ready-made tools in `sdk/tools/builtins`:
+The SDK ships ready-made tools in `github.com/v0lka/sp4rk/tools/builtins`:
 
 ```go
 registry.Register(builtins.NewReadFileTool())
@@ -140,4 +140,4 @@ File /tmp/sp4rk-example-02-123456/result.txt contains:
 
 ## Next
 
-→ **03-event-streaming** — observe the agent's thoughts, tool calls, and results in real time via a custom `AgentEvents` implementation.
+→ **03-event-streaming** — observe the agent's thoughts, tool calls, and results in real time via a custom `Events` implementation.

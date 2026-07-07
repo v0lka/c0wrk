@@ -51,14 +51,14 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 
 `NewRouter` builds a provider for every `ProviderEntry`, constructs a reverse index from composite model IDs to providers, and selects the first provider's first model as the initial active model. If `registry` is non-nil, providers may register their own metadata sources with it.
 
-> **Concurrency:** `Router` is **NOT** safe for concurrent use from multiple goroutines. Each `Router` instance handles one request at a time. The orchestrator enforces this via its single-active-request contract. If you need parallel inference, use separate `Router` instances.
+> **Concurrency:** `Router` is **safe for concurrent use** from multiple goroutines. It is protected by a `sync.RWMutex`: `SetModel` takes a write lock; `Call` snapshots the active provider and model under a read lock, then releases it before the retry loop so `SetModel` is not blocked by backoff sleeps. The Framework shares one Router across all Conductors created via `NewConductor`.
 
 ### RouterConfig
 
 ```go
 type RouterConfig struct {
     Providers           []ProviderEntry
-    MaxRetries          int           // default 3 when unset/zero
+    MaxRetries          int           // default 3 when unset/zero/negative
     InitialBackoff      time.Duration // default 1s
     MaxBackoff          time.Duration // default 30s
     SafetyMarginPercent int           // default 5
@@ -230,15 +230,11 @@ Additional methods:
 
 ```go
 type ModelMetadata struct {
-    ContextWindow       int
-    OutputLimit         int
-    TokenizerType       string
-    Family              string
-    Capabilities        ModelCapabilities
-    InputCostPer1M      float64
-    OutputCostPer1M     float64
-    CacheReadCostPer1M  float64
-    CacheWriteCostPer1M float64
+    ContextWindow int
+    OutputLimit   int
+    TokenizerType string
+    Family        string
+    Capabilities  ModelCapabilities
 }
 ```
 
@@ -247,17 +243,15 @@ type ModelMetadata struct {
 - **`TokenizerType`** — e.g. `"tiktoken/o200k_base"`, `"anthropic-api"`, `"approximate"`. Drives token counter selection.
 - **`Family`** — model family string used for prompt and parameter adaptation. Resolved from metadata or auto-detected via `DetectFamily`.
 - **`Capabilities`** — see below.
-- **Cost fields** — per-million-token pricing for budget accounting.
 
 ### ModelCapabilities
 
 ```go
 type ModelCapabilities struct {
-    Attachment  bool   // image/PDF support
-    Reasoning   bool   // reasoning/thinking mode
-    Temperature bool   // accepts the temperature parameter
-    ToolCall    bool   // function calling support
-    Interleaved string // "reasoning_content" | "reasoning_details" | ""
+    Attachment  bool // image/PDF support
+    Reasoning   bool // reasoning/thinking mode
+    Temperature bool // accepts the temperature parameter
+    ToolCall    bool // function calling support
 }
 ```
 
@@ -374,12 +368,13 @@ With the default `MaxRetries: 3`, the worst-case retry path adds up to ~7s of la
 
 ### Disabling retries
 
-`MaxRetries` defaults to **3** when unset or zero. To disable retries entirely, set it to a **negative** value (e.g. `-1`):
+`MaxRetries` defaults to **3** when unset or zero. Any non-positive value (including negatives) is replaced with the default of 3 — there is currently no way to disable retries entirely via this field. To minimise retry latency, set a small `MaxRetries` (e.g. `1`) and a short `MaxBackoff`:
 
 ```go
 router, err := llm.NewRouter(ctx, llm.RouterConfig{
-    Providers:  providers,
-    MaxRetries: -1, // no retries — fail fast
+    Providers:      providers,
+    MaxRetries:     1,    // one retry attempt
+    MaxBackoff:     1 * time.Second,
 }, registry)
 ```
 

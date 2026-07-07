@@ -13,7 +13,7 @@ import "github.com/v0lka/sp4rk/agent/reflector"
 ## Table of contents
 
 - [Reflector](#reflector-1)
-  - [NewReflector](#newreflector)
+  - [New](#new)
   - [SetReasoningEffort](#setreasoningeffort)
 - [Config](#config)
 - [Reflect](#reflect)
@@ -43,16 +43,16 @@ The reflector satisfies `orchestration.Reflector` at compile time:
 var _ orchestration.Reflector = (*Reflector)(nil)
 ```
 
-### NewReflector
+### New
 
 ```go
-func NewReflector(caller agent.LLMCaller, cfg Config) *Reflector
+func New(caller agent.LLMCaller, cfg Config) *Reflector
 ```
 
 Creates a new Reflector with the given LLM caller and configuration. If `cfg.AnalyzeFooter` is empty, a standard analysis request is used as the footer appended to the user message.
 
 ```go
-rf := reflector.NewReflector(router, reflector.Config{
+rf := reflector.New(router, reflector.Config{
     SystemPrompt: `You are a reflection agent. Analyze the failed execution.
 
 Consider:
@@ -396,7 +396,7 @@ MODE-JSON-EXAMPLE`,
 	}
 
 	// --- Reflector ---
-	rf := reflector.NewReflector(fw.LLMRouter(), reflector.Config{
+	rf := reflector.New(fw.LLMRouter(), reflector.Config{
 		SystemPrompt: `You are a reflection agent. Analyze the failed execution.
 
 Consider:

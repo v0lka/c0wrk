@@ -89,7 +89,7 @@ type Config struct {
 
     // Optional dependencies
     Logger          *slog.Logger
-    Emitter         PlannerEvents
+    Emitter         Events
     TokenCounter    llm.TokenCounter
     ContextFactory  ContextManagerFactory
     CallerForStep   func(cm agent.ContextManager, stepID string) agent.LLMCaller
@@ -112,7 +112,7 @@ type Config struct {
 | `ModelRegistry` | Resolves model metadata (family, context window) for the exploration executor. |
 | `Model` | Active LLM model name for family resolution. |
 | `Logger` | Structured logger. Defaults to `slog.Default()` when nil. |
-| `Emitter` | Event sink for planner lifecycle (`ServiceWithMeta`). Must be nil-safe. |
+| `Emitter` | Event sink for planner lifecycle (`ServiceWithMeta`). Must satisfy the planner's `Events` interface (embeds `agent.Events` + `ServiceWithMeta`). Must be nil-safe. |
 | `TokenCounter` | Token counter for the exploration executor. Defaults to `llm.NewSimpleTokenCounter()` when nil. |
 | `ContextFactory` | Creates a `ContextManager` for the exploration loop. When nil, the planner falls back to direct planning. |
 | `CallerForStep` | Returns a step-local `LLMCaller` for the given context manager and step ID. When set, the exploration executor uses this instead of the shared caller, ensuring independent context trackers. |
@@ -261,7 +261,7 @@ MODE-JSON-EXAMPLE`,
 
 ## AgentProfile
 
-`AgentProfile` defines a specialised agent role for plan-step execution. It is the canonical implementation of `orchestration.StepProfile` and is carried in a `PlanStep`'s `Profile` field.
+`AgentProfile` defines a specialised agent role for plan-step execution. It is carried in a `PlanStep`'s `Profile` field (type `any`).
 
 ```go
 type AgentProfile struct {
@@ -470,16 +470,16 @@ type ToolLister interface {
 
 Provides access to available tool descriptors. Tool registries implement this.
 
-### PlannerEvents
+### Events (planner)
 
 ```go
-type PlannerEvents interface {
-    agent.AgentEvents
+type Events interface {
+    agent.Events
     ServiceWithMeta(content string, meta map[string]any)
 }
 ```
 
-The minimal event interface the planner needs. Implementations must be nil-safe.
+The minimal event interface the planner needs. It embeds `agent.Events` and adds `ServiceWithMeta` for planner-lifecycle notifications. Implementations must be nil-safe.
 
 ### ToolRegistry (planner)
 
@@ -608,7 +608,7 @@ import (
 	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
-// consoleEvents implements planner.PlannerEvents.
+// consoleEvents implements planner.Events.
 type consoleEvents struct {
 	agent.NoopEvents
 }
@@ -691,7 +691,6 @@ func main() {
 	cfg.PlannerToolNames = map[string]bool{
 		"read_file": true, "list_directory": true, "glob": true,
 	}
-	cfg.ContextFactory = fw.ContextFactory()
 	cfg.DomainFromContext = func(context.Context) string { return "code" }
 	cfg.ComplexityFromContext = func(context.Context) int { return 5 }
 

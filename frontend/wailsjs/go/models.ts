@@ -688,25 +688,54 @@ export namespace backend {
 
 export namespace desktop {
 	
-	export class PendingToolConfirm {
-	    confirm_id: string;
-	    tool: string;
-	    args: string;
-	    reasoning?: string;
+	export class PendingAskUser {
+	    request_id: string;
+	    questions: tools.AskUserQuestion[];
 	
 	    static createFrom(source: any = {}) {
-	        return new PendingToolConfirm(source);
+	        return new PendingAskUser(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.confirm_id = source.confirm_id;
-	        this.tool = source.tool;
-	        this.args = source.args;
-	        this.reasoning = source.reasoning;
+	        this.request_id = source["request_id"];
+	        this.questions = this.convertValues(source["questions"], tools.AskUserQuestion);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PendingPlanApproval {
+	    request_id: string;
+	    plan_path: string;
+	    plan_content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PendingPlanApproval(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.request_id = source["request_id"];
+	        this.plan_path = source["plan_path"];
+	        this.plan_content = source["plan_content"];
 	    }
 	}
-
 	export class PendingStepLimit {
 	    request_id: string;
 	    current_step: number;
@@ -719,45 +748,30 @@ export namespace desktop {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.request_id = source.request_id;
-	        this.current_step = source.current_step;
-	        this.max_steps = source.max_steps;
-	        this.reason = source.reason;
+	        this.request_id = source["request_id"];
+	        this.current_step = source["current_step"];
+	        this.max_steps = source["max_steps"];
+	        this.reason = source["reason"];
 	    }
 	}
-
-	export class PendingPlanApproval {
-	    request_id: string;
-	    plan_path: string;
-	    plan_content: string;
+	export class PendingToolConfirm {
+	    confirm_id: string;
+	    tool: string;
+	    args: string;
+	    reasoning?: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new PendingPlanApproval(source);
+	        return new PendingToolConfirm(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.request_id = source.request_id;
-	        this.plan_path = source.plan_path;
-	        this.plan_content = source.plan_content;
+	        this.confirm_id = source["confirm_id"];
+	        this.tool = source["tool"];
+	        this.args = source["args"];
+	        this.reasoning = source["reasoning"];
 	    }
 	}
-
-	export class PendingAskUser {
-	    request_id: string;
-	    questions: Array<coretools.AskUserQuestion>;
-	
-	    static createFrom(source: any = {}) {
-	        return new PendingAskUser(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.request_id = source.request_id;
-	        this.questions = source.questions;
-	    }
-	}
-
 	export class PendingActionsResponse {
 	    tool_confirms: PendingToolConfirm[];
 	    step_limits: PendingStepLimit[];
@@ -770,13 +784,34 @@ export namespace desktop {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.tool_confirms = source.tool_confirms;
-	        this.step_limits = source.step_limits;
-	        this.plan_approvals = source.plan_approvals;
-	        this.ask_user = source.ask_user;
+	        this.tool_confirms = this.convertValues(source["tool_confirms"], PendingToolConfirm);
+	        this.step_limits = this.convertValues(source["step_limits"], PendingStepLimit);
+	        this.plan_approvals = this.convertValues(source["plan_approvals"], PendingPlanApproval);
+	        this.ask_user = this.convertValues(source["ask_user"], PendingAskUser);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
-
+	
+	
+	
+	
 	export class wailsLogAdapter {
 	
 	
@@ -957,6 +992,63 @@ export namespace session {
 	        this.command = source["command"];
 	        this.created_at = source["created_at"];
 	    }
+	}
+
+}
+
+export namespace tools {
+	
+	export class AskUserOption {
+	    label: string;
+	    value: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AskUserOption(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.label = source["label"];
+	        this.value = source["value"];
+	    }
+	}
+	export class AskUserQuestion {
+	    id: string;
+	    question: string;
+	    options: AskUserOption[];
+	    multi_select?: boolean;
+	    recommended?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new AskUserQuestion(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.question = source["question"];
+	        this.options = this.convertValues(source["options"], AskUserOption);
+	        this.multi_select = source["multi_select"];
+	        this.recommended = source["recommended"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

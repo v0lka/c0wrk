@@ -145,7 +145,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	return tool.Execute(ctx, input)
 }
 
-// GetToolSource returns the source of a tool (e.g., "core", "mcp:<server>").
+// GetToolSource returns the source of a tool (e.g., "core" or the MCP server name).
 // Returns "core" for built-in tools, or the source tag for tools registered via RegisterWithSource.
 // Returns empty string if the tool is not found.
 func (r *ToolRegistry) GetToolSource(name string) string {

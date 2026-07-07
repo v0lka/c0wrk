@@ -167,7 +167,7 @@ Use table-driven tests for clarity.
 
 | Field | Rule |
 | --- | --- |
-| `name` | Required. 1–64 characters, lowercase alphanumeric and hyphens, no leading/trailing/consecutive hyphens (regex `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`). Must match the parent directory name. |
+| `name` | Required. 1–64 characters, lowercase alphanumeric and hyphens, no leading/trailing hyphens (regex `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`). Consecutive hyphens are permitted. Must match the parent directory name. |
 | `description` | Required. At most 1024 characters. |
 | `compatibility` | At most 500 characters. |
 

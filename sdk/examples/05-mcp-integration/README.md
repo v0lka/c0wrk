@@ -24,11 +24,11 @@ sdk.New(cfg)
     │            │
     │            └─ discovers tools: query_db, search_api, …
     │
-    ├─ registers all MCP tools into ToolRegistry with source "mcp:<server>"
+    ├─ registers all MCP tools into ToolRegistry with source "<server-name>"
     │
     └─ ToolRegistry now contains:
-         [core]     read_file, list_directory, finish
-         [mcp:filesystem] read_file, write_file, list_directory, …
+         [core]       read_file, list_directory, finish
+         [filesystem] read_file, write_file, list_directory, …
 ```
 
 ## Code walkthrough
@@ -95,7 +95,7 @@ Output:
 …
 ```
 
-The `source` is also passed to the `AgentEvents.ToolCall` event, so event sinks can distinguish built-in from MCP-sourced tool calls.
+The `source` is also passed to the `Events.ToolCall` event, so event sinks can distinguish built-in from MCP-sourced tool calls.
 
 ### 4. Untrusted output
 

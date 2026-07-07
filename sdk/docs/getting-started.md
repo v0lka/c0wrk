@@ -47,7 +47,7 @@ Everything starts with [`sdk.Config`](../framework.go), passed to [`sdk.New`](..
 | --- | --- | --- | --- |
 | `Providers` | `[]llm.ProviderEntry` | — | Enabled LLM providers. **At least one is required.** |
 | `DefaultModel` | `string` | first provider's first model | Override the auto-selected default model. Accepts a bare name (`"claude-sonnet-4-5"`) or composite ID (`"anthropic/claude-sonnet-4-5"`). |
-| `MaxRetries` | `int` | `3` | Retry attempts for transient errors (HTTP 429, 502, 503, 529, network blips). Set negative to disable. |
+| `MaxRetries` | `int` | `3` | Retry attempts for transient errors (HTTP 429, 502, 503, 529, network blips). Any non-positive value (including negatives) is replaced with the default of 3 — there is currently no way to disable retries via this field. To minimise retry latency, set a small positive value and a short `MaxBackoff`. |
 | `InitialBackoff` | `string` | `"1s"` | Starting backoff duration for retries (parsed with `time.ParseDuration`). |
 | `MaxBackoff` | `string` | `"30s"` | Maximum backoff duration for retries. |
 | `OutputTokenReserve` | `int` | `4096` | Context-window space reserved for model output; affects context-window validation. |
@@ -69,7 +69,7 @@ Everything starts with [`sdk.Config`](../framework.go), passed to [`sdk.New`](..
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `Strategy` | `string` | `"sliding"` | Compaction algorithm: `"sliding_window"`, `"summarization"`, or `"hierarchical"`. |
+| `Strategy` | `string` | `"sliding_window"` | Compaction algorithm: `"sliding_window"`, `"summarization"`, or `"hierarchical"`. |
 | `PredictivePercent` | `int` | `85` | Context fill percentage that triggers predictive compaction. |
 | `WarningPercent` | `int` | `92` | Context fill percentage that triggers warning-level compaction. |
 | `EmergencyPercent` | `int` | `98` | Context fill percentage that triggers emergency compaction. |
@@ -106,7 +106,7 @@ The agent can only use tools that are in the registry. Register built-in tools, 
 ```go
 registry := fw.ToolRegistry()
 
-// Built-in file tools from sdk/tools/builtins
+// Built-in file tools from github.com/v0lka/sp4rk/tools/builtins
 registry.Register(builtins.NewReadFileTool())
 registry.Register(builtins.NewWriteFileTool())
 registry.Register(builtins.NewListDirectoryTool())

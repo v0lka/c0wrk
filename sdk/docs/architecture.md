@@ -46,7 +46,9 @@ sdk (root)
 
 orchestration
   ├──→ agent
-  └──→ llm
+  ├──→ llm
+  ├──→ skills
+  └──→ tools
 
 planner
   ├──→ agent
@@ -75,7 +77,14 @@ memory
   ├──→ agent
   ├──→ llm
   ├──→ prompt
-  └──→ security
+  ├──→ security
+  └──→ strutil
+
+tools
+  ├──→ llm
+  ├──→ pathutil
+  ├──→ strutil
+  └──→ tools/internal/judge_prompts
 
 tools/builtins
   └──→ tools
@@ -83,10 +92,11 @@ tools/mcp
   └──→ tools
 
 skills
-  └──→ pathutil
+  ├──→ pathutil
+  └──→ tools
 ```
 
-The `tools` package is a leaf dependency — it imports only the standard library. The `llm` package is similarly foundational. This keeps the primitive layers free of higher-level concerns and prevents import cycles.
+The `tools` package is a near-leaf dependency — it imports `llm`, `pathutil`, `strutil`, and `tools/internal/judge_prompts` (for the LLM-backed `ToolJudge`). The `llm` package is similarly foundational. This keeps the primitive layers free of higher-level concerns and prevents import cycles.
 
 ## The ReAct loop
 
@@ -119,13 +129,17 @@ A `Step` captures one iteration:
 
 ```go
 type Step struct {
-    Thought       string         // the model's reasoning
-    Action        llm.ToolCall   // the tool it chose to call
-    Observation   string         // the tool's result
-    IsError       bool           // whether the tool returned an error
-    IsUntrusted   bool           // whether the observation is external data
-    TokensUsed    int            // token consumption for this step
-    CacheHash     string         // hash for tool-result cache retrieval
+    Thought          string         // the model's reasoning
+    ReasoningContent string         // chain-of-thought from reasoning models
+    ReasoningItems   []llm.ReasoningItem // structured reasoning items (Responses API)
+    Action           llm.ToolCall   // the tool it chose to call
+    Observation      string         // the tool's result
+    IsError          bool           // whether the tool returned an error
+    IsUntrusted      bool           // whether the observation is external data
+    TokensUsed       int            // token consumption for this step
+    UserNudge        string         // optional injected user message (e.g. nudges)
+    ResponseGroup    int64          // links steps from the same multi-tool-call response
+    CacheHash        string         // hash for tool-result cache retrieval
 }
 ```
 
@@ -196,7 +210,7 @@ import (
     "github.com/v0lka/sp4rk/llm"
 )
 
-rt := router.NewRouter(llmCaller, router.Config{
+rt := router.New(llmCaller, router.Config{
     SystemPrompt:  "Classify the user's request by domain and complexity. ...",
     HistoryWindow: 10, // number of recent messages to include
 })
@@ -219,7 +233,7 @@ The SDK is built around small, focused interfaces that let you swap implementati
 | `ContextManager` | `agent` | Manages the LLM context window: `BuildPrompt`, `AddStep`, `Compact`, `CheckFill`, `FillPercent`, `AvailableTokens`. The `memory.ContextWindow` satisfies it. |
 | `CompactionStrategy` | `agent` | Compresses step history: `Compact(ctx, steps, budgetTokens) []llm.Message`. Implementations: sliding, summary, hierarchical. |
 | `HITLHandler` | `agent` | Human-in-the-loop hooks: `OnToolCall` (confirm/modify/reject) and `OnStepLimit` (grant or deny more steps). |
-| `AgentEvents` | `agent` | Streams lifecycle events: `StepStart`, `Thought`, `ToolCall`, `ToolResult`, `AssistantChunk`, `ContextFill`, `ContextCompaction`, `SubAgentLaunch`, `Finishing`, etc. `NoopEvents` is the no-op default. |
+| `Events` | `agent` | Streams lifecycle events: `StepStart`, `Thought`, `ToolCall`, `ToolResult`, `AssistantChunk`, `ContextFill`, `ContextCompaction`, `SubAgentLaunch`, `Finishing`, etc. `NoopEvents` is the no-op default. |
 | `Blackboard` | `orchestration` | Structured access to shared task state: plan, step results, reflections, facts, final result. `MapBlackboard` is the in-memory implementation. |
 | `Planner` | `orchestration` | Generates and regenerates plans: `Plan`, `Replan`, `PlanContinuation`. |
 | `Reflector` | `orchestration` | Analyzes failures: `Reflect(ctx, trajectory, plan, prevReflections) (*Reflection, error)`. |
@@ -278,7 +292,7 @@ Steps communicate through the blackboard rather than direct references. A step c
 
 | Component | Thread-safe? | Notes |
 | --- | --- | --- |
-| `llm.Router` | **No** | Each `Router` instance handles one request at a time. The orchestrator enforces a single-active-request contract. Do not share a router across goroutines without external synchronization. |
+| `llm.Router` | **Yes** | Protected by a `sync.RWMutex`. `SetModel` takes a write lock; `Call` snapshots the active provider and model under a read lock, then releases it before the retry loop so `SetModel` is not blocked by backoff sleeps. Safe to share across goroutines. |
 | `tools.ToolRegistry` | **Yes** | Protected by a `sync.RWMutex`. Register, unregister, get, list, and execute are safe for concurrent use. |
 | `orchestration.MapBlackboard` | **Yes** | Protected by a `sync.RWMutex`. All read and write methods are safe for concurrent use. |
 | `embedding.Embedder` | **Yes** | Protected by a `sync.Mutex`. Safe for concurrent embedding calls. |

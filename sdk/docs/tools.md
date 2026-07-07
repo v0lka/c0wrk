@@ -83,7 +83,7 @@ const (
 
 ### ToolJudger (optional)
 
-A tool with `PolicyAlwaysAllow` may optionally implement `ToolJudger` to provide tool-specific safety heuristics. When implemented, the registry calls `Judge` before execution; if it returns `allow=false` with non-empty reasoning, the call is escalated to user confirmation.
+A tool with `PolicyAlwaysAllow` may optionally implement `ToolJudger` to provide tool-specific safety heuristics. When implemented, a separate `ToolJudge` (backed by an LLM call) invokes `Judge` to obtain a tool-specific verdict; if it returns `allow=false` with non-empty reasoning, the call is escalated to user confirmation. The registry itself does not call `Judge` — the verdict is obtained externally and acted upon by the HITL layer.
 
 ```go
 type ToolJudger interface {
@@ -100,7 +100,7 @@ type ToolDescriptor struct {
     Name           string
     Description    string
     InputSchema    json.RawMessage
-    Source         string             // "core" | "mcp:<server>"
+    Source         string             // "core" | <server-name>
     SourceCategory ToolSourceCategory // "core" | "mcp" (cached for fast checks)
 }
 ```
@@ -364,7 +364,7 @@ import "github.com/v0lka/sp4rk/tools/builtins"
 | `list_step_outputs` | `NewListStepOutputsTool()` | List all available step outputs with short previews (up to 200 characters each). Use to discover which completed step results are available. |
 | `read_final_result` | `NewReadFinalResultTool()` | Read the final result of the previously completed task on the blackboard. Use to retrieve a prior exchange's outcome when it is not visible in the conversation history. |
 | `web_fetch` | `NewWebFetchTool(limits WebFetchLimits)` | Fetch a web page by URL and convert its HTML content to markdown. Only HTTP/HTTPS URLs are supported. Requests time out after 30 seconds; up to 10 redirects are followed. Supports paginated reading. |
-| `web_search` | `websearch.NewWebSearchTool(provider, limits)` | Search the web and return a list of results with titles, URLs, and text snippets. Uses a pluggable `SearchProvider` — see [Web search providers](#web-search-providers) below. |
+| `web_search` | `websearch.NewTool(provider, limits)` | Search the web and return a list of results with titles, URLs, and text snippets. Uses a pluggable `SearchProvider` — see [Web search providers](#web-search-providers) below. |
 | `bash_exec` | `NewBashExecTool(blacklist []string) (*BashExecTool, error)` | Execute shell commands via `bash -c`. Use for build commands, running scripts, installing packages, git operations, and system tasks. Returns combined stdout and stderr. Commands time out after 60 seconds by default (configurable up to 120s). Available on Unix only (`!windows` build tag). |
 | `posh_exec` | `NewPoshExecTool(blacklist []string) (*PoshExecTool, error)` | Execute commands via `powershell.exe -NoProfile -NonInteractive -Command`. Windows counterpart of `bash_exec`: same blacklist/Judge model, timeout, and working-directory containment. Returns combined stdout and stderr. Commands time out after 60 seconds by default (configurable up to 120s). Available on Windows only (`windows` build tag). |
 | `semantic_search` | `NewVectorSearchTool(searchFunc VectorSearchFunc, waitFunc VectorSearchWaitFunc)` | Search the project codebase using hybrid (vector + BM25) similarity matching. Finds code by meaning and intent as well as by literal symbol/keyword match. Returns file paths, line ranges, fused relevance scores, and content previews. |
@@ -435,7 +435,7 @@ provider := websearch.NewDuckDuckGoProviderWithClient(
     30*time.Second, // timeout
     nil,            // default HTTP client
 )
-tool := websearch.NewWebSearchTool(provider, builtins.DefaultWebSearchLimits())
+tool := websearch.NewTool(provider, builtins.DefaultWebSearchLimits())
 registry.Register(tool)
 ```
 

@@ -136,7 +136,7 @@ trajectory := store.Steps()  // full step history for reflection
 ### 5. The Reflector
 
 ```go
-rf := reflector.NewReflector(fw.LLMRouter(), reflector.Config{
+rf := reflector.New(fw.LLMRouter(), reflector.Config{
     SystemPrompt: "You are a reflection agent. Analyze the failed execution…",
 })
 
@@ -147,12 +147,14 @@ The Reflector sends the trajectory, plan, and prior reflections to the LLM and p
 
 ```go
 type Reflection struct {
-    Summary         string   // what happened
-    RootCause       string   // primary reason for failure
-    SuggestedAction string   // "retry" | "replan" | "abort"
-    ActionPlan      string   // concrete steps to fix
-    Hypotheses      []string // possible causes
-    Reasoning       string   // analysis reasoning
+    Summary         string    // what happened
+    RootCause       string    // primary reason for failure
+    SuggestedAction string    // "retry" | "replan" | "abort"
+    ActionPlan      string    // concrete steps to fix
+    Hypotheses      []string  // possible causes
+    Reasoning       string    // analysis reasoning
+    FailureAnalysis string    // detailed failure analysis
+    Timestamp       time.Time // when the reflection was produced
 }
 ```
 
@@ -185,13 +187,13 @@ finalOutput := orchestration.AggregateOutput(completed, plan, nil)
 
 ## The three SDK primitives
 
-| Primitive  | Package              | Role                                      |
-|------------|----------------------|-------------------------------------------|
-| Planner    | `sdk/planner`        | Generates a DAG plan from a task          |
-| Conductor  | `sdk/orchestration`  | Executes one step as a ReAct loop         |
-| Reflector  | `sdk/agent/reflector`| Analyzes failures, suggests corrections   |
+| Primitive  | Package                | Role                                      |
+|------------|------------------------|-------------------------------------------|
+| Planner    | `planner`              | Generates a DAG plan from a task          |
+| Conductor  | `orchestration`        | Executes one step as a ReAct loop         |
+| Reflector  | `agent/reflector`      | Analyzes failures, suggests corrections   |
 
-The Framework (`sdk.Framework`) wires them together: `fw.NewConductor()` creates a Conductor with the Framework's LLM router, tool registry, and context-window factory. `fw.LLMRouter()` provides the `agent.LLMCaller` needed by the Planner and Reflector.
+The Framework (`sdk.Framework`) wires them together: `fw.NewConductor()` creates a Conductor with the Framework's LLM router, tool registry, and context-window factory. `fw.LLMRouter()` provides the `agent.LLMCaller` needed by the Planner and Reflector. `fw.ContextFactory()` provides the `orchestration.ContextManagerFactory` needed by the Planner for exploration mode.
 
 ## Prerequisites
 
@@ -253,4 +255,4 @@ If a step fails, you'll see the reflection in action:
 
 ## Next
 
-→ **07-full-power** — combine every SDK subsystem into one agent: multi-provider LLM, custom + built-in + MCP tools, HITL, events, planner, reflector, skills, checkpointer, and fact memory.
+→ **07-full-power** — combine every SDK subsystem into one agent: multi-provider LLM, custom + built-in + MCP tools, HITL, events, planner, reflector, skills, and fact memory.

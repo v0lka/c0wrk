@@ -1,4 +1,4 @@
-# Go Agent SDK
+# sp4rk Agent SDK
 
 A Go framework for building AI agent systems with **Plan & Execute orchestration**, tool integration, and multi-provider LLM support.
 
@@ -15,7 +15,7 @@ It is a standalone library with no opinion about your UI, storage, or deployment
 - **Reflector for self-correction** — when a step fails, a `Reflector` analyzes the trajectory and produces a structured reflection that drives retry or replan decisions.
 - **Context window management with compaction** — a `ContextWindow` tracks fill percentage and triggers predictive, warning, or emergency compaction via sliding-window, summary, or hierarchical strategies. Tool-output pruning and history mutation keep replay cost bounded.
 - **Human-in-the-loop** — a `HITLHandler` intercepts tool calls for confirmation or modification and decides what happens when the step budget is reached.
-- **Event streaming** — an `AgentEvents` interface streams every lifecycle event (thoughts, tool calls, results, context fill, compaction, sub-agent launches) for live observability.
+- **Event streaming** — an `Events` interface streams every lifecycle event (thoughts, tool calls, results, context fill, compaction, sub-agent launches) for live observability.
 - **Skill discovery** — a `SkillManager` discovers and parses Agent Skills (agentskills.io specification) from priority-ordered directories and exposes lightweight descriptors for routing.
 - **ONNX embeddings** — a local `Embedder` runs jina-embeddings-v2-small-en through ONNX Runtime for vector search without external API calls.
 - **Prompt injection defense** — untrusted tool output (web, MCP, filesystem) is wrapped in `<untrusted-content>` boundary tags and sanitized before entering LLM context.
@@ -97,7 +97,7 @@ go run main.go
 | [tools.md](tools.md) | The `Tool` interface, `ToolRegistry`, built-in tools, and custom tools |
 | [mcp-integration.md](mcp-integration.md) | Model Context Protocol servers, the gateway, and external tool discovery |
 | [agent-executor.md](agent-executor.md) | The `Executor`, ReAct loop internals, and circuit breakers |
-| [events.md](events.md) | The `AgentEvents` interface and live execution observability |
+| [events.md](events.md) | The `Events` interface and live execution observability |
 | [hitl.md](hitl.md) | Human-in-the-loop: tool-call confirmation and step-limit decisions |
 | [subagents.md](subagents.md) | Parallel execution with `SubAgent` goroutines and trajectory capture |
 | [orchestration.md](orchestration.md) | The `Conductor`, blackboard, and single-task execution |
@@ -115,22 +115,22 @@ go run main.go
 | Package | Purpose |
 | --- | --- |
 | `github.com/v0lka/sp4rk` | Top-level `Framework`, `Config`, `New`, `Execute`, `NewConductor`, `Shutdown` |
-| `…/sdk/agent` | ReAct `Executor` loop, `AgentEvents`, `HITLHandler`, `FinishTool`, `SubAgent`, tool-result cache |
-| `…/sdk/agent/reflector` | `Reflector` for execution failure analysis and self-correction |
-| `…/sdk/agent/router` | `Router` that classifies requests by domain and complexity |
-| `…/sdk/llm` | `Router`, `Provider`, `ProviderEntry`, `ModelRegistry`, token counting, Anthropic/OpenAI providers |
-| `…/sdk/tools` | `Tool` interface, `BaseTool`, thread-safe `ToolRegistry`, `ToolPolicy`, `ToolDescriptor` |
-| `…/sdk/tools/builtins` | Built-in tools: file I/O, shell, glob, ripgrep, web fetch, vector search, facts, checklist |
-| `…/sdk/tools/mcp` | MCP `Gateway`, `Server`, `ServerEntry`, and tool proxying |
-| `…/sdk/orchestration` | `Conductor`, `Blackboard`, `Plan`, DAG utilities, `Checkpointer`, orchestration interfaces |
-| `…/sdk/planner` | `Planner`, `Config`, `PromptSet`, `AgentProfile` for DAG plan generation |
-| `…/sdk/prompt` | Fluent prompt `Builder` with cache-break support and substitutions |
-| `…/sdk/skills` | `SkillManager` for agentskills.io skill discovery, parsing, and serving |
-| `…/sdk/memory` | `ContextWindow`, compaction strategies (sliding, summary, hierarchical), pruning |
-| `…/sdk/security` | Prompt-injection defense: `WrapUntrustedContent`, `StripUntrustedTags` |
-| `…/sdk/embedding` | ONNX-based `Embedder`, `Tokenizer`, and chunker for local vector embeddings |
-| `…/sdk/pathutil` | Reusable filesystem-path algorithms: `IsWithinPath`, `SplitPathComponents`, `ResolveExistingPrefix` |
-| `…/sdk/strutil` | String helpers: `TruncateUTF8` and related utilities |
+| `…/agent` | ReAct `Executor` loop, `Events`, `HITLHandler`, `FinishTool`, `SubAgent`, tool-result cache |
+| `…/agent/reflector` | `Reflector` for execution failure analysis and self-correction |
+| `…/agent/router` | `Router` that classifies requests by domain and complexity |
+| `…/llm` | `Router`, `Provider`, `ProviderEntry`, `ModelRegistry`, token counting, Anthropic/OpenAI providers |
+| `…/tools` | `Tool` interface, `BaseTool`, thread-safe `ToolRegistry`, `ToolPolicy`, `ToolDescriptor` |
+| `…/tools/builtins` | Built-in tools: file I/O, shell, glob, ripgrep, web fetch, vector search, facts, checklist |
+| `…/tools/mcp` | MCP `Gateway`, `Server`, `ServerEntry`, and tool proxying |
+| `…/orchestration` | `Conductor`, `Blackboard`, `Plan`, DAG utilities, `Checkpointer`, orchestration interfaces |
+| `…/planner` | `Planner`, `Config`, `PromptSet`, `AgentProfile` for DAG plan generation |
+| `…/prompt` | Fluent prompt `Builder` with cache-break support and substitutions |
+| `…/skills` | `SkillManager` for agentskills.io skill discovery, parsing, and serving |
+| `…/memory` | `ContextWindow`, compaction strategies (sliding_window, summarization, hierarchical), pruning |
+| `…/security` | Prompt-injection defense: `WrapUntrustedContent`, `StripUntrustedTags` |
+| `…/embedding` | ONNX-based `Embedder`, `Tokenizer`, and chunker for local vector embeddings |
+| `…/pathutil` | Reusable filesystem-path algorithms: `IsWithinPath`, `SplitPathComponents`, `ResolveExistingPrefix` |
+| `…/strutil` | String helpers: `TruncateUTF8` and related utilities |
 
 ## Prerequisites
 

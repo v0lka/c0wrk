@@ -6,14 +6,18 @@ import (
 
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/skills"
 	"github.com/v0lka/sp4rk/tools"
 )
 
 // Planner generates and regenerates DAG execution plans.
+// The signatures match planner.Planner so that the reference implementation
+// satisfies this interface directly (verified by a compile-time
+// `var _ orchestration.Planner = (*Planner)(nil)` check in the planner package).
 type Planner interface {
-	Plan(ctx context.Context, task string, tools []tools.ToolDescriptor, reflections []Reflection) (*Plan, error)
-	Replan(ctx context.Context, plan *Plan, completed []CompletedStep, failedStep CompletedStep, reflection *Reflection, reflections []Reflection) (*Plan, error)
-	PlanContinuation(ctx context.Context, originalRequest string, existingPlan *Plan, completedSteps []CompletedStep, newMessage string, availableTools []tools.ToolDescriptor, conversationHistory []llm.Message, taskComplete bool) (*Plan, error)
+	Plan(ctx context.Context, task string, availableTools []tools.ToolDescriptor, reflections []Reflection, availableSkills []skills.SkillDescriptor, singleStep bool, conversationHistory []llm.Message) (*Plan, error)
+	Replan(ctx context.Context, originalPlan *Plan, completed []CompletedStep, failedStep CompletedStep, reflection *Reflection, sessionReflections []Reflection, availableSkills []skills.SkillDescriptor) (*Plan, error)
+	PlanContinuation(ctx context.Context, originalRequest string, existingPlan *Plan, completedSteps []CompletedStep, newMessage string, availableTools []tools.ToolDescriptor, availableSkills []skills.SkillDescriptor, singleStep bool, conversationHistory []llm.Message, taskComplete bool) (*Plan, error)
 }
 
 // Reflector analyzes failures and produces corrective insights.

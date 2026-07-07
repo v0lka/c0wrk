@@ -72,6 +72,8 @@ export function GetMCPServers():Promise<Record<string, config.MCPServerConfig>>;
 
 export function GetMCPStatus():Promise<Array<mcp.ServerStatus>>;
 
+export function GetPendingActions(arg1:string):Promise<desktop.PendingActionsResponse>;
+
 export function GetProjectSwitchState(arg1:string):Promise<backend.ProjectUIStateResponse>;
 
 export function GetProjectUIState(arg1:string):Promise<backend.ProjectUIStateResponse>;
@@ -83,8 +85,6 @@ export function GetRebaseMergeState():Promise<workspace.MergeRebaseState>;
 export function GetSecuritySettings():Promise<backend.SecuritySettingsResponse>;
 
 export function GetSessionHistory(arg1:string):Promise<Array<session.ChatMessage>>;
-
-export function GetPendingActions(arg1:string):Promise<desktop.PendingActionsResponse>;
 
 export function GetSessionRuntimeStatus(arg1:string):Promise<session.SessionRuntimeStatus>;
 

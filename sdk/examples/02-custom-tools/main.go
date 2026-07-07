@@ -85,7 +85,7 @@ func run() error {
 	// Register tools — the agent can only use tools that are in the registry.
 	registry := fw.ToolRegistry()
 
-	// Built-in tools from sdk/tools/builtins
+	// Built-in tools from github.com/v0lka/sp4rk/tools/builtins
 	registry.Register(builtins.NewReadFileTool())
 	registry.Register(builtins.NewWriteFileTool())
 	registry.Register(builtins.NewListDirectoryTool())

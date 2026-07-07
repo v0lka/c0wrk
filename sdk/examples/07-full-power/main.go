@@ -191,7 +191,7 @@ func run() error {
 			MaxDependencyContextChars: 8000,
 		},
 		Compaction: sdk.CompactionConfig{
-			Strategy:          "sliding",
+			Strategy:          "sliding_window",
 			PredictivePercent: 85,
 			WarningPercent:    92,
 			EmergencyPercent:  98,

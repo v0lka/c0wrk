@@ -383,4 +383,4 @@ The framework (`sdk.Config.MCP`) wires MCP integration into the agent lifecycle 
 - During `sdk.New`, the framework calls `StartGateway` with the configured servers, the shared `ToolRegistry`, an env-expansion function, and a logger. Discovered MCP tools are auto-registered alongside any built-in tools you register afterwards.
 - On `fw.Shutdown()`, the gateway is stopped and all server connections are closed.
 
-Because MCP tools are registered into the same `ToolRegistry` as built-in tools, they are immediately available to the executor, planner, and any custom tool selection logic. Their `Source` tag (`"mcp:<server>"` category) lets you filter or exclude them with `ListFiltered` and remove them wholesale with `UnregisterBySource`.
+Because MCP tools are registered into the same `ToolRegistry` as built-in tools, they are immediately available to the executor, planner, and any custom tool selection logic. Their `Source` tag (the bare server name, e.g. `"filesystem"`) lets you filter or exclude them with `ListFiltered` and remove them wholesale with `UnregisterBySource`.

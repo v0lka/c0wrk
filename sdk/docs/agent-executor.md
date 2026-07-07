@@ -35,21 +35,27 @@ type Executor struct {
 
 ### NewExecutor
 
-`NewExecutor` constructs an `Executor` with all required dependencies. Both the event emitter and the HITL handler are **nil-safe** — `nil` is replaced with `NoopEvents` and `NoopHITLHandler` respectively.
+`NewExecutor` constructs an `Executor` with the required dependencies and optional configuration supplied via functional options. Both the event emitter and the HITL handler are **nil-safe** — `nil` is replaced with `NoopEvents` and `NoopHITLHandler` respectively.
 
 ```go
 func NewExecutor(
     llmRouter LLMCaller,            // the LLM provider/router to call
     toolRegistry ToolExecutor,      // tool execution + source/untrusted metadata
-    counter llm.TokenCounter,       // token counting for context management
     maxSteps int,                   // hard cap on ReAct iterations
-    emitter AgentEvents,            // lifecycle events (nil-safe)
-    suppressAssistantEvents bool,   // hide AssistantChunk/AssistantDone (for sub-steps)
-    toolResultBudget ToolResultBudget,   // Stage 2 token-based truncation
-    circuitBreaker CircuitBreakerConfig, // loop-protection thresholds
-    hitl HITLHandler,               // human-in-the-loop hooks (nil-safe)
+    opts ...Option,                 // optional configuration (see below)
 ) *Executor
 ```
+
+Available options:
+
+| Option | Purpose |
+|--------|---------|
+| `WithTokenCounter(c llm.TokenCounter)` | Token counting for context management. |
+| `WithEvents(e Events)` | Lifecycle events (nil → `NoopEvents`). |
+| `WithSuppressAssistantEvents(bool)` | Hide `AssistantChunk`/`AssistantDone` (for sub-steps). |
+| `WithToolResultBudget(b ToolResultBudget)` | Stage 2 token-based truncation. Defaults to `DefaultToolResultBudget()` when unset. |
+| `WithCircuitBreaker(c CircuitBreakerConfig)` | Loop-protection thresholds. Defaults to `DefaultCircuitBreakerConfig()` when unset. |
+| `WithHITL(h HITLHandler)` | Human-in-the-loop hooks (nil → `NoopHITLHandler`). |
 
 A minimal construction using the SDK defaults:
 
@@ -57,13 +63,12 @@ A minimal construction using the SDK defaults:
 exec := agent.NewExecutor(
     llmRouter,
     toolRegistry,
-    tokenCounter,
     25,                              // maxSteps
-    &myEvents{},                     // AgentEvents implementation
-    false,                           // emit assistant streaming events
-    agent.DefaultToolResultBudget(),
-    agent.DefaultCircuitBreakerConfig(),
-    nil,                             // HITL — uses NoopHITLHandler
+    agent.WithTokenCounter(tokenCounter),
+    agent.WithEvents(&myEvents{}),   // Events implementation
+    agent.WithToolResultBudget(agent.DefaultToolResultBudget()),
+    // CircuitBreaker defaults to DefaultCircuitBreakerConfig() when omitted.
+    // HITL defaults to NoopHITLHandler when omitted.
 )
 exec.SetLogger(slog.Default())
 ```
@@ -197,10 +202,10 @@ finishTool := agent.NewFinishTool()
 registry.Register(finishTool)
 ```
 
-The finish tool's input schema requires a single `answer` string:
+The finish tool's input schema requires a single `answer` string. Internally, the tool unmarshals the input into an anonymous struct:
 
 ```go
-type finishInput struct {
+var params struct {
     Answer string `json:"answer"`
 }
 ```
@@ -245,10 +250,10 @@ Use the SDK defaults unless you have a specific reason to tune:
 
 ```go
 cfg := agent.DefaultCircuitBreakerConfig()
-// RepeatNudgeThreshold: 3, RepeatAbortThreshold: 4, TruncationAbortThreshold: 3,
-// ParseErrorAbortThreshold: 3, FruitlessNudgeThreshold: 4, FruitlessAbortThreshold: 6,
-// FruitlessMaxResultLen: 32, SameToolRepeatNudgeThreshold: 6,
-// SameToolRepeatAbortThreshold: 10, SameToolResultSizeDelta: 64
+// RepeatNudgeThreshold: 3, RepeatAbortThreshold: 5, TruncationAbortThreshold: 3,
+// ParseErrorAbortThreshold: 3, FruitlessNudgeThreshold: 5, FruitlessAbortThreshold: 8,
+// FruitlessMaxResultLen: 48, SameToolRepeatNudgeThreshold: 8,
+// SameToolRepeatAbortThreshold: 12, SameToolResultSizeDelta: 128
 ```
 
 ## Tool result budget and truncation
@@ -269,14 +274,16 @@ type ToolTruncationConfig struct {
 Configure per-tool defaults via `SetPerToolTruncation`. The SDK ships sensible defaults:
 
 ```go
-// agent.DefaultToolTruncationConfig
-var DefaultToolTruncationConfig = map[string]ToolTruncationConfig{
-    "read_file":      {MaxLines: 50000},
-    "ripgrep":        {MaxLines: 5000},
-    "glob":           {MaxLines: 5000},
-    "list_directory": {MaxLines: 5000},
-    "web_fetch":      {MaxBytes: 2097152}, // 2 MiB
-    "bash_exec":      {MaxLines: 10000},
+// agent.DefaultToolTruncationConfig — a function returning a fresh map copy.
+func DefaultToolTruncationConfig() map[string]ToolTruncationConfig {
+    return map[string]ToolTruncationConfig{
+        "read_file":      {MaxLines: 50000},
+        "ripgrep":        {MaxLines: 5000},
+        "glob":           {MaxLines: 5000},
+        "list_directory": {MaxLines: 5000},
+        "web_fetch":      {MaxBytes: 2097152}, // 2 MiB
+        "bash_exec":      {MaxLines: 10000},
+    }
 }
 ```
 
@@ -400,7 +407,7 @@ type ToolExecutor interface {
 
 - `LLMCaller.Call` — sends a chat request and returns the response. The executor handles context-exceeded errors by triggering reactive compaction and retrying.
 - `ToolExecutor.Execute` — runs a tool by name with raw JSON input.
-- `GetToolSource` — returns the source of a tool (e.g. `"core"`, `"mcp:<server>"`); empty string if not found. Used to detect MCP tools for cache TTL handling.
+- `GetToolSource` — returns the source of a tool (e.g. `"core"`, the MCP server name like `"filesystem"`); empty string if not found. Used to detect MCP tools for cache TTL handling.
 - `IsToolUntrusted` — reports whether a tool's output is from an untrusted external source (MCP tools and tools flagged `IsUntrusted()`). Drives the `<untrusted-content>` wrapping of observations.
 
 ## TrajectoryStore
@@ -492,17 +499,14 @@ A complete standalone executor run:
 exec := agent.NewExecutor(
     llmRouter,
     toolRegistry,
-    tokenCounter,
     25,
-    &myEvents{},
-    false,
-    agent.DefaultToolResultBudget(),
-    agent.DefaultCircuitBreakerConfig(),
-    nil,
+    agent.WithTokenCounter(tokenCounter),
+    agent.WithEvents(&myEvents{}),
+    agent.WithToolResultBudget(agent.DefaultToolResultBudget()),
 )
 exec.SetLogger(logger)
 exec.SetToolCache(agent.NewToolResultCache(5 * time.Minute))
-exec.SetPerToolTruncation(agent.DefaultToolTruncationConfig)
+exec.SetPerToolTruncation(agent.DefaultToolTruncationConfig())
 exec.SetPreWarningPercent(80)
 
 ctx := tools.WithWorkspacePath(context.Background(), workspaceDir)

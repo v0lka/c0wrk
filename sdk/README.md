@@ -1,4 +1,4 @@
-# sp4rk Agent Framework
+# sp4rk Agent SDK
 
 A standalone Go framework for building AI agent systems with Plan & Execute orchestration, tool integration, and multi-provider LLM support.
 
@@ -12,6 +12,7 @@ import (
 	"os"
 
 	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/llm"
 )
 
@@ -31,7 +32,10 @@ func main() {
 	}
 	defer fw.Shutdown()
 
-	result, err := fw.Execute(context.Background(), "You are a helpful assistant.", nil, "Write a hello world in Go")
+	systemPrompt := func(_ context.Context, _ string, _ llm.ModelMetadata) string {
+		return "You are a helpful assistant."
+	}
+	result, err := fw.Execute(context.Background(), systemPrompt, &agent.NoopEvents{}, "Write a hello world in Go")
 	if err != nil {
 		panic(err)
 	}
@@ -43,7 +47,7 @@ func main() {
 
 Detailed guides live in [`docs/`](docs/):
 
-- [Getting started](docs/getting-start.md) — installation, configuration, first run
+- [Getting started](docs/getting-started.md) — installation, configuration, first run
 - [Architecture](docs/architecture.md) — layered design and package layout
 - [Agent executor](docs/agent-executor.md) — the execution loop
 - [Orchestration](docs/orchestration.md) — Plan & Execute mode

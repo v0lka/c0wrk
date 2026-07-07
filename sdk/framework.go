@@ -154,8 +154,9 @@ type ExecutionConfig struct {
 
 // CompactionConfig configures context window compaction.
 type CompactionConfig struct {
-	// Strategy is the compaction algorithm: "sliding", "summary", or "hierarchical".
-	// Empty means "sliding".
+	// Strategy is the compaction algorithm: "sliding_window", "summarization",
+	// or "hierarchical". Empty means "sliding_window". Unrecognised values fall
+	// back to sliding window (see memory.NewCompactionStrategy).
 	Strategy string
 
 	// PredictivePercent triggers predictive compaction at this context fill %.
@@ -213,7 +214,7 @@ func New(cfg Config) (*Framework, error) {
 		cfg.Compaction.EmergencyPercent = 98
 	}
 	if cfg.Compaction.Strategy == "" {
-		cfg.Compaction.Strategy = "sliding"
+		cfg.Compaction.Strategy = "sliding_window"
 	}
 
 	// Parse retry durations
@@ -428,4 +429,16 @@ func (fw *Framework) ToolRegistry() *tools.ToolRegistry {
 // LLMRouter returns the shared LLM router for model switching at runtime.
 func (fw *Framework) LLMRouter() *llm.Router {
 	return fw.llmRouter
+}
+
+// ContextFactory returns a ContextManagerFactory wired with the Framework's
+// compaction, safety margin, and pruning configuration. Use it to give the
+// Planner (or any other component that needs a ContextManager) the same
+// context-window behaviour as the Framework-built Conductors.
+//
+// The returned factory accepts a system prompt, model metadata, compaction
+// strategy name, and optional pruning overrides — matching the
+// orchestration.ContextManagerFactory signature.
+func (fw *Framework) ContextFactory() orchestration.ContextManagerFactory {
+	return fw.buildContextWindow
 }
