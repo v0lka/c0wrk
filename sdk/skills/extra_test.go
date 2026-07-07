@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // ---------- SkillManager.log ----------

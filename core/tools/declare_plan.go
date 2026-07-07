@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 const toolDeclarePlanDescription = `Publish a roadmap to the plan panel and blackboard. Use this to surface a structured plan to the user before large implementations, or to track a multi-step task's shape. With mode="present" the plan is displayed but execution continues. With mode="await_approval" the tool blocks until the user approves, requests changes, or abandons — use this when an active skill prescribes an approval gate before implementation, or when the task is large enough that committing without sign-off is risky. On "request changes" the tool returns the feedback; revise and call declare_plan again.`

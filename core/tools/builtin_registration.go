@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
-	websearch "github.com/v0lka/c0wrk/sdk/tools/builtins/web_search"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/tools/builtins"
+	"github.com/v0lka/sp4rk/tools/builtins/websearch"
 )
 
 // BuiltinToolsConfig holds configuration for registering built-in tools.
@@ -77,7 +77,7 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 
 	// Web search (optional)
 	if provider := CreateSearchProviderWithClient(cfg.SearchProvider, cfg.SearchAPIKey, cfg.SearchTimeout, cfg.HTTPClient); provider != nil {
-		registry.Register(websearch.NewWebSearchTool(provider, cfg.WebSearchLimits))
+		registry.Register(websearch.NewTool(provider, cfg.WebSearchLimits))
 	}
 
 	// Glob and ripgrep
@@ -174,7 +174,7 @@ func UpdateSearchTool(registry *ToolRegistry, providerName, apiKey string, limit
 // with an optional HTTP client for proxy support.
 func UpdateSearchToolWithClient(registry *ToolRegistry, providerName, apiKey string, limits builtins.WebSearchLimits, client *http.Client) {
 	if provider := CreateSearchProviderWithClient(providerName, apiKey, limits.Timeout, client); provider != nil {
-		registry.Register(websearch.NewWebSearchTool(provider, limits))
+		registry.Register(websearch.NewTool(provider, limits))
 	} else {
 		registry.Unregister("web_search")
 	}

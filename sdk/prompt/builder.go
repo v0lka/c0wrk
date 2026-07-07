@@ -1,3 +1,5 @@
+// Package prompt provides builders for constructing LLM system prompts with
+// cache-break support and family-aware sampling defaults.
 package prompt
 
 import "strings"

@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	doublestar "github.com/bmatcuk/doublestar/v4"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const toolGlobDescription = `Find files and directories by name using glob patterns. Supports ** for recursive directory matching (e.g. **/*.go, src/**/*.ts, **/*.py, **/*.cs, **/*.java, **/*.php). Use this when you need to locate files by extension, name pattern, or directory structure. Respects .gitignore rules automatically.`

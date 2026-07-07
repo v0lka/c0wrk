@@ -6,15 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const toolBashDescription = `Execute shell commands via bash -c. Use this for build commands, running scripts, installing packages, git operations, and system tasks. Returns combined stdout and stderr. Commands time out after 60 seconds by default (configurable up to 120s). An optional working_directory can be set for the command's execution context.`
@@ -167,52 +165,4 @@ func (t *BashExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		Content: string(output),
 		IsError: false,
 	}, nil
-}
-
-// validateWorkDir checks that dir is within the workspace root or a temp
-// directory. If workspaceRoot is empty, any directory is accepted (no
-// workspace context means no containment is possible). ctxTempDir is the
-// per-request temp dir from context (may be empty).
-func validateWorkDir(dir, workspaceRoot, ctxTempDir string) error {
-	if workspaceRoot == "" {
-		return nil // no workspace context — cannot enforce containment
-	}
-
-	// Resolve symlinks so that macOS /tmp → /private/var/... comparisons work.
-	cleanDir, _ := filepath.EvalSymlinks(dir)
-	if cleanDir == "" {
-		cleanDir = filepath.Clean(dir)
-	}
-	cleanWS, _ := filepath.EvalSymlinks(workspaceRoot)
-	if cleanWS == "" {
-		cleanWS = filepath.Clean(workspaceRoot)
-	}
-
-	// Allow workspace root or subdirectory
-	if cleanDir == cleanWS || strings.HasPrefix(cleanDir, cleanWS+string(filepath.Separator)) {
-		return nil
-	}
-
-	// Allow context-provided temp directory
-	if ctxTempDir != "" {
-		cleanCtxTmp, _ := filepath.EvalSymlinks(ctxTempDir)
-		if cleanCtxTmp == "" {
-			cleanCtxTmp = filepath.Clean(ctxTempDir)
-		}
-		if cleanDir == cleanCtxTmp || strings.HasPrefix(cleanDir, cleanCtxTmp+string(filepath.Separator)) {
-			return nil
-		}
-	}
-
-	// Allow system temp directory (resolve its symlinks too)
-	tmpDir := os.TempDir()
-	cleanTmp, _ := filepath.EvalSymlinks(tmpDir)
-	if cleanTmp == "" {
-		cleanTmp = filepath.Clean(tmpDir)
-	}
-	if cleanDir == cleanTmp || strings.HasPrefix(cleanDir, cleanTmp+string(filepath.Separator)) {
-		return nil
-	}
-
-	return fmt.Errorf("path %q is outside workspace (%s) and temp directory", dir, workspaceRoot)
 }

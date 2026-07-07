@@ -5,6 +5,7 @@ import "strings"
 // ModelFamily represents a model provider family for prompt and parameter adaptation.
 type ModelFamily string
 
+// Model family identifiers used by DetectFamily and the built-in registry.
 const (
 	FamilyAnthropic      ModelFamily = "anthropic"
 	FamilyOpenAIFlagship ModelFamily = "openai_flagship"

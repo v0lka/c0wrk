@@ -11,6 +11,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { ChevronDown, Check, Plus, Pencil, Archive, Trash2 } from 'lucide-react'
+import { useSessionStatusIndicator } from '@/hooks/useSessionStatusIndicator'
 
 export function SessionSelector() {
   const sessions = useSessionStore((s) => s.sessions)
@@ -190,7 +191,7 @@ export function SessionSelector() {
 
 // --- Session Item ---
 interface SessionItemProps {
-  session: { id: string; name: string; active: boolean; archived: boolean; last_active_at: string }
+  session: { id: string; name: string; archived: boolean; last_active_at: string }
   isActive: boolean
   onSelect: () => void
   onRename: () => void
@@ -198,10 +199,12 @@ interface SessionItemProps {
   onDelete: () => void
 }
 function SessionItem({ session, isActive, onSelect, onRename, onArchive, onDelete }: SessionItemProps) {
+  const status = useSessionStatusIndicator(session.id)
   return (
     <DropdownMenuItem className="group/item gap-2" onSelect={onSelect}>
       <div className="flex flex-1 items-center gap-1.5 truncate">
-        {session.active && <span className="size-1.5 shrink-0 rounded-full bg-success" />}
+        {status === 'pending' && <span className="size-1.5 shrink-0 rounded-full bg-warning" title="Awaiting your response" />}
+        {status === 'active' && <span className="size-1.5 shrink-0 rounded-full bg-success" title="Task running" />}
         {isActive && <Check className="size-3.5 shrink-0" />}
         <span className={cn('truncate', isActive && 'font-medium')}>{session.name}</span>
       </div>

@@ -688,6 +688,95 @@ export namespace backend {
 
 export namespace desktop {
 	
+	export class PendingToolConfirm {
+	    confirm_id: string;
+	    tool: string;
+	    args: string;
+	    reasoning?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PendingToolConfirm(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.confirm_id = source.confirm_id;
+	        this.tool = source.tool;
+	        this.args = source.args;
+	        this.reasoning = source.reasoning;
+	    }
+	}
+
+	export class PendingStepLimit {
+	    request_id: string;
+	    current_step: number;
+	    max_steps: number;
+	    reason?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PendingStepLimit(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.request_id = source.request_id;
+	        this.current_step = source.current_step;
+	        this.max_steps = source.max_steps;
+	        this.reason = source.reason;
+	    }
+	}
+
+	export class PendingPlanApproval {
+	    request_id: string;
+	    plan_path: string;
+	    plan_content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PendingPlanApproval(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.request_id = source.request_id;
+	        this.plan_path = source.plan_path;
+	        this.plan_content = source.plan_content;
+	    }
+	}
+
+	export class PendingAskUser {
+	    request_id: string;
+	    questions: Array<coretools.AskUserQuestion>;
+	
+	    static createFrom(source: any = {}) {
+	        return new PendingAskUser(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.request_id = source.request_id;
+	        this.questions = source.questions;
+	    }
+	}
+
+	export class PendingActionsResponse {
+	    tool_confirms: PendingToolConfirm[];
+	    step_limits: PendingStepLimit[];
+	    plan_approvals: PendingPlanApproval[];
+	    ask_user: PendingAskUser[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PendingActionsResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tool_confirms = source.tool_confirms;
+	        this.step_limits = source.step_limits;
+	        this.plan_approvals = source.plan_approvals;
+	        this.ask_user = source.ask_user;
+	    }
+	}
+
 	export class wailsLogAdapter {
 	
 	

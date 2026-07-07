@@ -9,7 +9,7 @@ func TestNoopEvents_NoPanic(t *testing.T) {
 	n := &NoopEvents{}
 
 	// Verify interface compliance
-	var _ AgentEvents = n
+	var _ Events = n
 
 	// Call every method — none should panic
 	n.StepStart(1)

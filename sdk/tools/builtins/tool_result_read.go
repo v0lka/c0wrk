@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const toolResultReadDescription = `Read a previously cached tool result in fragments. Provide the hash from a truncation nudge (e.g. "[This output was truncated ... hash: abc123 ...]") along with a 1-based start_line and the number of lines to read. Use this to retrieve more content from a truncated tool output without re-executing the original tool.`
@@ -53,7 +53,10 @@ type toolResultReadInput struct {
 	NumLines  int    `json:"num_lines"`
 }
 
-// Execute retrieves the cached result fragment.
+// Execute retrieves the cached result fragment. For file-backed entries
+// (read_file), fragments are streamed from disk via ReadFileRange — O(1)
+// memory, no content stored in the cache. For content-backed entries,
+// fragments are extracted from the cached string.
 func (t *ToolResultReadTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params toolResultReadInput
 	if err := json.Unmarshal(input, &params); err != nil {
@@ -104,6 +107,12 @@ func (t *ToolResultReadTool) Execute(ctx context.Context, input json.RawMessage)
 		params.NumLines = defaultResultReadLines
 	}
 
+	// File-backed: stream fragments from disk.
+	if entry.FileBacked {
+		return t.readFromFileBacked(entry, params)
+	}
+
+	// Content-backed: extract from cached string.
 	allLines := strings.Split(entry.Content, "\n")
 	totalLines := len(allLines)
 
@@ -126,6 +135,50 @@ func (t *ToolResultReadTool) Execute(ctx context.Context, input json.RawMessage)
 	sb.WriteString(fragment)
 
 	// Add continuation nudge if more lines are available.
+	if endLine < totalLines {
+		fmt.Fprintf(&sb, "\n\n[Use tool_result_read(hash=\"%s\", start_line=%d, num_lines=%d) to continue reading]",
+			params.Hash, endLine+1, params.NumLines)
+	}
+
+	return tools.ToolResult{Content: sb.String()}, nil
+}
+
+// readFromFileBacked streams a fragment from the file on disk using
+// ReadFileRange. O(1) memory — only the requested window is buffered.
+func (t *ToolResultReadTool) readFromFileBacked(entry *agent.ToolResultCacheEntry, params toolResultReadInput) (tools.ToolResult, error) {
+	defaults := DefaultFileLimits()
+	result, err := ReadFileRange(FileReadParams{
+		Path:           entry.FilePath,
+		StartLine:      params.StartLine,
+		EndLine:        params.StartLine + params.NumLines - 1,
+		MaxLineBytes:   defaults.MaxLineBytes,
+		MaxWindowLines: defaults.MaxWindowLines,
+	})
+	if err != nil {
+		return tools.ToolResult{Content: fmt.Sprintf("failed to read cached file: %v", err), IsError: true}, nil
+	}
+
+	totalLines := result.TotalLines
+
+	if totalLines == 0 {
+		return tools.ToolResult{Content: fmt.Sprintf("[Cached %s result is an empty file | hash: %s]", entry.ToolName, params.Hash)}, nil
+	}
+
+	// Clamp for display.
+	startLine := params.StartLine
+	endLine := params.StartLine + params.NumLines - 1
+	if startLine > totalLines {
+		startLine = totalLines
+	}
+	if endLine > totalLines {
+		endLine = totalLines
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "[Lines %d-%d of %d from cached %s result | hash: %s]\n",
+		startLine, endLine, totalLines, entry.ToolName, params.Hash)
+	sb.WriteString(result.Content)
+
 	if endLine < totalLines {
 		fmt.Fprintf(&sb, "\n\n[Use tool_result_read(hash=\"%s\", start_line=%d, num_lines=%d) to continue reading]",
 			params.Hash, endLine+1, params.NumLines)

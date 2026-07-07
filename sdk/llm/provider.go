@@ -3,8 +3,8 @@ package llm
 
 import "context"
 
-// Caller can make a single LLM call. Structurally identical to agent.LLMCaller
-// to ensure duck-typing compatibility without circular imports.
+// Caller is the minimal single-call interface; higher layers may define
+// compatible interfaces without importing this package.
 type Caller interface {
 	Call(ctx context.Context, req ChatRequest) (*ChatResponse, error)
 }

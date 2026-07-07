@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 const defaultActivityCap = 200

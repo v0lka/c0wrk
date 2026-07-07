@@ -3,9 +3,9 @@ package orchestration
 import (
 	"log/slog"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // Config holds configuration for the Orchestrator.

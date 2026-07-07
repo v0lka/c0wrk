@@ -192,8 +192,8 @@ The routing decision drives two downstream behaviours:
 
 ```go
 import (
-    "github.com/v0lka/c0wrk/sdk/agent/router"
-    "github.com/v0lka/c0wrk/sdk/llm"
+    "github.com/v0lka/sp4rk/agent/router"
+    "github.com/v0lka/sp4rk/llm"
 )
 
 rt := router.NewRouter(llmCaller, router.Config{

@@ -15,7 +15,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/sp4rk/orchestration"
 )
 
 // testManager creates a Manager with a mock factory for testing.
@@ -1441,6 +1441,9 @@ func (m *mockSessionStoreForRestore) LoadMessages(_ context.Context, _ string) (
 	return []ChatMessage{}, nil
 }
 func (m *mockSessionStoreForRestore) DeleteMessages(_ context.Context, _ string) error { return nil }
+func (m *mockSessionStoreForRestore) ResolvePendingMessage(_ context.Context, _, _, _, _ string, _ map[string]any) error {
+	return nil
+}
 func (m *mockSessionStoreForRestore) SaveTerminalCommand(_ context.Context, _, _ string) error {
 	return nil
 }

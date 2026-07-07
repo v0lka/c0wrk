@@ -19,9 +19,9 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // contextKey is a type for context keys in the session package.

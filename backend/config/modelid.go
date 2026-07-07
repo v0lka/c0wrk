@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/sp4rk/llm"
 )
 
 // This file implements the config-layer composite model identifier helpers.

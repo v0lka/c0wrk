@@ -1,4 +1,3 @@
-// Package mcp provides Model Context Protocol server integration and tool proxying.
 package mcp
 
 import (
@@ -9,7 +8,7 @@ import (
 	"sort"
 	"sync"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // Gateway manages connections to multiple MCP servers and provides
@@ -97,11 +96,8 @@ func (g *Gateway) Start(ctx context.Context, configs map[string]ServerConfig) er
 // Tools are registered with the server name as their source for proper unregistration.
 func (g *Gateway) RegisterTools(registry *sdktools.ToolRegistry) error {
 	g.mu.RLock()
-	sanitizer := g.schemaSanitizer
-	g.mu.RUnlock()
-
-	g.mu.RLock()
 	defer g.mu.RUnlock()
+	sanitizer := g.schemaSanitizer
 
 	for name, server := range g.servers {
 		for _, toolInfo := range server.Tools() {

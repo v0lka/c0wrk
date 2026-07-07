@@ -8,8 +8,8 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/session"
 	coretools "github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // extractPayload performs the standard data[0].(map[string]any) shape check
@@ -113,6 +113,15 @@ func (a *App) handleToolConfirmResponse(payload map[string]any, log *slog.Logger
 	}
 
 	a.pendingConfirmations.Delete(requestID)
+
+	// Mark the persisted tool_confirm message as resolved so it doesn't
+	// reappear as pending on session reload.
+	if err := a.resolvePendingMessage(confirmData.sessionID, "tool_confirm", "confirm_id", requestID, map[string]any{
+		"resolved": true,
+		"decision": int(resp),
+	}); err != nil {
+		log.Warn("failed to resolve persisted tool_confirm message", "confirm_id", requestID, "error", err)
+	}
 }
 
 // handleToolJudgeRequest is the body of the EventToolJudgeRequest listener.
@@ -221,7 +230,7 @@ func (a *App) handleAskUserResponse(payload map[string]any, log *slog.Logger) {
 		log.Warn("no pending ask_user for request_id", "request_id", requestID)
 		return
 	}
-	ch, ok := chVal.(chan coretools.AskUserResponse)
+	entry, ok := chVal.(*pendingAskUserEntry)
 	if !ok {
 		log.Warn("pending ask_user channel has wrong type", "request_id", requestID)
 		a.pendingAskUser.Delete(requestID)
@@ -229,12 +238,20 @@ func (a *App) handleAskUserResponse(payload map[string]any, log *slog.Logger) {
 	}
 
 	select {
-	case ch <- resp:
+	case entry.ch <- resp:
 	default:
 		log.Warn("ask_user response dropped: channel full or receiver gone",
 			"request_id", requestID)
 	}
 	a.pendingAskUser.Delete(requestID)
+
+	// Mark the persisted ask_user message as resolved so it doesn't reappear
+	// as pending on session reload.
+	if err := a.resolvePendingMessage(entry.sessionID, "ask_user", "request_id", requestID, map[string]any{
+		"resolved": true,
+	}); err != nil {
+		log.Warn("failed to resolve persisted ask_user message", "request_id", requestID, "error", err)
+	}
 }
 
 // handlePlanApprovalResponse is the body of the EventPlanApprovalResponse listener.
@@ -252,7 +269,7 @@ func (a *App) handlePlanApprovalResponse(payload map[string]any, log *slog.Logge
 		log.Warn("no pending plan approval for request_id", "request_id", requestID)
 		return
 	}
-	ch, ok := chVal.(chan planApprovalResponse)
+	entry, ok := chVal.(*pendingPlanApprovalEntry)
 	if !ok {
 		log.Warn("pending plan approval channel has wrong type", "request_id", requestID)
 		a.pendingPlanApprovals.Delete(requestID)
@@ -260,12 +277,21 @@ func (a *App) handlePlanApprovalResponse(payload map[string]any, log *slog.Logge
 	}
 
 	select {
-	case ch <- planApprovalResponse{Decision: decision, Feedback: feedback}:
+	case entry.ch <- planApprovalResponse{Decision: decision, Feedback: feedback}:
 	default:
 		log.Warn("plan approval response dropped: channel full or receiver gone",
 			"request_id", requestID)
 	}
 	a.pendingPlanApprovals.Delete(requestID)
+
+	// Mark the persisted plan_review message as resolved so it doesn't
+	// reappear as pending on session reload.
+	if err := a.resolvePendingMessage(entry.sessionID, "plan_review", "request_id", requestID, map[string]any{
+		"resolved": true,
+		"decision": decision,
+	}); err != nil {
+		log.Warn("failed to resolve persisted plan_review message", "request_id", requestID, "error", err)
+	}
 }
 
 // parseAskUserAnswers extracts the typed answers slice from the untyped JSON
@@ -335,7 +361,7 @@ func (a *App) handleStepLimitResponse(payload map[string]any, log *slog.Logger) 
 		log.Warn("no pending step_limit for request_id", "request_id", requestID)
 		return
 	}
-	ch, ok := chVal.(chan agent.StepLimitResponse)
+	entry, ok := chVal.(*pendingStepLimitEntry)
 	if !ok {
 		log.Warn("pending step_limit channel has wrong type", "request_id", requestID)
 		a.pendingStepLimit.Delete(requestID)
@@ -343,10 +369,19 @@ func (a *App) handleStepLimitResponse(payload map[string]any, log *slog.Logger) 
 	}
 
 	select {
-	case ch <- resp:
+	case entry.ch <- resp:
 	default:
 		log.Warn("step_limit response dropped: channel full or receiver gone",
 			"request_id", requestID)
 	}
 	a.pendingStepLimit.Delete(requestID)
+
+	// Mark the persisted step_limit message as resolved so it doesn't
+	// reappear as pending on session reload.
+	if err := a.resolvePendingMessage(entry.sessionID, "step_limit", "request_id", requestID, map[string]any{
+		"resolved": true,
+		"response": respStr,
+	}); err != nil {
+		log.Warn("failed to resolve persisted step_limit message", "request_id", requestID, "error", err)
+	}
 }

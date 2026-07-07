@@ -6,16 +6,26 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	md "github.com/JohannesKaufmann/html-to-markdown"
 	"github.com/go-shiori/go-readability"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const toolWebfetchDescription = `Fetch a web page by URL and convert its HTML content to markdown for easy reading. Only HTTP and HTTPS URLs are supported. requests time out after 30 seconds, and up to 10 redirects are followed. Supports optional start_line/end_line parameters for paginated reading of large pages.`
+
+// maxWebFetchBodyBytes caps the response body buffered during fetch to bound
+// memory consumption. The centralized truncation layer only limits what
+// reaches the model; without this cap a malicious server could exhaust memory
+// with an unbounded response before any output truncation runs. Fetches that
+// exceed the cap fail closed rather than silently truncating (which would
+// yield broken HTML/markdown).
+const maxWebFetchBodyBytes = 10 * 1024 * 1024 // 10 MB
 
 // WebFetchTool fetches web pages and converts HTML to markdown.
 type WebFetchTool struct {
@@ -24,13 +34,41 @@ type WebFetchTool struct {
 	limits WebFetchLimits
 }
 
+// newSSRFSafeTransport clones base (or creates a new transport if base is nil)
+// and configures its DialContext with a net.Dialer whose Control function
+// rejects connections to private/reserved IP addresses at TCP connect time.
+// This closes the DNS rebinding TOCTOU window between Judge's pre-flight
+// resolution and the actual dial: a host could resolve to a public IP during
+// Judge and a private IP during the dial.
+func newSSRFSafeTransport(base *http.Transport) *http.Transport {
+	var t *http.Transport
+	if base != nil {
+		t = base.Clone()
+	} else {
+		t = &http.Transport{}
+	}
+
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control:   ssrfSafeControl,
+	}
+	t.DialContext = dialer.DialContext
+
+	return t
+}
+
 // NewWebFetchTool creates a new WebFetchTool with specified limits.
 func NewWebFetchTool(limits WebFetchLimits) *WebFetchTool {
 	return NewWebFetchToolWithClient(limits, nil)
 }
 
 // NewWebFetchToolWithClient creates a new WebFetchTool with specified limits
-// and an optional HTTP client. If client is nil, a default client is created.
+// and an optional HTTP client. If client is nil, a default client with an
+// SSRF-safe transport is created. If client is provided and its Transport is
+// an *http.Transport, the transport is cloned and wrapped with SSRF-safe
+// dialing; otherwise the client is left as-is (e.g. custom RoundTripper or
+// nil transport using http.DefaultTransport).
 func NewWebFetchToolWithClient(limits WebFetchLimits, client *http.Client) *WebFetchTool {
 	schema := `{
 		"type": "object",
@@ -52,12 +90,38 @@ func NewWebFetchToolWithClient(limits WebFetchLimits, client *http.Client) *WebF
 	}`
 
 	if client == nil {
-		client = &http.Client{Timeout: limits.Timeout}
+		client = &http.Client{
+			Timeout:   limits.Timeout,
+			Transport: newSSRFSafeTransport(nil),
+		}
+	} else if transport, ok := client.Transport.(*http.Transport); ok {
+		// Wrap the caller's transport with SSRF-safe dialing. Clone preserves
+		// existing settings (proxy, TLS config, etc.) while adding the
+		// dial-time private-IP check.
+		client.Transport = newSSRFSafeTransport(transport)
+	} else if client.Transport == nil {
+		// nil Transport means http.DefaultTransport will be used. Wrap it
+		// with SSRF-safe dialing so the protection applies even when the
+		// caller didn't set an explicit transport.
+		if defaultT, ok := http.DefaultTransport.(*http.Transport); ok {
+			client.Transport = newSSRFSafeTransport(defaultT)
+		}
 	}
-	// Always enforce redirect limit
+	// If client is provided but its Transport is not an *http.Transport and
+	// not nil (e.g. a custom RoundTripper), leave it as-is.
+	// Always enforce redirect limit and SSRF protection on redirect targets.
+	// The initial URL is validated by Judge, but an HTTP redirect could
+	// otherwise bypass it (e.g. a public URL 302-ing to 169.254.169.254).
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return errors.New("too many redirects (max 10)")
+		}
+		addr, private, chkErr := resolveHostIsPrivate(req.Context(), req.URL.String())
+		if chkErr != nil {
+			return fmt.Errorf("SSRF check on redirect target failed: %w", chkErr)
+		}
+		if private {
+			return fmt.Errorf("redirect to private/reserved address refused: %s", addr)
 		}
 		return nil
 	}
@@ -215,11 +279,17 @@ func (t *WebFetchTool) fetchPage(ctx context.Context, targetURL string) (string,
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// Read full response body; output size is managed by the centralized
-	// caching+truncation layer (no pre-cache truncation).
-	body, err := io.ReadAll(resp.Body)
+	// Cap the response body to bound memory use; the centralized
+	// caching+truncation layer only limits what reaches the model, not the
+	// bytes buffered during fetch. Fail closed when the cap is exceeded
+	// rather than silently truncating (which would yield broken HTML).
+	limited := io.LimitReader(resp.Body, maxWebFetchBodyBytes+1)
+	body, err := io.ReadAll(limited)
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+	if len(body) > maxWebFetchBodyBytes {
+		return "", fmt.Errorf("response body exceeds %d byte limit", maxWebFetchBodyBytes)
 	}
 
 	return string(body), nil

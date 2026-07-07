@@ -1,8 +1,6 @@
 # Example 02 — Custom Tools
 
-Build a custom tool that implements the `tools.Tool` interface, register it
-alongside SDK built-in tools, and give the agent a workspace to read/write
-files.
+Build a custom tool that implements the `tools.Tool` interface, register it alongside SDK built-in tools, and give the agent a workspace to read/write files.
 
 ## What you will learn
 
@@ -47,8 +45,7 @@ type Tool interface {
 }
 ```
 
-`tools.BaseTool` provides default implementations for everything except
-`Execute`, so concrete tools only need to implement that one method:
+`tools.BaseTool` provides default implementations for everything except `Execute`, so concrete tools only need to implement that one method:
 
 ```go
 type CalculatorTool struct {
@@ -79,17 +76,11 @@ func (t *CalculatorTool) Execute(_ context.Context, input json.RawMessage) (tool
 | `PolicyUserConfirm`| Always ask the user before executing         |
 | `PolicyAlwaysDeny` | Block the tool entirely                      |
 
-The calculator uses `PolicyAlwaysAllow` because it's read-only and safe.
-Destructive tools (write_file, delete_file) typically use `PolicyUserConfirm`
-— see **example 04** for a custom HITL handler.
+The calculator uses `PolicyAlwaysAllow` because it's read-only and safe. Destructive tools (write_file, delete_file) typically use `PolicyUserConfirm` — see **example 04** for a custom HITL handler.
 
 ### 3. IsUntrusted
 
-`IsUntrusted() bool` marks whether the tool returns external data (web, MCP,
-filesystem). When `true`, the executor wraps the tool's output in
-`<untrusted-content>` tags before injecting it into the LLM context as a
-prompt-injection defence. The calculator returns trusted internal data, so
-it's `false` (the `BaseTool` default).
+`IsUntrusted() bool` marks whether the tool returns external data (web, MCP, filesystem). When `true`, the executor wraps the tool's output in `<untrusted-content>` tags before injecting it into the LLM context as a prompt-injection defence. The calculator returns trusted internal data, so it's `false` (the `BaseTool` default).
 
 ### 4. Registering built-in tools
 
@@ -101,23 +92,18 @@ registry.Register(builtins.NewWriteFileTool())
 registry.Register(builtins.NewListDirectoryTool())
 ```
 
-Other available built-ins include `bash_exec`, `edit_file`, `glob`, `ripgrep`,
-`web_fetch`, `web_search`, `create_directory`, `delete_file`, and more. Each
-has a `New*Tool()` constructor.
+Other available built-ins include `bash_exec`, `edit_file`, `glob`, `ripgrep`, `web_fetch`, `web_search`, `create_directory`, `delete_file`, and more. Each has a `New*Tool()` constructor.
 
 ### 5. Workspace path via context
 
-File tools need to know where the workspace is. They retrieve it via
-`tools.WorkspacePathFrom(ctx)`. The caller injects it with
-`tools.WithWorkspacePath`:
+File tools need to know where the workspace is. They retrieve it via `tools.WorkspacePathFrom(ctx)`. The caller injects it with `tools.WithWorkspacePath`:
 
 ```go
 ctx := tools.WithWorkspacePath(context.Background(), workspaceDir)
 result, err := fw.Execute(ctx, systemPrompt, events, task)
 ```
 
-This context propagates through the Conductor → Executor → tool execution,
-so every tool call sees the workspace path.
+This context propagates through the Conductor → Executor → tool execution, so every tool call sees the workspace path.
 
 ## Files
 
@@ -142,17 +128,16 @@ go run main.go
 ## Expected output
 
 ```
-Workspace: /tmp/c0wrk-example-02-123456
+Workspace: /tmp/sp4rk-example-02-123456
 
 Status: success
 Output: I computed 17 * 23 + 100 = 491 using the calculator tool, wrote the
 result to result.txt, and read it back to verify the file contains "491".
 
-File /tmp/c0wrk-example-02-123456/result.txt contains:
+File /tmp/sp4rk-example-02-123456/result.txt contains:
 491
 ```
 
 ## Next
 
-→ **03-event-streaming** — observe the agent's thoughts, tool calls, and
-results in real time via a custom `AgentEvents` implementation.
+→ **03-event-streaming** — observe the agent's thoughts, tool calls, and results in real time via a custom `AgentEvents` implementation.

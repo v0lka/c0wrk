@@ -3,8 +3,8 @@ package core
 import (
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/orchestration"
 )
 
 func TestInlineStepLifecycle_OnChecklistUpdate_EmitsStepTodoUpdateAndInferredPlanStepStart(t *testing.T) {
@@ -50,10 +50,12 @@ func TestInlineStepLifecycle_OnChecklistUpdate_EmitsStepTodoUpdateAndInferredPla
 
 	// PlanStepStart must be emitted before StepTodoUpdate so the frontend
 	// opens the step container before the checklist arrives (nesting).
-	if len(emitter.eventOrder) != 2 ||
-		emitter.eventOrder[0] != "plan_step_start" ||
-		emitter.eventOrder[1] != "step_todo_update" {
-		t.Errorf("expected [plan_step_start, step_todo_update], got %v", emitter.eventOrder)
+	// SetCurrentStepID is called first to scope subsequent executor events.
+	if len(emitter.eventOrder) != 3 ||
+		emitter.eventOrder[0] != "set_current_step_id" ||
+		emitter.eventOrder[1] != "plan_step_start" ||
+		emitter.eventOrder[2] != "step_todo_update" {
+		t.Errorf("expected [set_current_step_id, plan_step_start, step_todo_update], got %v", emitter.eventOrder)
 	}
 }
 
@@ -177,11 +179,13 @@ func TestInlineStepLifecycle_CompleteStep_NotStartedInPlanSynthesizesStartAndCom
 			emitter.planStepCompletes[0].stepID, emitter.planStepCompletes[0].success)
 	}
 	// Start must be emitted before complete so the frontend opens the step
-	// container before the terminal status arrives.
-	if len(emitter.eventOrder) != 2 ||
+	// container before the terminal status arrives. The scope is cleared
+	// after the complete.
+	if len(emitter.eventOrder) != 3 ||
 		emitter.eventOrder[0] != "plan_step_start" ||
-		emitter.eventOrder[1] != "plan_step_complete" {
-		t.Errorf("expected [plan_step_start, plan_step_complete], got %v", emitter.eventOrder)
+		emitter.eventOrder[1] != "plan_step_complete" ||
+		emitter.eventOrder[2] != "set_current_step_id" {
+		t.Errorf("expected [plan_step_start, plan_step_complete, set_current_step_id], got %v", emitter.eventOrder)
 	}
 }
 
@@ -279,10 +283,13 @@ func TestInlineStepLifecycle_CompleteAll_AutoCompletesNeverStartedPlanSteps(t *t
 			t.Errorf("planStepStart[%d] (%q): expected description from plan, got empty", i, s.stepID)
 		}
 	}
-	// eventOrder must alternate start→complete for each step.
-	for i := 0; i < len(emitter.eventOrder); i += 2 {
-		if emitter.eventOrder[i] != "plan_step_start" || emitter.eventOrder[i+1] != "plan_step_complete" {
-			t.Errorf("expected plan_step_start→plan_step_complete pair at index %d, got %v", i, emitter.eventOrder)
+	// eventOrder must alternate start→complete for each step, with a
+	// trailing set_current_step_id (the scope clear from completeAll).
+	pairs := len(emitter.planStepStarts)
+	for i := 0; i < pairs; i++ {
+		idx := i * 2
+		if emitter.eventOrder[idx] != "plan_step_start" || emitter.eventOrder[idx+1] != "plan_step_complete" {
+			t.Errorf("expected plan_step_start→plan_step_complete pair at index %d, got %v", idx, emitter.eventOrder)
 		}
 	}
 }
@@ -314,12 +321,13 @@ func TestInlineStepLifecycle_CompleteAll_MixedStartedAndNeverStartedSteps(t *tes
 		t.Fatalf("expected 3 PlanStepStart (1 checklist + 2 synthesized), got %d", len(emitter.planStepStarts))
 	}
 	// The first start is step_1's, emitted before its step_todo_update (from
-	// the checklist), proving it is not a completeAll synthesis.
+	// the checklist), proving it is not a completeAll synthesis. SetCurrentStepID
+	// precedes the start to scope subsequent events.
 	if emitter.planStepStarts[0].stepID != "step_1" {
 		t.Errorf("expected first start to be step_1 (from checklist), got %q", emitter.planStepStarts[0].stepID)
 	}
-	if len(emitter.eventOrder) < 2 || emitter.eventOrder[0] != "plan_step_start" || emitter.eventOrder[1] != "step_todo_update" {
-		t.Errorf("expected step_1 start before step_todo_update, got %v", emitter.eventOrder)
+	if len(emitter.eventOrder) < 3 || emitter.eventOrder[0] != "set_current_step_id" || emitter.eventOrder[1] != "plan_step_start" || emitter.eventOrder[2] != "step_todo_update" {
+		t.Errorf("expected step_1 [set_current_step_id, plan_step_start, step_todo_update], got %v", emitter.eventOrder)
 	}
 }
 
@@ -400,5 +408,157 @@ func TestSubagentTodoCallback_EmitsOnlyStepTodoUpdate(t *testing.T) {
 	}
 	if len(emitter.planStepCompletes) != 0 {
 		t.Errorf("subagent callback should NOT emit PlanStepComplete, got %d", len(emitter.planStepCompletes))
+	}
+}
+
+func TestInlineStepLifecycle_OnChecklistUpdate_SetsCurrentStepIDBeforePlanStepStart(t *testing.T) {
+	emitter := &mockEmitter{}
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{
+		Steps: []orchestration.PlanStep{{ID: "step_1", Summary: "S", Description: "D"}},
+	})
+
+	lc := newInlineStepLifecycle(emitter, bb)
+	lc.onChecklistUpdate("step_1", []agent.TodoItem{{Text: "A", Checked: false}})
+
+	if len(emitter.setCurrentStepIDs) != 1 {
+		t.Fatalf("expected 1 SetCurrentStepID call, got %d", len(emitter.setCurrentStepIDs))
+	}
+	if emitter.setCurrentStepIDs[0] != "step_1" {
+		t.Errorf("expected SetCurrentStepID('step_1'), got %q", emitter.setCurrentStepIDs[0])
+	}
+	// SetCurrentStepID must be called BEFORE PlanStepStart so that subsequent
+	// executor events (and even the PlanStepStart itself) carry plan_step_id.
+	if len(emitter.eventOrder) != 3 ||
+		emitter.eventOrder[0] != "set_current_step_id" ||
+		emitter.eventOrder[1] != "plan_step_start" ||
+		emitter.eventOrder[2] != "step_todo_update" {
+		t.Errorf("expected [set_current_step_id, plan_step_start, step_todo_update], got %v", emitter.eventOrder)
+	}
+}
+
+func TestInlineStepLifecycle_OnChecklistUpdate_SecondUpdateDoesNotResetScope(t *testing.T) {
+	emitter := &mockEmitter{}
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{
+		Steps: []orchestration.PlanStep{{ID: "step_1", Summary: "S", Description: "D"}},
+	})
+
+	lc := newInlineStepLifecycle(emitter, bb)
+	lc.onChecklistUpdate("step_1", []agent.TodoItem{{Text: "A", Checked: false}})
+	lc.onChecklistUpdate("step_1", []agent.TodoItem{{Text: "A", Checked: true}})
+
+	// Only the first checklist update for a step sets the scope — subsequent
+	// updates (item checked off) must not call SetCurrentStepID again.
+	if len(emitter.setCurrentStepIDs) != 1 {
+		t.Errorf("expected 1 SetCurrentStepID (deduped on second update), got %d", len(emitter.setCurrentStepIDs))
+	}
+}
+
+func TestInlineStepLifecycle_OnChecklistUpdate_StandaloneDoesNotSetScope(t *testing.T) {
+	emitter := &mockEmitter{}
+	lc := newInlineStepLifecycle(emitter, orchestration.NewMapBlackboard())
+
+	lc.onChecklistUpdate("", []agent.TodoItem{{Text: "Standalone", Checked: false}})
+
+	if len(emitter.setCurrentStepIDs) != 0 {
+		t.Errorf("standalone checklist should NOT call SetCurrentStepID, got %d calls", len(emitter.setCurrentStepIDs))
+	}
+}
+
+func TestInlineStepLifecycle_CompleteStep_ClearsCurrentStepID(t *testing.T) {
+	emitter := &mockEmitter{}
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{
+		Steps: []orchestration.PlanStep{{ID: "step_1", Summary: "S", Description: "D"}},
+	})
+
+	lc := newInlineStepLifecycle(emitter, bb)
+	lc.onChecklistUpdate("step_1", []agent.TodoItem{{Text: "A", Checked: false}})
+	lc.completeStep("step_1", true, "")
+
+	// After completion: [set step_1, plan_step_start, step_todo_update, plan_step_complete, set ""].
+	if len(emitter.setCurrentStepIDs) != 2 {
+		t.Fatalf("expected 2 SetCurrentStepID calls (set + clear), got %d", len(emitter.setCurrentStepIDs))
+	}
+	if emitter.setCurrentStepIDs[0] != "step_1" {
+		t.Errorf("expected first SetCurrentStepID('step_1'), got %q", emitter.setCurrentStepIDs[0])
+	}
+	if emitter.setCurrentStepIDs[1] != "" {
+		t.Errorf("expected second SetCurrentStepID('') to clear, got %q", emitter.setCurrentStepIDs[1])
+	}
+	// The clear must happen AFTER PlanStepComplete so the complete event
+	// itself is still scoped (harmless either way, but consistent ordering).
+	if emitter.eventOrder[len(emitter.eventOrder)-1] != "set_current_step_id" {
+		t.Errorf("expected set_current_step_id last (after plan_step_complete), got %v", emitter.eventOrder)
+	}
+}
+
+func TestInlineStepLifecycle_CompleteStep_NotStartedInPlanStillClearsScope(t *testing.T) {
+	emitter := &mockEmitter{}
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{
+		Steps: []orchestration.PlanStep{{ID: "step_4", Summary: "V", Description: "V"}},
+	})
+
+	lc := newInlineStepLifecycle(emitter, bb)
+	// Step was never started via checklist — completeStep synthesizes start
+	// then complete. The scope should still be cleared afterwards.
+	lc.completeStep("step_4", true, "")
+
+	if len(emitter.setCurrentStepIDs) != 1 {
+		t.Fatalf("expected 1 SetCurrentStepID (clear only, no start), got %d", len(emitter.setCurrentStepIDs))
+	}
+	if emitter.setCurrentStepIDs[0] != "" {
+		t.Errorf("expected SetCurrentStepID('') to clear, got %q", emitter.setCurrentStepIDs[0])
+	}
+}
+
+func TestInlineStepLifecycle_CompleteAll_ClearsCurrentStepID(t *testing.T) {
+	emitter := &mockEmitter{}
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{
+		Steps: []orchestration.PlanStep{{ID: "step_1", Summary: "A", Description: "A"}},
+	})
+
+	lc := newInlineStepLifecycle(emitter, bb)
+	lc.onChecklistUpdate("step_1", []agent.TodoItem{{Text: "A", Checked: false}})
+	lc.completeAll(true, "")
+
+	// [set step_1, plan_step_start, step_todo_update, plan_step_complete, set ""]
+	if len(emitter.setCurrentStepIDs) != 2 {
+		t.Fatalf("expected 2 SetCurrentStepID calls (set + clear), got %d", len(emitter.setCurrentStepIDs))
+	}
+	if emitter.setCurrentStepIDs[len(emitter.setCurrentStepIDs)-1] != "" {
+		t.Errorf("expected last SetCurrentStepID('') to clear after completeAll, got %q",
+			emitter.setCurrentStepIDs[len(emitter.setCurrentStepIDs)-1])
+	}
+}
+
+func TestInlineStepLifecycle_StepTransition_UpdatesScopePerStep(t *testing.T) {
+	emitter := &mockEmitter{}
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{
+		Steps: []orchestration.PlanStep{
+			{ID: "step_1", Summary: "A", Description: "A"},
+			{ID: "step_2", Summary: "B", Description: "B"},
+		},
+	})
+
+	lc := newInlineStepLifecycle(emitter, bb)
+	// Start and complete step_1, then start step_2.
+	lc.onChecklistUpdate("step_1", []agent.TodoItem{{Text: "A", Checked: false}})
+	lc.completeStep("step_1", true, "")
+	lc.onChecklistUpdate("step_2", []agent.TodoItem{{Text: "B", Checked: false}})
+
+	// Expected SetCurrentStepID sequence: "step_1", "", "step_2".
+	want := []string{"step_1", "", "step_2"}
+	if len(emitter.setCurrentStepIDs) != len(want) {
+		t.Fatalf("expected %d SetCurrentStepID calls, got %d: %v", len(want), len(emitter.setCurrentStepIDs), emitter.setCurrentStepIDs)
+	}
+	for i, w := range want {
+		if emitter.setCurrentStepIDs[i] != w {
+			t.Errorf("SetCurrentStepID[%d] = %q, want %q", i, emitter.setCurrentStepIDs[i], w)
+		}
 	}
 }

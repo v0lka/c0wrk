@@ -5,6 +5,7 @@ import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isAskUserData, isStepLimitData, isTaskFailedResumableData, isPlanReviewReadyData } from '@/types/events'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import { generateMessageId } from '@/lib/ids'
+import { handleAskUserEvent, handleStepLimitEvent, handlePlanReviewEvent } from './hitlHandlers'
 
 export function useActionEvents(sessionId: string | null): void {
   useEffect(() => {
@@ -16,18 +17,7 @@ export function useActionEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'ask_user', (data) => {
         if (!isAskUserData(data)) { reportDroppedEvent('ask_user', data); return }
-        useChatStore.getState().addMessage(sessionId, {
-          id: `ask-user-${data.request_id}`,
-          sessionId,
-          type: 'ask_user',
-          content: data.questions.map(q => q.question).join('; '),
-          metadata: {
-            request_id: data.request_id,
-            questions: data.questions,
-          } as Record<string, unknown>,
-          timestamp: Date.now(),
-        })
-        useChatStore.getState().setActivityStatus('Waiting for your answer...')
+        handleAskUserEvent(sessionId, data)
       }),
     )
 
@@ -35,26 +25,7 @@ export function useActionEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'step_limit', (data) => {
         if (!isStepLimitData(data)) { reportDroppedEvent('step_limit', data); return }
-        useChatStore.getState().addMessage(sessionId, {
-          id: `step-limit-${data.request_id}`,
-          sessionId,
-          type: 'step_limit',
-          content: data.reason
-            ? `Circuit breaker: ${data.reason}`
-            : `Step limit reached: ${data.current_step} of ${data.max_steps}`,
-          metadata: {
-            request_id: data.request_id,
-            current_step: data.current_step,
-            max_steps: data.max_steps,
-            reason: data.reason,
-          } as Record<string, unknown>,
-          timestamp: Date.now(),
-        })
-        useChatStore.getState().setActivityStatus(
-          data.reason
-            ? 'Circuit breaker triggered — awaiting decision...'
-            : 'Step limit reached — awaiting decision...',
-        )
+        handleStepLimitEvent(sessionId, data)
       }),
     )
 
@@ -99,19 +70,7 @@ export function useActionEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'plan_review_ready', (data) => {
         if (!isPlanReviewReadyData(data)) { reportDroppedEvent('plan_review_ready', data); return }
-        useChatStore.getState().addMessage(sessionId, {
-          id: `plan-review-${data.request_id}`,
-          sessionId,
-          type: 'plan_review',
-          content: data.plan_content,
-          metadata: {
-            request_id: data.request_id,
-            plan_path: data.plan_path,
-            resolved: false,
-          } as Record<string, unknown>,
-          timestamp: Date.now(),
-        })
-        useChatStore.getState().setActivityStatus('Plan is ready for review...')
+        handlePlanReviewEvent(sessionId, data)
       }),
     )
 

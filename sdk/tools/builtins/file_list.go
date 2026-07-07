@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const toolListDirectoryDescription = `Lists the immediate contents of a directory, returning each entry's name, type (file or dir), and size in bytes. Does not recurse into subdirectories.`

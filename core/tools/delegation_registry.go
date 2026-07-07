@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/sp4rk/agent"
 )
 
 // DelegationStatus tracks the lifecycle of a single delegation.

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 const toolCancelDelegationDescription = `Cancel a pending or running async delegation by its ID. The subagent's context is cancelled and the delegation is marked cancelled. No-op for already completed, failed, or cancelled delegations. Use this before calling finish if you have pending async delegations you no longer need.`

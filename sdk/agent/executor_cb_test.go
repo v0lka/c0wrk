@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // --- Setter method tests ---
@@ -217,6 +217,57 @@ func TestCheckFruitlessResult_LargeResultResets(t *testing.T) {
 	}
 }
 
+// --- checkFruitlessResult: exempt tools (mutating tools, meta-tools) ---
+
+func TestCheckFruitlessResult_ExemptToolsNotCounted(t *testing.T) {
+	cfg := CircuitBreakerConfig{
+		RepeatNudgeThreshold:         3,
+		RepeatAbortThreshold:         5,
+		TruncationAbortThreshold:     3,
+		ParseErrorAbortThreshold:     3,
+		FruitlessNudgeThreshold:      3,
+		FruitlessAbortThreshold:      4,
+		FruitlessMaxResultLen:        48,
+		SameToolRepeatNudgeThreshold: 50,
+		SameToolRepeatAbortThreshold: 60,
+		SameToolResultSizeDelta:      64,
+	}
+	// Each exempt tool produces a short successful result (e.g. edit_file
+	// returns "successfully edited file" = 24 bytes). None should increment
+	// the fruitless counter, even when called many times in a row.
+	exemptTools := []string{
+		"edit_file", "write_file", "create_directory",
+		"delete_file", "delete_directory",
+		"update_checklist", "set_step_status", "store_fact",
+	}
+	for _, toolName := range exemptTools {
+		t.Run(toolName, func(t *testing.T) {
+			exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+			for i := 0; i < 10; i++ {
+				act, result, err := exec.checkFruitlessResult(
+					context.Background(),
+					llm.ToolCall{Name: toolName},
+					0, "ok", false,
+					&runState{effectiveMaxSteps: 10},
+					newMockContextManager(),
+				)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if result != nil {
+					t.Errorf("expected nil result for exempt tool %s at iteration %d, got abort", toolName, i)
+				}
+				if act != actionNone {
+					t.Errorf("expected actionNone for exempt tool %s at iteration %d, got %v", toolName, i, act)
+				}
+			}
+			if exec.consecutiveFruitlessCount != 0 {
+				t.Errorf("fruitless count should be 0 for exempt tool %s after 10 short results, got %d", toolName, exec.consecutiveFruitlessCount)
+			}
+		})
+	}
+}
+
 // --- checkSameToolRepetition edge cases ---
 
 func TestCheckSameToolRepetition_StoreFactResets(t *testing.T) {
@@ -253,6 +304,57 @@ func TestCheckSameToolRepetition_StoreFactResets(t *testing.T) {
 	)
 	if exec.sameToolConsecutiveCount != 0 {
 		t.Errorf("sameToolConsecutiveCount should be 0 after store_fact, got %d", exec.sameToolConsecutiveCount)
+	}
+}
+
+func TestCheckSameToolRepetition_ExemptToolsNotCounted(t *testing.T) {
+	cfg := CircuitBreakerConfig{
+		RepeatNudgeThreshold:         3,
+		RepeatAbortThreshold:         5,
+		TruncationAbortThreshold:     3,
+		ParseErrorAbortThreshold:     3,
+		FruitlessNudgeThreshold:      50,
+		FruitlessAbortThreshold:      60,
+		FruitlessMaxResultLen:        48,
+		SameToolRepeatNudgeThreshold: 3,
+		SameToolRepeatAbortThreshold: 4,
+		SameToolResultSizeDelta:      128,
+	}
+	// Mutating tools and meta-tools legitimately produce bursts of short,
+	// similarly-sized successful results (e.g. batch edit_file calls each
+	// returning "successfully edited file" = 24 bytes). They must not trigger
+	// the same-tool-repeat detector.
+	exemptTools := []string{
+		"edit_file", "write_file", "create_directory",
+		"delete_file", "delete_directory",
+		"update_checklist", "set_step_status", "store_fact",
+	}
+	for _, toolName := range exemptTools {
+		t.Run(toolName, func(t *testing.T) {
+			exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, cfg)
+			for i := 0; i < 10; i++ {
+				act, result, err := exec.checkSameToolRepetition(
+					context.Background(),
+					llm.ToolCall{Name: toolName},
+					0, "ok",
+					tools.ToolResult{Content: "ok"},
+					&runState{effectiveMaxSteps: 10},
+					newMockContextManager(),
+				)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if result != nil {
+					t.Errorf("expected nil result for exempt tool %s at iteration %d, got abort", toolName, i)
+				}
+				if act != actionNone {
+					t.Errorf("expected actionNone for exempt tool %s at iteration %d, got %v", toolName, i, act)
+				}
+			}
+			if exec.sameToolConsecutiveCount != 0 {
+				t.Errorf("sameToolConsecutiveCount should be 0 for exempt tool %s after 10 calls, got %d", toolName, exec.sameToolConsecutiveCount)
+			}
+		})
 	}
 }
 

@@ -1,16 +1,11 @@
 # Reflector
 
-The `reflector` package provides structured self-correction for agent
-execution. After a step fails, a `Reflector` analyses the execution
-trajectory — the sequence of thoughts, actions, and observations the agent
-produced — and returns a `Reflection` containing a root-cause analysis and a
-suggested recovery action.
+The `reflector` package provides structured self-correction for agent execution. After a step fails, a `Reflector` analyses the execution trajectory — the sequence of thoughts, actions, and observations the agent produced — and returns a `Reflection` containing a root-cause analysis and a suggested recovery action.
 
-The reflector implements the `orchestration.Reflector` interface, so it drops
-into any orchestrator that supports reflection-driven retry loops.
+The reflector implements the `orchestration.Reflector` interface, so it drops into any orchestrator that supports reflection-driven retry loops.
 
 ```go
-import "github.com/v0lka/c0wrk/sdk/agent/reflector"
+import "github.com/v0lka/sp4rk/agent/reflector"
 ```
 
 ---
@@ -40,10 +35,7 @@ type Reflector struct {
 }
 ```
 
-`Reflector` analyses an execution trajectory to produce structured
-self-correction insights. It is a stateless wrapper around an LLM caller: each
-call to `Reflect` sends the trajectory, the plan, and any prior reflections to
-the LLM and parses the JSON response into an `orchestration.Reflection`.
+`Reflector` analyses an execution trajectory to produce structured self-correction insights. It is a stateless wrapper around an LLM caller: each call to `Reflect` sends the trajectory, the plan, and any prior reflections to the LLM and parses the JSON response into an `orchestration.Reflection`.
 
 The reflector satisfies `orchestration.Reflector` at compile time:
 
@@ -57,9 +49,7 @@ var _ orchestration.Reflector = (*Reflector)(nil)
 func NewReflector(caller agent.LLMCaller, cfg Config) *Reflector
 ```
 
-Creates a new Reflector with the given LLM caller and configuration. If
-`cfg.AnalyzeFooter` is empty, a standard analysis request is used as the
-footer appended to the user message.
+Creates a new Reflector with the given LLM caller and configuration. If `cfg.AnalyzeFooter` is empty, a standard analysis request is used as the footer appended to the user message.
 
 ```go
 rf := reflector.NewReflector(router, reflector.Config{
@@ -85,10 +75,7 @@ Return a JSON object with:
 func (r *Reflector) SetReasoningEffort(effort string)
 ```
 
-Sets the reasoning effort for the reflector's LLM calls. Use this with
-reasoning-capable models to control how much reasoning budget the reflector
-spends analysing a failure. Common values are `"low"`, `"medium"`, and
-`"high"`.
+Sets the reasoning effort for the reflector's LLM calls. Use this with reasoning-capable models to control how much reasoning budget the reflector spends analysing a failure. Common values are `"low"`, `"medium"`, and `"high"`.
 
 ```go
 rf.SetReasoningEffort("high")
@@ -112,9 +99,7 @@ type Config struct {
 | `SystemPrompt` | The reflection system prompt. Instructs the LLM on how to analyse failures and what JSON to return. |
 | `AnalyzeFooter` | Text appended to the user message after the trajectory, plan, and prior reflections. When empty, defaults to `"Please analyze this execution and provide a structured reflection."` |
 
-The system prompt should instruct the model to return a JSON object matching
-the `Reflection` schema. The reflector extracts JSON from the response
-(allowing surrounding prose) and unmarshals it.
+The system prompt should instruct the model to return a JSON object matching the `Reflection` schema. The reflector extracts JSON from the response (allowing surrounding prose) and unmarshals it.
 
 ---
 
@@ -138,9 +123,7 @@ Analyses an execution trajectory and returns a structured reflection.
 | `plan` | The plan being executed. Provides step descriptions and dependencies so the reflector understands the broader context. May be `nil`. |
 | `prevReflections` | Reflections from earlier failures in the same task. The reflector learns from these to avoid repeating the same mistakes. |
 
-**Returns** an `*orchestration.Reflection` with `Timestamp` set to the current
-time. Returns an error if the LLM call fails, returns nil, or produces
-unparseable JSON.
+**Returns** an `*orchestration.Reflection` with `Timestamp` set to the current time. Returns an error if the LLM call fails, returns nil, or produces unparseable JSON.
 
 ```go
 reflection, err := rf.Reflect(ctx, trajectory, plan, reflections)
@@ -153,8 +136,7 @@ fmt.Printf("Suggested action: %s\n", reflection.SuggestedAction)
 
 ### How the trajectory is built
 
-The reflector constructs a user message that presents the trajectory in a
-step-by-step **Thought / Action / Observation** format:
+The reflector constructs a user message that presents the trajectory in a step-by-step **Thought / Action / Observation** format:
 
 ```markdown
 ## Execution Trajectory
@@ -174,8 +156,7 @@ step-by-step **Thought / Action / Observation** format:
 **Observation:** Error: permission denied
 ```
 
-When the plan is provided, it is appended as a section listing each step's ID,
-description, and dependencies:
+When the plan is provided, it is appended as a section listing each step's ID, description, and dependencies:
 
 ```markdown
 ## Plan
@@ -185,10 +166,7 @@ description, and dependencies:
   Depends on: [step_1]
 ```
 
-The trajectory is captured by injecting an `agent.TrajectoryStore` into the
-context before calling the executor. The executor syncs its step history to the
-store at each ReAct iteration, so the full trajectory is available after the
-run:
+The trajectory is captured by injecting an `agent.TrajectoryStore` into the context before calling the executor. The executor syncs its step history to the store at each ReAct iteration, so the full trajectory is available after the run:
 
 ```go
 type trajectoryStore struct {
@@ -217,33 +195,24 @@ trajectory := store.Steps() // pass this to rf.Reflect on failure
 
 ### Previous reflections
 
-When `prevReflections` is non-empty, the reflector includes them in the user
-message under a `## Previous Reflections` section, prefixed with the note
-"(Learn from these to avoid repeating the same mistakes)". Each prior
-reflection's summary, root cause, action plan, and suggested action are listed.
+When `prevReflections` is non-empty, the reflector includes them in the user message under a `## Previous Reflections` section, prefixed with the note "(Learn from these to avoid repeating the same mistakes)". Each prior reflection's summary, root cause, action plan, and suggested action are listed.
 
-This gives the LLM memory of past failures so it can identify recurring
-patterns and recommend a different recovery action rather than retrying the
-same doomed approach.
+This gives the LLM memory of past failures so it can identify recurring patterns and recommend a different recovery action rather than retrying the same doomed approach.
 
 ### Response parsing
 
-The reflector extracts JSON from the LLM response (tolerating surrounding
-prose or markdown fences) and unmarshals it into an
-`orchestration.Reflection`. It then validates `SuggestedAction`:
+The reflector extracts JSON from the LLM response (tolerating surrounding prose or markdown fences) and unmarshals it into an `orchestration.Reflection`. It then validates `SuggestedAction`:
 
 - `"retry"`, `"replan"`, and `"abort"` are accepted as-is.
 - An empty or unrecognised value defaults to `"retry"`.
 
-If `Summary` is empty, it is set to `"Execution analysis unavailable"`. The
-`Timestamp` is always set to `time.Now()`.
+If `Summary` is empty, it is set to `"Execution analysis unavailable"`. The `Timestamp` is always set to `time.Now()`.
 
 ---
 
 ## Reflection type
 
-The reflector returns an `orchestration.Reflection` (defined in the
-`orchestration` package):
+The reflector returns an `orchestration.Reflection` (defined in the `orchestration` package):
 
 ```go
 type Reflection struct {
@@ -271,8 +240,7 @@ type Reflection struct {
 
 ### SuggestedAction values
 
-`SuggestedAction` drives the orchestrator's recovery decision. It is a string
-with three valid values:
+`SuggestedAction` drives the orchestrator's recovery decision. It is a string with three valid values:
 
 | Value | Meaning | Orchestrator response |
 | --- | --- | --- |
@@ -280,22 +248,18 @@ with three valid values:
 | `"replan"` | The plan itself is wrong — the step decomposition or approach is flawed. | Call `Planner.Replan` to generate a corrected plan, then resume execution. |
 | `"abort"` | The failure is unrecoverable (e.g. missing dependencies, permission issues that cannot be fixed). | Stop execution immediately. |
 
-When the LLM omits or returns an unrecognised action, the reflector defaults to
-`"retry"` — the safest recovery attempt.
+When the LLM omits or returns an unrecognised action, the reflector defaults to `"retry"` — the safest recovery attempt.
 
 ---
 
 ## Integration with the Blackboard
 
-Reflections are stored on the `orchestration.Blackboard` so they persist across
-the retry loop and are available to the planner during replanning.
+Reflections are stored on the `orchestration.Blackboard` so they persist across the retry loop and are available to the planner during replanning.
 
 - `Blackboard.AddReflection(r Reflection)` appends a reflection.
-- `Blackboard.GetReflections() []Reflection` returns all reflections in
-  insertion order.
+- `Blackboard.GetReflections() []Reflection` returns all reflections in insertion order.
 
-A typical retry loop records each reflection on the blackboard and passes the
-accumulated list to the next `Reflect` call:
+A typical retry loop records each reflection on the blackboard and passes the accumulated list to the next `Reflect` call:
 
 ```go
 var reflections []orchestration.Reflection
@@ -334,17 +298,13 @@ for attempt := 1; attempt <= maxRetries+1; attempt++ {
 }
 ```
 
-The `ExecutionResult` returned by an orchestrator also carries the accumulated
-reflections in its `Reflections` field, so callers can inspect what went wrong
-even after the task completes.
+The `ExecutionResult` returned by an orchestrator also carries the accumulated reflections in its `Reflections` field, so callers can inspect what went wrong even after the task completes.
 
 ---
 
 ## Complete retry + reflect example
 
-This example (adapted from the SDK's example 06) shows the full retry-and-reflect
-loop: a Conductor executes a plan step, and on failure the Reflector analyses
-the trajectory and recommends a recovery action.
+This example (adapted from the SDK's example 06) shows the full retry-and-reflect loop: a Conductor executes a plan step, and on failure the Reflector analyses the trajectory and recommends a recovery action.
 
 ```go
 package main
@@ -356,14 +316,14 @@ import (
 	"os"
 	"sync"
 
-	"github.com/v0lka/c0wrk/sdk"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/agent/reflector"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/sdk/planner"
-	"github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/agent/reflector"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/planner"
+	"github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // trajectoryStore captures the executor's step history for reflection.
@@ -557,11 +517,6 @@ func main() {
 
 The flow is:
 
-1. **Execute** — `Conductor.Run` runs the step's ReAct loop. A
-   `TrajectoryStore` captures every thought/action/observation.
-2. **Reflect** — on failure, `Reflector.Reflect` receives the trajectory, the
-   plan, and prior reflections, then returns a `Reflection` with a root cause
-   and a suggested action.
-3. **Recover** — the orchestrator acts on `SuggestedAction`: retry the step,
-   replan via `Planner.Replan`, or abort. Each reflection is stored on the
-   blackboard so the next `Reflect` call can learn from past mistakes.
+1. **Execute** — `Conductor.Run` runs the step's ReAct loop. A `TrajectoryStore` captures every thought/action/observation.
+2. **Reflect** — on failure, `Reflector.Reflect` receives the trajectory, the plan, and prior reflections, then returns a `Reflection` with a root cause and a suggested action.
+3. **Recover** — the orchestrator acts on `SuggestedAction`: retry the step, replan via `Planner.Replan`, or abort. Each reflection is stored on the blackboard so the next `Reflect` call can learn from past mistakes.

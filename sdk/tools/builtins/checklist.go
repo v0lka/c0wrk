@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const toolUpdateChecklistDescription = "Update the checklist for the current step (or for the task as a whole if there is no declared plan). Call this as your FIRST tool call to initialize the checklist, and again after completing each item (mark it as '- [x]'). Use ONLY ASCII checkboxes: '- [ ]' for unchecked, '- [x]' for checked. No nested lists, no Unicode checkboxes. When executing a declared plan inline (as the Conductor), pass step_id to associate the checklist with a specific plan step. Omit step_id for a standalone checklist (no declared plan) or when running as a delegated subagent (the step ID is inferred from the execution context)."

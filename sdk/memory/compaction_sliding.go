@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
+	sdkagent "github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
 )
 
 // SlidingWindowStrategy keeps the first K and last N steps, removing the middle.

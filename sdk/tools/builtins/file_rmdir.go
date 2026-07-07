@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const toolDeleteDirectoryDescription = `Deletes a directory at the specified path. By default, only empty directories can be deleted. Set recursive to true to remove the directory and all of its contents. Fails if the path is not a directory.`

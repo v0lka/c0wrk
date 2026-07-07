@@ -7,6 +7,7 @@ Provide filesystem, search, web, execution, and agent-infrastructure tools out o
 ## Key Files
 
 - `sdk/tools/builtins/*.go` — tool implementations
+- `sdk/tools/builtins/file_reader.go` — streaming line-range reader (`ReadFileRange`), O(1) memory, reusable by custom tools
 - `sdk/tools/builtins/ripgrep.go` — wraps the `rg` CLI (`--json` event stream)
 - `sdk/tools/builtins/tool_result_read.go` — reads cached tool result fragments by hash
 - `sdk/tools/builtins/coherence_format.go` — conflict message formatting for cross-session coherence
@@ -83,7 +84,7 @@ All built-in tools accept `json.RawMessage` input and return `ToolResult{Content
 | Tool                  | Category  | Default Policy | Untrusted | Description                                        |
 | --------------------- | --------- | -------------- | --------- | -------------------------------------------------- |
 | `bash_exec`           | Execution | user_confirm   | yes       | Shell command execution with timeout and blacklist |
-| `read_file`           | File      | always_allow   | yes       | Read file contents (with size limits)              |
+| `read_file`           | File      | always_allow   | yes       | Read file contents (streaming, O(1) memory, default 2000-line window) |
 | `write_file`          | File      | user_confirm   | no        | Create/overwrite file                              |
 | `edit_file`           | File      | user_confirm   | no        | Apply targeted edits to existing file              |
 | `list_directory`      | File      | always_allow   | no        | List directory contents                            |
@@ -137,23 +138,33 @@ Eleven built-in tools implement `ToolJudger` (see File Safety Judging above). Wh
 
 Per-tool output truncation is centralized in the executor's two-stage pipeline (see [executor.md](../orchestration/executor.md)). All truncation happens exclusively in the centralized truncation pipeline (Stage 1 → Stage 2), after the full result is cached. No individual tool performs per-tool output truncation.
 
+**`read_file` is special**: it uses a streaming line-range reader (`ReadFileRange` in `file_reader.go`) that reads only the requested window from disk — O(1) memory, the file is never fully materialized. When no line range is specified, a default window of `ReadDefaultLines` (2000) lines is returned. The file on disk serves as the cache backing store (file-backed cache entry — see [executor.md](../orchestration/executor.md)), so `ToolResultCache` stores zero bytes of content for `read_file` results. Stage 1 truncation acts as a secondary safety net on the already-capped window.
+
 | Config                              | Affects                    | Default            |
 | ----------------------------------- | -------------------------- | ------------------ |
+| `toolLimits.readDefaultLines`       | `read_file` window size    | 2000               |
 | `toolLimits.perToolTruncation`      | All cacheable tools (map)  | per-tool (see below)|
 | `toolResultBudget.cacheTTLSeconds`  | ToolResultCache eviction   | 300                |
 
-> Stage 1 is a memory-exhaustion prevention layer. Values are conservative (2000 lines for most tools, 5000 for ripgrep) — truncation triggers on large outputs to keep context manageable. Defaults are configurable via `config.yaml` `toolLimits.perToolTruncation`.
+> Stage 1 is a memory-exhaustion prevention layer. Values are conservative (2000 lines for most tools, 5000 for ripgrep) — truncation triggers on large outputs to keep context manageable. Defaults are configurable via `config.yaml` `toolLimits.perToolTruncation`. For `read_file`, the primary cap is the streaming reader's `MaxWindowLines` (50000, hardcoded) — Stage 1 MaxLines is a secondary safety net on the already-windowed output.
 
 Default per-tool Stage 1 truncation:
 
 | Tool           | MaxLines      | MaxBytes        |
 | -------------- | ------------- | --------------- |
-| `read_file`    | 2000          | —               |
+| `read_file`    | 2000          | — (secondary; primary cap is streaming window) |
 | `ripgrep`      | 5000          | —               |
 | `glob`         | 2000          | —               |
 | `list_directory`| 2000         | —               |
 | `web_fetch`    | —             | 2097152 (2 MiB)  |
 | `bash_exec`    | 10000         | —               |
+
+`read_file` internal safety caps (hardcoded in `DefaultFileLimits()`, not configurable):
+
+| Cap               | Default | Purpose                                                     |
+| ----------------- | ------- | ----------------------------------------------------------- |
+| `MaxLineBytes`    | 1 MiB   | Per-line byte cap; lines exceeding this are truncated with a marker |
+| `MaxWindowLines`  | 50000   | Hard cap on lines returned per call even for explicit ranges |
 
 Non-truncation tool limits (timeouts, search limits, etc.)— still in code:
 
@@ -175,7 +186,8 @@ Non-truncation tool limits (timeouts, search limits, etc.)— still in code:
 7. If tool is mutating (writes files, runs commands), set `DefaultPolicy()` to `PolicyUserConfirm`
 8. If tool should be available in specific roles only, update `core/toolprofiles.go`
 9. Add tests: `sdk/tools/builtins/<name>_test.go`
-10. Run `make lint && make test`
+10. If the tool reads files, use `ReadFileRange` from `file_reader.go` for O(1) memory streaming (see `read_file` for reference)
+11. Run `make lint && make test`
 
 ## Invariants
 
@@ -185,6 +197,9 @@ Non-truncation tool limits (timeouts, search limits, etc.)— still in code:
 - Limits are applied at tool creation time (immutable after registration); output truncation limits are centralized in the executor, not in individual tools
 - `tool_result_read` and `batch` are non-cacheable internal tools that bypass policy checks and the caching layer; `batch` is intercepted at the executor level and never reaches the registry's `Execute()` path
 - Per-tool Stage 1 truncation produces a fragmentation nudge with the SHA256 hash of the full result; the LLM uses `tool_result_read(hash, start_line, num_lines)` to retrieve fragments
+- `read_file` uses a streaming line-range reader (`ReadFileRange`) — O(1) memory, the file is never fully materialized. Default window is `ReadDefaultLines` (2000) lines when no range is specified. `MaxLineBytes` (1 MiB) and `MaxWindowLines` (50000) are hardcoded safety caps
+- `read_file` cache entries are file-backed: `ToolResultCache` stores zero bytes of content (the file on disk is the backing store). The hash is derived from file metadata (path + mtime + size), stable for an unchanged file. `tool_result_read` streams fragments from disk for file-backed entries
+- `tool_result_read` serves both truncation recovery and token economy for `read_file`: a file-backed nudge with the cache hash is appended even when Stage 1 truncation did not fire, informing the LLM that additional fragments are available via `tool_result_read(hash, start_line, num_lines)`
 - Optional tools (semantic_search, web_search, ask_user) are only registered if their dependency func/key is provided
 - `ripgrep` invokes the `rg` binary via `exec.CommandContext`; the binary is a managed runtime dependency provided by the tool-manager (`core/toolmanager/`), downloaded on first run to `~/.c0wrk/tools/bin/`, and PATH-prepended at startup (see ADR-010)
 - `ripgrep` parses the `rg --json` event stream (match/context/end events); exit code 1 means "no matches" and is not an error, exit codes ≥ 2 surface as `IsError` with stderr content

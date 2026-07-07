@@ -175,12 +175,12 @@ index 1111111..2222222 100644
 
 func TestBuildHunkPatch(t *testing.T) {
 	tests := []struct {
-		name       string
-		diff       string
-		ranges     []HunkRange
-		wantSel    int
-		wantCont   []string // substrings that must appear in the patch
-		wantNot    []string // substrings that must NOT appear in the patch
+		name     string
+		diff     string
+		ranges   []HunkRange
+		wantSel  int
+		wantCont []string // substrings that must appear in the patch
+		wantNot  []string // substrings that must NOT appear in the patch
 	}{
 		{
 			name:     "select first hunk only",

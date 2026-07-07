@@ -36,7 +36,10 @@ export const useSessionStore = create<SessionState & SessionActions>((set) => ({
 
   setSessions: (sessions) => set((s) => {
     const sorted = sortByActivity(sessions)
-    // Skip if session IDs haven't changed (avoids duplicate event/RPC updates)
+    // Skip if session IDs haven't changed (avoids duplicate event/RPC updates).
+    // The live "task running" state is owned by chatStore.taskActive and read
+    // via useSessionStatusIndicator — not by SessionInfo.active — so active
+    // toggles no longer need to force a store update here.
     if (s.sessions && s.sessions.length === sorted.length &&
         s.sessions.every((sess, i) => sess.id === sorted[i]?.id)) {
       return s

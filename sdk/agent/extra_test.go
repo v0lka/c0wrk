@@ -6,12 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // ============================================================================
@@ -1115,5 +1116,122 @@ func TestExecutor_Run_ToolCallSyntaxNudge_ThenRecovery(t *testing.T) {
 	}
 	if !result.Finished {
 		t.Error("expected Finished=true after recovery from tool-call syntax nudge")
+	}
+}
+
+// ============================================================================
+// File-backed cache entry tests
+// ============================================================================
+
+func TestBuildCacheMeta_FileBacked_ReadFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := tmpDir + "/test.go"
+	if err := os.WriteFile(testFile, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mockTools := newMockToolExecutor()
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+
+	input, _ := json.Marshal(map[string]string{"path": testFile})
+	meta := exec.buildCacheMeta(context.Background(), tools.ToolReadFile, input)
+
+	if !meta.FileBacked {
+		t.Error("expected FileBacked = true for read_file")
+	}
+	if meta.FilePath != testFile {
+		t.Errorf("FilePath = %q, want %q", meta.FilePath, testFile)
+	}
+}
+
+func TestBuildCacheMeta_FileBacked_WriteFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := tmpDir + "/test.go"
+	if err := os.WriteFile(testFile, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mockTools := newMockToolExecutor()
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+
+	input, _ := json.Marshal(map[string]string{"path": testFile})
+	meta := exec.buildCacheMeta(context.Background(), tools.ToolWriteFile, input)
+
+	if meta.FileBacked {
+		t.Error("expected FileBacked = false for write_file")
+	}
+}
+
+func TestBuildCacheMeta_FileBacked_EditFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := tmpDir + "/test.go"
+	if err := os.WriteFile(testFile, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mockTools := newMockToolExecutor()
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+
+	input, _ := json.Marshal(map[string]string{"path": testFile})
+	meta := exec.buildCacheMeta(context.Background(), tools.ToolEditFile, input)
+
+	if meta.FileBacked {
+		t.Error("expected FileBacked = false for edit_file")
+	}
+}
+
+func TestProcessToolResult_FileBackedNudge(t *testing.T) {
+	// Verify that file-backed entries (read_file) get a nudge even without
+	// Stage 1 truncation. tool_result_read serves token economy, not just
+	// truncation recovery.
+	tmpDir := t.TempDir()
+	testFile := tmpDir + "/test.go"
+	if err := os.WriteFile(testFile, []byte("line1\nline2\nline3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mockTools := newMockToolExecutor()
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	tc := NewToolResultCache(5 * time.Minute)
+	exec.SetToolCache(tc)
+
+	cm := newMockContextManager()
+	input, _ := json.Marshal(map[string]string{"path": testFile})
+
+	observation, cacheHash := exec.processToolResult(context.Background(), "line1\nline2\nline3", "line1\nline2\nline3", tools.ToolReadFile, input, cm)
+
+	if cacheHash == "" {
+		t.Fatal("expected non-empty cache hash for file-backed read_file")
+	}
+	if !strings.Contains(observation, fileBackedNudgePrefix) {
+		t.Errorf("expected file-backed nudge in observation, got: %s", observation)
+	}
+	if !strings.Contains(observation, cacheHash) {
+		t.Errorf("expected cache hash %s in nudge, got: %s", cacheHash, observation)
+	}
+	if !strings.Contains(observation, "tool_result_read") {
+		t.Errorf("expected tool_result_read instruction in nudge")
+	}
+}
+
+func TestProcessToolResult_FileBackedNudge_NoStage1Truncation(t *testing.T) {
+	// With no per-tool truncation config, Stage 1 doesn't fire.
+	// The file-backed nudge should still be appended.
+	tmpDir := t.TempDir()
+	testFile := tmpDir + "/test.go"
+	if err := os.WriteFile(testFile, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mockTools := newMockToolExecutor()
+	// No per-tool truncation config — Stage 1 won't fire
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, mockTools, &mockTokenCounter{}, 5, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	tc := NewToolResultCache(5 * time.Minute)
+	exec.SetToolCache(tc)
+
+	cm := newMockContextManager()
+	input, _ := json.Marshal(map[string]string{"path": testFile})
+
+	observation, _ := exec.processToolResult(context.Background(), "content", "content", tools.ToolReadFile, input, cm)
+
+	if !strings.Contains(observation, fileBackedNudgePrefix) {
+		t.Errorf("expected file-backed nudge even without Stage 1 truncation, got: %s", observation)
 	}
 }

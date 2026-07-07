@@ -13,19 +13,31 @@
 // real time. The final answer and intermediate history are already persisted
 // by the backend's EventPersister and will be loaded from the DB by the
 // reconcile effect in ChatArea when the user switches to the session.
+//
+// Additionally, this hook subscribes to HITL events (tool_confirm, step_limit,
+// plan_review_ready, ask_user) for background sessions. Without this, a
+// background session that blocks on a HITL prompt would have its event
+// silently dropped (Wails EventsEmit with no listener is a no-op), leaving
+// the agent goroutine blocked forever and the user with no UI to respond.
+// The shared handlers in hitlHandlers.ts add the pending-action message to
+// the chat store so it renders (and sinks to the bottom) in the chat stream
+// when the user switches to the session.
 
 import { useEffect } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
-import { onSessionEvent } from '@/api/runtime'
+import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
+import { isToolConfirmData, isAskUserData, isStepLimitData, isPlanReviewReadyData } from '@/types/events'
+import { handleToolConfirmEvent, handleAskUserEvent, handleStepLimitEvent, handlePlanReviewEvent } from './events/hitlHandlers'
 
 /**
- * Watch all running background sessions for completion events.
+ * Watch all running background sessions for completion and HITL events.
  *
  * For each session with `taskActive === true` that is not the active session,
- * subscribes to `task_complete`, `task_cancelled`, and `error`. On any of
- * these, resets `taskActive` to false and clears transient UI state
- * (streaming text, activity status).
+ * subscribes to `task_complete`, `task_cancelled`, and `error` (resetting
+ * taskActive) and to `tool_confirm`, `step_limit`, `plan_review_ready`,
+ * `ask_user` (adding the pending-action message to the chat store so the
+ * user can respond even when viewing a different session).
  *
  * Called once at the app level (App.tsx) — not per session.
  */
@@ -66,6 +78,33 @@ export function useBackgroundSessionWatcher(): void {
       )
       cleanups.push(
         onSessionEvent(sessionId, 'error', () => handleCompletion()),
+      )
+
+      // HITL events — the agent goroutine blocks until the user responds.
+      // Without these listeners the event is lost and the session hangs.
+      cleanups.push(
+        onSessionEvent(sessionId, 'tool_confirm', (data) => {
+          if (!isToolConfirmData(data)) { reportDroppedEvent('tool_confirm', data); return }
+          handleToolConfirmEvent(sessionId, data)
+        }),
+      )
+      cleanups.push(
+        onSessionEvent(sessionId, 'ask_user', (data) => {
+          if (!isAskUserData(data)) { reportDroppedEvent('ask_user', data); return }
+          handleAskUserEvent(sessionId, data)
+        }),
+      )
+      cleanups.push(
+        onSessionEvent(sessionId, 'step_limit', (data) => {
+          if (!isStepLimitData(data)) { reportDroppedEvent('step_limit', data); return }
+          handleStepLimitEvent(sessionId, data)
+        }),
+      )
+      cleanups.push(
+        onSessionEvent(sessionId, 'plan_review_ready', (data) => {
+          if (!isPlanReviewReadyData(data)) { reportDroppedEvent('plan_review_ready', data); return }
+          handlePlanReviewEvent(sessionId, data)
+        }),
       )
     }
 

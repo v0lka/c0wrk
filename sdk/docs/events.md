@@ -1,25 +1,19 @@
 # Events
 
-The SDK emits lifecycle events throughout agent execution so applications can
-observe progress in real time — streaming thoughts, tool calls, context-window
-pressure, and internal diagnostics. This document covers the `AgentEvents`
-interface (the executor-level contract), the `NoopEvents` embedding pattern,
-streaming, diagnostics, and the `orchestration.Events` extension used by the
-planner/conductor layer.
+The SDK emits lifecycle events throughout agent execution so applications can observe progress in real time — streaming thoughts, tool calls, context-window pressure, and internal diagnostics. This document covers the `AgentEvents` interface (the executor-level contract), the `NoopEvents` embedding pattern, streaming, diagnostics, and the `orchestration.Events` extension used by the planner/conductor layer.
 
 ```go
 import (
     "time"
 
-    "github.com/v0lka/c0wrk/sdk/agent"
-    "github.com/v0lka/c0wrk/sdk/orchestration"
+    "github.com/v0lka/sp4rk/agent"
+    "github.com/v0lka/sp4rk/orchestration"
 )
 ```
 
 ## AgentEvents
 
-`AgentEvents` defines universal agent lifecycle events. Any agent system can
-implement this interface — it is not tied to a specific orchestration strategy.
+`AgentEvents` defines universal agent lifecycle events. Any agent system can implement this interface — it is not tied to a specific orchestration strategy.
 
 ```go
 type AgentEvents interface {
@@ -96,11 +90,7 @@ type AgentEvents interface {
 
 ## NoopEvents and the embedding pattern
 
-`NoopEvents` is a no-op implementation of `AgentEvents` — every method has an
-empty body. It satisfies the interface and serves as a base for the recommended
-**embed-and-override** pattern: embed `NoopEvents` in your own struct and
-override only the methods you care about. The embedded no-ops handle the rest,
-so you never need to implement the full interface.
+`NoopEvents` is a no-op implementation of `AgentEvents` — every method has an empty body. It satisfies the interface and serves as a base for the recommended **embed-and-override** pattern: embed `NoopEvents` in your own struct and override only the methods you care about. The embedded no-ops handle the rest, so you never need to implement the full interface.
 
 ```go
 type NoopEvents struct{}
@@ -108,9 +98,7 @@ type NoopEvents struct{}
 var _ AgentEvents = (*NoopEvents)(nil)
 ```
 
-This is especially useful because `AgentEvents` is a large interface. Without
-embedding, adding a new method would break every implementation. With embedding,
-only implementations that care about the new method need updating.
+This is especially useful because `AgentEvents` is a large interface. Without embedding, adding a new method would break every implementation. With embedding, only implementations that care about the new method need updating.
 
 ```go
 // PrintingEvents observes step lifecycle, tool calls, and streaming.
@@ -137,10 +125,7 @@ func (e *PrintingEvents) Thought(stepNum int, content, reasoning string) {
 
 ## Streaming
 
-`AssistantChunk` and `AssistantDone` together enable a live-typing effect for
-assistant output. The executor emits `AssistantChunk` for each text chunk as it
-arrives from the provider, then `AssistantDone` once with the full content and
-token counts.
+`AssistantChunk` and `AssistantDone` together enable a live-typing effect for assistant output. The executor emits `AssistantChunk` for each text chunk as it arrives from the provider, then `AssistantDone` once with the full content and token counts.
 
 ```go
 func (e *PrintingEvents) AssistantChunk(content string) {
@@ -153,16 +138,11 @@ func (e *PrintingEvents) AssistantDone(content string, inputTokens, outputTokens
 }
 ```
 
-> **Note:** streaming events are suppressed when the executor is created with
-> `suppressAssistantEvents = true`. This is typically set for plan-step
-> executors where the orchestration layer handles the final output, to avoid
-> duplicate assistant messages.
+> **Note:** streaming events are suppressed when the executor is created with `suppressAssistantEvents = true`. This is typically set for plan-step executors where the orchestration layer handles the final output, to avoid duplicate assistant messages.
 
 ## Context-window monitoring
 
-`ContextFill` and `ContextCompaction` let applications track how full the
-context window is and react to compaction events — for example, to show a
-progress bar or warn the user that older tool outputs are being pruned.
+`ContextFill` and `ContextCompaction` let applications track how full the context window is and react to compaction events — for example, to show a progress bar or warn the user that older tool outputs are being pruned.
 
 ```go
 func (e *PrintingEvents) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {
@@ -174,14 +154,11 @@ func (e *PrintingEvents) ContextCompaction(beforePercent, afterPercent float64, 
 }
 ```
 
-The `status` field mirrors `FillCheck.Status`: `ok`, `compact`, `warning`,
-`emergency`, or `reject`.
+The `status` field mirrors `FillCheck.Status`: `ok`, `compact`, `warning`, `emergency`, or `reject`.
 
 ## Diagnostics
 
-`ExecutorDiagnostic` surfaces internal lifecycle events that are not part of the
-normal execution flow. These are invaluable for debugging agent behavior and
-understanding why an execution stopped.
+`ExecutorDiagnostic` surfaces internal lifecycle events that are not part of the normal execution flow. These are invaluable for debugging agent behavior and understanding why an execution stopped.
 
 ```go
 func (e *PrintingEvents) ExecutorDiagnostic(stepNum int, event string, details map[string]any) {
@@ -191,20 +168,17 @@ func (e *PrintingEvents) ExecutorDiagnostic(stepNum int, event string, details m
 
 Typical `event` values include:
 
-- **Nudges** — corrective system messages injected by circuit breakers (repeat,
-  fruitless, same-tool-repeat, truncation, parse-error, wrap-up, finish).
+- **Nudges** — corrective system messages injected by circuit breakers (repeat, fruitless, same-tool-repeat, truncation, parse-error, wrap-up, finish).
 - **Circuit-breaker triggers** — when an abort threshold is crossed.
 - **Truncation** — when a tool result or LLM response was truncated.
 - **Compaction errors** — when compaction failed.
 - **Parse errors** — when tool input could not be parsed.
 
-The `details` map carries structured, event-specific data (e.g. the tool name,
-the repeat count, the cache hash).
+The `details` map carries structured, event-specific data (e.g. the tool name, the repeat count, the cache hash).
 
 ## Complete PrintingEvents example
 
-The following is a complete, runnable event sink that prints every lifecycle
-event to stdout. It embeds `NoopEvents` and overrides each method.
+The following is a complete, runnable event sink that prints every lifecycle event to stdout. It embeds `NoopEvents` and overrides each method.
 
 ```go
 package main
@@ -217,11 +191,11 @@ import (
     "strings"
     "time"
 
-    "github.com/v0lka/c0wrk/sdk"
-    "github.com/v0lka/c0wrk/sdk/agent"
-    "github.com/v0lka/c0wrk/sdk/llm"
-    "github.com/v0lka/c0wrk/sdk/tools"
-    "github.com/v0lka/c0wrk/sdk/tools/builtins"
+    "github.com/v0lka/sp4rk"
+    "github.com/v0lka/sp4rk/agent"
+    "github.com/v0lka/sp4rk/llm"
+    "github.com/v0lka/sp4rk/tools"
+    "github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // PrintingEvents implements agent.AgentEvents by embedding agent.NoopEvents
@@ -377,10 +351,7 @@ func main() {
 
 ## orchestration.Events
 
-The orchestration layer (planner → DAG → conductor → reflector) extends
-`AgentEvents` with additional hooks for plan-level lifecycle events.
-`orchestration.Events` embeds `agent.AgentEvents`, so any implementation must
-satisfy both interfaces.
+The orchestration layer (planner → DAG → conductor → reflector) extends `AgentEvents` with additional hooks for plan-level lifecycle events. `orchestration.Events` embeds `agent.AgentEvents`, so any implementation must satisfy both interfaces.
 
 ```go
 type Events interface {
@@ -413,10 +384,7 @@ type Events interface {
 
 ### Implementing orchestration.Events
 
-Because `orchestration.Events` embeds `agent.AgentEvents`, the embed-and-override
-pattern works here too — but you need a no-op base for the orchestration methods
-as well. A common approach is to embed both `agent.NoopEvents` and provide no-op
-stubs for the orchestration-specific methods, then override what you need:
+Because `orchestration.Events` embeds `agent.AgentEvents`, the embed-and-override pattern works here too — but you need a no-op base for the orchestration methods as well. A common approach is to embed both `agent.NoopEvents` and provide no-op stubs for the orchestration-specific methods, then override what you need:
 
 ```go
 type consoleEvents struct {
@@ -448,15 +416,11 @@ func (e *consoleEvents) OnReflected(r *orchestration.Reflection, attempt, maxAtt
 }
 ```
 
-> The `agent.NoopEvents` embedding covers all `AgentEvents` methods. The
-> orchestration-specific methods (`OnPlanGenerated`, `OnStepStarted`, etc.) must
-> be implemented or stubbed by your type to satisfy `orchestration.Events`.
+> The `agent.NoopEvents` embedding covers all `AgentEvents` methods. The orchestration-specific methods (`OnPlanGenerated`, `OnStepStarted`, etc.) must be implemented or stubbed by your type to satisfy `orchestration.Events`.
 
 ## Optional interfaces: StepScopable and RetryScopable
 
-Some event sinks want to scope events to a specific plan step or retry attempt.
-The orchestration layer checks for two optional interfaces and, if present, uses
-them to produce scoped event emitters.
+Some event sinks want to scope events to a specific plan step or retry attempt. The orchestration layer checks for two optional interfaces and, if present, uses them to produce scoped event emitters.
 
 ```go
 // StepScopable lets an Events implementation support scoping to a plan step.
@@ -470,13 +434,7 @@ type RetryScopable interface {
 }
 ```
 
-- `WithStepID(id)` returns a new `Events` instance whose emissions are tagged
-  with the given step ID. This is useful when a single sink handles multiple
-  concurrent steps and needs to route events back to the right step.
-- `WithRetryAttempt(attempt)` returns a new `Events` instance whose emissions
-  are tagged with a retry attempt number, so retries can be distinguished from
-  the original attempt.
+- `WithStepID(id)` returns a new `Events` instance whose emissions are tagged with the given step ID. This is useful when a single sink handles multiple concurrent steps and needs to route events back to the right step.
+- `WithRetryAttempt(attempt)` returns a new `Events` instance whose emissions are tagged with a retry attempt number, so retries can be distinguished from the original attempt.
 
-These are **optional** — implementations that do not need scoping simply omit
-them. The orchestration layer falls back to the un-scoped emitter when the
-interfaces are not implemented.
+These are **optional** — implementations that do not need scoping simply omit them. The orchestration layer falls back to the un-scoped emitter when the interfaces are not implemented.

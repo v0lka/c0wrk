@@ -115,3 +115,14 @@ func (a *App) emit(eventName string, optionalData ...any) {
 	}
 	wailsRuntime.EventsEmit(a.ctx, eventName, optionalData...)
 }
+
+// resolvePendingMessage delegates to FrontendAPI.ResolvePendingMessage to mark
+// a persisted HITL message as resolved in the DB. Safe to call when
+// FrontendAPI is not yet wired (returns nil — the message will be reconciled
+// by GetPendingActions on the next session switch instead).
+func (a *App) resolvePendingMessage(sessionID, role, matchField, matchValue string, extra map[string]any) error {
+	if a.FrontendAPI == nil {
+		return nil
+	}
+	return a.ResolvePendingMessage(sessionID, role, matchField, matchValue, extra)
+}

@@ -6,7 +6,7 @@
 //  3. Reflector analyzes failures and produces corrective insights
 //  4. The orchestrator retries or replans based on the reflection
 //
-// This is the pattern c0wrk itself uses: the Planner breaks complex tasks
+// This is the pattern sp4rk itself uses: the Planner breaks complex tasks
 // into steps, the Conductor runs each step, and the Reflector provides
 // self-correction when things go wrong.
 package main
@@ -18,14 +18,14 @@ import (
 	"os"
 	"sync"
 
-	"github.com/v0lka/c0wrk/sdk"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/agent/reflector"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/sdk/planner"
-	"github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/agent/reflector"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/planner"
+	"github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // trajectoryStore implements agent.TrajectoryStore. The executor syncs its
@@ -79,7 +79,7 @@ func run() error {
 	registry.Register(builtins.NewCreateDirectoryTool())
 	registry.Register(agent.NewFinishTool())
 
-	workspaceDir, err := os.MkdirTemp("", "c0wrk-example-06-*")
+	workspaceDir, err := os.MkdirTemp("", "sp4rk-example-06-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
@@ -122,7 +122,7 @@ MODE-JSON-EXAMPLE`,
 	// --- Create the Reflector ---
 	// The Reflector analyzes a failed step's trajectory and produces a
 	// Reflection with a suggested action: "retry", "replan", or "abort".
-	rf := reflector.NewReflector(fw.LLMRouter(), reflector.Config{
+	rf := reflector.New(fw.LLMRouter(), reflector.Config{
 		SystemPrompt: `You are a reflection agent. Analyze the failed execution and determine why it failed.
 
 Consider:

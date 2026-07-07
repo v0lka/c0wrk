@@ -11,9 +11,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/v0lka/c0wrk/sdk"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
 )
 
 func run() error {

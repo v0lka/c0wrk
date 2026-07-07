@@ -1,0 +1,14 @@
+# Go test/coverage artifacts
+*.out
+coverage*.out
+*_cov.out
+
+# OS
+.DS_Store
+
+# Vendoring (not used)
+vendor/
+
+# IDE
+.idea/
+.vscode/

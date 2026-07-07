@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // --- Name tests for individual tools ---
@@ -844,7 +845,7 @@ func TestReadFileTool_ReadFile_DefaultPagination(t *testing.T) {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
-	// Read with no start_line/end_line — returns full file; truncation is handled centrally
+	// Read with no start_line/end_line — returns default window (2000 lines)
 	input, _ := json.Marshal(map[string]string{
 		"path": testFile,
 	})
@@ -857,17 +858,72 @@ func TestReadFileTool_ReadFile_DefaultPagination(t *testing.T) {
 		t.Errorf("expected success, got error: %s", result.Content)
 	}
 
-	// Verify all lines are returned (no per-tool truncation)
-	if !strings.Contains(result.Content, "Line 1") {
+	// Verify first window is returned (lines 1-2000)
+	if !strings.Contains(result.Content, "Line 1\n") {
 		t.Errorf("expected 'Line 1' in content")
 	}
-	if !strings.Contains(result.Content, "Line 3000") {
-		t.Errorf("expected 'Line 3000' in content (full file should be returned)")
+	if !strings.Contains(result.Content, "Line 2000") {
+		t.Errorf("expected 'Line 2000' in content (default window)")
+	}
+	if strings.Contains(result.Content, "Line 3000") {
+		t.Errorf("did not expect 'Line 3000' in default window (should be truncated)")
 	}
 
-	// Verify metadata header shows full file
-	if !strings.Contains(result.Content, "[File: large.txt | Lines 1-3000 of 3000") {
-		t.Errorf("expected metadata header with full line range, got: %s", result.Content)
+	// Verify metadata header shows window range
+	if !strings.Contains(result.Content, "[File: large.txt | Lines 1-2000 of 3000") {
+		t.Errorf("expected metadata header with window range, got: %s", result.Content)
+	}
+
+	// Verify continuation hint
+	if !strings.Contains(result.Content, "[Use start_line=2001 to continue reading]") {
+		t.Errorf("expected continuation hint, got: %s", result.Content)
+	}
+}
+
+func TestReadFileTool_ReadFile_StreamingWindow(t *testing.T) {
+	tool := NewReadFileTool()
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// Create a temp file with 10000 lines
+	testFile := filepath.Join(tmpDir, "huge.txt")
+	var sb strings.Builder
+	for i := 1; i <= 10000; i++ {
+		if i > 1 {
+			sb.WriteByte('\n')
+		}
+		fmt.Fprintf(&sb, "Line %d", i)
+	}
+	if err := os.WriteFile(testFile, []byte(sb.String()), 0o644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Read with no range — should return default window
+	input, _ := json.Marshal(map[string]string{"path": testFile})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success, got error: %s", result.Content)
+	}
+
+	// Verify default window = ReadDefaultLines (2000)
+	if !strings.Contains(result.Content, "Lines 1-2000 of 10000") {
+		t.Errorf("expected 'Lines 1-2000 of 10000' in header, got: %s", result.Content[:min(80, len(result.Content))])
+	}
+	if !strings.Contains(result.Content, "[Use start_line=2001 to continue reading]") {
+		t.Errorf("expected continuation hint for 10000-line file")
+	}
+
+	// Read next window
+	input2, _ := json.Marshal(map[string]any{"path": testFile, "start_line": 2001})
+	result2, err := tool.Execute(ctx, input2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result2.Content, "Lines 2001-4000 of 10000") {
+		t.Errorf("expected 'Lines 2001-4000 of 10000' in header, got: %s", result2.Content[:min(80, len(result2.Content))])
 	}
 }
 
@@ -1241,6 +1297,12 @@ func TestDefaultFileLimits(t *testing.T) {
 	limits := DefaultFileLimits()
 	if limits.ReadDefaultLines != 2000 {
 		t.Errorf("expected ReadDefaultLines=2000, got %d", limits.ReadDefaultLines)
+	}
+	if limits.MaxLineBytes != 1<<20 {
+		t.Errorf("expected MaxLineBytes=%d, got %d", 1<<20, limits.MaxLineBytes)
+	}
+	if limits.MaxWindowLines != 50000 {
+		t.Errorf("expected MaxWindowLines=50000, got %d", limits.MaxWindowLines)
 	}
 }
 
@@ -1855,6 +1917,204 @@ func TestToolResultReadTool_Execute_NoCache(t *testing.T) {
 	}
 	if !strings.Contains(result.Content, "Tool result cache not available") {
 		t.Errorf("expected cache error, got: %s", result.Content)
+	}
+}
+
+func TestToolResultReadTool_FileBacked(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "cached.go")
+
+	var sb strings.Builder
+	for i := 1; i <= 1000; i++ {
+		if i > 1 {
+			sb.WriteByte('\n')
+		}
+		fmt.Fprintf(&sb, "Line %d", i)
+	}
+	if err := os.WriteFile(testFile, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cache := agent.NewToolResultCache(5 * time.Minute)
+	hash := cache.Store("read_file", "", agent.ToolCacheMeta{
+		FilePath:   testFile,
+		FileMtime:  info.ModTime().UnixNano(),
+		FileSize:   info.Size(),
+		FileBacked: true,
+	})
+
+	ctx := agent.WithToolResultCache(context.Background(), cache)
+	tool := NewToolResultReadTool()
+
+	// Read first 10 lines
+	input, _ := json.Marshal(map[string]any{
+		"hash":       hash,
+		"start_line": 1,
+		"num_lines":  10,
+	})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success, got error: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "Lines 1-10 of 1000") {
+		t.Errorf("expected 'Lines 1-10 of 1000' in header, got: %s", result.Content[:min(80, len(result.Content))])
+	}
+	if !strings.Contains(result.Content, "Line 1") {
+		t.Errorf("expected 'Line 1' in content")
+	}
+	if !strings.Contains(result.Content, "Line 10") {
+		t.Errorf("expected 'Line 10' in content")
+	}
+	if !strings.Contains(result.Content, "[Use tool_result_read(") {
+		t.Errorf("expected continuation hint")
+	}
+}
+
+func TestToolResultReadTool_FileBacked_MidFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "cached.go")
+
+	var sb strings.Builder
+	for i := 1; i <= 1000; i++ {
+		if i > 1 {
+			sb.WriteByte('\n')
+		}
+		fmt.Fprintf(&sb, "Line %d", i)
+	}
+	if err := os.WriteFile(testFile, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cache := agent.NewToolResultCache(5 * time.Minute)
+	hash := cache.Store("read_file", "", agent.ToolCacheMeta{
+		FilePath:   testFile,
+		FileMtime:  info.ModTime().UnixNano(),
+		FileSize:   info.Size(),
+		FileBacked: true,
+	})
+
+	ctx := agent.WithToolResultCache(context.Background(), cache)
+	tool := NewToolResultReadTool()
+
+	// Read lines 500-510
+	input, _ := json.Marshal(map[string]any{
+		"hash":       hash,
+		"start_line": 500,
+		"num_lines":  10,
+	})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success, got error: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "Lines 500-509 of 1000") {
+		t.Errorf("expected 'Lines 500-509 of 1000' in header, got: %s", result.Content[:min(80, len(result.Content))])
+	}
+	if !strings.Contains(result.Content, "Line 500") {
+		t.Errorf("expected 'Line 500' in content")
+	}
+	if !strings.Contains(result.Content, "Line 509") {
+		t.Errorf("expected 'Line 509' in content")
+	}
+}
+
+func TestToolResultReadTool_FileBacked_StaleFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "cached.go")
+	if err := os.WriteFile(testFile, []byte("original content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cache := agent.NewToolResultCache(5 * time.Minute)
+	hash := cache.Store("read_file", "", agent.ToolCacheMeta{
+		FilePath:   testFile,
+		FileMtime:  info.ModTime().UnixNano(),
+		FileSize:   info.Size(),
+		FileBacked: true,
+	})
+
+	// Modify the file after caching
+	if err := os.WriteFile(testFile, []byte("modified content that is longer"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := agent.WithToolResultCache(context.Background(), cache)
+	tool := NewToolResultReadTool()
+
+	input, _ := json.Marshal(map[string]any{
+		"hash":       hash,
+		"start_line": 1,
+		"num_lines":  10,
+	})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for stale file-backed entry")
+	}
+	if !strings.Contains(result.Content, "stale") {
+		t.Errorf("expected 'stale' in error message, got: %s", result.Content)
+	}
+}
+
+func TestToolResultReadTool_FileBacked_EmptyFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "empty.go")
+	if err := os.WriteFile(testFile, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cache := agent.NewToolResultCache(5 * time.Minute)
+	hash := cache.Store("read_file", "", agent.ToolCacheMeta{
+		FilePath:   testFile,
+		FileMtime:  info.ModTime().UnixNano(),
+		FileSize:   info.Size(),
+		FileBacked: true,
+	})
+
+	ctx := agent.WithToolResultCache(context.Background(), cache)
+	tool := NewToolResultReadTool()
+
+	input, _ := json.Marshal(map[string]any{
+		"hash":       hash,
+		"start_line": 1,
+		"num_lines":  10,
+	})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success for empty file, got error: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "empty file") {
+		t.Errorf("expected 'empty file' in content, got: %s", result.Content)
 	}
 }
 

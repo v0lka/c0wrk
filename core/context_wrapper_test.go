@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/agent/router"
+	"github.com/v0lka/sp4rk/agent/router"
 )
 
 // TestWithDomain_RoundTrip verifies the domain context helper round-trips.

@@ -12,26 +12,26 @@ import (
 	"time"
 )
 
+// maxHuggingFaceConfigBytes caps the response body when fetching model metadata
+// from HuggingFace. config.json is normally small, but the endpoint is
+// user/config-controlled and could return an oversized body.
+const maxHuggingFaceConfigBytes = 1 << 20 // 1 MiB
+
 // ModelCapabilities describes what a model supports.
 type ModelCapabilities struct {
-	Attachment  bool   // image/PDF support
-	Reasoning   bool   // reasoning/thinking mode
-	Temperature bool   // accepts temperature parameter
-	ToolCall    bool   // function calling support
-	Interleaved string // "reasoning_content" | "reasoning_details" | ""
+	Attachment  bool // image/PDF support
+	Reasoning   bool // reasoning/thinking mode
+	Temperature bool // accepts temperature parameter
+	ToolCall    bool // function calling support
 }
 
 // ModelMetadata holds the capabilities and configuration for a language model.
 type ModelMetadata struct {
-	ContextWindow       int
-	OutputLimit         int
-	TokenizerType       string
-	Family              string
-	Capabilities        ModelCapabilities
-	InputCostPer1M      float64
-	OutputCostPer1M     float64
-	CacheReadCostPer1M  float64
-	CacheWriteCostPer1M float64
+	ContextWindow int
+	OutputLimit   int
+	TokenizerType string
+	Family        string
+	Capabilities  ModelCapabilities
 }
 
 // ModelMetadataSource is a function that can resolve model metadata from an external source.
@@ -181,8 +181,13 @@ func (r *ModelRegistry) fetchFromHuggingFace(ctx context.Context, model string) 
 		return ModelMetadata{}, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Follow redirects automatically (http.Client default behavior)
-	resp, err := r.httpClient.Do(req)
+	// Follow redirects automatically (http.Client default behavior).
+	// Read httpClient under the lock because SetHTTPClient may replace it
+	// concurrently from another goroutine.
+	r.mu.RLock()
+	client := r.httpClient
+	r.mu.RUnlock()
+	resp, err := client.Do(req)
 	if err != nil {
 		return ModelMetadata{}, fmt.Errorf("http request failed: %w", err)
 	}
@@ -194,7 +199,7 @@ func (r *ModelRegistry) fetchFromHuggingFace(ctx context.Context, model string) 
 		return ModelMetadata{}, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHuggingFaceConfigBytes))
 	if err != nil {
 		return ModelMetadata{}, fmt.Errorf("failed to read response body: %w", err)
 	}

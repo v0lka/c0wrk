@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core/tools"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // TestToolRegistry_Clone_Independent verifies that the per-session clone

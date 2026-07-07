@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // Planner generates and regenerates DAG execution plans.
@@ -23,7 +23,7 @@ type Reflector interface {
 
 // Events provides hooks for observing orchestration lifecycle.
 type Events interface {
-	agent.AgentEvents
+	agent.Events
 	OnPlanGenerated(stepCount int, steps []PlanStepEvent)
 	OnStepStarted(stepID, description, summary string)
 	OnStepCompleted(stepID string, success bool, duration time.Duration, errMsg string)

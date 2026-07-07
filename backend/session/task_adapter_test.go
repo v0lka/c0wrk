@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/agent/router"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/agent/router"
+	"github.com/v0lka/sp4rk/orchestration"
 )
 
 func TestTaskStoreAdapter_RoundTrip(t *testing.T) {

@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/strutil"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/strutil"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // OptimizePromptResult holds the output of the prompt optimization pipeline.

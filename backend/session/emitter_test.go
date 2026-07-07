@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/sp4rk/orchestration"
 )
 
 // TestEventEmitterImplementsInterface verifies EventEmitter satisfies core.Emitter at compile time.
@@ -508,6 +508,93 @@ func TestEventEmitterWithPlanStepID_NonMapData(t *testing.T) {
 	// plan_step_id should NOT be injected because data is map[string]string
 	if _, exists := data["plan_step_id"]; exists {
 		t.Error("plan_step_id should not be injected into map[string]string data")
+	}
+}
+
+// TestEventEmitterSetCurrentStepID verifies that SetCurrentStepID dynamically
+// injects plan_step_id into subsequent events emitted by the same receiver,
+// and that clearing with an empty string stops injection. This is used by the
+// inline Conductor execution path to scope executor events to the current
+// plan step without creating emitter copies.
+func TestEventEmitterSetCurrentStepID(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	base := NewEventEmitter("test-session", emit)
+
+	// Before scoping — no plan_step_id.
+	base.Thought(1, "thinking", "")
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if _, exists := data["plan_step_id"]; exists {
+		t.Error("plan_step_id should NOT be injected before SetCurrentStepID")
+	}
+
+	// After scoping — plan_step_id injected.
+	base.SetCurrentStepID("step-inline")
+	base.Thought(2, "working", "")
+	data, ok = received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if data["plan_step_id"] != "step-inline" {
+		t.Errorf("expected plan_step_id 'step-inline', got %v", data["plan_step_id"])
+	}
+
+	// After clearing — no plan_step_id.
+	base.SetCurrentStepID("")
+	base.Thought(3, "done", "")
+	data, ok = received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if _, exists := data["plan_step_id"]; exists {
+		t.Error("plan_step_id should NOT be injected after SetCurrentStepID('')")
+	}
+}
+
+// TestEventEmitterSetCurrentStepID_DoesNotAffectScopedCopies verifies that
+// SetCurrentStepID on the original emitter does not change the planStepID of
+// copies created by WithPlanStepID. Subagent emitters have their own fixed
+// scope and must not be affected by the Conductor's dynamic inline scoping.
+func TestEventEmitterSetCurrentStepID_DoesNotAffectScopedCopies(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	base := NewEventEmitter("test-session", emit)
+	subScoped := base.WithPlanStepID("step-subagent")
+	subEmitter, ok := subScoped.(*EventEmitter)
+	if !ok {
+		t.Fatal("expected *EventEmitter from WithPlanStepID")
+	}
+
+	// Dynamically scope the original (Conductor inline path).
+	base.SetCurrentStepID("step-inline")
+
+	// The subagent copy must still inject its own fixed plan_step_id.
+	subEmitter.Thought(1, "subagent work", "")
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if data["plan_step_id"] != "step-subagent" {
+		t.Errorf("subagent copy should keep its own plan_step_id 'step-subagent', got %v", data["plan_step_id"])
+	}
+
+	// The original should use the dynamically-set plan_step_id.
+	base.Thought(2, "conductor work", "")
+	data, ok = received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if data["plan_step_id"] != "step-inline" {
+		t.Errorf("original should use dynamic plan_step_id 'step-inline', got %v", data["plan_step_id"])
 	}
 }
 

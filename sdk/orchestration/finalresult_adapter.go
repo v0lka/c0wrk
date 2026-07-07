@@ -1,6 +1,6 @@
 package orchestration
 
-import "github.com/v0lka/c0wrk/sdk/agent"
+import "github.com/v0lka/sp4rk/agent"
 
 // blackboardFinalResultStore adapts a Blackboard to the
 // agent.FinalResultStore interface, exposing the prior task's final result

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/sp4rk/orchestration"
 )
 
 // RandomSuffix generates a 6-character random hex suffix for plan filenames.

@@ -1,8 +1,8 @@
-module c0wrk-sdk-examples
+module sp4rk-examples
 
 go 1.26.3
 
-require github.com/v0lka/c0wrk/sdk v0.0.0-00010101000000-000000000000
+require github.com/v0lka/sp4rk v0.0.0-00010101000000-000000000000
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown v1.6.0 // indirect
@@ -36,4 +36,4 @@ require (
 	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
 
-replace github.com/v0lka/c0wrk/sdk => ..
+replace github.com/v0lka/sp4rk => ..

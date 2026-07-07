@@ -7,7 +7,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/mcp"
+	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
 // GetMCPStatus returns current MCP server connection statuses.

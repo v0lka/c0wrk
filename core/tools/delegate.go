@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 const toolDelegateDescription = `Launch one or more subagents to execute units of work in isolated ReAct loops. Each task runs in its own context with its own tool set; only the summary output returns. Use this to break large tasks into parallel or sequential pieces, or to isolate context-heavy investigation. Tasks with depends_on wait for their dependencies to complete first; tasks without dependencies run in parallel. blocking mode returns the output in the tool result; async mode returns immediately with a delegation_id (read results later via read_step_output). depends_on can only reference blocking tasks — async tasks run in the background and cannot be depended upon. By default subagents cannot delegate further; set allow_redelegate=true to permit nesting (capped by config).`

@@ -3,8 +3,8 @@ package memory
 import (
 	"context"
 
-	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
+	sdkagent "github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
 )
 
 // CompactionConfig holds configuration for compaction strategies.

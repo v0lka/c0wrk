@@ -1,10 +1,5 @@
-// Package pathutil provides reusable filesystem-path algorithms with zero
-// knowledge of c0wrk's directory layout. Safe for use from sdk/, core/, and
-// backend/.
-//
-// Project-specific path segment constants ("plans", "temp", "workspace",
-// "vector_index") live in backend/config/paths.go and MUST NOT be duplicated
-// here.
+// Package pathutil provides reusable filesystem-path algorithms with no
+// knowledge of any application's directory layout. Safe for use from any layer.
 package pathutil
 
 import (
@@ -34,11 +29,13 @@ func IsWithinPath(parent, child string) (bool, error) {
 		return false, err
 	}
 	// rel == "." means same path (child is within parent).
-	// rel starting with ".." means child escapes above parent.
+	// rel == ".." or rel starting with "../" means child escapes above parent.
+	// Note: strings.HasPrefix(rel, "..") alone is incorrect — it would also
+	// reject legitimate children whose name begins with ".." (e.g. "..foo").
 	if rel == "." {
 		return true, nil
 	}
-	return !strings.HasPrefix(rel, ".."), nil
+	return rel != ".." && !strings.HasPrefix(rel, "../"), nil
 }
 
 // SplitPathComponents splits a cleaned absolute path into non-empty components,

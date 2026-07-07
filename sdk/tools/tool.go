@@ -19,7 +19,7 @@ const (
 	PolicyUserConfirm
 )
 
-// Tool — unified interface for all tools (Core, MCP).
+// Tool is the unified interface for all tools (Core and MCP).
 type Tool interface {
 	Name() string
 	Description() string
@@ -31,7 +31,7 @@ type Tool interface {
 	IsUntrusted() bool
 }
 
-// ToolResult — result of tool execution.
+// ToolResult is the result of tool execution.
 type ToolResult struct {
 	Content string
 	IsError bool
@@ -41,8 +41,10 @@ type ToolResult struct {
 type ToolSourceCategory string
 
 const (
+	// SourceCategoryCore marks tools built into the SDK.
 	SourceCategoryCore ToolSourceCategory = "core"
-	SourceCategoryMCP  ToolSourceCategory = "mcp"
+	// SourceCategoryMCP marks tools provided by MCP servers.
+	SourceCategoryMCP ToolSourceCategory = "mcp"
 )
 
 // ToolDescriptor — describes a tool for Planner/Executor (metadata only, no execution).

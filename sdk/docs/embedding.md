@@ -1,17 +1,14 @@
 # Embedding & Vector Search
 
-The `embedding` package provides ONNX-based text embedding for local semantic
-search, plus a document chunker and a built-in vector search tool. Everything
-runs in-process — no external API calls are required for embedding.
+The `embedding` package provides ONNX-based text embedding for local semantic search, plus a document chunker and a built-in vector search tool. Everything runs in-process — no external API calls are required for embedding.
 
 ```go
-import "github.com/v0lka/c0wrk/sdk/embedding"
+import "github.com/v0lka/sp4rk/embedding"
 ```
 
 ## Embedder
 
-`Embedder` provides ONNX-based text embedding using
-`jina-embeddings-v2-small-en`. It is safe for concurrent use.
+`Embedder` provides ONNX-based text embedding using `jina-embeddings-v2-small-en`. It is safe for concurrent use.
 
 ### EmbedderConfig
 
@@ -48,29 +45,19 @@ const (
 func NewEmbedder(cfg EmbedderConfig) (*Embedder, error)
 ```
 
-`NewEmbedder` creates a new `Embedder` by loading the tokenizer and
-initializing the ONNX Runtime environment. `ModelPath`, `TokenizerPath`, and
-`LibraryPath` are all required. `MaxSeqLength` and `HiddenDim` default to `512`
-when zero or negative.
+`NewEmbedder` creates a new `Embedder` by loading the tokenizer and initializing the ONNX Runtime environment. `ModelPath`, `TokenizerPath`, and `LibraryPath` are all required. `MaxSeqLength` and `HiddenDim` default to `512` when zero or negative.
 
 The initialization sequence is:
 
-1. `initONNXRuntime(libraryPath)` — sets the shared library path and
-   initializes the global ONNX Runtime environment.
+1. `initONNXRuntime(libraryPath)` — sets the shared library path and initializes the global ONNX Runtime environment.
 2. `NewTokenizer(tokenizerPath)` — loads the HuggingFace tokenizer.
-3. `newONNXSession(modelPath, maxSeqLen, hiddenDim)` — creates a persistent
-   ONNX session with pre-allocated tensors for the fast path.
+3. `newONNXSession(modelPath, maxSeqLen, hiddenDim)` — creates a persistent ONNX session with pre-allocated tensors for the fast path.
 
-On any failure, the ONNX Runtime environment is cleaned up before returning the
-error.
+On any failure, the ONNX Runtime environment is cleaned up before returning the error.
 
 ### Process-global singleton limitation
 
-The ONNX Runtime is a **process-global singleton** — only one `Embedder` can
-exist at a time, and it lives for the process lifetime. There is no reference
-counting. The single owner is responsible for calling `Close()` at shutdown.
-This is a known limitation for library-reuse scenarios but sufficient for a
-single-process application.
+The ONNX Runtime is a **process-global singleton** — only one `Embedder` can exist at a time, and it lives for the process lifetime. There is no reference counting. The single owner is responsible for calling `Close()` at shutdown. This is a known limitation for library-reuse scenarios but sufficient for a single-process application.
 
 ### Methods
 
@@ -81,14 +68,9 @@ single-process application.
 | `EmbeddingFunc() chromem.EmbeddingFunc` | Returns a chromem-go compatible embedding function for use with `chromem.NewCollection`. |
 | `Close() error` | Releases the ONNX Runtime environment and associated resources. |
 
-`EmbedDocuments` uses a **fast path** for single-text embedding: a persistent
-ONNX session with pre-allocated tensors is reused, eliminating per-call session
-creation overhead. Creating an ONNX session is expensive (~2s for model loading
-and graph optimization), while inference is fast (~50ms). For larger batches, a
-temporary session is created for the batch.
+`EmbedDocuments` uses a **fast path** for single-text embedding: a persistent ONNX session with pre-allocated tensors is reused, eliminating per-call session creation overhead. Creating an ONNX session is expensive (~2s for model loading and graph optimization), while inference is fast (~50ms). For larger batches, a temporary session is created for the batch.
 
-All embeddings are **mean-pooled** (using the attention mask) and
-**L2-normalized** before being returned.
+All embeddings are **mean-pooled** (using the attention mask) and **L2-normalized** before being returned.
 
 ```go
 emb, err := embedding.NewEmbedder(embedding.EmbedderConfig{
@@ -111,30 +93,20 @@ vec, err := emb.EmbedQuery(context.Background(), "authentication middleware")
 
 The `onnx.go` file manages the ONNX Runtime lifecycle:
 
-- `initONNXRuntime(libraryPath)` — sets the shared library path via
-  `ort.SetSharedLibraryPath` and initializes the global environment. Must be
-  called once before creating any sessions.
+- `initONNXRuntime(libraryPath)` — sets the shared library path via `ort.SetSharedLibraryPath` and initializes the global environment. Must be called once before creating any sessions.
 - `destroyONNXRuntime()` — cleans up the global ONNX Runtime environment.
-- `onnxSession` — a reusable session with pre-allocated tensors for
-  `batchSize=1` inference. The session and its tensors are kept alive for reuse
-  across multiple calls.
-- `runInferenceBatch` — runs the model on a batch of tokenized inputs, creating
-  a temporary session for the batch.
+- `onnxSession` — a reusable session with pre-allocated tensors for `batchSize=1` inference. The session and its tensors are kept alive for reuse across multiple calls.
+- `runInferenceBatch` — runs the model on a batch of tokenized inputs, creating a temporary session for the batch.
 
 For `jina-embeddings-v2-small-en`:
 
-- **Inputs:** `input_ids`, `attention_mask`, `token_type_ids` (all `int64`,
-  shape `[batch, seq]`).
+- **Inputs:** `input_ids`, `attention_mask`, `token_type_ids` (all `int64`, shape `[batch, seq]`).
 - **Output:** `last_hidden_state` (`float32`, shape `[batch, seq, hiddenDim]`).
-- **Post-processing:** mean pooling with the attention mask, then L2
-  normalization.
+- **Post-processing:** mean pooling with the attention mask, then L2 normalization.
 
 ## Tokenizer
 
-`Tokenizer` wraps a HuggingFace-compatible WordPiece tokenizer loaded from a
-`tokenizer.json` file. It produces `input_ids`, `attention_mask`, and
-`token_type_ids` suitable for BERT-family models like
-`jina-embeddings-v2-small-en`.
+`Tokenizer` wraps a HuggingFace-compatible WordPiece tokenizer loaded from a `tokenizer.json` file. It produces `input_ids`, `attention_mask`, and `token_type_ids` suitable for BERT-family models like `jina-embeddings-v2-small-en`.
 
 ```go
 type Tokenizer struct { /* ... */ }
@@ -144,16 +116,11 @@ func (t *Tokenizer) Encode(text string, maxLen int) (inputIDs, attentionMask, to
 func (t *Tokenizer) EncodeBatch(texts []string, maxLen int) (inputIDs, attentionMask, tokenTypeIDs []int64)
 ```
 
-`Encode` tokenizes a single text and returns padded/truncated tensors ready for
-ONNX inference. `maxLen` controls the maximum sequence length (including the
-`[CLS]` and `[SEP]` special tokens). `EncodeBatch` tokenizes multiple texts and
-returns flattened, row-major tensors of shape `[batch_size * maxLen]`.
+`Encode` tokenizes a single text and returns padded/truncated tensors ready for ONNX inference. `maxLen` controls the maximum sequence length (including the `[CLS]` and `[SEP]` special tokens). `EncodeBatch` tokenizes multiple texts and returns flattened, row-major tensors of shape `[batch_size * maxLen]`.
 
 ## Chunker
 
-The chunker splits file contents into semantically meaningful chunks for
-embedding. Each chunk carries location metadata so search results can point
-back to the original file and line range.
+The chunker splits file contents into semantically meaningful chunks for embedding. Each chunk carries location metadata so search results can point back to the original file and line range.
 
 ### Chunk
 
@@ -177,8 +144,7 @@ type ChunkerConfig struct {
 }
 ```
 
-If `Overlap` is greater than or equal to `MaxChunkSize`, it is reduced to
-`MaxChunkSize / 5`.
+If `Overlap` is greater than or equal to `MaxChunkSize`, it is reduced to `MaxChunkSize / 5`.
 
 ### ChunkFile
 
@@ -186,8 +152,7 @@ If `Overlap` is greater than or equal to `MaxChunkSize`, it is reduced to
 func ChunkFile(filePath string, content []byte, cfg ChunkerConfig) ([]Chunk, error)
 ```
 
-`ChunkFile` splits a file's content into chunks using a strategy chosen by file
-type:
+`ChunkFile` splits a file's content into chunks using a strategy chosen by file type:
 
 | File type | Strategy |
 | --- | --- |
@@ -196,8 +161,7 @@ type:
 | **Config** (`.json`, `.yaml`, `.yml`, `.toml`, …) | Split by top-level keys; falls back to fixed-size. |
 | **Other** | Fixed-size split with overlap. |
 
-**Binary detection:** files with null bytes in the first 512 bytes are treated
-as binary and return `nil` (no chunks).
+**Binary detection:** files with null bytes in the first 512 bytes are treated as binary and return `nil` (no chunks).
 
 ```go
 chunks, err := embedding.ChunkFile("/path/to/main.go", content, embedding.ChunkerConfig{
@@ -212,24 +176,18 @@ chunks, err := embedding.ChunkFile("/path/to/main.go", content, embedding.Chunke
 func ComputeFileHash(content []byte) string
 ```
 
-Returns the SHA-256 hex digest of the content, useful for change detection
-(re-embed only when a file's hash changes).
+Returns the SHA-256 hex digest of the content, useful for change detection (re-embed only when a file's hash changes).
 
 ## VectorSearchTool
 
-`VectorSearchTool` is a built-in tool (registered under the name
-`semantic_search`) that searches the project codebase using hybrid (vector +
-BM25) similarity matching. It finds code by meaning and intent as well as by
-literal symbol/keyword match.
+`VectorSearchTool` is a built-in tool (registered under the name `semantic_search`) that searches the project codebase using hybrid (vector + BM25) similarity matching. It finds code by meaning and intent as well as by literal symbol/keyword match.
 
 ```go
 func NewVectorSearchTool(searchFunc VectorSearchFunc, waitFunc VectorSearchWaitFunc) *VectorSearchTool
 ```
 
-- `searchFunc` performs the actual search (provided by the backend layer at
-  wiring time).
-- `waitFunc` blocks until the vector index is ready (the embedder loads
-  asynchronously; searches return empty results until ready).
+- `searchFunc` performs the actual search (provided by the backend layer at wiring time).
+- `waitFunc` blocks until the vector index is ready (the embedder loads asynchronously; searches return empty results until ready).
 
 ### Search modes
 
@@ -269,13 +227,9 @@ type VectorSearchResult struct {
 
 The embedding subsystem requires three external assets, fetched separately:
 
-1. **ONNX Runtime shared library** — the platform-specific shared library
-   (`libonnxruntime.dylib` / `.so` / `.dll`). Its path is passed as
-   `EmbedderConfig.LibraryPath`.
-2. **Embedding model** — the quantized `jina-embeddings-v2-small-en` ONNX model
-   file. Its path is passed as `EmbedderConfig.ModelPath`.
-3. **Tokenizer** — the HuggingFace `tokenizer.json` file. Its path is passed as
-   `EmbedderConfig.TokenizerPath`.
+1. **ONNX Runtime shared library** — the platform-specific shared library (`libonnxruntime.dylib` / `.so` / `.dll`). Its path is passed as `EmbedderConfig.LibraryPath`.
+2. **Embedding model** — the quantized `jina-embeddings-v2-small-en` ONNX model file. Its path is passed as `EmbedderConfig.ModelPath`.
+3. **Tokenizer** — the HuggingFace `tokenizer.json` file. Its path is passed as `EmbedderConfig.TokenizerPath`.
 
 ## Complete Example
 
@@ -287,7 +241,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/v0lka/c0wrk/sdk/embedding"
+	"github.com/v0lka/sp4rk/embedding"
 )
 
 func main() {

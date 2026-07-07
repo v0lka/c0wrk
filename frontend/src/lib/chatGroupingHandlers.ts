@@ -10,6 +10,7 @@ export type ToolLike = DisplayItem & { kind: 'tool' }
 export type PlanStep = DisplayItem & { kind: 'plan_step' }
 export type SubAgentItem = DisplayItem & { kind: 'subagent' }
 export type StepLikeItem = PlanStep | SubAgentItem
+export type ActionDisplayItem = Extract<DisplayItem, { kind: 'tool_confirm' | 'ask_user' | 'step_limit' | 'plan_review' | 'resume_action' }>
 
 /**
  * handleStepTodoUpdate processes a step_todo_update message into a
@@ -213,29 +214,29 @@ export function handleToolResult(
 }
 
 export function handleActionMessage(
-  msg: ChatMessageUI, meta: Record<string, unknown> | undefined, planStepId: string | undefined,
-  pendingActions: DisplayItem[], pushItem: (item: DisplayItem, psId?: string) => void,
+  msg: ChatMessageUI, meta: Record<string, unknown> | undefined,
+  items: DisplayItem[], activeActions: ActionDisplayItem[],
 ) {
-  if (meta?.resolved === true) return
+  let item: ActionDisplayItem
   switch (msg.type) {
     case 'tool_confirm':
-      pendingActions.push({ kind: 'tool_confirm', message: msg })
-      pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Awaiting confirmation...' }, planStepId)
-      break
+      item = { kind: 'tool_confirm', message: msg }; break
     case 'ask_user':
-      pendingActions.push({ kind: 'ask_user', message: msg })
-      pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Awaiting your answer...' }, planStepId)
-      break
+      item = { kind: 'ask_user', message: msg }; break
     case 'task_failed_resumable':
-      pendingActions.push({ kind: 'resume_action', message: msg })
-      break
+      item = { kind: 'resume_action', message: msg }; break
     case 'step_limit':
-      pendingActions.push({ kind: 'step_limit', message: msg })
-      pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Step limit reached — awaiting decision...' }, planStepId)
-      break
+      item = { kind: 'step_limit', message: msg }; break
     case 'plan_review':
-      pendingActions.push({ kind: 'plan_review', message: msg })
-      pushItem({ kind: 'action_placeholder', id: msg.id, label: 'Plan is ready for review...' }, planStepId)
-      break
+      item = { kind: 'plan_review', message: msg }; break
+    default: return
   }
+  // Pending actions always render in the root chat stream — never nested
+  // inside a plan_step or subagent block, regardless of any plan_step_id in
+  // the message metadata. Unresolved actions are tracked in activeActions so
+  // the sinking post-pass in groupMessages can move them to the very bottom
+  // of the chat (staying visible while new content streams in above them);
+  // resolved actions remain at their stream position, like settled checklists.
+  items.push(item)
+  if (meta?.resolved !== true) activeActions.push(item)
 }

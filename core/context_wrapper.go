@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
-	sdkmemory "github.com/v0lka/c0wrk/sdk/memory"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/sp4rk/llm"
+	sdkmemory "github.com/v0lka/sp4rk/memory"
+	"github.com/v0lka/sp4rk/orchestration"
 )
 
 // domainKey is the context key for the routing domain.

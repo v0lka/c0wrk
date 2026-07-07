@@ -1,8 +1,6 @@
-# c0wrk Agent SDK — Examples
+# sp4rk Agent SDK — Examples
 
-A progression of 7 examples that show how to build AI agents with the
-`github.com/v0lka/c0wrk/sdk` Go framework, from a minimal single-call agent to
-a full-stack system that exercises every major SDK subsystem.
+A progression of 7 examples that show how to build AI agents with the `github.com/v0lka/sp4rk` Go framework, from a minimal single-call agent to a full-stack system that exercises every major SDK subsystem.
 
 ## Layout
 
@@ -49,27 +47,22 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."
 ```
 
-Examples default to Anthropic (`claude-sonnet-4-5`). See each example's
-README for provider-specific configuration.
+Examples default to Anthropic (`claude-sonnet-4-5`). See each example's README for provider-specific configuration.
 
 ### Module setup
 
-The examples live in a **separate Go module** (`c0wrk-sdk-examples`) that
-imports the SDK as an external dependency via a `replace` directive:
+The examples live in a **separate Go module** (`sp4rk-sdk-examples`) that imports the SDK as an external dependency via a `replace` directive:
 
 ```go
 // go.mod
-require github.com/v0lka/c0wrk/sdk v0.0.0
-replace github.com/v0lka/c0wrk/sdk => ..
+require github.com/v0lka/sp4rk v0.0.0
+replace github.com/v0lka/sp4rk => ..
 ```
 
-This lets the examples compile against the local SDK source tree without
-publishing to a module proxy. The `..` points to the SDK module root
-(`sdk/`), one directory above `sdk/examples/`. A real consumer would
-simply run:
+This lets the examples compile against the local SDK source tree without publishing to a module proxy. The `..` points to the SDK module root (`sdk/`), one directory above `sdk/examples/`. A real consumer would simply run:
 
 ```bash
-go get github.com/v0lka/c0wrk/sdk@latest
+go get github.com/v0lka/sp4rk@latest
 ```
 
 Before running an example for the first time, resolve dependencies:
@@ -86,14 +79,13 @@ cd sdk/examples/01-minimal-agent
 go run main.go
 ```
 
-Each example prints its output to stdout. Examples that require interactive
-input (e.g. 04-human-in-the-loop) will prompt on stdin.
+Each example prints its output to stdout. Examples that require interactive input (e.g. 04-human-in-the-loop) will prompt on stdin.
 
 ## Key SDK packages
 
 | Package                              | Purpose                                             |
 |--------------------------------------|-----------------------------------------------------|
-| `github.com/v0lka/c0wrk/sdk`         | Top-level `Framework`, `Config`, `Execute`          |
+| `github.com/v0lka/sp4rk`         | Top-level `Framework`, `Config`, `Execute`          |
 | `…/sdk/agent`                        | `Executor`, `AgentEvents`, `HITLHandler`, `FinishTool` |
 | `…/sdk/llm`                          | `Router`, `ProviderEntry`, `ModelMetadata`          |
 | `…/sdk/tools`                        | `Tool` interface, `ToolRegistry`, `BaseTool`        |

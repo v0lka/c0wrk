@@ -278,3 +278,141 @@ func TestComputeToolResultHash(t *testing.T) {
 		t.Error("different tool+content should produce different hashes")
 	}
 }
+
+// --- File-backed cache entry tests ---
+
+func TestToolResultCache_FileBacked_StoreAndGet(t *testing.T) {
+	c := NewToolResultCache(0)
+	meta := ToolCacheMeta{
+		FilePath:   "/test/file.go",
+		FileMtime:  1234567890,
+		FileSize:   100,
+		FileBacked: true,
+	}
+	hash := c.Store("read_file", "ignored content", meta)
+	if hash == "" {
+		t.Fatal("Store returned empty hash")
+	}
+	entry, ok := c.Get(hash)
+	if !ok {
+		t.Fatal("Get returned false for stored file-backed hash")
+	}
+	if entry.Content != "" {
+		t.Errorf("file-backed entry Content = %q, want empty", entry.Content)
+	}
+	if !entry.FileBacked {
+		t.Error("file-backed entry should have FileBacked = true")
+	}
+	if entry.FilePath != "/test/file.go" {
+		t.Errorf("FilePath = %q, want %q", entry.FilePath, "/test/file.go")
+	}
+}
+
+func TestToolResultCache_FileBacked_StableHash(t *testing.T) {
+	c := NewToolResultCache(0)
+	meta := ToolCacheMeta{
+		FilePath:   "/test/file.go",
+		FileMtime:  1234567890,
+		FileSize:   100,
+		FileBacked: true,
+	}
+	hash1 := c.Store("read_file", "window content 1", meta)
+	hash2 := c.Store("read_file", "window content 2", meta)
+	if hash1 != hash2 {
+		t.Errorf("same file metadata should produce same hash: %s != %s", hash1, hash2)
+	}
+}
+
+func TestToolResultCache_FileBacked_DifferentMetadataDifferentHash(t *testing.T) {
+	c := NewToolResultCache(0)
+	meta1 := ToolCacheMeta{
+		FilePath:   "/test/file.go",
+		FileMtime:  1234567890,
+		FileSize:   100,
+		FileBacked: true,
+	}
+	meta2 := ToolCacheMeta{
+		FilePath:   "/test/file.go",
+		FileMtime:  1234567891, // different mtime
+		FileSize:   100,
+		FileBacked: true,
+	}
+	hash1 := c.Store("read_file", "content", meta1)
+	hash2 := c.Store("read_file", "content", meta2)
+	if hash1 == hash2 {
+		t.Error("different file metadata should produce different hashes")
+	}
+}
+
+func TestToolResultCache_FileBacked_CheckCoherence(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := tmpDir + "/test.txt"
+	if err := os.WriteFile(testFile, []byte("original content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewToolResultCache(0)
+	meta := ToolCacheMeta{
+		FilePath:   testFile,
+		FileMtime:  info.ModTime().UnixNano(),
+		FileSize:   info.Size(),
+		FileBacked: true,
+	}
+	hash := c.Store("read_file", "", meta)
+	valid, _ := c.CheckCoherence(hash)
+	if !valid {
+		t.Error("CheckCoherence should return true for unchanged file-backed entry")
+	}
+}
+
+func TestToolResultCache_FileBacked_CheckCoherenceModified(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := tmpDir + "/test.txt"
+	if err := os.WriteFile(testFile, []byte("original content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewToolResultCache(0)
+	meta := ToolCacheMeta{
+		FilePath:   testFile,
+		FileMtime:  info.ModTime().UnixNano(),
+		FileSize:   info.Size(),
+		FileBacked: true,
+	}
+	hash := c.Store("read_file", "", meta)
+	if err := os.WriteFile(testFile, []byte("modified content that is longer"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	valid, reason := c.CheckCoherence(hash)
+	if valid {
+		t.Error("CheckCoherence should return false for modified file-backed entry")
+	}
+	if !strings.Contains(reason, "has been modified") {
+		t.Errorf("expected 'has been modified' in reason, got %q", reason)
+	}
+}
+
+func TestComputeFileBackedHash(t *testing.T) {
+	h1 := ComputeFileBackedHash("read_file", "/path/file.go", 123, 456)
+	h2 := ComputeFileBackedHash("read_file", "/path/file.go", 123, 456)
+	if h1 != h2 {
+		t.Error("ComputeFileBackedHash should be deterministic")
+	}
+	h3 := ComputeFileBackedHash("read_file", "/path/file.go", 124, 456)
+	if h1 == h3 {
+		t.Error("different mtime should produce different hash")
+	}
+	h4 := ComputeFileBackedHash("ripgrep", "/path/file.go", 123, 456)
+	if h1 == h4 {
+		t.Error("different tool name should produce different hash")
+	}
+	if len(h1) != 64 {
+		t.Errorf("hash length = %d, want 64", len(h1))
+	}
+}

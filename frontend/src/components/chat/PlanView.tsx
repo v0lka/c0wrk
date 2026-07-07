@@ -30,7 +30,7 @@ function PlanStepItem({ item, onClick }: PlanStepItemProps) {
   return (
     <button
       className={cn(
-        'w-full text-left px-1 -mx-1 rounded transition-colors border-0 bg-transparent',
+        'block w-full text-left px-1 -mx-1 rounded transition-colors border-0 bg-transparent',
         onClick && 'hover:bg-muted/50 cursor-pointer',
       )}
       onClick={onClick}

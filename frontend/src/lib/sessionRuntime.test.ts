@@ -81,4 +81,65 @@ describe('reconcileRuntimeStatus', () => {
     }
     expect(sessionMessages()).toHaveLength(2) // no banner injected
   })
+
+  // --- stale plan_review / tool_confirm / ask_user after reload ---
+  // These interactive prompts store `resolved: true` only in the in-memory
+  // Zustand store — the flag is never persisted to the backend. After an app
+  // reload the history comes back without `resolved`, so reconcileRuntimeStatus
+  // must dismiss them as stale when the session is no longer active.
+
+  it('resolves stale plan_review when the session completed successfully', () => {
+    addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1', resolved: false } })
+
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false })
+
+    const planReview = sessionMessages().find(m => m.type === 'plan_review')
+    expect(planReview?.metadata?.resolved).toBe(true)
+    expect(planReview?.metadata?.stale).toBe(true)
+  })
+
+  it('resolves stale plan_review when the task is resumable but not running', () => {
+    addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1', resolved: false } })
+
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true })
+
+    const planReview = sessionMessages().find(m => m.type === 'plan_review')
+    expect(planReview?.metadata?.resolved).toBe(true)
+    expect(planReview?.metadata?.stale).toBe(true)
+  })
+
+  it('resolves stale tool_confirm and ask_user when nothing is unfinished', () => {
+    addMsg({ id: 'tc-1', type: 'tool_confirm', metadata: { confirm_id: 'c1' } })
+    addMsg({ id: 'au-1', type: 'ask_user', metadata: { request_id: 'r1', questions: [] } })
+
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false })
+
+    const toolConfirm = sessionMessages().find(m => m.type === 'tool_confirm')
+    expect(toolConfirm?.metadata?.resolved).toBe(true)
+    expect(toolConfirm?.metadata?.stale).toBe(true)
+
+    const askUser = sessionMessages().find(m => m.type === 'ask_user')
+    expect(askUser?.metadata?.resolved).toBe(true)
+    expect(askUser?.metadata?.stale).toBe(true)
+  })
+
+  it('leaves plan_review untouched when the session is still active', () => {
+    addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1', resolved: false } })
+
+    reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: false })
+
+    const planReview = sessionMessages().find(m => m.type === 'plan_review')
+    expect(planReview?.metadata?.resolved).toBe(false)
+  })
+
+  it('does not re-resolve already-resolved plan_review', () => {
+    addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1', resolved: true, decision: 'approve' } })
+
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false })
+
+    const planReview = sessionMessages().find(m => m.type === 'plan_review')
+    expect(planReview?.metadata?.resolved).toBe(true)
+    expect(planReview?.metadata?.decision).toBe('approve')
+    expect(planReview?.metadata?.stale).toBeUndefined() // not touched
+  })
 })

@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/sp4rk/agent"
 )
 
 // defaultPersistenceTimeout is the maximum time allowed for a single
@@ -34,11 +35,15 @@ type CheckpointedBlackboard struct {
 	checkpointer       Checkpointer
 	logger             *slog.Logger
 	persistenceTimeout time.Duration
-	persistCh          chan persistOp
+	queue              []persistOp
+	queueMu            sync.Mutex
+	queueCh            chan struct{}
+	closed             atomic.Bool
 	persistCtx         context.Context         // context for persistence operations; nil-safe (falls back to Background)
 	onChanged          func(changeType string) // optional callback, nil-safe
 	wg                 sync.WaitGroup          // waits for persistence worker on shutdown
 	shutdownOnce       sync.Once               // ensures Shutdown is executed at most once
+	configMu           sync.RWMutex            // guards onChanged and persistCtx
 }
 
 // persistOp is a single persistence operation sent to the worker goroutine.
@@ -51,17 +56,16 @@ type persistOp struct {
 // NewCheckpointedBlackboard creates a CheckpointedBlackboard that wraps a fresh MapBlackboard.
 // The logger is optional (nil-safe). If timeout is 0, defaultPersistenceTimeout is used.
 func NewCheckpointedBlackboard(id string, cp Checkpointer, logger *slog.Logger, timeout time.Duration, opts ...MapBlackboardOption) *CheckpointedBlackboard {
-	ch := make(chan persistOp, 8)
 	pb := &CheckpointedBlackboard{
 		MapBlackboard:      NewMapBlackboard(opts...),
 		id:                 id,
 		checkpointer:       cp,
 		logger:             logger,
 		persistenceTimeout: timeout,
-		persistCh:          ch,
+		queueCh:            make(chan struct{}, 1),
 	}
 	pb.wg.Add(1)
-	go pb.persistenceWorker(ch)
+	go pb.persistenceWorker()
 	return pb
 }
 
@@ -69,6 +73,8 @@ func NewCheckpointedBlackboard(id string, cp Checkpointer, logger *slog.Logger, 
 // blackboard write. The changeType argument describes what changed (e.g. "plan",
 // "step_result", "fact", "reflection"). The callback is nil-safe.
 func (pb *CheckpointedBlackboard) SetOnChanged(fn func(changeType string)) {
+	pb.configMu.Lock()
+	defer pb.configMu.Unlock()
 	pb.onChanged = fn
 }
 
@@ -76,11 +82,15 @@ func (pb *CheckpointedBlackboard) SetOnChanged(fn func(changeType string)) {
 // When nil, context.Background() is used. Call before any write operations.
 // The context carries cancellation and tracing through to the Checkpointer.
 func (pb *CheckpointedBlackboard) SetPersistContext(ctx context.Context) {
+	pb.configMu.Lock()
+	defer pb.configMu.Unlock()
 	pb.persistCtx = ctx
 }
 
 // persistCtxOrDefault returns the persistence context or Background if unset.
 func (pb *CheckpointedBlackboard) persistCtxOrDefault() context.Context {
+	pb.configMu.RLock()
+	defer pb.configMu.RUnlock()
 	if pb.persistCtx != nil {
 		return pb.persistCtx
 	}
@@ -89,8 +99,11 @@ func (pb *CheckpointedBlackboard) persistCtxOrDefault() context.Context {
 
 // notifyChanged invokes the onChanged callback if set.
 func (pb *CheckpointedBlackboard) notifyChanged(changeType string) {
-	if pb.onChanged != nil {
-		pb.onChanged(changeType)
+	pb.configMu.RLock()
+	fn := pb.onChanged
+	pb.configMu.RUnlock()
+	if fn != nil {
+		fn(changeType)
 	}
 }
 
@@ -155,14 +168,17 @@ func (pb *CheckpointedBlackboard) ID() string {
 	return pb.id
 }
 
-// Shutdown closes the persistence channel, waits for the worker to finish,
-// then returns. Safe to call multiple times.
+// Shutdown signals the persistence worker to stop, waits for it to drain any
+// queued operations, then returns. Safe to call multiple times.
 func (pb *CheckpointedBlackboard) Shutdown() {
 	pb.shutdownOnce.Do(func() {
-		if pb.persistCh != nil {
-			close(pb.persistCh)
-			pb.persistCh = nil
-		}
+		// Set closed and close queueCh under queueMu so persistSafe cannot
+		// send on a closed channel (persistSafe checks closed and sends the
+		// signal under the same lock).
+		pb.queueMu.Lock()
+		pb.closed.Store(true)
+		pb.queueMu.Unlock()
+		close(pb.queueCh)
 		pb.wg.Wait()
 	})
 }
@@ -173,13 +189,36 @@ func (pb *CheckpointedBlackboard) Shutdown() {
 
 // persistSafe enqueues a persistence operation to the background worker.
 // The caller blocks until the operation completes or the timeout expires.
-// Errors are logged. A blocking send ensures no checkpoint is silently lost;
-// if the worker is healthy, the operation will start within one prior-op latency.
+// Errors are logged.
+//
+// The enqueue never blocks: the operation is appended to an unbounded queue
+// under queueMu, then a non-blocking signal is sent to the worker goroutine.
+// This prevents deadlock under I/O contention — unlike a fixed-size buffered
+// channel, the queue grows as needed. If the blackboard has been shut down,
+// the operation is skipped (logged as a warning).
+//
+// The closed-check, queue-append, and signal-send are all performed under
+// queueMu. Shutdown sets closed and closes queueCh under the same lock, so
+// the two operations are mutually exclusive — no send can land on a closed
+// channel.
 func (pb *CheckpointedBlackboard) persistSafe(operation string, fn func(context.Context) error) {
 	done := make(chan error, 1)
 	op := persistOp{operation: operation, fn: fn, done: done}
 
-	pb.persistCh <- op
+	pb.queueMu.Lock()
+	if pb.closed.Load() {
+		pb.queueMu.Unlock()
+		if pb.logger != nil {
+			pb.logger.Warn("persistence skipped: blackboard shut down", "operation", operation)
+		}
+		return
+	}
+	pb.queue = append(pb.queue, op)
+	select {
+	case pb.queueCh <- struct{}{}:
+	default:
+	}
+	pb.queueMu.Unlock()
 
 	pb.waitPersistenceResult(operation, done)
 }
@@ -200,23 +239,38 @@ func (pb *CheckpointedBlackboard) waitPersistenceResult(operation string, done <
 	}
 
 	if err != nil {
-		pb.logWarn("persistence failure: " + operation + " error: " + err.Error())
+		if pb.logger != nil {
+			pb.logger.Warn("persistence failure", "operation", operation, "error", err)
+		}
 	}
 }
 
 // persistenceWorker is the single goroutine that executes persist operations
-// serially, with panic recovery for each operation.
-func (pb *CheckpointedBlackboard) persistenceWorker(ch <-chan persistOp) {
+// serially, with panic recovery for each operation. It drains the entire queue
+// on each signal from queueCh, ensuring all queued operations are processed.
+// The worker exits when queueCh is closed by Shutdown.
+func (pb *CheckpointedBlackboard) persistenceWorker() {
 	defer pb.wg.Done()
-	for op := range ch {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					op.done <- fmt.Errorf("panic in persistence: %v", r)
-				}
+	for range pb.queueCh {
+		for {
+			pb.queueMu.Lock()
+			if len(pb.queue) == 0 {
+				pb.queueMu.Unlock()
+				break
+			}
+			op := pb.queue[0]
+			pb.queue = pb.queue[1:]
+			pb.queueMu.Unlock()
+
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						op.done <- fmt.Errorf("panic in persistence: %v", r)
+					}
+				}()
+				op.done <- op.fn(pb.persistCtxOrDefault())
 			}()
-			op.done <- op.fn(pb.persistCtxOrDefault())
-		}()
+		}
 	}
 }
 
@@ -254,27 +308,19 @@ func RestoreBlackboard(ctx context.Context, id string, cp Checkpointer, logger *
 		mb.SetFinalResult(finalResult)
 	}
 
-	ch := make(chan persistOp, 8)
 	pb := &CheckpointedBlackboard{
 		MapBlackboard:      mb,
 		id:                 id,
 		checkpointer:       cp,
 		logger:             logger,
 		persistenceTimeout: timeout,
-		persistCh:          ch,
+		queueCh:            make(chan struct{}, 1),
 	}
 	pb.wg.Add(1)
-	go pb.persistenceWorker(ch)
+	go pb.persistenceWorker()
 	return pb, nil
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-// logWarn logs a warning message if the logger is non-nil.
-func (pb *CheckpointedBlackboard) logWarn(msg string) {
-	if pb.logger != nil {
-		pb.logger.Warn(msg)
-	}
-}

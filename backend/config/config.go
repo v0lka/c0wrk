@@ -9,7 +9,7 @@ import (
 	"sort"
 
 	"github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/sp4rk/llm"
 
 	"gopkg.in/yaml.v3"
 )

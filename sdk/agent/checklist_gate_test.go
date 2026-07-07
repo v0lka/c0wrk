@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // checklistToolDescriptor returns a ToolDescriptor for update_checklist, used

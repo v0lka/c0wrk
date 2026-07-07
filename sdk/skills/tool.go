@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"os"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 const toolReadSkillResourceDesc = `Reads a resource file from an activated skill's directory. Use this to access reference materials, scripts, or other files bundled with a skill. The skill must be currently active (matched by the router). Path traversal attempts are blocked.`

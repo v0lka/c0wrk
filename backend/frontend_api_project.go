@@ -292,6 +292,11 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 	watcher, err := workspace.NewWatcher(p.WorkspacePath, func() {
 		f.emitEvent(EventWorkspaceTreeChanged, nil)
 
+		// Project-local skills live under <workspace>/.agents/skills, so a
+		// workspace change may have added/removed/modified them. Invalidate
+		// the skill cache so the next ListSkills call rescans.
+		f.invalidateSkillCache()
+
 		if vm := f.getVectorManager(); vm != nil {
 			vm.NotifyFileChange(p.WorkspacePath)
 		}
@@ -331,6 +336,8 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 	}
 	watcher, err := workspace.NewWatcher(root, func() {
 		f.emitEvent(EventWorkspaceTreeChanged, nil)
+		// Invalidate skill cache in case project-local skills changed.
+		f.invalidateSkillCache()
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start workspace file watcher: %w", err)

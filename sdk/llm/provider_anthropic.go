@@ -13,8 +13,7 @@ import (
 // defaultAnthropicMaxTokens is the fallback max_tokens sent to the Anthropic
 // Messages API when the caller does not specify one. The Anthropic API
 // requires max_tokens to be present and > 0 — omitting it (or sending 0)
-// results in a 400 "Missing key ['max_tokens']" error. Several internal
-// callers (classification router, planner, reflector, context-compaction)
+// results in a 400 "Missing key ['max_tokens']" error. Several callers
 // build ChatRequests without MaxTokens, relying on the provider to supply a
 // safe default. 8192 is the minimum OutputLimit across all Anthropic models
 // in the built-in registry, so it is accepted by every supported model.

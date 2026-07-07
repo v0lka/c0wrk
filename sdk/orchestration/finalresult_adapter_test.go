@@ -3,7 +3,7 @@ package orchestration
 import (
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/sp4rk/agent"
 )
 
 // mockBlackboardForFinalResult is a minimal Blackboard mock for testing

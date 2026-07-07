@@ -3,9 +3,9 @@ package memory
 import (
 	"strings"
 
-	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/strutil"
+	sdkagent "github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/strutil"
 )
 
 // stepsToMessages converts a slice of Steps to LLM messages.

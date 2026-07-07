@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/sp4rk/agent"
 )
 
 // FindReadySteps returns plan steps whose dependencies are all completed successfully.
@@ -71,11 +71,13 @@ func BuildCarryForward(completed []CompletedStep, newPlan *Plan) map[string]Comp
 				continue // not a candidate
 			}
 			for _, depID := range s.DependsOn {
-				if newStepIDs[depID] && carried[depID].StepID == "" {
-					// Dependency exists in new plan but is not carried forward
-					delete(carried, s.ID)
-					changed = true
-					break
+				if newStepIDs[depID] {
+					if _, depCarried := carried[depID]; !depCarried {
+						// Dependency exists in new plan but is not carried forward.
+						delete(carried, s.ID)
+						changed = true
+						break
+					}
 				}
 			}
 		}

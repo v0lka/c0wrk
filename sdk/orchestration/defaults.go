@@ -1,13 +1,13 @@
 package orchestration
 
 import (
-	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/sp4rk/agent"
 )
 
-// DefaultOrchestrationConfig returns sensible defaults for the Orchestrator Config.
+// DefaultConfig returns sensible defaults for the Orchestrator Config.
 // This is the canonical source of orchestrator defaults. Use as a starting point
 // and override specific fields as needed.
-func DefaultOrchestrationConfig() Config {
+func DefaultConfig() Config {
 	return Config{
 		MaxSteps:                  50,
 		MaxRetries:                2,

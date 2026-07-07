@@ -7,11 +7,11 @@ import (
 
 // Message — unit of communication with LLM (system/user/assistant/tool).
 type Message struct {
-	Role             string          `json:"role"`                        // "system" | "user" | "assistant" | "tool"
-	Content          string          `json:"content"`                     // text content
-	ReasoningContent string          `json:"reasoning_content,omitempty"` // chain-of-thought / reasoning content (DeepSeek)
-	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`        // tool calls (for assistant)
-	ToolCallID       string          `json:"tool_call_id,omitempty"`      // call ID (for tool responses)
+	Role             string     `json:"role"`                        // "system" | "user" | "assistant" | "tool"
+	Content          string     `json:"content"`                     // text content
+	ReasoningContent string     `json:"reasoning_content,omitempty"` // chain-of-thought / reasoning content (DeepSeek)
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`        // tool calls (for assistant)
+	ToolCallID       string     `json:"tool_call_id,omitempty"`      // call ID (for tool responses)
 	// ReasoningItems carries reasoning output items from the OpenAI Responses API.
 	// Each item has an ID (required for round-tripping to the API) and a Summary text.
 	// Populated only by the Responses API provider; other providers use ReasoningContent.

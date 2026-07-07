@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 func TestAskUserTool_Name(t *testing.T) {
@@ -388,5 +388,168 @@ func TestAskUserTool_Execute_MixedResponses(t *testing.T) {
 	}
 	if !strings.Contains(result.Content, "User answered: my custom answer") {
 		t.Errorf("expected content to contain 'User answered: my custom answer', got %q", result.Content)
+	}
+}
+
+// --- New validation: option values & question IDs ---
+
+// noopAskFunc never returns; validation tests fail before the callback runs.
+func noopAskFunc(_ context.Context, _ AskUserRequest) (AskUserResponse, error) {
+	return AskUserResponse{}, nil
+}
+
+func TestAskUserTool_Execute_EmptyOptionValue(t *testing.T) {
+	tool := NewAskUserTool(noopAskFunc)
+	input, _ := json.Marshal(map[string]any{
+		"questions": []map[string]any{
+			{
+				"id":       "q1",
+				"question": "Pick one",
+				"options": []map[string]any{
+					{"label": "A", "value": ""},
+					{"label": "B", "value": "b"},
+				},
+			},
+		},
+	})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true for empty option value, got false. Content: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "empty value") {
+		t.Errorf("expected 'empty value' in validation error, got %q", result.Content)
+	}
+}
+
+func TestAskUserTool_Execute_MissingOptionValue(t *testing.T) {
+	tool := NewAskUserTool(noopAskFunc)
+	// Model omits "value" entirely on every option → Go defaults to "".
+	input, _ := json.Marshal(map[string]any{
+		"questions": []map[string]any{
+			{
+				"id":       "q1",
+				"question": "Pick one",
+				"options": []map[string]any{
+					{"label": "Option A"},
+					{"label": "Option B"},
+				},
+			},
+		},
+	})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true for missing option value, got false. Content: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "empty value") {
+		t.Errorf("expected 'empty value' in validation error, got %q", result.Content)
+	}
+}
+
+func TestAskUserTool_Execute_DuplicateOptionValues(t *testing.T) {
+	tool := NewAskUserTool(noopAskFunc)
+	input, _ := json.Marshal(map[string]any{
+		"questions": []map[string]any{
+			{
+				"id":       "q1",
+				"question": "Pick one",
+				"options": []map[string]any{
+					{"label": "A", "value": "same"},
+					{"label": "B", "value": "same"},
+				},
+			},
+		},
+	})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true for duplicate option values, got false. Content: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "duplicate option value") {
+		t.Errorf("expected 'duplicate option value' in validation error, got %q", result.Content)
+	}
+}
+
+func TestAskUserTool_Execute_DuplicateQuestionIDs(t *testing.T) {
+	tool := NewAskUserTool(noopAskFunc)
+	input, _ := json.Marshal(map[string]any{
+		"questions": []map[string]any{
+			{
+				"id":       "q1",
+				"question": "First",
+				"options":  []map[string]any{{"label": "A", "value": "a"}},
+			},
+			{
+				"id":       "q1",
+				"question": "Second",
+				"options":  []map[string]any{{"label": "B", "value": "b"}},
+			},
+		},
+	})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true for duplicate question id, got false. Content: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "duplicate question id") {
+		t.Errorf("expected 'duplicate question id' in validation error, got %q", result.Content)
+	}
+}
+
+func TestAskUserTool_Execute_EmptyQuestionID(t *testing.T) {
+	tool := NewAskUserTool(noopAskFunc)
+	input, _ := json.Marshal(map[string]any{
+		"questions": []map[string]any{
+			{
+				"id":       "",
+				"question": "No id",
+				"options":  []map[string]any{{"label": "A", "value": "a"}},
+			},
+		},
+	})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true for empty question id, got false. Content: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "empty id") {
+		t.Errorf("expected 'empty id' in validation error, got %q", result.Content)
+	}
+}
+
+func TestAskUserTool_Execute_EmptyOptionLabel(t *testing.T) {
+	tool := NewAskUserTool(noopAskFunc)
+	input, _ := json.Marshal(map[string]any{
+		"questions": []map[string]any{
+			{
+				"id":       "q1",
+				"question": "Pick one",
+				"options": []map[string]any{
+					{"label": "", "value": "a"},
+					{"label": "B", "value": "b"},
+				},
+			},
+		},
+	})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true for empty option label, got false. Content: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "empty label") {
+		t.Errorf("expected 'empty label' in validation error, got %q", result.Content)
 	}
 }

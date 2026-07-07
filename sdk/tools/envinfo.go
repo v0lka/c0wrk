@@ -293,15 +293,23 @@ func FormatCompactEnvBlock(info *EnvInfo) string {
 }
 
 // formatTimezoneLabel produces a label like "Europe/Moscow (UTC+3)" or "MST (UTC-7)".
+// Offsets with non-zero minutes are rendered as "UTC+5:30" (e.g., India, Nepal).
 func formatTimezoneLabel(locName, zone string, offsetSecs int) string {
-	hours := offsetSecs / 3600
+	absOffset := offsetSecs
 	sign := "+"
-	if hours < 0 {
+	if absOffset < 0 {
 		sign = "-"
-		hours = -hours
+		absOffset = -absOffset
 	}
+	hours := absOffset / 3600
+	minutes := (absOffset % 3600) / 60
 
-	utcLabel := fmt.Sprintf("UTC%s%d", sign, hours)
+	var utcLabel string
+	if minutes > 0 {
+		utcLabel = fmt.Sprintf("UTC%s%d:%02d", sign, hours, minutes)
+	} else {
+		utcLabel = fmt.Sprintf("UTC%s%d", sign, hours)
+	}
 
 	// If the location name is informative (e.g. "Europe/Moscow"), prefer it.
 	// Otherwise fall back to the zone abbreviation (e.g. "MST").

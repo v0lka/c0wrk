@@ -10,7 +10,7 @@ import (
 
 	"mvdan.cc/sh/v3/syntax"
 
-	"github.com/v0lka/c0wrk/sdk/pathutil"
+	"github.com/v0lka/sp4rk/pathutil"
 )
 
 // SymlinkTraversal describes a path that traverses a symlink.

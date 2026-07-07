@@ -313,3 +313,17 @@ func convertBlackboardState(state *core.TaskState) *BlackboardStateResponse {
 
 	return resp
 }
+
+// ResolvePendingMessage patches the metadata of the most recent persisted
+// message with the given role and matching field value, merging the extra
+// fields. Used by desktop HITL response handlers to mark tool_confirm /
+// ask_user / step_limit / plan_review messages as resolved in the DB so they
+// don't reappear as pending on session reload.
+func (f *FrontendAPI) ResolvePendingMessage(sessionID, role, matchField, matchValue string, extra map[string]any) error {
+	if f.store == nil {
+		return errors.New("session store not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return f.store.ResolvePendingMessage(ctx, sessionID, role, matchField, matchValue, extra)
+}

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/v0lka/c0wrk/sdk/pathutil"
+	"github.com/v0lka/sp4rk/pathutil"
 )
 
 // SkillManager discovers, parses, and serves Agent Skills from configured directories.
@@ -33,7 +33,7 @@ func (m *SkillManager) log() *slog.Logger {
 	if m.logger != nil {
 		return m.logger
 	}
-	return slog.Default()
+	return slog.New(slog.NewTextHandler(os.Stderr, nil))
 }
 
 // Scan walks all discovery directories and loads valid skills.

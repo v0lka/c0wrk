@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/orchestration"
 )
 
 // loggingEmitter wraps an Emitter to log all events via a session-specific logger.
@@ -15,11 +15,13 @@ type loggingEmitter struct {
 	logger *slog.Logger
 }
 
-// ensure loggingEmitter implements Emitter, PlanStepScopable, and RetryAttemptScopable.
+// ensure loggingEmitter implements Emitter, PlanStepScopable, RetryAttemptScopable,
+// and CurrentStepScopable.
 var (
 	_ Emitter              = (*loggingEmitter)(nil)
 	_ PlanStepScopable     = (*loggingEmitter)(nil)
 	_ RetryAttemptScopable = (*loggingEmitter)(nil)
+	_ CurrentStepScopable  = (*loggingEmitter)(nil)
 )
 
 // NewLoggingEmitter wraps an Emitter to log all events via the given logger.
@@ -57,8 +59,18 @@ func (l *loggingEmitter) WithRetryAttempt(attempt int) Emitter {
 	}
 }
 
+// SetCurrentStepID delegates to the inner emitter if it supports dynamic
+// plan-step scoping. This allows the inlineStepLifecycle to dynamically
+// tag the Conductor's inline executor events with plan_step_id through
+// the logging wrapper.
+func (l *loggingEmitter) SetCurrentStepID(id string) {
+	if sc, ok := l.inner.(CurrentStepScopable); ok {
+		sc.SetCurrentStepID(id)
+	}
+}
+
 // ---------------------------------------------------------------------------
-// agent.AgentEvents methods (executor-level)
+// agent.Events methods (executor-level)
 // ---------------------------------------------------------------------------
 
 func (l *loggingEmitter) StepStart(stepNum int) {

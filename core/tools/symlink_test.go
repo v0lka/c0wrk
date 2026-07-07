@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	sdktools "github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // ── Registry integration tests ────────────────────────────────────────────

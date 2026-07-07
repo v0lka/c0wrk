@@ -32,22 +32,46 @@ export function StepLimitPrompt({ item }: { item: StepLimitItem }) {
 
   if (resolved === 'allow_once') {
     return (
-      <div className="flex items-center gap-1.5 text-muted-foreground">
-        <Check className="h-3.5 w-3.5 text-success" /><span className="text-sm">Allowed once — continuing execution</span>
+      <div className="rounded-md border border-success/30 bg-success/5 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <Check className="h-3.5 w-3.5 shrink-0 text-success" />
+          <span>Step Limit</span>
+        </div>
+        <p className="mt-1.5 text-xs text-muted-foreground">Allowed once — continuing execution</p>
       </div>
     )
   }
   if (resolved === 'allow_always') {
     return (
-      <div className="flex items-center gap-1.5 text-muted-foreground">
-        <InfinityIcon className="h-3.5 w-3.5 text-info" /><span className="text-sm">Allowed always — unlimited execution</span>
+      <div className="rounded-md border border-info/30 bg-info/5 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <InfinityIcon className="h-3.5 w-3.5 shrink-0 text-info" />
+          <span>Step Limit</span>
+        </div>
+        <p className="mt-1.5 text-xs text-muted-foreground">Allowed always — unlimited execution</p>
       </div>
     )
   }
   if (resolved === 'deny') {
     return (
-      <div className="flex items-center gap-1.5 text-muted-foreground">
-        <X className="h-3.5 w-3.5 text-destructive" /><span className="text-sm">Denied — execution stopped</span>
+      <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <X className="h-3.5 w-3.5 shrink-0 text-destructive" />
+          <span>Step Limit</span>
+        </div>
+        <p className="mt-1.5 text-xs text-muted-foreground">Denied — execution stopped</p>
+      </div>
+    )
+  }
+  // Resolved without a recorded decision — stale prompt reconciled on reload.
+  if (metadata?.resolved === true) {
+    return (
+      <div className="rounded-md border border-border bg-background/50 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <AlertOctagon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span>Step Limit</span>
+        </div>
+        <p className="mt-1.5 text-xs text-muted-foreground">Dismissed</p>
       </div>
     )
   }
@@ -58,16 +82,17 @@ export function StepLimitPrompt({ item }: { item: StepLimitItem }) {
     : `Agent has reached its tool call limit (step ${currentStep} of ${maxSteps}). Allow it to continue?`
 
   return (
-    <div className="border-2 border-warning/50 rounded-lg p-4 bg-warning/5 max-w-full overflow-hidden">
-      <div className="flex items-center gap-2 mb-3">
-        <AlertOctagon className="h-4 w-4 text-warning" />
-        <span className="text-sm font-medium">{title}</span>
+    <div className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <AlertOctagon className="h-3.5 w-3.5 shrink-0 text-warning" />
+        <span>Step Limit</span>
       </div>
-      <div className="mb-4">
-        <p className="text-sm">{description}</p>
-        {reason && <p className="text-sm text-muted-foreground mt-1">Allow the agent to continue?</p>}
+      <div className="mt-1.5">
+        <p className="text-xs text-foreground">{title}</p>
+        <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
+        {reason && <p className="text-xs text-muted-foreground mt-0.5">Allow the agent to continue?</p>}
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div className="mt-2 flex flex-wrap gap-2">
         <Button size="sm" onClick={handleAllowOnce} className="text-xs">Allow Once</Button>
         <Button size="sm" variant="secondary" onClick={handleAllowAlways} className="text-xs">Allow Always</Button>
         <Button size="sm" variant="outline" onClick={handleDeny} className="text-xs">Deny</Button>

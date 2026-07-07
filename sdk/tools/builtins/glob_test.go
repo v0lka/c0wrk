@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // setupGlobTestDir creates a temp directory with nested structure for glob tests.

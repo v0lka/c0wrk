@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
 )
 
 // newHistoryTestOrchestrator builds an orchestrator with the standard test

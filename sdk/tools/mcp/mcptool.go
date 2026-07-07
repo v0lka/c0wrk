@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // Compile-time check that Tool implements sdktools.ToolJudger.

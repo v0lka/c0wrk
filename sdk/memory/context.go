@@ -9,10 +9,11 @@ import (
 	"sort"
 	"strings"
 
-	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/prompt"
-	"github.com/v0lka/c0wrk/sdk/security"
+	sdkagent "github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/prompt"
+	"github.com/v0lka/sp4rk/security"
+	"github.com/v0lka/sp4rk/strutil"
 )
 
 // CompactionThresholds configures when context compaction triggers.
@@ -110,7 +111,8 @@ const defaultSafetyMargin = 5 // 5% of context window
 
 // NewContextWindow creates a new ContextWindow.
 // safetyMarginPercent is the percentage of context window reserved as safety margin (default: 5 if 0).
-// Optional pruning (first element) and mutation (second element) configs can be provided.
+// Optional pruning config can be provided as the first variadic element.
+// Use SetHistoryMutation() to configure history mutation separately.
 //
 // If modelMeta.ContextWindow is 0 (unknown model), a fallback of 128000 is
 // used. A zero ContextWindow would disable compaction entirely (EffectiveMax
@@ -695,7 +697,9 @@ func extractInputHint(input json.RawMessage) string {
 		if v, ok := m[key]; ok {
 			s := fmt.Sprint(v)
 			if len(s) > 60 {
-				return s[:57] + "..."
+				// TruncateUTF8 avoids splitting a multi-byte rune at the
+				// byte boundary, which would produce invalid UTF-8.
+				return strutil.TruncateUTF8(s, 57) + "..."
 			}
 			return s
 		}

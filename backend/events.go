@@ -48,6 +48,11 @@ const EventProjectSwitched = "project:switched"
 // in the active workspace.
 const EventWorkspaceTreeChanged = "workspace:tree_changed"
 
+// EventSkillsChanged is emitted when skill directories outside the workspace
+// (e.g. ~/.agents/skills, ~/.c0wrk/.agents/skills) are modified. Workspace-
+// local skill changes are surfaced via EventWorkspaceTreeChanged instead.
+const EventSkillsChanged = "skills:changed"
+
 // EventGitStatusChanged is emitted when the git staging area changes
 // (stage, unstage, commit). The payload is the repository path so the
 // frontend knows which project was affected.

@@ -11,8 +11,8 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/skills"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/skills"
 	_ "modernc.org/sqlite"
 )
 
@@ -42,6 +42,9 @@ type mockBuilder struct {
 	generateCommitMsgRes  string
 	generateCommitMsgErr  error
 	generateCommitMsgDiff string
+
+	getSkillDescriptorsCalls int
+	getSkillDescriptorsRes   []skills.SkillDescriptor
 }
 
 func (m *mockBuilder) RebuildJudge(_ *core.BuilderConfig) {
@@ -110,7 +113,8 @@ func (m *mockBuilder) GetBaseSkillDirs() []string {
 func (m *mockBuilder) GetSkillDescriptors(string) []skills.SkillDescriptor {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return nil
+	m.getSkillDescriptorsCalls++
+	return m.getSkillDescriptorsRes
 }
 func (m *mockBuilder) ModelRegistry() *llm.ModelRegistry {
 	return nil

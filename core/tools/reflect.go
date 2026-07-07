@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 const toolReflectDescription = `Invoke the reflector on the current execution trajectory or a specific delegation's trajectory. Use this proactively when the direction seems wrong, or reactively when a delegation failed and you need structured analysis before retrying. Returns the reflection's summary, suggested action (retry | replan | abort), root cause, and action plan. The reflection is also persisted to the blackboard and emitted to the UI.`

@@ -5,16 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // ConductorConfig holds the dependencies for a Conductor: a single ReAct loop
-// that owns a task end-to-end. This is the SDK-level primitive; c0wrk's core
-// layer wraps it with Conductor-specific tools (delegate, declare_plan,
-// reflect, cancel_delegation) via context injection before calling Run.
+// that owns a task end-to-end. This is the SDK-level primitive; the host
+// application's core layer wraps it with Conductor-specific tools (delegate,
+// declare_plan, reflect, cancel_delegation) via context injection before
+// calling Run.
 type ConductorConfig struct {
 	LLM               agent.LLMCaller
 	Tools             agent.ToolExecutor
@@ -47,11 +49,17 @@ type ConductorConfig struct {
 }
 
 // Conductor runs a single Executor.Run that owns a task end-to-end.
-// This is the SDK primitive; the core layer adds Conductor-specific tools
+// This is the SDK primitive; the host application adds Conductor-specific tools
 // (delegate, declare_plan, reflect, cancel_delegation) through context
 // injection before calling Run.
+//
+// Conductor is safe for concurrent use: SetReasoningEffort may be called from
+// one goroutine while Run executes on another. The reasoning-effort field is
+// guarded by mu; all other fields are set only at construction time and read
+// during a single Run, so they require no additional synchronization.
 type Conductor struct {
 	cfg ConductorConfig
+	mu  sync.RWMutex
 }
 
 // NewConductor creates a Conductor from the given config.
@@ -63,7 +71,10 @@ func NewConductor(cfg ConductorConfig) *Conductor {
 }
 
 // SetReasoningEffort updates the reasoning effort for subsequent runs.
+// Safe to call concurrently with Run.
 func (c *Conductor) SetReasoningEffort(effort string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.cfg.ReasoningEffort = effort
 }
 
@@ -74,8 +85,8 @@ func (c *Conductor) SetReasoningEffort(effort string) {
 // The method injects StepOutputStore and FactStore from the blackboard.
 //
 // compactionStrategy selects the context compaction strategy: "sliding_window",
-// "summarization", or "hierarchical". The caller (core layer) derives this
-// from the routing domain and complexity per ADR-012.
+// "summarization", or "hierarchical". The caller derives this from the
+// routing domain and complexity.
 //
 // events may be nil; a NoopEvents instance is used in that case.
 func (c *Conductor) Run(
@@ -83,7 +94,7 @@ func (c *Conductor) Run(
 	message string,
 	bb Blackboard,
 	availableTools []tools.ToolDescriptor,
-	events agent.AgentEvents,
+	events agent.Events,
 	compactionStrategy string,
 ) (*ExecutionResult, error) {
 	if c.cfg.ContextFactory == nil {
@@ -153,16 +164,20 @@ func (c *Conductor) Run(
 	executor := agent.NewExecutor(
 		caller,
 		c.cfg.Tools,
-		c.cfg.TokenCounter,
 		c.cfg.MaxSteps,
-		events,
-		false, // suppressAssistantEvents — Conductor streams assistant events
-		c.cfg.ToolResultBudget,
-		c.cfg.CircuitBreaker,
-		c.cfg.HITLHandler,
+		agent.WithTokenCounter(c.cfg.TokenCounter),
+		agent.WithEvents(events),
+		agent.WithToolResultBudget(c.cfg.ToolResultBudget),
+		agent.WithCircuitBreaker(c.cfg.CircuitBreaker),
+		agent.WithHITL(c.cfg.HITLHandler),
 	)
-	if c.cfg.ReasoningEffort != "" {
-		executor.SetReasoningEffort(c.cfg.ReasoningEffort)
+	// Read reasoning effort under the read lock so a concurrent
+	// SetReasoningEffort call cannot race with this snapshot.
+	c.mu.RLock()
+	effort := c.cfg.ReasoningEffort
+	c.mu.RUnlock()
+	if effort != "" {
+		executor.SetReasoningEffort(effort)
 	}
 	if c.cfg.ToolCache != nil {
 		executor.SetToolCache(c.cfg.ToolCache)
@@ -237,14 +252,13 @@ func (c *Conductor) Cleanup() {}
 // --- Minimal DelegationRegistry interface for finish-join ---
 //
 // The SDK Conductor needs to check for pending async delegations to
-// implement the finish-join guard. Rather than importing the full
-// core/tools.DelegationRegistry (which would create a circular dependency:
-// core/tools imports sdk/tools), the SDK defines a minimal interface that
-// the registry satisfies structurally. The actual registry lives in
-// core/tools/delegation_registry.go.
+// implement the finish-join guard. Rather than importing a full
+// DelegationRegistry (which would create a circular dependency), the SDK
+// defines a minimal interface that the host application's registry satisfies
+// structurally.
 
-// PendingDelegations is implemented by DelegationRegistry (core/tools).
-// The SDK Conductor uses it to check for pending async delegations.
+// PendingDelegations is implemented by the host application's delegation
+// registry. The SDK Conductor uses it to check for pending async delegations.
 type PendingDelegations interface {
 	ListPending() []string
 }
@@ -252,7 +266,7 @@ type PendingDelegations interface {
 type delegationRegistryContextKey struct{}
 
 // WithDelegationRegistry injects a PendingDelegations into the context.
-// The core layer calls this before Conductor.Run.
+// The host application calls this before Conductor.Run.
 func WithDelegationRegistry(ctx context.Context, reg PendingDelegations) context.Context {
 	return context.WithValue(ctx, delegationRegistryContextKey{}, reg)
 }

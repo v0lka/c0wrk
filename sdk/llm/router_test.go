@@ -200,14 +200,14 @@ func TestRouter_Call_RespectsContextCancellation(t *testing.T) {
 	}
 }
 
-func TestRouter_GetDefaultProvider(t *testing.T) {
+func TestRouter_DefaultProvider(t *testing.T) {
 	mock := &mockProvider{name: "default-prov"}
 	router := newTestRouter(
 		map[string]*mockProvider{"primary": mock},
 		"primary", "model",
 	)
 
-	p := router.GetDefaultProvider()
+	p := router.DefaultProvider()
 	if p == nil {
 		t.Fatal("expected non-nil default provider")
 	}

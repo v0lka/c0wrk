@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // loopAction is a typed enum so helpers can signal control flow back to the main loop.
@@ -1003,26 +1003,34 @@ func (e *Executor) processToolResult(
 				}
 				nudge := formatFragmentationNudge(cacheHash, toolName, maxSliceHint)
 				observation += nudge
+			} else if meta.FileBacked {
+				// File-backed entries (read_file) get a nudge even without
+				// Stage 1 truncation — tool_result_read serves the token-economy
+				// use case (LLM reads fragments on demand), not just truncation
+				// recovery.
+				observation += formatFileBackedNudge(cacheHash)
 			}
 		}
 	}
 
-	// --- Stage 2: Token-budget truncation (preserve Stage 1 nudge) ---
+	// --- Stage 2: Token-budget truncation (preserve nudge) ---
 	const stage1NudgePrefix = "\n\n[This output was truncated to"
-	var stage1Nudge string
+	var nudge string
 	if idx := strings.Index(observation, stage1NudgePrefix); idx >= 0 {
-		stage1Nudge = observation[idx:]
+		nudge = observation[idx:]
+		observation = observation[:idx]
+	} else if idx := strings.Index(observation, fileBackedNudgePrefix); idx >= 0 {
+		nudge = observation[idx:]
 		observation = observation[:idx]
 	}
-	// Suppress the Stage‑2 hash hint when Stage‑1 already appended a
-	// fragmentation nudge containing the cache hash — avoids redundant
-	// "Use tool_result_read…" instructions.
+	// Suppress the Stage‑2 hash hint when a nudge containing the cache hash
+	// was already appended — avoids redundant "Use tool_result_read…" instructions.
 	budgetHash := cacheHash
-	if stage1Nudge != "" {
+	if nudge != "" {
 		budgetHash = ""
 	}
 	observation = e.applyToolResultBudget(observation, cw, toolName, budgetHash)
-	observation += stage1Nudge
+	observation += nudge
 
 	processedObservation = observation
 	return
@@ -1148,6 +1156,12 @@ func (e *Executor) checkFruitlessResult(
 	if fruitlessMaxLen == 0 {
 		fruitlessMaxLen = 32 // default
 	}
+	// Skip exempt tools (mutating tools, meta-tools) whose short successful
+	// results are legitimate in bursts and must not be counted as fruitless.
+	if _, exempt := circuitBreakerExemptTools[action.Name]; exempt {
+		e.consecutiveFruitlessCount = 0
+		return actionNone, nil, nil
+	}
 	isFruitless := !isError && len(observation) <= fruitlessMaxLen
 	if isFruitless {
 		e.consecutiveFruitlessCount++
@@ -1159,7 +1173,7 @@ func (e *Executor) checkFruitlessResult(
 	// Check fruitless thresholds (skip if threshold is 0 = disabled)
 	if e.circuitBreaker.FruitlessAbortThreshold > 0 && e.consecutiveFruitlessCount >= e.circuitBreaker.FruitlessAbortThreshold {
 		e.emitter.ExecutorDiagnostic(state.stepNum, "fruitless_abort", map[string]any{"consecutive": e.consecutiveFruitlessCount})
-		e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, true)
+		e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, isError)
 		abortReason := fmt.Sprintf("%d consecutive tool calls returned empty or minimal results", e.consecutiveFruitlessCount)
 		slResp, slErr := e.hitl.OnStepLimit(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
 		if slErr == nil {
@@ -1216,7 +1230,9 @@ func (e *Executor) checkFruitlessResult(
 }
 
 // checkSameToolRepetition detects repetitive calls to the same tool with
-// varied arguments but similar-sized results (except store_fact).
+// varied arguments but similar-sized results, excluding tools in
+// circuitBreakerExemptTools (store_fact, mutating tools, meta-tools) whose
+// short similarly-sized successful results are legitimate in bursts.
 func (e *Executor) checkSameToolRepetition(
 	ctx context.Context,
 	action llm.ToolCall,
@@ -1226,88 +1242,91 @@ func (e *Executor) checkSameToolRepetition(
 	state *runState,
 	cw ContextManager,
 ) (loopAction, *ExecutorResult, error) {
-	// Skip for store_fact: it's legitimate to store many facts in a row with similar-sized confirmations.
-	if action.Name != "store_fact" {
-		resultLen := len(result.Content)
-		sizeDelta := e.circuitBreaker.SameToolResultSizeDelta
-		if sizeDelta == 0 {
-			sizeDelta = 64 // default
-		}
-		// Calculate absolute difference without importing math
-		lenDiff := resultLen - e.sameToolLastResultLen
-		if lenDiff < 0 {
-			lenDiff = -lenDiff
-		}
-
-		if action.Name == e.sameToolLastName && lenDiff <= sizeDelta {
-			e.sameToolConsecutiveCount++
-			e.sameToolLastResultLen = resultLen
-		} else {
-			e.sameToolConsecutiveCount = 1
-			e.sameToolLastName = action.Name
-			e.sameToolLastResultLen = resultLen
-		}
-
-		// Check same-tool thresholds (skip if threshold is 0 = disabled)
-		if e.circuitBreaker.SameToolRepeatAbortThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatAbortThreshold {
-			e.emitter.ExecutorDiagnostic(state.stepNum, "same_tool_repeat_abort", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
-			e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, true)
-			abortReason := fmt.Sprintf("Tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount)
-			slResp, slErr := e.hitl.OnStepLimit(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
-			if slErr == nil {
-				switch slResp {
-				case StepLimitAllowOnce:
-					e.sameToolConsecutiveCount = 0
-					e.sameToolNudgeAttempted = false
-					nudgeStep := Step{
-						UserNudge: "[System] The user acknowledged the same-tool circuit breaker and granted you ONE more chance. " +
-							"Try a completely different tool or approach instead of repeating the same tool.",
-					}
-					state.allSteps = append(state.allSteps, nudgeStep)
-					cw.AddStep(nudgeStep)
-					state.circuitBreakerTriggered = true
-				case StepLimitAllowAlways:
-					e.sameToolConsecutiveCount = 0
-					e.sameToolNudgeAttempted = false
-					e.circuitBreaker.SameToolRepeatAbortThreshold = 0 // disable
-					nudgeStep := Step{
-						UserNudge: "[System] The user has overridden the same-tool circuit breaker. " +
-							"You may continue, but consider using different tools or approaches.",
-					}
-					state.allSteps = append(state.allSteps, nudgeStep)
-					cw.AddStep(nudgeStep)
-					state.circuitBreakerTriggered = true
-				default:
-					// StepLimitDeny or empty — fall through to abort
-				}
-			}
-			if state.circuitBreakerTriggered {
-				return actionBreak, nil, nil
-			}
-			return actionNone, &ExecutorResult{
-				Output:   fmt.Sprintf("Aborted: tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount),
-				Steps:    state.allSteps,
-				Finished: false,
-			}, nil
-		}
-
-		if e.circuitBreaker.SameToolRepeatNudgeThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatNudgeThreshold && !e.sameToolNudgeAttempted {
-			e.sameToolNudgeAttempted = true
-			e.emitter.ExecutorDiagnostic(state.stepNum, "same_tool_repeat_nudge", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
-			e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, false)
-			nudgeStep := Step{
-				UserNudge: fmt.Sprintf(executorSameToolRepeatNudge, action.Name, e.sameToolConsecutiveCount),
-			}
-			state.allSteps = append(state.allSteps, nudgeStep)
-			cw.AddStep(nudgeStep)
-			state.circuitBreakerTriggered = true
-			return actionBreak, nil, nil
-		}
-	} else {
-		// Reset tracker when store_fact is used so the next non-store_fact tool starts fresh
+	// Skip exempt tools: it's legitimate to call them many times in a row
+	// with similarly-sized (short) successful results (e.g. batch file edits
+	// each returning "successfully edited file", or consecutive store_fact /
+	// update_checklist confirmations).
+	if _, exempt := circuitBreakerExemptTools[action.Name]; exempt {
+		// Reset tracker so the next non-exempt tool starts fresh.
 		e.sameToolConsecutiveCount = 0
 		e.sameToolLastName = ""
 		e.sameToolLastResultLen = 0
+		return actionNone, nil, nil
+	}
+	resultLen := len(result.Content)
+	sizeDelta := e.circuitBreaker.SameToolResultSizeDelta
+	if sizeDelta == 0 {
+		sizeDelta = 64 // default
+	}
+	// Calculate absolute difference without importing math
+	lenDiff := resultLen - e.sameToolLastResultLen
+	if lenDiff < 0 {
+		lenDiff = -lenDiff
+	}
+
+	if action.Name == e.sameToolLastName && lenDiff <= sizeDelta {
+		e.sameToolConsecutiveCount++
+		e.sameToolLastResultLen = resultLen
+	} else {
+		e.sameToolConsecutiveCount = 1
+		e.sameToolLastName = action.Name
+		e.sameToolLastResultLen = resultLen
+	}
+
+	// Check same-tool thresholds (skip if threshold is 0 = disabled)
+	if e.circuitBreaker.SameToolRepeatAbortThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatAbortThreshold {
+		e.emitter.ExecutorDiagnostic(state.stepNum, "same_tool_repeat_abort", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
+		e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, result.IsError)
+		abortReason := fmt.Sprintf("Tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount)
+		slResp, slErr := e.hitl.OnStepLimit(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
+		if slErr == nil {
+			switch slResp {
+			case StepLimitAllowOnce:
+				e.sameToolConsecutiveCount = 0
+				e.sameToolNudgeAttempted = false
+				nudgeStep := Step{
+					UserNudge: "[System] The user acknowledged the same-tool circuit breaker and granted you ONE more chance. " +
+						"Try a completely different tool or approach instead of repeating the same tool.",
+				}
+				state.allSteps = append(state.allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				state.circuitBreakerTriggered = true
+			case StepLimitAllowAlways:
+				e.sameToolConsecutiveCount = 0
+				e.sameToolNudgeAttempted = false
+				e.circuitBreaker.SameToolRepeatAbortThreshold = 0 // disable
+				nudgeStep := Step{
+					UserNudge: "[System] The user has overridden the same-tool circuit breaker. " +
+						"You may continue, but consider using different tools or approaches.",
+				}
+				state.allSteps = append(state.allSteps, nudgeStep)
+				cw.AddStep(nudgeStep)
+				state.circuitBreakerTriggered = true
+			default:
+				// StepLimitDeny or empty — fall through to abort
+			}
+		}
+		if state.circuitBreakerTriggered {
+			return actionBreak, nil, nil
+		}
+		return actionNone, &ExecutorResult{
+			Output:   fmt.Sprintf("Aborted: tool '%s' called %d times in a row with different arguments but similar results", action.Name, e.sameToolConsecutiveCount),
+			Steps:    state.allSteps,
+			Finished: false,
+		}, nil
+	}
+
+	if e.circuitBreaker.SameToolRepeatNudgeThreshold > 0 && e.sameToolConsecutiveCount >= e.circuitBreaker.SameToolRepeatNudgeThreshold && !e.sameToolNudgeAttempted {
+		e.sameToolNudgeAttempted = true
+		e.emitter.ExecutorDiagnostic(state.stepNum, "same_tool_repeat_nudge", map[string]any{"tool": action.Name, "consecutive": e.sameToolConsecutiveCount})
+		e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, false)
+		nudgeStep := Step{
+			UserNudge: fmt.Sprintf(executorSameToolRepeatNudge, action.Name, e.sameToolConsecutiveCount),
+		}
+		state.allSteps = append(state.allSteps, nudgeStep)
+		cw.AddStep(nudgeStep)
+		state.circuitBreakerTriggered = true
+		return actionBreak, nil, nil
 	}
 
 	return actionNone, nil, nil

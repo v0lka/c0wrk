@@ -13,7 +13,7 @@ import { StepLimitPrompt } from './StepLimitPrompt'
 import { ErrorBlock } from './ErrorBlock'
 import { ServiceMessage } from './ServiceMessage'
 import { ReflectionBlock } from './ReflectionBlock'
-import { ActionPlaceholder } from './ActionPlaceholder'
+import { PlanApprovalPanel } from './PlanApprovalPanel'
 import { ThoughtGroupBlock } from './ThoughtGroupBlock'
 import { ChecklistCard } from './ChecklistCard'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
@@ -68,10 +68,9 @@ const renderers: Record<DisplayItemKind, ItemRenderer> = {
   subagent: SubAgentBlock as ItemRenderer,
   reflection: ReflectionBlock as ItemRenderer,
   step_finish: StepFinishMarker as ItemRenderer,
-  action_placeholder: ActionPlaceholder as ItemRenderer,
   context_compaction: ContextCompactionBlock as ItemRenderer,
   memory_read: MemoryReadBlock as ItemRenderer,
-  plan_review: (() => null) as ItemRenderer,
+  plan_review: PlanApprovalPanel as ItemRenderer,
   checklist: ChecklistCard as ItemRenderer,
 }
 

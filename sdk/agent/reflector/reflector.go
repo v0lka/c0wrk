@@ -1,3 +1,5 @@
+// Package reflector analyzes execution trajectories to produce structured
+// self-correction insights (retry, replan, or abort recommendations).
 package reflector
 
 import (
@@ -8,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/sdk/prompt"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/prompt"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // compile-time check: Reflector implements orchestration.Reflector.
@@ -36,8 +38,8 @@ type Reflector struct {
 	reasoningEffort string
 }
 
-// NewReflector creates a new Reflector with the given caller and config.
-func NewReflector(caller agent.LLMCaller, cfg Config) *Reflector {
+// New creates a new Reflector with the given caller and config.
+func New(caller agent.LLMCaller, cfg Config) *Reflector {
 	footer := cfg.AnalyzeFooter
 	if footer == "" {
 		footer = defaultAnalyzeFooter

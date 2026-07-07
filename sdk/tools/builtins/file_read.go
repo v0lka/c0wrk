@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const toolReadFileDescription = `Reads and returns the contents of a file at the given path. Supports pagination via optional line range parameters. Output includes a metadata header showing the file name, returned line range, and total line count. When more content remains beyond the returned range, a continuation hint is appended.`
@@ -68,7 +66,10 @@ func (t *ReadFileTool) Judge(ctx context.Context, input json.RawMessage) (allowe
 	return judgeReadInSessionRoots(ctx, input)
 }
 
-// Execute reads and returns the content of a file with pagination support.
+// Execute reads and returns the content of a file with streaming pagination.
+// Uses ReadFileRange for O(1) memory — only the requested window is buffered,
+// never the full file. When no line range is specified, a default window of
+// ReadDefaultLines lines is returned from the beginning of the file.
 func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params ReadFileInput
 	if err := json.Unmarshal(input, &params); err != nil {
@@ -103,48 +104,48 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		checker.Unlock(params.Path)
 	}
 
-	data, err := os.ReadFile(params.Path)
+	result, err := ReadFileRange(FileReadParams{
+		Path:           params.Path,
+		StartLine:      params.StartLine,
+		EndLine:        params.EndLine,
+		DefaultLines:   t.limits.ReadDefaultLines,
+		MaxLineBytes:   t.limits.MaxLineBytes,
+		MaxWindowLines: t.limits.MaxWindowLines,
+	})
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to read file: %v", err), IsError: true}, nil
 	}
 
-	// Split content by newlines
-	allLines := strings.Split(string(data), "\n")
-	totalLines := len(allLines)
+	filename := filepath.Base(params.Path)
 
-	// Apply defaults
-	startLine := params.StartLine
-	endLine := params.EndLine
-	if startLine <= 0 {
-		startLine = 1
-	}
-	if endLine <= 0 {
-		endLine = totalLines // return entire file; centralized truncation handles output size
+	// Handle empty file.
+	if result.TotalLines == 0 {
+		content := fmt.Sprintf("[File: %s | 0 lines | empty file]\n", filename)
+		if coherenceWarning != "" {
+			content = coherenceWarning + "\n" + content
+		}
+		return tools.ToolResult{Content: content, IsError: false}, nil
 	}
 
-	// Clamp to file bounds
-	if startLine > totalLines {
-		startLine = totalLines
+	// Clamp resolved range to file bounds for display.
+	startLine := result.StartLine
+	endLine := result.EndLine
+	if startLine > result.TotalLines {
+		startLine = result.TotalLines
 	}
-	if endLine > totalLines {
-		endLine = totalLines
+	if endLine > result.TotalLines {
+		endLine = result.TotalLines
 	}
 	if startLine < 1 {
 		startLine = 1
 	}
 
-	// Extract the requested range (convert 1-based to 0-based indexing)
-	selectedLines := allLines[startLine-1 : endLine]
+	header := fmt.Sprintf("[File: %s | Lines %d-%d of %d | %d bytes]\n", filename, startLine, endLine, result.TotalLines, len(result.Content))
 
-	// Join lines
-	content := strings.Join(selectedLines, "\n")
+	content := result.Content
 
-	// Build metadata header
-	filename := filepath.Base(params.Path)
-	header := fmt.Sprintf("[File: %s | Lines %d-%d of %d | %d bytes]\n", filename, startLine, endLine, totalLines, len(content))
-
-	// Add continuation hint if there are more lines
-	if endLine < totalLines {
+	// Add continuation hint if more lines remain.
+	if endLine < result.TotalLines {
 		content = header + content + fmt.Sprintf("\n[Use start_line=%d to continue reading]", endLine+1)
 	} else {
 		content = header + content

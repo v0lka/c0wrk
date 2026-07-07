@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 const toolAskUserDescription = `Ask the user one or more questions and present selectable answer options for each. Supports single-select (default) and multi-select modes per question. The user can pick from predefined options or provide a custom free-text answer for each question. Not available in non-interactive (CLI) mode.`
@@ -31,7 +31,7 @@ func NewAskUserTool(fn AskUserFunc) *AskUserTool {
 				"items": {
 					"type": "object",
 					"properties": {
-						"id": {"type": "string", "description": "Unique identifier for this question (e.g. q1, q2)"},
+						"id": {"type": "string", "description": "Unique non-empty identifier for this question (e.g. q1, q2). Must be unique across all questions in this call."},
 						"question": {"type": "string", "description": "The question text"},
 						"options": {
 							"type": "array",
@@ -39,7 +39,7 @@ func NewAskUserTool(fn AskUserFunc) *AskUserTool {
 								"type": "object",
 								"properties": {
 									"label": {"type": "string", "description": "Display label for the option"},
-									"value": {"type": "string", "description": "Value identifier for the option"}
+									"value": {"type": "string", "description": "Unique non-empty value identifier for the option. Must be unique within the question — do NOT reuse the same value across options."}
 								},
 								"required": ["label", "value"]
 							},
@@ -85,7 +85,22 @@ func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (sdkto
 		}, nil
 	}
 
+	seenIDs := make(map[string]struct{}, len(params.Questions))
 	for _, q := range params.Questions {
+		if strings.TrimSpace(q.ID) == "" {
+			return sdktools.ToolResult{
+				Content: "validation error: question has empty id",
+				IsError: true,
+			}, nil
+		}
+		if _, dup := seenIDs[q.ID]; dup {
+			return sdktools.ToolResult{
+				Content: fmt.Sprintf("validation error: duplicate question id %q", q.ID),
+				IsError: true,
+			}, nil
+		}
+		seenIDs[q.ID] = struct{}{}
+
 		if strings.TrimSpace(q.Question) == "" {
 			return sdktools.ToolResult{
 				Content: fmt.Sprintf("validation error: question %q has empty text", q.ID),
@@ -97,6 +112,28 @@ func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (sdkto
 				Content: fmt.Sprintf("validation error: question %q must have at least one option", q.ID),
 				IsError: true,
 			}, nil
+		}
+		seenValues := make(map[string]struct{}, len(q.Options))
+		for _, opt := range q.Options {
+			if strings.TrimSpace(opt.Label) == "" {
+				return sdktools.ToolResult{
+					Content: fmt.Sprintf("validation error: question %q has an option with empty label", q.ID),
+					IsError: true,
+				}, nil
+			}
+			if strings.TrimSpace(opt.Value) == "" {
+				return sdktools.ToolResult{
+					Content: fmt.Sprintf("validation error: question %q option %q has empty value", q.ID, opt.Label),
+					IsError: true,
+				}, nil
+			}
+			if _, dup := seenValues[opt.Value]; dup {
+				return sdktools.ToolResult{
+					Content: fmt.Sprintf("validation error: question %q has duplicate option value %q", q.ID, opt.Value),
+					IsError: true,
+				}, nil
+			}
+			seenValues[opt.Value] = struct{}{}
 		}
 	}
 

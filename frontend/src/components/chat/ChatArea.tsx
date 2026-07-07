@@ -14,7 +14,6 @@ import { ChatScrollManager } from './ChatScrollManager'
 import { ChatMessageRenderer, CompactErrorFallback } from './ChatMessageRenderer'
 import { ExecutionPanels } from './ExecutionPanels'
 import { BlackboardPanel } from './BlackboardPanel'
-import { PendingActionsBar } from './PendingActionsBar'
 import { ChatInput } from './ChatInput'
 import { ScrollProvider } from './ScrollContext'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
@@ -176,7 +175,6 @@ export function ChatArea() {
         <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Panel error</div>}>
           <ExecutionPanels />
           <BlackboardPanel />
-          <PendingActionsBar />
         </ErrorBoundary>
         <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Input error</div>}>
           <ChatInput />
@@ -208,7 +206,6 @@ export function ChatArea() {
         <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Panel error</div>}>
           <ExecutionPanels />
           <BlackboardPanel />
-          <PendingActionsBar />
         </ErrorBoundary>
         <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Input error</div>}>
           <ChatInput />

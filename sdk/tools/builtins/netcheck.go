@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"syscall"
 )
 
 // privateNetworks contains CIDR ranges considered private or reserved.
@@ -103,4 +104,39 @@ func resolveHostIsPrivate(ctx context.Context, rawURL string) (addr string, priv
 		}
 	}
 	return "", false, nil
+}
+
+// ssrfSafeControl is a net.Dialer.Control function that rejects connections to
+// private or reserved IP addresses at TCP connect time. This closes the DNS
+// rebinding TOCTOU window: resolveHostIsPrivate checks the IP during Judge's
+// pre-flight, but the HTTP client re-resolves DNS when the actual dial occurs,
+// so a host could resolve to a public IP during Judge and a private IP during
+// the dial. By inspecting the address handed to the dialer we verify the IP
+// that is actually being connected to.
+//
+// The address parameter is the resolved "host:port" (or "[host]:port" for
+// IPv6) that the dialer is about to connect to — it is always a literal IP,
+// never a hostname, because resolution happens before Control is invoked.
+func ssrfSafeControl(network, address string, _ syscall.RawConn) error {
+	// Fail closed: if the CIDR list failed to initialize, SSRF protection is
+	// unavailable and we must refuse the connection rather than allow it.
+	if privateNetworksInitErr != nil {
+		return fmt.Errorf("SSRF protection unavailable: %w", privateNetworksInitErr)
+	}
+
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid dial address %q: %w", address, err)
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("dial address %q is not a literal IP address", address)
+	}
+
+	if isPrivateIP(ip) {
+		return fmt.Errorf("private/reserved address refused: %s", ip)
+	}
+
+	return nil
 }

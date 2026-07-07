@@ -1,4 +1,4 @@
-// Package sdk is the entry point for the c0wrk Agent SDK — a standalone Go framework
+// Package sdk is the entry point for the sp4rk Agent SDK — a standalone Go framework
 // for building AI agent systems with Plan & Execute orchestration, tool integration,
 // and multi-provider LLM support.
 //
@@ -24,12 +24,12 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	sdkmemory "github.com/v0lka/c0wrk/sdk/memory"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/mcp"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	sdkmemory "github.com/v0lka/sp4rk/memory"
+	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
 // Framework is the top-level entry point for building agent systems with the SDK.
@@ -184,7 +184,7 @@ func New(cfg Config) (*Framework, error) {
 		logger = slog.Default()
 	}
 
-	// Apply defaults — keep in sync with backend/config/defaults.go
+	// Apply defaults for zero-value fields.
 	if cfg.Execution.MaxSteps == 0 {
 		cfg.Execution.MaxSteps = 50
 	}
@@ -309,7 +309,7 @@ func New(cfg Config) (*Framework, error) {
 // declare_plan, reflect) into the context before calling Run, if desired.
 // The SDK Conductor primitive itself does not provide those tools; they are
 // an application-layer concern.
-func (fw *Framework) NewConductor(systemPrompt orchestration.SystemPromptFactory, events agent.AgentEvents) (*orchestration.Conductor, error) {
+func (fw *Framework) NewConductor(systemPrompt orchestration.SystemPromptFactory, events agent.Events) (*orchestration.Conductor, error) {
 	if fw.llmRouter == nil {
 		return nil, errors.New("framework not initialized: LLM router is nil")
 	}
@@ -386,7 +386,7 @@ func (fw *Framework) buildContextWindow(sysPrompt string, meta llm.ModelMetadata
 // Execute is a convenience method that creates a Conductor and executes a
 // single user message. Returns the execution result. For repeated use, call
 // NewConductor() once and reuse it.
-func (fw *Framework) Execute(ctx context.Context, systemPrompt orchestration.SystemPromptFactory, events agent.AgentEvents, userMessage string) (*orchestration.ExecutionResult, error) {
+func (fw *Framework) Execute(ctx context.Context, systemPrompt orchestration.SystemPromptFactory, events agent.Events, userMessage string) (*orchestration.ExecutionResult, error) {
 	conductor, err := fw.NewConductor(systemPrompt, events)
 	if err != nil {
 		return nil, err
@@ -403,7 +403,9 @@ func (fw *Framework) Execute(ctx context.Context, systemPrompt orchestration.Sys
 // Safe to call multiple times.
 func (fw *Framework) Shutdown() error {
 	if fw.mcpGateway != nil {
-		return fw.mcpGateway.Stop()
+		gw := fw.mcpGateway
+		fw.mcpGateway = nil // ensure idempotency on repeated calls
+		return gw.Stop()
 	}
 	return nil
 }

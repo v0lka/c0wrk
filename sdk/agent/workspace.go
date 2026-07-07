@@ -10,8 +10,9 @@ import (
 
 // StepOutputStore provides read access to completed step outputs.
 // Implementations must be safe for concurrent use.
-// This interface lives in sdk/agent to avoid a cyclic import between
-// sdk/tools and sdk/orchestration; the concrete adapter wraps Blackboard.
+// This interface lives in the agent package to avoid a cyclic import between
+// the tools and orchestration packages; the concrete adapter wraps the
+// orchestration blackboard.
 type StepOutputStore interface {
 	// GetStepOutput returns the full output of a completed step.
 	// Returns ("", false) if the step has no output or does not exist.

@@ -75,7 +75,7 @@ func TestNoopEvents_ExecutorDiagnostic(t *testing.T) {
 
 func TestNoopEvents_AllMethods_NoPanic(t *testing.T) {
 	n := &NoopEvents{}
-	var _ AgentEvents = n
+	var _ Events = n
 
 	funcs := []func(){
 		func() { n.StepStart(1) },

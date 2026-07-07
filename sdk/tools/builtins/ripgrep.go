@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const toolRipgrepDescription = `Search file contents using regex or literal patterns. Returns matches in "file:line: content" format with optional surrounding context lines. Automatically respects .gitignore rules and skips binary files. Use this when you need to find code patterns, function definitions, or text within files. For finding files by name or path pattern, use glob instead.`
@@ -19,10 +19,14 @@ const toolRipgrepDescription = `Search file contents using regex or literal patt
 // RipgrepTool searches file contents using regex patterns via the system
 // `rg` CLI (ripgrep). The rg binary is a managed runtime dependency provided
 // by the tool-manager (see specs/decisions/010-tool-manager.md) and
-// PATH-prepended at startup by desktop/startup.go.
+// PATH-prepended at startup by desktop/startup.go. The path to the rg binary
+// is configurable via NewRipgrepToolWithPath; when not provided it is resolved
+// from PATH at construction time (falling back to the bare "rg" name) and
+// re-resolved lazily in Execute if unset.
 type RipgrepTool struct {
 	*tools.BaseTool
 	limits RipgrepLimits
+	rgPath string
 }
 
 // NewRipgrepTool creates a new RipgrepTool instance with default limits.
@@ -30,8 +34,26 @@ func NewRipgrepTool() *RipgrepTool {
 	return NewRipgrepToolWithLimits(DefaultRipgrepLimits())
 }
 
-// NewRipgrepToolWithLimits creates a new RipgrepTool instance with specified limits.
+// NewRipgrepToolWithLimits creates a new RipgrepTool instance with specified
+// limits. The rg binary path is resolved from PATH, falling back to the bare
+// "rg" name when not found.
 func NewRipgrepToolWithLimits(limits RipgrepLimits) *RipgrepTool {
+	return NewRipgrepToolWithPath(limits, "")
+}
+
+// NewRipgrepToolWithPath creates a new RipgrepTool instance with specified
+// limits and an explicit path to the rg binary. If rgPath is empty, the rg
+// binary is resolved from PATH via exec.LookPath; when found the resolved
+// absolute path is used, otherwise the bare "rg" name is stored (and
+// re-resolved lazily in Execute if still unset).
+func NewRipgrepToolWithPath(limits RipgrepLimits, rgPath string) *RipgrepTool {
+	if rgPath == "" {
+		if resolved, err := exec.LookPath("rg"); err == nil {
+			rgPath = resolved
+		} else {
+			rgPath = "rg"
+		}
+	}
 	return &RipgrepTool{BaseTool: &tools.BaseTool{
 		ToolName:        "ripgrep",
 		ToolDescription: toolRipgrepDescription,
@@ -69,6 +91,7 @@ func NewRipgrepToolWithLimits(limits RipgrepLimits) *RipgrepTool {
 		Untrusted: true,
 	},
 		limits: limits,
+		rgPath: rgPath,
 	}
 }
 
@@ -131,6 +154,21 @@ func (t *RipgrepTool) Execute(ctx context.Context, input json.RawMessage) (tools
 		return tools.ToolResult{Content: "validation error: pattern is required", IsError: true}, nil
 	}
 
+	// Resolve the rg binary path. When unset (e.g. the struct was constructed
+	// directly without a constructor), resolve from PATH; if rg is not found,
+	// surface a clear, actionable error.
+	rgPath := t.rgPath
+	if rgPath == "" {
+		resolved, err := exec.LookPath("rg")
+		if err != nil {
+			return tools.ToolResult{
+				Content: "ripgrep (rg) not found in PATH — install ripgrep or configure via NewRipgrepToolWithPath",
+				IsError: true,
+			}, nil
+		}
+		rgPath = resolved
+	}
+
 	if params.Path == "" {
 		params.Path = tools.WorkspacePathFrom(ctx)
 		if params.Path == "" {
@@ -163,7 +201,7 @@ func (t *RipgrepTool) Execute(ctx context.Context, input json.RawMessage) (tools
 	searchCtx, cancel := context.WithTimeout(ctx, t.limits.Timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(searchCtx, "rg", args...)
+	cmd := exec.CommandContext(searchCtx, rgPath, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()

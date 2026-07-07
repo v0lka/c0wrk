@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 const toolDeclareStepCompleteDescription = `Signal that an inline plan step is complete. Call this after you finish executing a plan step inline (without delegating to a subagent) to mark it as completed or failed in the plan panel. Do NOT call this for steps you delegated via delegate — the system tracks delegated step completion automatically. Pass success=false with an error message if the step could not be completed. If you are not executing a declared plan inline, do not call this tool.`

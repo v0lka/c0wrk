@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 const toolWebsearchDescription = `Search the web and return a list of results with titles, URLs, and text snippets. Use this to find current information, external documentation, recent events, or any knowledge that may be beyond training data. Returns up to max_results entries (default 5), each with a title, URL, and a brief snippet summarizing the page content.`
@@ -20,6 +20,9 @@ type SearchResult struct {
 }
 
 // SearchProvider defines the interface for web search providers.
+// Built-in implementations include BraveProvider, DuckDuckGoProvider,
+// ExaProvider, and TavilyProvider. To add a custom provider, implement this
+// interface and pass it to NewTool.
 type SearchProvider interface {
 	Search(ctx context.Context, query string, maxResults int) ([]SearchResult, error)
 	Name() string
@@ -28,17 +31,17 @@ type SearchProvider interface {
 // Limits is an alias for builtins.WebSearchLimits.
 type Limits = builtins.WebSearchLimits
 
-// --- WebSearchTool ---
+// --- Tool ---
 
-// WebSearchTool searches the web using a pluggable SearchProvider.
-type WebSearchTool struct {
+// Tool searches the web using a pluggable SearchProvider.
+type Tool struct {
 	*tools.BaseTool
 	provider SearchProvider
 	limits   Limits
 }
 
-// NewWebSearchTool creates a new WebSearchTool with the given SearchProvider and specified limits.
-func NewWebSearchTool(provider SearchProvider, limits Limits) *WebSearchTool {
+// NewTool creates a new Tool with the given SearchProvider and specified limits.
+func NewTool(provider SearchProvider, limits Limits) *Tool {
 	schema := `{
 		"type": "object",
 		"properties": {
@@ -53,7 +56,7 @@ func NewWebSearchTool(provider SearchProvider, limits Limits) *WebSearchTool {
 		},
 		"required": ["query"]
 	}`
-	return &WebSearchTool{
+	return &Tool{
 		BaseTool: &tools.BaseTool{
 			ToolName:        "web_search",
 			ToolDescription: toolWebsearchDescription,
@@ -73,7 +76,7 @@ type webSearchInput struct {
 }
 
 // Execute performs a web search and returns the results.
-func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
+func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params webSearchInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tools.ParseInputError(err)

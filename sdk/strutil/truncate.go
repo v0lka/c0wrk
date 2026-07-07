@@ -1,7 +1,10 @@
-// Package strutil provides shared string helpers.
+// Package strutil provides string utilities such as UTF-8-safe truncation.
 package strutil
 
-import "unicode/utf8"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // TruncateUTF8 returns s truncated to at most maxBytes bytes, respecting
 // UTF-8 rune boundaries so the result is always valid UTF-8. If s is already
@@ -18,4 +21,17 @@ func TruncateUTF8(s string, maxBytes int) string {
 		maxBytes--
 	}
 	return s[:maxBytes]
+}
+
+// TruncateUTF8AtLineBoundary truncates s to at most maxBytes bytes using
+// TruncateUTF8, then snaps the result back to the last newline so the
+// returned string ends on a complete line. If the truncated string contains
+// no newline, or the only newline is at index 0, the UTF-8-safe truncated
+// value is returned unchanged.
+func TruncateUTF8AtLineBoundary(s string, maxBytes int) string {
+	truncated := TruncateUTF8(s, maxBytes)
+	if idx := strings.LastIndex(truncated, "\n"); idx > 0 {
+		return truncated[:idx+1]
+	}
+	return truncated
 }

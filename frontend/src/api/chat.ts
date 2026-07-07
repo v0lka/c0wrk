@@ -106,3 +106,66 @@ export async function getSessionRuntimeStatus(sessionId: string): Promise<Sessio
     return null
   }
 }
+
+// --- Pending HITL actions ---
+
+export interface PendingToolConfirm {
+  confirm_id: string
+  tool: string
+  args: string
+  reasoning?: string
+}
+
+export interface PendingStepLimit {
+  request_id: string
+  current_step: number
+  max_steps: number
+  reason?: string
+}
+
+export interface PendingPlanApproval {
+  request_id: string
+  plan_path: string
+  plan_content: string
+}
+
+export interface PendingAskUser {
+  request_id: string
+  questions: Array<{ id: string; question: string; options: Array<{ label: string; value: string }>; multi_select?: boolean; recommended?: string[] }>
+}
+
+export interface PendingActionsResponse {
+  tool_confirms: PendingToolConfirm[]
+  step_limits: PendingStepLimit[]
+  plan_approvals: PendingPlanApproval[]
+  ask_user: PendingAskUser[]
+}
+
+function isPendingActionsResponse(d: unknown): d is PendingActionsResponse {
+  if (typeof d !== 'object' || d === null) return false
+  const o = d as Record<string, unknown>
+  return Array.isArray(o.tool_confirms) && Array.isArray(o.step_limits)
+    && Array.isArray(o.plan_approvals) && Array.isArray(o.ask_user)
+}
+
+/**
+ * Fetch all pending HITL prompts (tool_confirm, step_limit, plan_review,
+ * ask_user) currently blocking a session's agent goroutine. Called on
+ * session switch to resurface prompts whose events were missed while the
+ * session was in the background, and to reconcile stale persisted prompts
+ * (a persisted HITL message NOT in this response has already been resolved).
+ */
+export async function getPendingActions(sessionId: string): Promise<PendingActionsResponse | null> {
+  try {
+    const app = getApp()
+    const result = await app.GetPendingActions(sessionId)
+    if (!isPendingActionsResponse(result)) {
+      logger.error('getPendingActions: unexpected response shape', result)
+      return null
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to get pending actions:', err)
+    return null
+  }
+}

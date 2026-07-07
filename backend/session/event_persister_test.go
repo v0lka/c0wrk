@@ -42,6 +42,9 @@ func (s *captureStore) LoadMessages(_ context.Context, _ string) ([]ChatMessage,
 	return nil, nil
 }
 func (s *captureStore) DeleteMessages(_ context.Context, _ string) error { return nil }
+func (s *captureStore) ResolvePendingMessage(_ context.Context, _, _, _, _ string, _ map[string]any) error {
+	return nil
+}
 func (s *captureStore) SaveTerminalCommand(_ context.Context, _, _ string) error {
 	return nil
 }

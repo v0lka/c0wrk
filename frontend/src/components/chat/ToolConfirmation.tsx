@@ -66,15 +66,37 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
 
   if (resolved === 'confirmed') {
     return (
-      <div className="flex items-center gap-1.5 text-muted-foreground">
-        <Check className="h-3.5 w-3.5 text-success" /><span className="text-sm">Confirmed: {tool}</span>
+      <div className="rounded-md border border-success/30 bg-success/5 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <Check className="h-3.5 w-3.5 shrink-0 text-success" />
+          <span>Tool Confirmation</span>
+        </div>
+        <p className="mt-1.5 text-xs text-muted-foreground">Confirmed: {tool}</p>
       </div>
     )
   }
   if (resolved === 'denied') {
     return (
-      <div className="flex items-center gap-1.5 text-muted-foreground">
-        <X className="h-3.5 w-3.5 text-destructive" /><span className="text-sm">Denied: {tool}</span>
+      <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <X className="h-3.5 w-3.5 shrink-0 text-destructive" />
+          <span>Tool Confirmation</span>
+        </div>
+        <p className="mt-1.5 text-xs text-muted-foreground">Denied: {tool}</p>
+      </div>
+    )
+  }
+  // Resolved without a recorded decision — stale prompt reconciled on reload
+  // (the executor waiting for the response is gone). Show a neutral settled
+  // card instead of the active Allow/Deny affordance.
+  if (metadata?.resolved === true) {
+    return (
+      <div className="rounded-md border border-border bg-background/50 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span>Tool Confirmation</span>
+        </div>
+        <p className="mt-1.5 text-xs text-muted-foreground">Dismissed: {tool}</p>
       </div>
     )
   }
@@ -85,39 +107,39 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
   }
 
   return (
-    <div className="border-2 border-warning/50 rounded-lg p-4 bg-warning/5 max-w-full overflow-hidden">
-      <div className="flex items-center gap-2 mb-3">
-        <AlertTriangle className="h-4 w-4 text-warning" />
-        <span className="text-sm font-medium">Tool Confirmation Required</span>
+    <div className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" />
+        <span>Tool Confirmation</span>
       </div>
       {judgeReasoning && (
-        <div className="mb-4 p-3 bg-warning/10 border border-warning/30 rounded-md">
-          <div className="flex items-start gap-2">
-            <AlertTriangle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
-            <div>
-              <p className="text-xs font-medium text-warning mb-1">Agent Verdict</p>
-              <p className="text-sm text-foreground">{judgeReasoning}</p>
+        <div className="mt-1.5 p-2 bg-warning/10 border border-warning/30 rounded-md">
+          <div className="flex items-start gap-1.5">
+            <AlertTriangle className="h-3.5 w-3.5 text-warning shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-warning mb-0.5">Agent Verdict</p>
+              <p className="text-xs text-foreground">{judgeReasoning}</p>
             </div>
           </div>
         </div>
       )}
       {judgeError && (
-        <div className="mb-4 p-3 bg-destructive/10 border border-destructive/30 rounded-md">
+        <div className="mt-1.5 p-2 bg-destructive/10 border border-destructive/30 rounded-md">
           <p className="text-xs text-destructive">{judgeError}</p>
         </div>
       )}
-      <div className="mb-4 space-y-2">
-        <p className="text-sm"><span className="text-muted-foreground">Tool:</span> <span className="font-medium">{tool || 'Unknown'}</span></p>
+      <div className="mt-1.5 space-y-1.5">
+        <p className="text-xs text-muted-foreground"><span className="text-muted-foreground/60">Tool:</span> <span className="font-medium text-foreground">{tool || 'Unknown'}</span></p>
         {args && (
           <div className="min-w-0 overflow-hidden">
-            <p className="text-xs text-muted-foreground mb-1">Input:</p>
+            <p className="text-xs text-muted-foreground/60 mb-1">Input:</p>
             <pre className="p-2 bg-background/50 rounded text-xs font-mono overflow-x-auto custom-scrollbar border border-border max-w-full min-w-0">
               <code>{formatJson(args)}</code>
             </pre>
           </div>
         )}
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div className="mt-2 flex flex-wrap gap-2">
         <Button size="sm" onClick={handleResponseAllowOnce} className="text-xs">Allow Once</Button>
         <Button size="sm" variant="secondary" onClick={handleAskAgent} disabled={judgeLoading || judgeReasoning !== null} className="text-xs">
           {judgeLoading ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Evaluating...</> : judgeReasoning !== null ? 'Evaluated' : 'Ask Agent'}

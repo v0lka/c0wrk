@@ -1,17 +1,11 @@
 # Orchestration
 
-The `orchestration` package provides the primitives that turn a single ReAct
-agent loop into a multi-step, self-correcting execution engine. It defines the
-shared state container (the **Blackboard**), the plan data model (a DAG of
-steps), the single-loop executor (**Conductor**), DAG traversal utilities,
-and a persistence layer for checkpointing state across restarts.
+The `orchestration` package provides the primitives that turn a single ReAct agent loop into a multi-step, self-correcting execution engine. It defines the shared state container (the **Blackboard**), the plan data model (a DAG of steps), the single-loop executor (**Conductor**), DAG traversal utilities, and a persistence layer for checkpointing state across restarts.
 
-This document covers every exported type and function in the package. For the
-planning component that produces DAGs, see [planner.md](planner.md); for the
-self-correction component, see [reflector.md](reflector.md).
+This document covers every exported type and function in the package. For the planning component that produces DAGs, see [planner.md](planner.md); for the self-correction component, see [reflector.md](reflector.md).
 
 ```go
-import "github.com/v0lka/c0wrk/sdk/orchestration"
+import "github.com/v0lka/sp4rk/orchestration"
 ```
 
 ---
@@ -68,15 +62,9 @@ import "github.com/v0lka/c0wrk/sdk/orchestration"
 
 ## Conductor
 
-The `Conductor` is the SDK-level primitive that runs a **single ReAct loop**
-owning one task end-to-end. It wraps the lower-level `agent.Executor` and wires
-in the blackboard-backed stores (step outputs, facts, final result) so that
-built-in tools such as `read_step_output`, `store_fact`, `search_facts`, and
-`read_final_result` can access shared state during execution.
+The `Conductor` is the SDK-level primitive that runs a **single ReAct loop** owning one task end-to-end. It wraps the lower-level `agent.Executor` and wires in the blackboard-backed stores (step outputs, facts, final result) so that built-in tools such as `read_step_output`, `store_fact`, `search_facts`, and `read_final_result` can access shared state during execution.
 
-A Conductor is reusable across steps: the system prompt factory receives the
-step description at `Run` time, so the same instance adapts to each step it
-executes.
+A Conductor is reusable across steps: the system prompt factory receives the step description at `Run` time, so the same instance adapts to each step it executes.
 
 ```go
 type Conductor struct {
@@ -86,8 +74,7 @@ type Conductor struct {
 
 ### ConductorConfig
 
-`ConductorConfig` holds every dependency a Conductor needs. All fields are
-populated by the caller before `NewConductor`.
+`ConductorConfig` holds every dependency a Conductor needs. All fields are populated by the caller before `NewConductor`.
 
 ```go
 type ConductorConfig struct {
@@ -139,8 +126,7 @@ type ConductorConfig struct {
 func NewConductor(cfg ConductorConfig) *Conductor
 ```
 
-Creates a Conductor from the given config. If `MaxSteps` is zero it defaults to
-`80`.
+Creates a Conductor from the given config. If `MaxSteps` is zero it defaults to `80`.
 
 ```go
 conductor := orchestration.NewConductor(orchestration.ConductorConfig{
@@ -185,16 +171,9 @@ Launches the Conductor's single ReAct loop for one task.
 
 **Returns**
 
-An `*ExecutionResult` whose `Status` is `ExecutionStatusSuccess`,
-`ExecutionStatusPartial` (the loop ended without finishing), or
-`ExecutionStatusFailed` (an error occurred). The returned `Blackboard` is the
-same instance passed in, now populated with any reflections recorded during the
-run.
+An `*ExecutionResult` whose `Status` is `ExecutionStatusSuccess`, `ExecutionStatusPartial` (the loop ended without finishing), or `ExecutionStatusFailed` (an error occurred). The returned `Blackboard` is the same instance passed in, now populated with any reflections recorded during the run.
 
-`Run` returns an error only when the context factory or system prompt factory
-is missing, or when the underlying executor returns an error. A non-nil error
-is still accompanied by a non-nil `*ExecutionResult` carrying best-effort
-output.
+`Run` returns an error only when the context factory or system prompt factory is missing, or when the underlying executor returns an error. A non-nil error is still accompanied by a non-nil `*ExecutionResult` carrying best-effort output.
 
 ```go
 result, err := conductor.Run(ctx, step.Description, bb, availableTools, events, "sliding_window")
@@ -212,8 +191,7 @@ if result.Status == orchestration.ExecutionStatusSuccess {
 func (c *Conductor) Cleanup()
 ```
 
-Releases resources held by the Conductor. Currently a no-op; per-step dump
-cleanup is owned by the session layer. Safe to call via `defer`.
+Releases resources held by the Conductor. Currently a no-op; per-step dump cleanup is owned by the session layer. Safe to call via `defer`.
 
 ### SetReasoningEffort
 
@@ -221,8 +199,7 @@ cleanup is owned by the session layer. Safe to call via `defer`.
 func (c *Conductor) SetReasoningEffort(effort string)
 ```
 
-Updates the reasoning effort applied to subsequent runs. Useful when the same
-Conductor is reused across phases that benefit from different reasoning depths.
+Updates the reasoning effort applied to subsequent runs. Useful when the same Conductor is reused across phases that benefit from different reasoning depths.
 
 ### WithDelegationRegistry
 
@@ -230,13 +207,9 @@ Conductor is reused across phases that benefit from different reasoning depths.
 func WithDelegationRegistry(ctx context.Context, reg PendingDelegations) context.Context
 ```
 
-Injects a `PendingDelegations` implementation into the context. The Conductor's
-finish-join guard checks it before allowing a `finish` call: if any async
-delegations are still pending, `finish` is rejected with a nudge listing them.
-This prevents the Conductor from silently abandoning background work.
+Injects a `PendingDelegations` implementation into the context. The Conductor's finish-join guard checks it before allowing a `finish` call: if any async delegations are still pending, `finish` is rejected with a nudge listing them. This prevents the Conductor from silently abandoning background work.
 
-`PendingDelegations` is a minimal interface the SDK defines to avoid a circular
-dependency with higher layers:
+`PendingDelegations` is a minimal interface the SDK defines to avoid a circular dependency with higher layers:
 
 ```go
 type PendingDelegations interface {
@@ -263,8 +236,7 @@ type Planner interface {
 }
 ```
 
-Generates and regenerates DAG execution plans. See [planner.md](planner.md) for
-the reference implementation.
+Generates and regenerates DAG execution plans. See [planner.md](planner.md) for the reference implementation.
 
 ### Reflector
 
@@ -274,14 +246,11 @@ type Reflector interface {
 }
 ```
 
-Analyzes failures and produces corrective insights. See
-[reflector.md](reflector.md) for the reference implementation.
+Analyzes failures and produces corrective insights. See [reflector.md](reflector.md) for the reference implementation.
 
 ### Events
 
-`Events` extends `agent.AgentEvents` with orchestration-lifecycle hooks. All
-methods are called by the orchestrator (not the Conductor directly) as it
-drives the plan.
+`Events` extends `agent.AgentEvents` with orchestration-lifecycle hooks. All methods are called by the orchestrator (not the Conductor directly) as it drives the plan.
 
 ```go
 type Events interface {
@@ -299,8 +268,7 @@ type Events interface {
 }
 ```
 
-`NoopEvents` is a no-op implementation that satisfies the interface; embed it
-and override only the hooks you care about:
+`NoopEvents` is a no-op implementation that satisfies the interface; embed it and override only the hooks you care about:
 
 ```go
 type myEvents struct {
@@ -318,9 +286,7 @@ func (e *myEvents) OnStepCompleted(id string, ok bool, d time.Duration, _ string
 type SystemPromptFactory func(ctx context.Context, stepDescription string, modelMeta llm.ModelMetadata) string
 ```
 
-Builds the system prompt for a step executor. `ctx` carries the workspace path;
-`stepDescription` is the step's task text; `modelMeta` provides model
-capabilities (context window, output limit) so the prompt can adapt.
+Builds the system prompt for a step executor. `ctx` carries the workspace path; `stepDescription` is the step's task text; `modelMeta` provides model capabilities (context window, output limit) so the prompt can adapt.
 
 ```go
 systemPromptFactory := func(_ context.Context, stepDescription string, _ llm.ModelMetadata) string {
@@ -344,9 +310,7 @@ type ContextManagerFactory func(
 ) agent.ContextManager
 ```
 
-Creates a `ContextManager` for a new task step. `pruningOverrides`, when
-provided, override the global pruning configuration with step-specific
-`KeepLastN` and `ProtectedTools` values.
+Creates a `ContextManager` for a new task step. `pruningOverrides`, when provided, override the global pruning configuration with step-specific `KeepLastN` and `ProtectedTools` values.
 
 ### PruningOverride
 
@@ -357,13 +321,11 @@ type PruningOverride struct {
 }
 ```
 
-Carries per-step overrides for tool-output pruning. Zero values mean "use the
-global default".
+Carries per-step overrides for tool-output pruning. Zero values mean "use the global default".
 
 ### StepScopable and RetryScopable
 
-These optional interfaces let an `Events` implementation scope events to a
-specific plan step or retry attempt:
+These optional interfaces let an `Events` implementation scope events to a specific plan step or retry attempt:
 
 ```go
 type StepScopable interface {
@@ -375,18 +337,13 @@ type RetryScopable interface {
 }
 ```
 
-When the orchestrator detects that an events object implements one of these, it
-wraps it so downstream handlers know which step or retry attempt produced each
-event.
+When the orchestrator detects that an events object implements one of these, it wraps it so downstream handlers know which step or retry attempt produced each event.
 
 ---
 
 ## Blackboard
 
-The Blackboard is the structured, thread-safe container for all shared task
-state: the original request, the plan, per-step results, reflections, the final
-result, and keyword-tagged facts. Every step executor reads from and writes to
-the same blackboard instance, which is how steps communicate.
+The Blackboard is the structured, thread-safe container for all shared task state: the original request, the plan, per-step results, reflections, the final result, and keyword-tagged facts. Every step executor reads from and writes to the same blackboard instance, which is how steps communicate.
 
 ### Blackboard interface
 
@@ -413,8 +370,7 @@ type Blackboard interface {
 }
 ```
 
-All methods are safe for concurrent use. Read methods return defensive copies,
-so callers can mutate returned slices without racing with the blackboard.
+All methods are safe for concurrent use. Read methods return defensive copies, so callers can mutate returned slices without racing with the blackboard.
 
 | Method | Behaviour |
 | --- | --- |
@@ -432,8 +388,7 @@ so callers can mutate returned slices without racing with the blackboard.
 
 ### MapBlackboard
 
-`MapBlackboard` is the reference thread-safe, map-backed implementation. It is
-the default blackboard for in-memory tasks.
+`MapBlackboard` is the reference thread-safe, map-backed implementation. It is the default blackboard for in-memory tasks.
 
 ```go
 func NewMapBlackboard(opts ...MapBlackboardOption) *MapBlackboard
@@ -450,32 +405,23 @@ bb.SetOriginalRequest("Build a Go project that prints hello")
 func WithMaxSummaryLen(n int) MapBlackboardOption
 ```
 
-Sets a character-based cap on auto-generated step summaries. A value of `0`
-uses the default of `500` characters. The summary takes the first paragraph
-(text up to the first double-newline) or the first `n` characters, whichever is
-shorter, appending `...` when truncated.
+Sets a character-based cap on auto-generated step summaries. A value of `0` uses the default of `500` characters. The summary takes the first paragraph (text up to the first double-newline) or the first `n` characters, whichever is shorter, appending `...` when truncated.
 
 ```go
 bb := orchestration.NewMapBlackboard(orchestration.WithMaxSummaryLen(800))
 ```
 
-`MapBlackboard` also exposes two methods used by the persistence layer to
-hydrate state without regenerating summaries:
+`MapBlackboard` also exposes two methods used by the persistence layer to hydrate state without regenerating summaries:
 
-- `SetStepResultRaw(stepID string, sr StepResult)` — stores a pre-built
-  `StepResult` directly.
+- `SetStepResultRaw(stepID string, sr StepResult)` — stores a pre-built `StepResult` directly.
 - `SetFacts(facts []Fact)` — replaces the entire facts slice (deep-copied).
 
 ### Fact memory
 
-Facts are keyword-tagged pieces of information that steps write for later
-retrieval by other steps. This is the primary inter-step communication channel
-beyond explicit step outputs.
+Facts are keyword-tagged pieces of information that steps write for later retrieval by other steps. This is the primary inter-step communication channel beyond explicit step outputs.
 
 - `StoreFact(fact Fact)` appends a fact.
-- `SearchFacts(keywords []string) []Fact` returns facts where at least one
-  keyword matches (case-insensitive), **sorted by number of matching keywords
-  descending** — most relevant first.
+- `SearchFacts(keywords []string) []Fact` returns facts where at least one keyword matches (case-insensitive), **sorted by number of matching keywords descending** — most relevant first.
 - `GetFacts() []Fact` returns a defensive copy of all stored facts.
 
 ```go
@@ -504,9 +450,7 @@ type Plan struct {
 }
 ```
 
-A DAG of execution steps. `ExplorationContext` holds a summary of any
-codebase exploration the planner performed before producing the plan (empty for
-direct, one-shot planning).
+A DAG of execution steps. `ExplorationContext` holds a summary of any codebase exploration the planner performed before producing the plan (empty for direct, one-shot planning).
 
 ### PlanStep
 
@@ -540,10 +484,7 @@ type StepProfile interface {
 }
 ```
 
-A marker interface for step-level configuration profiles. Implementations
-define step-specific behaviour such as tool sets, domain routing, compaction
-parameters, and step budgets. The planner's `AgentProfile` is the canonical
-implementation.
+A marker interface for step-level configuration profiles. Implementations define step-specific behaviour such as tool sets, domain routing, compaction parameters, and step budgets. The planner's `AgentProfile` is the canonical implementation.
 
 ### CompletedStep
 
@@ -556,9 +497,7 @@ type CompletedStep struct {
 }
 ```
 
-The result of an executed plan step. `Steps` holds the actual executor
-trajectory (tool calls + observations) when captured, which reflectors and
-evaluators use as evidence. `Error` is `nil` on success.
+The result of an executed plan step. `Steps` holds the actual executor trajectory (tool calls + observations) when captured, which reflectors and evaluators use as evidence. `Error` is `nil` on success.
 
 ### StepResult
 
@@ -572,8 +511,7 @@ type StepResult struct {
 }
 ```
 
-The blackboard's representation of a completed step. `Summary` is
-auto-generated from `FullOutput`; `Steps` is the executor trajectory.
+The blackboard's representation of a completed step. `Summary` is auto-generated from `FullOutput`; `Steps` is the executor trajectory.
 
 ### PlanStepEvent
 
@@ -587,8 +525,7 @@ type PlanStepEvent struct {
 }
 ```
 
-A step representation for event emission. `Status` is a string such as
-`"pending"`, `"running"`, `"completed"`, or `"failed"`.
+A step representation for event emission. `Status` is a string such as `"pending"`, `"running"`, `"completed"`, or `"failed"`.
 
 ### BlackboardEntry
 
@@ -608,9 +545,7 @@ A single search result from `Blackboard.Search`.
 
 ### ExecutionStatus
 
-`ExecutionStatus` classifies the terminal outcome of a plan execution. It is
-the typed success contract: callers must consult `Status` instead of parsing
-output suffixes.
+`ExecutionStatus` classifies the terminal outcome of a plan execution. It is the typed success contract: callers must consult `Status` instead of parsing output suffixes.
 
 ```go
 type ExecutionStatus string
@@ -662,10 +597,7 @@ type ExecutionResult struct {
 var ErrExecutionIncomplete = errors.New("plan execution incomplete")
 ```
 
-Indicates a plan execution ended before all steps completed (e.g. step limit
-reached, context cancelled). It accompanies a non-nil `*ExecutionResult`
-carrying best-effort output. Callers should `errors.Is`-check it and use the
-returned result for partial output.
+Indicates a plan execution ended before all steps completed (e.g. step limit reached, context cancelled). It accompanies a non-nil `*ExecutionResult` carrying best-effort output. Callers should `errors.Is`-check it and use the returned result for partial output.
 
 ```go
 result, err := orchestrator.Execute(ctx, plan, bb, tools, events)
@@ -691,8 +623,7 @@ type Reflection struct {
 }
 ```
 
-The structured result of failure analysis. `SuggestedAction` drives the
-orchestrator's recovery decision:
+The structured result of failure analysis. `SuggestedAction` drives the orchestrator's recovery decision:
 
 | Value | When to use |
 | --- | --- |
@@ -714,18 +645,13 @@ type Fact struct {
 }
 ```
 
-A keyword-tagged piece of information for inter-step communication. Steps
-store facts via `Blackboard.StoreFact` and retrieve them via
-`SearchFacts`/`GetFacts`. The `Author` field records which step wrote the fact,
-aiding traceability. Keywords (3–5 recommended) drive relevance ranking in
-`SearchFacts`.
+A keyword-tagged piece of information for inter-step communication. Steps store facts via `Blackboard.StoreFact` and retrieve them via `SearchFacts`/`GetFacts`. The `Author` field records which step wrote the fact, aiding traceability. Keywords (3–5 recommended) drive relevance ranking in `SearchFacts`.
 
 ---
 
 ## DAG utilities
 
-The package provides pure functions for traversing and aggregating plan DAGs.
-They are the building blocks an orchestrator uses to drive execution.
+The package provides pure functions for traversing and aggregating plan DAGs. They are the building blocks an orchestrator uses to drive execution.
 
 ### FindReadySteps
 
@@ -733,9 +659,7 @@ They are the building blocks an orchestrator uses to drive execution.
 func FindReadySteps(plan *Plan, completed map[string]CompletedStep) []PlanStep
 ```
 
-Returns plan steps whose dependencies are **all completed successfully**. Steps
-that are already completed, or that depend on a failed step, are excluded.
-Returns `nil` if `plan` is nil.
+Returns plan steps whose dependencies are **all completed successfully**. Steps that are already completed, or that depend on a failed step, are excluded. Returns `nil` if `plan` is nil.
 
 ```go
 for {
@@ -755,12 +679,7 @@ for {
 func BuildCarryForward(completed []CompletedStep, newPlan *Plan) map[string]CompletedStep
 ```
 
-Maps previously completed step outputs onto a new (replanned) plan. A step is a
-carry-forward candidate when its ID appears in the new plan **and** it
-completed without error. Steps whose dependencies (in the new plan) include a
-step that is **not** carried forward are transitively excluded — a replanned
-step invalidates all its downstream dependents. Returns `nil` if no steps can
-be preserved, signalling that full re-execution is required.
+Maps previously completed step outputs onto a new (replanned) plan. A step is a carry-forward candidate when its ID appears in the new plan **and** it completed without error. Steps whose dependencies (in the new plan) include a step that is **not** carried forward are transitively excluded — a replanned step invalidates all its downstream dependents. Returns `nil` if no steps can be preserved, signalling that full re-execution is required.
 
 ```go
 carried := orchestration.BuildCarryForward(completedSteps, newPlan)
@@ -773,11 +692,7 @@ carried := orchestration.BuildCarryForward(completedSteps, newPlan)
 func BuildPlanExecutionSteps(completedList []CompletedStep, plan *Plan) []agent.Step
 ```
 
-Converts completed plan steps into an execution trajectory
-(`[]agent.Step`) for reflectors and evaluators. When a `CompletedStep` carries
-the actual executor steps (tool calls + observations), those are used directly
-so the evaluator sees real evidence. Otherwise a fallback summary step is
-constructed from the completion output.
+Converts completed plan steps into an execution trajectory (`[]agent.Step`) for reflectors and evaluators. When a `CompletedStep` carries the actual executor steps (tool calls + observations), those are used directly so the evaluator sees real evidence. Otherwise a fallback summary step is constructed from the completion output.
 
 ### AggregateOutput
 
@@ -785,11 +700,7 @@ constructed from the completion output.
 func AggregateOutput(completedSteps map[string]CompletedStep, plan *Plan, preCompletedIDs map[string]bool) string
 ```
 
-Combines outputs from **terminal steps** — steps that no other step depends on.
-If no terminal outputs exist, all step outputs are collected instead.
-`preCompletedIDs`, when non-nil, lists step IDs that were pre-completed from a
-previous turn's blackboard; these are excluded so continuation messages return
-only newly produced output.
+Combines outputs from **terminal steps** — steps that no other step depends on. If no terminal outputs exist, all step outputs are collected instead. `preCompletedIDs`, when non-nil, lists step IDs that were pre-completed from a previous turn's blackboard; these are excluded so continuation messages return only newly produced output.
 
 ```go
 finalOutput := orchestration.AggregateOutput(completed, plan, nil)
@@ -799,9 +710,7 @@ finalOutput := orchestration.AggregateOutput(completed, plan, nil)
 
 ## Persistence
 
-The persistence layer lets you checkpoint blackboard state to an external
-backend and restore it later — essential for surviving restarts or resuming
-long-running tasks.
+The persistence layer lets you checkpoint blackboard state to an external backend and restore it later — essential for surviving restarts or resuming long-running tasks.
 
 ### Checkpointer
 
@@ -813,21 +722,15 @@ type Checkpointer interface {
 }
 ```
 
-Provides persistence for blackboard state. Implementations are responsible for
-the serialization format and backend storage. All methods must be safe for
-concurrent use. `LoadCheckpoint` returns `nil, nil` when the checkpoint does
-not exist.
+Provides persistence for blackboard state. Implementations are responsible for the serialization format and backend storage. All methods must be safe for concurrent use. `LoadCheckpoint` returns `nil, nil` when the checkpoint does not exist.
 
 ### NoopCheckpointer
 
-`NoopCheckpointer` is a no-op implementation that discards saves and returns
-`nil` for loads. Use it when persistence is disabled or in tests.
+`NoopCheckpointer` is a no-op implementation that discards saves and returns `nil` for loads. Use it when persistence is disabled or in tests.
 
 ### CheckpointedBlackboard
 
-`CheckpointedBlackboard` wraps a `MapBlackboard` and persists every write
-operation through a `Checkpointer`. Read methods delegate to the embedded
-`MapBlackboard`; write methods delegate **and** persist.
+`CheckpointedBlackboard` wraps a `MapBlackboard` and persists every write operation through a `Checkpointer`. Read methods delegate to the embedded `MapBlackboard`; write methods delegate **and** persist.
 
 ```go
 func NewCheckpointedBlackboard(
@@ -847,22 +750,13 @@ func NewCheckpointedBlackboard(
 | `timeout` | Max time for a single checkpoint write. `0` uses the default (5s). |
 | `opts` | `MapBlackboardOption`s (e.g. `WithMaxSummaryLen`). |
 
-All persistence calls are **best-effort**: errors are logged but do not
-propagate to callers. Persistence operations run on a single background worker
-goroutine with a timeout and panic recovery, so a slow or panicking backend
-cannot hang the agent.
+All persistence calls are **best-effort**: errors are logged but do not propagate to callers. Persistence operations run on a single background worker goroutine with a timeout and panic recovery, so a slow or panicking backend cannot hang the agent.
 
 **Lifecycle methods**
 
-- `SetOnChanged(fn func(changeType string))` — optional callback invoked after
-  every successful write. `changeType` is `"plan"`, `"step_result"`, `"fact"`,
-  `"reflection"`, etc.
-- `SetPersistContext(ctx context.Context)` — sets the context used for
-  persistence operations (carries cancellation/tracing). Defaults to
-  `context.Background()`.
-- `Shutdown()` — closes the persistence channel and waits for the worker to
-  finish. Safe to call multiple times. **Always call this** when the blackboard
-  is no longer needed to prevent goroutine leaks.
+- `SetOnChanged(fn func(changeType string))` — optional callback invoked after every successful write. `changeType` is `"plan"`, `"step_result"`, `"fact"`, `"reflection"`, etc.
+- `SetPersistContext(ctx context.Context)` — sets the context used for persistence operations (carries cancellation/tracing). Defaults to `context.Background()`.
+- `Shutdown()` — closes the persistence channel and waits for the worker to finish. Safe to call multiple times. **Always call this** when the blackboard is no longer needed to prevent goroutine leaks.
 - `ID() string` — returns the checkpoint identifier.
 
 ```go
@@ -892,10 +786,7 @@ func RestoreBlackboard(
 ) (*CheckpointedBlackboard, error)
 ```
 
-Loads a blackboard state from a Checkpointer and hydrates a fresh
-`CheckpointedBlackboard`. Returns `nil, nil` if the checkpoint does not exist.
-The restored blackboard is fully writable and will persist subsequent changes
-under the same `id`.
+Loads a blackboard state from a Checkpointer and hydrates a fresh `CheckpointedBlackboard`. Returns `nil, nil` if the checkpoint does not exist. The restored blackboard is fully writable and will persist subsequent changes under the same `id`.
 
 ```go
 bb, err := orchestration.RestoreBlackboard(ctx, "task-42", cp, logger, 5*time.Second)
@@ -913,9 +804,7 @@ defer bb.Shutdown()
 
 ## Adapters
 
-The package provides three small adapters that wrap a `Blackboard` as the
-`agent.*Store` interfaces consumed by built-in tools. The Conductor injects
-these into the context automatically, but they are also useful standalone.
+The package provides three small adapters that wrap a `Blackboard` as the `agent.*Store` interfaces consumed by built-in tools. The Conductor injects these into the context automatically, but they are also useful standalone.
 
 ```go
 func NewStepOutputStore(bb Blackboard) agent.StepOutputStore
@@ -923,23 +812,15 @@ func NewFactStore(bb Blackboard) agent.FactStore
 func NewFinalResultStore(bb Blackboard) agent.FinalResultStore
 ```
 
-- `NewStepOutputStore` exposes successful step outputs to the
-  `read_step_output` tool. Only steps that completed without error are
-  visible; outputs are listed in deterministic (step-ID) order.
-- `NewFactStore` exposes fact memory to the `store_fact` / `search_facts`
-  tools.
-- `NewFinalResultStore` exposes the prior task's final result to the
-  `read_final_result` tool — useful for continuation agents when the
-  conversation history alone is insufficient (e.g. after a restart, or when the
-  result was too large to inject verbatim).
+- `NewStepOutputStore` exposes successful step outputs to the `read_step_output` tool. Only steps that completed without error are visible; outputs are listed in deterministic (step-ID) order.
+- `NewFactStore` exposes fact memory to the `store_fact` / `search_facts` tools.
+- `NewFinalResultStore` exposes the prior task's final result to the `read_final_result` tool — useful for continuation agents when the conversation history alone is insufficient (e.g. after a restart, or when the result was too large to inject verbatim).
 
 ---
 
 ## Complete Plan & Execute example
 
-This example shows the full Plan & Execute pattern: a `Planner` generates a
-DAG, a `Conductor` executes each step, and a `Reflector` provides
-self-correction on failure. It is adapted from the SDK's example 06.
+This example shows the full Plan & Execute pattern: a `Planner` generates a DAG, a `Conductor` executes each step, and a `Reflector` provides self-correction on failure. It is adapted from the SDK's example 06.
 
 ```go
 package main
@@ -951,14 +832,14 @@ import (
 	"os"
 	"sync"
 
-	"github.com/v0lka/c0wrk/sdk"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/agent/reflector"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/sdk/planner"
-	"github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/agent/reflector"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/planner"
+	"github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // trajectoryStore captures the executor's step history for reflection.
@@ -1157,11 +1038,6 @@ func main() {
 The pattern is:
 
 1. **Plan** — `Planner.Plan` produces a `*Plan` (a DAG of `PlanStep`s).
-2. **Execute** — `FindReadySteps` selects steps whose dependencies are met;
-   `Conductor.Run` executes each step's ReAct loop, recording results on the
-   blackboard.
-3. **Reflect** — on failure, `Reflector.Reflect` analyses the trajectory and
-   returns a `Reflection` whose `SuggestedAction` drives retry, replan, or
-   abort.
-4. **Aggregate** — `AggregateOutput` combines terminal step outputs into the
-   final result.
+2. **Execute** — `FindReadySteps` selects steps whose dependencies are met; `Conductor.Run` executes each step's ReAct loop, recording results on the blackboard.
+3. **Reflect** — on failure, `Reflector.Reflect` analyses the trajectory and returns a `Reflection` whose `SuggestedAction` drives retry, replan, or abort.
+4. **Aggregate** — `AggregateOutput` combines terminal step outputs into the final result.

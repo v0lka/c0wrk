@@ -50,8 +50,7 @@ sdk.New(Config{
 
 ## Code walkthrough
 
-This example combines patterns from all previous examples. See each
-example's README for detailed explanations:
+This example combines patterns from all previous examples. See each example's README for detailed explanations:
 
 - **Multi-provider** → `LLMConfig.Providers` with two entries (example 01 + 07)
 - **Custom tool** → `timestampTool` embedding `BaseTool` (example 02)
@@ -72,14 +71,7 @@ router.SetModel(ctx, "openai/gpt-4o")   // switch before execution
 router.SetModel(ctx, "claude-sonnet-4-5") // switch back for reflection
 ```
 
-The `Framework` exposes the shared LLM router via `fw.LLMRouter()`. Because
-every LLM-calling component (Planner, Conductor, Reflector) routes through
-this single router, calling `SetModel` switches the active provider+model
-for all subsequent calls. The example uses Claude for planning and
-reflection (strong reasoning) and GPT-4o for step execution — switching
-before the execution loop and temporarily switching back during reflection.
-When `OPENAI_API_KEY` is unset, execution falls back to the single
-Anthropic model and switching is skipped.
+The `Framework` exposes the shared LLM router via `fw.LLMRouter()`. Because every LLM-calling component (Planner, Conductor, Reflector) routes through this single router, calling `SetModel` switches the active provider+model for all subsequent calls. The example uses Claude for planning and reflection (strong reasoning) and GPT-4o for step execution — switching before the execution loop and temporarily switching back during reflection. When `OPENAI_API_KEY` is unset, execution falls back to the single Anthropic model and switching is skipped.
 
 #### Skills discovery
 
@@ -89,10 +81,7 @@ skillMgr.Scan()
 discoveredSkills := skillMgr.List()
 ```
 
-Skills are markdown files (`SKILL.md`) with YAML frontmatter. The
-`SkillManager` scans directories in priority order and parses each skill's
-metadata. Discovered skills are passed to the Planner so it can assign them
-to steps.
+Skills are markdown files (`SKILL.md`) with YAML frontmatter. The `SkillManager` scans directories in priority order and parses each skill's metadata. Discovered skills are passed to the Planner so it can assign them to steps.
 
 #### Fact memory
 
@@ -101,10 +90,7 @@ registry.Register(builtins.NewStoreFactTool())
 registry.Register(builtins.NewSearchFactsTool())
 ```
 
-Facts are keyword-tagged pieces of information stored on the blackboard.
-Steps can `store_fact` to share findings and `search_facts` to retrieve
-them — enabling inter-step communication without passing large outputs
-through the context window.
+Facts are keyword-tagged pieces of information stored on the blackboard. Steps can `store_fact` to share findings and `search_facts` to retrieve them — enabling inter-step communication without passing large outputs through the context window.
 
 #### Blackboard change callback
 
@@ -114,8 +100,7 @@ OnBlackboardChanged: func(changeType string) {
 }
 ```
 
-Fires after every successful blackboard write (`plan`, `step_result`,
-`fact`, `reflection`). Useful for UI integration or audit logging.
+Fires after every successful blackboard write (`plan`, `step_result`, `fact`, `reflection`). Useful for UI integration or audit logging.
 
 #### Compaction configuration
 
@@ -128,9 +113,7 @@ Compaction: sdk.CompactionConfig{
 },
 ```
 
-Controls when the context window compacts. As the conversation grows,
-the `ContextWindow` checks fill percentage and triggers compaction at
-the configured thresholds.
+Controls when the context window compacts. As the conversation grows, the `ContextWindow` checks fill percentage and triggers compaction at the configured thresholds.
 
 ## Prerequisites
 
@@ -154,8 +137,8 @@ go run main.go
 ## Expected output
 
 ```
-Workspace: /tmp/c0wrk-example-07-123456
-Skills dir: /tmp/c0wrk-example-07-123456/.agents/skills
+Workspace: /tmp/sp4rk-example-07-123456
+Skills dir: /tmp/sp4rk-example-07-123456/.agents/skills
 
 Active LLM: anthropic/claude-sonnet-4-5 (provider: anthropic)
 Runtime model switching enabled: claude-sonnet-4-5 → openai/gpt-4o for execution
@@ -220,6 +203,4 @@ Facts stored:
 
 ## Summary
 
-This example demonstrates the full power of the c0wrk Agent SDK. A real
-application would typically use a subset of these features — but the SDK
-is designed so they all compose cleanly when you need them.
+This example demonstrates the full power of the sp4rk Agent SDK. A real application would typically use a subset of these features — but the SDK is designed so they all compose cleanly when you need them.

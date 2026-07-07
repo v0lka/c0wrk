@@ -194,6 +194,10 @@ export function buildHistoryId(
       const requestId = meta.request_id as string | undefined
       return requestId ? `step-limit-${requestId}` : `history-${dbId}`
     }
+    case 'plan_review': {
+      const requestId = meta.request_id as string | undefined
+      return requestId ? `plan-review-${requestId}` : `history-${dbId}`
+    }
     default:
       return `history-${dbId}`
   }

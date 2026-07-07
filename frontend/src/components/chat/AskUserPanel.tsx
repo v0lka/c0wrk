@@ -62,45 +62,49 @@ export function AskUserPanel({ item }: { item: AskUserItem }) {
 
   if (resolved !== null) {
     return (
-      <div className="flex items-center gap-1.5 text-muted-foreground">
-        <Check className="h-3.5 w-3.5 text-primary" /><span className="text-sm">Answered: {resolved}</span>
+      <div className="rounded-md border border-success/30 bg-success/5 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <Check className="h-3.5 w-3.5 shrink-0 text-success" />
+          <span>Question</span>
+        </div>
+        <p className="mt-1.5 text-xs text-muted-foreground">{resolved ? `Answered: ${resolved}` : 'Answered'}</p>
       </div>
     )
   }
 
   return (
-    <div className="border-2 border-primary/50 rounded-lg p-4 bg-primary/5 max-w-full overflow-hidden">
-      <div className="flex items-center gap-2 mb-3">
-        <HelpCircle className="h-4 w-4 text-primary" />
-        <span className="text-sm font-medium">{questions.length > 1 ? 'Questions' : 'Question'}</span>
+    <div className="rounded-md border border-info/30 bg-info/5 px-3 py-2">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <HelpCircle className="h-3.5 w-3.5 shrink-0 text-info" />
+        <span>{questions.length > 1 ? 'Questions' : 'Question'}</span>
       </div>
       {questions.map((q, qi) => {
         const sel = selections.get(q.id) ?? new Set<string>()
         const customText = customTexts.get(q.id) ?? ''
         return (
-          <div key={q.id}>
-            <p className="text-base font-medium mb-3">{q.question}</p>
+          <div key={q.id} className="mt-1.5">
+            <p className="text-xs font-medium text-foreground mb-1.5">{q.question}</p>
             {q.options.length > 0 && (
-              <div className="space-y-2 mb-4">
+              <div className="space-y-1.5 mb-2">
                 {q.options.map((opt: { label: string; value: string }) => (
                   <button key={opt.value} type="button" onClick={() => toggleOption(q.id, opt.value)}
-                    className={`w-full flex items-center gap-3 p-2.5 rounded-md border text-left transition-colors ${sel.has(opt.value) ? 'bg-primary/10 border-primary/50' : 'border-border hover:bg-accent/50'}`}
+                    className={`w-full flex items-center gap-2 p-2 rounded-md border text-left transition-colors ${sel.has(opt.value) ? 'bg-info/10 border-info/50' : 'border-border hover:bg-accent/50'}`}
                   >
-                    <div className={`shrink-0 flex items-center justify-center ${q.multi_select ? 'h-4 w-4 rounded-sm' : 'h-4 w-4 rounded-full'} border ${sel.has(opt.value) ? 'border-primary bg-primary' : 'border-muted-foreground'}`}>
-                      {sel.has(opt.value) && <Check className="h-3 w-3 text-primary-foreground" />}
+                    <div className={`shrink-0 flex items-center justify-center ${q.multi_select ? 'h-3.5 w-3.5 rounded-sm' : 'h-3.5 w-3.5 rounded-full'} border ${sel.has(opt.value) ? 'border-info bg-info' : 'border-muted-foreground'}`}>
+                      {sel.has(opt.value) && <Check className="h-2.5 w-2.5 text-primary-foreground" />}
                     </div>
-                    <span className="text-sm flex-1">{opt.label}</span>
-                    {q.recommended?.includes(opt.value) && <Star className="h-3.5 w-3.5 text-warning shrink-0" />}
+                    <span className="text-xs flex-1">{opt.label}</span>
+                    {q.recommended?.includes(opt.value) && <Star className="h-3 w-3 text-warning shrink-0" />}
                   </button>
                 ))}
               </div>
             )}
-            <div className="mb-4">
-              <label className="text-xs text-muted-foreground mb-1.5 block">Or type your own answer...</label>
+            <div className="mb-2">
+              <label className="text-xs text-muted-foreground/60 mb-1 block">Or type your own answer...</label>
               <Input value={customText} onChange={e => setCustomTexts(p => new Map(p).set(q.id, e.target.value))} placeholder="Type here..."
                 onKeyDown={e => { if (e.key === 'Enter' && canSubmit) handleSubmit() }} />
             </div>
-            {qi < questions.length - 1 && <hr className="border-border mb-4" />}
+            {qi < questions.length - 1 && <hr className="border-border mb-2" />}
           </div>
         )
       })}

@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/agent/router"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/sdk/prompt"
-	"github.com/v0lka/c0wrk/sdk/skills"
-	tools "github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/agent/router"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/prompt"
+	"github.com/v0lka/sp4rk/skills"
+	tools "github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // mockTool implements tools.Tool for testing.

@@ -1,8 +1,6 @@
 # Example 04 — Human-in-the-Loop
 
-Intercept tool calls for user confirmation before destructive operations
-execute. A custom `HITLHandler` prompts on stdin whenever the agent tries to
-use a "dangerous" tool and decides whether to allow, deny, or modify the call.
+Intercept tool calls for user confirmation before destructive operations execute. A custom `HITLHandler` prompts on stdin whenever the agent tries to use a "dangerous" tool and decides whether to allow, deny, or modify the call.
 
 **This example is interactive** — it reads `y`/`n` from stdin.
 
@@ -71,11 +69,9 @@ The `HITLToolDecision` struct:
 | `ModifiedInput` | `json.RawMessage`| When non-nil + Allow=true, replaces the original input |
 | `Reason`        | `string`         | Human-readable explanation (shown to the agent) |
 
-When `Allow=false`, the `Reason` is fed back to the agent as the tool result,
-so the agent can adapt (e.g. try a different approach or call `finish`).
+When `Allow=false`, the `Reason` is fed back to the agent as the tool result, so the agent can adapt (e.g. try a different approach or call `finish`).
 
-**Modifying input**: You can rewrite the tool's input before execution. For
-example, you could sanitize a file path or cap a `bash_exec` timeout:
+**Modifying input**: You can rewrite the tool's input before execution. For example, you could sanitize a file path or cap a `bash_exec` timeout:
 
 ```go
 return &agent.HITLToolDecision{
@@ -101,9 +97,7 @@ Three possible responses:
 | `StepLimitAllowAlways`| Remove the step limit for the rest of execution  |
 | `StepLimitDeny`       | Stop execution (the default `NoopHITLHandler` behaviour) |
 
-The `reason` parameter is non-empty when a circuit breaker triggered the
-pause (e.g. repeated identical tool calls, fruitless results). This lets you
-show the user *why* the agent got stuck.
+The `reason` parameter is non-empty when a circuit breaker triggered the pause (e.g. repeated identical tool calls, fruitless results). This lets you show the user *why* the agent got stuck.
 
 ### 4. Wiring into the Framework
 
@@ -115,21 +109,16 @@ fw, err := sdk.New(sdk.Config{
 })
 ```
 
-`Config.HITL` accepts any `agent.HITLHandler`. When `nil`, the Framework uses
-`NoopHITLHandler` which allows all tool calls and denies step extensions.
+`Config.HITL` accepts any `agent.HITLHandler`. When `nil`, the Framework uses `NoopHITLHandler` which allows all tool calls and denies step extensions.
 
 ### 5. Tool policies vs HITL
 
 Tool policies (`Tool.DefaultPolicy()`) and the HITL handler are complementary:
 
-- **Tool policy** — static, set at registration time. Defines the *default*
-  behaviour for a tool.
-- **HITL handler** — dynamic, called at runtime. Can make per-call decisions
-  based on the actual input.
+- **Tool policy** — static, set at registration time. Defines the *default* behaviour for a tool.
+- **HITL handler** — dynamic, called at runtime. Can make per-call decisions based on the actual input.
 
-The executor calls `OnToolCall` for **every** tool call regardless of its
-policy. The policy is a hint for UI layers (e.g. "show a confirmation dialog
-for this tool by default"); the HITL handler is the enforcement point.
+The executor calls `OnToolCall` for **every** tool call regardless of its policy. The policy is a hint for UI layers (e.g. "show a confirmation dialog for this tool by default"); the HITL handler is the enforcement point.
 
 ## Prerequisites
 
@@ -147,7 +136,7 @@ go run main.go
 ## Expected output
 
 ```
-Workspace: /tmp/c0wrk-example-04-123456
+Workspace: /tmp/sp4rk-example-04-123456
 This example is INTERACTIVE — you will be asked to approve tool calls.
 Press y + Enter to allow, or just Enter to deny.
 
@@ -183,10 +172,8 @@ If you deny a tool call, the agent receives the denial reason and can adapt:
    ❌ Denied
 ```
 
-The agent then sees: `Tool result: user denied this tool call` and can try a
-different approach or call `finish`.
+The agent then sees: `Tool result: user denied this tool call` and can try a different approach or call `finish`.
 
 ## Next
 
-→ **05-mcp-integration** — bring in external tools via Model Context Protocol
-servers.
+→ **05-mcp-integration** — bring in external tools via Model Context Protocol servers.

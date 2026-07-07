@@ -1,24 +1,19 @@
 # Human-in-the-Loop (HITL)
 
-The SDK provides hooks for human-in-the-loop interaction during agent execution.
-A `HITLHandler` can intercept tool calls for confirmation or modification before
-they execute, and decide what happens when the agent reaches its step budget.
-This document covers the `HITLHandler` interface, the decision types, the default
-no-op handler, and complete integration examples.
+The SDK provides hooks for human-in-the-loop interaction during agent execution. A `HITLHandler` can intercept tool calls for confirmation or modification before they execute, and decide what happens when the agent reaches its step budget. This document covers the `HITLHandler` interface, the decision types, the default no-op handler, and complete integration examples.
 
 ```go
 import (
     "context"
     "encoding/json"
 
-    "github.com/v0lka/c0wrk/sdk/agent"
+    "github.com/v0lka/sp4rk/agent"
 )
 ```
 
 ## HITLHandler interface
 
-`HITLHandler` provides two hooks: one invoked before every tool execution, and
-one invoked when the step budget is exhausted or a circuit breaker fires.
+`HITLHandler` provides two hooks: one invoked before every tool execution, and one invoked when the step budget is exhausted or a circuit breaker fires.
 
 ```go
 type HITLHandler interface {
@@ -31,10 +26,7 @@ type HITLHandler interface {
 }
 ```
 
-> **Synchronous execution:** all methods are called synchronously from the
-> executor loop. Implementations should return promptly or respect context
-> cancellation to avoid blocking execution. A handler that blocks indefinitely
-> on user input will stall the entire agent.
+> **Synchronous execution:** all methods are called synchronously from the executor loop. Implementations should return promptly or respect context cancellation to avoid blocking execution. A handler that blocks indefinitely on user input will stall the entire agent.
 
 ### OnToolCall
 
@@ -44,19 +36,13 @@ type HITLHandler interface {
 - **Deny** the tool call (`Allow: false`).
 - **Modify** the tool input (`Allow: true` with a non-nil `ModifiedInput`).
 
-Returning a `nil` decision allows the call unchanged (equivalent to
-`Allow: true` with no modification).
+Returning a `nil` decision allows the call unchanged (equivalent to `Allow: true` with no modification).
 
-The `input` parameter is the raw JSON the model generated for the tool. The
-handler can inspect, validate, or rewrite it before execution.
+The `input` parameter is the raw JSON the model generated for the tool. The handler can inspect, validate, or rewrite it before execution.
 
 ### OnStepLimit
 
-`OnStepLimit` is invoked when the agent exhausts its step budget or a circuit
-breaker abort threshold is reached. The `reason` parameter describes why
-execution was paused — it is an empty string for normal step-limit exhaustion,
-and a descriptive message (e.g. a circuit-breaker trigger) otherwise. The
-response determines whether execution continues or stops.
+`OnStepLimit` is invoked when the agent exhausts its step budget or a circuit breaker abort threshold is reached. The `reason` parameter describes why execution was paused — it is an empty string for normal step-limit exhaustion, and a descriptive message (e.g. a circuit-breaker trigger) otherwise. The response determines whether execution continues or stops.
 
 ## HITLToolDecision
 
@@ -102,8 +88,7 @@ return &agent.HITLToolDecision{
 
 ## StepLimitResponse
 
-`StepLimitResponse` represents the user's decision when the agent's step limit is
-reached. Three constants are defined:
+`StepLimitResponse` represents the user's decision when the agent's step limit is reached. Three constants are defined:
 
 ```go
 type StepLimitResponse string
@@ -123,8 +108,7 @@ const (
 
 ## NoopHITLHandler
 
-`NoopHITLHandler` is the default handler used when no HITL handler is configured.
-It:
+`NoopHITLHandler` is the default handler used when no HITL handler is configured. It:
 
 - **Allows all tool calls** unchanged.
 - **Denies step-limit extensions** — execution stops at the budget.
@@ -133,9 +117,7 @@ It:
 type NoopHITLHandler struct{}
 ```
 
-Like `NoopEvents`, it is designed for the embed-and-override pattern: embed it in
-your own handler and override only the methods you need. The embedded no-op
-handles the rest.
+Like `NoopEvents`, it is designed for the embed-and-override pattern: embed it in your own handler and override only the methods you need. The embedded no-op handles the rest.
 
 ```go
 // autoApproveHITL allows everything except a configured denylist.
@@ -152,13 +134,11 @@ func (h *autoApproveHITL) OnToolCall(_ context.Context, name string, _ json.RawM
 }
 ```
 
-Because `OnStepLimit` is inherited from `NoopHITLHandler` (which returns
-`StepLimitDeny`), this handler stops at the step budget without any extra code.
+Because `OnStepLimit` is inherited from `NoopHITLHandler` (which returns `StepLimitDeny`), this handler stops at the step budget without any extra code.
 
 ## Integration
 
-The HITL handler is passed to the framework via `Config.HITL`. A `nil` value
-uses the defaults (`NoopHITLHandler`).
+The HITL handler is passed to the framework via `Config.HITL`. A `nil` value uses the defaults (`NoopHITLHandler`).
 
 ```go
 fw, err := sdk.New(sdk.Config{
@@ -183,8 +163,7 @@ fw, err := sdk.New(sdk.Config{
 })
 ```
 
-You can also set the handler directly on an `Executor` via `SetHITLHandler`
-(nil-safe):
+You can also set the handler directly on an `Executor` via `SetHITLHandler` (nil-safe):
 
 ```go
 exec := agent.NewExecutor(/* ... */, nil)
@@ -193,9 +172,7 @@ exec.SetHITLHandler(&myHITLHandler{})
 
 ## Complete ConfirmingHITL example
 
-The following example implements a `ConfirmingHITL` handler that prompts on stdin
-whenever the agent tries to use a "dangerous" tool. It is interactive — it reads
-`y`/`n` from stdin.
+The following example implements a `ConfirmingHITL` handler that prompts on stdin whenever the agent tries to use a "dangerous" tool. It is interactive — it reads `y`/`n` from stdin.
 
 ```go
 package main
@@ -209,11 +186,11 @@ import (
     "os"
     "strings"
 
-    "github.com/v0lka/c0wrk/sdk"
-    "github.com/v0lka/c0wrk/sdk/agent"
-    "github.com/v0lka/c0wrk/sdk/llm"
-    "github.com/v0lka/c0wrk/sdk/tools"
-    "github.com/v0lka/c0wrk/sdk/tools/builtins"
+    "github.com/v0lka/sp4rk"
+    "github.com/v0lka/sp4rk/agent"
+    "github.com/v0lka/sp4rk/llm"
+    "github.com/v0lka/sp4rk/tools"
+    "github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // ConfirmingHITL implements agent.HITLHandler. It allows all tool calls
@@ -386,9 +363,7 @@ func main() {
 
 ## Auto-approve pattern
 
-For non-interactive deployments (e.g. CI or batch processing), you typically want
-to auto-approve tool calls while still enforcing a policy denylist. The
-embed-and-override pattern with `NoopHITLHandler` makes this concise:
+For non-interactive deployments (e.g. CI or batch processing), you typically want to auto-approve tool calls while still enforcing a policy denylist. The embed-and-override pattern with `NoopHITLHandler` makes this concise:
 
 ```go
 // autoApproveHITL allows everything except a configured denylist.
@@ -419,17 +394,7 @@ fw, err := sdk.New(sdk.Config{
 
 ## Design notes
 
-- **Every tool call is intercepted.** `OnToolCall` fires before *every* tool,
-  including read-only ones. Filter by `toolName` if you only want to confirm
-  destructive operations.
-- **Modification is powerful.** `ModifiedInput` lets you enforce invariants
-  (e.g. clamping line ranges, redirecting paths) without denying the call. The
-  modified input replaces the model's arguments verbatim.
-- **Step-limit reasons.** When `OnStepLimit` fires with a non-empty `reason`,
-  a circuit breaker (not plain budget exhaustion) triggered the pause. You can
-  use this to decide whether more steps are likely to help. See
-  [Agent Executor](agent-executor.md#circuit-breakers) for the breaker
-  thresholds.
-- **Promptness matters.** Because handlers run on the executor loop, a slow
-  handler delays the entire agent. For interactive handlers, read input with a
-  timeout or respect `ctx.Done()`.
+- **Every tool call is intercepted.** `OnToolCall` fires before *every* tool, including read-only ones. Filter by `toolName` if you only want to confirm destructive operations.
+- **Modification is powerful.** `ModifiedInput` lets you enforce invariants (e.g. clamping line ranges, redirecting paths) without denying the call. The modified input replaces the model's arguments verbatim.
+- **Step-limit reasons.** When `OnStepLimit` fires with a non-empty `reason`, a circuit breaker (not plain budget exhaustion) triggered the pause. You can use this to decide whether more steps are likely to help. See [Agent Executor](agent-executor.md#circuit-breakers) for the breaker thresholds.
+- **Promptness matters.** Because handlers run on the executor loop, a slow handler delays the entire agent. For interactive handlers, read input with a timeout or respect `ctx.Done()`.

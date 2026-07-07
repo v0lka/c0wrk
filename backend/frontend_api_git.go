@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/project"
-	"github.com/v0lka/c0wrk/sdk/pathutil"
+	"github.com/v0lka/sp4rk/pathutil"
 )
 
 const gitCmdTimeout = 30 * time.Second

@@ -24,9 +24,12 @@ type ConfirmationRequest struct {
 type ConfirmationResponse int
 
 const (
-	ConfirmAllowOnce   ConfirmationResponse = iota // Allow this single execution
-	ConfirmDeny                                    // Deny this execution
-	ConfirmDenyAndStop                             // Deny and cancel the entire task
+	// ConfirmAllowOnce allows this single execution.
+	ConfirmAllowOnce ConfirmationResponse = iota
+	// ConfirmDeny denies this execution.
+	ConfirmDeny
+	// ConfirmDenyAndStop denies the execution and cancels the entire task.
+	ConfirmDenyAndStop
 )
 
 // ConfirmFunc is called before executing a mutating tool.

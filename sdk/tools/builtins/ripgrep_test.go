@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // setupRipgrepTestDir creates a temp directory with test files containing known content.

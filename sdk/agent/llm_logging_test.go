@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/sp4rk/llm"
 )
 
 func TestLoggingCaller_CallSuccess_LogsTokenUsage(t *testing.T) {

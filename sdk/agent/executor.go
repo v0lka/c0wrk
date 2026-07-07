@@ -14,8 +14,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/pathutil"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const executorNudge = "[System] You have tools available that can help answer this request. Before finishing, try using relevant tools to discover the answer. Do NOT say you cannot determine something without first attempting to use your tools."
@@ -23,7 +24,7 @@ const executorNudge = "[System] You have tools available that can help answer th
 const executorToolCallSyntaxNudge = "[System] You printed tool-call syntax (e.g. ```bash_exec) as text in your response instead of invoking the tool through the tool_use block. This is an error — tools must be called via the tool_use mechanism, not typed as text. Re-issue your tool call correctly using the tool_use block."
 
 // toolCallSyntaxRe matches a fenced code block at the start of a line whose
-// language tag looks like a c0wrk tool name (lowercase words joined by
+// language tag looks like a sp4rk tool name (lowercase words joined by
 // underscores, e.g. ```bash_exec, ```read_file, ```edit_file). When the model
 // enters a failure-mode where it "prints" a tool invocation as prose instead
 // of emitting a tool_use block, this pattern is a reliable signal.
@@ -106,6 +107,26 @@ var mutatingTools = map[string]struct{}{
 	"delete_directory": {},
 }
 
+// circuitBreakerExemptTools are excluded from the fruitless-result and
+// same-tool-repeat detectors. These tools legitimately produce short,
+// similarly-sized successful results in bursts (e.g. batch file edits each
+// returning "successfully edited file", or consecutive update_checklist /
+// set_step_status confirmations). Counting them as "fruitless" or "repetitive"
+// triggers false aborts during normal batch workflows.
+//
+// store_fact is already handled separately in checkSameToolRepetition and is
+// included here for symmetry so checkFruitlessResult also skips it.
+var circuitBreakerExemptTools = map[string]struct{}{
+	"write_file":       {},
+	"edit_file":        {},
+	"create_directory": {},
+	"delete_file":      {},
+	"delete_directory": {},
+	"update_checklist": {},
+	"set_step_status":  {},
+	"store_fact":       {},
+}
+
 // Circuit-breaker nudge messages. Kept as Go constants because they use fmt.Sprintf
 // with runtime values that would require a template engine if moved to markdown.
 const (
@@ -144,8 +165,8 @@ type Executor struct {
 	tools                   ToolExecutor
 	tokenCounter            llm.TokenCounter
 	maxSteps                int
-	emitter                 AgentEvents // event emitter (uses NoopEvents if nil)
-	suppressAssistantEvents bool        // if true, don't emit AssistantChunk/AssistantDone
+	emitter                 Events // event emitter (uses NoopEvents if nil)
+	suppressAssistantEvents bool   // if true, don't emit AssistantChunk/AssistantDone
 	toolResultBudget        ToolResultBudget
 	circuitBreaker          CircuitBreakerConfig
 	hitl                    HITLHandler // human-in-the-loop hooks (uses NoopHITLHandler if nil)
@@ -221,29 +242,123 @@ type Executor struct {
 	logger *slog.Logger
 }
 
+// executorOptions holds the optional configuration for an Executor. The zero
+// value is a valid starting point; NewExecutor applies sensible defaults
+// (NoopEvents, NoopHITLHandler, DefaultCircuitBreakerConfig) before applying
+// caller-supplied options.
+type executorOptions struct {
+	tokenCounter            llm.TokenCounter
+	emitter                 Events
+	suppressAssistantEvents bool
+	toolResultBudget        ToolResultBudget
+	circuitBreaker          CircuitBreakerConfig
+	hitl                    HITLHandler
+}
+
+// Option configures an Executor created by NewExecutor. Only types from this
+// package can implement Option because apply is unexported.
+type Option interface {
+	apply(*executorOptions)
+}
+
+// Compile-time verification that every option type implements Option.
+var (
+	_ Option = tokenCounterOption{}
+	_ Option = eventsOption{}
+	_ Option = suppressAssistantEventsOption(false)
+	_ Option = toolResultBudgetOption{}
+	_ Option = circuitBreakerOption{}
+	_ Option = hitlOption{}
+)
+
+type tokenCounterOption struct{ Counter llm.TokenCounter }
+
+func (o tokenCounterOption) apply(opts *executorOptions) { opts.tokenCounter = o.Counter }
+
+// WithTokenCounter sets the token counter used for context-fill tracking.
+func WithTokenCounter(counter llm.TokenCounter) Option {
+	return tokenCounterOption{Counter: counter}
+}
+
+type eventsOption struct{ Emitter Events }
+
+func (o eventsOption) apply(opts *executorOptions) { opts.emitter = o.Emitter }
+
+// WithEvents sets the event emitter. If nil, NewExecutor substitutes
+// NoopEvents so downstream code never needs nil checks.
+func WithEvents(emitter Events) Option { return eventsOption{Emitter: emitter} }
+
+type suppressAssistantEventsOption bool
+
+func (o suppressAssistantEventsOption) apply(opts *executorOptions) {
+	opts.suppressAssistantEvents = bool(o)
+}
+
+// WithSuppressAssistantEvents disables AssistantChunk/AssistantDone events.
+// Set to true for plan-step executors to avoid duplicate assistant messages
+// when the orchestrator handles the final output.
+func WithSuppressAssistantEvents(suppress bool) Option {
+	return suppressAssistantEventsOption(suppress)
+}
+
+type toolResultBudgetOption struct{ Budget ToolResultBudget }
+
+func (o toolResultBudgetOption) apply(opts *executorOptions) { opts.toolResultBudget = o.Budget }
+
+// WithToolResultBudget sets the tool result truncation budget.
+func WithToolResultBudget(budget ToolResultBudget) Option {
+	return toolResultBudgetOption{Budget: budget}
+}
+
+type circuitBreakerOption struct{ Config CircuitBreakerConfig }
+
+func (o circuitBreakerOption) apply(opts *executorOptions) { opts.circuitBreaker = o.Config }
+
+// WithCircuitBreaker sets the circuit breaker thresholds. When omitted,
+// NewExecutor uses DefaultCircuitBreakerConfig.
+func WithCircuitBreaker(cfg CircuitBreakerConfig) Option {
+	return circuitBreakerOption{Config: cfg}
+}
+
+type hitlOption struct{ Handler HITLHandler }
+
+func (o hitlOption) apply(opts *executorOptions) { opts.hitl = o.Handler }
+
+// WithHITL sets the human-in-the-loop handler. If nil, NewExecutor substitutes
+// NoopHITLHandler.
+func WithHITL(handler HITLHandler) Option { return hitlOption{Handler: handler} }
+
 // NewExecutor creates a new Executor.
-// emitter is optional (nil-safe).
-// suppressAssistantEvents disables AssistantChunk/AssistantDone events; set to true for plan-step
-// executors to avoid duplicate assistant messages when the orchestrator handles final output.
-// hitl is optional (nil-safe) — uses NoopHITLHandler if nil.
-func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, emitter AgentEvents, suppressAssistantEvents bool, toolResultBudget ToolResultBudget, circuitBreaker CircuitBreakerConfig, hitl HITLHandler) *Executor {
-	// Use NoopEvents if nil to avoid nil checks throughout the code
-	if emitter == nil {
-		emitter = &NoopEvents{}
+//
+// llmRouter, toolRegistry, and maxSteps are required. Optional configuration
+// is supplied via Option values (see WithTokenCounter, WithEvents,
+// WithSuppressAssistantEvents, WithToolResultBudget, WithCircuitBreaker, and
+// WithHITL). Defaults: nil emitter → NoopEvents, nil HITL → NoopHITLHandler,
+// circuit breaker → DefaultCircuitBreakerConfig.
+func NewExecutor(llmRouter LLMCaller, toolRegistry ToolExecutor, maxSteps int, opts ...Option) *Executor {
+	o := executorOptions{
+		circuitBreaker: DefaultCircuitBreakerConfig(),
 	}
-	if hitl == nil {
-		hitl = &NoopHITLHandler{}
+	for _, opt := range opts {
+		opt.apply(&o)
+	}
+	// Use NoopEvents if nil to avoid nil checks throughout the code.
+	if o.emitter == nil {
+		o.emitter = &NoopEvents{}
+	}
+	if o.hitl == nil {
+		o.hitl = &NoopHITLHandler{}
 	}
 	return &Executor{
 		llm:                     llmRouter,
 		tools:                   toolRegistry,
-		tokenCounter:            counter,
+		tokenCounter:            o.tokenCounter,
 		maxSteps:                maxSteps,
-		emitter:                 emitter,
-		suppressAssistantEvents: suppressAssistantEvents,
-		toolResultBudget:        toolResultBudget,
-		circuitBreaker:          circuitBreaker,
-		hitl:                    hitl,
+		emitter:                 o.emitter,
+		suppressAssistantEvents: o.suppressAssistantEvents,
+		toolResultBudget:        o.toolResultBudget,
+		circuitBreaker:          o.circuitBreaker,
+		hitl:                    o.hitl,
 		checklistGateEnabled:    true,
 		nonCacheableTools:       copyNonCacheableTools(defaultNonCacheableTools),
 	}
@@ -467,9 +582,29 @@ func formatFragmentationNudge(hash, toolName string, maxSliceHint int) string {
 	)
 }
 
+// fileBackedNudgePrefix is the prefix of nudge messages appended for file-backed
+// cache entries (read_file). Used by processToolResult to extract the nudge
+// before Stage 2 token-budget truncation and re-append it afterwards.
+const fileBackedNudgePrefix = "\n\n[File content cached with hash:"
+
+// formatFileBackedNudge returns a message informing the LLM that the file
+// content is cached with the given hash and that additional fragments can be
+// read via tool_result_read. Unlike formatFragmentationNudge, this is appended
+// even when Stage 1 truncation did not fire — it serves the token-economy use
+// case (LLM reads fragments on demand) rather than truncation recovery.
+func formatFileBackedNudge(hash string) string {
+	return fmt.Sprintf(
+		"\n\n[File content cached with hash: %s. "+
+			"Use tool_result_read(hash=\"%s\", start_line=N, num_lines=M) to read additional fragments.]",
+		hash, hash,
+	)
+}
+
 // buildCacheMeta extracts file metadata from tool input for file-based tools.
 // Returns ToolCacheMeta with FilePath/FileMtime/FileSize set for file tools,
-// and IsMCP set for MCP-sourced tools.
+// and IsMCP set for MCP-sourced tools. For read_file, FileBacked is set to
+// true so the cache entry references the file on disk instead of storing
+// content in memory.
 func (e *Executor) buildCacheMeta(ctx context.Context, toolName string, input json.RawMessage) ToolCacheMeta {
 	var meta ToolCacheMeta
 
@@ -502,6 +637,12 @@ func (e *Executor) buildCacheMeta(ctx context.Context, toolName string, input js
 				meta.FilePath = absPath
 				meta.FileMtime = info.ModTime().UnixNano()
 				meta.FileSize = info.Size()
+				// read_file uses the file on disk as its cache backing store.
+				// write_file and edit_file produce new content that must be
+				// cached in memory (they are mutation tools, not reads).
+				if toolName == tools.ToolReadFile {
+					meta.FileBacked = true
+				}
 			}
 		}
 	}
@@ -510,15 +651,14 @@ func (e *Executor) buildCacheMeta(ctx context.Context, toolName string, input js
 }
 
 // isPathWithinWorkspace checks whether the given absolute path lies within the workspace root.
+// It delegates to pathutil.IsWithinPath for symlink-aware containment validation.
+// On error (e.g. paths on different volumes) it fails safe by returning false.
 func isPathWithinWorkspace(path, workspaceRoot string) bool {
-	cleanPath := filepath.Clean(path)
-	cleanRoot := filepath.Clean(workspaceRoot)
-	// filepath.HasPrefix is not available; use strings.HasPrefix with trailing separator.
-	rootWithSep := cleanRoot
-	if !strings.HasSuffix(rootWithSep, string(filepath.Separator)) {
-		rootWithSep += string(filepath.Separator)
+	within, err := pathutil.IsWithinPath(workspaceRoot, path)
+	if err != nil {
+		return false
 	}
-	return cleanPath == cleanRoot || strings.HasPrefix(cleanPath, rootWithSep)
+	return within
 }
 
 // Run executes the ReAct loop for the given task tools and context manager.

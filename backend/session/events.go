@@ -6,8 +6,8 @@ import (
 	"time"
 
 	coretools "github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/sdk/agent/router"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/sp4rk/agent/router"
+	"github.com/v0lka/sp4rk/orchestration"
 )
 
 // Event type constants for backend-to-frontend communication.

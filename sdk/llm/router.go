@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -18,13 +19,14 @@ type SamplingFunc func(family string) *float64
 // RouterConfig configures the LLM router.
 // All values must be pre-resolved by the caller (env vars expanded, durations parsed).
 //
-// MaxRetries defaults to 3 when unset or zero. This means transient errors (HTTP 429,
-// 502, 503, 529, network blips) recover automatically with exponential backoff
-// (1s → 2s → 4s, capped at MaxBackoff). This adds up to ~7s of latency on the
-// worst-case retry path.
-// Callers that rely on error propagation for compaction timing, circuit-breaker resets,
-// or budget control should account for this default. To disable retries entirely,
-// set MaxRetries to a negative value (e.g. -1).
+// MaxRetries defaults to 3 when unset or zero (any value <= 0 is replaced with 3).
+// This means transient errors (HTTP 429, 502, 503, 529, network blips) recover
+// automatically with exponential backoff (1s → 2s → 4s, capped at MaxBackoff).
+// This adds up to ~7s of latency on the worst-case retry path.
+// Callers that rely on error propagation for compaction timing, circuit-breaker
+// resets, or budget control should account for this default. There is currently
+// no way to disable retries via this field; set MaxRetries to 0 to get the
+// default of 3, or a positive value to control the count explicitly.
 type RouterConfig struct {
 	Providers           []ProviderEntry // all enabled providers (at least one required)
 	MaxRetries          int             // Max retry attempts on retryable errors
@@ -48,10 +50,12 @@ type ProviderEntry struct {
 
 // Router routes LLM calls to the active provider.
 //
-// Concurrency: Router is NOT safe for concurrent use from multiple goroutines.
-// Each Router instance handles one request at a time. The orchestrator enforces
-// this via its single-active-request contract.
+// Concurrency: Router is safe for concurrent use from multiple goroutines.
+// SetModel takes a write lock; all other methods take read locks. Call
+// snapshots the active provider and model under a read lock, then releases it
+// before the retry loop so SetModel is not blocked by backoff sleeps.
 type Router struct {
+	mu                 sync.RWMutex
 	providers          map[string]Provider
 	modelToProvider    map[string]string // composite model ID ("provider/model") → provider name
 	activeProvider     Provider
@@ -114,8 +118,8 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 	maxRetries := cfg.MaxRetries
 	if maxRetries <= 0 {
 		// Default to 3 retries so transient errors (HTTP 429/502/503/529,
-		// network blips) recover automatically. Callers that truly want to
-		// disable retries should pass a negative value.
+		// network blips) recover automatically. Any non-positive value
+		// (including negatives) is replaced with this default.
 		maxRetries = 3
 	}
 	initialBackoff := cfg.InitialBackoff
@@ -270,15 +274,19 @@ func (r *Router) applyDefaultTemperature(ctx context.Context, req *ChatRequest) 
 	req.Temperature = &temp
 }
 
-// prepareRequest fills defaults (model, temperature) and validates the context window.
-// Returns an error if the request would exceed the context window.
+// prepareRequest fills defaults (model, temperature) and validates the context
+// window. Returns an error if the request would exceed the context window.
 //
 // The bare model name (without provider prefix) is what is sent to the LLM API
 // and used for metadata lookups; the composite identifier is only the internal
 // selector stored in activeModel.
-func (r *Router) prepareRequest(ctx context.Context, req *ChatRequest) error {
+//
+// bareModel is the snapshot of the active bare model taken under the read lock
+// by the caller (Call). prepareRequest does not read r.active* fields itself,
+// so it does not require the caller to hold r.mu.
+func (r *Router) prepareRequest(ctx context.Context, req *ChatRequest, bareModel string) error {
 	if req.Model == "" {
-		req.Model = r.activeBareModel
+		req.Model = bareModel
 	}
 	r.applyDefaultTemperature(ctx, req)
 	return r.validateContextWindow(ctx, req.Model, req.Messages)
@@ -286,7 +294,19 @@ func (r *Router) prepareRequest(ctx context.Context, req *ChatRequest) error {
 
 // Call sends a chat request to the active provider.
 func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	if err := r.prepareRequest(ctx, &req); err != nil {
+	// Snapshot the active provider and bare model under the read lock, then
+	// release the lock before the retry loop. The retry loop includes
+	// exponential backoff sleeps (up to ~7s); holding the read lock for that
+	// duration would block SetModel (write lock) and freeze model switching
+	// during retry storms. applyDefaultTemperature and validateContextWindow
+	// only read immutable fields (registry, tokenCounter, sampling, etc.), so
+	// they are safe to call without the lock after the snapshot.
+	r.mu.RLock()
+	provider := r.activeProvider
+	bareModel := r.activeBareModel
+	r.mu.RUnlock()
+
+	if err := r.prepareRequest(ctx, &req, bareModel); err != nil {
 		return nil, err
 	}
 
@@ -294,7 +314,7 @@ func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	backoff := r.initialBackoff
 
 	for attempt := 0; attempt <= r.maxRetries; attempt++ {
-		resp, err := r.activeProvider.ChatCompletion(ctx, req)
+		resp, err := provider.ChatCompletion(ctx, req)
 		if err == nil {
 			// Ensure model is set in response
 			if resp.Model == "" {
@@ -331,14 +351,18 @@ func (r *Router) Call(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	return nil, lastErr
 }
 
-// GetDefaultProvider returns the active provider.
+// DefaultProvider returns the active provider.
 // Returns nil if no provider is configured.
-func (r *Router) GetDefaultProvider() Provider {
+func (r *Router) DefaultProvider() Provider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.activeProvider
 }
 
 // ActiveProviderName returns the logical name of the active provider.
 func (r *Router) ActiveProviderName() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.activeProviderName
 }
 
@@ -346,6 +370,8 @@ func (r *Router) ActiveProviderName() string {
 // currently active model. Use BareModel(ActiveModel()) to obtain the bare model
 // name shown to users / sent to the LLM API.
 func (r *Router) ActiveModel() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.activeModel
 }
 
@@ -358,6 +384,9 @@ func (r *Router) ActiveModel() string {
 // (deterministic, sorted by composite ID) is selected and a warning is logged
 // when a logger is configured.
 func (r *Router) SetModel(ctx context.Context, model string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	// Composite identifier: direct lookup.
 	if IsCompositeModelID(model) {
 		providerName, ok := r.modelToProvider[model]

@@ -17,11 +17,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // ConfirmingHITL implements agent.HITLHandler. It allows all tool calls
@@ -152,7 +152,7 @@ func run() error {
 	registry.Register(agent.NewFinishTool())
 
 	// Set up workspace
-	workspaceDir, err := os.MkdirTemp("", "c0wrk-example-04-*")
+	workspaceDir, err := os.MkdirTemp("", "sp4rk-example-04-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}

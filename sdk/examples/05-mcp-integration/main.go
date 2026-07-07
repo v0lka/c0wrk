@@ -17,17 +17,17 @@ import (
 	"log"
 	"os"
 
-	"github.com/v0lka/c0wrk/sdk"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
-	"github.com/v0lka/c0wrk/sdk/tools/mcp"
+	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
+	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
 func run() error {
 	// Create a directory the MCP filesystem server will expose.
-	mcpRoot, err := os.MkdirTemp("", "c0wrk-mcp-root-*")
+	mcpRoot, err := os.MkdirTemp("", "sp4rk-mcp-root-*")
 	if err != nil {
 		return fmt.Errorf("failed to create MCP root: %w", err)
 	}

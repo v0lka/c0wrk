@@ -27,6 +27,4 @@ You are a tool safety judge. Given a tool call and the task context, evaluate wh
 
 ## Response Format
 
-Respond in exactly this format:
-VERDICT: ALLOW or CONFIRM
-REASON: <one sentence explaining your decision>
+Respond in exactly this format: VERDICT: ALLOW or CONFIRM REASON: <one sentence explaining your decision>

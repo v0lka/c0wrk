@@ -17,9 +17,9 @@ import (
 	"github.com/v0lka/c0wrk/backend/session"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/vectorindex"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk/agent"
+	sdktools "github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // testLogger returns a logger that drops everything to a buffer for inspection.

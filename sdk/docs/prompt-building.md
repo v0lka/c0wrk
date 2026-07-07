@@ -1,17 +1,14 @@
 # Prompt Building
 
-The `prompt` package provides a fluent API for constructing prompts, with
-first-class support for splitting stable (cacheable) and dynamic content so
-that providers can apply prompt caching.
+The `prompt` package provides a fluent API for constructing prompts, with first-class support for splitting stable (cacheable) and dynamic content so that providers can apply prompt caching.
 
 ```go
-import "github.com/v0lka/c0wrk/sdk/prompt"
+import "github.com/v0lka/sp4rk/prompt"
 ```
 
 ## Builder
 
-`Builder` is a fluent API for constructing prompts from named sections with
-placeholder substitution and an optional cache-break boundary.
+`Builder` is a fluent API for constructing prompts from named sections with placeholder substitution and an optional cache-break boundary.
 
 ### API
 
@@ -27,11 +24,7 @@ placeholder substitution and an optional cache-break boundary.
 
 ### Placeholder substitution
 
-Placeholders are resolved iteratively during `Build()` and `BuildParts()`. The
-substitution loop runs up to **5 passes** (`maxSubstitutionPasses`), repeating
-until the text stabilizes or the pass cap is reached. This handles nested
-placeholders — for example, when one substitution value itself contains another
-placeholder key (e.g. `MODE-PREAMBLE` contains `RECENT-CONVERSATION`).
+Placeholders are resolved iteratively during `Build()` and `BuildParts()`. The substitution loop runs up to **5 passes** (`maxSubstitutionPasses`), repeating until the text stabilizes or the pass cap is reached. This handles nested placeholders — for example, when one substitution value itself contains another placeholder key (e.g. `MODE-PREAMBLE` contains `RECENT-CONVERSATION`).
 
 ```go
 b := prompt.NewBuilder().
@@ -52,23 +45,17 @@ The pass cap prevents infinite loops from circular placeholder references.
 
 ## CacheBreakMarker
 
-`CacheBreakMarker` is a sentinel string used to split a system prompt into
-cacheable (stable) and dynamic parts.
+`CacheBreakMarker` is a sentinel string used to split a system prompt into cacheable (stable) and dynamic parts.
 
 ```go
 const CacheBreakMarker = "\x00CACHE_BREAK\x00"
 ```
 
-Consumers such as `ContextWindow` check for this marker and emit **multiple
-system messages** — one for each part — enabling provider-level prompt caching
-(e.g. Anthropic's ephemeral cache control). The stable prefix can be cached
-across turns while the dynamic suffix changes per request.
+Consumers such as `ContextWindow` check for this marker and emit **multiple system messages** — one for each part — enabling provider-level prompt caching (e.g. Anthropic's ephemeral cache control). The stable prefix can be cached across turns while the dynamic suffix changes per request.
 
 ## SplitCacheBreak
 
-`SplitCacheBreak` splits a system prompt on `CacheBreakMarker` and returns the
-non-empty parts (trimmed). It returns one part when no marker is present, two
-parts when the marker is present, and omits any empty parts.
+`SplitCacheBreak` splits a system prompt on `CacheBreakMarker` and returns the non-empty parts (trimmed). It returns one part when no marker is present, two parts when the marker is present, and omits any empty parts.
 
 ```go
 func SplitCacheBreak(systemPrompt string) []string
@@ -80,14 +67,11 @@ parts := prompt.SplitCacheBreak(stable + prompt.CacheBreakMarker + dynamic)
 // parts[1] == dynamic
 ```
 
-This is the function `ContextWindow.BuildPrompt` uses to turn a single system
-prompt string into multiple cacheable system messages.
+This is the function `ContextWindow.BuildPrompt` uses to turn a single system prompt string into multiple cacheable system messages.
 
 ## CacheBreak
 
-`CacheBreak()` marks the boundary between stable and dynamic prompt content.
-Sections added **before** the call form the stable part; sections added
-**after** form the dynamic part.
+`CacheBreak()` marks the boundary between stable and dynamic prompt content. Sections added **before** the call form the stable part; sections added **after** form the dynamic part.
 
 ```go
 b := prompt.NewBuilder().
@@ -100,23 +84,15 @@ stable, dynamic := b.BuildParts()
 // dynamic == "Current task: refactor auth. (dynamic, per-request)"
 ```
 
-`Build()` inserts the `CacheBreakMarker` between the two parts (or returns just
-the stable part when the dynamic part is empty), so the marker survives into
-the final string and can be split downstream by `SplitCacheBreak`.
+`Build()` inserts the `CacheBreakMarker` between the two parts (or returns just the stable part when the dynamic part is empty), so the marker survives into the final string and can be split downstream by `SplitCacheBreak`.
 
 ## BuildParts
 
-`BuildParts()` returns the prompt split at the cache-break boundary as
-`(stable, dynamic string)`. Substitutions are applied to each part
-independently. If no `CacheBreak` was set, `stable` contains the full prompt
-and `dynamic` is empty.
+`BuildParts()` returns the prompt split at the cache-break boundary as `(stable, dynamic string)`. Substitutions are applied to each part independently. If no `CacheBreak` was set, `stable` contains the full prompt and `dynamic` is empty.
 
 ## SystemPromptBuilder
 
-`SystemPromptBuilder` wraps `Builder` for constructing system prompts with
-cache-break support. It is intended for use by orchestrator
-`SystemPromptFactory` implementations to build stable (cacheable) + dynamic
-prompt parts.
+`SystemPromptBuilder` wraps `Builder` for constructing system prompts with cache-break support. It is intended for use by orchestrator `SystemPromptFactory` implementations to build stable (cacheable) + dynamic prompt parts.
 
 ### API
 
@@ -129,25 +105,17 @@ prompt parts.
 | `CacheBreak() *SystemPromptBuilder` | Marks the boundary between stable and dynamic content. |
 | `Build() string` | Returns the full system prompt string with `CacheBreakMarker` between stable and dynamic parts (when `CacheBreak` was called). |
 
-`Dynamic` is a semantic alias: it delegates to `Core` but documents intent —
-the content belongs after the cache break and is therefore not cached.
+`Dynamic` is a semantic alias: it delegates to `Core` but documents intent — the content belongs after the cache break and is therefore not cached.
 
 ## Provider-Level Prompt Caching
 
-When a system prompt contains a `CacheBreakMarker`, downstream consumers split
-it into multiple system messages. Providers that support prompt caching (such
-as Anthropic's ephemeral cache control) can then cache the stable prefix across
-turns while the dynamic suffix changes per request. This reduces latency and
-token costs for long-running agent sessions where the system prompt is large
-but mostly stable.
+When a system prompt contains a `CacheBreakMarker`, downstream consumers split it into multiple system messages. Providers that support prompt caching (such as Anthropic's ephemeral cache control) can then cache the stable prefix across turns while the dynamic suffix changes per request. This reduces latency and token costs for long-running agent sessions where the system prompt is large but mostly stable.
 
 The flow is:
 
-1. Build the system prompt with `SystemPromptBuilder`, calling `CacheBreak()`
-   between the stable and dynamic sections.
+1. Build the system prompt with `SystemPromptBuilder`, calling `CacheBreak()` between the stable and dynamic sections.
 2. `Build()` returns a single string with the `CacheBreakMarker` embedded.
-3. `ContextWindow.BuildPrompt()` calls `SplitCacheBreak` on that string and
-   emits one system message per non-empty part.
+3. `ContextWindow.BuildPrompt()` calls `SplitCacheBreak` on that string and emits one system message per non-empty part.
 
 ## Complete Example
 
@@ -157,7 +125,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/v0lka/c0wrk/sdk/prompt"
+	"github.com/v0lka/sp4rk/prompt"
 )
 
 func main() {
@@ -198,9 +166,7 @@ spb := prompt.NewSystemPromptBuilder().
 
 ## Sampling Defaults
 
-The package also provides `SamplingConfig` and `DefaultSampling` for
-family-aware generation parameter defaults. These are advisory — providers
-should use them only when no explicit user overrides are set.
+The package also provides `SamplingConfig` and `DefaultSampling` for family-aware generation parameter defaults. These are advisory — providers should use them only when no explicit user overrides are set.
 
 ```go
 type SamplingConfig struct {

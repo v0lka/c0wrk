@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const toolCreateDirectoryDescription = `Creates a directory at the specified path, including any necessary parent directories (like mkdir -p). Succeeds silently if the directory already exists. Use this to set up directory structure before writing files into it.`

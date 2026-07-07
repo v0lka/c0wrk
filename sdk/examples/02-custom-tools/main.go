@@ -14,11 +14,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/v0lka/c0wrk/sdk"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // CalculatorTool evaluates simple arithmetic expressions.
@@ -97,7 +97,7 @@ func run() error {
 	registry.Register(NewCalculatorTool())
 
 	// Set up a workspace directory so file tools know where to read/write.
-	workspaceDir, err := os.MkdirTemp("", "c0wrk-example-02-*")
+	workspaceDir, err := os.MkdirTemp("", "sp4rk-example-02-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}

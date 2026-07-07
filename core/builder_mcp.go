@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/tools/mcp"
+	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
 // ReconfigureMCP reconfigures the MCP gateway with the given config.

@@ -7,10 +7,10 @@ import (
 	"strconv"
 
 	"github.com/google/uuid"
-	"github.com/v0lka/c0wrk/sdk/agent/router"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/sdk/skills"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent/router"
+	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/skills"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // prepareRequestContext sets plan-mode key, injection-defense key, vector hints,

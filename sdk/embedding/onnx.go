@@ -3,19 +3,38 @@ package embedding
 import (
 	"fmt"
 	"math"
+	"sync"
 
 	ort "github.com/yalue/onnxruntime_go"
 )
 
+// onnxInitOnce ensures initONNXRuntime performs its work at most once per process.
+// onnxInitErr caches the outcome of that single initialization attempt.
+var (
+	onnxInitOnce sync.Once
+	onnxInitErr  error
+)
+
 // initONNXRuntime initializes the global ONNX Runtime environment.
-// Must be called once before creating any sessions.
-// libraryPath is the path to the ONNX Runtime shared library.
+// Must be called once before creating any sessions. libraryPath is the path to
+// the ONNX Runtime shared library.
+//
+// Initialization is guarded by sync.Once, so only the first call performs the
+// actual work; all subsequent calls return the cached result. Consequences:
+//   - Once initialized, the ONNX Runtime cannot be reinitialized in the same
+//     process, even after destroyONNXRuntime has been called. The first
+//     libraryPath supplied is final.
+//   - If the first initialization fails, every later call returns the same
+//     error without retrying.
 func initONNXRuntime(libraryPath string) error {
-	ort.SetSharedLibraryPath(libraryPath)
-	if err := ort.InitializeEnvironment(); err != nil {
-		return fmt.Errorf("initializing ONNX Runtime environment: %w", err)
-	}
-	return nil
+	onnxInitOnce.Do(func() {
+		ort.SetSharedLibraryPath(libraryPath)
+		if err := ort.InitializeEnvironment(); err != nil {
+			onnxInitErr = fmt.Errorf("initializing ONNX Runtime environment: %w", err)
+			return
+		}
+	})
+	return onnxInitErr
 }
 
 // destroyONNXRuntime cleans up the global ONNX Runtime environment.

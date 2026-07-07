@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // checkSymlinksAndConfirm is the integration method called from ToolRegistry.Execute().

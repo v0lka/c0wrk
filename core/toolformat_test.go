@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	tools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	tools "github.com/v0lka/sp4rk/tools"
 )
 
 func TestBuildGroupedToolList_AllTiers(t *testing.T) {

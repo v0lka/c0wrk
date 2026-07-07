@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
+	sdkagent "github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
 )
 
 // testModelMeta creates a ModelMetadata for testing with the given context window.

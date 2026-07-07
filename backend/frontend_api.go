@@ -59,6 +59,13 @@ type FrontendAPI struct {
 	skillCacheProjectDir  string
 	skillCacheMu          sync.Mutex
 
+	// Skill directory watchers monitor global skill dirs (outside any
+	// workspace) for changes so the autocomplete / ListSkills cache stays
+	// fresh without an app restart. Workspace-local skills are covered by
+	// the workspace watcher above.
+	skillWatchers   []*workspace.Watcher
+	skillWatchersMu sync.Mutex
+
 	// Vector search
 	vectorManager   *vectorindex.Manager
 	vectorManagerMu sync.RWMutex
@@ -107,7 +114,7 @@ type FrontendAPIConfig struct {
 
 // NewFrontendAPI creates a new FrontendAPI with the given configuration.
 func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
-	return &FrontendAPI{
+	f := &FrontendAPI{
 		app:             cfg.App,
 		logger:          cfg.Logger,
 		config:          cfg.Config,
@@ -124,6 +131,16 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 		emitEvent:       cfg.EmitEvent,
 		appCtx:          cfg.AppCtx,
 	}
+
+	// Start watchers for global skill directories (those outside any
+	// workspace). Changes invalidate the skill cache and emit skills:changed
+	// so the frontend autocomplete refreshes without an app restart.
+	if cfg.Config != nil && len(cfg.Config.Skills.Dirs) > 0 {
+		dirs := resolveSkillDirs(cfg.Config.Skills.Dirs, cfg.AgentDir, config.ExpandEnvVars)
+		f.startSkillsWatchers(dirs)
+	}
+
+	return f
 }
 
 // FrontendAPILifecycle holds infrastructure/lifecycle methods that must NOT be
@@ -250,6 +267,7 @@ func (l *FrontendAPILifecycle) Cleanup() {
 		f.watcher = nil
 	}
 	f.watcherMu.Unlock()
+	f.closeSkillsWatchers()
 	if f.store != nil {
 		if err := f.store.Close(); err != nil {
 			f.log().Error("failed to close session store", "error", err)

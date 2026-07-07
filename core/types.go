@@ -4,10 +4,10 @@ package core
 import (
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/agent/router"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/agent/router"
+	"github.com/v0lka/sp4rk/orchestration"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // NoProjectID is the well-known identifier for the "No Project" pseudo-project.
@@ -28,14 +28,14 @@ type ContextManager interface {
 }
 
 // ---------------------------------------------------------------------------
-// Emitter — c0wrk-specific event interface (superset of agent.AgentEvents)
+// Emitter — c0wrk-specific event interface (superset of agent.Events)
 // ---------------------------------------------------------------------------
 
 // Emitter defines the interface for emitting agent execution events.
 // Implementations must be nil-safe (all methods are no-ops when receiver is nil).
 type Emitter interface {
 	// Embed generic agent events from sdk/agent
-	agent.AgentEvents
+	agent.Events
 
 	// c0wrk-specific orchestration events
 	Routing(mode, domain, complexity string)
@@ -73,10 +73,25 @@ type RetryAttemptScopable interface {
 	WithRetryAttempt(attempt int) Emitter
 }
 
+// CurrentStepScopable is an optional interface that Emitter implementations
+// can implement to support dynamic plan-step scoping for inline Conductor
+// execution. When the Conductor executes a plan step inline (without
+// delegating to a subagent), the inlineStepLifecycle calls SetCurrentStepID
+// to tag subsequent executor events (tool_call, thought, assistant, etc.)
+// with plan_step_id so they nest under the step block in the frontend.
+//
+// Unlike PlanStepScopable (which returns a scoped copy with a fixed
+// planStepID), SetCurrentStepID mutates the receiver in place, allowing a
+// single emitter instance to be re-scoped as the Conductor moves between
+// steps within one continuous ReAct loop.
+type CurrentStepScopable interface {
+	SetCurrentStepID(id string)
+}
+
 // noopEmitter is a no-op implementation of Emitter.
 // Used as a default when nil emitter is provided.
 type noopEmitter struct {
-	agent.NoopEvents // provides AgentEvents methods
+	agent.NoopEvents // provides Events methods
 }
 
 // ensure noopEmitter implements Emitter.

@@ -1,4 +1,4 @@
-module github.com/v0lka/c0wrk/sdk
+module github.com/v0lka/sp4rk
 
 go 1.26.3
 

@@ -1,9 +1,9 @@
 package planner
 
 import (
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // AgentProfile defines a specialized agent role for plan step execution.
@@ -19,21 +19,16 @@ type AgentProfile struct {
 	ProtectedTools []string `json:"protected_tools,omitempty"` // per-step ProtectedTools override (nil = use role default)
 }
 
-// StepProfileMarker satisfies orchestration.StepProfile.
-//
-//nolint:unused // marker method, consumed by interface satisfaction at type-assertion boundary
-func (AgentProfile) isStepProfile() {}
-
 // ToolLister provides access to available tool descriptors.
 // Implementations include tool registries.
 type ToolLister interface {
 	List() []tools.ToolDescriptor
 }
 
-// PlannerEvents is the minimal event interface needed by the planner.
+// Events is the minimal event interface needed by the planner.
 // Implementations must be nil-safe.
-type PlannerEvents interface {
-	agent.AgentEvents
+type Events interface {
+	agent.Events
 	ServiceWithMeta(content string, meta map[string]any)
 }
 

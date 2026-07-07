@@ -1,19 +1,14 @@
 # Utilities
 
-The SDK ships two small, dependency-light utility packages with reusable
-algorithms: `pathutil` for filesystem-path operations and `strutil` for string
-helpers.
+The SDK ships two small, dependency-light utility packages with reusable algorithms: `pathutil` for filesystem-path operations and `strutil` for string helpers.
 
 ## pathutil
 
 ```go
-import "github.com/v0lka/c0wrk/sdk/pathutil"
+import "github.com/v0lka/sp4rk/pathutil"
 ```
 
-The `pathutil` package provides reusable filesystem-path algorithms with **zero
-project-specific knowledge**. It contains pure algorithmic primitives that are
-safe to use from any layer. Project-specific path construction and directory
-layout live elsewhere — `pathutil` knows nothing about it.
+The `pathutil` package provides reusable filesystem-path algorithms with **zero project-specific knowledge**. It contains pure algorithmic primitives that are safe to use from any layer. Project-specific path construction and directory layout live elsewhere — `pathutil` knows nothing about it.
 
 ### IsWithinPath
 
@@ -21,15 +16,9 @@ layout live elsewhere — `pathutil` knows nothing about it.
 func IsWithinPath(parent, child string) (bool, error)
 ```
 
-`IsWithinPath` returns `true` if `child` is equal to or a descendant of
-`parent`. Both paths are symlink-resolved through their longest existing prefix
-(`ResolveExistingPrefix`) before comparison, so it correctly handles OS-level
-symlinks like macOS `/var → /private/var` even when the paths do not exist on
-disk yet.
+`IsWithinPath` returns `true` if `child` is equal to or a descendant of `parent`. Both paths are symlink-resolved through their longest existing prefix (`ResolveExistingPrefix`) before comparison, so it correctly handles OS-level symlinks like macOS `/var → /private/var` even when the paths do not exist on disk yet.
 
-It returns an error only when `filepath.Rel` fails (e.g. the paths are on
-different volumes). An empty `parent` returns `(true, nil)` — containment
-cannot be determined, so access is allowed (matching legacy behavior).
+It returns an error only when `filepath.Rel` fails (e.g. the paths are on different volumes). An empty `parent` returns `(true, nil)` — containment cannot be determined, so access is allowed (matching legacy behavior).
 
 ```go
 ok, err := pathutil.IsWithinPath("/home/user/project", "/home/user/project/src/main.go")
@@ -43,8 +32,7 @@ ok, err = pathutil.IsWithinPath("/var/log", "/var/log/app.log")
 // ok == true even though /var is a symlink to /private/var
 ```
 
-The containment check works by computing the relative path from `parent` to
-`child`:
+The containment check works by computing the relative path from `parent` to `child`:
 
 - `rel == "."` means the paths are the same → within.
 - `rel` starting with `".."` means `child` escapes above `parent` → not within.
@@ -56,8 +44,7 @@ The containment check works by computing the relative path from `parent` to
 func SplitPathComponents(absPath string) []string
 ```
 
-`SplitPathComponents` splits a cleaned absolute path into non-empty
-components, stripping the root separator.
+`SplitPathComponents` splits a cleaned absolute path into non-empty components, stripping the root separator.
 
 ```go
 pathutil.SplitPathComponents("/home/user/file.txt")
@@ -75,12 +62,7 @@ Empty components (e.g. from consecutive separators) are filtered out.
 func ResolveExistingPrefix(path string) string
 ```
 
-`ResolveExistingPrefix` resolves symlinks on the **longest existing prefix** of
-`path`, then joins the non-existent suffix back. This is used when validating
-paths for files or directories that may not exist yet (e.g. write or mkdir tool
-targets) — `filepath.EvalSymlinks` fails on non-existent paths, so this
-function walks up the path until it finds a component that exists, resolves it,
-and reattaches the remainder.
+`ResolveExistingPrefix` resolves symlinks on the **longest existing prefix** of `path`, then joins the non-existent suffix back. This is used when validating paths for files or directories that may not exist yet (e.g. write or mkdir tool targets) — `filepath.EvalSymlinks` fails on non-existent paths, so this function walks up the path until it finds a component that exists, resolves it, and reattaches the remainder.
 
 ```go
 // If "/ws/link" is a symlink to "/real/path" but "/ws/link/newfile.txt"
@@ -93,8 +75,7 @@ The algorithm:
 
 1. Try `filepath.EvalSymlinks(path)`. If it succeeds, return the resolved path.
 2. If it fails with "not exist", move to the parent directory and retry.
-3. When an existing ancestor is found, resolve it and reattach the relative
-   suffix.
+3. When an existing ancestor is found, resolve it and reattach the relative suffix.
 4. If the root is reached without finding anything, return the path unchanged.
 5. On permission or other errors, return the path unchanged.
 
@@ -106,7 +87,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/v0lka/c0wrk/sdk/pathutil"
+	"github.com/v0lka/sp4rk/pathutil"
 )
 
 func main() {
@@ -137,7 +118,7 @@ func main() {
 ## strutil
 
 ```go
-import "github.com/v0lka/c0wrk/sdk/strutil"
+import "github.com/v0lka/sp4rk/strutil"
 ```
 
 The `strutil` package provides shared string helpers.
@@ -148,16 +129,9 @@ The `strutil` package provides shared string helpers.
 func TruncateUTF8(s string, maxBytes int) string
 ```
 
-`TruncateUTF8` returns `s` truncated to at most `maxBytes` bytes, respecting
-UTF-8 rune boundaries so the result is always valid UTF-8. If `s` is already
-shorter than `maxBytes` (or `maxBytes` is non-positive), `s` is returned
-unchanged.
+`TruncateUTF8` returns `s` truncated to at most `maxBytes` bytes, respecting UTF-8 rune boundaries so the result is always valid UTF-8. If `s` is already shorter than `maxBytes` (or `maxBytes` is non-positive), `s` is returned unchanged.
 
-This is the recommended replacement for byte-slice truncation expressions like
-`s[:N]` when the input may contain multi-byte UTF-8 characters that the
-downstream consumer (LLM API, logger, frontend) expects to be valid. A naive
-`s[:N]` cut can split a multi-byte rune in half, producing invalid UTF-8 that
-causes encoding errors downstream.
+This is the recommended replacement for byte-slice truncation expressions like `s[:N]` when the input may contain multi-byte UTF-8 characters that the downstream consumer (LLM API, logger, frontend) expects to be valid. A naive `s[:N]` cut can split a multi-byte rune in half, producing invalid UTF-8 that causes encoding errors downstream.
 
 ```go
 // A 4-byte emoji followed by ASCII.
@@ -174,8 +148,7 @@ strutil.TruncateUTF8("short", 100) // → "short"
 strutil.TruncateUTF8("anything", 0) // → "anything"
 ```
 
-The implementation decrements `maxBytes` until `utf8.RuneStart(s[maxBytes])` is
-true, ensuring the cut never lands in the middle of a multi-byte rune.
+The implementation decrements `maxBytes` until `utf8.RuneStart(s[maxBytes])` is true, ensuring the cut never lands in the middle of a multi-byte rune.
 
 ### Complete strutil example
 
@@ -185,7 +158,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/v0lka/c0wrk/sdk/strutil"
+	"github.com/v0lka/sp4rk/strutil"
 )
 
 func main() {

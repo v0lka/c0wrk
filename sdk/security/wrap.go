@@ -45,7 +45,11 @@ func WrapUntrustedContent(content, source string, metadata map[string]string) st
 	sanitized := StripUntrustedTags(content)
 
 	var attrs strings.Builder
-	fmt.Fprintf(&attrs, "source=%q", source)
+	// Escape quotes in source for valid XML attribute values, consistent
+	// with metadata value escaping below. Using %q alone produces Go-style
+	// \" escaping which is invalid in XML and can break attribute parsing.
+	escapedSource := strings.ReplaceAll(source, `"`, "&quot;")
+	fmt.Fprintf(&attrs, "source=%q", escapedSource)
 	for key, value := range metadata {
 		escaped := strings.ReplaceAll(value, `"`, "&quot;")
 		fmt.Fprintf(&attrs, " %s=%q", key, escaped)

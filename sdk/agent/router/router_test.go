@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // mockLLMCaller is a minimal mock implementation of agent.LLMCaller for testing.
@@ -42,7 +42,7 @@ func (m *mockLLMCaller) lastCall() llm.ChatRequest {
 }
 
 func newTestRouter(mock *mockLLMCaller, historyWindow int) *Router {
-	return NewRouter(mock, Config{
+	return New(mock, Config{
 		SystemPrompt:  "Tools: {{AVAILABLE-TOOLS}}\nSkills: {{AVAILABLE-SKILLS}}",
 		HistoryWindow: historyWindow,
 	})
@@ -249,23 +249,23 @@ func TestRoute_UsesRouterRole(t *testing.T) {
 	_, _ = r.Route(context.Background(), "test request", nil, nil, nil)
 }
 
-func TestNewRouter_DefaultHistoryWindow(t *testing.T) {
+func TestNew_DefaultHistoryWindow(t *testing.T) {
 	mock := &mockLLMCaller{}
 
 	// Zero history window should default to 10
-	r := NewRouter(mock, Config{HistoryWindow: 0})
+	r := New(mock, Config{HistoryWindow: 0})
 	if r.historyWindow != 10 {
 		t.Errorf("expected historyWindow=10 for 0 input, got %d", r.historyWindow)
 	}
 
 	// Negative history window should default to 10
-	r = NewRouter(mock, Config{HistoryWindow: -5})
+	r = New(mock, Config{HistoryWindow: -5})
 	if r.historyWindow != 10 {
 		t.Errorf("expected historyWindow=10 for -5 input, got %d", r.historyWindow)
 	}
 
 	// Positive should be used as-is
-	r = NewRouter(mock, Config{HistoryWindow: 20})
+	r = New(mock, Config{HistoryWindow: 20})
 	if r.historyWindow != 20 {
 		t.Errorf("expected historyWindow=20, got %d", r.historyWindow)
 	}
@@ -409,7 +409,7 @@ func TestRoute_AppendContextSections(t *testing.T) {
 	}
 
 	appendCalled := false
-	r := NewRouter(mock, Config{
+	r := New(mock, Config{
 		SystemPrompt:  "Tools: {{AVAILABLE-TOOLS}}\nSkills: {{AVAILABLE-SKILLS}}",
 		HistoryWindow: 5,
 		AppendContextSections: func(ctx context.Context) string {
@@ -461,7 +461,7 @@ func TestRoute_AppendContextSections_Nil(t *testing.T) {
 
 func TestSetModelRegistry(t *testing.T) {
 	mock := &mockLLMCaller{}
-	r := NewRouter(mock, Config{HistoryWindow: 5})
+	r := New(mock, Config{HistoryWindow: 5})
 	if r.modelRegistry != nil {
 		t.Error("modelRegistry should be nil initially")
 	}

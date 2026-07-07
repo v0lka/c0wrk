@@ -24,10 +24,14 @@ const estimatedTokensPerChar = 4
 // SimpleTokenCounter — approximate token counter using ~4 chars = 1 token rule.
 type SimpleTokenCounter struct{}
 
+// NewSimpleTokenCounter creates a SimpleTokenCounter that estimates tokens
+// using the ~4 chars = 1 token heuristic.
 func NewSimpleTokenCounter() *SimpleTokenCounter {
 	return &SimpleTokenCounter{}
 }
 
+// Count returns the approximate token count for text using ceiling division
+// of its byte length by estimatedTokensPerChar.
 func (c *SimpleTokenCounter) Count(text string) int {
 	if text == "" {
 		return 0
@@ -35,6 +39,8 @@ func (c *SimpleTokenCounter) Count(text string) int {
 	return (len(text) + estimatedTokensPerChar - 1) / estimatedTokensPerChar // ceiling division
 }
 
+// CountMessages returns the total approximate token count across all messages,
+// including role, content, tool-call names/inputs, and per-message framing overhead.
 func (c *SimpleTokenCounter) CountMessages(msgs []Message) int {
 	total := 0
 	for _, msg := range msgs {
@@ -55,7 +61,7 @@ func (c *SimpleTokenCounter) CountMessages(msgs []Message) int {
 // (it mutates internal caches), hence the exclusive Lock.
 type TiktokenCounter struct {
 	tkm *tiktoken.Tiktoken
-	mu  sync.RWMutex
+	mu  sync.Mutex
 }
 
 // NewTiktokenCounter creates a new TiktokenCounter with the specified encoding.
@@ -68,6 +74,8 @@ func NewTiktokenCounter(encoding string) (*TiktokenCounter, error) {
 	return &TiktokenCounter{tkm: tkm}, nil
 }
 
+// Count returns the exact token count for text using the tiktoken encoding.
+// It is safe for concurrent use.
 func (c *TiktokenCounter) Count(text string) int {
 	if text == "" {
 		return 0
@@ -78,6 +86,8 @@ func (c *TiktokenCounter) Count(text string) int {
 	return len(tokens)
 }
 
+// CountMessages returns the total exact token count across all messages,
+// including role, content, tool-call names/inputs, and per-message framing overhead.
 func (c *TiktokenCounter) CountMessages(msgs []Message) int {
 	total := 0
 	for _, msg := range msgs {

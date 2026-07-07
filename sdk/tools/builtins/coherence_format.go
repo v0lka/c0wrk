@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // formatWriteConflict formats a coherence conflict as an error message for write operations.

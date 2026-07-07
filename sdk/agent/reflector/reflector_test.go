@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
 )
 
 // mockLLMCaller is a minimal mock for testing.
@@ -38,7 +38,7 @@ func (m *mockLLMCaller) lastCall() llm.ChatRequest {
 }
 
 func newTestReflector(mock *mockLLMCaller) *Reflector {
-	return NewReflector(mock, Config{SystemPrompt: "You are a reflector."})
+	return New(mock, Config{SystemPrompt: "You are a reflector."})
 }
 
 func TestReflector_Reflect_Success(t *testing.T) {

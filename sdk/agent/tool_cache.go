@@ -21,8 +21,8 @@ type ToolResultCache struct {
 
 // ToolResultCacheEntry holds a cached tool output with metadata.
 type ToolResultCacheEntry struct {
-	Hash      string    // SHA256 of Content
-	Content   string    // full raw tool output
+	Hash      string    // SHA256 of Content (or file metadata for file-backed entries)
+	Content   string    // full raw tool output (empty for file-backed entries)
 	ToolName  string    // e.g. "read_file", "ripgrep"
 	CreatedAt time.Time // when the entry was cached
 
@@ -30,6 +30,11 @@ type ToolResultCacheEntry struct {
 	FilePath  string // absolute path to the file (only for file-based tools)
 	FileMtime int64  // mod time at cache time (nanoseconds since epoch)
 	FileSize  int64  // file size in bytes at cache time
+
+	// FileBacked indicates that the entry's backing store is the file on disk
+	// (Content is empty). tool_result_read streams fragments directly from
+	// FilePath instead of splitting Content.
+	FileBacked bool
 
 	// MCP expiry.
 	TTL   time.Duration // >0 for MCP tools (copied from cache default at store time)
@@ -42,6 +47,12 @@ type ToolCacheMeta struct {
 	FileMtime int64
 	FileSize  int64
 	IsMCP     bool
+
+	// FileBacked indicates that the tool's backing store is the file on disk.
+	// When true, Store does not retain Content in memory; the cache entry
+	// references the file via FilePath + mtime + size, and tool_result_read
+	// streams fragments from disk on demand.
+	FileBacked bool
 }
 
 // NewToolResultCache creates a new cache with the given default MCP TTL.
@@ -59,32 +70,52 @@ func ComputeToolResultHash(toolName, content string) string {
 	return sha256hex(toolName + "\x00" + content)
 }
 
+// ComputeFileBackedHash returns the hex-encoded SHA256 hash for a file-backed
+// cache entry. The hash is derived from tool name, file path, mtime, and size
+// (not from file content), so it is stable for an unchanged file and changes
+// when the file is modified.
+func ComputeFileBackedHash(toolName, filePath string, mtime, size int64) string {
+	return sha256hex(fmt.Sprintf("%s\x00%s\x00%d\x00%d", toolName, filePath, mtime, size))
+}
+
 // Store caches raw tool output and returns its SHA256 hash.
 // The hash includes both toolName and content so that identical content from
 // different tools gets different hashes.
 // Repeated identical calls produce the same hash (no duplicate entries).
+//
+// For file-backed entries (meta.FileBacked == true), Content is NOT stored in
+// memory — the file on disk is the backing store. The hash is derived from
+// file metadata (path + mtime + size) instead of content.
 func (c *ToolResultCache) Store(toolName, content string, meta ToolCacheMeta) string {
-	hash := ComputeToolResultHash(toolName, content)
+	var hash string
+	if meta.FileBacked {
+		hash = ComputeFileBackedHash(toolName, meta.FilePath, meta.FileMtime, meta.FileSize)
+	} else {
+		hash = ComputeToolResultHash(toolName, content)
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.storeCount++
 
-	// Avoid overwriting an existing entry (same content → same hash).
+	// Avoid overwriting an existing entry (same metadata → same hash).
 	if _, ok := c.entries[hash]; ok {
 		return hash
 	}
 
 	entry := &ToolResultCacheEntry{
-		Hash:      hash,
-		Content:   content,
-		ToolName:  toolName,
-		CreatedAt: time.Now(),
-		FilePath:  meta.FilePath,
-		FileMtime: meta.FileMtime,
-		FileSize:  meta.FileSize,
-		IsMCP:     meta.IsMCP,
+		Hash:       hash,
+		ToolName:   toolName,
+		CreatedAt:  time.Now(),
+		FilePath:   meta.FilePath,
+		FileMtime:  meta.FileMtime,
+		FileSize:   meta.FileSize,
+		IsMCP:      meta.IsMCP,
+		FileBacked: meta.FileBacked,
+	}
+	if !meta.FileBacked {
+		entry.Content = content
 	}
 	if meta.IsMCP && c.ttl > 0 {
 		entry.TTL = c.ttl

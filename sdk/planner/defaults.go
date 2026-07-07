@@ -3,7 +3,7 @@ package planner
 import (
 	"context"
 
-	"github.com/v0lka/c0wrk/sdk/skills"
+	"github.com/v0lka/sp4rk/skills"
 )
 
 // DefaultPlannerConfig returns a Config with sensible defaults for standalone use.

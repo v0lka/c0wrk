@@ -10,11 +10,35 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
+// passthroughRoundTripper wraps an http.RoundTripper without being an
+// *http.Transport, so NewWebFetchToolWithClient leaves it as-is (no SSRF-safe
+// dialing). Used in tests to allow connections to loopback httptest servers.
+type passthroughRoundTripper struct {
+	rt http.RoundTripper
+}
+
+func (t *passthroughRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return t.rt.RoundTrip(req)
+}
+
+// newTestWebFetchTool creates a WebFetchTool with a client whose Transport is
+// a passthroughRoundTripper (not *http.Transport), so connections to loopback
+// addresses used by httptest.NewServer are not blocked by the SSRF-safe dialer.
+// The redirect protection (CheckRedirect) is still applied. Use NewWebFetchTool
+// directly when testing SSRF dial-time enforcement.
+func newTestWebFetchTool(limits WebFetchLimits) *WebFetchTool {
+	client := &http.Client{
+		Timeout:   limits.Timeout,
+		Transport: &passthroughRoundTripper{rt: http.DefaultTransport},
+	}
+	return NewWebFetchToolWithClient(limits, client)
+}
+
 func TestWebFetchTool_Descriptor(t *testing.T) {
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 
 	// Verify name
 	if name := tool.Name(); name != "web_fetch" {
@@ -65,14 +89,14 @@ func TestWebFetchTool_Descriptor(t *testing.T) {
 }
 
 func TestWebFetchTool_ImplementsToolInterface(t *testing.T) {
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 
 	// Verify it implements the Tool interface
 	var _ tools.Tool = tool
 }
 
 func TestWebFetchTool_MissingURL(t *testing.T) {
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	// Test with empty input
@@ -100,7 +124,7 @@ func TestWebFetchTool_MissingURL(t *testing.T) {
 }
 
 func TestWebFetchTool_InvalidURL(t *testing.T) {
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	testCases := []struct {
@@ -132,7 +156,7 @@ func TestWebFetchTool_InvalidURL(t *testing.T) {
 }
 
 func TestWebFetchTool_InvalidJSON(t *testing.T) {
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	input := json.RawMessage(`{invalid json`)
@@ -165,7 +189,7 @@ func TestWebFetchTool_HTTPServer(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]string{"url": server.URL})
@@ -193,7 +217,7 @@ func TestWebFetchTool_HTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]string{"url": server.URL})
@@ -222,7 +246,7 @@ func TestWebFetchTool_BodySizeLimit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]string{"url": server.URL})
@@ -270,7 +294,7 @@ func TestWebFetchTool_TruncationAppliesToMarkdownNotHTML(t *testing.T) {
 	defer server.Close()
 
 	limits := WebFetchLimits{Timeout: 30 * time.Second}
-	tool := NewWebFetchTool(limits)
+	tool := newTestWebFetchTool(limits)
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]string{"url": server.URL})
@@ -299,7 +323,7 @@ func TestWebFetchTool_FetchRealPage(t *testing.T) {
 	// Skip if running in CI or no network
 	t.Skip("Skipping integration test - requires network access")
 
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	// Use a stable URL
@@ -317,7 +341,7 @@ func TestWebFetchTool_FetchRealPage(t *testing.T) {
 }
 
 func TestWebFetchTool_DefaultPolicy(t *testing.T) {
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	if tool.DefaultPolicy() != tools.PolicyAlwaysAllow {
 		t.Errorf("expected DefaultPolicy() to return PolicyAlwaysAllow, got %v", tool.DefaultPolicy())
 	}
@@ -337,7 +361,7 @@ func TestWebFetchTool_ContextCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 
 	// Create cancelled context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -394,7 +418,7 @@ func TestWebFetchTool_ReadabilityExtraction(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]string{"url": server.URL})
@@ -444,7 +468,7 @@ func TestWebFetchTool_StartLineEndLine(t *testing.T) {
 	defer server.Close()
 
 	limits := WebFetchLimits{Timeout: 30 * time.Second}
-	tool := NewWebFetchTool(limits)
+	tool := newTestWebFetchTool(limits)
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]any{"url": server.URL, "start_line": 2, "end_line": 4})
@@ -471,7 +495,7 @@ func TestWebFetchTool_StartLineOnly(t *testing.T) {
 	defer server.Close()
 
 	limits := WebFetchLimits{Timeout: 30 * time.Second}
-	tool := NewWebFetchTool(limits)
+	tool := newTestWebFetchTool(limits)
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]any{"url": server.URL, "start_line": 3})
@@ -498,7 +522,7 @@ func TestWebFetchTool_EndLineOnly(t *testing.T) {
 	defer server.Close()
 
 	limits := WebFetchLimits{Timeout: 30 * time.Second}
-	tool := NewWebFetchTool(limits)
+	tool := newTestWebFetchTool(limits)
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]any{"url": server.URL, "end_line": 3})
@@ -525,7 +549,7 @@ func TestWebFetchTool_LineRangeOutOfBounds(t *testing.T) {
 	defer server.Close()
 
 	limits := WebFetchLimits{Timeout: 30 * time.Second}
-	tool := NewWebFetchTool(limits)
+	tool := newTestWebFetchTool(limits)
 	ctx := context.Background()
 
 	// Request lines way beyond actual content
@@ -561,7 +585,7 @@ func TestWebFetchTool_TruncationShowsLineCount(t *testing.T) {
 	defer server.Close()
 
 	limits := WebFetchLimits{Timeout: 30 * time.Second}
-	tool := NewWebFetchTool(limits)
+	tool := newTestWebFetchTool(limits)
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]string{"url": server.URL})
@@ -596,7 +620,7 @@ func TestWebFetchTool_LineRangeWithTruncation(t *testing.T) {
 	defer server.Close()
 
 	limits := WebFetchLimits{Timeout: 30 * time.Second}
-	tool := NewWebFetchTool(limits)
+	tool := newTestWebFetchTool(limits)
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]any{"url": server.URL, "start_line": 1, "end_line": 5})
@@ -635,7 +659,7 @@ func TestWebFetchTool_ReadabilityFallback(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 	ctx := context.Background()
 
 	input, _ := json.Marshal(map[string]string{"url": server.URL})
@@ -657,7 +681,7 @@ func TestWebFetchTool_ReadabilityFallback(t *testing.T) {
 }
 
 func TestWebFetchTool_Judge_PrivateIP(t *testing.T) {
-	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
 
 	t.Run("loopback is blocked", func(t *testing.T) {
 		input, _ := json.Marshal(map[string]string{"url": "http://127.0.0.1/secret"})
@@ -695,4 +719,86 @@ func TestWebFetchTool_Judge_PrivateIP(t *testing.T) {
 			t.Error("expected Judge to allow on invalid input (let Execute handle validation)")
 		}
 	})
+}
+
+// TestWebFetchTool_RedirectToPrivateRefused verifies that an HTTP redirect to a
+// private/reserved address is refused by CheckRedirect before any connection is
+// made to the private target. This closes the SSRF redirect bypass: Judge only
+// inspects the initial URL, so without a redirect-target check a public URL
+// could 302 to 169.254.169.254 (cloud metadata) or localhost.
+func TestWebFetchTool_RedirectToPrivateRefused(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	defer server.Close()
+
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]string{"url": server.URL})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true for redirect to private address, got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "private") && !strings.Contains(result.Content, "refused") {
+		t.Errorf("expected error to mention private/refused, got: %s", result.Content)
+	}
+}
+
+// TestWebFetchTool_BodySizeCapExceeded verifies that a response body larger
+// than maxWebFetchBodyBytes is rejected (fail closed) instead of being buffered
+// entirely into memory.
+func TestWebFetchTool_BodySizeCapExceeded(t *testing.T) {
+	oversized := strings.Repeat("x", maxWebFetchBodyBytes+1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(oversized))
+	}))
+	defer server.Close()
+
+	tool := newTestWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]string{"url": server.URL})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true for oversized body, got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "exceeds") {
+		t.Errorf("expected error to mention size limit, got: %s", result.Content)
+	}
+}
+
+// TestWebFetchTool_DialTimeSSRFRefused verifies that a connection to a
+// private/reserved IP is refused at TCP dial time by the SSRF-safe transport,
+// closing the DNS rebinding TOCTOU window. Judge's pre-flight check can be
+// bypassed if a hostname resolves to a public IP during Judge and a private IP
+// during the actual dial; the dialer's Control function inspects the resolved
+// address at connect time and rejects private ranges.
+//
+// This test uses NewWebFetchTool (the production constructor with the
+// SSRF-safe transport) rather than newTestWebFetchTool (which bypasses the
+// dial-time check for loopback test servers).
+func TestWebFetchTool_DialTimeSSRFRefused(t *testing.T) {
+	tool := NewWebFetchTool(WebFetchLimits{Timeout: 30 * time.Second})
+	ctx := context.Background()
+
+	input, _ := json.Marshal(map[string]string{"url": "http://127.0.0.1:1/"})
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected IsError=true for private IP at dial time, got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "private/reserved address refused") {
+		t.Errorf("expected error to mention 'private/reserved address refused', got: %s", result.Content)
+	}
 }

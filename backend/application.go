@@ -15,11 +15,11 @@ import (
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core"
 	coretools "github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
-	"github.com/v0lka/c0wrk/sdk/tools/mcp"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/orchestration"
+	sdktools "github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
+	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
 // ApplicationConfig holds all parameters needed to construct an Application.

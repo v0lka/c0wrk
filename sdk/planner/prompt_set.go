@@ -1,7 +1,7 @@
 package planner
 
 // PromptSet holds all parameterizable prompt templates for the Planner.
-// core/ injects c0wrk-specific prompts from core/prompts/ via this struct.
+// The host application injects its own prompts via this struct.
 type PromptSet struct {
 	// Base templates
 	BasePrompt     string

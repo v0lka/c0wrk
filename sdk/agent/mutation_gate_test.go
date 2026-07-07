@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // denyingHITLHandler denies all tool calls. Used to test that rejected
@@ -169,7 +169,7 @@ func TestExecutor_MutationGate_RejectedToolDoesNotCount(t *testing.T) {
 	denyingHITL := &denyingHITLHandler{}
 
 	cm := newMockContextManager()
-	exec := NewExecutor(mockLLM, mockTools, &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig, denyingHITL)
+	exec := NewExecutor(mockLLM, mockTools, 10, WithTokenCounter(&mockTokenCounter{}), WithCircuitBreaker(defaultCircuitBreakerConfig), WithHITL(denyingHITL))
 	exec.SetMutationRequired(true)
 
 	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{

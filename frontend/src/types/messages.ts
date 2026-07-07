@@ -25,7 +25,7 @@ export interface ChatMessageUI {
 export type DisplayItemKind =
   | 'user' | 'assistant' | 'thought' | 'thought_group' | 'tool' | 'tool_confirm'
   | 'ask_user' | 'step_limit' | 'resume_action' | 'error' | 'service' | 'plan_step'
-  | 'subagent' | 'reflection' | 'step_finish' | 'action_placeholder'
+  | 'subagent' | 'reflection' | 'step_finish'
   | 'context_compaction' | 'memory_read' | 'plan_review' | 'checklist'
 
 export type DisplayItem =
@@ -44,7 +44,6 @@ export type DisplayItem =
   | { kind: 'subagent'; id: string; stepId: string; title: string; description?: string; status: 'running' | 'completed' | 'failed'; duration?: number; error?: string; children: DisplayItem[] }
   | { kind: 'reflection'; id: string; summary: string; suggestedAction: string; rootCause: string; failureAnalysis: string; actionPlan: string; reasoning: string; hypotheses: string[]; attempt: number; maxAttempts: number }
   | { kind: 'step_finish'; id: string; stepNum?: number }
-  | { kind: 'action_placeholder'; id: string; label: string }
   | { kind: 'context_compaction'; id: string; beforePercent: number; afterPercent: number }
   | { kind: 'memory_read'; id: string; content: string; stepNum?: number }
   | { kind: 'plan_review'; message: ChatMessageUI }
@@ -52,7 +51,6 @@ export type DisplayItem =
 
 export interface GroupedMessages {
   items: DisplayItem[]
-  pendingActions: DisplayItem[]
 }
 
 // --- Metadata type helpers for action components ---
@@ -63,11 +61,13 @@ export interface GroupedMessages {
 
 export type ToolConfirmDecision = 'confirmed' | 'denied'
 export type StepLimitDecision = 'allow_once' | 'allow_always' | 'deny'
+export type ResumeDecision = 'resumed' | 'cancelled'
+export type PlanReviewDecision = 'approve' | 'request_changes' | 'abandon'
 
 interface ToolConfirmResolved { resolved: true; decision: ToolConfirmDecision; [key: string]: unknown }
 interface StepLimitResolved { resolved: true; decision: StepLimitDecision; [key: string]: unknown }
 interface AskUserResolved { resolved: true; answer: string; [key: string]: unknown }
-interface ResumeResolved { resolved: true; [key: string]: unknown }
+interface ResumeResolved { resolved: true; decision: ResumeDecision; [key: string]: unknown }
 
 export function toolConfirmResolved(decision: ToolConfirmDecision): ToolConfirmResolved {
   return { resolved: true, decision }
@@ -81,8 +81,8 @@ export function askUserResolved(answer: string): AskUserResolved {
   return { resolved: true, answer }
 }
 
-export function resumeResolved(): ResumeResolved {
-  return { resolved: true }
+export function resumeResolved(decision: ResumeDecision): ResumeResolved {
+  return { resolved: true, decision }
 }
 
 // -- Read-side type guards --
@@ -110,14 +110,52 @@ export function getAskUserResolution(metadata: Record<string, unknown> | undefin
   return typeof metadata.answer === 'string' ? metadata.answer : ''
 }
 
+const RESUME_DECISIONS: ReadonlySet<string> = new Set(['resumed', 'cancelled'])
+
+export function getResumeResolution(metadata: Record<string, unknown> | undefined): ResumeDecision | null {
+  if (!isObj(metadata) || metadata.resolved !== true) return null
+  return typeof metadata.decision === 'string' && RESUME_DECISIONS.has(metadata.decision)
+    ? metadata.decision as ResumeDecision
+    : null
+}
+
+const PLAN_REVIEW_DECISIONS: ReadonlySet<string> = new Set(['approve', 'request_changes', 'abandon'])
+
+export function getPlanReviewResolution(metadata: Record<string, unknown> | undefined): PlanReviewDecision | null {
+  if (!isObj(metadata) || metadata.resolved !== true) return null
+  return typeof metadata.decision === 'string' && PLAN_REVIEW_DECISIONS.has(metadata.decision)
+    ? metadata.decision as PlanReviewDecision
+    : null
+}
+
 export function isResolved(metadata: Record<string, unknown> | undefined): boolean {
   return isObj(metadata) && metadata.resolved === true
 }
 
 export function parseAskUserQuestions(metadata: Record<string, unknown> | undefined): AskUserQuestion[] {
   if (!isObj(metadata) || !Array.isArray(metadata.questions)) return []
-  return metadata.questions.filter(
-    (q): q is AskUserQuestion =>
-      isObj(q) && typeof q.id === 'string' && typeof q.question === 'string' && Array.isArray(q.options),
-  )
+  const questions: AskUserQuestion[] = []
+  for (const q of metadata.questions) {
+    if (!isObj(q) || typeof q.id !== 'string' || typeof q.question !== 'string' || !Array.isArray(q.options)) continue
+    // Normalize options: every option needs a non-empty, usable value for Set
+    // keying in AskUserPanel. If the model omitted `value` (or left it blank),
+    // fall back to the label so a single click doesn't select every option at
+    // once (all sharing value=""). Drops options with neither label nor value.
+    const options = q.options
+      .map((o): { label: string; value: string } | null => {
+        if (!isObj(o)) return null
+        const label = typeof o.label === 'string' ? o.label : ''
+        const value = typeof o.value === 'string' ? o.value : ''
+        if (!label && !value) return null
+        return { label: label || value, value: value || label }
+      })
+      .filter((o): o is { label: string; value: string } => o !== null)
+    const question: AskUserQuestion = { id: q.id, question: q.question, options }
+    if (typeof q.multi_select === 'boolean') question.multi_select = q.multi_select
+    if (Array.isArray(q.recommended)) {
+      question.recommended = q.recommended.filter((r): r is string => typeof r === 'string')
+    }
+    questions.push(question)
+  }
+  return questions
 }

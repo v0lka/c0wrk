@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"strings"
 
-	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/strutil"
+	sdkagent "github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/strutil"
 )
 
 // SummarizationStrategy groups the oldest steps into blocks and uses an LLM

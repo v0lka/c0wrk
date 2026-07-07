@@ -118,6 +118,9 @@ func findFrontmatterDelim(s string) int {
 }
 
 // validateSkill checks all spec constraints on a parsed Skill.
+// Note: the name regex permits consecutive hyphens (e.g. "a--b"); the
+// agentskills.io spec wording is ambiguous on this point and the current
+// pattern intentionally allows them.
 func validateSkill(skill *Skill, dirPath string) error {
 	// Name is required
 	if skill.Metadata.Name == "" {

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // SubAgent wraps an Executor to run as a goroutine for parallel plan execution.
@@ -29,7 +29,7 @@ type SubAgentTask struct {
 	CM             ContextManager
 	TaskTools      []tools.ToolDescriptor
 	TaskDesc       string             // task description (for SubAgentLaunch event)
-	Emitter        AgentEvents        // event emitter (nil-safe)
+	Emitter        Events             // event emitter (nil-safe)
 	TodoUpdateFunc StepTodoUpdateFunc // optional callback for update_checklist tool
 }
 
@@ -37,7 +37,7 @@ type SubAgentTask struct {
 // The goroutine respects context cancellation — when ctx is cancelled,
 // executor.Run will return because its LLM calls and tool executions use the same context.
 // emitter is optional (nil-safe) for console output.
-func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm ContextManager, taskTools []tools.ToolDescriptor, taskDesc string, emitter AgentEvents, todoUpdateFunc StepTodoUpdateFunc) (resultCh <-chan SubAgentResult) {
+func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm ContextManager, taskTools []tools.ToolDescriptor, taskDesc string, emitter Events, todoUpdateFunc StepTodoUpdateFunc) (resultCh <-chan SubAgentResult) {
 	// Use NoopEvents if nil to avoid nil checks
 	if emitter == nil {
 		emitter = &NoopEvents{}
@@ -114,7 +114,8 @@ func RunSubAgent(ctx context.Context, stepID string, executor *Executor, cm Cont
 }
 
 // RunSubAgentsParallel runs multiple SubAgents concurrently and collects results.
-// Returns results in the order they complete (not necessarily input order).
+// Returns results in input order (not completion order); a slow agent blocks
+// all subsequent results from being returned.
 func RunSubAgentsParallel(ctx context.Context, agents []SubAgentTask) (results []SubAgentResult) {
 	if len(agents) == 0 {
 		return nil

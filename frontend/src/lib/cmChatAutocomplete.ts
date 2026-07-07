@@ -7,6 +7,7 @@ import {
 import type { Extension } from '@codemirror/state'
 import { listSkills } from '@/api/skills'
 import { listDirectory } from '@/api/workspace'
+import { subscribe } from '@/api/runtime'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { fuzzyFilter } from '@/lib/fuzzyMatch'
@@ -31,7 +32,11 @@ function invalidateFilesCache() {
   filesLoaded = false
 }
 
-// Subscribe once to rootPath changes.
+function invalidateSkillsCache() {
+  skillsLoaded = false
+}
+
+// Subscribe once to rootPath changes and filesystem/skills events.
 let rootSubActive = false
 function ensureRootSubscription() {
   if (rootSubActive) return
@@ -41,7 +46,20 @@ function ensureRootSubscription() {
     if (s.rootPath !== prevRoot) {
       prevRoot = s.rootPath
       invalidateFilesCache()
+      invalidateSkillsCache()
     }
+  })
+  // Filesystem changes inside the workspace (including project-local skills
+  // under .agents/skills/) invalidate both caches so the next completion
+  // request refetches fresh data.
+  subscribe('workspace:tree_changed', () => {
+    invalidateFilesCache()
+    invalidateSkillsCache()
+  })
+  // Global skill directory changes (outside the workspace) invalidate the
+  // skills cache only — files are unaffected.
+  subscribe('skills:changed', () => {
+    invalidateSkillsCache()
   })
 }
 

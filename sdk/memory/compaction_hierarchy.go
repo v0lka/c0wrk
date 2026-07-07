@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
-	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/strutil"
+	sdkagent "github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/strutil"
 )
 
 // HierarchicalStrategy divides steps into 3 zones with different compression levels:

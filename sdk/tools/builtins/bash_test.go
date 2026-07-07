@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 func mustNewBashExecTool(t *testing.T, blacklist []string) *BashExecTool {

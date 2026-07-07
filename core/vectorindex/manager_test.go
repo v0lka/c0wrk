@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
-	"github.com/v0lka/c0wrk/sdk/embedding"
+	"github.com/v0lka/sp4rk/embedding"
 )
 
 func TestManagerSwitchProject(t *testing.T) {

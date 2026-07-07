@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const toolFinishDescription = `Signal task completion and deliver the final result. Call this tool exactly once, only after all work is done. Before calling finish, you MUST verify that every acceptance criterion from your task is satisfied — use tool calls to confirm, not assumptions. If any criterion is unmet, continue working instead of calling finish. The answer parameter should contain the complete result: findings, analysis, code summaries, or any deliverable relevant to the task. Include the specific deliverables requested by the task. Summarize key findings concisely.`

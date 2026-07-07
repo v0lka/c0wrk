@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { roleToType, chatMessageToUI, rebuildPlanFromHistory, extractPendingActions, groupMessages } from './chatUtils'
+import { roleToType, chatMessageToUI, rebuildPlanFromHistory, groupMessages } from './chatUtils'
 import type { ChatMessage } from '@/types/models'
 import type { ChatMessageUI } from '@/types/messages'
 
@@ -642,7 +642,7 @@ describe('groupMessages — checklist', () => {
   })
 })
 
-describe('extractPendingActions — plan_review', () => {
+describe('groupMessages — plan_review sinking', () => {
   function makeUI(overrides: Partial<ChatMessageUI>): ChatMessageUI {
     return {
       id: 'msg-1',
@@ -655,37 +655,35 @@ describe('extractPendingActions — plan_review', () => {
     }
   }
 
-  it('includes unresolved plan_review', () => {
-    const actions = extractPendingActions([
-      makeUI({ metadata: { resolved: false } }),
-    ])
-    expect(actions).toHaveLength(1)
-    expect(actions[0]!.kind).toBe('plan_review')
+  it('renders unresolved plan_review in items (sinks to end)', () => {
+    const result = groupMessages([makeUI({ metadata: { resolved: false } })])
+    const planReviews = result.items.filter(i => i.kind === 'plan_review')
+    expect(planReviews).toHaveLength(1)
   })
 
-  it('excludes resolved plan_review', () => {
-    const actions = extractPendingActions([
-      makeUI({ metadata: { resolved: true, decision: 'approve' } }),
-    ])
-    expect(actions).toHaveLength(0)
+  it('keeps resolved plan_review in items at stream position', () => {
+    const result = groupMessages([makeUI({ metadata: { resolved: true, decision: 'approve' } })])
+    const planReviews = result.items.filter(i => i.kind === 'plan_review')
+    expect(planReviews).toHaveLength(1)
   })
 
   it('keeps only the last unresolved plan_review (replan cycle)', () => {
-    const actions = extractPendingActions([
+    const result = groupMessages([
       makeUI({ id: 'pr-1', metadata: { resolved: false } }),
       makeUI({ id: 'pr-2', metadata: { resolved: false } }),
     ])
-    expect(actions).toHaveLength(1)
-    expect(actions.every(a => a.kind === 'plan_review')).toBe(true)
-    expect((actions[0]! as { message: ChatMessageUI }).message.id).toBe('pr-2')
+    const planReviews = result.items.filter(i => i.kind === 'plan_review')
+    expect(planReviews).toHaveLength(1)
+    expect((planReviews[0]! as { message: ChatMessageUI }).message.id).toBe('pr-2')
   })
 
-  it('filters out resolved items among unresolved ones', () => {
-    const actions = extractPendingActions([
+  it('keeps resolved plan_reviews at stream position alongside the last unresolved one', () => {
+    const result = groupMessages([
       makeUI({ id: 'pr-1', metadata: { resolved: true, decision: 'approve' } }),
       makeUI({ id: 'pr-2', metadata: { resolved: false } }),
     ])
-    expect(actions).toHaveLength(1)
-    expect((actions[0]! as { message: ChatMessageUI }).message.id).toBe('pr-2')
+    const planReviews = result.items.filter(i => i.kind === 'plan_review')
+    expect(planReviews).toHaveLength(2)
+    expect((planReviews[planReviews.length - 1]! as { message: ChatMessageUI }).message.id).toBe('pr-2')
   })
 })

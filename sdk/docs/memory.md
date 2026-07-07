@@ -1,21 +1,14 @@
 # Memory Management
 
-The `memory` package provides working-memory management for agent sessions: a
-managed representation of the LLM context window, three pluggable compaction
-strategies, selective tool-output pruning, and history mutation that reduces
-the O(n²) replay cost of long conversations.
+The `memory` package provides working-memory management for agent sessions: a managed representation of the LLM context window, three pluggable compaction strategies, selective tool-output pruning, and history mutation that reduces the O(n²) replay cost of long conversations.
 
 ```go
-import "github.com/v0lka/c0wrk/sdk/memory"
+import "github.com/v0lka/sp4rk/memory"
 ```
 
 ## ContextWindow
 
-`ContextWindow` is the managed representation of the LLM context window. It
-holds the system prompt, task content, plan content, prior conversation, and
-the running step history, and assembles them into the message slice that is
-sent to the model. It tracks token usage, reports fill status, and compacts
-history when the window fills up.
+`ContextWindow` is the managed representation of the LLM context window. It holds the system prompt, task content, plan content, prior conversation, and the running step history, and assembles them into the message slice that is sent to the model. It tracks token usage, reports fill status, and compacts history when the window fills up.
 
 ### NewContextWindow
 
@@ -45,11 +38,7 @@ func NewContextWindow(
 
 #### Fallback behavior
 
-If `modelMeta.ContextWindow` is `0` (unknown model), a fallback of **128000**
-is used. A zero context window would otherwise disable compaction entirely
-(`EffectiveMax` returns `0`, `CheckFill` returns `"ok"`), causing unbounded
-conversation growth until the API rejects the request. Likewise, a zero
-`OutputLimit` falls back to **4096**.
+If `modelMeta.ContextWindow` is `0` (unknown model), a fallback of **128000** is used. A zero context window would otherwise disable compaction entirely (`EffectiveMax` returns `0`, `CheckFill` returns `"ok"`), causing unbounded conversation growth until the API rejects the request. Likewise, a zero `OutputLimit` falls back to **4096**.
 
 ```go
 cw := memory.NewContextWindow(
@@ -85,14 +74,11 @@ cw := memory.NewContextWindow(
 | `EffectiveMax() int` | Effective maximum token count: `ContextWindow - OutputLimit - safetyMargin`. |
 | `Tracker() *llm.ContextTokenTracker` | Returns the underlying token tracker. |
 
-`BuildPrompt` splits the system prompt on `CacheBreakMarker` into multiple
-system messages so that providers can apply prompt caching to the stable parts
-(see [Prompt Building](prompt-building.md)).
+`BuildPrompt` splits the system prompt on `CacheBreakMarker` into multiple system messages so that providers can apply prompt caching to the stable parts (see [Prompt Building](prompt-building.md)).
 
 ## CompactionThresholds
 
-`CompactionThresholds` configures when context compaction triggers, expressed as
-context-fill percentages.
+`CompactionThresholds` configures when context compaction triggers, expressed as context-fill percentages.
 
 ```go
 type CompactionThresholds struct {
@@ -130,27 +116,21 @@ memory.CompactionThresholds{
 
 ## Compaction Strategies
 
-Three strategies implement the `agent.CompactionStrategy` interface. Each
-transforms a slice of steps into a smaller slice of messages.
+Three strategies implement the `agent.CompactionStrategy` interface. Each transforms a slice of steps into a smaller slice of messages.
 
 ### 1. Sliding Window
 
-`SlidingWindowStrategy` keeps the first `KeepFirst` and last `KeepLast` steps,
-dropping the middle. A system message `[... N steps omitted ...]` marks the
-gap. This is the simplest and fastest strategy — no LLM calls are required.
+`SlidingWindowStrategy` keeps the first `KeepFirst` and last `KeepLast` steps, dropping the middle. A system message `[... N steps omitted ...]` marks the gap. This is the simplest and fastest strategy — no LLM calls are required.
 
 ```go
 strategy := memory.NewSlidingWindowStrategy(keepFirst, keepLast)
 ```
 
-If the total step count does not exceed `KeepFirst + KeepLast`, all steps are
-kept verbatim.
+If the total step count does not exceed `KeepFirst + KeepLast`, all steps are kept verbatim.
 
 ### 2. Summarization
 
-`SummarizationStrategy` groups the oldest steps into blocks and uses an LLM
-(via a `Summarize` callback) to summarize each block into a compact system
-message. The most recent `KeepLast` steps are preserved verbatim.
+`SummarizationStrategy` groups the oldest steps into blocks and uses an LLM (via a `Summarize` callback) to summarize each block into a compact system message. The most recent `KeepLast` steps are preserved verbatim.
 
 ```go
 strategy := memory.NewSummarizationStrategy(
@@ -163,14 +143,11 @@ strategy := memory.NewSummarizationStrategy(
 )
 ```
 
-Each block's text is truncated to `maxSummarizeTokens` before being sent to the
-summarizer. If summarization fails, a fallback indicator message is emitted
-instead. If no summarizer is provided, a placeholder is used.
+Each block's text is truncated to `maxSummarizeTokens` before being sent to the summarizer. If summarization fails, a fallback indicator message is emitted instead. If no summarizer is provided, a placeholder is used.
 
 ### 3. Hierarchical
 
-`HierarchicalStrategy` divides steps into three zones with different
-compression levels:
+`HierarchicalStrategy` divides steps into three zones with different compression levels:
 
 | Zone | Default ratio | Treatment |
 | --- | --- | --- |
@@ -190,13 +167,11 @@ strategy := memory.NewHierarchicalStrategy(
 )
 ```
 
-Ratios are normalized to sum to `1.0` if they do not already. For very small
-step counts (≤ 5), all steps are returned verbatim.
+Ratios are normalized to sum to `1.0` if they do not already. For very small step counts (≤ 5), all steps are returned verbatim.
 
 ### NewCompactionStrategy
 
-`NewCompactionStrategy` is a factory that creates a strategy by name. It is the
-recommended entry point when configuration is loaded from a config file.
+`NewCompactionStrategy` is a factory that creates a strategy by name. It is the recommended entry point when configuration is loaded from a config file.
 
 ```go
 func NewCompactionStrategy(name string, cfg CompactionConfig, deps CompactionDeps) sdkagent.CompactionStrategy
@@ -231,8 +206,7 @@ strategy := memory.NewCompactionStrategy(
 
 ### CompactionConfig
 
-`CompactionConfig` holds configuration for all three strategies in one struct.
-Only the fields relevant to the selected strategy are used.
+`CompactionConfig` holds configuration for all three strategies in one struct. Only the fields relevant to the selected strategy are used.
 
 ```go
 type CompactionConfig struct {
@@ -253,13 +227,11 @@ type CompactionConfig struct {
 }
 ```
 
-`NewCompactionStrategy` applies defaults when fields are zero: `BlockSize` →
-`10`, `KeepLast` → `5`, `ObservationTruncate` → `500`, ratios → `0.4/0.3/0.3`.
+`NewCompactionStrategy` applies defaults when fields are zero: `BlockSize` → `10`, `KeepLast` → `5`, `ObservationTruncate` → `500`, ratios → `0.4/0.3/0.3`.
 
 ### CompactionDeps
 
-`CompactionDeps` holds the external dependencies required by the LLM-based
-strategies.
+`CompactionDeps` holds the external dependencies required by the LLM-based strategies.
 
 ```go
 type CompactionDeps struct {
@@ -274,10 +246,7 @@ type CompactionDeps struct {
 
 ## ToolOutputPruning
 
-`ToolOutputPruning` configures selective pruning of old tool outputs. Unlike
-compaction (which rewrites the whole history), pruning replaces individual tool
-result bodies with a placeholder while keeping the surrounding assistant/tool
-message structure intact.
+`ToolOutputPruning` configures selective pruning of old tool outputs. Unlike compaction (which rewrites the whole history), pruning replaces individual tool result bodies with a placeholder while keeping the surrounding assistant/tool message structure intact.
 
 ```go
 type ToolOutputPruning struct {
@@ -292,16 +261,11 @@ type ToolOutputPruning struct {
 How protection works:
 
 - The last `KeepLastN` tool-result steps are always protected.
-- Any step whose tool name is in `ProtectedTools` is protected regardless of
-  position.
-- When context fill is below `ThresholdPercent`, **all** tool outputs are
-  preserved (pruning is skipped entirely).
-- Entire response groups are protected if any step in the group is protected —
-  this prevents malformed API messages (an assistant message with N tool calls
-  but fewer tool results).
+- Any step whose tool name is in `ProtectedTools` is protected regardless of position.
+- When context fill is below `ThresholdPercent`, **all** tool outputs are preserved (pruning is skipped entirely).
+- Entire response groups are protected if any step in the group is protected — this prevents malformed API messages (an assistant message with N tool calls but fewer tool results).
 
-If `PlaceholderText` is empty, a sensible default is applied that instructs the
-model not to fabricate content it can no longer see.
+If `PlaceholderText` is empty, a sensible default is applied that instructs the model not to fabricate content it can no longer see.
 
 ### DefaultToolOutputPruning
 
@@ -318,12 +282,7 @@ memory.ToolOutputPruning{
 
 ## HistoryMutation
 
-`HistoryMutation` configures regular (non-emergency) mutation of step history to
-reduce the O(n²) replay cost of long conversations. Unlike emergency
-compaction (triggered by fill %), history mutation runs on every `BuildPrompt`
-call. Crucially, **information is preserved** — evicted content is recoverable
-via the `ToolResultCache`, so the model can retrieve it through
-`tool_result_read`.
+`HistoryMutation` configures regular (non-emergency) mutation of step history to reduce the O(n²) replay cost of long conversations. Unlike emergency compaction (triggered by fill %), history mutation runs on every `BuildPrompt` call. Crucially, **information is preserved** — evicted content is recoverable via the `ToolResultCache`, so the model can retrieve it through `tool_result_read`.
 
 ```go
 type HistoryMutation struct {
@@ -344,24 +303,17 @@ type HistoryMutation struct {
 
 ### Cache reference eviction
 
-When a tool result is older than `ToolResultEvictionStep` steps and has a
-`CacheHash`, its observation is replaced with a cache reference:
+When a tool result is older than `ToolResultEvictionStep` steps and has a `CacheHash`, its observation is replaced with a cache reference:
 
 ```
 [Result evicted to cache. Use tool_result_read(hash="abc123", start_line=1, num_lines=N) to retrieve the full content.]
 ```
 
-The model can call `tool_result_read` with the hash to retrieve the full
-content on demand. This keeps the prompt compact while preserving
-recoverability.
+The model can call `tool_result_read` with the hash to retrieve the full content on demand. This keeps the prompt compact while preserving recoverability.
 
 ### Mutation ordering
 
-History mutation runs **first** in `buildToolMsg`, before pruning and injection
-defense. Pruning is skipped for outputs already replaced by a cache reference
-or step-status eviction text — overwriting those compact placeholders with the
-generic pruning placeholder would destroy the cache hash and break the
-information-preservation guarantee.
+History mutation runs **first** in `buildToolMsg`, before pruning and injection defense. Pruning is skipped for outputs already replaced by a cache reference or step-status eviction text — overwriting those compact placeholders with the generic pruning placeholder would destroy the cache hash and break the information-preservation guarantee.
 
 ```go
 cw := memory.NewContextWindow(/* ... */)
@@ -375,11 +327,7 @@ cw.SetHistoryMutation(memory.HistoryMutation{
 
 ## Prompt Injection Defense Integration
 
-When `injectionDefenseEnabled` is `true`, tool outputs from tools that return
-external data (marked via the step's `IsUntrusted` flag) are wrapped in
-`<untrusted-content>` tags before being added to the prompt. This defends
-against indirect prompt injection. See [Security](security.md) for details on
-the wrapping and stripping functions.
+When `injectionDefenseEnabled` is `true`, tool outputs from tools that return external data (marked via the step's `IsUntrusted` flag) are wrapped in `<untrusted-content>` tags before being added to the prompt. This defends against indirect prompt injection. See [Security](security.md) for details on the wrapping and stripping functions.
 
 ## Complete Example
 
@@ -390,9 +338,9 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/memory"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/memory"
 )
 
 func main() {

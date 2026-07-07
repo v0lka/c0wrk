@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // Step — single iteration of the ReAct loop.
@@ -17,8 +17,10 @@ type Step struct {
 	// reasoning chain across ReAct iterations. Populated only by the Responses API
 	// provider; mirrors llm.Message.ReasoningItems so it survives the Step boundary.
 	ReasoningItems []llm.ReasoningItem `json:"reasoning_items,omitempty"`
-	Action         llm.ToolCall        `json:"action"`
-	Observation    string              `json:"observation"`
+	// Action is the tool call requested by the model in this step.
+	Action llm.ToolCall `json:"action"`
+	// Observation is the tool result (possibly truncated) fed back to the model.
+	Observation string `json:"observation"`
 	// IsError is true when the tool execution returned an error result
 	// (ToolResult.IsError). Used by the mutation gate to avoid counting failed
 	// mutating tools (e.g. a write_file that errored) as successful mutations.
@@ -131,7 +133,7 @@ type VulnerableOutput struct {
 }
 
 // ContextManager is the interface Executor needs for context window management.
-// NOTE: This is the SDK-level interface WITHOUT SetTask (c0wrk-core adds that).
+// NOTE: This is the SDK-level interface WITHOUT SetTask (the host application adds that).
 type ContextManager interface {
 	BuildPrompt() []llm.Message
 	AddStep(step Step)
@@ -160,6 +162,12 @@ const (
 // TrajectoryStore is a mutable holder for the executor's current trajectory.
 // The executor syncs its step history to the store at each loop iteration so
 // tools (e.g. reflect) can access the trajectory via context.
+//
+// Concurrency: the executor calls Sync/Steps from the ReAct loop goroutine.
+// When sub-agents run in parallel, each has its own executor and thus its own
+// store, so cross-goroutine access is uncommon — but tools reading the store
+// via TrajectoryStoreFrom may run on a different goroutine. Implementations
+// that share state across goroutines MUST be safe for concurrent use.
 type TrajectoryStore interface {
 	Sync(steps []Step)
 	Steps() []Step

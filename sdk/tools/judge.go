@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/strutil"
-	"github.com/v0lka/c0wrk/sdk/tools/judge_prompts"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/strutil"
+	"github.com/v0lka/sp4rk/tools/internal/judge_prompts"
 )
 
 // pathRegex matches absolute path-like substrings in command strings.
@@ -230,7 +230,8 @@ func isPathInWorkspace(absPath, workspacePath string) bool {
 	return strings.HasPrefix(absPathClean+string(filepath.Separator), workspaceAbs) || absPathClean == filepath.Clean(workspacePath)
 }
 
-// ExtractJSONStrings recursively extracts all string values from a JSON structure.
+// ExtractJSONStrings recursively extracts all string values from a value
+// produced by json.Unmarshal. It traverses maps, slices, and string values.
 func ExtractJSONStrings(data any) []string {
 	var results []string
 	switch v := data.(type) {
@@ -253,7 +254,7 @@ func ExtractPaths(s string) []string {
 	return pathRegex.FindAllString(s, -1)
 }
 
-// allPathsInDir returns true if the JSON input contains at least one absolute
+// AllPathsInDir returns true if the JSON input contains at least one absolute
 // path and every such path is within the specified directory.
 func AllPathsInDir(input json.RawMessage, dir string) bool {
 	if dir == "" {
@@ -284,7 +285,7 @@ func AllPathsInDir(input json.RawMessage, dir string) bool {
 	return true
 }
 
-// allPathsInWorkspace returns true if the JSON input contains at least one absolute
+// AllPathsInWorkspace returns true if the JSON input contains at least one absolute
 // path and every such path is within the workspace directory.
 func AllPathsInWorkspace(ctx context.Context, input json.RawMessage) bool {
 	workspacePath := WorkspacePathFrom(ctx)

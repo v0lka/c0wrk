@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	tools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	tools "github.com/v0lka/sp4rk/tools"
 )
 
 // Tests use shared mock types from testhelpers_test.go:
@@ -58,7 +58,7 @@ func TestExecutor_BasicReActFlow(t *testing.T) {
 		taskDefinition: "Find the answer",
 	}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Find the answer",
@@ -119,7 +119,7 @@ func TestExecutor_DirectFinish(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{Task: "Simple question"}
 
@@ -197,7 +197,7 @@ func TestExecutor_MaxStepsReached(t *testing.T) {
 	}
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 3, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 3, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Never-ending task",
@@ -251,7 +251,7 @@ func TestExecutor_ImplicitFinish(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{Task: "Simple question"}
 
@@ -317,7 +317,7 @@ func TestExecutor_CompactionTriggered(t *testing.T) {
 	}
 	mockCW := &mockContextManager{needsCompaction: true}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Test compaction",
@@ -361,7 +361,7 @@ func TestExecutor_ToolDefinitionsIncludeFinish(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Test",
@@ -423,7 +423,7 @@ func TestExecutor_NoDuplicateFinishTool(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	// Task includes finish tool (as would happen when toolRegistry.List() includes it)
 	task := TaskDefinition{
@@ -482,7 +482,7 @@ func TestExecutor_TextOnlyEndTurn_YieldsImmediately(t *testing.T) {
 	mockEm := &mockEmitter{}
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, mockEm, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithEvents(mockEm), agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Find the answer",
@@ -543,7 +543,7 @@ func TestExecutor_TextOnlyEndTurn_NoNudgeRetry(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Find the answer",
@@ -592,7 +592,7 @@ func TestExecutor_NudgeMechanism_NoNudgeWithoutTools(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	// Task with NO tools
 	task := TaskDefinition{
@@ -658,7 +658,7 @@ func TestExecutor_TextOnlyEndTurn_AfterToolCall_Yields(t *testing.T) {
 	}
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Find something",
@@ -743,7 +743,7 @@ func TestExecutor_ReactiveCompaction_RejectTriggersCompact(t *testing.T) {
 		},
 	}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Test reactive compaction on reject",
@@ -807,7 +807,7 @@ func TestExecutor_ReactiveCompaction_APIContextExceeded(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Test reactive compaction on API error",
@@ -876,7 +876,7 @@ func TestExecutor_ReactiveCompaction_DoubleRejectFails(t *testing.T) {
 		},
 	}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Test double reject failure",
@@ -921,7 +921,7 @@ func TestExecutor_ReactiveCompaction_NonContextErrorNotIntercepted(t *testing.T)
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Test non-context error propagation",
@@ -974,7 +974,7 @@ func TestExecutor_SuppressAssistantEvents_True(t *testing.T) {
 	mockEm := &mockEmitter{}
 
 	// Create executor with suppressAssistantEvents = true
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, mockEm, true, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithEvents(mockEm), agent.WithSuppressAssistantEvents(true), agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{Task: "Simple question"}
 
@@ -1018,7 +1018,7 @@ func TestExecutor_SuppressAssistantEvents_False(t *testing.T) {
 	mockEm := &mockEmitter{}
 
 	// Create executor with suppressAssistantEvents = false
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, mockEm, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithEvents(mockEm), agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{Task: "Simple question"}
 
@@ -1112,7 +1112,7 @@ func TestExecutor_ToolResultBudget_HardCap(t *testing.T) {
 		MaxFillFraction: 0.3,
 	}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, budget, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithToolResultBudget(budget), agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Test budget",
@@ -1199,7 +1199,7 @@ func TestExecutor_ToolResultBudget_AdaptiveCap(t *testing.T) {
 		MaxFillFraction: 0.3,
 	}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, budget, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithToolResultBudget(budget), agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Test budget",
@@ -1283,7 +1283,7 @@ func TestExecutor_ToolResultBudget_SmallResultPassesThrough(t *testing.T) {
 		MaxFillFraction: 0.3,
 	}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, budget, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithToolResultBudget(budget), agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Test budget",
@@ -1368,7 +1368,7 @@ func TestExecutor_ToolResultBudget_FloorPreventsZeroCap(t *testing.T) {
 		MaxFillFraction: 0.3,
 	}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, budget, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithToolResultBudget(budget), agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Test budget",
@@ -1451,7 +1451,7 @@ func TestExecutor_ToolResultBudget_TruncationNotice(t *testing.T) {
 		MaxFillFraction: 0.3,
 	}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, budget, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithToolResultBudget(budget), agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Test budget",
@@ -1541,7 +1541,7 @@ func TestExecutor_ToolResultBudget_Disabled(t *testing.T) {
 	// Zero value budget = disabled
 	budget := agent.ToolResultBudget{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, budget, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithToolResultBudget(budget), agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Test budget",
@@ -1604,7 +1604,7 @@ func TestExecutor_RepeatedToolCallCircuitBreaker(t *testing.T) {
 
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Write a file",
@@ -1712,7 +1712,7 @@ func TestExecutor_RepeatedToolCallResets(t *testing.T) {
 
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{
 		Task: "Mixed tool calls",
@@ -1784,7 +1784,7 @@ func TestExecutor_PlanContextInLogs(t *testing.T) {
 
 	mockCW := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 	executor.SetPlanContext("step_3", 3, 10)
 
 	task := TaskDefinition{

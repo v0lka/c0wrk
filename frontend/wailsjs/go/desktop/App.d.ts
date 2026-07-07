@@ -84,6 +84,8 @@ export function GetSecuritySettings():Promise<backend.SecuritySettingsResponse>;
 
 export function GetSessionHistory(arg1:string):Promise<Array<session.ChatMessage>>;
 
+export function GetPendingActions(arg1:string):Promise<desktop.PendingActionsResponse>;
+
 export function GetSessionRuntimeStatus(arg1:string):Promise<session.SessionRuntimeStatus>;
 
 export function GetSessionTokens(arg1:string):Promise<backend.SessionTokensResponse>;
@@ -125,6 +127,8 @@ export function Rebase(arg1:string):Promise<void>;
 export function RenameProject(arg1:string,arg2:string):Promise<void>;
 
 export function RenameSession(arg1:string,arg2:string):Promise<void>;
+
+export function ResolvePendingMessage(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Record<string, any>):Promise<void>;
 
 export function ResumeTask(arg1:string):Promise<void>;
 

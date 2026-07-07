@@ -11,8 +11,8 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/session"
 	coretools "github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // silentLogger returns a logger that discards all output. Tests assert behavior
@@ -188,7 +188,7 @@ func TestHandleToolConfirmResponse_ChannelFull(t *testing.T) {
 func TestHandleAskUserResponse_HappyPath(t *testing.T) {
 	a := &App{}
 	ch := make(chan coretools.AskUserResponse, 1)
-	a.pendingAskUser.Store("au-1", ch)
+	a.pendingAskUser.Store("au-1", &pendingAskUserEntry{ch: ch, sessionID: "s1"})
 
 	a.handleAskUserResponse(map[string]any{
 		"request_id": "au-1",
@@ -218,7 +218,7 @@ func TestHandleAskUserResponse_HappyPath(t *testing.T) {
 func TestHandleAskUserResponse_NoAnswersField(t *testing.T) {
 	a := &App{}
 	ch := make(chan coretools.AskUserResponse, 1)
-	a.pendingAskUser.Store("au-2", ch)
+	a.pendingAskUser.Store("au-2", &pendingAskUserEntry{ch: ch, sessionID: "s2"})
 
 	a.handleAskUserResponse(map[string]any{"request_id": "au-2"}, silentLogger())
 
@@ -244,7 +244,7 @@ func TestHandleAskUserResponse_MissingRequestID(t *testing.T) {
 func TestHandleAskUserResponse_MalformedAnswers(t *testing.T) {
 	a := &App{}
 	ch := make(chan coretools.AskUserResponse, 1)
-	a.pendingAskUser.Store("au-3", ch)
+	a.pendingAskUser.Store("au-3", &pendingAskUserEntry{ch: ch, sessionID: "s3"})
 
 	// Each branch malformed in a different way; all should be silently skipped.
 	a.handleAskUserResponse(map[string]any{
@@ -279,7 +279,7 @@ func TestHandleAskUserResponse_MalformedAnswers(t *testing.T) {
 func TestHandleStepLimitResponse_HappyPath(t *testing.T) {
 	a := &App{}
 	ch := make(chan agent.StepLimitResponse, 1)
-	a.pendingStepLimit.Store("sl-1", ch)
+	a.pendingStepLimit.Store("sl-1", &pendingStepLimitEntry{ch: ch, sessionID: "s1"})
 
 	a.handleStepLimitResponse(map[string]any{
 		"request_id": "sl-1",
@@ -323,7 +323,7 @@ func TestHandleStepLimitResponse_NoAppContext(t *testing.T) {
 	// the application is fully initialized.
 	a := &App{} // a.app == nil
 	ch := make(chan agent.StepLimitResponse, 1)
-	a.pendingStepLimit.Store("sl-noapp", ch)
+	a.pendingStepLimit.Store("sl-noapp", &pendingStepLimitEntry{ch: ch, sessionID: "s-na"})
 
 	a.handleStepLimitResponse(map[string]any{
 		"request_id": "sl-noapp",

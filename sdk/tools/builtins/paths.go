@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/v0lka/c0wrk/sdk/pathutil"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/pathutil"
+	"github.com/v0lka/sp4rk/tools"
 	"os"
 	"path/filepath"
 )

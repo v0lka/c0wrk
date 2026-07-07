@@ -1,23 +1,18 @@
 # Agent Executor
 
-The `agent` package provides the core **ReAct loop engine** — the component that
-drives an AI agent through iterative *Thought → Action → Observation* cycles until
-a task is finished or the step budget is exhausted. This document covers the
-`Executor`, the data types it produces and consumes, the circuit breakers that
-protect it, and the context-management interfaces it depends on.
+The `agent` package provides the core **ReAct loop engine** — the component that drives an AI agent through iterative *Thought → Action → Observation* cycles until a task is finished or the step budget is exhausted. This document covers the `Executor`, the data types it produces and consumes, the circuit breakers that protect it, and the context-management interfaces it depends on.
 
 ```go
 import (
-    "github.com/v0lka/c0wrk/sdk/agent"
-    "github.com/v0lka/c0wrk/sdk/llm"
-    "github.com/v0lka/c0wrk/sdk/tools"
+    "github.com/v0lka/sp4rk/agent"
+    "github.com/v0lka/sp4rk/llm"
+    "github.com/v0lka/sp4rk/tools"
 )
 ```
 
 ## Overview
 
-The `Executor` is the heart of the agent. Given a set of tools and a
-`ContextManager` (which owns the conversation history), it repeatedly:
+The `Executor` is the heart of the agent. Given a set of tools and a `ContextManager` (which owns the conversation history), it repeatedly:
 
 1. Builds a prompt from the current context.
 2. Calls the LLM.
@@ -26,14 +21,11 @@ The `Executor` is the heart of the agent. Given a set of tools and a
 5. Records the observation back into the context.
 6. Repeats — unless the agent calls the `finish` tool or a limit is hit.
 
-Each iteration is represented as a `Step`. The full sequence of steps is returned
-in an `ExecutorResult`.
+Each iteration is represented as a `Step`. The full sequence of steps is returned in an `ExecutorResult`.
 
 ## The Executor
 
-`Executor` runs the ReAct loop. It is **not safe for concurrent use on a single
-instance** — `Run` must be called one at a time. Orchestrators that need
-parallelism create a fresh `Executor` per step (see [Subagents](subagents.md)).
+`Executor` runs the ReAct loop. It is **not safe for concurrent use on a single instance** — `Run` must be called one at a time. Orchestrators that need parallelism create a fresh `Executor` per step (see [Subagents](subagents.md)).
 
 ```go
 type Executor struct {
@@ -43,9 +35,7 @@ type Executor struct {
 
 ### NewExecutor
 
-`NewExecutor` constructs an `Executor` with all required dependencies. Both the
-event emitter and the HITL handler are **nil-safe** — `nil` is replaced with
-`NoopEvents` and `NoopHITLHandler` respectively.
+`NewExecutor` constructs an `Executor` with all required dependencies. Both the event emitter and the HITL handler are **nil-safe** — `nil` is replaced with `NoopEvents` and `NoopHITLHandler` respectively.
 
 ```go
 func NewExecutor(
@@ -80,8 +70,7 @@ exec.SetLogger(slog.Default())
 
 ### Executor.Run
 
-`Run` is the main execution method. The caller is responsible for setting up the
-task context (workspace path, task description, etc.) **before** calling `Run`.
+`Run` is the main execution method. The caller is responsible for setting up the task context (workspace path, task description, etc.) **before** calling `Run`.
 
 ```go
 func (e *Executor) Run(
@@ -91,15 +80,11 @@ func (e *Executor) Run(
 ) (*ExecutorResult, error)
 ```
 
-- `ctx` — carries cancellation, workspace path, trajectory store, and other
-  injected dependencies (see [Context helpers](#context-helpers)).
-- `taskTools` — the tools available for this run. The `finish` tool is appended
-  automatically if not already present.
+- `ctx` — carries cancellation, workspace path, trajectory store, and other injected dependencies (see [Context helpers](#context-helpers)).
+- `taskTools` — the tools available for this run. The `finish` tool is appended automatically if not already present.
 - `cw` — the `ContextManager` that owns the prompt history and compaction logic.
 
-Returns an `*ExecutorResult` and an error. A non-nil error indicates a fatal
-failure (LLM error, context cancellation). A `nil` error with `Finished == false`
-means the step budget was exhausted or a circuit breaker aborted the loop.
+Returns an `*ExecutorResult` and an error. A non-nil error indicates a fatal failure (LLM error, context cancellation). A `nil` error with `Finished == false` means the step budget was exhausted or a circuit breaker aborted the loop.
 
 ```go
 result, err := exec.Run(ctx, taskTools, cm)
@@ -117,32 +102,18 @@ fmt.Println(result.Output)
 
 Each iteration of `Run` proceeds as follows:
 
-1. **Trajectory sync** — if a `TrajectoryStore` is in the context, the current
-   step history is synced so tools (e.g. a reflector) can read it.
-2. **Step-limit boundary** — if the step budget is reached, `OnStepLimit` is
-   consulted via the HITL handler to decide whether to grant more steps.
+1. **Trajectory sync** — if a `TrajectoryStore` is in the context, the current step history is synced so tools (e.g. a reflector) can read it.
+2. **Step-limit boundary** — if the step budget is reached, `OnStepLimit` is consulted via the HITL handler to decide whether to grant more steps.
 3. **StepStart event** — `emitter.StepStart(stepNum)` fires.
-4. **LLM call** — the prompt is built from the context manager and sent to the
-   LLM. If the provider reports a context-window-exceeded error, a reactive
-   compaction is triggered and the call is retried.
-5. **Thought event** — `emitter.Thought(stepNum, content, reasoning)` fires with
-   the model's reasoning and content.
-6. **Implicit finish check** — if the model returns no tool calls, the executor
-   checks whether this is a legitimate finish or a failure mode (e.g. printed
-   tool-call syntax as text). A nudge may be injected to force an explicit
-   `finish` call.
-7. **Truncation detection** — if the stop reason is `max_tokens` and tool calls
-   were present, the call was truncated; a nudge is injected and the truncation
-   counter is checked against the circuit breaker.
-8. **Tool execution** — each tool call is executed (after HITL approval). Results
-   are truncated in two stages, cached if applicable, and recorded as
-   observations. `ToolCall` and `ToolResult` events fire per call.
+4. **LLM call** — the prompt is built from the context manager and sent to the LLM. If the provider reports a context-window-exceeded error, a reactive compaction is triggered and the call is retried.
+5. **Thought event** — `emitter.Thought(stepNum, content, reasoning)` fires with the model's reasoning and content.
+6. **Implicit finish check** — if the model returns no tool calls, the executor checks whether this is a legitimate finish or a failure mode (e.g. printed tool-call syntax as text). A nudge may be injected to force an explicit `finish` call.
+7. **Truncation detection** — if the stop reason is `max_tokens` and tool calls were present, the call was truncated; a nudge is injected and the truncation counter is checked against the circuit breaker.
+8. **Tool execution** — each tool call is executed (after HITL approval). Results are truncated in two stages, cached if applicable, and recorded as observations. `ToolCall` and `ToolResult` events fire per call.
 9. **StepComplete event** — `emitter.StepComplete(stepNum, duration)` fires.
-10. **Compaction** — the context fill is checked; if it crosses a threshold,
-    compaction runs and `ContextFill` / `ContextCompaction` events fire.
+10. **Compaction** — the context fill is checked; if it crosses a threshold, compaction runs and `ContextFill` / `ContextCompaction` events fire.
 
-The loop terminates when the `finish` tool is called (`Finished: true`) or the
-budget is exhausted (`Finished: false`).
+The loop terminates when the `finish` tool is called (`Finished: true`) or the budget is exhausted (`Finished: false`).
 
 ## Step
 
@@ -190,11 +161,9 @@ type ExecutorResult struct {
 }
 ```
 
-- `Output` — the final answer (from the `finish` tool) or, when not finished, the
-  abort reason (e.g. circuit breaker, fruitless abort, max steps).
+- `Output` — the final answer (from the `finish` tool) or, when not finished, the abort reason (e.g. circuit breaker, fruitless abort, max steps).
 - `Steps` — the full sequence of executed steps.
-- `Finished` — `true` if the agent called `finish`; `false` if the budget was
-  exhausted or a circuit breaker aborted.
+- `Finished` — `true` if the agent called `finish`; `false` if the budget was exhausted or a circuit breaker aborted.
 
 ## FillCheck
 
@@ -221,10 +190,7 @@ type FillCheck struct {
 
 ## FinishTool
 
-`FinishTool` is the special tool that signals task completion. The executor
-appends it automatically to every run's tool set (unless a `finish` tool is
-already registered). When the model calls `finish`, the loop terminates with
-`Finished: true` and the tool's `answer` argument becomes `ExecutorResult.Output`.
+`FinishTool` is the special tool that signals task completion. The executor appends it automatically to every run's tool set (unless a `finish` tool is already registered). When the model calls `finish`, the loop terminates with `Finished: true` and the tool's `answer` argument becomes `ExecutorResult.Output`.
 
 ```go
 finishTool := agent.NewFinishTool()
@@ -239,19 +205,11 @@ type finishInput struct {
 }
 ```
 
-**Why it is required:** an LLM that simply stops emitting tool calls has not
-necessarily completed the task — it may have hit a failure mode (e.g. printing
-tool-call syntax as text). The executor treats a text-only response as an
-*implicit finish* and injects a nudge demanding an explicit `finish` call. Only
-an actual `finish` tool call is accepted as completion (subject to the finish
-guard and mutation/checklist gates).
+**Why it is required:** an LLM that simply stops emitting tool calls has not necessarily completed the task — it may have hit a failure mode (e.g. printing tool-call syntax as text). The executor treats a text-only response as an *implicit finish* and injects a nudge demanding an explicit `finish` call. Only an actual `finish` tool call is accepted as completion (subject to the finish guard and mutation/checklist gates).
 
 ## Circuit breakers
 
-`CircuitBreakerConfig` holds thresholds that protect the executor from
-unproductive infinite loops. When a threshold is crossed, the executor injects a
-nudge (a corrective system message) and, if the behavior persists, aborts the
-loop with `Finished: false`.
+`CircuitBreakerConfig` holds thresholds that protect the executor from unproductive infinite loops. When a threshold is crossed, the executor injects a nudge (a corrective system message) and, if the behavior persists, aborts the loop with `Finished: false`.
 
 ```go
 type CircuitBreakerConfig struct {
@@ -295,14 +253,11 @@ cfg := agent.DefaultCircuitBreakerConfig()
 
 ## Tool result budget and truncation
 
-Tool outputs are truncated in **two stages** to keep the context window
-manageable.
+Tool outputs are truncated in **two stages** to keep the context window manageable.
 
 ### Stage 1 — per-tool line/byte truncation
 
-`ToolTruncationConfig` applies line- and byte-based limits *before* token-based
-budgeting. Byte truncation is UTF-8 safe (it walks back to the last valid
-codepoint boundary).
+`ToolTruncationConfig` applies line- and byte-based limits *before* token-based budgeting. Byte truncation is UTF-8 safe (it walks back to the last valid codepoint boundary).
 
 ```go
 type ToolTruncationConfig struct {
@@ -311,8 +266,7 @@ type ToolTruncationConfig struct {
 }
 ```
 
-Configure per-tool defaults via `SetPerToolTruncation`. The SDK ships sensible
-defaults:
+Configure per-tool defaults via `SetPerToolTruncation`. The SDK ships sensible defaults:
 
 ```go
 // agent.DefaultToolTruncationConfig
@@ -342,16 +296,11 @@ budget := agent.DefaultToolResultBudget()
 // HardCapTokens: 30000, MaxFillFraction: 0.4
 ```
 
-When a result exceeds the budget, it is truncated and a fragmentation nudge is
-appended telling the model how to retrieve the full output in fragments (see
-[Tool result cache](#tool-result-cache)).
+When a result exceeds the budget, it is truncated and a fragmentation nudge is appended telling the model how to retrieve the full output in fragments (see [Tool result cache](#tool-result-cache)).
 
 ## Tool result cache
 
-`ToolResultCache` stores raw (pre-truncation) tool outputs indexed by
-`SHA256(toolName + "\x00" + content)`. When a result is truncated, the cache
-holds the full content and the executor appends a nudge instructing the model to
-retrieve fragments via a `tool_result_read` tool using the cache hash.
+`ToolResultCache` stores raw (pre-truncation) tool outputs indexed by `SHA256(toolName + "\x00" + content)`. When a result is truncated, the cache holds the full content and the executor appends a nudge instructing the model to retrieve fragments via a `tool_result_read` tool using the cache hash.
 
 ```go
 cache := agent.NewToolResultCache(5 * time.Minute) // TTL for MCP-sourced entries
@@ -360,19 +309,11 @@ exec.SetToolCache(cache)
 
 Key behaviors:
 
-- **Hashing** — `ComputeToolResultHash(toolName, content)` returns the same hash
-  `Store` would produce. Identical content from different tools gets different
-  hashes.
-- **Deduplication** — repeated identical calls produce the same hash; no
-  duplicate entries.
-- **File coherence** — for file-based tools (`read_file`, `write_file`,
-  `edit_file`), the cache records the file path, mtime, and size.
-  `CheckCoherence(hash)` returns `false` if the file has changed since caching.
-- **MCP TTL** — MCP-sourced entries expire after the configured TTL. Non-MCP
-  entries never expire. Expired entries are swept periodically.
-- **Non-cacheable tools** — internal meta-tools (`finish`, `tool_result_read`,
-  `store_fact`, etc.) are excluded from caching by default. Add your own
-  meta-tools via `AddNonCacheableTools`.
+- **Hashing** — `ComputeToolResultHash(toolName, content)` returns the same hash `Store` would produce. Identical content from different tools gets different hashes.
+- **Deduplication** — repeated identical calls produce the same hash; no duplicate entries.
+- **File coherence** — for file-based tools (`read_file`, `write_file`, `edit_file`), the cache records the file path, mtime, and size. `CheckCoherence(hash)` returns `false` if the file has changed since caching.
+- **MCP TTL** — MCP-sourced entries expire after the configured TTL. Non-MCP entries never expire. Expired entries are swept periodically.
+- **Non-cacheable tools** — internal meta-tools (`finish`, `tool_result_read`, `store_fact`, etc.) are excluded from caching by default. Add your own meta-tools via `AddNonCacheableTools`.
 
 ```go
 // Exclude an application-layer meta-tool from caching.
@@ -381,8 +322,7 @@ exec.AddNonCacheableTools("delegate", "reflect")
 
 ## ContextManager interface
 
-`ContextManager` is the interface the executor needs for context-window
-management. It owns the prompt history and the compaction strategy.
+`ContextManager` is the interface the executor needs for context-window management. It owns the prompt history and the compaction strategy.
 
 ```go
 type ContextManager interface {
@@ -414,8 +354,7 @@ type ContextManager interface {
 
 ### CompactionStrategy
 
-`CompactionStrategy` defines an algorithm for compressing step history into a
-smaller set of messages when the context fills up.
+`CompactionStrategy` defines an algorithm for compressing step history into a smaller set of messages when the context fills up.
 
 ```go
 type CompactionStrategy interface {
@@ -434,9 +373,7 @@ type CompactionResult struct {
 
 ### VulnerableOutput
 
-`VulnerableOutput` describes a tool output that will be pruned on the next
-pruning cycle. The pre-compaction nudge lists these so the model can preserve key
-findings (e.g. via a fact-store tool) before they are lost.
+`VulnerableOutput` describes a tool output that will be pruned on the next pruning cycle. The pre-compaction nudge lists these so the model can preserve key findings (e.g. via a fact-store tool) before they are lost.
 
 ```go
 type VulnerableOutput struct {
@@ -447,8 +384,7 @@ type VulnerableOutput struct {
 
 ## LLMCaller and ToolExecutor interfaces
 
-The executor depends on two narrow interfaces so it is decoupled from any
-specific LLM provider or tool registry.
+The executor depends on two narrow interfaces so it is decoupled from any specific LLM provider or tool registry.
 
 ```go
 type LLMCaller interface {
@@ -462,20 +398,14 @@ type ToolExecutor interface {
 }
 ```
 
-- `LLMCaller.Call` — sends a chat request and returns the response. The executor
-  handles context-exceeded errors by triggering reactive compaction and retrying.
+- `LLMCaller.Call` — sends a chat request and returns the response. The executor handles context-exceeded errors by triggering reactive compaction and retrying.
 - `ToolExecutor.Execute` — runs a tool by name with raw JSON input.
-- `GetToolSource` — returns the source of a tool (e.g. `"core"`, `"mcp:<server>"`);
-  empty string if not found. Used to detect MCP tools for cache TTL handling.
-- `IsToolUntrusted` — reports whether a tool's output is from an untrusted
-  external source (MCP tools and tools flagged `IsUntrusted()`). Drives the
-  `<untrusted-content>` wrapping of observations.
+- `GetToolSource` — returns the source of a tool (e.g. `"core"`, `"mcp:<server>"`); empty string if not found. Used to detect MCP tools for cache TTL handling.
+- `IsToolUntrusted` — reports whether a tool's output is from an untrusted external source (MCP tools and tools flagged `IsUntrusted()`). Drives the `<untrusted-content>` wrapping of observations.
 
 ## TrajectoryStore
 
-`TrajectoryStore` is a mutable holder for the executor's current trajectory. The
-executor syncs its step history to the store at each loop iteration so tools
-(e.g. a reflector) can access the trajectory via context.
+`TrajectoryStore` is a mutable holder for the executor's current trajectory. The executor syncs its step history to the store at each loop iteration so tools (e.g. a reflector) can access the trajectory via context.
 
 ```go
 type TrajectoryStore interface {
@@ -526,8 +456,7 @@ These setters configure optional behavior. Call them **before** `Run`.
 
 ### Finish guard example
 
-The finish guard lets a caller block premature completion — for instance, to
-prevent an agent from finishing while async sub-tasks are still running:
+The finish guard lets a caller block premature completion — for instance, to prevent an agent from finishing while async sub-tasks are still running:
 
 ```go
 exec.SetFinishGuard(func(ctx context.Context) error {
@@ -538,14 +467,11 @@ exec.SetFinishGuard(func(ctx context.Context) error {
 })
 ```
 
-If the guard returns an error, finish is rejected and a nudge containing the
-error message is injected. On the second attempt, finish is accepted regardless
-(soft gate).
+If the guard returns an error, finish is rejected and a nudge containing the error message is injected. On the second attempt, finish is accepted regardless (soft gate).
 
 ## Context helpers
 
-The executor reads several optional values from the context. These are injected
-by the caller or by the orchestration layer before `Run`.
+The executor reads several optional values from the context. These are injected by the caller or by the orchestration layer before `Run`.
 
 | Helper | Purpose |
 |--------|---------|
@@ -556,10 +482,7 @@ by the caller or by the orchestration layer before `Run`.
 | `WithStepTodoUpdateFunc(ctx, fn)` / `StepTodoUpdateFuncFromContext(ctx)` | Callback for checklist/to-do updates. |
 | `WithDumpWriter(ctx, w)` / `DumpWriterFromContext(ctx)` | Injects an `io.Writer` for LLM request/response dumps. |
 
-Additional stores for inter-step communication live in the `agent` package:
-`StepOutputStore`, `FactStore`, and `FinalResultStore`, each with a
-`With*`/`*FromContext` pair. See [Subagents](subagents.md) for how these are
-wired during parallel plan execution.
+Additional stores for inter-step communication live in the `agent` package: `StepOutputStore`, `FactStore`, and `FinalResultStore`, each with a `With*`/`*FromContext` pair. See [Subagents](subagents.md) for how these are wired during parallel plan execution.
 
 ## Putting it together
 

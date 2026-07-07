@@ -5,7 +5,7 @@ import {
   handlePlanStepStart, handlePlanStepComplete, handleSubAgentLaunch, handleSubAgentComplete,
   handleReflection, handleStepTodoUpdate,
   handleToolCall, handleToolResult, handleActionMessage,
-  type ToolLike, type StepLikeItem,
+  type ToolLike, type StepLikeItem, type ActionDisplayItem,
 } from './chatGroupingHandlers'
 
 export { collapseThoughts } from './chatUtilsHelpers'
@@ -33,8 +33,9 @@ export const roleToType: Record<ChatRole, MessageType> = {
   tool_confirm: 'tool_confirm', ask_user: 'ask_user', task_cancelled: 'error',
   status: 'status', task_resumed: 'task_resumed',
   // task_failed_resumable and step_limit keep their own types on reload so
-  // extractPendingActions can restore the Resume / decision affordances
-  // (their staleness is reconciled against GetSessionRuntimeStatus after load).
+  // groupMessages can render the Resume / decision affordances in the chat
+  // stream (their staleness is reconciled against GetSessionRuntimeStatus
+  // and GetPendingActions after load).
   task_failed_resumable: 'task_failed_resumable', step_limit: 'step_limit', context_compaction: 'context_compaction',
   step_todo_update: 'step_todo_update',
   memory_read: 'memory_read',
@@ -69,7 +70,6 @@ export function chatMessageToUI(msg: ChatMessage): ChatMessageUI {
 /** Transform a flat list of ChatMessageUI into a display-ready tree. */
 export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   const items: DisplayItem[] = []
-  const pendingActions: DisplayItem[] = []
   const openSteps = new Map<string, StepLikeItem>()
   const stepIdCounts = new Map<string, number>()
   const stepIndexMap = new Map<string, { num: number; title: string; description: string }>()
@@ -79,6 +79,12 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   // earlier superseded updates can be removed from their container, and
   // active (incomplete) checklists can be sunk to the end of their container.
   const checklistsByKey = new Map<string, { item: DisplayItem & { kind: 'checklist' }; container: DisplayItem[] }>()
+  // Unresolved pending actions (tool_confirm, ask_user, step_limit,
+  // plan_review, resume_action) tracked in stream order so the sinking
+  // post-pass can move them to the very bottom of the chat. Resolved actions
+  // are pushed into items but NOT tracked here — they stay at their stream
+  // position, like settled checklists.
+  const activeActions: ActionDisplayItem[] = []
 
   const pushItem = (item: DisplayItem, planStepId?: string) => {
     const container = planStepId ? openSteps.get(planStepId) : null
@@ -112,7 +118,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
       case 'tool_call': handleToolCall(msg, meta, planStepId, stepIndexMap, toolItemsByKey, pendingResults, pushItem); break
       case 'tool_result': handleToolResult(meta, toolItemsByKey, pendingResults); break
       case 'tool_confirm': case 'ask_user': case 'task_failed_resumable': case 'step_limit': case 'plan_review':
-        handleActionMessage(msg, meta, planStepId, pendingActions, pushItem); break
+        handleActionMessage(msg, meta, items, activeActions); break
       case 'context_compaction': {
         const bp = (meta?.before_percent as number) ?? 0
         const ap = (meta?.after_percent as number) ?? 0
@@ -144,44 +150,43 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
     }
   }
 
+  // Keep only the last unresolved plan_review — earlier unresolved ones are
+  // superseded by a replan cycle (plan → reject → replan → new plan). Showing
+  // all of them would stack stale approval panels at the bottom of the chat.
+  // Resolved plan_reviews remain at their stream position.
+  const unresolvedPlanReviews = activeActions.filter(a => a.kind === 'plan_review')
+  if (unresolvedPlanReviews.length > 1) {
+    const keep = unresolvedPlanReviews[unresolvedPlanReviews.length - 1]!
+    for (const pr of unresolvedPlanReviews) {
+      if (pr === keep) continue
+      const idx = items.indexOf(pr)
+      if (idx !== -1) items.splice(idx, 1)
+    }
+    for (let i = activeActions.length - 1; i >= 0; i--) {
+      if (activeActions[i]!.kind === 'plan_review' && activeActions[i] !== keep) {
+        activeActions.splice(i, 1)
+      }
+    }
+  }
+
+  // Action sinking: move unresolved pending actions to the very end of the
+  // root items so they stay visible at the bottom of the chat (below any sunk
+  // checklists) while new content streams in above them. Resolved actions are
+  // not tracked here and remain at their stream position.
+  for (const action of activeActions) {
+    const idx = items.indexOf(action)
+    if (idx !== -1) {
+      items.splice(idx, 1)
+      items.push(action)
+    }
+  }
+
   for (const item of items) {
     if (item.kind === 'plan_step' || item.kind === 'subagent') {
       item.children = collapseThoughts(item.children)
     }
   }
-  return { items: collapseThoughts(items), pendingActions }
-}
-
-const EMPTY_PENDING: DisplayItem[] = []
-
-/** Lightweight pending actions scan — avoids full groupMessages pipeline. */
-export function extractPendingActions(messages: ChatMessageUI[]): DisplayItem[] {
-  const actions: DisplayItem[] = []
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i]!
-    if (msg.metadata?.resolved === true) continue
-    if (msg.type === 'tool_confirm') actions.push({ kind: 'tool_confirm', message: msg })
-    else if (msg.type === 'ask_user') actions.push({ kind: 'ask_user', message: msg })
-    else if (msg.type === 'task_failed_resumable') actions.push({ kind: 'resume_action', message: msg })
-    else if (msg.type === 'step_limit') actions.push({ kind: 'step_limit', message: msg })
-    else if (msg.type === 'plan_review' && msg.metadata?.resolved !== true) actions.push({ kind: 'plan_review', message: msg })
-  }
-
-  // Keep only the last unresolved plan_review — earlier ones are superseded
-  // by a replan cycle (plan → reject → replan → new plan). Showing all of
-  // them would stack stale approval panels in the PendingActionsBar.
-  let lastPlanReviewIdx = -1
-  for (let i = actions.length - 1; i >= 0; i--) {
-    if (actions[i]!.kind === 'plan_review') {
-      lastPlanReviewIdx = i
-      break
-    }
-  }
-  if (lastPlanReviewIdx >= 0) {
-    return actions.filter((a, i) => a.kind !== 'plan_review' || i === lastPlanReviewIdx)
-  }
-
-  return actions.length > 0 ? actions : EMPTY_PENDING
+  return { items: collapseThoughts(items) }
 }
 
 /** Actions interface for plan store dependency injection. */

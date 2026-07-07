@@ -1,11 +1,8 @@
 # Example 06 — Plan & Reflect Orchestration
 
-The full Plan & Execute orchestration pattern: a **Planner** breaks the task
-into a DAG of steps, a **Conductor** executes each step as an independent
-ReAct loop, and a **Reflector** analyzes failures to self-correct with retry
-or replan.
+The full Plan & Execute orchestration pattern: a **Planner** breaks the task into a DAG of steps, a **Conductor** executes each step as an independent ReAct loop, and a **Reflector** analyzes failures to self-correct with retry or replan.
 
-This is the pattern c0wrk itself uses for complex tasks.
+This is the pattern sp4rk itself uses for complex tasks.
 
 ## What you will learn
 
@@ -72,15 +69,9 @@ plannerCfg.Model = "claude-sonnet-4-5"
 pl, err := planner.NewPlanner(fw.LLMRouter(), plannerCfg)
 ```
 
-The Planner calls the LLM with a system prompt built from the `PromptSet`
-template. Placeholders like `AVAILABLE-TOOLS`, `MODE-JSON-EXAMPLE`, and
-`MAX-STEPS` are substituted automatically. The LLM returns a JSON plan that
-the Planner parses into an `*orchestration.Plan`.
+The Planner calls the LLM with a system prompt built from the `PromptSet` template. Placeholders like `AVAILABLE-TOOLS`, `MODE-JSON-EXAMPLE`, and `MAX-STEPS` are substituted automatically. The LLM returns a JSON plan that the Planner parses into an `*orchestration.Plan`.
 
-`planner.DefaultPlannerConfig()` provides sensible defaults for the context
-functions (`DomainFromContext`, `ComplexityFromContext`, etc.). When
-`PlannerToolNames` is empty (the default), the Planner uses **direct
-planning** — a single LLM call without codebase exploration.
+`planner.DefaultPlannerConfig()` provides sensible defaults for the context functions (`DomainFromContext`, `ComplexityFromContext`, etc.). When `PlannerToolNames` is empty (the default), the Planner uses **direct planning** — a single LLM call without codebase exploration.
 
 ### 2. Generating a plan
 
@@ -125,16 +116,11 @@ for {
 }
 ```
 
-`FindReadySteps` returns steps whose dependencies are all completed
-successfully. This respects the DAG topology — a step only runs after its
-`DependsOn` steps are done. For parallel execution, launch each ready step
-in a goroutine (see `agent.RunSubAgentsParallel`).
+`FindReadySteps` returns steps whose dependencies are all completed successfully. This respects the DAG topology — a step only runs after its `DependsOn` steps are done. For parallel execution, launch each ready step in a goroutine (see `agent.RunSubAgentsParallel`).
 
 ### 4. Capturing the trajectory
 
-The Reflector needs the executor's step history (thoughts, tool calls,
-observations) to analyze failures. We inject a `TrajectoryStore` into the
-context — the executor syncs to it at every ReAct iteration:
+The Reflector needs the executor's step history (thoughts, tool calls, observations) to analyze failures. We inject a `TrajectoryStore` into the context — the executor syncs to it at every ReAct iteration:
 
 ```go
 type trajectoryStore struct { … }
@@ -157,8 +143,7 @@ rf := reflector.NewReflector(fw.LLMRouter(), reflector.Config{
 reflection, err := rf.Reflect(ctx, trajectory, plan, prevReflections)
 ```
 
-The Reflector sends the trajectory, plan, and prior reflections to the LLM
-and parses the response into an `*orchestration.Reflection`:
+The Reflector sends the trajectory, plan, and prior reflections to the LLM and parses the response into an `*orchestration.Reflection`:
 
 ```go
 type Reflection struct {
@@ -184,8 +169,7 @@ case "abort":
 }
 ```
 
-This example implements the retry loop. A full implementation would also
-call `pl.Replan()` when the reflection suggests it:
+This example implements the retry loop. A full implementation would also call `pl.Replan()` when the reflection suggests it:
 
 ```go
 newPlan, err := pl.Replan(ctx, plan, completedList, failedStep, reflection, reflections, nil)
@@ -197,8 +181,7 @@ newPlan, err := pl.Replan(ctx, plan, completedList, failedStep, reflection, refl
 finalOutput := orchestration.AggregateOutput(completed, plan, nil)
 ```
 
-`AggregateOutput` collects outputs from terminal steps (steps that no other
-step depends on). If all steps succeeded, this is the final deliverable.
+`AggregateOutput` collects outputs from terminal steps (steps that no other step depends on). If all steps succeeded, this is the final deliverable.
 
 ## The three SDK primitives
 
@@ -208,10 +191,7 @@ step depends on). If all steps succeeded, this is the final deliverable.
 | Conductor  | `sdk/orchestration`  | Executes one step as a ReAct loop         |
 | Reflector  | `sdk/agent/reflector`| Analyzes failures, suggests corrections   |
 
-The Framework (`sdk.Framework`) wires them together: `fw.NewConductor()`
-creates a Conductor with the Framework's LLM router, tool registry, and
-context-window factory. `fw.LLMRouter()` provides the `agent.LLMCaller`
-needed by the Planner and Reflector.
+The Framework (`sdk.Framework`) wires them together: `fw.NewConductor()` creates a Conductor with the Framework's LLM router, tool registry, and context-window factory. `fw.LLMRouter()` provides the `agent.LLMCaller` needed by the Planner and Reflector.
 
 ## Prerequisites
 
@@ -229,7 +209,7 @@ go run main.go
 ## Expected output
 
 ```
-Workspace: /tmp/c0wrk-example-06-123456
+Workspace: /tmp/sp4rk-example-06-123456
 
 📋 Planning...
 Plan generated with 3 steps:
@@ -273,6 +253,4 @@ If a step fails, you'll see the reflection in action:
 
 ## Next
 
-→ **07-full-power** — combine every SDK subsystem into one agent: multi-provider
-LLM, custom + built-in + MCP tools, HITL, events, planner, reflector, skills,
-checkpointer, and fact memory.
+→ **07-full-power** — combine every SDK subsystem into one agent: multi-provider LLM, custom + built-in + MCP tools, HITL, events, planner, reflector, skills, checkpointer, and fact memory.

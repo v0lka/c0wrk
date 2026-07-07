@@ -3,7 +3,7 @@
 // Combines every major SDK subsystem into one agent:
 //   - Multi-provider LLM (Anthropic + OpenAI) with runtime model switching
 //   - Custom tools + built-in tools + MCP server tools
-//   - Custom AgentEvents for live observability
+//   - Custom Events for live observability
 //   - Human-in-the-loop tool confirmation
 //   - Planner → DAG → Conductor → Reflector orchestration
 //   - Skills discovery from a local skills directory
@@ -26,16 +26,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/agent/reflector"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/sdk/planner"
-	"github.com/v0lka/c0wrk/sdk/skills"
-	"github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
-	"github.com/v0lka/c0wrk/sdk/tools/mcp"
+	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/agent/reflector"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/planner"
+	"github.com/v0lka/sp4rk/skills"
+	"github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
+	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
 // ─── Custom event sink (from example 03, condensed) ───────────────────────
@@ -151,7 +151,7 @@ func run() error {
 	}
 
 	// ── 2. Workspace + skills directory ──
-	workspaceDir, err := os.MkdirTemp("", "c0wrk-example-07-*")
+	workspaceDir, err := os.MkdirTemp("", "sp4rk-example-07-*")
 	if err != nil {
 		return fmt.Errorf("temp dir: %w", err)
 	}
@@ -257,7 +257,7 @@ func run() error {
 	}
 
 	// ── 7. Create Reflector ──
-	rf := reflector.NewReflector(fw.LLMRouter(), reflector.Config{
+	rf := reflector.New(fw.LLMRouter(), reflector.Config{
 		SystemPrompt: "You are a reflection agent. Analyze the failed execution and return JSON with summary, root_cause, suggested_action (retry/replan/abort), and action_plan.",
 	})
 

@@ -1,3 +1,5 @@
+// Package router classifies user requests by domain and complexity to drive
+// execution strategy selection (direct execution vs. plan-and-execute).
 package router
 
 import (
@@ -7,10 +9,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/prompt"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/prompt"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // Config holds the configuration for a Router.
@@ -38,8 +40,8 @@ type Router struct {
 	appendContextSections func(ctx context.Context) string
 }
 
-// NewRouter creates a new Router with the given caller and config.
-func NewRouter(caller agent.LLMCaller, cfg Config) *Router {
+// New creates a new Router with the given caller and config.
+func New(caller agent.LLMCaller, cfg Config) *Router {
 	hw := cfg.HistoryWindow
 	if hw <= 0 {
 		hw = 10
@@ -141,7 +143,10 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 
 		retryResp, retryErr := r.llm.Call(ctx, llm.ChatRequest{Messages: repairMessages, ReasoningEffort: r.reasoningEffort})
 		if retryErr != nil {
-			return nil, fmt.Errorf("failed to parse routing decision: %w", retryErr)
+			return nil, fmt.Errorf("router retry LLM call failed: %w", retryErr)
+		}
+		if retryResp == nil {
+			return nil, errors.New("router LLM retry call returned nil response")
 		}
 
 		retryJSON := llm.ExtractJSON(retryResp.Message.Content)

@@ -4,13 +4,13 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/skills"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/skills"
 )
 
 // Config holds all configuration for the Planner.
-// The Config separates stable SDK interfaces from c0wrk-specific wiring.
+// The Config separates stable SDK interfaces from application-specific wiring.
 type Config struct {
 	// Prompts holds all parameterizable prompt templates.
 	Prompts PromptSet
@@ -48,7 +48,7 @@ type Config struct {
 	// --- Optional dependencies ---
 
 	Logger          *slog.Logger
-	Emitter         PlannerEvents
+	Emitter         Events
 	TokenCounter    llm.TokenCounter
 	ContextFactory  ContextManagerFactory
 	CallerForStep   func(cm agent.ContextManager, stepID string) agent.LLMCaller

@@ -8,11 +8,27 @@
  */
 import type { SessionRuntimeStatus } from '@/api/chat'
 import { useChatStore } from '@/stores/chatStore'
-import type { ChatMessageUI } from '@/types/messages'
+import type { ChatMessageUI, MessageType } from '@/types/messages'
 
 /** Message content for the synthetic resume banner injected on reload. */
 const UNFINISHED_TASK_MESSAGE =
   'A previous task did not finish. You can resume it or discard it.'
+
+/**
+ * Interactive prompt types that block execution while awaiting a user
+ * response. After an app restart (or backend crash) the goroutine that was
+ * waiting for the response no longer exists, so these prompts can never be
+ * answered — they must be resolved as stale during reconciliation.
+ *
+ * Note: `task_failed_resumable` is handled separately because it is replaced
+ * by a Resume/Cancel banner rather than silently dismissed.
+ */
+const STALE_PROMPT_TYPES: ReadonlySet<MessageType> = new Set([
+  'step_limit',
+  'plan_review',
+  'tool_confirm',
+  'ask_user',
+])
 
 /**
  * Align chat-store state for `sessionId` with the backend runtime status.
@@ -20,9 +36,10 @@ const UNFINISHED_TASK_MESSAGE =
  * - `active` → restore the "task running" flag (input disabled, no false idle).
  * - not active + unfinished task persisted → ensure an unresolved
  *   `task_failed_resumable` banner exists (Resume/Cancel affordance) and
- *   resolve stale `step_limit` prompts (their executor is gone).
- * - not active + no unfinished task → resolve stale resumable/step_limit
- *   prompts left over from previous runs.
+ *   resolve stale interactive prompts (step_limit, plan_review, tool_confirm,
+ *   ask_user) whose owning executor is gone.
+ * - not active + no unfinished task → resolve all stale prompts left over
+ *   from previous runs.
  */
 export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntimeStatus): void {
   const store = useChatStore.getState()
@@ -40,16 +57,17 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
   for (const id of order) {
     const msg = index[id]
     if (!msg) continue
-    if ((msg.type === 'task_failed_resumable' || msg.type === 'step_limit') && msg.metadata?.resolved !== true) {
+    if (msg.metadata?.resolved === true) continue
+    if (STALE_PROMPT_TYPES.has(msg.type) || msg.type === 'task_failed_resumable') {
       unresolved.push(msg)
     }
   }
 
   if (status.has_unfinished_task) {
-    // Stale step_limit prompts cannot be answered after a restart — the
+    // Stale interactive prompts cannot be answered after a restart — the
     // executor waiting for the response no longer exists.
     for (const msg of unresolved) {
-      if (msg.type === 'step_limit') {
+      if (STALE_PROMPT_TYPES.has(msg.type)) {
         store.updateMessage(sessionId, msg.id, { metadata: { ...msg.metadata, resolved: true, stale: true } })
       }
     }
@@ -67,7 +85,7 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
     return
   }
 
-  // No unfinished task: any surviving resumable/step_limit prompts are stale.
+  // No unfinished task: any surviving prompts are stale.
   for (const msg of unresolved) {
     store.updateMessage(sessionId, msg.id, { metadata: { ...msg.metadata, resolved: true, stale: true } })
   }

@@ -6,7 +6,7 @@ import { generateMessageId } from '@/lib/ids'
 
 // Re-export types and grouping functions so existing imports continue to work
 export type { MessageType, ChatMessageUI, DisplayItem, GroupedMessages } from '@/types/messages'
-export { groupMessages, extractPendingActions } from '@/lib/chatUtils'
+export { groupMessages } from '@/lib/chatUtils'
 
 // --- State types ---
 

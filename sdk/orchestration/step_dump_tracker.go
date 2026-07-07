@@ -39,7 +39,9 @@ func (t *StepDumpTracker) OpenStepDump(stepID string) io.Writer {
 	if t.dir == "" {
 		return nil
 	}
-	filename := "step_" + stepID + ".jsonl"
+	// Sanitize stepID to prevent path traversal: strip any directory
+	// components so the filename stays within t.dir.
+	filename := "step_" + filepath.Base(stepID) + ".jsonl"
 
 	t.mu.Lock()
 	defer t.mu.Unlock()

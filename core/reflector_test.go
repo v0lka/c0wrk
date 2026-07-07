@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/sp4rk/llm"
 )
 
 // TestReflector_ImplementsInterface is kept here to ensure the adapter

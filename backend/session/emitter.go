@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/orchestration"
 )
 
 // Event represents a structured event emitted during agent execution.
@@ -139,6 +139,22 @@ func (e *EventEmitter) WithRetryAttempt(attempt int) core.Emitter {
 		toolCallIDs:  e.toolCallIDs, // share tool call ID counter across copies
 		logger:       e.logger,      // propagate logger to copies
 	}
+}
+
+// SetCurrentStepID dynamically updates the plan_step_id injected into
+// subsequent events emitted by this receiver. Unlike WithPlanStepID (which
+// returns a scoped copy with a fixed planStepID), SetCurrentStepID mutates
+// the receiver in place — use it to track the "current step" during inline
+// Conductor execution, where a single emitter instance serves the whole
+// ReAct loop and the active step changes via update_checklist /
+// declare_step_complete tool calls. Pass an empty string to clear the scope.
+//
+// Scoped copies created by WithPlanStepID have their own planStepID field
+// and are unaffected by calls to this method on the original emitter.
+func (e *EventEmitter) SetCurrentStepID(id string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.planStepID = id
 }
 
 // ensure EventEmitter implements core.Emitter, core.PlanStepScopable, and core.RetryAttemptScopable at compile time.

@@ -1,7 +1,7 @@
 // Example 03 — Event Streaming
 //
 // Demonstrates how to observe the agent's execution in real time by
-// implementing the agent.AgentEvents interface. A PrintingEvents sink
+// implementing the agent.Events interface. A PrintingEvents sink
 // formats each lifecycle event (thoughts, tool calls, results, context
 // fill) and writes it to stdout, giving full visibility into the ReAct loop.
 package main
@@ -14,14 +14,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
-// PrintingEvents implements agent.AgentEvents by embedding agent.NoopEvents
+// PrintingEvents implements agent.Events by embedding agent.NoopEvents
 // (which provides no-op stubs for every method) and overriding the methods
 // we want to observe. This is the recommended pattern: embed NoopEvents,
 // override only what you need.

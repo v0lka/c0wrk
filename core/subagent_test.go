@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	tools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	tools "github.com/v0lka/sp4rk/tools"
 )
 
 // Tests use shared mock types from testhelpers_test.go:
@@ -52,7 +52,7 @@ func TestRunSubAgent_Successful(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCM := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{Task: "Test task"}
 
@@ -89,7 +89,7 @@ func TestRunSubAgent_ContextCancellation(t *testing.T) {
 	mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
 	mockCM := &mockContextManager{}
 
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	task := TaskDefinition{Task: "Test task"}
 
@@ -132,7 +132,7 @@ func TestRunSubAgentsParallel_MultipleAgents(t *testing.T) {
 			},
 		}
 		mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
-		return agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+		return agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 	}
 
 	agents := []agent.SubAgentTask{
@@ -202,7 +202,7 @@ func TestRunSubAgentsParallel_EmptyInput(t *testing.T) {
 func TestNewSubAgent(t *testing.T) {
 	mockLLM := &mockLLMCaller{}
 	mockTools := &mockToolExecutor{}
-	executor := agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 
 	subAgent := agent.NewSubAgent("test_id", executor)
 
@@ -222,7 +222,7 @@ func TestRunSubAgentsParallel_WithContextCancellation(t *testing.T) {
 	createMockExecutor := func() *agent.Executor {
 		mockLLM := &mockLLMCaller{responses: []*llm.ChatResponse{}}
 		mockTools := &mockToolExecutor{results: make(map[string]tools.ToolResult)}
-		return agent.NewExecutor(mockLLM, mockTools, nil, 10, nil, false, agent.ToolResultBudget{}, defaultCircuitBreakerConfig, nil)
+		return agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
 	}
 
 	agents := []agent.SubAgentTask{

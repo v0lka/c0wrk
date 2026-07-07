@@ -1,21 +1,14 @@
 # Planner
 
-The `planner` package generates DAG execution plans from user tasks. A
-`Planner` takes a free-text task and a set of available tools, then produces an
-`*orchestration.Plan` — a directed acyclic graph of `PlanStep`s that an
-orchestrator can execute step by step.
+The `planner` package generates DAG execution plans from user tasks. A `Planner` takes a free-text task and a set of available tools, then produces an `*orchestration.Plan` — a directed acyclic graph of `PlanStep`s that an orchestrator can execute step by step.
 
 The planner supports two strategies:
 
-- **Direct planning** — a single LLM call produces the plan. Used for simple or
-  general-domain tasks, or when no exploration tools are configured.
-- **Informed (exploration) planning** — the planner first runs a short ReAct
-  loop with read-only exploration tools to gather context about the codebase,
-  then produces a plan informed by what it found. Used for complex,
-  code-domain tasks.
+- **Direct planning** — a single LLM call produces the plan. Used for simple or general-domain tasks, or when no exploration tools are configured.
+- **Informed (exploration) planning** — the planner first runs a short ReAct loop with read-only exploration tools to gather context about the codebase, then produces a plan informed by what it found. Used for complex, code-domain tasks.
 
 ```go
-import "github.com/v0lka/c0wrk/sdk/planner"
+import "github.com/v0lka/sp4rk/planner"
 ```
 
 ---
@@ -51,8 +44,7 @@ type Planner struct {
 }
 ```
 
-`Planner` generates DAG execution plans for complex tasks. The `Cfg` field is
-exported so that a builder can wire additional dependencies after construction.
+`Planner` generates DAG execution plans for complex tasks. The `Cfg` field is exported so that a builder can wire additional dependencies after construction.
 
 ### NewPlanner
 
@@ -60,9 +52,7 @@ exported so that a builder can wire additional dependencies after construction.
 func NewPlanner(caller agent.LLMCaller, cfg Config) (*Planner, error)
 ```
 
-Creates a new Planner with the given LLM caller and configuration. Returns an
-error if `caller` is `nil` (a required dependency). If `MaxExploreSteps` is
-zero or negative, it defaults to `7`.
+Creates a new Planner with the given LLM caller and configuration. Returns an error if `caller` is `nil` (a required dependency). If `MaxExploreSteps` is zero or negative, it defaults to `7`.
 
 ```go
 pl, err := planner.NewPlanner(router, planner.DefaultPlannerConfig())
@@ -75,9 +65,7 @@ if err != nil {
 
 ## Config
 
-`Config` holds all configuration for the Planner. It separates stable SDK
-interfaces from framework-specific wiring (context-extraction functions,
-formatters, and appenders that the host application provides).
+`Config` holds all configuration for the Planner. It separates stable SDK interfaces from framework-specific wiring (context-extraction functions, formatters, and appenders that the host application provides).
 
 ```go
 type Config struct {
@@ -137,11 +125,7 @@ type Config struct {
 func DefaultPlannerConfig() Config
 ```
 
-Returns a `Config` with sensible defaults for **standalone use**. It provides
-no-op context-extraction functions (empty domain, zero complexity), a
-`FormatSkillList` that returns `"None"`, and `MaxExploreSteps` of `7`. Override
-specific fields as needed — most importantly, set `Prompts`, `Model`, and (for
-exploration) `ToolRegistry` + `PlannerToolNames` + `ContextFactory`.
+Returns a `Config` with sensible defaults for **standalone use**. It provides no-op context-extraction functions (empty domain, zero complexity), a `FormatSkillList` that returns `"None"`, and `MaxExploreSteps` of `7`. Override specific fields as needed — most importantly, set `Prompts`, `Model`, and (for exploration) `ToolRegistry` + `PlannerToolNames` + `ContextFactory`.
 
 ```go
 cfg := planner.DefaultPlannerConfig()
@@ -152,15 +136,13 @@ cfg.PlannerToolNames = map[string]bool{"read_file": true, "list_directory": true
 cfg.ContextFactory = contextFactory
 ```
 
-> `DefaultConfig()` (a separate function in `config.go`) returns testing stubs
-> instead of production defaults. Prefer `DefaultPlannerConfig()` for real use.
+> `DefaultConfig()` (a separate function in `config.go`) returns testing stubs instead of production defaults. Prefer `DefaultPlannerConfig()` for real use.
 
 ---
 
 ## PromptSet
 
-`PromptSet` holds all parameterizable prompt templates. The host application
-injects its own prompts through this struct.
+`PromptSet` holds all parameterizable prompt templates. The host application injects its own prompts through this struct.
 
 ```go
 type PromptSet struct {
@@ -213,8 +195,7 @@ type PromptSet struct {
 
 ### Placeholder system
 
-Prompt templates use uppercase placeholders that the planner substitutes at
-call time. This keeps prompts data-driven and avoids hand-building strings.
+Prompt templates use uppercase placeholders that the planner substitutes at call time. This keeps prompts data-driven and avoids hand-building strings.
 
 **Plan-mode placeholders** (used by `BasePrompt` / `InformedPrompt`):
 
@@ -280,9 +261,7 @@ MODE-JSON-EXAMPLE`,
 
 ## AgentProfile
 
-`AgentProfile` defines a specialised agent role for plan-step execution. It is
-the canonical implementation of `orchestration.StepProfile` and is carried in a
-`PlanStep`'s `Profile` field.
+`AgentProfile` defines a specialised agent role for plan-step execution. It is the canonical implementation of `orchestration.StepProfile` and is carried in a `PlanStep`'s `Profile` field.
 
 ```go
 type AgentProfile struct {
@@ -308,9 +287,7 @@ type AgentProfile struct {
 | `KeepLastN` | Per-step tool-output pruning override. `0` uses the role default. |
 | `ProtectedTools` | Per-step protected-tools override. `nil` uses the role default. |
 
-The planner emits profiles in the JSON example so the LLM can attach them to
-steps. Downstream, a `StepConfigurator` reads the profile to configure each
-step's executor (tool set, compaction, budget).
+The planner emits profiles in the JSON example so the LLM can attach them to steps. Downstream, a `StepConfigurator` reads the profile to configure each step's executor (tool set, compaction, budget).
 
 ```json
 {
@@ -361,11 +338,7 @@ Generates an execution plan for the given task.
 | `singleStep` | When `true`, forces single-step mode (max one step). |
 | `conversationHistory` | Prior user/assistant exchanges so plans for follow-up requests are generated with full dialogue context. May be `nil` for genuinely first messages. |
 
-The method selects direct or exploration planning based on the domain,
-complexity, and available planner tools (see
-[Exploration vs direct planning](#exploration-vs-direct-planning)). In
-single-step mode, if the LLM returns multiple steps, the plan is truncated to
-the first step.
+The method selects direct or exploration planning based on the domain, complexity, and available planner tools (see [Exploration vs direct planning](#exploration-vs-direct-planning)). In single-step mode, if the LLM returns multiple steps, the plan is truncated to the first step.
 
 ```go
 plan, err := pl.Plan(ctx, task, availableTools, nil, discoveredSkills, false, nil)
@@ -391,14 +364,9 @@ func (p *Planner) Replan(
 ) (*orchestration.Plan, error)
 ```
 
-Generates a revised plan after a step failure. The replan prompt receives the
-original plan, the completed steps, the failed step, the reflection on the
-failure, and earlier session reflections — giving the LLM full context to
-produce a corrected plan.
+Generates a revised plan after a step failure. The replan prompt receives the original plan, the completed steps, the failed step, the reflection on the failure, and earlier session reflections — giving the LLM full context to produce a corrected plan.
 
-Use this when a `Reflection.SuggestedAction` is `"replan"` (the plan itself is
-wrong). After replanning, use `BuildCarryForward` to preserve outputs from
-steps that remain valid in the new plan.
+Use this when a `Reflection.SuggestedAction` is `"replan"` (the plan itself is wrong). After replanning, use `BuildCarryForward` to preserve outputs from steps that remain valid in the new plan.
 
 ```go
 newPlan, err := pl.Replan(ctx, plan, completedList, failedStep, reflection, reflections, skills)
@@ -426,8 +394,7 @@ func (p *Planner) PlanContinuation(
 ) (*orchestration.Plan, error)
 ```
 
-Generates a continuation plan for follow-up requests after a task has (fully or
-partially) completed.
+Generates a continuation plan for follow-up requests after a task has (fully or partially) completed.
 
 | Parameter | Description |
 | --- | --- |
@@ -441,8 +408,7 @@ partially) completed.
 | `conversationHistory` | Prior dialogue for context. |
 | `taskComplete` | Whether the prior task fully completed. When `false`, the `ContinuationIncompletePreamble` is used so the planner finishes only remaining work and does not re-execute completed steps. |
 
-Continuation steps depend on the prior plan's **terminal steps** (steps no
-other step depends on), chaining new work onto completed work.
+Continuation steps depend on the prior plan's **terminal steps** (steps no other step depends on), chaining new work onto completed work.
 
 ```go
 contPlan, err := pl.PlanContinuation(
@@ -463,17 +429,10 @@ len(plannerTools) == 0                  →  direct planning
 otherwise                               →  exploration planning
 ```
 
-- **Direct planning** makes a single LLM call with the `BasePrompt` and parses
-  the JSON plan. Fast and sufficient for simple or general-domain tasks.
-- **Exploration planning** runs a short ReAct loop (bounded by
-  `MaxExploreSteps`) using the tools named in `PlannerToolNames` — typically
-  read-only tools like `read_file`, `list_directory`, `ripgrep`, `glob`. The
-  exploration output is then parsed into a plan, and
-  `Plan.ExplorationContext` is populated with a summary of what was explored.
+- **Direct planning** makes a single LLM call with the `BasePrompt` and parses the JSON plan. Fast and sufficient for simple or general-domain tasks.
+- **Exploration planning** runs a short ReAct loop (bounded by `MaxExploreSteps`) using the tools named in `PlannerToolNames` — typically read-only tools like `read_file`, `list_directory`, `ripgrep`, `glob`. The exploration output is then parsed into a plan, and `Plan.ExplorationContext` is populated with a summary of what was explored.
 
-If the exploration executor fails, produces no output, or returns unparseable
-JSON, the planner **falls back to direct planning** automatically. If
-`ContextFactory` is nil, exploration is skipped and direct planning is used.
+If the exploration executor fails, produces no output, or returns unparseable JSON, the planner **falls back to direct planning** automatically. If `ContextFactory` is nil, exploration is skipped and direct planning is used.
 
 To enable exploration, configure:
 
@@ -492,16 +451,10 @@ cfg.ComplexityFromContext = func(ctx context.Context) int { return 5 }
 
 ## Single-step vs multi-step mode
 
-- **Multi-step mode** (default, `singleStep = false`): the planner may produce
-  up to 10 steps forming a DAG. Use for complex tasks that benefit from
-  decomposition.
-- **Single-step mode** (`singleStep = true`): the planner produces at most one
-  step. If the LLM returns multiple steps, the plan is truncated to the first.
-  Use for simple tasks or when you want the agent to act without an explicit
-  plan structure.
+- **Multi-step mode** (default, `singleStep = false`): the planner may produce up to 10 steps forming a DAG. Use for complex tasks that benefit from decomposition.
+- **Single-step mode** (`singleStep = true`): the planner produces at most one step. If the LLM returns multiple steps, the plan is truncated to the first. Use for simple tasks or when you want the agent to act without an explicit plan structure.
 
-The mode controls which preamble, tree-of-thought, guidance, and JSON example
-are substituted into the prompt.
+The mode controls which preamble, tree-of-thought, guidance, and JSON example are substituted into the prompt.
 
 ---
 
@@ -526,8 +479,7 @@ type PlannerEvents interface {
 }
 ```
 
-The minimal event interface the planner needs. Implementations must be
-nil-safe.
+The minimal event interface the planner needs. Implementations must be nil-safe.
 
 ### ToolRegistry (planner)
 
@@ -538,8 +490,7 @@ type ToolRegistry interface {
 }
 ```
 
-The interface the planner needs for tool operations: executing tools during
-exploration and listing available tools.
+The interface the planner needs for tool operations: executing tools during exploration and listing available tools.
 
 ### ContextManagerFactory (planner)
 
@@ -555,8 +506,7 @@ Creates a `ContextManager` for the exploration loop.
 
 ### Standalone planner
 
-A minimal planner that produces a multi-step plan with direct planning (no
-exploration tools configured):
+A minimal planner that produces a multi-step plan with direct planning (no exploration tools configured):
 
 ```go
 package main
@@ -567,12 +517,12 @@ import (
 	"log"
 	"os"
 
-	"github.com/v0lka/c0wrk/sdk"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/planner"
-	"github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/planner"
+	"github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 func main() {
@@ -636,9 +586,7 @@ MODE-JSON-EXAMPLE`,
 
 ### Full-power planner with skills and exploration
 
-This example (adapted from the SDK's example 07) shows a planner configured
-with skills discovery, exploration tools, and a custom event sink. It is the
-"kitchen sink" configuration exercising the planner at maximum capacity.
+This example (adapted from the SDK's example 07) shows a planner configured with skills discovery, exploration tools, and a custom event sink. It is the "kitchen sink" configuration exercising the planner at maximum capacity.
 
 ```go
 package main
@@ -650,14 +598,14 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/v0lka/c0wrk/sdk"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/sdk/planner"
-	"github.com/v0lka/c0wrk/sdk/skills"
-	"github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/planner"
+	"github.com/v0lka/sp4rk/skills"
+	"github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // consoleEvents implements planner.PlannerEvents.
@@ -779,7 +727,4 @@ func main() {
 }
 ```
 
-The key configuration points for exploration are `ToolRegistry`,
-`PlannerToolNames`, `ContextFactory`, and the context-extraction functions
-that report a code domain and sufficient complexity. With those set, the
-planner explores the workspace before generating an informed plan.
+The key configuration points for exploration are `ToolRegistry`, `PlannerToolNames`, `ContextFactory`, and the context-extraction functions that report a code domain and sufficient complexity. With those set, the planner explores the workspace before generating an informed plan.

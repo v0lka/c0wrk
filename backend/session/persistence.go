@@ -68,6 +68,12 @@ type SessionStore interface {
 	SaveMessage(ctx context.Context, msg ChatMessage) error
 	LoadMessages(ctx context.Context, sessionID string) ([]ChatMessage, error)
 	DeleteMessages(ctx context.Context, sessionID string) error
+	// ResolvePendingMessage patches the metadata of the most recent message
+	// with the given role whose metadata[matchField] == matchValue, merging
+	// the extra fields. Used to mark HITL messages (tool_confirm, ask_user,
+	// step_limit, plan_review) as resolved after the user responds, so they
+	// don't reappear as pending on session reload.
+	ResolvePendingMessage(ctx context.Context, sessionID, role, matchField, matchValue string, extra map[string]any) error
 
 	// Terminal command history
 	SaveTerminalCommand(ctx context.Context, sessionID, command string) error
@@ -484,6 +490,70 @@ func (s *SQLiteSessionStore) DeleteMessages(ctx context.Context, sessionID strin
 	_, err := s.db.ExecContext(ctx, `DELETE FROM session_messages WHERE session_id = ?`, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to delete messages: %w", err)
+	}
+	return nil
+}
+
+// ResolvePendingMessage patches the metadata of the most recent message with
+// the given role whose metadata JSON contains matchField==matchValue, merging
+// the extra map into the existing metadata. If no matching message is found,
+// the call is a no-op (not an error) — the message may not have been persisted
+// (e.g. event fired while persister was busy) or may already have been resolved.
+func (s *SQLiteSessionStore) ResolvePendingMessage(ctx context.Context, sessionID, role, matchField, matchValue string, extra map[string]any) error {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, metadata FROM session_messages
+		WHERE session_id = ? AND role = ?
+		ORDER BY created_at DESC`,
+		sessionID, role,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to query pending messages: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			s.log().Warn("failed to close database rows", "error", cerr)
+		}
+	}()
+
+	var targetID int64
+	var targetMeta map[string]any
+	for rows.Next() {
+		var id int64
+		var metadataStr string
+		if err := rows.Scan(&id, &metadataStr); err != nil {
+			return fmt.Errorf("failed to scan message: %w", err)
+		}
+		var meta map[string]any
+		if err := json.Unmarshal([]byte(metadataStr), &meta); err != nil {
+			continue
+		}
+		if v, ok := meta[matchField].(string); ok && v == matchValue {
+			targetID = id
+			targetMeta = meta
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error iterating messages: %w", err)
+	}
+
+	if targetID == 0 {
+		return nil
+	}
+
+	for k, v := range extra {
+		targetMeta[k] = v
+	}
+	updated, err := json.Marshal(targetMeta)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated metadata: %w", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE session_messages SET metadata = ? WHERE id = ?`,
+		string(updated), targetID,
+	); err != nil {
+		return fmt.Errorf("failed to update message metadata: %w", err)
 	}
 	return nil
 }

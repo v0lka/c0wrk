@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 // --- Mock LLMCaller ---
@@ -185,7 +185,7 @@ func (m *mockTokenCounter) CountMessages(msgs []llm.Message) int {
 	return total
 }
 
-// --- Mock AgentEvents (recording) ---
+// --- Mock Events (recording) ---
 
 type recordingEvents struct {
 	mu     sync.Mutex
@@ -349,6 +349,12 @@ func (a *testStepLimitAdapter) OnStepLimit(ctx context.Context, currentStep, max
 
 // newExecutorDefaultHITL creates an Executor with a nil HITLHandler (uses NoopHITLHandler default).
 // Convenience wrapper for tests that don't need custom HITL behavior.
-func newExecutorDefaultHITL(llmCaller LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, emitter AgentEvents, suppressAssistantEvents bool, toolResultBudget ToolResultBudget, circuitBreaker CircuitBreakerConfig) *Executor {
-	return NewExecutor(llmCaller, toolRegistry, counter, maxSteps, emitter, suppressAssistantEvents, toolResultBudget, circuitBreaker, nil)
+func newExecutorDefaultHITL(llmCaller LLMCaller, toolRegistry ToolExecutor, counter llm.TokenCounter, maxSteps int, emitter Events, suppressAssistantEvents bool, toolResultBudget ToolResultBudget, circuitBreaker CircuitBreakerConfig) *Executor {
+	return NewExecutor(llmCaller, toolRegistry, maxSteps,
+		WithTokenCounter(counter),
+		WithEvents(emitter),
+		WithSuppressAssistantEvents(suppressAssistantEvents),
+		WithToolResultBudget(toolResultBudget),
+		WithCircuitBreaker(circuitBreaker),
+	)
 }

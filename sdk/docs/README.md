@@ -31,9 +31,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/v0lka/c0wrk/sdk"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
 )
 
 func main() {
@@ -114,7 +114,7 @@ go run main.go
 
 | Package | Purpose |
 | --- | --- |
-| `github.com/v0lka/c0wrk/sdk` | Top-level `Framework`, `Config`, `New`, `Execute`, `NewConductor`, `Shutdown` |
+| `github.com/v0lka/sp4rk` | Top-level `Framework`, `Config`, `New`, `Execute`, `NewConductor`, `Shutdown` |
 | `…/sdk/agent` | ReAct `Executor` loop, `AgentEvents`, `HITLHandler`, `FinishTool`, `SubAgent`, tool-result cache |
 | `…/sdk/agent/reflector` | `Reflector` for execution failure analysis and self-correction |
 | `…/sdk/agent/router` | `Router` that classifies requests by domain and complexity |

@@ -3,7 +3,7 @@ package core
 import (
 	"testing"
 
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 func TestFilterToolsByName_NoDuplicateInternalTools(t *testing.T) {

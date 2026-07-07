@@ -1,11 +1,13 @@
 package memory
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/llm"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/strutil"
 )
 
 // CompactConversationHistory compacts conversation history messages to fit within
@@ -30,6 +32,9 @@ func CompactConversationHistory(messages []llm.Message, budgetTokens int, tokenC
 	}
 	if len(messages) == 0 || budgetTokens <= 0 {
 		return messages, nil
+	}
+	if tokenCounter == nil {
+		return nil, errors.New("tokenCounter must not be nil")
 	}
 
 	totalTokens := tokenCounter.CountMessages(messages)
@@ -92,13 +97,14 @@ func CompactConversationHistory(messages []llm.Message, budgetTokens int, tokenC
 	}
 
 	// If still over budget and recent is empty/1, truncate the summary.
+	// Always halve the summary so the last-resort path makes progress toward
+	// the budget; the previous `half < 100 → half = len(summary)` guard
+	// produced a no-op for short summaries that still exceeded the budget.
 	if resultTokens > budgetTokens {
 		half := len(summary) / 2
-		if half < 100 {
-			half = len(summary)
+		if half > 0 {
+			result[0].Content = strutil.TruncateUTF8(summary, half)
 		}
-		truncatedSummary := summary[:half]
-		result[0].Content = truncatedSummary
 	}
 
 	return result, nil
@@ -152,6 +158,7 @@ outer:
 
 // truncateSummaryContent truncates text to maxChars, breaking at word boundaries.
 // The returned string includes "..." suffix, so the total length is at most maxChars.
+// Truncation is UTF-8 aware: it never splits a multi-byte rune.
 func truncateSummaryContent(text string, maxChars int) string {
 	if len(text) <= maxChars {
 		return text
@@ -159,12 +166,14 @@ func truncateSummaryContent(text string, maxChars int) string {
 	suffix := "..."
 	if maxChars <= len(suffix) {
 		// Budget is too small for meaningful text + suffix.
-		return text[:maxChars]
+		return strutil.TruncateUTF8(text, maxChars)
 	}
 	contentMax := maxChars - len(suffix)
-	truncated := text[:contentMax]
+	truncated := strutil.TruncateUTF8(text, contentMax)
 	if idx := strings.LastIndexAny(truncated, " .\n"); idx > contentMax/2 {
+		// idx points to an ASCII char (space/dot/newline), which is always a
+		// valid rune boundary, so text[:idx] is safe UTF-8.
 		return text[:idx] + suffix
 	}
-	return text[:contentMax] + suffix
+	return truncated + suffix
 }

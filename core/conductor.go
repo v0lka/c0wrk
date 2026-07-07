@@ -12,11 +12,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/agent/reflector"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/agent/reflector"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // trajectoryHolder is a thread-safe TrajectoryStore for the Conductor.
@@ -372,7 +372,7 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}
 
 	caller := l.callerForStep(cm, t.ID)
-	executor := agent.NewExecutor(caller, l.deps.toolExec, l.deps.tokenCounter, maxSteps, l.scopeEvents(t.ID), false, l.deps.toolResultBudget, l.deps.circuitBreaker, l.deps.hitlHandler)
+	executor := agent.NewExecutor(caller, l.deps.toolExec, maxSteps, agent.WithTokenCounter(l.deps.tokenCounter), agent.WithEvents(l.scopeEvents(t.ID)), agent.WithToolResultBudget(l.deps.toolResultBudget), agent.WithCircuitBreaker(l.deps.circuitBreaker), agent.WithHITL(l.deps.hitlHandler))
 	executor.SetPlanContext(t.ID, 0, 0)
 	l.configureExecutor(executor)
 
@@ -563,7 +563,7 @@ func (l *conductorLauncher) callerForStep(cm agent.ContextManager, stepID string
 	return caller
 }
 
-func (l *conductorLauncher) scopeEvents(stepID string) agent.AgentEvents {
+func (l *conductorLauncher) scopeEvents(stepID string) agent.Events {
 	if sc, ok := l.deps.emitter.(interface {
 		WithPlanStepID(string) Emitter
 	}); ok {
@@ -901,7 +901,7 @@ func RunConductor(
 		ConversationHistory: deps.conversationHistory,
 	}
 
-	var events agent.AgentEvents = &agent.NoopEvents{}
+	var events agent.Events = &agent.NoopEvents{}
 	if deps.emitter != nil {
 		events = deps.emitter
 	}
@@ -1003,6 +1003,7 @@ func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orch
 //     re-Start from a late checklist update after completion.
 type inlineStepLifecycle struct {
 	emitter   Emitter
+	scoper    CurrentStepScopable // nil if emitter doesn't support dynamic scoping
 	bb        orchestration.Blackboard
 	mu        sync.Mutex
 	started   map[string]bool // stepIDs that received PlanStepStart but not PlanStepComplete
@@ -1010,8 +1011,10 @@ type inlineStepLifecycle struct {
 }
 
 func newInlineStepLifecycle(emitter Emitter, bb orchestration.Blackboard) *inlineStepLifecycle {
+	scoper, _ := emitter.(CurrentStepScopable)
 	return &inlineStepLifecycle{
 		emitter:   emitter,
+		scoper:    scoper,
 		bb:        bb,
 		started:   make(map[string]bool),
 		completed: make(map[string]bool),
@@ -1046,12 +1049,19 @@ func (l *inlineStepLifecycle) onChecklistUpdate(stepID string, items []agent.Tod
 	}
 	l.mu.Unlock()
 
-	// Emit PlanStepStart before StepTodoUpdate so the frontend's openSteps
-	// map contains the step when the checklist update arrives, enabling
-	// nesting inside the plan-step block. A step that was already completed
-	// is not re-started (defensive against a late checklist update after
-	// declare_step_complete).
+	// Set the dynamic plan-step scope BEFORE emitting PlanStepStart so that
+	// all subsequent executor events (tool_call, thought, assistant, etc.)
+	// carry plan_step_id and nest under the step block in the frontend. This
+	// mirrors the static scoping that subagent copies get via WithPlanStepID.
+	// A step that was already completed is not re-started (defensive against
+	// a late checklist update after declare_step_complete).
 	if first {
+		if l.scoper != nil {
+			l.scoper.SetCurrentStepID(stepID)
+		}
+		// Emit PlanStepStart before StepTodoUpdate so the frontend's openSteps
+		// map contains the step when the checklist update arrives, enabling
+		// nesting inside the plan-step block.
 		desc, summary := lookupStepDesc(l.bb, stepID)
 		l.emitter.PlanStepStart(stepID, desc, summary)
 	}
@@ -1087,6 +1097,12 @@ func (l *inlineStepLifecycle) completeStep(stepID string, success bool, errMsg s
 		l.emitter.PlanStepStart(stepID, desc, summary)
 	}
 	l.emitter.PlanStepComplete(stepID, success, 0, errMsg)
+	// Clear the dynamic step scope so events after completion (delegation,
+	// planning, the next step's update_checklist ToolCall) are not mis-tagged
+	// with the completed step's plan_step_id.
+	if l.scoper != nil {
+		l.scoper.SetCurrentStepID("")
+	}
 }
 
 // completeAll auto-completes any plan steps that have not reached a terminal
@@ -1148,6 +1164,12 @@ func (l *inlineStepLifecycle) completeAll(success bool, errMsg string) {
 		desc, summary := lookupStepDesc(l.bb, id)
 		l.emitter.PlanStepStart(id, desc, summary)
 		l.emitter.PlanStepComplete(id, success, 0, errMsg)
+	}
+	// Clear the dynamic step scope after all steps are completed so any
+	// post-finish events (e.g. Conductor's final assistant message) are not
+	// mis-tagged with the last step's plan_step_id.
+	if l.scoper != nil {
+		l.scoper.SetCurrentStepID("")
 	}
 }
 

@@ -7,7 +7,7 @@ This guide covers installation, configuration, and building your first agent. By
 The SDK is a standard Go module. Add it to your project:
 
 ```bash
-go get github.com/v0lka/c0wrk/sdk@latest
+go get github.com/v0lka/sp4rk@latest
 ```
 
 ### Go version
@@ -69,7 +69,7 @@ Everything starts with [`sdk.Config`](../framework.go), passed to [`sdk.New`](..
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `Strategy` | `string` | `"sliding"` | Compaction algorithm: `"sliding"`, `"summary"`, or `"hierarchical"`. |
+| `Strategy` | `string` | `"sliding"` | Compaction algorithm: `"sliding_window"`, `"summarization"`, or `"hierarchical"`. |
 | `PredictivePercent` | `int` | `85` | Context fill percentage that triggers predictive compaction. |
 | `WarningPercent` | `int` | `92` | Context fill percentage that triggers warning-level compaction. |
 | `EmergencyPercent` | `int` | `98` | Context fill percentage that triggers emergency compaction. |
@@ -226,11 +226,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/v0lka/c0wrk/sdk"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // CalculatorTool evaluates simple arithmetic expressions.

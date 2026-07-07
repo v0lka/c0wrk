@@ -188,6 +188,26 @@ func TestFormatTimezoneLabel_PositiveOffset(t *testing.T) {
 	}
 }
 
+func TestFormatTimezoneLabel_HalfHourOffset(t *testing.T) {
+	// India is UTC+5:30 (19800 seconds). The label must include the minutes,
+	// not truncate to UTC+5.
+	label := formatTimezoneLabel("Asia/Kolkata", "IST", 19800) // UTC+5:30
+	if !strings.Contains(label, "UTC+5:30") {
+		t.Errorf("expected 'UTC+5:30' for half-hour offset, got %q", label)
+	}
+	if strings.Contains(label, "UTC+5:") && !strings.Contains(label, "UTC+5:30") {
+		t.Errorf("expected minutes rendered, got %q", label)
+	}
+}
+
+func TestFormatTimezoneLabel_NegativeHalfHourOffset(t *testing.T) {
+	// Newfoundland is UTC-3:30 (-12600 seconds).
+	label := formatTimezoneLabel("America/St_Johns", "NST", -12600) // UTC-3:30
+	if !strings.Contains(label, "UTC-3:30") {
+		t.Errorf("expected 'UTC-3:30' for negative half-hour offset, got %q", label)
+	}
+}
+
 func TestRuntimeOrNotInstalled(t *testing.T) {
 	if got := runtimeOrNotInstalled(""); got != "not installed" {
 		t.Errorf("expected 'not installed' for empty, got %q", got)

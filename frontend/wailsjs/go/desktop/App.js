@@ -154,6 +154,10 @@ export function GetSessionHistory(arg1) {
   return window['go']['desktop']['App']['GetSessionHistory'](arg1);
 }
 
+export function GetPendingActions(arg1) {
+  return window['go']['desktop']['App']['GetPendingActions'](arg1);
+}
+
 export function GetSessionRuntimeStatus(arg1) {
   return window['go']['desktop']['App']['GetSessionRuntimeStatus'](arg1);
 }
@@ -236,6 +240,10 @@ export function RenameProject(arg1, arg2) {
 
 export function RenameSession(arg1, arg2) {
   return window['go']['desktop']['App']['RenameSession'](arg1, arg2);
+}
+
+export function ResolvePendingMessage(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['desktop']['App']['ResolvePendingMessage'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function ResumeTask(arg1) {

@@ -1,7 +1,6 @@
 # Example 01 — Minimal Agent
 
-The smallest possible **full** agent: one LLM provider, the finish tool, and a
-single `Execute` call. No custom tools, no event handling, no orchestration.
+The smallest possible **full** agent: one LLM provider, the finish tool, and a single `Execute` call. No custom tools, no event handling, no orchestration.
 
 ## What you will learn
 
@@ -26,9 +25,7 @@ Executor.Run()
 ExecutionResult { Output, Status }
 ```
 
-The agent has exactly one tool — `finish`. It receives the user message,
-thinks about the answer, and calls `finish` with its response. This is the
-minimum viable agent: the ReAct loop with a completion signal.
+The agent has exactly one tool — `finish`. It receives the user message, thinks about the answer, and calls `finish` with its response. This is the minimum viable agent: the ReAct loop with a completion signal.
 
 ## Code walkthrough
 
@@ -48,12 +45,9 @@ fw, err := sdk.New(sdk.Config{
 })
 ```
 
-`sdk.Config.LLM.Providers` is a slice — you can register multiple providers
-(see example 07). Each `ProviderEntry` has a logical `Name`, a `ProviderType`
-(`"anthropic"` or `"openai"`), an `APIKey`, and a list of `Models`.
+`sdk.Config.LLM.Providers` is a slice — you can register multiple providers (see example 07). Each `ProviderEntry` has a logical `Name`, a `ProviderType` (`"anthropic"` or `"openai"`), an `APIKey`, and a list of `Models`.
 
-`DefaultModel` sets the model the router uses for all calls. You can switch
-models at runtime via `fw.LLMRouter().SetModel()`.
+`DefaultModel` sets the model the router uses for all calls. You can switch models at runtime via `fw.LLMRouter().SetModel()`.
 
 ### 2. The finish tool
 
@@ -61,10 +55,7 @@ models at runtime via `fw.LLMRouter().SetModel()`.
 fw.ToolRegistry().Register(agent.NewFinishTool())
 ```
 
-The `finish` tool is the agent's way of saying "I'm done." The executor
-handles `finish` inline — it does not call `ToolRegistry.Execute` for it —
-but the tool **must** be in the registry so its descriptor is sent to the LLM
-as an available tool. Without it, the LLM has no way to signal completion.
+The `finish` tool is the agent's way of saying "I'm done." The executor handles `finish` inline — it does not call `ToolRegistry.Execute` for it — but the tool **must** be in the registry so its descriptor is sent to the LLM as an available tool. Without it, the LLM has no way to signal completion.
 
 ### 3. System prompt factory
 
@@ -83,9 +74,7 @@ func(ctx context.Context, stepDescription string, modelMeta llm.ModelMetadata) s
 - `stepDescription` — the task the agent is working on
 - `modelMeta` — the active model's capabilities (context window, family, …)
 
-For a minimal agent, a static string is fine. Later examples use
-`prompt.NewSystemPromptBuilder()` for structured prompts with cache-break
-support.
+For a minimal agent, a static string is fine. Later examples use `prompt.NewSystemPromptBuilder()` for structured prompts with cache-break support.
 
 ### 4. Execute
 
@@ -93,13 +82,9 @@ support.
 result, err := fw.Execute(ctx, systemPrompt, &agent.NoopEvents{}, "What is the capital of France?")
 ```
 
-`Execute` is a convenience method that creates a `Conductor`, runs one ReAct
-loop, and returns an `*orchestration.ExecutionResult`. For repeated calls,
-use `fw.NewConductor()` once and call `conductor.Run()` multiple times.
+`Execute` is a convenience method that creates a `Conductor`, runs one ReAct loop, and returns an `*orchestration.ExecutionResult`. For repeated calls, use `fw.NewConductor()` once and call `conductor.Run()` multiple times.
 
-The second argument (`&agent.NoopEvents{}`) is the event sink. `NoopEvents`
-discards all lifecycle events — see **example 03** for a custom implementation
-that prints a live trace.
+The second argument (`&agent.NoopEvents{}`) is the event sink. `NoopEvents` discards all lifecycle events — see **example 03** for a custom implementation that prints a live trace.
 
 ### 5. Result
 

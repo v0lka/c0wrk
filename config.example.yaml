@@ -113,7 +113,6 @@ executor:
   max_react_steps: 80 # Maximum ReAct loop iterations for the Conductor (default: 80)
   max_retries: 2 # Maximum retries on execution failure (legacy, retained for framework.go)
   output_token_reserve: 4096 # Tokens reserved for model output generation
-
   # --- Context Compaction ---------------------------------------------------
   compaction:
     # Sliding-window compaction
@@ -167,17 +166,25 @@ executor:
     dedupRepeatedReads: false # Replace duplicate file reads with cache reference
 
   # --- Circuit Breaker (loop protection) ------------------------------------
+  # Thresholds calibrated against real-session telemetry. Mutating tools
+  # (write_file, edit_file, create_directory, delete_file, delete_directory)
+  # and meta-tools (update_checklist, set_step_status, store_fact) are excluded
+  # from the fruitless and same-tool-repeat detectors — their short, similarly-
+  # sized successful results are legitimate in bursts (e.g. batch file edits
+  # each returning "successfully edited file"). Thresholds below apply only to
+  # exploration/search tools where consecutive short results indicate a stuck
+  # loop.
   circuitBreaker:
     repeatNudgeThreshold: 3 # Identical tool calls before nudge
-    repeatAbortThreshold: 4 # Identical tool calls before abort
+    repeatAbortThreshold: 5 # Identical tool calls before abort
     truncationAbortThreshold: 3 # Consecutive truncated responses before abort
     parseErrorAbortThreshold: 3 # Consecutive parse errors before abort
-    fruitlessNudgeThreshold: 4 # Fruitless tool calls before nudge
-    fruitlessAbortThreshold: 6 # Fruitless tool calls before abort
-    fruitlessMaxResultLen: 32 # Max result length to consider fruitless
-    sameToolRepeatNudgeThreshold: 6 # Same tool repeated calls before nudge
-    sameToolRepeatAbortThreshold: 10 # Same tool repeated calls before abort
-    sameToolResultSizeDelta: 64 # Result size delta for same-tool detection
+    fruitlessNudgeThreshold: 5 # Fruitless tool calls before nudge
+    fruitlessAbortThreshold: 8 # Fruitless tool calls before abort
+    fruitlessMaxResultLen: 48 # Max result length to consider fruitless
+    sameToolRepeatNudgeThreshold: 8 # Same tool repeated calls before nudge
+    sameToolRepeatAbortThreshold: 12 # Same tool repeated calls before abort
+    sameToolResultSizeDelta: 128 # Result size delta for same-tool detection
 
 # ---------------------------------------------------------------------------
 # Security & Tool Access Policies
@@ -245,7 +252,7 @@ search:
 # ---------------------------------------------------------------------------
 toolLimits:
   # File read limits
-  readDefaultLines: 2000 # Max lines returned per read call
+  readDefaultLines: 2000 # Max lines returned per read_file call (default window when no range specified)
 
   # Search limits
   webSearchMaxResults: 5 # Max web search results
@@ -258,13 +265,18 @@ toolLimits:
   # large-output scenarios (e.g. reading files >2000 lines).
   # Omitted tools receive no Stage 1 truncation. Use 0 to disable a dimension.
   #
+  # Note: read_file uses a streaming reader (O(1) memory) that caps output at
+  # read time via MaxWindowLines (50000, hardcoded). The maxLines value below
+  # is a secondary safety net on the already-windowed output. The primary cap
+  # is readDefaultLines (the default window size).
+  #
   # Lowering these limits increases fragmentation frequency and thus LLM call
   # count (each fragment read costs an extra tool-call iteration), but reduces
   # memory and context overhead per individual tool result. Balance these
   # values based on your typical file sizes and available context window.
   perToolTruncation:
     read_file:
-      maxLines: 2000
+      maxLines: 2000 # secondary; primary cap is the streaming reader window
     ripgrep:
       maxLines: 2000
     glob:

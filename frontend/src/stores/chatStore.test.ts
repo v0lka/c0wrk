@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { useChatStore, groupMessages, extractPendingActions, type ChatMessageUI, type MessageType, type DisplayItem } from '@/stores/chatStore'
+import { useChatStore, groupMessages, type ChatMessageUI, type MessageType, type DisplayItem } from '@/stores/chatStore'
 
 let msgCounter = 0
 function makeUI(overrides: Partial<ChatMessageUI> & { type: MessageType }): ChatMessageUI {
@@ -15,10 +15,9 @@ function makeUI(overrides: Partial<ChatMessageUI> & { type: MessageType }): Chat
 }
 
 describe('groupMessages', () => {
-  it('returns empty items and pendingActions for empty input', () => {
+  it('returns empty items for empty input', () => {
     const result = groupMessages([])
     expect(result.items).toEqual([])
-    expect(result.pendingActions).toEqual([])
   })
 
   it('wraps a user message as kind: user', () => {
@@ -225,69 +224,122 @@ describe('groupMessages', () => {
     expect(group.thoughts[1]!.content).toBe('Second thought')
   })
 
-  it('puts unresolved tool_confirm in pendingActions', () => {
+  it('renders unresolved tool_confirm in items (sinks to end)', () => {
     const msg = makeUI({
       type: 'tool_confirm',
       metadata: { confirm_id: 'c1', tool: 'bash' },
     })
     const result = groupMessages([msg])
-    expect(result.pendingActions).toHaveLength(1)
-    expect(result.pendingActions[0]!.kind).toBe('tool_confirm')
-    // Also an action_placeholder in items
-    expect(result.items.some(i => i.kind === 'action_placeholder')).toBe(true)
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0]!.kind).toBe('tool_confirm')
   })
 
-  it('skips resolved tool_confirm', () => {
+  it('keeps resolved tool_confirm in items at stream position', () => {
     const msg = makeUI({
       type: 'tool_confirm',
-      metadata: { confirm_id: 'c1', tool: 'bash', resolved: true },
+      metadata: { confirm_id: 'c1', tool: 'bash', resolved: true, decision: 'confirmed' },
     })
     const result = groupMessages([msg])
-    expect(result.pendingActions).toHaveLength(0)
-    expect(result.items).toHaveLength(0)
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0]!.kind).toBe('tool_confirm')
   })
 
-  it('puts unresolved ask_user in pendingActions', () => {
+  it('renders unresolved ask_user in items', () => {
     const msg = makeUI({
       type: 'ask_user',
       metadata: { request_id: 'r1', questions: [] },
     })
     const result = groupMessages([msg])
-    expect(result.pendingActions).toHaveLength(1)
-    expect(result.pendingActions[0]!.kind).toBe('ask_user')
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0]!.kind).toBe('ask_user')
   })
 
-  it('skips resolved ask_user', () => {
+  it('keeps resolved ask_user in items at stream position', () => {
     const msg = makeUI({
       type: 'ask_user',
-      metadata: { request_id: 'r1', questions: [], resolved: true },
+      metadata: { request_id: 'r1', questions: [], resolved: true, answer: 'yes' },
     })
     const result = groupMessages([msg])
-    expect(result.pendingActions).toHaveLength(0)
-    expect(result.items).toHaveLength(0)
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0]!.kind).toBe('ask_user')
   })
 
-  it('puts unresolved task_failed_resumable in pendingActions (no placeholder)', () => {
+  it('renders unresolved task_failed_resumable as resume_action in items', () => {
     const msg = makeUI({
       type: 'task_failed_resumable' as MessageType,
       metadata: {},
     })
     const result = groupMessages([msg])
-    expect(result.pendingActions).toHaveLength(1)
-    expect(result.pendingActions[0]!.kind).toBe('resume_action')
-    // No placeholder in items
-    expect(result.items.filter(i => i.kind === 'action_placeholder')).toHaveLength(0)
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0]!.kind).toBe('resume_action')
   })
 
-  it('puts unresolved step_limit in pendingActions with placeholder', () => {
+  it('renders unresolved step_limit in items', () => {
     const msg = makeUI({
       type: 'step_limit',
       metadata: { request_id: 'sl1' },
     })
     const result = groupMessages([msg])
-    expect(result.pendingActions).toHaveLength(1)
-    expect(result.pendingActions[0]!.kind).toBe('step_limit')
-    expect(result.items.some(i => i.kind === 'action_placeholder')).toBe(true)
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0]!.kind).toBe('step_limit')
+  })
+
+  it('sinks unresolved pending actions to the end of items', () => {
+    const user = makeUI({ type: 'user', content: 'hi' })
+    const confirm = makeUI({ type: 'tool_confirm', metadata: { confirm_id: 'c1', tool: 'bash' } })
+    const result = groupMessages([confirm, user])
+    expect(result.items).toHaveLength(2)
+    expect(result.items[0]!.kind).toBe('user')
+    expect(result.items[1]!.kind).toBe('tool_confirm')
+  })
+
+  it('keeps resolved pending actions at their stream position (no sinking)', () => {
+    const user = makeUI({ type: 'user', content: 'hi' })
+    const confirm = makeUI({ type: 'tool_confirm', metadata: { confirm_id: 'c1', tool: 'bash', resolved: true, decision: 'confirmed' } })
+    const result = groupMessages([confirm, user])
+    expect(result.items).toHaveLength(2)
+    expect(result.items[0]!.kind).toBe('tool_confirm')
+    expect(result.items[1]!.kind).toBe('user')
+  })
+
+  it('renders pending action in root even when message carries a plan_step_id', () => {
+    const plan = makeUI({
+      type: 'plan',
+      metadata: { steps: [{ id: 'ps1', description: 'First step' }] },
+    })
+    const stepStart = makeUI({
+      type: 'plan_step_start',
+      metadata: { step_id: 'ps1', description: 'First step' },
+    })
+    const confirm = makeUI({
+      type: 'tool_confirm',
+      metadata: { confirm_id: 'c1', tool: 'bash', plan_step_id: 'ps1' },
+    })
+    const result = groupMessages([plan, stepStart, confirm])
+    const step = result.items.find(i => i.kind === 'plan_step')
+    expect(step).toBeDefined()
+    const confirmItem = result.items.find(i => i.kind === 'tool_confirm')
+    expect(confirmItem).toBeDefined()
+    if (step && step.kind === 'plan_step') {
+      expect(step.children.some(i => i.kind === 'tool_confirm')).toBe(false)
+    }
+  })
+
+  it('keeps only the last unresolved plan_review (replan cycle)', () => {
+    const pr1 = makeUI({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1' } })
+    const pr2 = makeUI({ id: 'pr-2', type: 'plan_review', metadata: { request_id: 'r2' } })
+    const result = groupMessages([pr1, pr2])
+    const planReviews = result.items.filter(i => i.kind === 'plan_review')
+    expect(planReviews).toHaveLength(1)
+    expect((planReviews[0]! as { message: ChatMessageUI }).message.id).toBe('pr-2')
+  })
+
+  it('keeps resolved plan_reviews at stream position alongside the last unresolved one', () => {
+    const pr1 = makeUI({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1', resolved: true, decision: 'approve' } })
+    const pr2 = makeUI({ id: 'pr-2', type: 'plan_review', metadata: { request_id: 'r2' } })
+    const result = groupMessages([pr1, pr2])
+    const planReviews = result.items.filter(i => i.kind === 'plan_review')
+    expect(planReviews).toHaveLength(2)
   })
 
   it('wraps error message as kind: error', () => {
@@ -409,67 +461,6 @@ describe('groupMessages', () => {
     const sub = result.items[0]! as DisplayItem & { kind: 'subagent' }
     expect(sub.status).toBe('completed')
     expect(sub.duration).toBe(3000)
-  })
-})
-
-describe('extractPendingActions', () => {
-  it('returns empty array for empty input', () => {
-    const result = extractPendingActions([])
-    expect(result).toHaveLength(0)
-  })
-
-  it('returns same reference for consecutive calls with no actions', () => {
-    const r1 = extractPendingActions([])
-    const r2 = extractPendingActions([makeUI({ type: 'user', content: 'hi' })])
-    expect(r1).toBe(r2) // same EMPTY_PENDING array reference
-  })
-
-  it('collects unresolved tool_confirm', () => {
-    const msg = makeUI({ type: 'tool_confirm', metadata: { confirm_id: 'c1' } })
-    const result = extractPendingActions([msg])
-    expect(result).toHaveLength(1)
-    expect(result[0]!.kind).toBe('tool_confirm')
-  })
-
-  it('collects unresolved ask_user', () => {
-    const msg = makeUI({ type: 'ask_user', metadata: { request_id: 'r1' } })
-    const result = extractPendingActions([msg])
-    expect(result).toHaveLength(1)
-    expect(result[0]!.kind).toBe('ask_user')
-  })
-
-  it('collects unresolved task_failed_resumable', () => {
-    const msg = makeUI({ type: 'task_failed_resumable' as MessageType, metadata: {} })
-    const result = extractPendingActions([msg])
-    expect(result).toHaveLength(1)
-    expect(result[0]!.kind).toBe('resume_action')
-  })
-
-  it('collects unresolved step_limit', () => {
-    const msg = makeUI({ type: 'step_limit', metadata: { request_id: 'sl1' } })
-    const result = extractPendingActions([msg])
-    expect(result).toHaveLength(1)
-    expect(result[0]!.kind).toBe('step_limit')
-  })
-
-  it('excludes resolved items', () => {
-    const msgs = [
-      makeUI({ type: 'tool_confirm', metadata: { confirm_id: 'c1', resolved: true } }),
-      makeUI({ type: 'ask_user', metadata: { request_id: 'r1', resolved: true } }),
-    ]
-    const result = extractPendingActions(msgs)
-    expect(result).toHaveLength(0)
-  })
-
-  it('collects only unresolved from mixed set', () => {
-    const msgs = [
-      makeUI({ type: 'tool_confirm', metadata: { confirm_id: 'c1', resolved: true } }),
-      makeUI({ type: 'tool_confirm', metadata: { confirm_id: 'c2' } }),
-      makeUI({ type: 'user', content: 'hello' }),
-      makeUI({ type: 'ask_user', metadata: { request_id: 'r1' } }),
-    ]
-    const result = extractPendingActions(msgs)
-    expect(result).toHaveLength(2)
   })
 })
 

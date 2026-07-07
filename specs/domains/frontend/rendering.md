@@ -13,7 +13,7 @@ Transforms flat message arrays into a structured display tree, rendering each it
 - `frontend/src/components/chat/toolCards/` — specialized tool card system (registry-driven per-tool rendering)
 - `frontend/src/components/chat/toolCards/toolCardRegistry.ts` — per-tool card config lookup, `(cached)` / `(batched)` suffix stripping
 - `frontend/src/components/chat/toolCards/ToolCard.tsx` — tool card component (renders cached/batched badges, suffix-aware title extraction)
-- `frontend/src/components/chat/PendingActionsBar.tsx` — action bar (confirm/ask/limit)
+- `frontend/src/components/chat/ChecklistCard.tsx` — checklist card (the visual reference style for pending-action cards)
 - `frontend/src/components/chat/UserMessage.tsx` — user message component (supports `isPinned` mode for sticky rendering inside ChatArea)
 - `frontend/src/components/chat/UserMessageContent.tsx` — renders user message content with skill chips and clickable file links (falls back to Markdown for messages without references)
 - `frontend/src/lib/markdownConfig.tsx` — Markdown wrapper component with remark/rehype plugins and custom link handler for local file navigation
@@ -38,7 +38,7 @@ groupMessages(): GroupedMessages { items: DisplayItem[], pendingActions: ... } (
 ChatMessageRenderer: renders each DisplayItem by type
 ```
 
-### Display Item Types (19 kinds)
+### Display Item Types (18 kinds)
 
 | Type                 | Description               | Visual Treatment                                                              |
 | -------------------- | ------------------------- | ----------------------------------------------------------------------------- |
@@ -47,20 +47,19 @@ ChatMessageRenderer: renders each DisplayItem by type
 | `thought`            | Single reasoning block    | Collapsed by default, muted                                                   |
 | `thought_group`      | Multiple thoughts grouped | Collapsible container                                                         |
 | `tool`               | Tool call + result pair   | Specialized card per tool (icon + verb + title + type-specific body). Batched sub-calls arrive with `" (batched)"` suffix — `ToolCard.tsx` strips the suffix, renders a "batched" badge, and looks up the original tool's card config. Cached tool reads arrive with `" (cached)"` suffix and follow the same pattern. |
-| `tool_confirm`       | Pending confirmation      | Action buttons (Allow/Deny)                                                   |
-| `ask_user`           | Agent question to user    | Form with inputs                                                              |
-| `step_limit`         | Budget decision           | Action buttons                                                                |
-| `resume_action`      | Resume after failure      | Resume button                                                                 |
+| `tool_confirm`       | Pending confirmation      | Checklist-style card (warning accent); Allow/Deny/Ask-Agent buttons. **Sinks** to the bottom of the chat while unresolved; settles at stream position when resolved (success/destructive accent). Always rendered in the root stream, never nested in a plan step or subagent. |
+| `ask_user`           | Agent question to user    | Checklist-style card (info accent); option list + custom-text input + Submit. Sinks while unresolved; settles at stream position when answered. |
+| `step_limit`         | Budget decision           | Checklist-style card (warning accent); Allow Once/Always/Deny buttons. Sinks while unresolved; settles at stream position when decided. |
+| `resume_action`      | Resume after failure      | Checklist-style card (destructive accent); Resume/Cancel buttons. Sinks while unresolved; settles at stream position when resolved (records `resumed`/`cancelled` decision). |
 | `error`              | Error message             | Red accent, error icon                                                        |
 | `service`            | System/status message     | Muted, small text (routing, retry, status events are grouped here)            |
 | `plan_step`          | Plan step indicator       | Step badge with status                                                        |
-| `plan_review`        | Plan review message       | Plan review UI (approve/reject/feedback)                                      |
+| `plan_review`        | Plan review message       | Checklist-style card (info accent); Approve/Request-Changes/Abandon UI. Sinks while unresolved; settles at stream position when decided. Only the last unresolved `plan_review` is kept (replan cycle supersedes earlier unresolved ones); resolved plan_reviews remain at their stream position. |
 | `reflection`         | Reflector analysis        | Warning accent, collapsible                                                   |
 | `step_finish`        | Step completion marker    | Success/fail indicator (emitted by `finish` tool call)                        |
 | `memory_read`        | Memory read notice        | Info badge (agent read from persistent memory)                                |
-| `action_placeholder` | Pending action indicator  | Placeholder with label                                                        |
 | `context_compaction` | Compaction notice         | Info badge (shows before/after fill %)                                        |
-| `checklist`          | Checklist card            | Checkbox list with progress count; **sinks** to end of parent container while active (unchecked items), settles at stream position when all items checked. Renders standalone (no plan step) or nested in a `plan_step` block. |
+| `checklist`          | Checklist card            | Checkbox list with progress count; **sinks** to end of parent container while active (unchecked items), settles at stream position when all items checked. Renders standalone (no plan step) or nested in a `plan_step` block. Pending-action cards (`tool_confirm`/`ask_user`/`step_limit`/`plan_review`/`resume_action`) follow the same sinking semantics but always render in the root stream and use the same card chrome as this component. |
 
 ### Grouping Logic
 
@@ -69,7 +68,7 @@ Key transformations in `groupMessages()`:
 1. **Tool call correlation**: matches `tool_call` with its `tool_result` by `tool_call_id` or composite key
 2. **Thought collapsing**: consecutive thought messages grouped into `thought_group`
 3. **Plan step nesting**: messages between `plan_step_start` and `plan_step_complete` nested under step
-4. **Pending action extraction**: unresolved confirmations/questions extracted to PendingActionsBar
+4. **Pending action sinking**: unresolved confirmations/questions (`tool_confirm`, `ask_user`, `step_limit`, `plan_review`, `resume_action`) are pushed into the **root** items (never nested in a plan step or subagent, regardless of `plan_step_id`) and moved to the very end of the chat so they stay visible at the bottom while new content streams in above. Resolved actions remain at their stream position (like settled checklists). Only the last unresolved `plan_review` is kept (replan cycle).
 5. **Subagent handling**: subagent messages (`subagent_launch`/`subagent_complete`) are skipped entirely (not rendered as display items)
 6. **Special tool handling**: `finish` tool call → `step_finish` item; `memory_read` event → `memory_read` item; `plan_review_*` events → `plan_review` item; `context_compaction` event → `context_compaction` item (with before/after fill %); `routing`/`retry`/`status` events → `service` item
 7. **Checklist sinking**: `step_todo_update` messages → `checklist` DisplayItem; latest per key (stepId || standalone) supersedes previous; active (unchecked items) checklists are moved to the end of their container (root items for standalone, step children for step-associated) so they stay visible at the bottom while new content streams in above; settled (all-checked) checklists remain at their stream position
@@ -98,7 +97,7 @@ All user messages always render in the chat history. The most recent user messag
 - Display items are keyed by stable IDs (not array index)
 - Streaming text renders in real-time without layout shift
 - Tool call and result are always rendered together (never orphaned)
-- Pending actions are always visible (sticky bar, never scrolled off-screen)
+- Pending actions are always visible: unresolved action cards sink to the bottom of the chat stream (never scrolled out of reach while the user is at the bottom); resolved action cards settle at their stream position
 - No component file exceeds 300 lines (extract into sub-components — see `ChatInput.tsx` for a component using sub-hooks to manage complexity)
 
 ## Error Handling

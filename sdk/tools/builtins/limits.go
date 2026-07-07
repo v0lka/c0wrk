@@ -4,7 +4,9 @@ import "time"
 
 // FileLimits holds configurable limits for file operation tools.
 type FileLimits struct {
-	ReadDefaultLines int // max lines per read call
+	ReadDefaultLines int // max lines per read call when no explicit range is given
+	MaxLineBytes     int // per-line byte cap; lines exceeding this are truncated (0 = no cap)
+	MaxWindowLines   int // hard cap on lines returned per call even for explicit ranges (0 = no cap)
 }
 
 // BashTimeouts holds configurable timeout values for the bash_exec tool.
@@ -25,6 +27,8 @@ func DefaultBashTimeouts() BashTimeouts {
 func DefaultFileLimits() FileLimits {
 	return FileLimits{
 		ReadDefaultLines: 2000,
+		MaxLineBytes:     1 << 20, // 1 MiB
+		MaxWindowLines:   50000,
 	}
 }
 

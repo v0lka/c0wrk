@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const toolEditFileDescription = `Performs a find-and-replace edit on an existing file. Locates a single exact occurrence of old_string in the file and replaces it with new_string. The operation fails if old_string is not found or if it matches more than once — provide enough surrounding context in old_string to ensure a unique match. Prefer this tool over write_file for surgical modifications to existing files.`

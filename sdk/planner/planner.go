@@ -1,3 +1,5 @@
+// Package planner generates DAG execution plans for complex tasks, breaking
+// them into ordered steps with dependency tracking.
 package planner
 
 import (
@@ -8,12 +10,13 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	"github.com/v0lka/c0wrk/sdk/prompt"
-	"github.com/v0lka/c0wrk/sdk/skills"
-	tools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/prompt"
+	"github.com/v0lka/sp4rk/skills"
+	"github.com/v0lka/sp4rk/strutil"
+	tools "github.com/v0lka/sp4rk/tools"
 )
 
 // systemMessagesFromPrompt splits a system prompt on CacheBreakMarker
@@ -389,7 +392,7 @@ func (p *Planner) planWithExploration(
 		execCaller = p.Cfg.CallerForStep(cm, "planner-exploration")
 	}
 
-	var executorEmitter agent.AgentEvents
+	var executorEmitter agent.Events
 	if p.Cfg.Emitter != nil {
 		executorEmitter = p.Cfg.Emitter
 	}
@@ -397,18 +400,17 @@ func (p *Planner) planWithExploration(
 	exec := agent.NewExecutor(
 		execCaller,
 		p.Cfg.ToolRegistry,
-		tokenCounter,
 		p.Cfg.MaxExploreSteps,
-		executorEmitter,
-		true,
-		agent.DefaultToolResultBudget(),
-		agent.CircuitBreakerConfig{
+		agent.WithTokenCounter(tokenCounter),
+		agent.WithEvents(executorEmitter),
+		agent.WithSuppressAssistantEvents(true),
+		agent.WithToolResultBudget(agent.DefaultToolResultBudget()),
+		agent.WithCircuitBreaker(agent.CircuitBreakerConfig{
 			RepeatNudgeThreshold:     defaultRepeatNudgeThreshold,
 			RepeatAbortThreshold:     defaultRepeatAbortThreshold,
 			TruncationAbortThreshold: defaultTruncationAbortThreshold,
 			ParseErrorAbortThreshold: defaultParseErrorAbortThreshold,
-		},
-		nil,
+		}),
 	)
 	exec.SetReasoningEffort(p.Cfg.ReasoningEffort)
 
@@ -906,15 +908,6 @@ func summarizeExplorationSteps(steps []agent.Step) string {
 	}
 
 	result := b.String()
-	if len(result) > maxExplorationContextLen {
-		truncIdx := maxExplorationContextLen
-		for truncIdx > 0 && result[truncIdx]&0xC0 == 0x80 {
-			truncIdx--
-		}
-		result = result[:truncIdx]
-		if idx := strings.LastIndex(result, "\n"); idx > 0 {
-			result = result[:idx+1]
-		}
-	}
+	result = strutil.TruncateUTF8AtLineBoundary(result, maxExplorationContextLen)
 	return result
 }

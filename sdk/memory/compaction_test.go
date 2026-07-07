@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	sdkagent "github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/llm"
+	sdkagent "github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
 )
 
 // mockSummarizer returns a deterministic summary for testing.

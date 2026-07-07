@@ -2,14 +2,18 @@ package agent
 
 import "time"
 
-// AgentEvents defines universal agent lifecycle events.
-// Any agent system (not just c0wrk) can implement this interface.
+// Events defines universal agent lifecycle events.
+// Any agent system (not just the host application) can implement this interface.
+//
+// Concurrency: when sub-agents run in parallel (RunSubAgentsParallel), each
+// sub-agent goroutine invokes emitter methods concurrently. Implementations
+// MUST be safe for concurrent use (e.g. guard shared state with a mutex).
 //
 // BREAKING CHANGE (v0.x): Finishing(stepNum int, summary string) was added.
-// All implementations of AgentEvents (and orchestration.Events, which embeds it)
+// All implementations of Events (and orchestration.Events, which embeds it)
 // MUST implement this method or fail to compile. A no-op stub is provided by
 // NoopEvents for struct embedding convenience.
-type AgentEvents interface {
+type Events interface {
 	StepStart(stepNum int)
 	Thought(stepNum int, content, reasoning string)
 	ToolCall(stepNum, callIdx int, toolName, argsPreview, source string)
@@ -30,21 +34,46 @@ type AgentEvents interface {
 	ExecutorDiagnostic(stepNum int, event string, details map[string]any)
 }
 
-// NoopEvents is a no-op implementation of AgentEvents.
+// NoopEvents is a no-op implementation of Events.
 type NoopEvents struct{}
 
-var _ AgentEvents = (*NoopEvents)(nil)
+var _ Events = (*NoopEvents)(nil)
 
-func (n *NoopEvents) StepStart(_ int)                                      {}
-func (n *NoopEvents) Thought(_ int, _, _ string)                           {}
-func (n *NoopEvents) ToolCall(_, _ int, _, _, _ string)                    {}
-func (n *NoopEvents) ToolResult(_, _, _ int, _ string, _ bool)             {}
-func (n *NoopEvents) StepComplete(_ int, _ time.Duration)                  {}
-func (n *NoopEvents) SubAgentLaunch(_, _ string)                           {}
-func (n *NoopEvents) SubAgentComplete(_ string, _ bool, _ time.Duration)   {}
-func (n *NoopEvents) AssistantChunk(_ string)                              {}
-func (n *NoopEvents) AssistantDone(_ string, _, _ int)                     {}
-func (n *NoopEvents) ContextFill(_ float64, _, _ int, _, _ string)         {}
-func (n *NoopEvents) Finishing(_ int, _ string)                            {}
-func (n *NoopEvents) ContextCompaction(_, _ float64, _ string)             {}
+// StepStart is a no-op.
+func (n *NoopEvents) StepStart(_ int) {}
+
+// Thought is a no-op.
+func (n *NoopEvents) Thought(_ int, _, _ string) {}
+
+// ToolCall is a no-op.
+func (n *NoopEvents) ToolCall(_, _ int, _, _, _ string) {}
+
+// ToolResult is a no-op.
+func (n *NoopEvents) ToolResult(_, _, _ int, _ string, _ bool) {}
+
+// StepComplete is a no-op.
+func (n *NoopEvents) StepComplete(_ int, _ time.Duration) {}
+
+// SubAgentLaunch is a no-op.
+func (n *NoopEvents) SubAgentLaunch(_, _ string) {}
+
+// SubAgentComplete is a no-op.
+func (n *NoopEvents) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
+
+// AssistantChunk is a no-op.
+func (n *NoopEvents) AssistantChunk(_ string) {}
+
+// AssistantDone is a no-op.
+func (n *NoopEvents) AssistantDone(_ string, _, _ int) {}
+
+// ContextFill is a no-op.
+func (n *NoopEvents) ContextFill(_ float64, _, _ int, _, _ string) {}
+
+// Finishing is a no-op.
+func (n *NoopEvents) Finishing(_ int, _ string) {}
+
+// ContextCompaction is a no-op.
+func (n *NoopEvents) ContextCompaction(_, _ float64, _ string) {}
+
+// ExecutorDiagnostic is a no-op.
 func (n *NoopEvents) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/orchestration"
 )
 
 // spyEmitter records all method calls for assertion.
@@ -85,9 +85,14 @@ func (s *scopableSpyEmitter) WithPlanStepID(id string) Emitter {
 	return &scopableSpyEmitter{spyEmitter: spyEmitter{}}
 }
 
+func (s *scopableSpyEmitter) SetCurrentStepID(id string) {
+	s.record("SetCurrentStepID", id)
+}
+
 var _ Emitter = (*spyEmitter)(nil)
 var _ Emitter = (*scopableSpyEmitter)(nil)
 var _ PlanStepScopable = (*scopableSpyEmitter)(nil)
+var _ CurrentStepScopable = (*scopableSpyEmitter)(nil)
 
 func TestNewLoggingEmitter_NilLogger_ReturnsInner(t *testing.T) {
 	inner := &spyEmitter{}
@@ -202,5 +207,42 @@ func TestLoggingEmitter_WithPlanStepID_ScopesInner(t *testing.T) {
 	logged := buf.String()
 	if !bytes.Contains([]byte(logged), []byte("planStepID=step_42")) {
 		t.Errorf("expected planStepID in log output; got: %s", logged)
+	}
+}
+
+func TestLoggingEmitter_SetCurrentStepID_DelegatesToInner(t *testing.T) {
+	inner := &scopableSpyEmitter{}
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	le := NewLoggingEmitter(inner, logger)
+
+	scoper, ok := le.(CurrentStepScopable)
+	if !ok {
+		t.Fatal("expected loggingEmitter to implement CurrentStepScopable")
+	}
+	scoper.SetCurrentStepID("step_inline")
+
+	if len(inner.calls) != 1 {
+		t.Fatalf("expected 1 call to inner, got %d", len(inner.calls))
+	}
+	if inner.calls[0].method != "SetCurrentStepID" {
+		t.Errorf("expected method SetCurrentStepID, got %q", inner.calls[0].method)
+	}
+}
+
+func TestLoggingEmitter_SetCurrentStepID_NoopWhenInnerNotScopable(t *testing.T) {
+	// spyEmitter does NOT implement CurrentStepScopable — the call must be
+	// a graceful no-op (no panic, no call recorded).
+	inner := &spyEmitter{}
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	le := NewLoggingEmitter(inner, logger)
+
+	scoper, ok := le.(CurrentStepScopable)
+	if !ok {
+		t.Fatal("expected loggingEmitter to implement CurrentStepScopable")
+	}
+	scoper.SetCurrentStepID("step_inline") // must not panic
+
+	if len(inner.calls) != 0 {
+		t.Errorf("expected 0 calls to non-scopable inner, got %d", len(inner.calls))
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
+	"github.com/v0lka/sp4rk/agent"
 )
 
 // ---------------------------------------------------------------------------

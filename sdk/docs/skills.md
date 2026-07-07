@@ -1,19 +1,14 @@
 # Agent Skills
 
-The `skills` package provides discovery, parsing, and management of Agent
-Skills following the open agentskills.io specification. Skills are markdown
-documents (`SKILL.md`) with YAML frontmatter that bundle instructions and
-optional resources an agent can activate on demand.
+The `skills` package provides discovery, parsing, and management of Agent Skills following the open agentskills.io specification. Skills are markdown documents (`SKILL.md`) with YAML frontmatter that bundle instructions and optional resources an agent can activate on demand.
 
 ```go
-import "github.com/v0lka/c0wrk/sdk/skills"
+import "github.com/v0lka/sp4rk/skills"
 ```
 
 ## SkillManager
 
-`SkillManager` discovers, parses, and serves Agent Skills from configured
-directories. Directories are scanned in priority order; the first occurrence of
-a skill name wins, so higher-priority directories override lower-priority ones.
+`SkillManager` discovers, parses, and serves Agent Skills from configured directories. Directories are scanned in priority order; the first occurrence of a skill name wins, so higher-priority directories override lower-priority ones.
 
 ### NewSkillManager
 
@@ -21,8 +16,7 @@ a skill name wins, so higher-priority directories override lower-priority ones.
 func NewSkillManager(dirs []string, logger *slog.Logger) *SkillManager
 ```
 
-`dirs` is a list of discovery directories in priority order (highest priority
-first). Call `Scan()` to populate the catalog.
+`dirs` is a list of discovery directories in priority order (highest priority first). Call `Scan()` to populate the catalog.
 
 ```go
 mgr := skills.NewSkillManager([]string{
@@ -41,17 +35,11 @@ if err := mgr.Scan(); err != nil {
 func (m *SkillManager) Scan() error
 ```
 
-`Scan` walks all discovery directories and loads valid skills. It clears any
-existing catalog first, so it is safe to call repeatedly (e.g. after skills are
-added or removed). Directories are walked in **reverse priority order** so that
-higher-priority entries overwrite lower-priority ones with the same name.
+`Scan` walks all discovery directories and loads valid skills. It clears any existing catalog first, so it is safe to call repeatedly (e.g. after skills are added or removed). Directories are walked in **reverse priority order** so that higher-priority entries overwrite lower-priority ones with the same name.
 
-Invalid `SKILL.md` files are logged at debug level and skipped — a directory
-that is not an agent skill is simply ignored rather than causing an error.
+Invalid `SKILL.md` files are logged at debug level and skipped — a directory that is not an agent skill is simply ignored rather than causing an error.
 
-**Symlink following:** `Scan` follows symlinks that point to directories. This
-lets you keep a skill repository elsewhere and link it into a discovery
-directory.
+**Symlink following:** `Scan` follows symlinks that point to directories. This lets you keep a skill repository elsewhere and link it into a discovery directory.
 
 ### List
 
@@ -59,9 +47,7 @@ directory.
 func (m *SkillManager) List() []SkillDescriptor
 ```
 
-Returns lightweight descriptors for all discovered skills. Each descriptor
-contains only the name and description (~100 tokens total), making it suitable
-for the discovery/matching phase where the full skill body is not yet needed.
+Returns lightweight descriptors for all discovered skills. Each descriptor contains only the name and description (~100 tokens total), making it suitable for the discovery/matching phase where the full skill body is not yet needed.
 
 ### Get
 
@@ -77,8 +63,7 @@ Returns the full `Skill` by name, or `(_, false)` if not found.
 func (m *SkillManager) SkillPath(name string) (string, bool)
 ```
 
-Returns the absolute directory path for a named skill, or `("", false)` if the
-skill is not found.
+Returns the absolute directory path for a named skill, or `("", false)` if the skill is not found.
 
 ### SafeResolvePath
 
@@ -86,23 +71,14 @@ skill is not found.
 func SafeResolvePath(baseDir, relPath string) (string, error)
 ```
 
-`SafeResolvePath` resolves a relative path within a base directory, preventing
-path traversal attacks. It is used by both `SkillManager` and
-`ReadSkillResourceTool` to safely access skill-bundled resources.
+`SafeResolvePath` resolves a relative path within a base directory, preventing path traversal attacks. It is used by both `SkillManager` and `ReadSkillResourceTool` to safely access skill-bundled resources.
 
 It works as follows:
 
-1. Cleans `baseDir`. If `baseDir` itself is a symlink, it resolves the symlink
-   (but does **not** resolve ancestor symlinks like macOS `/var → /private/var`,
-   preserving textual path consistency).
+1. Cleans `baseDir`. If `baseDir` itself is a symlink, it resolves the symlink (but does **not** resolve ancestor symlinks like macOS `/var → /private/var`, preserving textual path consistency).
 2. Joins and cleans the relative path.
-3. Resolves any symlinks in the joined path to their real filesystem paths,
-   preventing symlink-based traversal bypass (e.g. a symlink inside the skill
-   directory pointing outside). If symlink resolution fails (e.g. a broken
-   link), it falls back to a textual check.
-4. Verifies the resolved path is within `baseDir` using
-   `pathutil.IsWithinPath`. Returns an error if the path escapes the skill
-   directory.
+3. Resolves any symlinks in the joined path to their real filesystem paths, preventing symlink-based traversal bypass (e.g. a symlink inside the skill directory pointing outside). If symlink resolution fails (e.g. a broken link), it falls back to a textual check.
+4. Verifies the resolved path is within `baseDir` using `pathutil.IsWithinPath`. Returns an error if the path escapes the skill directory.
 
 ```go
 abs, err := skills.SafeResolvePath(skillDir, "references/api.md")
@@ -113,8 +89,7 @@ if err != nil {
 
 ## Skill
 
-`Skill` represents a fully loaded Agent Skill — metadata, instructions, and
-filesystem path.
+`Skill` represents a fully loaded Agent Skill — metadata, instructions, and filesystem path.
 
 ```go
 type Skill struct {
@@ -147,9 +122,7 @@ type SkillMetadata struct {
 func (m *SkillMetadata) AllowedToolList() []string
 ```
 
-Parses the space-separated `allowed-tools` field into a slice. Returns `nil`
-if the field is empty. This is an experimental field for restricting which
-tools a skill may use.
+Parses the space-separated `allowed-tools` field into a slice. Returns `nil` if the field is empty. This is an experimental field for restricting which tools a skill may use.
 
 ```go
 tools := skill.Metadata.AllowedToolList()
@@ -158,9 +131,7 @@ tools := skill.Metadata.AllowedToolList()
 
 ## SkillDescriptor
 
-`SkillDescriptor` is the lightweight discovery-time representation of a skill —
-name and description only (~100 tokens). It is what `List()` returns and what
-the router uses for matching.
+`SkillDescriptor` is the lightweight discovery-time representation of a skill — name and description only (~100 tokens). It is what `List()` returns and what the router uses for matching.
 
 ```go
 type SkillDescriptor struct {
@@ -171,8 +142,7 @@ type SkillDescriptor struct {
 
 ## SKILL.md Format
 
-A `SKILL.md` file consists of YAML frontmatter delimited by `---` lines,
-followed by a markdown body.
+A `SKILL.md` file consists of YAML frontmatter delimited by `---` lines, followed by a markdown body.
 
 ```markdown
 ---
@@ -209,16 +179,11 @@ A skill whose `name` does not match its parent directory name is rejected.
 func ParseSkill(skillMDPath, dirPath string) (*Skill, error)
 ```
 
-Reads and validates a `SKILL.md` file. `dirPath` is the absolute path to the
-skill directory (used for `DirPath` and name validation). On validation
-failure, returns a `*ParseError` describing the problem.
+Reads and validates a `SKILL.md` file. `dirPath` is the absolute path to the skill directory (used for `DirPath` and name validation). On validation failure, returns a `*ParseError` describing the problem.
 
 ## ReadSkillResourceTool
 
-`ReadSkillResourceTool` is a built-in tool (`read_skill_resource`) that reads
-resource files from activated skill directories. It is constructed with a
-`SkillPathResolver` — a function that resolves a skill name to its directory
-path, carrying per-session activation state.
+`ReadSkillResourceTool` is a built-in tool (`read_skill_resource`) that reads resource files from activated skill directories. It is constructed with a `SkillPathResolver` — a function that resolves a skill name to its directory path, carrying per-session activation state.
 
 ```go
 type SkillPathResolver func(ctx context.Context, skillName string) (dirPath string, ok bool)
@@ -226,14 +191,11 @@ type SkillPathResolver func(ctx context.Context, skillName string) (dirPath stri
 func NewReadSkillResourceTool(resolver SkillPathResolver) *ReadSkillResourceTool
 ```
 
-The tool uses `SafeResolvePath` to prevent path traversal, so an agent cannot
-read files outside a skill's directory. Skill resources are read-only and safe,
-so the tool uses an always-allow policy.
+The tool uses `SafeResolvePath` to prevent path traversal, so an agent cannot read files outside a skill's directory. Skill resources are read-only and safe, so the tool uses an always-allow policy.
 
 ## Complete Example
 
-This example mirrors the skill-discovery flow from the full-power example: seed
-a sample skill on disk, scan the directory, and list the discovered skills.
+This example mirrors the skill-discovery flow from the full-power example: seed a sample skill on disk, scan the directory, and list the discovered skills.
 
 ```go
 package main
@@ -244,7 +206,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/v0lka/c0wrk/sdk/skills"
+	"github.com/v0lka/sp4rk/skills"
 )
 
 func main() {

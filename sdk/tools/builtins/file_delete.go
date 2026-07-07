@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const toolDeleteFileDescription = `Deletes a single file at the specified path. Fails if the path points to a directory — use delete_directory for directories.`

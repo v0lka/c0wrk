@@ -23,8 +23,8 @@ import (
 	"github.com/v0lka/c0wrk/core/terminal"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/vectorindex"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // pendingConfirmData holds the state for a pending tool confirmation,
@@ -35,6 +35,30 @@ type pendingConfirmData struct {
 	toolName    string
 	input       json.RawMessage
 	sessionID   string
+}
+
+// pendingStepLimitEntry wraps the step-limit response channel with the
+// session ID, so GetPendingActions can filter by session.
+type pendingStepLimitEntry struct {
+	ch        chan agent.StepLimitResponse
+	sessionID string
+	payload   session.StepLimitPayload
+}
+
+// pendingAskUserEntry wraps the ask-user response channel with the
+// session ID and payload, so GetPendingActions can filter by session.
+type pendingAskUserEntry struct {
+	ch        chan coretools.AskUserResponse
+	sessionID string
+	payload   session.AskUserPayload
+}
+
+// pendingPlanApprovalEntry wraps the plan-approval response channel with
+// the session ID and payload, so GetPendingActions can filter by session.
+type pendingPlanApprovalEntry struct {
+	ch        chan planApprovalResponse
+	sessionID string
+	payload   session.PlanApprovalPayload
 }
 
 // Startup is called when the Wails app starts.
@@ -275,9 +299,9 @@ func (a *App) Shutdown(ctx context.Context) {
 		return true
 	})
 	a.pendingAskUser.Range(func(key, value any) bool {
-		if ch, ok := value.(chan coretools.AskUserResponse); ok {
+		if e, ok := value.(*pendingAskUserEntry); ok {
 			select {
-			case ch <- coretools.AskUserResponse{}:
+			case e.ch <- coretools.AskUserResponse{}:
 			default:
 			}
 		}
@@ -285,9 +309,9 @@ func (a *App) Shutdown(ctx context.Context) {
 		return true
 	})
 	a.pendingStepLimit.Range(func(key, value any) bool {
-		if ch, ok := value.(chan agent.StepLimitResponse); ok {
+		if e, ok := value.(*pendingStepLimitEntry); ok {
 			select {
-			case ch <- agent.StepLimitDeny:
+			case e.ch <- agent.StepLimitDeny:
 			default:
 			}
 		}
@@ -295,9 +319,9 @@ func (a *App) Shutdown(ctx context.Context) {
 		return true
 	})
 	a.pendingPlanApprovals.Range(func(key, value any) bool {
-		if ch, ok := value.(chan planApprovalResponse); ok {
+		if e, ok := value.(*pendingPlanApprovalEntry); ok {
 			select {
-			case ch <- planApprovalResponse{Decision: "abandon"}:
+			case e.ch <- planApprovalResponse{Decision: "abandon"}:
 			default:
 			}
 		}

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/v0lka/c0wrk/sdk/pathutil"
+	"github.com/v0lka/sp4rk/pathutil"
 )
 
 // ── extractAllPathsFromJSON tests ─────────────────────────────────────────

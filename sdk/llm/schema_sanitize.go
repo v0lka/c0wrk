@@ -105,7 +105,35 @@ func resolveRefRecursive(schema, defs map[string]any) map[string]any {
 
 // resolveRefRecursiveWithVisited is the internal implementation that tracks
 // visited definition names to detect and break cycles.
+//
+// Cycle detection: when a schema is a $ref, the target definition name is
+// recorded on a private copy of the visited set before descending into the
+// resolved content. This serves two purposes:
+//   - A self-referential schema (e.g. a tree node whose "children" items
+//     reference the same definition) terminates with a safe fallback instead
+//     of recursing forever. Without this, the visited set is never populated
+//     because the resolved definition is a full object (not a bare $ref), so
+//     the chain-detection loop below never runs.
+//   - Sibling properties do not pollute each other's visited sets: each $ref
+//     resolution copies the ancestor set, so one sibling's resolution cannot
+//     cause a false cycle in another sibling.
 func resolveRefRecursiveWithVisited(schema, defs map[string]any, visited map[string]struct{}) map[string]any {
+	// Record the current $ref target on a copy of the visited set so that
+	// nested back-references to the same definition are detected as cycles.
+	if ref, ok := schema["$ref"].(string); ok && defs != nil {
+		if parts := splitRefPath(ref); len(parts) > 0 {
+			name := parts[len(parts)-1]
+			if visited == nil {
+				visited = make(map[string]struct{})
+			}
+			if _, seen := visited[name]; seen {
+				return safeFallbackSchema()
+			}
+			visited = copyVisitedSet(visited)
+			visited[name] = struct{}{}
+		}
+	}
+
 	resolved := resolveRef(schema, defs)
 
 	// Re-resolve if the resolved schema is itself just another $ref chain.
@@ -220,6 +248,15 @@ func copyMap(m map[string]any) map[string]any {
 	cp := make(map[string]any, len(m))
 	for k, v := range m {
 		cp[k] = v
+	}
+	return cp
+}
+
+// copyVisitedSet returns a shallow copy of a cycle-detection visited set.
+func copyVisitedSet(visited map[string]struct{}) map[string]struct{} {
+	cp := make(map[string]struct{}, len(visited)+1)
+	for k := range visited {
+		cp[k] = struct{}{}
 	}
 	return cp
 }

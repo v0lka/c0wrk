@@ -26,10 +26,10 @@ import (
 	"github.com/v0lka/c0wrk/core/toolmanager"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/vectorindex"
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/embedding"
-	sdktools "github.com/v0lka/c0wrk/sdk/tools"
-	"github.com/v0lka/c0wrk/sdk/tools/builtins"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/embedding"
+	sdktools "github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // initLogger initializes the session logger with a temporary INFO level so any
@@ -315,9 +315,12 @@ func (a *App) buildAskUserCallback(uiEmit func(session.Event)) coretools.AskUser
 
 		requestID := uuid.New().String()
 		ch := make(chan coretools.AskUserResponse, 1)
-		a.pendingAskUser.Store(requestID, ch)
-
 		payload := session.AskUserPayload{RequestID: requestID, Questions: req.Questions}
+		a.pendingAskUser.Store(requestID, &pendingAskUserEntry{
+			ch:        ch,
+			sessionID: sessionID,
+			payload:   payload,
+		})
 		uiEmit(session.Event{SessionID: sessionID, Type: "ask_user", Data: payload})
 
 		select {
@@ -362,13 +365,16 @@ func (a *App) buildPlanApprovalCallback(uiEmit func(session.Event)) coretools.Ap
 
 		requestID := uuid.New().String()
 		ch := make(chan planApprovalResponse, 1)
-		a.pendingPlanApprovals.Store(requestID, ch)
-
 		payload := session.PlanApprovalPayload{
 			RequestID:   requestID,
 			PlanPath:    planPath,
 			PlanContent: planMarkdown,
 		}
+		a.pendingPlanApprovals.Store(requestID, &pendingPlanApprovalEntry{
+			ch:        ch,
+			sessionID: sessionID,
+			payload:   payload,
+		})
 		// Emit through the Application's combined UI + persistence path so
 		// the plan_review_ready event survives app restarts. Fall back to
 		// the raw UI emitter when the Application is not yet initialized.
@@ -477,14 +483,17 @@ func (s *stepLimitHITLAdapter) OnStepLimit(ctx context.Context, currentStep, max
 
 	requestID := uuid.New().String()
 	ch := make(chan agent.StepLimitResponse, 1)
-	s.pendingStepLimit.Store(requestID, ch)
-
 	payload := session.StepLimitPayload{
 		RequestID:   requestID,
 		CurrentStep: currentStep,
 		MaxSteps:    maxSteps,
 		Reason:      reason,
 	}
+	s.pendingStepLimit.Store(requestID, &pendingStepLimitEntry{
+		ch:        ch,
+		sessionID: sessionID,
+		payload:   payload,
+	})
 	s.uiEmit(session.Event{SessionID: sessionID, Type: "step_limit", Data: payload})
 
 	select {

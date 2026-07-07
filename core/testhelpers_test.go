@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/v0lka/c0wrk/sdk/agent"
-	"github.com/v0lka/c0wrk/sdk/agent/router"
-	"github.com/v0lka/c0wrk/sdk/llm"
-	"github.com/v0lka/c0wrk/sdk/orchestration"
-	tools "github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/agent/router"
+	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/orchestration"
+	tools "github.com/v0lka/sp4rk/tools"
 )
 
 // mockLLMCaller is a unified mock implementation of agent.LLMCaller for testing.
@@ -225,6 +225,7 @@ type mockEmitter struct {
 		stepID string
 		items  []agent.TodoItem
 	}
+	setCurrentStepIDs []string // records SetCurrentStepID calls for inline-scoping verification
 	eventOrder []string // records event type names ("plan_step_start", "step_todo_update", ...) in call order
 }
 
@@ -280,6 +281,11 @@ func (m *mockEmitter) StepTodoUpdate(stepID string, items []agent.TodoItem) {
 	}{stepID, items})
 }
 func (m *mockEmitter) MemoryRead(_ int, _ string) {}
+
+func (m *mockEmitter) SetCurrentStepID(id string) {
+	m.eventOrder = append(m.eventOrder, "set_current_step_id")
+	m.setCurrentStepIDs = append(m.setCurrentStepIDs, id)
+}
 
 // ---------------------------------------------------------------------------
 // testPersistableBlackboard — a minimal PersistableBlackboard for core tests

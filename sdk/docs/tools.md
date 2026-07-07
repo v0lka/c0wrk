@@ -1,19 +1,14 @@
 # Tools
 
-The `tools` package provides the tool abstraction, a thread-safe registry, and
-core types for agent tool execution. Tools are the agent's way of acting on the
-world — reading files, running commands, calling external APIs. Every tool
-implements a single `Tool` interface and is registered in a `ToolRegistry` that
-the executor consults at runtime.
+The `tools` package provides the tool abstraction, a thread-safe registry, and core types for agent tool execution. Tools are the agent's way of acting on the world — reading files, running commands, calling external APIs. Every tool implements a single `Tool` interface and is registered in a `ToolRegistry` that the executor consults at runtime.
 
 ```go
-import "github.com/v0lka/c0wrk/sdk/tools"
+import "github.com/v0lka/sp4rk/tools"
 ```
 
 ## Tool interface
 
-Every tool — whether built-in, custom, or proxied from an MCP server —
-implements the `Tool` interface:
+Every tool — whether built-in, custom, or proxied from an MCP server — implements the `Tool` interface:
 
 ```go
 type Tool interface {
@@ -37,9 +32,7 @@ type Tool interface {
 
 ## BaseTool
 
-`BaseTool` provides default implementations of `Name`, `Description`,
-`InputSchema`, `DefaultPolicy`, and `IsUntrusted` so concrete tools only need to
-implement `Execute`. Embed it in your custom tool and set the relevant fields:
+`BaseTool` provides default implementations of `Name`, `Description`, `InputSchema`, `DefaultPolicy`, and `IsUntrusted` so concrete tools only need to implement `Execute`. Embed it in your custom tool and set the relevant fields:
 
 ```go
 type BaseTool struct {
@@ -60,9 +53,7 @@ type ToolResult struct {
 }
 ```
 
-`Content` is the text returned to the agent. Set `IsError` to `true` when the
-tool ran but produced an error condition (e.g. a file was not found) — this is
-distinct from returning a Go `error`, which signals an infrastructure failure.
+`Content` is the text returned to the agent. Set `IsError` to `true` when the tool ran but produced an error condition (e.g. a file was not found) — this is distinct from returning a Go `error`, which signals an infrastructure failure.
 
 Two helpers construct error results consistently:
 
@@ -74,9 +65,7 @@ tools.ErrorResult("file not found: %s", path)
 tools.ParseInputError(err) // (ToolResult, error) — returns an error result, nil error
 ```
 
-`ParseInputError` is the idiomatic response when `json.Unmarshal` of the tool
-input fails. It returns a `ToolResult` (with `IsError: true`) and a `nil` error,
-so the agent sees a clean error message rather than an infrastructure failure.
+`ParseInputError` is the idiomatic response when `json.Unmarshal` of the tool input fails. It returns a `ToolResult` (with `IsError: true`) and a `nil` error, so the agent sees a clean error message rather than an infrastructure failure.
 
 ## ToolPolicy
 
@@ -90,16 +79,11 @@ const (
 )
 ```
 
-`ParseToolPolicy(s)` converts a config string to a constant. Recognized strings
-are `"always_allow"`, `"always_deny"`, and `"user_confirm"`; any other value
-defaults to `PolicyUserConfirm` (the safest option).
+`ParseToolPolicy(s)` converts a config string to a constant. Recognized strings are `"always_allow"`, `"always_deny"`, and `"user_confirm"`; any other value defaults to `PolicyUserConfirm` (the safest option).
 
 ### ToolJudger (optional)
 
-A tool with `PolicyAlwaysAllow` may optionally implement `ToolJudger` to provide
-tool-specific safety heuristics. When implemented, the registry calls `Judge`
-before execution; if it returns `allow=false` with non-empty reasoning, the call
-is escalated to user confirmation.
+A tool with `PolicyAlwaysAllow` may optionally implement `ToolJudger` to provide tool-specific safety heuristics. When implemented, the registry calls `Judge` before execution; if it returns `allow=false` with non-empty reasoning, the call is escalated to user confirmation.
 
 ```go
 type ToolJudger interface {
@@ -109,9 +93,7 @@ type ToolJudger interface {
 
 ## ToolDescriptor
 
-`ToolDescriptor` is metadata-only (no execution capability) used by the Planner
-and Executor to reason about available tools without holding live `Tool`
-references:
+`ToolDescriptor` is metadata-only (no execution capability) used by the Planner and Executor to reason about available tools without holding live `Tool` references:
 
 ```go
 type ToolDescriptor struct {
@@ -123,15 +105,11 @@ type ToolDescriptor struct {
 }
 ```
 
-`Source` records where a tool came from. Built-in tools report `"core"`; MCP
-tools report their server name (e.g. `"filesystem"`). `SourceCategory` is a
-cached classification (`SourceCategoryCore` or `SourceCategoryMCP`) for fast
-routing checks.
+`Source` records where a tool came from. Built-in tools report `"core"`; MCP tools report their server name (e.g. `"filesystem"`). `SourceCategory` is a cached classification (`SourceCategoryCore` or `SourceCategoryMCP`) for fast routing checks.
 
 ## ToolRegistry
 
-`ToolRegistry` stores all available tools and provides them to the executor. It
-is **thread-safe** via `sync.RWMutex`.
+`ToolRegistry` stores all available tools and provides them to the executor. It is **thread-safe** via `sync.RWMutex`.
 
 ```go
 registry := tools.NewToolRegistry()
@@ -151,15 +129,11 @@ registry := tools.NewToolRegistry()
 | `IsToolUntrusted(name)` | `true` if the tool's `IsUntrusted()` is true **or** it is MCP-sourced. |
 | `SetParamManager(pm)` | Install a `ParamManager` for execution-time parameter injection. |
 
-`Execute` applies parameter injection (if a `ParamManager` is configured) before
-invoking the tool. If the tool is not found it returns an error `ToolResult`
-rather than a Go error.
+`Execute` applies parameter injection (if a `ParamManager` is configured) before invoking the tool. If the tool is not found it returns an error `ToolResult` rather than a Go error.
 
 ## Context helpers
 
-Several values are passed to tools through `context.Context` rather than tool
-parameters. This keeps the LLM-facing schema clean while giving tools access to
-session-scoped state.
+Several values are passed to tools through `context.Context` rather than tool parameters. This keeps the LLM-facing schema clean while giving tools access to session-scoped state.
 
 ```go
 // Workspace path — used by file tools to resolve relative paths.
@@ -175,18 +149,15 @@ ctx = tools.WithTaskContext(ctx, taskDesc)
 desc := tools.TaskContextFrom(ctx)
 ```
 
-Built-in file tools retrieve the workspace path via `WorkspacePathFrom(ctx)`,
-so always attach it before executing tasks that touch the filesystem.
+Built-in file tools retrieve the workspace path via `WorkspacePathFrom(ctx)`, so always attach it before executing tasks that touch the filesystem.
 
 ## Custom tool implementation
 
-This is a complete, step-by-step guide using a `calculator` tool that evaluates
-arithmetic expressions. The same pattern applies to any custom tool.
+This is a complete, step-by-step guide using a `calculator` tool that evaluates arithmetic expressions. The same pattern applies to any custom tool.
 
 ### 1. Define the tool struct, embedding `BaseTool`
 
-Embedding `BaseTool` gives you `Name`, `Description`, `InputSchema`,
-`DefaultPolicy`, and `IsUntrusted` for free — you only implement `Execute`.
+Embedding `BaseTool` gives you `Name`, `Description`, `InputSchema`, `DefaultPolicy`, and `IsUntrusted` for free — you only implement `Execute`.
 
 ```go
 package main
@@ -196,7 +167,7 @@ import (
     "encoding/json"
     "fmt"
 
-    "github.com/v0lka/c0wrk/sdk/tools"
+    "github.com/v0lka/sp4rk/tools"
 )
 
 // CalculatorTool evaluates simple arithmetic expressions.
@@ -231,9 +202,7 @@ func NewCalculatorTool() *CalculatorTool {
 
 ### 3. Implement `Execute`
 
-Parse the JSON input, validate it, perform the work, and return a `ToolResult`.
-Use `ParseInputError` for JSON parse failures and `ErrorResult` (or an
-`IsError` result) for logical errors.
+Parse the JSON input, validate it, perform the work, and return a `ToolResult`. Use `ParseInputError` for JSON parse failures and `ErrorResult` (or an `IsError` result) for logical errors.
 
 ```go
 func (t *CalculatorTool) Execute(_ context.Context, input json.RawMessage) (tools.ToolResult, error) {
@@ -257,8 +226,7 @@ func (t *CalculatorTool) Execute(_ context.Context, input json.RawMessage) (tool
 
 ### 4. Register the tool and run
 
-The agent can only use tools that are in the registry. Register your custom tool
-alongside any built-in tools and a `finish` tool (required for task completion).
+The agent can only use tools that are in the registry. Register your custom tool alongside any built-in tools and a `finish` tool (required for task completion).
 
 ```go
 package main
@@ -269,11 +237,11 @@ import (
     "log"
     "os"
 
-    "github.com/v0lka/c0wrk/sdk"
-    "github.com/v0lka/c0wrk/sdk/agent"
-    "github.com/v0lka/c0wrk/sdk/llm"
-    "github.com/v0lka/c0wrk/sdk/tools"
-    "github.com/v0lka/c0wrk/sdk/tools/builtins"
+    "github.com/v0lka/sp4rk"
+    "github.com/v0lka/sp4rk/agent"
+    "github.com/v0lka/sp4rk/llm"
+    "github.com/v0lka/sp4rk/tools"
+    "github.com/v0lka/sp4rk/tools/builtins"
 )
 
 func main() {
@@ -342,23 +310,16 @@ func main() {
 | Logical failure (e.g. division by zero) | `tools.ToolResult{Content: "...", IsError: true}, nil` |
 | Infrastructure failure (panic, broken invariant) | `tools.ToolResult{}, err` (a Go error) |
 
-Returning a Go `error` signals that the executor should treat the failure as
-infrastructure-level (and potentially retry or reflect); an `IsError` result is
-a normal, reportable tool failure that the agent can reason about.
+Returning a Go `error` signals that the executor should treat the failure as infrastructure-level (and potentially retry or reflect); an `IsError` result is a normal, reportable tool failure that the agent can reason about.
 
 ## ParamManager
 
-`ParamManager` handles auto-injected tool parameters. It has two
-responsibilities:
+`ParamManager` handles auto-injected tool parameters. It has two responsibilities:
 
-- **`SanitizeSchema(source, schema)`** — strip auto-injected params from tool
-  schemas so the LLM never sees them.
-- **`InjectParams(ctx, toolName, source, input)`** — add their values at
-  execution time.
+- **`SanitizeSchema(source, schema)`** — strip auto-injected params from tool schemas so the LLM never sees them.
+- **`InjectParams(ctx, toolName, source, input)`** — add their values at execution time.
 
-A single `ParamManager` instance should be shared between the MCP gateway (which
-calls `SanitizeSchema`) and the tool registry (which calls `InjectParams`) so
-both sides agree on the set of auto-injected parameters.
+A single `ParamManager` instance should be shared between the MCP gateway (which calls `SanitizeSchema`) and the tool registry (which calls `InjectParams`) so both sides agree on the set of auto-injected parameters.
 
 ```go
 type ParamManager interface {
@@ -367,24 +328,20 @@ type ParamManager interface {
 }
 ```
 
-`DefaultParamManager()` handles all known auto-injected parameters (currently
-the `"project"` parameter, which is injected from the workspace path in the
-context). Install it on the registry with `SetParamManager`:
+`DefaultParamManager()` handles all known auto-injected parameters (currently the `"project"` parameter, which is injected from the workspace path in the context). Install it on the registry with `SetParamManager`:
 
 ```go
 registry.SetParamManager(tools.DefaultParamManager())
 ```
 
-When set, `ToolRegistry.Execute` consults the manager and injects the workspace
-path as the `"project"` parameter before invoking the tool — but only if the
-parameter is not already present in the input.
+When set, `ToolRegistry.Execute` consults the manager and injects the workspace path as the `"project"` parameter before invoking the tool — but only if the parameter is not already present in the input.
 
 ## Built-in tools reference
 
 All built-in tools live in the `builtins` package:
 
 ```go
-import "github.com/v0lka/c0wrk/sdk/tools/builtins"
+import "github.com/v0lka/sp4rk/tools/builtins"
 ```
 
 | Tool name | Constructor | Description |
@@ -408,24 +365,17 @@ import "github.com/v0lka/c0wrk/sdk/tools/builtins"
 | `read_final_result` | `NewReadFinalResultTool()` | Read the final result of the previously completed task on the blackboard. Use to retrieve a prior exchange's outcome when it is not visible in the conversation history. |
 | `web_fetch` | `NewWebFetchTool(limits WebFetchLimits)` | Fetch a web page by URL and convert its HTML content to markdown. Only HTTP/HTTPS URLs are supported. Requests time out after 30 seconds; up to 10 redirects are followed. Supports paginated reading. |
 | `web_search` | `websearch.NewWebSearchTool(provider, limits)` | Search the web and return a list of results with titles, URLs, and text snippets. Uses a pluggable `SearchProvider` — see [Web search providers](#web-search-providers) below. |
-| `bash_exec` | `NewBashExecTool(blacklist []string) (*BashExecTool, error)` | Execute shell commands via `bash -c`. Use for build commands, running scripts, installing packages, git operations, and system tasks. Returns combined stdout and stderr. Commands time out after 60 seconds by default (configurable up to 120s). |
+| `bash_exec` | `NewBashExecTool(blacklist []string) (*BashExecTool, error)` | Execute shell commands via `bash -c`. Use for build commands, running scripts, installing packages, git operations, and system tasks. Returns combined stdout and stderr. Commands time out after 60 seconds by default (configurable up to 120s). Available on Unix only (`!windows` build tag). |
+| `posh_exec` | `NewPoshExecTool(blacklist []string) (*PoshExecTool, error)` | Execute commands via `powershell.exe -NoProfile -NonInteractive -Command`. Windows counterpart of `bash_exec`: same blacklist/Judge model, timeout, and working-directory containment. Returns combined stdout and stderr. Commands time out after 60 seconds by default (configurable up to 120s). Available on Windows only (`windows` build tag). |
 | `semantic_search` | `NewVectorSearchTool(searchFunc VectorSearchFunc, waitFunc VectorSearchWaitFunc)` | Search the project codebase using hybrid (vector + BM25) similarity matching. Finds code by meaning and intent as well as by literal symbol/keyword match. Returns file paths, line ranges, fused relevance scores, and content previews. |
 
-> **Note on `semantic_search`:** the type is `VectorSearchTool`, but the name
-> exposed to the LLM is `semantic_search`. Its constructor requires a
-> `VectorSearchFunc` (performs the search) and a `VectorSearchWaitFunc` (blocks
-> until the vector index is ready), both provided by the backend layer at wiring
-> time.
+> **Note on `semantic_search`:** the type is `VectorSearchTool`, but the name exposed to the LLM is `semantic_search`. Its constructor requires a `VectorSearchFunc` (performs the search) and a `VectorSearchWaitFunc` (blocks until the vector index is ready), both provided by the backend layer at wiring time.
 >
-> **Note on SSRF protection:** the `netcheck.go` file in the `builtins` package
-> provides private-network detection helpers (`isPrivateIP`,
-> `resolveHostIsPrivate`) consumed by `web_fetch` to guard against SSRF. It is
-> not itself a registered tool.
+> **Note on SSRF protection:** the `netcheck.go` file in the `builtins` package provides private-network detection helpers (`isPrivateIP`, `resolveHostIsPrivate`) consumed by `web_fetch` to guard against SSRF. It is not itself a registered tool.
 
 ### Tool name constants
 
-The `tools` package exports name constants for tools that need special handling
-in the executor (truncation hints, caching, etc.):
+The `tools` package exports name constants for tools that need special handling in the executor (truncation hints, caching, etc.):
 
 ```go
 const (
@@ -437,13 +387,14 @@ const (
     ToolGlob      = "glob"
     ToolWebFetch  = "web_fetch"
     ToolBashExec  = "bash_exec"
+    ToolPoshExec  = "posh_exec"
     ToolBatch     = "batch"
 )
 ```
 
 ### Web search providers
 
-The `web_search` tool lives in the `tools/builtins/web_search` sub-package and uses a pluggable `SearchProvider` interface so you can choose the backend that fits your needs:
+The `web_search` tool lives in the `tools/builtins/websearch` sub-package and uses a pluggable `SearchProvider` interface so you can choose the backend that fits your needs:
 
 ```go
 type SearchProvider interface {
@@ -475,8 +426,8 @@ type SearchResult struct {
 
 ```go
 import (
-    "github.com/v0lka/c0wrk/sdk/tools/builtins"
-    "github.com/v0lka/c0wrk/sdk/tools/builtins/web_search"
+    "github.com/v0lka/sp4rk/tools/builtins"
+    "github.com/v0lka/sp4rk/tools/builtins/websearch"
 )
 
 // DuckDuckGo requires no API key — simplest setup

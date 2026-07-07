@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/v0lka/c0wrk/sdk/tools"
+	"github.com/v0lka/sp4rk/tools"
 )
 
 const batchDescription = `Execute multiple tool calls sequentially in one turn. Provide an array of calls, each with a "tool" name and "input" object. All calls execute in order even if one fails — errors are captured per-call and do not abort the batch. Use this to reduce round-trips when you know all the calls you want to make.`

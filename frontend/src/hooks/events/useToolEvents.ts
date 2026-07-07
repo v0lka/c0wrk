@@ -3,7 +3,8 @@
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isToolCallData, isToolResultData, isToolConfirmData } from '@/types/events'
-import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
+import { useChatStore } from '@/stores/chatStore'
+import { handleToolConfirmEvent } from './hitlHandlers'
 
 /** Build the message ID used to correlate tool_call ↔ tool_result */
 function buildToolMsgId(d: { tool_call_id?: string; plan_step_id?: string; step: number; call_idx?: number; retry_attempt?: number }): string {
@@ -87,36 +88,7 @@ export function useToolEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'tool_confirm', (data) => {
         if (!isToolConfirmData(data)) { reportDroppedEvent('tool_confirm', data); return }
-        const store = useChatStore.getState()
-        const msgs = selectSessionMessages(store, sessionId)
-
-        let toolMsgId: string | undefined
-        let toolPlanStepId: string | undefined
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          const m = msgs[i]!
-          if (m.type === 'tool_call' && m.metadata?.tool === data.tool) {
-            toolMsgId = m.id
-            toolPlanStepId = m.metadata?.plan_step_id as string | undefined
-            store.updateMessage(sessionId, m.id, {
-              metadata: { ...m.metadata, awaiting_confirmation: true },
-            })
-            break
-          }
-        }
-
-        store.addMessage(sessionId, {
-          id: `tool-confirm-${data.confirm_id}`,
-          sessionId,
-          type: 'tool_confirm',
-          content: `Confirm: ${data.tool}`,
-          metadata: {
-            confirm_id: data.confirm_id, tool: data.tool,
-            args: data.args, reasoning: data.reasoning,
-            tool_msg_id: toolMsgId, plan_step_id: toolPlanStepId,
-          } as Record<string, unknown>,
-          timestamp: Date.now(),
-        })
-        store.setActivityStatus('Awaiting confirmation...')
+        handleToolConfirmEvent(sessionId, data)
       }),
     )
 
