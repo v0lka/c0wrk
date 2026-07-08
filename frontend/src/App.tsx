@@ -11,7 +11,6 @@ import { useProjectLoader } from '@/hooks/useProjectLoader'
 import { useSessionLoader } from '@/hooks/useSessionLoader'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { useBackgroundSessionWatcher } from '@/hooks/useBackgroundSessionWatcher'
-import { usePendingActionsReconcile } from '@/hooks/usePendingActionsReconcile'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import type { ToolManagerToolInfo, ToolManagerProgressData } from '@/types/events'
@@ -33,7 +32,6 @@ function App() {
   useSessionLoader()
   useSessionEvents(activeSessionId)
   useBackgroundSessionWatcher()
-  usePendingActionsReconcile()
 
   // ── Tool manager lifecycle ────────────────────────────────────────────
 

@@ -892,6 +892,9 @@ func TestEmitResumableIfUnfinished_EmitsWhenUnfinishedTaskExists(t *testing.T) {
 		if data.Message == "" {
 			t.Error("expected non-empty message in TaskFailedResumableData")
 		}
+		if data.TaskID != "task-123" {
+			t.Errorf("expected TaskID task-123 (so the banner can be resolved by task_id), got %q", data.TaskID)
+		}
 	case <-time.After(time.Second):
 		t.Error("timeout waiting for task_failed_resumable event")
 	}
@@ -1145,6 +1148,31 @@ func (m *recordingCancelTaskStore) CancelTask(_ context.Context, taskID string) 
 	return nil
 }
 
+// recordingSessionStore wraps mockSessionStoreForRestore and captures
+// ResolvePendingMessage calls, so CancelUnfinishedTask/ResumeTask can assert
+// that the persisted task_failed_resumable banner is marked resolved.
+type recordingSessionStore struct {
+	mockSessionStoreForRestore
+	mu       sync.Mutex
+	resolved []resolvedPendingCall
+}
+
+type resolvedPendingCall struct {
+	role       string
+	matchField string
+	matchValue string
+	extra      map[string]any
+}
+
+func (r *recordingSessionStore) ResolvePendingMessage(_ context.Context, _, role, matchField, matchValue string, extra map[string]any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resolved = append(r.resolved, resolvedPendingCall{
+		role: role, matchField: matchField, matchValue: matchValue, extra: extra,
+	})
+	return nil
+}
+
 // TestCancelUnfinishedTask_PersistsCancellation verifies that
 // CancelUnfinishedTask looks up the unfinished task and marks it as
 // cancelled (NOT completed) in the store, so the persisted status
@@ -1208,6 +1236,61 @@ func TestCancelUnfinishedTask_NoTaskStore(t *testing.T) {
 	// Do not call SetTaskStore — taskStore stays nil.
 	if err := manager.CancelUnfinishedTask("sess-1"); err != nil {
 		t.Fatalf("CancelUnfinishedTask should be a no-op without task store, got: %v", err)
+	}
+}
+
+// TestCancelUnfinishedTask_ResolvesResumableBanner verifies that
+// CancelUnfinishedTask persists the resolution of the task_failed_resumable
+// message (matched by task_id) so the Resume/Cancel banner does not reappear
+// as pending on session reload after the user discards the task.
+func TestCancelUnfinishedTask_ResolvesResumableBanner(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	taskStore := &recordingCancelTaskStore{
+		mockTaskStoreForResumable: mockTaskStoreForResumable{
+			unfinished: &TaskRecord{ID: "task-abc", SessionID: "sess-1", Status: "in_progress"},
+		},
+	}
+	manager.SetTaskStore(taskStore)
+	sessStore := &recordingSessionStore{}
+	manager.SetSessionStore(sessStore)
+
+	if err := manager.CancelUnfinishedTask("sess-1"); err != nil {
+		t.Fatalf("CancelUnfinishedTask returned error: %v", err)
+	}
+
+	sessStore.mu.Lock()
+	defer sessStore.mu.Unlock()
+	if len(sessStore.resolved) != 1 {
+		t.Fatalf("expected exactly one ResolvePendingMessage call, got %d", len(sessStore.resolved))
+	}
+	call := sessStore.resolved[0]
+	if call.role != "task_failed_resumable" {
+		t.Errorf("expected role task_failed_resumable, got %q", call.role)
+	}
+	if call.matchField != "task_id" || call.matchValue != "task-abc" {
+		t.Errorf("expected match task_id=task-abc, got %s=%s", call.matchField, call.matchValue)
+	}
+	if call.extra["resolved"] != true {
+		t.Errorf("expected resolved=true, got %v", call.extra["resolved"])
+	}
+	if call.extra["decision"] != "cancelled" {
+		t.Errorf("expected decision=cancelled, got %v", call.extra["decision"])
+	}
+}
+
+// TestCancelUnfinishedTask_NoResolveWithoutSessionStore verifies that a nil
+// session store does not break CancelUnfinishedTask (resolve is skipped, the
+// in-memory UI still updates and stale reconciliation self-heals on reload).
+func TestCancelUnfinishedTask_NoResolveWithoutSessionStore(t *testing.T) {
+	manager, _, _ := testManager(t)
+	manager.SetTaskStore(&mockTaskStoreForResumable{
+		unfinished: &TaskRecord{ID: "task-xyz", SessionID: "sess-1", Status: "in_progress"},
+	})
+	// No SetSessionStore — sessionStore stays nil.
+
+	if err := manager.CancelUnfinishedTask("sess-1"); err != nil {
+		t.Fatalf("CancelUnfinishedTask with nil session store returned error: %v", err)
 	}
 }
 

@@ -3,10 +3,10 @@ import { useChatStore, useSessionMessages } from '@/stores/chatStore'
 import { groupMessages, chatMessageToUI, rebuildPlanFromHistory } from '@/lib/chatUtils'
 import { useSessionStore } from '@/stores/sessionStore'
 import { usePlanStore } from '@/stores/planStore'
-import { getSessionHistory, getSessionRuntimeStatus } from '@/api/chat'
-import { reconcileRuntimeStatus } from '@/lib/sessionRuntime'
-import { useLatestAsync } from '@/hooks/useLatestAsync'
+import { getSessionHistory, getSessionRuntimeStatus, getPendingActions, resolveStalePrompt } from '@/api/chat'
+import { reconcileRuntimeStatus, reconcilePendingActions, stalePromptMatchField } from '@/lib/sessionRuntime'
 import { generateMessageId } from '@/lib/ids'
+import type { ChatMessageUI } from '@/types/messages'
 import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
 import { ActivityIndicator } from './ActivityIndicator'
@@ -27,7 +27,6 @@ export function ChatArea() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [containerHeight, setContainerHeight] = useState(600)
-  const { wrap } = useLatestAsync()
 
   // Track container height via ResizeObserver (no rAF fallback)
   useLayoutEffect(() => {
@@ -47,10 +46,20 @@ export function ChatArea() {
 
   const maxPinnedHeight = containerHeight / 7
 
-  // Load persisted history on session change.
-  // Uses `wrap` for stale-async protection: if the user switches sessions
-  // before the RPC resolves, the stale result is discarded (returns undefined)
-  // to prevent clobbering the new session's messages with old data.
+  // Load persisted history on session change, then reconcile the chat store
+  // against the backend runtime status and pending-action set AFTER the merge.
+  //
+  // Reconciliation runs after mergeHistoryMessages (not in a separate effect)
+  // so it always sees a populated store. Previously the status/pending RPCs
+  // resolved faster than the history RPC and reconciled an empty store, then
+  // history loaded with unresolved prompts and nothing re-triggered
+  // reconciliation — so stale plan_review / task_failed_resumable banners
+  // reappeared in completed sessions.
+  //
+  // A `cancelled` flag guards the whole async chain: if the user switches
+  // sessions before it settles, the result is discarded (the new session's
+  // own chain takes over). This is equivalent to `useLatestAsync.wrap` but
+  // spans a multi-step await sequence.
   useEffect(() => {
     if (!activeSessionId) {
       usePlanStore.getState().clearPlan()
@@ -58,8 +67,27 @@ export function ChatArea() {
     }
     usePlanStore.getState().clearPlan()
     const loadStartedAt = Date.now()
-    wrap(getSessionHistory(activeSessionId)).then((history) => {
-      if (!history) return // stale — superseded by a newer session switch
+    let cancelled = false
+
+    ;(async () => {
+      let history: Awaited<ReturnType<typeof getSessionHistory>>
+      try {
+        history = await getSessionHistory(activeSessionId)
+      } catch (err) {
+        if (cancelled) return
+        logger.error('Failed to load session history:', err)
+        useChatStore.getState().addMessage(activeSessionId, {
+          id: generateMessageId(),
+          sessionId: activeSessionId,
+          type: 'error',
+          content: 'Failed to load session history. Please try switching sessions.',
+          metadata: {},
+          timestamp: Date.now(),
+        })
+        return
+      }
+      if (cancelled) return
+
       if (history.length > 0) {
         const uiMessages = history.map((msg) => chatMessageToUI(msg))
         // Merge (not replace) so live events delivered while the RPC was in
@@ -67,33 +95,54 @@ export function ChatArea() {
         useChatStore.getState().mergeHistoryMessages(activeSessionId, uiMessages, loadStartedAt)
         rebuildPlanFromHistory(uiMessages, usePlanStore.getState())
       }
-    }).catch((err) => {
-      logger.error('Failed to load session history:', err)
-      useChatStore.getState().addMessage(activeSessionId, {
-        id: generateMessageId(),
-        sessionId: activeSessionId,
-        type: 'error',
-        content: 'Failed to load session history. Please try switching sessions.',
-        metadata: {},
-        timestamp: Date.now(),
-      })
-    })
-  }, [activeSessionId, wrap])
 
-  // Reconcile visual state with the backend runtime status — INDEPENDENT of
-  // history loading so a stale history RPC cannot prevent the taskActive flag
-  // from being reset. This is critical for background sessions: when a session
-  // completes in the background and the user switches to it, the history RPC
-  // and the status RPC are separate concerns. If they shared a single `wrap`
-  // counter (as in the previous implementation), a stale history result would
-  // cause an early return that skipped the status reconciliation entirely —
-  // leaving taskActive=true (red "stop" button) even though the task finished.
+      // Reconcile AFTER the merge so the store is populated. Fetch the
+      // authoritative runtime status and pending-action set in parallel.
+      const [status, pending] = await Promise.all([
+        getSessionRuntimeStatus(activeSessionId),
+        getPendingActions(activeSessionId),
+      ])
+      if (cancelled) return
+
+      // Collect messages resolved as stale so their resolution can be
+      // persisted (otherwise they reappear on the next reload).
+      const staleResolved: ChatMessageUI[] = []
+      if (status) {
+        for (const msg of reconcileRuntimeStatus(activeSessionId, status)) staleResolved.push(msg)
+      }
+      if (pending) {
+        for (const msg of reconcilePendingActions(activeSessionId, pending)) staleResolved.push(msg)
+      }
+
+      // Persist stale resolutions to the backend (best-effort, idempotent).
+      // Once persisted, the message reloads with resolved:true and is never
+      // reprocessed.
+      for (const msg of staleResolved) {
+        const field = stalePromptMatchField(msg.type)
+        if (!field) continue
+        const value = msg.metadata?.[field]
+        if (typeof value === 'string') {
+          void resolveStalePrompt(activeSessionId, msg.type, field, value, { resolved: true, stale: true })
+        }
+      }
+    })()
+
+    return () => { cancelled = true }
+  }, [activeSessionId])
+
+  // Restore the taskActive flag fast and independently of history loading.
+  // This handles background sessions that complete while not viewed: the
+  // "stop" button must reflect the real state even before the (slower)
+  // history RPC resolves. Only sets taskActive here — full message
+  // reconciliation happens in the history effect above (where the store is
+  // populated), to avoid injecting a synthetic resume banner into an empty
+  // store.
   useEffect(() => {
     if (!activeSessionId) return
     let cancelled = false
     getSessionRuntimeStatus(activeSessionId).then((status) => {
-      if (cancelled) return
-      if (status) reconcileRuntimeStatus(activeSessionId, status)
+      if (cancelled || !status) return
+      useChatStore.getState().setTaskActive(activeSessionId, status.active)
     }).catch((err) => {
       logger.error('Failed to get session runtime status:', err)
     })

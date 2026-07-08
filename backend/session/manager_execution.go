@@ -299,6 +299,12 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 		},
 	})
 
+	// Mark the prior task_failed_resumable banner as resolved so it does not
+	// reappear as pending after the resume goroutine finishes. Done here (at
+	// the committed point, right before launching) so a failed restore still
+	// leaves the banner actionable for a retry.
+	m.resolveResumableTaskMessage(id, taskID, "resumed")
+
 	// Launch goroutine (same pattern as SendMessage).
 	go func() {
 		defer close(resumeDoneCh)
@@ -383,6 +389,9 @@ func (m *Manager) CancelUnfinishedTask(sessionID string) error {
 	if err := adapter.PersistCancellation(taskID); err != nil {
 		return fmt.Errorf("failed to mark task as cancelled: %w", err)
 	}
+	// Mark the prior task_failed_resumable banner as resolved so it does not
+	// reappear as pending on session reload after the user discards the task.
+	m.resolveResumableTaskMessage(sessionID, taskID, "cancelled")
 	return nil
 }
 
@@ -480,9 +489,33 @@ func (m *Manager) emitResumableIfUnfinished(sessionID string) bool {
 		Type:      "task_failed_resumable",
 		Data: TaskFailedResumableData{
 			Message: "Plan execution failed. You can resume to retry from where it left off.",
+			TaskID:  taskID,
 		},
 	})
 	return true
+}
+
+// resolveResumableTaskMessage marks the persisted "task_failed_resumable"
+// message for the given task as resolved, so the Resume/Cancel banner does
+// not reappear as pending on session reload after the user resumes or cancels.
+// Best-effort: errors are logged only — the in-memory UI is already updated
+// optimistically by the frontend, and a missed persist is self-healing via
+// stale reconciliation on the next reload.
+func (m *Manager) resolveResumableTaskMessage(sessionID, taskID, decision string) {
+	m.mu.RLock()
+	store := m.sessionStore
+	m.mu.RUnlock()
+	if store == nil || taskID == "" {
+		return
+	}
+	extra := map[string]any{"resolved": true}
+	if decision != "" {
+		extra["decision"] = decision
+	}
+	if err := store.ResolvePendingMessage(context.Background(), sessionID, "task_failed_resumable", "task_id", taskID, extra); err != nil {
+		m.log().Warn("failed to resolve persisted task_failed_resumable message",
+			"session", sessionID, "task", taskID, "decision", decision, "error", err)
+	}
 }
 
 // taskCompletionInfo derives the frontend-facing success contract from the

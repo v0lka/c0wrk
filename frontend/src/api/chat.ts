@@ -169,3 +169,28 @@ export async function getPendingActions(sessionId: string): Promise<PendingActio
     return null
   }
 }
+
+/**
+ * Persist the resolution of a stale HITL prompt so it does not reappear as
+ * pending on the next session reload. This is a best-effort write — the
+ * in-memory store is already updated optimistically; this call makes the
+ * resolution durable. The backend ResolvePendingMessage matches the persisted
+ * message by (role, matchField, matchValue) and merges `extra` into its
+ * metadata.
+ */
+export async function resolveStalePrompt(
+  sessionId: string,
+  role: string,
+  matchField: string,
+  matchValue: string,
+  extra: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const app = getApp()
+    await app.ResolvePendingMessage(sessionId, role, matchField, matchValue, extra)
+  } catch (err) {
+    // Best-effort: a missed persist is self-healing via stale reconciliation
+    // on the next reload (the prompt resolves in-memory again).
+    logger.error('Failed to persist stale prompt resolution:', err)
+  }
+}

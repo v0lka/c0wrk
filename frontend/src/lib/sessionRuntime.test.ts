@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { reconcileRuntimeStatus } from './sessionRuntime'
+import { reconcileRuntimeStatus, reconcilePendingActions, stalePromptMatchField } from './sessionRuntime'
 import { useChatStore } from '@/stores/chatStore'
 import type { ChatMessageUI } from '@/types/messages'
+import type { PendingActionsResponse } from '@/api/chat'
 
 const SESSION = 'sess-1'
 
@@ -141,5 +142,94 @@ describe('reconcileRuntimeStatus', () => {
     expect(planReview?.metadata?.resolved).toBe(true)
     expect(planReview?.metadata?.decision).toBe('approve')
     expect(planReview?.metadata?.stale).toBeUndefined() // not touched
+  })
+
+  it('returns the resolved stale messages so the caller can persist them', () => {
+    addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1' } })
+    addMsg({ id: 'resume-1', type: 'task_failed_resumable', metadata: { resolved: false, task_id: 't-9' } })
+
+    const stale = reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false })
+
+    // Both resolved messages are returned, with their identifying metadata
+    // intact, so the caller can map type → match field and persist.
+    expect(stale).toHaveLength(2)
+    expect(stale.map(m => m.type).sort()).toEqual(['plan_review', 'task_failed_resumable'])
+    const resumable = stale.find(m => m.type === 'task_failed_resumable')!
+    expect(resumable.metadata?.task_id).toBe('t-9')
+  })
+
+  it('returns an empty list (and does not mutate) for an active session', () => {
+    addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1' } })
+
+    const stale = reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: true })
+
+    expect(stale).toHaveLength(0)
+  })
+})
+
+describe('reconcilePendingActions', () => {
+  beforeEach(resetStore)
+
+  // After an app restart the in-memory pending maps are empty, so every
+  // persisted HITL prompt is reported as "not pending" and must be resolved.
+  const EMPTY_PENDING: PendingActionsResponse = {
+    tool_confirms: [],
+    step_limits: [],
+    plan_approvals: [],
+    ask_user: [],
+  }
+
+  it('resolves HITL prompts absent from the pending set and returns them', () => {
+    addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1' } })
+    addMsg({ id: 'tc-1', type: 'tool_confirm', metadata: { confirm_id: 'c1' } })
+
+    const stale = reconcilePendingActions(SESSION, EMPTY_PENDING)
+
+    expect(stale.map(m => m.type).sort()).toEqual(['plan_review', 'tool_confirm'])
+    for (const msg of sessionMessages()) {
+      expect(msg.metadata?.resolved).toBe(true)
+      expect(msg.metadata?.stale).toBe(true)
+    }
+  })
+
+  it('leaves prompts untouched when they are still reported as pending', () => {
+    addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1' } })
+    const pending: PendingActionsResponse = {
+      ...EMPTY_PENDING,
+      plan_approvals: [{ request_id: 'r1', plan_path: '', plan_content: 'plan' }],
+    }
+
+    const stale = reconcilePendingActions(SESSION, pending)
+
+    expect(stale).toHaveLength(0)
+    expect(sessionMessages()[0]!.metadata?.resolved).toBeUndefined()
+  })
+
+  it('adds missing pending messages not present in the store', () => {
+    const pending: PendingActionsResponse = {
+      ...EMPTY_PENDING,
+      ask_user: [{ request_id: 'r2', questions: [{ id: 'q1', question: 'Pick one', options: [{ label: 'A', value: 'a' }] }] }],
+    }
+
+    reconcilePendingActions(SESSION, pending)
+
+    const added = sessionMessages().find(m => m.type === 'ask_user')
+    expect(added?.id).toBe('ask-user-r2')
+    expect(added?.metadata?.request_id).toBe('r2')
+  })
+})
+
+describe('stalePromptMatchField', () => {
+  it('maps each HITL type to its identifying metadata field', () => {
+    expect(stalePromptMatchField('tool_confirm')).toBe('confirm_id')
+    expect(stalePromptMatchField('ask_user')).toBe('request_id')
+    expect(stalePromptMatchField('step_limit')).toBe('request_id')
+    expect(stalePromptMatchField('plan_review')).toBe('request_id')
+    expect(stalePromptMatchField('task_failed_resumable')).toBe('task_id')
+  })
+
+  it('returns null for non-persistable types', () => {
+    expect(stalePromptMatchField('assistant')).toBeNull()
+    expect(stalePromptMatchField('error')).toBeNull()
   })
 })

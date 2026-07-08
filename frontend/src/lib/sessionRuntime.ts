@@ -4,10 +4,20 @@
  * After history load the UI would otherwise default to "idle/completed" —
  * even for a session whose task is still running or died mid-way (app crash,
  * backend panic). This module aligns the chat store with the authoritative
- * backend answer from GetSessionRuntimeStatus.
+ * backend answers from GetSessionRuntimeStatus / GetPendingActions.
+ *
+ * IMPORTANT: these functions only mutate the in-memory Zustand store. They are
+ * invoked by ChatArea AFTER history is merged (see loadSessionHistory), so the
+ * store is populated when they run — this is what fixes the prior race where a
+ * fast status/pending RPC resolved before the (slower) history RPC and thus
+ * reconciled an empty store.
+ *
+ * Each function returns the messages it resolved as stale so the caller can
+ * persist that resolution to the backend (otherwise the prompts reappear on
+ * the next reload).
  */
-import type { SessionRuntimeStatus } from '@/api/chat'
-import { useChatStore } from '@/stores/chatStore'
+import type { PendingActionsResponse, SessionRuntimeStatus } from '@/api/chat'
+import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import type { ChatMessageUI, MessageType } from '@/types/messages'
 
 /** Message content for the synthetic resume banner injected on reload. */
@@ -31,6 +41,22 @@ const STALE_PROMPT_TYPES: ReadonlySet<MessageType> = new Set([
 ])
 
 /**
+ * Maps a stale prompt type to the metadata field that identifies the specific
+ * persisted message, so its resolution can be persisted via ResolvePendingMessage.
+ * Returns null for types that cannot be persisted by id (e.g. synthetic banners).
+ */
+export function stalePromptMatchField(type: MessageType): string | null {
+  switch (type) {
+    case 'tool_confirm': return 'confirm_id'
+    case 'ask_user':
+    case 'step_limit':
+    case 'plan_review': return 'request_id'
+    case 'task_failed_resumable': return 'task_id'
+    default: return null
+  }
+}
+
+/**
  * Align chat-store state for `sessionId` with the backend runtime status.
  *
  * - `active` → restore the "task running" flag (input disabled, no false idle).
@@ -40,15 +66,18 @@ const STALE_PROMPT_TYPES: ReadonlySet<MessageType> = new Set([
  *   ask_user) whose owning executor is gone.
  * - not active + no unfinished task → resolve all stale prompts left over
  *   from previous runs.
+ *
+ * Returns the messages that were resolved as stale (so the caller can persist
+ * the resolution to the backend). Messages already resolved are skipped.
  */
-export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntimeStatus): void {
+export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntimeStatus): ChatMessageUI[] {
   const store = useChatStore.getState()
   store.setTaskActive(sessionId, status.active)
 
   if (status.active) {
     // A live task owns its pending prompts (step_limit, ask_user, ...);
     // leave them untouched.
-    return
+    return []
   }
 
   const order = store.messageOrder[sessionId] ?? []
@@ -66,9 +95,11 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
   if (status.has_unfinished_task) {
     // Stale interactive prompts cannot be answered after a restart — the
     // executor waiting for the response no longer exists.
+    const resolvedStale: ChatMessageUI[] = []
     for (const msg of unresolved) {
       if (STALE_PROMPT_TYPES.has(msg.type)) {
         store.updateMessage(sessionId, msg.id, { metadata: { ...msg.metadata, resolved: true, stale: true } })
+        resolvedStale.push(msg)
       }
     }
     const hasResumable = unresolved.some(m => m.type === 'task_failed_resumable')
@@ -82,11 +113,146 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
         timestamp: Date.now(),
       })
     }
-    return
+    return resolvedStale
   }
 
   // No unfinished task: any surviving prompts are stale.
+  const resolvedStale: ChatMessageUI[] = []
   for (const msg of unresolved) {
     store.updateMessage(sessionId, msg.id, { metadata: { ...msg.metadata, resolved: true, stale: true } })
+    resolvedStale.push(msg)
   }
+  return resolvedStale
+}
+
+/**
+ * Reconcile persisted HITL messages against the live pending-action set.
+ *
+ * For each HITL message in the store whose id is NOT reported as pending by
+ * the backend, mark it resolved (the response was already given or the
+ * channel was drained on shutdown). For each pending item NOT yet in the
+ * store, add it (its event was missed while the session was in the
+ * background).
+ *
+ * Returns the messages that were resolved as stale (so the caller can persist
+ * the resolution to the backend).
+ */
+export function reconcilePendingActions(sessionId: string, pending: PendingActionsResponse): ChatMessageUI[] {
+  const store = useChatStore.getState()
+  const msgs = selectSessionMessages(store, sessionId)
+
+  // Collect the set of request/confirm IDs that are still pending.
+  const pendingConfirmIds = new Set(pending.tool_confirms.map(c => c.confirm_id))
+  const pendingStepLimitIds = new Set(pending.step_limits.map(s => s.request_id))
+  const pendingPlanReviewIds = new Set(pending.plan_approvals.map(p => p.request_id))
+  const pendingAskUserIds = new Set(pending.ask_user.map(a => a.request_id))
+
+  const resolvedStale: ChatMessageUI[] = []
+
+  // Reconcile existing HITL messages: mark resolved if NOT in pending.
+  for (const m of msgs) {
+    if (m.metadata?.resolved === true) continue
+    if (m.type === 'tool_confirm') {
+      const cid = m.metadata?.confirm_id as string | undefined
+      if (cid && !pendingConfirmIds.has(cid)) {
+        store.updateMessage(sessionId, m.id, { metadata: { ...m.metadata, resolved: true, stale: true } })
+        resolvedStale.push(m)
+      }
+    } else if (m.type === 'step_limit') {
+      const rid = m.metadata?.request_id as string | undefined
+      if (rid && !pendingStepLimitIds.has(rid)) {
+        store.updateMessage(sessionId, m.id, { metadata: { ...m.metadata, resolved: true, stale: true } })
+        resolvedStale.push(m)
+      }
+    } else if (m.type === 'plan_review') {
+      const rid = m.metadata?.request_id as string | undefined
+      if (rid && !pendingPlanReviewIds.has(rid)) {
+        store.updateMessage(sessionId, m.id, { metadata: { ...m.metadata, resolved: true, stale: true } })
+        resolvedStale.push(m)
+      }
+    } else if (m.type === 'ask_user') {
+      const rid = m.metadata?.request_id as string | undefined
+      if (rid && !pendingAskUserIds.has(rid)) {
+        store.updateMessage(sessionId, m.id, { metadata: { ...m.metadata, resolved: true, stale: true } })
+        resolvedStale.push(m)
+      }
+    }
+  }
+
+  // Add messages for pending items that weren't in the store (event
+  // was missed while the session was in the background).
+  const existingIDs = new Set(msgs.map(m => m.id))
+
+  for (const c of pending.tool_confirms) {
+    const id = `tool-confirm-${c.confirm_id}`
+    if (existingIDs.has(id)) continue
+    store.addMessage(sessionId, {
+      id,
+      sessionId,
+      type: 'tool_confirm',
+      content: `Confirm: ${c.tool}`,
+      metadata: {
+        confirm_id: c.confirm_id,
+        tool: c.tool,
+        args: c.args,
+        reasoning: c.reasoning ?? '',
+      } as Record<string, unknown>,
+      timestamp: Date.now(),
+    })
+  }
+
+  for (const s of pending.step_limits) {
+    const id = `step-limit-${s.request_id}`
+    if (existingIDs.has(id)) continue
+    store.addMessage(sessionId, {
+      id,
+      sessionId,
+      type: 'step_limit',
+      content: s.reason
+        ? `Circuit breaker: ${s.reason}`
+        : `Step limit reached: ${s.current_step} of ${s.max_steps}`,
+      metadata: {
+        request_id: s.request_id,
+        current_step: s.current_step,
+        max_steps: s.max_steps,
+        reason: s.reason ?? '',
+      } as Record<string, unknown>,
+      timestamp: Date.now(),
+    })
+  }
+
+  for (const p of pending.plan_approvals) {
+    const id = `plan-review-${p.request_id}`
+    if (existingIDs.has(id)) continue
+    store.addMessage(sessionId, {
+      id,
+      sessionId,
+      type: 'plan_review',
+      content: p.plan_content,
+      metadata: {
+        request_id: p.request_id,
+        plan_path: p.plan_path,
+        resolved: false,
+      } as Record<string, unknown>,
+      timestamp: Date.now(),
+    })
+  }
+
+  for (const a of pending.ask_user) {
+    const id = `ask-user-${a.request_id}`
+    if (existingIDs.has(id)) continue
+    store.addMessage(sessionId, {
+      id,
+      sessionId,
+      type: 'ask_user',
+      content: a.questions.map(q => q.question).join('; '),
+      metadata: {
+        request_id: a.request_id,
+        questions: a.questions,
+      } as Record<string, unknown>,
+      timestamp: Date.now(),
+    })
+  }
+
+  return resolvedStale
 }

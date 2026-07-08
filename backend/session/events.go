@@ -70,8 +70,12 @@ type TaskCancelledData struct {
 
 // TaskFailedResumableData is the payload for "task_failed_resumable" events.
 // Emitted when plan execution fails but the task can be resumed.
+// TaskID lets the persisted message be matched and resolved when the user
+// resumes or cancels (see Manager.resolveResumableTaskMessage), so the banner
+// does not reappear as pending on session reload.
 type TaskFailedResumableData struct {
 	Message string `json:"message"`
+	TaskID  string `json:"task_id,omitempty"`
 }
 
 // ErrorData is the payload for "error" events.
