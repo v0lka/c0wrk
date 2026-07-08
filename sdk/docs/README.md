@@ -99,7 +99,7 @@ go run main.go
 | [agent-executor.md](agent-executor.md) | The `Executor`, ReAct loop internals, and circuit breakers |
 | [events.md](events.md) | The `Events` interface and live execution observability |
 | [hitl.md](hitl.md) | Human-in-the-loop: tool-call confirmation and step-limit decisions |
-| [subagents.md](subagents.md) | Parallel execution with `SubAgent` goroutines and trajectory capture |
+| [subagents.md](subagents.md) | Parallel execution with subagent goroutines and trajectory capture |
 | [orchestration.md](orchestration.md) | The `Conductor`, blackboard, and single-task execution |
 | [planner.md](planner.md) | DAG plan generation, step profiles, and replanning |
 | [reflector.md](reflector.md) | Failure analysis and self-correction reflections |
@@ -115,7 +115,7 @@ go run main.go
 | Package | Purpose |
 | --- | --- |
 | `github.com/v0lka/sp4rk` | Top-level `Framework`, `Config`, `New`, `Execute`, `NewConductor`, `Shutdown` |
-| `…/agent` | ReAct `Executor` loop, `Events`, `HITLHandler`, `FinishTool`, `SubAgent`, tool-result cache |
+| `…/agent` | ReAct `Executor` loop, `Events`, `HITLHandler`, `FinishTool`, `RunSubAgent`, tool-result cache |
 | `…/agent/reflector` | `Reflector` for execution failure analysis and self-correction |
 | `…/agent/router` | `Router` that classifies requests by domain and complexity |
 | `…/llm` | `Router`, `Provider`, `ProviderEntry`, `ModelRegistry`, token counting, Anthropic/OpenAI providers |

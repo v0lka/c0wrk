@@ -144,14 +144,24 @@ func (p *AnthropicProvider) buildRequest(req ChatRequest) (*anthropic.MessagesRe
 		anthropicReq.Temperature = &temp
 	}
 
-	// Apply reasoning effort: "On" enables thinking with budget 32000
+	// Apply reasoning effort: "On" enables thinking with budget 32000.
+	// The Anthropic API requires max_tokens to be strictly greater than
+	// thinking.budget_tokens, and the budget itself must be >= 1024. Clamp
+	// the budget for small max_tokens values (e.g. the 8192 fallback) and
+	// skip thinking entirely when no valid budget fits.
 	if req.ReasoningEffort == "On" {
-		anthropicReq.Thinking = &anthropic.Thinking{
-			Type:         anthropic.ThinkingTypeEnabled,
-			BudgetTokens: 32000,
+		budget := 32000
+		if anthropicReq.MaxTokens <= budget {
+			budget = anthropicReq.MaxTokens / 2
 		}
-		// Anthropic requires temperature to be unset (or 1.0) when thinking is enabled
-		anthropicReq.Temperature = nil
+		if budget >= 1024 {
+			anthropicReq.Thinking = &anthropic.Thinking{
+				Type:         anthropic.ThinkingTypeEnabled,
+				BudgetTokens: budget,
+			}
+			// Anthropic requires temperature to be unset (or 1.0) when thinking is enabled
+			anthropicReq.Temperature = nil
+		}
 	}
 
 	// Convert tools

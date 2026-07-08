@@ -109,47 +109,79 @@ func (n *noopCounter) CountMessages([]llm.Message) int { return 0 }
 // defaultSafetyMargin is the default percentage of context window reserved as safety margin.
 const defaultSafetyMargin = 5 // 5% of context window
 
-// NewContextWindow creates a new ContextWindow.
-// safetyMarginPercent is the percentage of context window reserved as safety margin (default: 5 if 0).
-// Optional pruning config can be provided as the first variadic element.
+// ContextWindowConfig configures a ContextWindow. Zero-value fields fall back
+// to sensible defaults (see field comments); only ModelMeta is meaningfully
+// required in practice.
+type ContextWindowConfig struct {
+	// SystemPrompt is the system prompt rendered at the start of every
+	// prompt build. May contain a prompt.CacheBreakMarker.
+	SystemPrompt string
+
+	// ModelMeta describes the target model. If ContextWindow is 0 (unknown
+	// model), a fallback of 128000 is used — a zero ContextWindow would
+	// disable compaction entirely (EffectiveMax returns 0, CheckFill returns
+	// "ok"), causing unbounded conversation growth until the API rejects the
+	// request. If OutputLimit is 0, a fallback of 4096 is used.
+	ModelMeta llm.ModelMetadata
+
+	// Tracker counts tokens for fill tracking. nil disables token accounting
+	// (compaction and fill warnings are silently disabled).
+	Tracker *llm.ContextTokenTracker
+
+	// Thresholds configures the compaction trigger percentages.
+	Thresholds CompactionThresholds
+
+	// Strategy is the compaction algorithm. nil disables compaction.
+	Strategy sdkagent.CompactionStrategy
+
+	// SafetyMarginPercent is the percentage of the context window reserved
+	// as safety margin. Values <= 0 use the default (5).
+	SafetyMarginPercent int
+
+	// InjectionDefenseEnabled gates prompt-injection defense wrapping
+	// (<untrusted-content> tags around tool outputs).
+	InjectionDefenseEnabled bool
+
+	// Pruning configures tool-output pruning. Zero value leaves pruning
+	// disabled (ThresholdPercent 0) with a default placeholder text.
+	Pruning ToolOutputPruning
+}
+
+// NewContextWindow creates a new ContextWindow from the given config.
 // Use SetHistoryMutation() to configure history mutation separately.
-//
-// If modelMeta.ContextWindow is 0 (unknown model), a fallback of 128000 is
-// used. A zero ContextWindow would disable compaction entirely (EffectiveMax
-// returns 0, CheckFill returns "ok"), causing unbounded conversation growth
-// until the API rejects the request.
-func NewContextWindow(systemPrompt string, modelMeta llm.ModelMetadata, tracker *llm.ContextTokenTracker, thresholds CompactionThresholds, strategy sdkagent.CompactionStrategy, safetyMarginPercent int, injectionDefenseEnabled bool, pruning ...ToolOutputPruning) *ContextWindow {
-	if modelMeta.ContextWindow == 0 {
-		modelMeta.ContextWindow = 128000
+func NewContextWindow(cfg ContextWindowConfig) *ContextWindow {
+	if cfg.ModelMeta.ContextWindow == 0 {
+		cfg.ModelMeta.ContextWindow = 128000
 	}
-	if modelMeta.OutputLimit == 0 {
-		modelMeta.OutputLimit = 4096
+	if cfg.ModelMeta.OutputLimit == 0 {
+		cfg.ModelMeta.OutputLimit = 4096
 	}
+	tracker := cfg.Tracker
 	if tracker == nil {
 		// Use a discard tracker to prevent nil dereference panics downstream.
 		// Token accounting (compaction, fill warnings) will be silently disabled.
 		tracker = llm.NewContextTokenTracker(&noopCounter{})
 	}
 	cw := &ContextWindow{
-		systemPrompt:            systemPrompt,
-		modelMeta:               modelMeta,
+		systemPrompt:            cfg.SystemPrompt,
+		modelMeta:               cfg.ModelMeta,
 		tracker:                 tracker,
-		thresholds:              thresholds,
-		strategy:                strategy,
-		injectionDefenseEnabled: injectionDefenseEnabled,
+		thresholds:              cfg.Thresholds,
+		strategy:                cfg.Strategy,
+		injectionDefenseEnabled: cfg.InjectionDefenseEnabled,
+		pruning:                 cfg.Pruning,
 	}
+	safetyMarginPercent := cfg.SafetyMarginPercent
 	if safetyMarginPercent <= 0 {
 		safetyMarginPercent = defaultSafetyMargin
 	}
 	cw.safetyMargin = safetyMarginPercent
-	if len(pruning) > 0 {
-		cw.pruning = pruning[0]
-	}
 	if cw.pruning.PlaceholderText == "" {
 		cw.pruning.PlaceholderText = "[Tool output pruned — not available in context. Use search_facts for stored findings, or re-read the file if needed. Do NOT fabricate content you cannot see.]"
 	}
-	// ThresholdPercent is left at zero-value (disabled) unless explicitly set.
-	// The config layer sets the default (e.g. 50%) via config.yaml.
+	// Pruning.ThresholdPercent is left at zero-value (disabled) unless
+	// explicitly set. The config layer sets the default (e.g. 50%) via
+	// config.yaml.
 	return cw
 }
 
@@ -747,22 +779,34 @@ func (cw *ContextWindow) Compact(ctx context.Context) *CompactionResult {
 	// Estimate after-compaction fill
 	effectiveMax := cw.EffectiveMax()
 	afterPercent := float64(0)
-	if effectiveMax > 0 {
-		baseTokens := cw.tracker.EstimateMessages([]llm.Message{
-			{Role: "system", Content: cw.systemPrompt},
-			{Role: "user", Content: cw.taskContent},
+	baseTokens := cw.tracker.EstimateMessages([]llm.Message{
+		{Role: "system", Content: cw.systemPrompt},
+		{Role: "user", Content: cw.taskContent},
+	})
+	if cw.planContent != "" {
+		baseTokens += cw.tracker.EstimateMessages([]llm.Message{
+			{Role: "system", Content: cw.planContent},
 		})
-		if cw.planContent != "" {
-			baseTokens += cw.tracker.EstimateMessages([]llm.Message{
-				{Role: "system", Content: cw.planContent},
-			})
-		}
-		if len(cw.priorConversation) > 0 {
-			baseTokens += cw.tracker.EstimateMessages(cw.priorConversation)
-		}
-		compactedTokens := cw.tracker.EstimateMessages(cw.compactedMessages)
-		afterPercent = float64(baseTokens+compactedTokens) / float64(effectiveMax) * 100
 	}
+	if len(cw.priorConversation) > 0 {
+		baseTokens += cw.tracker.EstimateMessages(cw.priorConversation)
+	}
+	compactedTokens := cw.tracker.EstimateMessages(cw.compactedMessages)
+	estimatedTotal := baseTokens + compactedTokens
+	if effectiveMax > 0 {
+		afterPercent = float64(estimatedTotal) / float64(effectiveMax) * 100
+	}
+
+	// Sync the tracker with the post-compaction estimate so that CheckFill()
+	// immediately reflects the reduced context size instead of the stale
+	// pre-compaction value (lastKnownUsed from the last API call plus any
+	// pendingDelta accumulated since). Without this, callers checking fill
+	// right after Compact() (e.g. reactive/emergency compaction handling)
+	// would see the old fill and could falsely conclude the context is still
+	// full or re-trigger compaction. Correct() overwrites lastKnownUsed and
+	// resets pendingDelta; the next real API-reported usage will overwrite
+	// this estimate through the normal correction path.
+	cw.tracker.Correct(estimatedTotal)
 
 	return &CompactionResult{
 		BeforePercent: beforeFill.Percent,

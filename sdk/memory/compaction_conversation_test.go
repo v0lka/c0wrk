@@ -15,7 +15,7 @@ func TestCompactConversationHistory_UnderBudget(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	budget := 1000
 
-	result, err := CompactConversationHistory(messages, budget, counter, 0.75)
+	result, err := compactConversationHistory(messages, budget, counter, 0.75)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestCompactConversationHistory_UnderBudget(t *testing.T) {
 
 func TestCompactConversationHistory_EmptyMessages(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
-	result, err := CompactConversationHistory(nil, 100, counter, 0.75)
+	result, err := compactConversationHistory(nil, 100, counter, 0.75)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestCompactConversationHistory_EmptyMessages(t *testing.T) {
 		t.Fatalf("expected 0 messages for nil input, got %d", len(result))
 	}
 
-	result, err = CompactConversationHistory([]llm.Message{}, 100, counter, 0.75)
+	result, err = compactConversationHistory([]llm.Message{}, 100, counter, 0.75)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestCompactConversationHistory_ZeroBudget(t *testing.T) {
 		{Role: "user", Content: "Hello"},
 	}
 	counter := llm.NewSimpleTokenCounter()
-	result, err := CompactConversationHistory(messages, 0, counter, 0.75)
+	result, err := compactConversationHistory(messages, 0, counter, 0.75)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestCompactConversationHistory_OverBudget(t *testing.T) {
 
 	// Budget is smaller than total — should trigger compaction.
 	budget := totalTokens / 10 // ~10% of total tokens
-	result, err := CompactConversationHistory(messages, budget, counter, 0.75)
+	result, err := compactConversationHistory(messages, budget, counter, 0.75)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestCompactConversationHistory_SmallBudget(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	budget := 5 // Very small
 
-	result, err := CompactConversationHistory(messages, budget, counter, 0.75)
+	result, err := compactConversationHistory(messages, budget, counter, 0.75)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -161,19 +161,19 @@ func TestCompactConversationHistory_InvalidRatio(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 
 	// Ratio 0 should return an error.
-	_, err := CompactConversationHistory(messages, 100, counter, 0)
+	_, err := compactConversationHistory(messages, 100, counter, 0)
 	if err == nil {
 		t.Error("expected error for keepRecentRatio=0")
 	}
 
 	// Ratio 1.0 should return an error.
-	_, err = CompactConversationHistory(messages, 100, counter, 1.0)
+	_, err = compactConversationHistory(messages, 100, counter, 1.0)
 	if err == nil {
 		t.Error("expected error for keepRecentRatio=1.0")
 	}
 
 	// Ratio > 1.0 should return an error.
-	_, err = CompactConversationHistory(messages, 100, counter, 1.5)
+	_, err = compactConversationHistory(messages, 100, counter, 1.5)
 	if err == nil {
 		t.Error("expected error for keepRecentRatio=1.5")
 	}

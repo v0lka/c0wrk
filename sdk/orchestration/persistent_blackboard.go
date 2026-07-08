@@ -117,6 +117,7 @@ func (pb *CheckpointedBlackboard) SetOriginalRequest(req string) {
 	pb.persistSafe("set_original_request", func(ctx context.Context) error {
 		return pb.checkpointer.SaveCheckpoint(ctx, pb.id, pb.MapBlackboard)
 	})
+	pb.notifyChanged("original_request")
 }
 
 // SetPlan stores a plan and persists a checkpoint.
@@ -161,6 +162,7 @@ func (pb *CheckpointedBlackboard) SetFinalResult(result string) {
 	pb.persistSafe("set_final_result", func(ctx context.Context) error {
 		return pb.checkpointer.SaveCheckpoint(ctx, pb.id, pb.MapBlackboard)
 	})
+	pb.notifyChanged("final_result")
 }
 
 // ID returns the checkpoint identifier.
@@ -172,9 +174,11 @@ func (pb *CheckpointedBlackboard) ID() string {
 // queued operations, then returns. Safe to call multiple times.
 func (pb *CheckpointedBlackboard) Shutdown() {
 	pb.shutdownOnce.Do(func() {
-		// Set closed and close queueCh under queueMu so persistSafe cannot
-		// send on a closed channel (persistSafe checks closed and sends the
-		// signal under the same lock).
+		// Set closed under queueMu. persistSafe checks closed and sends the
+		// wake-up signal under the same lock, so once we release queueMu here
+		// every subsequent persistSafe observes closed==true and returns
+		// without sending. Closing queueCh outside the lock is therefore
+		// safe: no sender can race with the close.
 		pb.queueMu.Lock()
 		pb.closed.Store(true)
 		pb.queueMu.Unlock()
@@ -198,9 +202,10 @@ func (pb *CheckpointedBlackboard) Shutdown() {
 // the operation is skipped (logged as a warning).
 //
 // The closed-check, queue-append, and signal-send are all performed under
-// queueMu. Shutdown sets closed and closes queueCh under the same lock, so
-// the two operations are mutually exclusive — no send can land on a closed
-// channel.
+// queueMu. Shutdown sets the closed flag under the same lock, which gives a
+// happens-before edge: any persistSafe that acquires queueMu after Shutdown
+// released it observes closed==true and never sends. The actual close(queueCh)
+// happens outside the lock, which is safe because no sender can race with it.
 func (pb *CheckpointedBlackboard) persistSafe(operation string, fn func(context.Context) error) {
 	done := make(chan error, 1)
 	op := persistOp{operation: operation, fn: fn, done: done}

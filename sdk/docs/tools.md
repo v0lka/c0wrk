@@ -83,7 +83,7 @@ const (
 
 ### ToolJudger (optional)
 
-A tool with `PolicyAlwaysAllow` may optionally implement `ToolJudger` to provide tool-specific safety heuristics. When implemented, a separate `ToolJudge` (backed by an LLM call) invokes `Judge` to obtain a tool-specific verdict; if it returns `allow=false` with non-empty reasoning, the call is escalated to user confirmation. The registry itself does not call `Judge` — the verdict is obtained externally and acted upon by the HITL layer.
+A tool with `PolicyAlwaysAllow` may optionally implement `ToolJudger` to provide tool-specific safety heuristics. When a `PolicyAlwaysAllow` tool implements `ToolJudger`, `ToolRegistry.Execute` calls `Judge` before execution; if it returns `allow=false` with non-empty reasoning, the call is escalated to user confirmation via the registry's `ConfirmFunc` (and denied if none is configured — fail-closed).
 
 ```go
 type ToolJudger interface {
@@ -117,19 +117,43 @@ registry := tools.NewToolRegistry()
 
 | Method | Behavior |
 | --- | --- |
-| `Register(tool)` | Add a tool by its name. |
-| `RegisterWithSource(tool, source)` | Add a tool with an explicit source tag (used by MCP). |
+| `Register(tool)` | Add a tool by its name (Core category). Overwrites an existing entry — including an MCP one — and clears its stale source/category metadata. |
+| `RegisterWithSource(tool, source)` | Add a tool with an explicit source tag. Category inferred by legacy heuristic: sources prefixed `"mcp"` → MCP, else Core. |
+| `RegisterWithSourceCategory(tool, source, category)` | Preferred for MCP gateways: stores the category explicitly, independent of the server name. Returns an error when an MCP tool would shadow a non-MCP tool. |
 | `Unregister(name)` | Remove a tool by name. |
 | `UnregisterBySource(source)` | Remove all tools registered with a given source. |
 | `Get(name)` | Look up a tool by name; returns `(Tool, bool)`. |
 | `List()` | Return `[]ToolDescriptor` for all registered tools. |
 | `ListFiltered(excludeNames)` | Return descriptors for all tools except those in `excludeNames`. |
-| `Execute(ctx, name, input)` | Look up and execute a tool. **No policy enforcement** — that is the executor's job. |
+| `Execute(ctx, name, input)` | Look up and execute a tool **with fail-closed policy enforcement** (see below). |
 | `GetToolSource(name)` | Return a tool's source (`"core"` or its source tag); `""` if not found. |
-| `IsToolUntrusted(name)` | `true` if the tool's `IsUntrusted()` is true **or** it is MCP-sourced. |
+| `IsToolUntrusted(name)` | `true` if the tool's `IsUntrusted()` is true **or** its source category is MCP. |
+| `SetConfirmFunc(fn)` | Install the confirmation callback consulted for `PolicyUserConfirm` tools and judge-escalated calls. |
+| `SetPolicyOverride(name, policy)` / `ClearPolicyOverride(name)` | Explicitly override (or restore) a tool's effective policy. |
 | `SetParamManager(pm)` | Install a `ParamManager` for execution-time parameter injection. |
+| `SetLogger(l)` | Set the logger used for registration warnings. |
 
 `Execute` applies parameter injection (if a `ParamManager` is configured) before invoking the tool. If the tool is not found it returns an error `ToolResult` rather than a Go error.
+
+### Policy enforcement in Execute (fail-closed)
+
+`Execute` resolves each tool's effective policy — the per-tool override set via `SetPolicyOverride`, or the tool's own `DefaultPolicy()` — and enforces it:
+
+- **`PolicyAlwaysAllow`** — executes directly. If the tool implements `ToolJudger` and the judge flags the call, it is escalated to confirmation.
+- **`PolicyAlwaysDeny`** — the call is rejected with an error result.
+- **`PolicyUserConfirm`** — the registry's `ConfirmFunc` is consulted. **If no `ConfirmFunc` is configured, the call is DENIED** with an actionable error. Mutating tools never execute silently.
+
+To run non-interactively (CI, batch jobs), either provide an auto-approving `ConfirmFunc` or explicitly relax individual tools:
+
+```go
+registry.SetPolicyOverride("bash_exec", tools.PolicyAlwaysAllow) // deliberate opt-in
+```
+
+Hosts that implement their own enforcement layer (e.g. a wrapping registry that shadows `Execute` and calls `tool.Execute` directly after its own checks) are unaffected — the SDK-level enforcement only applies to calls routed through `ToolRegistry.Execute`.
+
+### MCP shadowing protection
+
+A tool whose source category is MCP may **not** overwrite an already-registered non-MCP tool of the same name. `RegisterWithSourceCategory` returns an error in that case; the legacy `RegisterWithSource` path logs a warning and skips the registration. A built-in tool can always replace an MCP tool (clearing the stale MCP source), and an MCP server re-registering its own tools (reconnect) is allowed.
 
 ## Context helpers
 

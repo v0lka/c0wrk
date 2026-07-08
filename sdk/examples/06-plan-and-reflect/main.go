@@ -63,6 +63,13 @@ func run() error {
 			MaxSteps:   15, // per-step ReAct budget
 			MaxRetries: 2,  // retries per plan step on failure
 		},
+		// The registry is FAIL-CLOSED for PolicyUserConfirm tools
+		// (write_file, edit_file, create_directory). This example runs in a
+		// throwaway temp workspace, so we auto-approve mutations.
+		ConfirmFunc: func(_ context.Context, req tools.ConfirmationRequest) (tools.ConfirmationResponse, error) {
+			fmt.Printf("  [auto-approving %s]\n", req.ToolName)
+			return tools.ConfirmAllowOnce, nil
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create framework: %w", err)
@@ -91,7 +98,7 @@ func run() error {
 	// The Planner needs a PromptSet with a BasePrompt template. The template
 	// uses placeholders (AVAILABLE-TOOLS, MODE-JSON-EXAMPLE, etc.) that the
 	// planner substitutes at call time.
-	plannerCfg := planner.DefaultPlannerConfig()
+	plannerCfg := planner.DefaultConfig()
 	plannerCfg.Prompts = planner.PromptSet{
 		BasePrompt: `You are a task planning agent. Break down the user's task into a sequence of concrete steps.
 
@@ -152,7 +159,7 @@ Return a JSON object with:
 - Verify your work before finishing.
 - Call the finish tool with a summary of what you did.`, stepDescription)
 	}
-	conductor, err := fw.NewConductor(systemPromptFactory, &agent.NoopEvents{})
+	conductor, err := fw.NewConductor(systemPromptFactory)
 	if err != nil {
 		return fmt.Errorf("failed to create conductor: %w", err)
 	}

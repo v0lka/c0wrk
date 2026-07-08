@@ -276,11 +276,20 @@ func (t *RipgrepTool) Execute(ctx context.Context, input json.RawMessage) (tools
 		}
 	}
 
+	timedOut := errors.Is(searchCtx.Err(), context.DeadlineExceeded)
+
 	if matchCount == 0 {
-		return tools.ToolResult{Content: "no matches found"}, nil
+		content := "no matches found"
+		if timedOut {
+			content += "\n[search timed out — results may be incomplete]"
+		}
+		return tools.ToolResult{Content: content}, nil
 	}
 
 	fmt.Fprintf(&sb, "\nFound %d matches in %d files", matchCount, len(fileSet))
+	if timedOut {
+		sb.WriteString("\n[search timed out — results may be incomplete]")
+	}
 
 	return tools.ToolResult{Content: sb.String()}, nil
 }

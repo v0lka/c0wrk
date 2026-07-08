@@ -223,10 +223,11 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 		if state.toolCallSyntaxNudgeCount < 3 {
 			state.toolCallSyntaxNudgeCount++
 			nudgeStep := Step{
-				Thought:        thought,
-				UserNudge:      executorToolCallSyntaxNudge,
-				ReasoningItems: resp.Message.ReasoningItems,
-				TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				Thought:          thought,
+				UserNudge:        executorToolCallSyntaxNudge,
+				ReasoningContent: resp.Message.ReasoningContent,
+				ReasoningItems:   resp.Message.ReasoningItems,
+				TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			}
 			state.allSteps = append(state.allSteps, nudgeStep)
 			cw.AddStep(nudgeStep)
@@ -254,10 +255,11 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 		if e.suppressAssistantEvents && !e.finishNudgeAttempted {
 			e.finishNudgeAttempted = true
 			nudgeStep := Step{
-				Thought:        thought,
-				UserNudge:      executorFinishNudge,
-				ReasoningItems: resp.Message.ReasoningItems,
-				TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
+				Thought:          thought,
+				UserNudge:        executorFinishNudge,
+				ReasoningContent: resp.Message.ReasoningContent,
+				ReasoningItems:   resp.Message.ReasoningItems,
+				TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			}
 			state.allSteps = append(state.allSteps, nudgeStep)
 			cw.AddStep(nudgeStep)
@@ -292,10 +294,11 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 	if hasTools && state.implicitFinishNudgeCount < 2 {
 		state.implicitFinishNudgeCount++
 		nudgeStep := Step{
-			Thought:        thought,
-			UserNudge:      executorNudge,
-			ReasoningItems: resp.Message.ReasoningItems,
-			TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			Thought:          thought,
+			UserNudge:        executorNudge,
+			ReasoningContent: resp.Message.ReasoningContent,
+			ReasoningItems:   resp.Message.ReasoningItems,
+			TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		}
 		state.allSteps = append(state.allSteps, nudgeStep)
 		cw.AddStep(nudgeStep)
@@ -308,10 +311,11 @@ func (e *Executor) handleImplicitFinish(resp *llm.ChatResponse, thought string, 
 	if e.suppressAssistantEvents && !e.finishNudgeAttempted {
 		e.finishNudgeAttempted = true
 		nudgeStep := Step{
-			Thought:        thought,
-			UserNudge:      executorFinishNudge,
-			ReasoningItems: resp.Message.ReasoningItems,
-			TokensUsed:     resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			Thought:          thought,
+			UserNudge:        executorFinishNudge,
+			ReasoningContent: resp.Message.ReasoningContent,
+			ReasoningItems:   resp.Message.ReasoningItems,
+			TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		}
 		state.allSteps = append(state.allSteps, nudgeStep)
 		cw.AddStep(nudgeStep)
@@ -349,7 +353,7 @@ func (e *Executor) handleTruncationStopReason(ctx context.Context, resp *llm.Cha
 	e.emitter.ToolCall(state.stepNum, 0, truncAction.Name, string(truncAction.Input), e.tools.GetToolSource(truncAction.Name))
 
 	e.consecutiveTruncationCount++
-	if e.consecutiveTruncationCount >= e.circuitBreaker.TruncationAbortThreshold {
+	if e.circuitBreaker.TruncationAbortThreshold > 0 && e.consecutiveTruncationCount >= e.circuitBreaker.TruncationAbortThreshold {
 		e.emitter.ExecutorDiagnostic(state.stepNum, "truncation_abort", map[string]any{"tool": truncAction.Name, "consecutive": e.consecutiveTruncationCount})
 		abortReason := fmt.Sprintf("Tool '%s' output was truncated %d times consecutively by max output token limit", truncAction.Name, e.consecutiveTruncationCount)
 		slResp, slErr := e.hitl.OnStepLimit(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
@@ -791,6 +795,7 @@ func (e *Executor) processBatchTool(
 			ReasoningContent: resp.Message.ReasoningContent,
 			Action:           action,
 			Observation:      obs,
+			IsError:          true,
 			TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			ResponseGroup:    responseGroup,
 		}
@@ -809,6 +814,7 @@ func (e *Executor) processBatchTool(
 			ReasoningContent: resp.Message.ReasoningContent,
 			Action:           action,
 			Observation:      obs,
+			IsError:          true,
 			TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			ResponseGroup:    responseGroup,
 		}
@@ -823,8 +829,13 @@ func (e *Executor) processBatchTool(
 
 	for subIdx, sub := range batchInput.Calls {
 		effectiveIdx := baseIdx + subIdx
+		// The ID must be unique across the whole conversation history: these
+		// steps are replayed to the API as assistant tool_calls matched with
+		// tool results by ID, and duplicate IDs (e.g. from two batch calls in
+		// different steps) can cause provider-side 400 errors. Include the
+		// step number and the batch call index to guarantee uniqueness.
 		subCall := llm.ToolCall{
-			ID:    fmt.Sprintf("batch_sub_%d", subIdx),
+			ID:    fmt.Sprintf("batch_%d_%d_sub_%d", state.stepNum, callIdx, subIdx),
 			Name:  sub.Tool,
 			Input: sub.Input,
 		}
@@ -841,6 +852,7 @@ func (e *Executor) processBatchTool(
 				Action:        subCall,
 				Observation:   obs,
 				IsUntrusted:   false,
+				IsError:       true,
 				TokensUsed:    resp.Usage.InputTokens + resp.Usage.OutputTokens,
 				ResponseGroup: responseGroup,
 			}
@@ -884,6 +896,7 @@ func (e *Executor) processBatchTool(
 					Action:        subCall,
 					Observation:   obs,
 					IsUntrusted:   false,
+					IsError:       true,
 					TokensUsed:    resp.Usage.InputTokens + resp.Usage.OutputTokens,
 					ResponseGroup: responseGroup,
 				}
@@ -959,6 +972,7 @@ func (e *Executor) processBatchTool(
 			Action:           subCall,
 			Observation:      observation,
 			IsUntrusted:      isUntrusted,
+			IsError:          result.IsError,
 			CacheHash:        batchCacheHash,
 			TokensUsed:       resp.Usage.InputTokens + resp.Usage.OutputTokens,
 			ResponseGroup:    responseGroup,
@@ -1070,7 +1084,7 @@ func (e *Executor) checkRepeatIdenticalTool(
 		}
 	}
 
-	if e.consecutiveRepeatCount >= abortThreshold {
+	if abortThreshold > 0 && e.consecutiveRepeatCount >= abortThreshold {
 		e.emitter.ExecutorDiagnostic(state.stepNum, "repeated_tool_call_abort", map[string]any{"tool": action.Name, "repeat_count": e.consecutiveRepeatCount})
 		abortReason := fmt.Sprintf("Tool '%s' called %d times consecutively with identical arguments", action.Name, e.consecutiveRepeatCount)
 		slResp, slErr := e.hitl.OnStepLimit(ctx, state.stepNum, state.effectiveMaxSteps, abortReason)
@@ -1111,7 +1125,7 @@ func (e *Executor) checkRepeatIdenticalTool(
 		}, nil
 	}
 
-	if e.consecutiveRepeatCount >= nudgeThreshold {
+	if nudgeThreshold > 0 && e.consecutiveRepeatCount >= nudgeThreshold {
 		nudgeMsg := repeatNudgeMessage
 		if e.lastToolResultIsError {
 			nudgeMsg = repeatErrorNudgeMessage
@@ -1352,7 +1366,7 @@ func (e *Executor) checkParseErrors(
 			e.consecutiveParseErrorCount = 1
 		}
 
-		if e.consecutiveParseErrorCount >= e.circuitBreaker.ParseErrorAbortThreshold {
+		if e.circuitBreaker.ParseErrorAbortThreshold > 0 && e.consecutiveParseErrorCount >= e.circuitBreaker.ParseErrorAbortThreshold {
 			e.emitter.ExecutorDiagnostic(state.stepNum, "parse_error_abort", map[string]any{"tool": action.Name, "consecutive_parse_errors": e.consecutiveParseErrorCount})
 			e.emitter.ToolResult(state.stepNum, callIdx, len(observation), observation, true)
 			abortReason := fmt.Sprintf("Tool '%s' failed to parse input %d times consecutively", action.Name, e.consecutiveParseErrorCount)

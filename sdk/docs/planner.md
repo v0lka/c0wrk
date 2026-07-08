@@ -18,7 +18,7 @@ import "github.com/v0lka/sp4rk/planner"
 - [Planner](#planner-1)
   - [NewPlanner](#newplanner)
 - [Config](#config)
-  - [DefaultPlannerConfig](#defaultplannerconfig)
+  - [DefaultConfig](#defaultconfig)
 - [PromptSet](#promptset)
   - [Placeholder system](#placeholder-system)
 - [AgentProfile](#agentprofile)
@@ -55,7 +55,7 @@ func NewPlanner(caller agent.LLMCaller, cfg Config) (*Planner, error)
 Creates a new Planner with the given LLM caller and configuration. Returns an error if `caller` is `nil` (a required dependency). If `MaxExploreSteps` is zero or negative, it defaults to `7`.
 
 ```go
-pl, err := planner.NewPlanner(router, planner.DefaultPlannerConfig())
+pl, err := planner.NewPlanner(router, planner.DefaultConfig())
 if err != nil {
     log.Fatal(err)
 }
@@ -119,24 +119,22 @@ type Config struct {
 | `MaxExploreSteps` | Step budget for the exploration loop. Defaults to `7`. |
 | `ReasoningEffort` | Reasoning effort applied to the exploration executor and plan-generation calls. |
 
-### DefaultPlannerConfig
+### DefaultConfig
 
 ```go
-func DefaultPlannerConfig() Config
+func DefaultConfig() Config
 ```
 
 Returns a `Config` with sensible defaults for **standalone use**. It provides no-op context-extraction functions (empty domain, zero complexity), a `FormatSkillList` that returns `"None"`, and `MaxExploreSteps` of `7`. Override specific fields as needed — most importantly, set `Prompts`, `Model`, and (for exploration) `ToolRegistry` + `PlannerToolNames` + `ContextFactory`.
 
 ```go
-cfg := planner.DefaultPlannerConfig()
+cfg := planner.DefaultConfig()
 cfg.Prompts = myPromptSet
 cfg.Model = "claude-sonnet-4-5"
 cfg.ToolRegistry = registry
 cfg.PlannerToolNames = map[string]bool{"read_file": true, "list_directory": true, "ripgrep": true}
 cfg.ContextFactory = contextFactory
 ```
-
-> `DefaultConfig()` (a separate function in `config.go`) returns testing stubs instead of production defaults. Prefer `DefaultPlannerConfig()` for real use.
 
 ---
 
@@ -287,7 +285,7 @@ type AgentProfile struct {
 | `KeepLastN` | Per-step tool-output pruning override. `0` uses the role default. |
 | `ProtectedTools` | Per-step protected-tools override. `nil` uses the role default. |
 
-The planner emits profiles in the JSON example so the LLM can attach them to steps. Downstream, a `StepConfigurator` reads the profile to configure each step's executor (tool set, compaction, budget).
+The planner emits profiles in the JSON example so the LLM can attach them to steps. Downstream, the host application reads the profile to configure each step's executor (tool set, compaction, budget).
 
 ```json
 {
@@ -547,7 +545,7 @@ func main() {
 	registry.Register(builtins.NewListDirectoryTool())
 	registry.Register(agent.NewFinishTool())
 
-	cfg := planner.DefaultPlannerConfig()
+	cfg := planner.DefaultConfig()
 	cfg.Prompts = planner.PromptSet{
 		BasePrompt: `You are a task planning agent. Break the task into steps.
 
@@ -683,7 +681,7 @@ func main() {
 	discoveredSkills := skillMgr.List()
 
 	// Configure the planner with exploration tools and skills.
-	cfg := planner.DefaultPlannerConfig()
+	cfg := planner.DefaultConfig()
 	cfg.Prompts = makePlannerPromptSet()
 	cfg.Model = "claude-sonnet-4-5"
 	cfg.Emitter = &consoleEvents{}

@@ -130,25 +130,24 @@ func (c *Conductor) Run(
 	systemPrompt := c.cfg.SystemPrompt(ctx, message, modelMeta)
 
 	cm := c.cfg.ContextFactory(systemPrompt, modelMeta, compactionStrategy)
-	if ccm, ok := cm.(interface{ SetTask(string) }); ok {
+	if ccm, ok := cm.(TaskAware); ok {
 		ccm.SetTask(message)
 	}
 
 	// Inject prior conversation (previous exchanges) so the LLM sees the
 	// dialogue context leading up to the current message. The ContextManager
-	// must support SetPriorConversation — the SDK's memory.ContextWindow does.
+	// must implement ConversationAware — the SDK's memory.ContextWindow does.
 	if len(c.cfg.ConversationHistory) > 0 {
-		if pcm, ok := cm.(interface{ SetPriorConversation([]llm.Message) }); ok {
+		if pcm, ok := cm.(ConversationAware); ok {
 			pcm.SetPriorConversation(c.cfg.ConversationHistory)
 		}
 	}
 
 	// Build the executor caller: wire context tracker correction if the
-	// context manager exposes one.
+	// context manager exposes one (TrackerProvider) and the caller supports
+	// tracker injection.
 	caller := c.cfg.LLM
-	if ctm, ok := cm.(interface {
-		ContextTracker() *llm.ContextTokenTracker
-	}); ok {
+	if ctm, ok := cm.(TrackerProvider); ok {
 		if tc, ok2 := caller.(interface {
 			WithContextTracker(*llm.ContextTokenTracker) agent.LLMCaller
 		}); ok2 {
@@ -216,7 +215,11 @@ func (c *Conductor) Run(
 	result, err := executor.Run(ctx, availableTools, cm)
 	status := ExecutionStatusSuccess
 	if err != nil {
-		status = ExecutionStatusFailed
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			status = ExecutionStatusCancelled
+		} else {
+			status = ExecutionStatusFailed
+		}
 	} else if result == nil || !result.Finished {
 		status = ExecutionStatusPartial
 	}

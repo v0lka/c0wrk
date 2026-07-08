@@ -336,10 +336,11 @@ func TestWalkSymlinkComponents_SimpleSymlink(t *testing.T) {
 
 	nestedPath := filepath.Join(symlinkPath, "target.txt")
 
-	result := walkSymlinkComponents(nestedPath, dir)
-	if result == nil {
-		t.Fatal("expected symlink traversal, got nil")
+	results := walkSymlinkComponents(nestedPath, dir)
+	if len(results) == 0 {
+		t.Fatal("expected symlink traversal, got none")
 	}
+	result := results[0]
 	if result.SymlinkAt != symlinkPath {
 		t.Fatalf("expected symlink at %s, got %s", symlinkPath, result.SymlinkAt)
 	}
@@ -364,10 +365,11 @@ func TestWalkSymlinkComponents_DeepSymlink(t *testing.T) {
 
 	nestedPath := filepath.Join(symlinkAt, "secret")
 
-	result := walkSymlinkComponents(nestedPath, dir)
-	if result == nil {
+	results := walkSymlinkComponents(nestedPath, dir)
+	if len(results) == 0 {
 		t.Fatal("expected symlink traversal for deep symlink")
 	}
+	result := results[0]
 	if result.SymlinkAt != symlinkAt {
 		t.Fatalf("expected symlink at %s, got %s", symlinkAt, result.SymlinkAt)
 	}
@@ -409,10 +411,11 @@ func TestWalkSymlinkComponents_LastComponentSymlink(t *testing.T) {
 	symlinkPath := filepath.Join(dir, "link.file")
 	_ = os.Symlink(target, symlinkPath)
 
-	result := walkSymlinkComponents(symlinkPath, dir)
-	if result == nil {
+	results := walkSymlinkComponents(symlinkPath, dir)
+	if len(results) == 0 {
 		t.Fatal("expected symlink traversal")
 	}
+	result := results[0]
 	if result.SymlinkAt != symlinkPath {
 		t.Fatalf("expected symlink at %s, got %s", symlinkPath, result.SymlinkAt)
 	}
@@ -532,9 +535,9 @@ func TestIsPathOutside_OutsideWorkspace(t *testing.T) {
 }
 
 func TestIsPathOutside_EmptyWorkspace(t *testing.T) {
-	ok, _ := pathutil.IsWithinPath("", "/tmp/anything")
-	if !ok {
-		t.Fatal("expected true for empty workspace (can't determine)")
+	ok, err := pathutil.IsWithinPath("", "/tmp/anything")
+	if err == nil || ok {
+		t.Fatal("expected (false, error) for empty workspace (fail closed)")
 	}
 }
 

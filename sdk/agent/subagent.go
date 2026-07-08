@@ -8,20 +8,6 @@ import (
 	"github.com/v0lka/sp4rk/tools"
 )
 
-// SubAgent wraps an Executor to run as a goroutine for parallel plan execution.
-type SubAgent struct {
-	ID       string
-	Executor *Executor
-}
-
-// NewSubAgent creates a SubAgent for a specific plan step.
-func NewSubAgent(id string, executor *Executor) *SubAgent {
-	return &SubAgent{
-		ID:       id,
-		Executor: executor,
-	}
-}
-
 // SubAgentTask bundles an agent with its task tools, context manager, and events.
 type SubAgentTask struct {
 	StepID         string

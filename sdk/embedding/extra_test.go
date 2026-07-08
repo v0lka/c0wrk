@@ -13,6 +13,23 @@ import (
 // fixedSizeStrings
 // =============================================================================
 
+// fixedSizeStrings is a test adapter for fixedSizePieces preserving the old
+// string-slice API used throughout these tests.
+func fixedSizeStrings(text string, cfg ChunkerConfig) []string {
+	pieces := fixedSizePieces(piece{text: text, startLine: 1}, cfg)
+	out := make([]string, 0, len(pieces))
+	for _, p := range pieces {
+		out = append(out, p.text)
+	}
+	return out
+}
+
+// assignLineNumbers is a test adapter: converts contiguous line-aligned parts
+// into sections (old API preserved for these tests).
+func assignLineNumbers(parts []string) []section {
+	return piecesToSections(piecesFromContiguousLines(parts))
+}
+
 func TestFixedSizeStrings_WithinLimit(t *testing.T) {
 	cfg := ChunkerConfig{MaxChunkSize: 100, Overlap: 20}
 	result := fixedSizeStrings("short text", cfg)
@@ -239,7 +256,7 @@ func TestSplitBySingleBlanks_LeadingBlanks(t *testing.T) {
 	// else: current=[""]. Second blank: TrimSpace("")=="" and len(current)>0, so we
 	// split off current=["",""] as a part and reset. Then the code lines form a second part.
 	text := "\n\nfunc hello() {\n  return 1\n}\n"
-	result := splitBySingleBlanks(text, ChunkerConfig{})
+	result := splitBySingleBlanksStrings(text)
 
 	// Two parts: the leading blank lines and the function body
 	if len(result) != 2 {
@@ -252,7 +269,7 @@ func TestSplitBySingleBlanks_LeadingBlanks(t *testing.T) {
 
 func TestSplitBySingleBlanks_NoBlanks(t *testing.T) {
 	text := "line1\nline2\nline3"
-	result := splitBySingleBlanks(text, ChunkerConfig{})
+	result := splitBySingleBlanksStrings(text)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 part for text without blank lines, got %d", len(result))
@@ -266,7 +283,7 @@ func TestSplitBySingleBlanks_ConsecutiveBlanks(t *testing.T) {
 	// Consecutive blank lines: the first blank line group is kept with previous block,
 	// then subsequent blank lines start a new block.
 	text := "a\n\n\nb"
-	result := splitBySingleBlanks(text, ChunkerConfig{})
+	result := splitBySingleBlanksStrings(text)
 
 	// "a\n" → encounters "\n" (blank), appends it to current → "a\n\n"
 	// Then next "\n" → TrimSpace("") is true, len(current)="a\n\n" > 0 → append, current=nil
@@ -1285,9 +1302,14 @@ func TestEmbedder_Close_WithSession(t *testing.T) {
 	if e.sess != nil {
 		t.Error("sess should be nil after Close")
 	}
-	// tokenizer should still be non-nil (Close doesn't touch it).
-	if e.tokenizer == nil {
-		t.Error("tokenizer should remain non-nil after Close")
+	// tokenizer is cleared on Close so subsequent Embed calls fail fast
+	// instead of touching the destroyed ONNX environment.
+	if e.tokenizer != nil {
+		t.Error("tokenizer should be nil after Close (marks embedder closed)")
+	}
+	// EmbedDocuments after Close must return an error, not run inference.
+	if _, embedErr := e.EmbedDocuments(context.Background(), []string{"x"}); embedErr == nil {
+		t.Error("EmbedDocuments after Close should return an error")
 	}
 }
 
@@ -1359,5 +1381,76 @@ func TestEmbedder_EmbedQuery_NilTokenizer(t *testing.T) {
 	_, err := e.EmbedQuery(context.Background(), "test")
 	if err == nil {
 		t.Error("expected error for nil tokenizer")
+	}
+}
+
+// splitBySingleBlanksStrings is a test adapter for splitBySingleBlanks
+// preserving the old string-slice API used in these tests.
+func splitBySingleBlanksStrings(text string) []string {
+	pieces := splitBySingleBlanks(piece{text: text, startLine: 1}, ChunkerConfig{})
+	out := make([]string, 0, len(pieces))
+	for _, p := range pieces {
+		out = append(out, p.text)
+	}
+	return out
+}
+
+// =============================================================================
+// R5 regression: line numbers after mid-line fixed-size splits
+// =============================================================================
+
+func TestChunkFile_OversizedChunk_LineNumbersStayAligned(t *testing.T) {
+	// Build a code file with one oversized paragraph (no blank lines inside)
+	// followed by a normal paragraph. The oversized paragraph forces a
+	// fixed-size split that lands mid-line; subsequent sections must still
+	// report line numbers matching the original file.
+	var sb strings.Builder
+	const bigLines = 20
+	for i := 1; i <= bigLines; i++ {
+		// Each line is 40 chars incl. newline → 20 lines ≈ 800 runes.
+		sb.WriteString(strings.Repeat("x", 37))
+		sb.WriteString("//\n")
+	}
+	sb.WriteString("\n")             // blank line 21 ends the paragraph
+	sb.WriteString("func tail() {}") // line 22
+	text := sb.String()
+
+	cfg := ChunkerConfig{MaxChunkSize: 300, Overlap: 50}
+	chunks, err := ChunkFile("/tmp/file.go", []byte(text), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) < 3 {
+		t.Fatalf("expected >=3 chunks, got %d", len(chunks))
+	}
+
+	lines := strings.Split(text, "\n")
+	for i, c := range chunks {
+		if c.StartLine < 1 || c.EndLine > len(lines) {
+			t.Fatalf("chunk %d: line range %d-%d out of file bounds (1-%d)", i, c.StartLine, c.EndLine, len(lines))
+		}
+		// The chunk's first line fragment must be a substring of the
+		// original line it claims to start on.
+		firstLine := strings.SplitN(c.Content, "\n", 2)[0]
+		if firstLine != "" && !strings.Contains(lines[c.StartLine-1], firstLine) {
+			t.Errorf("chunk %d: StartLine=%d but content's first line %q not found in original line %q",
+				i, c.StartLine, firstLine, lines[c.StartLine-1])
+		}
+		// Same for the last line fragment and EndLine.
+		parts := strings.Split(c.Content, "\n")
+		lastLine := parts[len(parts)-1]
+		if lastLine != "" && !strings.Contains(lines[c.EndLine-1], lastLine) {
+			t.Errorf("chunk %d: EndLine=%d but content's last line %q not found in original line %q",
+				i, c.EndLine, lastLine, lines[c.EndLine-1])
+		}
+	}
+
+	// The final chunk (tail paragraph) must start at line 22.
+	last := chunks[len(chunks)-1]
+	if !strings.Contains(last.Content, "func tail") {
+		t.Fatalf("last chunk should contain tail function, got %q", last.Content)
+	}
+	if last.StartLine > 22 || last.EndLine < 22 {
+		t.Errorf("tail chunk line range %d-%d must include line 22", last.StartLine, last.EndLine)
 	}
 }

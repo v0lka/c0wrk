@@ -55,15 +55,3 @@ type Config struct {
 	MaxExploreSteps int
 	ReasoningEffort string
 }
-
-// DefaultConfig returns a Config with sensible defaults for testing.
-func DefaultConfig() Config {
-	return Config{
-		DomainFromContext:     func(context.Context) string { return "" },
-		ComplexityFromContext: func(context.Context) int { return 0 },
-		FormatSkillList:       func(context.Context, []skills.SkillDescriptor) string { return "None" },
-		FormatWorkspacePath:   func(context.Context) string { return "" },
-		AppendContextSections: func(_ context.Context, base string) string { return base },
-		MaxExploreSteps:       7,
-	}
-}

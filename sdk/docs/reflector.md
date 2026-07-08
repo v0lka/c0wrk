@@ -373,7 +373,7 @@ func run() error {
 	defer func() { _ = os.RemoveAll(workspaceDir) }()
 
 	// --- Planner ---
-	plannerCfg := planner.DefaultPlannerConfig()
+	plannerCfg := planner.DefaultConfig()
 	plannerCfg.Prompts = planner.PromptSet{
 		BasePrompt: `You are a task planning agent. Break the task into steps.
 
@@ -417,7 +417,7 @@ Return JSON with "summary", "root_cause", "suggested_action" (retry/replan/abort
 
 Use the available tools. Verify your work before calling finish.`, stepDescription)
 	}
-	conductor, err := fw.NewConductor(systemPromptFactory, &agent.NoopEvents{})
+	conductor, err := fw.NewConductor(systemPromptFactory)
 	if err != nil {
 		return err
 	}

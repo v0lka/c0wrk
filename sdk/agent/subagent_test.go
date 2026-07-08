@@ -10,17 +10,6 @@ import (
 	"github.com/v0lka/sp4rk/tools"
 )
 
-func TestNewSubAgent(t *testing.T) {
-	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
-	sa := NewSubAgent("step_1", exec)
-	if sa.ID != "step_1" {
-		t.Errorf("ID = %q, want %q", sa.ID, "step_1")
-	}
-	if sa.Executor != exec {
-		t.Error("Executor not set correctly")
-	}
-}
-
 func TestRunSubAgent_Success(t *testing.T) {
 	mockLLM := &mockLLMCaller{
 		responses: []*llm.ChatResponse{

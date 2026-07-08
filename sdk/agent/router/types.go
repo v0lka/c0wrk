@@ -37,9 +37,9 @@ type SkillDescriptor struct {
 	Description string
 }
 
-// ApplyCompactionStrategy returns the compaction strategy name based on
-// domain and complexity. This logic lives here so sdk/planner can import it.
-func ApplyCompactionStrategy(domain string, complexity int) string {
+// applyCompactionStrategy returns the compaction strategy name based on
+// domain and complexity.
+func applyCompactionStrategy(domain string, complexity int) string {
 	switch domain {
 	case DomainCode:
 		return "sliding_window"

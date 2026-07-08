@@ -1043,7 +1043,16 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 			}
 		}
 
-		cw := sdkmemory.NewContextWindow(systemPrompt, modelMeta, tracker, thresholds, strategy, cfg.Executor.Compaction.SafetyMarginPercent, cfg.Security.InjectionDefenseEnabled, pruning)
+		cw := sdkmemory.NewContextWindow(sdkmemory.ContextWindowConfig{
+			SystemPrompt:            systemPrompt,
+			ModelMeta:               modelMeta,
+			Tracker:                 tracker,
+			Thresholds:              thresholds,
+			Strategy:                strategy,
+			SafetyMarginPercent:     cfg.Executor.Compaction.SafetyMarginPercent,
+			InjectionDefenseEnabled: cfg.Security.InjectionDefenseEnabled,
+			Pruning:                 pruning,
+		})
 		cw.SetHistoryMutation(sdkmemory.HistoryMutation{
 			ToolResultEvictionStep: cfg.Executor.HistoryMutation.ToolResultEvictionStep,
 			EvictStepStatus:        cfg.Executor.HistoryMutation.EvictStepStatus,

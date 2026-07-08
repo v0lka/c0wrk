@@ -154,8 +154,8 @@ Available tools:
   [core] store_fact
   [core] search_facts
   [core] finish
-  [mcp:filesystem] read_file
-  [mcp:filesystem] write_file
+  [filesystem] search_files
+  [filesystem] get_file_info
   …
 
 Discovered skills: 1

@@ -68,15 +68,15 @@ func (t *CalculatorTool) Execute(_ context.Context, input json.RawMessage) (tool
 
 ### 2. Tool policies
 
-`DefaultPolicy()` controls the human-in-the-loop behaviour:
+`DefaultPolicy()` controls how the tool registry treats the tool at execution time:
 
-| Policy             | Behaviour                                    |
-|--------------------|----------------------------------------------|
-| `PolicyAlwaysAllow`| Execute without confirmation                 |
-| `PolicyUserConfirm`| Always ask the user before executing         |
-| `PolicyAlwaysDeny` | Block the tool entirely                      |
+| Policy             | Behaviour                                                        |
+|--------------------|------------------------------------------------------------------|
+| `PolicyAlwaysAllow`| Execute without confirmation                                     |
+| `PolicyUserConfirm`| Ask via the registry's `ConfirmFunc`; **denied if none is set** (fail-closed) |
+| `PolicyAlwaysDeny` | Block the tool entirely                                          |
 
-The calculator uses `PolicyAlwaysAllow` because it's read-only and safe. Destructive tools (write_file, delete_file) typically use `PolicyUserConfirm` — see **example 04** for a custom HITL handler.
+The calculator uses `PolicyAlwaysAllow` because it's read-only and safe. Destructive tools (write_file, delete_file) use `PolicyUserConfirm`, which is why this example passes a `ConfirmFunc` in `sdk.Config` — without it, `write_file` would be denied. You can also relax specific tools deliberately with `registry.SetPolicyOverride(name, tools.PolicyAlwaysAllow)`. See **example 04** for interactive confirmation via a custom HITL handler.
 
 ### 3. IsUntrusted
 
@@ -92,7 +92,7 @@ registry.Register(builtins.NewWriteFileTool())
 registry.Register(builtins.NewListDirectoryTool())
 ```
 
-Other available built-ins include `bash_exec`, `edit_file`, `glob`, `ripgrep`, `web_fetch`, `web_search`, `create_directory`, `delete_file`, and more. Each has a `New*Tool()` constructor.
+Other available built-ins include `bash_exec`, `edit_file`, `glob`, `ripgrep`, `web_fetch`, `create_directory`, `delete_file`, and more. Each has a `New*Tool()` constructor (some take configuration arguments, e.g. `NewBashExecTool(blacklist)` and `NewWebFetchTool(limits)`). The `web_search` tool lives in the `tools/builtins/websearch` subpackage.
 
 ### 5. Workspace path via context
 

@@ -199,6 +199,13 @@ func run() error {
 		HITL: &autoApproveHITL{
 			deniedTools: map[string]bool{"delete_directory": true}, // block destructive ops
 		},
+		// The registry is FAIL-CLOSED for PolicyUserConfirm tools (file
+		// writers and MCP tools). Everything here runs in a throwaway temp
+		// workspace, so we auto-approve; the HITL handler above still blocks
+		// delete_directory at the executor level.
+		ConfirmFunc: func(_ context.Context, req tools.ConfirmationRequest) (tools.ConfirmationResponse, error) {
+			return tools.ConfirmAllowOnce, nil
+		},
 		OnBlackboardChanged: func(changeType string) {
 			fmt.Printf("  📝 blackboard: %s\n", changeType)
 		},
@@ -248,7 +255,7 @@ func run() error {
 	}
 
 	// ── 6. Create Planner ──
-	plannerCfg := planner.DefaultPlannerConfig()
+	plannerCfg := planner.DefaultConfig()
 	plannerCfg.Prompts = makePlannerPromptSet()
 	plannerCfg.Model = plannerModel
 	pl, err := planner.NewPlanner(fw.LLMRouter(), plannerCfg)
@@ -269,7 +276,7 @@ Complete the assigned step using the available tools.
 Use store_fact to record important findings for other steps.
 Call finish with a summary when done.`, workspaceDir)
 	}
-	conductor, err := fw.NewConductor(systemPromptFactory, events)
+	conductor, err := fw.NewConductor(systemPromptFactory)
 	if err != nil {
 		return fmt.Errorf("conductor: %w", err)
 	}
@@ -345,6 +352,7 @@ Call finish with a summary when done.`, workspaceDir)
 				} else if result != nil {
 					errMsg = result.Output
 				}
+				fmt.Printf("  ❌ %s failed (attempt %d): %s\n", step.ID, attempt, trunc(errMsg, 120))
 				if attempt <= maxRetries {
 					// Reflect on Claude (plannerModel) for stronger reasoning,
 					// then restore the executor model for the retry attempt.
@@ -366,7 +374,7 @@ Call finish with a summary when done.`, workspaceDir)
 						_ = router.SetModel(stepCtx, executorModel)
 					}
 				}
-				_ = errMsg
+
 			}
 			if !success {
 				events.OnStepCompleted(step.ID, false, 0, "max retries exceeded")

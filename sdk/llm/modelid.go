@@ -43,9 +43,9 @@ func BareModel(id string) string {
 	return model
 }
 
-// ProviderOf returns the provider name portion of a composite identifier, or ""
+// providerOf returns the provider name portion of a composite identifier, or ""
 // when id is a bare model name.
-func ProviderOf(id string) string {
+func providerOf(id string) string {
 	provider, _, _ := ParseCompositeModelID(id)
 	return provider
 }

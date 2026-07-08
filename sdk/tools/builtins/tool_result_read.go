@@ -95,15 +95,18 @@ func (t *ToolResultReadTool) Execute(ctx context.Context, input json.RawMessage)
 
 	// Enforce num_lines upper bound from per-tool truncation config.
 	// The LLM is told in the nudge to keep num_lines <= MaxLines, but we enforce it server-side.
+	// When per-tool config exists, its MaxLines IS the ceiling; the default
+	// hard cap applies only as a fallback when no per-tool config is available.
+	capped := false
 	if perToolCfg := agent.PerToolTruncationFromContext(ctx); perToolCfg != nil {
 		if cfg, ok := perToolCfg[entry.ToolName]; ok && cfg.MaxLines > 0 {
 			if params.NumLines > cfg.MaxLines {
 				params.NumLines = cfg.MaxLines
 			}
+			capped = true
 		}
 	}
-	// Fallback hard cap if no per-tool config is available.
-	if params.NumLines > defaultResultReadLines {
+	if !capped && params.NumLines > defaultResultReadLines {
 		params.NumLines = defaultResultReadLines
 	}
 

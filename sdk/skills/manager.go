@@ -151,14 +151,10 @@ func SafeResolvePath(baseDir, relPath string) (string, error) {
 	joined := filepath.Clean(filepath.Join(cleanBase, relPath))
 	// Resolve any symlinks to their real filesystem paths to prevent symlink-based
 	// traversal bypass (e.g., a symlink inside the skill directory pointing outside).
-	resolved, err := filepath.EvalSymlinks(joined)
-	if err != nil {
-		// If symlink resolution fails (e.g., broken link), fall back to textual check.
-		slog.Debug("SafeResolvePath: EvalSymlinks failed, falling back to textual check",
-			"path", joined, "error", err)
-		resolved = joined
-	}
-	cleanAbs := filepath.Clean(resolved)
+	// ResolveExistingPrefix resolves symlinks on the longest existing prefix and
+	// joins the non-existent suffix back, so partially-existing paths are still
+	// symlink-checked (no textual-only fallback).
+	cleanAbs := filepath.Clean(pathutil.ResolveExistingPrefix(joined))
 	if cleanAbs != cleanBase {
 		ok, err := pathutil.IsWithinPath(cleanBase, cleanAbs)
 		if err != nil || !ok {

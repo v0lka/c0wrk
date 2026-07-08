@@ -92,8 +92,8 @@ llm.IsCompositeModelID(id) // true
 // Return the bare model name portion (unchanged if already bare).
 llm.BareModel("openai/gpt-4o") // "gpt-4o"
 
-// Return the provider name portion ("" when id is bare).
-llm.ProviderOf("openai/gpt-4o") // "openai"
+// Parse a composite identifier into its parts.
+provider, model, ok := llm.ParseCompositeModelID("openai/gpt-4o") // "openai", "gpt-4o", true
 ```
 
 ## Runtime model switching

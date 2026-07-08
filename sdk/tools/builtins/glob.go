@@ -12,7 +12,7 @@ import (
 	"github.com/v0lka/sp4rk/tools"
 )
 
-const toolGlobDescription = `Find files and directories by name using glob patterns. Supports ** for recursive directory matching (e.g. **/*.go, src/**/*.ts, **/*.py, **/*.cs, **/*.java, **/*.php). Use this when you need to locate files by extension, name pattern, or directory structure. Respects .gitignore rules automatically.`
+const toolGlobDescription = `Find files and directories by name using glob patterns. Supports ** for recursive directory matching (e.g. **/*.go, src/**/*.ts, **/*.py, **/*.cs, **/*.java, **/*.php). Use this when you need to locate files by extension, name pattern, or directory structure.`
 
 // GlobTool finds files and directories matching doublestar glob patterns.
 type GlobTool struct {

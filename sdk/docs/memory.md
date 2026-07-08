@@ -13,44 +13,37 @@ import "github.com/v0lka/sp4rk/memory"
 ### NewContextWindow
 
 ```go
-func NewContextWindow(
-    systemPrompt string,
-    modelMeta llm.ModelMetadata,
-    tracker *llm.ContextTokenTracker,
-    thresholds CompactionThresholds,
-    strategy sdkagent.CompactionStrategy,
-    safetyMarginPercent int,
-    injectionDefenseEnabled bool,
-    pruning ...ToolOutputPruning,
-) *ContextWindow
+func NewContextWindow(cfg ContextWindowConfig) *ContextWindow
 ```
 
-| Parameter | Description |
+`ContextWindowConfig` fields (zero values fall back to sensible defaults):
+
+| Field | Description |
 | --- | --- |
-| `systemPrompt` | The base system prompt. May contain a `CacheBreakMarker` to split it into cacheable and dynamic system messages. |
-| `modelMeta` | Model metadata (`ContextWindow`, `OutputLimit`). |
-| `tracker` | Token tracker for fill accounting. If `nil`, a discard tracker is used and token accounting is silently disabled. |
-| `thresholds` | Fill percentages that trigger compaction. |
-| `strategy` | The compaction strategy (sliding window, summarization, or hierarchical). May be `nil`. |
-| `safetyMarginPercent` | Percentage of the context window reserved as a safety margin. Defaults to `5` when `0` or negative. |
-| `injectionDefenseEnabled` | When `true`, untrusted tool outputs are wrapped in `<untrusted-content>` tags (see [Security](security.md)). |
-| `pruning` | Optional variadic `ToolOutputPruning` config (first element is used). |
+| `SystemPrompt` | The base system prompt. May contain a `CacheBreakMarker` to split it into cacheable and dynamic system messages. |
+| `ModelMeta` | Model metadata (`ContextWindow`, `OutputLimit`). |
+| `Tracker` | Token tracker for fill accounting. If `nil`, a discard tracker is used and token accounting is silently disabled. |
+| `Thresholds` | Fill percentages that trigger compaction. |
+| `Strategy` | The compaction strategy (sliding window, summarization, or hierarchical). May be `nil` (compaction disabled). |
+| `SafetyMarginPercent` | Percentage of the context window reserved as a safety margin. Defaults to `5` when `0` or negative. |
+| `InjectionDefenseEnabled` | When `true`, untrusted tool outputs are wrapped in `<untrusted-content>` tags (see [Security](security.md)). |
+| `Pruning` | `ToolOutputPruning` config. Zero value leaves pruning disabled with a default placeholder text. |
 
 #### Fallback behavior
 
-If `modelMeta.ContextWindow` is `0` (unknown model), a fallback of **128000** is used. A zero context window would otherwise disable compaction entirely (`EffectiveMax` returns `0`, `CheckFill` returns `"ok"`), causing unbounded conversation growth until the API rejects the request. Likewise, a zero `OutputLimit` falls back to **4096**.
+If `ModelMeta.ContextWindow` is `0` (unknown model), a fallback of **128000** is used. A zero context window would otherwise disable compaction entirely (`EffectiveMax` returns `0`, `CheckFill` returns `"ok"`), causing unbounded conversation growth until the API rejects the request. Likewise, a zero `OutputLimit` falls back to **4096**.
 
 ```go
-cw := memory.NewContextWindow(
-    systemPrompt,
-    llm.ModelMetadata{ContextWindow: 200000, OutputLimit: 8192},
-    tracker,
-    memory.DefaultCompactionThresholds(),
-    memory.NewCompactionStrategy("sliding_window", memory.CompactionConfig{}, memory.CompactionDeps{}),
-    5,   // 5% safety margin
-    true, // wrap untrusted tool outputs
-    memory.DefaultToolOutputPruning(),
-)
+cw := memory.NewContextWindow(memory.ContextWindowConfig{
+    SystemPrompt:            systemPrompt,
+    ModelMeta:               llm.ModelMetadata{ContextWindow: 200000, OutputLimit: 8192},
+    Tracker:                 tracker,
+    Thresholds:              memory.DefaultCompactionThresholds(),
+    Strategy:                memory.NewCompactionStrategy("sliding_window", memory.CompactionConfig{}, memory.CompactionDeps{}),
+    SafetyMarginPercent:     5,    // 5% safety margin
+    InjectionDefenseEnabled: true, // wrap untrusted tool outputs
+    Pruning:                 memory.DefaultToolOutputPruning(),
+})
 ```
 
 ### Methods
@@ -327,7 +320,7 @@ cw.SetHistoryMutation(memory.HistoryMutation{
 
 ## Prompt Injection Defense Integration
 
-When `injectionDefenseEnabled` is `true`, tool outputs from tools that return external data (marked via the step's `IsUntrusted` flag) are wrapped in `<untrusted-content>` tags before being added to the prompt. This defends against indirect prompt injection. See [Security](security.md) for details on the wrapping and stripping functions.
+When `InjectionDefenseEnabled` is `true`, tool outputs from tools that return external data (marked via the step's `IsUntrusted` flag) are wrapped in `<untrusted-content>` tags before being added to the prompt. This defends against indirect prompt injection. See [Security](security.md) for details on the wrapping and stripping functions.
 
 ## Complete Example
 
@@ -362,16 +355,16 @@ func main() {
 		},
 	)
 
-	cw := memory.NewContextWindow(
-		"You are a helpful coding agent.",
-		llm.ModelMetadata{ContextWindow: 200000, OutputLimit: 8192},
-		tracker,
-		memory.DefaultCompactionThresholds(),
-		strategy,
-		5,
-		true,
-		memory.DefaultToolOutputPruning(),
-	)
+	cw := memory.NewContextWindow(memory.ContextWindowConfig{
+		SystemPrompt:            "You are a helpful coding agent.",
+		ModelMeta:               llm.ModelMetadata{ContextWindow: 200000, OutputLimit: 8192},
+		Tracker:                 tracker,
+		Thresholds:              memory.DefaultCompactionThresholds(),
+		Strategy:                strategy,
+		SafetyMarginPercent:     5,
+		InjectionDefenseEnabled: true,
+		Pruning:                 memory.DefaultToolOutputPruning(),
+	})
 	cw.SetHistoryMutation(memory.HistoryMutation{
 		ToolResultEvictionStep: 8,
 		EvictStepStatus:        true,

@@ -4,11 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/builtins"
 )
+
+// maxResponseBodyBytes caps how much of a provider HTTP response body is read,
+// protecting against unbounded memory use from a hostile or broken endpoint.
+const maxResponseBodyBytes = 4 << 20 // 4 MB
+
+// limitBody wraps a response body reader with a hard size cap.
+func limitBody(r io.Reader) io.Reader {
+	return io.LimitReader(r, maxResponseBodyBytes)
+}
 
 const toolWebsearchDescription = `Search the web and return a list of results with titles, URLs, and text snippets. Use this to find current information, external documentation, recent events, or any knowledge that may be beyond training data. Returns up to max_results entries (default 5), each with a title, URL, and a brief snippet summarizing the page content.`
 

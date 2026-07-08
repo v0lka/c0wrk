@@ -199,21 +199,6 @@ func TestRunSubAgentsParallel_EmptyInput(t *testing.T) {
 	}
 }
 
-func TestNewSubAgent(t *testing.T) {
-	mockLLM := &mockLLMCaller{}
-	mockTools := &mockToolExecutor{}
-	executor := agent.NewExecutor(mockLLM, mockTools, 10, agent.WithCircuitBreaker(defaultCircuitBreakerConfig))
-
-	subAgent := agent.NewSubAgent("test_id", executor)
-
-	if subAgent.ID != "test_id" {
-		t.Errorf("expected id 'test_id', got '%s'", subAgent.ID)
-	}
-	if subAgent.Executor != executor {
-		t.Error("expected executor to be set")
-	}
-}
-
 func TestRunSubAgentsParallel_WithContextCancellation(t *testing.T) {
 	// Create a context that's cancelled
 	ctx, cancel := context.WithCancel(context.Background())

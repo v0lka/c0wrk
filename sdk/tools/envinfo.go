@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,24 +30,15 @@ type EnvInfo struct {
 
 // CollectEnvInfo detects the current environment and returns a populated EnvInfo.
 // Runtime version detection uses short timeouts (2s) and returns empty strings on failure.
+//
+// The external-process probes (OS version and per-runtime version commands)
+// run concurrently — each writes to its own dedicated EnvInfo field, so the
+// result is deterministic and no synchronization beyond the WaitGroup is
+// needed. This bounds the worst-case latency to a single probe timeout (~2s)
+// instead of the sum of all probes.
 func CollectEnvInfo() *EnvInfo {
 	info := &EnvInfo{
 		Arch: runtime.GOARCH,
-	}
-
-	// OS detection
-	switch runtime.GOOS {
-	case "darwin":
-		info.OS = detectDarwinOS()
-	case "linux":
-		kernel := runVersionCmd("uname", "-r")
-		if kernel != "" {
-			info.OS = "Linux " + kernel
-		} else {
-			info.OS = "Linux"
-		}
-	default:
-		info.OS = runtime.GOOS
 	}
 
 	// Shell
@@ -61,13 +53,41 @@ func CollectEnvInfo() *EnvInfo {
 		info.HomeDir = home
 	}
 
-	// Runtime versions
-	info.GoVersion = detectGoVersion()
-	info.NodeVersion = detectNodeVersion()
-	info.PythonVersion = detectPythonVersion()
-	info.DotNetVersion = detectDotNetVersion()
-	info.JavaVersion = detectJavaVersion()
-	info.PhpVersion = detectPhpVersion()
+	// External-process probes, run in parallel. Each closure writes to a
+	// distinct field of info.
+	probes := []func(){
+		func() {
+			switch runtime.GOOS {
+			case "darwin":
+				info.OS = detectDarwinOS()
+			case "linux":
+				kernel := runVersionCmd("uname", "-r")
+				if kernel != "" {
+					info.OS = "Linux " + kernel
+				} else {
+					info.OS = "Linux"
+				}
+			default:
+				info.OS = runtime.GOOS
+			}
+		},
+		func() { info.GoVersion = detectGoVersion() },
+		func() { info.NodeVersion = detectNodeVersion() },
+		func() { info.PythonVersion = detectPythonVersion() },
+		func() { info.DotNetVersion = detectDotNetVersion() },
+		func() { info.JavaVersion = detectJavaVersion() },
+		func() { info.PhpVersion = detectPhpVersion() },
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(len(probes))
+	for _, probe := range probes {
+		go func() {
+			defer wg.Done()
+			probe()
+		}()
+	}
+	wg.Wait()
 
 	return info
 }

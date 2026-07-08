@@ -207,6 +207,9 @@ func (e *Embedder) Close() error {
 		e.sess.destroy()
 		e.sess = nil
 	}
+	// Mark the embedder closed so EmbedDocuments/EmbedQuery return an error
+	// instead of touching the destroyed ONNX environment.
+	e.tokenizer = nil
 	if err := destroyONNXRuntime(); err != nil {
 		return fmt.Errorf("destroying ONNX Runtime environment: %w", err)
 	}

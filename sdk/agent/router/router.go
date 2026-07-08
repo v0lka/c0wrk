@@ -82,12 +82,15 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 	// If the template uses PROJECT-CONTEXT, insert the context there
 	// (before the JSON-output directive to avoid recency bias).
 	// Otherwise fall back to appending at the end for backward compatibility.
+	// Tool/skill lists and project context (AGENTS.md etc.) are dynamic,
+	// externally-influenced values — substituted via ReplaceData so
+	// placeholder names inside them are never expanded.
 	builder := prompt.NewBuilder().
 		Core(r.systemPrompt).
-		Replace("AVAILABLE-TOOLS", toolListStr).
-		Replace("AVAILABLE-SKILLS", skillListStr)
+		ReplaceData("AVAILABLE-TOOLS", toolListStr).
+		ReplaceData("AVAILABLE-SKILLS", skillListStr)
 	if strings.Contains(r.systemPrompt, "PROJECT-CONTEXT") {
-		builder = builder.Replace("PROJECT-CONTEXT", projectContext)
+		builder = builder.ReplaceData("PROJECT-CONTEXT", projectContext)
 	}
 	systemPrompt := builder.Build()
 	if projectContext != "" && !strings.Contains(r.systemPrompt, "PROJECT-CONTEXT") {
@@ -155,13 +158,13 @@ func (r *Router) Route(ctx context.Context, userMessage string, availableTools [
 		}
 	}
 
-	ValidateRoutingDecision(&routingDecision)
+	validateRoutingDecision(&routingDecision)
 
 	return &routingDecision, nil
 }
 
-// ValidateRoutingDecision sanitizes and corrects a routing decision from LLM output.
-func ValidateRoutingDecision(d *RoutingDecision) {
+// validateRoutingDecision sanitizes and corrects a routing decision from LLM output.
+func validateRoutingDecision(d *RoutingDecision) {
 	// Validate domain
 	switch d.Domain {
 	case DomainCode, DomainResearch, DomainGeneral, DomainMixed:

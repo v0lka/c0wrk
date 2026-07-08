@@ -110,6 +110,16 @@ func TestIsWithinPath_NonExistent(t *testing.T) {
 	}
 }
 
+func TestIsWithinPath_EmptyParent(t *testing.T) {
+	ok, err := IsWithinPath("", "/some/path")
+	if err == nil {
+		t.Error("empty parent should return an error (fail closed)")
+	}
+	if ok {
+		t.Error("empty parent should return false")
+	}
+}
+
 func TestIsWithinPath_DifferentVolumes(t *testing.T) {
 	// filepath.Rel fails for paths on different roots.
 	// On macOS/Linux this is hard to test without actual mounts;

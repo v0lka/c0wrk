@@ -113,12 +113,12 @@ fw, err := sdk.New(sdk.Config{
 
 ### 5. Tool policies vs HITL
 
-Tool policies (`Tool.DefaultPolicy()`) and the HITL handler are complementary:
+Tool policies (`Tool.DefaultPolicy()`) and the HITL handler are two separate gates:
 
-- **Tool policy** — static, set at registration time. Defines the *default* behaviour for a tool.
-- **HITL handler** — dynamic, called at runtime. Can make per-call decisions based on the actual input.
+- **Tool policy** — enforced by the tool registry inside `Execute()`. `PolicyUserConfirm` tools require the registry's `ConfirmFunc`; with none configured they are **denied** (fail-closed).
+- **HITL handler** — dynamic, called by the executor for **every** tool call before it reaches the registry. Can make per-call decisions based on the actual input.
 
-The executor calls `OnToolCall` for **every** tool call regardless of its policy. The policy is a hint for UI layers (e.g. "show a confirmation dialog for this tool by default"); the HITL handler is the enforcement point.
+Because this example does its confirmation in the HITL handler, it explicitly relaxes the registry-level policy for the gated tools (`registry.SetPolicyOverride(name, tools.PolicyAlwaysAllow)`) so the user is not asked twice. If you prefer registry-level confirmation instead, drop the overrides and pass a `ConfirmFunc` in `sdk.Config`.
 
 ## Prerequisites
 

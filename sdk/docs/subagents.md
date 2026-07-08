@@ -1,6 +1,6 @@
 # Subagents
 
-The SDK supports parallel plan execution through **subagents** — goroutine-based wrappers around an `Executor` that run independent plan steps concurrently. This document covers the `SubAgent` type, the `SubAgentTask` bundle, the `RunSubAgent` launcher, parallel execution, context injection, event emission, and the `TrajectoryStore` used to capture executor steps.
+The SDK supports parallel plan execution through **subagents** — goroutine-based wrappers around an `Executor` that run independent plan steps concurrently. This document covers the `SubAgentTask` bundle, the `RunSubAgent` launcher, parallel execution, context injection, event emission, and the `TrajectoryStore` used to capture executor steps.
 
 ```go
 import (
@@ -14,21 +14,6 @@ import (
 ## Overview
 
 A plan is a DAG of steps. Steps with no dependencies between them can run in parallel to reduce total latency. The SDK achieves this by giving each independent step its own `Executor` (since an `Executor` is not safe for concurrent use on a single instance) and launching it in a goroutine via `RunSubAgent`. Each subagent runs to completion and reports its result on a channel.
-
-## SubAgent
-
-`SubAgent` wraps an `Executor` to run as a goroutine for parallel plan execution.
-
-```go
-type SubAgent struct {
-    ID       string
-    Executor *Executor
-}
-
-func NewSubAgent(id string, executor *Executor) *SubAgent
-```
-
-The `ID` is the plan-step identifier (e.g. `"step_3"`). The `Executor` is a fresh instance configured for this step — typically with its own context manager, tool set, and event emitter.
 
 ## SubAgentTask
 

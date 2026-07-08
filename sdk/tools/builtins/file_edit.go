@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/v0lka/sp4rk/tools"
@@ -66,6 +67,45 @@ func (t *EditFileTool) Judge(ctx context.Context, input json.RawMessage) (allowe
 	return judgeWriteInSessionRoots(ctx, params.Path)
 }
 
+// atomicWriteFile writes data to path atomically: the content is written to a
+// temporary file in the same directory, then renamed over the target. This
+// guarantees readers never observe a partially-written file. The original
+// file's permission bits are preserved (falling back to 0o644 when the file
+// cannot be stat'ed).
+func atomicWriteFile(path string, data []byte) error {
+	perm := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		perm = info.Mode().Perm()
+	}
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		// Best-effort cleanup on failure; no-op after successful rename.
+		_ = os.Remove(tmpName)
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename temp file: %w", err)
+	}
+	return nil
+}
+
 // Execute performs ACI-style find-and-replace in a file.
 func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	var params EditFileInput
@@ -96,7 +136,16 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 		defer checker.Unlock(params.Path)
 	}
 
-	data, err := os.ReadFile(params.Path)
+	// If the target is a symlink, resolve it and write to the resolved path.
+	// This preserves write-through-symlink semantics: an atomic rename on the
+	// symlink path itself would replace the symlink instead of its target.
+	// Symlink safety is gated above this layer (Judge / registry symlink checks).
+	writePath := params.Path
+	if resolved, evalErr := filepath.EvalSymlinks(params.Path); evalErr == nil {
+		writePath = resolved
+	}
+
+	data, err := os.ReadFile(writePath)
 	if err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to read file: %v", err), IsError: true}, nil
 	}
@@ -114,7 +163,7 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	newContent := strings.Replace(content, params.OldString, params.NewString, 1)
 
-	if err := os.WriteFile(params.Path, []byte(newContent), 0o644); err != nil {
+	if err := atomicWriteFile(writePath, []byte(newContent)); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to write file: %v", err), IsError: true}, nil
 	}
 

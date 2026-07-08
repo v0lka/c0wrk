@@ -74,6 +74,14 @@ func run() error {
 			// server takes its root as a command-line argument.
 			DefaultWorkDir: mcpRoot,
 		},
+		// MCP tools default to PolicyUserConfirm, and the registry is
+		// FAIL-CLOSED: without a ConfirmFunc, they would be denied. The MCP
+		// server here is sandboxed to a throwaway temp directory, so we
+		// auto-approve. In a real app, prompt the user instead.
+		ConfirmFunc: func(_ context.Context, req tools.ConfirmationRequest) (tools.ConfirmationResponse, error) {
+			fmt.Printf("[auto-approving %s]\n", req.ToolName)
+			return tools.ConfirmAllowOnce, nil
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create framework: %w", err)

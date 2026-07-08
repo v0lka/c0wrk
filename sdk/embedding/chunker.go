@@ -166,36 +166,48 @@ func lineCount(s string) int {
 	return strings.Count(s, "\n") + 1
 }
 
-// chunkCode splits code by blank lines, then fixed-size if still oversized.
-func chunkCode(text string, cfg ChunkerConfig) []section {
-	parts := splitBySingleBlanks(text, cfg)
-	parts = splitOversized(parts, cfg, fixedSizeStrings)
-	return assignLineNumbers(parts)
+// piece is an intermediate chunk fragment that carries its 1-based start line
+// in the original file. Splitters propagate the line offset so parts cut
+// mid-line (fixed-size splits with overlap) still get correct line numbers.
+type piece struct {
+	text      string
+	startLine int
 }
 
-func splitBySingleBlanks(text string, _ ChunkerConfig) []string {
-	lines := strings.Split(text, "\n")
-	var parts []string
+// chunkCode splits code by blank lines, then fixed-size if still oversized.
+func chunkCode(text string, cfg ChunkerConfig) []section {
+	parts := splitBySingleBlanks(piece{text: text, startLine: 1}, cfg)
+	parts = splitOversized(parts, cfg, fixedSizePieces)
+	return piecesToSections(parts)
+}
+
+// splitBySingleBlanks splits a piece on blank lines. Every split point is a
+// line boundary, so each sub-piece's start line is the cumulative line count.
+func splitBySingleBlanks(p piece, _ ChunkerConfig) []piece {
+	lines := strings.Split(p.text, "\n")
+	var parts []piece
 	var current []string
+	startLine := p.startLine
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" && len(current) > 0 {
 			current = append(current, line)
-			parts = append(parts, strings.Join(current, "\n"))
+			parts = append(parts, piece{text: strings.Join(current, "\n"), startLine: startLine})
+			startLine += len(current)
 			current = nil
 		} else {
 			current = append(current, line)
 		}
 	}
 	if len(current) > 0 {
-		parts = append(parts, strings.Join(current, "\n"))
+		parts = append(parts, piece{text: strings.Join(current, "\n"), startLine: startLine})
 	}
 	return parts
 }
 
-func splitOversized(parts []string, cfg ChunkerConfig, splitter func(string, ChunkerConfig) []string) []string {
-	var result []string
+func splitOversized(parts []piece, cfg ChunkerConfig, splitter func(piece, ChunkerConfig) []piece) []piece {
+	var result []piece
 	for _, p := range parts {
-		if utf8.RuneCountInString(p) > cfg.MaxChunkSize {
+		if utf8.RuneCountInString(p.text) > cfg.MaxChunkSize {
 			result = append(result, splitter(p, cfg)...)
 		} else {
 			result = append(result, p)
@@ -204,18 +216,26 @@ func splitOversized(parts []string, cfg ChunkerConfig, splitter func(string, Chu
 	return result
 }
 
-func fixedSizeStrings(text string, cfg ChunkerConfig) []string {
-	runes := []rune(text)
+// fixedSizePieces splits a piece into fixed-size rune windows with overlap.
+// Splits may land mid-line; each sub-piece's start line is computed from the
+// number of newlines preceding its rune offset in the parent piece, so line
+// numbers stay aligned with the original file (overlapping windows share
+// lines, which is reflected in overlapping line ranges).
+func fixedSizePieces(p piece, cfg ChunkerConfig) []piece {
+	runes := []rune(p.text)
 	if len(runes) <= cfg.MaxChunkSize {
-		return []string{text}
+		return []piece{p}
 	}
-	var parts []string
+	var parts []piece
 	for i := 0; i < len(runes); {
 		end := i + cfg.MaxChunkSize
 		if end > len(runes) {
 			end = len(runes)
 		}
-		parts = append(parts, string(runes[i:end]))
+		parts = append(parts, piece{
+			text:      string(runes[i:end]),
+			startLine: p.startLine + countNewlines(runes[:i]),
+		})
 		if end == len(runes) {
 			break
 		}
@@ -227,52 +247,78 @@ func fixedSizeStrings(text string, cfg ChunkerConfig) []string {
 	return parts
 }
 
-func assignLineNumbers(parts []string) []section {
+// countNewlines returns the number of '\n' runes in rs.
+func countNewlines(rs []rune) int {
+	n := 0
+	for _, r := range rs {
+		if r == '\n' {
+			n++
+		}
+	}
+	return n
+}
+
+// piecesToSections converts pieces to sections, deriving each end line from
+// the piece's start line and its own line count.
+func piecesToSections(parts []piece) []section {
 	sections := make([]section, 0, len(parts))
-	currentLine := 1
 	for _, p := range parts {
-		if p == "" {
+		if p.text == "" {
 			continue
 		}
-		lc := lineCount(p)
+		lc := lineCount(p.text)
 		sections = append(sections, section{
-			text:      p,
-			startLine: currentLine,
-			endLine:   currentLine + lc - 1,
+			text:      p.text,
+			startLine: p.startLine,
+			endLine:   p.startLine + lc - 1,
 		})
-		currentLine += lc
 	}
 	return sections
+}
+
+// piecesFromContiguousLines converts contiguous, line-boundary-aligned string
+// parts (as produced by the config splitters) into pieces with cumulative
+// line offsets starting at 1.
+func piecesFromContiguousLines(parts []string) []piece {
+	pieces := make([]piece, 0, len(parts))
+	currentLine := 1
+	for _, p := range parts {
+		pieces = append(pieces, piece{text: p, startLine: currentLine})
+		currentLine += lineCount(p)
+	}
+	return pieces
 }
 
 // chunkMarkdown splits markdown by H2 headers.
 func chunkMarkdown(text string, cfg ChunkerConfig) []section {
 	lines := strings.Split(text, "\n")
-	var parts []string
+	var parts []piece
 	var current []string //nolint:prealloc // false positive: conditionally appended
+	startLine := 1
 
 	for _, line := range lines {
 		if strings.HasPrefix(line, "## ") && len(current) > 0 {
-			parts = append(parts, strings.Join(current, "\n"))
+			parts = append(parts, piece{text: strings.Join(current, "\n"), startLine: startLine})
+			startLine += len(current)
 			current = nil
 		}
 		current = append(current, line)
 	}
 	if len(current) > 0 {
-		parts = append(parts, strings.Join(current, "\n"))
+		parts = append(parts, piece{text: strings.Join(current, "\n"), startLine: startLine})
 	}
 
 	// Handle oversized sections
 	parts = splitOversized(parts, cfg, splitBySingleBlanks)
-	parts = splitOversized(parts, cfg, fixedSizeStrings)
+	parts = splitOversized(parts, cfg, fixedSizePieces)
 
-	return assignLineNumbers(parts)
+	return piecesToSections(parts)
 }
 
 // chunkConfig splits config files by top-level keys if oversized.
 func chunkConfig(text, ext string, cfg ChunkerConfig) []section {
 	if utf8.RuneCountInString(text) <= cfg.MaxChunkSize {
-		return assignLineNumbers([]string{text})
+		return piecesToSections([]piece{{text: text, startLine: 1}})
 	}
 
 	var parts []string
@@ -287,13 +333,12 @@ func chunkConfig(text, ext string, cfg ChunkerConfig) []section {
 
 	// Fallback if splitting didn't help
 	if len(parts) <= 1 {
-		fixedParts := fixedSizeStrings(text, cfg)
-		return assignLineNumbers(fixedParts)
+		return piecesToSections(fixedSizePieces(piece{text: text, startLine: 1}, cfg))
 	}
 
-	parts = splitOversized(parts, cfg, fixedSizeStrings)
+	pieces := splitOversized(piecesFromContiguousLines(parts), cfg, fixedSizePieces)
 
-	return assignLineNumbers(parts)
+	return piecesToSections(pieces)
 }
 
 var jsonTopLevelKeyRe = regexp.MustCompile(`^ {2}"([^"]+)"\s*:`)
@@ -359,6 +404,6 @@ func splitGenericConfig(text string) []string {
 
 // fixedSizeSplit splits text into fixed-size chunks with overlap.
 func fixedSizeSplit(text string, cfg ChunkerConfig) []section {
-	parts := fixedSizeStrings(text, cfg)
-	return assignLineNumbers(parts)
+	parts := fixedSizePieces(piece{text: text, startLine: 1}, cfg)
+	return piecesToSections(parts)
 }

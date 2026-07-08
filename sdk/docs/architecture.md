@@ -14,7 +14,7 @@ The SDK is organized in four layers. Import direction flows downward — upper l
 │  orchestration      Conductor, Planner, Reflector            │
 │                     Multi-step task coordination             │
 ├─────────────────────────────────────────────────────────────┤
-│  agent              Executor, ReAct loop, SubAgent           │
+│  agent              Executor, ReAct loop, RunSubAgent        │
 │                     Single-step reasoning & tool use         │
 ├─────────────────────────────────────────────────────────────┤
 │  llm                Router, Providers, ModelRegistry         │
@@ -178,7 +178,7 @@ For complex tasks, the SDK composes three orchestration primitives:
 ```
 
 1. **Planner** — `Planner.Plan` generates a `Plan`: a DAG of `PlanStep` values, each with a summary, description, dependencies (`DependsOn`), a parallelism hint, estimated tools, and an optional `AgentProfile` (role, allowed tools, domain, step budget).
-2. **Conductor** — for each step, the `Conductor` creates an `Executor` and runs a ReAct loop. Steps with no unmet dependencies can run in parallel via `SubAgent` goroutines. Results are written to the `Blackboard`.
+2. **Conductor** — for each step, the `Conductor` creates an `Executor` and runs a ReAct loop. Steps with no unmet dependencies can run in parallel via `RunSubAgent` goroutines. Results are written to the `Blackboard`.
 3. **Reflector** — when a step fails, `Reflector.Reflect` examines the execution trajectory and prior reflections, then returns a `Reflection` with a root cause, hypotheses, and a suggested action: `"retry"`, `"replan"`, or `"abort"`.
 4. **Retry/replan** — the orchestrator consults the reflection. A retry re-runs the step (up to `ExecutionConfig.MaxRetries`). A replan asks the `Planner` to generate a new plan accounting for completed steps and the failure. An abort stops execution with `Status == "aborted"`.
 
@@ -193,7 +193,7 @@ The `agent/router` package provides a `Router` that classifies user requests bef
 
 The routing decision drives two downstream behaviours:
 
-1. **Compaction strategy** — `ApplyCompactionStrategy(domain, complexity)` maps the domain/complexity pair to a context compaction strategy name:
+1. **Compaction strategy** — the host application maps the domain/complexity pair to a context compaction strategy name:
 
    | Domain | Complexity | Strategy |
    | --- | --- | --- |
@@ -217,9 +217,8 @@ rt := router.New(llmCaller, router.Config{
 
 decision, err := rt.Route(ctx, userMessage, availableTools, history, skillDescriptors)
 // decision.Domain, decision.Complexity, decision.MatchedSkills, decision.NeedsClarification
-
-strategy := router.ApplyCompactionStrategy(decision.Domain, decision.Complexity)
-// → "sliding_window" | "summarization" | "hierarchical"
+// The host maps decision.Domain/decision.Complexity to a compaction strategy
+// ("sliding_window" | "summarization" | "hierarchical") per the table above.
 ```
 
 ## Key interfaces
@@ -297,9 +296,9 @@ Steps communicate through the blackboard rather than direct references. A step c
 | `orchestration.MapBlackboard` | **Yes** | Protected by a `sync.RWMutex`. All read and write methods are safe for concurrent use. |
 | `embedding.Embedder` | **Yes** | Protected by a `sync.Mutex`. Safe for concurrent embedding calls. |
 | `skills.SkillManager` | **Yes** | Protected by a `sync.RWMutex`. Scan and lookups are safe for concurrent use. |
-| `agent.Executor` | **No** | An executor owns a single ReAct loop. For parallel steps, create separate executors and run them via `SubAgent` goroutines. |
+| `agent.Executor` | **No** | An executor owns a single ReAct loop. For parallel steps, create separate executors and run them via `RunSubAgent` goroutines. |
 
-The `Conductor` runs one task at a time. Parallelism within a plan is achieved by launching multiple `SubAgent` goroutines, each with its own `Executor` and `ContextManager`, writing results back to the shared `Blackboard`.
+The `Conductor` runs one task at a time. Parallelism within a plan is achieved by launching multiple subagent goroutines (`RunSubAgent`), each with its own `Executor` and `ContextManager`, writing results back to the shared `Blackboard`.
 
 ## Next steps
 

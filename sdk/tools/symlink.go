@@ -20,6 +20,7 @@ type SymlinkTraversal struct {
 	ResolvesTo       string // what the symlink points to (readlink result)
 	FullResolved     string // fully resolved absolute path after symlink chain
 	OutsideWorkspace bool   // does the fully resolved path fall outside the workspace?
+	Unresolvable     bool   // component could not be inspected (Lstat/Readlink failure) — escalate
 }
 
 // DetectSymlinksInToolInput extracts all path-like values from a tool input
@@ -237,16 +238,24 @@ func wordLiteral(w *syntax.Word) string {
 // not security-relevant traversals.
 func checkPathsForSymlinks(paths []string, workspace string) (inside, outside []SymlinkTraversal) {
 	for _, p := range paths {
-		t := walkSymlinkComponents(p, workspace)
-		if t == nil {
-			continue
-		}
-		ok, _ := pathutil.IsWithinPath(workspace, t.FullResolved)
-		t.OutsideWorkspace = !ok
-		if t.OutsideWorkspace {
-			outside = append(outside, *t)
-		} else {
-			inside = append(inside, *t)
+		for _, t := range walkSymlinkComponents(p, workspace) {
+			if t.Unresolvable {
+				// Cannot determine where the component resolves — fail closed
+				// and escalate as an outside-workspace traversal.
+				t.OutsideWorkspace = true
+				outside = append(outside, t)
+				continue
+			}
+			ok := false
+			if workspace != "" {
+				ok, _ = pathutil.IsWithinPath(workspace, t.FullResolved)
+			}
+			t.OutsideWorkspace = !ok
+			if t.OutsideWorkspace {
+				outside = append(outside, t)
+			} else {
+				inside = append(inside, t)
+			}
 		}
 	}
 	return inside, outside
@@ -254,9 +263,19 @@ func checkPathsForSymlinks(paths []string, workspace string) (inside, outside []
 
 // walkSymlinkComponents walks a path from root to leaf, checking each component
 // for symlinks. Returns nil if no symlinks are found anywhere in the chain.
-// If the final component doesn't exist but a parent component is a symlink,
-// the symlink is still detected.
-func walkSymlinkComponents(absPath, workspace string) *SymlinkTraversal {
+// All symlinked components of the original path are collected, not just the
+// first one (os.Lstat resolves intermediate symlinks itself, so the walk
+// continues naturally after a symlink is found). If the final component
+// doesn't exist but a parent component is a symlink, the symlink is still
+// detected.
+//
+// Fail-closed behavior: when a component cannot be inspected (Lstat
+// permission error, ELOOP, or Readlink failure on a confirmed symlink), a
+// traversal record with Unresolvable=true is returned so callers escalate to
+// confirmation. To avoid over-prompting, Lstat failures are only escalated
+// when the unreadable component lies within the workspace — unreadable
+// paths outside the workspace are already gated by containment/judge checks.
+func walkSymlinkComponents(absPath, workspace string) []SymlinkTraversal {
 	if absPath == "" {
 		return nil
 	}
@@ -267,6 +286,7 @@ func walkSymlinkComponents(absPath, workspace string) *SymlinkTraversal {
 		return nil
 	}
 
+	var traversals []SymlinkTraversal
 	current := string(filepath.Separator) // start from /
 	for i, part := range parts {
 		if part == "" {
@@ -277,9 +297,22 @@ func walkSymlinkComponents(absPath, workspace string) *SymlinkTraversal {
 		fi, err := os.Lstat(current)
 		if err != nil {
 			if os.IsNotExist(err) {
-				return nil // path doesn't exist — no further components to check
+				break // path doesn't exist — no further components to check
 			}
-			return nil // permission or other error — can't determine
+			// Permission or other error (e.g., ELOOP) — cannot determine
+			// whether this component is a symlink. Escalate only when the
+			// component lies within the workspace; unreadable paths outside
+			// the workspace are gated by containment checks elsewhere.
+			if workspace != "" {
+				if within, werr := pathutil.IsWithinPath(workspace, current); werr == nil && within {
+					traversals = append(traversals, SymlinkTraversal{
+						OriginalPath: absPath,
+						SymlinkAt:    current,
+						Unresolvable: true,
+					})
+				}
+			}
+			break
 		}
 
 		if fi.Mode()&os.ModeSymlink == 0 {
@@ -300,7 +333,13 @@ func walkSymlinkComponents(absPath, workspace string) *SymlinkTraversal {
 		// Symlink found at current component
 		target, err := os.Readlink(current)
 		if err != nil {
-			return nil
+			// Confirmed symlink whose target cannot be read — escalate.
+			traversals = append(traversals, SymlinkTraversal{
+				OriginalPath: absPath,
+				SymlinkAt:    current,
+				Unresolvable: true,
+			})
+			break
 		}
 
 		// Resolve the target relative to the symlink's directory
@@ -327,15 +366,18 @@ func walkSymlinkComponents(absPath, workspace string) *SymlinkTraversal {
 			fullAbs = filepath.Clean(fullResolved)
 		}
 
-		return &SymlinkTraversal{
+		traversals = append(traversals, SymlinkTraversal{
 			OriginalPath: absPath,
 			SymlinkAt:    current,
 			ResolvesTo:   target,
 			FullResolved: fullAbs,
-		}
+		})
+		// Continue the walk: os.Lstat on deeper components follows this
+		// (already recorded) symlink transparently, so subsequent symlinked
+		// components of the original path are also collected.
 	}
 
-	return nil
+	return traversals
 }
 
 // FormatSymlinkReasoning formats symlink traversals into a human-readable
@@ -350,6 +392,11 @@ func FormatSymlinkReasoning(inside, outside []SymlinkTraversal, suspicious bool)
 			if i >= 10 {
 				fmt.Fprintf(&sb, "  ... and %d more symlink(s)\n", len(outside)-10)
 				break
+			}
+			if t.Unresolvable {
+				fmt.Fprintf(&sb, "  %s\n    └─ component at: %s (could not be resolved — target unknown)\n\n",
+					t.OriginalPath, t.SymlinkAt)
+				continue
 			}
 			fmt.Fprintf(&sb, "  %s\n    └─ symlink at: %s → %s (outside workspace)\n\n",
 				t.OriginalPath, t.SymlinkAt, t.FullResolved)

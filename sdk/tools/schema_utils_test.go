@@ -7,7 +7,7 @@ import (
 
 func TestStripParamsFromSchema_NoParamsToRemove(t *testing.T) {
 	orig := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`)
-	result, err := StripParamsFromSchema(orig, nil)
+	result, err := stripParamsFromSchema(orig, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -18,7 +18,7 @@ func TestStripParamsFromSchema_NoParamsToRemove(t *testing.T) {
 
 func TestStripParamsFromSchema_StripsProject(t *testing.T) {
 	orig := json.RawMessage(`{"type":"object","properties":{"project":{"type":"string"},"query":{"type":"string"}},"required":["project","query"]}`)
-	result, err := StripParamsFromSchema(orig, map[string]bool{"project": true})
+	result, err := stripParamsFromSchema(orig, map[string]bool{"project": true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestStripParamsFromSchema_StripsProject(t *testing.T) {
 
 func TestStripParamsFromSchema_NoProperties(t *testing.T) {
 	orig := json.RawMessage(`{"type":"object"}`)
-	result, err := StripParamsFromSchema(orig, map[string]bool{"project": true})
+	result, err := stripParamsFromSchema(orig, map[string]bool{"project": true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestStripParamsFromSchema_NoProperties(t *testing.T) {
 
 func TestStripParamsFromSchema_ParamNotPresent(t *testing.T) {
 	orig := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`)
-	result, err := StripParamsFromSchema(orig, map[string]bool{"project": true})
+	result, err := stripParamsFromSchema(orig, map[string]bool{"project": true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestStripParamsFromSchema_ParamNotPresent(t *testing.T) {
 
 func TestStripParamsFromSchema_InvalidJSON(t *testing.T) {
 	orig := json.RawMessage(`not json`)
-	_, err := StripParamsFromSchema(orig, map[string]bool{"project": true})
+	_, err := stripParamsFromSchema(orig, map[string]bool{"project": true})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
 	}

@@ -228,9 +228,9 @@ func TestApplyCompactionStrategy(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := ApplyCompactionStrategy(tt.domain, tt.complexity)
+		result := applyCompactionStrategy(tt.domain, tt.complexity)
 		if result != tt.expected {
-			t.Errorf("ApplyCompactionStrategy(%s, %d) = %s, expected %s",
+			t.Errorf("applyCompactionStrategy(%s, %d) = %s, expected %s",
 				tt.domain, tt.complexity, result, tt.expected)
 		}
 	}
@@ -288,7 +288,7 @@ func TestValidateRoutingDecision(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := tt.input
-			ValidateRoutingDecision(&d)
+			validateRoutingDecision(&d)
 			if d.Domain != tt.wantDomain || d.Complexity != tt.wantComplex {
 				t.Errorf("got domain=%q complexity=%d, want domain=%q complexity=%d", d.Domain, d.Complexity, tt.wantDomain, tt.wantComplex)
 			}
@@ -313,7 +313,7 @@ func TestValidateRoutingDecision_MatchedSkills(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := RoutingDecision{Domain: "code", Complexity: 3, MatchedSkills: tt.input}
-			ValidateRoutingDecision(&d)
+			validateRoutingDecision(&d)
 			if len(d.MatchedSkills) != len(tt.wantSkills) {
 				t.Fatalf("got %d skills %v, want %d skills %v", len(d.MatchedSkills), d.MatchedSkills, len(tt.wantSkills), tt.wantSkills)
 			}

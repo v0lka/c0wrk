@@ -19,14 +19,15 @@ type SamplingFunc func(family string) *float64
 // RouterConfig configures the LLM router.
 // All values must be pre-resolved by the caller (env vars expanded, durations parsed).
 //
-// MaxRetries defaults to 3 when unset or zero (any value <= 0 is replaced with 3).
-// This means transient errors (HTTP 429, 502, 503, 529, network blips) recover
-// automatically with exponential backoff (1s → 2s → 4s, capped at MaxBackoff).
-// This adds up to ~7s of latency on the worst-case retry path.
-// Callers that rely on error propagation for compaction timing, circuit-breaker
-// resets, or budget control should account for this default. There is currently
-// no way to disable retries via this field; set MaxRetries to 0 to get the
-// default of 3, or a positive value to control the count explicitly.
+// MaxRetries defaults to 3 when unset (zero); a negative value means
+// explicitly 0 (retries disabled). With retries enabled, transient errors
+// (HTTP 429, 502, 503, 529, network blips) recover automatically with
+// exponential backoff (1s → 2s → 4s, capped at MaxBackoff). This adds up to
+// ~7s of latency on the worst-case retry path. Callers that rely on error
+// propagation for compaction timing, circuit-breaker resets, or budget
+// control should account for this default, or disable retries with a
+// negative MaxRetries. InitialBackoff and MaxBackoff follow the same
+// convention: 0 → default (1s / 30s), negative → explicitly 0.
 type RouterConfig struct {
 	Providers           []ProviderEntry // all enabled providers (at least one required)
 	MaxRetries          int             // Max retry attempts on retryable errors
@@ -115,20 +116,30 @@ func NewRouter(ctx context.Context, cfg RouterConfig, registry *ModelRegistry) (
 		return nil, fmt.Errorf("provider %q not found", first.Name)
 	}
 
+	// Sentinel convention (see RouterConfig doc): 0 → default, negative →
+	// explicitly 0/disabled.
 	maxRetries := cfg.MaxRetries
-	if maxRetries <= 0 {
+	switch {
+	case maxRetries == 0:
 		// Default to 3 retries so transient errors (HTTP 429/502/503/529,
-		// network blips) recover automatically. Any non-positive value
-		// (including negatives) is replaced with this default.
+		// network blips) recover automatically.
 		maxRetries = 3
+	case maxRetries < 0:
+		maxRetries = 0 // retries explicitly disabled
 	}
 	initialBackoff := cfg.InitialBackoff
-	if initialBackoff == 0 {
+	switch {
+	case initialBackoff == 0:
 		initialBackoff = 1 * time.Second
+	case initialBackoff < 0:
+		initialBackoff = 0
 	}
 	maxBackoff := cfg.MaxBackoff
-	if maxBackoff == 0 {
+	switch {
+	case maxBackoff == 0:
 		maxBackoff = 30 * time.Second
+	case maxBackoff < 0:
+		maxBackoff = 0
 	}
 	safetyMarginPercent := cfg.SafetyMarginPercent
 	if safetyMarginPercent <= 0 {

@@ -161,11 +161,11 @@ func TestNewPlanner_NegativeMaxExploreStepsDefaulted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// FindTerminalSteps
+// findTerminalSteps
 // ---------------------------------------------------------------------------
 
 func TestFindTerminalSteps_NilPlan(t *testing.T) {
-	got := FindTerminalSteps(nil)
+	got := findTerminalSteps(nil)
 	if got != nil {
 		t.Errorf("expected nil for nil plan, got %v", got)
 	}
@@ -173,7 +173,7 @@ func TestFindTerminalSteps_NilPlan(t *testing.T) {
 
 func TestFindTerminalSteps_EmptyPlan(t *testing.T) {
 	plan := &orchestration.Plan{}
-	got := FindTerminalSteps(plan)
+	got := findTerminalSteps(plan)
 	if len(got) != 0 {
 		t.Errorf("expected empty slice for empty plan, got %v", got)
 	}
@@ -188,7 +188,7 @@ func TestFindTerminalSteps_DAGTerminal(t *testing.T) {
 			{ID: "step_4", DependsOn: []string{"step_2", "step_3"}},
 		},
 	}
-	got := FindTerminalSteps(plan)
+	got := findTerminalSteps(plan)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 terminal step, got %d", len(got))
 	}
@@ -205,7 +205,7 @@ func TestFindTerminalSteps_MultipleTerminal(t *testing.T) {
 			{ID: "step_3", DependsOn: []string{"step_1"}},
 		},
 	}
-	got := FindTerminalSteps(plan)
+	got := findTerminalSteps(plan)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 terminal steps, got %d", len(got))
 	}
@@ -227,7 +227,7 @@ func TestFindTerminalSteps_SingleStep(t *testing.T) {
 			{ID: "only", DependsOn: []string{}},
 		},
 	}
-	got := FindTerminalSteps(plan)
+	got := findTerminalSteps(plan)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 terminal step, got %d", len(got))
 	}
@@ -399,6 +399,57 @@ func TestParsePlanResponse_EmptyProfileMap(t *testing.T) {
 	}
 	if plan.Steps[0].Profile == nil {
 		t.Fatal("expected non-nil profile for empty map")
+	}
+}
+
+func TestParsePlanResponse_DuplicateStepIDs(t *testing.T) {
+	p := &Planner{}
+	input := `{"steps":[{"id":"step_1","description":"first"},{"id":"step_1","description":"dup"}]}`
+	_, err := p.parsePlanResponse(input, nil)
+	if err == nil {
+		t.Fatal("expected error for duplicate step IDs")
+	}
+	if !strings.Contains(err.Error(), "duplicate step ID") {
+		t.Errorf("expected duplicate-ID error, got: %v", err)
+	}
+}
+
+func TestParsePlanResponse_UnknownDependency(t *testing.T) {
+	p := &Planner{}
+	input := `{"steps":[{"id":"step_1","description":"first","depends_on":["missing_step"]}]}`
+	_, err := p.parsePlanResponse(input, nil)
+	if err == nil {
+		t.Fatal("expected error for unknown depends_on reference")
+	}
+	if !strings.Contains(err.Error(), "unknown step ID") {
+		t.Errorf("expected unknown-dependency error, got: %v", err)
+	}
+}
+
+func TestParsePlanResponse_DependencyCycle(t *testing.T) {
+	p := &Planner{}
+	input := `{"steps":[` +
+		`{"id":"step_1","description":"a","depends_on":["step_2"]},` +
+		`{"id":"step_2","description":"b","depends_on":["step_3"]},` +
+		`{"id":"step_3","description":"c","depends_on":["step_1"]}]}`
+	_, err := p.parsePlanResponse(input, nil)
+	if err == nil {
+		t.Fatal("expected error for dependency cycle")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("expected cycle error, got: %v", err)
+	}
+}
+
+func TestParsePlanResponse_SelfDependencyCycle(t *testing.T) {
+	p := &Planner{}
+	input := `{"steps":[{"id":"step_1","description":"a","depends_on":["step_1"]}]}`
+	_, err := p.parsePlanResponse(input, nil)
+	if err == nil {
+		t.Fatal("expected error for self-dependency")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("expected cycle error, got: %v", err)
 	}
 }
 

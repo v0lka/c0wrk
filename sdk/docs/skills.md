@@ -77,7 +77,7 @@ It works as follows:
 
 1. Cleans `baseDir`. If `baseDir` itself is a symlink, it resolves the symlink (but does **not** resolve ancestor symlinks like macOS `/var → /private/var`, preserving textual path consistency).
 2. Joins and cleans the relative path.
-3. Resolves any symlinks in the joined path to their real filesystem paths, preventing symlink-based traversal bypass (e.g. a symlink inside the skill directory pointing outside). If symlink resolution fails (e.g. a broken link), it falls back to a textual check.
+3. Resolves any symlinks in the joined path to their real filesystem paths, preventing symlink-based traversal bypass (e.g. a symlink inside the skill directory pointing outside). Symlinks are resolved through the longest existing prefix (`pathutil.ResolveExistingPrefix`), so partially-existing paths (e.g. broken links) are still symlink-checked — there is no textual-only fallback.
 4. Verifies the resolved path is within `baseDir` using `pathutil.IsWithinPath`. Returns an error if the path escapes the skill directory.
 
 ```go

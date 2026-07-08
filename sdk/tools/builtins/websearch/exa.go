@@ -112,7 +112,7 @@ func (p *ExaProvider) Search(ctx context.Context, query string, maxResults int) 
 
 	// Check status code
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(limitBody(resp.Body))
 		if readErr != nil {
 			return nil, fmt.Errorf("HTTP %d (could not read body: %w)", resp.StatusCode, readErr)
 		}
@@ -121,7 +121,7 @@ func (p *ExaProvider) Search(ctx context.Context, query string, maxResults int) 
 
 	// Parse response
 	var exaResp exaResponse
-	if err := json.NewDecoder(resp.Body).Decode(&exaResp); err != nil {
+	if err := json.NewDecoder(limitBody(resp.Body)).Decode(&exaResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 

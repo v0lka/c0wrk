@@ -134,6 +134,7 @@ func run() error {
 		HITL: NewConfirmingHITL([]string{
 			"write_file",
 			"delete_file",
+			"create_directory",
 			"bash_exec",
 		}),
 	})
@@ -150,6 +151,15 @@ func run() error {
 	registry.Register(builtins.NewListDirectoryTool())
 	registry.Register(builtins.NewCreateDirectoryTool())
 	registry.Register(agent.NewFinishTool())
+
+	// In this example, confirmation is handled by the HITL handler at the
+	// executor level (OnToolCall above). The registry itself is FAIL-CLOSED
+	// for PolicyUserConfirm tools, so we explicitly relax the registry-level
+	// policy for the tools our HITL handler already gates — otherwise the
+	// user would be asked twice (or the registry would deny the call).
+	for _, name := range []string{"write_file", "delete_file", "create_directory"} {
+		registry.SetPolicyOverride(name, tools.PolicyAlwaysAllow)
+	}
 
 	// Set up workspace
 	workspaceDir, err := os.MkdirTemp("", "sp4rk-example-04-*")

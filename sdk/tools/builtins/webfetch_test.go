@@ -713,10 +713,13 @@ func TestWebFetchTool_Judge_PrivateIP(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid input falls through", func(t *testing.T) {
-		allow, _ := tool.Judge(context.Background(), json.RawMessage(`{invalid`))
-		if !allow {
-			t.Error("expected Judge to allow on invalid input (let Execute handle validation)")
+	t.Run("invalid input escalates to confirmation", func(t *testing.T) {
+		allow, reason := tool.Judge(context.Background(), json.RawMessage(`{invalid`))
+		if allow {
+			t.Error("expected Judge to escalate on invalid input (fail closed)")
+		}
+		if reason != "cannot determine target URL" {
+			t.Errorf("unexpected reason: %q", reason)
 		}
 	})
 }

@@ -2,15 +2,10 @@ package tools
 
 import "encoding/json"
 
-// StripParamsFromSchema removes the named properties from a JSON Schema's
+// stripParamsFromSchema removes the named properties from a JSON Schema's
 // "properties" object and (if present) from "required". This is used to hide
 // parameters that are auto-injected at execution time and should not be visible
-// to the LLM.
-func StripParamsFromSchema(schema json.RawMessage, paramsToRemove map[string]bool) (json.RawMessage, error) {
-	return stripParamsFromSchema(schema, paramsToRemove)
-}
-
-// stripParamsFromSchema is the internal implementation, shared with ParamManager.
+// to the LLM. It is shared with ParamManager.
 func stripParamsFromSchema(schema json.RawMessage, paramsToRemove map[string]bool) (json.RawMessage, error) {
 	if len(paramsToRemove) == 0 {
 		return schema, nil

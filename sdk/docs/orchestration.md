@@ -310,6 +310,32 @@ type ContextManagerFactory func(
 
 Creates a `ContextManager` for a new task step. `pruningOverrides`, when provided, override the global pruning configuration with step-specific `KeepLastN` and `ProtectedTools` values.
 
+### Optional ContextManager capabilities
+
+The Conductor type-asserts the `ContextManager` returned by the factory against three named capability interfaces and uses them when implemented (the SDK's `memory.ContextWindow` implements all three):
+
+```go
+// Receives the formatted task content (the user message).
+type TaskAware interface {
+    SetTask(task string)
+}
+
+// Receives prior conversation messages (previous user/assistant exchanges)
+// rendered before the current task content. Used when
+// ConductorConfig.ConversationHistory is set.
+type ConversationAware interface {
+    SetPriorConversation(msgs []llm.Message)
+}
+
+// Exposes the token tracker so API-reported token corrections can be wired
+// back into the context window's fill accounting.
+type TrackerProvider interface {
+    ContextTracker() *llm.ContextTokenTracker
+}
+```
+
+A custom `ContextManager` that does not implement these interfaces still works — the corresponding features (task content injection, prior-conversation rendering, tracker correction) are simply skipped.
+
 ### PruningOverride
 
 ```go
@@ -881,7 +907,7 @@ func run() error {
 	defer func() { _ = os.RemoveAll(workspaceDir) }()
 
 	// --- Planner ---
-	plannerCfg := planner.DefaultPlannerConfig()
+	plannerCfg := planner.DefaultConfig()
 	plannerCfg.Prompts = planner.PromptSet{
 		BasePrompt: `You are a task planning agent. Break down the user's task into steps.
 
@@ -920,7 +946,7 @@ Return JSON with "summary", "root_cause", "suggested_action" (retry/replan/abort
 
 Use the available tools. Verify your work before calling finish.`, stepDescription)
 	}
-	conductor, err := fw.NewConductor(systemPromptFactory, &agent.NoopEvents{})
+	conductor, err := fw.NewConductor(systemPromptFactory)
 	if err != nil {
 		return err
 	}

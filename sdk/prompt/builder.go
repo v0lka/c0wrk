@@ -2,7 +2,10 @@
 // cache-break support and family-aware sampling defaults.
 package prompt
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // CacheBreakMarker is the sentinel used to split a system prompt string into
 // cacheable (stable) and dynamic parts. Consumers like ContextWindow check for
@@ -31,17 +34,19 @@ type section struct {
 
 // Builder provides a fluent API for constructing prompts.
 type Builder struct {
-	sections      []section
-	substitutions map[string]string
-	cacheBreakIdx int // index in sections after which dynamic content starts; -1 = no break
+	sections          []section
+	substitutions     map[string]string
+	dataSubstitutions map[string]string
+	cacheBreakIdx     int // index in sections after which dynamic content starts; -1 = no break
 }
 
 // NewBuilder creates a new prompt Builder.
 func NewBuilder() *Builder {
 	return &Builder{
-		sections:      nil,
-		substitutions: make(map[string]string),
-		cacheBreakIdx: -1,
+		sections:          nil,
+		substitutions:     make(map[string]string),
+		dataSubstitutions: make(map[string]string),
+		cacheBreakIdx:     -1,
 	}
 }
 
@@ -61,6 +66,29 @@ func (b *Builder) Replace(placeholder, value string) *Builder {
 func (b *Builder) ReplaceAll(substitutions map[string]string) *Builder {
 	for placeholder, value := range substitutions {
 		b.substitutions[placeholder] = value
+	}
+	return b
+}
+
+// ReplaceData registers a placeholder substitution for UNTRUSTED values
+// (dynamic/external content such as user requests, conversation history, or
+// tool outputs). Data substitutions are applied LAST, in a single pass without
+// re-scanning: a placeholder name occurring inside an untrusted value is NOT
+// expanded, preventing placeholder-injection through untrusted content.
+//
+// Use Replace for trusted template-on-template substitutions (values that may
+// legitimately contain other placeholders); use ReplaceData for everything
+// derived from external input.
+func (b *Builder) ReplaceData(placeholder, value string) *Builder {
+	b.dataSubstitutions[placeholder] = value
+	return b
+}
+
+// ReplaceDataAll registers multiple untrusted-value substitutions.
+// See ReplaceData for semantics.
+func (b *Builder) ReplaceDataAll(substitutions map[string]string) *Builder {
+	for placeholder, value := range substitutions {
+		b.dataSubstitutions[placeholder] = value
 	}
 	return b
 }
@@ -88,7 +116,38 @@ func (b *Builder) BuildParts() (stable, dynamic string) {
 	stable = applySubstitutionsIteratively(stable, b.substitutions)
 	dynamic = applySubstitutionsIteratively(dynamic, b.substitutions)
 
+	stable = applyDataSubstitutions(stable, b.dataSubstitutions)
+	dynamic = applyDataSubstitutions(dynamic, b.dataSubstitutions)
+
 	return stable, dynamic
+}
+
+// applyDataSubstitutions replaces untrusted-value placeholders in a single
+// pass without re-scanning replaced content. strings.Replacer scans the text
+// left-to-right exactly once, so a placeholder name occurring inside a
+// substituted value is never expanded (no placeholder injection).
+//
+// Placeholders are ordered longest-first so a key that is a prefix of another
+// key never shadows it (map iteration order is otherwise random).
+func applyDataSubstitutions(text string, substitutions map[string]string) string {
+	if len(substitutions) == 0 {
+		return text
+	}
+	keys := make([]string, 0, len(substitutions))
+	for placeholder := range substitutions {
+		keys = append(keys, placeholder)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if len(keys[i]) != len(keys[j]) {
+			return len(keys[i]) > len(keys[j])
+		}
+		return keys[i] < keys[j]
+	})
+	pairs := make([]string, 0, len(keys)*2)
+	for _, placeholder := range keys {
+		pairs = append(pairs, placeholder, substitutions[placeholder])
+	}
+	return strings.NewReplacer(pairs...).Replace(text)
 }
 
 // maxSubstitutionPasses caps iterative substitution to prevent infinite loops
@@ -133,6 +192,10 @@ func (b *Builder) Build() string {
 	// (e.g. RECENT-CONVERSATION inside MODE-PREAMBLE).
 	result = applySubstitutionsIteratively(result, b.substitutions)
 
+	// Untrusted data substitutions run last, in a single pass — values
+	// containing placeholder names are NOT expanded.
+	result = applyDataSubstitutions(result, b.dataSubstitutions)
+
 	return result
 }
 
@@ -169,6 +232,15 @@ func (s *SystemPromptBuilder) Core(content string) *SystemPromptBuilder {
 // Replace registers a placeholder substitution.
 func (s *SystemPromptBuilder) Replace(placeholder, value string) *SystemPromptBuilder {
 	s.b.Replace(placeholder, value)
+	return s
+}
+
+// ReplaceData registers a placeholder substitution for UNTRUSTED values.
+// Data substitutions are applied last in a single pass without re-scanning,
+// so placeholder names inside untrusted values are never expanded.
+// See Builder.ReplaceData.
+func (s *SystemPromptBuilder) ReplaceData(placeholder, value string) *SystemPromptBuilder {
+	s.b.ReplaceData(placeholder, value)
 	return s
 }
 

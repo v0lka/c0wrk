@@ -24,7 +24,15 @@ type TavilyProvider struct {
 // and optional HTTP client. If client is nil, a default client with the specified timeout is used.
 func NewTavilyProviderWithClient(apiKey string, timeout time.Duration, client *http.Client) *TavilyProvider {
 	if client == nil {
-		client = &http.Client{Timeout: timeout}
+		// The Tavily API key travels in the POST body. Refuse to follow
+		// redirects so the body (and key) is never re-sent to another host.
+		// A caller-provided client is used as-is (never mutated).
+		client = &http.Client{
+			Timeout: timeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
 	}
 	return &TavilyProvider{
 		apiKey:  apiKey,
@@ -95,7 +103,7 @@ func (p *TavilyProvider) Search(ctx context.Context, query string, maxResults in
 
 	// Check status code
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(limitBody(resp.Body))
 		if readErr != nil {
 			return nil, fmt.Errorf("HTTP %d (could not read body: %w)", resp.StatusCode, readErr)
 		}
@@ -104,7 +112,7 @@ func (p *TavilyProvider) Search(ctx context.Context, query string, maxResults in
 
 	// Parse response
 	var tavilyResp tavilyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tavilyResp); err != nil {
+	if err := json.NewDecoder(limitBody(resp.Body)).Decode(&tavilyResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/v0lka/sp4rk/pathutil"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
@@ -371,13 +372,16 @@ func TestSafeResolvePathBrokenSymlink(t *testing.T) {
 		t.Skipf("symlinks not supported: %v", err)
 	}
 
-	// Broken symlink within base should still resolve textually
+	// Broken symlink within base should still resolve; the longest existing
+	// prefix is symlink-resolved (e.g. /var → /private/var on macOS) and the
+	// non-existent suffix is joined back.
 	path, err := SafeResolvePath(baseDir, "broken")
 	if err != nil {
 		t.Fatalf("unexpected error for broken symlink within base: %v", err)
 	}
-	if path != brokenLink {
-		t.Errorf("path = %q, want %q", path, brokenLink)
+	want := filepath.Clean(pathutil.ResolveExistingPrefix(brokenLink))
+	if path != want {
+		t.Errorf("path = %q, want %q", path, want)
 	}
 }
 

@@ -76,6 +76,14 @@ func run() error {
 				Models:       []string{"claude-sonnet-4-5"},
 			}},
 		},
+		// The tool registry is FAIL-CLOSED: tools with PolicyUserConfirm
+		// (like write_file below) are denied unless a ConfirmFunc is set.
+		// This example runs in a throwaway temp workspace, so we auto-approve.
+		// In an interactive app, prompt the user here instead.
+		ConfirmFunc: func(_ context.Context, req tools.ConfirmationRequest) (tools.ConfirmationResponse, error) {
+			fmt.Printf("[auto-approving %s]\n", req.ToolName)
+			return tools.ConfirmAllowOnce, nil
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create framework: %w", err)

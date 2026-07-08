@@ -55,7 +55,7 @@ AggregateOutput(completed, plan)  ──►  final result
 ### 1. The Planner
 
 ```go
-plannerCfg := planner.DefaultPlannerConfig()
+plannerCfg := planner.DefaultConfig()
 plannerCfg.Prompts = planner.PromptSet{
     BasePrompt: `You are a task planning agent…
         AVAILABLE-TOOLS
@@ -71,7 +71,7 @@ pl, err := planner.NewPlanner(fw.LLMRouter(), plannerCfg)
 
 The Planner calls the LLM with a system prompt built from the `PromptSet` template. Placeholders like `AVAILABLE-TOOLS`, `MODE-JSON-EXAMPLE`, and `MAX-STEPS` are substituted automatically. The LLM returns a JSON plan that the Planner parses into an `*orchestration.Plan`.
 
-`planner.DefaultPlannerConfig()` provides sensible defaults for the context functions (`DomainFromContext`, `ComplexityFromContext`, etc.). When `PlannerToolNames` is empty (the default), the Planner uses **direct planning** — a single LLM call without codebase exploration.
+`planner.DefaultConfig()` provides sensible defaults for the context functions (`DomainFromContext`, `ComplexityFromContext`, etc.). When `PlannerToolNames` is empty (the default), the Planner uses **direct planning** — a single LLM call without codebase exploration.
 
 ### 2. Generating a plan
 

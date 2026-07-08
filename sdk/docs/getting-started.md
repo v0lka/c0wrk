@@ -37,6 +37,7 @@ Everything starts with [`sdk.Config`](../framework.go), passed to [`sdk.New`](..
 | `Execution` | `ExecutionConfig` | Agent execution parameters (step budgets, retries, truncation, circuit breakers). |
 | `Compaction` | `CompactionConfig` | Context-window management thresholds and strategy. |
 | `HITL` | `agent.HITLHandler` | Optional human-in-the-loop hooks. `nil` uses defaults: allow all tool calls, deny step extensions. |
+| `ConfirmFunc` | `tools.ConfirmFunc` | Confirmation callback for tools whose effective policy is `PolicyUserConfirm` (file writers, `bash_exec`, MCP tools). **The registry is fail-closed:** with no `ConfirmFunc`, such tools are denied instead of executing silently. See [tools.md](tools.md#policy-enforcement-in-execute-fail-closed). |
 | `Checkpointer` | `orchestration.Checkpointer` | Optional blackboard state persistence. `nil` means no checkpointing. |
 | `OnBlackboardChanged` | `func(changeType string)` | Optional callback invoked after every successful blackboard write (plan, step result, fact, reflection). `nil` means no notifications. |
 | `Logger` | `*slog.Logger` | Optional structured logger. Uses `slog.Default()` if `nil`. |
@@ -47,17 +48,17 @@ Everything starts with [`sdk.Config`](../framework.go), passed to [`sdk.New`](..
 | --- | --- | --- | --- |
 | `Providers` | `[]llm.ProviderEntry` | — | Enabled LLM providers. **At least one is required.** |
 | `DefaultModel` | `string` | first provider's first model | Override the auto-selected default model. Accepts a bare name (`"claude-sonnet-4-5"`) or composite ID (`"anthropic/claude-sonnet-4-5"`). |
-| `MaxRetries` | `int` | `3` | Retry attempts for transient errors (HTTP 429, 502, 503, 529, network blips). Any non-positive value (including negatives) is replaced with the default of 3 — there is currently no way to disable retries via this field. To minimise retry latency, set a small positive value and a short `MaxBackoff`. |
-| `InitialBackoff` | `string` | `"1s"` | Starting backoff duration for retries (parsed with `time.ParseDuration`). |
-| `MaxBackoff` | `string` | `"30s"` | Maximum backoff duration for retries. |
+| `MaxRetries` | `int` | `3` | Retry attempts for transient errors (HTTP 429, 502, 503, 529, network blips). `0` means the default (3); a **negative value** means explicitly 0 — retries disabled. |
+| `InitialBackoff` | `string` | `"1s"` | Starting backoff duration for retries (parsed with `time.ParseDuration`). Empty means the default; a **negative duration** (e.g. `"-1s"`) means explicitly 0. |
+| `MaxBackoff` | `string` | `"30s"` | Maximum backoff duration for retries. Empty means the default; a **negative duration** means explicitly 0. |
 | `OutputTokenReserve` | `int` | `4096` | Context-window space reserved for model output; affects context-window validation. |
 
 ### ExecutionConfig
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `MaxSteps` | `int` | `50` | Maximum ReAct loop iterations per step. |
-| `MaxRetries` | `int` | `2` | Maximum retry attempts per plan step. |
+| `MaxSteps` | `int` | `50` | Maximum ReAct loop iterations per step. `0` means the default; a **negative value** means explicitly 0. |
+| `MaxRetries` | `int` | `2` | Maximum retry attempts per plan step. `0` means the default; a **negative value** means explicitly 0 — retries disabled. |
 | `ToolResultBudget` | `agent.ToolResultBudget` | `DefaultToolResultBudget()` | Tool result truncation: `HardCapTokens` and `MaxFillFraction`. |
 | `CircuitBreaker` | `agent.CircuitBreakerConfig` | `DefaultCircuitBreakerConfig()` | Thresholds for repeat-call, truncation, parse-error, and fruitless-result detection. |
 | `SafetyMarginPercent` | `int` | `5` | Percentage of the context window reserved as a safety margin. |
@@ -117,6 +118,17 @@ registry.Register(agent.NewFinishTool())
 // A custom tool
 registry.Register(NewCalculatorTool())
 ```
+
+> **Fail-closed enforcement:** tools whose policy is `PolicyUserConfirm` (like `write_file` above) are **denied** by the registry unless a confirmation channel is configured. Either pass a `ConfirmFunc` in `sdk.Config`:
+>
+> ```go
+> ConfirmFunc: func(_ context.Context, req tools.ConfirmationRequest) (tools.ConfirmationResponse, error) {
+>     // prompt the user here; this example auto-approves
+>     return tools.ConfirmAllowOnce, nil
+> },
+> ```
+>
+> or explicitly relax individual tools: `registry.SetPolicyOverride("write_file", tools.PolicyAlwaysAllow)`. Read-only tools (`read_file`, `list_directory`, `glob`, …) have `PolicyAlwaysAllow` and need no configuration.
 
 ### The FinishTool
 
@@ -181,7 +193,7 @@ result, err := fw.Execute(ctx, systemPrompt, events, userMessage)
 For repeated use — multiple messages in a session, conversation history, or when you want to reuse the same conductor configuration — call `NewConductor` once and reuse it:
 
 ```go
-conductor, err := fw.NewConductor(systemPrompt, events)
+conductor, err := fw.NewConductor(systemPrompt)
 if err != nil {
 	return err
 }
@@ -282,6 +294,14 @@ func main() {
 				APIKey:       os.Getenv("ANTHROPIC_API_KEY"),
 				Models:       []string{"claude-sonnet-4-5"},
 			}},
+		},
+		// write_file has PolicyUserConfirm; the registry is fail-closed, so a
+		// confirmation channel is required. This example runs in a throwaway
+		// temp workspace, so we auto-approve. In an interactive app, prompt
+		// the user here.
+		ConfirmFunc: func(_ context.Context, req tools.ConfirmationRequest) (tools.ConfirmationResponse, error) {
+			fmt.Printf("[auto-approving %s]\n", req.ToolName)
+			return tools.ConfirmAllowOnce, nil
 		},
 	})
 	if err != nil {

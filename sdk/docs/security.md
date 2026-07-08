@@ -76,20 +76,20 @@ cleaned := security.StripUntrustedTags(input)
 
 ## Integration with ContextWindow
 
-The prompt injection defense integrates with the memory package's `ContextWindow`. When `NewContextWindow` is called with `injectionDefenseEnabled = true`, tool outputs from tools that return external data are automatically wrapped before being added to the prompt.
+The prompt injection defense integrates with the memory package's `ContextWindow`. When `NewContextWindow` is called with `InjectionDefenseEnabled: true`, tool outputs from tools that return external data are automatically wrapped before being added to the prompt.
 
 A tool marks its output as untrusted by setting the step's `IsUntrusted` flag. Tools that return external data — web fetchers, MCP gateways, filesystem readers of untrusted paths — set this flag so their output is wrapped:
 
 ```go
-cw := memory.NewContextWindow(
-    systemPrompt,
-    modelMeta,
-    tracker,
-    thresholds,
-    strategy,
-    5,
-    true, // injectionDefenseEnabled — wrap untrusted tool outputs
-)
+cw := memory.NewContextWindow(memory.ContextWindowConfig{
+    SystemPrompt:            systemPrompt,
+    ModelMeta:               modelMeta,
+    Tracker:                 tracker,
+    Thresholds:              thresholds,
+    Strategy:                strategy,
+    SafetyMarginPercent:     5,
+    InjectionDefenseEnabled: true, // wrap untrusted tool outputs
+})
 ```
 
 When `BuildPrompt` assembles the step history, each tool message whose `IsUntrusted` flag is set is passed through `security.WrapUntrustedContent` with the tool name as the `source`. The wrapping is applied **after** history mutation and pruning, so the defense always wraps the final content the model sees.
@@ -103,6 +103,20 @@ The `IsUntrusted` field on a step marks tools whose output originates from exter
 - **Filesystem tools reading untrusted paths** — return file contents that may contain injected instructions.
 
 Tools that return only internally generated, trusted data (e.g. a timestamp tool) do not set the flag, so their output is not wrapped.
+
+## Tool Execution Policy Enforcement (fail-closed)
+
+Prompt-injection defense is complemented by execution-time policy enforcement in `tools.ToolRegistry.Execute` (see [tools.md](tools.md#policy-enforcement-in-execute-fail-closed)):
+
+- Tools with `PolicyUserConfirm` (file writers, `bash_exec`, MCP tools) are **denied** unless a `ConfirmFunc` is configured — the registry is fail-closed, so an injected instruction cannot trigger a silent mutation in a default-configured agent.
+- Tools with `PolicyAlwaysDeny` are always blocked.
+- `PolicyAlwaysAllow` tools that implement `ToolJudger` are escalated to confirmation when the judge flags a call (e.g. a blacklisted shell command or an SSRF attempt).
+
+Configure the confirmation channel via `sdk.Config.ConfirmFunc` (Framework) or `registry.SetConfirmFunc` (direct registry use), or deliberately relax individual tools via `registry.SetPolicyOverride(name, tools.PolicyAlwaysAllow)`.
+
+## MCP Tool Shadowing Protection
+
+MCP servers are untrusted; a malicious or compromised server could advertise a tool named `read_file` or `bash_exec` to intercept calls intended for built-in tools. The registry stores each tool's source category explicitly at registration time (`RegisterWithSourceCategory`) and **rejects any MCP-categorized registration that would overwrite an existing non-MCP tool**. Built-in tools can always replace MCP tools, and an MCP server may re-register its own tools on reconnect.
 
 ## Complete Example
 

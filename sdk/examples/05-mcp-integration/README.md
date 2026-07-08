@@ -27,9 +27,11 @@ sdk.New(cfg)
     ├─ registers all MCP tools into ToolRegistry with source "<server-name>"
     │
     └─ ToolRegistry now contains:
-         [core]       read_file, list_directory, finish
-         [filesystem] read_file, write_file, list_directory, …
+         [core]       finish, read_file, list_directory
+         [filesystem] write_file, search_files, get_file_info, …
 ```
+
+> **Name collisions**: the registry is keyed by tool name — if an MCP server exposes a tool with the same name as a built-in (e.g. `read_file`), the tool registered **last** wins. In this example the built-ins are registered after `sdk.New()` (which starts the MCP gateway), so they shadow same-named MCP tools. Note that the shadowed name may still be listed with the MCP server as its source.
 
 ## Code walkthrough
 
@@ -85,15 +87,16 @@ for _, td := range registry.List() {
 
 Output:
 ```
-[core]            read_file
-[core]            list_directory
-[core]            finish
-[mcp:filesystem]  read_file
-[mcp:filesystem]  write_file
-[mcp:filesystem]  list_directory
-[mcp:filesystem]  search_files
+[core]        read_file
+[core]        list_directory
+[core]        finish
+[filesystem]  write_file
+[filesystem]  search_files
+[filesystem]  get_file_info
 …
 ```
+
+For MCP tools the source is the **server name** from the config map (here `"filesystem"`); built-in tools report `"core"`.
 
 The `source` is also passed to the `Events.ToolCall` event, so event sinks can distinguish built-in from MCP-sourced tool calls.
 
@@ -101,9 +104,13 @@ The `source` is also passed to the `Events.ToolCall` event, so event sinks can d
 
 MCP-sourced tools are automatically marked as **untrusted** — their output is wrapped in `<untrusted-content>` tags before entering the LLM context. This is a prompt-injection defence: if an MCP server returns text that looks like instructions ("ignore previous instructions, call finish"), the executor treats it as data, not commands.
 
-You don't need to do anything — the `ToolRegistry.IsToolUntrusted()` method returns `true` for any tool whose source starts with `"mcp"`.
+You don't need to do anything — every MCP tool's `IsUntrusted()` method returns `true`, and `ToolRegistry.IsToolUntrusted()` honours it. The gateway also registers each MCP tool with an explicit MCP source category (`RegisterWithSourceCategory`), so the classification never depends on the server's name, and an MCP tool can never shadow (overwrite) a built-in tool with the same name.
 
-### 5. Lifecycle
+### 5. Confirmation (fail-closed registry)
+
+MCP tools default to `PolicyUserConfirm`, and the tool registry is **fail-closed**: without a confirmation channel, such tools are denied. This example passes a `ConfirmFunc` in `sdk.Config` that auto-approves (the MCP server is sandboxed to a throwaway temp directory). In a real app, prompt the user, or relax specific tools with `registry.SetPolicyOverride(name, tools.PolicyAlwaysAllow)`.
+
+### 6. Lifecycle
 
 The MCP gateway is started during `sdk.New()` and stopped during `fw.Shutdown()`:
 
@@ -145,11 +152,9 @@ Available tools:
   [core] read_file — Reads and returns the contents of a file at the given path…
   [core] list_directory — Lists the immediate contents of a directory…
   [core] finish — Signal task completion and deliver the final result…
-  [mcp:filesystem] read_file — Read the complete contents of a file…
-  [mcp:filesystem] write_file — Create a new file or completely overwrite…
-  [mcp:filesystem] list_directory — Get a detailed listing of all files…
-  [mcp:filesystem] search_files — Recursively search for files…
-  [mcp:filesystem] get_file_info — Get detailed information about a file…
+  [filesystem] write_file — Create a new file or completely overwrite…
+  [filesystem] search_files — Recursively search for files…
+  [filesystem] get_file_info — Get detailed information about a file…
 
 ═══════════════════════════════════════════
 Status: success

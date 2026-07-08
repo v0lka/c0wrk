@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/v0lka/sp4rk/agent"
@@ -34,15 +35,16 @@ import (
 
 // Framework is the top-level entry point for building agent systems with the SDK.
 // It owns shared infrastructure (LLM router, tool registry, MCP gateway, tool cache) and
-// creates per-session orchestrators via NewOrchestrator().
+// creates per-session conductors via NewConductor().
 type Framework struct {
-	cfg        Config
-	llmRouter  *llm.Router
-	tools      *tools.ToolRegistry
-	modelReg   *llm.ModelRegistry
-	mcpGateway *mcp.Gateway
-	toolCache  *agent.ToolResultCache
-	logger     *slog.Logger
+	cfg          Config
+	llmRouter    *llm.Router
+	tools        *tools.ToolRegistry
+	modelReg     *llm.ModelRegistry
+	mcpGateway   *mcp.Gateway
+	toolCache    *agent.ToolResultCache
+	logger       *slog.Logger
+	shutdownOnce sync.Once
 }
 
 // Config holds all configuration for the Framework.
@@ -64,6 +66,19 @@ type Config struct {
 	// HITL optionally provides human-in-the-loop hooks.
 	// Nil means defaults (allow all tool calls, deny step extensions).
 	HITL agent.HITLHandler
+
+	// ConfirmFunc is the confirmation callback the tool registry consults
+	// before executing tools whose effective policy is PolicyUserConfirm
+	// (e.g. write_file, bash_exec). The registry is FAIL-CLOSED: when no
+	// ConfirmFunc is configured, such tools are denied instead of executing
+	// silently. To run without interactive confirmation, either provide a
+	// ConfirmFunc that auto-approves, or relax individual tools via
+	// ToolRegistry().SetPolicyOverride(name, tools.PolicyAlwaysAllow).
+	//
+	// Note: this is a separate, lower-level gate than HITL.OnToolCall.
+	// HITL intercepts tool calls at the executor level for every tool;
+	// ConfirmFunc is consulted by the registry only for confirm-policy tools.
+	ConfirmFunc tools.ConfirmFunc
 
 	// Checkpointer optionally provides state persistence.
 	Checkpointer orchestration.Checkpointer
@@ -90,15 +105,17 @@ type LLMConfig struct {
 	DefaultModel string
 
 	// MaxRetries sets the number of retry attempts for transient errors.
-	// 0 means use the default (3).
+	// 0 means use the default (3); negative means explicitly 0 (no retries).
 	MaxRetries int
 
 	// InitialBackoff is the starting backoff duration for retries.
-	// Empty string means use the default (1s).
+	// Empty string means use the default (1s); a negative duration (e.g.
+	// "-1s") means explicitly 0 (no initial backoff).
 	InitialBackoff string
 
 	// MaxBackoff is the maximum backoff duration for retries.
-	// Empty string means use the default (30s).
+	// Empty string means use the default (30s); a negative duration means
+	// explicitly 0 (no backoff cap).
 	MaxBackoff string
 
 	// OutputTokenReserve reserves context window space for model output.
@@ -118,11 +135,12 @@ type MCPConfig struct {
 // ExecutionConfig configures agent execution.
 type ExecutionConfig struct {
 	// MaxSteps is the maximum number of ReAct loop iterations per step.
-	// 0 means use the default (50).
+	// 0 means use the default (50); negative means explicitly 0 (no loop
+	// iterations — effectively disabled).
 	MaxSteps int
 
 	// MaxRetries is the maximum number of retry attempts per plan step.
-	// 0 means use the default (2).
+	// 0 means use the default (2); negative means explicitly 0 (no retries).
 	MaxRetries int
 
 	// ToolResultBudget configures tool result truncation.
@@ -172,6 +190,23 @@ type CompactionConfig struct {
 	EmergencyPercent int
 }
 
+// resolveIntSentinel implements the documented zero-value convention for
+// numeric config fields:
+//
+//	value == 0 → use def (zero value means "unset")
+//	value <  0 → explicitly 0 / disabled
+//	value >  0 → use as-is
+func resolveIntSentinel(value, def int) int {
+	switch {
+	case value == 0:
+		return def
+	case value < 0:
+		return 0
+	default:
+		return value
+	}
+}
+
 // New creates a new Framework from the given configuration.
 // It builds the LLM router, tool registry, and optionally starts MCP servers.
 // Call Shutdown() when done to release resources.
@@ -185,13 +220,10 @@ func New(cfg Config) (*Framework, error) {
 		logger = slog.Default()
 	}
 
-	// Apply defaults for zero-value fields.
-	if cfg.Execution.MaxSteps == 0 {
-		cfg.Execution.MaxSteps = 50
-	}
-	if cfg.Execution.MaxRetries == 0 {
-		cfg.Execution.MaxRetries = 2
-	}
+	// Apply defaults for zero-value fields. Negative values are documented
+	// sentinels meaning "explicitly 0/disabled" (see field doc comments).
+	cfg.Execution.MaxSteps = resolveIntSentinel(cfg.Execution.MaxSteps, 50)
+	cfg.Execution.MaxRetries = resolveIntSentinel(cfg.Execution.MaxRetries, 2)
 	if cfg.Execution.SafetyMarginPercent == 0 {
 		cfg.Execution.SafetyMarginPercent = 5
 	}
@@ -217,25 +249,17 @@ func New(cfg Config) (*Framework, error) {
 		cfg.Compaction.Strategy = "sliding_window"
 	}
 
-	// Parse retry durations
+	// Parse retry durations. Sentinel values (0 → default, negative →
+	// explicitly 0/disabled) are resolved by llm.NewRouter — pass through.
 	initialBackoff, err := time.ParseDuration(cfg.LLM.InitialBackoff)
 	if err != nil && cfg.LLM.InitialBackoff != "" {
 		logger.Warn("invalid InitialBackoff, using default", "value", cfg.LLM.InitialBackoff, "error", err)
-	}
-	if initialBackoff == 0 {
-		initialBackoff = 1 * time.Second
 	}
 	maxBackoff, err := time.ParseDuration(cfg.LLM.MaxBackoff)
 	if err != nil && cfg.LLM.MaxBackoff != "" {
 		logger.Warn("invalid MaxBackoff, using default", "value", cfg.LLM.MaxBackoff, "error", err)
 	}
-	if maxBackoff == 0 {
-		maxBackoff = 30 * time.Second
-	}
 	maxRetries := cfg.LLM.MaxRetries
-	if maxRetries == 0 {
-		maxRetries = 3
-	}
 	outputReserve := cfg.LLM.OutputTokenReserve
 	if outputReserve == 0 {
 		outputReserve = llm.DefaultRouterConfig().OutputTokenReserve
@@ -279,6 +303,10 @@ func New(cfg Config) (*Framework, error) {
 		toolCache: toolCache,
 		logger:    logger,
 	}
+	fw.tools.SetLogger(logger)
+	if cfg.ConfirmFunc != nil {
+		fw.tools.SetConfirmFunc(cfg.ConfirmFunc)
+	}
 
 	// Start MCP gateway if configured
 	if cfg.MCP != nil && len(cfg.MCP.Servers) > 0 {
@@ -303,14 +331,14 @@ func New(cfg Config) (*Framework, error) {
 // shared infrastructure (LLM router, tool registry, MCP tools).
 //
 // systemPrompt is a factory that creates the Conductor's system prompt.
-// events receives lifecycle events; use nil for a no-op emitter.
+// Lifecycle events are supplied per-run via Conductor.Run (nil = no-op emitter).
 //
 // The Conductor is a single ReAct loop that owns a task end-to-end. The
 // caller is responsible for injecting any Conductor-specific tools (delegate,
 // declare_plan, reflect) into the context before calling Run, if desired.
 // The SDK Conductor primitive itself does not provide those tools; they are
 // an application-layer concern.
-func (fw *Framework) NewConductor(systemPrompt orchestration.SystemPromptFactory, events agent.Events) (*orchestration.Conductor, error) {
+func (fw *Framework) NewConductor(systemPrompt orchestration.SystemPromptFactory) (*orchestration.Conductor, error) {
 	if fw.llmRouter == nil {
 		return nil, errors.New("framework not initialized: LLM router is nil")
 	}
@@ -381,34 +409,63 @@ func (fw *Framework) buildContextWindow(sysPrompt string, meta llm.ModelMetadata
 		}
 	}
 
-	return sdkmemory.NewContextWindow(sysPrompt, meta, tracker, thresholds, strategy, fw.cfg.Execution.SafetyMarginPercent, false, pruning)
+	return sdkmemory.NewContextWindow(sdkmemory.ContextWindowConfig{
+		SystemPrompt:        sysPrompt,
+		ModelMeta:           meta,
+		Tracker:             tracker,
+		Thresholds:          thresholds,
+		Strategy:            strategy,
+		SafetyMarginPercent: fw.cfg.Execution.SafetyMarginPercent,
+		Pruning:             pruning,
+	})
 }
 
 // Execute is a convenience method that creates a Conductor and executes a
 // single user message. Returns the execution result. For repeated use, call
 // NewConductor() once and reuse it.
+//
+// When Config.Checkpointer is set, the blackboard is a CheckpointedBlackboard
+// (persisted through the checkpointer, keyed by a unique per-execution ID) and
+// Config.OnBlackboardChanged (if set) receives change notifications. Without a
+// Checkpointer the blackboard is in-memory only and OnBlackboardChanged is not
+// invoked.
 func (fw *Framework) Execute(ctx context.Context, systemPrompt orchestration.SystemPromptFactory, events agent.Events, userMessage string) (*orchestration.ExecutionResult, error) {
-	conductor, err := fw.NewConductor(systemPrompt, events)
+	conductor, err := fw.NewConductor(systemPrompt)
 	if err != nil {
 		return nil, err
 	}
 	defer conductor.Cleanup()
 
-	bb := orchestration.NewMapBlackboard()
+	var bb orchestration.Blackboard
+	if fw.cfg.Checkpointer != nil {
+		id := fmt.Sprintf("execute-%d", time.Now().UnixNano())
+		cb := orchestration.NewCheckpointedBlackboard(id, fw.cfg.Checkpointer, fw.logger, 0)
+		if fw.cfg.OnBlackboardChanged != nil {
+			cb.SetOnChanged(fw.cfg.OnBlackboardChanged)
+		}
+		defer cb.Shutdown()
+		bb = cb
+	} else {
+		bb = orchestration.NewMapBlackboard()
+	}
 	bb.SetOriginalRequest(userMessage)
 	availableTools := fw.tools.List()
 	return conductor.Run(ctx, userMessage, bb, availableTools, events, "")
 }
 
 // Shutdown releases all resources held by the Framework (MCP connections, etc.).
-// Safe to call multiple times.
+// Safe to call multiple times, including concurrently: sync.Once guarantees
+// the underlying shutdown runs exactly once.
 func (fw *Framework) Shutdown() error {
-	if fw.mcpGateway != nil {
-		gw := fw.mcpGateway
-		fw.mcpGateway = nil // ensure idempotency on repeated calls
-		return gw.Stop()
-	}
-	return nil
+	var err error
+	fw.shutdownOnce.Do(func() {
+		if fw.mcpGateway != nil {
+			gw := fw.mcpGateway
+			fw.mcpGateway = nil
+			err = gw.Stop()
+		}
+	})
+	return err
 }
 
 // RestoreBlackboard loads a previously persisted blackboard state from the configured
@@ -418,7 +475,14 @@ func (fw *Framework) RestoreBlackboard(ctx context.Context, id string) (*orchest
 	if fw.cfg.Checkpointer == nil {
 		return nil, errors.New("no Checkpointer configured")
 	}
-	return orchestration.RestoreBlackboard(ctx, id, fw.cfg.Checkpointer, fw.logger, 0)
+	pb, err := orchestration.RestoreBlackboard(ctx, id, fw.cfg.Checkpointer, fw.logger, 0)
+	if err != nil || pb == nil {
+		return pb, err
+	}
+	if fw.cfg.OnBlackboardChanged != nil {
+		pb.SetOnChanged(fw.cfg.OnBlackboardChanged)
+	}
+	return pb, nil
 }
 
 // ToolRegistry returns the shared tool registry for direct tool registration.

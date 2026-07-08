@@ -5,6 +5,7 @@ package security
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -15,6 +16,10 @@ const UntrustedTag = "untrusted-content"
 var (
 	tagOpenRe  = regexp.MustCompile(`(?i)<\s*` + UntrustedTag)
 	tagCloseRe = regexp.MustCompile(`(?i)<\s*/\s*` + UntrustedTag)
+
+	// metadataKeyRe whitelists metadata keys usable as XML attribute names.
+	// Keys not matching are silently dropped by WrapUntrustedContent.
+	metadataKeyRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
 )
 
 // StripUntrustedTags escapes literal <untrusted-content patterns in content
@@ -50,8 +55,20 @@ func WrapUntrustedContent(content, source string, metadata map[string]string) st
 	// \" escaping which is invalid in XML and can break attribute parsing.
 	escapedSource := strings.ReplaceAll(source, `"`, "&quot;")
 	fmt.Fprintf(&attrs, "source=%q", escapedSource)
-	for key, value := range metadata {
-		escaped := strings.ReplaceAll(value, `"`, "&quot;")
+	// Sort metadata keys for deterministic attribute ordering.
+	keys := make([]string, 0, len(metadata))
+	for key := range metadata {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		// Only emit keys that are valid XML attribute names — a key
+		// containing spaces, quotes, '>' etc. could break out of the
+		// attribute list and forge tags.
+		if !metadataKeyRe.MatchString(key) {
+			continue
+		}
+		escaped := strings.ReplaceAll(metadata[key], `"`, "&quot;")
 		fmt.Fprintf(&attrs, " %s=%q", key, escaped)
 	}
 

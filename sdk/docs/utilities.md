@@ -18,7 +18,7 @@ func IsWithinPath(parent, child string) (bool, error)
 
 `IsWithinPath` returns `true` if `child` is equal to or a descendant of `parent`. Both paths are symlink-resolved through their longest existing prefix (`ResolveExistingPrefix`) before comparison, so it correctly handles OS-level symlinks like macOS `/var → /private/var` even when the paths do not exist on disk yet.
 
-It returns an error only when `filepath.Rel` fails (e.g. the paths are on different volumes). An empty `parent` returns `(true, nil)` — containment cannot be determined, so access is allowed (matching legacy behavior).
+It returns an error when `parent` is empty (containment cannot be determined — fail closed; callers must guard empty roots explicitly before calling) or when `filepath.Rel` fails (e.g. the paths are on different volumes).
 
 ```go
 ok, err := pathutil.IsWithinPath("/home/user/project", "/home/user/project/src/main.go")

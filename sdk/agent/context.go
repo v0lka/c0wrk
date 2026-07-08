@@ -26,18 +26,15 @@ func StepIDFromContext(ctx context.Context) string {
 // don't pass through the per-step CallerForStep pipeline.
 type dumpWriterContextKey struct{}
 
-// DumpWriterContextKey is the key for retrieving an LLM dump writer from context.
-var DumpWriterContextKey = dumpWriterContextKey{}
-
 // WithDumpWriter returns a new context with the dump writer attached.
 func WithDumpWriter(ctx context.Context, w io.Writer) context.Context {
-	return context.WithValue(ctx, DumpWriterContextKey, w)
+	return context.WithValue(ctx, dumpWriterContextKey{}, w)
 }
 
 // DumpWriterFromContext extracts the dump writer from the context.
 // Returns nil if not found.
 func DumpWriterFromContext(ctx context.Context) io.Writer {
-	if w, ok := ctx.Value(DumpWriterContextKey).(io.Writer); ok {
+	if w, ok := ctx.Value(dumpWriterContextKey{}).(io.Writer); ok {
 		return w
 	}
 	return nil

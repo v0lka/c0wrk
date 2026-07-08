@@ -902,8 +902,8 @@ func TestParseCompositeModelID(t *testing.T) {
 			if got := IsCompositeModelID(tt.id); got != tt.wantIsComp {
 				t.Errorf("IsCompositeModelID(%q) = %v, want %v", tt.id, got, tt.wantIsComp)
 			}
-			if got := ProviderOf(tt.id); got != tt.wantProviderOf {
-				t.Errorf("ProviderOf(%q) = %q, want %q", tt.id, got, tt.wantProviderOf)
+			if got := providerOf(tt.id); got != tt.wantProviderOf {
+				t.Errorf("providerOf(%q) = %q, want %q", tt.id, got, tt.wantProviderOf)
 			}
 		})
 	}

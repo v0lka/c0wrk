@@ -66,7 +66,7 @@ func (p *DuckDuckGoProvider) Search(ctx context.Context, query string, maxResult
 
 	// Check status code
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(limitBody(resp.Body))
 		if readErr != nil {
 			return nil, fmt.Errorf("HTTP %d (could not read body: %w)", resp.StatusCode, readErr)
 		}
@@ -74,7 +74,7 @@ func (p *DuckDuckGoProvider) Search(ctx context.Context, query string, maxResult
 	}
 
 	// Parse HTML response
-	results, err := parseDuckDuckGoHTML(resp.Body, maxResults)
+	results, err := parseDuckDuckGoHTML(limitBody(resp.Body), maxResults)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}

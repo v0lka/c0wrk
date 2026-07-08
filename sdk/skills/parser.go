@@ -20,6 +20,7 @@ type ParseError struct {
 	Message string
 }
 
+// Error returns the validation failure message prefixed with the SKILL.md path.
 func (e *ParseError) Error() string {
 	return fmt.Sprintf("skill parse error (%s): %s", e.Path, e.Message)
 }

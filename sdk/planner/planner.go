@@ -253,6 +253,9 @@ func (p *Planner) PlanContinuation(
 	conversationHistory []llm.Message,
 	taskComplete bool,
 ) (*orchestration.Plan, error) {
+	if existingPlan == nil {
+		return nil, errors.New("planner: PlanContinuation requires a non-nil existing plan")
+	}
 	mode := p.continuationMultiMode()
 	if singleStep {
 		mode = p.continuationSingleMode()
@@ -379,7 +382,7 @@ func (p *Planner) planWithExploration(
 		p.log().Warn("planner: ContextFactory is nil, falling back to direct planning")
 		return p.planDirect(ctx, task, mode, availableTools, reflections, availableSkills, singleStep, conversationHistory)
 	}
-	cm := p.Cfg.ContextFactory(systemPrompt, modelMeta, "sliding")
+	cm := p.Cfg.ContextFactory(systemPrompt, modelMeta, "sliding_window")
 
 	if setter, ok := cm.(interface{ SetTask(string) }); ok {
 		setter.SetTask(task)
@@ -465,11 +468,10 @@ func (p *Planner) buildSystemPromptFromMode(
 ) string {
 	availableToolsStr := agent.BuildGroupedToolList(availableTools)
 
-	resolvedTail := mode.tail
-	if strings.Contains(resolvedTail, "REFLECTIONS") {
-		resolvedTail = strings.ReplaceAll(resolvedTail, "REFLECTIONS", formatPlanReflections(reflections))
-	}
-
+	// Trusted template-on-template substitutions: static prompt fragments
+	// that may legitimately contain other placeholders (e.g.
+	// RECENT-CONVERSATION inside MODE-PREAMBLE, REFLECTIONS inside
+	// MODE-TAIL). Resolved iteratively.
 	substitutions := map[string]string{
 		"MODE-PREAMBLE":       mode.preamble,
 		"MODE-TOT":            mode.tot,
@@ -477,16 +479,25 @@ func (p *Planner) buildSystemPromptFromMode(
 		"DOMAIN-ASSIGNMENT":   p.Cfg.Prompts.DomainAssignment,
 		"AGENT-PROFILES":      p.Cfg.Prompts.AgentProfiles,
 		"MODE-EXTRA-SECTIONS": mode.extraSections,
-		"MODE-TAIL":           resolvedTail,
+		"MODE-TAIL":           mode.tail,
 		"MODE-JSON-EXAMPLE":   mode.jsonExample,
-		"AVAILABLE-TOOLS":     availableToolsStr,
-		"AVAILABLE-SKILLS":    p.Cfg.FormatSkillList(ctx, availableSkills),
-		"WORKSPACE-PATH":      p.Cfg.FormatWorkspacePath(ctx),
 		"MAX-STEPS":           mode.maxSteps,
 	}
 
+	// Untrusted dynamic/external content: substituted LAST in a single pass
+	// (Builder.ReplaceData) so placeholder names occurring inside these
+	// values are never expanded — placeholder-injection protection. Covers
+	// LLM-generated reflections, tool/skill lists, workspace paths, and
+	// caller-provided extras (conversation history, user requests, plan
+	// summaries, etc.).
+	dataSubstitutions := map[string]string{
+		"REFLECTIONS":      formatPlanReflections(reflections),
+		"AVAILABLE-TOOLS":  availableToolsStr,
+		"AVAILABLE-SKILLS": p.Cfg.FormatSkillList(ctx, availableSkills),
+		"WORKSPACE-PATH":   p.Cfg.FormatWorkspacePath(ctx),
+	}
 	for k, v := range extraSubstitutions {
-		substitutions[k] = v
+		dataSubstitutions[k] = v
 	}
 
 	result := prompt.NewBuilder().
@@ -495,6 +506,7 @@ func (p *Planner) buildSystemPromptFromMode(
 		Core(p.Cfg.Prompts.VerificationMandate).
 		CacheBreak().
 		ReplaceAll(substitutions).
+		ReplaceDataAll(dataSubstitutions).
 		Build()
 
 	return p.Cfg.AppendContextSections(ctx, result)
@@ -564,6 +576,9 @@ func (p *Planner) buildReplanSystemPrompt(ctx context.Context, rc replanContext)
 `, rc.reflection.FailureAnalysis, rc.reflection.RootCause, rc.reflection.ActionPlan)
 	}
 
+	// All of these values are derived from dynamic/external content
+	// (LLM-generated plans, step outputs, reflections) — substituted via
+	// ReplaceData so placeholder names inside them are never expanded.
 	substitutions := map[string]string{
 		"ORIGINAL-PLAN":                originalPlanStr,
 		"COMPLETED-STEPS":              completedStepsStr,
@@ -579,7 +594,7 @@ func (p *Planner) buildReplanSystemPrompt(ctx context.Context, rc replanContext)
 		Core(p.familyPrompt(ctx)).
 		Core(p.Cfg.Prompts.VerificationMandate).
 		CacheBreak().
-		ReplaceAll(substitutions).
+		ReplaceDataAll(substitutions).
 		Build()
 
 	return p.Cfg.AppendContextSections(ctx, result)
@@ -633,7 +648,7 @@ func (p *Planner) buildContinuationSystemPrompt(
 	}
 	completedPlanSummary := planSummaryBuilder.String()
 
-	terminalSteps := FindTerminalSteps(existingPlan)
+	terminalSteps := findTerminalSteps(existingPlan)
 	terminalStepsStr := strings.Join(terminalSteps, ", ")
 
 	extraSubs := map[string]string{
@@ -692,6 +707,9 @@ func (p *Planner) callAndParsePlan(
 		if err != nil {
 			return nil, fmt.Errorf("planner LLM call failed: %w", err)
 		}
+		if resp == nil {
+			return nil, errors.New("planner LLM call returned nil response")
+		}
 
 		plan, err := p.parsePlanResponse(resp.Message.Content, availableSkills)
 		if err == nil {
@@ -749,34 +767,20 @@ func (p *Planner) callAndParsePlan(
 }
 
 func (p *Planner) parsePlanResponse(content string, availableSkills []skills.SkillDescriptor) (*orchestration.Plan, error) {
-	content = strings.TrimSpace(content)
-
-	if strings.HasPrefix(content, "```json") {
-		content = strings.TrimPrefix(content, "```json")
-		if idx := strings.Index(content, "```"); idx != -1 {
-			content = content[:idx]
-		}
-	} else if strings.HasPrefix(content, "```") {
-		content = strings.TrimPrefix(content, "```")
-		if idx := strings.Index(content, "```"); idx != -1 {
-			content = content[:idx]
-		}
-	}
-
-	content = strings.TrimSpace(content)
-
-	startIdx := strings.Index(content, "{")
-	endIdx := strings.LastIndex(content, "}")
-
-	if startIdx == -1 || endIdx == -1 || endIdx <= startIdx {
+	// Robust JSON extraction: handles markdown code fences and surrounding
+	// prose, and finds the last valid JSON object in the response.
+	jsonContent := llm.ExtractJSON(content)
+	if !strings.HasPrefix(strings.TrimSpace(jsonContent), "{") {
 		return nil, errors.New("no valid JSON object found in response")
 	}
-
-	jsonContent := content[startIdx : endIdx+1]
 
 	var plan orchestration.Plan
 	if err := json.Unmarshal([]byte(jsonContent), &plan); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal plan JSON: %w", err)
+	}
+
+	if err := validatePlanDAG(&plan); err != nil {
+		return nil, err
 	}
 
 	var skillAllowed map[string]bool
@@ -829,6 +833,68 @@ func (p *Planner) parsePlanResponse(content string, availableSkills []skills.Ski
 	return &plan, nil
 }
 
+// validatePlanDAG performs structural validation of a parsed plan:
+//  1. Step IDs are unique.
+//  2. Every depends_on entry references an existing step ID.
+//  3. The dependency graph contains no cycles.
+//
+// The returned error is descriptive so it can be fed back to the model in
+// the callAndParsePlan retry loop.
+func validatePlanDAG(plan *orchestration.Plan) error {
+	ids := make(map[string]bool, len(plan.Steps))
+	for _, step := range plan.Steps {
+		if ids[step.ID] {
+			return fmt.Errorf("invalid plan: duplicate step ID %q — every step must have a unique ID", step.ID)
+		}
+		ids[step.ID] = true
+	}
+
+	for _, step := range plan.Steps {
+		for _, dep := range step.DependsOn {
+			if !ids[dep] {
+				return fmt.Errorf("invalid plan: step %q depends on unknown step ID %q — depends_on may only reference IDs of steps in this plan", step.ID, dep)
+			}
+		}
+	}
+
+	// Cycle detection via iterative DFS with three-color marking.
+	const (
+		white = 0 // unvisited
+		gray  = 1 // in progress
+		black = 2 // done
+	)
+	color := make(map[string]int, len(plan.Steps))
+	deps := make(map[string][]string, len(plan.Steps))
+	for _, step := range plan.Steps {
+		deps[step.ID] = step.DependsOn
+	}
+
+	var visit func(id string) error
+	visit = func(id string) error {
+		switch color[id] {
+		case gray:
+			return fmt.Errorf("invalid plan: dependency cycle detected involving step %q — the depends_on graph must be acyclic", id)
+		case black:
+			return nil
+		}
+		color[id] = gray
+		for _, dep := range deps[id] {
+			if err := visit(dep); err != nil {
+				return err
+			}
+		}
+		color[id] = black
+		return nil
+	}
+	for _, step := range plan.Steps {
+		if err := visit(step.ID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Shared formatting helpers
 // ---------------------------------------------------------------------------
@@ -868,9 +934,9 @@ func (p *Planner) familyPrompt(ctx context.Context) string {
 	return p.Cfg.Prompts.FamilyPrompt("planner", p.getFamily(ctx))
 }
 
-// FindTerminalSteps returns the IDs of steps that have no dependents (terminal steps in the DAG).
+// findTerminalSteps returns the IDs of steps that have no dependents (terminal steps in the DAG).
 // Returns nil for a nil plan.
-func FindTerminalSteps(plan *orchestration.Plan) []string {
+func findTerminalSteps(plan *orchestration.Plan) []string {
 	if plan == nil {
 		return nil
 	}

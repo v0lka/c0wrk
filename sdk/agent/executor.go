@@ -488,7 +488,12 @@ func (e *Executor) applyToolResultBudget(observation string, cw ContextManager, 
 		return observation
 	}
 
+	// UTF-8 safe: walk back to the last valid codepoint boundary so the
+	// truncated observation never ends with a split multi-byte rune.
 	truncated := observation[:charLimit]
+	for truncated != "" && !utf8.ValidString(truncated) {
+		truncated = truncated[:len(truncated)-1]
+	}
 
 	// Generate context-aware hint based on tool name
 	hint := getTruncationHint(toolName)

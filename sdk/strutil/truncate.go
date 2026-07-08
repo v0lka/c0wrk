@@ -28,6 +28,12 @@ func TruncateUTF8(s string, maxBytes int) string {
 // returned string ends on a complete line. If the truncated string contains
 // no newline, or the only newline is at index 0, the UTF-8-safe truncated
 // value is returned unchanged.
+//
+// WARNING: snapping to the last newline can shorten the result significantly
+// below maxBytes — in the extreme, input with one early newline followed by a
+// single very long line is cut down to just that first line. Callers that
+// need to preserve as much content as possible should use TruncateUTF8
+// instead and tolerate a partial final line.
 func TruncateUTF8AtLineBoundary(s string, maxBytes int) string {
 	truncated := TruncateUTF8(s, maxBytes)
 	if idx := strings.LastIndex(truncated, "\n"); idx > 0 {

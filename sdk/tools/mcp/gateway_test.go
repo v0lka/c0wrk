@@ -1223,11 +1223,7 @@ func TestGateway_SchemaSanitizer(t *testing.T) {
 		if source != "test-mcp" {
 			return schema
 		}
-		stripped, err := sdktools.StripParamsFromSchema(schema, map[string]bool{"project": true})
-		if err != nil {
-			return schema
-		}
-		return stripped
+		return sdktools.DefaultParamManager().SanitizeSchema(source, schema)
 	}
 
 	registry := sdktools.NewToolRegistry()
@@ -1288,11 +1284,7 @@ func TestGateway_SchemaSanitizer_OtherSourceUntouched(t *testing.T) {
 		if source != "test-mcp" {
 			return schema
 		}
-		stripped, err := sdktools.StripParamsFromSchema(schema, map[string]bool{"project": true})
-		if err != nil {
-			return schema
-		}
-		return stripped
+		return sdktools.DefaultParamManager().SanitizeSchema(source, schema)
 	}
 
 	registry := sdktools.NewToolRegistry()

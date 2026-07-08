@@ -78,7 +78,7 @@ func TestBuildPromptWithReasoningContent(t *testing.T) {
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(5, 5)
 
-	cw := NewContextWindow("You are helpful.", testModelMeta(128000), tracker, testThresholds(), strategy, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "You are helpful.", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), Strategy: strategy})
 	cw.SetTask("Do something")
 
 	// Add a step with reasoning content
@@ -124,7 +124,7 @@ func TestBuildPromptOrdering(t *testing.T) {
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(5, 5)
 
-	cw := NewContextWindow("You are a helpful assistant.", testModelMeta(128000), tracker, testThresholds(), strategy, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "You are a helpful assistant.", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), Strategy: strategy})
 
 	// Set task (caller is responsible for formatting criteria into task string)
 	cw.SetTask("Complete the coding task\n\nAcceptance Criteria:\n- First criterion (llm_judge)\n- Second criterion (programmatic: go test)")
@@ -175,7 +175,7 @@ func TestBuildPromptWithEmptySections(t *testing.T) {
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(5, 5)
 
-	cw := NewContextWindow("System prompt only", testModelMeta(128000), tracker, testThresholds(), strategy, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System prompt only", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), Strategy: strategy})
 
 	// Only add steps, no task, criteria, or plan
 	cw.AddStep(makeStep("Thought 1", "Obs 1", 1))
@@ -206,7 +206,7 @@ func TestBuildPromptWithPriorConversation(t *testing.T) {
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(5, 5)
 
-	cw := NewContextWindow("You are a helpful assistant.", testModelMeta(128000), tracker, testThresholds(), strategy, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "You are a helpful assistant.", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), Strategy: strategy})
 	cw.SetTask("implement variant a")
 
 	cw.SetPriorConversation([]llm.Message{
@@ -242,7 +242,7 @@ func TestBuildPromptWithoutPriorConversation(t *testing.T) {
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(5, 5)
 
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), strategy, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), Strategy: strategy})
 	cw.SetTask("do something")
 
 	messages := cw.BuildPrompt()
@@ -340,7 +340,7 @@ func TestSlidingWindowNoCompactionNeeded(t *testing.T) {
 func TestAddStep(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds()})
 
 	// Initially no steps
 	messages := cw.BuildPrompt()
@@ -383,7 +383,7 @@ func TestAddStepAfterCompactAppendsToCompactedPrefix(t *testing.T) {
 		OutputLimit:   1000,
 		TokenizerType: "approximate",
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: modelMeta, Tracker: tracker, Thresholds: testThresholds(), Strategy: strategy})
 
 	// Add 10 steps: sliding window (keepFirst=2, keepLast=2) will keep T1,T2,T9,T10
 	// and omit T3..T8.
@@ -479,7 +479,7 @@ func TestNewCompactionStrategy(t *testing.T) {
 func TestEmptyContextWindow(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds()})
 
 	messages := cw.BuildPrompt()
 
@@ -502,7 +502,7 @@ func TestEffectiveMax(t *testing.T) {
 		OutputLimit:   8192,
 		TokenizerType: "approximate",
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: modelMeta, Tracker: tracker, Thresholds: testThresholds(), Strategy: strategy})
 
 	expectedMax := 100000 - 8192 - 5000 // 86808
 	if cw.EffectiveMax() != expectedMax {
@@ -523,7 +523,7 @@ func TestFillPercent(t *testing.T) {
 		OutputLimit:   1000,
 		TokenizerType: "approximate",
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: modelMeta, Tracker: tracker, Thresholds: testThresholds(), Strategy: strategy})
 
 	// Initially should be 0% (no tokens used)
 	if cw.FillPercent() != 0.0 {
@@ -613,7 +613,7 @@ func TestCheckFill(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tracker := llm.NewContextTokenTracker(counter)
-			cw := NewContextWindow("System", modelMeta, tracker, thresholds, strategy, 0, false)
+			cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: modelMeta, Tracker: tracker, Thresholds: thresholds, Strategy: strategy})
 
 			for i := 1; i <= tt.steps; i++ {
 				cw.AddStep(makeStep(
@@ -647,7 +647,7 @@ func TestCheckFillReject(t *testing.T) {
 		OutputLimit:   500,
 		TokenizerType: "approximate",
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), strategy, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: modelMeta, Tracker: tracker, Thresholds: testThresholds(), Strategy: strategy})
 
 	// Add many steps to exceed 100%
 	for i := 1; i <= 500; i++ {
@@ -669,7 +669,7 @@ func TestCorrectTokenCount(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
 	strategy := NewSlidingWindowStrategy(3, 5)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), strategy, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), Strategy: strategy})
 
 	// Add some steps
 	cw.AddStep(makeStep("Thought 1", "Observation 1", 1))
@@ -697,7 +697,7 @@ func TestCorrectTokenCount(t *testing.T) {
 func TestAddStepUpdatesTracker(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds()})
 
 	// Initial state
 	initialTotal := cw.tracker.EstimateTotal()
@@ -729,7 +729,7 @@ func TestAddStepUpdatesTracker(t *testing.T) {
 func TestBuildStepMessages_EmptyThoughtNoAction(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds()})
 
 	// Add a step with empty thought and no action (edge case that could cause API errors)
 	emptyStep := sdkagent.Step{
@@ -792,7 +792,7 @@ func TestBuildStepMessages_EmptyThoughtNoAction(t *testing.T) {
 func TestBuildStepMessages_TrimsTrailingInvisibleChars(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds()})
 
 	// Add a step with thought containing trailing zero-width space characters
 	step := sdkagent.Step{
@@ -826,7 +826,7 @@ func TestBuildStepMessages_TrimsTrailingInvisibleChars(t *testing.T) {
 func TestBuildStepMessages_EmptyThoughtAfterTrimmingBecomesProceeding(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds()})
 
 	// Add a step with thought containing only whitespace and invisible characters, no tool call
 	step := sdkagent.Step{
@@ -859,7 +859,7 @@ func TestBuildStepMessages_EmptyThoughtAfterTrimmingBecomesProceeding(t *testing
 func TestBuildStepMessages_WhitespaceUserNudgeSkipped(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds()})
 
 	// Add a step with a valid thought but whitespace-only nudge
 	step := sdkagent.Step{
@@ -891,7 +891,7 @@ func TestBuildStepMessages_WhitespaceUserNudgeSkipped(t *testing.T) {
 func TestBuildStepMessages_ValidUserNudgePreserved(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds()})
 
 	// Add a step with a valid thought and valid nudge
 	step := sdkagent.Step{
@@ -928,7 +928,7 @@ func TestPruningKeepsLastN(t *testing.T) {
 		KeepLastN:       3,
 		PlaceholderText: "[PRUNED]",
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 
 	// Create 10 steps with unique observations
 	for i := 1; i <= 10; i++ {
@@ -975,7 +975,7 @@ func TestPruningProtectsTools(t *testing.T) {
 		ProtectedTools:  []string{"read_evidence"},
 		PlaceholderText: "[PRUNED]",
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 
 	// Create 5 steps (all have tool results):
 	// Step 1: regular tool (outside KeepLastN -> pruned)
@@ -1033,7 +1033,7 @@ func TestPruningSkipsNonToolSteps(t *testing.T) {
 		KeepLastN:       1, // Only keep the last 1 tool-result step
 		PlaceholderText: "[PRUNED]",
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 
 	// Create steps: tool step, non-tool step, tool step, non-tool step
 	// Tool-result steps are at indices 0 and 2 (steps 1 and 3)
@@ -1093,7 +1093,7 @@ func TestPruningDisabledWhenKeepLastNZero(t *testing.T) {
 		KeepLastN:       0, // Pruning disabled
 		PlaceholderText: "[PRUNED]",
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 
 	// Create 5 steps
 	for i := 1; i <= 5; i++ {
@@ -1138,7 +1138,7 @@ func makeGroupedStep(thought, observation, toolName string, toolID int, group in
 func TestBuildStepMessages_GroupedStepsProduceOneAssistantMessage(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds()})
 
 	// Add 3 steps with the same ResponseGroup
 	cw.AddStep(makeGroupedStep("I'll read all files", "content of a", "read_file", 1, 42))
@@ -1184,7 +1184,7 @@ func TestBuildStepMessages_GroupedStepsProduceOneAssistantMessage(t *testing.T) 
 func TestBuildStepMessages_MixedGroupedAndStandalone(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds()})
 
 	// Standalone step
 	cw.AddStep(makeStep("standalone thought", "standalone obs", 1))
@@ -1244,7 +1244,7 @@ func TestPruningGroupAwareness_ProtectsEntireGroup(t *testing.T) {
 		KeepLastN:       2, // Only protect last 2 tool-result steps
 		PlaceholderText: "[PRUNED]",
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 
 	// 2 standalone steps (will be pruned, outside KeepLastN)
 	cw.AddStep(makeStep("old 1", "old obs 1", 1))
@@ -1301,7 +1301,7 @@ func TestBuildStepMessages_GroupedStepsBackwardCompat(t *testing.T) {
 	// Steps with ResponseGroup == 0 work exactly as before
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds()})
 
 	cw.AddStep(makeStep("Thought 1", "Obs 1", 1))
 	cw.AddStep(makeStep("Thought 2", "Obs 2", 2))
@@ -1336,7 +1336,7 @@ func TestPruningThreshold_SkipsWhenBelowThreshold(t *testing.T) {
 		ThresholdPercent: 80, // Set threshold high so fill is below it
 	}
 	// Large context window → fill will be very low (well under 80%)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 
 	for i := 1; i <= 10; i++ {
 		cw.AddStep(makeStep(fmt.Sprintf("Thought %d", i), fmt.Sprintf("Observation %d", i), i))
@@ -1379,7 +1379,7 @@ func TestPruningThreshold_PrunesWhenAboveThreshold(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 2, // Low threshold; 10 steps at ~3% fill will exceed it
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: modelMeta, Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 
 	for i := 1; i <= 10; i++ {
 		cw.AddStep(makeStep(fmt.Sprintf("Thought %d", i), fmt.Sprintf("Observation %d", i), i))
@@ -1427,7 +1427,7 @@ func TestPruningThreshold_ZeroMeansDisabled(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 0, // Zero = no threshold, pruning always active
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 
 	for i := 1; i <= 5; i++ {
 		cw.AddStep(makeStep(fmt.Sprintf("Thought %d", i), fmt.Sprintf("Observation %d", i), i))
@@ -1474,7 +1474,7 @@ func TestPruningThreshold_SmallContextWindow(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 20, // Low threshold to ensure we cross it
 	}
-	cw := NewContextWindow("System", modelMeta, tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: modelMeta, Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 
 	// Add enough steps to push fill above 20%
 	for i := 1; i <= 30; i++ {
@@ -1522,7 +1522,7 @@ func TestVulnerableOutputs(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 0, // always prune (no threshold)
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 
 	// Add 6 steps:
 	// Steps 1-3 are outside KeepLastN (vulnerable)
@@ -1557,7 +1557,7 @@ func TestVulnerableOutputsEmpty(t *testing.T) {
 	tracker := llm.NewContextTokenTracker(counter)
 
 	// No pruning configured (KeepLastN = 0)
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, false)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds()})
 	cw.AddStep(makeStep("T1", "Obs 1", 1))
 	cw.AddStep(makeStep("T2", "Obs 2", 2))
 
@@ -1579,7 +1579,7 @@ func TestVulnerableOutputsBelowThreshold(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 50, // pruning only active above 50%
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 
 	// Add a few steps — total tokens will be well below 50% of 128k
 	cw.AddStep(makeStep("T1", "Obs 1", 1))
@@ -1604,7 +1604,7 @@ func TestVulnerableOutputsInputHint(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 0,
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 
 	// Step with file_path input
 	cw.AddStep(sdkagent.Step{
@@ -1659,7 +1659,7 @@ func TestVulnerableOutputsAllWithinKeepLastN(t *testing.T) {
 		PlaceholderText:  "[PRUNED]",
 		ThresholdPercent: 0, // always active
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 
 	// Add 3 steps — all within KeepLastN=5
 	cw.AddStep(makeStepWithTool("T1", "Obs 1", "read_file", 1))
@@ -1694,7 +1694,7 @@ func TestHistoryMutation_ToolResultEviction(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
 
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true})
 	cw.SetHistoryMutation(HistoryMutation{
 		ToolResultEvictionStep: 3,
 	})
@@ -1745,7 +1745,7 @@ func TestHistoryMutation_StepStatusEviction(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
 
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true})
 	cw.SetHistoryMutation(HistoryMutation{
 		EvictStepStatus: true,
 	})
@@ -1771,7 +1771,7 @@ func TestHistoryMutation_DedupRepeatedReads(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
 
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true})
 	cw.SetHistoryMutation(HistoryMutation{
 		DedupRepeatedReads:     true,
 		ToolResultEvictionStep: 100, // high threshold so age-based eviction doesn't interfere
@@ -1803,7 +1803,7 @@ func TestHistoryMutation_DisabledByDefault(t *testing.T) {
 	counter := llm.NewSimpleTokenCounter()
 	tracker := llm.NewContextTokenTracker(counter)
 
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true})
 	// No SetHistoryMutation — defaults to zero-value (all disabled).
 
 	for i := 1; i <= 5; i++ {
@@ -1838,7 +1838,7 @@ func TestHistoryMutation_ProtectedToolsExempt(t *testing.T) {
 		KeepLastN:      100, // keep all (no pruning interference)
 		ProtectedTools: []string{"store_fact"},
 	}
-	cw := NewContextWindow("System", testModelMeta(128000), tracker, testThresholds(), nil, 0, true, pruning)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(128000), Tracker: tracker, Thresholds: testThresholds(), InjectionDefenseEnabled: true, Pruning: pruning})
 	cw.SetHistoryMutation(HistoryMutation{
 		ToolResultEvictionStep: 1, // aggressive eviction
 	})
@@ -1855,5 +1855,198 @@ func TestHistoryMutation_ProtectedToolsExempt(t *testing.T) {
 	// read_file (age 1, not > 1) should also remain full (age threshold not met).
 	if messages[4].Content != "file content" {
 		t.Errorf("read_file with age 1 should remain full (threshold > 1), got %q", messages[4].Content)
+	}
+}
+
+// ==================== stepsToMessages UserNudge Tests ====================
+
+// TestStepsToMessages_UserNudgePreserved verifies stepsToMessages emits
+// Step.UserNudge as a user message after the step's messages (mirroring
+// buildNudgeMsg in the live prompt path).
+func TestStepsToMessages_UserNudgePreserved(t *testing.T) {
+	step := makeStep("Thinking", "result", 1)
+	step.UserNudge = "user granted 10 more iterations"
+
+	messages := stepsToMessages([]sdkagent.Step{step})
+
+	// assistant + tool + user(nudge)
+	if len(messages) != 3 {
+		t.Fatalf("Expected 3 messages, got %d", len(messages))
+	}
+	if messages[0].Role != "assistant" || messages[0].Content != "Thinking" {
+		t.Errorf("Message 0 should be assistant thought, got role=%s content=%q", messages[0].Role, messages[0].Content)
+	}
+	if messages[1].Role != "tool" || messages[1].Content != "result" {
+		t.Errorf("Message 1 should be tool result, got role=%s content=%q", messages[1].Role, messages[1].Content)
+	}
+	if messages[2].Role != "user" || messages[2].Content != "user granted 10 more iterations" {
+		t.Errorf("Message 2 should be user nudge, got role=%s content=%q", messages[2].Role, messages[2].Content)
+	}
+}
+
+// TestStepsToMessages_NudgeOnlyStepNoPlaceholder verifies that a nudge-only
+// step (no thought, no action — e.g. a step-limit grant) produces only the
+// user nudge message, without an empty "(proceeding)" assistant placeholder.
+func TestStepsToMessages_NudgeOnlyStepNoPlaceholder(t *testing.T) {
+	step := sdkagent.Step{
+		UserNudge: "user granted unlimited iterations",
+	}
+
+	messages := stepsToMessages([]sdkagent.Step{step})
+
+	if len(messages) != 1 {
+		t.Fatalf("Expected 1 message for nudge-only step, got %d: %+v", len(messages), messages)
+	}
+	if messages[0].Role != "user" || messages[0].Content != "user granted unlimited iterations" {
+		t.Errorf("Expected user nudge message, got role=%s content=%q", messages[0].Role, messages[0].Content)
+	}
+}
+
+// TestStepsToMessages_EmptyStepStillGetsPlaceholder verifies that a fully
+// empty step (no thought, no action, no nudge) still produces the
+// "(proceeding)" assistant placeholder (prevents API 400 on empty content).
+func TestStepsToMessages_EmptyStepStillGetsPlaceholder(t *testing.T) {
+	messages := stepsToMessages([]sdkagent.Step{{}})
+
+	if len(messages) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(messages))
+	}
+	if messages[0].Role != "assistant" || messages[0].Content != "(proceeding)" {
+		t.Errorf("Expected '(proceeding)' placeholder, got role=%s content=%q", messages[0].Role, messages[0].Content)
+	}
+}
+
+// TestStepsToMessages_WhitespaceNudgeSkipped verifies whitespace-only nudges
+// are not emitted and the placeholder is used for otherwise-empty steps.
+func TestStepsToMessages_WhitespaceNudgeSkipped(t *testing.T) {
+	step := sdkagent.Step{UserNudge: "   \t\n\u200b  "}
+
+	messages := stepsToMessages([]sdkagent.Step{step})
+
+	if len(messages) != 1 {
+		t.Fatalf("Expected 1 message, got %d", len(messages))
+	}
+	if messages[0].Role != "assistant" || messages[0].Content != "(proceeding)" {
+		t.Errorf("Expected '(proceeding)' placeholder, got role=%s content=%q", messages[0].Role, messages[0].Content)
+	}
+}
+
+// TestStepsToMessages_GroupedNudgeOnLastStep verifies that for a ResponseGroup
+// the nudge of the group's last step is emitted after the tool results,
+// mirroring buildGroupedMessages.
+func TestStepsToMessages_GroupedNudgeOnLastStep(t *testing.T) {
+	step1 := makeStep("Group thought", "obs 1", 1)
+	step1.ResponseGroup = 7
+	step2 := makeStep("", "obs 2", 2)
+	step2.ResponseGroup = 7
+	step2.UserNudge = "please continue with variant B"
+
+	messages := stepsToMessages([]sdkagent.Step{step1, step2})
+
+	// 1 assistant (merged) + 2 tool results + 1 user nudge
+	if len(messages) != 4 {
+		t.Fatalf("Expected 4 messages, got %d: %+v", len(messages), messages)
+	}
+	if messages[0].Role != "assistant" || len(messages[0].ToolCalls) != 2 {
+		t.Errorf("Message 0 should be merged assistant with 2 tool calls, got role=%s calls=%d", messages[0].Role, len(messages[0].ToolCalls))
+	}
+	if messages[3].Role != "user" || messages[3].Content != "please continue with variant B" {
+		t.Errorf("Last message should be user nudge, got role=%s content=%q", messages[3].Role, messages[3].Content)
+	}
+}
+
+// TestCompact_PreservesUserNudgeInVerbatimZone verifies that compaction keeps
+// UserNudge messages for steps inside the verbatim (kept) zone. A step-limit
+// grant like "user granted unlimited iterations" must survive Compact().
+func TestCompact_PreservesUserNudgeInVerbatimZone(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	strategy := NewSlidingWindowStrategy(2, 3)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(5000), Tracker: tracker, Thresholds: testThresholds(), Strategy: strategy})
+
+	for i := 1; i <= 9; i++ {
+		cw.AddStep(makeStep(fmt.Sprintf("T%d", i), fmt.Sprintf("O%d", i), i))
+	}
+	// Nudge-only step in the verbatim (last-N) zone, e.g. a step-limit grant.
+	cw.AddStep(sdkagent.Step{UserNudge: "user granted unlimited iterations"})
+
+	if result := cw.Compact(context.Background()); result == nil {
+		t.Fatal("Compact returned nil, expected a CompactionResult")
+	}
+
+	messages := cw.BuildPrompt()
+	foundNudge := false
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Content == "user granted unlimited iterations" {
+			foundNudge = true
+		}
+		if msg.Role == "assistant" && msg.Content == "(proceeding)" && len(msg.ToolCalls) == 0 {
+			t.Error("nudge-only step produced an empty '(proceeding)' assistant placeholder after compaction")
+		}
+	}
+	if !foundNudge {
+		t.Error("UserNudge was lost during compaction — expected user message 'user granted unlimited iterations' in prompt")
+	}
+}
+
+// ==================== Compact Tracker Sync Tests ====================
+
+// TestCompactUpdatesTracker verifies that Compact() corrects the token tracker
+// so that CheckFill() immediately reflects the post-compaction size instead of
+// the stale pre-compaction estimate.
+func TestCompactUpdatesTracker(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	strategy := NewSlidingWindowStrategy(1, 1)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(5000), Tracker: tracker, Thresholds: testThresholds(), Strategy: strategy})
+
+	// Add many steps with large observations to drive fill up.
+	bigObs := strings.Repeat("x", 400)
+	for i := 1; i <= 30; i++ {
+		cw.AddStep(makeStep(fmt.Sprintf("T%d", i), bigObs, i))
+	}
+
+	before := cw.CheckFill()
+	if before.Percent <= 0 {
+		t.Fatalf("Expected non-zero fill before compaction, got %.2f%%", before.Percent)
+	}
+
+	result := cw.Compact(context.Background())
+	if result == nil {
+		t.Fatal("Compact returned nil, expected a CompactionResult")
+	}
+	if result.AfterPercent >= result.BeforePercent {
+		t.Fatalf("Expected AfterPercent (%.2f) < BeforePercent (%.2f)", result.AfterPercent, result.BeforePercent)
+	}
+
+	after := cw.CheckFill()
+	if after.Percent >= before.Percent {
+		t.Errorf("CheckFill after Compact = %.2f%%, expected less than before (%.2f%%) — tracker was not updated", after.Percent, before.Percent)
+	}
+	// CheckFill must agree with the estimate Compact reported.
+	if diff := after.Percent - result.AfterPercent; diff > 0.01 || diff < -0.01 {
+		t.Errorf("CheckFill after Compact = %.2f%%, expected to match CompactionResult.AfterPercent = %.2f%%", after.Percent, result.AfterPercent)
+	}
+}
+
+// TestCompactTrackerOverwrittenByNextCorrection verifies that the estimate
+// written by Compact() is replaced by the next real API-reported token count.
+func TestCompactTrackerOverwrittenByNextCorrection(t *testing.T) {
+	counter := llm.NewSimpleTokenCounter()
+	tracker := llm.NewContextTokenTracker(counter)
+	strategy := NewSlidingWindowStrategy(1, 1)
+	cw := NewContextWindow(ContextWindowConfig{SystemPrompt: "System", ModelMeta: testModelMeta(5000), Tracker: tracker, Thresholds: testThresholds(), Strategy: strategy})
+
+	for i := 1; i <= 10; i++ {
+		cw.AddStep(makeStep(fmt.Sprintf("T%d", i), strings.Repeat("y", 200), i))
+	}
+	if result := cw.Compact(context.Background()); result == nil {
+		t.Fatal("Compact returned nil, expected a CompactionResult")
+	}
+
+	// A subsequent real correction from the API must take precedence.
+	cw.CorrectTokenCount(1234)
+	if got := tracker.EstimateTotal(); got != 1234 {
+		t.Errorf("EstimateTotal after API correction = %d, want 1234", got)
 	}
 }

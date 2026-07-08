@@ -14,12 +14,13 @@ import (
 // (ResolveExistingPrefix) to handle OS-level symlinks like macOS
 // /var → /private/var even when paths don't exist on disk.
 //
-// Returns an error only when Rel fails (e.g., paths on different volumes).
+// Returns an error when parent is empty (containment cannot be determined —
+// callers must guard empty roots explicitly) or when Rel fails (e.g., paths
+// on different volumes).
 func IsWithinPath(parent, child string) (bool, error) {
-	// Empty parent means containment cannot be determined — return true
-	// (matching legacy isPathOutside behavior).
+	// Empty parent means containment cannot be determined — fail closed.
 	if parent == "" {
-		return true, nil
+		return false, errors.New("pathutil: empty parent path — containment cannot be determined")
 	}
 	parentResolved := ResolveExistingPrefix(filepath.Clean(parent))
 	childResolved := ResolveExistingPrefix(filepath.Clean(child))

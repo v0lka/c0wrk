@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/strutil"
 )
 
 // compile-time check
@@ -360,10 +361,12 @@ func GenerateSummary(output string, maxLen int) string {
 	}
 
 	// Take whichever is shorter: paragraph or maxLen chars.
+	// TruncateUTF8 cuts at a rune boundary so multi-byte characters
+	// are never split mid-sequence.
 	result := paragraph
 	truncated := false
 	if len(result) > maxLen {
-		result = result[:maxLen]
+		result = strutil.TruncateUTF8(result, maxLen)
 		truncated = true
 	}
 

@@ -10,7 +10,7 @@ import (
 	"github.com/v0lka/sp4rk/strutil"
 )
 
-// CompactConversationHistory compacts conversation history messages to fit within
+// compactConversationHistory compacts conversation history messages to fit within
 // a token budget. If the total token count of messages exceeds the budget, older
 // messages are summarised into a single system message while the most recent
 // messages are kept verbatim.
@@ -26,7 +26,7 @@ import (
 //
 // keepRecentRatio must be strictly between 0 and 1 (exclusive). Values outside
 // this range return an error.
-func CompactConversationHistory(messages []llm.Message, budgetTokens int, tokenCounter llm.TokenCounter, keepRecentRatio float64) ([]llm.Message, error) {
+func compactConversationHistory(messages []llm.Message, budgetTokens int, tokenCounter llm.TokenCounter, keepRecentRatio float64) ([]llm.Message, error) {
 	if keepRecentRatio <= 0 || keepRecentRatio >= 1.0 {
 		return nil, fmt.Errorf("keepRecentRatio must be in (0,1), got %f", keepRecentRatio)
 	}

@@ -55,15 +55,15 @@ type UpdateChecklistInput struct {
 	StepID   string `json:"step_id,omitempty"`
 }
 
-// TodoParseResult holds the outcome of parsing a checklist.
-type TodoParseResult struct {
+// todoParseResult holds the outcome of parsing a checklist.
+type todoParseResult struct {
 	Items []agent.TodoItem
 	Valid bool
 	Error string
 }
 
 // parseAndValidateTodoList parses a Markdown checklist with strict validation.
-func parseAndValidateTodoList(input string) TodoParseResult {
+func parseAndValidateTodoList(input string) todoParseResult {
 	lines := strings.Split(input, "\n")
 	var items []agent.TodoItem
 	var errors []string
@@ -99,18 +99,18 @@ func parseAndValidateTodoList(input string) TodoParseResult {
 	}
 
 	if nonEmptyCount == 0 {
-		return TodoParseResult{Valid: false, Error: "checklist is empty — provide at least one item"}
+		return todoParseResult{Valid: false, Error: "checklist is empty — provide at least one item"}
 	}
 
 	if len(errors) > 0 {
-		return TodoParseResult{Valid: false, Error: strings.Join(errors, "; ")}
+		return todoParseResult{Valid: false, Error: strings.Join(errors, "; ")}
 	}
 
 	if len(items) == 0 {
-		return TodoParseResult{Valid: false, Error: "checklist is empty — provide at least one checkbox item"}
+		return todoParseResult{Valid: false, Error: "checklist is empty — provide at least one checkbox item"}
 	}
 
-	return TodoParseResult{Items: items, Valid: true}
+	return todoParseResult{Items: items, Valid: true}
 }
 
 // Execute validates the checklist and emits a StepTodoUpdate event.

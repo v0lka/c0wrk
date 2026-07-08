@@ -102,7 +102,9 @@ func (g *Gateway) RegisterTools(registry *sdktools.ToolRegistry) error {
 	for name, server := range g.servers {
 		for _, toolInfo := range server.Tools() {
 			mcpTool := NewTool(server, toolInfo, sanitizer)
-			registry.RegisterWithSource(mcpTool, name)
+			if err := registry.RegisterWithSourceCategory(mcpTool, name, sdktools.SourceCategoryMCP); err != nil {
+				g.log().Warn("MCP tool registration rejected", "server", name, "tool", mcpTool.Name(), "error", err)
+			}
 		}
 		toolNames := make([]string, len(server.Tools()))
 		for i, t := range server.Tools() {
@@ -254,7 +256,11 @@ func (g *Gateway) Reconfigure(ctx context.Context, newConfig GatewayConfig,
 		// Register new tools
 		for _, toolInfo := range server.Tools() {
 			mcpTool := NewTool(server, toolInfo, g.schemaSanitizer)
-			registry.RegisterWithSource(mcpTool, name)
+			if err := registry.RegisterWithSourceCategory(mcpTool, name, sdktools.SourceCategoryMCP); err != nil {
+				if logger != nil {
+					logger.Warn("MCP tool registration rejected", "server", name, "tool", mcpTool.Name(), "error", err)
+				}
+			}
 		}
 
 		if logger != nil {
@@ -386,6 +392,8 @@ type StartError struct {
 	Errors []error
 }
 
+// Error summarizes the startup failure: the single underlying error, or the
+// number of servers that failed to connect when multiple errors occurred.
 func (e *StartError) Error() string {
 	if len(e.Errors) == 1 {
 		return fmt.Sprintf("MCP gateway start error: %v", e.Errors[0])
@@ -398,6 +406,8 @@ type StopError struct {
 	Errors []error
 }
 
+// Error summarizes the shutdown failure: the single underlying error, or the
+// number of servers that failed to stop cleanly when multiple errors occurred.
 func (e *StopError) Error() string {
 	if len(e.Errors) == 1 {
 		return fmt.Sprintf("MCP gateway stop error: %v", e.Errors[0])
@@ -410,6 +420,8 @@ type ReconfigureError struct {
 	Errors []error
 }
 
+// Error summarizes the reconfiguration failure: the single underlying error,
+// or the number of failed operations when multiple errors occurred.
 func (e *ReconfigureError) Error() string {
 	if len(e.Errors) == 1 {
 		return fmt.Sprintf("MCP gateway reconfigure error: %v", e.Errors[0])

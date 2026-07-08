@@ -94,17 +94,23 @@ func NewWebFetchToolWithClient(limits WebFetchLimits, client *http.Client) *WebF
 			Timeout:   limits.Timeout,
 			Transport: newSSRFSafeTransport(nil),
 		}
-	} else if transport, ok := client.Transport.(*http.Transport); ok {
-		// Wrap the caller's transport with SSRF-safe dialing. Clone preserves
-		// existing settings (proxy, TLS config, etc.) while adding the
-		// dial-time private-IP check.
-		client.Transport = newSSRFSafeTransport(transport)
-	} else if client.Transport == nil {
-		// nil Transport means http.DefaultTransport will be used. Wrap it
-		// with SSRF-safe dialing so the protection applies even when the
-		// caller didn't set an explicit transport.
-		if defaultT, ok := http.DefaultTransport.(*http.Transport); ok {
-			client.Transport = newSSRFSafeTransport(defaultT)
+	} else {
+		// Never mutate the caller's client: make a shallow copy and configure
+		// the copy (Transport, CheckRedirect) for exclusive use by this tool.
+		c := *client
+		client = &c
+		if transport, ok := client.Transport.(*http.Transport); ok {
+			// Wrap the caller's transport with SSRF-safe dialing. Clone preserves
+			// existing settings (proxy, TLS config, etc.) while adding the
+			// dial-time private-IP check.
+			client.Transport = newSSRFSafeTransport(transport)
+		} else if client.Transport == nil {
+			// nil Transport means http.DefaultTransport will be used. Wrap it
+			// with SSRF-safe dialing so the protection applies even when the
+			// caller didn't set an explicit transport.
+			if defaultT, ok := http.DefaultTransport.(*http.Transport); ok {
+				client.Transport = newSSRFSafeTransport(defaultT)
+			}
 		}
 	}
 	// If client is provided but its Transport is not an *http.Transport and
@@ -151,8 +157,8 @@ type webFetchInput struct {
 func (t *WebFetchTool) Judge(ctx context.Context, input json.RawMessage) (allowed bool, reason string) {
 	var params webFetchInput
 	if err := json.Unmarshal(input, &params); err != nil || params.URL == "" {
-		// Cannot determine URL; let Execute() handle validation.
-		return true, "web fetch"
+		// Cannot determine URL — fail closed and escalate to confirmation.
+		return false, "cannot determine target URL"
 	}
 
 	addr, private, initErr := resolveHostIsPrivate(ctx, params.URL)

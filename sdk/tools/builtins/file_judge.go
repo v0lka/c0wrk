@@ -45,8 +45,8 @@ func judgeReadInSessionRoots(ctx context.Context, input json.RawMessage) (allowe
 		Path string `json:"path"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil || params.Path == "" {
-		// Cannot determine path; allow execution — Execute() will validate.
-		return true, "read-only file operation"
+		// Cannot determine path — fail closed and escalate to confirmation.
+		return false, "cannot determine target path"
 	}
 
 	resolved := resolvePath(ctx, params.Path)
@@ -56,7 +56,8 @@ func judgeReadInSessionRoots(ctx context.Context, input json.RawMessage) (allowe
 
 	absPath, err := filepath.Abs(resolved)
 	if err != nil {
-		return true, "read-only file operation"
+		// Cannot determine path — fail closed and escalate to confirmation.
+		return false, "cannot determine target path"
 	}
 	absPath = filepath.Clean(absPath)
 	if evaled, evalErr := filepath.EvalSymlinks(absPath); evalErr == nil {

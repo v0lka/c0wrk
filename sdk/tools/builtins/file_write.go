@@ -85,10 +85,7 @@ func (t *WriteFileTool) Execute(ctx context.Context, input json.RawMessage) (too
 			checker.Unlock(params.Path)
 			return tools.ToolResult{Content: formatWriteConflict(conflict), IsError: true}, nil
 		}
-		defer func() {
-			checker.RecordWrite(ctx, params.Path)
-			checker.Unlock(params.Path)
-		}()
+		defer checker.Unlock(params.Path)
 	}
 
 	dir := filepath.Dir(params.Path)
@@ -98,6 +95,10 @@ func (t *WriteFileTool) Execute(ctx context.Context, input json.RawMessage) (too
 
 	if err := os.WriteFile(params.Path, []byte(params.Content), 0o644); err != nil {
 		return tools.ToolResult{Content: fmt.Sprintf("failed to write file: %v", err), IsError: true}, nil
+	}
+
+	if checker != nil {
+		checker.RecordWrite(ctx, params.Path)
 	}
 
 	return tools.ToolResult{Content: fmt.Sprintf("successfully wrote %d bytes to %s", len(params.Content), params.Path), IsError: false}, nil
