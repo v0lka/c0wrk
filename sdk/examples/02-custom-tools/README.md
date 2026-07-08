@@ -2,6 +2,27 @@
 
 Build a custom tool that implements the `tools.Tool` interface, register it alongside SDK built-in tools, and give the agent a workspace to read/write files.
 
+| Variant     | File            | Command                 | When to read                              |
+|-------------|-----------------|-------------------------|-------------------------------------------|
+| **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended — bundled tools + declarative registration |
+| **Classic** | `main.go`       | `go run .`              | Manual `registry.Register` of each tool   |
+
+### Fluent (recommended)
+
+The fluent façade bundles the common file tools via `FileTools()`; a custom tool is passed alongside. The finish tool is auto-registered:
+
+```go
+fw, err := fluent.New().
+    Anthropic(key, "claude-sonnet-4-5").
+    FileTools().
+    Tools(NewCalculatorTool()).
+    AutoApprove(). // satisfy the fail-closed registry for write_file
+    Build()
+// workspace is injected via the context (Run has no .Workspace() helper)
+ctx := tools.WithWorkspacePath(context.Background(), workspaceDir)
+result, err := fluent.Run(ctx, fw).System(systemPrompt).Ask(task)
+```
+
 ## What you will learn
 
 - How to implement the `tools.Tool` interface
@@ -107,10 +128,12 @@ This context propagates through the Conductor → Executor → tool execution, s
 
 ## Files
 
-| File            | Description                                  |
-|-----------------|----------------------------------------------|
-| `main.go`       | SDK wiring: Framework, tool registration, execution |
-| `calculator.go` | Arithmetic expression evaluator (implementation detail, not SDK-specific) |
+| File                 | Description                                  |
+|----------------------|----------------------------------------------|
+| `main.go`            | Classic SDK wiring: Framework, tool registration, execution (`//go:build !fluent`) |
+| `main_fluent.go`     | Fluent wiring: `fluent.New` + bundled tools (`//go:build fluent`) |
+| `calculator_tool.go` | The custom `CalculatorTool` (shared by both variants — tagless) |
+| `calculator.go`      | Arithmetic expression evaluator (implementation detail, not SDK-specific) |
 
 ## Prerequisites
 
@@ -120,9 +143,18 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ## Run
 
+### Fluent (recommended)
+
 ```bash
 cd sdk/examples/02-custom-tools
-go run main.go
+go run -tags fluent .
+```
+
+### Classic API (advanced control)
+
+```bash
+cd sdk/examples/02-custom-tools
+go run .
 ```
 
 ## Expected output

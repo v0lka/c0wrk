@@ -2,6 +2,24 @@
 
 Observe the agent's execution in real time by implementing the `agent.Events` interface. A custom `PrintingEvents` sink formats each lifecycle event — thoughts, tool calls, results, context fill — and prints it to stdout.
 
+| Variant     | File            | Command                 | When to read                              |
+|-------------|-----------------|-------------------------|-------------------------------------------|
+| **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended — `.Events(sink)` on Run builder |
+| **Classic** | `main.go`       | `go run .`              | Pass events manually to `Framework.Execute` |
+
+> `PrintingEvents` lives in `events.go` (tagless) so both variants share it.
+
+### Fluent (recommended)
+
+Attach a custom event sink to the Run builder; everything else is the same as example 01:
+
+```go
+result, err := fluent.Run(ctx, fw).
+    Events(&PrintingEvents{}).   // live trace instead of NoopEvents
+    System("You are a code exploration assistant.").
+    Ask(task)
+```
+
 ## What you will learn
 
 - The `Events` interface and its 13 methods
@@ -112,9 +130,18 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ## Run
 
+### Fluent (recommended)
+
 ```bash
 cd sdk/examples/03-event-streaming
-go run main.go
+go run -tags fluent .
+```
+
+### Classic API (advanced control)
+
+```bash
+cd sdk/examples/03-event-streaming
+go run .
 ```
 
 ## Expected output

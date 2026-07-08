@@ -1,14 +1,11 @@
-// Example 06 — Plan & Reflect Orchestration
+//go:build !fluent
+
+// Example 06 — Plan & Reflect Orchestration (Classic API)
 //
-// Demonstrates the full Plan & Execute orchestration pattern:
-//  1. Planner generates a DAG of steps from the user's task
-//  2. Conductor executes each step (ReAct loop per step)
-//  3. Reflector analyzes failures and produces corrective insights
-//  4. The orchestrator retries or replans based on the reflection
-//
-// This is the pattern sp4rk itself uses: the Planner breaks complex tasks
-// into steps, the Conductor runs each step, and the Reflector provides
-// self-correction when things go wrong.
+// The full Plan & Execute orchestration pattern, written by hand against the
+// classic SDK API (Planner → DAG → Conductor → Reflector, with a manual retry
+// loop). For the concise recommended path — which collapses this ~80-line loop
+// into a single fluent.Task chain — see main_fluent.go (run with `-tags fluent`).
 package main
 
 import (

@@ -26,7 +26,7 @@ sdk/examples/
 | 04 | human-in-the-loop    | `HITLHandler`, tool-call confirmation, step-limit decisions     |
 | 05 | mcp-integration      | `MCPConfig`, stdio/HTTP MCP servers, external tool discovery    |
 | 06 | plan-and-reflect     | `Planner`, DAG execution, `Reflector`, retry/replan loop        |
-| 07 | full-power           | multi-provider, skills, compaction, fact memory                   |
+| 07 | full-power           | multi-provider, Plan→Reflect, MCP, event streaming, HITL, skills, compaction, fact memory |
 
 Each example is a self-contained `package main` with its own `README.md`.
 
@@ -73,10 +73,20 @@ go mod tidy
 
 ## Running an example
 
+Most examples ship in **two equivalent variants** selected by a build tag:
+
+| Command                 | Variant  | File            |
+|-------------------------|----------|-----------------|
+| `go run -tags fluent .` | Fluent   | `main_fluent.go` — recommended, concise |
+| `go run .`              | Classic  | `main.go` — full low-level control        |
+
 ```bash
 cd sdk/examples/01-minimal-agent
-go run main.go
+go run -tags fluent .   # recommended (fluent façade)
+go run .                # classic SDK API
 ```
+
+Both variants build the same `*sdk.Framework` and produce the same result — the fluent package is a thin façade that returns the original SDK types. See [`docs/fluent-api.md`](../docs/fluent-api.md).
 
 Each example prints its output to stdout. Examples that require interactive input (e.g. 04-human-in-the-loop) will prompt on stdin.
 
@@ -85,6 +95,7 @@ Each example prints its output to stdout. Examples that require interactive inpu
 | Package                              | Purpose                                             |
 |--------------------------------------|-----------------------------------------------------|
 | `github.com/v0lka/sp4rk`         | Top-level `Framework`, `Config`, `Execute`          |
+| `…/fluent`                           | Concise façade: `New`, `Run`, `Task`, bundles (recommended) |
 | `…/agent`                            | `Executor`, `Events`, `HITLHandler`, `FinishTool`   |
 | `…/llm`                              | `Router`, `ProviderEntry`, `ModelMetadata`          |
 | `…/tools`                            | `Tool` interface, `ToolRegistry`, `BaseTool`        |

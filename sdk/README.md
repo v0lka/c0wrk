@@ -9,39 +9,37 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 
-	"github.com/v0lka/sp4rk"
-	"github.com/v0lka/sp4rk/agent"
-	"github.com/v0lka/sp4rk/llm"
+	"github.com/v0lka/sp4rk/fluent"
 )
 
 func main() {
-	fw, err := sdk.New(sdk.Config{
-		LLM: sdk.LLMConfig{
-			Providers: []llm.ProviderEntry{{
-				Name:         "anthropic",
-				ProviderType: "anthropic",
-				APIKey:       os.Getenv("ANTHROPIC_API_KEY"),
-				Models:       []string{"claude-sonnet-4-5"},
-			}},
-		},
-	})
+	// fluent.New returns a real *sdk.Framework (fluent.Framework is a type alias).
+	// The finish tool is auto-registered so the agent can signal completion.
+	fw, err := fluent.New().
+		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
+		Build()
 	if err != nil {
 		panic(err)
 	}
 	defer fw.Shutdown()
 
-	systemPrompt := func(_ context.Context, _ string, _ llm.ModelMetadata) string {
-		return "You are a helpful assistant."
-	}
-	result, err := fw.Execute(context.Background(), systemPrompt, &agent.NoopEvents{}, "Write a hello world in Go")
+	// Run a single ReAct loop and return the original *orchestration.ExecutionResult.
+	result, err := fluent.Run(context.Background(), fw).
+		System("You are a helpful assistant.").
+		Ask("Write a hello world in Go")
 	if err != nil {
 		panic(err)
 	}
-	_ = result
+	fmt.Println(result.Output)
 }
 ```
+
+The `fluent` package is a **thin façade** over the classic SDK: it returns the original SDK types (`*sdk.Framework`, `*orchestration.ExecutionResult`) and delegates every call to the underlying API, so you can mix fluent and classic code freely. For the classic `sdk.Config` API (full low-level control), see [Getting started](docs/getting-started.md).
+
+> New here? Read the [Fluent API guide](docs/fluent-api.md) for the layer map, before/after comparisons, and when to reach for classic escapes.
 
 ## Documentation
 

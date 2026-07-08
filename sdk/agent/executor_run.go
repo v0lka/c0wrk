@@ -127,23 +127,59 @@ func (e *Executor) callLLMWithReactiveCompaction(ctx context.Context, state *run
 // successfully executed during this step. It scans the accumulated steps
 // for Action.Name in the mutatingTools set, ignoring steps that carry
 // an error observation (rejected calls, circuit-breaker intercepts).
+// isSuccessfulMutationStep reports whether a single step executed a mutating
+// tool successfully: the action is a mutating tool, the call was not rejected
+// by HITL ("[Tool call rejected" observation), and the tool did not report an
+// error (ToolResult.IsError, e.g. a non-matching edit_file or a write_file to
+// an invalid path made no real change).
+//
+// Centralized so the two mutation-detection helpers —
+// hasMutatingToolExecuted (full-history scan) and recentSuccessfulMutation
+// (lookback-window scan) — share one definition of "successful mutation"
+// instead of duplicating the mutating-tools + rejected + failed checks.
+func isSuccessfulMutationStep(s Step) bool {
+	if s.Action.Name == "" {
+		return false
+	}
+	if _, ok := mutatingTools[s.Action.Name]; !ok {
+		return false
+	}
+	if strings.HasPrefix(s.Observation, "[Tool call rejected") {
+		return false
+	}
+	if s.IsError {
+		return false
+	}
+	return true
+}
+
+// hasMutatingToolExecuted checks whether any mutating tool (write_file,
+// edit_file, create_directory, delete_file, delete_directory) was
+// successfully executed during this step by scanning the accumulated steps.
 func (e *Executor) hasMutatingToolExecuted(state *runState) bool {
 	for _, s := range state.allSteps {
-		if s.Action.Name == "" {
-			continue
+		if isSuccessfulMutationStep(s) {
+			return true
 		}
-		if _, ok := mutatingTools[s.Action.Name]; ok {
-			// A step with an Observation starting with "[Tool call rejected"
-			// was denied by HITL — don't count it as a mutation.
-			if strings.HasPrefix(s.Observation, "[Tool call rejected") {
-				continue
-			}
-			// A failed tool execution (ToolResult.IsError, e.g. an edit_file
-			// that did not match or a write_file to an invalid path) made no
-			// real change — don't count it as a successful mutation.
-			if s.IsError {
-				continue
-			}
+	}
+	return false
+}
+
+// recentSuccessfulMutation reports whether a mutating tool was successfully
+// executed within the last `lookback` tool-call steps. It scans state.allSteps
+// backwards, skipping steps without an Action.Name (nudges) so only real tool
+// calls count toward the window. Used by the wrap-up nudge to distinguish
+// active progress (encourage continuation, preserving the path to OnStepLimit)
+// from a stalled task (wrap up and finish).
+func (e *Executor) recentSuccessfulMutation(state *runState, lookback int) bool {
+	seen := 0
+	for i := len(state.allSteps) - 1; i >= 0 && seen < lookback; i-- {
+		s := state.allSteps[i]
+		if s.Action.Name == "" {
+			continue // skip nudge-only steps
+		}
+		seen++
+		if isSuccessfulMutationStep(s) {
 			return true
 		}
 	}
@@ -1422,13 +1458,27 @@ func (e *Executor) handleWrapUpNudge(state *runState, cw ContextManager) {
 	// Only applies when the budget is large enough for the nudge to be meaningful.
 	if state.effectiveMaxSteps > 3 && state.stepNum >= state.effectiveMaxSteps-3 && !state.wrapUpNudgeAttempted {
 		state.wrapUpNudgeAttempted = true
-		wrapUpMsg := fmt.Sprintf(executorWrapUpNudge, state.effectiveMaxSteps-state.stepNum)
+		remaining := state.effectiveMaxSteps - state.stepNum
+		// If the agent has been actively making progress (a successful mutating
+		// call within the recent lookback window), use the continuation-oriented
+		// nudge instead of the wrap-up nudge. This avoids pressuring the agent
+		// into a premature finish and keeps the path to OnStepLimit open: if it
+		// keeps working past the budget, the user is asked to extend it.
+		mode := "default"
+		wrapUpMsg := fmt.Sprintf(executorWrapUpNudge, remaining)
+		if e.recentSuccessfulMutation(state, wrapUpActiveLookback) {
+			mode = "active_progress"
+			wrapUpMsg = fmt.Sprintf(executorWrapUpNudgeActive, remaining)
+		}
 		wrapUpStep := Step{
 			UserNudge: wrapUpMsg,
 		}
 		state.allSteps = append(state.allSteps, wrapUpStep)
 		cw.AddStep(wrapUpStep)
-		e.emitter.ExecutorDiagnostic(state.stepNum, "executor_wrapup_nudge", map[string]any{"remaining": state.effectiveMaxSteps - state.stepNum})
+		e.emitter.ExecutorDiagnostic(state.stepNum, "executor_wrapup_nudge", map[string]any{
+			"remaining": remaining,
+			"mode":      mode,
+		})
 	}
 }
 

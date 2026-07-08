@@ -1328,6 +1328,149 @@ func TestExecutor_WrapUpNudge_OnlyOnce(t *testing.T) {
 	}
 }
 
+func TestExecutor_WrapUpNudge_ActiveProgress_UsesActiveNudge(t *testing.T) {
+	// maxSteps=6, nudge fires at stepNum=3 (maxSteps-3). A successful write_file
+	// in step 1 falls within the lookback window, so the continuation-oriented
+	// "active progress" nudge should fire instead of the default wrap-up nudge.
+	maxSteps := 6
+	writeInput := json.RawMessage(`{"path": "/tmp/a.go", "content": "x"}`)
+	responses := []*llm.ChatResponse{
+		llmResponseWithToolCall("writing", "write_file", writeInput),
+		llmResponseWithToolCall("reading 1", "read_file", json.RawMessage(`{"path": "/tmp/1"}`)),
+		llmResponseWithToolCall("reading 2", "read_file", json.RawMessage(`{"path": "/tmp/2"}`)),
+		llmResponseWithToolCall("reading 3", "read_file", json.RawMessage(`{"path": "/tmp/3"}`)),
+		llmResponseWithToolCall("reading 4", "read_file", json.RawMessage(`{"path": "/tmp/4"}`)),
+		llmResponseWithToolCall("reading 5", "read_file", json.RawMessage(`{"path": "/tmp/5"}`)),
+		llmResponseWithToolCall("reading 6", "read_file", json.RawMessage(`{"path": "/tmp/6"}`)), // buffer for step-limit boundary
+	}
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	mockTools.results["write_file"] = tools.ToolResult{Content: "file written"}
+	mockTools.results["read_file"] = tools.ToolResult{Content: "content"}
+	cm := newMockContextManager()
+
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, maxSteps, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "write_file", Description: "write", Source: "core"},
+		{Name: "read_file", Description: "read", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Find the wrap-up nudge and assert it is the active-progress variant.
+	foundActive := false
+	for _, s := range result.Steps {
+		if strings.Contains(s.UserNudge, "running low on tool call iterations") {
+			if !strings.Contains(s.UserNudge, "active progress") {
+				t.Errorf("expected active-progress nudge, got: %s", s.UserNudge)
+			}
+			if !strings.Contains(s.UserNudge, "Continue completing the work in progress") {
+				t.Errorf("active nudge should encourage continuation, got: %s", s.UserNudge)
+			}
+			foundActive = true
+		}
+	}
+	if !foundActive {
+		t.Error("expected wrap-up nudge user nudge containing 'running low on tool call iterations'")
+	}
+}
+
+func TestExecutor_WrapUpNudge_NoMutation_UsesDefaultNudge(t *testing.T) {
+	// maxSteps=6, only read-only tools. No recent mutation → default wrap-up
+	// nudge, which still offers the alternative to continue working instead of
+	// finishing, so the path to OnStepLimit is never excluded. Distinct tool
+	// names/args per step avoid the same-tool-repeat circuit breaker.
+	maxSteps := 6
+	responses := make([]*llm.ChatResponse, 0, maxSteps+1)
+	for i := 0; i < maxSteps+1; i++ {
+		responses = append(responses, llmResponseWithToolCall(
+			fmt.Sprintf("reading %d", i+1),
+			fmt.Sprintf("search_%d", i+1),
+			json.RawMessage(fmt.Sprintf(`{"q":"q%d"}`, i+1)),
+		))
+	}
+	mockLLM := &mockLLMCaller{responses: responses}
+	mockTools := newMockToolExecutor()
+	cm := newMockContextManager()
+
+	exec := newExecutorDefaultHITL(mockLLM, mockTools, &mockTokenCounter{}, maxSteps, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+	result, err := exec.Run(context.Background(), []tools.ToolDescriptor{
+		{Name: "search", Description: "search", Source: "core"},
+	}, cm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	foundDefault := false
+	for _, s := range result.Steps {
+		if strings.Contains(s.UserNudge, "running low on tool call iterations") {
+			if strings.Contains(s.UserNudge, "active progress") {
+				t.Errorf("did not expect active-progress nudge for read-only task, got: %s", s.UserNudge)
+			}
+			// The default nudge should still offer the continue alternative so
+			// the path to OnStepLimit is not excluded.
+			if !strings.Contains(s.UserNudge, "you may continue working instead of finishing") {
+				t.Errorf("default nudge should offer the continue alternative, got: %s", s.UserNudge)
+			}
+			foundDefault = true
+		}
+	}
+	if !foundDefault {
+		t.Error("expected wrap-up nudge user nudge containing 'running low on tool call iterations'")
+	}
+}
+
+func TestExecutor_RecentSuccessfulMutation(t *testing.T) {
+	exec := newExecutorDefaultHITL(&mockLLMCaller{}, newMockToolExecutor(), &mockTokenCounter{}, 10, nil, false, ToolResultBudget{}, defaultCircuitBreakerConfig)
+
+	// No steps at all.
+	if exec.recentSuccessfulMutation(&runState{}, 5) {
+		t.Error("expected false for empty steps")
+	}
+
+	// write_file succeeds, followed by two read-only calls.
+	state := &runState{allSteps: []Step{
+		{Action: llm.ToolCall{Name: "write_file"}},
+		{Action: llm.ToolCall{Name: "read_file"}},
+		{Action: llm.ToolCall{Name: "read_file"}},
+	}}
+	// lookback=3 reaches write_file → true.
+	if !exec.recentSuccessfulMutation(state, 3) {
+		t.Error("expected true: write_file within lookback=3")
+	}
+	// lookback=2 only sees the two read_file calls → false (write_file outside window).
+	if exec.recentSuccessfulMutation(state, 2) {
+		t.Error("expected false: write_file outside lookback=2")
+	}
+
+	// Failed write_file does not count.
+	failed := &runState{allSteps: []Step{
+		{Action: llm.ToolCall{Name: "write_file"}, IsError: true},
+	}}
+	if exec.recentSuccessfulMutation(failed, 5) {
+		t.Error("expected false: failed mutation not counted")
+	}
+
+	// Rejected write_file does not count.
+	rejected := &runState{allSteps: []Step{
+		{Action: llm.ToolCall{Name: "write_file"}, Observation: "[Tool call rejected by HITL]"},
+	}}
+	if exec.recentSuccessfulMutation(rejected, 5) {
+		t.Error("expected false: rejected mutation not counted")
+	}
+
+	// Nudge-only steps are skipped (do not consume the lookback window).
+	withNudges := &runState{allSteps: []Step{
+		{Action: llm.ToolCall{Name: "write_file"}},
+		{UserNudge: "nudge 1"},
+		{UserNudge: "nudge 2"},
+	}}
+	if !exec.recentSuccessfulMutation(withNudges, 1) {
+		t.Error("expected true: nudge steps skipped, write_file is 1 real call back")
+	}
+}
+
 // --- StepLimit tests ---
 
 func TestStepLimit_NilCallback(t *testing.T) {

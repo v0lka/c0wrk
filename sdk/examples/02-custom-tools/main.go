@@ -1,14 +1,14 @@
-// Example 02 — Custom Tools
+//go:build !fluent
+
+// Example 02 — Custom Tools (Classic API)
 //
 // Demonstrates how to implement a custom tool and register built-in tools
-// alongside it. The agent uses a custom "calculator" tool to evaluate
-// arithmetic expressions and a built-in "write_file" tool to persist the
-// result to disk.
+// alongside it, using the classic sdk.Config API. For the concise recommended
+// path, see main_fluent.go (run with `-tags fluent`).
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -21,50 +21,7 @@ import (
 	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
-// CalculatorTool evaluates simple arithmetic expressions.
-// It embeds tools.BaseTool which provides default implementations of
-// Name, Description, InputSchema, DefaultPolicy, and IsUntrusted.
-type CalculatorTool struct {
-	*tools.BaseTool
-}
-
-// NewCalculatorTool creates a new CalculatorTool.
-func NewCalculatorTool() *CalculatorTool {
-	return &CalculatorTool{BaseTool: &tools.BaseTool{
-		ToolName:        "calculator",
-		ToolDescription: "Evaluate an arithmetic expression (supports +, -, *, /, parentheses). Example: calculator(expression=\"15 * 37 + 4\")",
-		Schema: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"expression": {
-					"type": "string",
-					"description": "The arithmetic expression to evaluate, e.g. \"2 + 3 * 4\""
-				}
-			},
-			"required": ["expression"]
-		}`),
-		Policy: tools.PolicyAlwaysAllow,
-	}}
-}
-
-// Execute parses the expression and returns the numeric result.
-func (t *CalculatorTool) Execute(_ context.Context, input json.RawMessage) (tools.ToolResult, error) {
-	var params struct {
-		Expression string `json:"expression"`
-	}
-	if err := json.Unmarshal(input, &params); err != nil {
-		return tools.ParseInputError(err)
-	}
-	if params.Expression == "" {
-		return tools.ToolResult{Content: "validation error: expression is required", IsError: true}, nil
-	}
-
-	result, err := evaluate(params.Expression)
-	if err != nil {
-		return tools.ToolResult{Content: fmt.Sprintf("evaluation error: %v", err), IsError: true}, nil
-	}
-	return tools.ToolResult{Content: fmt.Sprintf("%s = %g", params.Expression, result)}, nil
-}
+// (CalculatorTool lives in calculator_tool.go — shared with the fluent variant.)
 
 func run() error {
 	fw, err := sdk.New(sdk.Config{

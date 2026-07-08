@@ -64,7 +64,32 @@ var defaultNonCacheableTools = map[string]struct{}{
 	tools.ToolBatch:     {},
 }
 
-const executorWrapUpNudge = "[System] You are running low on tool call iterations. You have %d iteration(s) remaining. Wrap up your work NOW: summarize your findings and finish. Do not start new explorations."
+// executorWrapUpNudge is injected when the agent approaches the step budget
+// without evidence of recent productive mutations. It recommends wrapping up
+// but — unlike a hard "finish NOW" imperative — leaves the door open to keep
+// working: the agent may continue, in which case the user is asked (via
+// OnStepLimit) to grant additional iterations when the limit is reached.
+const executorWrapUpNudge = "[System] You are running low on tool call iterations. You have %d iteration(s) remaining. Prioritize wrapping up your work: summarize your findings and call finish, and do not start new explorations. However, if your task is still in progress and you genuinely need more iterations to complete it, you may continue working instead of finishing — the user will be asked to grant additional iterations if you exceed the limit."
+
+// executorWrapUpNudgeActive is injected when the agent approaches the step
+// budget but its recent steps show active progress (successful mutating tool
+// calls). Instead of pressuring the agent to finish prematurely, it encourages
+// continuing so the work in progress can be completed. This preserves the path
+// to OnStepLimit: if the agent keeps working past the budget, the user is asked
+// whether to extend it, rather than the agent being nudged to abandon the task.
+const executorWrapUpNudgeActive = "[System] You are running low on tool call iterations. You have %d iteration(s) remaining, but your recent steps show active progress (successful file changes). Continue completing the work in progress rather than abandoning it. If you need more iterations beyond the limit, keep working — the user will be asked to grant additional iterations when you reach the limit, and you can call finish once the task is done. Do not finish prematurely."
+
+// Trade-off note (intentional): softening the wrap-up nudges above — replacing
+// a hard "finish NOW" imperative with a recommendation that leaves the door
+// open to keep working — deliberately shifts the final enforcement of the step
+// budget onto OnStepLimit. As a consequence, for tasks with active mutations
+// the agent is more likely to continue past the budget, which raises the
+// frequency at which the user is prompted (via OnStepLimit) to grant
+// additional iterations. This is an accepted trade-off: it avoids prematurely
+// aborting productive work at the cost of more step-limit prompts. OnStepLimit
+// remains the hard stop — AutoApprove governs only tool-call confirmations,
+// not the step limit — so runaway execution is bounded by the user's choice at
+// the limit prompt.
 
 const executorFinishNudge = "[System] You must call the finish tool to complete your task. Simply responding with text does not count as completion. Call the finish tool now with your final answer."
 
@@ -95,6 +120,13 @@ var checklistDoneRe = regexp.MustCompile(`(\d+)/(\d+)\s+done`)
 // activates. Steps at or below this threshold are considered trivial and do
 // not require a checklist.
 const checklistTrivialThreshold = 2
+
+// wrapUpActiveLookback is the number of recent tool-call steps examined by the
+// wrap-up nudge to detect active progress (successful mutating calls). When a
+// mutation was made within this window, the active wrap-up nudge is used,
+// which encourages continuation instead of pressuring the agent to finish —
+// preserving the path to the step-limit confirmation (OnStepLimit).
+const wrapUpActiveLookback = 5
 
 // mutatingTools is the set of tool names that constitute a filesystem mutation.
 // The mutation gate checks whether any of these were successfully executed before

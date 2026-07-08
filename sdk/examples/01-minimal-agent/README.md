@@ -2,12 +2,36 @@
 
 The smallest possible **full** agent: one LLM provider, the finish tool, and a single `Execute` call. No custom tools, no event handling, no orchestration.
 
+This example ships in **two equivalent variants**:
+
+| Variant     | File            | Command                 | When to read                                   |
+|-------------|-----------------|-------------------------|------------------------------------------------|
+| **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended entry point — concise & declarative |
+| **Classic** | `main.go`       | `go run .`              | Full low-level control via `sdk.Config`        |
+
+Both build the identical `*sdk.Framework` and produce the same result. The fluent variant is a thin façade that returns the original SDK types — see [`docs/fluent-api.md`](../../docs/fluent-api.md).
+
 ## What you will learn
 
-- How to create a `sdk.Framework` with `sdk.New`
+- How to create a `sdk.Framework` (via fluent `New` or classic `sdk.New`)
 - Why the `finish` tool must be registered
 - How to define a system prompt factory
 - How to call `Framework.Execute` and read the result
+
+### Fluent (recommended)
+
+```go
+fw, err := fluent.New().
+    Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
+    Build()
+defer fw.Shutdown() // finish tool is auto-registered
+
+result, err := fluent.Run(ctx, fw).
+    System("You are a helpful assistant.").
+    Ask("What is the capital of France?")
+```
+
+`fluent.New` returns a real `*sdk.Framework` (the type is aliased), and the finish tool is registered by convention. `fluent.Run` delegates to `Framework.Execute` and returns the original `*orchestration.ExecutionResult`.
 
 ## Architecture
 
@@ -108,11 +132,20 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ## Run
 
+### Fluent (recommended)
+
 ```bash
 cd sdk/examples
 go mod tidy          # first time only
 cd 01-minimal-agent
-go run main.go
+go run -tags fluent .
+```
+
+### Classic API (advanced control)
+
+```bash
+cd sdk/examples/01-minimal-agent
+go run .
 ```
 
 ## Expected output

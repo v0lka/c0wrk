@@ -1,4 +1,4 @@
-// Example 07 — Full-Power Agent
+// Example 07 — Full-Power Agent (Fluent-first hybrid)
 //
 // Combines every major SDK subsystem into one agent:
 //   - Multi-provider LLM (Anthropic + OpenAI) with runtime model switching
@@ -11,37 +11,45 @@
 //   - Context compaction configuration
 //   - Blackboard with OnBlackboardChanged callback
 //
-// This is the "kitchen sink" example — it exercises the SDK at maximum capacity.
+// HYBRID APPROACH. The Framework is assembled with fluent.New and the
+// orchestration runs as a single fluent.Task chain. Where fluent does not yet
+// surface fine-grained control, classic escapes are used:
+//   - WithConfig carries compaction/execution tuning + OnBlackboardChanged
+//     (no dedicated fluent option for these).
+//   - Skills are discovered via the classic SkillManager and passed to
+//     fluent.Task.Skills — discovery is pre-execution setup, not a fluent concern.
+//   - The custom event sink embeds orchestration.NoopEvents so it satisfies the
+//     full orchestration.Events interface required by fluent.Task.Events.
 package main
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/v0lka/sp4rk"
+	sdk "github.com/v0lka/sp4rk"
 	"github.com/v0lka/sp4rk/agent"
-	"github.com/v0lka/sp4rk/agent/reflector"
+	"github.com/v0lka/sp4rk/fluent"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
-	"github.com/v0lka/sp4rk/planner"
 	"github.com/v0lka/sp4rk/skills"
+	"github.com/v0lka/sp4rk/strutil"
 	"github.com/v0lka/sp4rk/tools"
-	"github.com/v0lka/sp4rk/tools/builtins"
-	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
-// ─── Custom event sink (from example 03, condensed) ───────────────────────
+// ─── Custom event sink ────────────────────────────────────────────────────
+//
+// Embeds orchestration.NoopEvents (which itself embeds agent.NoopEvents) so the
+// type satisfies the FULL orchestration.Events interface — a requirement for
+// fluent.Task.Events. Only the methods we care about are overridden.
 
 type consoleEvents struct {
-	agent.NoopEvents
+	orchestration.NoopEvents
 }
 
 func (e *consoleEvents) StepStart(n int) { fmt.Printf("  ▶ step %d\n", n) }
@@ -78,7 +86,7 @@ func (e *consoleEvents) OnReflected(r *orchestration.Reflection, attempt, maxAtt
 	fmt.Printf("  🔍 reflection (attempt %d/%d): %s → %s\n", attempt, maxAttempts, r.Summary, r.SuggestedAction)
 }
 
-// ─── Custom HITL handler (from example 04, auto-approve mode) ──────────────
+// ─── Custom HITL handler (auto-approve with a denylist) ───────────────────
 
 type autoApproveHITL struct {
 	agent.NoopHITLHandler
@@ -92,17 +100,7 @@ func (h *autoApproveHITL) OnToolCall(_ context.Context, name string, _ json.RawM
 	return &agent.HITLToolDecision{Allow: true}, nil
 }
 
-// ─── Trajectory store (from example 06) ────────────────────────────────────
-
-type trajStore struct {
-	mu    sync.Mutex
-	steps []agent.Step
-}
-
-func (s *trajStore) Sync(steps []agent.Step) { s.mu.Lock(); s.steps = steps; s.mu.Unlock() }
-func (s *trajStore) Steps() []agent.Step     { s.mu.Lock(); defer s.mu.Unlock(); return s.steps }
-
-// ─── Custom tool: timestamp ────────────────────────────────────────────────
+// ─── Custom tool: timestamp ───────────────────────────────────────────────
 
 type timestampTool struct{ *tools.BaseTool }
 
@@ -123,30 +121,20 @@ func run() error {
 	// ── 1. Multi-provider LLM config ──
 	//
 	// Two providers are configured so we can demonstrate runtime model
-	// switching: Claude for planning/reflection (strong reasoning) and
-	// GPT-4o for step execution. The shared router is switched between
-	// phases via fw.LLMRouter().SetModel — see sections 10 and 11.
+	// switching: Claude for planning/reflection (strong reasoning) and GPT-4o
+	// for step execution. fluent.Task.Models(...) switches the shared router
+	// between phases automatically.
 	const (
 		plannerModel  = "claude-sonnet-4-5" // Anthropic — planning & reflection
 		executorModel = "openai/gpt-4o"     // composite ID — step execution
 	)
 
-	providers := []llm.ProviderEntry{{
-		Name:         "anthropic",
-		ProviderType: "anthropic",
-		APIKey:       os.Getenv("ANTHROPIC_API_KEY"),
-		Models:       []string{plannerModel},
-	}}
-	// Add OpenAI if a key is available (multi-provider demonstration).
-	// When absent, execution falls back to the Anthropic model.
+	providers := []llm.ProviderEntry{
+		fluent.Anthropic(os.Getenv("ANTHROPIC_API_KEY"), plannerModel),
+	}
 	openaiAvailable := false
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		providers = append(providers, llm.ProviderEntry{
-			Name:         "openai",
-			ProviderType: "openai",
-			APIKey:       key,
-			Models:       []string{llm.BareModel(executorModel)},
-		})
+		providers = append(providers, fluent.OpenAI(key, llm.BareModel(executorModel)))
 		openaiAvailable = true
 	}
 
@@ -161,29 +149,20 @@ func run() error {
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
 		return fmt.Errorf("skills dir: %w", err)
 	}
-	// Seed a sample skill
 	seedSkill(skillsDir)
 
-	// ── 3. Create the Framework with every subsystem ──
-	fw, err := sdk.New(sdk.Config{
+	// ── 3. Framework via fluent.New ──
+	//
+	// CLASSIC ESCAPE (WithConfig): compaction tuning, execution tuning, and the
+	// OnBlackboardChanged callback have no dedicated fluent option, so they ride
+	// in a base sdk.Config. fluent options then layer the common wiring
+	// (providers, MCP, tools, HITL, auto-approve) on top of that base.
+	base := sdk.Config{
 		LLM: sdk.LLMConfig{
-			Providers:          providers,
-			DefaultModel:       plannerModel,
 			MaxRetries:         3,
 			OutputTokenReserve: 4096,
 		},
-		MCP: &sdk.MCPConfig{
-			Servers: map[string]mcp.ServerEntry{
-				"filesystem": {
-					Transport: "stdio",
-					Command:   "npx",
-					Args:      []string{"-y", "@modelcontextprotocol/server-filesystem", workspaceDir},
-				},
-			},
-			DefaultWorkDir: workspaceDir,
-		},
 		Execution: sdk.ExecutionConfig{
-			MaxSteps:                  20,
 			MaxRetries:                2,
 			SafetyMarginPercent:       5,
 			PreWarningPercent:         80,
@@ -196,54 +175,46 @@ func run() error {
 			WarningPercent:    92,
 			EmergencyPercent:  98,
 		},
-		HITL: &autoApproveHITL{
-			deniedTools: map[string]bool{"delete_directory": true}, // block destructive ops
-		},
-		// The registry is FAIL-CLOSED for PolicyUserConfirm tools (file
-		// writers and MCP tools). Everything here runs in a throwaway temp
-		// workspace, so we auto-approve; the HITL handler above still blocks
-		// delete_directory at the executor level.
-		ConfirmFunc: func(_ context.Context, req tools.ConfirmationRequest) (tools.ConfirmationResponse, error) {
-			return tools.ConfirmAllowOnce, nil
-		},
 		OnBlackboardChanged: func(changeType string) {
 			fmt.Printf("  📝 blackboard: %s\n", changeType)
 		},
-	})
+	}
+
+	// Tools: custom timestamp + bundled file tools + fact-memory tools.
+	// The finish tool is auto-registered by fluent.New.
+	fw, err := fluent.New().
+		Config(base).            // escape hatch: advanced tuning
+		Providers(providers...). // multi-provider (conditional OpenAI)
+		DefaultModel(plannerModel).
+		MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", workspaceDir). // MCP stdio server
+		MCPWorkDir(workspaceDir).
+		FileTools().
+		MemoryTools().
+		Tools(newTimestampTool()). // custom timestamp tool
+		HITL(&autoApproveHITL{deniedTools: map[string]bool{"delete_directory": true}}).
+		AutoApprove(). // satisfy the fail-closed registry (throwaway workspace)
+		MaxSteps(20).
+		Build()
 	if err != nil {
 		return fmt.Errorf("framework: %w", err)
 	}
 	defer func() { _ = fw.Shutdown() }()
 
-	// ── 4. Register tools: custom + built-in + finish ──
-	registry := fw.ToolRegistry()
-	registry.Register(newTimestampTool()) // custom
-	registry.Register(builtins.NewReadFileTool())
-	registry.Register(builtins.NewWriteFileTool())
-	registry.Register(builtins.NewEditFileTool())
-	registry.Register(builtins.NewListDirectoryTool())
-	registry.Register(builtins.NewGlobTool())
-	registry.Register(builtins.NewCreateDirectoryTool())
-	registry.Register(builtins.NewStoreFactTool())
-	registry.Register(builtins.NewSearchFactsTool())
-	registry.Register(agent.NewFinishTool())
-	// MCP tools are auto-registered by the gateway during sdk.New()
-
 	fmt.Println("Workspace:", workspaceDir)
 	fmt.Println("Skills dir:", skillsDir)
 	fmt.Println("\nAvailable tools:")
-	for _, td := range registry.List() {
+	for _, td := range fw.ToolRegistry().List() {
 		fmt.Printf("  [%s] %s\n", td.Source, td.Name)
 	}
 
 	fmt.Printf("\nActive LLM: %s (provider: %s)\n", fw.LLMRouter().ActiveModel(), fw.LLMRouter().ActiveProviderName())
 	if openaiAvailable {
-		fmt.Printf("Runtime model switching enabled: %s → %s for execution\n", plannerModel, executorModel)
+		fmt.Printf("Runtime model switching enabled: %s → %s for execution (handled by fluent.Task.Models)\n", plannerModel, executorModel)
 	} else {
 		fmt.Println("Runtime model switching disabled (set OPENAI_API_KEY to enable a second provider)")
 	}
 
-	// ── 5. Discover skills ──
+	// ── 4. Discover skills (classic — pre-execution setup) ──
 	skillMgr := skills.NewSkillManager([]string{skillsDir}, nil)
 	if err := skillMgr.Scan(); err != nil {
 		log.Printf("skill scan: %v", err)
@@ -254,156 +225,55 @@ func run() error {
 		fmt.Printf("  • %s: %s\n", s.Name, trunc(s.Description, 60))
 	}
 
-	// ── 6. Create Planner ──
-	plannerCfg := planner.DefaultConfig()
-	plannerCfg.Prompts = makePlannerPromptSet()
-	plannerCfg.Model = plannerModel
-	pl, err := planner.NewPlanner(fw.LLMRouter(), plannerCfg)
-	if err != nil {
-		return fmt.Errorf("planner: %w", err)
-	}
-
-	// ── 7. Create Reflector ──
-	rf := reflector.New(fw.LLMRouter(), reflector.Config{
-		SystemPrompt: "You are a reflection agent. Analyze the failed execution and return JSON with summary, root_cause, suggested_action (retry/replan/abort), and action_plan.",
-	})
-
-	// ── 8. Create Conductor ──
-	events := &consoleEvents{}
-	systemPromptFactory := func(_ context.Context, stepDesc string, _ llm.ModelMetadata) string {
-		return fmt.Sprintf(`You are a task execution agent working in %s.
-Complete the assigned step using the available tools.
-Use store_fact to record important findings for other steps.
-Call finish with a summary when done.`, workspaceDir)
-	}
-	conductor, err := fw.NewConductor(systemPromptFactory)
-	if err != nil {
-		return fmt.Errorf("conductor: %w", err)
-	}
-	defer conductor.Cleanup()
-
-	// ── 9. The task ──
+	// ── 5. The task ──
 	task := fmt.Sprintf(`In the workspace %s, create a Go project:
 1. Create a directory "myproject"
 2. Write main.go that prints the current timestamp (use the timestamp tool) and "Hello from full-power agent!"
 3. Read the file back to verify
 4. Store a fact about what you created for future reference`, workspaceDir)
 
-	ctx := tools.WithWorkspacePath(context.Background(), workspaceDir)
-	availableTools := registry.List()
-
-	// ── 10. Plan ──
-	fmt.Println("\n📋 Planning...")
-	bb := orchestration.NewMapBlackboard()
-	bb.SetOriginalRequest(task)
-
-	plan, err := pl.Plan(ctx, task, availableTools, nil, discoveredSkills, false, nil)
-	if err != nil {
-		return fmt.Errorf("plan: %w", err)
-	}
-	events.OnPlanGenerated(len(plan.Steps), planStepsToEvents(plan))
-
-	// ── 11. Execute the DAG with retry + reflect ──
+	// ── 6. Plan → Execute → Reflect via fluent.Task ──
 	//
-	// Runtime model switching: planning used Claude (plannerModel). For step
-	// execution we switch the shared router to GPT-4o (executorModel) so the
-	// Conductor's ReAct loop runs on a different provider. Reflection — which
-	// needs strong reasoning — switches back to Claude temporarily, then
-	// restores the executor model for the next attempt.
-	router := fw.LLMRouter()
-	executorActive := false
+	// A single chain replaces the hand-rolled loop of the classic example 06.
+	// .Plan()/.Reflect() use the fluent default prompts; .Models() switches the
+	// router between a strong-reasoning planner and a fast executor.
+	events := &consoleEvents{}
+	tb := fluent.Task(context.Background(), fw, task).
+		System(fmt.Sprintf(`You are a task execution agent working in %s.
+Complete the assigned step using the available tools.
+Use store_fact to record important findings for other steps.
+Call finish with a summary when done.`, workspaceDir)).
+		Workspace(workspaceDir).
+		Skills(discoveredSkills).
+		Events(events).
+		Plan().
+		Reflect().
+		MaxRetries(2)
 	if openaiAvailable {
-		if err := router.SetModel(ctx, executorModel); err != nil {
-			log.Printf("switch to executor model %s failed: %v — staying on %s", executorModel, err, plannerModel)
-		} else {
-			executorActive = true
-			fmt.Printf("\n🔄 Switched executor to %s (provider: %s)\n", router.ActiveModel(), router.ActiveProviderName())
-		}
+		// Runtime model switching: plan/reflect on Claude, execute on GPT-4o.
+		tb = tb.Models(plannerModel, executorModel)
 	}
 
-	completed := make(map[string]orchestration.CompletedStep)
-	var reflections []orchestration.Reflection
-	maxRetries := 2
-
-	for {
-		ready := orchestration.FindReadySteps(plan, completed)
-		if len(ready) == 0 {
-			break
-		}
-		for _, step := range ready {
-			events.OnStepStarted(step.ID, step.Description, step.Summary)
-			success := false
-			for attempt := 1; attempt <= maxRetries+1; attempt++ {
-				store := &trajStore{}
-				stepCtx := agent.WithTrajectoryStore(ctx, store)
-				result, runErr := conductor.Run(stepCtx, step.Description, bb, availableTools, events, "sliding_window")
-				trajectory := store.Steps()
-
-				if runErr == nil && result.Status == orchestration.ExecutionStatusSuccess {
-					completed[step.ID] = orchestration.CompletedStep{StepID: step.ID, Output: result.Output, Steps: trajectory}
-					bb.SetStepResult(step.ID, result.Output, nil, trajectory)
-					events.OnStepCompleted(step.ID, true, 0, "")
-					success = true
-					break
-				}
-				errMsg := "execution failed"
-				if runErr != nil {
-					errMsg = runErr.Error()
-				} else if result != nil {
-					errMsg = result.Output
-				}
-				fmt.Printf("  ❌ %s failed (attempt %d): %s\n", step.ID, attempt, trunc(errMsg, 120))
-				if attempt <= maxRetries {
-					// Reflect on Claude (plannerModel) for stronger reasoning,
-					// then restore the executor model for the retry attempt.
-					if executorActive {
-						_ = router.SetModel(stepCtx, plannerModel)
-					}
-					if r, e := rf.Reflect(stepCtx, trajectory, plan, reflections); e == nil && r != nil {
-						bb.AddReflection(*r)
-						reflections = append(reflections, *r)
-						events.OnReflected(r, attempt, maxRetries)
-						if r.SuggestedAction == "abort" {
-							if executorActive {
-								_ = router.SetModel(stepCtx, executorModel)
-							}
-							break
-						}
-					}
-					if executorActive {
-						_ = router.SetModel(stepCtx, executorModel)
-					}
-				}
-
-			}
-			if !success {
-				events.OnStepCompleted(step.ID, false, 0, "max retries exceeded")
-				completed[step.ID] = orchestration.CompletedStep{StepID: step.ID, Error: errors.New("failed after retries")}
-			}
-		}
+	result, err := tb.Execute()
+	if err != nil {
+		return fmt.Errorf("execution: %w", err)
 	}
 
-	// Restore the planner model after execution so any subsequent LLM calls
-	// (e.g. a follow-up plan) use Claude rather than the executor model.
-	if executorActive {
-		_ = router.SetModel(ctx, plannerModel)
-	}
-
-	// ── 12. Aggregate + report ──
-	finalOutput := orchestration.AggregateOutput(completed, plan, nil)
+	// ── 7. Aggregate + report ──
 	fmt.Println("\n═══════════════════════════════════════════")
-	fmt.Printf("Steps: %d/%d | Reflections: %d | Facts: %d\n", len(completed), len(plan.Steps), len(reflections), len(bb.GetFacts()))
+	fmt.Printf("Steps: %d total, %d failed | Reflections: %d | Facts: %d\n",
+		len(result.Plan.Steps), result.FailedSteps, len(result.Reflections), len(result.Blackboard.GetFacts()))
 	fmt.Printf("Models: planning=%s", plannerModel)
-	if executorActive {
+	if openaiAvailable {
 		fmt.Printf(" | execution=%s", executorModel)
 	} else {
 		fmt.Print(" | execution=same as planning (single provider)")
 	}
 	fmt.Println()
 	fmt.Println("\nFinal output:")
-	fmt.Println(finalOutput)
+	fmt.Println(result.Output)
 	fmt.Println("\nFacts stored:")
-	for _, f := range bb.GetFacts() {
+	for _, f := range result.Blackboard.GetFacts() {
 		fmt.Printf("  [%s] %s\n", strings.Join(f.Keywords, ", "), trunc(f.Content, 80))
 	}
 	fmt.Println("═══════════════════════════════════════════")
@@ -427,45 +297,10 @@ func seedSkill(skillsDir string) {
 	_ = os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644)
 }
 
-func makePlannerPromptSet() planner.PromptSet {
-	return planner.PromptSet{
-		BasePrompt: `You are a task planning agent. Break the task into concrete steps.
-
-Available tools:
-AVAILABLE-TOOLS
-
-Available skills:
-AVAILABLE-SKILLS
-
-Create at most MAX-STEPS steps. Each step needs clear acceptance criteria.
-Use depends_on for ordering.
-
-MODE-PREAMBLE
-
-Output ONLY valid JSON:
-MODE-JSON-EXAMPLE`,
-		PlanPreamble:      "Break the task into sequential steps with clear deliverables.",
-		MultiStepGuidance: "Each step should produce a verifiable artifact.",
-	}
-}
-
-func planStepsToEvents(plan *orchestration.Plan) []orchestration.PlanStepEvent {
-	events := make([]orchestration.PlanStepEvent, len(plan.Steps))
-	for i, s := range plan.Steps {
-		events[i] = orchestration.PlanStepEvent{
-			ID:          s.ID,
-			Summary:     s.Summary,
-			Description: s.Description,
-			DependsOn:   s.DependsOn,
-		}
-	}
-	return events
-}
-
 func trunc(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	if len(s) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	return strutil.TruncateUTF8(s, n-1) + "…"
 }

@@ -4,6 +4,27 @@ The full Plan & Execute orchestration pattern: a **Planner** breaks the task int
 
 This is the pattern sp4rk itself uses for complex tasks.
 
+| Variant     | File            | Command                 | When to read                              |
+|-------------|-----------------|-------------------------|-------------------------------------------|
+| **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended — `fluent.Task` collapses the loop to one chain |
+| **Classic** | `main.go`       | `go run .`              | Hand-rolled Plan → DAG → retry → Reflect loop (~80 lines) |
+
+### Fluent (recommended)
+
+The entire orchestration loop — plan generation, ready-step scheduling, per-step retry, and reflection — is one `fluent.Task` chain. The default prompt set and reflector prompt are applied automatically:
+
+```go
+result, err := fluent.Task(ctx, fw, task).
+    SystemFactory(stepPromptFactory).
+    Workspace(workspaceDir).
+    Plan().        // planner + DefaultPromptSet
+    Reflect().     // reflector + DefaultReflectorPrompt
+    MaxRetries(2). // per-step retry budget
+    Execute()      // → *orchestration.ExecutionResult{Plan, Reflections, Output, …}
+```
+
+`main_fluent.go` collapses the classic `main.go`'s hand-rolled Plan → DAG → retry → Reflect loop into a single `fluent.Task` chain for identical behaviour. Read the classic variant to understand *how* the loop works; use the fluent variant in your own code.
+
 ## What you will learn
 
 - How to create and configure a `Planner` with a custom `PromptSet`
@@ -203,9 +224,18 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ## Run
 
+### Fluent (recommended)
+
 ```bash
 cd sdk/examples/06-plan-and-reflect
-go run main.go
+go run -tags fluent .
+```
+
+### Classic API (advanced control)
+
+```bash
+cd sdk/examples/06-plan-and-reflect
+go run .
 ```
 
 ## Expected output

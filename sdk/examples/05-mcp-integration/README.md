@@ -2,6 +2,25 @@
 
 Connect external Model Context Protocol (MCP) servers to the agent. MCP tools are discovered at startup and registered alongside built-in tools, giving the agent access to arbitrary external capabilities — databases, APIs, file systems, browsers — without writing custom Go code.
 
+| Variant     | File            | Command                 | When to read                              |
+|-------------|-----------------|-------------------------|-------------------------------------------|
+| **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended — `MCPStdio` + `WithMCPServer` |
+| **Classic** | `main.go`       | `go run .`              | `sdk.MCPConfig` map + manual ConfirmFunc  |
+
+### Fluent (recommended)
+
+Declare and register the server inline with `.MCPStdio`. The gateway starts during `Build()` (via `sdk.New`), discovers the server's tools, and registers them alongside the built-ins:
+
+```go
+fw, _ := fluent.New().
+    Anthropic(key, "claude-sonnet-4-5").
+    MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", mcpRoot).
+    MCPWorkDir(mcpRoot).
+    AutoApprove(). // satisfy the fail-closed registry for MCP tools
+    FileTools().
+    Build()
+```
+
 ## What you will learn
 
 - How to configure MCP servers in `sdk.MCPConfig`
@@ -138,9 +157,18 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ## Run
 
+### Fluent (recommended)
+
 ```bash
 cd sdk/examples/05-mcp-integration
-go run main.go
+go run -tags fluent .
+```
+
+### Classic API (advanced control)
+
+```bash
+cd sdk/examples/05-mcp-integration
+go run .
 ```
 
 ## Expected output

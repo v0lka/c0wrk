@@ -4,6 +4,32 @@ Intercept tool calls for user confirmation before destructive operations execute
 
 **This example is interactive** — it reads `y`/`n` from stdin.
 
+| Variant     | File            | Command                 | When to read                              |
+|-------------|-----------------|-------------------------|-------------------------------------------|
+| **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended — `WithHITL(handler)` + classic escape |
+| **Classic** | `main.go`       | `go run .`              | `Config.HITL` wiring + manual policy overrides |
+
+> `ConfirmingHITL` lives in `hitl.go` (tagless) so both variants share it.
+
+### Fluent (recommended)
+
+The HITL handler is wired in via `WithHITL`. Because the registry stays fail-closed, the gated tools are relaxed with a classic escape (`registry.SetPolicyOverride`) after construction — the intended hybrid of fluent + classic control:
+
+```go
+fw, _ := fluent.New().
+    Anthropic(key, "claude-sonnet-4-5").
+    HITL(NewConfirmingHITL([]string{"write_file", "delete_file", "create_directory", "bash_exec"})).
+    MaxSteps(10).
+    FileTools().
+    Tools(builtins.NewDeleteFileTool()).
+    Build()
+// classic escape: relax registry policy so the HITL handler is the single gate
+for _, name := range []string{"write_file", "delete_file", "create_directory"} {
+    fw.ToolRegistry().SetPolicyOverride(name, tools.PolicyAlwaysAllow)
+}
+fluent.Run(ctx, fw).System(systemPrompt).Ask(task)
+```
+
 ## What you will learn
 
 - The `HITLHandler` interface and its two methods
@@ -128,9 +154,18 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ## Run
 
+### Fluent (recommended)
+
 ```bash
 cd sdk/examples/04-human-in-the-loop
-go run main.go
+go run -tags fluent .
+```
+
+### Classic API (advanced control)
+
+```bash
+cd sdk/examples/04-human-in-the-loop
+go run .
 ```
 
 ## Expected output

@@ -2,9 +2,21 @@
 
 The "kitchen sink" example: every major SDK subsystem combined into one agent.
 
+This example is a **fluent-first hybrid**: the Framework is assembled with `fluent.New` and the orchestration runs as a single `fluent.Task` chain. Where fluent does not surface fine-grained control, **classic escapes** are used. This is the recommended pattern for real applications — fluent for the common path, classic API for advanced tuning.
+
+| Concern                | Path      | How                                                    |
+|------------------------|-----------|--------------------------------------------------------|
+| Framework assembly     | **Fluent**| `fluent.New` + `.Providers`/`.MCPStdio`/`.Tools`/`.HITL` |
+| Plan → Execute → Reflect | **Fluent**| `fluent.Task(...).Plan().Reflect().Models(...).Execute()` |
+| Compaction / execution tuning | **Classic**| `.Config(base sdk.Config)` escape hatch |
+| `OnBlackboardChanged`  | **Classic**| rides in the `WithConfig` base (no dedicated fluent option) |
+| Skills discovery       | **Classic**| `skills.SkillManager` → passed to `fluent.Task.Skills` |
+| Custom events sink     | **Classic**| `consoleEvents` (embeds `orchestration.NoopEvents`) → `fluent.Task.Events` |
+
 ## What you will learn
 
 - How to combine all SDK features in a single application
+- When to use the fluent façade vs. fall back to the classic API
 - Multi-provider LLM configuration with runtime model switching (Claude for planning/reflection, GPT-4o for execution)
 - Custom + built-in + MCP tools in one registry
 - Skills discovery, fact memory, and blackboard callbacks
@@ -12,40 +24,43 @@ The "kitchen sink" example: every major SDK subsystem combined into one agent.
 
 ## Subsystems exercised
 
-| Subsystem          | Configuration                                    |
-|--------------------|--------------------------------------------------|
-| Multi-provider LLM | Anthropic (planning/reflection) + OpenAI (execution, if `OPENAI_API_KEY` is set) — runtime switching via `router.SetModel` |
-| Custom tools       | `timestamp` tool (implements `tools.Tool`)       |
-| Built-in tools     | read_file, write_file, edit_file, glob, …        |
-| MCP integration    | `@modelcontextprotocol/server-filesystem` (stdio)|
-| Event streaming    | `consoleEvents` — prints plan/step/tool events   |
-| Human-in-the-loop  | `autoApproveHITL` — blocks `delete_directory`    |
-| Planner            | `planner.Planner` with custom `PromptSet`        |
-| Conductor          | `fw.NewConductor` — per-step ReAct execution     |
-| Reflector          | `reflector.Reflector` — failure analysis + retry |
-| Skills             | `skills.SkillManager` — discovers `go-testing`   |
-| Fact memory        | `store_fact` / `search_facts` tools              |
-| Compaction         | Sliding-window strategy with custom thresholds   |
-| Blackboard         | `OnBlackboardChanged` callback for live updates  |
+| Subsystem          | Fluent or classic | Configuration                                    |
+|--------------------|-------------------|--------------------------------------------------|
+| Multi-provider LLM | Fluent            | `.Providers(Anthropic + OpenAI?)`; switching via `fluent.Task.Models` |
+| Custom tools       | Fluent            | `timestamp` tool registered via `.Tools(...)`      |
+| Built-in tools     | Fluent            | `fluent.FileTools()` + `fluent.MemoryTools()` bundles |
+| MCP integration    | Fluent            | `.MCPStdio(...)`              |
+| Event streaming    | Classic escape    | `consoleEvents` (embeds `orchestration.NoopEvents`) → `fluent.Task.Events` |
+| Human-in-the-loop  | Fluent            | `.HITL(autoApproveHITL)` (blocks `delete_directory`) |
+| Planner            | Fluent            | `.Plan()` with `fluent.DefaultPromptSet`         |
+| Conductor          | Fluent            | created internally by `fluent.Task`              |
+| Reflector          | Fluent            | `.Reflect()` with `fluent.DefaultReflectorPrompt`|
+| Skills             | Classic escape    | `skills.SkillManager` → `.Skills(discovered)`    |
+| Fact memory        | Fluent            | `MemoryTools()` bundle + blackboard              |
+| Compaction         | Classic escape    | `.Config(base)` carrying `CompactionConfig`      |
+| Blackboard         | Classic escape    | `OnBlackboardChanged` in the `.Config(base)` base |
 
 ## Architecture
 
 ```
-sdk.New(Config{
-    LLM:         multi-provider,
-    MCP:         filesystem server,
-    Execution:   { MaxSteps, PreWarning, ToolCache },
-    Compaction:  { sliding_window, 85/92/98% },
-    HITL:        autoApproveHITL,
-    OnBlackboardChanged: callback,
-})
+fluent.New().
+    Config(base).               // classic escape: compaction, execution tuning, OnBlackboardChanged
+    Providers(anthropic, openai?).
+    MCPStdio("filesystem", …).
+    Tools(timestamp + FileTools + MemoryTools).
+    HITL(autoApproveHITL).AutoApprove().
+    Build()
     │
-    ├─ ToolRegistry: [custom] timestamp + [core] file tools + [mcp] filesystem tools
-    ├─ SkillManager: discovers go-testing skill
-    ├─ Planner: generates DAG from task
-    ├─ Conductor: executes each step (ReAct loop)
-    ├─ Reflector: analyzes failures → retry/replan/abort
-    └─ Events: consoleEvents prints live trace
+    ├─ ToolRegistry: [custom] timestamp + [core] file/memory tools + [mcp] filesystem tools
+    ├─ SkillManager: discovers go-testing skill   (classic — pre-execution)
+    │
+    └─ fluent.Task(...).Workspace(...).Skills(...).Events(consoleEvents)
+           .Plan().Reflect().MaxRetries(2).Models(claude, gpt-4o?).Execute()
+              │
+              ├─ Planner: generates DAG (Claude)
+              ├─ Conductor: executes each step (GPT-4o when available)
+              ├─ Reflector: analyzes failures → retry/abort (Claude)
+              └─ consoleEvents: prints live trace
 ```
 
 ## Code walkthrough
@@ -61,36 +76,61 @@ This example combines patterns from all previous examples. See each example's RE
 
 ### New concepts in this example
 
-#### Runtime model switching
+#### The hybrid: fluent façade + classic escapes
+
+The Framework is built with `fluent.New`, but fields that have no dedicated fluent option (compaction tuning, `OnBlackboardChanged`) ride in a `WithConfig` base — a classic escape hatch that fluent layers its options on top of:
 
 ```go
-// Two providers: Claude for planning/reflection, GPT-4o for execution.
-router := fw.LLMRouter()
-router.SetModel(ctx, "openai/gpt-4o")   // switch before execution
-// … Conductor runs steps on GPT-4o …
-router.SetModel(ctx, "claude-sonnet-4-5") // switch back for reflection
+base := sdk.Config{
+    Execution:  sdk.ExecutionConfig{ /* tuning */ },
+    Compaction: sdk.CompactionConfig{ /* thresholds */ },
+    OnBlackboardChanged: func(ct string) { fmt.Println("blackboard:", ct) },
+}
+fw, _ := fluent.New().
+    Config(base).             // escape hatch: advanced tuning
+    Providers(providers...).
+    MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", workspaceDir).
+    FileTools().MemoryTools().
+    Tools(allTools...).
+    HITL(&autoApproveHITL{...}).
+    AutoApprove().
+    Build()
 ```
 
-The `Framework` exposes the shared LLM router via `fw.LLMRouter()`. Because every LLM-calling component (Planner, Conductor, Reflector) routes through this single router, calling `SetModel` switches the active provider+model for all subsequent calls. The example uses Claude for planning and reflection (strong reasoning) and GPT-4o for step execution — switching before the execution loop and temporarily switching back during reflection. When `OPENAI_API_KEY` is unset, execution falls back to the single Anthropic model and switching is skipped.
+The orchestration cycle is one `fluent.Task` chain (replacing the ~80-line hand-rolled loop of example 06):
 
-#### Skills discovery
+```go
+result, err := fluent.Task(ctx, fw, task).
+    Workspace(workspaceDir).
+    Skills(discoveredSkills).
+    Events(&consoleEvents{}).
+    Plan().Reflect().MaxRetries(2).
+    Models(plannerModel, executorModel). // runtime switching
+    Execute()
+```
+
+#### Runtime model switching
+
+`.Models(plannerModel, executorModel)` switches the shared LLM router between phases automatically: the planner and reflector run on the strong-reasoning model (Claude), while the Conductor's per-step ReAct loops run on the executor model (GPT-4o). Because every LLM-calling component routes through the single router, one call switches the active provider+model for all subsequent calls. The router is restored to the planning model after execution. When `OPENAI_API_KEY` is unset, `.Models(...)` is omitted and execution stays on the single Anthropic model.
+
+#### Skills discovery (classic escape)
 
 ```go
 skillMgr := skills.NewSkillManager([]string{skillsDir}, nil)
 skillMgr.Scan()
 discoveredSkills := skillMgr.List()
+// passed to the planner via fluent.Task.Skills(discoveredSkills)
 ```
 
-Skills are markdown files (`SKILL.md`) with YAML frontmatter. The `SkillManager` scans directories in priority order and parses each skill's metadata. Discovered skills are passed to the Planner so it can assign them to steps.
+Skills are markdown files (`SKILL.md`) with YAML frontmatter. The `SkillManager` scans directories in priority order and parses each skill's metadata. Discovered skills are passed to the Planner (via `fluent.Task.Skills`) so it can assign them to steps. Discovery is pre-execution setup, so it stays in the classic API.
 
 #### Fact memory
 
 ```go
-registry.Register(builtins.NewStoreFactTool())
-registry.Register(builtins.NewSearchFactsTool())
+fluent.New().FileTools().MemoryTools()
 ```
 
-Facts are keyword-tagged pieces of information stored on the blackboard. Steps can `store_fact` to share findings and `search_facts` to retrieve them — enabling inter-step communication without passing large outputs through the context window.
+The `MemoryTools()` bundle registers `store_fact` and `search_facts`. Facts are keyword-tagged pieces of information stored on the blackboard; steps can share findings without passing large outputs through the context window. Stored facts are readable from `result.Blackboard.GetFacts()`.
 
 #### Blackboard change callback
 
@@ -127,11 +167,13 @@ node --version
 
 ## Run
 
+This example is a single fluent-first hybrid `main.go` (no build tag):
+
 ```bash
 cd sdk/examples
 go mod tidy          # first time only
 cd 07-full-power
-go run main.go
+go run .
 ```
 
 ## Expected output

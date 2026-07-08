@@ -93,6 +93,7 @@ go run main.go
 | --- | --- |
 | [getting-started.md](getting-started.md) | Installation, configuration reference, and your first agent |
 | [architecture.md](architecture.md) | Layered design, package relationships, data flow, and the ReAct loop |
+| [fluent-api.md](fluent-api.md) | Concise façade over the SDK — the recommended entry point (layers, before/after, escape hatches) |
 | [llm-providers.md](llm-providers.md) | Multi-provider routing, model registry, and provider configuration |
 | [tools.md](tools.md) | The `Tool` interface, `ToolRegistry`, built-in tools, and custom tools |
 | [mcp-integration.md](mcp-integration.md) | Model Context Protocol servers, the gateway, and external tool discovery |
@@ -115,6 +116,7 @@ go run main.go
 | Package | Purpose |
 | --- | --- |
 | `github.com/v0lka/sp4rk` | Top-level `Framework`, `Config`, `New`, `Execute`, `NewConductor`, `Shutdown` |
+| `…/fluent` | Concise façade: `New`, `Run`, `Task`, option constructors, tool bundles (recommended entry point) |
 | `…/agent` | ReAct `Executor` loop, `Events`, `HITLHandler`, `FinishTool`, `RunSubAgent`, tool-result cache |
 | `…/agent/reflector` | `Reflector` for execution failure analysis and self-correction |
 | `…/agent/router` | `Router` that classifies requests by domain and complexity |

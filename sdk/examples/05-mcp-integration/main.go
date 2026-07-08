@@ -1,14 +1,10 @@
-// Example 05 — MCP Integration
+//go:build !fluent
+
+// Example 05 — MCP Integration (Classic API)
 //
 // Demonstrates how to connect external Model Context Protocol (MCP) servers
-// to the agent. MCP tools are discovered at startup and registered alongside
-// built-in tools, giving the agent access to arbitrary external capabilities
-// (databases, APIs, file systems, etc.) without writing custom Go code.
-//
-// This example configures a stdio MCP server. You need Node.js installed
-// (npx) to run the filesystem MCP server. If the server is unavailable,
-// the agent still works with the built-in tools — MCP failures are logged
-// as warnings, not fatal errors.
+// to the agent, using the classic sdk.Config + MCPConfig API.
+// For the concise recommended path, see main_fluent.go (run with `-tags fluent`).
 package main
 
 import (
@@ -129,11 +125,4 @@ func main() {
 	if err := run(); err != nil {
 		log.Fatalf("%v", err)
 	}
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-1] + "…"
 }
