@@ -509,4 +509,59 @@ describe('mergeHistoryMessages', () => {
 
     expect(useChatStore.getState().messageOrder[SESSION]).toEqual(['shared-id', 'h-2'])
   })
+
+  it('preserves an unresolved HITL prompt (ask_user) added by the background watcher even though it predates the switch', () => {
+    resetStore()
+    const store = useChatStore.getState()
+    // Background watcher added the ask_user card at t=500; the user switches at
+    // t=1000. The combined emit delivers the event to the UI before persisting
+    // (backend/application.go), so in the race window (or if the best-effort
+    // persist failed) the card is absent from the loaded history. Without
+    // preservation it would be dropped here and only reappear after the async
+    // GetPendingActions reconcile — a visible flicker, or lost entirely if
+    // reconcile is skipped.
+    store.addMessage(SESSION, {
+      id: 'ask-user-req-1', sessionId: SESSION, type: 'ask_user',
+      content: 'Pick one', metadata: { request_id: 'req-1', questions: [] }, timestamp: 500,
+    })
+    const history = [liveMsg('h-1', 100)]
+
+    useChatStore.getState().mergeHistoryMessages(SESSION, history, 1000)
+
+    const order = useChatStore.getState().messageOrder[SESSION]
+    expect(order).toContain('ask-user-req-1')
+    expect(useChatStore.getState().messages[SESSION]!['ask-user-req-1']!.type).toBe('ask_user')
+  })
+
+  it('preserves all four unpersisted HITL types when unresolved', () => {
+    resetStore()
+    const store = useChatStore.getState()
+    const types: MessageType[] = ['tool_confirm', 'ask_user', 'step_limit', 'plan_review']
+    for (const t of types) {
+      store.addMessage(SESSION, {
+        id: `${t}-1`, sessionId: SESSION, type: t, content: t,
+        metadata: { request_id: 'r1', confirm_id: 'c1' }, timestamp: 500,
+      })
+    }
+
+    useChatStore.getState().mergeHistoryMessages(SESSION, [liveMsg('h-1', 100)], 1000)
+
+    const order = useChatStore.getState().messageOrder[SESSION]
+    for (const t of types) {
+      expect(order).toContain(`${t}-1`)
+    }
+  })
+
+  it('drops a resolved HITL prompt that predates the switch (it was answered)', () => {
+    resetStore()
+    const store = useChatStore.getState()
+    store.addMessage(SESSION, {
+      id: 'ask-user-req-1', sessionId: SESSION, type: 'ask_user',
+      content: 'Pick one', metadata: { request_id: 'req-1', resolved: true, answer: 'A' }, timestamp: 500,
+    })
+
+    useChatStore.getState().mergeHistoryMessages(SESSION, [liveMsg('h-1', 100)], 1000)
+
+    expect(useChatStore.getState().messageOrder[SESSION]).not.toContain('ask-user-req-1')
+  })
 })

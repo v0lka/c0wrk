@@ -19,26 +19,11 @@
 import type { PendingActionsResponse, SessionRuntimeStatus } from '@/api/chat'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import type { ChatMessageUI, MessageType } from '@/types/messages'
+import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
 
 /** Message content for the synthetic resume banner injected on reload. */
 const UNFINISHED_TASK_MESSAGE =
   'A previous task did not finish. You can resume it or discard it.'
-
-/**
- * Interactive prompt types that block execution while awaiting a user
- * response. After an app restart (or backend crash) the goroutine that was
- * waiting for the response no longer exists, so these prompts can never be
- * answered — they must be resolved as stale during reconciliation.
- *
- * Note: `task_failed_resumable` is handled separately because it is replaced
- * by a Resume/Cancel banner rather than silently dismissed.
- */
-const STALE_PROMPT_TYPES: ReadonlySet<MessageType> = new Set([
-  'step_limit',
-  'plan_review',
-  'tool_confirm',
-  'ask_user',
-])
 
 /**
  * Maps a stale prompt type to the metadata field that identifies the specific
@@ -87,7 +72,7 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
     const msg = index[id]
     if (!msg) continue
     if (msg.metadata?.resolved === true) continue
-    if (STALE_PROMPT_TYPES.has(msg.type) || msg.type === 'task_failed_resumable') {
+    if (HITL_PROMPT_TYPES.has(msg.type) || msg.type === 'task_failed_resumable') {
       unresolved.push(msg)
     }
   }
@@ -97,7 +82,7 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
     // executor waiting for the response no longer exists.
     const resolvedStale: ChatMessageUI[] = []
     for (const msg of unresolved) {
-      if (STALE_PROMPT_TYPES.has(msg.type)) {
+      if (HITL_PROMPT_TYPES.has(msg.type)) {
         store.updateMessage(sessionId, msg.id, { metadata: { ...msg.metadata, resolved: true, stale: true } })
         resolvedStale.push(msg)
       }

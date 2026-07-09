@@ -53,7 +53,18 @@ type PendingAskUser struct {
 // them) and to reconcile stale persisted prompts (a prompt in the DB that is
 // NOT in this response has already been resolved).
 func (a *App) GetPendingActions(sessionID string) (*PendingActionsResponse, error) {
-	resp := &PendingActionsResponse{}
+	// Initialize every slice as non-nil/empty. Go's encoding/json marshals a
+	// nil slice to JSON `null` (not `[]`), and the frontend's shape guard
+	// (isPendingActionsResponse) rejects the response when any kind is null —
+	// which would silently disable HITL reconciliation on session switch.
+	// A session almost never has all four kinds pending at once, so without
+	// this the response was effectively always rejected.
+	resp := &PendingActionsResponse{
+		ToolConfirms:  []PendingToolConfirm{},
+		StepLimits:    []PendingStepLimit{},
+		PlanApprovals: []PendingPlanApproval{},
+		AskUser:       []PendingAskUser{},
+	}
 
 	a.pendingConfirmations.Range(func(key, value any) bool {
 		pd, ok := value.(*pendingConfirmData)

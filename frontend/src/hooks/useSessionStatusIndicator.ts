@@ -11,19 +11,8 @@
 
 import { useMemo } from 'react'
 import { useChatStore } from '@/stores/chatStore'
-import type { ChatMessageUI, MessageType } from '@/types/messages'
-
-/**
- * HITL message types that block execution while awaiting a user response.
- * A session with any unresolved message of one of these types shows a yellow
- * indicator instead of the green "task running" one.
- */
-export const HITL_PROMPT_TYPES: ReadonlySet<MessageType> = new Set([
-  'tool_confirm',
-  'ask_user',
-  'step_limit',
-  'plan_review',
-])
+import type { ChatMessageUI } from '@/types/messages'
+import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
 
 /** Sidebar indicator state for a session. */
 export type SessionIndicatorStatus = 'pending' | 'active' | 'idle'

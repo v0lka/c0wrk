@@ -141,11 +141,17 @@ export interface PendingActionsResponse {
   ask_user: PendingAskUser[]
 }
 
-function isPendingActionsResponse(d: unknown): d is PendingActionsResponse {
+// isPendingActionsResponse validates the GetPendingActions response shape.
+// Each kind must be an array OR null/absent: Go's encoding/json marshals a nil
+// slice to JSON `null` (not `[]`), so a session without a given kind of
+// pending action legitimately produces null for that field. null/absent is
+// treated as "no pending actions of this kind" and normalized to [] by the
+// caller — rejecting it here would silently disable HITL reconciliation.
+function isPendingActionsResponse(d: unknown): boolean {
   if (typeof d !== 'object' || d === null) return false
   const o = d as Record<string, unknown>
-  return Array.isArray(o.tool_confirms) && Array.isArray(o.step_limits)
-    && Array.isArray(o.plan_approvals) && Array.isArray(o.ask_user)
+  const kinds = [o.tool_confirms, o.step_limits, o.plan_approvals, o.ask_user]
+  return kinds.every(k => k === undefined || k === null || Array.isArray(k))
 }
 
 /**
@@ -163,7 +169,15 @@ export async function getPendingActions(sessionId: string): Promise<PendingActio
       logger.error('getPendingActions: unexpected response shape', result)
       return null
     }
-    return result
+    // Normalize null/absent kinds to empty arrays (Go nil-slice → JSON null)
+    // so downstream `.map(...)` consumers never hit a null.
+    const o = result as Record<string, unknown>
+    return {
+      tool_confirms: (o.tool_confirms as PendingToolConfirm[] | undefined) ?? [],
+      step_limits: (o.step_limits as PendingStepLimit[] | undefined) ?? [],
+      plan_approvals: (o.plan_approvals as PendingPlanApproval[] | undefined) ?? [],
+      ask_user: (o.ask_user as PendingAskUser[] | undefined) ?? [],
+    }
   } catch (err) {
     logger.error('Failed to get pending actions:', err)
     return null

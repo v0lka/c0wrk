@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { create } from 'zustand'
 import type { ChatMessageUI } from '@/types/messages'
 import type { TokenInfo } from '@/types/models'
+import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
 
 // Re-export types and grouping functions so existing imports continue to work
 export type { MessageType, ChatMessageUI, DisplayItem, GroupedMessages } from '@/types/messages'
@@ -174,6 +175,20 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   // setMessages would clobber e.g. an `error` event delivered between the
   // backend's DB read and this state update, leaving the session looking
   // cleanly finished when it actually failed.
+  //
+  // Additionally, UNRESOLVED HITL prompt messages (tool_confirm, ask_user,
+  // step_limit, plan_review) are preserved even when they predate the switch.
+  // The combined emit function delivers these events to the UI before
+  // persisting them (backend/application.go), so a live card can be
+  // momentarily absent from the history snapshot loaded right after a switch.
+  // Without preservation the card would disappear here and only reappear once
+  // the (async) GetPendingActions reconcile re-adds it — a visible flicker, or
+  // a permanent loss if that reconcile is skipped (e.g. the RPC fails).
+  // This cannot duplicate a persisted row: the live event handler
+  // (hooks/events/hitlHandlers.ts) and the history→UI converter
+  // (lib/chatUtilsHelpers.ts) derive the SAME semantic id
+  // (`<type>-<request_id|confirm_id>`), and any message already in historyIds
+  // is skipped above before this check runs.
   mergeHistoryMessages: (sessionId, history, loadStartedAt) => set((s) => {
     const liveIndex = s.messages[sessionId] ?? {}
     const liveOrder = s.messageOrder[sessionId] ?? []
@@ -182,7 +197,11 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     for (const id of liveOrder) {
       const msg = liveIndex[id]
       if (!msg || historyIds.has(id)) continue
-      if (msg.timestamp >= loadStartedAt) preserved.push(msg)
+      if (msg.timestamp >= loadStartedAt) { preserved.push(msg); continue }
+      // Keep live, unresolved HITL prompts even if they predate the switch.
+      if (HITL_PROMPT_TYPES.has(msg.type) && msg.metadata?.resolved !== true) {
+        preserved.push(msg)
+      }
     }
     const merged = [...history, ...preserved]
     return {

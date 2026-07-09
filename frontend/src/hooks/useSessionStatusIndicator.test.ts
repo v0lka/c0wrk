@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   hasUnresolvedHITL,
   deriveSessionIndicatorStatus,
-  HITL_PROMPT_TYPES,
 } from './useSessionStatusIndicator'
+import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
 import type { ChatMessageUI, MessageType } from '@/types/messages'
 
 let counter = 0
