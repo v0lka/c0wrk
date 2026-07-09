@@ -24,7 +24,7 @@
 | `ExecutorResult`       | sdk/agent | core/types (direct)              | Executor output                       |
 | `CircuitBreakerConfig` | sdk/agent | core/orchestrator                | Circuit breaker thresholds            |
 | `ToolResultBudget`     | sdk/agent | core/orchestrator                | Tool result truncation (Stage 2)     |
-| `ToolResultCache`      | sdk/agent | core/orchestrator, core/builder   | Full result cache keyed by SHA256    |
+| `ToolResultCache`      | sdk/agent | core/orchestrator, core/builder   | Full result cache keyed by short hash |
 | `ToolTruncationConfig` | sdk/agent | core/orchestrator config          | Per-tool Stage 1 truncation limits   |
 | `ToolCacheMeta`        | sdk/agent | sdk/agent (executor)              | Cache entry metadata (paths, mtime)  |
 | `TodoItem`             | sdk/agent | core/types (adapter)             | Step todo item                        |
@@ -152,8 +152,8 @@ Core uses adapters to bridge its interfaces with SDK interfaces:
 | LLM response            | sdk → core | `llm.ChatResponse`                                  |
 | Tool execution request  | core → sdk | `tools.Tool.Execute()`                              |
 | Tool result             | sdk → core | `tools.ToolResult`                                  |
-| Tool cache store        | sdk → sdk | `ToolResultCache.Store(name, content, meta)` — SHA256 key |
-| Tool cache lookup       | sdk ← sdk | `tool_result_read(hash, start_line, num_lines)` — fragment |
+| Tool cache store        | sdk → sdk | `ToolResultCache.Store(name, content, meta)` — returns a short hash (git-style abbreviated SHA256 prefix, unique per session) |
+| Tool cache lookup       | sdk ← sdk | `tool_result_read(hash, start_line, num_lines)` — fragment (hash is the short hash, full hash, or any unique prefix) |
 | File coherence state    | sdk ↔ core | `FileCoherenceChecker` (injected via context)       |
 | Compaction trigger      | core → sdk | `CompactionStrategy.Compact()`                      |
 | Compacted messages      | sdk → core | `[]llm.Message`                                     |

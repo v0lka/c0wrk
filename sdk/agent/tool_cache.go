@@ -5,23 +5,56 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
 
-// ToolResultCache caches raw tool outputs indexed by SHA256(toolName + "\x00" + content).
+// Abbreviation bounds for the git-style short cache hashes.
+const (
+	// minAbbrevLen is the initial short-hash length. 4 hex chars give a 65 536
+	// prefix space — ample for a session-scoped cache (unlike git, which starts
+	// at 7 for repos with millions of objects). Short hashes grow only when a
+	// collision forces it.
+	minAbbrevLen = 4
+	// fullHashLen is the length of a hex-encoded SHA256 (64 chars) — the
+	// unambiguous maximum for an abbreviated hash.
+	fullHashLen = sha256.Size * 2
+)
+
+// ToolResultCache caches raw tool outputs keyed by a git-style SHORT hash.
+//
+// Each entry's key is the shortest prefix (starting at minAbbrevLen hex chars)
+// of the full SHA256 that is unique among all hashes already known in the
+// session. Collisions are resolved per-entry: when a new entry's minAbbrevLen
+// prefix is already taken by a known session hash, the prefix length is
+// incremented one character at a time until it is unique — exactly like git
+// expanding an abbreviated object id. Identical content (same full hash) always
+// maps to the same short hash, so dedup and history-mutation references stay
+// stable.
+//
+// Internally the full hash is retained on the entry (Hash field) plus a
+// fullToShort index, so resolution accepts the issued short hash, the full
+// hash, or any unique prefix.
+//
+// Short hashes are immutable once issued: when an entry is evicted (MCP TTL),
+// its short key is retired (retiredShort) and never reused or aliased, so stale
+// history references resolve to not-found rather than to unrelated content.
+//
 // Cache entries live for the duration of a session (per-orchestrator lifetime).
 // MCP tool entries are subject to TTL-based expiry.
 type ToolResultCache struct {
-	mu         sync.RWMutex
-	entries    map[string]*ToolResultCacheEntry
-	ttl        time.Duration // default TTL for MCP tools (0 = no expiry for non-MCP)
-	storeCount int64         // incremented on every Store; periodic eviction on every 100th call
+	mu           sync.RWMutex
+	entries      map[string]*ToolResultCacheEntry // keyed by short hash
+	fullToShort  map[string]string                // full hash → short hash (dedup + reverse lookup)
+	retiredShort map[string]struct{}              // short keys of evicted entries — never reused, never aliased
+	ttl          time.Duration                    // default TTL for MCP tools (0 = no expiry for non-MCP)
+	storeCount   int64                            // incremented on every Store; periodic eviction on every 100th call
 }
 
 // ToolResultCacheEntry holds a cached tool output with metadata.
 type ToolResultCacheEntry struct {
-	Hash      string    // SHA256 of Content (or file metadata for file-backed entries)
+	Hash      string    // full SHA256 of Content (or file metadata for file-backed entries); used for dedup/coherence, NOT as the map key
 	Content   string    // full raw tool output (empty for file-backed entries)
 	ToolName  string    // e.g. "read_file", "ripgrep"
 	CreatedAt time.Time // when the entry was cached
@@ -58,14 +91,17 @@ type ToolCacheMeta struct {
 // NewToolResultCache creates a new cache with the given default MCP TTL.
 func NewToolResultCache(ttl time.Duration) *ToolResultCache {
 	return &ToolResultCache{
-		entries: make(map[string]*ToolResultCacheEntry),
-		ttl:     ttl,
+		entries:      make(map[string]*ToolResultCacheEntry),
+		fullToShort:  make(map[string]string),
+		retiredShort: make(map[string]struct{}),
+		ttl:          ttl,
 	}
 }
 
 // ComputeToolResultHash returns the hex-encoded SHA256 hash for a tool result.
 // This uses the same formula as Store: SHA256(toolName + "\x00" + content).
-// Use this when you need the hash before/without calling Store.
+// Use this when you need the full hash before/without calling Store. Note that
+// Store returns an ABBREVIATED (short) hash, not this full value.
 func ComputeToolResultHash(toolName, content string) string {
 	return sha256hex(toolName + "\x00" + content)
 }
@@ -78,20 +114,24 @@ func ComputeFileBackedHash(toolName, filePath string, mtime, size int64) string 
 	return sha256hex(fmt.Sprintf("%s\x00%s\x00%d\x00%d", toolName, filePath, mtime, size))
 }
 
-// Store caches raw tool output and returns its SHA256 hash.
-// The hash includes both toolName and content so that identical content from
-// different tools gets different hashes.
-// Repeated identical calls produce the same hash (no duplicate entries).
+// Store caches raw tool output and returns its git-style SHORT hash.
+//
+// The full hash includes both toolName and content so that identical content
+// from different tools gets different hashes. The returned short hash is the
+// shortest prefix (starting at minAbbrevLen) of the full hash that does not
+// collide with a hash already known in the session; the prefix grows one
+// character at a time until it is unique. Repeated identical calls (same full
+// hash) return the same short hash — no duplicate entries are created.
 //
 // For file-backed entries (meta.FileBacked == true), Content is NOT stored in
 // memory — the file on disk is the backing store. The hash is derived from
 // file metadata (path + mtime + size) instead of content.
 func (c *ToolResultCache) Store(toolName, content string, meta ToolCacheMeta) string {
-	var hash string
+	var full string
 	if meta.FileBacked {
-		hash = ComputeFileBackedHash(toolName, meta.FilePath, meta.FileMtime, meta.FileSize)
+		full = ComputeFileBackedHash(toolName, meta.FilePath, meta.FileMtime, meta.FileSize)
 	} else {
-		hash = ComputeToolResultHash(toolName, content)
+		full = ComputeToolResultHash(toolName, content)
 	}
 
 	c.mu.Lock()
@@ -99,13 +139,16 @@ func (c *ToolResultCache) Store(toolName, content string, meta ToolCacheMeta) st
 
 	c.storeCount++
 
-	// Avoid overwriting an existing entry (same metadata → same hash).
-	if _, ok := c.entries[hash]; ok {
-		return hash
+	// Dedup: identical content (same full hash) maps to the same short hash,
+	// keeping history-mutation references stable.
+	if short, ok := c.fullToShort[full]; ok {
+		return short
 	}
 
+	short := c.abbreviateLocked(full)
+
 	entry := &ToolResultCacheEntry{
-		Hash:       hash,
+		Hash:       full,
 		ToolName:   toolName,
 		CreatedAt:  time.Now(),
 		FilePath:   meta.FilePath,
@@ -121,22 +164,96 @@ func (c *ToolResultCache) Store(toolName, content string, meta ToolCacheMeta) st
 		entry.TTL = c.ttl
 	}
 
-	c.entries[hash] = entry
+	c.entries[short] = entry
+	c.fullToShort[full] = short
 
 	// Periodic eviction: sweep expired MCP entries every 100th Store.
 	if c.storeCount%100 == 0 {
 		c.evictExpiredLocked()
 	}
 
-	return hash
+	return short
 }
 
-// Get returns a cache entry by hash. Returns nil, false if not found or expired.
+// abbreviateLocked returns the shortest prefix of full (starting at
+// minAbbrevLen hex chars) that is neither a live short-hash key nor a retired
+// one. Retired keys (from evicted entries) are skipped so a short hash, once
+// issued, is never handed to a different entry — preventing history references
+// from silently aliasing new content. The prefix length is incremented one
+// character at a time on each collision. The loop runs through fullHashLen,
+// where full itself is always free (dedup guarantees it is not a live key, and
+// a 64-char retired key cannot exist), so it always terminates. Caller must
+// hold c.mu.
+func (c *ToolResultCache) abbreviateLocked(full string) string {
+	for n := minAbbrevLen; n <= fullHashLen; n++ {
+		prefix := full[:n]
+		if _, exists := c.entries[prefix]; exists {
+			continue
+		}
+		if _, retired := c.retiredShort[prefix]; retired {
+			continue
+		}
+		return prefix
+	}
+	return full // unreachable: full is free at n == fullHashLen
+}
+
+// resolveLocked maps a user-provided hash to its cache entry and short key.
+// Resolution order:
+//  1. exact short-hash key (the common path — the caller copies the hash from a
+//     nudge);
+//  2. retired short-hash keys resolve to not-found: an evicted entry must not
+//     alias a different live entry that happens to share its prefix;
+//  3. exact full-hash match (entry.Hash == hash);
+//  4. unique prefix: exactly one entry whose full hash starts with hash.
+//
+// Returns ok=false when the hash is unknown, retired, or the prefix is
+// ambiguous. Caller must hold at least c.mu.RLock.
+func (c *ToolResultCache) resolveLocked(hash string) (entry *ToolResultCacheEntry, shortKey string, ok bool) {
+	// An empty hash is not a valid lookup key: strings.HasPrefix(e.Hash, "") is
+	// true for every entry, so it must be rejected explicitly rather than
+	// resolving to an arbitrary single entry.
+	if hash == "" {
+		return nil, "", false
+	}
+
+	if e, found := c.entries[hash]; found {
+		return e, hash, true
+	}
+
+	// A retired (evicted) short hash must not fall through to the prefix scan:
+	// another live entry may share this prefix, which would silently alias it.
+	if _, retired := c.retiredShort[hash]; retired {
+		return nil, "", false
+	}
+
+	var match *ToolResultCacheEntry
+	var matchKey string
+	count := 0
+	for short, e := range c.entries {
+		if e.Hash == hash || strings.HasPrefix(e.Hash, hash) {
+			match = e
+			matchKey = short
+			count++
+			if count > 1 {
+				return nil, "", false // ambiguous prefix
+			}
+		}
+	}
+	if count == 1 {
+		return match, matchKey, true
+	}
+	return nil, "", false
+}
+
+// Get returns a cache entry by hash. The hash may be the issued short hash, the
+// full hash, or any unique prefix. Returns nil, false if not found, expired, or
+// the prefix is ambiguous.
 // Uses RLock for the common (non-expired) path; only upgrades to Lock when
 // an expired entry needs deletion.
 func (c *ToolResultCache) Get(hash string) (*ToolResultCacheEntry, bool) {
 	c.mu.RLock()
-	entry, ok := c.entries[hash]
+	entry, _, ok := c.resolveLocked(hash)
 	if !ok {
 		c.mu.RUnlock()
 		return nil, false
@@ -153,8 +270,8 @@ func (c *ToolResultCache) Get(hash string) (*ToolResultCacheEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Re-check after acquiring write lock (entry may have been refreshed).
-	entry, ok = c.entries[hash]
+	// Re-resolve after acquiring write lock (entry may have changed).
+	entry, key, ok := c.resolveLocked(hash)
 	if !ok {
 		return nil, false
 	}
@@ -162,7 +279,9 @@ func (c *ToolResultCache) Get(hash string) (*ToolResultCacheEntry, bool) {
 		return entry, true
 	}
 
-	delete(c.entries, hash)
+	delete(c.entries, key)
+	delete(c.fullToShort, entry.Hash)
+	c.retiredShort[key] = struct{}{} // retire the freed short key — never reuse/alias it
 	return nil, false
 }
 
@@ -173,7 +292,7 @@ func (c *ToolResultCache) CheckCoherence(hash string) (valid bool, reason string
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	entry, ok := c.entries[hash]
+	entry, _, ok := c.resolveLocked(hash)
 	if !ok {
 		return false, "cache entry not found"
 	}
@@ -200,9 +319,11 @@ func (c *ToolResultCache) CheckCoherence(hash string) (valid bool, reason string
 
 // evictExpiredLocked removes all expired MCP entries. Caller must hold c.mu.
 func (c *ToolResultCache) evictExpiredLocked() {
-	for hash, entry := range c.entries {
+	for short, entry := range c.entries {
 		if entry.TTL > 0 && time.Since(entry.CreatedAt) > entry.TTL {
-			delete(c.entries, hash)
+			delete(c.entries, short)
+			delete(c.fullToShort, entry.Hash)
+			c.retiredShort[short] = struct{}{} // retire the freed short key — never reuse/alias it
 		}
 	}
 }

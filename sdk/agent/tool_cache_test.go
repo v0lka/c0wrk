@@ -416,3 +416,230 @@ func TestComputeFileBackedHash(t *testing.T) {
 		t.Errorf("hash length = %d, want 64", len(h1))
 	}
 }
+
+// --- Short-hash abbreviation tests ---
+
+func TestToolResultCache_StoreReturnsShortHash(t *testing.T) {
+	c := NewToolResultCache(0)
+	short := c.Store("read_file", "some content", ToolCacheMeta{})
+	if short == "" {
+		t.Fatal("Store returned empty hash")
+	}
+	// No collision on the first entry → minimal abbreviation length.
+	if len(short) != minAbbrevLen {
+		t.Errorf("first short hash length = %d, want %d (%q)", len(short), minAbbrevLen, short)
+	}
+	if len(short) >= fullHashLen {
+		t.Errorf("short hash should be abbreviated, got full-length %q", short)
+	}
+}
+
+func TestToolResultCache_AbbreviateLocked(t *testing.T) {
+	c := NewToolResultCache(0)
+	target := ComputeToolResultHash("target_tool", "target content")
+
+	// No collisions yet → minimal length.
+	if got := c.abbreviateLocked(target); len(got) != minAbbrevLen {
+		t.Errorf("abbreviateLocked = %d chars, want %d", len(got), minAbbrevLen)
+	}
+
+	// Seed a known short hash that collides with target's 4-char prefix.
+	c.entries[target[:minAbbrevLen]] = &ToolResultCacheEntry{Hash: ComputeToolResultHash("other", "x")}
+	got := c.abbreviateLocked(target)
+	if got == target[:minAbbrevLen] {
+		t.Error("abbreviateLocked should extend past a colliding 4-char prefix")
+	}
+	if !strings.HasPrefix(target, got) {
+		t.Errorf("short %q must be a prefix of the full hash", got)
+	}
+	if len(got) != minAbbrevLen+1 {
+		t.Errorf("expected one-character extension to %d, got %d (%q)", minAbbrevLen+1, len(got), got)
+	}
+}
+
+func TestToolResultCache_AbbreviateLocked_ChainedCollisions(t *testing.T) {
+	c := NewToolResultCache(0)
+	target := ComputeToolResultHash("chained_tool", "content")
+
+	// Occupy the first three prefix lengths (4, 5, 6) so the resolver must
+	// walk to length 7.
+	for n := minAbbrevLen; n <= minAbbrevLen+2; n++ {
+		c.entries[target[:n]] = &ToolResultCacheEntry{Hash: strings.Repeat("z", fullHashLen)}
+	}
+	got := c.abbreviateLocked(target)
+	if len(got) != minAbbrevLen+3 {
+		t.Errorf("expected length %d after three collisions, got %d (%q)", minAbbrevLen+3, len(got), got)
+	}
+	if _, exists := c.entries[got]; exists {
+		t.Errorf("resolved short %q should be free", got)
+	}
+}
+
+func TestToolResultCache_StoreCollisionExtendsShortHash(t *testing.T) {
+	c := NewToolResultCache(0)
+	target := ComputeToolResultHash("collide_tool", "content")
+
+	// Pre-seed the cache so target's 4-char prefix is already a known key.
+	c.entries[target[:minAbbrevLen]] = &ToolResultCacheEntry{Hash: ComputeToolResultHash("existing", "x")}
+	c.fullToShort[c.entries[target[:minAbbrevLen]].Hash] = target[:minAbbrevLen]
+
+	short := c.Store("collide_tool", "content", ToolCacheMeta{})
+	if short == target[:minAbbrevLen] {
+		t.Error("Store should return an extended short hash when the 4-char prefix collides")
+	}
+	if !strings.HasPrefix(target, short) {
+		t.Errorf("returned short %q must be a prefix of the full hash", short)
+	}
+	// The stored entry must be retrievable by the issued short hash.
+	if _, ok := c.Get(short); !ok {
+		t.Errorf("Get should resolve the issued short hash %q", short)
+	}
+}
+
+func TestToolResultCache_GetByFullHash(t *testing.T) {
+	c := NewToolResultCache(0)
+	short := c.Store("read_file", "payload", ToolCacheMeta{})
+	full := ComputeToolResultHash("read_file", "payload")
+
+	// The full hash is not the map key, but prefix resolution must find it.
+	entry, ok := c.Get(full)
+	if !ok {
+		t.Fatal("Get should resolve the full hash via prefix fallback")
+	}
+	if entry.Content != "payload" {
+		t.Errorf("Content = %q, want %q", entry.Content, "payload")
+	}
+	if _, ok := c.Get(short); !ok {
+		t.Error("Get should still resolve the issued short hash")
+	}
+}
+
+func TestToolResultCache_StableShortHashForSameContent(t *testing.T) {
+	c := NewToolResultCache(0)
+	first := c.Store("read_file", "same content", ToolCacheMeta{})
+	second := c.Store("read_file", "same content", ToolCacheMeta{})
+	if first != second {
+		t.Errorf("identical content should map to the same short hash: %q != %q", first, second)
+	}
+	if c.Len() != 1 {
+		t.Errorf("dedup should keep a single entry, got Len = %d", c.Len())
+	}
+}
+
+func TestToolResultCache_DistinctContentDistinctShortHash(t *testing.T) {
+	c := NewToolResultCache(0)
+	a := c.Store("read_file", "content A", ToolCacheMeta{})
+	b := c.Store("read_file", "content B", ToolCacheMeta{})
+	if a == b {
+		t.Errorf("distinct content must produce distinct short hashes, both = %q", a)
+	}
+	if c.Len() != 2 {
+		t.Errorf("expected 2 entries, got %d", c.Len())
+	}
+}
+
+func TestToolResultCache_Get_AmbiguousPrefix(t *testing.T) {
+	c := NewToolResultCache(0)
+	// Two distinct full hashes sharing the first two characters.
+	fullA := "ab" + strings.Repeat("a", fullHashLen-2)
+	fullB := "ab" + strings.Repeat("b", fullHashLen-2)
+	c.entries[fullA[:minAbbrevLen]] = &ToolResultCacheEntry{Hash: fullA}
+	c.entries[fullB[:minAbbrevLen]] = &ToolResultCacheEntry{Hash: fullB}
+
+	// "ab" matches both full hashes → ambiguous → not resolved.
+	if _, ok := c.Get("ab"); ok {
+		t.Error("Get should not resolve an ambiguous prefix")
+	}
+	// Each full hash resolves unambiguously on its own.
+	if _, ok := c.Get(fullA); !ok {
+		t.Error("Get should resolve fullA by exact full-hash match")
+	}
+}
+
+func TestToolResultCache_Get_EmptyHashNotResolved(t *testing.T) {
+	c := NewToolResultCache(0)
+	c.Store("read_file", "only entry", ToolCacheMeta{})
+
+	// An empty hash matches every entry via HasPrefix; it must NOT resolve to
+	// the single entry (ambiguous by definition), even when only one exists.
+	if _, ok := c.Get(""); ok {
+		t.Error("Get(\"\") should not resolve even with a single cached entry")
+	}
+}
+
+// --- Short-hash retirement (anti-aliasing after eviction) tests ---
+
+func TestToolResultCache_AbbreviateLocked_SkipsRetiredKeys(t *testing.T) {
+	c := NewToolResultCache(0)
+	target := ComputeToolResultHash("target_tool", "content")
+
+	// Retire target's 4-char prefix (as if an entry that held it was evicted).
+	c.retiredShort[target[:minAbbrevLen]] = struct{}{}
+
+	got := c.abbreviateLocked(target)
+	if got == target[:minAbbrevLen] {
+		t.Fatal("abbreviateLocked must skip retired short keys")
+	}
+	if !strings.HasPrefix(target, got) {
+		t.Errorf("result %q must be a prefix of the full hash", got)
+	}
+	if len(got) <= minAbbrevLen {
+		t.Errorf("expected extension past the retired %d-char key, got %d (%q)", minAbbrevLen, len(got), got)
+	}
+	if _, retired := c.retiredShort[got]; retired {
+		t.Errorf("resolved short %q must not itself be retired", got)
+	}
+}
+
+func TestToolResultCache_Resolve_RetiredHashDoesNotAlias(t *testing.T) {
+	c := NewToolResultCache(0)
+	short := "abcd"
+	full := short + strings.Repeat("1", fullHashLen-len(short))
+
+	// A live entry whose full hash SHARES the retired prefix, but was forced to
+	// a longer key because the prefix was retired.
+	c.entries[short+"1"] = &ToolResultCacheEntry{Hash: full}
+	// Retire the prefix (as if an entry with key `short` had been evicted).
+	c.retiredShort[short] = struct{}{}
+
+	// Resolving the retired short hash must NOT alias the live entry via the
+	// prefix fallback.
+	if _, ok := c.Get(short); ok {
+		t.Error("a retired short hash must not resolve (no aliasing via prefix fallback)")
+	}
+	// The live entry still resolves by its own issued key.
+	if _, ok := c.Get(short + "1"); !ok {
+		t.Error("live entry should still resolve by its own short key")
+	}
+}
+
+func TestToolResultCache_EvictionRetiresShortHash(t *testing.T) {
+	c := NewToolResultCache(10 * time.Millisecond)
+	short := c.Store("mcp_tool", "payload", ToolCacheMeta{IsMCP: true})
+
+	time.Sleep(20 * time.Millisecond)
+
+	// Trigger eviction through Get's slow path (entry now past its TTL).
+	if _, ok := c.Get(short); ok {
+		t.Fatal("expired MCP entry should not resolve")
+	}
+
+	// The short key is now retired — a future entry must not reuse it, and an
+	// old reference must resolve to not-found rather than to new content.
+	c.mu.RLock()
+	_, retired := c.retiredShort[short]
+	c.mu.RUnlock()
+	if !retired {
+		t.Fatal("evicted entry's short key should be retired to prevent reuse")
+	}
+
+	// Store unrelated content; its short hash must differ from the retired one.
+	other := c.Store("mcp_tool", "different payload", ToolCacheMeta{IsMCP: true})
+	if other == short {
+		t.Errorf("new entry reused retired short hash %q", short)
+	}
+	// The retired reference still resolves to not-found.
+	if _, ok := c.Get(short); ok {
+		t.Error("retired short hash must not resolve after a new entry is stored")
+	}
+}

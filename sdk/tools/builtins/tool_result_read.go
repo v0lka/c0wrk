@@ -10,7 +10,7 @@ import (
 	"github.com/v0lka/sp4rk/tools"
 )
 
-const toolResultReadDescription = `Read a previously cached tool result in fragments. Provide the hash from a truncation nudge (e.g. "[This output was truncated ... hash: abc123 ...]") along with a 1-based start_line and the number of lines to read. Use this to retrieve more content from a truncated tool output without re-executing the original tool.`
+const toolResultReadDescription = `Read a previously cached tool result in fragments. Provide the short hash from a truncation nudge (e.g. "[This output was truncated ... hash: abc123 ...]") along with a 1-based start_line and the number of lines to read. Use this to retrieve more content from a truncated tool output without re-executing the original tool.`
 
 const defaultResultReadLines = 500
 
@@ -29,7 +29,7 @@ func NewToolResultReadTool() *ToolResultReadTool {
 		"properties": {
 			"hash": {
 				"type": "string",
-				"description": "The SHA256 hash from the truncation nudge message, e.g. \"abc123def456\""
+				"description": "The short cache hash from the truncation nudge message, e.g. \"abc123\". A unique prefix of the full hash is also accepted."
 			},
 			"start_line": {
 				"type": "integer",

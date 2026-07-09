@@ -38,8 +38,9 @@ type Step struct {
 	// (web, MCP, filesystem) and should be wrapped in <untrusted-content> tags
 	// before entering the LLM context as a prompt injection defense.
 	IsUntrusted bool `json:"is_untrusted,omitempty"`
-	// CacheHash holds the SHA256 hash of the full (pre-truncation) tool result
-	// stored in ToolResultCache. Empty for non-cacheable tools or when the cache
+	// CacheHash holds the short (abbreviated) hash of the full (pre-truncation)
+	// tool result stored in ToolResultCache — a git-style prefix of the SHA256,
+	// unique within the session. Empty for non-cacheable tools or when the cache
 	// is disabled. Used by ContextWindow to replace old tool results with a
 	// cache reference (regular history mutation), reducing O(n²) replay cost.
 	CacheHash string `json:"cache_hash,omitempty"`
