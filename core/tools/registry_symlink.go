@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
-	"strings"
 
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
@@ -19,52 +17,16 @@ func (r *ToolRegistry) checkSymlinksAndConfirm(ctx context.Context, tool sdktool
 		return false, sdktools.ToolResult{}, nil
 	}
 
-	// If all symlink traversals are OS-level infrastructure, skip interception.
-	if len(outside) == 0 {
-		tempDir := sdktools.TempDirFrom(ctx)
-		workspace := sdktools.WorkspacePathFrom(ctx)
-		allOSLevel := true
-		for _, t := range inside {
-			symlinkPrefix := filepath.Clean(t.SymlinkAt) + string(filepath.Separator)
-			osLevel := false
-			if workspace != "" {
-				wsPrefix := filepath.Clean(workspace) + string(filepath.Separator)
-				if strings.HasPrefix(wsPrefix, symlinkPrefix) {
-					osLevel = true
-				}
-			}
-			if !osLevel && tempDir != "" {
-				tempPrefix := filepath.Clean(tempDir) + string(filepath.Separator)
-				if strings.HasPrefix(tempPrefix, symlinkPrefix) {
-					osLevel = true
-				}
-			}
-			if !osLevel {
-				allOSLevel = false
-				break
-			}
-		}
-		if allOSLevel {
-			return false, sdktools.ToolResult{}, nil
-		}
-	}
-
-	if len(outside) > 0 {
-		tempDir := sdktools.TempDirFrom(ctx)
-		if tempDir != "" {
-			allOSLevel := true
-			for _, t := range outside {
-				symlinkPrefix := filepath.Clean(t.SymlinkAt) + string(filepath.Separator)
-				tempPrefix := filepath.Clean(tempDir) + string(filepath.Separator)
-				if !strings.HasPrefix(tempPrefix, symlinkPrefix) {
-					allOSLevel = false
-					break
-				}
-			}
-			if allOSLevel {
-				return false, sdktools.ToolResult{}, nil
-			}
-		}
+	// If every detected symlink traversal is benign OS-level infrastructure
+	// (a well-known OS symlink, or a symlink that is an ancestor of the
+	// workspace/temp root), skip the confirmation gate. Classification is
+	// delegated to the SDK's IsOSLevelSymlink so the well-known list is never
+	// duplicated here — os_symlinks.go is the single source of truth shared by
+	// both the SDK symlink walker and this core gate.
+	workspace := sdktools.WorkspacePathFrom(ctx)
+	tempDir := sdktools.TempDirFrom(ctx)
+	if allTraversalsOSLevel(inside, outside, workspace, tempDir) {
+		return false, sdktools.ToolResult{}, nil
 	}
 
 	policy := r.resolvePolicy(name, tool)
@@ -78,4 +40,23 @@ func (r *ToolRegistry) checkSymlinksAndConfirm(ctx context.Context, tool sdktool
 	reasoning := sdktools.FormatSymlinkReasoning(inside, outside, suspicious)
 	result, err = r.confirmAndExecute(ctx, tool, name, input, reasoning)
 	return true, result, err
+}
+
+// allTraversalsOSLevel reports whether every given symlink traversal is benign
+// OS-level infrastructure: a well-known OS symlink, or a symlink that is an
+// ancestor of the workspace or temp root. Returns true for an empty set
+// (nothing to confirm). roots is the set of legitimate session roots
+// (workspace, temp dir) that may legitimately be reached through a symlink.
+func allTraversalsOSLevel(inside, outside []sdktools.SymlinkTraversal, roots ...string) bool {
+	for _, t := range inside {
+		if !sdktools.IsOSLevelSymlink(t.SymlinkAt, roots...) {
+			return false
+		}
+	}
+	for _, t := range outside {
+		if !sdktools.IsOSLevelSymlink(t.SymlinkAt, roots...) {
+			return false
+		}
+	}
+	return true
 }

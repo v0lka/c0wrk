@@ -319,15 +319,15 @@ func walkSymlinkComponents(absPath, workspace string) []SymlinkTraversal {
 			continue
 		}
 
-		// Skip OS-level symlinks: if the symlink path is a prefix of the workspace
-		// root, it's filesystem mapping infrastructure (e.g., macOS /var → /private/var,
-		// /tmp → /private/tmp), not a user-created security-relevant traversal.
-		if workspace != "" {
-			symlinkNorm := filepath.Clean(current) + string(filepath.Separator)
-			wsNorm := filepath.Clean(workspace) + string(filepath.Separator)
-			if strings.HasPrefix(wsNorm, symlinkNorm) {
-				continue
-			}
+		// Skip OS-level infrastructure symlinks: a well-known OS symlink
+		// (macOS /var → /private/var, Linux /bin → /usr/bin, Windows
+		// junctions) or a symlink that is an ancestor of the workspace root
+		// (the workspace itself is reached through it). These are mapping
+		// infrastructure, not user-created security-relevant traversals.
+		// IsOSLevelSymlink is the shared chokepoint; the well-known list lives
+		// only in os_symlinks.go.
+		if IsOSLevelSymlink(current, workspace) {
+			continue
 		}
 
 		// Symlink found at current component

@@ -47,6 +47,12 @@ type conductorDeps struct {
 	contextFactory   ContextManagerFactory
 	toolExec         agent.ToolExecutor
 	toolRegistry     *sdktools.ToolRegistry
+	// disabledTools is the set of tool names disabled for the current mode
+	// (e.g. CHAT / No-Project mode disables glob/ripgrep/semantic_search). The
+	// Conductor uses it to (a) exclude dead tools from subagent toolsets and
+	// (b) compute the per-mode mandatory read-only base. Mirrors
+	// Orchestrator.coreToolRegistry.DisabledTools(); nil/empty = nothing disabled.
+	disabledTools    map[string]bool
 	llm              agent.LLMCaller
 	modelRegistry    *llm.ModelRegistry
 	model            string
@@ -423,7 +429,11 @@ func stripConductorOnlyTools(descs []sdktools.ToolDescriptor) []sdktools.ToolDes
 }
 
 func (l *conductorLauncher) resolveTaskTools(t tools.DelegationTask) []sdktools.ToolDescriptor {
-	all := l.allToolDescriptors()
+	all := l.stripDisabled(l.allToolDescriptors())
+	mandatory := l.mandatorySubagentTools(all)
+
+	// No explicit tool request: give everything (minus conductor-only and
+	// mode-disabled tools).
 	if t.Tools == nil {
 		return stripConductorOnlyTools(all)
 	}
@@ -433,15 +443,28 @@ func (l *conductorLauncher) resolveTaskTools(t tools.DelegationTask) []sdktools.
 		case "all", "":
 			return stripConductorOnlyTools(all)
 		case "read-only":
-			return filterReadOnlyTools(all)
+			// Read-only delegation: only the mandatory read + MCP + meta base.
+			return stripConductorOnlyTools(mandatory)
 		default:
 			return stripConductorOnlyTools(all)
 		}
 	default:
+		// Explicit tool list: the Conductor is selecting MUTATING tools to
+		// grant. The mandatory read-only/MCP base is ALWAYS added on top so
+		// every subagent can explore files and use MCP tools regardless of
+		// what the Conductor chose to list. This fixes the bug where a
+		// subagent received only the explicitly-named mutating tools and lost
+		// read_file/list_directory/MCP tools entirely.
 		if names, ok := parseToolNames(t.Tools); ok {
-			return stripConductorOnlyTools(filterToolsByName(all, names))
+			requested := filterToolsByName(all, names)
+			return stripConductorOnlyTools(unionToolDescriptors(mandatory, requested))
 		}
-		return stripConductorOnlyTools(all)
+		// Unexpected tool-request type: fall back to the safe minimum
+		// (read-only + MCP base) instead of granting the full mutating
+		// toolset. Returning everything would defeat the Conductor's
+		// tool-selection intent if an unknown DelegationTask.Tools shape
+		// ever reaches this code path.
+		return stripConductorOnlyTools(mandatory)
 	}
 }
 
@@ -450,6 +473,75 @@ func (l *conductorLauncher) allToolDescriptors() []sdktools.ToolDescriptor {
 		return l.deps.toolRegistry.List()
 	}
 	return nil
+}
+
+// stripDisabled removes tools disabled for the current mode (e.g. CHAT /
+// No-Project mode) from the descriptor list. Disabled tools must never be
+// advertised to a subagent's LLM even though runtime Execute() would block
+// them too — advertising dead tools wastes the tool-call budget and misleads
+// the model.
+func (l *conductorLauncher) stripDisabled(descs []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
+	if len(l.deps.disabledTools) == 0 {
+		return descs
+	}
+	out := make([]sdktools.ToolDescriptor, 0, len(descs))
+	for _, d := range descs {
+		if !l.deps.disabledTools[d.Name] {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// mandatorySubagentTools returns the tools that MUST always be present in a
+// subagent's toolset regardless of the Conductor's requested list: all
+// MCP-sourced tools plus the read-only/meta built-in tools, minus any tool
+// disabled in the current mode. The Conductor may only add mutating built-in
+// tools on top of this base (see resolveTaskTools). The read/MCP composition
+// therefore differs between CODE mode (all read tools) and CHAT / No-Project
+// mode (glob/ripgrep/semantic_search disabled).
+func (l *conductorLauncher) mandatorySubagentTools(all []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
+	disabled := l.deps.disabledTools
+	out := make([]sdktools.ToolDescriptor, 0, len(all))
+	seen := make(map[string]struct{}, len(all))
+	for _, d := range all {
+		if disabled[d.Name] {
+			continue
+		}
+		isMCP := d.SourceCategory == sdktools.SourceCategoryMCP
+		_, isReadOnly := subagentReadOnlyToolNames[d.Name]
+		if !isMCP && !isReadOnly {
+			continue
+		}
+		if _, ok := seen[d.Name]; ok {
+			continue
+		}
+		seen[d.Name] = struct{}{}
+		out = append(out, d)
+	}
+	return out
+}
+
+// unionToolDescriptors merges two descriptor lists, deduplicating by tool name
+// (preserving the first occurrence — base wins over requested on conflict).
+func unionToolDescriptors(base, extra []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	out := make([]sdktools.ToolDescriptor, 0, len(base)+len(extra))
+	for _, d := range base {
+		if _, ok := seen[d.Name]; ok {
+			continue
+		}
+		seen[d.Name] = struct{}{}
+		out = append(out, d)
+	}
+	for _, d := range extra {
+		if _, ok := seen[d.Name]; ok {
+			continue
+		}
+		seen[d.Name] = struct{}{}
+		out = append(out, d)
+	}
+	return out
 }
 
 // toolDescriptorByName looks up a single tool's full descriptor (including
@@ -636,21 +728,22 @@ func filterToolsByName(all []sdktools.ToolDescriptor, names []string) []sdktools
 	return out
 }
 
-func filterReadOnlyTools(all []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
-	readOnly := map[string]struct{}{
-		"read_file": {}, "list_directory": {}, "glob": {}, "ripgrep": {},
-		"semantic_search": {}, "search_facts": {}, "read_step_output": {},
-		"list_step_outputs": {}, "read_final_result": {}, "web_fetch": {}, "web_search": {},
-		"finish": {}, "store_fact": {}, "update_checklist": {}, "declare_step_complete": {}, "ask_user": {},
-		"tool_result_read": {}, "read_skill_resource": {},
-	}
-	out := make([]sdktools.ToolDescriptor, 0, len(all))
-	for _, d := range all {
-		if _, ok := readOnly[d.Name]; ok {
-			out = append(out, d)
-		}
-	}
-	return out
+// subagentReadOnlyToolNames are non-mutating tools that must always be
+// available to a subagent, regardless of the Conductor's requested tool list.
+// They are read-only exploration tools (read_file, glob, web_search, ...) and
+// internal meta-tools (finish, store_fact, ...). MCP-sourced tools are handled
+// separately in mandatorySubagentTools (always included via SourceCategory) and
+// do not need to appear here. Mode-disabled tools (e.g. glob/ripgrep/
+// semantic_search in CHAT mode) are filtered out at selection time.
+var subagentReadOnlyToolNames = map[string]struct{}{
+	// Read-only exploration
+	ToolReadFile: {}, ToolListDirectory: {}, ToolGlob: {}, ToolRipgrep: {},
+	ToolSemanticSearch: {}, ToolWebSearch: {}, ToolWebFetch: {}, ToolReadSkillRes: {},
+	// Internal meta (read-oriented)
+	ToolSearchFacts: {}, ToolReadStepOutput: {}, ToolListStepOutput: {},
+	ToolReadFinalResult: {}, ToolToolResultRead: {},
+	ToolFinish: {}, ToolStoreFact: {}, ToolUpdateChecklist: {},
+	ToolDeclareStepComplete: {}, ToolAskUser: {},
 }
 
 // conductorPublisher implements tools.PlanPublisher.
@@ -962,6 +1055,7 @@ func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orch
 		contextFactory:      o.contextFactory,
 		toolExec:            o.toolExec,
 		toolRegistry:        o.toolRegistry,
+		disabledTools:       o.disabledToolNames(),
 		llm:                 o.llm,
 		modelRegistry:       o.modelRegistry,
 		model:               o.config.Model,

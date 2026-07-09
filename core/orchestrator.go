@@ -372,10 +372,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// Delegate to the Conductor. The restored blackboard carries facts and
 	// step results from the prior run; the Conductor reads them via tools
 	// (search_facts, read_step_output) and continues toward completion.
-	availableTools := o.toolRegistry.List()
-	if o.coreToolRegistry != nil {
-		availableTools = o.toolRegistry.ListFiltered(o.coreToolRegistry.DisabledTools())
-	}
+	availableTools := o.toolRegistry.ListFiltered(o.disabledToolNames())
 	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, nil)
 	var incompleteErr error
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
@@ -806,12 +803,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	}
 
 	// 2. Get available tools (exclude disabled tools in No Project mode).
-	var availableTools []sdktools.ToolDescriptor
-	if o.coreToolRegistry != nil {
-		availableTools = o.toolRegistry.ListFiltered(o.coreToolRegistry.DisabledTools())
-	} else {
-		availableTools = o.toolRegistry.List()
-	}
+	availableTools := o.toolRegistry.ListFiltered(o.disabledToolNames())
 	mcpCount := 0
 	for _, t := range availableTools {
 		if t.SourceCategory == sdktools.SourceCategoryMCP {
@@ -870,4 +862,15 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		return result, incompleteErr
 	}
 	return result, nil
+}
+
+// disabledToolNames returns the set of tool names disabled for the current
+// mode (e.g. CHAT / No-Project mode disables glob/ripgrep/semantic_search),
+// or nil if no tools are disabled / the core registry is unavailable. Used to
+// build the Conductor's available-tool view and the per-mode subagent toolset.
+func (o *Orchestrator) disabledToolNames() map[string]bool {
+	if o.coreToolRegistry == nil {
+		return nil
+	}
+	return o.coreToolRegistry.DisabledTools()
 }
