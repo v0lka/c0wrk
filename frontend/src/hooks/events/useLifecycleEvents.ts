@@ -25,7 +25,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'routing', (data) => {
         if (!isRoutingData(data)) { reportDroppedEvent('routing', data); return }
-        useChatStore.getState().setActivityStatus('Analyzing request...')
+        useChatStore.getState().setActivityStatus(sessionId, 'Analyzing request...')
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,
@@ -44,7 +44,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'step_start', (data) => {
         if (!isStepData(data)) { reportDroppedEvent('step_start', data); return }
-        useChatStore.getState().setActivityStatus('Thinking...')
+        useChatStore.getState().setActivityStatus(sessionId, 'Thinking...')
         const id = generateMessageId()
         stepIdMap.set(data.step_num, id)
         useChatStore.getState().addMessage(sessionId, {
@@ -75,7 +75,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'retry', (data) => {
         if (!isRetryData(data)) { reportDroppedEvent('retry', data); return }
-        useChatStore.getState().setActivityStatus(`Retrying (attempt ${data.attempt}/${data.max_attempts})...`)
+        useChatStore.getState().setActivityStatus(sessionId, `Retrying (attempt ${data.attempt}/${data.max_attempts})...`)
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,
@@ -95,7 +95,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'step_retry', (data) => {
         if (!isStepRetryData(data)) { reportDroppedEvent('step_retry', data); return }
-        useChatStore.getState().setActivityStatus(`Retrying step ${data.attempt}/${data.max_attempts}...`)
+        useChatStore.getState().setActivityStatus(sessionId, `Retrying step ${data.attempt}/${data.max_attempts}...`)
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,
@@ -112,7 +112,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
       onSessionEvent(sessionId, 'service', (data) => {
         if (!isServiceData(data)) { reportDroppedEvent('service', data); return }
         if (data.content) {
-          useChatStore.getState().setActivityStatus(data.content)
+          useChatStore.getState().setActivityStatus(sessionId, data.content)
         }
         if (data.phase === 'orchestration' && data.content) {
           useChatStore.getState().addMessage(sessionId, {
@@ -129,7 +129,7 @@ export function useLifecycleEvents(sessionId: string | null): void {
     // --- finishing ---
     cleanups.push(
       onSessionEvent(sessionId, 'finishing', () => {
-        useChatStore.getState().setActivityStatus('Finishing...')
+        useChatStore.getState().setActivityStatus(sessionId, 'Finishing...')
       }),
     )
 

@@ -60,14 +60,19 @@ export function useBackgroundSessionWatcher(): void {
     const cleanups: Array<() => void> = []
 
     for (const sessionId of sessionIds) {
-      // Reset the session's running flag and transient UI state. The final
-      // answer is already persisted by the backend — it will appear when the
-      // user switches to the session and the reconcile effect loads history.
+      // Finalize THIS background session's ephemeral UI state on a terminal
+      // event. Because streaming/activity are now keyed per session, clearing
+      // them here only affects the completing session — it cannot contaminate
+      // the currently-viewed active session. This mirrors what the
+      // active-session terminal handler (useChatEvents) does and prevents a
+      // stale partial stream from lingering when the user later switches back
+      // to a session that finished in the background. The final answer is
+      // persisted by the backend and loaded by the reconcile effect on switch.
       const handleCompletion = (): void => {
         const store = useChatStore.getState()
         store.setTaskActive(sessionId, false)
-        store.setActivityStatus(null)
-        store.clearStreamingText()
+        store.clearStreamingText(sessionId)
+        store.setActivityStatus(sessionId, null)
       }
 
       cleanups.push(

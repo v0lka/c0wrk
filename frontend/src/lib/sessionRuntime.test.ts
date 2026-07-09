@@ -11,9 +11,8 @@ function resetStore(): void {
     messages: {},
     messageOrder: {},
     taskActive: {},
-    streamingText: null,
-    streamingSessionId: null,
-    activityStatus: null,
+    streamingText: {},
+    activityStatus: {},
   })
 }
 

@@ -45,7 +45,7 @@ export function handleToolConfirmEvent(sessionId: string, data: ToolConfirmData)
     } as Record<string, unknown>,
     timestamp: Date.now(),
   })
-  store.setActivityStatus('Awaiting confirmation...')
+  store.setActivityStatus(sessionId, 'Awaiting confirmation...')
 }
 
 /** Handle an ask_user event for a session (active or background). */
@@ -61,7 +61,7 @@ export function handleAskUserEvent(sessionId: string, data: AskUserData): void {
     } as Record<string, unknown>,
     timestamp: Date.now(),
   })
-  useChatStore.getState().setActivityStatus('Waiting for your answer...')
+  useChatStore.getState().setActivityStatus(sessionId, 'Waiting for your answer...')
 }
 
 /** Handle a step_limit event for a session (active or background). */
@@ -82,6 +82,7 @@ export function handleStepLimitEvent(sessionId: string, data: StepLimitData): vo
     timestamp: Date.now(),
   })
   useChatStore.getState().setActivityStatus(
+    sessionId,
     data.reason
       ? 'Circuit breaker triggered — awaiting decision...'
       : 'Step limit reached — awaiting decision...',
@@ -102,5 +103,5 @@ export function handlePlanReviewEvent(sessionId: string, data: PlanReviewReadyDa
     } as Record<string, unknown>,
     timestamp: Date.now(),
   })
-  useChatStore.getState().setActivityStatus('Plan is ready for review...')
+  useChatStore.getState().setActivityStatus(sessionId, 'Plan is ready for review...')
 }

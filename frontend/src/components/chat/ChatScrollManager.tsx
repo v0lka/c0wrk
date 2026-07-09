@@ -5,7 +5,7 @@ import { ChatNewActivityBanner } from './ChatNewActivityBanner'
 
 interface ChatScrollManagerProps {
   messages: ChatMessageUI[]
-  streamingText: string | null
+  streamingText: string | undefined
   scrollRef: React.RefObject<HTMLDivElement | null>
   children: React.ReactNode
 }

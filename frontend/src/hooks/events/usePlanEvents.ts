@@ -29,7 +29,7 @@ export function usePlanEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'plan_generated', (data) => {
         if (!isPlanData(data)) { reportDroppedEvent('plan_generated', data); return }
-        useChatStore.getState().setActivityStatus('Executing plan...')
+        useChatStore.getState().setActivityStatus(sessionId, 'Executing plan...')
         if (data.steps) {
           const items = data.steps.map(toPlanItem)
           const group: PlanGroup = {
@@ -61,7 +61,7 @@ export function usePlanEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'plan_step_start', (data) => {
         if (!isPlanStepStartData(data)) { reportDroppedEvent('plan_step_start', data); return }
-        useChatStore.getState().setActivityStatus(`Executing step ${data.step_id}...`)
+        useChatStore.getState().setActivityStatus(sessionId, `Executing step ${data.step_id}...`)
         usePlanStore.getState().updateStepStatus(data.step_id, 'running')
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),

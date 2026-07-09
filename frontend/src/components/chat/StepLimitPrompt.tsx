@@ -23,7 +23,7 @@ export function StepLimitPrompt({ item }: { item: StepLimitItem }) {
   const handleResponse = useCallback((response: StepLimitDecision) => {
     emit('step_limit_response', { request_id: requestId, response })
     updateMessage(sessionId, item.message.id, { metadata: stepLimitResolved(response) })
-    setActivityStatus(response === 'deny' ? null : 'Continuing execution...')
+    setActivityStatus(sessionId, response === 'deny' ? null : 'Continuing execution...')
   }, [requestId, sessionId, updateMessage, setActivityStatus, item.message.id])
 
   const handleAllowOnce = useCallback(() => handleResponse('allow_once'), [handleResponse])

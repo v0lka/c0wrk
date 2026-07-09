@@ -2,7 +2,6 @@ import { useMemo } from 'react'
 import { create } from 'zustand'
 import type { ChatMessageUI } from '@/types/messages'
 import type { TokenInfo } from '@/types/models'
-import { generateMessageId } from '@/lib/ids'
 
 // Re-export types and grouping functions so existing imports continue to work
 export type { MessageType, ChatMessageUI, DisplayItem, GroupedMessages } from '@/types/messages'
@@ -15,11 +14,10 @@ interface ChatState {
   messages: Record<string, Record<string, ChatMessageUI>>
   // Ordered message IDs per session: sessionId -> messageId[]
   messageOrder: Record<string, string[]>
-  // Streaming
-  streamingText: string | null
-  streamingSessionId: string | null
-  // Activity
-  activityStatus: string | null
+  // Streaming per session: sessionId -> accumulated text (absent key = not streaming)
+  streamingText: Record<string, string>
+  // Activity status per session: sessionId -> status (absent key = no activity)
+  activityStatus: Record<string, string>
   // Task active per session
   taskActive: Record<string, boolean>
   // Context fill per step: stepId -> fill percent
@@ -34,11 +32,10 @@ interface ChatActions {
   removeMessage: (sessionId: string, messageId: string) => void
   setMessages: (sessionId: string, messages: ChatMessageUI[]) => void
   mergeHistoryMessages: (sessionId: string, history: ChatMessageUI[], loadStartedAt: number) => void
-  setStreamingText: (text: string, sessionId: string) => void
-  appendStreamingText: (delta: string) => void
-  flushStreaming: () => ChatMessageUI | null
-  clearStreamingText: () => void
-  setActivityStatus: (status: string | null) => void
+  setStreamingText: (sessionId: string, text: string) => void
+  appendStreamingText: (sessionId: string, delta: string) => void
+  clearStreamingText: (sessionId: string) => void
+  setActivityStatus: (sessionId: string, status: string | null) => void
   setTaskActive: (sessionId: string, active: boolean) => void
   setStepContextFill: (stepId: string, fill: number) => void
   clearStepContextFill: () => void
@@ -106,12 +103,11 @@ export function useSessionMessages(sessionId: string | null): ChatMessageUI[] {
 
 // --- Store ---
 
-export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
+export const useChatStore = create<ChatState & ChatActions>((set) => ({
   messages: {},
   messageOrder: {},
-  streamingText: null,
-  streamingSessionId: null,
-  activityStatus: null,
+  streamingText: {},
+  activityStatus: {},
   taskActive: {},
   stepContextFill: {},
   sessionTokens: {},
@@ -195,53 +191,29 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
     }
   }),
 
-  setStreamingText: (text, sessionId) => set({
-    streamingText: text,
-    streamingSessionId: sessionId,
-  }),
-
-  appendStreamingText: (delta) => set((s) => ({
-    streamingText: (s.streamingText ?? '') + delta,
+  setStreamingText: (sessionId, text) => set((s) => ({
+    streamingText: { ...s.streamingText, [sessionId]: text },
   })),
 
-  flushStreaming: () => {
-    const { streamingText, streamingSessionId } = get()
-    if (!streamingText || !streamingSessionId) {
-      set({ streamingText: null, streamingSessionId: null })
-      return null
-    }
-    const message: ChatMessageUI = {
-      id: generateMessageId(),
-      sessionId: streamingSessionId,
-      type: 'assistant',
-      content: streamingText,
-      timestamp: Date.now(),
-    }
-    // Add to store and clear streaming
-    const s = get()
-    const sessionIndex = s.messages[streamingSessionId] ?? {}
-    const sessionOrder = s.messageOrder[streamingSessionId] ?? []
-    set({
-      messages: {
-        ...s.messages,
-        [streamingSessionId]: { ...sessionIndex, [message.id]: message },
-      },
-      messageOrder: {
-        ...s.messageOrder,
-        [streamingSessionId]: [...sessionOrder, message.id],
-      },
-      streamingText: null,
-      streamingSessionId: null,
-    })
-    return message
-  },
-
-  clearStreamingText: () => set({
-    streamingText: null,
-    streamingSessionId: null,
+  appendStreamingText: (sessionId, delta) => set((s) => {
+    const prev = s.streamingText[sessionId] ?? ''
+    return { streamingText: { ...s.streamingText, [sessionId]: prev + delta } }
   }),
 
-  setActivityStatus: (status) => set({ activityStatus: status }),
+  clearStreamingText: (sessionId) => set((s) => {
+    if (!(sessionId in s.streamingText)) return s
+    const { [sessionId]: _stream, ...rest } = s.streamingText
+    return { streamingText: rest }
+  }),
+
+  setActivityStatus: (sessionId, status) => set((s) => {
+    if (status === null || status === undefined) {
+      if (!(sessionId in s.activityStatus)) return s
+      const { [sessionId]: _status, ...rest } = s.activityStatus
+      return { activityStatus: rest }
+    }
+    return { activityStatus: { ...s.activityStatus, [sessionId]: status } }
+  }),
 
   setTaskActive: (sessionId, active) => set((s) => ({
     taskActive: { ...s.taskActive, [sessionId]: active },
@@ -262,14 +234,15 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
     const { [sessionId]: _order, ...restOrder } = s.messageOrder
     const { [sessionId]: _active, ...restActive } = s.taskActive
     const { [sessionId]: _tokens, ...restTokens } = s.sessionTokens
+    const { [sessionId]: _stream, ...restStream } = s.streamingText
+    const { [sessionId]: _status, ...restStatus } = s.activityStatus
     return {
       messages: restMessages,
       messageOrder: restOrder,
       taskActive: restActive,
       sessionTokens: restTokens,
-      activityStatus: null,
-      streamingText: null,
-      streamingSessionId: null,
+      streamingText: restStream,
+      activityStatus: restStatus,
       stepContextFill: {},
     }
   }),

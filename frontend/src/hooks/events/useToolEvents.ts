@@ -30,7 +30,7 @@ export function useToolEvents(sessionId: string | null): void {
         const activityLabel = isMemoryTool
           ? 'Using memory...'
           : data.tool === 'finish' ? 'Finishing...' : `Running tool: ${data.tool}...`
-        useChatStore.getState().setActivityStatus(activityLabel)
+        useChatStore.getState().setActivityStatus(sessionId, activityLabel)
 
         const toolMsgId = buildToolMsgId(data)
         useChatStore.getState().addMessage(sessionId, {

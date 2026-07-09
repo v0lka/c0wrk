@@ -57,7 +57,7 @@ export function AskUserPanel({ item }: { item: AskUserItem }) {
       answers: questions.map(q => ({ id: q.id, selected: Array.from(selections.get(q.id) ?? []), custom_text: customTexts.get(q.id) ?? '' })),
     })
     updateMessage(sessionId, item.message.id, { metadata: askUserResolved(answer) })
-    setActivityStatus(null)
+    setActivityStatus(sessionId, null)
   }
 
   if (resolved !== null) {

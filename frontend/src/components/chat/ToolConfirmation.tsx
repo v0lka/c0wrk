@@ -45,7 +45,7 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
       updateMessage(sessionId, toolMsgId, { metadata: { awaiting_confirmation: false } })
     }
     updateMessage(sessionId, item.message.id, { metadata: toolConfirmResolved(isConfirm ? 'confirmed' : 'denied') })
-    setActivityStatus(isConfirm ? `Running tool: ${tool}...` : null)
+    setActivityStatus(sessionId, isConfirm ? `Running tool: ${tool}...` : null)
   }, [confirmId, toolMsgId, sessionId, updateMessage, setActivityStatus, item.message.id, tool])
 
   const handleAskAgent = () => {

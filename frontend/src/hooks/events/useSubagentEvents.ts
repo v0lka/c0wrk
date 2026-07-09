@@ -20,7 +20,7 @@ export function useSubagentEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'subagent_launch', (data) => {
         if (!isSubAgentLaunchData(data)) { reportDroppedEvent('subagent_launch', data); return }
-        useChatStore.getState().setActivityStatus('Launching sub-agent...')
+        useChatStore.getState().setActivityStatus(sessionId, 'Launching sub-agent...')
         useChatStore.getState().addMessage(sessionId, {
           id: `subagent-${data.step_id}-launch`,
           sessionId,

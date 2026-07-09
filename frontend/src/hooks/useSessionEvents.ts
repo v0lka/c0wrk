@@ -23,10 +23,10 @@ export function useSessionEvents(sessionId: string | null): void {
     // taskActive is reset to false here so the send button doesn't render as
     // a red "stop" immediately on switch — the reconcile effect in ChatArea
     // will set it back to true if the session is genuinely still running.
+    // NOTE: streamingText/activityStatus are now per-session keyed maps, so
+    // they are naturally preserved across A->B->A switches and must NOT be
+    // reset here — doing so would wipe another (background) session's state.
     useChatStore.setState({
-      streamingText: null,
-      streamingSessionId: null,
-      activityStatus: null,
       stepContextFill: {},
       taskActive: { ...useChatStore.getState().taskActive, [sessionId]: false },
     })

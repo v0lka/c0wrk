@@ -23,7 +23,7 @@ import { logger } from '@/lib/logger'
 export function ChatArea() {
   const activeSessionId = useSessionStore(s => s.activeSessionId)
   const messages = useSessionMessages(activeSessionId)
-  const streamingText = useChatStore(s => s.streamingText)
+  const streamingText = useChatStore(s => activeSessionId ? s.streamingText[activeSessionId] : undefined)
   const scrollRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [containerHeight, setContainerHeight] = useState(600)

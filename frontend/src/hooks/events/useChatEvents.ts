@@ -40,15 +40,15 @@ export function useChatEvents(sessionId: string | null): void {
       onSessionEvent(sessionId, 'assistant_chunk', (data) => {
         if (!isAssistantChunkData(data)) { reportDroppedEvent('assistant_chunk', data); return }
         const store = useChatStore.getState()
-        store.setActivityStatus('Generating response...')
+        store.setActivityStatus(sessionId, 'Generating response...')
         if (data.accumulated_content !== undefined) {
-          store.setStreamingText(data.accumulated_content, sessionId)
+          store.setStreamingText(sessionId, data.accumulated_content)
         } else if (data.content) {
           // Ensure streaming session is set before appending
-          if (!store.streamingSessionId) {
-            store.setStreamingText(data.content, sessionId)
+          if (!store.streamingText[sessionId]) {
+            store.setStreamingText(sessionId, data.content)
           } else {
-            store.appendStreamingText(data.content)
+            store.appendStreamingText(sessionId, data.content)
           }
         }
       }),
@@ -58,7 +58,7 @@ export function useChatEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'assistant_done', () => {
         const store = useChatStore.getState()
-        const text = store.streamingText
+        const text = store.streamingText[sessionId]
         if (text) {
           store.addMessage(sessionId, {
             id: generateMessageId(),
@@ -67,7 +67,7 @@ export function useChatEvents(sessionId: string | null): void {
             content: text,
             timestamp: Date.now(),
           })
-          store.clearStreamingText()
+          store.clearStreamingText(sessionId)
         }
       }),
     )
@@ -76,7 +76,7 @@ export function useChatEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'thought', (data) => {
         if (!isThoughtData(data)) { reportDroppedEvent('thought', data); return }
-        useChatStore.getState().setActivityStatus('Reasoning...')
+        useChatStore.getState().setActivityStatus(sessionId, 'Reasoning...')
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,
@@ -100,8 +100,8 @@ export function useChatEvents(sessionId: string | null): void {
           timestamp: Date.now(),
         })
         const store = useChatStore.getState()
-        store.clearStreamingText()
-        store.setActivityStatus(null)
+        store.clearStreamingText(sessionId)
+        store.setActivityStatus(sessionId, null)
         store.setTaskActive(sessionId, false)
       }),
     )
@@ -111,8 +111,8 @@ export function useChatEvents(sessionId: string | null): void {
       onSessionEvent(sessionId, 'task_complete', (data) => {
         if (!isTaskCompleteData(data)) { reportDroppedEvent('task_complete', data); return }
         const store = useChatStore.getState()
-        store.clearStreamingText()
-        store.setActivityStatus(null)
+        store.clearStreamingText(sessionId)
+        store.setActivityStatus(sessionId, null)
         store.setTaskActive(sessionId, false)
         if (data.output) {
           // Dedup: in the implicit text-only finish path the executor streams
@@ -167,8 +167,8 @@ export function useChatEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'task_cancelled', () => {
         const store = useChatStore.getState()
-        store.clearStreamingText()
-        store.setActivityStatus(null)
+        store.clearStreamingText(sessionId)
+        store.setActivityStatus(sessionId, null)
         store.setTaskActive(sessionId, false)
         store.addMessage(sessionId, {
           id: generateMessageId(),
@@ -184,7 +184,7 @@ export function useChatEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'reflection', (data) => {
         if (!isReflectionData(data)) { reportDroppedEvent('reflection', data); return }
-        useChatStore.getState().setActivityStatus('Reflecting on results...')
+        useChatStore.getState().setActivityStatus(sessionId, 'Reflecting on results...')
         useChatStore.getState().addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,

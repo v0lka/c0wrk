@@ -42,18 +42,20 @@ vi.mock('@/api/runtime', () => ({
 
 const chatStoreState = {
   taskActive: {} as Record<string, boolean>,
-  activityStatus: null as string | null,
-  streamingText: null as string | null,
-  streamingSessionId: null as string | null,
+  activityStatus: {} as Record<string, string>,
+  streamingText: {} as Record<string, string>,
   setTaskActive: (sid: string, active: boolean) => {
     chatStoreState.taskActive = { ...chatStoreState.taskActive, [sid]: active }
   },
-  setActivityStatus: (status: string | null) => {
-    chatStoreState.activityStatus = status
+  setActivityStatus: (sid: string, status: string | null) => {
+    if (status === null) {
+      delete chatStoreState.activityStatus[sid]
+    } else {
+      chatStoreState.activityStatus = { ...chatStoreState.activityStatus, [sid]: status }
+    }
   },
-  clearStreamingText: () => {
-    chatStoreState.streamingText = null
-    chatStoreState.streamingSessionId = null
+  clearStreamingText: (sid: string) => {
+    delete chatStoreState.streamingText[sid]
   },
 }
 
@@ -95,9 +97,8 @@ function resetMockState(): void {
 
 function resetStores(): void {
   chatStoreState.taskActive = {}
-  chatStoreState.activityStatus = null
-  chatStoreState.streamingText = null
-  chatStoreState.streamingSessionId = null
+  chatStoreState.activityStatus = {}
+  chatStoreState.streamingText = {}
   sessionStoreState.activeSessionId = null
 }
 
@@ -177,9 +178,11 @@ describe('useBackgroundSessionWatcher', () => {
     expect(subscriptions.size).toBe(14)
   })
 
-  it('resets taskActive to false on task_complete', () => {
+  it('resets taskActive to false on task_complete without touching the active session state', () => {
     chatStoreState.setTaskActive('bg-1', true)
-    chatStoreState.setActivityStatus('Processing...')
+    // activityStatus is now per-session; the active session's status must be
+    // untouched by a background session's completion.
+    chatStoreState.setActivityStatus('active-1', 'Processing...')
     sessionStoreState.activeSessionId = 'active-1'
 
     useRenderWatcher()
@@ -188,7 +191,9 @@ describe('useBackgroundSessionWatcher', () => {
     fireSessionEvent('bg-1', 'task_complete', { output: 'done', success: true })
 
     expect(chatStoreState.taskActive['bg-1']).toBe(false)
-    expect(chatStoreState.activityStatus).toBe(null)
+    // The background completion must NOT clear the active session's activity
+    // indicator (cross-session global-state contamination).
+    expect(chatStoreState.activityStatus['active-1']).toBe('Processing...')
   })
 
   it('resets taskActive to false on task_cancelled', () => {
@@ -213,18 +218,26 @@ describe('useBackgroundSessionWatcher', () => {
     expect(chatStoreState.taskActive['bg-1']).toBe(false)
   })
 
-  it('clears streaming text on completion', () => {
+  it('finalizes only the completing background session, leaving the active session untouched', () => {
     chatStoreState.setTaskActive('bg-1', true)
-    chatStoreState.streamingText = 'partial response'
-    chatStoreState.streamingSessionId = 'bg-1'
+    // Per-session buffers: active-1 holds the live stream; bg-1 holds a stale
+    // partial left over from before it went to the background.
+    chatStoreState.streamingText = { 'active-1': 'active-1 partial response', 'bg-1': 'bg-1 stale partial' }
+    chatStoreState.activityStatus = { 'active-1': 'Generating response...', 'bg-1': 'Generating response...' }
     sessionStoreState.activeSessionId = 'active-1'
 
     useRenderWatcher()
 
     fireSessionEvent('bg-1', 'task_complete', { output: 'done', success: true })
 
-    expect(chatStoreState.streamingText).toBe(null)
-    expect(chatStoreState.streamingSessionId).toBe(null)
+    // bg-1's OWN ephemeral state is finalized — no stale partial lingers to
+    // surface when the user later switches to bg-1.
+    expect(chatStoreState.streamingText['bg-1']).toBeUndefined()
+    expect(chatStoreState.activityStatus['bg-1']).toBeUndefined()
+    expect(chatStoreState.taskActive['bg-1']).toBe(false)
+    // The ACTIVE session is completely untouched — no cross-session contamination.
+    expect(chatStoreState.streamingText['active-1']).toBe('active-1 partial response')
+    expect(chatStoreState.activityStatus['active-1']).toBe('Generating response...')
   })
 
   it('unsubscribes when a session is no longer running', () => {

@@ -43,7 +43,7 @@ export function useActionEvents(sessionId: string | null): void {
           metadata: { resolved: false },
           timestamp: Date.now(),
         })
-        useChatStore.getState().setActivityStatus(null)
+        useChatStore.getState().setActivityStatus(sessionId, null)
         useChatStore.getState().setTaskActive(sessionId, false)
       }),
     )
@@ -62,7 +62,7 @@ export function useActionEvents(sessionId: string | null): void {
           }
         }
         store.setTaskActive(sessionId, true)
-        store.setActivityStatus('Resuming...')
+        store.setActivityStatus(sessionId, 'Resuming...')
       }),
     )
 

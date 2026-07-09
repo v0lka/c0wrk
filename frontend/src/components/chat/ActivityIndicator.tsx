@@ -1,7 +1,9 @@
 import { useChatStore } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
 
 export function ActivityIndicator() {
-  const activityStatus = useChatStore(s => s.activityStatus)
+  const activeSessionId = useSessionStore(s => s.activeSessionId)
+  const activityStatus = useChatStore(s => activeSessionId ? s.activityStatus[activeSessionId] : undefined)
 
   if (!activityStatus) return null
 

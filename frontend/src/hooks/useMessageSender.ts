@@ -50,7 +50,7 @@ export function useMessageSender(): UseMessageSenderResult {
 
     useSessionStore.getState().touchSession(sessionId)
     useChatStore.getState().setTaskActive(sessionId, true)
-    useChatStore.getState().setActivityStatus('Processing...')
+    useChatStore.getState().setActivityStatus(sessionId, 'Processing...')
 
     try {
       const modelOverride = useInputModeStore.getState().selectedModel ?? ''
