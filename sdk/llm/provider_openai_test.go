@@ -962,3 +962,80 @@ func TestOpenAIProvider_BuildChatParams_NoReasoningNoFamily(t *testing.T) {
 		t.Errorf("expected model 'gpt-4o', got %q", params.Model)
 	}
 }
+
+func TestOpenAIProvider_BuildChatParams_GLMReasoning(t *testing.T) {
+	p, _ := NewOpenAIProvider(OpenAIProviderConfig{Name: "glm", APIKey: "k"})
+
+	// build marshals the generated params to JSON and returns the decoded
+	// top-level map so individual reasoning fields can be asserted.
+	build := func(t *testing.T, model, effort string) map[string]any {
+		req := ChatRequest{
+			Model:           model,
+			Messages:        []Message{{Role: "user", Content: "Hi"}},
+			ReasoningEffort: effort,
+		}
+		raw, err := json.Marshal(p.buildChatParams(req))
+		if err != nil {
+			t.Fatalf("marshal params: %v", err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("unmarshal params: %v", err)
+		}
+		return out
+	}
+
+	t.Run("glm-5.2 none disables thinking and omits reasoning_effort", func(t *testing.T) {
+		out := build(t, "glm-5.2", "none")
+		thinking, _ := out["thinking"].(map[string]any)
+		if thinking["type"] != "disabled" {
+			t.Errorf("thinking.type = %v, want disabled", thinking["type"])
+		}
+		if _, ok := out["reasoning_effort"]; ok {
+			t.Errorf("reasoning_effort must be absent for none, got %v", out["reasoning_effort"])
+		}
+	})
+
+	t.Run("glm-5.2 max enables thinking and sets reasoning_effort=max", func(t *testing.T) {
+		out := build(t, "glm-5.2", "max")
+		thinking, _ := out["thinking"].(map[string]any)
+		if thinking["type"] != "enabled" {
+			t.Errorf("thinking.type = %v, want enabled", thinking["type"])
+		}
+		if out["reasoning_effort"] != "max" {
+			t.Errorf("reasoning_effort = %v, want max", out["reasoning_effort"])
+		}
+	})
+
+	t.Run("glm-5.2 high enables thinking and sets reasoning_effort=high", func(t *testing.T) {
+		out := build(t, "glm-5.2", "high")
+		thinking, _ := out["thinking"].(map[string]any)
+		if thinking["type"] != "enabled" {
+			t.Errorf("thinking.type = %v, want enabled", thinking["type"])
+		}
+		if out["reasoning_effort"] != "high" {
+			t.Errorf("reasoning_effort = %v, want high", out["reasoning_effort"])
+		}
+	})
+
+	t.Run("glm-5.2 empty (Auto) sends no reasoning fields", func(t *testing.T) {
+		out := build(t, "glm-5.2", "")
+		if _, ok := out["thinking"]; ok {
+			t.Errorf("thinking must be absent for Auto, got %v", out["thinking"])
+		}
+		if _, ok := out["reasoning_effort"]; ok {
+			t.Errorf("reasoning_effort must be absent for Auto, got %v", out["reasoning_effort"])
+		}
+	})
+
+	t.Run("glm-5.1 keeps legacy On/Off thinking", func(t *testing.T) {
+		out := build(t, "glm-5.1", "Off")
+		thinking, _ := out["thinking"].(map[string]any)
+		if thinking["type"] != "Off" {
+			t.Errorf("thinking.type = %v, want Off (legacy)", thinking["type"])
+		}
+		if _, ok := out["reasoning_effort"]; ok {
+			t.Errorf("reasoning_effort must be absent for legacy GLM, got %v", out["reasoning_effort"])
+		}
+	})
+}

@@ -126,7 +126,7 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 			}
 
 			if family != "" {
-				if opts, def, ok := llm.FamilyReasoningOptions(family); ok {
+				if opts, def, ok := llm.ModelReasoningOptions(family, modelName); ok {
 					info.Reasoning = &ReasoningInfo{
 						Options: opts,
 						Default: def,

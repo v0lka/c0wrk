@@ -142,7 +142,31 @@ Controls extended thinking (reasoning tokens) for supported models. Reasoning ef
 func FamilyReasoningOptions(family string) (options []string, default_ string, ok bool)
 // e.g., FamilyReasoningOptions("anthropic") → (["On", "Off"], "On", true)
 //       FamilyReasoningOptions("openai_flagship") → (["minimal", "low", "medium", "high"], "high", true)
+
+// Model-aware variant: returns version-specific options when the model matters
+// (e.g. GLM 5.2+), otherwise delegates to FamilyReasoningOptions.
+func ModelReasoningOptions(family, model string) (options []string, default_ string, ok bool)
+// e.g., ModelReasoningOptions("glm", "glm-5.2") → (["none", "max", "high"], "max", true)
+//       ModelReasoningOptions("glm", "glm-5.1") → (["On", "Off"], "On", true)
 ```
+
+The backend populates `AllModels[].Reasoning` via `ModelReasoningOptions` so the frontend shows model-version-accurate options.
+
+### GLM 5.2+ reasoning_effort
+
+GLM 5.2+ introduced the `reasoning_effort` parameter (`max`/`high`), honored when
+thinking is enabled. The OpenAI-compatible provider (`provider_openai.go`,
+`applyGLMReasoning`) maps the UI options to native API fields:
+
+| UI option | `thinking.type` | `reasoning_effort` |
+| --------- | --------------- | ------------------ |
+| `none`    | `disabled`      | *(omitted)*        |
+| `max`     | `enabled`       | `max`              |
+| `high`    | `enabled`       | `high`             |
+
+The UI "Auto"/Default selection sends an empty effort. GLM 5.2 enables thinking by
+default with `reasoning_effort=max`, so Auto is equivalent to `max`. Older GLM
+models (< 5.2) keep the legacy `thinking.type` = `On`/`Off` control unchanged.
 
 The full flow:
 
@@ -231,7 +255,7 @@ Default-model validation: `default_model` must be non-empty and must appear in a
 
 - New provider: implement `Provider` interface, add to router factory
 - Custom model metadata: override in config `models` section
-- Custom reasoning options: add a family mapping to `FamilyReasoningOptions()` in `sdk/llm/reasoning.go`
+- Custom reasoning options: add a family mapping to `FamilyReasoningOptions()` in `sdk/llm/reasoning.go`. When options depend on the model *version* (not just family), branch on the model in `ModelReasoningOptions()` (same file); the backend already feeds it the bare model name.
 
 ## Related Specs
 

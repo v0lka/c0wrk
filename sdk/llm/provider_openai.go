@@ -137,9 +137,7 @@ func (p *OpenAIProvider) buildChatParams(req ChatRequest) oai.ChatCompletionNewP
 				"enable_thinking": req.ReasoningEffort == "On",
 			})
 		case "glm":
-			params.SetExtraFields(map[string]any{
-				"thinking": map[string]string{"type": req.ReasoningEffort},
-			})
+			applyGLMReasoning(&params, req.Model, req.ReasoningEffort)
 		}
 	}
 
@@ -158,6 +156,45 @@ func (p *OpenAIProvider) buildChatParams(req ChatRequest) oai.ChatCompletionNewP
 	}
 
 	return params
+}
+
+// applyGLMReasoning sets the reasoning-related extra fields for GLM models.
+//
+// GLM 5.2+ supports the reasoning_effort parameter (values "max"/"high") which
+// is honored when thinking is enabled:
+//
+//   - "none": thinking disabled, no reasoning_effort
+//   - "max":  thinking enabled,  reasoning_effort=max
+//   - "high": thinking enabled,  reasoning_effort=high
+//
+// An empty effort (the UI "Auto"/Default selection) is left unset: GLM 5.2
+// enables thinking by default with reasoning_effort=max, so Auto == "max".
+//
+// Older GLM models (< 5.2) keep the legacy thinking on/off control, passing the
+// native effort value ("On"/"Off") directly as thinking.type.
+func applyGLMReasoning(params *oai.ChatCompletionNewParams, model, effort string) {
+	if IsGLM52OrLater(model) {
+		switch effort {
+		case "none":
+			params.SetExtraFields(map[string]any{
+				"thinking": map[string]string{"type": "disabled"},
+			})
+		case "max":
+			params.SetExtraFields(map[string]any{
+				"thinking":         map[string]string{"type": "enabled"},
+				"reasoning_effort": "max",
+			})
+		case "high":
+			params.SetExtraFields(map[string]any{
+				"thinking":         map[string]string{"type": "enabled"},
+				"reasoning_effort": "high",
+			})
+		}
+		return
+	}
+	params.SetExtraFields(map[string]any{
+		"thinking": map[string]string{"type": effort},
+	})
 }
 
 // convertSchemaToMap converts JSON schema bytes to a map[string]any.
