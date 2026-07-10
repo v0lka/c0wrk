@@ -285,4 +285,6 @@ If a step fails, you'll see the reflection in action:
 
 ## Next
 
-→ **07-full-power** — combine every SDK subsystem into one agent: multi-provider LLM, custom + built-in + MCP tools, HITL, events, planner, reflector, skills, and fact memory.
+→ **11-full-power** — combine every SDK subsystem into one agent: multi-provider LLM, custom + built-in + MCP tools, HITL, events, planner, reflector, skills, and fact memory.
+
+Or dive into a focused subsystem first: **07-multi-provider-routing**, **08-parallel-subagents**, **09-context-memory**, **10-security-and-safety**.

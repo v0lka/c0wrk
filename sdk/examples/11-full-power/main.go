@@ -1,4 +1,4 @@
-// Example 07 — Full-Power Agent (Fluent-first hybrid)
+// Example 11 — Full-Power Agent (Fluent-first hybrid)
 //
 // Combines every major sp4rk subsystem into one agent:
 //   - Multi-provider LLM (Anthropic + OpenAI) with runtime model switching
@@ -138,7 +138,7 @@ func run() error {
 	}
 
 	// ── 2. Workspace + skills directory ──
-	workspaceDir, err := os.MkdirTemp("", "sp4rk-example-07-*")
+	workspaceDir, err := os.MkdirTemp("", "sp4rk-example-11-*")
 	if err != nil {
 		return fmt.Errorf("temp dir: %w", err)
 	}

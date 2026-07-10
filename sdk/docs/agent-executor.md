@@ -491,6 +491,45 @@ The executor reads several optional values from the context. These are injected 
 
 Additional stores for inter-step communication live in the `agent` package: `StepOutputStore`, `FactStore`, and `FinalResultStore`, each with a `With*`/`*FromContext` pair. See [Subagents](subagents.md) for how these are wired during parallel plan execution.
 
+## LLM debugging callers
+
+The executor talks to the model through the [`LLMCaller`](#llmcaller-and-toolexecutor-interfaces) interface, which makes it trivially wrappable. The `agent` package ships two debugging decorators you can stack onto the caller the executor receives — no changes to the executor itself:
+
+```go
+import "github.com/v0lka/sp4rk/agent"
+```
+
+### NewDumpCaller — full JSONL request/response dumps
+
+```go
+func NewDumpCaller(inner agent.LLMCaller, w io.Writer, logger *slog.Logger) agent.LLMCaller
+```
+
+Wraps `inner` so that every `Call` writes the **full, untruncated** `ChatRequest` and `ChatResponse` as JSONL records to `w`. Each record carries a UTC timestamp, a `direction` (`request`/`response`), the payload, and (for responses) an `error` field. Pass `nil` for `w` (or `logger`) to no-op. This is the mechanism behind `WithDumpWriter` above — but `NewDumpCaller` lets you attach a dump writer to the caller directly, independent of context plumbing (e.g. when wiring an executor that runs many steps into one shared file).
+
+### NewLoggingLLMCaller — structured token-usage logs
+
+```go
+func NewLoggingLLMCaller(inner agent.LLMCaller, provider string, logger *slog.Logger) agent.LLMCaller
+```
+
+Logs, at **DEBUG** level, the outgoing request (provider, model, message/tool counts) and the response token usage (input/output/total tokens, stop reason, tool-call count). `provider` is a logical label (e.g. `"anthropic"`) used only for log attribution; a `nil` logger returns `inner` unchanged. Because logging is DEBUG-level, it is toggled purely by the logger's level — no code changes needed to enable it in production.
+
+### Stacking and combining
+
+Both decorators are transparent — they implement `LLMCaller` and forward the response/error untouched — so they compose freely and can be stacked with `llm.NewTrackingCaller` (for [usage tracking](llm-providers.md#usage-tracking)):
+
+```go
+caller := agent.NewLoggingLLMCaller(
+    agent.NewDumpCaller(rawCaller, dumpFile, logger),
+    "anthropic",
+    logger,
+)
+exec := agent.NewExecutor(caller, toolRegistry, 25)
+```
+
+For per-step dumps orchestrated by the conductor (one `step_<id>.jsonl` file per plan step), the orchestration layer uses a [`StepDumpTracker`](orchestration.md) and feeds each step's writer into the context via `WithDumpWriter`.
+
 ## Putting it together
 
 A complete standalone executor run:

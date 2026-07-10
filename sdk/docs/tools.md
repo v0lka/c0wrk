@@ -175,6 +175,26 @@ desc := tools.TaskContextFrom(ctx)
 
 Built-in file tools retrieve the workspace path via `WorkspacePathFrom(ctx)`, so always attach it before executing tasks that touch the filesystem.
 
+### Filtering tools by profile
+
+When routing work to a sub-agent or restricting which tools an agent may call, `FilterToolsByProfile` narrows a descriptor list to an allowlist:
+
+```go
+func FilterToolsByProfile(allTools []tools.ToolDescriptor, allowedNames []string) []tools.ToolDescriptor
+```
+
+- `nil` allowlist → returns all tools (no filtering);
+- empty slice → returns no tools;
+- otherwise → only descriptors whose `Name` is in the allowlist.
+
+```go
+// Expose only read-only tools to a planning sub-agent.
+readOnly := tools.FilterToolsByProfile(
+    registry.List(),
+    []string{"read_file", "list_directory", "glob", "ripgrep"},
+)
+```
+
 ## Custom tool implementation
 
 This is a complete, step-by-step guide using a `calculator` tool that evaluates arithmetic expressions. The same pattern applies to any custom tool.
@@ -473,3 +493,63 @@ type WebSearchLimits struct {
 ```
 
 Use `builtins.DefaultWebSearchLimits()` for sensible defaults, or construct a custom `WebSearchLimits` to override them. The tool is marked `IsUntrusted: true` — its output is automatically wrapped in `<untrusted-content>` tags by the context window's prompt injection defense.
+
+## Configurable limits & timeouts
+
+Several built-in tools accept a limits/timeouts struct so you can cap resource use instead of relying on the defaults. Each comes with a `Default*` constructor and a `New*With…` tool constructor that takes the override:
+
+```go
+import "github.com/v0lka/sp4rk/tools/builtins"
+```
+
+### BashTimeouts (`bash_exec` / `posh_exec`)
+
+```go
+type BashTimeouts struct {
+    MaxTimeout time.Duration // max allowed timeout for a command (default: 120s)
+    WaitDelay  time.Duration // grace period for pipe readers after process kill (default: 5s)
+}
+
+func DefaultBashTimeouts() BashTimeouts
+
+// Constructors that accept the override:
+func NewBashExecToolWithTimeouts(blacklist []string, timeouts BashTimeouts) (*BashExecTool, error)
+func NewPoshExecToolWithTimeouts(blacklist []string, timeouts BashTimeouts) (*PoshExecTool, error)
+```
+
+`NewBashExecTool(blacklist)` / `NewPoshExecTool(blacklist)` use `DefaultBashTimeouts()`.
+
+### FileLimits (`read_file`)
+
+```go
+type FileLimits struct {
+    ReadDefaultLines int // lines returned when no explicit range is given (default: 2000)
+    MaxLineBytes     int // per-line byte cap; overlong lines are truncated, 0 = no cap (default: 1 MiB)
+    MaxWindowLines   int // hard cap on lines per call, even for explicit ranges, 0 = no cap (default: 50000)
+}
+
+func DefaultFileLimits() FileLimits
+func NewReadFileToolWithLimits(limits FileLimits) *ReadFileTool
+```
+
+`NewReadFileTool()` uses `DefaultFileLimits()`.
+
+### RipgrepLimits (`ripgrep`)
+
+```go
+type RipgrepLimits struct {
+    Timeout time.Duration // timeout for a search operation (default: 60s)
+}
+
+func DefaultRipgrepLimits() RipgrepLimits
+func NewRipgrepToolWithLimits(limits RipgrepLimits) *RipgrepTool
+func NewRipgrepToolWithPath(limits RipgrepLimits, rgPath string) *RipgrepTool // pin a specific rg binary
+```
+
+`NewRipgrepTool()` uses `DefaultRipgrepLimits()` and locates `rg` on `PATH`. `NewRipgrepToolWithPath` pins a specific binary path — useful when `rg` is bundled alongside your app rather than installed system-wide.
+
+> The `WebFetchLimits` and `WebSearchLimits` structs follow the same pattern and are documented with their respective tools above.
+
+## Related: execution-context intelligence
+
+The `tools` package also ships centralized safety and context machinery consulted during tool execution: the **LLM-backed `ToolJudge`**, **file coherence** (cross-session conflict detection), **environment info (`EnvInfo`)**, and **symlink detection**. These are covered in [Tool Safety & Execution Context](tool-safety.md).

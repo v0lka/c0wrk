@@ -56,7 +56,7 @@ There is **no `Makefile`** inside the sp4rk module — run Go tooling directly f
 - `cd sdk && golangci-lint run` — lint. The config is `sdk/.golangci.yml` (v2 schema).
 - `cd sdk && go run ./examples/01-minimal-agent` — **wrong**: `examples/` is a *separate* Go module (`sp4rk-examples`) that imports the SDK as an external dependency. Run examples from inside it instead:
   - `cd sdk/examples && go run ./01-minimal-agent`
-  - The seven examples progress from a minimal agent to a full-stack system; see [`examples/README.md`](examples/README.md).
+  - The eleven examples progress from a minimal agent through focused subsystem deep-dives to a full-stack system; see [`examples/README.md`](examples/README.md).
 
 ## Conventions & gotchas
 

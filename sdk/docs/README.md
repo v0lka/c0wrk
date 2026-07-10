@@ -20,6 +20,8 @@ It is a standalone library with no opinion about your UI, storage, or deployment
 - **ONNX embeddings** — a local `Embedder` runs jina-embeddings-v2-small-en through ONNX Runtime for vector search without external API calls.
 - **Prompt injection defense** — untrusted tool output (web, MCP, filesystem) is wrapped in `<untrusted-content>` boundary tags and sanitized before entering LLM context.
 
+- **Tool execution-context intelligence** — a centralized, cached LLM-backed `ToolJudge` decides whether a mutating call may auto-approve; file-coherence tracking prevents cross-session read/write races; an `EnvInfo` snapshot injects host/runtime context into prompts; and symlink detection guards against path-escape traversals. See [Tool Safety & Execution Context](tool-safety.md).
+
 ## Quick start
 
 ```go
@@ -108,6 +110,7 @@ go run main.go
 | [prompt-building.md](prompt-building.md) | The prompt `Builder`, cache breaks, and substitutions |
 | [skills.md](skills.md) | Agent Skill discovery, parsing, and routing |
 | [security.md](security.md) | Prompt injection defense and untrusted-content wrapping |
+| [tool-safety.md](tool-safety.md) | Tool execution-context intelligence: LLM-backed `ToolJudge`, file coherence, environment info, symlink detection |
 | [embedding.md](embedding.md) | ONNX-based local embeddings and vector search |
 | [utilities.md](utilities.md) | `pathutil` and `strutil` helper packages |
 
@@ -120,8 +123,8 @@ go run main.go
 | `…/agent/reflector` | `Reflector` for execution failure analysis and self-correction |
 | `…/agent/router` | `Router` that classifies requests by domain and complexity |
 | `…/llm` | `Router`, `Provider`, `ProviderEntry`, `ModelRegistry`, token counting, Anthropic/OpenAI providers |
-| `…/tools` | `Tool` interface, `BaseTool`, thread-safe `ToolRegistry`, `ToolPolicy`, `ToolDescriptor` |
-| `…/tools/builtins` | Built-in tools: file I/O, shell, glob, ripgrep, web fetch, vector search, facts, checklist |
+| `…/tools` | `Tool` interface, `BaseTool`, thread-safe `ToolRegistry`, `ToolPolicy`, `ToolDescriptor`, LLM-backed `ToolJudge`, file coherence, `EnvInfo`, symlink detection |
+| `…/tools/builtins` | Built-in tools: file I/O, shell, glob, ripgrep, web fetch, vector search, facts, checklist; configurable limits/timeouts |
 | `…/tools/mcp` | MCP `Gateway`, `Server`, `ServerEntry`, and tool proxying |
 | `…/orchestration` | `Conductor`, `Blackboard`, `Plan`, DAG utilities, `Checkpointer`, orchestration interfaces |
 | `…/planner` | `Planner`, `Config`, `PromptSet`, `AgentProfile` for DAG plan generation |
@@ -143,4 +146,4 @@ go run main.go
 
 - Follow the [getting-started guide](getting-started.md) for a complete walkthrough with custom tools.
 - Read the [architecture overview](architecture.md) to understand how the layers fit together.
-- Browse the `examples/` directory for seven self-contained programs that progress from a minimal agent to a full-stack system exercising every subsystem.
+- Browse the `examples/` directory for eleven self-contained programs that progress from a minimal agent through focused subsystem deep-dives to a full-stack system exercising every subsystem.

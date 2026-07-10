@@ -76,6 +76,49 @@ no postfix is needed.
 - `.Options(opts…)` — apply functional options (`WithProvider`, `WithTools`, …)
 - `.Config(sp4rk.Config)` — supply a full classic config as the base
 
+#### Functional options reference
+
+The root `sp4rk` package exports functional options (`Option` values) that the
+fluent builder applies via `.Options(opts…)`. They are an alternative to the
+typed builder methods — useful in code that assembles configuration
+generically, or to mix classic-API fields with fluent conveniences. Every
+option is repeatable where it makes sense.
+
+```go
+import "github.com/v0lka/sp4rk"  // options live in the root package
+```
+
+| Option | Category | Effect |
+| --- | --- | --- |
+| `WithProvider(p)` | Providers | Append one LLM provider (repeatable). |
+| `WithProviders(ps…)` | Providers | Append multiple providers at once. |
+| `WithDefaultModel(model)` | Providers | Override the auto-selected default model; accepts a bare name or composite `provider/model` ID. |
+| `WithTools(ts…)` | Tools | Register tools after the framework is built (spread a bundle: `sp4rk.WithTools(sp4rk.FileTools()...)`). |
+| `WithoutAutoFinish()` | Tools | Skip auto-registering the finish tool (it is registered by default). |
+| `WithMCPServer(name, entry)` | MCP | Register an MCP server (pair with `sp4rk.MCPStdio` / `sp4rk.MCPHTTP`). |
+| `WithMCPWorkDir(dir)` | MCP | Set the fallback working directory for stdio MCP servers. |
+| `WithConfirmFunc(fn)` | Security | Confirmation callback for `PolicyUserConfirm` tools; without it such tools are denied (fail-closed). |
+| `WithAutoApprove()` | Security | Install an always-approve callback — convenient for sandboxed workspaces. |
+| `WithHITL(h)` | Security | Set the human-in-the-loop handler ([HITL](hitl.md)). |
+| `WithMaxSteps(n)` | Execution | Per-step ReAct loop budget (`0` = sp4rk default 50, negative = disabled). |
+| `WithLogger(l)` | Misc | Structured logger (defaults to `slog.Default()`). |
+| `WithConfig(cfg)` | Escape hatch | Supply a full `Config` as the base; other options apply on top. |
+
+`Option` uses an interface-based functional-options pattern: only the `sp4rk`
+package can produce `Option` values (the `apply` method is unexported), so
+options from other packages cannot be applied by accident.
+
+```go
+fw := sp4rk.NewF().
+    Anthropic(key, "claude-sonnet-4-5").
+    FileTools().
+    Options(
+        sp4rk.WithMaxSteps(40),
+        sp4rk.WithAutoApprove(),
+    ).
+    Build(ctx)
+```
+
 ## RunBuilder surface
 
 Layer 2 — a single ReAct loop over the framework. Created with

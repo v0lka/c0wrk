@@ -1,4 +1,4 @@
-# Example 07 — Full-Power Agent
+# Example 11 — Full-Power Agent
 
 The "kitchen sink" example: every major SDK subsystem combined into one agent.
 
@@ -67,7 +67,7 @@ sp4rk.NewF().
 
 This example combines patterns from all previous examples. See each example's README for detailed explanations:
 
-- **Multi-provider** → `LLMConfig.Providers` with two entries (example 01 + 07)
+- **Multi-provider** → `LLMConfig.Providers` with two entries (example 07)
 - **Custom tool** → `timestampTool` embedding `BaseTool` (example 02)
 - **Events** → `consoleEvents` embedding `NoopEvents` (example 03)
 - **HITL** → `autoApproveHITL` embedding `NoopHITLHandler` (example 04)
@@ -172,15 +172,15 @@ This example is a single fluent-first hybrid `main.go` (no build tag):
 ```bash
 cd sdk/examples
 go mod tidy          # first time only
-cd 07-full-power
+cd 11-full-power
 go run .
 ```
 
 ## Expected output
 
 ```
-Workspace: /tmp/sp4rk-example-07-123456
-Skills dir: /tmp/sp4rk-example-07-123456/.agents/skills
+Workspace: /tmp/sp4rk-example-11-123456
+Skills dir: /tmp/sp4rk-example-11-123456/.agents/skills
 
 Active LLM: anthropic/claude-sonnet-4-5 (provider: anthropic)
 Runtime model switching enabled: claude-sonnet-4-5 → openai/gpt-4o for execution

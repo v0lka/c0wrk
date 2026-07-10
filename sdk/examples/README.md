@@ -1,5 +1,5 @@
 # sp4rk Agent SDK — Examples
-A progression of 7 examples that show how to build AI agents with the `github.com/v0lka/sp4rk` Go framework, from a minimal single-call agent to a full-stack system that exercises every major SDK subsystem.
+A progression of 11 examples that show how to build AI agents with the `github.com/v0lka/sp4rk` Go framework, from a minimal single-call agent through focused subsystem deep-dives to a full-stack system that exercises every major SDK subsystem.
 
 ## Layout
 
@@ -13,7 +13,11 @@ sdk/examples/
 ├── 04-human-in-the-loop/       # custom HITLHandler for tool-call confirmation
 ├── 05-mcp-integration/         # Model Context Protocol server integration
 ├── 06-plan-and-reflect/        # Planner → DAG → Conductor → Reflector orchestration
-└── 07-full-power/              # every SDK subsystem combined in one agent
+├── 07-multi-provider-routing/  # multi-provider Router, runtime model switching
+├── 08-parallel-subagents/      # RunSubAgent / RunSubAgentsParallel concurrency
+├── 09-context-memory/          # ContextWindow, compaction strategies, fill events
+├── 10-security-and-safety/     # prompt-injection defense, ToolJudger, ToolPolicy
+└── 11-full-power/              # every SDK subsystem combined in one agent
 ```
 
 ## Progression
@@ -26,7 +30,11 @@ sdk/examples/
 | 04 | human-in-the-loop    | `HITLHandler`, tool-call confirmation, step-limit decisions     |
 | 05 | mcp-integration      | `MCPConfig`, stdio/HTTP MCP servers, external tool discovery    |
 | 06 | plan-and-reflect     | `Planner`, DAG execution, `Reflector`, retry/replan loop        |
-| 07 | full-power           | multi-provider, Plan→Reflect, MCP, event streaming, HITL, skills, compaction, fact memory |
+| 07 | multi-provider-routing | `Router`, `SetModel`, composite IDs, phase-based `Models()`   |
+| 08 | parallel-subagents   | `RunSubAgent`/`RunSubAgentsParallel`, per-step Executor/CM     |
+| 09 | context-memory       | `ContextWindow`, compaction strategies, `ContextFill` events   |
+| 10 | security-and-safety  | `WrapUntrustedContent`, `ToolJudger`, `ToolPolicy`, `ConfirmFunc` |
+| 11 | full-power           | multi-provider, Plan→Reflect, MCP, event streaming, HITL, skills, compaction, fact memory |
 
 Each example is a self-contained `package main` with its own `README.md`.
 

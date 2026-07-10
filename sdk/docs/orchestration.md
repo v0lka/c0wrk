@@ -810,6 +810,34 @@ if bb == nil {
 defer bb.Shutdown()
 ```
 
+### StepDumpTracker
+
+```go
+func NewStepDumpTracker(dir string) *StepDumpTracker
+```
+
+A best-effort manager for **per-step LLM dump files**, used when the conductor records each plan step's LLM traffic to its own file for offline debugging. Pass a directory; `NewStepDumpTracker` creates it (logging a warning, not returning an error, on failure). Pass an empty `dir` to disable the tracker.
+
+```go
+type StepDumpTracker struct{ /* unexported */ }
+
+// OpenStepDump returns an io.Writer for the step's dump file, or nil when
+// disabled/closed. The file is created on first call and cached — repeated
+// calls for the same stepID (including retries) append to the same file.
+func (t *StepDumpTracker) OpenStepDump(stepID string) io.Writer
+
+// CloseAll closes every tracked file. Idempotent.
+func (t *StepDumpTracker) CloseAll() error
+```
+
+Key properties:
+
+- **Path-traversal safe** — the filename is `step_<filepath.Base(stepID)>.jsonl`, so any directory components in `stepID` are stripped and the file always lands inside `dir`.
+- **Idempotent** — opening a dump for an already-seen step returns the cached `*os.File`, so retries and sub-steps append rather than overwrite.
+- **Graceful degradation** — every failure (directory creation, file open, write) is swallowed with a warning; dumps are debugging aids and never affect execution.
+
+The conductor typically feeds each step's writer into the executor context via [`agent.WithDumpWriter`](agent-executor.md#llm-debugging-callers), so each step produces a self-contained `step_<id>.jsonl` (consumable by [`NewDumpCaller`](agent-executor.md#newdumpcaller--full-jsonl-requestresponse-dumps)).
+
 ---
 
 ## Adapters
