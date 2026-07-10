@@ -298,7 +298,7 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		f.invalidateSkillCache()
 
 		if vm := f.getVectorManager(); vm != nil {
-			vm.NotifyFileChange(p.WorkspacePath)
+			vm.NotifyFileChange()
 		}
 	})
 	if err != nil {

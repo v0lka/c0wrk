@@ -43,6 +43,12 @@ type ApplicationConfig struct {
 	// Vector search callbacks (optional — nil disables semantic_search tool).
 	VectorSearchFunc     builtins.VectorSearchFunc
 	VectorSearchWaitFunc builtins.VectorSearchWaitFunc
+
+	// FileChangeNotifyFunc is called after a file-mutating tool (write_file,
+	// edit_file, bash_exec) completes successfully. It triggers debounced
+	// incremental re-indexing so that subsequent searches reflect the change
+	// without waiting for the filesystem watcher. Nil disables the hook.
+	FileChangeNotifyFunc func()
 }
 
 // Application is the central ViewModel that ties together the OrchestratorBuilder,
@@ -121,6 +127,28 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// 4. Set confirmation function on the shared registry.
 	if cfg.ConfirmFunc != nil {
 		builder.ToolRegistry().SetConfirmFunc(cfg.ConfirmFunc)
+	}
+
+	// 4a. Post-execute hook: after a file-mutating tool (write_file, edit_file,
+	// bash_exec) completes successfully, notify the vector index manager so it
+	// triggers debounced incremental re-indexing. This ensures subsequent
+	// searches reflect the change without relying solely on the filesystem
+	// watcher (which has latency on macOS and may miss same-process writes).
+	if cfg.FileChangeNotifyFunc != nil {
+		notifyFn := cfg.FileChangeNotifyFunc
+		builder.ToolRegistry().SetPostExecuteHook(func(_ context.Context, toolName string, res sdktools.ToolResult, execErr error) {
+			// Only notify on a genuine successful file mutation. Skip error
+			// results (policy deny, tool error) and non-nil execution errors
+			// (confirmation denied, context cancellation, confirm-func failure)
+			// where no file was actually modified.
+			if execErr != nil || res.IsError {
+				return
+			}
+			if !core.FileMutatingTools[toolName] {
+				return
+			}
+			notifyFn()
+		})
 	}
 
 	// 5. Orchestrator factory closure for the session manager.

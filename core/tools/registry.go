@@ -62,6 +62,7 @@ type ToolRegistry struct {
 	defaultPolicy              sdktools.ToolPolicy
 	hasDefaultPolicy           bool
 	preExecuteHook             PreExecuteHook
+	postExecuteHook            PostExecuteHook
 	toolFilter                 ToolFilter
 	paramManager               sdktools.ParamManager
 	disabledTools              map[string]bool
@@ -74,6 +75,16 @@ type ToolRegistry struct {
 // preconditions (e.g., indexing completion). If it returns an error, execution
 // is aborted and the error is returned as a tool error result.
 type PreExecuteHook func(ctx context.Context, toolName string, source string) error
+
+// PostExecuteHook is called after a non-internal tool execution path completes
+// (regardless of success or error). It receives the tool name, the result, and
+// the execution error so it can react to file mutations (e.g., triggering
+// vector index refresh) while distinguishing genuine successes from failed
+// attempts (user confirmation denied, context cancellation, confirm-func
+// failure, etc.). The hook must not block — long-running work should be
+// dispatched to a goroutine. If the hook panics, the panic propagates to the
+// caller; hooks should be defensive.
+type PostExecuteHook func(ctx context.Context, toolName string, result sdktools.ToolResult, err error)
 
 // NewToolRegistry creates a new ToolRegistry with an empty tool map.
 func NewToolRegistry() *ToolRegistry {
@@ -99,6 +110,7 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		defaultPolicy:              r.defaultPolicy,
 		hasDefaultPolicy:           r.hasDefaultPolicy,
 		preExecuteHook:             r.preExecuteHook,
+		postExecuteHook:            r.postExecuteHook,
 		toolFilter:                 r.toolFilter,
 		paramManager:               r.paramManager,
 		extraBashBlacklist:         r.extraBashBlacklist, // shared (compiled regexps are read-only)
@@ -249,6 +261,21 @@ func (r *ToolRegistry) SetPreExecuteHook(hook PreExecuteHook) {
 	r.preExecuteHook = hook
 }
 
+// SetPostExecuteHook sets a hook that is called after a non-internal tool
+// execution path completes. The hook receives the tool name, result, and the
+// execution error. The hook is registered via defer after the tool-not-found,
+// disabled-tool, and internal-tool early returns, so it fires only for tools
+// that reach policy/security resolution: successful execution, policy denials,
+// pre-execute-hook errors, symlink confirmation, and user-confirmation
+// outcomes (allow/deny). It does NOT fire when the tool is not found,
+// disabled, or an internal tool. The hook should filter on err,
+// result.IsError, and toolName to avoid unnecessary work.
+func (r *ToolRegistry) SetPostExecuteHook(hook PostExecuteHook) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.postExecuteHook = hook
+}
+
 // SetToolFilter sets a filter that decides whether a tool should be registered.
 // If the filter returns false, the tool is rejected during RegisterWithSource.
 func (r *ToolRegistry) SetToolFilter(f ToolFilter) {
@@ -308,7 +335,7 @@ func (r *ToolRegistry) SetSkillPolicyOverrides(overrides map[string]sdktools.Too
 // Security policy is resolved via resolvePolicy() and applied accordingly.
 // Internal tools bypass policy and judge checks, but disabled-tool checks
 // (No Project mode) are applied to all tools including internal ones.
-func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (sdktools.ToolResult, error) {
+func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (result sdktools.ToolResult, err error) {
 	tool, ok := r.Get(name)
 	if !ok {
 		return sdktools.ToolResult{Content: "tool not found: " + name, IsError: true}, nil
@@ -330,6 +357,20 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	// Internal tools bypass remaining policy/judge checks
 	if IsInternalTool(name) {
 		return tool.Execute(ctx, input)
+	}
+
+	// Post-execute hook: deferred so it runs on every return path below
+	// (policy denials, pre-execute-hook errors, successful execution, etc.).
+	// The hook filters on err, result.IsError, and toolName to skip irrelevant
+	// calls. It does not cover the early returns above (tool not found,
+	// disabled tool, internal tool) — see SetPostExecuteHook docs.
+	r.mu.RLock()
+	postHook := r.postExecuteHook
+	r.mu.RUnlock()
+	if postHook != nil {
+		defer func() {
+			postHook(ctx, name, result, err)
+		}()
 	}
 
 	// Extra bash blacklist check (per-session, e.g. No Project mode).

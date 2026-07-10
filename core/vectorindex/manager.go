@@ -64,6 +64,13 @@ type Manager struct {
 	ignoreExtensions map[string]bool
 	ignoreFileNames  map[string]bool
 
+	// workspacePath is the active project's workspace, stored during
+	// SwitchProject so that NotifyFileChange can trigger incremental
+	// indexing without the caller needing to supply the path each time.
+	// This enables the PostExecuteHook (which doesn't have access to the
+	// workspace path) to request a re-index after file-mutating tools.
+	workspacePath string
+
 	// Chunk and hash functions for indexing.
 	chunkFn ChunkFunc
 	hashFn  HashFunc
@@ -186,6 +193,7 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 			m.gitMonitor = nil
 		}
 		m.indexer = nil
+		m.workspacePath = ""
 		m.mu.Unlock()
 		m.stopDebounce()
 		if err := m.service.SetProject(projectID, ""); err != nil {
@@ -243,6 +251,7 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 
 	m.mu.Lock()
 	m.indexer = indexer
+	m.workspacePath = workspacePath
 	m.mu.Unlock()
 
 	// Switch to branch collection.
@@ -319,13 +328,18 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 	return nil
 }
 
-// NotifyFileChange triggers debounced incremental indexing for the given workspace.
-func (m *Manager) NotifyFileChange(workspacePath string) {
+// NotifyFileChange triggers debounced incremental indexing for the active
+// project's workspace. The workspace path is stored during SwitchProject, so
+// callers (watcher callback, PostExecuteHook) don't need to supply it.
+// No-op when no indexer is configured (e.g. No Project / CHAT mode) or when
+// the workspace path is empty.
+func (m *Manager) NotifyFileChange() {
 	m.mu.RLock()
 	idx := m.indexer
+	ws := m.workspacePath
 	m.mu.RUnlock()
 
-	if idx == nil {
+	if idx == nil || ws == "" {
 		return
 	}
 
@@ -334,7 +348,7 @@ func (m *Manager) NotifyFileChange(workspacePath string) {
 		m.debounceTimer.Stop()
 	}
 	m.debounceTimer = time.AfterFunc(1*time.Second, func() {
-		if idxErr := idx.IndexIncremental(context.Background(), workspacePath); idxErr != nil {
+		if idxErr := idx.IndexIncremental(context.Background(), ws); idxErr != nil {
 			m.logger.Warn("incremental indexing failed", "error", idxErr)
 		}
 	})

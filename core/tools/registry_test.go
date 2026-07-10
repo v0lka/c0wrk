@@ -1376,6 +1376,141 @@ func TestPreExecuteHook_ReceivesCorrectSource(t *testing.T) {
 	}
 }
 
+// --- PostExecuteHook tests ---
+
+// TestPostExecuteHook_CalledAfterSuccessfulExecution verifies that the
+// post-execute hook is called with the correct tool name and result after
+// a successful tool execution.
+func TestPostExecuteHook_CalledAfterSuccessfulExecution(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := newMockReadOnlyTool("my_tool", "A tool")
+	registry.Register(tool)
+
+	var mu sync.Mutex
+	var capturedName string
+	var capturedResult sdktools.ToolResult
+	var capturedErr error
+	registry.SetPostExecuteHook(func(_ context.Context, toolName string, res sdktools.ToolResult, hookErr error) {
+		mu.Lock()
+		capturedName = toolName
+		capturedResult = res
+		capturedErr = hookErr
+		mu.Unlock()
+	})
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"data":"hello"}`)
+
+	result, err := registry.Execute(ctx, "my_tool", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if capturedName != "my_tool" {
+		t.Errorf("expected hook toolName %q, got %q", "my_tool", capturedName)
+	}
+	if capturedResult.Content != result.Content {
+		t.Errorf("expected hook result content %q, got %q", result.Content, capturedResult.Content)
+	}
+	if capturedResult.IsError {
+		t.Error("expected hook result IsError to be false")
+	}
+	if capturedErr != nil {
+		t.Errorf("expected hook err to be nil, got %v", capturedErr)
+	}
+}
+
+// TestPostExecuteHook_NotCalledForInternalTools verifies that the hook is
+// NOT invoked for internal tools (e.g. ask_user, finish).
+func TestPostExecuteHook_NotCalledForInternalTools(t *testing.T) {
+	registry := NewToolRegistry()
+	// Register a mock tool under an internal tool name.
+	tool := newMockReadOnlyTool("ask_user", "Internal ask_user tool")
+	registry.Register(tool)
+
+	var hookCalled bool
+	registry.SetPostExecuteHook(func(context.Context, string, sdktools.ToolResult, error) {
+		hookCalled = true
+	})
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"question":"hello?"}`)
+
+	_, err := registry.Execute(ctx, "ask_user", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hookCalled {
+		t.Error("expected post-execute hook NOT to be called for internal tool 'ask_user'")
+	}
+}
+
+// TestPostExecuteHook_CalledOnPolicyDeny verifies that the hook IS called
+// (with an error result) when a tool is blocked by policy. This is correct
+// because the defer covers all return paths — the hook can filter on
+// result.IsError.
+func TestPostExecuteHook_CalledOnPolicyDeny(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := newMockTool("denied_tool", "A tool with deny policy")
+	registry.Register(tool)
+	registry.SetPolicyOverrides(map[string]sdktools.ToolPolicy{"denied_tool": sdktools.PolicyAlwaysDeny})
+
+	var mu sync.Mutex
+	var capturedName string
+	var capturedIsError bool
+	registry.SetPostExecuteHook(func(_ context.Context, toolName string, res sdktools.ToolResult, _ error) {
+		mu.Lock()
+		capturedName = toolName
+		capturedIsError = res.IsError
+		mu.Unlock()
+	})
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"data":"test"}`)
+
+	_, err := registry.Execute(ctx, "denied_tool", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if capturedName != "denied_tool" {
+		t.Errorf("expected hook toolName %q, got %q", "denied_tool", capturedName)
+	}
+	if !capturedIsError {
+		t.Error("expected hook result IsError to be true for denied tool")
+	}
+}
+
+// TestPostExecuteHook_PreservedInClone verifies that the hook is shared
+// with cloned registries (per-session clones inherit the hook).
+func TestPostExecuteHook_PreservedInClone(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := newMockReadOnlyTool("cloned_tool", "A tool")
+	registry.Register(tool)
+
+	var hookCalled bool
+	registry.SetPostExecuteHook(func(context.Context, string, sdktools.ToolResult, error) {
+		hookCalled = true
+	})
+
+	cloned := registry.Clone()
+
+	ctx := context.Background()
+	input := json.RawMessage(`{"data":"test"}`)
+
+	_, err := cloned.Execute(ctx, "cloned_tool", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hookCalled {
+		t.Error("expected post-execute hook to be called in cloned registry")
+	}
+}
+
 // --- ToolFilter tests ---
 
 // TestToolFilter_BlocksRegistration verifies that a filter can reject tools during registration.

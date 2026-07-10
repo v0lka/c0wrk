@@ -134,7 +134,7 @@ func TestManagerSwitchProject_CancelsDebounce(t *testing.T) {
 	}
 
 	// Trigger a debounced incremental run for project A.
-	mgr.NotifyFileChange(wsA)
+	mgr.NotifyFileChange()
 
 	// Immediately switch to project B (this should cancel the debounce).
 	if err := mgr.SwitchProject("project-b", wsB, viPathB, ProjectCallbacks{}); err != nil {

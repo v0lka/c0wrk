@@ -43,6 +43,18 @@ const (
 	ToolWebFetch  = "web_fetch"
 )
 
+// FileMutatingTools is the set of tool names that can modify files on disk.
+// The PostExecuteHook uses this to decide whether to notify the vector index
+// manager of a potential content change after tool execution. The notification
+// is debounced and incremental indexing validates actual changes, so including
+// bash_exec (which may or may not touch files) is safe — a no-change pass is
+// cheap.
+var FileMutatingTools = map[string]bool{
+	ToolWriteFile: true,
+	ToolEditFile:  true,
+	ToolBashExec:  true,
+}
+
 // NoProjectDisabledTools is the set of tool names that are blocked from both
 // listing and execution when the current project is "No Project" (__no_project__).
 //

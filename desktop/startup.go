@@ -194,6 +194,18 @@ func (a *App) Startup(ctx context.Context) {
 	var vectorOnce sync.Once
 	vectorSearchFunc, vectorSearchWaitFunc := a.buildVectorCallbacks(&vectorMgrPtr, vectorReady)
 
+	// File-change notification: called by the PostExecuteHook after a
+	// file-mutating tool completes. Triggers debounced incremental
+	// re-indexing so subsequent searches reflect the change without waiting
+	// for the filesystem watcher (which has latency on macOS and may miss
+	// same-process writes). Safe to call before the vector manager is ready
+	// — the atomic pointer returns nil and the call is a no-op.
+	fileChangeNotify := func() {
+		if mgr := vectorMgrPtr.Load(); mgr != nil {
+			mgr.NotifyFileChange()
+		}
+	}
+
 	application, err := a.buildApplication(backend.ApplicationConfig{
 		Config:               cfg,
 		Logger:               log,
@@ -207,6 +219,7 @@ func (a *App) Startup(ctx context.Context) {
 		HITLHandler:          hitlHandler,
 		VectorSearchFunc:     vectorSearchFunc,
 		VectorSearchWaitFunc: vectorSearchWaitFunc,
+		FileChangeNotifyFunc: fileChangeNotify,
 	}, log, startTime)
 	if err != nil {
 		return
