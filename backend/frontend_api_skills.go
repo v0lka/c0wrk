@@ -77,7 +77,7 @@ func (f *FrontendAPI) startSkillsWatchers(dirs []string) {
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		watcher, err := workspace.NewWatcher(dir, func() {
+		watcher, err := workspace.NewWatcher(dir, func(_ []string) {
 			f.invalidateSkillCache()
 			f.emitEvent(EventSkillsChanged, nil)
 		}, f.log())

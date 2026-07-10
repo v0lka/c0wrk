@@ -188,7 +188,7 @@ func TestUnwatchDirectory_CodeMode_IsNoOp(t *testing.T) {
 	// Create the watcher scoped to the project workspace, mirroring what
 	// switchProjectSetupWatcher does in CODE mode (without the vector-manager
 	// callback to keep the test isolated).
-	watcher, err := workspace.NewWatcher(ws, func() { f.emitEvent(EventWorkspaceTreeChanged, nil) })
+	watcher, err := workspace.NewWatcher(ws, func(_ []string) { f.emitEvent(EventWorkspaceTreeChanged, nil) })
 	if err != nil {
 		t.Fatalf("NewWatcher: %v", err)
 	}

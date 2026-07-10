@@ -18,11 +18,16 @@ import (
 // of rapid consecutive file changes (e.g., editor save + format).
 const defaultDebounce = 200 * time.Millisecond
 
+// ChangeHandler is invoked (debounced) with the set of changed file/directory
+// paths accumulated during the debounce window. The slice may be empty when
+// events carried no usable path (e.g. some Chmod/Rename events).
+type ChangeHandler func(changedPaths []string)
+
 // Watcher watches directories for file system changes and calls onChange when changes occur.
 type Watcher struct {
 	root      string
 	watcher   *fsnotify.Watcher
-	onChange  func()
+	onChange  ChangeHandler
 	mu        sync.Mutex
 	watched   map[string]bool
 	done      chan struct{}
@@ -39,8 +44,10 @@ func (w *Watcher) log() *slog.Logger {
 }
 
 // NewWatcher creates a Watcher that watches the root directory and calls onChange
-// (debounced at 200ms) on any change.
-func NewWatcher(root string, onChange func(), loggers ...*slog.Logger) (*Watcher, error) {
+// (debounced at 200ms) on any change. The accumulated changed paths are passed
+// to onChange so consumers can decide whether a change is relevant to them
+// (e.g. skip re-indexing for .git-internal churn).
+func NewWatcher(root string, onChange ChangeHandler, loggers ...*slog.Logger) (*Watcher, error) {
 	if onChange == nil {
 		return nil, errors.New("onChange callback must not be nil")
 	}
@@ -77,7 +84,9 @@ func NewWatcher(root string, onChange func(), loggers ...*slog.Logger) (*Watcher
 	w.watched[absRoot] = true
 
 	// Also watch the .git directory so that index changes (staging/unstaging)
-	// trigger the same onChange callback used by the file tree.
+	// trigger the same onChange callback used by the file tree. The vector
+	// indexer ignores .git, so the consumer (backend) filters .git paths before
+	// triggering re-indexing — keeping this watch for file-tree refresh only.
 	gitDir := filepath.Join(absRoot, ".git")
 	if stat, err := os.Stat(gitDir); err == nil && stat.IsDir() {
 		if err := fsw.Add(gitDir); err != nil {
@@ -89,9 +98,13 @@ func NewWatcher(root string, onChange func(), loggers ...*slog.Logger) (*Watcher
 	return w, nil
 }
 
-// eventLoop reads fsnotify events and debounces onChange calls.
+// eventLoop reads fsnotify events, accumulates their paths during a debounce
+// window, and flushes them to onChange. All state (pending paths + timer) is
+// confined to this single goroutine, so no extra synchronization is needed.
 func (w *Watcher) eventLoop() {
+	var pending map[string]struct{}
 	var timer *time.Timer
+	var timerC <-chan time.Time
 
 	for {
 		select {
@@ -100,14 +113,36 @@ func (w *Watcher) eventLoop() {
 				timer.Stop()
 			}
 			return
-		case _, ok := <-w.watcher.Events:
+		case event, ok := <-w.watcher.Events:
 			if !ok {
 				return
 			}
-			if timer != nil {
-				timer.Stop()
+			if event.Name != "" {
+				if pending == nil {
+					pending = make(map[string]struct{})
+				}
+				pending[event.Name] = struct{}{}
 			}
-			timer = time.AfterFunc(defaultDebounce, w.onChange)
+			// (Re)start the debounce window.
+			if timer == nil {
+				timer = time.NewTimer(defaultDebounce)
+				timerC = timer.C
+			} else {
+				if !timer.Stop() {
+					// Timer already fired; drain its channel so Reset is safe.
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(defaultDebounce)
+			}
+		case <-timerC:
+			paths := keysOf(pending)
+			pending = nil
+			timer = nil
+			timerC = nil
+			w.onChange(paths)
 		case watchErr, ok := <-w.watcher.Errors:
 			if !ok {
 				return
@@ -115,6 +150,18 @@ func (w *Watcher) eventLoop() {
 			w.log().Debug("fsnotify watcher error", "error", watchErr)
 		}
 	}
+}
+
+// keysOf returns the keys of m as a slice, or nil if m is empty/nil.
+func keysOf(m map[string]struct{}) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 // WatchDir adds a directory to the watch list. The path must be under the root.

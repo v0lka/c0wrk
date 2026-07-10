@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/bmatcuk/doublestar/v4"
 	chromem "github.com/philippgille/chromem-go"
@@ -95,6 +96,15 @@ type Indexer struct {
 	ignoreDirs       map[string]bool
 	ignoreExtensions map[string]bool
 	ignoreFileNames  map[string]bool
+
+	// gitignoreMu guards gitignoreRoot / gitignorePatterns, a cache of the
+	// workspace's .gitignore patterns loaded once (during the first walk or
+	// watcher filter) and reused thereafter, so the watcher does not re-read
+	// .gitignore on every debounce flush. The cache is per-project: the
+	// Indexer is recreated on SwitchProject.
+	gitignoreMu       sync.RWMutex
+	gitignoreRoot     string
+	gitignorePatterns []string
 }
 
 // NewIndexer creates a new Indexer with the given configuration.
@@ -139,7 +149,7 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) error {
 	idx.service.SetReady(false)
 
-	files, err := walkProjectFiles(workspacePath, idx.ignoreDirs, idx.ignoreExtensions, idx.ignoreFileNames)
+	files, err := walkProjectFiles(workspacePath, idx.gitignorePatternsFor(workspacePath), idx.ignoreDirs, idx.ignoreExtensions, idx.ignoreFileNames)
 	if err != nil {
 		return fmt.Errorf("walking project files: %w", err)
 	}
@@ -203,6 +213,15 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) error {
 func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) error {
 	idx.service.SetReady(false)
 
+	// Wait for any background file-hash migration (first run after the sidecar
+	// upgrade, or a branch whose collection was built elsewhere) so
+	// ValidateCollection sees the full hash map instead of re-embedding every
+	// file. IndexFull is unaffected: an empty collection has nothing to migrate.
+	if err := idx.service.WaitFileHashMigration(ctx); err != nil {
+		idx.service.SetReady(true)
+		return fmt.Errorf("waiting for file-hash migration: %w", err)
+	}
+
 	stale, newFiles, deleted, err := idx.service.ValidateCollection(ctx, workspacePath)
 	if err != nil {
 		idx.service.SetReady(true)
@@ -249,6 +268,11 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 			if delErr := idx.service.DeleteDocumentsByIDs(ctx, ids); delErr != nil {
 				return fmt.Errorf("deleting stale documents: %w", delErr)
 			}
+		}
+		// Drop truly-deleted files from the file-hash sidecar. Stale files
+		// remain in the sidecar and are refreshed by the upsert during re-index.
+		if len(deleted) > 0 {
+			idx.service.removeFileHashes(deleted)
 		}
 	}
 
@@ -491,13 +515,13 @@ func (idx *Indexer) collectDocumentIDs(ctx context.Context, filePaths []string) 
 }
 
 // walkProjectFiles walks the workspace and returns all indexable file paths.
-func walkProjectFiles(root string, extraIgnoreDirs, extraIgnoreExtensions, extraIgnoreFileNames map[string]bool) ([]string, error) {
+// gitignorePatterns must be pre-loaded by the caller (the Indexer caches them)
+// so the walk and the watcher filter share one source of truth.
+func walkProjectFiles(root string, gitignorePatterns []string, extraIgnoreDirs, extraIgnoreExtensions, extraIgnoreFileNames map[string]bool) ([]string, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolving root path: %w", err)
 	}
-
-	gitignorePatterns := loadGitignorePatterns(absRoot)
 
 	var files []string
 	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkDirErr error) error {
@@ -647,6 +671,166 @@ func isIgnoredFile(path, root string, gitignorePatterns []string, extraIgnoreExt
 		}
 	}
 
+	return false
+}
+
+// IsIndexablePath reports whether absPath (which must be under root) refers to
+// a file or directory the indexer would process. It returns false if any
+// ancestor directory is ignored (e.g. .git, node_modules, hidden dirs) or if
+// the path itself matches ignore-file rules (e.g. .DS_Store, binary
+// extensions). It applies the same hardcoded defaults as walkProjectFiles.
+//
+// It is intended for the workspace watcher to decide whether a file change
+// warrants vector re-indexing, so that churn inside ignored locations (most
+// notably .git maintenance: gc, repack, reflog cleanup) does not trigger a
+// spurious — and costly (ONNX inference) — reindex pass that always ends with
+// "no changes detected". User-configured extra ignore patterns are NOT applied
+// here (they live on the Indexer); a change in an extra-ignored location would
+// at worst trigger a harmless no-op reindex.
+func IsIndexablePath(absPath, root string) bool {
+	return isIndexablePathWithPatterns(absPath, root, loadGitignorePatterns(root))
+}
+
+// IsAnyIndexablePath reports whether at least one of paths is indexable under
+// root. It loads .gitignore patterns once for the whole batch. An empty/nil
+// path list reports false (nothing indexable).
+func IsAnyIndexablePath(paths []string, root string) bool {
+	patterns := loadGitignorePatterns(root)
+	for _, p := range paths {
+		if isIndexablePathWithPatterns(p, root, patterns) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitignorePatternsFor returns the cached .gitignore patterns for root, loading
+// and caching them on first use. The Indexer (and thus the cache) is recreated
+// on every SwitchProject, so patterns are re-read at most once per active
+// project instead of once per watcher debounce flush. A mid-session edit of
+// .gitignore is not picked up until the next source-driven index pass triggers
+// a cache miss — acceptable, since a stale filter only risks a harmless no-op
+// reindex that the walker then drops.
+func (idx *Indexer) gitignorePatternsFor(root string) []string {
+	idx.gitignoreMu.RLock()
+	if idx.gitignoreRoot == root && idx.gitignorePatterns != nil {
+		p := idx.gitignorePatterns
+		idx.gitignoreMu.RUnlock()
+		return p
+	}
+	idx.gitignoreMu.RUnlock()
+
+	patterns := loadGitignorePatterns(root)
+	idx.gitignoreMu.Lock()
+	idx.gitignoreRoot = root
+	idx.gitignorePatterns = patterns
+	idx.gitignoreMu.Unlock()
+	return patterns
+}
+
+// IsAnyIndexablePath reports whether at least one of changedPaths is indexable
+// under root, reusing the Indexer's cached .gitignore patterns. It is the
+// watcher-facing variant of the package-level IsAnyIndexablePath and avoids
+// re-reading .gitignore on every debounce flush.
+func (idx *Indexer) IsAnyIndexablePath(changedPaths []string, root string) bool {
+	patterns := idx.gitignorePatternsFor(root)
+	for _, p := range changedPaths {
+		if isIndexablePathWithPatterns(p, root, patterns) {
+			return true
+		}
+	}
+	return false
+}
+
+// isIndexablePathWithPatterns is the core single-path check with pre-loaded
+// gitignore patterns. It avoids os.Stat by inspecting path segments directly,
+// so it works for both file and directory change events.
+func isIndexablePathWithPatterns(absPath, root string, gitignorePatterns []string) bool {
+	relPath, err := filepath.Rel(root, absPath)
+	if err != nil {
+		return false
+	}
+	relPath = filepath.ToSlash(relPath)
+	if relPath == "." || strings.HasPrefix(relPath, "..") {
+		// The root itself, or outside it: not a concrete indexable file.
+		return false
+	}
+
+	segments := strings.Split(relPath, "/")
+	// Check directory components (every segment except the last).
+	dirRel := ""
+	for i := 0; i < len(segments)-1; i++ {
+		seg := segments[i]
+		if isIgnoredDirSegment(seg) {
+			return false
+		}
+		// Build the cumulative directory relative path and apply gitignore
+		// patterns (mirroring isIgnoredDir: match both "dir/" and "dir") so a
+		// directory excluded only via .gitignore (e.g. "coverage_report/") is
+		// filtered here too — otherwise the watcher would fire for churn under
+		// it and the walker would silently drop it, leaving a confusing gap.
+		if dirRel == "" {
+			dirRel = seg
+		} else {
+			dirRel += "/" + seg
+		}
+		if isGitIgnoredDir(dirRel, gitignorePatterns) {
+			return false
+		}
+	}
+
+	// Check the last segment (the changed file/dir itself).
+	last := segments[len(segments)-1]
+	if last == "" || strings.HasPrefix(last, ".") {
+		return false // hidden file/dir
+	}
+	if defaultIgnoreDirs[last] || defaultIgnoreFileNames[last] {
+		return false
+	}
+	if ext := strings.ToLower(filepath.Ext(last)); defaultIgnoreExtensions[ext] {
+		return false
+	}
+
+	// gitignore pattern matching against the full relative path.
+	for _, pattern := range gitignorePatterns {
+		if matched, _ := doublestar.Match(pattern, relPath); matched {
+			return false
+		}
+	}
+	return true
+}
+
+// isIgnoredDirSegment reports whether a single path segment (a directory base
+// name) is ignored by default rules: hidden dirs (leading dot) or a member of
+// defaultIgnoreDirs.
+func isIgnoredDirSegment(seg string) bool {
+	if seg == "" {
+		return false
+	}
+	if strings.HasPrefix(seg, ".") {
+		return true
+	}
+	return defaultIgnoreDirs[seg]
+}
+
+// isGitIgnoredDir reports whether a directory — given as a slash-relative path
+// without a trailing slash — is excluded by any gitignore pattern. It mirrors
+// isIgnoredDir by matching both "dir/" and "dir", so directory-only patterns
+// such as "build/" or "coverage/" are honoured by the watcher filter exactly as
+// they are by the walker.
+func isGitIgnoredDir(relDirPath string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	withSlash := relDirPath + "/"
+	for _, pattern := range patterns {
+		if matched, _ := doublestar.Match(pattern, withSlash); matched {
+			return true
+		}
+		if matched, _ := doublestar.Match(pattern, relDirPath); matched {
+			return true
+		}
+	}
 	return false
 }
 

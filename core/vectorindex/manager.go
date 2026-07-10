@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	chromem "github.com/philippgille/chromem-go"
@@ -47,6 +48,14 @@ type Manager struct {
 
 	debounceMu    sync.Mutex
 	debounceTimer *time.Timer
+	// indexing coalesces trailing incremental passes. Embedding itself is
+	// serialized by the service write lock (IndexIncremental → AddDocuments
+	// holds s.mu), so two concurrent passes can never embed at once; this flag
+	// has the narrower job of avoiding a redundant trailing pass: while a pass
+	// is in flight, a newly-armed debounce re-arms itself instead of launching
+	// a serial no-op pass once the in-flight one finishes, coalescing
+	// late-arriving changes into a single final run.
+	indexing atomic.Bool
 
 	logger *slog.Logger
 
@@ -168,6 +177,23 @@ func (m *Manager) Searcher() VectorSearcher {
 // DeleteProjectData removes the on-disk vector data for a project.
 func (m *Manager) DeleteProjectData(fullPath string) error {
 	return m.service.DeleteProjectData(fullPath)
+}
+
+// IsAnyIndexablePath reports whether at least one of changedPaths is indexable
+// in the active project's workspace, reusing the indexer's cached .gitignore
+// patterns so the workspace watcher does not re-read .gitignore on every
+// debounce flush. Returns false when no project/indexer is configured (e.g.
+// No Project / CHAT mode).
+func (m *Manager) IsAnyIndexablePath(changedPaths []string) bool {
+	m.mu.RLock()
+	idx := m.indexer
+	ws := m.workspacePath
+	m.mu.RUnlock()
+
+	if idx == nil || ws == "" {
+		return false
+	}
+	return idx.IsAnyIndexablePath(changedPaths, ws)
 }
 
 // SwitchProject sets up vector indexing for the given project and workspace.
@@ -347,12 +373,44 @@ func (m *Manager) NotifyFileChange() {
 	if m.debounceTimer != nil {
 		m.debounceTimer.Stop()
 	}
-	m.debounceTimer = time.AfterFunc(1*time.Second, func() {
-		if idxErr := idx.IndexIncremental(context.Background(), ws); idxErr != nil {
-			m.logger.Warn("incremental indexing failed", "error", idxErr)
-		}
-	})
+	m.scheduleIncrementalLocked(idx, ws)
 	m.debounceMu.Unlock()
+}
+
+// scheduleIncrementalLocked arms a 1s debounce that runs one incremental index
+// pass. The fired callback re-checks the in-flight flag (runIncrementalGuarded)
+// so that changes arriving while a pass is running are coalesced into a single
+// trailing run instead of queuing a redundant serial no-op pass. Embedding
+// overlap is already prevented by the service write lock (s.mu); this is an
+// efficiency guard, not a correctness one. The caller must hold m.debounceMu.
+func (m *Manager) scheduleIncrementalLocked(idx *Indexer, ws string) {
+	m.debounceTimer = time.AfterFunc(1*time.Second, func() {
+		m.runIncrementalGuarded(idx, ws)
+	})
+}
+
+// runIncrementalGuarded runs a single incremental pass unless one is already in
+// flight, in which case it re-arms a debounce to coalesce trailing changes into
+// one final run. Note: this guard does NOT provide embedding serialization on
+// its own — IndexIncremental holds the service write lock around AddDocuments,
+// which is what guarantees peak concurrency of 1. The guard's value is purely
+// coalescing (fewer trailing passes), not preventing overlap.
+func (m *Manager) runIncrementalGuarded(idx *Indexer, ws string) {
+	if m.indexing.Load() {
+		// A pass is in flight: re-arm rather than launching a redundant
+		// trailing pass that would find no new changes.
+		m.debounceMu.Lock()
+		m.debounceTimer = time.AfterFunc(1*time.Second, func() {
+			m.runIncrementalGuarded(idx, ws)
+		})
+		m.debounceMu.Unlock()
+		return
+	}
+	m.indexing.Store(true)
+	if idxErr := idx.IndexIncremental(context.Background(), ws); idxErr != nil {
+		m.logger.Warn("incremental indexing failed", "error", idxErr)
+	}
+	m.indexing.Store(false)
 }
 
 // CancelIndexing cancels any in-flight indexing operation and stops pending debounces.

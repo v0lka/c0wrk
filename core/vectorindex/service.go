@@ -50,7 +50,25 @@ type Service struct {
 	projectID     string
 	projectPath   string // full path to project vector storage (set by SetProject)
 	currentBranch string
-	mu            sync.RWMutex
+	// fileHashes is a sidecar store mapping file_path → content_hash, kept in
+	// sync with the chromem collection. It lets ValidateCollection compare
+	// stored hashes against disk WITHOUT querying the collection (which would
+	// trigger an ONNX embedding via Query). Loaded per-branch in SwitchBranch
+	// and flushed at lifecycle boundaries (not on every batch).
+	fileHashes map[string]string
+	// fileHashMigrationPending is true while a background sidecar backfill
+	// (collection → file_hashes) is in flight for the current branch.
+	fileHashMigrationPending atomic.Bool
+	// migrationCh is closed when the current branch's sidecar has settled
+	// (loaded, empty, or migrated). WaitFileHashMigration selects on it.
+	// nil before the first SwitchBranch.
+	migrationCh chan struct{}
+	// migrationCancel cancels an in-flight migrateFileHashes goroutine
+	// (e.g. on branch switch / project switch / close).
+	migrationCancel context.CancelFunc
+	// migrationWG lets Close/SetProject wait for the migration goroutine.
+	migrationWG sync.WaitGroup
+	mu          sync.RWMutex
 	ready         atomic.Bool
 	readyCh       chan struct{} // closed when ready becomes true; recreated on false
 	readyMu       sync.Mutex    // protects readyCh swaps
@@ -98,10 +116,24 @@ func (s *Service) SetProject(projectID, fullPath string) error {
 
 	s.SetReady(false)
 
+	// Persist the outgoing project's in-memory hashes before discarding them,
+	// and cancel any in-flight sidecar migration from the previous branch.
+	if s.fileHashes != nil && s.currentBranch != "" {
+		if err := s.saveFileHashes(); err != nil {
+			s.logger.Warn("failed to persist file-hash sidecar on project switch", "error", err)
+		}
+	}
+	if s.migrationCancel != nil {
+		s.migrationCancel()
+		s.migrationCancel = nil
+	}
+
 	// Drop references to the previous project so any lingering goroutines
 	// can't modify the old collection after we've switched.
 	s.collection = nil
 	s.currentBranch = ""
+	s.fileHashes = nil
+	s.migrationCh = nil
 	s.projectID = projectID
 	s.projectPath = fullPath
 	s.db = nil
@@ -315,16 +347,34 @@ func (s *Service) DeleteProjectData(fullPath string) error {
 // Close cleans up resources.
 func (s *Service) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+
+	// Persist the current branch's in-memory hashes before shutdown.
+	if s.fileHashes != nil && s.currentBranch != "" {
+		if err := s.saveFileHashes(); err != nil {
+			s.logger.Warn("failed to persist file-hash sidecar on close", "error", err)
+		}
+	}
+	if s.migrationCancel != nil {
+		s.migrationCancel()
+		s.migrationCancel = nil
+	}
 
 	s.collection = nil
 	s.db = nil
+	s.fileHashes = nil
+	s.migrationCh = nil
 	if s.lexical != nil {
 		if err := s.lexical.Close(); err != nil {
 			s.logger.Warn("failed to close lexical index on service close", "error", err)
 		}
 		s.lexical = nil
 	}
+	s.mu.Unlock()
+
+	// Wait for any in-flight migration goroutine to unwind (it aborts after
+	// seeing the cancellation / nil collection above). Must happen AFTER
+	// releasing the lock, or the goroutine would deadlock waiting for it.
+	s.migrationWG.Wait()
 	s.logger.Info("vector index service closed")
 	return nil
 }

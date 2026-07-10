@@ -289,7 +289,7 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		_ = f.watcher.Close()
 		f.watcher = nil
 	}
-	watcher, err := workspace.NewWatcher(p.WorkspacePath, func() {
+	watcher, err := workspace.NewWatcher(p.WorkspacePath, func(changedPaths []string) {
 		f.emitEvent(EventWorkspaceTreeChanged, nil)
 
 		// Project-local skills live under <workspace>/.agents/skills, so a
@@ -297,7 +297,15 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		// the skill cache so the next ListSkills call rescans.
 		f.invalidateSkillCache()
 
-		if vm := f.getVectorManager(); vm != nil {
+		// Only trigger vector re-indexing when at least one changed path is
+		// indexable. Churn inside ignored locations (.git maintenance: gc,
+		// repack, reflog cleanup; .DS_Store; node_modules) must not wake the
+		// indexer — it would run a full ValidateCollection pass (including a
+		// wasted ONNX inference) only to find "no changes detected". The
+		// indexer's cached .gitignore patterns are reused so the watcher does
+		// not re-read .gitignore on every debounce flush.
+		vm := f.getVectorManager()
+		if vm != nil && vm.IsAnyIndexablePath(changedPaths) {
 			vm.NotifyFileChange()
 		}
 	})
@@ -334,7 +342,7 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return fmt.Errorf("failed to create session workspace for watcher: %w", err)
 	}
-	watcher, err := workspace.NewWatcher(root, func() {
+	watcher, err := workspace.NewWatcher(root, func(_ []string) {
 		f.emitEvent(EventWorkspaceTreeChanged, nil)
 		// Invalidate skill cache in case project-local skills changed.
 		f.invalidateSkillCache()

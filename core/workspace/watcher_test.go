@@ -12,7 +12,7 @@ func TestNewWatcher_WatchesRoot(t *testing.T) {
 	dir := t.TempDir()
 
 	var called atomic.Int32
-	w, err := NewWatcher(dir, func() {
+	w, err := NewWatcher(dir, func(_ []string) {
 		called.Add(1)
 	})
 	if err != nil {
@@ -41,7 +41,7 @@ func TestWatcher_WatchDir_UnwatchDir(t *testing.T) {
 	}
 
 	var called atomic.Int32
-	w, err := NewWatcher(root, func() {
+	w, err := NewWatcher(root, func(_ []string) {
 		called.Add(1)
 	})
 	if err != nil {
@@ -82,8 +82,11 @@ func TestWatcher_Debounce(t *testing.T) {
 	dir := t.TempDir()
 
 	var called atomic.Int32
-	w, err := NewWatcher(dir, func() {
+	w, err := NewWatcher(dir, func(paths []string) {
 		called.Add(1)
+		if len(paths) == 0 {
+			t.Error("expected changed paths to be passed to onChange")
+		}
 	})
 	if err != nil {
 		t.Fatalf("NewWatcher: %v", err)
@@ -114,7 +117,7 @@ func TestWatcher_Debounce(t *testing.T) {
 func TestWatcher_Close(t *testing.T) {
 	dir := t.TempDir()
 
-	w, err := NewWatcher(dir, func() {})
+	w, err := NewWatcher(dir, func(_ []string) {})
 	if err != nil {
 		t.Fatalf("NewWatcher: %v", err)
 	}
@@ -133,7 +136,7 @@ func TestWatcher_PathValidation(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 
-	w, err := NewWatcher(root, func() {})
+	w, err := NewWatcher(root, func(_ []string) {})
 	if err != nil {
 		t.Fatalf("NewWatcher: %v", err)
 	}

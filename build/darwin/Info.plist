@@ -21,6 +21,10 @@
         <string>10.13.0</string>
         <key>NSHighResolutionCapable</key>
         <string>true</string>
+        <key>NSAppSleepDisabled</key>
+        <true/>
+        <key>NSSupportsAutomaticTermination</key>
+        <false/>
         <key>NSHumanReadableCopyright</key>
         <string>{{.Info.Copyright}}</string>
         {{if .Info.FileAssociations}}
