@@ -376,6 +376,165 @@ func TestBuildSkillAugmentedRoutingMessage(t *testing.T) {
 	})
 }
 
+// TestResolveTaskMessage verifies the effective-task resolution that feeds the
+// Conductor and conversation history. A bare skill invocation (e.g. just
+// "/code-check" with no extra text) is stripped to "" by preprocessing; without
+// restoration the Conductor would receive an empty task and the provider may
+// reject the request (HTTP 400 "messages parameter is illegal").
+func TestResolveTaskMessage(t *testing.T) {
+	skillDir := t.TempDir()
+	checkDir := filepath.Join(skillDir, "code-check")
+	if err := os.MkdirAll(checkDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	md := "---\nname: code-check\ndescription: Run static analysis on source code\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(checkDir, "SKILL.md"), []byte(md), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	sm := skills.NewSkillManager([]string{skillDir}, nil)
+	if err := sm.Scan(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	o := &Orchestrator{skillManager: sm}
+
+	t.Run("empty message with skill is restored to non-empty", func(t *testing.T) {
+		got := o.resolveTaskMessage("", []string{"code-check"})
+		if got == "" {
+			t.Fatal("expected non-empty task message for bare skill invocation; got empty (provider would reject HTTP 400)")
+		}
+		if !strings.Contains(got, "/code-check") {
+			t.Errorf("expected /code-check in task message, got: %s", got)
+		}
+		if !strings.Contains(got, "Run static analysis") {
+			t.Errorf("expected skill description in task message, got: %s", got)
+		}
+	})
+
+	t.Run("message with args keeps args and adds skill context", func(t *testing.T) {
+		got := o.resolveTaskMessage("src/main.go", []string{"code-check"})
+		if !strings.Contains(got, "/code-check") || !strings.Contains(got, "src/main.go") {
+			t.Errorf("expected skill ref and args in task message, got: %s", got)
+		}
+	})
+
+	t.Run("no skills returns message unchanged", func(t *testing.T) {
+		if got := o.resolveTaskMessage("just text", nil); got != "just text" {
+			t.Errorf("expected passthrough without skills, got: %s", got)
+		}
+	})
+
+	t.Run("nil skill manager returns message unchanged", func(t *testing.T) {
+		noMgr := &Orchestrator{skillManager: nil}
+		if got := noMgr.resolveTaskMessage("", []string{"code-check"}); got != "" {
+			t.Errorf("expected passthrough with nil skill manager, got: %q", got)
+		}
+	})
+}
+
+// TestHandleMessage_EmptySkillMessage_PropagatesNonEmptyTaskToConductor is the
+// regression test for the HTTP 400 "messages parameter is illegal" failure:
+// a bare skill invocation (e.g. just "/code-check") is stripped to "" by
+// preprocessing. The Conductor must still receive a non-empty task — otherwise
+// the request is system-only and the provider rejects it.
+func TestHandleMessage_EmptySkillMessage_PropagatesNonEmptyTaskToConductor(t *testing.T) {
+	skillDir := t.TempDir()
+	checkDir := filepath.Join(skillDir, "code-check")
+	if err := os.MkdirAll(checkDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	md := "---\nname: code-check\ndescription: Run static analysis on source code\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(checkDir, "SKILL.md"), []byte(md), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	sm := skills.NewSkillManager([]string{skillDir}, nil)
+	if err := sm.Scan(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	// Capturing context factory: records every CM created so we can inspect
+	// the task each one received via SetTask (the Conductor calls SetTask on
+	// the CM it builds).
+	var createdCMs []*mockContextManager
+	captureFactory := func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...orchestration.PruningOverride) ContextManager {
+		cm := &mockContextManager{systemPrompt: systemPrompt}
+		createdCMs = append(createdCMs, cm)
+		return cm
+	}
+
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			if callIdx == 1 {
+				// Router: classify as general; the skill is user-specified.
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "general", "complexity": 2, "needs_clarification": false, "matched_skills": []}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			}
+			// Conductor: finish immediately.
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role: "assistant",
+					ToolCalls: []llm.ToolCall{{
+						ID:    "call_1",
+						Name:  "finish",
+						Input: json.RawMessage(`{"answer":"done"}`),
+					}},
+				},
+				StopReason: "tool_use",
+			}, nil
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+		Router:         newCoreRouter(mockLLM, 5),
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: captureFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+		SkillManager:   sm,
+	})
+
+	// Bare skill invocation: preprocessor would strip "/code-check" → "".
+	if _, err := orchestrator.HandleMessage(context.Background(), "", "session-skill", HandleOptions{UserSkills: []string{"code-check"}}); err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	// At least one context manager must have received a non-empty task
+	// containing the restored skill reference.
+	var conductorTask string
+	for _, cm := range createdCMs {
+		if strings.Contains(cm.taskDefinition, "/code-check") {
+			conductorTask = cm.taskDefinition
+			break
+		}
+	}
+	if conductorTask == "" {
+		t.Fatalf("expected Conductor to receive a non-empty task with /code-check for bare skill invocation; got %d CMs with tasks: %v", len(createdCMs), cmTasks(createdCMs))
+	}
+	if !strings.Contains(conductorTask, "Run static analysis") {
+		t.Errorf("expected Conductor task to include skill description, got: %s", conductorTask)
+	}
+}
+
+// cmTasks returns the task definitions set on each context manager (for diagnostics).
+func cmTasks(cms []*mockContextManager) []string {
+	tasks := make([]string, len(cms))
+	for i, cm := range cms {
+		tasks[i] = cm.taskDefinition
+	}
+	return tasks
+}
+
 // TestBuildSystemPrompt_PlanMode verifies that buildSystemPrompt includes the
 // Plan Context section when PlanModeKey is set in the context.
 func TestBuildSystemPrompt_PlanMode(t *testing.T) {

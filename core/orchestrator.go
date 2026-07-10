@@ -321,6 +321,30 @@ func (o *Orchestrator) buildSkillAugmentedRoutingMessage(message string, userSki
 	return prefix + " " + message
 }
 
+// resolveTaskMessage returns the effective task message used for everything
+// downstream of routing: the blackboard's original request, the Conductor's
+// task, and the conversation-history recording.
+//
+// When the user invokes a skill via /skill-name, preprocessMessageText strips
+// the reference — potentially leaving an empty message. That empty message
+// would (a) produce a request with only system messages, which some providers
+// reject with HTTP 400 "messages parameter is illegal", and (b) get recorded
+// as an empty user turn in the conversation history, risking the same failure
+// on subsequent turns. This restores the skill context so the Conductor
+// receives a meaningful task — symmetrically with the router's own
+// augmentation in routeAndActivateSkills (which calls
+// buildSkillAugmentedRoutingMessage directly).
+//
+// The router itself is deliberately excluded from using this: it must receive
+// the raw preprocessed message and augment internally, otherwise the skill
+// reference would be double-prefixed.
+func (o *Orchestrator) resolveTaskMessage(message string, userSkills []string) string {
+	if len(userSkills) == 0 || o.skillManager == nil {
+		return message
+	}
+	return o.buildSkillAugmentedRoutingMessage(message, userSkills)
+}
+
 // logDebug logs a DEBUG level message if logger is not nil.
 func (o *Orchestrator) logDebug(msg string, args ...any) {
 	if o.logger != nil {
@@ -771,13 +795,23 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	}
 	defer o.requestInFlight.Store(false)
 
+	// Resolve the effective task message. When the user invokes a skill via
+	// /skill-name, preprocessMessageText strips the reference — potentially
+	// leaving an empty message. resolveTaskMessage rebuilds it so the
+	// Conductor receives a meaningful task and the conversation history never
+	// records an empty user message (which some providers reject with HTTP
+	// 400 "messages parameter is illegal"). The raw `message` is still passed
+	// to the router below, which applies its own augmentation — using the
+	// augmented message there would double-prefix the skill reference.
+	taskMessage := o.resolveTaskMessage(message, opts.UserSkills)
+
 	// Record the exchange in the in-memory conversation history for EVERY
 	// terminal outcome (success, failure, cancellation) of HandleMessage
 	// cancellation) so future routing and continuation planning always see
 	// the full dialogue. Registered after the single-flight guard so a
 	// rejected concurrent request is not recorded.
 	defer func() {
-		o.recordConversationOutcome(ctx, message, result, err)
+		o.recordConversationOutcome(ctx, taskMessage, result, err)
 	}()
 
 	// 0. Apply per-request overrides to all LLM-calling components.
@@ -794,10 +828,10 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 
 	// 1. Prepare context (plan-mode key, injection-defense, vector hints, initial context_fill).
 	o.logDebug("orchestrator: handle_message started", "messageLength", len(message), "taskID", opts.TaskID)
-	ctx = o.prepareRequestContext(ctx, message)
+	ctx = o.prepareRequestContext(ctx, taskMessage)
 
 	// 2. Setup blackboard (fresh or restored).
-	bb, err := o.setupBlackboard(message, sessionID, opts.TaskID)
+	bb, err := o.setupBlackboard(taskMessage, sessionID, opts.TaskID)
 	if err != nil {
 		return nil, err
 	}
@@ -816,6 +850,9 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// Continuation fast-path: routeOrContinue skips the router when a restored
 	// task has an existing plan + routing (the router is blind to the plan and
 	// would misclassify continuation messages).
+	// NOTE: the raw preprocessed `message` is passed here (not taskMessage)
+	// because the router augments the skill context itself — passing the
+	// already-augmented taskMessage would double-prefix the skill reference.
 	ctx, routing, _, _, err := o.routeOrContinue(ctx, message, opts, bb, availableTools)
 	if err != nil {
 		return nil, err
@@ -842,7 +879,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	conductorHistory := truncateHistory(o.conversationHistory, o.config.ConductorHistoryWindow)
 
 	plansDir := opts.SessionPlansDir
-	execResult, err := o.runConductor(ctx, message, bb, availableTools, plansDir, conductorHistory)
+	execResult, err := o.runConductor(ctx, taskMessage, bb, availableTools, plansDir, conductorHistory)
 	// C-5: propagate ErrExecutionIncomplete alongside best-effort result.
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
 		return nil, err

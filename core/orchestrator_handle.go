@@ -185,11 +185,9 @@ func (o *Orchestrator) routeAndActivateSkills(
 
 	// When the user explicitly invoked skill(s) via /skill-name, the message
 	// has the skill reference stripped. Build a routing-specific message that
-	// restores the skill context.
-	routingMessage := message
-	if len(opts.UserSkills) > 0 && o.skillManager != nil {
-		routingMessage = o.buildSkillAugmentedRoutingMessage(message, opts.UserSkills)
-	}
+	// restores the skill context (same logic as resolveTaskMessage, applied
+	// here to the raw message the router receives).
+	routingMessage := o.resolveTaskMessage(message, opts.UserSkills)
 
 	// Convert github.com/v0lka/sp4rk/skills.SkillDescriptor to github.com/v0lka/sp4rk/agent/router.SkillDescriptor
 	routerSkills := make([]router.SkillDescriptor, len(skillDescriptors))
