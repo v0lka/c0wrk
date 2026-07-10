@@ -1,4 +1,4 @@
-package fluent
+package sdk
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 func TestRunAskWithoutSystem(t *testing.T) {
 	fw := testFramework(t)
 
-	_, err := Run(context.Background(), fw).Ask("hello")
+	_, err := fw.RunF(context.Background()).Ask("hello")
 	if !errors.Is(err, errNoSystemPrompt) {
 		t.Errorf("Ask without system: err = %v, want errNoSystemPrompt", err)
 	}
@@ -24,7 +24,7 @@ func TestRunBuilderChaining(t *testing.T) {
 	events := &agent.NoopEvents{}
 	factory := func(_ context.Context, _ string, _ llm.ModelMetadata) string { return "dynamic" }
 
-	b := Run(context.Background(), fw)
+	b := fw.RunF(context.Background())
 	// Each setter must return the same builder instance for chaining.
 	if b.System("static") != b {
 		t.Error("System should return the same builder")
@@ -53,7 +53,7 @@ func TestRunBuilderChaining(t *testing.T) {
 func TestRunSystemStoresStaticPrompt(t *testing.T) {
 	fw := testFramework(t)
 
-	b := Run(context.Background(), fw).System("You are helpful.")
+	b := fw.RunF(context.Background()).System("You are helpful.")
 	if b.system != "You are helpful." {
 		t.Errorf("system = %q, want %q", b.system, "You are helpful.")
 	}

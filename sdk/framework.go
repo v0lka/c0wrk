@@ -15,6 +15,36 @@
 //	defer fw.Shutdown()
 //
 //	result, _ := fw.Execute(ctx, mySystemPrompt, myEvents, "Write a hello world in Go")
+//
+// # Fluent API
+//
+// The same SDK is reachable through a concise method-chain (fluent) API. The
+// fluent entry points carry an "F" postfix to distinguish them from the classic
+// methods on the shared [Framework] type; once inside a builder, methods keep
+// their natural names so the chain reads fluently:
+//
+//	fw, _ := sdk.NewF().
+//	    Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
+//	    FileTools().
+//	    AutoApprove().
+//	    Build()
+//	defer fw.Shutdown()
+//
+//	// fw.RunF — single ReAct loop (fluent counterpart of Execute).
+//	result, _ := fw.RunF(ctx).
+//	    System("You are a helpful assistant.").
+//	    Ask("Write a hello world in Go")
+//
+//	// fw.TaskF — Plan → Execute → Reflect orchestration.
+//	result, _ = fw.TaskF(ctx, task).
+//	    System("You are a task execution agent.").
+//	    Plan().Reflect().Execute()
+//
+// [NewF] returns a [FrameworkBuilder]; [Framework.RunF] and [Framework.TaskF]
+// start the single-loop and orchestration builders. The classic and fluent APIs
+// are fully interoperable — both produce and operate on the same [*Framework].
+// For the layer map, before/after comparisons, and when to reach for classic
+// escapes, see the Fluent API guide at docs/fluent-api.md.
 package sdk
 
 import (

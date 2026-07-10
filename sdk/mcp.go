@@ -1,11 +1,11 @@
-package fluent
+package sdk
 
 import "github.com/v0lka/sp4rk/tools/mcp"
 
 // MCPStdio returns an [mcp.ServerEntry] for a stdio-based MCP server (a local
 // process launched via command + args). Pass the result to [WithMCPServer].
 //
-//	fluent.MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", workDir)
+//	name, entry := sdk.MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", workDir)
 func MCPStdio(name, command string, args ...string) (string, mcp.ServerEntry) {
 	return name, mcp.ServerEntry{
 		Transport: "stdio",
@@ -17,8 +17,8 @@ func MCPStdio(name, command string, args ...string) (string, mcp.ServerEntry) {
 // MCPHTTP returns an [mcp.ServerEntry] for an HTTP-based MCP server reachable
 // at url. Pass the result to [WithMCPServer].
 //
-//	name, entry := fluent.MCPHTTP("remote", "https://mcp.example.com/sse")
-//	fw, _ := fluent.New(fluent.WithMCPServer(name, entry), ...)
+//	name, entry := sdk.MCPHTTP("remote", "https://mcp.example.com/sse")
+//	fw, _ := sdk.NewF(sdk.WithMCPServer(name, entry), ...)
 func MCPHTTP(name, url string) (string, mcp.ServerEntry) {
 	return name, mcp.ServerEntry{
 		Transport: "http",

@@ -1,4 +1,4 @@
-package fluent
+package sdk
 
 import (
 	"context"
@@ -11,11 +11,11 @@ import (
 
 // errNoSystemPrompt is returned by [RunBuilder.Ask] when no system prompt was
 // configured via [RunBuilder.System] or [RunBuilder.SystemFactory].
-var errNoSystemPrompt = errors.New("fluent.Run: system prompt is required — use .System(...) or .SystemFactory(...)")
+var errNoSystemPrompt = errors.New("RunF: system prompt is required — use .System(...) or .SystemFactory(...)")
 
 // RunBuilder is a fluent builder for executing a single ReAct loop via
-// [sdk.Framework.Execute]. Create one with [Run]; terminate the chain with
-// [RunBuilder.Ask].
+// [Framework.Execute]. Create one with [Framework.RunF]; terminate the chain
+// with [RunBuilder.Ask].
 //
 // Conventions (all overridable):
 //   - Events defaults to [agent.NoopEvents]; override with [RunBuilder.Events].
@@ -31,14 +31,17 @@ type RunBuilder struct {
 	err        error // set by pipeline transition when the framework build failed
 }
 
-// Run starts a fluent single-task execution over fw. The chain is terminated
-// by [RunBuilder.Ask], which delegates to [sdk.Framework.Execute] and returns
-// the original [*orchestration.ExecutionResult].
+// RunF starts a fluent single-task execution over fw. The chain is terminated
+// by [RunBuilder.Ask], which delegates to [Framework.Execute] and returns the
+// original [*orchestration.ExecutionResult].
 //
-//	result, err := fluent.Run(ctx, fw).
+//	result, err := fw.RunF(ctx).
 //	    System("You are a helpful assistant.").
 //	    Ask("What is the capital of France?")
-func Run(ctx context.Context, fw *Framework) *RunBuilder {
+//
+// RunF is the fluent counterpart of [Framework.Execute]: both run a single
+// ReAct loop, but RunF returns a [RunBuilder] for declarative configuration.
+func (fw *Framework) RunF(ctx context.Context) *RunBuilder {
 	return &RunBuilder{ctx: ctx, fw: fw}
 }
 
@@ -49,7 +52,7 @@ func Run(ctx context.Context, fw *Framework) *RunBuilder {
 // handle (there is no defer Shutdown). If the build fails, the error is surfaced
 // by [RunBuilder.Ask] instead of panicking.
 //
-//	fluent.New().Anthropic(key, model).
+//	sdk.NewF().Anthropic(key, model).
 //	    FileTools().Run(ctx).
 //	    System("You are helpful.").
 //	    Ask("What is the capital of France?")
@@ -58,7 +61,7 @@ func (b *FrameworkBuilder) Run(ctx context.Context) *RunBuilder {
 	if err != nil {
 		return &RunBuilder{ctx: ctx, err: err}
 	}
-	return Run(ctx, fw)
+	return fw.RunF(ctx)
 }
 
 // System sets a static system prompt. This is the common case; the string is

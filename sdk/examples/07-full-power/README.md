@@ -2,21 +2,21 @@
 
 The "kitchen sink" example: every major SDK subsystem combined into one agent.
 
-This example is a **fluent-first hybrid**: the Framework is assembled with `fluent.New` and the orchestration runs as a single `fluent.Task` chain. Where fluent does not surface fine-grained control, **classic escapes** are used. This is the recommended pattern for real applications — fluent for the common path, classic API for advanced tuning.
+This example is a **fluent-first hybrid**: the Framework is assembled with `sdk.NewF` and the orchestration runs as a single `fw.TaskF` chain. Where fluent does not surface fine-grained control, **classic escapes** are used. This is the recommended pattern for real applications — fluent for the common path, classic API for advanced tuning.
 
 | Concern                | Path      | How                                                    |
 |------------------------|-----------|--------------------------------------------------------|
-| Framework assembly     | **Fluent**| `fluent.New` + `.Providers`/`.MCPStdio`/`.Tools`/`.HITL` |
-| Plan → Execute → Reflect | **Fluent**| `fluent.Task(...).Plan().Reflect().Models(...).Execute()` |
+| Framework assembly     | **Fluent**| `sdk.NewF` + `.Providers`/`.MCPStdio`/`.Tools`/`.HITL` |
+| Plan → Execute → Reflect | **Fluent**| `fw.TaskF(...).Plan().Reflect().Models(...).Execute()` |
 | Compaction / execution tuning | **Classic**| `.Config(base sdk.Config)` escape hatch |
 | `OnBlackboardChanged`  | **Classic**| rides in the `WithConfig` base (no dedicated fluent option) |
-| Skills discovery       | **Classic**| `skills.SkillManager` → passed to `fluent.Task.Skills` |
-| Custom events sink     | **Classic**| `consoleEvents` (embeds `orchestration.NoopEvents`) → `fluent.Task.Events` |
+| Skills discovery       | **Classic**| `skills.SkillManager` → passed to the fluent `.Skills` builder method |
+| Custom events sink     | **Classic**| `consoleEvents` (embeds `orchestration.NoopEvents`) → the fluent `.Events` builder method |
 
 ## What you will learn
 
 - How to combine all SDK features in a single application
-- When to use the fluent façade vs. fall back to the classic API
+- When to use the fluent API vs. fall back to the classic API
 - Multi-provider LLM configuration with runtime model switching (Claude for planning/reflection, GPT-4o for execution)
 - Custom + built-in + MCP tools in one registry
 - Skills discovery, fact memory, and blackboard callbacks
@@ -26,15 +26,15 @@ This example is a **fluent-first hybrid**: the Framework is assembled with `flue
 
 | Subsystem          | Fluent or classic | Configuration                                    |
 |--------------------|-------------------|--------------------------------------------------|
-| Multi-provider LLM | Fluent            | `.Providers(Anthropic + OpenAI?)`; switching via `fluent.Task.Models` |
+| Multi-provider LLM | Fluent            | `.Providers(Anthropic + OpenAI?)`; switching via `.Models` |
 | Custom tools       | Fluent            | `timestamp` tool registered via `.Tools(...)`      |
-| Built-in tools     | Fluent            | `fluent.FileTools()` + `fluent.MemoryTools()` bundles |
+| Built-in tools     | Fluent            | `sdk.FileTools()` + `sdk.MemoryTools()` bundles |
 | MCP integration    | Fluent            | `.MCPStdio(...)`              |
-| Event streaming    | Classic escape    | `consoleEvents` (embeds `orchestration.NoopEvents`) → `fluent.Task.Events` |
+| Event streaming    | Classic escape    | `consoleEvents` (embeds `orchestration.NoopEvents`) → the fluent `.Events` builder method |
 | Human-in-the-loop  | Fluent            | `.HITL(autoApproveHITL)` (blocks `delete_directory`) |
-| Planner            | Fluent            | `.Plan()` with `fluent.DefaultPromptSet`         |
-| Conductor          | Fluent            | created internally by `fluent.Task`              |
-| Reflector          | Fluent            | `.Reflect()` with `fluent.DefaultReflectorPrompt`|
+| Planner            | Fluent            | `.Plan()` with `sdk.DefaultPromptSet`         |
+| Conductor          | Fluent            | created internally by `fw.TaskF`              |
+| Reflector          | Fluent            | `.Reflect()` with `sdk.DefaultReflectorPrompt`|
 | Skills             | Classic escape    | `skills.SkillManager` → `.Skills(discovered)`    |
 | Fact memory        | Fluent            | `MemoryTools()` bundle + blackboard              |
 | Compaction         | Classic escape    | `.Config(base)` carrying `CompactionConfig`      |
@@ -43,7 +43,7 @@ This example is a **fluent-first hybrid**: the Framework is assembled with `flue
 ## Architecture
 
 ```
-fluent.New().
+sdk.NewF().
     Config(base).               // classic escape: compaction, execution tuning, OnBlackboardChanged
     Providers(anthropic, openai?).
     MCPStdio("filesystem", …).
@@ -54,7 +54,7 @@ fluent.New().
     ├─ ToolRegistry: [custom] timestamp + [core] file/memory tools + [mcp] filesystem tools
     ├─ SkillManager: discovers go-testing skill   (classic — pre-execution)
     │
-    └─ fluent.Task(...).Workspace(...).Skills(...).Events(consoleEvents)
+    └─ fw.TaskF(...).Workspace(...).Skills(...).Events(consoleEvents)
            .Plan().Reflect().MaxRetries(2).Models(claude, gpt-4o?).Execute()
               │
               ├─ Planner: generates DAG (Claude)
@@ -76,9 +76,9 @@ This example combines patterns from all previous examples. See each example's RE
 
 ### New concepts in this example
 
-#### The hybrid: fluent façade + classic escapes
+#### The hybrid: fluent API + classic escapes
 
-The Framework is built with `fluent.New`, but fields that have no dedicated fluent option (compaction tuning, `OnBlackboardChanged`) ride in a `WithConfig` base — a classic escape hatch that fluent layers its options on top of:
+The Framework is built with `sdk.NewF`, but fields that have no dedicated fluent option (compaction tuning, `OnBlackboardChanged`) ride in a `Config` base — a classic escape hatch that fluent layers its options on top of:
 
 ```go
 base := sdk.Config{
@@ -86,7 +86,7 @@ base := sdk.Config{
     Compaction: sdk.CompactionConfig{ /* thresholds */ },
     OnBlackboardChanged: func(ct string) { fmt.Println("blackboard:", ct) },
 }
-fw, _ := fluent.New().
+fw, _ := sdk.NewF().
     Config(base).             // escape hatch: advanced tuning
     Providers(providers...).
     MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", workspaceDir).
@@ -97,10 +97,10 @@ fw, _ := fluent.New().
     Build()
 ```
 
-The orchestration cycle is one `fluent.Task` chain (replacing the ~80-line hand-rolled loop of example 06):
+The orchestration cycle is one `fw.TaskF` chain (replacing the ~80-line hand-rolled loop of example 06):
 
 ```go
-result, err := fluent.Task(ctx, fw, task).
+result, err := fw.TaskF(ctx, task).
     Workspace(workspaceDir).
     Skills(discoveredSkills).
     Events(&consoleEvents{}).
@@ -119,15 +119,15 @@ result, err := fluent.Task(ctx, fw, task).
 skillMgr := skills.NewSkillManager([]string{skillsDir}, nil)
 skillMgr.Scan()
 discoveredSkills := skillMgr.List()
-// passed to the planner via fluent.Task.Skills(discoveredSkills)
+// passed to the planner via the .Skills(discoveredSkills) builder method
 ```
 
-Skills are markdown files (`SKILL.md`) with YAML frontmatter. The `SkillManager` scans directories in priority order and parses each skill's metadata. Discovered skills are passed to the Planner (via `fluent.Task.Skills`) so it can assign them to steps. Discovery is pre-execution setup, so it stays in the classic API.
+Skills are markdown files (`SKILL.md`) with YAML frontmatter. The `SkillManager` scans directories in priority order and parses each skill's metadata. Discovered skills are passed to the Planner (via the fluent `.Skills` builder method) so it can assign them to steps. Discovery is pre-execution setup, so it stays in the classic API.
 
 #### Fact memory
 
 ```go
-fluent.New().FileTools().MemoryTools()
+sdk.NewF().FileTools().MemoryTools()
 ```
 
 The `MemoryTools()` bundle registers `store_fact` and `search_facts`. Facts are keyword-tagged pieces of information stored on the blackboard; steps can share findings without passing large outputs through the context window. Stored facts are readable from `result.Blackboard.GetFacts()`.

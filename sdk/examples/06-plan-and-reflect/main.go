@@ -5,7 +5,7 @@
 // The full Plan & Execute orchestration pattern, written by hand against the
 // classic SDK API (Planner → DAG → Conductor → Reflector, with a manual retry
 // loop). For the concise recommended path — which collapses this ~80-line loop
-// into a single fluent.Task chain — see main_fluent.go (run with `-tags fluent`).
+// into a single fw.TaskF chain — see main_fluent.go (run with `-tags fluent`).
 package main
 
 import (

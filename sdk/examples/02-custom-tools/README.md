@@ -9,10 +9,10 @@ Build a custom tool that implements the `tools.Tool` interface, register it alon
 
 ### Fluent (recommended)
 
-The fluent façade bundles the common file tools via `FileTools()`; a custom tool is passed alongside. The finish tool is auto-registered:
+The fluent builder bundles the common file tools via `FileTools()`; a custom tool is passed alongside. The finish tool is auto-registered:
 
 ```go
-fw, err := fluent.New().
+fw, err := sdk.NewF().
     Anthropic(key, "claude-sonnet-4-5").
     FileTools().
     Tools(NewCalculatorTool()).
@@ -20,7 +20,7 @@ fw, err := fluent.New().
     Build()
 // workspace is injected via the context (Run has no .Workspace() helper)
 ctx := tools.WithWorkspacePath(context.Background(), workspaceDir)
-result, err := fluent.Run(ctx, fw).System(systemPrompt).Ask(task)
+result, err := fw.RunF(ctx).System(systemPrompt).Ask(task)
 ```
 
 ## What you will learn
@@ -131,7 +131,7 @@ This context propagates through the Conductor → Executor → tool execution, s
 | File                 | Description                                  |
 |----------------------|----------------------------------------------|
 | `main.go`            | Classic SDK wiring: Framework, tool registration, execution (`//go:build !fluent`) |
-| `main_fluent.go`     | Fluent wiring: `fluent.New` + bundled tools (`//go:build fluent`) |
+| `main_fluent.go`     | Fluent wiring: `sdk.NewF` + bundled tools (`//go:build fluent`) |
 | `calculator_tool.go` | The custom `CalculatorTool` (shared by both variants — tagless) |
 | `calculator.go`      | Arithmetic expression evaluator (implementation detail, not SDK-specific) |
 

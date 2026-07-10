@@ -1,4 +1,4 @@
-package fluent
+package sdk
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 func TestTaskExecuteWithoutSystem(t *testing.T) {
 	fw := testFramework(t)
 
-	_, err := Task(context.Background(), fw, "do something").Execute()
+	_, err := fw.TaskF(context.Background(), "do something").Execute()
 	if err == nil {
 		t.Fatal("expected error when no system prompt is configured")
 	}
@@ -20,7 +20,7 @@ func TestTaskExecuteWithoutSystem(t *testing.T) {
 func TestTaskDefaults(t *testing.T) {
 	fw := testFramework(t)
 
-	b := Task(context.Background(), fw, "task")
+	b := fw.TaskF(context.Background(), "task")
 	if b.maxRetries != 2 {
 		t.Errorf("default maxRetries = %d, want 2", b.maxRetries)
 	}
@@ -32,7 +32,7 @@ func TestTaskDefaults(t *testing.T) {
 func TestTaskBuilderChaining(t *testing.T) {
 	fw := testFramework(t)
 
-	b := Task(context.Background(), fw, "task")
+	b := fw.TaskF(context.Background(), "task")
 	checks := []bool{
 		b.System("prompt") == b,
 		b.Events(&orchestration.NoopEvents{}) == b,
@@ -72,7 +72,7 @@ func TestTaskBuilderChaining(t *testing.T) {
 func TestResolvePlannerUsesDefaults(t *testing.T) {
 	fw := testFramework(t)
 
-	b := Task(context.Background(), fw, "task").Plan()
+	b := fw.TaskF(context.Background(), "task").Plan()
 
 	pl, err := b.resolvePlanner(context.Background())
 	if err != nil {
@@ -94,7 +94,7 @@ func TestResolvePlannerUsesDefaults(t *testing.T) {
 func TestResolveReflectorDisabledByDefault(t *testing.T) {
 	fw := testFramework(t)
 
-	b := Task(context.Background(), fw, "task")
+	b := fw.TaskF(context.Background(), "task")
 	if rf := b.resolveReflector(); rf != nil {
 		t.Error("resolveReflector should return nil when reflection is disabled")
 	}
@@ -103,7 +103,7 @@ func TestResolveReflectorDisabledByDefault(t *testing.T) {
 func TestResolveReflectorEnabled(t *testing.T) {
 	fw := testFramework(t)
 
-	b := Task(context.Background(), fw, "task").Reflect()
+	b := fw.TaskF(context.Background(), "task").Reflect()
 	if rf := b.resolveReflector(); rf == nil {
 		t.Error("resolveReflector should return a reflector when Reflect() is set")
 	}

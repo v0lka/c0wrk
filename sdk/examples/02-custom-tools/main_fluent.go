@@ -3,7 +3,7 @@
 // Example 02 — Custom Tools (Fluent API)
 //
 // The same custom-tool agent as main.go, expressed through the fluent façade.
-// Built-in file tools come from a bundle ([fluent.FileTools]); the custom
+// Built-in file tools come from a bundle ([sdk.FileTools]); the custom
 // CalculatorTool (shared via calculator_tool.go) is registered alongside.
 //
 // Run with: go run -tags fluent .
@@ -16,7 +16,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/v0lka/sp4rk/fluent"
+	"github.com/v0lka/sp4rk"
 	"github.com/v0lka/sp4rk/tools"
 )
 
@@ -29,10 +29,10 @@ func run() error {
 	defer func() { _ = os.RemoveAll(workspaceDir) }()
 	fmt.Println("Workspace:", workspaceDir)
 
-	// fluent.New: provider + bundled file tools + our custom calculator tool.
+	// sdk.NewF: provider + bundled file tools + our custom calculator tool.
 	// The finish tool is auto-registered. AutoApprove satisfies the
 	// fail-closed registry for write_file (sandboxed throwaway workspace).
-	fw, err := fluent.New().
+	fw, err := sdk.NewF().
 		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 		FileTools().
 		Tools(NewCalculatorTool()).
@@ -54,7 +54,7 @@ func run() error {
 	// context instead (built-in file tools read it via tools.WorkspacePathFrom).
 	ctx := tools.WithWorkspacePath(context.Background(), workspaceDir)
 
-	result, err := fluent.Run(ctx, fw).
+	result, err := fw.RunF(ctx).
 		System(fmt.Sprintf(`You are a coding assistant working in the directory %s.
 You have a calculator tool for arithmetic and file tools for reading/writing files.
 When you have completed the task, call the finish tool with a summary.`, workspaceDir)).

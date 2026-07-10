@@ -4,7 +4,7 @@
 //
 // The same Plan & Execute orchestration as main.go, but the ~80-line hand-rolled
 // loop (Planner → DAG → Conductor → retry → Reflect) collapses into a single
-// fluent.Task chain. The default PromptSet and reflector prompt are applied
+// fw.TaskF chain. The default PromptSet and reflector prompt are applied
 // automatically; only the task, system prompt, workspace, and retry budget
 // need configuring.
 //
@@ -17,14 +17,14 @@ import (
 	"log"
 	"os"
 
-	"github.com/v0lka/sp4rk/fluent"
+	"github.com/v0lka/sp4rk"
 	"github.com/v0lka/sp4rk/llm"
 )
 
 func run() error {
 	// Build the Framework: provider + file tools + per-step budget + auto-approve.
 	// The finish tool is auto-registered so each step can signal completion.
-	fw, err := fluent.New().
+	fw, err := sdk.NewF().
 		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 		FileTools().   // read, write, edit, list, glob, mkdir
 		MaxSteps(15).  // per-step ReAct budget
@@ -47,12 +47,12 @@ func run() error {
 2. Write a main.go file that prints "Hello from planned agent!"
 3. Read the file back to verify it was written correctly`, workspaceDir)
 
-	// A single fluent.Task chain replaces the entire hand-rolled
+	// A single fw.TaskF chain replaces the entire hand-rolled
 	// Plan → FindReadySteps → per-step retry → Reflect loop in main.go.
 	// .Plan() enables the planner (with DefaultPromptSet);
 	// .Reflect() enables the reflector (with DefaultReflectorPrompt);
 	// .MaxRetries(2) is the per-step retry budget.
-	result, err := fluent.Task(context.Background(), fw, task).
+	result, err := fw.TaskF(context.Background(), task).
 		SystemFactory(func(_ context.Context, stepDescription string, _ llm.ModelMetadata) string {
 			return fmt.Sprintf(`You are a task execution agent. Complete the following task step.
 

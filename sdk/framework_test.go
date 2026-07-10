@@ -1,9 +1,8 @@
-package fluent
+package sdk
 
 import (
 	"testing"
 
-	sdk "github.com/v0lka/sp4rk"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/tools/mcp"
 )
@@ -18,7 +17,7 @@ func registryNames(t *testing.T, fw *Framework) map[string]bool {
 	return names
 }
 
-// dummyProvider returns a minimal valid provider entry for tests. sdk.New does
+// dummyProvider returns a minimal valid provider entry for tests. New does
 // not validate API keys at construction time (only at call time), so a dummy
 // key is sufficient to build a Framework.
 func dummyProvider() llm.ProviderEntry {
@@ -30,7 +29,7 @@ func dummyProvider() llm.ProviderEntry {
 // ready Framework but don't exercise the builder surface itself.
 func testFramework(t *testing.T) *Framework {
 	t.Helper()
-	fw, err := New().Provider(dummyProvider()).Build()
+	fw, err := NewF().Provider(dummyProvider()).Build()
 	if err != nil {
 		t.Fatalf("build test framework: %v", err)
 	}
@@ -49,7 +48,7 @@ func TestNewMinimalFramework(t *testing.T) {
 }
 
 func TestNoAutoFinish(t *testing.T) {
-	fw, err := New().Provider(dummyProvider()).NoAutoFinish().Build()
+	fw, err := NewF().Provider(dummyProvider()).NoAutoFinish().Build()
 	if err != nil {
 		t.Fatalf("Build: unexpected error: %v", err)
 	}
@@ -62,7 +61,7 @@ func TestNoAutoFinish(t *testing.T) {
 }
 
 func TestBuilderToolsRegisters(t *testing.T) {
-	fw, err := New().
+	fw, err := NewF().
 		Provider(dummyProvider()).
 		Tools(FileTools()...).
 		Build()
@@ -80,7 +79,7 @@ func TestBuilderToolsRegisters(t *testing.T) {
 }
 
 func TestNewNoProviderError(t *testing.T) {
-	_, err := New().Build()
+	_, err := NewF().Build()
 	if err == nil {
 		t.Fatal("expected error when no provider is configured")
 	}
@@ -88,13 +87,13 @@ func TestNewNoProviderError(t *testing.T) {
 
 func TestConfigEscapeHatch(t *testing.T) {
 	// A classic base config with a provider + an MCP server.
-	base := sdk.Config{
-		LLM: sdk.LLMConfig{
+	base := Config{
+		LLM: LLMConfig{
 			Providers: []llm.ProviderEntry{OpenAI("base-key", "gpt-4o")},
 		},
 	}
 	// Layer builder methods on top: add tools + finish.
-	fw, err := New().
+	fw, err := NewF().
 		Config(base).
 		MemoryTools().
 		Build()
@@ -112,12 +111,12 @@ func TestConfigEscapeHatch(t *testing.T) {
 }
 
 func TestConfigAndProviderCombine(t *testing.T) {
-	base := sdk.Config{
-		LLM: sdk.LLMConfig{
+	base := Config{
+		LLM: LLMConfig{
 			Providers: []llm.ProviderEntry{OpenAI("base-key", "gpt-4o")},
 		},
 	}
-	fw, err := New().
+	fw, err := NewF().
 		Config(base).
 		Provider(Anthropic("added-key", "claude-sonnet-4-5")).
 		Build()
@@ -135,9 +134,9 @@ func TestConfigAndProviderCombine(t *testing.T) {
 	}
 }
 
-// TestNewReturnsOriginalType confirms the façade returns the real SDK type.
-// The return-type contract is enforced by the Build signature (Framework is a
-// type alias for sdk.Framework); this test exercises the construction path.
+// TestNewReturnsOriginalType confirms the builder returns the real SDK type.
+// The return-type contract is enforced by the Build signature (which returns
+// *Framework directly); this test exercises the construction path.
 func TestNewReturnsOriginalType(t *testing.T) {
 	fw := testFramework(t)
 
@@ -152,7 +151,7 @@ func TestNewReturnsOriginalType(t *testing.T) {
 // build() wrote into the shared (nil) base map.
 func TestMergeConfigMCPNilServersNoPanic(t *testing.T) {
 	o := options{
-		baseCfg:    &sdk.Config{MCP: &sdk.MCPConfig{DefaultWorkDir: "/tmp"}},
+		baseCfg:    &Config{MCP: &MCPConfig{DefaultWorkDir: "/tmp"}},
 		mcpServers: map[string]mcp.ServerEntry{"added": {Transport: "stdio"}},
 	}
 	// Must not panic on the nil-map write.
@@ -171,11 +170,11 @@ func TestMergeConfigMCPNilServersNoPanic(t *testing.T) {
 // aliases the caller's backing array. Regression test for the shallow-copy
 // aliasing bug in mergeConfig's provider/MCP merge.
 func TestMergeConfigDoesNotMutateBase(t *testing.T) {
-	base := &sdk.Config{
-		LLM: sdk.LLMConfig{
+	base := &Config{
+		LLM: LLMConfig{
 			Providers: []llm.ProviderEntry{OpenAI("base-key", "gpt-4o")},
 		},
-		MCP: &sdk.MCPConfig{
+		MCP: &MCPConfig{
 			Servers: map[string]mcp.ServerEntry{"existing": {Transport: "stdio"}},
 		},
 	}

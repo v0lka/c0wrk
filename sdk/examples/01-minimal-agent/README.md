@@ -9,11 +9,11 @@ This example ships in **two equivalent variants**:
 | **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended entry point — concise & declarative |
 | **Classic** | `main.go`       | `go run .`              | Full low-level control via `sdk.Config`        |
 
-Both build the identical `*sdk.Framework` and produce the same result. The fluent variant is a thin façade that returns the original SDK types — see [`docs/fluent-api.md`](../../docs/fluent-api.md).
+Both build the identical `*sdk.Framework` and produce the same result. The fluent builders live in the root `sdk` package and return the original SDK types — see [`docs/fluent-api.md`](../../docs/fluent-api.md).
 
 ## What you will learn
 
-- How to create a `sdk.Framework` (via fluent `New` or classic `sdk.New`)
+- How to create a `sdk.Framework` (via `sdk.NewF` or classic `sdk.New`)
 - Why the `finish` tool must be registered
 - How to define a system prompt factory
 - How to call `Framework.Execute` and read the result
@@ -21,17 +21,17 @@ Both build the identical `*sdk.Framework` and produce the same result. The fluen
 ### Fluent (recommended)
 
 ```go
-fw, err := fluent.New().
+fw, err := sdk.NewF().
     Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
     Build()
 defer fw.Shutdown() // finish tool is auto-registered
 
-result, err := fluent.Run(ctx, fw).
+result, err := fw.RunF(ctx).
     System("You are a helpful assistant.").
     Ask("What is the capital of France?")
 ```
 
-`fluent.New` returns a real `*sdk.Framework` (the type is aliased), and the finish tool is registered by convention. `fluent.Run` delegates to `Framework.Execute` and returns the original `*orchestration.ExecutionResult`.
+`sdk.NewF()` returns a real `*sdk.Framework` (no shadow types), and the finish tool is registered by convention. `fw.RunF(ctx)` delegates to `Framework.Execute` and returns the original `*orchestration.ExecutionResult`.
 
 ## Architecture
 

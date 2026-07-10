@@ -15,12 +15,12 @@ import (
 	"log"
 	"os"
 
-	"github.com/v0lka/sp4rk/fluent"
+	"github.com/v0lka/sp4rk"
 	"github.com/v0lka/sp4rk/tools"
 )
 
 func run() error {
-	fw, err := fluent.New().
+	fw, err := sdk.NewF().
 		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 		FileTools(). // read_file, list_directory, glob, …
 		Build()
@@ -42,7 +42,7 @@ func run() error {
 	// Attach the shared PrintingEvents sink instead of the default NoopEvents.
 	events := &PrintingEvents{}
 
-	result, err := fluent.Run(ctx, fw).
+	result, err := fw.RunF(ctx).
 		Events(events).
 		System("You are a code exploration assistant. " +
 			"Use the available tools to investigate the codebase. " +

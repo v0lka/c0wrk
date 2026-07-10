@@ -1,4 +1,4 @@
-package fluent
+package sdk
 
 import (
 	"testing"

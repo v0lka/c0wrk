@@ -1,19 +1,18 @@
-package fluent
+package sdk
 
 import (
 	"context"
 	"log/slog"
 
-	sdk "github.com/v0lka/sp4rk"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
-// options holds the accumulated configuration for a [Framework] built via [New].
+// options holds the accumulated configuration for a [Framework] built via [NewF].
 // All fields are unexported; callers configure them exclusively through [Option]
-// values.
+// values or the matching [FrameworkBuilder] methods.
 type options struct {
 	providers    []llm.ProviderEntry
 	defaultModel string
@@ -30,12 +29,12 @@ type options struct {
 
 	logger *slog.Logger
 
-	// baseCfg is an escape-hatch: a full [sdk.Config] that options are applied
+	// baseCfg is an escape-hatch: a full [Config] that options are applied
 	// on top of. Nil means start from a zero Config.
-	baseCfg *sdk.Config
+	baseCfg *Config
 }
 
-// Option configures how [New] builds the [Framework].
+// Option configures how [NewF] builds the [Framework].
 //
 // Option uses the interface-based functional-options pattern: only this
 // package can produce values implementing Option (the apply method is
@@ -56,9 +55,9 @@ func (o providerOption) apply(opts *options) {
 // WithProvider adds a single LLM provider to the configuration. Repeatable to
 // register multiple providers:
 //
-//	fluent.New(
-//	    fluent.WithProvider(fluent.Anthropic(...)),
-//	    fluent.WithProvider(fluent.OpenAI(...)),
+//	sdk.NewF(
+//	    sdk.WithProvider(sdk.Anthropic(...)),
+//	    sdk.WithProvider(sdk.OpenAI(...)),
 //	)
 func WithProvider(p llm.ProviderEntry) Option { return providerOption{provider: p} }
 
@@ -87,10 +86,10 @@ type toolsOption struct{ tools []tools.Tool }
 
 func (o toolsOption) apply(opts *options) { opts.tools = append(opts.tools, o.tools...) }
 
-// WithTools adds tools that [New] registers automatically after building the
+// WithTools adds tools that [NewF] registers automatically after building the
 // [Framework]. Spread a bundle to register it:
 //
-//	fluent.WithTools(fluent.FileTools()...)
+//	sdk.WithTools(sdk.FileTools()...)
 func WithTools(ts ...tools.Tool) Option { return toolsOption{tools: ts} }
 
 // noAutoFinishOption disables automatic finish-tool registration.
@@ -98,7 +97,7 @@ type noAutoFinishOption struct{}
 
 func (noAutoFinishOption) apply(opts *options) { opts.autoFinish = false }
 
-// WithoutAutoFinish prevents [New] from auto-registering the finish tool.
+// WithoutAutoFinish prevents [NewF] from auto-registering the finish tool.
 // By default the finish tool is registered so the agent can signal completion.
 func WithoutAutoFinish() Option { return noAutoFinishOption{} }
 
@@ -119,8 +118,8 @@ func (o mcpServerOption) apply(opts *options) {
 
 // WithMCPServer registers an MCP server. Pair with [MCPStdio] or [MCPHTTP]:
 //
-//	name, entry := fluent.MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", dir)
-//	fluent.New(fluent.WithMCPServer(name, entry), ...)
+//	name, entry := sdk.MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", dir)
+//	sdk.NewF(sdk.WithMCPServer(name, entry), ...)
 func WithMCPServer(name string, entry mcp.ServerEntry) Option {
 	return mcpServerOption{name: name, entry: entry}
 }
@@ -191,18 +190,18 @@ func WithLogger(l *slog.Logger) Option { return loggerOption{logger: l} }
 // ─── Escape hatch ───────────────────────────────────────────────────────────
 
 // configOption provides a full base configuration (escape hatch).
-type configOption struct{ cfg sdk.Config }
+type configOption struct{ cfg Config }
 
 func (o configOption) apply(opts *options) {
 	cfg := o.cfg
 	opts.baseCfg = &cfg
 }
 
-// WithConfig supplies a full [sdk.Config] as the base; other options are then
+// WithConfig supplies a full [Config] as the base; other options are then
 // applied on top of it. Use this when you need classic-API fields not yet
 // surfaced as dedicated options, while still benefiting from the fluent
 // conveniences (provider/tool/MCP helpers, auto-finish).
-func WithConfig(cfg sdk.Config) Option { return configOption{cfg: cfg} }
+func WithConfig(cfg Config) Option { return configOption{cfg: cfg} }
 
 // Compile-time checks: every option type satisfies the Option interface.
 var (

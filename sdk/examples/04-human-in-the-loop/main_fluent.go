@@ -6,7 +6,7 @@
 // façade. The shared ConfirmingHITL handler (from hitl.go) is wired in via
 // .HITL(). Because the registry stays fail-closed for PolicyUserConfirm
 // tools even with a HITL handler attached, we relax those tools with a
-// classic escape (registry.SetPolicyOverride) after fluent.New — this is the
+// classic escape (registry.SetPolicyOverride) after sdk.NewF — this is the
 // intended hybrid: fluent for construction, classic for fine-grained control.
 //
 // This example is interactive — it reads y/n from stdin.
@@ -19,7 +19,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/v0lka/sp4rk/fluent"
+	"github.com/v0lka/sp4rk"
 	"github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/builtins"
 )
@@ -31,9 +31,9 @@ func run() error {
 	}
 	defer func() { _ = os.RemoveAll(workspaceDir) }()
 
-	// fluent.New: provider + HITL handler + a low step budget (to demonstrate
+	// sdk.NewF: provider + HITL handler + a low step budget (to demonstrate
 	// OnStepLimit) + bundled file tools plus delete_file. Finish is auto.
-	fw, err := fluent.New().
+	fw, err := sdk.NewF().
 		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 		HITL(NewConfirmingHITL([]string{
 			"write_file",
@@ -65,7 +65,7 @@ func run() error {
 	ctx := tools.WithWorkspacePath(context.Background(), workspaceDir)
 	task := "Create a file called notes.txt with the text 'Hello HITL!', then delete it."
 
-	result, err := fluent.Run(ctx, fw).
+	result, err := fw.RunF(ctx).
 		System(fmt.Sprintf(`You are a file management assistant working in %s.
 Create a file called "notes.txt" with some content, then delete it.
 Use the available file tools. Call finish when done.`, workspaceDir)).

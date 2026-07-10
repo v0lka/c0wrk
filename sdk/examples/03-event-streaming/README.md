@@ -14,7 +14,7 @@ Observe the agent's execution in real time by implementing the `agent.Events` in
 Attach a custom event sink to the Run builder; everything else is the same as example 01:
 
 ```go
-result, err := fluent.Run(ctx, fw).
+result, err := fw.RunF(ctx).
     Events(&PrintingEvents{}).   // live trace instead of NoopEvents
     System("You are a code exploration assistant.").
     Ask(task)

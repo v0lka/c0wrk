@@ -11,15 +11,15 @@
 //   - Context compaction configuration
 //   - Blackboard with OnBlackboardChanged callback
 //
-// HYBRID APPROACH. The Framework is assembled with fluent.New and the
-// orchestration runs as a single fluent.Task chain. Where fluent does not yet
+// HYBRID APPROACH. The Framework is assembled with sdk.NewF and the
+// orchestration runs as a single fw.TaskF chain. Where the fluent builders do not yet
 // surface fine-grained control, classic escapes are used:
 //   - WithConfig carries compaction/execution tuning + OnBlackboardChanged
 //     (no dedicated fluent option for these).
 //   - Skills are discovered via the classic SkillManager and passed to
-//     fluent.Task.Skills — discovery is pre-execution setup, not a fluent concern.
+//     TaskBuilder.Skills — discovery is pre-execution setup, not a fluent concern.
 //   - The custom event sink embeds orchestration.NoopEvents so it satisfies the
-//     full orchestration.Events interface required by fluent.Task.Events.
+//     full orchestration.Events interface required by TaskBuilder.Events.
 package main
 
 import (
@@ -32,9 +32,8 @@ import (
 	"strings"
 	"time"
 
-	sdk "github.com/v0lka/sp4rk"
+	"github.com/v0lka/sp4rk"
 	"github.com/v0lka/sp4rk/agent"
-	"github.com/v0lka/sp4rk/fluent"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
 	"github.com/v0lka/sp4rk/skills"
@@ -46,7 +45,7 @@ import (
 //
 // Embeds orchestration.NoopEvents (which itself embeds agent.NoopEvents) so the
 // type satisfies the FULL orchestration.Events interface — a requirement for
-// fluent.Task.Events. Only the methods we care about are overridden.
+// TaskBuilder.Events. Only the methods we care about are overridden.
 
 type consoleEvents struct {
 	orchestration.NoopEvents
@@ -122,7 +121,7 @@ func run() error {
 	//
 	// Two providers are configured so we can demonstrate runtime model
 	// switching: Claude for planning/reflection (strong reasoning) and GPT-4o
-	// for step execution. fluent.Task.Models(...) switches the shared router
+	// for step execution. TaskBuilder.Models(...) switches the shared router
 	// between phases automatically.
 	const (
 		plannerModel  = "claude-sonnet-4-5" // Anthropic — planning & reflection
@@ -130,11 +129,11 @@ func run() error {
 	)
 
 	providers := []llm.ProviderEntry{
-		fluent.Anthropic(os.Getenv("ANTHROPIC_API_KEY"), plannerModel),
+		sdk.Anthropic(os.Getenv("ANTHROPIC_API_KEY"), plannerModel),
 	}
 	openaiAvailable := false
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		providers = append(providers, fluent.OpenAI(key, llm.BareModel(executorModel)))
+		providers = append(providers, sdk.OpenAI(key, llm.BareModel(executorModel)))
 		openaiAvailable = true
 	}
 
@@ -151,7 +150,7 @@ func run() error {
 	}
 	seedSkill(skillsDir)
 
-	// ── 3. Framework via fluent.New ──
+	// ── 3. Framework via sdk.NewF ──
 	//
 	// CLASSIC ESCAPE (WithConfig): compaction tuning, execution tuning, and the
 	// OnBlackboardChanged callback have no dedicated fluent option, so they ride
@@ -181,8 +180,8 @@ func run() error {
 	}
 
 	// Tools: custom timestamp + bundled file tools + fact-memory tools.
-	// The finish tool is auto-registered by fluent.New.
-	fw, err := fluent.New().
+	// The finish tool is auto-registered by sdk.NewF.
+	fw, err := sdk.NewF().
 		Config(base).            // escape hatch: advanced tuning
 		Providers(providers...). // multi-provider (conditional OpenAI)
 		DefaultModel(plannerModel).
@@ -209,7 +208,7 @@ func run() error {
 
 	fmt.Printf("\nActive LLM: %s (provider: %s)\n", fw.LLMRouter().ActiveModel(), fw.LLMRouter().ActiveProviderName())
 	if openaiAvailable {
-		fmt.Printf("Runtime model switching enabled: %s → %s for execution (handled by fluent.Task.Models)\n", plannerModel, executorModel)
+		fmt.Printf("Runtime model switching enabled: %s → %s for execution (handled by TaskBuilder.Models)\n", plannerModel, executorModel)
 	} else {
 		fmt.Println("Runtime model switching disabled (set OPENAI_API_KEY to enable a second provider)")
 	}
@@ -232,13 +231,13 @@ func run() error {
 3. Read the file back to verify
 4. Store a fact about what you created for future reference`, workspaceDir)
 
-	// ── 6. Plan → Execute → Reflect via fluent.Task ──
+	// ── 6. Plan → Execute → Reflect via fw.TaskF ──
 	//
 	// A single chain replaces the hand-rolled loop of the classic example 06.
 	// .Plan()/.Reflect() use the fluent default prompts; .Models() switches the
 	// router between a strong-reasoning planner and a fast executor.
 	events := &consoleEvents{}
-	tb := fluent.Task(context.Background(), fw, task).
+	tb := fw.TaskF(context.Background(), task).
 		System(fmt.Sprintf(`You are a task execution agent working in %s.
 Complete the assigned step using the available tools.
 Use store_fact to record important findings for other steps.

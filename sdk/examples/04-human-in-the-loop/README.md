@@ -6,17 +6,17 @@ Intercept tool calls for user confirmation before destructive operations execute
 
 | Variant     | File            | Command                 | When to read                              |
 |-------------|-----------------|-------------------------|-------------------------------------------|
-| **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended — `WithHITL(handler)` + classic escape |
+| **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended — `.HITL(handler)` + classic escape |
 | **Classic** | `main.go`       | `go run .`              | `Config.HITL` wiring + manual policy overrides |
 
 > `ConfirmingHITL` lives in `hitl.go` (tagless) so both variants share it.
 
 ### Fluent (recommended)
 
-The HITL handler is wired in via `WithHITL`. Because the registry stays fail-closed, the gated tools are relaxed with a classic escape (`registry.SetPolicyOverride`) after construction — the intended hybrid of fluent + classic control:
+The HITL handler is wired in via the `.HITL` builder method. Because the registry stays fail-closed, the gated tools are relaxed with a classic escape (`registry.SetPolicyOverride`) after construction — the intended hybrid of fluent + classic control:
 
 ```go
-fw, _ := fluent.New().
+fw, _ := sdk.NewF().
     Anthropic(key, "claude-sonnet-4-5").
     HITL(NewConfirmingHITL([]string{"write_file", "delete_file", "create_directory", "bash_exec"})).
     MaxSteps(10).
@@ -27,7 +27,7 @@ fw, _ := fluent.New().
 for _, name := range []string{"write_file", "delete_file", "create_directory"} {
     fw.ToolRegistry().SetPolicyOverride(name, tools.PolicyAlwaysAllow)
 }
-fluent.Run(ctx, fw).System(systemPrompt).Ask(task)
+fw.RunF(ctx).System(systemPrompt).Ask(task)
 ```
 
 ## What you will learn

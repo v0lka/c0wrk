@@ -4,15 +4,15 @@ Connect external Model Context Protocol (MCP) servers to the agent. MCP tools ar
 
 | Variant     | File            | Command                 | When to read                              |
 |-------------|-----------------|-------------------------|-------------------------------------------|
-| **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended — `MCPStdio` + `WithMCPServer` |
+| **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended — inline `.MCPStdio` + `.MCPWorkDir` |
 | **Classic** | `main.go`       | `go run .`              | `sdk.MCPConfig` map + manual ConfirmFunc  |
 
 ### Fluent (recommended)
 
-Declare and register the server inline with `.MCPStdio`. The gateway starts during `Build()` (via `sdk.New`), discovers the server's tools, and registers them alongside the built-ins:
+Declare and register the server inline with `.MCPStdio`. The gateway starts during `Build()` (the framework is constructed by the `sdk.NewF()` chain), discovers the server's tools, and registers them alongside the built-ins:
 
 ```go
-fw, _ := fluent.New().
+fw, _ := sdk.NewF().
     Anthropic(key, "claude-sonnet-4-5").
     MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", mcpRoot).
     MCPWorkDir(mcpRoot).

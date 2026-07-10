@@ -82,11 +82,11 @@ Most examples ship in **two equivalent variants** selected by a build tag:
 
 ```bash
 cd sdk/examples/01-minimal-agent
-go run -tags fluent .   # recommended (fluent façade)
+go run -tags fluent .   # recommended (fluent API)
 go run .                # classic SDK API
 ```
 
-Both variants build the same `*sdk.Framework` and produce the same result — the fluent package is a thin façade that returns the original SDK types. See [`docs/fluent-api.md`](../docs/fluent-api.md).
+Both variants build the same `*sdk.Framework` and produce the same result — the fluent builders live in the root `sdk` package and return the original SDK types. See [`docs/fluent-api.md`](../docs/fluent-api.md).
 
 Each example prints its output to stdout. Examples that require interactive input (e.g. 04-human-in-the-loop) will prompt on stdin.
 
@@ -94,8 +94,7 @@ Each example prints its output to stdout. Examples that require interactive inpu
 
 | Package                              | Purpose                                             |
 |--------------------------------------|-----------------------------------------------------|
-| `github.com/v0lka/sp4rk`         | Top-level `Framework`, `Config`, `Execute`          |
-| `…/fluent`                           | Concise façade: `New`, `Run`, `Task`, bundles (recommended) |
+| `github.com/v0lka/sp4rk`         | Top-level `Framework`, `Config`, `Execute`; fluent builders `NewF`/`RunF`/`TaskF` + bundles |
 | `…/agent`                            | `Executor`, `Events`, `HITLHandler`, `FinishTool`   |
 | `…/llm`                              | `Router`, `ProviderEntry`, `ModelMetadata`          |
 | `…/tools`                            | `Tool` interface, `ToolRegistry`, `BaseTool`        |

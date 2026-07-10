@@ -4,7 +4,7 @@
 //
 // The same MCP integration as main.go, expressed through the fluent façade.
 // The stdio MCP server is registered inline with
-// [fluent.FrameworkBuilder.MCPStdio]; [fluent.FrameworkBuilder.AutoApprove]
+// [sdk.FrameworkBuilder.MCPStdio]; [sdk.FrameworkBuilder.AutoApprove]
 // satisfies the fail-closed registry for the MCP-discovered tools.
 //
 // You need Node.js (npx) to run the filesystem MCP server. If it is
@@ -19,7 +19,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/v0lka/sp4rk/fluent"
+	"github.com/v0lka/sp4rk"
 	"github.com/v0lka/sp4rk/tools"
 )
 
@@ -38,11 +38,11 @@ func run() error {
 	}
 	fmt.Println("MCP filesystem root:", mcpRoot)
 
-	// fluent.New: provider + MCP stdio server + auto-approve + built-in tools.
+	// sdk.NewF: provider + MCP stdio server + auto-approve + built-in tools.
 	// MCPStdio registers the mcp.ServerEntry inline (no tuple to unpack). The
 	// gateway starts during New(), discovers the server's tools, and adds them
 	// to the registry alongside the built-ins.
-	fw, err := fluent.New().
+	fw, err := sdk.NewF().
 		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 		MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", mcpRoot).
 		MCPWorkDir(mcpRoot).
@@ -64,7 +64,7 @@ func run() error {
 	ctx := tools.WithWorkspacePath(context.Background(), mcpRoot)
 	task := "Read the file greeting.txt in the workspace and tell me its contents."
 
-	result, err := fluent.Run(ctx, fw).
+	result, err := fw.RunF(ctx).
 		System("You are a file exploration assistant with access to both " +
 			"built-in tools and MCP-provided tools. " +
 			"Use any available tool to accomplish the task. " +

@@ -12,13 +12,14 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/v0lka/sp4rk/fluent"
+	"github.com/v0lka/sp4rk"
 )
 
 func main() {
-	// fluent.New returns a real *sdk.Framework (fluent.Framework is a type alias).
-	// The finish tool is auto-registered so the agent can signal completion.
-	fw, err := fluent.New().
+	// sdk.NewF is the fluent entry point; it returns a real *sdk.Framework
+	// (the same type the classic sdk.New constructor returns). The finish tool
+	// is auto-registered so the agent can signal completion.
+	fw, err := sdk.NewF().
 		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 		Build()
 	if err != nil {
@@ -27,7 +28,7 @@ func main() {
 	defer fw.Shutdown()
 
 	// Run a single ReAct loop and return the original *orchestration.ExecutionResult.
-	result, err := fluent.Run(context.Background(), fw).
+	result, err := fw.RunF(context.Background()).
 		System("You are a helpful assistant.").
 		Ask("Write a hello world in Go")
 	if err != nil {
@@ -37,7 +38,7 @@ func main() {
 }
 ```
 
-The `fluent` package is a **thin façade** over the classic SDK: it returns the original SDK types (`*sdk.Framework`, `*orchestration.ExecutionResult`) and delegates every call to the underlying API, so you can mix fluent and classic code freely. For the classic `sdk.Config` API (full low-level control), see [Getting started](docs/getting-started.md).
+The fluent builders are part of the **root `sdk` package** (no separate import): they return the original SDK types (`*sdk.Framework`, `*orchestration.ExecutionResult`) and delegate every call to the underlying API, so you can mix fluent and classic code freely. For the classic `sdk.Config` API (full low-level control), see [Getting started](docs/getting-started.md).
 
 > New here? Read the [Fluent API guide](docs/fluent-api.md) for the layer map, before/after comparisons, and when to reach for classic escapes.
 

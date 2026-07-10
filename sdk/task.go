@@ -1,4 +1,4 @@
-package fluent
+package sdk
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 
 // errTaskNoSystem is returned by [TaskBuilder.Execute] when no system prompt
 // was configured.
-var errTaskNoSystem = errors.New("fluent.Task: system prompt is required — use .System(...) or .SystemFactory(...)")
+var errTaskNoSystem = errors.New("TaskF: system prompt is required — use .System(...) or .SystemFactory(...)")
 
 // trajectoryStore is a minimal [agent.TrajectoryStore] capturing the last
 // synced step sequence, used to feed the reflector after a failed attempt.
@@ -39,8 +39,8 @@ func (s *trajectoryStore) Steps() []agent.Step {
 }
 
 // TaskBuilder is a fluent builder for orchestrated task execution (the
-// Plan→Execute→Reflect loop). Create one with [Task]; terminate the chain with
-// [TaskBuilder.Execute].
+// Plan→Execute→Reflect loop). Create one with [Framework.TaskF]; terminate the
+// chain with [TaskBuilder.Execute].
 //
 // Without [TaskBuilder.Plan], Execute runs a single ReAct loop (like [Run] but
 // returning an orchestrated result). With [TaskBuilder.Plan], Execute builds a
@@ -72,10 +72,14 @@ type TaskBuilder struct {
 	err error // set by pipeline transition when the framework build failed
 }
 
-// Task starts a fluent orchestrated execution over fw for the given task. The
+// TaskF starts a fluent orchestrated execution over fw for the given task. The
 // chain is terminated by [TaskBuilder.Execute], which returns the original
 // [*orchestration.ExecutionResult].
-func Task(ctx context.Context, fw *Framework, task string) *TaskBuilder {
+//
+// TaskF is the fluent counterpart of a hand-rolled Plan→Execute→Reflect loop:
+// without [TaskBuilder.Plan] it runs a single ReAct loop, with [TaskBuilder.Plan]
+// it builds a DAG with retry and (optionally) reflection.
+func (fw *Framework) TaskF(ctx context.Context, task string) *TaskBuilder {
 	return &TaskBuilder{
 		ctx:        ctx,
 		fw:         fw,
@@ -92,7 +96,7 @@ func Task(ctx context.Context, fw *Framework, task string) *TaskBuilder {
 // handle (there is no defer Shutdown). If the build fails, the error is surfaced
 // by [TaskBuilder.Execute] instead of panicking.
 //
-//	fluent.New().Anthropic(key, model).
+//	sdk.NewF().Anthropic(key, model).
 //	    FileTools().Task(ctx, task).
 //	    System("...").Plan().Reflect().Execute()
 func (b *FrameworkBuilder) Task(ctx context.Context, task string) *TaskBuilder {
@@ -106,7 +110,7 @@ func (b *FrameworkBuilder) Task(ctx context.Context, task string) *TaskBuilder {
 			err:        err,
 		}
 	}
-	return Task(ctx, fw, task)
+	return fw.TaskF(ctx, task)
 }
 
 // System sets a static system prompt for step execution.
@@ -222,7 +226,7 @@ func (b *TaskBuilder) Execute() (*orchestration.ExecutionResult, error) {
 
 	conductor, err := b.fw.NewConductor(systemFn)
 	if err != nil {
-		return nil, fmt.Errorf("fluent.Task: %w", err)
+		return nil, fmt.Errorf("TaskF: %w", err)
 	}
 	defer conductor.Cleanup()
 
@@ -234,7 +238,7 @@ func (b *TaskBuilder) Execute() (*orchestration.ExecutionResult, error) {
 		// Single ReAct loop — no DAG.
 		res, runErr := conductor.Run(ctx, b.task, bb, availableTools, b.events, b.compaction)
 		if runErr != nil {
-			return nil, fmt.Errorf("fluent.Task: %w", runErr)
+			return nil, fmt.Errorf("TaskF: %w", runErr)
 		}
 		return res, nil
 	}
@@ -263,13 +267,13 @@ func (b *TaskBuilder) runPlanned(
 	// Plan on the planning model.
 	if b.planModel != "" {
 		if err := router.SetModel(ctx, b.planModel); err != nil {
-			return nil, fmt.Errorf("fluent.Task: switch to plan model %q: %w", b.planModel, err)
+			return nil, fmt.Errorf("TaskF: switch to plan model %q: %w", b.planModel, err)
 		}
 	}
 
 	plan, err := pl.Plan(ctx, b.task, availableTools, nil, b.skills, false, nil)
 	if err != nil {
-		return nil, fmt.Errorf("fluent.Task: plan: %w", err)
+		return nil, fmt.Errorf("TaskF: plan: %w", err)
 	}
 	b.events.OnPlanGenerated(len(plan.Steps), planStepsToEvents(plan))
 	bb.SetPlan(plan)
@@ -277,7 +281,7 @@ func (b *TaskBuilder) runPlanned(
 	// Execute on the execution model.
 	if b.execModel != "" {
 		if err := router.SetModel(ctx, b.execModel); err != nil {
-			return nil, fmt.Errorf("fluent.Task: switch to exec model %q: %w", b.execModel, err)
+			return nil, fmt.Errorf("TaskF: switch to exec model %q: %w", b.execModel, err)
 		}
 	}
 
@@ -522,7 +526,7 @@ func (b *TaskBuilder) resolvePlanner(ctx context.Context) (*planner.Planner, err
 	cfg.Model = model
 	pl, err := planner.NewPlanner(b.fw.LLMRouter(), cfg)
 	if err != nil {
-		return nil, fmt.Errorf("fluent.Task: planner: %w", err)
+		return nil, fmt.Errorf("TaskF: planner: %w", err)
 	}
 	return pl, nil
 }

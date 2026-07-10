@@ -6,15 +6,15 @@ This is the pattern sp4rk itself uses for complex tasks.
 
 | Variant     | File            | Command                 | When to read                              |
 |-------------|-----------------|-------------------------|-------------------------------------------|
-| **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended — `fluent.Task` collapses the loop to one chain |
+| **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended — `fw.TaskF` collapses the loop to one chain |
 | **Classic** | `main.go`       | `go run .`              | Hand-rolled Plan → DAG → retry → Reflect loop (~80 lines) |
 
 ### Fluent (recommended)
 
-The entire orchestration loop — plan generation, ready-step scheduling, per-step retry, and reflection — is one `fluent.Task` chain. The default prompt set and reflector prompt are applied automatically:
+The entire orchestration loop — plan generation, ready-step scheduling, per-step retry, and reflection — is one `fw.TaskF` chain. The default prompt set and reflector prompt are applied automatically:
 
 ```go
-result, err := fluent.Task(ctx, fw, task).
+result, err := fw.TaskF(ctx, task).
     SystemFactory(stepPromptFactory).
     Workspace(workspaceDir).
     Plan().        // planner + DefaultPromptSet
@@ -23,7 +23,7 @@ result, err := fluent.Task(ctx, fw, task).
     Execute()      // → *orchestration.ExecutionResult{Plan, Reflections, Output, …}
 ```
 
-`main_fluent.go` collapses the classic `main.go`'s hand-rolled Plan → DAG → retry → Reflect loop into a single `fluent.Task` chain for identical behaviour. Read the classic variant to understand *how* the loop works; use the fluent variant in your own code.
+`main_fluent.go` collapses the classic `main.go`'s hand-rolled Plan → DAG → retry → Reflect loop into a single `fw.TaskF` chain for identical behaviour. Read the classic variant to understand *how* the loop works; use the fluent variant in your own code.
 
 ## What you will learn
 

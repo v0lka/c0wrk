@@ -1,4 +1,4 @@
-package fluent
+package sdk
 
 import (
 	"github.com/v0lka/sp4rk/agent"
@@ -42,8 +42,8 @@ func CodeTools() []tools.Tool {
 }
 
 // FinishTool returns the [agent.FinishTool], which signals task completion.
-// [New] auto-registers it by default; this helper is exposed for callers that
-// build a [sdk.Config] directly (classic API) or disable auto-registration.
+// [NewF] auto-registers it by default; this helper is exposed for callers that
+// build a [Config] directly (classic API) or disable auto-registration.
 func FinishTool() []tools.Tool {
 	return []tools.Tool{agent.NewFinishTool()}
 }
@@ -81,9 +81,9 @@ func AllBuiltinTools() []tools.Tool {
 // Tools is a passthrough grouping helper that returns its arguments as a slice.
 // Useful for combining bundles with custom tools in a single [WithTools] call:
 //
-//	fluent.WithTools(append(
-//	    fluent.FileTools(),
-//	    fluent.Tools(myCustomTool, anotherTool...)...,
+//	sdk.WithTools(append(
+//	    sdk.FileTools(),
+//	    sdk.Tools(myCustomTool, anotherTool...)...,
 //	)...)
 func Tools(ts ...tools.Tool) []tools.Tool {
 	return ts

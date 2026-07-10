@@ -1,21 +1,18 @@
 # Fluent API
 
-A concise, method-chain (fluent) façade over the sp4rk SDK. Every method returns
-the real SDK type — there are no shadow types, so you can mix fluent calls with
-the classic [`sdk.Config`](../framework.go) API at any point.
+A concise, method-chain (fluent) builder API that lives **in the root `sdk`
+package** — there is no separate `fluent` package. Every method returns the real
+SDK type (`*sdk.Framework`, `*orchestration.ExecutionResult`), so you can mix
+fluent calls with the classic [`sdk.Config`](../framework.go) API at any point.
 
 ## Why fluent?
 
 The classic entry point `sdk.New(cfg)` is a plain struct + constructor: every
-setting is a field, and every "fluent" helper used to wrap a constructor inside
-an option, forcing `fluent.WithProvider(fluent.Anthropic(...))` double-nesting
-and a `fluent.` prefix on every line.
-
-The fluent API replaces that with a **method-chain builder**. A build reads as
-one unbroken chain with a **single** `fluent.` prefix:
+setting is a field. The fluent API layers a **method-chain builder** on top so a
+build reads as one unbroken chain with a **single** `sdk.` prefix:
 
 ```go
-fw, err := fluent.New().
+fw, err := sdk.NewF().
     Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
     FileTools().
     MaxSteps(15).
@@ -23,13 +20,30 @@ fw, err := fluent.New().
     Build()
 ```
 
+## Why the `F` postfix?
+
+The fluent entry points share the root package with the classic API, so the
+chain starts/stops need names that do **not** collide with the existing
+`sdk.New`, `Framework.Execute`, or `Framework.NewConductor`. The convention is a
+single **`F` postfix** on the three fluent entry points:
+
+| Classic (unchanged)             | Fluent (method-chain)                 |
+|---------------------------------|---------------------------------------|
+| `sdk.New(cfg)`                  | `sdk.NewF()` → `*FrameworkBuilder`    |
+| `fw.Execute(ctx, sys, ev, msg)` | `fw.RunF(ctx)` → `*RunBuilder`        |
+| `fw.NewConductor(sys)`          | `fw.TaskF(ctx, task)` → `*TaskBuilder` |
+
+The package-level helper constructors (`sdk.Anthropic`, `sdk.FileTools`,
+`sdk.MCPStdio`, …) keep their plain names — they have no classic collision, so
+no postfix is needed.
+
 ## Layers
 
 | Layer | Purpose | Entry | Terminal |
 |-------|---------|-------|----------|
-| 1 — Builder | Configure the framework | `fluent.New()` | `.Build()` → `(*Framework, error)` |
-| 2 — Single task | One ReAct loop | `fluent.Run(ctx, fw)` | `.Ask(msg)` |
-| 3 — Orchestration | Plan → Execute → Reflect | `fluent.Task(ctx, fw, task)` | `.Execute()` |
+| 1 — Builder | Configure the framework | `sdk.NewF()` | `.Build()` → `(*Framework, error)` |
+| 2 — Single task | One ReAct loop | `fw.RunF(ctx)` | `.Ask(msg)` |
+| 3 — Orchestration | Plan → Execute → Reflect | `fw.TaskF(ctx, task)` | `.Execute()` |
 
 ## FrameworkBuilder surface
 
@@ -65,7 +79,7 @@ fw, err := fluent.New().
 ## RunBuilder surface
 
 Layer 2 — a single ReAct loop over the framework. Created with
-`fluent.Run(ctx, fw)`; terminate with `.Ask(msg)`.
+`fw.RunF(ctx)`; terminate with `.Ask(msg)`.
 
 - `.System(prompt)` — static system prompt
 - `.SystemFactory(fn)` — factory receiving the task + model metadata
@@ -75,8 +89,8 @@ Layer 2 — a single ReAct loop over the framework. Created with
 ## TaskBuilder surface
 
 Layer 3 — Plan → Execute → Reflect orchestration. Created with
-`fluent.Task(ctx, fw, task)`; terminate with `.Execute()`. Without `.Plan()`,
-`.Execute()` runs a single ReAct loop (like `Run`) but returns an orchestrated
+`fw.TaskF(ctx, task)`; terminate with `.Execute()`. Without `.Plan()`,
+`.Execute()` runs a single ReAct loop (like `RunF`) but returns an orchestrated
 result; with `.Plan()` it builds a DAG and runs it with retry + reflection.
 
 - `.System(prompt)` / `.SystemFactory(fn)` — system prompt (required) or factory
@@ -96,11 +110,12 @@ carrying forward completed work), and `abort` halts execution.
 
 ## Single-use pipeline
 
-For one-shot scripts, transition methods `.Run(ctx)` / `.Task(ctx, task)` build
-the framework implicitly, so the whole program is a single chain:
+For one-shot scripts, transition methods `.Run(ctx)` / `.Task(ctx, task)` on the
+`FrameworkBuilder` build the framework implicitly, so the whole program is a
+single chain:
 
 ```go
-result, err := fluent.New().
+result, err := sdk.NewF().
     Anthropic(key, model).
     FileTools().
     Task(ctx, task).
@@ -113,35 +128,39 @@ result, err := fluent.New().
 **Tradeoff:** the pipeline form loses the explicit `*Framework` handle, so there
 is no `defer Shutdown()`. If a build error occurs inside the transition, it
 surfaces at the terminal (`.Ask()` / `.Execute()`) instead of panicking.
-Callers needing lifecycle control use `.Build()` then the `Run`/`Task`
-constructors.
+Callers needing lifecycle control use `.Build()` then `fw.RunF(ctx)` /
+`fw.TaskF(ctx, task)`.
 
 ## Errors
 
 Chain methods never panic. The first error accumulates in the builder and
 surfaces once, at `.Build()` (or the pipeline terminal), wrapped as
-`fluent.New: …`.
+`NewF: …`.
 
 ## Before / after
 
 Example 05 (MCP integration) — the headline tuple elimination:
 
-**Before**
+**Before** (classic `sdk.New` constructor — tuple + separate registration)
 ```go
-name, entry := fluent.MCPStdio("filesystem", "npx",
+name, entry := sdk.MCPStdio("filesystem", "npx",
     "-y", "@modelcontextprotocol/server-filesystem", mcpRoot)
-fw, err := fluent.New(
-    fluent.WithProvider(fluent.Anthropic(key, model)),
-    fluent.WithMCPServer(name, entry),
-    fluent.WithMCPWorkDir(mcpRoot),
-    fluent.WithAutoApprove(),
-    fluent.WithTools(fluent.FileTools()...),
-)
+fw, err := sdk.New(sdk.Config{
+    LLM: sdk.LLMConfig{
+        Providers: []llm.ProviderEntry{sdk.Anthropic(key, model)},
+    },
+    MCP: &sdk.MCPConfig{
+        Servers:        map[string]mcp.ServerEntry{name: entry},
+        DefaultWorkDir: mcpRoot,
+    },
+})
+// built-ins registered separately; MCP tools need a ConfirmFunc/policy override
+fw.ToolRegistry().Register(sdk.FileTools()...)
 ```
 
-**After**
+**After** (fluent builder)
 ```go
-fw, err := fluent.New().
+fw, err := sdk.NewF().
     Anthropic(key, model).
     MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", mcpRoot).
     MCPWorkDir(mcpRoot).
@@ -150,5 +169,5 @@ fw, err := fluent.New().
     Build()
 ```
 
-The `fluent.` prefix count drops from 5 to 1, the `WithX(X(...))` nesting is
-gone, and the `(name, entry)` tuple is eliminated.
+The `sdk.` prefix is a single import, the `(name, entry)` tuple is registered
+inline (no local variable), and the `WithX` nesting is gone.

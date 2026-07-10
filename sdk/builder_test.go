@@ -1,4 +1,4 @@
-package fluent
+package sdk
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 // TestBuilderReturnsSameInstance verifies that every builder setter returns the
 // same *FrameworkBuilder pointer, which is what makes the chain unbroken.
 func TestBuilderReturnsSameInstance(t *testing.T) {
-	b := New()
+	b := NewF()
 	one := b.Anthropic("k", "m").FileTools().MaxSteps(5).AutoApprove().MCPStdio("s", "cmd")
 	if one != b {
 		t.Fatal("chained setters must return the same builder instance")
@@ -22,7 +22,7 @@ func TestBuilderReturnsSameInstance(t *testing.T) {
 }
 
 func TestBuilderProviderMethods(t *testing.T) {
-	b := New().
+	b := NewF().
 		Anthropic("k1", "m1").
 		OpenAI("k2", "m2").
 		OpenAICompatible("groq", "https://api.groq.com/openai/v1", "k3", "m3").
@@ -42,33 +42,33 @@ func TestBuilderProviderMethods(t *testing.T) {
 	}
 
 	// Providers() appends a pre-assembled slice.
-	b2 := New().Providers(OpenAI("k", "m"), Anthropic("k2", "m2"))
+	b2 := NewF().Providers(OpenAI("k", "m"), Anthropic("k2", "m2"))
 	if len(b2.opts.providers) != 2 {
 		t.Errorf("Providers len = %d, want 2", len(b2.opts.providers))
 	}
 
 	// Provider() appends a single entry.
-	b3 := New().Provider(OpenAICompatible("x", "u", "k", "m"))
+	b3 := NewF().Provider(OpenAICompatible("x", "u", "k", "m"))
 	if len(b3.opts.providers) != 1 || b3.opts.providers[0].Name != "x" {
 		t.Errorf("Provider = %v, want single entry named x", b3.opts.providers)
 	}
 }
 
 func TestBuilderToolMethods(t *testing.T) {
-	if got := len(New().FileTools().opts.tools); got != 6 {
+	if got := len(NewF().FileTools().opts.tools); got != 6 {
 		t.Errorf("FileTools = %d tools, want 6", got)
 	}
-	if got := len(New().MemoryTools().opts.tools); got != 2 {
+	if got := len(NewF().MemoryTools().opts.tools); got != 2 {
 		t.Errorf("MemoryTools = %d tools, want 2", got)
 	}
-	if got := len(New().CodeTools().opts.tools); got != 9 {
+	if got := len(NewF().CodeTools().opts.tools); got != 9 {
 		t.Errorf("CodeTools = %d tools, want 9", got)
 	}
-	if got := len(New().AllBuiltinTools().opts.tools); got < 10 {
+	if got := len(NewF().AllBuiltinTools().opts.tools); got < 10 {
 		t.Errorf("AllBuiltinTools = %d tools, want >= 10", got)
 	}
 	// Tools() appends arbitrary tools.
-	if got := len(New().Tools(FileTools()...).opts.tools); got != 6 {
+	if got := len(NewF().Tools(FileTools()...).opts.tools); got != 6 {
 		t.Errorf("Tools(FileTools()...) = %d, want 6", got)
 	}
 }
@@ -76,7 +76,7 @@ func TestBuilderToolMethods(t *testing.T) {
 // TestBuilderMCPStdioNoTuple is the headline fix: a stdio MCP server registers
 // in a single chained call, with no (name, entry) tuple to unpack.
 func TestBuilderMCPStdioNoTuple(t *testing.T) {
-	b := New().MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp/ws")
+	b := NewF().MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp/ws")
 
 	entry, ok := b.opts.mcpServers["filesystem"]
 	if !ok {
@@ -101,7 +101,7 @@ func TestBuilderMCPStdioNoTuple(t *testing.T) {
 
 func TestBuilderMCPEndpoints(t *testing.T) {
 	// MCPHTTP
-	b := New().MCPHTTP("remote", "https://mcp.example.com/sse")
+	b := NewF().MCPHTTP("remote", "https://mcp.example.com/sse")
 	entry, ok := b.opts.mcpServers["remote"]
 	if !ok {
 		t.Fatal("expected remote MCP server to be registered")
@@ -111,7 +111,7 @@ func TestBuilderMCPEndpoints(t *testing.T) {
 	}
 
 	// MCPServer (pre-built entry) + MCPWorkDir
-	custom := New().
+	custom := NewF().
 		MCPServer("manual", mcp.ServerEntry{Transport: "http", URL: "https://mcp.example.com"}).
 		MCPWorkDir("/srv")
 	if _, ok := custom.opts.mcpServers["manual"]; !ok {
@@ -129,7 +129,7 @@ func TestBuilderSecurityAndMisc(t *testing.T) {
 		return tools.ConfirmAllowOnce, nil
 	}
 
-	b := New().
+	b := NewF().
 		AutoApprove().
 		ConfirmFunc(cf).
 		HITL(hitl).
@@ -157,7 +157,7 @@ func TestBuilderSecurityAndMisc(t *testing.T) {
 // TestBuilderOptionsBridge confirms the functional-options escape hatch still
 // composes with the builder via .Options(...).
 func TestBuilderOptionsBridge(t *testing.T) {
-	b := New().
+	b := NewF().
 		Options(WithProvider(dummyProvider())).
 		Options(WithMaxSteps(7))
 
@@ -178,7 +178,7 @@ func TestBuilderOptionsBridge(t *testing.T) {
 // TestPipelineTaskBuildErrorSurfaces proves a failed framework build inside the
 // .Task transition surfaces at .Execute rather than nil-panicking.
 func TestPipelineTaskBuildErrorSurfaces(t *testing.T) {
-	_, err := New(). // no provider → build fails
+	_, err := NewF(). // no provider → build fails
 				Task(context.Background(), "do something").
 				System("s").
 				Execute()
@@ -192,7 +192,7 @@ func TestPipelineTaskBuildErrorSurfaces(t *testing.T) {
 
 // TestPipelineRunBuildErrorSurfaces is the Run-side analogue.
 func TestPipelineRunBuildErrorSurfaces(t *testing.T) {
-	_, err := New(). // no provider → build fails
+	_, err := NewF(). // no provider → build fails
 				Run(context.Background()).
 				System("s").
 				Ask("hi")
