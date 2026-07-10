@@ -18,7 +18,7 @@ Manages the project workspace: file tree loading, filesystem watching for change
 - `core/vectorindex/search_result.go` — search result types and filtering
 - `core/vectorindex/hybrid.go` — hybrid search (vector ∪ lexical) with RRF fusion, per-side filters
 - `core/vectorindex/lexical/` — bleve/BM25 lexical index with `c0wrk_code` analyzer (camelCase split + lowercase + stop-en)
-- `sdk/embedding/` — embedding model interface
+- `github.com/v0lka/sp4rk/embedding/` — embedding model interface
 - `backend/frontend_api_vector.go` — FrontendAPI vector methods + lazy manager access (SetVectorManager/getVectorManager with RWMutex)
 - `backend/api_types.go` — `VectorIndexStatus` struct (shared API response type, also used by frontend_api_vector.go)
 
@@ -146,7 +146,7 @@ Project switched (after vector index ready)
 | `GetFileDiff(path)`                 | Unified git diff for file                           |
 | `GetGitStatus()`                    | Workspace-level git status summary                  |
 
-Filename search is available via the `glob` built-in tool (`sdk/tools/builtins/glob.go`), not as a direct Workspace API method.
+Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4rk/tools/builtins/glob.go`), not as a direct Workspace API method.
 
 ## Invariants
 

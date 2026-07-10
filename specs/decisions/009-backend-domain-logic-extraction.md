@@ -2,7 +2,7 @@
 
 ## Status
 
-Superseded by [ADR-011](011-sdk-to-core-extraction.md) — vectorindex and proxy moved from sdk/ to core/.
+Superseded by [ADR-011](011-sp4rk-to-core-extraction.md) — vectorindex and proxy moved from sp4rk to `core/`.
 
 ## Context
 
@@ -14,15 +14,15 @@ The layer architecture spec defines `backend/` as a ViewModel — the thin "app 
 
 Additionally, `backend/frontend_api_workspace.go` (~574 LOC) contained git operations (status, diff, gitignore parsing) and file tree building logic — all domain logic that should live in `core/`.
 
-These packages had zero dependency on `backend/` types (they only imported `core/` and `sdk/`), confirming they were incorrectly placed. The only thing tying them to `backend/` was their directory location.
+These packages had zero dependency on `backend/` types (they only imported `core/` and sp4rk), confirming they were incorrectly placed. The only thing tying them to `backend/` was their directory location.
 
 ## Decision
 
 Move all three packages and extract the git/filetree logic into `core/`:
 
-| Source | Destination |
+| Source | Destination (at ADR-009 time) |
 |--------|-------------|
-| `backend/vectorindex/` | `sdk/vectorindex/` |
+| `backend/vectorindex/` | sp4rk `vectorindex/` (later moved to `core/vectorindex/` per ADR-011) |
 | `backend/terminal/` | `core/terminal/` |
 | `backend/workspace/` | `core/workspace/` |
 | `backend/frontend_api_workspace.go` (git logic) | `core/workspace/git.go` |
@@ -40,7 +40,7 @@ Backend ViewModel methods now delegate to core domain functions:
 - `GetFileDiff()` → `workspace.GetFileDiff()`
 - `ListDirectory()` → `workspace.ListDirFlat()` / `workspace.ListDirRecursive()`
 
-Desktop imports were updated from `backend/vectorindex` → `sdk/vectorindex` and `backend/terminal` → `core/terminal`. Per ADR-008, desktop may import `core/` directly — this is cleaner because desktop now imports domain logic from its proper layer.
+Desktop imports were updated from `backend/vectorindex` → sp4rk `vectorindex` (subsequently `core/vectorindex` per ADR-011) and `backend/terminal` → `core/terminal`. Per ADR-008, desktop may import `core/` directly — this is cleaner because desktop now imports domain logic from its proper layer.
 
 ## Consequences
 
@@ -60,4 +60,4 @@ Desktop imports were updated from `backend/vectorindex` → `sdk/vectorindex` an
 ## Related
 
 - Supersedes the implicit placement of domain services in `backend/`
-- Follows [ADR-008](008-backend-sdk-direct-import.md) — desktop and backend may import core directly
+- Follows [ADR-008](008-backend-sp4rk-direct-import.md) — desktop and backend may import core directly

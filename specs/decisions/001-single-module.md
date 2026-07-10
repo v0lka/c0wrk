@@ -2,11 +2,11 @@
 
 ## Status
 
-Superseded by [ADR-014](./014-sdk-separate-module.md)
+Superseded by [ADR-014](./014-sp4rk-separate-module.md)
 
 ## Context
 
-The project could be structured as multiple Go modules (one per layer: sdk, core, backend, desktop) using `go.work`, or as a single module containing all packages. Multi-module setups provide stronger isolation but introduce complexity with inter-module versioning, replace directives, and CI/CD.
+The project could be structured as multiple Go modules (one per layer: sp4rk, core, backend, desktop) using `go.work`, or as a single module containing all packages. Multi-module setups provide stronger isolation but introduce complexity with inter-module versioning, replace directives, and CI/CD.
 
 ## Decision
 
@@ -26,7 +26,7 @@ Use a single Go module (`github.com/v0lka/c0wrk`) for the entire project. No `go
 
 - Layer boundary violations are only caught by code review and linting conventions (not by the Go module system)
 - The module path (`github.com/v0lka/c0wrk`) doesn't match the binary name (`c0wrk-desktop`) — intentional, do not "fix"
-- Cannot independently version sdk for external consumption (sdk is internal to this project)
+- Cannot independently version sp4rk for external consumption (sp4rk is internal to this project)
 
 ## Alternatives Considered
 

@@ -16,7 +16,7 @@ Frontend communicates with Go exclusively through Wails IPC. No direct Go import
 | `FileNode`                 | backend  | backend → frontend | File tree entry                     |
 | `ChatMessage`              | backend  | backend → frontend | Message history entry               |
 | `VectorIndexStatus`        | backend  | backend → frontend | Index progress                      |
-| `mcp.ServerStatus`        | sdk/tools/mcp | backend → frontend | MCP server state (used by `GetMCPStatus`) |
+| `mcp.ServerStatus`        | github.com/v0lka/sp4rk/tools/mcp | backend → frontend | MCP server state (used by `GetMCPStatus`) |
 | `ToolInfo`                 | backend  | backend → frontend | Tool descriptor for UI              |
 | `ConfigResponse`           | backend  | backend → frontend | Sanitized config view               |
 | `LLMFullConfigRequest`    | frontend | frontend → backend | LLM multi-provider config update |

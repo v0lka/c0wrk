@@ -18,7 +18,7 @@
 //
 // # Fluent API
 //
-// The same SDK is reachable through a concise method-chain (fluent) API. The
+// The same framework is reachable through a concise method-chain (fluent) API. The
 // fluent entry points carry an "F" postfix to distinguish them from the classic
 // methods on the shared [Framework] type; once inside a builder, methods keep
 // their natural names so the chain reads fluently:
@@ -63,7 +63,7 @@ import (
 	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
-// Framework is the top-level entry point for building agent systems with the SDK.
+// Framework is the top-level entry point for building agent systems with sp4rk.
 // It owns shared infrastructure (LLM router, tool registry, MCP gateway, tool cache) and
 // creates per-session conductors via NewConductor().
 type Framework struct {
@@ -366,7 +366,7 @@ func New(cfg Config) (*Framework, error) {
 // The Conductor is a single ReAct loop that owns a task end-to-end. The
 // caller is responsible for injecting any Conductor-specific tools (delegate,
 // declare_plan, reflect) into the context before calling Run, if desired.
-// The SDK Conductor primitive itself does not provide those tools; they are
+// The sp4rk Conductor primitive itself does not provide those tools; they are
 // an application-layer concern.
 func (fw *Framework) NewConductor(systemPrompt orchestration.SystemPromptFactory) (*orchestration.Conductor, error) {
 	if fw.llmRouter == nil {

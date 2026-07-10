@@ -2,19 +2,17 @@
 
 ## Role
 
-The ReAct loop primitive (Thought → Action → Observation) with circuit breakers for failure detection and context window management. The Executor is the load-bearing primitive shared by two callers: the **Conductor** (a top-level `Executor.Run` that owns a task end-to-end) and **subagents** (isolated `Executor.Run` instances launched by the `delegate` tool). The Executor itself is agnostic to which caller invoked it.
+The ReAct loop primitive (Thought → Action → Observation) is a **sp4rk engine** component. c0wrk does not reimplement it — `core/` launches `github.com/v0lka/sp4rk/agent.Executor.Run` in two roles: as the **Conductor** (top-level task owner) and as **subagents** (isolated loops launched by the `delegate` tool). The full loop semantics — circuit breakers, mutation/checklist gates, implicit-finish detection, two-stage truncation, `ToolResultCache`, `batch` interception — are documented canonically in [the sp4rk executor spec](../../../sdk/specs/domains/orchestration/executor.md).
 
 ## Key Files
 
-- `sdk/agent/executor.go` — Executor struct (Run method, ReAct loop, configurable non-cacheable tools set via `AddNonCacheableTools`, batch dispatch, `DetectToolCallSyntaxInContent` failure-mode detector, mutation + checklist gate fields and nudge constants)
-- `sdk/agent/executor_run.go` — `processSingleToolCall`, `processBatchTool` (batch meta-tool interception), `handleImplicitFinish` (nudge → abort logic), `hasMutatingToolExecuted`, `hasChecklistUpdate`, `countProductiveToolCalls`, `lastChecklistUnchecked`
-- `sdk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (subagent lifecycle, defense-in-depth success check)
-- `sdk/agent/events.go` — AgentEvents interface (lifecycle hooks)
-- `sdk/tools/builtins/batch.go` — batch meta-tool descriptor (intercepted at executor, never directly executed)
-- `core/conductor.go` — Conductor entry point (builds and launches an Executor as the Conductor)
-- `core/tools/delegate.go` — `delegate` tool (builds and launches Executors as subagents via `RunSubAgent`)
+- `core/conductor.go` — Conductor entry point: builds system prompt + tool set, injects the Delegation Registry, launches an `Executor.Run` as the Conductor
+- `core/tools/delegate.go` — `delegate` tool: builds and launches `Executor.Run` instances as subagents via `github.com/v0lka/sp4rk/agent.RunSubAgent`
+- `core/stepconfig.go` — `criticalAlwaysAllowedTools` set (c0wrk tools that survive an `AllowedTools` filter)
 
-## Behavior
+Engine files (`github.com/v0lka/sp4rk/agent/executor.go`, `executor_run.go`, `subagent.go`, `events.go`, `github.com/v0lka/sp4rk/tools/builtins/batch.go`) are documented in [the sp4rk executor spec](../../../sdk/specs/domains/orchestration/executor.md).
+
+## c0wrk Integration
 
 ### Callers
 
@@ -28,197 +26,15 @@ Conductor (core/conductor.go)
 
 The Executor is the same primitive in both cases. The difference is the tool set, system prompt, and context — assembled by the caller (Conductor entry point or `delegate` tool), not by the Executor itself. See [conductor.md](conductor.md) and [delegation.md](delegation.md) for how callers configure the Executor.
 
-### Per-Step Configuration (StepConfigurator)
+### Non-Cacheable Meta-Tools (`AddNonCacheableTools`)
 
-`coreStepConfigurator` resolves runtime config for each step:
-
-| Field              | Resolution                                                      |
-| ------------------ | --------------------------------------------------------------- |
-| MaxSteps           | step.Profile.MaxSteps > 0 ? use it : config.MaxSteps            |
-| SystemPrompt       | buildSystemPrompt(ctx) with step-local skill narrowing          |
-| CompactionStrategy | step.Profile.Domain mapping (code→sliding, research→summary)    |
-| AgentRole          | step.Profile.Role (affects prompt + pruning)                    |
-| AllowedTools       | step.Profile.AllowedTools (nil = all)                           |
-| ReasoningEffort    | `config.ReasoningEffort` (native string, set via `SetReasoningEffort()`) |
-| KeepLastN          | step.Profile.KeepLastN > 0 ? use it : rolePruningDefaults[role] |
-| ProtectedTools     | step.Profile.ProtectedTools ?? rolePruningDefaults[role]        |
-
-Role-based pruning defaults:
-
-- `researcher`: KeepLastN=10
-- `coder`, `tester`, `executor`: KeepLastN=5
-
-### Dependency Context Injection
-
-Before a step runs, outputs from its dependencies are injected into the task description:
-
-```
-Step task = step.Description + "\n\n## Context from previous steps\n"
-  + For each dep in step.DependsOn:
-      "### {dep.Summary}\n{truncate(dep.Output, budget)}\n"
-```
-
-Budget: `MaxDependencyContextChars` (default: 8000) divided among dependencies.
-
-### ReAct Loop (Executor.Run)
-
-```
-Executor.Run(ctx, task, tools, systemPrompt)
-│
-├─ Initialize: ContextManager, messages, step counter
-│
-├─ Loop (max MaxSteps iterations):
-│   │
-│   ├─ 1. Call LLM with current messages
-│   │      → Response may contain: text, tool_calls, or finish
-│   │
-│   │   ├─ 2. If tool_call:
-│   │      ├─ If batch meta-tool → processBatchTool() (see Batch Tool below)
-│   │      ├─ HITL: OnToolCall(ctx, name, input) — consumer may deny or modify input
-│   │      │      → Denied: inject rejection observation, skip execution, continue loop
-│   │      │      → Modified input: use modified input for execution
-│   │      ├─ Inject ToolResultCache into context (for fragmentation reader)
-│   │      ├─ Execute tool via ToolExecutor.Execute(ctx, name, input)
-│   │      ├─ Set Step.IsUntrusted ← tool.IsUntrusted() || source starts with "mcp"
-│   │      ├─ Stage 1: Per-tool line/byte truncation (configurable, cached)
-│   │      │   → Store full result in ToolResultCache keyed by SHA256 hash
-│   │      │   → Truncate to per-tool limits, append fragmentation nudge with hash
-│   │      ├─ Stage 2: Apply ToolResultBudget (token-based truncation)
-│   │      ├─ Add observation to messages (context.go wraps untrusted output in <untrusted-content>)
-│   │      └─ Check context fill → compact if needed
-│   │
-  │   ├─ 3. If finish tool called:
-  │   │      ├─ Mutation gate (if mutationRequired): check if any mutating tool
-  │   │      │   (write_file, edit_file, create_directory, delete_file, delete_directory)
-  │   │      │   was successfully executed in this step.
-  │   │      │   → No mutation + first attempt: inject mutation nudge, continue loop
-  │   │      │   → No mutation + second attempt: return Finished=false (triggers reflection/replan)
-  │   │      │   → Mutation present or gate disabled: extract output, return success
-  │   ├─ Checklist gate (if checklistGateEnabled + update_checklist available):
-  │   │      ├─ Missing gate: non-trivial step (> 2 productive tool calls) with no
-  │   │      │   update_checklist call → inject missing-checklist nudge, continue loop
-  │   │      ├─ Unchecked gate: last checklist has unchecked items → inject unchecked
-  │   │      │   nudge, continue loop
-  │   │      └─ Both gates are soft: after one nudge attempt, finish is accepted
-  │   └─ Extract output, return success (when gates pass)
- │   │
- │   ├─ 3a. If no tool calls (implicit finish path — see Implicit Finish & Failure-Mode below):
- │   │      → Failure-mode detector checks for tool-call syntax printed as text
- │   │      → General nudge (up to 2 attempts) before accepting implicit finish
- │   │      → Finish nudge (suppressAssistantEvents mode) requires explicit finish call
- │   │
- │   ├─ 4. Circuit breaker check (see below)
- │   │      → If abort threshold reached: call HITLHandler.OnStepLimit(reason)
- │   │      → AllowOnce: reset + nudge, AllowAlways: disable + nudge, Deny: stop
- │   │
- │   └─ 5. If step limit reached:
- │          → Call HITLHandler.OnStepLimit(reason="")
- │          → AllowOnce: +N steps, AllowAlways: unlimited, Deny: stop
-│
-└─ Return ExecutorResult {Steps, Output, Finished}
-```
-
-### Circuit Breaker
-
-Detects pathological patterns. Each detector has a nudge threshold and an abort threshold:
-
-| Detection   | Trigger                                     | Nudge Action               | Abort Action                   |
-| ----------- | ------------------------------------------- | -------------------------- | ------------------------------ |
-| Repeat      | Same tool + same args + same error N times  | "try a different approach" | Call HITLHandler.OnStepLimit with reason |
-| Truncation  | LLM output truncated (tool call incomplete) | "split into smaller calls" | Call HITLHandler.OnStepLimit with reason |
-| Parse error | Invalid tool input N times                  | "simplify your input"      | Call HITLHandler.OnStepLimit with reason |
-| Fruitless   | Last N tool results are empty/minimal       | "consider wrapping up"     | Call HITLHandler.OnStepLimit with reason |
-| Same tool   | Same tool name N times with similar results | "try a different strategy" | Call HITLHandler.OnStepLimit with reason |
-
-When a circuit breaker abort threshold is reached, the executor calls `HITLHandler.OnStepLimit` with a reason string describing the trigger (same mechanism as the step limit). The user receives the same three options:
-
-- **AllowOnce**: resets the counter, injects a nudge urging the LLM to change approach, continues one more iteration
-- **AllowAlways**: resets the counter, disables that specific circuit breaker for the remainder of the execution, injects a permissive nudge
-- **Deny**: aborts execution (returns `ExecutorResult{Finished: false}`)
-
-If `HITLHandler` is nil (no UI connected), the executor aborts immediately (preserving headless/test behavior).
-
-Config: `CircuitBreakerConfig` (thresholds per detection type).
-
-### Mutation Gate
-
-When `mutationRequired` is set on the executor (via `SetMutationRequired(true)`), the finish tool call is intercepted before completion. The gate checks whether any mutating tool (`write_file`, `edit_file`, `create_directory`, `delete_file`, `delete_directory`) was **successfully** executed during the current step (scanning `state.allSteps` for `Step.Action.Name` in the mutating set, excluding rejected calls).
-
-Flow:
-
-```
-finish called + mutationRequired=true
-  │
-  ├─ hasMutatingToolExecuted?
-  │   ├─ YES → accept finish, return Finished=true
-  │   └─ NO  → mutationNudgeAttempted?
-  │       ├─ NO  → inject executorMutationNudge, set flag, continue loop (retry)
-  │       └─ YES → return Finished=false (triggers orchestrator reflection/replan)
-```
-
-Purpose: prevents "false success" on code-modification steps where the agent reads extensively but finishes without making changes. The gate is role-dependent — set by `coreStepConfigurator` only for `profile.Role == "coder" && profile.Domain == "code"`. Researcher/audit/tester steps are not gated.
-
-Rejected tool calls (HITL denial with `Observation` starting `[Tool call rejected`) do **not** count as mutations. `bash_exec` is intentionally excluded from the mutating set — it's ambiguous (could be `pwd && ls` or `go test`), and the gate focuses on structural filesystem mutations.
-
-Source: `sdk/agent/executor.go` `mutatingTools` set, `sdk/agent/executor_run.go` `hasMutatingToolExecuted` + finish branch gate.
-
-### Checklist Gate
-
-When `checklistGateEnabled` is set on the executor (default: `true` via `NewExecutor`), the finish tool call is intercepted after the mutation gate and before completion. The gate enforces incremental checklist adoption. It activates only when `update_checklist` is present in the executor's `taskTools` (the gate is inert when the tool is filtered out, e.g. No Project mode).
-
-Two sub-gates, both soft (one nudge attempt, then finish is accepted):
-
-**Missing-checklist gate (Enf-1):** on a non-trivial step — one with more than `checklistTrivialThreshold` (2) productive tool calls (any tool call except `finish` and nudge-only steps) — if no successful `update_checklist` call was made, inject `executorChecklistMissingNudge` and continue the loop. Trivial steps (≤ 2 tool calls) are exempt.
-
-**Unchecked-items gate (Enf-2):** if the last successful `update_checklist` has unchecked items (parsed from the "N/M done" tool result), inject `executorChecklistUncheckedNudge` (formatted with the unchecked count) and continue the loop. This gate has no triviality threshold — if the agent created a checklist, it must either complete it or justify skipping.
-
-```
-finish called + checklistGateEnabled + update_checklist available
-  │
-  ├─ hasChecklistUpdate?  (scan allSteps for successful update_checklist)
-  │   ├─ NO  + countProductiveToolCalls > 2 + not yet nudged
-  │   │   → inject executorChecklistMissingNudge, set flag, continue loop
-  │   └─ YES or trivial or already nudged → fall through
-  │
-  ├─ lastChecklistUnchecked > 0 + not yet nudged
-  │   → inject executorChecklistUncheckedNudge, set flag, continue loop
-  │
-  └─ accept finish (soft gate: second attempt always accepted)
-```
-
-The gate can be disabled via `SetChecklistGateEnabled(false)`. Nudge flags are per-executor-instance (reset on each `Executor.Run` since the orchestrator creates a fresh executor per step).
-
-Source: `sdk/agent/executor.go` `checklistGateEnabled` field + nudge constants, `sdk/agent/executor_run.go` `hasChecklistUpdate`, `countProductiveToolCalls`, `lastChecklistUnchecked` + finish branch gates.
-
-### Implicit Finish & Failure-Mode Detection
-
-When the LLM returns no tool calls, `handleImplicitFinish` decides whether to accept an implicit finish, nudge the LLM to use tools, or abort. Two paths:
-
-**General implicit finish** (no tool calls, `end_turn` or other stop reason):
-
-- Up to 2 general nudges (`executorNudge`) are injected before accepting implicit finish. The nudge counter (`implicitFinishNudgeCount`) tracks attempts across the step.
-- In `suppressAssistantEvents` mode (plan-step execution), a finish nudge (`executorFinishNudge`) requires an explicit `finish` tool call before accepting completion.
-- After the nudge budget is exhausted, the response is accepted as an implicit finish (`Finished: true`).
-
-**Failure-mode: tool-call syntax as text** (`DetectToolCallSyntaxInContent`):
-
-- The detector (`toolCallSyntaxRe` regex) matches a fenced code block at the start of a line whose language tag looks like a c0wrk tool name (`` ```\w+_\w+ `` — e.g. `` ```bash_exec ``, `` ```read_file ``).
-- This signals the model is stuck: it "printed" a tool invocation as prose instead of emitting a `tool_use` block. This is NOT a legitimate finish.
-- A dedicated nudge (`executorToolCallSyntaxNudge`) is injected up to 3 times, explaining that tools must be called via the `tool_use` mechanism, not typed as text.
-- After 3 failed nudges, the executor aborts with `Finished: false` and an "Aborted: model repeatedly printed tool-call syntax as text" output. This triggers reflection/replan or step failure — never a silent success.
-
-**Defense-in-depth (subagent)**:
-
-`RunSubAgent` computes `success = err == nil && result.Finished`. As a backup guard, if `DetectToolCallSyntaxInContent(result.Output)` is true even when `Finished` is true, `success` is forced to false. This catches any escape from the executor's failure-mode detector.
-
-Source: `sdk/agent/executor.go` `DetectToolCallSyntaxInContent` + `executorToolCallSyntaxNudge`, `sdk/agent/executor_run.go` `handleImplicitFinish`, `sdk/agent/subagent.go` `RunSubAgent`.
+c0wrk registers consumer-specific meta-tools (`delegate`, `declare_plan`, `reflect`, `cancel_delegation`, `declare_step_complete`, `ask_user`) as non-cacheable via `Executor.AddNonCacheableTools`. These tools bypass `ToolResultCache` and Stage-1 truncation (their results are not large outputs worth fragmenting). The names are also passed to the sp4rk Conductor's `ConductorConfig.NonCacheableTools`. The default non-cacheable set (`tool_result_read`, `finish`, `batch`, etc.) is an engine concern — see the sp4rk executor spec.
 
 ### Critical Always-Allowed Tools
 
-These tools are always available regardless of step's AllowedTools filter:
+These c0wrk tools are always available regardless of a step's `AllowedTools` filter:
 
-- `batch` — execute multiple tool calls sequentially in one turn (intercepted at executor level)
-- `finish` — end step execution
+- `finish` — end execution
 - `store_fact` — save findings to blackboard
 - `search_facts` — retrieve stored facts
 - `ask_user` — prompt user for information
@@ -229,108 +45,36 @@ These tools are always available regardless of step's AllowedTools filter:
 
 The set is enforced in `core/stepconfig.go` `criticalAlwaysAllowedTools` and unioned into the filtered list whenever `AllowedTools` is non-empty.
 
-### Tool Result Caching & Two-Stage Truncation
+## Engine Behavior (canonical in sp4rk)
 
-Every non-infrastructure tool result is cached and truncated in two stages:
+The following are sp4rk engine primitives, documented in [the sp4rk executor spec](../../../sdk/specs/domains/orchestration/executor.md) — do not duplicate here:
 
-**Stage 1 — Per-tool line/byte truncation (configurable per tool):**
-
-- Full result is stored in `ToolResultCache`. The lookup key is a git-style **short hash**: the shortest prefix (starting at 4 hex chars) of SHA256(toolName + "\x00" + content) that is unique among hashes already known in the session — the prefix grows one character at a time on collision (null-byte separator prevents content/tool-name collisions). Identical content (same SHA256) maps to the same short hash, so dedup and history-mutation references stay stable. The full SHA256 is retained on the entry for dedup/coherence. A short hash, once issued, is immutable: when an entry is evicted (MCP TTL) its short key is **retired** and never reused or aliased, so a stale history reference resolves to not-found rather than to unrelated content.
-- **File-backed entries** (`read_file`): content is NOT stored in memory — the file on disk is the backing store. The identity hash is derived from file metadata (SHA256(toolName + path + mtime + size)), stable for an unchanged file; the short-hash key is abbreviated from it as above. The cache entry's `Content` field is empty; `tool_result_read` streams fragments from disk via `ReadFileRange` on demand. A file-backed nudge (`[File content cached with hash: ...]`) is appended even when Stage 1 truncation did not fire, informing the LLM that `tool_result_read` can read additional fragments for token economy.
-- The short cache hash is stored on `Step.CacheHash` for later use by history mutation (regular eviction to cache references)
-- Result is truncated to per-tool `MaxLines` / `MaxBytes` (from config `toolLimits.perToolTruncation`). For `read_file`, this is a secondary safety net — the primary cap is the streaming reader's window (`ReadDefaultLines` + `MaxWindowLines`)
-- A fragmentation nudge is appended: `[This output was truncated. Read the rest with tool_result_read(hash="abc123", start_line=N+1, num_lines=M)]` (the hash is the short cache hash)
-- Cache entries carry metadata for coherence checking (file tools: mtime+size; MCP tools: TTL)
-
-**Stage 2 — Token-based budget (existing, unchanged):**
-
-- `HardCapTokens` — absolute maximum tokens for a single result
-- `FillFraction` — max percentage of available context for tool results
-- Floor: 256 tokens minimum
-- Truncation notice appended when result exceeds budget
-
-**Cache coherence:**
-
-- File tools (`read_file`, `write_file`, `edit_file`, `delete_file`): cache entries tagged with file path + mtime + size. On `tool_result_read`, the executor checks current file metadata against cached signature. If changed, returns an error instructing the LLM to re-read.
-- MCP tools: cache entries carry a TTL. Expired entries are evicted on access.
-- Non-cacheable tools (`batch`, `tool_result_read`, `finish`, `read_step_output`, `list_step_outputs`, `store_fact`, `search_facts`, `update_checklist`, `declare_step_complete`, `ask_user`): excluded from both caching and Stage 1 truncation.
-
-**Cache TTL:** `toolResultBudget.cacheTTLSeconds` (default: 300). Eviction runs on access.
-
-### Batch Tool Interception
-
-The `batch` meta-tool is intercepted at the executor level in `processBatchTool()` before it reaches the tool registry. Flow:
-
-```
-processBatchTool(ctx, action, callIdx, toolCalls, resp, thought, state, cw)
-│
-├─ Parse batch input: { calls: [{ tool, input }, ...] }
-├─ For each sub-call (subIdx):
-│   │
-│   ├─ Emit ToolCall as "<tool_name> (batched)"
-│   ├─ Circuit breaker: checkRepeatIdenticalTool, checkFruitlessResult, checkSameToolRepetition
-│   ├─ HITL: OnToolCall(ctx, name, input) — consumer may deny or modify input
-│   │      → Denied: inject rejection observation, skip to next sub-call
-│   │      → Modified input: use modified input for execution
-│   ├─ Execute sub-call through full policy pipeline: e.tools.Execute(ctx, name, input)
-│   ├─ Set IsUntrusted via e.tools.IsToolUntrusted(name)
-│   ├─ Stage 1: Per-tool truncation + ToolResultCache.Store() + fragmentation nudge
-│   ├─ Stage 2: Token-budget truncation (preserves Stage 1 nudge)
-│   ├─ Emit ToolResult
-│   └─ Pre-compaction nudge (on last sub-call only)
-│
-└─ Return actionNone (continue loop)
-```
-
-Key behaviors:
-- Errors in individual sub-calls do not abort the batch — the error is captured as the tool result and processing continues
-- Sub-calls go through the full policy + truncation + caching pipeline (same as standalone tool calls)
-- HITL OnToolCall check runs before each sub-call; denied sub-calls inject a rejection observation and continue to the next sub-call without aborting the batch
-- Circuit breakers (repeat, fruitless, same-tool) are checked per sub-call; if triggered, the batch aborts and returns the circuit breaker action
-- Each sub-call is emitted to the frontend with the suffix `" (batched)"` (e.g., `read_file (batched)`)
-- Only the first sub-call in the first response group carries `Thought` and `ReasoningContent`
-- The `batch` tool itself is in the default non-cacheable tools set (`defaultNonCacheableTools`) — its result is never cached, and the tool never reaches the registry's `Execute()` path (its `Execute()` method returns an error). Consumer-specific meta-tools are added via `Executor.AddNonCacheableTools`.
+- ReAct loop iteration, step limit, `HITLHandler.OnStepLimit` (AllowOnce/AllowAlways/Deny)
+- Circuit breakers (repeat, truncation, parse-error, fruitless, same-tool)
+- Mutation gate (coder steps, `mutationRequired`) and checklist gate (missing/unchecked sub-gates)
+- Implicit-finish detection and `DetectToolCallSyntaxInContent` failure-mode handling
+- `ToolResultCache` (short-hash keying, file-backed entries, coherence checks, TTL) and two-stage truncation
+- `batch` meta-tool interception (`processBatchTool`)
+- `Step.IsUntrusted` propagation and `<untrusted-content>` wrapping (see [../../architecture/security-model.md](../../architecture/security-model.md) for c0wrk's session-root/auto-approval layer)
 
 ## Error Handling
 
-- Step failure (executor returns error): result stored with Error field set
-- Context cancelled: propagates immediately, no retry
-- Step limit reached without finish: treated as incomplete (not failure)
+- Step failure (executor returns error): result stored with Error field set; the orchestrator records the failure on the blackboard.
+- Context cancelled: propagates immediately; pending async delegations are cancelled via context-tree cancellation.
+- Step limit reached without finish: `Finished: false`; the orchestrator records `Status: partial` (resumable).
 
 ## Invariants
 
-- `finish` tool is ALWAYS available in every step (never filtered out)
-- When `mutationRequired` is set, finish without a prior mutating tool execution is rejected (nudge → `Finished: false`)
-- Mutation gate only applies to coder steps with `domain == "code"`; researcher/tester/audit steps are unaffected
-- The checklist gate is enabled by default (`checklistGateEnabled=true`); it activates only when `update_checklist` is in the executor's tool set
-- The checklist missing-gate exempts trivial steps (≤ `checklistTrivialThreshold` productive tool calls); the unchecked-items gate applies whenever a checklist exists
-- Both checklist sub-gates are soft: after one nudge attempt, finish is accepted regardless (`Finished: true`)
-- Context window never exceeds model limit (compaction triggers automatically)
-- MaxSteps bounds total iterations (HITLHandler.OnStepLimit may extend)
-- Each step has its own ContextManager (isolated memory)
-- Parallel steps run in separate goroutines with independent contexts
-- A step's output is immutable once stored on Blackboard
-- Active skill bodies are rendered verbatim in the step system prompt (no truncation)
-- Step-local skill narrowing fires whenever `step.Profile.Skills` is non-empty; requested names resolve from the task-scope ActiveSkills pool first, falling back to the SkillManager only for names absent from the pool
-- Every `Step` carries `IsUntrusted`; set by executor after tool execution via `tool.IsUntrusted()` or MCP source check
-- Untrusted tool output is wrapped in `<untrusted-content>` XML tags in `context.go` `buildStepMessages()` before messages are sent to the LLM
-- Every tool result from a cacheable tool is stored in ToolResultCache before truncation; the cache entry is keyed by a short hash — the shortest unique prefix (from 4 chars) of SHA256(toolName + "\x00" + full content) for content-backed entries, or of SHA256(toolName + path + mtime + size) for file-backed entries (`read_file`). The full SHA256 is retained on the entry for dedup/coherence.
-- File-backed cache entries (`read_file`) store zero bytes of content — the file on disk is the backing store. `tool_result_read` streams fragments from disk via `ReadFileRange` (O(1) memory) for file-backed entries
-- A file-backed nudge (`[File content cached with hash: ...]`) is appended for `read_file` results even when Stage 1 truncation did not fire, serving the token-economy use case (LLM reads fragments on demand)
-- `Step.CacheHash` is populated with the ToolResultCache hash for cacheable tools (empty for non-cacheable tools); used by ContextWindow for regular history mutation (eviction to cache references)
-- `tool_result_read` validates cache coherence on every read: for file tools, it compares current file mtime+size with the cached signature; for MCP tools, it checks TTL expiry
-- `batch` is intercepted in `processBatchTool()` before reaching the registry; its own `Execute()` returns an error. Sub-calls within a batch go through the full policy + truncation + caching pipeline and are emitted as `"<tool_name> (batched)"`
-- The `batch` tool is marked in the default non-cacheable tools set; its sub-calls are cached individually per normal tool rules
-- `batch` sub-call errors do not abort the batch — errors are captured inline and processing continues to the next sub-call
-- The general implicit-finish nudge budget is 2 attempts before accepting `Finished: true`
-- `DetectToolCallSyntaxInContent` catches failure-mode where the model prints tool-call syntax (`` ```\w+_\w+ ``) as text; 3 dedicated nudges are injected before aborting with `Finished: false`
-- Subagent success requires `result.Finished && !DetectToolCallSyntaxInContent(result.Output)` (defense-in-depth: even if the executor returns Finished=true with tool-call syntax in output, the subagent treats it as failure)
+- `finish` is ALWAYS available in every executor instance (never filtered out).
+- Consumer meta-tools registered via `AddNonCacheableTools` are excluded from caching and Stage-1 truncation.
+- `criticalAlwaysAllowedTools` (c0wrk) are unioned into any non-empty `AllowedTools` filter.
+- Each executor instance has its own `ContextManager` (isolated memory); the Conductor context never shares with subagent contexts.
+- Untrusted tool output is wrapped in `<untrusted-content>` before reaching the LLM (engine behavior; c0wrk's session-root/auto-approval gating runs in the registry, see [../../architecture/security-model.md](../../architecture/security-model.md)).
 
 ## Related Specs
 
-- [README.md](README.md) — orchestration overview
+- [sp4rk executor](../../../sdk/specs/domains/orchestration/executor.md) — canonical ReAct loop, circuit breakers, gates, truncation, caching, batch interception
 - [conductor.md](conductor.md) — Conductor (top-level Executor caller)
 - [delegation.md](delegation.md) — subagent launch via the `delegate` tool
 - [../memory/compaction.md](../memory/compaction.md) — compaction strategies
-- [../tool-system/README.md](../tool-system/README.md) — tool execution pipeline and trust classification
 - [../../architecture/security-model.md](../../architecture/security-model.md) — policy enforcement and injection defense

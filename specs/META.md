@@ -51,7 +51,7 @@ specs/
 │       └── rendering.md
 │
 ├── contracts/                      interfaces between layers
-│   ├── core-sdk.md
+│   ├── core-sp4rk.md
 │   ├── backend-core.md
 │   ├── desktop-frontend.md
 │   ├── event-catalog.md
@@ -60,7 +60,7 @@ specs/
 └── decisions/                      Architecture Decision Records
     ├── _template.md
     ├── 001-single-module.md
-    ├── 002-sdk-isolation.md
+    ├── 002-sp4rk-isolation.md
     ├── 003-cgo-free-sqlite.md
     └── 004-external-binary-dependencies.md
 ```

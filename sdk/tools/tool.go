@@ -41,7 +41,7 @@ type ToolResult struct {
 type ToolSourceCategory string
 
 const (
-	// SourceCategoryCore marks tools built into the SDK.
+	// SourceCategoryCore marks tools built into sp4rk.
 	SourceCategoryCore ToolSourceCategory = "core"
 	// SourceCategoryMCP marks tools provided by MCP servers.
 	SourceCategoryMCP ToolSourceCategory = "mcp"

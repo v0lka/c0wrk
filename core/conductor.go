@@ -270,11 +270,11 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	childReg := tools.NewDelegationRegistryWithDepth(registry.Depth() + 1)
 	taskCtx := tools.WithDelegationRegistry(ctx, childReg)
 	taskCtx = tools.WithDelegationLauncher(taskCtx, l)
-	// Also inject into the SDK-level context key so finishJoinExecutor
-	// (in sdk/orchestration/conductor.go) can find the child registry.
+	// Also inject into the sp4rk-level context key so finishJoinExecutor
+	// (in github.com/v0lka/sp4rk/orchestration/conductor.go) can find the child registry.
 	taskCtx = orchestration.WithDelegationRegistry(taskCtx, childReg)
 
-	// Build the subagent task. The finishJoinExecutor in the SDK Conductor
+	// Build the subagent task. The finishJoinExecutor in the sp4rk Conductor
 	// will guard against finish with pending async sub-delegations
 	// automatically, since the child registry is in the context.
 	st, err := l.buildSubAgentTask(taskCtx, t, registry)
@@ -405,7 +405,7 @@ var conductorOnlyToolNames = map[string]struct{}{
 }
 
 // coreNonCacheableToolNames are c0wrk-specific meta-tools whose results should
-// not be cached. These are registered by core/tools and extend the SDK-provided
+// not be cached. These are registered by core/tools and extend the sp4rk-provided
 // defaultNonCacheableTools set via Executor.AddNonCacheableTools. They produce
 // tiny or stateful outputs where caching adds overhead.
 var coreNonCacheableToolNames = []string{
@@ -912,7 +912,7 @@ func conductorGuidanceForComplexity(complexity int) string {
 //     PlanPublisher, ReflectionRunner, TrajectoryStore) into the context
 //   - Appending the Conductor Guidance section to the system prompt
 //
-// The SDK-level orchestration.Conductor handles:
+// The sp4rk-level orchestration.Conductor handles:
 //   - Model metadata resolution and system prompt construction
 //   - ContextManager creation
 //   - Executor construction and configuration
@@ -1027,7 +1027,7 @@ func callerForConductor(deps conductorDeps) agent.LLMCaller {
 }
 
 // adaptContextFactory converts a core ContextManagerFactory (which returns
-// core.ContextManager and takes variadic PruningOverride) to the SDK
+// core.ContextManager and takes variadic PruningOverride) to the sp4rk
 // ContextManagerFactory signature (which returns agent.ContextManager and
 // takes variadic PruningOverride). The core ContextManager embeds
 // agent.ContextManager, so the return type is compatible.
@@ -1304,7 +1304,7 @@ func planStepExists(bb orchestration.Blackboard, stepID string) bool {
 
 // subagentTodoCallback returns a StepTodoUpdateFunc for subagent execution.
 // It only emits StepTodoUpdate — delegation progress is tracked via
-// SubAgentLaunch/SubAgentComplete events from the SDK, not plan-step events.
+// SubAgentLaunch/SubAgentComplete events from sp4rk, not plan-step events.
 func subagentTodoCallback(emitter Emitter) agent.StepTodoUpdateFunc {
 	if emitter == nil {
 		return nil

@@ -4,6 +4,8 @@
 
 Accepted
 
+> **Related:** the canonical, sp4rk-native version of this decision now lives in [sdk/specs/decisions/003-shell-parser-symlink-detection.md](../../sdk/specs/decisions/003-shell-parser-symlink-detection.md). This c0wrk ADR is retained as historical decision history.
+
 ## Context
 
 `bash_exec` is one of c0wrk's most powerful built-in tools. With symlink traversal detection, the tool needed to parse bash commands to detect cases where an agent attempts to break out of the workspace by following symlinks (e.g., `cat /etc/passwd` via a symlink created in the workspace). The original detection approach used simple string matching, which was fragile: it couldn't distinguish `echo "../etc/passwd"` (safe, a string literal) from `cat ../etc/passwd` (dangerous, a relative path). A proper AST-based parser was needed to resolve argument paths, understand command structure, and correctly identify symlink targets.
@@ -12,14 +14,14 @@ Go's standard library does not include a shell parser. Writing one is non-trivia
 
 ## Decision
 
-Add `mvdan.cc/sh/v3/syntax` as a dependency of `core/tools`. This library:
+Add `mvdan.cc/sh/v3/syntax` as a dependency of sp4rk's `tools` package. This library:
 
 - Is the de-facto standard shell parser for Go (used by staticcheck, shfmt, and gopls)
 - Parses POSIX Shell and Bash syntax per the POSIX/IEEE Std 1003.1 specification
 - Provides an AST that enables reliable resolution of argument paths, distinguishing string literals from actual file arguments
-- Is used exclusively in `sdk/tools/symlink.go` for bash command traversal detection
+- Is used exclusively in `github.com/v0lka/sp4rk/tools/symlink.go` for bash command traversal detection
 
-The dependency is confined to `sdk/tools/symlink.go` — no other package in the module imports it.
+The dependency is confined to `github.com/v0lka/sp4rk/tools/symlink.go` — no other package in the module imports it.
 
 ## Consequences
 
@@ -32,7 +34,7 @@ The dependency is confined to `sdk/tools/symlink.go` — no other package in the
 
 **Negative:**
 
-- Adds a compile-time dependency from `sdk/tools` on a third-party module. Breaking changes in `mvdan.cc/sh/v3` would require code updates in `symlink.go`.
+- Adds a compile-time dependency from sp4rk's `tools` package on a third-party module. Breaking changes in `mvdan.cc/sh/v3` would require code updates in `symlink.go`.
 - `go.mod` gains a new `require` directive. The module is otherwise dependency-light, so the supply-chain impact is bounded.
 - The parser adds CPU cost to every `bash_exec` invocation with symlink detection enabled. This cost is negligible relative to the bash process startup time (~1ms parse vs. ~10ms `exec`).
 
@@ -43,5 +45,3 @@ The dependency is confined to `sdk/tools/symlink.go` — no other package in the
 **Use regex-based path detection.** Rejected: the original implementation used this approach and was replaced because it produced false positives on string literals and false negatives on multi-quoted paths (e.g., `cat "/"etc"/"passwd`).
 
 **Reject any command containing path-like strings without parsing.** Rejected: would block legitimate commands and harm usability. The point of symlink detection is to allow normal tool use while catching actual escape attempts.
-
-**Pre-execution filesystem check (resolve all paths before exec).** Rejected: resolving all paths before execution can't handle commands that create symlinks as part of their operation (e.g., `ln -s /tmp target && cat target` — the symlink only exists after the first command). AST-based detection handles this by identifying the command arguments that are path arguments, then resolving those specific paths.

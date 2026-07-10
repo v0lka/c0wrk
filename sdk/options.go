@@ -175,7 +175,7 @@ type maxStepsOption struct{ steps int }
 func (o maxStepsOption) apply(opts *options) { opts.maxSteps = o.steps }
 
 // WithMaxSteps sets the maximum ReAct loop iterations per step. 0 keeps the
-// SDK default (50); a negative value disables the loop.
+// sp4rk default (50); a negative value disables the loop.
 func WithMaxSteps(n int) Option { return maxStepsOption{steps: n} }
 
 // loggerOption sets the structured logger.
@@ -247,7 +247,7 @@ func (b *FrameworkBuilder) HITL(h agent.HITLHandler) *FrameworkBuilder {
 	return b
 }
 
-// MaxSteps sets the maximum ReAct loop iterations per step. 0 keeps the SDK
+// MaxSteps sets the maximum ReAct loop iterations per step. 0 keeps the sp4rk
 // default (50); a negative value disables the loop.
 func (b *FrameworkBuilder) MaxSteps(n int) *FrameworkBuilder {
 	b.opts.maxSteps = n

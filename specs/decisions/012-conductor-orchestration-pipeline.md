@@ -49,7 +49,7 @@ no capability to actually follow them:
 The observed failure: a user activated `/explore` for a multi-provider model
 disambiguation task. The Router returned `needsClarification=false`; the
 Planner produced a single step with full What/How/Where/Acceptance Criteria;
-the Executor-subagent implemented the entire change across config, SDK, core,
+the Executor-subagent implemented the entire change across config, sp4rk, core,
 backend, and frontend; the session ended without a single clarifying question
 or approval request. Every hard gate in the skill was bypassed.
 
@@ -111,9 +111,9 @@ lifecycle. Planning, decomposition, interaction, and reflection become
 | Tool | Purpose | Origin |
 | ---- | ------- | ------ |
 | `ask_user` | Interactive: clarifications, plan approval, direction choice | Reused from `core/tools/askuser.go` |
-| `delegate` | Launch one or more subagents with a task, acceptance criteria, tool set, DAG dependencies, blocking or async mode | New, built on `sdk/agent/subagent.go` `RunSubAgent` / `RunSubAgentsParallel` |
+| `delegate` | Launch one or more subagents with a task, acceptance criteria, tool set, DAG dependencies, blocking or async mode | New, built on `github.com/v0lka/sp4rk/agent/subagent.go` `RunSubAgent` / `RunSubAgentsParallel` |
 | `declare_plan` | Publish a roadmap to the blackboard and UI plan panel; optionally block for user approval | New, reuses `core/plan_serializer.go` `SerializePlan` and the existing `PlanGenerated` event |
-| `reflect` | Invoke the Reflector on the current trajectory or a sub-task trajectory | New tool wrapping `sdk/agent/reflector/reflector.go` `Reflect` |
+| `reflect` | Invoke the Reflector on the current trajectory or a sub-task trajectory | New tool wrapping `github.com/v0lka/sp4rk/agent/reflector/reflector.go` `Reflect` |
 | `store_fact` / `search_facts` | Memory across delegations | Reused |
 | `read_step_output` | Read results of completed delegations | Reused |
 | `set_step_status` | Visible todo progress within the Conductor | Reused |
@@ -146,11 +146,11 @@ hierarchical decomposition when explicitly requested.
 
 ### What is removed (clean break)
 
-- `sdk/planner/planner.go` `Plan` / `Replan` / `PlanContinuation` as
+- `github.com/v0lka/sp4rk/planner/planner.go` `Plan` / `Replan` / `PlanContinuation` as
   pipeline phases. The DAG data structures (`Plan`, `PlanStep`,
   `FindReadySteps`) are retained as a library used by `delegate` and
   `declare_plan`.
-- `sdk/orchestration/orchestrator.go` `executePlanWithSteps` and
+- `github.com/v0lka/sp4rk/orchestration/orchestrator.go` `executePlanWithSteps` and
   `runPlanExecute` (the plan-execute-reflect outer loop).
 - `core/plan_review.go` `HandlePlanReview` as a pipeline stage. Its
   serialization and approval-callback logic moves into the `declare_plan`
@@ -167,9 +167,9 @@ hierarchical decomposition when explicitly requested.
 
 ### What is preserved (unchanged foundation)
 
-- `sdk/agent/executor.go` `Executor.Run` — the ReAct loop, circuit breakers,
+- `github.com/v0lka/sp4rk/agent/executor.go` `Executor.Run` — the ReAct loop, circuit breakers,
   truncation handling, implicit-finish detection, mutation gate.
-- `sdk/agent/subagent.go` `RunSubAgent` / `RunSubAgentsParallel` —
+- `github.com/v0lka/sp4rk/agent/subagent.go` `RunSubAgent` / `RunSubAgentsParallel` —
   isolated executor in a goroutine with task-context injection, step ID,
   scoped emitter.
 - Context manager, compaction strategies, tool result cache, two-stage
@@ -177,7 +177,7 @@ hierarchical decomposition when explicitly requested.
 - `core/tools/registry.go` tool registry, policy enforcement, internal-tools
   set, HITL hooks.
 - Blackboard, facts, step outputs, session persistence.
-- Reflector (`sdk/agent/reflector/reflector.go`) as a callable library.
+- Reflector (`github.com/v0lka/sp4rk/agent/reflector/reflector.go`) as a callable library.
 - All frontend event types and the plan panel rendering — `declare_plan`
   emits the same `PlanGenerated` / `OnStepStarted` / `OnStepCompleted`
   events, so the UI requires no changes.
@@ -233,8 +233,8 @@ exists), but are not required for the design to function.
   an optional delegation count cap is available.
 - **Large test rewrite.** `core/orchestrator_test.go`,
   `core/planner_test.go`, and reflector-as-phase tests are invalidated.
-  SDK-level tests (`sdk/agent/executor_test.go`,
-  `sdk/agent/subagent_test.go`, `sdk/agent/reflector/reflector_test.go`)
+  sp4rk-level tests (`github.com/v0lka/sp4rk/agent/executor_test.go`,
+  `github.com/v0lka/sp4rk/agent/subagent_test.go`, `github.com/v0lka/sp4rk/agent/reflector/reflector_test.go`)
   are preserved — the foundation is unchanged.
 - **Async delegation complexity.** The Delegation Registry, lifecycle
   management, cancellation propagation, and finish-join semantics add
@@ -289,6 +289,7 @@ skill works because the Conductor has the tools and owns the loop.
 
 ## Related Specs
 
+- Canonical sp4rk decision: [sdk/specs/decisions/005-conductor-orchestration-pipeline.md](../../sdk/specs/decisions/005-conductor-orchestration-pipeline.md) — the conductor-driven ReAct pipeline framed from the engine's perspective
 - [../domains/orchestration/README.md](../domains/orchestration/README.md) — rewritten orchestration domain overview
 - [../domains/orchestration/conductor.md](../domains/orchestration/conductor.md) — Conductor component detail
 - [../domains/orchestration/delegation.md](../domains/orchestration/delegation.md) — delegate tool and async delegation registry

@@ -2,68 +2,18 @@
 
 ## Purpose
 
-Provides tool infrastructure for the agent: discovery, registration, policy enforcement, and execution. Tools are the agent's interface to the outside world (filesystem, shell, web, vector index).
+c0wrk provides tool infrastructure for the agent on top of sp4rk's `Tool`/`ToolRegistry` primitives: a policy-enforcing registry wrapper, built-in tool registration, the c0wrk-specific `ask_user` tool, and tool-manager wiring for external binaries. The `Tool` interface, `ToolPolicy`, `ToolResult`, `BaseTool`, `ToolJudger`, `ConfirmFunc`, and the basic `ToolRegistry` are **sp4rk engine** primitives — see [the sp4rk tool-system spec](../../../sdk/specs/domains/tool-system/README.md) and [the sp4rk tools contract](../../../sdk/specs/contracts/tools.md).
 
 ## Key Files
 
-- `sdk/tools/tool.go` — Tool interface, ToolDescriptor, ToolPolicy, ToolResult, BaseTool
-- `sdk/tools/safety.go` — ToolJudger, ConfirmFunc, ConfirmationRequest, ConfirmationResponse
-- `sdk/tools/registry.go` — SDK ToolRegistry (basic get/list/execute/ListFiltered)
-- `sdk/security/wrap.go` — Content wrapping for untrusted tool output (indirect prompt injection defense)
-- `core/tools/registry.go` — core ToolRegistry (wraps SDK, adds policies/judge/hooks/symlink check)
-- `core/tools/symlink.go` — symlink detection, traversal, confirmation gating
-- `core/tools/builtin_registration.go` — RegisterBuiltinTools function
-- `sdk/tools/builtins/batch.go` — batch meta-tool (intercepted at executor level)
-- `sdk/tools/judge.go` — ToolJudge (LLM-based safety evaluation)
-- `sdk/tools/mcp/gateway.go` — MCP Gateway (dynamic tool discovery)
-- `core/toolnames.go` — tool name constants, NoProjectDisabledTools, NoProjectBashBlacklist
+- `core/tools/registry.go` — core `ToolRegistry` (wraps the sp4rk registry; adds policy resolution, judge, hooks, symlink gate, disabled-tool and bash-blacklist enforcement)
+- `core/tools/symlink.go` — symlink detection/traversal integration calling sp4rk `DetectSymlinksInToolInput`
+- `core/tools/builtin_registration.go` — `RegisterBuiltinTools` function + `BuiltinToolsConfig`
+- `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
+- `core/toolnames.go` — tool name constants, `NoProjectDisabledTools`, `NoProjectBashBlacklist`
+- `core/toolmanager/` — manages external binary dependencies (`rg`, `rtk`, `uv`, `markitdown`), auto-downloaded on first run (see ADR-010)
 
-## Core Types
-
-```go
-// Tool interface (sdk/tools/tool.go)
-type Tool interface {
-    Name() string
-    Description() string
-    InputSchema() json.RawMessage
-    Execute(ctx context.Context, input json.RawMessage) (ToolResult, error)
-    DefaultPolicy() ToolPolicy
-    IsUntrusted() bool  // Returns true if tool output must be wrapped in <untrusted-content>
-}
-
-// BaseTool provides defaults for tool implementations
-type BaseTool struct {
-    ToolName        string
-    ToolDescription string
-    Schema          json.RawMessage
-    Policy          ToolPolicy
-    Untrusted       bool // Set to true for tools whose output should be delimited
-}
-```
-
-// Tool metadata for planner/executor (no execution capability)
-type ToolDescriptor struct {
-    Name           string          `json:"name"`
-    Description    string          `json:"description"`
-    InputSchema    json.RawMessage `json:"input_schema"`
-    Source         string          `json:"source"` // "core" | "mcp:<server>"
-    SourceCategory ToolSourceCategory `json:"-"` // cached category for fast checks
-}
-
-// Execution result
-type ToolResult struct {
-    Content string
-    IsError bool
-}
-
-// Security policies
-type ToolPolicy int
-const (
-    PolicyAlwaysAllow  ToolPolicy = iota
-    PolicyAlwaysDeny
-    PolicyUserConfirm
-)
-```
+Engine files (`github.com/v0lka/sp4rk/tools/tool.go`, `safety.go`, `registry.go`, `judge.go`, `github.com/v0lka/sp4rk/security/wrap.go`, `github.com/v0lka/sp4rk/tools/mcp/gateway.go`) are documented in [the sp4rk tool-system spec](../../../sdk/specs/domains/tool-system/README.md).
 
 ## Two-Layer Registry
 
@@ -73,7 +23,7 @@ const (
 │  (policy enforcement, judge, hooks, filters)        │
 │                                                     │
 │  ┌─────────────────────────────────────────────┐   │
-│  │  sdk/tools.ToolRegistry (embedded)           │   │
+│  │  sp4rk tools.ToolRegistry (embedded)         │   │
 │  │  (basic store: Register, Get, List, Execute) │   │
 │  └─────────────────────────────────────────────┘   │
 │                                                     │
@@ -90,10 +40,12 @@ const (
 └─────────────────────────────────────────────────────┘
 ```
 
-## Flow
+The embedded sp4rk `ToolRegistry` satisfies `github.com/v0lka/sp4rk/agent.ToolExecutor`. The fail-closed policy pipeline, `ConfirmFunc`, `ToolJudger`, and `ToolPolicy` semantics are engine behavior — see [the sp4rk tools contract](../../../sdk/specs/contracts/tools.md).
+
+## Flow (c0wrk registry pipeline)
 
 ```
-ToolRegistry.Execute(ctx, name, input)
+core ToolRegistry.Execute(ctx, name, input)
 │
 ├─ 1. Lookup tool by name → not found? return error result
 ├─ 2. Disabled tool (No Project mode)? → return error result (applies to ALL tools including internal)
@@ -112,21 +64,17 @@ ToolRegistry.Execute(ctx, name, input)
       └─ UserConfirm → confirmFunc blocks → execute or deny
 ```
 
+The policy resolution, auto-approval (session roots), and symlink gate are c0wrk's session-security layer — detailed in [../../architecture/security-model.md](../../architecture/security-model.md).
+
 ## Invariants
 
 - Tool names are unique within the registry
-- Internal tools (ask_user, batch, finish, list_step_outputs, read_step_output, read_skill_resource, search_facts, semantic_search, update_checklist, declare_step_complete, store_fact, tool_result_read) bypass policy and judge checks. The disabled-tool check (No Project mode) applies to all tools including internal ones, but the extra-bash-blacklist check runs AFTER the internal-tool bypass (so internal tools are never bash-blacklisted). `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
+- Internal tools (`ask_user`, `batch`, `finish`, `list_step_outputs`, `read_step_output`, `read_skill_resource`, `search_facts`, `semantic_search`, `update_checklist`, `declare_step_complete`, `store_fact`, `tool_result_read`) bypass policy and judge checks. The disabled-tool check (No Project mode) applies to all tools including internal ones, but the extra-bash-blacklist check runs AFTER the internal-tool bypass. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
 - The symlink gate runs before policy resolution for every non-internal tool call
-- Symlinks in workspace or temp dir that are OS-level infrastructure (e.g., macOS /tmp → /private/tmp) are filtered out and do not trigger confirmation
-- MCP tools are tagged with source `mcp`
-- Core built-in tools are tagged with source `core`
-- Tool filter can silently reject registration (no error returned)
-- Disabled tools are blocked at execution time; the registry's `SetDisabledTools` and `DisabledTools` methods deep-copy the map to prevent concurrent mutation
-- Extra bash blacklist patterns are compiled at set time and checked against `bash_exec` command input; the check runs after the internal-tool bypass (only `bash_exec` — which is not an internal tool — reaches this check)
+- MCP tools are tagged with source `mcp`; core built-in tools with source `core`
+- Disabled tools are blocked at execution time; `SetDisabledTools`/`DisabledTools` deep-copy the map to prevent concurrent mutation
 - The registry is thread-safe (sync.RWMutex)
-- Untrusted tool output (IsUntrusted() == true) is wrapped in <untrusted-content> tags before entering the LLM context
-- All MCP tools are untrusted; built-in untrusted tools set `Untrusted: true` on their `BaseTool` (classifications: web_search, web_fetch, bash_exec, ripgrep, glob, read_file)
-- `ToolExecutor.IsToolUntrusted(name)` reports trust status by delegating to `Tool.IsUntrusted()` plus MCP source check
+- Untrusted tool output (`IsUntrusted() == true`) is wrapped in `&lt;untrusted-content>` tags before entering the LLM context (engine wrapping; see [../../architecture/security-model.md](../../architecture/security-model.md))
 
 ## Configuration
 
@@ -168,12 +116,14 @@ Note: `security.*` keys use `snake_case`; `toolLimits.*` and `timeouts.*` keys u
 - `ToolFilter` — reject tools during registration (e.g., filter MCP tools by server)
 - `ParamManager` — transform tool input (e.g., inject workspace path for MCP tools)
 - `ToolJudger` interface — per-tool safety evaluation (implement on tool struct)
-- New built-in tools: implement `Tool` interface, set `Untrusted: true` on `BaseTool` if output comes from external sources, register in `RegisterBuiltinTools`
+- New built-in tools: implement the sp4rk `Tool` interface, set `Untrusted: true` on `BaseTool` if output comes from external sources, register in `RegisterBuiltinTools` (c0wrk-specific tools like `ask_user` go in `core/tools/`) — see [builtins.md](builtins.md)
 - To disable tools at runtime (e.g., for No Project mode): call `SetDisabledTools(names)` on the core registry; all tools including internal ones are blocked at execution time
 - To add runtime bash command restrictions: call `SetExtraBashBlacklist(patterns)` on the core registry; patterns are compiled regexps checked before `bash_exec` execution
 
 ## Related Specs
 
-- [builtins.md](builtins.md) — catalog of built-in tools
+- [sp4rk tool-system overview](../../../sdk/specs/domains/tool-system/README.md) — canonical `Tool`/`ToolRegistry`/`ToolPolicy`/`ToolJudger`/`ConfirmFunc`
+- [sp4rk tools contract](../../../sdk/specs/contracts/tools.md) — interface definitions
+- [builtins.md](builtins.md) — catalog of built-in tools and c0wrk registration
 - [mcp-gateway.md](mcp-gateway.md) — dynamic MCP tool lifecycle
-- [../../architecture/security-model.md](../../architecture/security-model.md) — policy details
+- [../../architecture/security-model.md](../../architecture/security-model.md) — c0wrk policy/auto-approval/symlink layer

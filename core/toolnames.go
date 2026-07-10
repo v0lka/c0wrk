@@ -4,7 +4,7 @@ package core
 // tools by name. Centralizing these prevents drift and silent typos when the
 // planner or step configurator references a tool string in multiple files.
 //
-// The values mirror the names registered by sdk/tools/builtins.RegisterBuiltinTools
+// The values mirror the names registered by github.com/v0lka/sp4rk/tools/builtins.RegisterBuiltinTools
 // and the internal-tool list in core/tools/registry.go.
 const (
 	// Internal infrastructure tools (always allowed, bypass policy).

@@ -13,7 +13,7 @@ import (
 )
 
 // ConductorConfig holds the dependencies for a Conductor: a single ReAct loop
-// that owns a task end-to-end. This is the SDK-level primitive; the host
+// that owns a task end-to-end. This is the sp4rk-level primitive; the host
 // application's core layer wraps it with Conductor-specific tools (delegate,
 // declare_plan, reflect, cancel_delegation) via context injection before
 // calling Run.
@@ -37,7 +37,7 @@ type ConductorConfig struct {
 
 	// NonCacheableTools lists additional tool names whose results should not be
 	// cached. These are consumer-specific meta-tools (e.g. delegate, declare_plan)
-	// that extend the SDK-provided defaults. Empty = SDK defaults only.
+	// that extend the sp4rk-provided defaults. Empty = sp4rk defaults only.
 	NonCacheableTools []string
 
 	// ConversationHistory holds prior user/assistant exchanges from the
@@ -49,7 +49,7 @@ type ConductorConfig struct {
 }
 
 // Conductor runs a single Executor.Run that owns a task end-to-end.
-// This is the SDK primitive; the host application adds Conductor-specific tools
+// This is the sp4rk primitive; the host application adds Conductor-specific tools
 // (delegate, declare_plan, reflect, cancel_delegation) through context
 // injection before calling Run.
 //
@@ -136,7 +136,7 @@ func (c *Conductor) Run(
 
 	// Inject prior conversation (previous exchanges) so the LLM sees the
 	// dialogue context leading up to the current message. The ContextManager
-	// must implement ConversationAware — the SDK's memory.ContextWindow does.
+	// must implement ConversationAware — sp4rk's memory.ContextWindow does.
 	if len(c.cfg.ConversationHistory) > 0 {
 		if pcm, ok := cm.(ConversationAware); ok {
 			pcm.SetPriorConversation(c.cfg.ConversationHistory)
@@ -254,14 +254,14 @@ func (c *Conductor) Cleanup() {}
 
 // --- Minimal DelegationRegistry interface for finish-join ---
 //
-// The SDK Conductor needs to check for pending async delegations to
+// The sp4rk Conductor needs to check for pending async delegations to
 // implement the finish-join guard. Rather than importing a full
-// DelegationRegistry (which would create a circular dependency), the SDK
+// DelegationRegistry (which would create a circular dependency), sp4rk
 // defines a minimal interface that the host application's registry satisfies
 // structurally.
 
 // PendingDelegations is implemented by the host application's delegation
-// registry. The SDK Conductor uses it to check for pending async delegations.
+// registry. The sp4rk Conductor uses it to check for pending async delegations.
 type PendingDelegations interface {
 	ListPending() []string
 }

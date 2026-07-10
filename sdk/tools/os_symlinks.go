@@ -19,7 +19,7 @@ import (
 // cross-platform entries is safe and avoids a runtime.GOOS switch.
 //
 // This map is the SINGLE source of truth for the well-known list — both the
-// SDK symlink walker (walkSymlinkComponents) and the core registry gate
+// sp4rk symlink walker (walkSymlinkComponents) and the core registry gate
 // (checkSymlinksAndConfirm) resolve through IsWellKnownOSSymlink /
 // IsOSLevelSymlink, so the list must never be duplicated in core.
 //
@@ -74,7 +74,7 @@ func IsWellKnownOSSymlink(symlinkPath string) bool {
 // of one of the given root directories (workspace / temp dir) — i.e. the root
 // itself is reached through the symlink. roots may be empty.
 //
-// This is the single chokepoint used by both the SDK's symlink walker and the
+// This is the single chokepoint used by both sp4rk's symlink walker and the
 // core registry gate, keeping the classification consistent and the
 // well-known list unduplicated.
 func IsOSLevelSymlink(symlinkPath string, roots ...string) bool {

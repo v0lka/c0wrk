@@ -16,11 +16,11 @@ import (
 const NoProjectID = "__no_project__"
 
 // ---------------------------------------------------------------------------
-// ContextManager — extends sdk/agent.ContextManager with c0wrk-specific SetTask
+// ContextManager — extends github.com/v0lka/sp4rk/agent.ContextManager with c0wrk-specific SetTask
 // ---------------------------------------------------------------------------
 
 // ContextManager is the interface Executor and Orchestrator need for context window management.
-// It extends sdk/agent.ContextManager with SetTask for c0wrk-specific task support.
+// It extends github.com/v0lka/sp4rk/agent.ContextManager with SetTask for c0wrk-specific task support.
 type ContextManager interface {
 	agent.ContextManager
 	// SetTask sets the user's task into the context window.
@@ -34,7 +34,7 @@ type ContextManager interface {
 // Emitter defines the interface for emitting agent execution events.
 // Implementations must be nil-safe (all methods are no-ops when receiver is nil).
 type Emitter interface {
-	// Embed generic agent events from sdk/agent
+	// Embed generic agent events from github.com/v0lka/sp4rk/agent
 	agent.Events
 
 	// c0wrk-specific orchestration events

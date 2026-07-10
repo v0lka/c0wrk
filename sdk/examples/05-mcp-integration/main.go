@@ -51,7 +51,7 @@ func run() error {
 		},
 		MCP: &sp4rk.MCPConfig{
 			Servers: map[string]mcp.ServerEntry{
-				// A stdio MCP server: the SDK launches the command, communicates
+				// A stdio MCP server: sp4rk launches the command, communicates
 				// over stdin/stdout, and discovers tools via the MCP protocol.
 				"filesystem": {
 					Transport: "stdio",

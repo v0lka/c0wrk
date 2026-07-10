@@ -1,7 +1,7 @@
 package tools
 
 // Tool name constants for built-in tools. These mirror the names used by
-// sdk/tools/builtins during registration and are consumed by the executor
+// github.com/v0lka/sp4rk/tools/builtins during registration and are consumed by the executor
 // for tool-specific behavior (truncation hints, caching, etc.).
 const (
 	ToolReadFile  = "read_file"

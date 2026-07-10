@@ -125,7 +125,7 @@ func (t *PoshExecTool) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	// Place the command in a new process group. On Windows, killing the
 	// entire process tree on timeout requires a Job Object
-	// (golang.org/x/sys/windows), which the SDK avoids to stay stdlib-only.
+	// (golang.org/x/sys/windows), which sp4rk avoids to stay stdlib-only.
 	// We therefore kill just the parent powershell.exe process and rely on
 	// WaitDelay to drain any pipe readers. PowerShell -NonInteractive
 	// -Command typically does not spawn long-lived children that outlive it.

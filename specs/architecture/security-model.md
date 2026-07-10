@@ -56,7 +56,7 @@ The session has two equal-peer root directories:
 
 Both roots are treated as **equal peers**: any operation (read or write) permitted inside the workspace is permitted inside the temp directory and vice versa. The agent can do anything in the temp directory that it can do in the workspace. There are no second-class roots.
 
-The system temp directory (`os.TempDir()`) is NOT a session root. It is allowed as a `bash_exec` working directory (see `validateWorkDir` in `sdk/tools/builtins/bash.go`) but does not participate in auto-approval or session-root containment checks.
+The system temp directory (`os.TempDir()`) is NOT a session root. It is allowed as a `bash_exec` working directory (see `validateWorkDir` in `github.com/v0lka/sp4rk/tools/builtins/bash.go`) but does not participate in auto-approval or session-root containment checks.
 
 ## Operations Outside Session Roots
 
@@ -91,11 +91,11 @@ Important: `always_deny` is NEVER bypassed by auto-approval. Judge-flagged `alwa
 
 ## Judge System
 
-The `ToolJudge` (`sdk/tools/judge.go`) provides LLM-based safety evaluation:
+The `ToolJudge` (`github.com/v0lka/sp4rk/tools/judge.go`) provides LLM-based safety evaluation:
 
 - NOT automatic gating — it is invoked on-demand via the frontend "Ask agent" button
 - When a tool has `PolicyAlwaysAllow` but implements the `ToolJudger` interface, the tool-specific judge may flag suspicious calls and escalate to user confirmation
-- File tools use `judgeReadInSessionRoots` / `judgeWriteInSessionRoots` (in `sdk/tools/builtins/file_judge.go`) to check whether the target path is inside the session workspace or temp directory. Operations outside both roots return `allow=false` with a reason, escalating to user confirmation.
+- File tools use `judgeReadInSessionRoots` / `judgeWriteInSessionRoots` (in `github.com/v0lka/sp4rk/tools/builtins/file_judge.go`) to check whether the target path is inside the session workspace or temp directory. Operations outside both roots return `allow=false` with a reason, escalating to user confirmation.
 - The judge provides reasoning that is displayed to the user in the confirmation dialog
 
 ## Confirmation Flow
@@ -177,7 +177,7 @@ If the input contains suspicious (unexpandable) shell expressions, a warning is 
 
 ### Source
 
-`core/tools/registry_symlink.go` — integration method `checkSymlinksAndConfirm()` (calls `sdktools.DetectSymlinksInToolInput`). Injected in `core/tools/registry.go` `Execute()` between ParamManager and policy resolution. Detection, traversal, and formatting (`SymlinkTraversal` type, `DetectSymlinksInToolInput`, `FormatSymlinkReasoning`) live in `sdk/tools/symlink.go`.
+`core/tools/registry_symlink.go` — integration method `checkSymlinksAndConfirm()` (calls `sdktools.DetectSymlinksInToolInput`). Injected in `core/tools/registry.go` `Execute()` between ParamManager and policy resolution. Detection, traversal, and formatting (`SymlinkTraversal` type, `DetectSymlinksInToolInput`, `FormatSymlinkReasoning`) live in `github.com/v0lka/sp4rk/tools/symlink.go`.
 
 ## Bash Blacklist
 
@@ -197,10 +197,10 @@ Tool output from untrusted sources is wrapped in `<untrusted-content>` XML tags 
 </untrusted-content>
 ```
 
-The wrapping occurs in `sdk/memory/context.go` `buildStepMessages()` — the last point before content reaches the LLM API.
+The wrapping occurs in `github.com/v0lka/sp4rk/memory/context.go` `buildStepMessages()` — the last point before content reaches the LLM API.
 
 Untrusted tools:
-- All MCP tools (`IsUntrusted()` returns `true` on `sdk/tools/mcp/mcptool.go`)
+- All MCP tools (`IsUntrusted()` returns `true` on `github.com/v0lka/sp4rk/tools/mcp/mcptool.go`)
 - Built-in: `web_search`, `web_fetch`, `bash_exec`, `ripgrep`, `glob`, `read_file` (`Untrusted: true` on `BaseTool`)
 - `finish` tool is trusted (`IsUntrusted()` returns `false`)
 
@@ -208,7 +208,7 @@ Trust classification is determined by `ToolExecutor.IsToolUntrusted()` which del
 
 ### Tag Breakout Protection
 
-Before wrapping, `StripUntrustedTags()` in `sdk/security/wrap.go` escapes literal `<untrusted-content` patterns in the output to prevent attackers from closing the wrapper tag early. Only the leading `'<'` is replaced with `"&lt;"` — the rest of the tag text is preserved as-is.
+Before wrapping, `StripUntrustedTags()` in `github.com/v0lka/sp4rk/security/wrap.go` escapes literal `<untrusted-content` patterns in the output to prevent attackers from closing the wrapper tag early. Only the leading `'<'` is replaced with `"&lt;"` — the rest of the tag text is preserved as-is.
 
 ### System Prompt Instructions
 
@@ -254,7 +254,7 @@ The defense does NOT include LLM-based output content judging for injection dete
 
 All untrusted tools (including `web_fetch`) receive the same wrapping treatment. There is no domain allowlist or content-type gate before wrapping — the wrapping is unconditional for any tool marked as untrusted.
 
-Source: `sdk/security/wrap.go` (wrapping), `core/prompts/injection_defense.md` (prompt)
+Source: `github.com/v0lka/sp4rk/security/wrap.go` (wrapping), `core/prompts/injection_defense.md` (prompt)
 
 ## Invariants
 
@@ -317,6 +317,7 @@ security:
 
 ## Related Specs
 
+- [sp4rk security model](../../sdk/specs/architecture/security-model.md) - canonical engine-level definitions of `ToolPolicy`, `ToolJudger`/`ToolJudge`, confirmation primitives, and `untrusted-content` wrapping (this spec covers c0wrk's session-root, auto-approval, and registry-integration wiring on top of those primitives)
 - [domains/tool-system/README.md](../domains/tool-system/README.md) - Tool registry details
 - [contracts/event-catalog.md](../contracts/event-catalog.md) - tool_confirm event payload
 - [architecture/data-flow.md](data-flow.md) - Tool execution flow

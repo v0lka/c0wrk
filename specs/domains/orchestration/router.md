@@ -2,24 +2,19 @@
 
 ## Role
 
-Classifies user requests by domain, complexity, and matched skills, and selects a model for the Conductor. The Router no longer determines an execution mode or triggers clarification — both are handled inside the Conductor loop via tool calls.
+c0wrk classifies each user request by domain, complexity, and matched skills, then selects a model for the Conductor. Classification itself is a **sp4rk engine** primitive (`github.com/v0lka/sp4rk/agent/router`); c0wrk wraps it via `core/router_adapter.go` and consumes the `RoutingDecision` to drive skill activation, compaction selection, and the continuation fast-path. The Router no longer determines an execution mode or triggers clarification — both are handled inside the Conductor loop via tool calls.
+
+The canonical classification algorithm (prompt, domain/complexity scales, skill matching, validation) is documented in [the sp4rk router spec](../../../sdk/specs/domains/orchestration/router.md).
 
 ## Key Files
 
-- `sdk/agent/router/router.go` — Router struct and Route method
-- `core/router_adapter.go` — core adapter wrapping SDK router
+- `core/router_adapter.go` — core adapter wrapping the sp4rk router
 - `core/prompts/router_system.md` — routing classification prompt
+- `core/orchestrator_handle.go` — invokes the router and applies c0wrk-specific routing policy (continuation fast-path, skill augmentation, No Project override)
 
-## Behavior
+Engine file: `github.com/v0lka/sp4rk/agent/router/router.go` (Router struct, `Route` method) — see [the sp4rk router spec](../../../sdk/specs/domains/orchestration/router.md).
 
-### Input
-
-- User message (string)
-- Available tools (grouped by priority tier)
-- Conversation history (last N messages, default N=10)
-- Available skill descriptors (name + description)
-
-### Output: RoutingDecision
+## RoutingDecision (consumed by c0wrk)
 
 ```json
 {
@@ -31,7 +26,9 @@ Classifies user requests by domain, complexity, and matched skills, and selects 
 
 The `needs_clarification` and `mode` fields present in the prior pipeline are removed. Clarification is a Conductor tool call (`ask_user`); execution mode is a Conductor decision (`delegate` or not).
 
-### Domain Values
+### Domain → Compaction Strategy (c0wrk consumption)
+
+c0wrk's Conductor selects a compaction strategy from `routing.Domain`:
 
 | Domain | Meaning | Compaction Strategy (Conductor context) |
 | ------ | ------- | --------------------------------------- |
@@ -40,7 +37,7 @@ The `needs_clarification` and `mode` fields present in the prior pipeline are re
 | `general` | Mixed or unclear primary activity | sliding_window (hierarchical if complexity >= 4) |
 | `mixed` | Explicitly mixed activities | sliding_window |
 
-### Complexity Scale
+### Complexity → Conductor Guidance (c0wrk consumption)
 
 The complexity score informs the Conductor's system-prompt guidance on whether to delegate. It is no longer mapped to a fixed step count (the Conductor chooses its own granularity).
 
@@ -52,48 +49,39 @@ The complexity score informs the Conductor's system-prompt guidance on whether t
 | 4 | Complex (significant exploration + implementation) | Delegate; consider `declare_plan` first. |
 | 5 | Large (multiple subsystems, extensive work) | Delegate; call `declare_plan` with `await_approval` for large roadmaps. |
 
-### Skill Matching
+## c0wrk Routing Policy
 
-The router prompt includes the full list of available skills (name + description). The LLM selects which skills are relevant to the current request. Selected skills are merged with user-specified skills (from `/skill` references in the message) via `mergeSkillNames()` — a deduplicated union where router-matched skills come first. The combined set is activated for the task (system prompt injection, tool policy overrides).
+### Skill Merge
 
-### Process
+Selected (router-matched) skills are merged with user-specified skills (from `/skill` references in the message) via `mergeSkillNames()` — a deduplicated union where router-matched skills come first. The combined set is activated for the task (system prompt injection, tool policy overrides). When `HandleOptions.UserSkills` is non-empty, the orchestrator augments the routing message with skill descriptions (`buildSkillAugmentedRoutingMessage`) so the router classifies domain/complexity based on the skill's purpose.
 
-1. Build system prompt from `router_system.md` template
-   - Replace `AVAILABLE-TOOLS` with grouped tool list
-   - Replace `AVAILABLE-SKILLS` with formatted skill list
-2. Construct messages: system + history (last `historyWindow`) + "Classify this request: {msg}"
-3. Use reasoning effort set by orchestrator via `SetReasoningEffort()`
-4. Call LLM
-5. Extract JSON from response (handles markdown code blocks)
-6. Parse RoutingDecision
-7. Validate and clamp values
+### Continuation Fast-Path
 
-### Validation Rules
+When `opts.TaskID` is non-empty (a continuation) AND the restored blackboard has an existing routing decision, the orchestrator **skips the router LLM call entirely**, reuses the prior `RoutingDecision`, and reactivates skills. Every FIRST user message passes through `Route`; only continuations with restored routing take the fast-path.
 
-- Domain: must be one of {"code", "research", "general", "mixed"}; invalid → "general"
-- Complexity: clamped to [1, 5]
-- MatchedSkills: deduplicated; unknown skill names are retained in the RoutingDecision but filtered out during orchestrator skill activation
+### No Project Override
+
+In No Project (CHAT) mode, `routing.Domain` is overridden from `"code"` to `"general"` after classification, and code tools are disabled (`SetNoProjectMode()`).
 
 ## Error Handling
 
 - LLM call failure → return error (no fallback routing)
-- JSON parse failure → one retry with repair prompt asking LLM to fix its JSON
+- JSON parse failure → one retry with repair prompt asking the LLM to fix its JSON
 - Second parse failure → return error
+
+(Validation rules — domain clamping, complexity range, skill dedup — are engine behavior; see the sp4rk router spec.)
 
 ## Invariants
 
-- Route always returns a valid RoutingDecision (no nil on success)
-- Domain is always from the valid set after validation
-- Complexity is always in [1, 5] after clamping
-- Skill names in MatchedSkills are always deduplicated
-- User-specified skills (from HandleOptions.UserSkills) are merged with router-matched skills in the orchestrator, not in the router
-- When UserSkills is non-empty, the orchestrator augments the routing message with skill descriptions (via `buildSkillAugmentedRoutingMessage`) so the router classifies domain/complexity based on the skill's purpose
-- Router never modifies tool registry or any state (pure classification)
-- Router never produces a clarification decision — clarification is a Conductor responsibility via `ask_user`
+- Route always returns a valid `RoutingDecision` (no nil on success)
 - The orchestrator's continuation fast-path skips the router entirely when `opts.TaskID` is non-empty AND the restored blackboard has an existing routing decision
+- The router never modifies the tool registry or any state (pure classification)
+- The router never produces a clarification decision — clarification is a Conductor responsibility via `ask_user`
+- User-specified skills are merged with router-matched skills in the orchestrator, not in the router
 
 ## Related Specs
 
+- [sp4rk router](../../../sdk/specs/domains/orchestration/router.md) — canonical classification algorithm, prompt, validation
 - [README.md](README.md) — orchestration overview
 - [conductor.md](conductor.md) — routing decision feeds the Conductor
 - [../memory/compaction.md](../memory/compaction.md) — domain → strategy mapping

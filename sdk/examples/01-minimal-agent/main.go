@@ -2,7 +2,7 @@
 
 // Example 01 — Minimal Agent (Classic API)
 //
-// The smallest possible full agent via the classic SDK API: manually assemble a
+// The smallest possible full agent via the classic sp4rk API: manually assemble a
 // [sp4rk.Config], create the Framework, register the finish tool, and call
 // Execute. For the concise recommended path, see main_fluent.go (run with
 // `-tags fluent`).

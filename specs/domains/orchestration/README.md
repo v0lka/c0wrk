@@ -14,16 +14,16 @@ The orchestration domain coordinates the full lifecycle of a user request: class
 - `core/tools/reflect.go` — `reflect` tool (invokes Reflector on trajectory)
 - `core/tools/cancel_delegation.go` — `cancel_delegation` tool (async cancellation)
 - `core/delegation_registry.go` — Delegation Registry (active/completed delegations per Conductor run)
-- `sdk/agent/router/router.go` — request classification (Route)
-- `core/router_adapter.go` — core adapter wrapping SDK router
-- `sdk/agent/executor.go` — ReAct loop (Conductor and subagents are both `Executor.Run` instances)
-- `sdk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (isolated executor in goroutine)
-- `sdk/agent/reflector/reflector.go` — failure analysis (Reflect), invoked via the `reflect` tool
-- `sdk/orchestration/dag.go` — DAG data structure (used by `delegate` and `declare_plan`)
+- `github.com/v0lka/sp4rk/agent/router/router.go` — request classification (Route)
+- `core/router_adapter.go` — core adapter wrapping sp4rk router
+- `github.com/v0lka/sp4rk/agent/executor.go` — ReAct loop (Conductor and subagents are both `Executor.Run` instances)
+- `github.com/v0lka/sp4rk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (isolated executor in goroutine)
+- `github.com/v0lka/sp4rk/agent/reflector/reflector.go` — failure analysis (Reflect), invoked via the `reflect` tool
+- `github.com/v0lka/sp4rk/orchestration/dag.go` — DAG data structure (used by `delegate` and `declare_plan`)
 - `core/plan_serializer.go` — Plan ↔ Markdown serialization (used by `declare_plan`)
 - `core/systemprompt.go` — system prompt construction with skill context
-- `sdk/prompt/builder.go` — fluent prompt construction with cache-break support
-- `sdk/prompt/sampling.go` — family-aware temperature defaults
+- `github.com/v0lka/sp4rk/prompt/builder.go` — fluent prompt construction with cache-break support
+- `github.com/v0lka/sp4rk/prompt/sampling.go` — family-aware temperature defaults
 
 ## Core Types
 
@@ -212,6 +212,7 @@ Note: yaml key casing is mixed across config sections — `executor.*` keys use 
 
 ## Related Specs
 
+- [sp4rk orchestration overview](../../../sdk/specs/domains/orchestration/README.md) — canonical engine orchestration specs (Conductor, Executor, Router, Planner, Reflector, Subagents)
 - [conductor.md](conductor.md) — Conductor component detail
 - [delegation.md](delegation.md) — delegate tool and async delegation registry
 - [router.md](router.md) — request classification

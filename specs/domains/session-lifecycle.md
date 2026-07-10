@@ -11,7 +11,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `core/plan_review.go` — HandlePlanReview, PlanWithFeedback, SemanticValidatePlan (plan review orchestration)
 - `backend/frontend_api_plan_review.go` — FrontendAPI.ApprovePlan, FrontendAPI.RejectPlan (plan review RPC surface)
 - `backend/config/paths.go` — centralized path functions (single source of truth for ~/.c0wrk/ directory structure)
-- `sdk/orchestration/step_dump_tracker.go` — StepDumpTracker (per-step LLM dump file management)
+- `github.com/v0lka/sp4rk/orchestration/step_dump_tracker.go` — StepDumpTracker (per-step LLM dump file management)
 - `backend/session/file_coherence.go` — FileCoherenceTracker (cross-session conflict detection)
 - `backend/session/persistence.go` — SessionStore (SQLite persistence including plan review state)
 - `backend/session/events.go` — event data structs (session lifecycle + plan review)
@@ -373,7 +373,7 @@ type HandleResult struct {
 - **Preprocessing pipeline**: add custom message transforms (e.g., additional filter types) before orchestrator invocation in `FrontendAPI.SendMessage()`
 - **Event persistence**: implement `EventPersister` interface for alternative storage backends
 - **Session metadata enrichment**: add custom fields to `SessionInfo` and populate them in `SessionManager.Create()`
-- **File coherence strategy**: replace `FileCoherenceTracker` in `backend/session/file_coherence.go` with an alternative conflict detection implementation (must satisfy `FileCoherenceChecker` interface from `sdk/tools/coherence.go`)
+- **File coherence strategy**: replace `FileCoherenceTracker` in `backend/session/file_coherence.go` with an alternative conflict detection implementation (must satisfy `FileCoherenceChecker` interface from `github.com/v0lka/sp4rk/tools/coherence.go`)
 
 ## Invariants
 

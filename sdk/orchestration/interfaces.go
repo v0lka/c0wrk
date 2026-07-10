@@ -55,7 +55,7 @@ type RetryScopable interface {
 // TaskAware is an optional capability interface for ContextManager
 // implementations that can receive the formatted task content (the user
 // message). The Conductor type-asserts the ContextManager against this
-// interface and calls SetTask when supported. The SDK's memory.ContextWindow
+// interface and calls SetTask when supported. sp4rk's memory.ContextWindow
 // implements it.
 type TaskAware interface {
 	SetTask(task string)
@@ -65,7 +65,7 @@ type TaskAware interface {
 // implementations that can receive prior conversation messages (previous
 // user/assistant exchanges) to render before the current task content. The
 // Conductor type-asserts against this interface when ConversationHistory is
-// configured. The SDK's memory.ContextWindow implements it.
+// configured. sp4rk's memory.ContextWindow implements it.
 type ConversationAware interface {
 	SetPriorConversation(msgs []llm.Message)
 }
@@ -73,7 +73,7 @@ type ConversationAware interface {
 // TrackerProvider is an optional capability interface for ContextManager
 // implementations that expose their token tracker. The Conductor uses it to
 // wire API-reported token corrections from the LLM caller back into the
-// context window's fill accounting. The SDK's memory.ContextWindow implements
+// context window's fill accounting. sp4rk's memory.ContextWindow implements
 // it.
 type TrackerProvider interface {
 	ContextTracker() *llm.ContextTokenTracker

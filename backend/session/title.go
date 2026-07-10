@@ -8,7 +8,7 @@ import (
 )
 
 // LLMTitleCaller is the interface for making LLM calls for title generation.
-// This avoids importing sdk/llm in the backend layer.
+// This avoids importing github.com/v0lka/sp4rk/llm in the backend layer.
 type LLMTitleCaller interface {
 	GenerateTitle(ctx context.Context, userMessage string, activeSkills []string) (string, error)
 }

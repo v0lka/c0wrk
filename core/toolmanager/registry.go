@@ -59,7 +59,7 @@ type ToolSpec struct {
 //
 // Note: rtk and markitdown are infrastructure-only at this stage — the
 // tool-manager downloads and installs them, but no built-in tool wrappers
-// consume them yet. Wrappers will be added in sdk/tools/builtins/ when the
+// consume them yet. Wrappers will be added in github.com/v0lka/sp4rk/tools/builtins/ when the
 // agent is ready to invoke these tools.
 func ManagedTools() ([]ToolSpec, error) {
 	triple, err := PlatformTriple()

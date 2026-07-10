@@ -8,7 +8,7 @@ import (
 	"github.com/v0lka/sp4rk/agent/router"
 )
 
-// newCoreRouter creates an sdk/agent/router.Router wired with the c0wrk
+// newCoreRouter creates a github.com/v0lka/sp4rk/agent/router.Router wired with the c0wrk
 // routing system prompt. historyWindow controls how many recent messages
 // are included in the routing context (default 10 when <= 0).
 func newCoreRouter(caller agent.LLMCaller, historyWindow int) *router.Router {

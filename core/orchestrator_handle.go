@@ -191,7 +191,7 @@ func (o *Orchestrator) routeAndActivateSkills(
 		routingMessage = o.buildSkillAugmentedRoutingMessage(message, opts.UserSkills)
 	}
 
-	// Convert sdk/skills.SkillDescriptor to sdk/agent/router.SkillDescriptor
+	// Convert github.com/v0lka/sp4rk/skills.SkillDescriptor to github.com/v0lka/sp4rk/agent/router.SkillDescriptor
 	routerSkills := make([]router.SkillDescriptor, len(skillDescriptors))
 	for i, sd := range skillDescriptors {
 		routerSkills[i] = router.SkillDescriptor{Name: sd.Name, Description: sd.Description}

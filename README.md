@@ -38,10 +38,10 @@ High-level layers and responsibilities:
 - **`desktop/`** — Wails app lifecycle; embeds `*backend.FrontendAPI` whose promoted methods are exposed to the frontend via Wails bindings.
 - **`backend/`** — application/view-model layer: config loading, session/project management, persistence wiring, installer/watcher behavior. Frontend-callable methods split across `backend/frontend_api_*.go` by area.
 - **`core/`** — orchestration logic: planner, router, reflector, tool registry, MCP gateway, security policy application.
-- **`sdk/`** — reusable engine components: agent executor, LLM providers, memory/compaction, prompt/tool primitives.
+- **`sdk/`** — sp4rk (reusable agent engine, `github.com/v0lka/sp4rk`): agent executor, LLM providers, memory/compaction, prompt/tool primitives.
 - **`frontend/`** — React + TypeScript UI; communicates with Go via generated Wails bindings (`frontend/wailsjs/go/desktop/App`).
 
-> Important layering rule: `backend/` and `desktop/` import `core` and `sdk/` directly. `core/` remains the primary consumer of `sdk`. No convenience re-export layers exist — all types are imported from their source packages. See `specs/decisions/008-backend-sdk-direct-import.md`.
+> Important layering rule: `backend/` and `desktop/` import `core` and `sdk/` directly. `core/` remains the primary consumer of sp4rk. No convenience re-export layers exist — all types are imported from their source packages. See `specs/decisions/008-backend-sp4rk-direct-import.md`.
 
 ### Frontend Stack
 
@@ -208,7 +208,7 @@ make fetch-onnx
 ├── desktop/        # Wails app entrypoints, lifecycle, embeds backend.FrontendAPI
 ├── backend/        # App/view-model layer: config/session/project/persistence/workspace services
 ├── core/           # Planner/router/reflector/orchestration/tool + MCP wiring
-├── sdk/            # Reusable agent engine (LLM, tools, memory, execution primitives)
+├── sdk/            # sp4rk module (github.com/v0lka/sp4rk) — reusable agent engine: LLM, tools, memory, execution primitives
 ├── frontend/       # React + TS app and generated Wails JS bindings
 ├── specs/          # System specs: architecture, contracts, domains, decisions (see specs/INDEX.md)
 ├── config.example.yaml

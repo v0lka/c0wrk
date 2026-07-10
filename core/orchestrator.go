@@ -101,7 +101,7 @@ type BlackboardFactory func(taskID string) orchestration.Blackboard
 
 // Orchestrator coordinates the agent's reasoning cycle.
 // It handles c0wrk-specific concerns (routing, PersistentBlackboard,
-// conversation history) and delegates the Plan&Execute loop to the SDK engine.
+// conversation history) and delegates the Plan&Execute loop to the sp4rk engine.
 //
 // Lifecycle: One Orchestrator is created per active session via Builder.Build().
 // It lives for the duration of the session and is discarded when the session ends.
@@ -331,7 +331,7 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 // Resume continues execution of a previously interrupted task from its checkpoint state.
 // The blackboard must be pre-loaded with the task's persisted state (via RestoreBlackboard).
 //
-// Error semantics: when the SDK engine returns orchestration.ErrExecutionIncomplete with
+// Error semantics: when the sp4rk engine returns orchestration.ErrExecutionIncomplete with
 // a non-nil ExecutionResult, Resume returns a valid *HandleResult alongside the error.
 // This indicates partial success — the task made progress but did not finish (e.g., step
 // limit reached). Callers should check errors.Is(err, orchestration.ErrExecutionIncomplete)

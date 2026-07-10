@@ -134,7 +134,7 @@ func TestConfigAndProviderCombine(t *testing.T) {
 	}
 }
 
-// TestNewReturnsOriginalType confirms the builder returns the real SDK type.
+// TestNewReturnsOriginalType confirms the builder returns the real sp4rk type.
 // The return-type contract is enforced by the Build signature (which returns
 // *Framework directly); this test exercises the construction path.
 func TestNewReturnsOriginalType(t *testing.T) {

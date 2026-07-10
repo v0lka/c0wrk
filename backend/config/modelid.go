@@ -9,7 +9,7 @@ import (
 
 // This file implements the config-layer composite model identifier helpers.
 // The pure string helpers (CompositeModelID, ParseCompositeModelID,
-// IsCompositeModelID, BareModel) live in sdk/llm/modelid.go and
+// IsCompositeModelID, BareModel) live in github.com/v0lka/sp4rk/llm/modelid.go and
 // are reused here to avoid duplication. This file retains only the
 // config-specific resolution logic (ResolveModelID, AllModelIDs) that depends
 // on the configured provider set.

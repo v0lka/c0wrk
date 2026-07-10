@@ -10,7 +10,7 @@ import (
 )
 
 // Config holds all configuration for the Planner.
-// The Config separates stable SDK interfaces from application-specific wiring.
+// The Config separates stable sp4rk interfaces from application-specific wiring.
 type Config struct {
 	// Prompts holds all parameterizable prompt templates.
 	Prompts PromptSet

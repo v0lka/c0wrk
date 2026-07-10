@@ -38,8 +38,8 @@ import (
 // LLM router. It provides Build() to create per-session Orchestrators and
 // exposes methods for runtime reconfiguration (judge, router, MCP, security).
 //
-// OrchestratorBuilder lives in core so that all SDK imports are confined to
-// the core layer. The backend.Application wraps it without importing the SDK.
+// OrchestratorBuilder lives in core so that all sp4rk imports are confined to
+// the core layer. The backend.Application wraps it without importing sp4rk.
 type OrchestratorBuilder struct {
 	mu               sync.RWMutex
 	registry         *tools.ToolRegistry
@@ -55,7 +55,7 @@ type OrchestratorBuilder struct {
 	// Cached reasoning effort string. Always empty at builder level;
 	// per-request overrides flow through HandleOptions.ReasoningEffort
 	// → Orchestrator.SetReasoningEffort, which propagates to router,
-	// planner, reflector, and the SDK P&E engine.
+	// planner, reflector, and the sp4rk P&E engine.
 	reasoningEffort string
 
 	// Async initialization: MCP gateway and LLM router are initialized in the
@@ -383,7 +383,7 @@ func (b *OrchestratorBuilder) Build(
 
 	// Per-session ToolRegistry clone: skill-derived policy overrides set during
 	// HandleMessage must NOT leak to other concurrent sessions. The clone shares
-	// the underlying SDK ToolRegistry (tools themselves are stateless), but each
+	// the underlying sp4rk ToolRegistry (tools themselves are stateless), but each
 	// session has its own policyOverrides/skillPolicyOverrides view.
 	sessionRegistry := b.registry.Clone()
 
@@ -398,7 +398,7 @@ func (b *OrchestratorBuilder) Build(
 		LLM:               loggedLLM,
 		ModelSwitcher:     llmRouter,
 		ToolExec:          sessionRegistry,         // ToolExecutor (per-session policy view)
-		ToolRegistry:      b.registry.ToolRegistry, // SDK ToolRegistry (shared)
+		ToolRegistry:      b.registry.ToolRegistry, // sp4rk ToolRegistry (shared)
 		TokenCounter:      tokenCounter,
 		ContextFactory:    contextFactory,
 		Reflector:         coreReflector,

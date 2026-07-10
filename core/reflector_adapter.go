@@ -6,7 +6,7 @@ import (
 	"github.com/v0lka/sp4rk/agent/reflector"
 )
 
-// newCoreReflector creates an sdk/agent/reflector.Reflector wired with the
+// newCoreReflector creates a github.com/v0lka/sp4rk/agent/reflector.Reflector wired with the
 // c0wrk reflection system prompt.
 func newCoreReflector(caller agent.LLMCaller) *reflector.Reflector {
 	return reflector.New(caller, reflector.Config{

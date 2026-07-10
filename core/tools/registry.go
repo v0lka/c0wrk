@@ -44,14 +44,14 @@ func IsInternalTool(name string) bool {
 type ToolFilter func(toolName, source string) bool
 
 // ToolRegistry stores all available tools and provides them to Executor.
-// It embeds the SDK ToolRegistry for basic operations and adds policy enforcement on top.
+// It embeds the sp4rk ToolRegistry for basic operations and adds policy enforcement on top.
 // Thread-safe via sync.RWMutex.
 //
 // TODO(S-14): Replace embedding with composition — store *sdktools.ToolRegistry as a
 // private field and explicitly delegate only the methods the core layer intends to
 // expose. This gives full control over the public surface area and prevents
-// accidental exposure of SDK-internal methods to callers. The refactor requires
-// auditing all callers that access SDK methods through the embedded type.
+// accidental exposure of sp4rk-internal methods to callers. The refactor requires
+// auditing all callers that access sp4rk methods through the embedded type.
 type ToolRegistry struct {
 	*sdktools.ToolRegistry
 	mu                         sync.RWMutex
@@ -82,7 +82,7 @@ func NewToolRegistry() *ToolRegistry {
 	}
 }
 
-// Clone returns a copy of this ToolRegistry that shares the underlying SDK
+// Clone returns a copy of this ToolRegistry that shares the underlying sp4rk
 // ToolRegistry (tools themselves are stateless and shared) but has independent
 // policy state (policyOverrides, skillPolicyOverrides, defaultPolicy, judge,
 // confirmFunc, hooks). This is used to give each session/orchestrator its own
@@ -93,7 +93,7 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 	defer r.mu.RUnlock()
 
 	cloned := &ToolRegistry{
-		ToolRegistry:               r.ToolRegistry, // shared SDK registry (tool definitions)
+		ToolRegistry:               r.ToolRegistry, // shared sp4rk registry (tool definitions)
 		confirmFunc:                r.confirmFunc,
 		judge:                      r.judge,
 		defaultPolicy:              r.defaultPolicy,

@@ -61,13 +61,13 @@ func UserSkillsFromContext(ctx context.Context) []string {
 	return nil
 }
 
-// CoreContextManager wraps sdk/memory.ContextWindow to implement the core-level
+// CoreContextManager wraps github.com/v0lka/sp4rk/memory.ContextWindow to implement the core-level
 // ContextManager interface which adds SetTask and SetPlan(*Plan).
 type CoreContextManager struct {
 	*sdkmemory.ContextWindow
 }
 
-// NewCoreContextManager wraps an SDK ContextWindow into a core ContextManager.
+// NewCoreContextManager wraps a sp4rk ContextWindow into a core ContextManager.
 func NewCoreContextManager(cw *sdkmemory.ContextWindow) *CoreContextManager {
 	return &CoreContextManager{ContextWindow: cw}
 }

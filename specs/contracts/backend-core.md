@@ -2,7 +2,7 @@
 
 ## Boundary Rule
 
-`backend` imports `core` and `sdk` directly. Desktop imports `backend`, `core`, and `sdk` directly (see ADR-008).
+`backend` imports `core` and sp4rk directly. Desktop imports `backend`, `core`, and sp4rk directly (see ADR-008).
 
 ## Interfaces
 
@@ -14,12 +14,12 @@
 | `HandleResult`        | core           | core → backend | Orchestration output                  |
 | `HandleOptions`       | core           | backend → core | Execution mode, plan review, model override, reasoning effort, user skill overrides, session plans dir |
 | `Emitter`             | core           | backend → core | Event emission interface              |
-| `Blackboard`          | sdk/orchestration (direct) | core → backend | Task state (for persistence)          |
-| `RoutingDecision`     | sdk/agent/router | core → backend | Routing classification                |
-| `Plan`, `PlanStep`    | sdk/orchestration (direct) | core → backend | Plan structure                        |
-| `ToolPolicy`          | sdk/tools      | backend → core | Security policy values                |
+| `Blackboard`          | github.com/v0lka/sp4rk/orchestration (direct) | core → backend | Task state (for persistence)          |
+| `RoutingDecision`     | github.com/v0lka/sp4rk/agent/router | core → backend | Routing classification                |
+| `Plan`, `PlanStep`    | github.com/v0lka/sp4rk/orchestration (direct) | core → backend | Plan structure                        |
+| `ToolPolicy`          | github.com/v0lka/sp4rk/tools      | backend → core | Security policy values                |
 | `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. ExtraBashBlacklist). Per-tool truncation lives in `BuilderConfig.ToolLimits.PerToolTruncation`, not `BuiltinToolsConfig`. |
-| `StepDumpTracker`     | sdk/orchestration (direct) | backend → core | Per-step LLM dump file manager        |
+| `StepDumpTracker`     | github.com/v0lka/sp4rk/orchestration (direct) | backend → core | Per-step LLM dump file manager        |
 | `Manager`             | core/vectorindex | core → backend | Vector index management (embedding, search, git monitoring) |
 | `terminal.Manager`    | core/terminal  | core → backend | PTY lifecycle, shell env, I/O         |
 | `Watcher`             | core/workspace | core → backend | Filesystem event watcher with debouncing |

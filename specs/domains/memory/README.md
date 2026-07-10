@@ -2,70 +2,19 @@
 
 ## Purpose
 
-Manages the agent's context window during step execution: tracks token usage, triggers compaction when the window fills, and provides strategy-based compression of conversation history.
+c0wrk wires sp4rk's context-management engine into the orchestration cycle: it selects a compaction strategy per routing domain, configures fill thresholds, and persists blackboard state across sessions. The `ContextWindow`, compaction strategies, tool-output pruning, history mutation, and untrusted-content wrapping are **sp4rk engine** primitives — see [the sp4rk memory spec](../../../sdk/specs/domains/memory/README.md) and [the sp4rk compaction spec](../../../sdk/specs/domains/memory/compaction.md).
 
 ## Key Files
 
-- `sdk/memory/context.go` — ContextWindow struct (token tracking, compaction orchestration, untrusted content wrapping)
-- `sdk/memory/compaction.go` — CompactionStrategy factory (NewCompactionStrategy)
-- `sdk/memory/compaction_sliding.go` — sliding window strategy
-- `sdk/memory/compaction_summary.go` — summarization strategy
-- `sdk/memory/compaction_hierarchy.go` — hierarchical strategy
-- `sdk/memory/steps.go` — step message collection for compaction
+- `core/builder.go` / `core/orchestrator.go` — `ContextManagerFactory` closure: constructs a `github.com/v0lka/sp4rk/agent.ContextManager` (backed by a sp4rk `ContextWindow`) per executor, selecting the compaction strategy from `routing.Domain`
+- `core/orchestrator.go` — `plannerHistory()` trims conversation history to a token budget before passing it to the router (uses sp4rk `CompactConversationHistory`)
+- `backend/session/persistent_blackboard.go` — `PersistentBlackboard` (SQLite-backed Blackboard for c0wrk persistence/restore) — see [blackboard.md](blackboard.md)
 
-## Core Types
+Engine files (`github.com/v0lka/sp4rk/memory/context.go`, `compaction*.go`, `steps.go`) and the `ContextWindow` struct are documented in [the sp4rk memory spec](../../../sdk/specs/domains/memory/README.md).
 
-```go
-// ContextWindow manages token budget during step execution
-type ContextWindow struct {
-    systemPrompt    string
-    taskContent     string
-    planContent     string
-    steps           []agent.Step
-    strategy        CompactionStrategy
-    tracker         *llm.ContextTokenTracker
-    modelMeta       llm.ModelMetadata  // context window size, output limit
-    thresholds      CompactionThresholds
-    pruning         ToolOutputPruning
-    safetyMargin    int
+## Domain → Strategy Mapping (c0wrk consumption)
 
-    // injectionDefenseEnabled gates <untrusted-content> wrapping for untrusted tool output
-    injectionDefenseEnabled bool
-    // compactedMessages stores the frozen prefix from the last Compact() call
-    compactedMessages []llm.Message
-    // compactedThroughIndex marks where the frozen prefix ends in the steps slice
-    compactedThroughIndex int
-}
-
-// CompactionStrategy interface
-type CompactionStrategy interface {
-    Compact(ctx context.Context, steps []agent.Step, budgetTokens int) []Message
-}
-
-// CompactionResult
-type CompactionResult struct {
-    BeforePercent float64
-    AfterPercent  float64
-}
-```
-
-## Flow
-
-```
-Executor calls LLM
-  → response tokens counted → update ContextWindow
-  → check fill percentage:
-      ├─ < predictive threshold (85%): continue normally
-      ├─ >= predictive threshold (85%): trigger tool output pruning
-      ├─ >= warning threshold (92%): trigger compaction strategy
-      └─ >= emergency threshold (98%): aggressive compaction
-```
-
-### Content Wrapping for Untrusted Tools
-
-Before observations are added to the LLM context, `buildStepMessages()` checks `Step.IsUntrusted`. If `true`, the observation content is wrapped in `<untrusted-content>` XML tags (via `sdk/security.WrapUntrustedContent()`). Wrapping happens after pruning and empty-check, but before the observation is turned into an LLM message. This is the last point before content reaches the LLM API.
-
-## Domain → Strategy Mapping
+c0wrk's `ContextManagerFactory` selects the compaction strategy from the router's `routing.Domain`:
 
 | Domain (from Router)        | Strategy       | Rationale                            |
 | --------------------------- | -------------- | ------------------------------------ |
@@ -74,13 +23,28 @@ Before observations are added to the LLM context, `buildStepMessages()` checks `
 | `general` (complexity < 4)  | sliding_window | Default safe choice                  |
 | `general` (complexity >= 4) | hierarchical   | Balanced retention for complex tasks |
 
+Unrecognized domains fall back to `sliding_window`.
+
+## Flow
+
+The fill-check ladder is engine behavior (see the sp4rk memory spec); c0wrk only configures the thresholds:
+
+```
+Executor calls LLM → response tokens counted → ContextWindow checks fill %:
+  ├─ < predictive threshold (85%): continue normally
+  ├─ >= predictive threshold (85%): trigger tool output pruning
+  ├─ >= warning threshold (92%): trigger compaction strategy
+  └─ >= emergency threshold (98%): aggressive compaction
+```
+
+Untrusted tool output is wrapped in `&lt;untrusted-content>` tags by the sp4rk context builder — see [../../architecture/security-model.md](../../architecture/security-model.md) for c0wrk's session-root/auto-approval layer on top of that wrapping.
+
 ## Invariants
 
-- Context window NEVER exceeds model's limit (compaction prevents overflow)
-- System prompt is ALWAYS preserved (never compacted away)
+- The context window NEVER exceeds the model's limit (compaction prevents overflow)
+- The system prompt is ALWAYS preserved (never compacted away)
 - Compaction is triggered proactively (before overflow, not after)
-- Each step has its own ContextWindow (no sharing between parallel steps)
-- Tool output from untrusted sources is wrapped in `<untrusted-content>` tags before becoming an LLM message; wrapping happens after pruning and before message construction
+- Each executor instance has its own `ContextManager` (no sharing between Conductor and subagents)
 
 ## Configuration
 
@@ -99,13 +63,14 @@ From `config.yaml` (values are percentages, not fractions):
 
 ## Extension Points
 
-- **New compaction strategy**: implement `CompactionStrategy` interface and register in `NewCompactionStrategy` factory
-- **Custom thresholds**: override compaction trigger percentages in config.yaml per execution mode
-- **Alternative token counter**: swap `TokenCounter` implementation for different model families
-- **Compaction event hooks**: add custom logic on `ContextWindow.compact()` for logging or metrics
+- **Custom compaction strategy**: implement `github.com/v0lka/sp4rk/agent.CompactionStrategy` and register it in the sp4rk factory; c0wrk selects it via the domain→strategy mapping.
+- **Custom thresholds**: override compaction trigger percentages in `config.yaml`.
+- **Alternative token counter**: swap the `github.com/v0lka/sp4rk/llm.TokenCounter` implementation for different model families.
 
 ## Related Specs
 
-- [compaction.md](compaction.md) — strategy details
-- [blackboard.md](blackboard.md) — inter-step state
+- [sp4rk memory overview](../../../sdk/specs/domains/memory/README.md) — canonical `ContextWindow`, fill statuses, content wrapping
+- [sp4rk compaction](../../../sdk/specs/domains/memory/compaction.md) — canonical strategy implementations, tool-output pruning, history mutation
+- [compaction.md](compaction.md) — c0wrk strategy selection and config
+- [blackboard.md](blackboard.md) — c0wrk blackboard persistence/restore
 - [../orchestration/executor.md](../orchestration/executor.md) — executor drives compaction

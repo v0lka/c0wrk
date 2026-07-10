@@ -22,7 +22,7 @@ import (
 //
 // Errors accumulated along the chain surface once, at [FrameworkBuilder.Build].
 //
-// This is the fluent entry point of the SDK. The "F" postfix on the entry
+// This is the fluent entry point of sp4rk. The "F" postfix on the entry
 // functions ([NewF], [Framework.RunF], [Framework.TaskF]) distinguishes the
 // fluent API from the classic one ([New], [Framework.Execute]) while sharing
 // the same [Framework] type. Inside a builder, methods keep their natural

@@ -13,10 +13,10 @@ Conductor tools (`delegate`, `declare_plan`, `reflect`, `cancel_delegation`) are
 | `declare_plan` tool | `core/tools` | Conductor | Publish a roadmap to the blackboard and UI; optionally block for user approval |
 | `reflect` tool | `core/tools` | Conductor | Invoke the Reflector on the current trajectory or a sub-task trajectory |
 | `DelegationRegistry` | `core` | `delegate`, `cancel_delegation`, `read_step_output`, `finish` (via context) | Track active/completed delegations for one Conductor run |
-| `RunSubAgent` / `RunSubAgentsParallel` | `sdk/agent` | `delegate` tool | Execute an isolated `Executor.Run` in a goroutine |
-| `Reflector.Reflect` | `sdk/agent/reflector` | `reflect` tool | Produce a Reflection (root cause, action plan, suggested action) |
+| `RunSubAgent` / `RunSubAgentsParallel` | `github.com/v0lka/sp4rk/agent` | `delegate` tool | Execute an isolated `Executor.Run` in a goroutine |
+| `Reflector.Reflect` | `github.com/v0lka/sp4rk/agent/reflector` | `reflect` tool | Produce a Reflection (root cause, action plan, suggested action) |
 | `SerializePlan` | `core/plan_serializer` | `declare_plan` tool | Serialize a Plan to markdown for UI display and plan-file persistence |
-| `Plan` / `PlanStep` / `FindReadySteps` | `sdk/orchestration` | `delegate` tool, `declare_plan` tool | DAG data structures and traversal |
+| `Plan` / `PlanStep` / `FindReadySteps` | `github.com/v0lka/sp4rk/orchestration` | `delegate` tool, `declare_plan` tool | DAG data structures and traversal |
 
 ## Initialization
 
@@ -66,7 +66,7 @@ delegate.Execute(ctx, input)
   ├─ For each result:
   │    ├─ Store on blackboard (SetStepResult)
   │    ├─ Update Registry (status, output, error, steps)
-  │    └─ SubAgentComplete emitted by RunSubAgent (SDK) — sole progress signal;
+  │    └─ SubAgentComplete emitted by RunSubAgent (sp4rk) — sole progress signal;
   │       no PlanStepStart/Complete emitted for delegations
   │
   └─ Return tool result:
@@ -157,7 +157,7 @@ All errors are tool-level (`ToolResult{ IsError: true, Content: "..." }`), not G
 - If you change the `DelegationRegistry` API, update `delegate`, `cancel_delegation`, `read_step_output`, and the `finish` join check in the executor.
 - If you add a new Conductor tool, add it to `internalTools` in `core/tools/registry.go`, register it in `core/tools/builtin_registration.go`, add it to the Conductor tool set in `core/conductor.go`, and document it in this contract.
 - If you change the `declare_plan` event payload, the frontend plan panel ([../domains/frontend/events.md](../domains/frontend/events.md)) must be updated to match.
-- If you change the `Plan` / `PlanStep` struct in `sdk/orchestration/types.go`, both `delegate` and `declare_plan` are affected (they share these types).
+- If you change the `Plan` / `PlanStep` struct in `github.com/v0lka/sp4rk/orchestration/types.go`, both `delegate` and `declare_plan` are affected (they share these types).
 - If you change the `Reflector.Reflect` signature, update the `reflect` tool wrapper.
 - If you remove or rename an internal tool, update the `internalTools` set and the "always available" invariants in [conductor.md](../domains/orchestration/conductor.md) and [delegation.md](../domains/orchestration/delegation.md).
 

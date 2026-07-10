@@ -4,16 +4,16 @@
 
 The `delegate` tool lets the Conductor launch one or more subagents to execute units of work in isolated ReAct loops, with DAG dependencies between them and a choice of blocking or async execution. It replaces the prior system-driven DAG execution (`executePlanWithSteps`) with an agent-driven invocation.
 
-Delegation is an **execution** mechanism, not a planning one. It has its own UI progress tracking via `SubAgentLaunch`/`SubAgentComplete` events emitted by the SDK's `RunSubAgent`. The Conductor should NOT call `declare_plan` to display or mirror delegated tasks — `declare_plan` is for user roadmaps and approval gates only.
+Delegation is an **execution** mechanism, not a planning one. It has its own UI progress tracking via `SubAgentLaunch`/`SubAgentComplete` events emitted by sp4rk's `RunSubAgent`. The Conductor should NOT call `declare_plan` to display or mirror delegated tasks — `declare_plan` is for user roadmaps and approval gates only.
 
 ## Key Files
 
 - `core/tools/delegate.go` — `delegate` tool implementation
 - `core/tools/cancel_delegation.go` — `cancel_delegation` tool (async cancellation)
 - `core/delegation_registry.go` — Delegation Registry (active/completed delegations per Conductor run)
-- `sdk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (the primitive that runs an isolated executor in a goroutine)
-- `sdk/orchestration/dag.go` — `FindReadySteps` and DAG traversal (reused for dependency resolution)
-- `sdk/orchestration/types.go` — `Plan` and `PlanStep` types (reused as delegation task descriptors)
+- `github.com/v0lka/sp4rk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (the primitive that runs an isolated executor in a goroutine)
+- `github.com/v0lka/sp4rk/orchestration/dag.go` — `FindReadySteps` and DAG traversal (reused for dependency resolution)
+- `github.com/v0lka/sp4rk/orchestration/types.go` — `Plan` and `PlanStep` types (reused as delegation task descriptors)
 
 ## Behavior
 
@@ -95,7 +95,7 @@ delegate.Execute(ctx, input)
 │     ├─ For each completed subagent:
 │     │   ├─ Store result on the blackboard (SetStepResult)
 │     │   ├─ Update the Registry: status "completed" or "failed"
-│     │   └─ SubAgentComplete emitted by RunSubAgent (SDK) — the sole
+│     │   └─ SubAgentComplete emitted by RunSubAgent (sp4rk) — the sole
 │     │      progress signal for delegations; no PlanStepStart/Complete
 │     └─ Tasks with depends_on that are now satisfied remain "pending"
 │        until a later delegate call or read_step_output triggers them
@@ -215,6 +215,7 @@ Budget: `config.Conductor.MaxDependencyContextChars` (default 8000) divided amon
 
 ## Related Specs
 
+- [sp4rk Subagents](../../../sdk/specs/domains/orchestration/subagents.md) — canonical `RunSubAgent`/`RunSubAgentsParallel` primitive (isolated executor in a goroutine, trajectory capture, defense-in-depth)
 - [conductor.md](conductor.md) — the Conductor that invokes `delegate`
 - [executor.md](executor.md) — the ReAct loop primitive shared by Conductor and subagents
 - [README.md](README.md) — orchestration overview

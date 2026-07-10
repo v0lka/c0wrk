@@ -39,7 +39,7 @@ func DetectToolCallSyntaxInContent(content string) bool {
 	return toolCallSyntaxRe.MatchString(content)
 }
 
-// defaultNonCacheableTools is the set of SDK-provided tool names whose results
+// defaultNonCacheableTools is the set of sp4rk-provided tool names whose results
 // are NOT cached. These are internal meta-tools or produce tiny outputs where
 // caching adds overhead.
 //
@@ -48,7 +48,7 @@ func DetectToolCallSyntaxInContent(content string) bool {
 // both caching and hash hints is a deliberate dual-purpose: if a tool's results
 // are not worth caching, they are also not worth offering for fragment retrieval.
 //
-// This set contains only tools that the SDK itself provides. Consumers that
+// This set contains only tools that sp4rk itself provides. Consumers that
 // register additional non-cacheable tools (e.g. application-layer meta-tools
 // like delegate, declare_plan, reflect) should add them via
 // Executor.AddNonCacheableTools.
@@ -267,7 +267,7 @@ type Executor struct {
 
 	// FinishGuard is an optional callback invoked before finish is accepted.
 	// If it returns a non-nil error, finish is rejected with a nudge containing
-	// the error message. Used by the SDK Conductor to prevent abandoning pending
+	// the error message. Used by the sp4rk Conductor to prevent abandoning pending
 	// async delegations.
 	finishGuard func(ctx context.Context) error
 
@@ -423,7 +423,7 @@ func (e *Executor) SetPreWarningPercent(percent int) { e.preWarningPercent = per
 
 // SetFinishGuard sets an optional callback invoked before finish is accepted.
 // If the callback returns a non-nil error, finish is rejected with a nudge
-// containing the error message. Used by the SDK Conductor to prevent
+// containing the error message. Used by the sp4rk Conductor to prevent
 // abandoning pending async delegations.
 func (e *Executor) SetFinishGuard(fn func(ctx context.Context) error) { e.finishGuard = fn }
 
@@ -463,7 +463,7 @@ func (e *Executor) SetPerToolTruncation(cfg map[string]ToolTruncationConfig) {
 }
 
 // AddNonCacheableTools adds tool names to the set of tools whose results are
-// not cached. This extends the SDK-provided defaults (see defaultNonCacheableTools)
+// not cached. This extends the sp4rk-provided defaults (see defaultNonCacheableTools)
 // with consumer-specific meta-tools. Tools already in the set are no-ops.
 // Must be called before Run.
 func (e *Executor) AddNonCacheableTools(names ...string) {

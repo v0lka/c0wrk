@@ -696,7 +696,7 @@ func (a *App) startVectorIndexBackground(
 		tokenizerPath := resolveModelPath("jina-v2-small-tokenizer.json", agentDir)
 		libraryPath := resolveONNXLibPath()
 
-		// Create embedder directly via sdk/embedding.
+		// Create embedder directly via github.com/v0lka/sp4rk/embedding.
 		if modelPath == "" || tokenizerPath == "" || libraryPath == "" {
 			log.Info("vector search disabled (model files not found)")
 			a.emit("vector_index:status", map[string]any{"available": false, "reason": "model files not found"})

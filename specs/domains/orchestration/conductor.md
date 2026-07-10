@@ -8,10 +8,10 @@ A single `Executor.Run` instance that owns a user task end-to-end, using the ReA
 
 - `core/conductor.go` — Conductor entry point: builds system prompt, assembles tool set, injects Delegation Registry + ChecklistGuard into context, manages inlineStepLifecycle, launches `Executor.Run`
 - `core/tools/declare_step_complete.go` — `declare_step_complete` tool (inline plan-step completion signal)
-- `sdk/agent/workspace.go` — `ChecklistGuardFunc` type + context helpers (`WithChecklistGuard`, `ChecklistGuardFromContext`)
-- `sdk/tools/builtins/checklist.go` — `update_checklist` tool (consults `ChecklistGuardFunc` before emitting update)
+- `github.com/v0lka/sp4rk/agent/workspace.go` — `ChecklistGuardFunc` type + context helpers (`WithChecklistGuard`, `ChecklistGuardFromContext`)
+- `github.com/v0lka/sp4rk/tools/builtins/checklist.go` — `update_checklist` tool (consults `ChecklistGuardFunc` before emitting update)
 - `core/orchestrator_handle.go` — HandleMessage body that invokes the Conductor after routing
-- `sdk/agent/executor.go` — `Executor.Run` (the ReAct loop; the Conductor is an Executor configured with Conductor-specific tools and prompt)
+- `github.com/v0lka/sp4rk/agent/executor.go` — `Executor.Run` (the ReAct loop; the Conductor is an Executor configured with Conductor-specific tools and prompt)
 - `core/systemprompt.go` — `buildSystemPrompt` and Conductor-specific prompt sections
 - `core/delegation_registry.go` — Delegation Registry injected into the Conductor context
 
@@ -161,6 +161,8 @@ The guard is consulted in `UpdateChecklistTool.Execute` after parsing succeeds a
 
 ## Related Specs
 
+- [sp4rk Conductor](../../../sdk/specs/domains/orchestration/conductor.md) — canonical engine Conductor (single-loop task owner)
+- [sp4rk Executor](../../../sdk/specs/domains/orchestration/executor.md) — canonical ReAct loop primitive (circuit breakers, gates, truncation)
 - [README.md](README.md) — orchestration overview
 - [delegation.md](delegation.md) — delegate tool and Delegation Registry
 - [executor.md](executor.md) — ReAct loop (the primitive the Conductor is built on)

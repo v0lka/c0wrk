@@ -134,7 +134,7 @@ type VulnerableOutput struct {
 }
 
 // ContextManager is the interface Executor needs for context window management.
-// NOTE: This is the SDK-level interface WITHOUT SetTask (the host application adds that).
+// NOTE: This is the sp4rk-level interface WITHOUT SetTask (the host application adds that).
 type ContextManager interface {
 	BuildPrompt() []llm.Message
 	AddStep(step Step)

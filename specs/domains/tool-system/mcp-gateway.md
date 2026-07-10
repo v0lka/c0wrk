@@ -2,15 +2,17 @@
 
 ## Role
 
-Manages connections to external MCP (Model Context Protocol) servers, discovers their tools at runtime, and proxies tool execution through the core tool registry.
+c0wrk wires sp4rk's MCP (Model Context Protocol) gateway into the orchestration builder: it starts configured MCP servers at startup, discovers their tools, and registers them into the core tool registry. The `Gateway`, `Server`, and `mcp.Tool` lifecycle, transports, and schema sanitization are **sp4rk engine** primitives — see [the sp4rk mcp-gateway spec](../../../sdk/specs/domains/tool-system/mcp-gateway.md).
 
 ## Key Files
 
-- `sdk/tools/mcp/gateway.go` — Gateway struct (Start, Stop, RegisterTools, Status) + config types
-- `sdk/tools/mcp/server.go` — Server struct (Connect, DiscoverTools, CallTool, Close)
-- `sdk/tools/mcp/mcptool.go` — `mcp.Tool` (wraps MCP tool as sdk Tool interface; struct is `Tool`, not `MCPTool`)
+- `core/builder.go` — `NewOrchestratorBuilder` starts the gateway in `runAsyncInit()` (goroutine) and registers discovered tools into the core registry
+- `backend/frontend_api_mcp.go` (or matching `frontend_api_*.go`) — `GetMCPStatus` / `ReconfigureMCP` surface for the frontend MCP management UI
+- `core/tools/registry.go` — `RegisterWithSource(mcpTool, "mcp:"+serverName)` registers MCP tools with the `mcp` source tag
 
-## Behavior
+Engine files (`github.com/v0lka/sp4rk/tools/mcp/gateway.go` `Gateway`, `server.go` `Server`, `mcptool.go` `mcp.Tool`) are documented in [the sp4rk mcp-gateway spec](../../../sdk/specs/domains/tool-system/mcp-gateway.md).
+
+## c0wrk Wiring
 
 ### Lifecycle
 
@@ -18,69 +20,30 @@ Manages connections to external MCP (Model Context Protocol) servers, discovers 
 NewOrchestratorBuilder()
 │
 ├─ runAsyncInit() (goroutine):
-│   ├─ gateway.Start(ctx, configs)
-│   │   ├─ For each configured server:
-│   │   │   ├─ server.Connect(ctx, cfg) — spawn process or HTTP connect
-│   │   │   ├─ server.DiscoverTools(ctx) — list available tools
-│   │   │   └─ On failure: log error, continue to next server
-│   │   └─ Return aggregate error (partial failure = non-fatal)
-│   │
-│   └─ gateway.RegisterTools(registry)
-│       └─ For each server's tools:
-│           ├─ Sanitize schema (remove auto-injected params)
-│           └─ registry.RegisterWithSource(mcpTool, "mcp:"+serverName)
+│   ├─ gateway.Start(ctx, configs)        // per-server Connect + DiscoverTools (partial failure = non-fatal)
+│   └─ gateway.RegisterTools(registry)    // sanitize schema + RegisterWithSource("mcp:"+serverName)
 │
 ├─ Application running...
 │   ├─ Tool execution: mcp.Tool.Execute() → server.CallTool(name, input)
-│   └─ ReconfigureMCP() → Stop + Start with new config
+│   └─ ReconfigureMCP() → Stop + Start with new config (atomic)
 │
 └─ Shutdown:
     └─ gateway.Stop() → close all server connections
 ```
 
-### Transport Types
+`EventBackendReady` fires without waiting for the MCP gateway's async init; MCP tools become available asynchronously.
 
-| Transport | Description                                       | Config Fields                        |
-| --------- | ------------------------------------------------- | ------------------------------------ |
-| `stdio`   | Spawn child process, communicate via stdin/stdout | `command`, `args`, `env`, `work_dir` |
-| `http`    | Connect to HTTP server                            | `url`, `headers`                     |
+### Registration into the Core Registry
 
-### Tool Registration
+MCP tools are wrapped in sp4rk `mcp.Tool` (implements the `Tool` interface) and registered via the core registry's `RegisterWithSource`:
 
-MCP tools are wrapped in `mcp.Tool` struct (in `sdk/tools/mcp/mcptool.go`) that implements `sdk/tools.Tool`:
+- `DefaultPolicy()` → `PolicyUserConfirm` (external tools, conservative default)
+- `IsUntrusted()` → `true` (all MCP tool output is wrapped in `&lt;untrusted-content>` tags)
+- Source tag: `mcp:<server_name>`
 
-- `Name()` — prefixed or as-is from MCP server
-- `Description()` — from MCP tool metadata
-- `InputSchema()` — JSON schema from MCP (sanitized)
-- `Execute()` — proxies to `server.CallTool()`
-- `DefaultPolicy()` — `PolicyUserConfirm` (MCP tools are external, conservative default)
-- `IsUntrusted()` — returns `true` (all MCP tool output is wrapped in `<untrusted-content>` tags)
-- `Judge()` — implements `ToolJudger`: defers to the LLM judge (same evaluation flow as built-in tools)
+### Status Reporting (frontend UI)
 
-### Schema Sanitization
-
-The gateway's `SchemaSanitizer` removes parameters from tool schemas that are auto-injected at execution time (via `ParamManager`). This prevents the LLM from seeing and filling parameters that will be overwritten.
-
-### Status Reporting
-
-`gateway.Status()` returns per-server `ServerStatus`:
-
-- `Name` — server name
-- `Transport` — transport type (stdio, sse, http)
-- `Connected` (bool)
-- `ToolCount` — number of discovered tools
-- `Tools` — list of tool names (`[]string`)
-- `Error` — error message (if failed)
-
-Used by frontend MCP management UI.
-
-## Error Handling
-
-- Individual server connection failure → logged, other servers continue
-- Tool discovery failure → server closed, logged as error
-- Gateway startup failure → stored as `gatewayErr`, non-fatal (app starts without MCP tools)
-- Tool execution failure → returned as ToolResult with IsError=true
-- Server process crash → connection marked as broken (reconnect on next ReconfigureMCP)
+`gateway.Status()` returns per-server `ServerStatus` (`Name`, `Transport`, `Connected`, `ToolCount`, `Tools`, `Error`), exposed to the frontend MCP management UI via `GetMCPStatus`.
 
 ## Configuration
 
@@ -103,18 +66,19 @@ mcp:
         Authorization: "Bearer ${MCP_TOKEN}"
 ```
 
+Env vars are expanded as `${VAR}`. Transport types (stdio/http), schema sanitization, and server connection behavior are engine concerns — see [the sp4rk mcp-gateway spec](../../../sdk/specs/domains/tool-system/mcp-gateway.md).
+
 ## Invariants
 
 - MCP gateway failure is non-fatal (application starts without MCP tools)
 - MCP tools always have source tag `mcp:<server_name>`
 - MCP tools default to `PolicyUserConfirm` (never auto-execute untrusted external tools)
-- Schema sanitization happens at registration time (not per-call)
-- Gateway.Stop() always attempts graceful close of all server connections
-- ReconfigureMCP() is atomic: old servers stopped before new ones started
-- All MCP tools are untrusted (`IsUntrusted()` returns `true`); their output is wrapped in `<untrusted-content>` tags before entering the LLM context
+- All MCP tools are untrusted (`IsUntrusted()` returns `true`)
+- `ReconfigureMCP()` is atomic: old servers stopped before new ones started
 
 ## Related Specs
 
+- [sp4rk mcp-gateway](../../../sdk/specs/domains/tool-system/mcp-gateway.md) — canonical Gateway/Server/mcp.Tool lifecycle, transports, schema sanitization
 - [README.md](README.md) — tool system overview
 - [../../architecture/security-model.md](../../architecture/security-model.md) — MCP tool policies
 - [../../contracts/backend-core.md](../../contracts/backend-core.md) — ReconfigureMCP wiring

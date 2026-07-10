@@ -206,7 +206,7 @@ func ValidateNoProjectSessionPath(projectDir, absDir string) error {
 
 // IsWithinPath returns true if child is equal to or a descendant of parent.
 // Wraps pathutil.IsWithinPath so all backend path-containment checks use a
-// single import. See sdk/pathutil.IsWithinPath for full semantics.
+// single import. See github.com/v0lka/sp4rk/pathutil.IsWithinPath for full semantics.
 func IsWithinPath(parent, child string) (bool, error) {
 	return pathutil.IsWithinPath(parent, child)
 }

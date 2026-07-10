@@ -509,7 +509,7 @@ func (e *Executor) processSingleToolCall(
 
 	// Check for finish tool (also before ToolCall emission).
 	if action.Name == "finish" {
-		// Finish guard: allow the caller (e.g. SDK Conductor) to reject
+		// Finish guard: allow the caller (e.g. sp4rk Conductor) to reject
 		// finish when preconditions are not met (e.g. pending async
 		// delegations). If the guard returns an error, inject a nudge and
 		// retry instead of accepting finish.

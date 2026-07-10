@@ -38,8 +38,8 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Skills.Dirs = append([]string(nil), defaultSkillDirs...)
 	}
 
-	// LLM retry defaults — keep this in sync with the SDK Router defaults
-	// (sdk/llm/router.go) so config-driven and code-driven values agree.
+	// LLM retry defaults — keep this in sync with the sp4rk Router defaults
+	// (github.com/v0lka/sp4rk/llm/router.go) so config-driven and code-driven values agree.
 	// Retries cover transient failures: HTTP 429/502/503/529 and network blips.
 	if cfg.LLM.Retry.MaxRetries == 0 {
 		cfg.LLM.Retry.MaxRetries = 3

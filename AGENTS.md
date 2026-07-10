@@ -14,7 +14,7 @@ Detailed system specs live in `specs/`. Before making structural changes, read t
 
 ## Project shape
 
-- Two Go modules: `github.com/v0lka/c0wrk` (root: `core/`, `backend/`, `desktop/`, `frontend/`) and `github.com/v0lka/sp4rk` (`sdk/`). The root module depends on the SDK via `replace github.com/v0lka/sp4rk => ./sdk` for local development. See ADR-014. Binary/app name is `c0wrk-desktop` (see `wails.json`).
+- Two Go modules: `github.com/v0lka/c0wrk` (root: `core/`, `backend/`, `desktop/`, `frontend/`) and the sp4rk module `github.com/v0lka/sp4rk` (local `sdk/` directory). The root module depends on sp4rk via `replace github.com/v0lka/sp4rk => ./sdk` for local development. See ADR-014. Binary/app name is `c0wrk-desktop` (see `wails.json`).
 - Entry point: `main.go` → `desktop.NewApp()` → Wails runs with `OnStartup = app.Startup` (`desktop/startup.go`).
 - Go `1.26.3` (`go.mod` in both modules). Frontend uses React 19, Tailwind v4, Vite 6, TS ~5.7.
 
@@ -24,11 +24,11 @@ Detailed system specs live in `specs/`. Before making structural changes, read t
 desktop/   Wails bindings + app lifecycle (UI callbacks)  →  depends on backend, core
 backend/   "Application" ViewModel, config, session mgr, persistence, MCP installer, workspace watcher
 core/      Orchestrator / planner / router / reflector / tool registry / MCP gateway / vector index / proxy / c0wrk-specific tools
-sdk/       Reusable engine: agent executor, llm providers, memory compaction, orchestration, tools, prompts
+sdk/       sp4rk (github.com/v0lka/sp4rk) — reusable engine: agent executor, llm providers, memory compaction, orchestration, tools, prompts
 frontend/  React UI; talks to Go via `frontend/wailsjs/go/desktop/App` (generated)
 ```
 
-Rule enforced by layout: `backend/` and `desktop/` import `core` and `sdk/` directly. `core/` remains the primary consumer of `sdk`. No convenience re-export layers exist — all types are imported from their source packages. See ADR-008.
+Rule enforced by layout: `backend/` and `desktop/` import `core` and `sdk/` directly. `core/` remains the primary consumer of sp4rk. No convenience re-export layers exist — all types are imported from their source packages. See ADR-008.
 
 ## Commands
 
@@ -45,10 +45,10 @@ Frontend-only: `cd frontend && npm run lint | build | dev | test`. Frontend test
 
 ### Focused Go workflows
 
-- Single package (root module): `go test ./sdk/agent/...` — note: `sdk/` is a separate module, so run from `sdk/` dir: `cd sdk && go test ./agent/...`
-- Single package (sdk module): `cd sdk && go test ./agent/...`
+- Single package (root module): `go test ./sdk/agent/...` — note: `sdk/` is the sp4rk module (a separate Go module), so run from the `sdk/` dir: `cd sdk && go test ./agent/...`
+- Single package (sp4rk module): `cd sdk && go test ./agent/...`
 - Single test (root module): `go test ./core -run TestOrchestrator_PlanExecuteMode -v`
-- Single test (sdk module): `cd sdk && go test ./agent -run TestExecutor -v`
+- Single test (sp4rk module): `cd sdk && go test ./agent -run TestExecutor -v`
 - Tests use in-package style (`package agent`, not `agent_test`); many packages have a `testhelpers_test.go`.
 
 ## Config & runtime
@@ -64,13 +64,13 @@ Frontend-only: `cd frontend && npm run lint | build | dev | test`. Frontend test
 - **Logging**: `log/slog` everywhere. Pass `*slog.Logger` through constructors; don't use global `slog` in new code except at the top-level boundary.
 - **Errors**: `errorlint` + `perfsprint` are on. Use `%w` for wrapping, `errors.Is/As`, never `fmt.Errorf` where `errors.New` suffices, never `fmt.Sprintf("%s", s)`.
 - **Linters enabled** (see `.golangci.yml`): `errcheck` (incl. type assertions), `govet`, `staticcheck`, `ineffassign`, `unused`, `errorlint`, `nilerr`, `gocritic` (diagnostic+performance+style, except `hugeParam`/`rangeValCopy`), `revive` with `exported` & `var-naming` disabled, `prealloc`, `bodyclose`, `noctx`, `sqlclosecheck`, `perfsprint`, `unconvert`, `wastedassign`, `copyloopvar`, `durationcheck`, `whitespace`, `depguard`. Run `make lint` before declaring done.
-- **Tool registry pattern**: reusable built-in tools live in `sdk/tools/builtins/`; c0wrk-specific tools (e.g. `ask_user`) live in `core/tools/`. MCP-backed tools are added at runtime via `sdk/tools/mcp/gateway.go`. To add a new built-in tool, implement `tools.Tool` in the correct package and wire it through `core/tools.RegisterBuiltinTools` (defined in `core/tools/builtin_registration.go`, called from `core/builder.go`).
+- **Tool registry pattern**: reusable built-in tools live in `github.com/v0lka/sp4rk/tools/builtins/`; c0wrk-specific tools (e.g. `ask_user`) live in `core/tools/`. MCP-backed tools are added at runtime via `github.com/v0lka/sp4rk/tools/mcp/gateway.go`. To add a new built-in tool, implement `tools.Tool` in the correct package and wire it through `core/tools.RegisterBuiltinTools` (defined in `core/tools/builtin_registration.go`, called from `core/builder.go`).
 - **Prompts are data**: markdown files under `core/prompts/` are embedded via `prompts.go` in the same dir. Tests verify every `.md` file is referenced — update both when adding/removing a prompt.
 - **Generated Wails bindings** at `frontend/wailsjs/go/desktop/App.{js,d.ts}` are regenerated by `wails build` / `wails dev` from the methods on `desktop.App`. Don't hand-edit them; if they drift, rebuild.
 - **Desktop API surface**: `*desktop.App` embeds `*backend.FrontendAPI`; promoted methods are visible to the Wails binding generator. Frontend-callable methods are split across `backend/frontend_api_*.go` files by area (`config`, `git`, `mcp`, `plan_review`, `project`, `prompt`, `session`, `skills`, `terminal`, `vector`, `workspace`). New frontend-callable methods go in the matching `backend/frontend_api_*.go`.
 - **Security/tool policies** are enforced in `core/builder.go` → `applySecurityPolicies` from `config.Security.ToolPolicies`. Default is `user_confirm`; pending confirmations flow through `App.pendingConfirmations` sync.Map back to the UI.
 - **Path logic centralization**: All filesystem-path construction and containment validation must go through the centralized path API:
-  - `sdk/pathutil/` — pure algorithmic primitives (`IsWithinPath`, `SplitPathComponents`, `ResolveExistingPrefix`). Zero project-specific knowledge. Usable from any layer.
+  - `github.com/v0lka/sp4rk/pathutil/` — pure algorithmic primitives (`IsWithinPath`, `SplitPathComponents`, `ResolveExistingPrefix`). Zero project-specific knowledge. Usable from any layer.
   - `backend/config/paths.go` — project-specific path construction (`ProjectSkillsPath`, `SessionStepDumpDir`, `IsSessionInfraPath`) and containment wrappers that delegate to `pathutil`. The ONLY package that knows c0wrk's directory layout.
   - `core/pathsegments.go` — cross-layer path segment constants (e.g., `SkillsRelativePath`).
   - NEVER inline `strings.HasPrefix(path, root+"/")`, `filepath.Rel`+`HasPrefix(rel,"..")`, or `filepath.Join(ws, ".agents", "skills")` for containment or path construction. Always use `pathutil.IsWithinPath`, `config.IsWithinPath`, `config.ProjectSkillsPath`, or the relevant constant.

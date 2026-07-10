@@ -181,10 +181,10 @@ emitBackendReady():
 Executor decides to call a tool
          │
          ▼
-sdk/agent/executor.go: injects ToolResultCache into context
+github.com/v0lka/sp4rk/agent/executor.go: injects ToolResultCache into context
          │
          ▼
-sdk/agent/executor.go: calls ToolExecutor.Execute(ctx, name, input)
+github.com/v0lka/sp4rk/agent/executor.go: calls ToolExecutor.Execute(ctx, name, input)
          │
          ▼
 core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
@@ -209,9 +209,9 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
          ToolResult {Content, IsError}
                 │
                 ▼ (back in executor)
-sdk/agent/executor.go: cache + two-stage truncation
+github.com/v0lka/sp4rk/agent/executor.go: cache + two-stage truncation
   │
-  ├─ Skip if tool is non-cacheable (SDK defaults: tool_result_read, finish, batch, etc.; extended via AddNonCacheableTools)
+  ├─ Skip if tool is non-cacheable (sp4rk defaults: tool_result_read, finish, batch, etc.; extended via AddNonCacheableTools)
   ├─ Store full result in ToolResultCache; key is a short hash — the shortest unique prefix (from 4 chars) of SHA256(toolName + content)
   │    └─ Metadata: file path+mtime+size (file tools) or TTL (MCP tools)
   ├─ Stage 1: Apply per-tool line/byte truncation (configurable per tool)
@@ -252,13 +252,13 @@ Orchestrator.HandleMessage()
 
 ## Anti-Patterns
 
-### ❌ Frontend directly calling `sdk/*` packages
+### ❌ Frontend directly calling sp4rk packages
 
-The data flow requires all requests to go through Wails RPC → backend → core → sdk. Skipping layers breaks security, event tracking, and session isolation.
+The data flow requires all requests to go through Wails RPC → backend → core → sp4rk. Skipping layers breaks security, event tracking, and session isolation.
 
 ### ❌ Bypassing config adapter
 
-Never read `config.yaml` directly from core or sdk packages. All config flows through `backend/configadapter.go → core.BuilderConfig`. Adding a field to config requires updates to all three layers.
+Never read `config.yaml` directly from core or sp4rk packages. All config flows through `backend/configadapter.go → core.BuilderConfig`. Adding a field to config requires updates to all three layers.
 
 ### ❌ Emitting events without persisting
 

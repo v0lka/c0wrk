@@ -1,6 +1,6 @@
 // Example 07 — Full-Power Agent (Fluent-first hybrid)
 //
-// Combines every major SDK subsystem into one agent:
+// Combines every major sp4rk subsystem into one agent:
 //   - Multi-provider LLM (Anthropic + OpenAI) with runtime model switching
 //   - Custom tools + built-in tools + MCP server tools
 //   - Custom Events for live observability

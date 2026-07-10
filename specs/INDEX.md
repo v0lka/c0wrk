@@ -1,5 +1,7 @@
 # Specs Index
 
+> **Engine behavior is canonical in sp4rk.** c0wrk's `specs/` cover c0wrk-only wiring (layering, lifecycle, session roots, the policy-enforcing registry wrapper, conductor/delegation tools, persistence, frontend). Engine primitives (Executor, Router, Planner, Reflector, Conductor, Blackboard, Tool/ToolRegistry, LLM Router, compaction, MCP gateway) are documented in [the sp4rk spec set](../sdk/specs/INDEX.md) (`sdk/specs/`). Engine-related c0wrk specs below cross-reference their canonical sp4rk counterparts.
+
 ## Navigation by Task
 
 | If your task involves...                 | Read these specs                                                         |
@@ -25,10 +27,11 @@
 | Frontend stores, state management        | [domains/frontend/stores.md](domains/frontend/stores.md)                 |
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |
 | Message rendering, display items         | [domains/frontend/rendering.md](domains/frontend/rendering.md)           |
-| Core-SDK interface boundary              | [contracts/core-sdk.md](contracts/core-sdk.md)                           |
+| Core-sp4rk interface boundary            | [contracts/core-sp4rk.md](contracts/core-sp4rk.md)                       |
 | Backend-Core wiring                      | [contracts/backend-core.md](contracts/backend-core.md)                   |
 | Wails bindings, frontend RPC             | [contracts/desktop-frontend.md](contracts/desktop-frontend.md)           |
 | Event types, payloads, protocol          | [contracts/event-catalog.md](contracts/event-catalog.md)                 |
+| Canonical engine behavior (sp4rk)        | [../sdk/specs/INDEX.md](../sdk/specs/INDEX.md)                           |
 | "Why was X designed this way?"           | [decisions/](decisions/)                                                 |
 
 ## Domain Dependency Graph
@@ -39,17 +42,19 @@
                 └────┬─────┘
                      │ Wails events + RPC
                      ▼
-┌──────────┐    ┌──────────┐    ┌──────────┐    ┌─────┐
-│ desktop  │───▶│ backend  │───▶│   core   │───▶│ sdk │
-└──────────┘    └────┬─────┘    └──────────┘    └─────┘
+┌──────────┐    ┌──────────┐    ┌──────────┐    ┌───────┐
+│ desktop  │───▶│ backend  │───▶│   core   │───▶│ sp4rk │
+└──────────┘    └────┬─────┘    └──────────┘    └───────┘
                      │ direct import               ▲
                      ▼                             │
-                   ┌─────┐                         │ separate Go module
-                   │ sdk │─────────────────────────┘
-                   └─────┘
+                   ┌───────┐                       │ separate Go module
+                   │ sp4rk │  (sdk/ dir)           │ github.com/v0lka/sp4rk
+                   └───┬───┘───────────────────────┘
+                       │ require github.com/v0lka/sp4rk
+                       │ + replace github.com/v0lka/sp4rk => ./sdk
 ```
 
-Import rule: each arrow is one-way. `backend` imports `core` AND `sdk` directly (per ADR-008). `core` remains the primary sdk consumer. `sdk/` is a separate Go module (`github.com/v0lka/c0wrk/sdk`, per ADR-014); the root module depends on it via a `replace` directive for local development.
+Import rule: each arrow is one-way. `backend` imports `core` AND sp4rk directly (per ADR-008). `core` remains the primary sp4rk consumer. sp4rk (the `sdk/` directory — `sdk/` is the sp4rk agent engine) is a separate Go module (`github.com/v0lka/sp4rk`, per ADR-014); the root module depends on it via `require github.com/v0lka/sp4rk` + `replace github.com/v0lka/sp4rk => ./sdk` for local development.
 
 ## Spec Workflow and Format Reference
 
@@ -61,31 +66,31 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 
 - [layers.md](architecture/layers.md) - Layer hierarchy, import rules, responsibilities
 - [data-flow.md](architecture/data-flow.md) - Request lifecycle, event flow, config flow
-- [security-model.md](architecture/security-model.md) - Tool policies, judge, confirmations
+- [security-model.md](architecture/security-model.md) - c0wrk session-root/auto-approval/symlink layer (engine ToolPolicy/judge/untrusted primitives → canonical in [../sdk/specs/architecture/security-model.md](../sdk/specs/architecture/security-model.md))
 
 ### domains/orchestration/
 
-- [README.md](domains/orchestration/README.md) - Orchestration domain overview (Conductor pipeline)
-- [conductor.md](domains/orchestration/conductor.md) - Conductor (top-level ReAct loop that owns a task)
-- [delegation.md](domains/orchestration/delegation.md) - delegate tool, async delegation registry, DAG
-- [router.md](domains/orchestration/router.md) - Request classification and skill matching
-- [executor.md](domains/orchestration/executor.md) - ReAct loop primitive (shared by Conductor and subagents)
+- [README.md](domains/orchestration/README.md) - c0wrk orchestration overview (Conductor pipeline, HandleMessage flow)
+- [conductor.md](domains/orchestration/conductor.md) - c0wrk Conductor wiring (system prompt, tool set, inline step lifecycle)
+- [delegation.md](domains/orchestration/delegation.md) - `delegate`/`cancel_delegation` tools, Delegation Registry, DAG
+- [router.md](domains/orchestration/router.md) - c0wrk router adapter + routing policy (classification → canonical in [../sdk/specs/domains/orchestration/router.md](../sdk/specs/domains/orchestration/router.md))
+- [executor.md](domains/orchestration/executor.md) - c0wrk Executor integration (AddNonCacheableTools, callers; loop internals → canonical in [../sdk/specs/domains/orchestration/executor.md](../sdk/specs/domains/orchestration/executor.md))
 
 ### domains/tool-system/
 
-- [README.md](domains/tool-system/README.md) - Tool registry and execution pipeline
-- [builtins.md](domains/tool-system/builtins.md) - Built-in tool catalog and extension guide
-- [mcp-gateway.md](domains/tool-system/mcp-gateway.md) - MCP server lifecycle and dynamic tools
+- [README.md](domains/tool-system/README.md) - c0wrk policy-enforcing registry wrapper (two-layer registry)
+- [builtins.md](domains/tool-system/builtins.md) - Tool catalog, registration, `ask_user`, tool-manager wiring
+- [mcp-gateway.md](domains/tool-system/mcp-gateway.md) - c0wrk MCP wiring (Gateway/Server/mcp.Tool → canonical in [../sdk/specs/domains/tool-system/mcp-gateway.md](../sdk/specs/domains/tool-system/mcp-gateway.md))
 
 ### domains/memory/
 
-- [README.md](domains/memory/README.md) - Context management overview
-- [compaction.md](domains/memory/compaction.md) - Compaction strategies and thresholds
-- [blackboard.md](domains/memory/blackboard.md) - Shared state, facts, persistence
+- [README.md](domains/memory/README.md) - c0wrk context wiring (domain→strategy, config)
+- [compaction.md](domains/memory/compaction.md) - c0wrk strategy selection and config
+- [blackboard.md](domains/memory/blackboard.md) - c0wrk blackboard persistence/restore (interface/adapters → canonical in [../sdk/specs/domains/memory/blackboard.md](../sdk/specs/domains/memory/blackboard.md))
 
 ### domains/ (single-file)
 
-- [llm-providers.md](domains/llm-providers.md) - Provider abstraction, routing, token counting
+- [llm-providers.md](domains/llm-providers.md) - Thin c0wrk wiring note (provider config → core/builder → sp4rk Router)
 - [session-lifecycle.md](domains/session-lifecycle.md) - Session and task lifecycle
 - [workspace.md](domains/workspace.md) - File tree, vector index, workspace watcher
 
@@ -98,7 +103,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 
 ### contracts/
 
-- [core-sdk.md](contracts/core-sdk.md) - Core layer's consumption of SDK interfaces
+- [core-sp4rk.md](contracts/core-sp4rk.md) - Core layer's consumption of sp4rk interfaces
 - [backend-core.md](contracts/backend-core.md) - Backend wrapping of Core
 - [desktop-frontend.md](contracts/desktop-frontend.md) - Wails bindings and RPC surface
 - [event-catalog.md](contracts/event-catalog.md) - Complete event type reference
@@ -107,16 +112,16 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 ### decisions/
 
 - [001-single-module.md](decisions/001-single-module.md) - Single Go module design
-- [002-sdk-isolation.md](decisions/002-sdk-isolation.md) - SDK imports confined to core → Superseded by ADR-008
+- [002-sp4rk-isolation.md](decisions/002-sp4rk-isolation.md) - sp4rk imports confined to core → Superseded by ADR-008
 - [003-cgo-free-sqlite.md](decisions/003-cgo-free-sqlite.md) - CGO-free SQLite choice
 - [004-external-binary-dependencies.md](decisions/004-external-binary-dependencies.md) - git and rg as hard runtime dependencies
 - [005-bleve-rrf-hybrid-search.md](decisions/005-bleve-rrf-hybrid-search.md) - Bleve BM25 + Reciprocal Rank Fusion hybrid search → Superseded by ADR-013
 - [006-skills-mcp-layer.md](decisions/006-skills-mcp-layer.md) - Skills integration with MCP tool layer
 - [007-shell-parser-dependency.md](decisions/007-shell-parser-dependency.md) - mvdan.cc/sh shell parser for symlink detection
-- [008-backend-sdk-direct-import.md](decisions/008-backend-sdk-direct-import.md) - Backend allowed to import sdk directly
+- [008-backend-sp4rk-direct-import.md](decisions/008-backend-sp4rk-direct-import.md) - Backend allowed to import sp4rk directly
 - [009-backend-domain-logic-extraction.md](decisions/009-backend-domain-logic-extraction.md) - Extraction of domain logic from App/UI layer
 - [010-tool-manager.md](decisions/010-tool-manager.md) - Tool manager for external binary dependencies (rg, rtk, uv, markitdown)
-- [011-sdk-to-core-extraction.md](decisions/011-sdk-to-core-extraction.md) - Move vector index and proxy from SDK to Core
+- [011-sp4rk-to-core-extraction.md](decisions/011-sp4rk-to-core-extraction.md) - Move vector index and proxy from sp4rk to Core
 - [012-conductor-orchestration-pipeline.md](decisions/012-conductor-orchestration-pipeline.md) - Conductor-driven ReAct pipeline replacing system-driven plan-execute-reflect
 - [013-rrf-pre-fusion-score-thresholds.md](decisions/013-rrf-pre-fusion-score-thresholds.md) - Pre-fusion score thresholds and configurable RRF parameters for hybrid search
-- [014-sdk-separate-module.md](decisions/014-sdk-separate-module.md) - SDK as a separate Go module → Supersedes ADR-001
+- [014-sp4rk-separate-module.md](decisions/014-sp4rk-separate-module.md) - sp4rk as a separate Go module → Supersedes ADR-001

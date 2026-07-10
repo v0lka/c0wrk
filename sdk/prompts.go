@@ -25,7 +25,7 @@ MODE-JSON-EXAMPLE`
 
 // DefaultPromptSet returns a general-purpose [planner.PromptSet] suitable for a
 // zero-config planner. The prompts are domain-agnostic (they do not assume a
-// specific workspace, language, or framework) so they work for any SDK
+// specific workspace, language, or framework) so they work for any sp4rk
 // consumer. Override individual fields after calling it to customize.
 //
 //	cfg := planner.DefaultConfig()
