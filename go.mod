@@ -22,6 +22,7 @@ require (
 	github.com/epilande/go-devicons v0.0.0-20250505162540-0661cab71a28
 	github.com/google/go-cmp v0.7.0
 	github.com/philippgille/chromem-go v0.7.0
+	github.com/v0lka/sp4rk v0.0.0-20260710205611-b7dbcbbad959
 )
 
 require (
@@ -108,7 +109,6 @@ require (
 	github.com/samber/lo v1.49.1 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/tkrajina/go-reflector v0.5.8 // indirect
-	github.com/v0lka/sp4rk v0.0.0
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
@@ -124,5 +124,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/v0lka/sp4rk => ./sdk
