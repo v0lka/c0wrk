@@ -4,7 +4,7 @@
 //
 // The same MCP integration as main.go, expressed through the fluent façade.
 // The stdio MCP server is registered inline with
-// [sdk.FrameworkBuilder.MCPStdio]; [sdk.FrameworkBuilder.AutoApprove]
+// [sp4rk.FrameworkBuilder.MCPStdio]; [sp4rk.FrameworkBuilder.AutoApprove]
 // satisfies the fail-closed registry for the MCP-discovered tools.
 //
 // You need Node.js (npx) to run the filesystem MCP server. If it is
@@ -38,11 +38,11 @@ func run() error {
 	}
 	fmt.Println("MCP filesystem root:", mcpRoot)
 
-	// sdk.NewF: provider + MCP stdio server + auto-approve + built-in tools.
+	// sp4rk.NewF: provider + MCP stdio server + auto-approve + built-in tools.
 	// MCPStdio registers the mcp.ServerEntry inline (no tuple to unpack). The
 	// gateway starts during New(), discovers the server's tools, and adds them
 	// to the registry alongside the built-ins.
-	fw, err := sdk.NewF().
+	fw, err := sp4rk.NewF().
 		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 		MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", mcpRoot).
 		MCPWorkDir(mcpRoot).

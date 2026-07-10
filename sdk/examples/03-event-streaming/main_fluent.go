@@ -20,7 +20,7 @@ import (
 )
 
 func run() error {
-	fw, err := sdk.NewF().
+	fw, err := sp4rk.NewF().
 		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 		FileTools(). // read_file, list_directory, glob, …
 		Build()

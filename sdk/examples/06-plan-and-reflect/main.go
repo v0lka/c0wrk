@@ -47,8 +47,8 @@ func (s *trajectoryStore) Steps() []agent.Step {
 }
 
 func run() error {
-	fw, err := sdk.New(sdk.Config{
-		LLM: sdk.LLMConfig{
+	fw, err := sp4rk.New(sp4rk.Config{
+		LLM: sp4rk.LLMConfig{
 			Providers: []llm.ProviderEntry{{
 				Name:         "anthropic",
 				ProviderType: "anthropic",
@@ -56,7 +56,7 @@ func run() error {
 				Models:       []string{"claude-sonnet-4-5"},
 			}},
 		},
-		Execution: sdk.ExecutionConfig{
+		Execution: sp4rk.ExecutionConfig{
 			MaxSteps:   15, // per-step ReAct budget
 			MaxRetries: 2,  // retries per plan step on failure
 		},

@@ -304,10 +304,10 @@ func run() error {
     }
 
     // Create the Framework with an MCP server configuration.
-    // The MCP gateway starts during sdk.New(), connects to all configured
+    // The MCP gateway starts during sp4rk.New(), connects to all configured
     // servers, discovers their tools, and registers them in the ToolRegistry.
-    fw, err := sdk.New(sdk.Config{
-        LLM: sdk.LLMConfig{
+    fw, err := sp4rk.New(sp4rk.Config{
+        LLM: sp4rk.LLMConfig{
             Providers: []llm.ProviderEntry{{
                 Name:         "anthropic",
                 ProviderType: "anthropic",
@@ -315,7 +315,7 @@ func run() error {
                 Models:       []string{"claude-sonnet-4-5"},
             }},
         },
-        MCP: &sdk.MCPConfig{
+        MCP: &sp4rk.MCPConfig{
             Servers: map[string]mcp.ServerEntry{
                 // A stdio MCP server: the SDK launches the command,
                 // communicates over stdin/stdout, and discovers tools via MCP.
@@ -376,11 +376,11 @@ func run() error {
 
 ## Integration with the Framework
 
-The framework (`sdk.Config.MCP`) wires MCP integration into the agent lifecycle so you do not have to call `StartGateway` manually:
+The framework (`sp4rk.Config.MCP`) wires MCP integration into the agent lifecycle so you do not have to call `StartGateway` manually:
 
 - **`MCPConfig.Servers`** — a `map[string]mcp.ServerEntry`, identical to `GatewayConfig.Servers`.
 - **`MCPConfig.DefaultWorkDir`** — fallback working directory for stdio servers.
-- During `sdk.New`, the framework calls `StartGateway` with the configured servers, the shared `ToolRegistry`, an env-expansion function, and a logger. Discovered MCP tools are auto-registered alongside any built-in tools you register afterwards.
+- During `sp4rk.New`, the framework calls `StartGateway` with the configured servers, the shared `ToolRegistry`, an env-expansion function, and a logger. Discovered MCP tools are auto-registered alongside any built-in tools you register afterwards.
 - On `fw.Shutdown()`, the gateway is stopped and all server connections are closed.
 
 Because MCP tools are registered into the same `ToolRegistry` as built-in tools, they are immediately available to the executor, planner, and any custom tool selection logic. Their `Source` tag (the bare server name, e.g. `"filesystem"`) lets you filter or exclude them with `ListFiltered` and remove them wholesale with `UnregisterBySource`.

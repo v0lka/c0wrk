@@ -296,8 +296,8 @@ func truncate(s string, maxLen int) string {
 }
 
 func run() error {
-    fw, err := sdk.New(sdk.Config{
-        LLM: sdk.LLMConfig{
+    fw, err := sp4rk.New(sp4rk.Config{
+        LLM: sp4rk.LLMConfig{
             Providers: []llm.ProviderEntry{{
                 Name:         "anthropic",
                 ProviderType: "anthropic",

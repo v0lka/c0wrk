@@ -112,7 +112,7 @@ Prompt-injection defense is complemented by execution-time policy enforcement in
 - Tools with `PolicyAlwaysDeny` are always blocked.
 - `PolicyAlwaysAllow` tools that implement `ToolJudger` are escalated to confirmation when the judge flags a call (e.g. a blacklisted shell command or an SSRF attempt).
 
-Configure the confirmation channel via `sdk.Config.ConfirmFunc` (Framework) or `registry.SetConfirmFunc` (direct registry use), or deliberately relax individual tools via `registry.SetPolicyOverride(name, tools.PolicyAlwaysAllow)`.
+Configure the confirmation channel via `sp4rk.Config.ConfirmFunc` (Framework) or `registry.SetConfirmFunc` (direct registry use), or deliberately relax individual tools via `registry.SetPolicyOverride(name, tools.PolicyAlwaysAllow)`.
 
 ## MCP Tool Shadowing Protection
 

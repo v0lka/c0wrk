@@ -1,4 +1,4 @@
-package sdk
+package sp4rk
 
 import (
 	"context"
@@ -55,9 +55,9 @@ func (o providerOption) apply(opts *options) {
 // WithProvider adds a single LLM provider to the configuration. Repeatable to
 // register multiple providers:
 //
-//	sdk.NewF(
-//	    sdk.WithProvider(sdk.Anthropic(...)),
-//	    sdk.WithProvider(sdk.OpenAI(...)),
+//	sp4rk.NewF(
+//	    sp4rk.WithProvider(sp4rk.Anthropic(...)),
+//	    sp4rk.WithProvider(sp4rk.OpenAI(...)),
 //	)
 func WithProvider(p llm.ProviderEntry) Option { return providerOption{provider: p} }
 
@@ -89,7 +89,7 @@ func (o toolsOption) apply(opts *options) { opts.tools = append(opts.tools, o.to
 // WithTools adds tools that [NewF] registers automatically after building the
 // [Framework]. Spread a bundle to register it:
 //
-//	sdk.WithTools(sdk.FileTools()...)
+//	sp4rk.WithTools(sp4rk.FileTools()...)
 func WithTools(ts ...tools.Tool) Option { return toolsOption{tools: ts} }
 
 // noAutoFinishOption disables automatic finish-tool registration.
@@ -118,8 +118,8 @@ func (o mcpServerOption) apply(opts *options) {
 
 // WithMCPServer registers an MCP server. Pair with [MCPStdio] or [MCPHTTP]:
 //
-//	name, entry := sdk.MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", dir)
-//	sdk.NewF(sdk.WithMCPServer(name, entry), ...)
+//	name, entry := sp4rk.MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", dir)
+//	sp4rk.NewF(sp4rk.WithMCPServer(name, entry), ...)
 func WithMCPServer(name string, entry mcp.ServerEntry) Option {
 	return mcpServerOption{name: name, entry: entry}
 }

@@ -1,4 +1,4 @@
-package sdk
+package sp4rk
 
 import "github.com/v0lka/sp4rk/planner"
 
@@ -29,7 +29,7 @@ MODE-JSON-EXAMPLE`
 // consumer. Override individual fields after calling it to customize.
 //
 //	cfg := planner.DefaultConfig()
-//	cfg.Prompts = sdk.DefaultPromptSet()
+//	cfg.Prompts = sp4rk.DefaultPromptSet()
 //	cfg.Model = "claude-sonnet-4-5"
 func DefaultPromptSet() planner.PromptSet {
 	return planner.PromptSet{

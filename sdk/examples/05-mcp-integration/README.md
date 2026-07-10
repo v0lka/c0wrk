@@ -5,14 +5,14 @@ Connect external Model Context Protocol (MCP) servers to the agent. MCP tools ar
 | Variant     | File            | Command                 | When to read                              |
 |-------------|-----------------|-------------------------|-------------------------------------------|
 | **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended — inline `.MCPStdio` + `.MCPWorkDir` |
-| **Classic** | `main.go`       | `go run .`              | `sdk.MCPConfig` map + manual ConfirmFunc  |
+| **Classic** | `main.go`       | `go run .`              | `sp4rk.MCPConfig` map + manual ConfirmFunc  |
 
 ### Fluent (recommended)
 
-Declare and register the server inline with `.MCPStdio`. The gateway starts during `Build()` (the framework is constructed by the `sdk.NewF()` chain), discovers the server's tools, and registers them alongside the built-ins:
+Declare and register the server inline with `.MCPStdio`. The gateway starts during `Build()` (the framework is constructed by the `sp4rk.NewF()` chain), discovers the server's tools, and registers them alongside the built-ins:
 
 ```go
-fw, _ := sdk.NewF().
+fw, _ := sp4rk.NewF().
     Anthropic(key, "claude-sonnet-4-5").
     MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", mcpRoot).
     MCPWorkDir(mcpRoot).
@@ -23,7 +23,7 @@ fw, _ := sdk.NewF().
 
 ## What you will learn
 
-- How to configure MCP servers in `sdk.MCPConfig`
+- How to configure MCP servers in `sp4rk.MCPConfig`
 - The difference between stdio and HTTP transports
 - How MCP tools appear in the `ToolRegistry` alongside built-ins
 - How MCP tool outputs are treated as untrusted (prompt-injection defence)
@@ -31,7 +31,7 @@ fw, _ := sdk.NewF().
 ## Architecture
 
 ```
-sdk.New(cfg)
+sp4rk.New(cfg)
     │
     ├─ starts MCP Gateway
     │     │
@@ -50,16 +50,16 @@ sdk.New(cfg)
          [filesystem] write_file, search_files, get_file_info, …
 ```
 
-> **Name collisions**: the registry is keyed by tool name — if an MCP server exposes a tool with the same name as a built-in (e.g. `read_file`), the tool registered **last** wins. In this example the built-ins are registered after `sdk.New()` (which starts the MCP gateway), so they shadow same-named MCP tools. Note that the shadowed name may still be listed with the MCP server as its source.
+> **Name collisions**: the registry is keyed by tool name — if an MCP server exposes a tool with the same name as a built-in (e.g. `read_file`), the tool registered **last** wins. In this example the built-ins are registered after `sp4rk.New()` (which starts the MCP gateway), so they shadow same-named MCP tools. Note that the shadowed name may still be listed with the MCP server as its source.
 
 ## Code walkthrough
 
 ### 1. MCP server configuration
 
 ```go
-fw, err := sdk.New(sdk.Config{
+fw, err := sp4rk.New(sp4rk.Config{
     LLM: llmConfig,
-    MCP: &sdk.MCPConfig{
+    MCP: &sp4rk.MCPConfig{
         Servers: map[string]mcp.ServerEntry{
             "filesystem": {
                 Transport: "stdio",
@@ -127,14 +127,14 @@ You don't need to do anything — every MCP tool's `IsUntrusted()` method return
 
 ### 5. Confirmation (fail-closed registry)
 
-MCP tools default to `PolicyUserConfirm`, and the tool registry is **fail-closed**: without a confirmation channel, such tools are denied. This example passes a `ConfirmFunc` in `sdk.Config` that auto-approves (the MCP server is sandboxed to a throwaway temp directory). In a real app, prompt the user, or relax specific tools with `registry.SetPolicyOverride(name, tools.PolicyAlwaysAllow)`.
+MCP tools default to `PolicyUserConfirm`, and the tool registry is **fail-closed**: without a confirmation channel, such tools are denied. This example passes a `ConfirmFunc` in `sp4rk.Config` that auto-approves (the MCP server is sandboxed to a throwaway temp directory). In a real app, prompt the user, or relax specific tools with `registry.SetPolicyOverride(name, tools.PolicyAlwaysAllow)`.
 
 ### 6. Lifecycle
 
-The MCP gateway is started during `sdk.New()` and stopped during `fw.Shutdown()`:
+The MCP gateway is started during `sp4rk.New()` and stopped during `fw.Shutdown()`:
 
 ```go
-fw, _ := sdk.New(cfg)
+fw, _ := sp4rk.New(cfg)
 defer fw.Shutdown()  // closes all MCP server connections
 ```
 

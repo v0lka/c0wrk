@@ -25,7 +25,7 @@ The SDK is organized in four layers. Import direction flows downward — upper l
 
 | Layer | Package(s) | Responsibility |
 | --- | --- | --- |
-| **Entry point** | `sdk` | The `Framework` owns shared infrastructure (LLM router, tool registry, MCP gateway, tool cache) and creates per-session orchestrators. `Execute` and `NewConductor` are the two ways to run a task. |
+| **Entry point** | `sp4rk` | The `Framework` owns shared infrastructure (LLM router, tool registry, MCP gateway, tool cache) and creates per-session orchestrators. `Execute` and `NewConductor` are the two ways to run a task. |
 | **Orchestration** | `orchestration`, `planner`, `agent/reflector`, `agent/router` | Coordinates multi-step tasks. The `Conductor` runs a single task end-to-end. The `Planner` generates a DAG of steps. The `Reflector` analyzes failures. The `Router` classifies requests by domain and complexity. |
 | **Agent** | `agent` | The `Executor` runs the ReAct loop: think, call a tool, observe, repeat. Manages the step budget, circuit breakers, tool-result caching, and sub-agent parallelism. |
 | **Primitives** | `llm`, `tools`, `tools/builtins`, `tools/mcp` | The `Router` routes LLM calls to the active provider. The `ToolRegistry` holds and executes tools. Built-in tools cover file, shell, and search operations; the MCP gateway proxies external servers. |

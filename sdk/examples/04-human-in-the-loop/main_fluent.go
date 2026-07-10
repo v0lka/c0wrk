@@ -6,7 +6,7 @@
 // façade. The shared ConfirmingHITL handler (from hitl.go) is wired in via
 // .HITL(). Because the registry stays fail-closed for PolicyUserConfirm
 // tools even with a HITL handler attached, we relax those tools with a
-// classic escape (registry.SetPolicyOverride) after sdk.NewF — this is the
+// classic escape (registry.SetPolicyOverride) after sp4rk.NewF — this is the
 // intended hybrid: fluent for construction, classic for fine-grained control.
 //
 // This example is interactive — it reads y/n from stdin.
@@ -31,9 +31,9 @@ func run() error {
 	}
 	defer func() { _ = os.RemoveAll(workspaceDir) }()
 
-	// sdk.NewF: provider + HITL handler + a low step budget (to demonstrate
+	// sp4rk.NewF: provider + HITL handler + a low step budget (to demonstrate
 	// OnStepLimit) + bundled file tools plus delete_file. Finish is auto.
-	fw, err := sdk.NewF().
+	fw, err := sp4rk.NewF().
 		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 		HITL(NewConfirmingHITL([]string{
 			"write_file",

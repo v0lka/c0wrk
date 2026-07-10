@@ -11,7 +11,7 @@
 //   - Context compaction configuration
 //   - Blackboard with OnBlackboardChanged callback
 //
-// HYBRID APPROACH. The Framework is assembled with sdk.NewF and the
+// HYBRID APPROACH. The Framework is assembled with sp4rk.NewF and the
 // orchestration runs as a single fw.TaskF chain. Where the fluent builders do not yet
 // surface fine-grained control, classic escapes are used:
 //   - WithConfig carries compaction/execution tuning + OnBlackboardChanged
@@ -129,11 +129,11 @@ func run() error {
 	)
 
 	providers := []llm.ProviderEntry{
-		sdk.Anthropic(os.Getenv("ANTHROPIC_API_KEY"), plannerModel),
+		sp4rk.Anthropic(os.Getenv("ANTHROPIC_API_KEY"), plannerModel),
 	}
 	openaiAvailable := false
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		providers = append(providers, sdk.OpenAI(key, llm.BareModel(executorModel)))
+		providers = append(providers, sp4rk.OpenAI(key, llm.BareModel(executorModel)))
 		openaiAvailable = true
 	}
 
@@ -150,25 +150,25 @@ func run() error {
 	}
 	seedSkill(skillsDir)
 
-	// ── 3. Framework via sdk.NewF ──
+	// ── 3. Framework via sp4rk.NewF ──
 	//
 	// CLASSIC ESCAPE (WithConfig): compaction tuning, execution tuning, and the
 	// OnBlackboardChanged callback have no dedicated fluent option, so they ride
-	// in a base sdk.Config. fluent options then layer the common wiring
+	// in a base sp4rk.Config. fluent options then layer the common wiring
 	// (providers, MCP, tools, HITL, auto-approve) on top of that base.
-	base := sdk.Config{
-		LLM: sdk.LLMConfig{
+	base := sp4rk.Config{
+		LLM: sp4rk.LLMConfig{
 			MaxRetries:         3,
 			OutputTokenReserve: 4096,
 		},
-		Execution: sdk.ExecutionConfig{
+		Execution: sp4rk.ExecutionConfig{
 			MaxRetries:                2,
 			SafetyMarginPercent:       5,
 			PreWarningPercent:         80,
 			ToolCacheTTLSeconds:       300,
 			MaxDependencyContextChars: 8000,
 		},
-		Compaction: sdk.CompactionConfig{
+		Compaction: sp4rk.CompactionConfig{
 			Strategy:          "sliding_window",
 			PredictivePercent: 85,
 			WarningPercent:    92,
@@ -180,8 +180,8 @@ func run() error {
 	}
 
 	// Tools: custom timestamp + bundled file tools + fact-memory tools.
-	// The finish tool is auto-registered by sdk.NewF.
-	fw, err := sdk.NewF().
+	// The finish tool is auto-registered by sp4rk.NewF.
+	fw, err := sp4rk.NewF().
 		Config(base).            // escape hatch: advanced tuning
 		Providers(providers...). // multi-provider (conditional OpenAI)
 		DefaultModel(plannerModel).

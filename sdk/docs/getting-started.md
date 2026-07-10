@@ -26,7 +26,7 @@ export OPENAI_API_KEY="sk-..."
 
 ## Configuration
 
-Everything starts with [`sdk.Config`](../framework.go), passed to [`sdk.New`](../framework.go). Zero-value fields are replaced with sensible defaults, so a minimal config only needs an LLM provider.
+Everything starts with [`sp4rk.Config`](../framework.go), passed to [`sp4rk.New`](../framework.go). Zero-value fields are replaced with sensible defaults, so a minimal config only needs an LLM provider.
 
 ### Config
 
@@ -82,8 +82,8 @@ This tutorial builds an agent with a custom calculator tool and built-in file to
 ### Step 1 — Create the Framework
 
 ```go
-fw, err := sdk.New(sdk.Config{
-	LLM: sdk.LLMConfig{
+fw, err := sp4rk.New(sp4rk.Config{
+	LLM: sp4rk.LLMConfig{
 		Providers: []llm.ProviderEntry{{
 			Name:         "anthropic",
 			ProviderType: "anthropic",
@@ -119,7 +119,7 @@ registry.Register(agent.NewFinishTool())
 registry.Register(NewCalculatorTool())
 ```
 
-> **Fail-closed enforcement:** tools whose policy is `PolicyUserConfirm` (like `write_file` above) are **denied** by the registry unless a confirmation channel is configured. Either pass a `ConfirmFunc` in `sdk.Config`:
+> **Fail-closed enforcement:** tools whose policy is `PolicyUserConfirm` (like `write_file` above) are **denied** by the registry unless a confirmation channel is configured. Either pass a `ConfirmFunc` in `sp4rk.Config`:
 >
 > ```go
 > ConfirmFunc: func(_ context.Context, req tools.ConfirmationRequest) (tools.ConfirmationResponse, error) {
@@ -286,8 +286,8 @@ func (t *CalculatorTool) Execute(_ context.Context, input json.RawMessage) (tool
 }
 
 func main() {
-	fw, err := sdk.New(sdk.Config{
-		LLM: sdk.LLMConfig{
+	fw, err := sp4rk.New(sp4rk.Config{
+		LLM: sp4rk.LLMConfig{
 			Providers: []llm.ProviderEntry{{
 				Name:         "anthropic",
 				ProviderType: "anthropic",

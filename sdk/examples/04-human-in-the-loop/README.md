@@ -16,7 +16,7 @@ Intercept tool calls for user confirmation before destructive operations execute
 The HITL handler is wired in via the `.HITL` builder method. Because the registry stays fail-closed, the gated tools are relaxed with a classic escape (`registry.SetPolicyOverride`) after construction — the intended hybrid of fluent + classic control:
 
 ```go
-fw, _ := sdk.NewF().
+fw, _ := sp4rk.NewF().
     Anthropic(key, "claude-sonnet-4-5").
     HITL(NewConfirmingHITL([]string{"write_file", "delete_file", "create_directory", "bash_exec"})).
     MaxSteps(10).
@@ -35,7 +35,7 @@ fw.RunF(ctx).System(systemPrompt).Ask(task)
 - The `HITLHandler` interface and its two methods
 - How to allow, deny, or modify tool calls before execution
 - How to handle step-limit exhaustion interactively
-- How to wire a HITL handler into `sdk.Config`
+- How to wire a HITL handler into `sp4rk.Config`
 
 ## Architecture
 
@@ -128,9 +128,9 @@ The `reason` parameter is non-empty when a circuit breaker triggered the pause (
 ### 4. Wiring into the Framework
 
 ```go
-fw, err := sdk.New(sdk.Config{
+fw, err := sp4rk.New(sp4rk.Config{
     LLM:       llmConfig,
-    Execution: sdk.ExecutionConfig{ MaxSteps: 10 },
+    Execution: sp4rk.ExecutionConfig{ MaxSteps: 10 },
     HITL:      NewConfirmingHITL([]string{"write_file", "delete_file", "bash_exec"}),
 })
 ```
@@ -144,7 +144,7 @@ Tool policies (`Tool.DefaultPolicy()`) and the HITL handler are two separate gat
 - **Tool policy** — enforced by the tool registry inside `Execute()`. `PolicyUserConfirm` tools require the registry's `ConfirmFunc`; with none configured they are **denied** (fail-closed).
 - **HITL handler** — dynamic, called by the executor for **every** tool call before it reaches the registry. Can make per-call decisions based on the actual input.
 
-Because this example does its confirmation in the HITL handler, it explicitly relaxes the registry-level policy for the gated tools (`registry.SetPolicyOverride(name, tools.PolicyAlwaysAllow)`) so the user is not asked twice. If you prefer registry-level confirmation instead, drop the overrides and pass a `ConfirmFunc` in `sdk.Config`.
+Because this example does its confirmation in the HITL handler, it explicitly relaxes the registry-level policy for the gated tools (`registry.SetPolicyOverride(name, tools.PolicyAlwaysAllow)`) so the user is not asked twice. If you prefer registry-level confirmation instead, drop the overrides and pass a `ConfirmFunc` in `sp4rk.Config`.
 
 ## Prerequisites
 

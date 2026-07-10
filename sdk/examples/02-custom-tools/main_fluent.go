@@ -3,7 +3,7 @@
 // Example 02 — Custom Tools (Fluent API)
 //
 // The same custom-tool agent as main.go, expressed through the fluent façade.
-// Built-in file tools come from a bundle ([sdk.FileTools]); the custom
+// Built-in file tools come from a bundle ([sp4rk.FileTools]); the custom
 // CalculatorTool (shared via calculator_tool.go) is registered alongside.
 //
 // Run with: go run -tags fluent .
@@ -29,10 +29,10 @@ func run() error {
 	defer func() { _ = os.RemoveAll(workspaceDir) }()
 	fmt.Println("Workspace:", workspaceDir)
 
-	// sdk.NewF: provider + bundled file tools + our custom calculator tool.
+	// sp4rk.NewF: provider + bundled file tools + our custom calculator tool.
 	// The finish tool is auto-registered. AutoApprove satisfies the
 	// fail-closed registry for write_file (sandboxed throwaway workspace).
-	fw, err := sdk.NewF().
+	fw, err := sp4rk.NewF().
 		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 		FileTools().
 		Tools(NewCalculatorTool()).

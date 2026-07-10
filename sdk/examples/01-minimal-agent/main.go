@@ -3,7 +3,7 @@
 // Example 01 — Minimal Agent (Classic API)
 //
 // The smallest possible full agent via the classic SDK API: manually assemble a
-// [sdk.Config], create the Framework, register the finish tool, and call
+// [sp4rk.Config], create the Framework, register the finish tool, and call
 // Execute. For the concise recommended path, see main_fluent.go (run with
 // `-tags fluent`).
 package main
@@ -23,8 +23,8 @@ func run() error {
 	// 1. Create the Framework with a single Anthropic provider.
 	//    The Framework owns shared infrastructure: LLM router, tool registry,
 	//    and (optionally) an MCP gateway. At least one provider is required.
-	fw, err := sdk.New(sdk.Config{
-		LLM: sdk.LLMConfig{
+	fw, err := sp4rk.New(sp4rk.Config{
+		LLM: sp4rk.LLMConfig{
 			Providers: []llm.ProviderEntry{{
 				Name:         "anthropic",
 				ProviderType: "anthropic",

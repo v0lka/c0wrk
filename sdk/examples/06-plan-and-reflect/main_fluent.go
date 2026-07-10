@@ -24,7 +24,7 @@ import (
 func run() error {
 	// Build the Framework: provider + file tools + per-step budget + auto-approve.
 	// The finish tool is auto-registered so each step can signal completion.
-	fw, err := sdk.NewF().
+	fw, err := sp4rk.NewF().
 		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 		FileTools().   // read, write, edit, list, glob, mkdir
 		MaxSteps(15).  // per-step ReAct budget

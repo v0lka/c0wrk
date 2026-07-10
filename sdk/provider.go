@@ -1,11 +1,11 @@
-package sdk
+package sp4rk
 
 import "github.com/v0lka/sp4rk/llm"
 
 // Anthropic returns a [llm.ProviderEntry] for the Anthropic API with the given
 // API key and enabled models.
 //
-//	sdk.Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5", "claude-haiku-3-5")
+//	sp4rk.Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5", "claude-haiku-3-5")
 //
 // The returned entry is exactly what [LLMConfig] expects — pass it to the
 // FrameworkBuilder via [FrameworkBuilder.Provider]/[FrameworkBuilder.Anthropic]
@@ -22,7 +22,7 @@ func Anthropic(apiKey string, models ...string) llm.ProviderEntry {
 // OpenAI returns a [llm.ProviderEntry] for the OpenAI API with the given API
 // key and enabled models.
 //
-//	sdk.OpenAI(os.Getenv("OPENAI_API_KEY"), "gpt-4o", "gpt-4o-mini")
+//	sp4rk.OpenAI(os.Getenv("OPENAI_API_KEY"), "gpt-4o", "gpt-4o-mini")
 func OpenAI(apiKey string, models ...string) llm.ProviderEntry {
 	return llm.ProviderEntry{
 		Name:         "openai",
@@ -38,7 +38,7 @@ func OpenAI(apiKey string, models ...string) llm.ProviderEntry {
 // The logical name distinguishes this provider from a built-in OpenAI entry
 // when several providers are configured simultaneously.
 //
-//	sdk.OpenAICompatible("groq", "https://api.groq.com/openai/v1", key, "llama-3.3-70b-versatile")
+//	sp4rk.OpenAICompatible("groq", "https://api.groq.com/openai/v1", key, "llama-3.3-70b-versatile")
 func OpenAICompatible(name, baseURL, apiKey string, models ...string) llm.ProviderEntry {
 	return llm.ProviderEntry{
 		Name:         name,

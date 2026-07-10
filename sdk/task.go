@@ -1,4 +1,4 @@
-package sdk
+package sp4rk
 
 import (
 	"context"
@@ -96,7 +96,7 @@ func (fw *Framework) TaskF(ctx context.Context, task string) *TaskBuilder {
 // handle (there is no defer Shutdown). If the build fails, the error is surfaced
 // by [TaskBuilder.Execute] instead of panicking.
 //
-//	sdk.NewF().Anthropic(key, model).
+//	sp4rk.NewF().Anthropic(key, model).
 //	    FileTools().Task(ctx, task).
 //	    System("...").Plan().Reflect().Execute()
 func (b *FrameworkBuilder) Task(ctx context.Context, task string) *TaskBuilder {

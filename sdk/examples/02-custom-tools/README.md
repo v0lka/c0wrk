@@ -12,7 +12,7 @@ Build a custom tool that implements the `tools.Tool` interface, register it alon
 The fluent builder bundles the common file tools via `FileTools()`; a custom tool is passed alongside. The finish tool is auto-registered:
 
 ```go
-fw, err := sdk.NewF().
+fw, err := sp4rk.NewF().
     Anthropic(key, "claude-sonnet-4-5").
     FileTools().
     Tools(NewCalculatorTool()).
@@ -97,7 +97,7 @@ func (t *CalculatorTool) Execute(_ context.Context, input json.RawMessage) (tool
 | `PolicyUserConfirm`| Ask via the registry's `ConfirmFunc`; **denied if none is set** (fail-closed) |
 | `PolicyAlwaysDeny` | Block the tool entirely                                          |
 
-The calculator uses `PolicyAlwaysAllow` because it's read-only and safe. Destructive tools (write_file, delete_file) use `PolicyUserConfirm`, which is why this example passes a `ConfirmFunc` in `sdk.Config` — without it, `write_file` would be denied. You can also relax specific tools deliberately with `registry.SetPolicyOverride(name, tools.PolicyAlwaysAllow)`. See **example 04** for interactive confirmation via a custom HITL handler.
+The calculator uses `PolicyAlwaysAllow` because it's read-only and safe. Destructive tools (write_file, delete_file) use `PolicyUserConfirm`, which is why this example passes a `ConfirmFunc` in `sp4rk.Config` — without it, `write_file` would be denied. You can also relax specific tools deliberately with `registry.SetPolicyOverride(name, tools.PolicyAlwaysAllow)`. See **example 04** for interactive confirmation via a custom HITL handler.
 
 ### 3. IsUntrusted
 
@@ -131,7 +131,7 @@ This context propagates through the Conductor → Executor → tool execution, s
 | File                 | Description                                  |
 |----------------------|----------------------------------------------|
 | `main.go`            | Classic SDK wiring: Framework, tool registration, execution (`//go:build !fluent`) |
-| `main_fluent.go`     | Fluent wiring: `sdk.NewF` + bundled tools (`//go:build fluent`) |
+| `main_fluent.go`     | Fluent wiring: `sp4rk.NewF` + bundled tools (`//go:build fluent`) |
 | `calculator_tool.go` | The custom `CalculatorTool` (shared by both variants — tagless) |
 | `calculator.go`      | Arithmetic expression evaluator (implementation detail, not SDK-specific) |
 

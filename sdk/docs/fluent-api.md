@@ -1,18 +1,18 @@
 # Fluent API
 
-A concise, method-chain (fluent) builder API that lives **in the root `sdk`
+A concise, method-chain (fluent) builder API that lives **in the root `sp4rk`
 package** — there is no separate `fluent` package. Every method returns the real
-SDK type (`*sdk.Framework`, `*orchestration.ExecutionResult`), so you can mix
-fluent calls with the classic [`sdk.Config`](../framework.go) API at any point.
+SDK type (`*sp4rk.Framework`, `*orchestration.ExecutionResult`), so you can mix
+fluent calls with the classic [`sp4rk.Config`](../framework.go) API at any point.
 
 ## Why fluent?
 
-The classic entry point `sdk.New(cfg)` is a plain struct + constructor: every
+The classic entry point `sp4rk.New(cfg)` is a plain struct + constructor: every
 setting is a field. The fluent API layers a **method-chain builder** on top so a
-build reads as one unbroken chain with a **single** `sdk.` prefix:
+build reads as one unbroken chain with a **single** `sp4rk.` prefix:
 
 ```go
-fw, err := sdk.NewF().
+fw, err := sp4rk.NewF().
     Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
     FileTools().
     MaxSteps(15).
@@ -24,24 +24,24 @@ fw, err := sdk.NewF().
 
 The fluent entry points share the root package with the classic API, so the
 chain starts/stops need names that do **not** collide with the existing
-`sdk.New`, `Framework.Execute`, or `Framework.NewConductor`. The convention is a
+`sp4rk.New`, `Framework.Execute`, or `Framework.NewConductor`. The convention is a
 single **`F` postfix** on the three fluent entry points:
 
 | Classic (unchanged)             | Fluent (method-chain)                 |
 |---------------------------------|---------------------------------------|
-| `sdk.New(cfg)`                  | `sdk.NewF()` → `*FrameworkBuilder`    |
+| `sp4rk.New(cfg)`                  | `sp4rk.NewF()` → `*FrameworkBuilder`    |
 | `fw.Execute(ctx, sys, ev, msg)` | `fw.RunF(ctx)` → `*RunBuilder`        |
 | `fw.NewConductor(sys)`          | `fw.TaskF(ctx, task)` → `*TaskBuilder` |
 
-The package-level helper constructors (`sdk.Anthropic`, `sdk.FileTools`,
-`sdk.MCPStdio`, …) keep their plain names — they have no classic collision, so
+The package-level helper constructors (`sp4rk.Anthropic`, `sp4rk.FileTools`,
+`sp4rk.MCPStdio`, …) keep their plain names — they have no classic collision, so
 no postfix is needed.
 
 ## Layers
 
 | Layer | Purpose | Entry | Terminal |
 |-------|---------|-------|----------|
-| 1 — Builder | Configure the framework | `sdk.NewF()` | `.Build()` → `(*Framework, error)` |
+| 1 — Builder | Configure the framework | `sp4rk.NewF()` | `.Build()` → `(*Framework, error)` |
 | 2 — Single task | One ReAct loop | `fw.RunF(ctx)` | `.Ask(msg)` |
 | 3 — Orchestration | Plan → Execute → Reflect | `fw.TaskF(ctx, task)` | `.Execute()` |
 
@@ -74,7 +74,7 @@ no postfix is needed.
 
 ### Escape hatches
 - `.Options(opts…)` — apply functional options (`WithProvider`, `WithTools`, …)
-- `.Config(sdk.Config)` — supply a full classic config as the base
+- `.Config(sp4rk.Config)` — supply a full classic config as the base
 
 ## RunBuilder surface
 
@@ -115,7 +115,7 @@ For one-shot scripts, transition methods `.Run(ctx)` / `.Task(ctx, task)` on the
 single chain:
 
 ```go
-result, err := sdk.NewF().
+result, err := sp4rk.NewF().
     Anthropic(key, model).
     FileTools().
     Task(ctx, task).
@@ -141,26 +141,26 @@ surfaces once, at `.Build()` (or the pipeline terminal), wrapped as
 
 Example 05 (MCP integration) — the headline tuple elimination:
 
-**Before** (classic `sdk.New` constructor — tuple + separate registration)
+**Before** (classic `sp4rk.New` constructor — tuple + separate registration)
 ```go
-name, entry := sdk.MCPStdio("filesystem", "npx",
+name, entry := sp4rk.MCPStdio("filesystem", "npx",
     "-y", "@modelcontextprotocol/server-filesystem", mcpRoot)
-fw, err := sdk.New(sdk.Config{
-    LLM: sdk.LLMConfig{
-        Providers: []llm.ProviderEntry{sdk.Anthropic(key, model)},
+fw, err := sp4rk.New(sp4rk.Config{
+    LLM: sp4rk.LLMConfig{
+        Providers: []llm.ProviderEntry{sp4rk.Anthropic(key, model)},
     },
-    MCP: &sdk.MCPConfig{
+    MCP: &sp4rk.MCPConfig{
         Servers:        map[string]mcp.ServerEntry{name: entry},
         DefaultWorkDir: mcpRoot,
     },
 })
 // built-ins registered separately; MCP tools need a ConfirmFunc/policy override
-fw.ToolRegistry().Register(sdk.FileTools()...)
+fw.ToolRegistry().Register(sp4rk.FileTools()...)
 ```
 
 **After** (fluent builder)
 ```go
-fw, err := sdk.NewF().
+fw, err := sp4rk.NewF().
     Anthropic(key, model).
     MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", mcpRoot).
     MCPWorkDir(mcpRoot).
@@ -169,5 +169,5 @@ fw, err := sdk.NewF().
     Build()
 ```
 
-The `sdk.` prefix is a single import, the `(name, entry)` tuple is registered
+The `sp4rk.` prefix is a single import, the `(name, entry)` tuple is registered
 inline (no local variable), and the `WithX` nesting is gone.

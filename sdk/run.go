@@ -1,4 +1,4 @@
-package sdk
+package sp4rk
 
 import (
 	"context"
@@ -52,7 +52,7 @@ func (fw *Framework) RunF(ctx context.Context) *RunBuilder {
 // handle (there is no defer Shutdown). If the build fails, the error is surfaced
 // by [RunBuilder.Ask] instead of panicking.
 //
-//	sdk.NewF().Anthropic(key, model).
+//	sp4rk.NewF().Anthropic(key, model).
 //	    FileTools().Run(ctx).
 //	    System("You are helpful.").
 //	    Ask("What is the capital of France?")

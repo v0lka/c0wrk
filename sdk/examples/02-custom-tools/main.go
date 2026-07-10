@@ -3,7 +3,7 @@
 // Example 02 — Custom Tools (Classic API)
 //
 // Demonstrates how to implement a custom tool and register built-in tools
-// alongside it, using the classic sdk.Config API. For the concise recommended
+// alongside it, using the classic sp4rk.Config API. For the concise recommended
 // path, see main_fluent.go (run with `-tags fluent`).
 package main
 
@@ -24,8 +24,8 @@ import (
 // (CalculatorTool lives in calculator_tool.go — shared with the fluent variant.)
 
 func run() error {
-	fw, err := sdk.New(sdk.Config{
-		LLM: sdk.LLMConfig{
+	fw, err := sp4rk.New(sp4rk.Config{
+		LLM: sp4rk.LLMConfig{
 			Providers: []llm.ProviderEntry{{
 				Name:         "anthropic",
 				ProviderType: "anthropic",

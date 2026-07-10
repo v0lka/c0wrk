@@ -214,7 +214,7 @@ finalOutput := orchestration.AggregateOutput(completed, plan, nil)
 | Conductor  | `orchestration`        | Executes one step as a ReAct loop         |
 | Reflector  | `agent/reflector`      | Analyzes failures, suggests corrections   |
 
-The Framework (`sdk.Framework`) wires them together: `fw.NewConductor()` creates a Conductor with the Framework's LLM router, tool registry, and context-window factory. `fw.LLMRouter()` provides the `agent.LLMCaller` needed by the Planner and Reflector. `fw.ContextFactory()` provides the `orchestration.ContextManagerFactory` needed by the Planner for exploration mode.
+The Framework (`sp4rk.Framework`) wires them together: `fw.NewConductor()` creates a Conductor with the Framework's LLM router, tool registry, and context-window factory. `fw.LLMRouter()` provides the `agent.LLMCaller` needed by the Planner and Reflector. `fw.ContextFactory()` provides the `orchestration.ContextManagerFactory` needed by the Planner for exploration mode.
 
 ## Prerequisites
 

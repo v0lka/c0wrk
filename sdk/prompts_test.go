@@ -1,4 +1,4 @@
-package sdk
+package sp4rk
 
 import (
 	"strings"

@@ -16,10 +16,10 @@ import (
 )
 
 func main() {
-	// sdk.NewF is the fluent entry point; it returns a real *sdk.Framework
-	// (the same type the classic sdk.New constructor returns). The finish tool
+	// sp4rk.NewF is the fluent entry point; it returns a real *sp4rk.Framework
+	// (the same type the classic sp4rk.New constructor returns). The finish tool
 	// is auto-registered so the agent can signal completion.
-	fw, err := sdk.NewF().
+	fw, err := sp4rk.NewF().
 		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 		Build()
 	if err != nil {
@@ -38,7 +38,7 @@ func main() {
 }
 ```
 
-The fluent builders are part of the **root `sdk` package** (no separate import): they return the original SDK types (`*sdk.Framework`, `*orchestration.ExecutionResult`) and delegate every call to the underlying API, so you can mix fluent and classic code freely. For the classic `sdk.Config` API (full low-level control), see [Getting started](docs/getting-started.md).
+The fluent builders are part of the **root `sp4rk` package** (no separate import): they return the original SDK types (`*sp4rk.Framework`, `*orchestration.ExecutionResult`) and delegate every call to the underlying API, so you can mix fluent and classic code freely. For the classic `sp4rk.Config` API (full low-level control), see [Getting started](docs/getting-started.md).
 
 > New here? Read the [Fluent API guide](docs/fluent-api.md) for the layer map, before/after comparisons, and when to reach for classic escapes.
 

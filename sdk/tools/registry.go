@@ -293,7 +293,7 @@ func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool Tool, name st
 		return ToolResult{
 			Content: fmt.Sprintf(
 				"tool %q requires confirmation but no ConfirmFunc is configured; "+
-					"set one via ToolRegistry.SetConfirmFunc (or sdk.Config.ConfirmFunc when using the Framework), "+
+					"set one via ToolRegistry.SetConfirmFunc (or sp4rk.Config.ConfirmFunc when using the Framework), "+
 					"or explicitly override the policy via SetPolicyOverride(%q, PolicyAlwaysAllow)",
 				name, name),
 			IsError: true,

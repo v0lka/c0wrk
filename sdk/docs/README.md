@@ -38,8 +38,8 @@ import (
 
 func main() {
 	// 1. Create the Framework with a single Anthropic provider.
-	fw, err := sdk.New(sdk.Config{
-		LLM: sdk.LLMConfig{
+	fw, err := sp4rk.New(sp4rk.Config{
+		LLM: sp4rk.LLMConfig{
 			Providers: []llm.ProviderEntry{{
 				Name:         "anthropic",
 				ProviderType: "anthropic",
@@ -93,7 +93,7 @@ go run main.go
 | --- | --- |
 | [getting-started.md](getting-started.md) | Installation, configuration reference, and your first agent |
 | [architecture.md](architecture.md) | Layered design, package relationships, data flow, and the ReAct loop |
-| [fluent-api.md](fluent-api.md) | Fluent API in the root `sdk` package — method-chain builders, the `F` postfix, before/after, escape hatches |
+| [fluent-api.md](fluent-api.md) | Fluent API in the root `sp4rk` package — method-chain builders, the `F` postfix, before/after, escape hatches |
 | [llm-providers.md](llm-providers.md) | Multi-provider routing, model registry, and provider configuration |
 | [tools.md](tools.md) | The `Tool` interface, `ToolRegistry`, built-in tools, and custom tools |
 | [mcp-integration.md](mcp-integration.md) | Model Context Protocol servers, the gateway, and external tool discovery |

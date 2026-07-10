@@ -20,7 +20,7 @@ sdk/examples/
 
 | #  | Example              | Concepts introduced                                             |
 |----|----------------------|-----------------------------------------------------------------|
-| 01 | minimal-agent        | `sdk.New`, `Framework.Execute`, `FinishTool`, system prompt     |
+| 01 | minimal-agent        | `sp4rk.New`, `Framework.Execute`, `FinishTool`, system prompt     |
 | 02 | custom-tools         | `tools.Tool` interface, `BaseTool`, built-in tools, workspace   |
 | 03 | event-streaming      | `Events` interface, live thought/tool/result observation        |
 | 04 | human-in-the-loop    | `HITLHandler`, tool-call confirmation, step-limit decisions     |
@@ -86,7 +86,7 @@ go run -tags fluent .   # recommended (fluent API)
 go run .                # classic SDK API
 ```
 
-Both variants build the same `*sdk.Framework` and produce the same result — the fluent builders live in the root `sdk` package and return the original SDK types. See [`docs/fluent-api.md`](../docs/fluent-api.md).
+Both variants build the same `*sp4rk.Framework` and produce the same result — the fluent builders live in the root `sp4rk` package and return the original SDK types. See [`docs/fluent-api.md`](../docs/fluent-api.md).
 
 Each example prints its output to stdout. Examples that require interactive input (e.g. 04-human-in-the-loop) will prompt on stdin.
 

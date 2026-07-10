@@ -3,7 +3,7 @@
 // Example 01 — Minimal Agent (Fluent API)
 //
 // The same minimal agent as main.go, expressed through the fluent API
-// ([github.com/v0lka/sp4rk]; entry point [sdk.NewF]). The finish tool is auto-registered and
+// ([github.com/v0lka/sp4rk]; entry point [sp4rk.NewF]). The finish tool is auto-registered and
 // the provider, tools, and execution are configured declaratively. Compare the
 // line count to the classic variant — this is the recommended entry point.
 //
@@ -20,10 +20,10 @@ import (
 )
 
 func run() error {
-	// sdk.NewF builds a real *sdk.Framework (no shadow types).
+	// sp4rk.NewF builds a real *sp4rk.Framework (no shadow types).
 	// The finish tool is auto-registered by convention, so the agent
 	// can signal completion without an explicit Register call.
-	fw, err := sdk.NewF().
+	fw, err := sp4rk.NewF().
 		Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 		Build()
 	if err != nil {

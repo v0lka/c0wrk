@@ -2,13 +2,13 @@
 
 The "kitchen sink" example: every major SDK subsystem combined into one agent.
 
-This example is a **fluent-first hybrid**: the Framework is assembled with `sdk.NewF` and the orchestration runs as a single `fw.TaskF` chain. Where fluent does not surface fine-grained control, **classic escapes** are used. This is the recommended pattern for real applications — fluent for the common path, classic API for advanced tuning.
+This example is a **fluent-first hybrid**: the Framework is assembled with `sp4rk.NewF` and the orchestration runs as a single `fw.TaskF` chain. Where fluent does not surface fine-grained control, **classic escapes** are used. This is the recommended pattern for real applications — fluent for the common path, classic API for advanced tuning.
 
 | Concern                | Path      | How                                                    |
 |------------------------|-----------|--------------------------------------------------------|
-| Framework assembly     | **Fluent**| `sdk.NewF` + `.Providers`/`.MCPStdio`/`.Tools`/`.HITL` |
+| Framework assembly     | **Fluent**| `sp4rk.NewF` + `.Providers`/`.MCPStdio`/`.Tools`/`.HITL` |
 | Plan → Execute → Reflect | **Fluent**| `fw.TaskF(...).Plan().Reflect().Models(...).Execute()` |
-| Compaction / execution tuning | **Classic**| `.Config(base sdk.Config)` escape hatch |
+| Compaction / execution tuning | **Classic**| `.Config(base sp4rk.Config)` escape hatch |
 | `OnBlackboardChanged`  | **Classic**| rides in the `WithConfig` base (no dedicated fluent option) |
 | Skills discovery       | **Classic**| `skills.SkillManager` → passed to the fluent `.Skills` builder method |
 | Custom events sink     | **Classic**| `consoleEvents` (embeds `orchestration.NoopEvents`) → the fluent `.Events` builder method |
@@ -28,13 +28,13 @@ This example is a **fluent-first hybrid**: the Framework is assembled with `sdk.
 |--------------------|-------------------|--------------------------------------------------|
 | Multi-provider LLM | Fluent            | `.Providers(Anthropic + OpenAI?)`; switching via `.Models` |
 | Custom tools       | Fluent            | `timestamp` tool registered via `.Tools(...)`      |
-| Built-in tools     | Fluent            | `sdk.FileTools()` + `sdk.MemoryTools()` bundles |
+| Built-in tools     | Fluent            | `sp4rk.FileTools()` + `sp4rk.MemoryTools()` bundles |
 | MCP integration    | Fluent            | `.MCPStdio(...)`              |
 | Event streaming    | Classic escape    | `consoleEvents` (embeds `orchestration.NoopEvents`) → the fluent `.Events` builder method |
 | Human-in-the-loop  | Fluent            | `.HITL(autoApproveHITL)` (blocks `delete_directory`) |
-| Planner            | Fluent            | `.Plan()` with `sdk.DefaultPromptSet`         |
+| Planner            | Fluent            | `.Plan()` with `sp4rk.DefaultPromptSet`         |
 | Conductor          | Fluent            | created internally by `fw.TaskF`              |
-| Reflector          | Fluent            | `.Reflect()` with `sdk.DefaultReflectorPrompt`|
+| Reflector          | Fluent            | `.Reflect()` with `sp4rk.DefaultReflectorPrompt`|
 | Skills             | Classic escape    | `skills.SkillManager` → `.Skills(discovered)`    |
 | Fact memory        | Fluent            | `MemoryTools()` bundle + blackboard              |
 | Compaction         | Classic escape    | `.Config(base)` carrying `CompactionConfig`      |
@@ -43,7 +43,7 @@ This example is a **fluent-first hybrid**: the Framework is assembled with `sdk.
 ## Architecture
 
 ```
-sdk.NewF().
+sp4rk.NewF().
     Config(base).               // classic escape: compaction, execution tuning, OnBlackboardChanged
     Providers(anthropic, openai?).
     MCPStdio("filesystem", …).
@@ -78,15 +78,15 @@ This example combines patterns from all previous examples. See each example's RE
 
 #### The hybrid: fluent API + classic escapes
 
-The Framework is built with `sdk.NewF`, but fields that have no dedicated fluent option (compaction tuning, `OnBlackboardChanged`) ride in a `Config` base — a classic escape hatch that fluent layers its options on top of:
+The Framework is built with `sp4rk.NewF`, but fields that have no dedicated fluent option (compaction tuning, `OnBlackboardChanged`) ride in a `Config` base — a classic escape hatch that fluent layers its options on top of:
 
 ```go
-base := sdk.Config{
-    Execution:  sdk.ExecutionConfig{ /* tuning */ },
-    Compaction: sdk.CompactionConfig{ /* thresholds */ },
+base := sp4rk.Config{
+    Execution:  sp4rk.ExecutionConfig{ /* tuning */ },
+    Compaction: sp4rk.CompactionConfig{ /* thresholds */ },
     OnBlackboardChanged: func(ct string) { fmt.Println("blackboard:", ct) },
 }
-fw, _ := sdk.NewF().
+fw, _ := sp4rk.NewF().
     Config(base).             // escape hatch: advanced tuning
     Providers(providers...).
     MCPStdio("filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", workspaceDir).
@@ -127,7 +127,7 @@ Skills are markdown files (`SKILL.md`) with YAML frontmatter. The `SkillManager`
 #### Fact memory
 
 ```go
-sdk.NewF().FileTools().MemoryTools()
+sp4rk.NewF().FileTools().MemoryTools()
 ```
 
 The `MemoryTools()` bundle registers `store_fact` and `search_facts`. Facts are keyword-tagged pieces of information stored on the blackboard; steps can share findings without passing large outputs through the context window. Stored facts are readable from `result.Blackboard.GetFacts()`.
@@ -145,7 +145,7 @@ Fires after every successful blackboard write (`plan`, `step_result`, `fact`, `r
 #### Compaction configuration
 
 ```go
-Compaction: sdk.CompactionConfig{
+Compaction: sp4rk.CompactionConfig{
     Strategy:          "sliding_window",
     PredictivePercent: 85,
     WarningPercent:    92,

@@ -3,7 +3,7 @@
 // Example 05 — MCP Integration (Classic API)
 //
 // Demonstrates how to connect external Model Context Protocol (MCP) servers
-// to the agent, using the classic sdk.Config + MCPConfig API.
+// to the agent, using the classic sp4rk.Config + MCPConfig API.
 // For the concise recommended path, see main_fluent.go (run with `-tags fluent`).
 package main
 
@@ -38,10 +38,10 @@ func run() error {
 	fmt.Println("MCP filesystem root:", mcpRoot)
 
 	// Create the Framework with an MCP server configuration.
-	// The MCP gateway starts during sdk.New(), connects to all configured
+	// The MCP gateway starts during sp4rk.New(), connects to all configured
 	// servers, discovers their tools, and registers them in the ToolRegistry.
-	fw, err := sdk.New(sdk.Config{
-		LLM: sdk.LLMConfig{
+	fw, err := sp4rk.New(sp4rk.Config{
+		LLM: sp4rk.LLMConfig{
 			Providers: []llm.ProviderEntry{{
 				Name:         "anthropic",
 				ProviderType: "anthropic",
@@ -49,7 +49,7 @@ func run() error {
 				Models:       []string{"claude-sonnet-4-5"},
 			}},
 		},
-		MCP: &sdk.MCPConfig{
+		MCP: &sp4rk.MCPConfig{
 			Servers: map[string]mcp.ServerEntry{
 				// A stdio MCP server: the SDK launches the command, communicates
 				// over stdin/stdout, and discovers tools via the MCP protocol.

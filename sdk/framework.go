@@ -1,11 +1,11 @@
-// Package sdk is the entry point for the sp4rk Agent SDK — a standalone Go framework
+// Package sp4rk is the entry point for the sp4rk Agent SDK — a standalone Go framework
 // for building AI agent systems with Plan & Execute orchestration, tool integration,
 // and multi-provider LLM support.
 //
 // Quick start:
 //
-//	fw, _ := sdk.New(sdk.Config{
-//	    LLM: sdk.LLMConfig{
+//	fw, _ := sp4rk.New(sp4rk.Config{
+//	    LLM: sp4rk.LLMConfig{
 //	        Providers: []llm.ProviderEntry{{
 //	            Name: "anthropic", ProviderType: "anthropic",
 //	            APIKey: os.Getenv("ANTHROPIC_API_KEY"), Models: []string{"claude-sonnet-4-5"},
@@ -23,7 +23,7 @@
 // methods on the shared [Framework] type; once inside a builder, methods keep
 // their natural names so the chain reads fluently:
 //
-//	fw, _ := sdk.NewF().
+//	fw, _ := sp4rk.NewF().
 //	    Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 //	    FileTools().
 //	    AutoApprove().
@@ -45,7 +45,7 @@
 // are fully interoperable — both produce and operate on the same [*Framework].
 // For the layer map, before/after comparisons, and when to reach for classic
 // escapes, see the Fluent API guide at docs/fluent-api.md.
-package sdk
+package sp4rk
 
 import (
 	"context"

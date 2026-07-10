@@ -27,8 +27,8 @@ import (
 func run() error {
 	// Create the Framework with our custom HITL handler.
 	// The handler is passed via Config.HITL.
-	fw, err := sdk.New(sdk.Config{
-		LLM: sdk.LLMConfig{
+	fw, err := sp4rk.New(sp4rk.Config{
+		LLM: sp4rk.LLMConfig{
 			Providers: []llm.ProviderEntry{{
 				Name:         "anthropic",
 				ProviderType: "anthropic",
@@ -36,7 +36,7 @@ func run() error {
 				Models:       []string{"claude-sonnet-4-5"},
 			}},
 		},
-		Execution: sdk.ExecutionConfig{
+		Execution: sp4rk.ExecutionConfig{
 			MaxSteps: 10, // low limit to demonstrate OnStepLimit
 		},
 		// HITL is the human-in-the-loop handler. Nil means defaults

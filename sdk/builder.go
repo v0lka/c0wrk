@@ -1,4 +1,4 @@
-package sdk
+package sp4rk
 
 import (
 	"fmt"
@@ -13,7 +13,7 @@ import (
 // method returning the same builder, so the whole configuration reads as a
 // single unbroken chain terminated by [FrameworkBuilder.Build]:
 //
-//	fw, err := sdk.NewF().
+//	fw, err := sp4rk.NewF().
 //	    Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 //	    FileTools().
 //	    MaxSteps(15).
@@ -46,7 +46,7 @@ type FrameworkBuilder struct {
 // [FrameworkBuilder.OpenAI], [FrameworkBuilder.Providers], …) or via a
 // [FrameworkBuilder.Config] base that already contains providers.
 //
-//	fw, err := sdk.NewF().
+//	fw, err := sp4rk.NewF().
 //	    Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
 //	    FileTools().
 //	    AutoApprove().

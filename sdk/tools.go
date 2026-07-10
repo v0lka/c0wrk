@@ -1,4 +1,4 @@
-package sdk
+package sp4rk
 
 import (
 	"github.com/v0lka/sp4rk/agent"
@@ -81,9 +81,9 @@ func AllBuiltinTools() []tools.Tool {
 // Tools is a passthrough grouping helper that returns its arguments as a slice.
 // Useful for combining bundles with custom tools in a single [WithTools] call:
 //
-//	sdk.WithTools(append(
-//	    sdk.FileTools(),
-//	    sdk.Tools(myCustomTool, anotherTool...)...,
+//	sp4rk.WithTools(append(
+//	    sp4rk.FileTools(),
+//	    sp4rk.Tools(myCustomTool, anotherTool...)...,
 //	)...)
 func Tools(ts ...tools.Tool) []tools.Tool {
 	return ts

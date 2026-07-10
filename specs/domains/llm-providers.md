@@ -235,7 +235,7 @@ llm:
 
 Default-model validation: `default_model` must be non-empty and must appear in at least one provider's `models` list. Only providers with non-empty `models` are registered in the Router. There is no `active_provider` field — the Router resolves which provider to use by looking up the model name in its `modelToProvider` reverse index.
 
-> **SDK vs desktop config**: The SDK's `sdk.LLMConfig.DefaultModel` is **optional** — when empty, the Router auto-selects the first provider's first model. The desktop app's `config.yaml` `default_model` remains **required** (validated by `backend/config/config.go`); this validation is a desktop-app concern, not an SDK contract.
+> **SDK vs desktop config**: The SDK's `sp4rk.LLMConfig.DefaultModel` is **optional** — when empty, the Router auto-selects the first provider's first model. The desktop app's `config.yaml` `default_model` remains **required** (validated by `backend/config/config.go`); this validation is a desktop-app concern, not an SDK contract.
 
 ## Invariants
 

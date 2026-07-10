@@ -7,13 +7,13 @@ This example ships in **two equivalent variants**:
 | Variant     | File            | Command                 | When to read                                   |
 |-------------|-----------------|-------------------------|------------------------------------------------|
 | **Fluent**  | `main_fluent.go`| `go run -tags fluent .` | Recommended entry point — concise & declarative |
-| **Classic** | `main.go`       | `go run .`              | Full low-level control via `sdk.Config`        |
+| **Classic** | `main.go`       | `go run .`              | Full low-level control via `sp4rk.Config`        |
 
-Both build the identical `*sdk.Framework` and produce the same result. The fluent builders live in the root `sdk` package and return the original SDK types — see [`docs/fluent-api.md`](../../docs/fluent-api.md).
+Both build the identical `*sp4rk.Framework` and produce the same result. The fluent builders live in the root `sp4rk` package and return the original SDK types — see [`docs/fluent-api.md`](../../docs/fluent-api.md).
 
 ## What you will learn
 
-- How to create a `sdk.Framework` (via `sdk.NewF` or classic `sdk.New`)
+- How to create a `sp4rk.Framework` (via `sp4rk.NewF` or classic `sp4rk.New`)
 - Why the `finish` tool must be registered
 - How to define a system prompt factory
 - How to call `Framework.Execute` and read the result
@@ -21,7 +21,7 @@ Both build the identical `*sdk.Framework` and produce the same result. The fluen
 ### Fluent (recommended)
 
 ```go
-fw, err := sdk.NewF().
+fw, err := sp4rk.NewF().
     Anthropic(os.Getenv("ANTHROPIC_API_KEY"), "claude-sonnet-4-5").
     Build()
 defer fw.Shutdown() // finish tool is auto-registered
@@ -31,7 +31,7 @@ result, err := fw.RunF(ctx).
     Ask("What is the capital of France?")
 ```
 
-`sdk.NewF()` returns a real `*sdk.Framework` (no shadow types), and the finish tool is registered by convention. `fw.RunF(ctx)` delegates to `Framework.Execute` and returns the original `*orchestration.ExecutionResult`.
+`sp4rk.NewF()` returns a real `*sp4rk.Framework` (no shadow types), and the finish tool is registered by convention. `fw.RunF(ctx)` delegates to `Framework.Execute` and returns the original `*orchestration.ExecutionResult`.
 
 ## Architecture
 
@@ -56,8 +56,8 @@ The agent has exactly one tool — `finish`. It receives the user message, think
 ### 1. Framework creation
 
 ```go
-fw, err := sdk.New(sdk.Config{
-    LLM: sdk.LLMConfig{
+fw, err := sp4rk.New(sp4rk.Config{
+    LLM: sp4rk.LLMConfig{
         Providers: []llm.ProviderEntry{{
             Name:         "anthropic",
             ProviderType: "anthropic",
@@ -68,7 +68,7 @@ fw, err := sdk.New(sdk.Config{
 })
 ```
 
-`sdk.Config.LLM.Providers` is a slice — you can register multiple providers (see example 07). Each `ProviderEntry` has a logical `Name`, a `ProviderType` (`"anthropic"` or `"openai"`), an `APIKey`, and a list of `Models`.
+`sp4rk.Config.LLM.Providers` is a slice — you can register multiple providers (see example 07). Each `ProviderEntry` has a logical `Name`, a `ProviderType` (`"anthropic"` or `"openai"`), an `APIKey`, and a list of `Models`.
 
 ### 2. The finish tool
 
