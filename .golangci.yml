@@ -79,15 +79,6 @@ linters:
       for-loops: true
     depguard:
       rules:
-        sdk-no-core:
-          list-mode: lax
-          files:
-            - "**/sdk/**"
-          deny:
-            - pkg: "github.com/v0lka/c0wrk/core"
-              desc: "sdk must not import core (layering violation)"
-            - pkg: "github.com/v0lka/c0wrk/backend"
-              desc: "sdk must not import backend (layering violation)"
         core-no-backend:
           list-mode: lax
           files:
