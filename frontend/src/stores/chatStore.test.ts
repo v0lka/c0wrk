@@ -302,6 +302,78 @@ describe('groupMessages', () => {
     expect(result.items[1]!.kind).toBe('user')
   })
 
+  it('anchors a resolved tool_confirm directly under its triggering tool call', () => {
+    const call = makeUI({
+      id: 'tool-call-1',
+      type: 'tool_call',
+      metadata: { tool: 'write_file', args: '/foo', step: 1, tool_call_id: 'tc_1' },
+    })
+    const confirm = makeUI({
+      type: 'tool_confirm',
+      metadata: {
+        confirm_id: 'c1', tool: 'write_file', tool_msg_id: 'tool-call-1',
+        resolved: true, decision: 'confirmed',
+      },
+    })
+    const user = makeUI({ type: 'user', content: 'later' })
+    const result = groupMessages([call, confirm, user])
+    // Tool card first, decision card immediately after it, user last.
+    expect(result.items.map(i => i.kind)).toEqual(['tool', 'tool_confirm', 'user'])
+  })
+
+  it('falls back to stream position when a resolved tool_confirm has no matching tool call', () => {
+    const confirm = makeUI({
+      type: 'tool_confirm',
+      metadata: {
+        confirm_id: 'c1', tool: 'bash', tool_msg_id: 'missing-tool',
+        resolved: true, decision: 'denied',
+      },
+    })
+    const user = makeUI({ type: 'user', content: 'hi' })
+    const result = groupMessages([confirm, user])
+    // No matching tool card → stays at its stream position.
+    expect(result.items.map(i => i.kind)).toEqual(['tool_confirm', 'user'])
+  })
+
+  it('still sinks an unresolved tool_confirm to the bottom even with a tool_msg_id', () => {
+    const call = makeUI({
+      id: 'tool-call-2',
+      type: 'tool_call',
+      metadata: { tool: 'bash', args: 'rm -rf /', step: 1, tool_call_id: 'tc_2' },
+    })
+    const confirm = makeUI({
+      type: 'tool_confirm',
+      metadata: { confirm_id: 'c2', tool: 'bash', tool_msg_id: 'tool-call-2' },
+    })
+    const user = makeUI({ type: 'user', content: 'after' })
+    const result = groupMessages([call, confirm, user])
+    // Pending confirmation sinks below the user message (stays visible at bottom).
+    expect(result.items.map(i => i.kind)).toEqual(['tool', 'user', 'tool_confirm'])
+  })
+
+  it('anchors a resolved tool_confirm under a tool call nested in a plan step', () => {
+    const plan = makeUI({ type: 'plan', metadata: { steps: [{ id: 'ps1', description: 'Do thing' }] } })
+    const stepStart = makeUI({ type: 'plan_step_start', metadata: { step_id: 'ps1', description: 'Do thing' } })
+    const call = makeUI({
+      id: 'tool-call-3',
+      type: 'tool_call',
+      metadata: { tool: 'write_file', args: '/x', step: 1, tool_call_id: 'tc_3', plan_step_id: 'ps1' },
+    })
+    const confirm = makeUI({
+      type: 'tool_confirm',
+      metadata: {
+        confirm_id: 'c3', tool: 'write_file', tool_msg_id: 'tool-call-3', plan_step_id: 'ps1',
+        resolved: true, decision: 'confirmed',
+      },
+    })
+    const stepComplete = makeUI({ type: 'plan_step_complete', metadata: { step_id: 'ps1', success: true, duration: 10 } })
+    const result = groupMessages([plan, stepStart, call, confirm, stepComplete])
+    const step = result.items.find(i => i.kind === 'plan_step') as (DisplayItem & { kind: 'plan_step' }) | undefined
+    expect(step).toBeDefined()
+    // Decision card nests under the step, right after the tool card.
+    expect(step!.children.map(i => i.kind)).toEqual(['tool', 'tool_confirm'])
+  })
+
   it('renders pending action in root even when message carries a plan_step_id', () => {
     const plan = makeUI({
       type: 'plan',

@@ -74,6 +74,11 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   const stepIdCounts = new Map<string, number>()
   const stepIndexMap = new Map<string, { num: number; title: string; description: string }>()
   const toolItemsByKey = new Map<string, ToolLike>()
+  // Index of tool cards by their message id, each with the container array
+  // (root items or a step/subagent's children) they were pushed into. Used to
+  // anchor a resolved tool_confirm directly beneath the tool call that
+  // triggered it (linked via tool_msg_id).
+  const toolItemById = new Map<string, { item: ToolLike; container: DisplayItem[] }>()
   const pendingResults = new Map<string, { result?: string; resultLen?: number; error?: boolean }>()
   // Track the latest checklist per key (stepId || '' for standalone) so
   // earlier superseded updates can be removed from their container, and
@@ -86,9 +91,11 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   // position, like settled checklists.
   const activeActions: ActionDisplayItem[] = []
 
-  const pushItem = (item: DisplayItem, planStepId?: string) => {
+  const pushItem = (item: DisplayItem, planStepId?: string): DisplayItem[] => {
     const container = planStepId ? openSteps.get(planStepId) : null
-    if (container) { container.children.push(item) } else { items.push(item) }
+    if (container) { container.children.push(item); return container.children }
+    items.push(item)
+    return items
   }
 
   for (const msg of messages) {
@@ -115,10 +122,10 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
       case 'thought':
         pushItem({ kind: 'thought', id: msg.id, stepNum: (meta?.step_num as number) ?? 0, content: msg.content, reasoning: meta?.reasoning as string | undefined }, planStepId)
         break
-      case 'tool_call': handleToolCall(msg, meta, planStepId, stepIndexMap, toolItemsByKey, pendingResults, pushItem); break
+      case 'tool_call': handleToolCall(msg, meta, planStepId, stepIndexMap, toolItemsByKey, pendingResults, pushItem, toolItemById); break
       case 'tool_result': handleToolResult(meta, toolItemsByKey, pendingResults); break
       case 'tool_confirm': case 'ask_user': case 'task_failed_resumable': case 'step_limit': case 'plan_review':
-        handleActionMessage(msg, meta, items, activeActions); break
+        handleActionMessage(msg, meta, items, activeActions, toolItemById); break
       case 'context_compaction': {
         const bp = (meta?.before_percent as number) ?? 0
         const ap = (meta?.after_percent as number) ?? 0

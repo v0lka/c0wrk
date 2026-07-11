@@ -171,6 +171,19 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
   for (const c of pending.tool_confirms) {
     const id = `tool-confirm-${c.confirm_id}`
     if (existingIDs.has(id)) continue
+    // Link the confirmation to the tool_call that triggered it (mirroring the
+    // live-event path in hitlHandlers) so that, once resolved, the decision
+    // card anchors directly beneath the tool card rather than at the bottom.
+    let toolMsgId: string | undefined
+    let toolPlanStepId: string | undefined
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]!
+      if (m.type === 'tool_call' && m.metadata?.tool === c.tool) {
+        toolMsgId = m.id
+        toolPlanStepId = m.metadata?.plan_step_id as string | undefined
+        break
+      }
+    }
     store.addMessage(sessionId, {
       id,
       sessionId,
@@ -181,6 +194,8 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
         tool: c.tool,
         args: c.args,
         reasoning: c.reasoning ?? '',
+        tool_msg_id: toolMsgId,
+        plan_step_id: toolPlanStepId,
       } as Record<string, unknown>,
       timestamp: Date.now(),
     })

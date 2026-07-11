@@ -166,7 +166,8 @@ export function handleToolCall(
   stepIndexMap: Map<string, { num: number; title: string; description: string }>,
   toolItemsByKey: Map<string, ToolLike>,
   pendingResults: Map<string, { result?: string; resultLen?: number; error?: boolean }>,
-  pushItem: (item: DisplayItem, psId?: string) => void,
+  pushItem: (item: DisplayItem, psId?: string) => DisplayItem[],
+  toolItemById: Map<string, { item: ToolLike; container: DisplayItem[] }>,
 ) {
   const toolName = (meta?.tool as string) || ''
   if (toolName === 'subagent') return
@@ -188,7 +189,10 @@ export function handleToolCall(
     source: meta?.source as string | undefined,
   }
   applyPending(toolItem, key, toolItemsByKey, pendingResults)
-  pushItem(toolItem, planStepId)
+  // Record the tool card by its message id and the container it landed in,
+  // so a resolved tool_confirm can be anchored directly beneath it.
+  const container = pushItem(toolItem, planStepId)
+  toolItemById.set(toolItem.id, { item: toolItem, container })
 }
 
 export function handleToolResult(
@@ -216,6 +220,7 @@ export function handleToolResult(
 export function handleActionMessage(
   msg: ChatMessageUI, meta: Record<string, unknown> | undefined,
   items: DisplayItem[], activeActions: ActionDisplayItem[],
+  toolItemById: Map<string, { item: ToolLike; container: DisplayItem[] }>,
 ) {
   let item: ActionDisplayItem
   switch (msg.type) {
@@ -231,12 +236,29 @@ export function handleActionMessage(
       item = { kind: 'plan_review', message: msg }; break
     default: return
   }
+  // A resolved tool confirmation renders as a settled decision card. Anchor
+  // it directly beneath the tool call that triggered it (linked via
+  // tool_msg_id) rather than at its stream position near the bottom — so the
+  // "Confirmed/Denied" card appears under the tool card, matching where the
+  // decision was effectively about. The pending (unresolved) confirmation
+  // still sinks to the very bottom via activeActions below.
+  if (item.kind === 'tool_confirm' && meta?.resolved === true) {
+    const toolMsgId = meta.tool_msg_id as string | undefined
+    const ref = toolMsgId ? toolItemById.get(toolMsgId) : undefined
+    if (ref) {
+      const idx = ref.container.indexOf(ref.item)
+      if (idx !== -1) ref.container.splice(idx + 1, 0, item)
+      else ref.container.push(item)
+      return
+    }
+  }
   // Pending actions always render in the root chat stream — never nested
   // inside a plan_step or subagent block, regardless of any plan_step_id in
   // the message metadata. Unresolved actions are tracked in activeActions so
   // the sinking post-pass in groupMessages can move them to the very bottom
   // of the chat (staying visible while new content streams in above them);
-  // resolved actions remain at their stream position, like settled checklists.
+  // resolved actions without a linked tool call remain at their stream
+  // position, like settled checklists.
   items.push(item)
   if (meta?.resolved !== true) activeActions.push(item)
 }
