@@ -4,6 +4,8 @@ import { renameProject, deleteProject } from "@/api/projects";
 import { useProjectSwitchState } from "@/hooks/useProjectSwitchState";
 import { CreateProjectDialog } from "@/components/project/CreateProjectDialog";
 import { logger } from "@/lib/logger";
+import { cn } from "@/lib/utils";
+import { formatRelativeTime } from "@/lib/formatters";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -106,35 +108,47 @@ export function ProjectSelector() {
         <div className="flex items-center gap-1">
           <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="h-7 flex-1 min-w-0 justify-between gap-1 px-2 text-sm font-medium">
+              <Button variant="ghost" className="h-7 flex-1 min-w-0 justify-between gap-1 px-2 text-sm">
                 <span className="truncate  text-muted-foreground">{activeProject?.name ?? "Select project"}</span>
                 <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-56">
+            <DropdownMenuContent align="start" className="w-96">
               {realProjects.map((project) => (
                 <DropdownMenuItem
                   key={project.id}
                   className="group/item gap-2"
                   onSelect={() => handleSwitch(project.id)}
                 >
-                  {project.id === activeProjectId && <Check className="size-3.5 shrink-0" />}
-                  <span className="flex-1 truncate">{project.name}</span>
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                    {project.id === activeProjectId && <Check className="size-3.5 shrink-0" />}
+                    <span
+                      className={cn(
+                        "min-w-0 flex-1 truncate",
+                        project.id === activeProjectId && "font-medium",
+                      )}
+                    >
+                      {project.name}
+                    </span>
+                  </div>
+                  <span className="ml-auto text-[10px] text-muted-foreground">
+                    {formatRelativeTime(project.last_active_at)}
+                  </span>
                   <span
-                    className="ml-auto flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover/item:opacity-100 group-focus-within/item:opacity-100"
+                    className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover/item:opacity-100 group-focus-within/item:opacity-100"
                     onPointerDown={(e) => e.stopPropagation()}
                     onPointerUp={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
                   >
                     <button
                       type="button"
-                      className="rounded p-0.5 hover:bg-accent"
+                      className="rounded p-0.5 hover:bg-info/15"
                       onClick={() => {
                         startRename(project.id, project.name);
                         setDropdownOpen(false);
                       }}
                     >
-                      <Pencil className="size-3" />
+                      <Pencil className="size-3 text-info" />
                     </button>
                     <button
                       type="button"

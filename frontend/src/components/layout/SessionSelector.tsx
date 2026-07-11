@@ -242,11 +242,11 @@ function SessionItem({ session, isActive, onSelect, onRename, onArchive, onDelet
         onPointerUp={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
-        <button type="button" className="rounded p-0.5 hover:bg-accent" onClick={onRename}>
-          <Pencil className="size-3" />
+        <button type="button" className="rounded p-0.5 hover:bg-info/15" onClick={onRename}>
+          <Pencil className="size-3 text-info" />
         </button>
-        <button type="button" className="rounded p-0.5 hover:bg-accent" onClick={onArchive}>
-          <Archive className="size-3" />
+        <button type="button" className="rounded p-0.5 hover:bg-warning/15" onClick={onArchive}>
+          <Archive className="size-3 text-warning" />
         </button>
         <button type="button" className="rounded p-0.5 hover:bg-destructive/20" onClick={onDelete}>
           <Trash2 className="size-3 text-destructive" />
