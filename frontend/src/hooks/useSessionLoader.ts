@@ -5,7 +5,7 @@ import { subscribe } from '@/api/runtime'
 import { listSessions } from '@/api/sessions'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
-import { isSessionInfo, isArrayOf } from '@/types/guards'
+import { isSessionInfo, isArrayOf, isSessionRenamed } from '@/types/guards'
 import type { SessionInfo } from '@/types/models'
 
 // --- Helpers (mirror useProjectSwitchState for consistency) ---
@@ -80,6 +80,20 @@ export function useSessionLoader(): void {
         }
       })
       .catch(() => { /* ignore */ })
+
+    // Global session rename (manual or background auto-titling). Updates the
+    // session title in the sidebar even when the renamed session is not the
+    // active one — the session-scoped `session:{id}:session_renamed` event has
+    // no listener for non-active sessions, so without this the title stays
+    // stale ("Session <id>") until a project switch or app reload.
+    // updateSession is a no-op when the session is not in the current list.
+    cleanups.push(
+      subscribe('session:renamed', (data: unknown) => {
+        if (cancelled) return
+        if (!isSessionRenamed(data)) return
+        store().updateSession(data.id, { name: data.name })
+      }),
+    )
 
     return () => {
       cancelled = true

@@ -519,6 +519,67 @@ func TestEmit_NoOpWhenCtxNilAndNoFake(t *testing.T) {
 	a.emit("ev:test", "p1") // must not panic
 }
 
+func TestBuildUIEmitFunc_SessionRenamedEmitsGlobal(t *testing.T) {
+	a := &App{}
+	rec := &emitRecorder{}
+	a.wailsEmit = rec.emit
+	emit := a.buildUIEmitFunc()
+
+	// A session_renamed event must emit BOTH the session-scoped event and the
+	// global session:renamed event so that non-active sessions' titles update
+	// in the sidebar during background auto-titling.
+	emit(session.Event{
+		SessionID: "s1",
+		Type:      "session_renamed",
+		Data: session.SessionRenamedData{
+			ID:      "s1",
+			OldName: "Session abc123",
+			NewName: "Meaningful Title",
+		},
+	})
+
+	events := rec.snapshot()
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events (session-scoped + global), got %d: %+v", len(events), events)
+	}
+	// First: the session-scoped event carrying the full payload.
+	if events[0].Name != "session:s1:session_renamed" {
+		t.Errorf("events[0] name = %q, want session:s1:session_renamed", events[0].Name)
+	}
+	// Second: the global session:renamed with {id, name}.
+	if events[1].Name != backend.EventSessionRenamed {
+		t.Errorf("events[1] name = %q, want %q", events[1].Name, backend.EventSessionRenamed)
+	}
+	if len(events[1].Data) != 1 {
+		t.Fatalf("global event data len = %d, want 1", len(events[1].Data))
+	}
+	payload, ok := events[1].Data[0].(map[string]string)
+	if !ok {
+		t.Fatalf("global event payload type = %T, want map[string]string", events[1].Data[0])
+	}
+	if payload["id"] != "s1" || payload["name"] != "Meaningful Title" {
+		t.Errorf("global event payload = %+v, want {id:s1, name:Meaningful Title}", payload)
+	}
+}
+
+func TestBuildUIEmitFunc_NonRenameEmitsOnlyScoped(t *testing.T) {
+	a := &App{}
+	rec := &emitRecorder{}
+	a.wailsEmit = rec.emit
+	emit := a.buildUIEmitFunc()
+
+	// A regular event must emit only the session-scoped event, no global echo.
+	emit(session.Event{SessionID: "s1", Type: "finishing"})
+
+	events := rec.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	if events[0].Name != "session:s1:finishing" {
+		t.Errorf("event name = %q, want session:s1:finishing", events[0].Name)
+	}
+}
+
 // --- temp-file fixtures helper ---
 
 func writeTempFile(t *testing.T, dir, name, content string) string {

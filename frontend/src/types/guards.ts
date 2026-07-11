@@ -83,6 +83,10 @@ export function isProjectRenamed(v: unknown): v is { id: string; name: string } 
     return isObj(v) && typeof v.id === 'string' && typeof v.name === 'string'
 }
 
+export function isSessionRenamed(v: unknown): v is { id: string; name: string } {
+    return isObj(v) && typeof v.id === 'string' && typeof v.name === 'string'
+}
+
 export function isProxySettingsResponse(v: unknown): v is ProxySettingsResponse {
     return isObj(v) && has(v, 'enabled', 'bypass_list')
 }

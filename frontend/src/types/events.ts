@@ -179,6 +179,7 @@ export interface GlobalEventMap {
   readonly 'project:created': ProjectInfo
   readonly 'project:deleted': string
   readonly 'project:renamed': { readonly id: string; readonly name: string }
+  readonly 'session:renamed': { readonly id: string; readonly name: string }
   readonly 'project:switched': ProjectInfo
   readonly 'tool_manager:start': ToolManagerStartData
   readonly 'tool_manager:progress': ToolManagerProgressData

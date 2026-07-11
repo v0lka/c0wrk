@@ -5,11 +5,10 @@ import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import {
   isRoutingData, isStepData, isRetryData, isStepRetryData,
-  isServiceData, isSessionRenamedData, isSkillsActivatedData,
+  isServiceData, isSkillsActivatedData,
 } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
 import { usePlanStore } from '@/stores/planStore'
-import { useSessionStore } from '@/stores/sessionStore'
 import { generateMessageId } from '@/lib/ids'
 
 export function useLifecycleEvents(sessionId: string | null): void {
@@ -134,12 +133,10 @@ export function useLifecycleEvents(sessionId: string | null): void {
     )
 
     // --- session_renamed ---
-    cleanups.push(
-      onSessionEvent(sessionId, 'session_renamed', (data) => {
-        if (!isSessionRenamedData(data)) { reportDroppedEvent('session_renamed', data); return }
-        useSessionStore.getState().updateSession(sessionId, { name: data.new_name })
-      }),
-    )
+    // Handled globally in useSessionLoader via the `session:renamed` event so
+    // that non-active sessions' titles update in the sidebar too. The
+    // session-scoped event has no listener for non-active sessions, so a
+    // per-session handler here would miss background auto-titling.
 
     // --- skills_activated ---
     cleanups.push(

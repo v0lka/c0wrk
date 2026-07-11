@@ -41,6 +41,13 @@ const EventProjectDeleted = "project:deleted"
 // EventProjectRenamed is emitted when a project is renamed.
 const EventProjectRenamed = "project:renamed"
 
+// EventSessionRenamed is emitted when a session is renamed (either manually
+// or via background auto-titling). Unlike the session-scoped
+// `session:{id}:session_renamed` orchestration event, this global event lets
+// the sidebar update a session's title even when it is not the active session
+// (mirrors EventProjectRenamed).
+const EventSessionRenamed = "session:renamed"
+
 // EventProjectSwitched is emitted when the active project changes.
 const EventProjectSwitched = "project:switched"
 

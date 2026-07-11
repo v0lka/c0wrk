@@ -295,6 +295,18 @@ func (a *App) buildUIEmitFunc() func(session.Event) {
 	return func(evt session.Event) {
 		eventName := fmt.Sprintf("session:%s:%s", evt.SessionID, evt.Type)
 		a.emit(eventName, evt.Data)
+		// session_renamed is a session-list metadata change (it mirrors the
+		// global project:renamed event). Re-emit it globally so the sidebar
+		// updates the title even when the renamed session is NOT the active
+		// one — e.g. when background auto-titling completes after the user has
+		// already switched to another session. Without this, the session-scoped
+		// event has no listener and the title stays stale until a project
+		// switch or app reload.
+		if evt.Type == "session_renamed" {
+			if rd, ok := evt.Data.(session.SessionRenamedData); ok {
+				a.emit(backend.EventSessionRenamed, map[string]string{"id": rd.ID, "name": rd.NewName})
+			}
+		}
 		a.log().Debug("desktop: Wails EventsEmit called", "eventName", eventName)
 	}
 }
