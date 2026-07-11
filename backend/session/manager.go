@@ -78,7 +78,8 @@ type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspa
 
 // TokenPersistFunc is called with cumulative session token totals after each LLM call.
 // The sessionID parameter identifies which session the tokens belong to.
-type TokenPersistFunc func(sessionID string, inputTokens, outputTokens int, model, family string)
+// fillPercent is the conductor's context-window fill percent (0-100).
+type TokenPersistFunc func(sessionID string, inputTokens, outputTokens int, model, family string, fillPercent float64)
 
 // ProjectResolverFunc resolves a project ID to its workspace directory path.
 type ProjectResolverFunc func(projectID string) (workspacePath string, err error)
@@ -303,8 +304,8 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 
 	// Wire token persistence callback if configured.
 	if persistFn != nil {
-		emitter.SetTokenPersist(func(inputTokens, outputTokens int, model, family string) {
-			persistFn(id, inputTokens, outputTokens, model, family)
+		emitter.SetTokenPersist(func(inputTokens, outputTokens int, model, family string, fillPercent float64) {
+			persistFn(id, inputTokens, outputTokens, model, family, fillPercent)
 		})
 	}
 
@@ -554,8 +555,8 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 
 	// Wire token persistence callback if configured
 	if persistFn != nil {
-		emitter.SetTokenPersist(func(inputTokens, outputTokens int, model, family string) {
-			persistFn(id, inputTokens, outputTokens, model, family)
+		emitter.SetTokenPersist(func(inputTokens, outputTokens int, model, family string, fillPercent float64) {
+			persistFn(id, inputTokens, outputTokens, model, family, fillPercent)
 		})
 	}
 

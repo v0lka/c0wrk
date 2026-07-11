@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { IndexingStatus } from "./IndexingStatus";
+import { ContextFillStatus } from "./ContextFillStatus";
 
 function Sep() {
   return <Separator orientation="vertical" className="mx-1 h-4" />;
@@ -62,8 +63,16 @@ export function StatusBar() {
       {/* Spacer */}
       <div className="flex-1" />
 
+      {/* Context fill (conductor's context window), left of the index status */}
+      {tokens && <ContextFillStatus percent={tokens.fill_percent} />}
+
       {/* Vector index status (hidden for No Project) */}
-      {!isNoProject && <IndexingStatus />}
+      {!isNoProject && (
+        <>
+          <Sep />
+          <IndexingStatus />
+        </>
+      )}
     </div>
   );
 }

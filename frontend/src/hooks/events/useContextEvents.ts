@@ -45,6 +45,10 @@ export function useContextEvents(sessionId: string | null): void {
     )
 
     // --- session_tokens ---
+    // Carries the conductor's context-window fill_percent (guarded server-side by
+    // the isSessionRoot emitter, so subagent emissions never leak their own fill).
+    // context_fill events deliberately omit fill_percent here; with merge
+    // semantics they update only token totals, preserving the session-level fill.
     cleanups.push(
       onSessionEvent(sessionId, 'session_tokens', (data) => {
         if (!isSessionTokensData(data)) { reportDroppedEvent('session_tokens', data); return }
@@ -53,6 +57,7 @@ export function useContextEvents(sessionId: string | null): void {
           total_output_tokens: data.session_output_tokens,
           model: data.model,
           family: data.family,
+          fill_percent: data.fill_percent ?? 0,
         })
       }),
     )

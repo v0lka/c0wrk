@@ -579,6 +579,7 @@ export namespace backend {
 	    total_output_tokens: number;
 	    model: string;
 	    family: string;
+	    fill_percent: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionTokensResponse(source);
@@ -590,6 +591,7 @@ export namespace backend {
 	        this.total_output_tokens = source["total_output_tokens"];
 	        this.model = source["model"];
 	        this.family = source["family"];
+	        this.fill_percent = source["fill_percent"];
 	    }
 	}
 	export class SkillDescriptorDTO {
@@ -939,6 +941,7 @@ export namespace session {
 	    total_output_tokens: number;
 	    model: string;
 	    family: string;
+	    fill_percent: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
@@ -957,6 +960,7 @@ export namespace session {
 	        this.total_output_tokens = source["total_output_tokens"];
 	        this.model = source["model"];
 	        this.family = source["family"];
+	        this.fill_percent = source["fill_percent"];
 	    }
 	}
 	export class SessionRuntimeStatus {

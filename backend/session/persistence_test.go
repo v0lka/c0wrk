@@ -752,7 +752,7 @@ func TestUpdateSessionTokens(t *testing.T) {
 	}
 
 	// Update tokens with model info
-	if err := store.UpdateSessionTokens(context.Background(), session.ID, 10000, 7500, "claude-3-opus", "anthropic"); err != nil {
+	if err := store.UpdateSessionTokens(context.Background(), session.ID, 10000, 7500, "claude-3-opus", "anthropic", 42.5); err != nil {
 		t.Fatalf("failed to update session tokens: %v", err)
 	}
 
@@ -776,9 +776,12 @@ func TestUpdateSessionTokens(t *testing.T) {
 	if loaded.Family != "anthropic" {
 		t.Errorf("family mismatch: got %q, want %q", loaded.Family, "anthropic")
 	}
+	if loaded.FillPercent != 42.5 {
+		t.Errorf("fill percent mismatch: got %f, want %f", loaded.FillPercent, 42.5)
+	}
 
 	// Update again (overwrite)
-	if err := store.UpdateSessionTokens(context.Background(), session.ID, 20000, 15000, "gpt-4o", "openai"); err != nil {
+	if err := store.UpdateSessionTokens(context.Background(), session.ID, 20000, 15000, "gpt-4o", "openai", 88); err != nil {
 		t.Fatalf("failed to update session tokens again: %v", err)
 	}
 

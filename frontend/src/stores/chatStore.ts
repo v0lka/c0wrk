@@ -40,7 +40,7 @@ interface ChatActions {
   setTaskActive: (sessionId: string, active: boolean) => void
   setStepContextFill: (stepId: string, fill: number) => void
   clearStepContextFill: () => void
-  setSessionTokens: (sessionId: string, tokens: TokenInfo) => void
+  setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
   clearSession: (sessionId: string) => void
 }
 
@@ -244,9 +244,15 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
 
   clearStepContextFill: () => set({ stepContextFill: {} }),
 
-  setSessionTokens: (sessionId, tokens) => set((s) => ({
-    sessionTokens: { ...s.sessionTokens, [sessionId]: tokens },
-  })),
+  // Merge partial token info into the session entry so event-driven updates
+  // (context_fill / session_tokens) that omit fill_percent don't clobber it,
+  // while the full TokenInfo from GetSessionTokens still replaces everything.
+  setSessionTokens: (sessionId, tokens) => set((s) => {
+    const existing = s.sessionTokens[sessionId]
+    return {
+      sessionTokens: { ...s.sessionTokens, [sessionId]: { ...existing, ...tokens } as TokenInfo },
+    }
+  }),
 
   clearSession: (sessionId) => set((s) => {
     const { [sessionId]: _msgs, ...restMessages } = s.messages

@@ -1513,7 +1513,7 @@ func (m *mockSessionStoreForRestore) ArchiveSession(_ context.Context, _ string,
 	return nil
 }
 func (m *mockSessionStoreForRestore) RenameSession(_ context.Context, _, _ string) error { return nil }
-func (m *mockSessionStoreForRestore) UpdateSessionTokens(_ context.Context, _ string, _, _ int, _, _ string) error {
+func (m *mockSessionStoreForRestore) UpdateSessionTokens(_ context.Context, _ string, _, _ int, _, _ string, _ float64) error {
 	return nil
 }
 func (m *mockSessionStoreForRestore) UpdateSessionActivity(_ context.Context, _ string) error {

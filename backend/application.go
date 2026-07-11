@@ -159,10 +159,10 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// 6. Session manager.
 	manager := session.NewManager(factory, emitFunc, cfg.AgentDir)
 	if cfg.SessionStore != nil {
-		manager.SetTokenPersist(func(sessionID string, inputTokens, outputTokens int, model, family string) {
+		manager.SetTokenPersist(func(sessionID string, inputTokens, outputTokens int, model, family string, fillPercent float64) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			if err := cfg.SessionStore.UpdateSessionTokens(ctx, sessionID, inputTokens, outputTokens, model, family); err != nil {
+			if err := cfg.SessionStore.UpdateSessionTokens(ctx, sessionID, inputTokens, outputTokens, model, family, fillPercent); err != nil {
 				app.log().Warn("failed to persist session tokens", "session", sessionID, "error", err)
 			}
 		})

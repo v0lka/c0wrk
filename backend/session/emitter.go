@@ -32,9 +32,9 @@ type tokenState struct {
 	lastUsedTokens      int
 	lastMaxTokens       int
 	lastFillStatus      string
-	lastModel           string                                                    // last model used
-	lastFamily          string                                                    // last model family used
-	tokenPersist        func(inputTokens, outputTokens int, model, family string) // callback to persist tokens
+	lastModel           string                                                                  // last model used
+	lastFamily          string                                                                  // last model family used
+	tokenPersist        func(inputTokens, outputTokens int, model, family string, fillPercent float64) // callback to persist tokens
 }
 
 // toolCallIDGen holds a shared monotonic counter for generating unique tool_call_id values
@@ -81,16 +81,23 @@ type EventEmitter struct {
 	// since each executor starts stepNum from 1.
 	localToolIDs map[string]string
 
+	// isSessionRoot marks the conductor's own emitter. Scoped copies created by
+	// WithPlanStepID/WithRetryAttempt (subagents) are NOT root. Only the root
+	// emitter updates the session-level fill cache so a subagent's own context
+	// fill never overwrites the conductor's fill shown in the status bar.
+	isSessionRoot bool
+
 	logger *slog.Logger
 }
 
 // NewEventEmitter creates a new EventEmitter for a session.
 func NewEventEmitter(sessionID string, emit func(Event)) *EventEmitter {
 	return &EventEmitter{
-		sessionID:   sessionID,
-		emit:        emit,
-		tokens:      &tokenState{lastFillStatus: "ok"},
-		toolCallIDs: &toolCallIDGen{epoch: time.Now().UnixMilli()},
+		sessionID:     sessionID,
+		emit:          emit,
+		tokens:        &tokenState{lastFillStatus: "ok"},
+		toolCallIDs:   &toolCallIDGen{epoch: time.Now().UnixMilli()},
+		isSessionRoot: true,
 	}
 }
 
@@ -105,7 +112,7 @@ func (e *EventEmitter) log() *slog.Logger {
 // SetTokenPersist sets a callback that is invoked with cumulative session token
 // totals each time the UsageTracker observer fires. Use this to persist tokens to the store
 // without introducing a direct store dependency in the emitter.
-func (e *EventEmitter) SetTokenPersist(fn func(inputTokens, outputTokens int, model, family string)) {
+func (e *EventEmitter) SetTokenPersist(fn func(inputTokens, outputTokens int, model, family string, fillPercent float64)) {
 	e.tokens.mu.Lock()
 	defer e.tokens.mu.Unlock()
 	e.tokens.tokenPersist = fn
@@ -116,13 +123,14 @@ func (e *EventEmitter) SetTokenPersist(fn func(inputTokens, outputTokens int, mo
 func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
 	e.log().Debug("emitter: creating plan-step-scoped emitter", "sessionID", e.sessionID, "planStepID", id)
 	return &EventEmitter{
-		sessionID:    e.sessionID,
-		emit:         e.emit,
-		planStepID:   id,
-		retryAttempt: e.retryAttempt, // preserve retry attempt across copies
-		tokens:       e.tokens,       // share token accumulation state across copies
-		toolCallIDs:  e.toolCallIDs,  // share tool call ID counter across copies
-		logger:       e.logger,       // propagate logger to copies
+		sessionID:     e.sessionID,
+		emit:          e.emit,
+		planStepID:    id,
+		retryAttempt:  e.retryAttempt, // preserve retry attempt across copies
+		tokens:        e.tokens,       // share token accumulation state across copies
+		toolCallIDs:   e.toolCallIDs,  // share tool call ID counter across copies
+		logger:        e.logger,       // propagate logger to copies
+		isSessionRoot: false,          // scoped copies are never the session root
 	}
 }
 
@@ -131,13 +139,14 @@ func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
 func (e *EventEmitter) WithRetryAttempt(attempt int) core.Emitter {
 	e.log().Debug("emitter: creating retry-scoped emitter", "sessionID", e.sessionID, "retryAttempt", attempt)
 	return &EventEmitter{
-		sessionID:    e.sessionID,
-		emit:         e.emit,
-		planStepID:   e.planStepID,
-		retryAttempt: attempt,
-		tokens:       e.tokens,      // share token accumulation state across copies
-		toolCallIDs:  e.toolCallIDs, // share tool call ID counter across copies
-		logger:       e.logger,      // propagate logger to copies
+		sessionID:     e.sessionID,
+		emit:          e.emit,
+		planStepID:    e.planStepID,
+		retryAttempt:  attempt,
+		tokens:        e.tokens,      // share token accumulation state across copies
+		toolCallIDs:   e.toolCallIDs, // share tool call ID counter across copies
+		logger:        e.logger,      // propagate logger to copies
+		isSessionRoot: false,         // scoped copies are never the session root
 	}
 }
 
@@ -532,6 +541,7 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 	totalOut := e.tokens.sessionOutputTokens
 	lastModel := e.tokens.lastModel
 	lastFamily := e.tokens.lastFamily
+	lastFill := e.tokens.lastFillPercent
 	e.tokens.mu.Unlock()
 
 	e.mu.Lock()
@@ -550,6 +560,7 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 			SessionOutputTokens: totalOut,
 			Model:               lastModel,
 			Family:              lastFamily,
+			FillPercent:         lastFill,
 		},
 	})
 
@@ -566,6 +577,8 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 
 // EmitSessionTokens emits a "session_tokens" event with the given totals.
 // This is called by the UsageTracker observer — accumulation is handled externally.
+// The context-window fill percent is read from the shared cache (updated only by the
+// session-root emitter in ContextFill) and forwarded for persistence and display.
 func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
 	e.log().Debug("emitter: session tokens update", "sessionID", e.sessionID, "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family)
 	e.tokens.mu.Lock()
@@ -576,11 +589,12 @@ func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family st
 		e.tokens.lastModel = model
 		e.tokens.lastFamily = family
 	}
+	fillPercent := e.tokens.lastFillPercent
 	persist := e.tokens.tokenPersist
 	e.tokens.mu.Unlock()
 
 	if persist != nil {
-		persist(totalIn, totalOut, model, family)
+		persist(totalIn, totalOut, model, family, fillPercent)
 	}
 
 	e.emitEvent(Event{
@@ -591,6 +605,7 @@ func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family st
 			SessionOutputTokens: totalOut,
 			Model:               model,
 			Family:              family,
+			FillPercent:         fillPercent,
 		},
 	})
 }
@@ -599,10 +614,16 @@ func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family st
 func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {
 	// Cache fill state and read session totals atomically.
 	e.tokens.mu.Lock()
-	e.tokens.lastFillPercent = fillPercent
-	e.tokens.lastUsedTokens = usedTokens
-	e.tokens.lastMaxTokens = maxTokens
-	e.tokens.lastFillStatus = status
+	// Only the session-root (conductor) emitter updates the session-level fill
+	// cache. Scoped copies (subagents) report their own fill via the emitted
+	// event and stepContextFill, but must not clobber the conductor's fill used
+	// by the status bar / persisted session tokens.
+	if e.isSessionRoot {
+		e.tokens.lastFillPercent = fillPercent
+		e.tokens.lastUsedTokens = usedTokens
+		e.tokens.lastMaxTokens = maxTokens
+		e.tokens.lastFillStatus = status
+	}
 	totalIn := e.tokens.sessionInputTokens
 	totalOut := e.tokens.sessionOutputTokens
 	lastModel := e.tokens.lastModel

@@ -21,10 +21,11 @@ type SessionInfo struct {
 	LastActiveAt      string `json:"last_active_at"` // RFC 3339 formatted timestamp
 	Archived          bool   `json:"archived"`
 	Active            bool   `json:"active"`
-	TotalInputTokens  int    `json:"total_input_tokens"`
-	TotalOutputTokens int    `json:"total_output_tokens"`
-	Model             string `json:"model"`
-	Family            string `json:"family"`
+	TotalInputTokens  int     `json:"total_input_tokens"`
+	TotalOutputTokens int     `json:"total_output_tokens"`
+	Model             string  `json:"model"`
+	Family            string  `json:"family"`
+	FillPercent       float64 `json:"fill_percent"`
 }
 
 // ChatMessage represents a stored chat message.
@@ -59,7 +60,7 @@ type SessionStore interface {
 	RenameSession(ctx context.Context, id, name string) error
 
 	// Token tracking
-	UpdateSessionTokens(ctx context.Context, id string, inputTokens, outputTokens int, model, family string) error
+	UpdateSessionTokens(ctx context.Context, id string, inputTokens, outputTokens int, model, family string, fillPercent float64) error
 
 	// Activity tracking
 	UpdateSessionActivity(ctx context.Context, id string) error
@@ -128,7 +129,8 @@ func (s *SQLiteSessionStore) createTables() error {
 		total_input_tokens INTEGER DEFAULT 0,
 		total_output_tokens INTEGER DEFAULT 0,
 		model TEXT DEFAULT '',
-		family TEXT DEFAULT ''
+		family TEXT DEFAULT '',
+		fill_percent REAL DEFAULT 0
 	);
 
 	CREATE TABLE IF NOT EXISTS session_messages (
@@ -222,6 +224,28 @@ func (s *SQLiteSessionStore) createTables() error {
 		}
 	}
 
+	// Migration: add fill_percent column to sessions for persisting the
+	// conductor's context-window fill across app restarts.
+	if !s.columnExists("sessions", "fill_percent") {
+		var lastErr error
+		for attempt := range 3 {
+			_, lastErr = s.db.ExecContext(context.Background(),
+				`ALTER TABLE sessions ADD COLUMN fill_percent REAL DEFAULT 0`)
+			if lastErr == nil {
+				break
+			}
+			if !strings.Contains(lastErr.Error(), "database is locked") {
+				break
+			}
+			if attempt < 2 {
+				time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
+			}
+		}
+		if lastErr != nil {
+			s.log().Warn("migration ALTER TABLE failed", "table", "sessions", "column", "fill_percent", "error", lastErr)
+		}
+	}
+
 	return nil
 }
 
@@ -248,8 +272,8 @@ func (s *SQLiteSessionStore) SaveSession(ctx context.Context, info SessionInfo) 
 		lastActiveAt = info.CreatedAt
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens, model, family)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens, model, family, fill_percent)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			last_active_at = excluded.last_active_at,
@@ -257,8 +281,9 @@ func (s *SQLiteSessionStore) SaveSession(ctx context.Context, info SessionInfo) 
 			total_input_tokens = excluded.total_input_tokens,
 			total_output_tokens = excluded.total_output_tokens,
 			model = excluded.model,
-			family = excluded.family`,
-		info.ID, info.ProjectID, info.Name, info.CreatedAt, lastActiveAt, info.Archived, info.TotalInputTokens, info.TotalOutputTokens, info.Model, info.Family,
+			family = excluded.family,
+			fill_percent = excluded.fill_percent`,
+		info.ID, info.ProjectID, info.Name, info.CreatedAt, lastActiveAt, info.Archived, info.TotalInputTokens, info.TotalOutputTokens, info.Model, info.Family, info.FillPercent,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
@@ -270,9 +295,9 @@ func (s *SQLiteSessionStore) SaveSession(ctx context.Context, info SessionInfo) 
 func (s *SQLiteSessionStore) LoadSession(ctx context.Context, id string) (*SessionInfo, error) {
 	var info SessionInfo
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, '') FROM sessions WHERE id = ?`,
+		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(fill_percent, 0) FROM sessions WHERE id = ?`,
 		id,
-	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family)
+	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -293,7 +318,8 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 		       COALESCE(total_input_tokens, 0),
 		       COALESCE(total_output_tokens, 0),
 		       COALESCE(model, ''),
-		       COALESCE(family, '')
+		       COALESCE(family, ''),
+		       COALESCE(fill_percent, 0)
 		FROM sessions
 		ORDER BY COALESCE(last_active_at, created_at) DESC`)
 	if err != nil {
@@ -308,7 +334,7 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 	var sessions []SessionInfo
 	for rows.Next() {
 		var info SessionInfo
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family); err != nil {
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent); err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
 		}
 		sessions = append(sessions, info)
@@ -329,7 +355,7 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 // ListSessionsByProject returns all sessions for a given project, ordered by last activity (newest first).
 func (s *SQLiteSessionStore) ListSessionsByProject(ctx context.Context, projectID string) ([]SessionInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, '') FROM sessions
+		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(fill_percent, 0) FROM sessions
 		WHERE project_id = ?
 		ORDER BY COALESCE(last_active_at, created_at) DESC`, projectID)
 	if err != nil {
@@ -344,7 +370,7 @@ func (s *SQLiteSessionStore) ListSessionsByProject(ctx context.Context, projectI
 	var sessions []SessionInfo
 	for rows.Next() {
 		var info SessionInfo
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family); err != nil {
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent); err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
 		}
 		sessions = append(sessions, info)
@@ -386,11 +412,12 @@ func (s *SQLiteSessionStore) RenameSession(ctx context.Context, id, name string)
 	return nil
 }
 
-// UpdateSessionTokens updates the accumulated token counts and model info for a session.
-func (s *SQLiteSessionStore) UpdateSessionTokens(ctx context.Context, id string, inputTokens, outputTokens int, model, family string) error {
+// UpdateSessionTokens updates the accumulated token counts, model info, and
+// context-window fill percent for a session.
+func (s *SQLiteSessionStore) UpdateSessionTokens(ctx context.Context, id string, inputTokens, outputTokens int, model, family string, fillPercent float64) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE sessions SET total_input_tokens = ?, total_output_tokens = ?, model = ?, family = ? WHERE id = ?`,
-		inputTokens, outputTokens, model, family, id,
+		UPDATE sessions SET total_input_tokens = ?, total_output_tokens = ?, model = ?, family = ?, fill_percent = ? WHERE id = ?`,
+		inputTokens, outputTokens, model, family, fillPercent, id,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update session tokens: %w", err)

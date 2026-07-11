@@ -185,10 +185,11 @@ type ContextFillEventData struct {
 
 // SessionTokensEventData is the typed Data payload for "session_tokens" events.
 type SessionTokensEventData struct {
-	SessionInputTokens  int    `json:"session_input_tokens"`
-	SessionOutputTokens int    `json:"session_output_tokens"`
-	Model               string `json:"model"`
-	Family              string `json:"family"`
+	SessionInputTokens  int     `json:"session_input_tokens"`
+	SessionOutputTokens int     `json:"session_output_tokens"`
+	Model               string  `json:"model"`
+	Family              string  `json:"family"`
+	FillPercent         float64 `json:"fill_percent"`
 }
 
 // ContextCompactionEventData is the typed Data payload for "context_compaction" events.

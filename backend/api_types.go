@@ -169,10 +169,11 @@ type MergeRebaseState = workspace.MergeRebaseState
 
 // SessionTokensResponse holds token usage statistics for a session.
 type SessionTokensResponse struct {
-	TotalInputTokens  int    `json:"total_input_tokens"`
-	TotalOutputTokens int    `json:"total_output_tokens"`
-	Model             string `json:"model"`
-	Family            string `json:"family"`
+	TotalInputTokens  int     `json:"total_input_tokens"`
+	TotalOutputTokens int     `json:"total_output_tokens"`
+	Model             string  `json:"model"`
+	Family            string  `json:"family"`
+	FillPercent       float64 `json:"fill_percent"`
 }
 
 // ProjectUIStateRequest is the payload used to persist project switch UI state.

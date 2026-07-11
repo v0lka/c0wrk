@@ -197,6 +197,7 @@ func (f *FrontendAPI) GetSessionTokens(sessionID string) SessionTokensResponse {
 	result.TotalOutputTokens = info.TotalOutputTokens
 	result.Model = info.Model
 	result.Family = info.Family
+	result.FillPercent = info.FillPercent
 	return result
 }
 
