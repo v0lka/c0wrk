@@ -6,7 +6,7 @@
 
 `core/`, `backend/`, and `desktop/` all import sp4rk packages directly. No convenience re-export layers exist. See ADR-008.
 
-sp4rk (the `sdk/` directory — `sdk/` is the sp4rk agent engine, module `github.com/v0lka/sp4rk`) is a separate Go module (per ADR-014). The root module (`github.com/v0lka/c0wrk`) depends on it via `require github.com/v0lka/sp4rk` + `replace github.com/v0lka/sp4rk => ./sdk`. The module boundary provides compile-time enforcement of the import prohibition: the sp4rk module cannot import `core/`, `backend/`, or `desktop/`. External consumers can import `github.com/v0lka/sp4rk` independently.
+sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://github.com/v0lka/sp4rk) and is a separate Go module (per ADR-015). The root module (`github.com/v0lka/c0wrk`) depends on it as a normal external dependency (`require github.com/v0lka/sp4rk`, no `replace` directive). The module boundary provides compile-time enforcement of the import prohibition: the sp4rk module cannot import `core/`, `backend/`, or `desktop/`. External consumers can import `github.com/v0lka/sp4rk` independently.
 
 ## Interfaces
 
@@ -183,8 +183,8 @@ Core bridges c0wrk-specific configuration into sp4rk engine components via small
 
 ## Related Specs
 
-- [sp4rk agent-execution contract](../../sdk/specs/contracts/agent-execution.md) - canonical contract for what an embedding application provides (events, HITL, ToolExecutor)
-- [sp4rk tools contract](../../sdk/specs/contracts/tools.md) - canonical `Tool`/`ToolRegistry`/`ToolPolicy`/`ToolJudger` definitions
-- [sp4rk llm-providers contract](../../sdk/specs/contracts/llm-providers.md) - canonical `Provider`/`Router`/`ModelRegistry` definitions
+- [sp4rk agent-execution contract](https://github.com/v0lka/sp4rk/blob/main/specs/contracts/agent-execution.md) - canonical contract for what an embedding application provides (events, HITL, ToolExecutor)
+- [sp4rk tools contract](https://github.com/v0lka/sp4rk/blob/main/specs/contracts/tools.md) - canonical `Tool`/`ToolRegistry`/`ToolPolicy`/`ToolJudger` definitions
+- [sp4rk llm-providers contract](https://github.com/v0lka/sp4rk/blob/main/specs/contracts/llm-providers.md) - canonical `Provider`/`Router`/`ModelRegistry` definitions
 - [ADR-008](../decisions/008-backend-sp4rk-direct-import.md) - backend may import sp4rk directly
-- [ADR-014](../decisions/014-sp4rk-separate-module.md) - sp4rk as a separate Go module
+- [ADR-015](../decisions/015-sp4rk-external-module-dependency.md) - sp4rk as an external module dependency

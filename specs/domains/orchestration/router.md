@@ -4,7 +4,7 @@
 
 c0wrk classifies each user request by domain, complexity, and matched skills, then selects a model for the Conductor. Classification itself is a **sp4rk engine** primitive (`github.com/v0lka/sp4rk/agent/router`); c0wrk wraps it via `core/router_adapter.go` and consumes the `RoutingDecision` to drive skill activation, compaction selection, and the continuation fast-path. The Router no longer determines an execution mode or triggers clarification — both are handled inside the Conductor loop via tool calls.
 
-The canonical classification algorithm (prompt, domain/complexity scales, skill matching, validation) is documented in [the sp4rk router spec](../../../sdk/specs/domains/orchestration/router.md).
+The canonical classification algorithm (prompt, domain/complexity scales, skill matching, validation) is documented in [the sp4rk router spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/router.md).
 
 ## Key Files
 
@@ -12,7 +12,7 @@ The canonical classification algorithm (prompt, domain/complexity scales, skill 
 - `core/prompts/router_system.md` — routing classification prompt
 - `core/orchestrator_handle.go` — invokes the router and applies c0wrk-specific routing policy (continuation fast-path, skill augmentation, No Project override)
 
-Engine file: `github.com/v0lka/sp4rk/agent/router/router.go` (Router struct, `Route` method) — see [the sp4rk router spec](../../../sdk/specs/domains/orchestration/router.md).
+Engine file: `github.com/v0lka/sp4rk/agent/router/router.go` (Router struct, `Route` method) — see [the sp4rk router spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/router.md).
 
 ## RoutingDecision (consumed by c0wrk)
 
@@ -81,7 +81,7 @@ In No Project (CHAT) mode, `routing.Domain` is overridden from `"code"` to `"gen
 
 ## Related Specs
 
-- [sp4rk router](../../../sdk/specs/domains/orchestration/router.md) — canonical classification algorithm, prompt, validation
+- [sp4rk router](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/router.md) — canonical classification algorithm, prompt, validation
 - [README.md](README.md) — orchestration overview
 - [conductor.md](conductor.md) — routing decision feeds the Conductor
 - [../memory/compaction.md](../memory/compaction.md) — domain → strategy mapping

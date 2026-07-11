@@ -2,7 +2,7 @@
 
 ## Role
 
-The ReAct loop primitive (Thought → Action → Observation) is a **sp4rk engine** component. c0wrk does not reimplement it — `core/` launches `github.com/v0lka/sp4rk/agent.Executor.Run` in two roles: as the **Conductor** (top-level task owner) and as **subagents** (isolated loops launched by the `delegate` tool). The full loop semantics — circuit breakers, mutation/checklist gates, implicit-finish detection, two-stage truncation, `ToolResultCache`, `batch` interception — are documented canonically in [the sp4rk executor spec](../../../sdk/specs/domains/orchestration/executor.md).
+The ReAct loop primitive (Thought → Action → Observation) is a **sp4rk engine** component. c0wrk does not reimplement it — `core/` launches `github.com/v0lka/sp4rk/agent.Executor.Run` in two roles: as the **Conductor** (top-level task owner) and as **subagents** (isolated loops launched by the `delegate` tool). The full loop semantics — circuit breakers, mutation/checklist gates, implicit-finish detection, two-stage truncation, `ToolResultCache`, `batch` interception — are documented canonically in [the sp4rk executor spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/executor.md).
 
 ## Key Files
 
@@ -10,7 +10,7 @@ The ReAct loop primitive (Thought → Action → Observation) is a **sp4rk engin
 - `core/tools/delegate.go` — `delegate` tool: builds and launches `Executor.Run` instances as subagents via `github.com/v0lka/sp4rk/agent.RunSubAgent`
 - `core/stepconfig.go` — `criticalAlwaysAllowedTools` set (c0wrk tools that survive an `AllowedTools` filter)
 
-Engine files (`github.com/v0lka/sp4rk/agent/executor.go`, `executor_run.go`, `subagent.go`, `events.go`, `github.com/v0lka/sp4rk/tools/builtins/batch.go`) are documented in [the sp4rk executor spec](../../../sdk/specs/domains/orchestration/executor.md).
+Engine files (`github.com/v0lka/sp4rk/agent/executor.go`, `executor_run.go`, `subagent.go`, `events.go`, `github.com/v0lka/sp4rk/tools/builtins/batch.go`) are documented in [the sp4rk executor spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/executor.md).
 
 ## c0wrk Integration
 
@@ -47,7 +47,7 @@ The set is enforced in `core/stepconfig.go` `criticalAlwaysAllowedTools` and uni
 
 ## Engine Behavior (canonical in sp4rk)
 
-The following are sp4rk engine primitives, documented in [the sp4rk executor spec](../../../sdk/specs/domains/orchestration/executor.md) — do not duplicate here:
+The following are sp4rk engine primitives, documented in [the sp4rk executor spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/executor.md) — do not duplicate here:
 
 - ReAct loop iteration, step limit, `HITLHandler.OnStepLimit` (AllowOnce/AllowAlways/Deny)
 - Circuit breakers (repeat, truncation, parse-error, fruitless, same-tool)
@@ -73,7 +73,7 @@ The following are sp4rk engine primitives, documented in [the sp4rk executor spe
 
 ## Related Specs
 
-- [sp4rk executor](../../../sdk/specs/domains/orchestration/executor.md) — canonical ReAct loop, circuit breakers, gates, truncation, caching, batch interception
+- [sp4rk executor](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/executor.md) — canonical ReAct loop, circuit breakers, gates, truncation, caching, batch interception
 - [conductor.md](conductor.md) — Conductor (top-level Executor caller)
 - [delegation.md](delegation.md) — subagent launch via the `delegate` tool
 - [../memory/compaction.md](../memory/compaction.md) — compaction strategies

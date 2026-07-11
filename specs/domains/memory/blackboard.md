@@ -2,7 +2,7 @@
 
 ## Role
 
-c0wrk persists and restores task state — plan, step results, reflections, and facts — across sessions on top of the sp4rk `Blackboard` abstraction. The `Blackboard` interface, the in-memory `MapBlackboard`, and the step-output / fact / final-result store adapters are **sp4rk engine** primitives; c0wrk adds SQLite-backed persistence and restore. See [the sp4rk blackboard spec](../../../sdk/specs/domains/memory/blackboard.md) for the canonical interface and adapters.
+c0wrk persists and restores task state — plan, step results, reflections, and facts — across sessions on top of the sp4rk `Blackboard` abstraction. The `Blackboard` interface, the in-memory `MapBlackboard`, and the step-output / fact / final-result store adapters are **sp4rk engine** primitives; c0wrk adds SQLite-backed persistence and restore. See [the sp4rk blackboard spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/memory/blackboard.md) for the canonical interface and adapters.
 
 ## Key Files
 
@@ -10,7 +10,7 @@ c0wrk persists and restores task state — plan, step results, reflections, and 
 - `core/persistent_blackboard.go` — `PersistableBlackboard` interface + `TaskPersistence` store interface (persistence contract types the orchestrator uses for BB restoration)
 - `core/orchestrator.go` / `core/orchestrator_handle.go` — Blackboard lifecycle: create per first message, restore for continuations (`opts.TaskID != ""`)
 
-Engine files (`github.com/v0lka/sp4rk/orchestration/blackboard.go` `MapBlackboard`, `interfaces.go` `Blackboard`, `stepoutput_adapter.go` / `factstore_adapter.go` / `finalresult_adapter.go`) are documented in [the sp4rk blackboard spec](../../../sdk/specs/domains/memory/blackboard.md).
+Engine files (`github.com/v0lka/sp4rk/orchestration/blackboard.go` `MapBlackboard`, `interfaces.go` `Blackboard`, `stepoutput_adapter.go` / `factstore_adapter.go` / `finalresult_adapter.go`) are documented in [the sp4rk blackboard spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/memory/blackboard.md).
 
 ## c0wrk Persistence & Restore
 
@@ -78,7 +78,7 @@ The final result is set via `SetFinalResult(output)` after the Conductor finishe
 
 ## Related Specs
 
-- [sp4rk blackboard](../../../sdk/specs/domains/memory/blackboard.md) — canonical `Blackboard` interface, `MapBlackboard`, store adapters, `Checkpointer`
+- [sp4rk blackboard](https://github.com/v0lka/sp4rk/blob/main/specs/domains/memory/blackboard.md) — canonical `Blackboard` interface, `MapBlackboard`, store adapters, `Checkpointer`
 - [README.md](README.md) — memory overview
 - [../orchestration/conductor.md](../orchestration/conductor.md) — how the Conductor reads blackboard state
 - [../orchestration/delegation.md](../orchestration/delegation.md) — how `delegate` writes subagent results

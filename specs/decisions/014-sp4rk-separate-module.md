@@ -2,9 +2,9 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-015](./015-sp4rk-external-module-dependency.md)
 
-> **Related:** the canonical, sp4rk-native version of this decision now lives in [sdk/specs/decisions/001-separate-module.md](../../sdk/specs/decisions/001-separate-module.md). This c0wrk ADR is retained as historical decision history.
+> **Related:** the canonical, sp4rk-native version of this decision now lives in the `github.com/v0lka/sp4rk` repository. This c0wrk ADR is retained as historical decision history. The in-repo `sdk/` directory and `replace` directive described below no longer exist; see ADR-015.
 
 ## Context
 

@@ -4,7 +4,7 @@
 
 Accepted
 
-> **Related:** the canonical, sp4rk-native version of this decision now lives in [sdk/specs/decisions/003-shell-parser-symlink-detection.md](../../sdk/specs/decisions/003-shell-parser-symlink-detection.md). This c0wrk ADR is retained as historical decision history.
+> **Related:** the canonical, sp4rk-native version of this decision now lives in [sp4rk: specs/decisions/003-shell-parser-symlink-detection.md](https://github.com/v0lka/sp4rk/blob/main/specs/decisions/003-shell-parser-symlink-detection.md). This c0wrk ADR is retained as historical decision history.
 
 ## Context
 

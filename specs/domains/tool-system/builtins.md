@@ -2,7 +2,7 @@
 
 ## Role
 
-c0wrk registers sp4rk's built-in tools plus the c0wrk-specific `ask_user` tool at startup via `RegisterBuiltinTools`. This spec documents c0wrk's tool catalog, registration order, and configuration. The tool implementations (filesystem, search, web, agent-infrastructure), file-safety judging, and file-coherence checking are **sp4rk engine** behavior — see [the sp4rk builtins spec](../../../sdk/specs/domains/tool-system/builtins.md).
+c0wrk registers sp4rk's built-in tools plus the c0wrk-specific `ask_user` tool at startup via `RegisterBuiltinTools`. This spec documents c0wrk's tool catalog, registration order, and configuration. The tool implementations (filesystem, search, web, agent-infrastructure), file-safety judging, and file-coherence checking are **sp4rk engine** behavior — see [the sp4rk builtins spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/builtins.md).
 
 ## Key Files
 
@@ -10,7 +10,7 @@ c0wrk registers sp4rk's built-in tools plus the c0wrk-specific `ask_user` tool a
 - `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
 - `core/toolmanager/` — manages external binaries (`rg`, `rtk`, `uv`, `markitdown`), auto-downloaded on first run to `~/.c0wrk/tools/bin/`, PATH-prepended at startup (ADR-010)
 
-Engine files (`github.com/v0lka/sp4rk/tools/builtins/*.go`, including `file_reader.go`, `ripgrep.go`, `tool_result_read.go`, `web_search/`, `batch.go`, `checklist.go`, `coherence.go`) are documented in [the sp4rk builtins spec](../../../sdk/specs/domains/tool-system/builtins.md).
+Engine files (`github.com/v0lka/sp4rk/tools/builtins/*.go`, including `file_reader.go`, `ripgrep.go`, `tool_result_read.go`, `web_search/`, `batch.go`, `checklist.go`, `coherence.go`) are documented in [the sp4rk builtins spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/builtins.md).
 
 ## Tool Catalog
 
@@ -102,7 +102,7 @@ Non-truncation tool limits:
 
 ## Engine Behavior (canonical in sp4rk)
 
-The following are sp4rk engine primitives, documented in [the sp4rk builtins spec](../../../sdk/specs/domains/tool-system/builtins.md) — do not duplicate here:
+The following are sp4rk engine primitives, documented in [the sp4rk builtins spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/builtins.md) — do not duplicate here:
 
 - Tool implementations (file_reader streaming, ripgrep `--json` parsing, web_search provider abstraction, batch interception, checklist validation)
 - File-safety judging (`judgeReadInSessionRoots` / `judgeWriteInSessionRoots`, the 11 `ToolJudger` implementations) — c0wrk's session-root/auto-approval layer on top is in [../../architecture/security-model.md](../../architecture/security-model.md)
@@ -121,7 +121,7 @@ The following are sp4rk engine primitives, documented in [the sp4rk builtins spe
 
 ## Related Specs
 
-- [sp4rk builtins](../../../sdk/specs/domains/tool-system/builtins.md) — canonical tool implementations, file-safety judging, coherence checking
+- [sp4rk builtins](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/builtins.md) — canonical tool implementations, file-safety judging, coherence checking
 - [README.md](README.md) — tool system overview
 - [../../architecture/security-model.md](../../architecture/security-model.md) — policy enforcement and session-root auto-approval
 - [../../contracts/core-sp4rk.md](../../contracts/core-sp4rk.md) — tool interface boundary

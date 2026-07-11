@@ -2,7 +2,7 @@
 
 ## Role
 
-c0wrk wires sp4rk's MCP (Model Context Protocol) gateway into the orchestration builder: it starts configured MCP servers at startup, discovers their tools, and registers them into the core tool registry. The `Gateway`, `Server`, and `mcp.Tool` lifecycle, transports, and schema sanitization are **sp4rk engine** primitives — see [the sp4rk mcp-gateway spec](../../../sdk/specs/domains/tool-system/mcp-gateway.md).
+c0wrk wires sp4rk's MCP (Model Context Protocol) gateway into the orchestration builder: it starts configured MCP servers at startup, discovers their tools, and registers them into the core tool registry. The `Gateway`, `Server`, and `mcp.Tool` lifecycle, transports, and schema sanitization are **sp4rk engine** primitives — see [the sp4rk mcp-gateway spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/mcp-gateway.md).
 
 ## Key Files
 
@@ -10,7 +10,7 @@ c0wrk wires sp4rk's MCP (Model Context Protocol) gateway into the orchestration 
 - `backend/frontend_api_mcp.go` (or matching `frontend_api_*.go`) — `GetMCPStatus` / `ReconfigureMCP` surface for the frontend MCP management UI
 - `core/tools/registry.go` — `RegisterWithSource(mcpTool, "mcp:"+serverName)` registers MCP tools with the `mcp` source tag
 
-Engine files (`github.com/v0lka/sp4rk/tools/mcp/gateway.go` `Gateway`, `server.go` `Server`, `mcptool.go` `mcp.Tool`) are documented in [the sp4rk mcp-gateway spec](../../../sdk/specs/domains/tool-system/mcp-gateway.md).
+Engine files (`github.com/v0lka/sp4rk/tools/mcp/gateway.go` `Gateway`, `server.go` `Server`, `mcptool.go` `mcp.Tool`) are documented in [the sp4rk mcp-gateway spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/mcp-gateway.md).
 
 ## c0wrk Wiring
 
@@ -66,7 +66,7 @@ mcp:
         Authorization: "Bearer ${MCP_TOKEN}"
 ```
 
-Env vars are expanded as `${VAR}`. Transport types (stdio/http), schema sanitization, and server connection behavior are engine concerns — see [the sp4rk mcp-gateway spec](../../../sdk/specs/domains/tool-system/mcp-gateway.md).
+Env vars are expanded as `${VAR}`. Transport types (stdio/http), schema sanitization, and server connection behavior are engine concerns — see [the sp4rk mcp-gateway spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/mcp-gateway.md).
 
 ## Invariants
 
@@ -78,7 +78,7 @@ Env vars are expanded as `${VAR}`. Transport types (stdio/http), schema sanitiza
 
 ## Related Specs
 
-- [sp4rk mcp-gateway](../../../sdk/specs/domains/tool-system/mcp-gateway.md) — canonical Gateway/Server/mcp.Tool lifecycle, transports, schema sanitization
+- [sp4rk mcp-gateway](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/mcp-gateway.md) — canonical Gateway/Server/mcp.Tool lifecycle, transports, schema sanitization
 - [README.md](README.md) — tool system overview
 - [../../architecture/security-model.md](../../architecture/security-model.md) — MCP tool policies
 - [../../contracts/backend-core.md](../../contracts/backend-core.md) — ReconfigureMCP wiring

@@ -289,7 +289,7 @@ skill works because the Conductor has the tools and owns the loop.
 
 ## Related Specs
 
-- Canonical sp4rk decision: [sdk/specs/decisions/005-conductor-orchestration-pipeline.md](../../sdk/specs/decisions/005-conductor-orchestration-pipeline.md) — the conductor-driven ReAct pipeline framed from the engine's perspective
+- Canonical sp4rk decision: [sp4rk: specs/decisions/005-conductor-orchestration-pipeline.md](https://github.com/v0lka/sp4rk/blob/main/specs/decisions/005-conductor-orchestration-pipeline.md) — the conductor-driven ReAct pipeline framed from the engine's perspective
 - [../domains/orchestration/README.md](../domains/orchestration/README.md) — rewritten orchestration domain overview
 - [../domains/orchestration/conductor.md](../domains/orchestration/conductor.md) — Conductor component detail
 - [../domains/orchestration/delegation.md](../domains/orchestration/delegation.md) — delegate tool and async delegation registry

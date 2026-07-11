@@ -35,14 +35,14 @@ c0wrk enforces a strict layered architecture. Each layer has a single responsibi
                                  │ Go imports
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  sp4rk (sdk/ dir)   Reusable agent execution engine                 │
+│  sp4rk (ext. repo)  Reusable agent execution engine                 │
 │   github.com/v0lka/  Agent executor, LLM providers, memory,         │
 │   sp4rk              orchestration loop, tools, skills, MCP gateway │
 │                      prompts, embeddings                            │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-> `sdk/` is the local directory holding the sp4rk agent engine (module `github.com/v0lka/sp4rk`). It is shown here as the lowest layer.
+> sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://github.com/v0lka/sp4rk); c0wrk consumes it as an external dependency. It is shown here as the lowest layer.
 
 ## Import Rules
 
@@ -52,15 +52,15 @@ c0wrk enforces a strict layered architecture. Each layer has a single responsibi
 | `desktop/`  | `backend`, `core`, sp4rk             | —                            |
 | `backend/`  | `core`, sp4rk                        | —                            |
 | `core/`     | sp4rk                                | `backend`, `desktop`         |
-| `sdk/` (sp4rk) | External libs only                | `core`, `backend`, `desktop` |
+| sp4rk (ext. repo) | External libs only                | `core`, `backend`, `desktop` |
 
-> **Module boundary** (ADR-014): sp4rk (the `sdk/` directory) is a separate Go module (`github.com/v0lka/sp4rk`). The root module (`github.com/v0lka/c0wrk`) depends on it via `replace github.com/v0lka/sp4rk => ./sdk`. The import prohibition on the sp4rk module is now enforced at the module level — sp4rk cannot import `core/`, `backend/`, or `desktop/` because they live in a different module.
+> **Module boundary** (ADR-015): sp4rk is a separate Go module (`github.com/v0lka/sp4rk`) living in its [own repository](https://github.com/v0lka/sp4rk). The root module (`github.com/v0lka/c0wrk`) depends on it as a normal external dependency (`require github.com/v0lka/sp4rk`, no `replace` directive). The import prohibition on sp4rk is enforced at the repository level — sp4rk cannot import `core/`, `backend/`, or `desktop/` because they live in a different repository.
 
-> **depguard enforcement** (`.golangci.yml`): the linter currently enforces a subset of the above — sp4rk may not import `core`/`backend`, and `core` may not import `backend`. The `→desktop` prohibitions are maintained by convention (and by the import cycles they would create), not by the linter.
+> **depguard enforcement** (`.golangci.yml`): the linter enforces one layering rule here — `core` may not import `backend`. sp4rk isolation is now enforced at the repository level (sp4rk lives in a separate repo, ADR-015), so no sp4rk-targeted depguard rule remains. All other prohibitions (`→desktop`) are maintained by convention (and by the import cycles they would create), not by the linter.
 
 ## Layer Responsibilities
 
-### sp4rk (`sdk/` directory) — Reusable Agent Engine
+### sp4rk (external repository) — Reusable Agent Engine
 
 The lowest layer. Contains the generic building blocks for an LLM agent application: executor (ReAct loop), LLM provider abstraction (OpenAI, Anthropic, Gemini, LM Studio), memory management (context window + compaction strategies), orchestration primitives (Plan&Execute DAG engine, Blackboard), tool interface and registry, skill system, MCP gateway, prompt utilities, and embedding support. Nothing in sp4rk is c0wrk-specific.
 
@@ -107,7 +107,7 @@ No direct Go imports. Auto-generated bindings at `frontend/wailsjs/go/desktop/Ap
 - `backend` may import sp4rk packages directly for type definitions
 - `core` never imports `backend` or `desktop`
 - sp4rk has zero knowledge of c0wrk-specific concepts
-- sp4rk is a separate Go module; the import prohibition on `core/`/`backend/`/`desktop/` is enforced at the module level (ADR-014)
+- sp4rk is a separate Go module in its own repository; the import prohibition on `core/`/`backend/`/`desktop/` is enforced at the repository level (ADR-015)
 - All inter-layer communication between frontend and Go goes through Wails
 
 ## Anti-Patterns
@@ -123,4 +123,4 @@ No direct Go imports. Auto-generated bindings at `frontend/wailsjs/go/desktop/Ap
 - [contracts/core-sp4rk.md](../contracts/core-sp4rk.md) - Detailed interface table
 - [contracts/backend-core.md](../contracts/backend-core.md) - Config adapter pattern
 - [contracts/desktop-frontend.md](../contracts/desktop-frontend.md) - Wails binding surface
-- [sp4rk package layers](../../sdk/specs/architecture/layers.md) - canonical engine package layout and import graph
+- [sp4rk package layers](https://github.com/v0lka/sp4rk/blob/main/specs/architecture/layers.md) - canonical engine package layout and import graph

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-c0wrk provides tool infrastructure for the agent on top of sp4rk's `Tool`/`ToolRegistry` primitives: a policy-enforcing registry wrapper, built-in tool registration, the c0wrk-specific `ask_user` tool, and tool-manager wiring for external binaries. The `Tool` interface, `ToolPolicy`, `ToolResult`, `BaseTool`, `ToolJudger`, `ConfirmFunc`, and the basic `ToolRegistry` are **sp4rk engine** primitives — see [the sp4rk tool-system spec](../../../sdk/specs/domains/tool-system/README.md) and [the sp4rk tools contract](../../../sdk/specs/contracts/tools.md).
+c0wrk provides tool infrastructure for the agent on top of sp4rk's `Tool`/`ToolRegistry` primitives: a policy-enforcing registry wrapper, built-in tool registration, the c0wrk-specific `ask_user` tool, and tool-manager wiring for external binaries. The `Tool` interface, `ToolPolicy`, `ToolResult`, `BaseTool`, `ToolJudger`, `ConfirmFunc`, and the basic `ToolRegistry` are **sp4rk engine** primitives — see [the sp4rk tool-system spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/README.md) and [the sp4rk tools contract](https://github.com/v0lka/sp4rk/blob/main/specs/contracts/tools.md).
 
 ## Key Files
 
@@ -13,7 +13,7 @@ c0wrk provides tool infrastructure for the agent on top of sp4rk's `Tool`/`ToolR
 - `core/toolnames.go` — tool name constants, `NoProjectDisabledTools`, `NoProjectBashBlacklist`
 - `core/toolmanager/` — manages external binary dependencies (`rg`, `rtk`, `uv`, `markitdown`), auto-downloaded on first run (see ADR-010)
 
-Engine files (`github.com/v0lka/sp4rk/tools/tool.go`, `safety.go`, `registry.go`, `judge.go`, `github.com/v0lka/sp4rk/security/wrap.go`, `github.com/v0lka/sp4rk/tools/mcp/gateway.go`) are documented in [the sp4rk tool-system spec](../../../sdk/specs/domains/tool-system/README.md).
+Engine files (`github.com/v0lka/sp4rk/tools/tool.go`, `safety.go`, `registry.go`, `judge.go`, `github.com/v0lka/sp4rk/security/wrap.go`, `github.com/v0lka/sp4rk/tools/mcp/gateway.go`) are documented in [the sp4rk tool-system spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/README.md).
 
 ## Two-Layer Registry
 
@@ -40,7 +40,7 @@ Engine files (`github.com/v0lka/sp4rk/tools/tool.go`, `safety.go`, `registry.go`
 └─────────────────────────────────────────────────────┘
 ```
 
-The embedded sp4rk `ToolRegistry` satisfies `github.com/v0lka/sp4rk/agent.ToolExecutor`. The fail-closed policy pipeline, `ConfirmFunc`, `ToolJudger`, and `ToolPolicy` semantics are engine behavior — see [the sp4rk tools contract](../../../sdk/specs/contracts/tools.md).
+The embedded sp4rk `ToolRegistry` satisfies `github.com/v0lka/sp4rk/agent.ToolExecutor`. The fail-closed policy pipeline, `ConfirmFunc`, `ToolJudger`, and `ToolPolicy` semantics are engine behavior — see [the sp4rk tools contract](https://github.com/v0lka/sp4rk/blob/main/specs/contracts/tools.md).
 
 ## Flow (c0wrk registry pipeline)
 
@@ -122,8 +122,8 @@ Note: `security.*` keys use `snake_case`; `toolLimits.*` and `timeouts.*` keys u
 
 ## Related Specs
 
-- [sp4rk tool-system overview](../../../sdk/specs/domains/tool-system/README.md) — canonical `Tool`/`ToolRegistry`/`ToolPolicy`/`ToolJudger`/`ConfirmFunc`
-- [sp4rk tools contract](../../../sdk/specs/contracts/tools.md) — interface definitions
+- [sp4rk tool-system overview](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/README.md) — canonical `Tool`/`ToolRegistry`/`ToolPolicy`/`ToolJudger`/`ConfirmFunc`
+- [sp4rk tools contract](https://github.com/v0lka/sp4rk/blob/main/specs/contracts/tools.md) — interface definitions
 - [builtins.md](builtins.md) — catalog of built-in tools and c0wrk registration
 - [mcp-gateway.md](mcp-gateway.md) — dynamic MCP tool lifecycle
 - [../../architecture/security-model.md](../../architecture/security-model.md) — c0wrk policy/auto-approval/symlink layer

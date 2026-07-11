@@ -215,7 +215,7 @@ Budget: `config.Conductor.MaxDependencyContextChars` (default 8000) divided amon
 
 ## Related Specs
 
-- [sp4rk Subagents](../../../sdk/specs/domains/orchestration/subagents.md) — canonical `RunSubAgent`/`RunSubAgentsParallel` primitive (isolated executor in a goroutine, trajectory capture, defense-in-depth)
+- [sp4rk Subagents](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/subagents.md) — canonical `RunSubAgent`/`RunSubAgentsParallel` primitive (isolated executor in a goroutine, trajectory capture, defense-in-depth)
 - [conductor.md](conductor.md) — the Conductor that invokes `delegate`
 - [executor.md](executor.md) — the ReAct loop primitive shared by Conductor and subagents
 - [README.md](README.md) — orchestration overview

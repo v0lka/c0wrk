@@ -212,7 +212,7 @@ Note: yaml key casing is mixed across config sections — `executor.*` keys use 
 
 ## Related Specs
 
-- [sp4rk orchestration overview](../../../sdk/specs/domains/orchestration/README.md) — canonical engine orchestration specs (Conductor, Executor, Router, Planner, Reflector, Subagents)
+- [sp4rk orchestration overview](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/README.md) — canonical engine orchestration specs (Conductor, Executor, Router, Planner, Reflector, Subagents)
 - [conductor.md](conductor.md) — Conductor component detail
 - [delegation.md](delegation.md) — delegate tool and async delegation registry
 - [router.md](router.md) — request classification

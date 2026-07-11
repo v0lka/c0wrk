@@ -4,7 +4,7 @@
 
 Accepted
 
-> **Related:** the canonical, sp4rk-native version of this decision now lives in [sdk/specs/decisions/004-application-concept-extraction.md](../../sdk/specs/decisions/004-application-concept-extraction.md). This c0wrk ADR is retained as historical decision history.
+> **Related:** the canonical, sp4rk-native version of this decision now lives in [sp4rk: specs/decisions/004-application-concept-extraction.md](https://github.com/v0lka/sp4rk/blob/main/specs/decisions/004-application-concept-extraction.md). This c0wrk ADR is retained as historical decision history.
 
 ## Context
 
@@ -53,5 +53,5 @@ Refactor `FormatFullEnvBlock`/`FormatCompactEnvBlock` to accept explicit `EnvFor
 
 - Refines [ADR-009](009-backend-domain-logic-extraction.md) — vectorindex moved from sp4rk to its final `core/` home
 - Follows [ADR-008](008-backend-sp4rk-direct-import.md) — all layers import source packages directly
-- Canonical sp4rk decision: [sdk/specs/decisions/004-application-concept-extraction.md](../../sdk/specs/decisions/004-application-concept-extraction.md)
+- Canonical sp4rk decision: [sp4rk: specs/decisions/004-application-concept-extraction.md](https://github.com/v0lka/sp4rk/blob/main/specs/decisions/004-application-concept-extraction.md)
 - Aligned with [specs/contracts/core-sp4rk.md](../contracts/core-sp4rk.md) — updated interface tables

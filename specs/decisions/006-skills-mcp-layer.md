@@ -4,7 +4,7 @@
 
 **Superseded** (2026-07-03). Skills and the MCP gateway have since moved to sp4rk (the `sdk/` directory) — see `github.com/v0lka/sp4rk/skills` and `github.com/v0lka/sp4rk/tools/mcp`. The concerns about orchestration coupling were resolved via interface indirection — sp4rk's skills package uses context values for per-session activation, and sp4rk's tools/mcp registers through the standard sp4rk tool registry. `core/` now only *wires* skills and MCP into the orchestration cycle (see `core/builder.go`, `core/builder_mcp.go`). No superseding ADR was written for this move; this status update records the drift.
 
-> **Related:** the canonical, sp4rk-native version of this decision now lives in [sdk/specs/decisions/002-skills-mcp-in-sdk.md](../../sdk/specs/decisions/002-skills-mcp-in-sdk.md). This c0wrk ADR is retained as historical decision history.
+> **Related:** the canonical, sp4rk-native version of this decision now lives in [sp4rk: specs/decisions/002-skills-mcp-in-sdk.md](https://github.com/v0lka/sp4rk/blob/main/specs/decisions/002-skills-mcp-in-sdk.md). This c0wrk ADR is retained as historical decision history.
 
 ## Context
 

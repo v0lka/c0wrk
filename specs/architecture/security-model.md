@@ -317,7 +317,7 @@ security:
 
 ## Related Specs
 
-- [sp4rk security model](../../sdk/specs/architecture/security-model.md) - canonical engine-level definitions of `ToolPolicy`, `ToolJudger`/`ToolJudge`, confirmation primitives, and `untrusted-content` wrapping (this spec covers c0wrk's session-root, auto-approval, and registry-integration wiring on top of those primitives)
+- [sp4rk security model](https://github.com/v0lka/sp4rk/blob/main/specs/architecture/security-model.md) - canonical engine-level definitions of `ToolPolicy`, `ToolJudger`/`ToolJudge`, confirmation primitives, and `untrusted-content` wrapping (this spec covers c0wrk's session-root, auto-approval, and registry-integration wiring on top of those primitives)
 - [domains/tool-system/README.md](../domains/tool-system/README.md) - Tool registry details
 - [contracts/event-catalog.md](../contracts/event-catalog.md) - tool_confirm event payload
 - [architecture/data-flow.md](data-flow.md) - Tool execution flow

@@ -1,6 +1,6 @@
 # Specs Index
 
-> **Engine behavior is canonical in sp4rk.** c0wrk's `specs/` cover c0wrk-only wiring (layering, lifecycle, session roots, the policy-enforcing registry wrapper, conductor/delegation tools, persistence, frontend). Engine primitives (Executor, Router, Planner, Reflector, Conductor, Blackboard, Tool/ToolRegistry, LLM Router, compaction, MCP gateway) are documented in [the sp4rk spec set](../sdk/specs/INDEX.md) (`sdk/specs/`). Engine-related c0wrk specs below cross-reference their canonical sp4rk counterparts.
+> **Engine behavior is canonical in sp4rk.** c0wrk's `specs/` cover c0wrk-only wiring (layering, lifecycle, session roots, the policy-enforcing registry wrapper, conductor/delegation tools, persistence, frontend). Engine primitives (Executor, Router, Planner, Reflector, Conductor, Blackboard, Tool/ToolRegistry, LLM Router, compaction, MCP gateway) are documented in [the sp4rk spec set](https://github.com/v0lka/sp4rk/blob/main/specs/INDEX.md) in the sp4rk repository. Engine-related c0wrk specs below cross-reference their canonical sp4rk counterparts.
 
 ## Navigation by Task
 
@@ -31,7 +31,7 @@
 | Backend-Core wiring                      | [contracts/backend-core.md](contracts/backend-core.md)                   |
 | Wails bindings, frontend RPC             | [contracts/desktop-frontend.md](contracts/desktop-frontend.md)           |
 | Event types, payloads, protocol          | [contracts/event-catalog.md](contracts/event-catalog.md)                 |
-| Canonical engine behavior (sp4rk)        | [../sdk/specs/INDEX.md](../sdk/specs/INDEX.md)                           |
+| Canonical engine behavior (sp4rk)        | [sp4rk/specs/INDEX.md (GitHub)](https://github.com/v0lka/sp4rk/blob/main/specs/INDEX.md) |
 | "Why was X designed this way?"           | [decisions/](decisions/)                                                 |
 
 ## Domain Dependency Graph
@@ -47,14 +47,13 @@
 └──────────┘    └────┬─────┘    └──────────┘    └───────┘
                      │ direct import               ▲
                      ▼                             │
-                   ┌───────┐                       │ separate Go module
-                   │ sp4rk │  (sdk/ dir)           │ github.com/v0lka/sp4rk
+                   ┌───────┐                       │ separate repository
+                   │ sp4rk │  github.com/v0lka/sp4rk (external module)
                    └───┬───┘───────────────────────┘
-                       │ require github.com/v0lka/sp4rk
-                       │ + replace github.com/v0lka/sp4rk => ./sdk
+                       │ require github.com/v0lka/sp4rk (no replace)
 ```
 
-Import rule: each arrow is one-way. `backend` imports `core` AND sp4rk directly (per ADR-008). `core` remains the primary sp4rk consumer. sp4rk (the `sdk/` directory — `sdk/` is the sp4rk agent engine) is a separate Go module (`github.com/v0lka/sp4rk`, per ADR-014); the root module depends on it via `require github.com/v0lka/sp4rk` + `replace github.com/v0lka/sp4rk => ./sdk` for local development.
+Import rule: each arrow is one-way. `backend` imports `core` AND sp4rk directly (per ADR-008). `core` remains the primary sp4rk consumer. sp4rk is a separate Go module (`github.com/v0lka/sp4rk`) living in its [own repository](https://github.com/v0lka/sp4rk) (per ADR-015); the root module depends on it as a normal external dependency (`require github.com/v0lka/sp4rk`, no `replace` directive).
 
 ## Spec Workflow and Format Reference
 
@@ -66,27 +65,27 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 
 - [layers.md](architecture/layers.md) - Layer hierarchy, import rules, responsibilities
 - [data-flow.md](architecture/data-flow.md) - Request lifecycle, event flow, config flow
-- [security-model.md](architecture/security-model.md) - c0wrk session-root/auto-approval/symlink layer (engine ToolPolicy/judge/untrusted primitives → canonical in [../sdk/specs/architecture/security-model.md](../sdk/specs/architecture/security-model.md))
+- [security-model.md](architecture/security-model.md) - c0wrk session-root/auto-approval/symlink layer (engine ToolPolicy/judge/untrusted primitives → canonical in [sp4rk: specs/architecture/security-model.md](https://github.com/v0lka/sp4rk/blob/main/specs/architecture/security-model.md))
 
 ### domains/orchestration/
 
 - [README.md](domains/orchestration/README.md) - c0wrk orchestration overview (Conductor pipeline, HandleMessage flow)
 - [conductor.md](domains/orchestration/conductor.md) - c0wrk Conductor wiring (system prompt, tool set, inline step lifecycle)
 - [delegation.md](domains/orchestration/delegation.md) - `delegate`/`cancel_delegation` tools, Delegation Registry, DAG
-- [router.md](domains/orchestration/router.md) - c0wrk router adapter + routing policy (classification → canonical in [../sdk/specs/domains/orchestration/router.md](../sdk/specs/domains/orchestration/router.md))
-- [executor.md](domains/orchestration/executor.md) - c0wrk Executor integration (AddNonCacheableTools, callers; loop internals → canonical in [../sdk/specs/domains/orchestration/executor.md](../sdk/specs/domains/orchestration/executor.md))
+- [router.md](domains/orchestration/router.md) - c0wrk router adapter + routing policy (classification → canonical in [sp4rk: specs/domains/orchestration/router.md](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/router.md))
+- [executor.md](domains/orchestration/executor.md) - c0wrk Executor integration (AddNonCacheableTools, callers; loop internals → canonical in [sp4rk: specs/domains/orchestration/executor.md](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/executor.md))
 
 ### domains/tool-system/
 
 - [README.md](domains/tool-system/README.md) - c0wrk policy-enforcing registry wrapper (two-layer registry)
 - [builtins.md](domains/tool-system/builtins.md) - Tool catalog, registration, `ask_user`, tool-manager wiring
-- [mcp-gateway.md](domains/tool-system/mcp-gateway.md) - c0wrk MCP wiring (Gateway/Server/mcp.Tool → canonical in [../sdk/specs/domains/tool-system/mcp-gateway.md](../sdk/specs/domains/tool-system/mcp-gateway.md))
+- [mcp-gateway.md](domains/tool-system/mcp-gateway.md) - c0wrk MCP wiring (Gateway/Server/mcp.Tool → canonical in [sp4rk: specs/domains/tool-system/mcp-gateway.md](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/mcp-gateway.md))
 
 ### domains/memory/
 
 - [README.md](domains/memory/README.md) - c0wrk context wiring (domain→strategy, config)
 - [compaction.md](domains/memory/compaction.md) - c0wrk strategy selection and config
-- [blackboard.md](domains/memory/blackboard.md) - c0wrk blackboard persistence/restore (interface/adapters → canonical in [../sdk/specs/domains/memory/blackboard.md](../sdk/specs/domains/memory/blackboard.md))
+- [blackboard.md](domains/memory/blackboard.md) - c0wrk blackboard persistence/restore (interface/adapters → canonical in [sp4rk: specs/domains/memory/blackboard.md](https://github.com/v0lka/sp4rk/blob/main/specs/domains/memory/blackboard.md))
 
 ### domains/ (single-file)
 
@@ -124,4 +123,5 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [011-sp4rk-to-core-extraction.md](decisions/011-sp4rk-to-core-extraction.md) - Move vector index and proxy from sp4rk to Core
 - [012-conductor-orchestration-pipeline.md](decisions/012-conductor-orchestration-pipeline.md) - Conductor-driven ReAct pipeline replacing system-driven plan-execute-reflect
 - [013-rrf-pre-fusion-score-thresholds.md](decisions/013-rrf-pre-fusion-score-thresholds.md) - Pre-fusion score thresholds and configurable RRF parameters for hybrid search
-- [014-sp4rk-separate-module.md](decisions/014-sp4rk-separate-module.md) - sp4rk as a separate Go module → Supersedes ADR-001
+- [014-sp4rk-separate-module.md](decisions/014-sp4rk-separate-module.md) - sp4rk as a separate Go module → Superseded by ADR-015
+- [015-sp4rk-external-module-dependency.md](decisions/015-sp4rk-external-module-dependency.md) - sp4rk as an external module dependency → Supersedes ADR-014

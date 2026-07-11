@@ -161,8 +161,8 @@ The guard is consulted in `UpdateChecklistTool.Execute` after parsing succeeds a
 
 ## Related Specs
 
-- [sp4rk Conductor](../../../sdk/specs/domains/orchestration/conductor.md) — canonical engine Conductor (single-loop task owner)
-- [sp4rk Executor](../../../sdk/specs/domains/orchestration/executor.md) — canonical ReAct loop primitive (circuit breakers, gates, truncation)
+- [sp4rk Conductor](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/conductor.md) — canonical engine Conductor (single-loop task owner)
+- [sp4rk Executor](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/executor.md) — canonical ReAct loop primitive (circuit breakers, gates, truncation)
 - [README.md](README.md) — orchestration overview
 - [delegation.md](delegation.md) — delegate tool and Delegation Registry
 - [executor.md](executor.md) — ReAct loop (the primitive the Conductor is built on)

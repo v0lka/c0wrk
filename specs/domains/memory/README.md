@@ -2,7 +2,7 @@
 
 ## Purpose
 
-c0wrk wires sp4rk's context-management engine into the orchestration cycle: it selects a compaction strategy per routing domain, configures fill thresholds, and persists blackboard state across sessions. The `ContextWindow`, compaction strategies, tool-output pruning, history mutation, and untrusted-content wrapping are **sp4rk engine** primitives — see [the sp4rk memory spec](../../../sdk/specs/domains/memory/README.md) and [the sp4rk compaction spec](../../../sdk/specs/domains/memory/compaction.md).
+c0wrk wires sp4rk's context-management engine into the orchestration cycle: it selects a compaction strategy per routing domain, configures fill thresholds, and persists blackboard state across sessions. The `ContextWindow`, compaction strategies, tool-output pruning, history mutation, and untrusted-content wrapping are **sp4rk engine** primitives — see [the sp4rk memory spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/memory/README.md) and [the sp4rk compaction spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/memory/compaction.md).
 
 ## Key Files
 
@@ -10,7 +10,7 @@ c0wrk wires sp4rk's context-management engine into the orchestration cycle: it s
 - `core/orchestrator.go` — `plannerHistory()` trims conversation history to a token budget before passing it to the router (uses sp4rk `CompactConversationHistory`)
 - `backend/session/persistent_blackboard.go` — `PersistentBlackboard` (SQLite-backed Blackboard for c0wrk persistence/restore) — see [blackboard.md](blackboard.md)
 
-Engine files (`github.com/v0lka/sp4rk/memory/context.go`, `compaction*.go`, `steps.go`) and the `ContextWindow` struct are documented in [the sp4rk memory spec](../../../sdk/specs/domains/memory/README.md).
+Engine files (`github.com/v0lka/sp4rk/memory/context.go`, `compaction*.go`, `steps.go`) and the `ContextWindow` struct are documented in [the sp4rk memory spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/memory/README.md).
 
 ## Domain → Strategy Mapping (c0wrk consumption)
 
@@ -69,8 +69,8 @@ From `config.yaml` (values are percentages, not fractions):
 
 ## Related Specs
 
-- [sp4rk memory overview](../../../sdk/specs/domains/memory/README.md) — canonical `ContextWindow`, fill statuses, content wrapping
-- [sp4rk compaction](../../../sdk/specs/domains/memory/compaction.md) — canonical strategy implementations, tool-output pruning, history mutation
+- [sp4rk memory overview](https://github.com/v0lka/sp4rk/blob/main/specs/domains/memory/README.md) — canonical `ContextWindow`, fill statuses, content wrapping
+- [sp4rk compaction](https://github.com/v0lka/sp4rk/blob/main/specs/domains/memory/compaction.md) — canonical strategy implementations, tool-output pruning, history mutation
 - [compaction.md](compaction.md) — c0wrk strategy selection and config
 - [blackboard.md](blackboard.md) — c0wrk blackboard persistence/restore
 - [../orchestration/executor.md](../orchestration/executor.md) — executor drives compaction
