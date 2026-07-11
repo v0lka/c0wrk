@@ -761,6 +761,7 @@ export namespace desktop {
 	    tool: string;
 	    args: string;
 	    reasoning?: string;
+	    tool_call_id?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new PendingToolConfirm(source);
@@ -772,6 +773,7 @@ export namespace desktop {
 	        this.tool = source["tool"];
 	        this.args = source["args"];
 	        this.reasoning = source["reasoning"];
+	        this.tool_call_id = source["tool_call_id"];
 	    }
 	}
 	export class PendingActionsResponse {

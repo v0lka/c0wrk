@@ -12,7 +12,7 @@ import (
 // It detects symlinks in the tool input and, if found, forces confirmation
 // (respecting sdktools.PolicyAlwaysDeny). Returns intercepted=true if the call was handled.
 func (r *ToolRegistry) checkSymlinksAndConfirm(ctx context.Context, tool sdktools.Tool, name string, input json.RawMessage) (intercepted bool, result sdktools.ToolResult, err error) {
-	inside, outside, suspicious := sdktools.DetectSymlinksInToolInput(ctx, name, input)
+	inside, outside, suspicious := sdktools.DetectSymlinksInToolInput(ctx, name, input, tool.InputSchema())
 	if len(inside) == 0 && len(outside) == 0 && !suspicious {
 		return false, sdktools.ToolResult{}, nil
 	}
