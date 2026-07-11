@@ -3,6 +3,7 @@ import { Bot, Loader2, CheckCircle2, XCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
+import { StepTooltip } from './StepTooltip'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
 import type { DisplayItem } from '@/types/messages'
 
@@ -15,7 +16,7 @@ const statusConfig = {
 } as const
 
 export function SubAgentBlock({ item }: { item: SubAgentItem }) {
-  const { title, description, status, duration, error, children } = item
+  const { stepId, description, status, duration, error, children } = item
 
   // Collapsed by default; user can expand. Auto-collapses again on status change.
   const [userOverride, setUserOverride] = useState<boolean | null>(null)
@@ -35,10 +36,12 @@ export function SubAgentBlock({ item }: { item: SubAgentItem }) {
   ), [])
 
   const label = useMemo(() => (
-    <span className="text-sm truncate" title={description && description !== title ? description : undefined}>
-      {title}
-    </span>
-  ), [title, description])
+    <StepTooltip description={description || ''} enabled={!!description}>
+      <span className={cn('text-sm truncate', description && 'cursor-default')}>
+        Delegated: {stepId}
+      </span>
+    </StepTooltip>
+  ), [description, stepId])
 
   const headerExtra = useMemo(() => (
     <>
