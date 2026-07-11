@@ -27,9 +27,9 @@ export function formatRelativeTime(dateStr: string): string {
   const DAY = 24 * HOUR
 
   if (diffMs < MIN) return 'just now'
-  if (diffMs < HOUR) return `${Math.floor(diffMs / MIN)}m ago`
-  if (diffMs < DAY) return `${Math.floor(diffMs / HOUR)}h ago`
-  if (diffMs < 7 * DAY) return `${Math.floor(diffMs / DAY)}d ago`
+  if (diffMs < HOUR) return `${Math.floor(diffMs / MIN)}m`
+  if (diffMs < DAY) return `${Math.floor(diffMs / HOUR)}h`
+  if (diffMs < 7 * DAY) return `${Math.floor(diffMs / DAY)}d`
 
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
