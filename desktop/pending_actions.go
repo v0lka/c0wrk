@@ -76,6 +76,7 @@ func (a *App) GetPendingActions(sessionID string) (*PendingActionsResponse, erro
 			ConfirmID: confirmID,
 			Tool:      pd.toolName,
 			Args:      string(pd.input),
+			Reasoning: pd.reasoning,
 		})
 		return true
 	})

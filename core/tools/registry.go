@@ -495,10 +495,43 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 				return r.confirmAndExecute(ctx, tool, name, input, reason)
 			}
 		}
-		return r.confirmAndExecute(ctx, tool, name, input, "")
+		// No judge reasoning available (auto-approve disabled, or the tool
+		// has no ToolJudger): explain WHY confirmation is required so the user
+		// can make an informed decision rather than staring at a blank prompt.
+		return r.confirmAndExecute(ctx, tool, name, input, defaultConfirmReason(name))
 
 	default:
 		return tool.Execute(ctx, input)
+	}
+}
+
+// defaultConfirmReason returns a human-readable explanation of why a tool whose
+// resolved policy is PolicyUserConfirm requires the user's approval before it
+// can run. It is used when there is no richer reason available (e.g. no
+// symlink traversal, no judge flag, no auto-approve denial) — previously this
+// case surfaced an empty string, leaving the confirmation dialog without any
+// explanation of what led to the prompt.
+//
+// The mapping covers the built-in mutating tools (which default to
+// PolicyUserConfirm). Any other tool falls back to a generic statement. The
+// strings are UI-facing and kept in English to match the rest of the
+// confirmation card ("Tool Confirmation", "Allow Once", ...).
+func defaultConfirmReason(name string) string {
+	switch name {
+	case "bash_exec", "posh_exec":
+		return "This tool runs a shell command on your system."
+	case "write_file":
+		return "This tool creates or overwrites a file."
+	case "edit_file":
+		return "This tool modifies an existing file."
+	case "delete_file":
+		return "This tool deletes a file."
+	case "create_directory":
+		return "This tool creates a directory."
+	case "delete_directory":
+		return "This tool deletes a directory and all of its contents."
+	default:
+		return "This tool can modify your system and requires your approval before running."
 	}
 }
 
@@ -528,7 +561,7 @@ func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool sdktools.Tool
 	case sdktools.ConfirmDeny:
 		msg := "Tool execution denied by user."
 		if reasoning != "" {
-			msg += " LLM Judge reasoning for flagging this call: " + reasoning
+			msg += " Reason for confirmation request: " + reasoning
 		}
 		return sdktools.ToolResult{Content: msg, IsError: true}, nil
 	case sdktools.ConfirmDenyAndStop:

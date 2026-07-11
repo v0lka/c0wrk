@@ -35,6 +35,7 @@ type pendingConfirmData struct {
 	toolName    string
 	input       json.RawMessage
 	sessionID   string
+	reasoning   string
 }
 
 // pendingStepLimitEntry wraps the step-limit response channel with the

@@ -26,7 +26,7 @@ export function useToolEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'tool_call', (data) => {
         if (!isToolCallData(data)) { reportDroppedEvent('tool_call', data); return }
-        const isMemoryTool = ['read_evidence', 'read_step_output', 'list_step_outputs', 'store_fact', 'search_facts'].includes(data.tool)
+        const isMemoryTool = ['read_final_result', 'read_evidence', 'read_step_output', 'list_step_outputs', 'store_fact', 'search_facts'].includes(data.tool)
         const activityLabel = isMemoryTool
           ? 'Using memory...'
           : data.tool === 'finish' ? 'Finishing...' : `Running tool: ${data.tool}...`

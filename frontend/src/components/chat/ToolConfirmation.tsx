@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback } from 'react'
-import { AlertTriangle, Check, X, Loader2 } from 'lucide-react'
+import { AlertTriangle, Check, X, Loader2, Info } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { emit } from '@/api/runtime'
 import { useChatStore } from '@/stores/chatStore'
@@ -27,6 +27,11 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
   const args = typeof metadata?.args === 'string' ? metadata.args : undefined
   const confirmId = typeof metadata?.confirm_id === 'string' ? metadata.confirm_id : undefined
   const toolMsgId = typeof metadata?.tool_msg_id === 'string' ? metadata.tool_msg_id : undefined
+  // Human-readable reason for WHY this call needs confirmation (computed by the
+  // backend at the security gate: symlink traversal, judge flag, or the tool's
+  // default mutating-action policy). Distinct from `judgeReasoning`, which is
+  // the on-demand "Ask Agent" verdict the user requests from the card.
+  const reason = typeof metadata?.reasoning === 'string' ? metadata.reasoning.trim() : ''
   const judgeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useToolJudgeEvents(sessionId, confirmId, {
@@ -112,6 +117,17 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
         <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" />
         <span>Tool Confirmation</span>
       </div>
+      {reason && (
+        <div className="mt-1.5 p-2 bg-info/10 border border-info/30 rounded-md">
+          <div className="flex items-start gap-1.5">
+            <Info className="h-3.5 w-3.5 text-info shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-info mb-0.5">Why approval is needed</p>
+              <p className="text-xs text-foreground whitespace-pre-wrap break-words">{reason}</p>
+            </div>
+          </div>
+        </div>
+      )}
       {judgeReasoning && (
         <div className="mt-1.5 p-2 bg-warning/10 border border-warning/30 rounded-md">
           <div className="flex items-start gap-1.5">

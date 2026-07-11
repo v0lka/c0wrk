@@ -63,7 +63,7 @@ The system temp directory (`os.TempDir()`) is NOT a session root. It is allowed 
 File operations (both read and write) targeting paths **outside** the session roots are allowed, but **only after explicit user confirmation** — regardless of the tool's resolved policy:
 
 - `always_allow` tools (e.g., `read_file`, `list_directory`): the tool's `ToolJudger.Judge()` returns `allow=false` with a reason, which the registry routes to `confirmAndExecute`.
-- `user_confirm` tools (e.g., `write_file`, `edit_file`): confirmation is already required by policy; the Judge reason is surfaced in the confirmation dialog.
+- `user_confirm` tools (e.g., `write_file`, `edit_file`): confirmation is already required by policy; the confirmation carries a human-readable reason explaining the mutating action (from `defaultConfirmReason`), supplemented by the Judge reason when one is available.
 - `always_deny` tools: blocked immediately, never reach confirmation.
 
 This means reading or writing arbitrary files on the filesystem (e.g., `/etc/hosts`, `~/Documents/notes.txt`) is possible, but the user always sees a confirmation prompt first. The only exception is relative paths that escape the workspace via `..` components — these are rejected by `resolvePath` as invalid input (relative paths cannot escape the workspace).
@@ -100,17 +100,24 @@ The `ToolJudge` (`github.com/v0lka/sp4rk/tools/judge.go`) provides LLM-based saf
 
 ## Confirmation Flow
 
+Every confirmation request carries a **human-readable reason** in `ConfirmationRequest.JudgeReasoning` (surfaced to the frontend as `tool_confirm` event `reasoning`), so the user understands *why* approval is needed before deciding. The reason is derived per trigger:
+
+- **Symlink traversal** → the formatted symlink chain (`FormatSymlinkReasoning`).
+- **`always_allow` + Judge flagged** → the tool-specific Judge reasoning (e.g. blacklist match, path outside session roots).
+- **`user_confirm` + auto-approve denied** → the Judge reasoning that denied auto-approval.
+- **`user_confirm` (plain)** → a mutating-action explanation from `defaultConfirmReason(name)` (e.g. "This tool runs a shell command on your system."), so the dialog is never blank.
+
 ```
 ToolRegistry.Execute()
   → policy = UserConfirm (or judge-escalated)
   │
-  ├─ confirmFunc(ctx, ConfirmationRequest{ToolName, Input, JudgeReasoning})
+  ├─ confirmFunc(ctx, ConfirmationRequest{ToolName, Input, JudgeReasoning=<human-readable reason>})
   │   │
   │   ▼
-  │ backend: stores in pendingConfirmations sync.Map
+  │ backend: stores in pendingConfirmations sync.Map (incl. reason)
   │   │
   │   ▼
-  │ frontend: receives tool_confirm event, renders decision UI
+  │ frontend: receives tool_confirm event, renders reason + decision UI
   │   │
   │   ▼
   │ user clicks: Allow / Deny / Deny & Stop
@@ -119,7 +126,7 @@ ToolRegistry.Execute()
   │ frontend emits response → backend resolves channel
   │
   ├─ ConfirmAllowOnce → execute tool
-  ├─ ConfirmDeny → return error ToolResult (agent sees denial)
+  ├─ ConfirmDeny → return error ToolResult (agent sees denial + reason)
   └─ ConfirmDenyAndStop → return context.Canceled (stops entire task)
 ```
 

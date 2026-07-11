@@ -437,6 +437,7 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmF
 			toolName:    req.ToolName,
 			input:       req.Input,
 			sessionID:   sessionID,
+			reasoning:   req.JudgeReasoning,
 		})
 
 		payload := session.ToolConfirmPayload{

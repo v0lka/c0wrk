@@ -248,8 +248,15 @@ func TestConfirmFunc_Deny(t *testing.T) {
 	if !result.IsError {
 		t.Error("expected IsError to be true")
 	}
-	if result.Content != "Tool execution denied by user." {
-		t.Errorf("expected content 'Tool execution denied by user.', got %q", result.Content)
+	// "mutating" is not a known mutating tool, so it surfaces the generic
+	// fallback reason. The denial now always carries the reason the call was
+	// flagged for confirmation (previously it was only appended for judge
+	// flags, leaving plain user_confirm denials unexplained).
+	if !strings.HasPrefix(result.Content, "Tool execution denied by user.") {
+		t.Errorf("expected content to start with 'Tool execution denied by user.', got %q", result.Content)
+	}
+	if !strings.Contains(result.Content, "Reason for confirmation request:") {
+		t.Errorf("expected denial to include the confirmation reason, got %q", result.Content)
 	}
 }
 
@@ -418,6 +425,52 @@ func TestPolicyUserConfirm_AlwaysCallsConfirmFunc(t *testing.T) {
 	}
 	if !confirmCalled {
 		t.Error("expected confirmFunc to be called for PolicyUserConfirm")
+	}
+}
+
+// TestPolicyUserConfirm_SurfacesDefaultReason verifies that when a tool's
+// resolved policy is PolicyUserConfirm and no richer reason (symlink traversal,
+// judge flag, or auto-approve denial) is available, the confirmation request
+// still carries a human-readable reason explaining why approval is needed —
+// instead of the empty string that previously left the dialog unexplained.
+func TestPolicyUserConfirm_SurfacesDefaultReason(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(newMockTool("write_file", "writes a file"))
+
+	var gotReason string
+	registry.SetConfirmFunc(func(_ context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		gotReason = req.JudgeReasoning
+		return sdktools.ConfirmAllowOnce, nil
+	})
+
+	if _, err := registry.Execute(context.Background(), "write_file", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotReason == "" {
+		t.Fatal("expected a non-empty human-readable reason for a PolicyUserConfirm tool, got empty string")
+	}
+	if gotReason != "This tool creates or overwrites a file." {
+		t.Errorf("expected write_file-specific reason, got %q", gotReason)
+	}
+}
+
+// TestPolicyUserConfirm_DefaultReason_GenericFallback verifies that a tool name
+// without a specific mapping falls back to the generic mutating-action reason.
+func TestPolicyUserConfirm_DefaultReason_GenericFallback(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(newMockTool("some_custom_tool", "custom"))
+
+	var gotReason string
+	registry.SetConfirmFunc(func(_ context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		gotReason = req.JudgeReasoning
+		return sdktools.ConfirmAllowOnce, nil
+	})
+
+	if _, err := registry.Execute(context.Background(), "some_custom_tool", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(gotReason, "requires your approval") {
+		t.Errorf("expected generic fallback reason, got %q", gotReason)
 	}
 }
 

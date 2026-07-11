@@ -58,6 +58,20 @@ export function extractUrlTitle(args: Args, rawArgs: string): string {
   return str(parsed, 'url') || 'URL'
 }
 
+// extractStepOutputTitle returns the step ID for read_step_output.
+export function extractStepOutputTitle(args: Args, rawArgs: string): string {
+  const parsed = safeParseArgs(args, rawArgs)
+  return str(parsed, 'step_id') || 'step output'
+}
+
+// extractFactsTitle returns the searched keywords for search_facts.
+export function extractFactsTitle(args: Args, rawArgs: string): string {
+  const parsed = safeParseArgs(args, rawArgs)
+  const keywords = parsed.keywords
+  if (Array.isArray(keywords) && keywords.length > 0) return keywords.join(', ')
+  return 'facts'
+}
+
 export function extractMemoTitle(toolName: string, args: Args, rawArgs: string): string {
   const parsed = safeParseArgs(args, rawArgs)
   if (toolName === 'update_checklist') return 'checklist'

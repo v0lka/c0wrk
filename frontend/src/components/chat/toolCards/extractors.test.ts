@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   extractBashTitle, extractFileTitle, extractDirTitle,
   extractSearchTitle, extractUrlTitle, extractMemoTitle,
+  extractStepOutputTitle, extractFactsTitle,
   extractFileHint, extractBashHint, extractSearchHint,
 } from './extractors'
 
@@ -114,5 +115,29 @@ describe('extractSearchHint', () => {
   })
   it('returns undefined when no path', () => {
     expect(extractSearchHint({ pattern: '*.ts' }, '')).toBeUndefined()
+  })
+})
+
+describe('extractStepOutputTitle', () => {
+  it('extracts step_id from parsedArgs', () => {
+    expect(extractStepOutputTitle({ step_id: 'step_1' }, '')).toBe('step_1')
+  })
+  it('falls back to raw args', () => {
+    expect(extractStepOutputTitle(undefined, '{"step_id":"del_1"}')).toBe('del_1')
+  })
+  it('returns fallback when empty', () => {
+    expect(extractStepOutputTitle(undefined, '{}')).toBe('step output')
+  })
+})
+
+describe('extractFactsTitle', () => {
+  it('joins keywords array', () => {
+    expect(extractFactsTitle({ keywords: ['auth', 'jwt'] }, '')).toBe('auth, jwt')
+  })
+  it('falls back to raw args', () => {
+    expect(extractFactsTitle(undefined, '{"keywords":["login"]}')).toBe('login')
+  })
+  it('returns fallback when no keywords', () => {
+    expect(extractFactsTitle({}, '')).toBe('facts')
   })
 })

@@ -63,7 +63,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 
 | Event Type     | Payload                                          | Handler Hook    | Description                                    |
 | -------------- | ------------------------------------------------ | --------------- | ---------------------------------------------- |
-| `tool_confirm` | `{confirm_id, tool, args, reasoning}`            | useActionEvents | Confirmation required (`reasoning` from judge) |
+| `tool_confirm` | `{confirm_id, tool, args, reasoning}`            | useActionEvents | Confirmation required (`reasoning` is a human-readable explanation of why approval is needed — symlink traversal, judge flag, auto-approve denial, or the tool's default mutating-action policy; rendered as "Why approval is needed") |
 | `ask_user`     | `{request_id, questions: AskUserQuestion[]}`     | useActionEvents | Agent asks user                                |
 | `step_limit`   | `{request_id, current_step, max_steps, reason?}` | useActionEvents | Step limit or circuit breaker reached          |
 

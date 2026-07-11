@@ -4,10 +4,12 @@ import {
   Terminal, FilePen, FileText, FolderPlus, Trash2,
   Search, FolderOpen, ClipboardCheck, StickyNote,
   Globe, Puzzle, Wrench,
+  Brain, Layers, History, ListTree,
 } from 'lucide-react'
 import {
   extractBashTitle, extractFileTitle, extractDirTitle,
   extractSearchTitle, extractUrlTitle, extractMemoTitle,
+  extractStepOutputTitle, extractFactsTitle,
   extractFileHint, extractBashHint, extractSearchHint, extractMcpHint,
 } from './extractors'
 import { BashBody } from './bodies/BashBody'
@@ -18,6 +20,7 @@ import { ListDirBody } from './bodies/ListDirBody'
 import { WebFetchBody } from './bodies/WebFetchBody'
 import { McpBody } from './bodies/McpBody'
 import { MemoBody } from './bodies/MemoBody'
+import { MemoryBody } from './bodies/MemoryBody'
 import { GenericBody } from './bodies/GenericBody'
 
 type Args = Record<string, unknown> | undefined
@@ -95,7 +98,35 @@ const DECLARE_STEP_COMPLETE_CONFIG: CardConfig = {
 const STORE_FACT_CONFIG: CardConfig = {
   icon: StickyNote, verb: 'Stored',
   extractTitle: (args, raw) => extractMemoTitle('store_fact', args, raw),
-  Body: MemoBody,
+  Body: MemoryBody,
+}
+
+// --- Blackboard / memory operation configs ---
+// These read from or query the session blackboard. They get dedicated icons
+// and verbs so they never render as misleading "Read: file" file-event cards.
+
+const MEMORY_STEP_CONFIG: CardConfig = {
+  icon: Layers, verb: 'Recovered',
+  extractTitle: extractStepOutputTitle,
+  Body: MemoryBody,
+}
+
+const MEMORY_FINAL_CONFIG: CardConfig = {
+  icon: History, verb: 'Recovered',
+  extractTitle: () => 'previous result',
+  Body: MemoryBody,
+}
+
+const MEMORY_LIST_CONFIG: CardConfig = {
+  icon: ListTree, verb: 'Listed',
+  extractTitle: () => 'available steps',
+  Body: MemoryBody,
+}
+
+const MEMORY_SEARCH_CONFIG: CardConfig = {
+  icon: Brain, verb: 'Recalled',
+  extractTitle: extractFactsTitle,
+  Body: MemoryBody,
 }
 
 const WEB_FETCH_CONFIG: CardConfig = {
@@ -129,16 +160,18 @@ const TOOL_CONFIGS: Record<string, CardConfig> = {
   glob: SEARCH_CONFIG,
   ripgrep: SEARCH_CONFIG,
   semantic_search: SEARCH_CONFIG,
-  search_facts: SEARCH_CONFIG,
   web_search: SEARCH_CONFIG,
   list_directory: LIST_DIR_CONFIG,
   update_checklist: CHECKLIST_CONFIG,
   declare_step_complete: DECLARE_STEP_COMPLETE_CONFIG,
   store_fact: STORE_FACT_CONFIG,
   web_fetch: WEB_FETCH_CONFIG,
-  read_evidence: SEARCH_CONFIG,
-  read_step_output: FILE_READ_CONFIG,
-  list_step_outputs: LIST_DIR_CONFIG,
+  // Blackboard / memory operations
+  read_step_output: MEMORY_STEP_CONFIG,
+  read_final_result: MEMORY_FINAL_CONFIG,
+  read_evidence: MEMORY_FINAL_CONFIG,
+  list_step_outputs: MEMORY_LIST_CONFIG,
+  search_facts: MEMORY_SEARCH_CONFIG,
 }
 
 const CACHED_SUFFIX = ' (cached)'
