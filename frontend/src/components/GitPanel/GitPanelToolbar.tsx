@@ -1,4 +1,4 @@
-import { GitBranch, List, FolderTree, RefreshCw, Loader2, Plus, Minus, ChevronDown, Ban } from 'lucide-react'
+import { GitBranch, List, FolderTree, Loader2, Plus, Minus, ChevronDown, Ban } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
@@ -10,30 +10,26 @@ interface GitPanelToolbarProps {
   branch: BranchInfo
   viewMode: 'flat' | 'tree'
   onViewModeChange: (mode: 'flat' | 'tree') => void
-  onRefresh: () => void
 }
 
 export function GitPanelToolbar({
   branch,
   viewMode,
   onViewModeChange,
-  onRefresh,
 }: GitPanelToolbarProps) {
   const openBranchPicker = useGitPanelStore((s) => s.openBranchPicker)
   const mergeRebaseState = useGitPanelStore((s) => s.mergeRebaseState)
   const {
     isStagingAll,
     isUnstagingAll,
-    isRefreshing,
     isAborting,
     isBusy,
     error,
     setError,
     handleStageAll,
     handleUnstageAll,
-    handleRefresh,
     handleAbort,
-  } = useGitToolbarActions(onRefresh)
+  } = useGitToolbarActions()
 
   return (
     <div className="flex items-center gap-1 px-2 py-1 min-h-[32px] shrink-0 border-b border-border bg-secondary/30">
@@ -152,20 +148,6 @@ export function GitPanelToolbar({
           <FolderTree className="size-3.5" />
         </Button>
       </div>
-
-      {/* Refresh button */}
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        disabled={isRefreshing}
-        onClick={handleRefresh}
-        title="Refresh git status"
-        aria-label="Refresh git status"
-      >
-        <RefreshCw
-          className={cn('size-3.5', isRefreshing && 'animate-spin')}
-        />
-      </Button>
     </div>
   )
 }

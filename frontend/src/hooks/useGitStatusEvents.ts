@@ -35,10 +35,19 @@ async function enrichWithDiffStats(entries: GitPanelEntry[]): Promise<GitPanelEn
 }
 
 /**
- * Subscribes to `git:status_changed` events and refreshes the git panel store.
+ * Subscribes to `git:status_changed` and `workspace:tree_changed` events and
+ * refreshes the git panel store.
  *
  * - Calls GetGitStatus() once on mount (initial load).
- * - Debounces subsequent event-triggered refreshes by 50ms.
+ * - `git:status_changed` is emitted by the backend immediately after a
+ *   UI-initiated git operation (stage/unstage/commit/checkout/…), giving
+ *   instant feedback.
+ * - `workspace:tree_changed` is emitted by the workspace watcher (which also
+ *   watches `.git/`) ~200ms after filesystem changes — this catches external
+ *   mutations (terminal `git` commands, other editors, branch switches from
+ *   external tools) that `git:status_changed` would miss.
+ * - Both events share a single 50ms debounce timer so near-simultaneous
+ *   firings coalesce into one refresh.
  * - Auto-unsubscribes on unmount via useEffect cleanup.
  * - Returns void — purely a side-effect hook.
  */
@@ -105,9 +114,14 @@ export function useGitStatusEvents(): void {
     refresh()
   }, [refresh])
 
-  // --- Subscribe to git:status_changed with 50ms debounce ---
+  // --- Subscribe to git:status_changed + workspace:tree_changed (50ms debounce) ---
+  // Both events share a single debounce timer: when a UI git operation fires
+  // `git:status_changed` and the watcher subsequently fires
+  // `workspace:tree_changed` for the same `.git/` mutation, only one refresh
+  // runs. The watcher's 200ms Go-side debounce means `git:status_changed`
+  // usually fires first, so UI-initiated ops still feel instant.
   useEffect(() => {
-    const unsub = subscribe('git:status_changed', () => {
+    const debouncedRefresh = () => {
       if (debounceRef.current !== null) {
         clearTimeout(debounceRef.current)
       }
@@ -115,11 +129,14 @@ export function useGitStatusEvents(): void {
         debounceRef.current = null
         refresh()
       }, 50)
-    })
+    }
+
+    const unsubGit = subscribe('git:status_changed', debouncedRefresh)
+    const unsubWorkspace = subscribe('workspace:tree_changed', debouncedRefresh)
 
     return () => {
-      // Unsubscribe from Wails event
-      unsub()
+      unsubGit()
+      unsubWorkspace()
       // Clear any pending debounce timer to prevent memory leaks
       if (debounceRef.current !== null) {
         clearTimeout(debounceRef.current)

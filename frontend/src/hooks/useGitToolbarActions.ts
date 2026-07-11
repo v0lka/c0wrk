@@ -4,14 +4,12 @@ import { stageAll, unstageAll, abortMerge, abortRebase } from '@/api/git'
 interface UseGitToolbarActions {
   isStagingAll: boolean
   isUnstagingAll: boolean
-  isRefreshing: boolean
   isAborting: boolean
   isBusy: boolean
   error: string | null
   setError: (message: string | null) => void
   handleStageAll: () => Promise<void>
   handleUnstageAll: () => Promise<void>
-  handleRefresh: () => Promise<void>
   handleAbort: (op: 'merge' | 'rebase') => Promise<void>
 }
 
@@ -24,10 +22,9 @@ interface UseGitToolbarActions {
  * `git:status_changed` after each so `useGitStatusEvents` refreshes the
  * store automatically — no manual refresh is needed here.
  */
-export function useGitToolbarActions(onRefresh: () => void): UseGitToolbarActions {
+export function useGitToolbarActions(): UseGitToolbarActions {
   const [isStagingAll, setIsStagingAll] = useState(false)
   const [isUnstagingAll, setIsUnstagingAll] = useState(false)
-  const [isRefreshing, setIsRefreshing] = useState(false)
   const [isAborting, setIsAborting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -57,18 +54,6 @@ export function useGitToolbarActions(onRefresh: () => void): UseGitToolbarAction
     }
   }, [])
 
-  const handleRefresh = useCallback(async () => {
-    setIsRefreshing(true)
-    setError(null)
-    try {
-      await onRefresh()
-    } catch {
-      // onRefresh handles its own errors.
-    } finally {
-      setIsRefreshing(false)
-    }
-  }, [onRefresh])
-
   /** Abort an in-progress merge or rebase (Phase 6). */
   const handleAbort = useCallback(async (op: 'merge' | 'rebase') => {
     setIsAborting(true)
@@ -91,14 +76,12 @@ export function useGitToolbarActions(onRefresh: () => void): UseGitToolbarAction
   return {
     isStagingAll,
     isUnstagingAll,
-    isRefreshing,
     isAborting,
     isBusy,
     error,
     setError,
     handleStageAll,
     handleUnstageAll,
-    handleRefresh,
     handleAbort,
   }
 }

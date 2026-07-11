@@ -1,14 +1,11 @@
 import { useCallback } from 'react'
 import { GitBranch, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useGitPanelStore, EMPTY_BRANCH_INFO } from '@/stores/gitPanelStore'
+import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
-import { useProjectStore } from '@/stores/projectStore'
 import { useGitStatusEvents } from '@/hooks/useGitStatusEvents'
-import { getGitStatus } from '@/api/workspace'
 import { getFileDiff } from '@/api/workspace'
-import { stageFile, unstageFile, getCurrentBranch } from '@/api/git'
-import { toEntries } from '@/lib/gitStatus'
+import { stageFile, unstageFile } from '@/api/git'
 import { GitPanelToolbar } from './GitPanelToolbar'
 import { ChangesList } from './ChangesList'
 import { CommitSection } from './CommitSection'
@@ -17,22 +14,11 @@ import { GitHistoryTab } from './GitHistoryTab'
 import { GitGraph } from './GitGraph'
 import { GitPanelFooter } from './GitPanelFooter'
 
-// ─────────────────────────────── Helpers ─────────────────────────────────────
-
-/** Resolve the current workspace path from the project store. */
-function getWorkspacePath(): string | null {
-  const { projects, activeProjectId } = useProjectStore.getState()
-  if (!activeProjectId || !projects) return null
-  return (
-    projects.find((p) => p.id === activeProjectId)?.workspace_path ?? null
-  )
-}
-
-// ─────────────────────────────── Component ───────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────────
 
 export function GitPanel() {
-  // Side-effect hook: subscribes to git:status_changed events and
-  // keeps the store in sync with the backend. Returns void.
+  // Side-effect hook: subscribes to git:status_changed + workspace:tree_changed
+  // events and keeps the store in sync with the backend. Returns void.
   useGitStatusEvents()
 
   // Stable individual selectors — each only triggers re-render when its
@@ -87,36 +73,6 @@ export function GitPanel() {
     }
   }, [])
 
-  /** Manually refresh git status and branch from the backend. */
-  const onRefresh = useCallback(async () => {
-    const workspacePath = getWorkspacePath()
-    if (!workspacePath) return
-
-    const store = useGitPanelStore.getState()
-    store.setLoading(true)
-    store.setError(null)
-
-    try {
-      const statusMap = await getGitStatus(workspacePath)
-      store.loadEntries(toEntries(statusMap))
-      store.setGitRepo(true)
-
-      // Fetch branch info (non-critical — best-effort)
-      try {
-        const branchInfo = await getCurrentBranch()
-        store.setBranch(branchInfo)
-      } catch {
-        store.setBranch(EMPTY_BRANCH_INFO)
-      }
-    } catch {
-      store.setGitRepo(false)
-      store.loadEntries([])
-      store.setError('Failed to load git status')
-    } finally {
-      store.setLoading(false)
-    }
-  }, [])
-
   /** Switch between flat and tree view modes. */
   const onViewModeChange = useCallback((mode: 'flat' | 'tree') => {
     useGitPanelStore.getState().setViewMode(mode)
@@ -143,7 +99,6 @@ export function GitPanel() {
         branch={branch}
         viewMode={viewMode}
         onViewModeChange={onViewModeChange}
-        onRefresh={onRefresh}
       />
       {/* Changes | History | Graph tab switcher (Phase 5/6) */}
       <div className="flex shrink-0 border-b border-border bg-secondary/20">
