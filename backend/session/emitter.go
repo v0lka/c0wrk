@@ -581,6 +581,8 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 	lastModel := e.tokens.lastModel
 	lastFamily := e.tokens.lastFamily
 	lastFill := e.tokens.lastFillPercent
+	lastUsed := e.tokens.lastUsedTokens
+	lastMax := e.tokens.lastMaxTokens
 	e.tokens.mu.Unlock()
 
 	e.mu.Lock()
@@ -600,6 +602,8 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 			Model:               lastModel,
 			Family:              lastFamily,
 			FillPercent:         lastFill,
+			UsedTokens:          lastUsed,
+			MaxTokens:           lastMax,
 		},
 	})
 
@@ -616,8 +620,9 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 
 // EmitSessionTokens emits a "session_tokens" event with the given totals.
 // This is called by the UsageTracker observer — accumulation is handled externally.
-// The context-window fill percent is read from the shared cache (updated only by the
-// session-root emitter in ContextFill) and forwarded for persistence and display.
+// The context-window fill percent and used/max token counts are read from the shared
+// cache (updated only by the session-root emitter in ContextFill) and forwarded for
+// persistence and display.
 func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
 	e.log().Debug("emitter: session tokens update", "sessionID", e.sessionID, "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family)
 	e.tokens.mu.Lock()
@@ -629,6 +634,8 @@ func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family st
 		e.tokens.lastFamily = family
 	}
 	fillPercent := e.tokens.lastFillPercent
+	usedTokens := e.tokens.lastUsedTokens
+	maxTokens := e.tokens.lastMaxTokens
 	persist := e.tokens.tokenPersist
 	e.tokens.mu.Unlock()
 
@@ -645,6 +652,8 @@ func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family st
 			Model:               model,
 			Family:              family,
 			FillPercent:         fillPercent,
+			UsedTokens:          usedTokens,
+			MaxTokens:           maxTokens,
 		},
 	})
 }

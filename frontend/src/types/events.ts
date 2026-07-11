@@ -62,7 +62,7 @@ export interface ContextFillData {
 }
 
 export interface ContextCompactionData { before_percent: number; after_percent: number; plan_step_id?: string }
-export interface SessionTokensData { session_input_tokens: number; session_output_tokens: number; model: string; family: string; fill_percent?: number }
+export interface SessionTokensData { session_input_tokens: number; session_output_tokens: number; model: string; family: string; fill_percent?: number; used_tokens?: number; max_tokens?: number }
 export interface AssistantChunkData { content: string; accumulated_content?: string }
 export interface TaskCompleteData {
   session_id?: string; output?: string; attempt_count?: number; routing_decision?: Record<string, unknown>

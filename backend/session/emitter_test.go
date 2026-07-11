@@ -355,6 +355,46 @@ func TestEventEmitterContextFill(t *testing.T) {
 	}
 }
 
+// TestEventEmitterEmitSessionTokensForwardFill verifies that EmitSessionTokens
+// forwards the cached context-window fill (percent + used/max tokens) populated
+// by a prior session-root ContextFill, so the status bar can render "N of M".
+func TestEventEmitterEmitSessionTokensForwardFill(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	// Populate the session-root fill cache.
+	emitter.ContextFill(75.5, 75500, 100000, "compact", "")
+	// EmitSessionTokens should forward the cached fill alongside token totals.
+	emitter.EmitSessionTokens(1000, 500, "gpt-4", "openai")
+
+	if received.Type != "session_tokens" {
+		t.Fatalf("expected type 'session_tokens', got %q", received.Type)
+	}
+
+	data, ok := received.Data.(SessionTokensEventData)
+	if !ok {
+		t.Fatalf("expected SessionTokensEventData data, got %T", received.Data)
+	}
+	if data.FillPercent != 75.5 {
+		t.Errorf("expected FillPercent 75.5, got %v", data.FillPercent)
+	}
+	if data.UsedTokens != 75500 {
+		t.Errorf("expected UsedTokens 75500, got %v", data.UsedTokens)
+	}
+	if data.MaxTokens != 100000 {
+		t.Errorf("expected MaxTokens 100000, got %v", data.MaxTokens)
+	}
+	if data.SessionInputTokens != 1000 {
+		t.Errorf("expected SessionInputTokens 1000, got %v", data.SessionInputTokens)
+	}
+	if data.SessionOutputTokens != 500 {
+		t.Errorf("expected SessionOutputTokens 500, got %v", data.SessionOutputTokens)
+	}
+}
+
 // TestEventEmitterThreadSafety verifies concurrent calls don't panic.
 func TestEventEmitterThreadSafety(t *testing.T) {
 	var events []Event

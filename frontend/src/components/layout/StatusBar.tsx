@@ -64,7 +64,7 @@ export function StatusBar() {
       <div className="flex-1" />
 
       {/* Context fill (conductor's context window), left of the index status */}
-      {tokens && <ContextFillStatus percent={tokens.fill_percent} />}
+      {tokens && <ContextFillStatus percent={tokens.fill_percent} usedTokens={tokens.used_tokens} maxTokens={tokens.max_tokens} />}
 
       {/* Vector index status (hidden for No Project) */}
       {!isNoProject && (

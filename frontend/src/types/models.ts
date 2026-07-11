@@ -169,6 +169,10 @@ export interface TokenInfo {
   model: string
   family: string
   fill_percent?: number
+  /** Conductor's context-window used token count (session-root only, from session_tokens events). */
+  used_tokens?: number
+  /** Conductor's context-window total capacity (session-root only, from session_tokens events). */
+  max_tokens?: number
 }
 
 export interface TodoItem {

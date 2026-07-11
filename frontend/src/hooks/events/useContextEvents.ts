@@ -49,6 +49,8 @@ export function useContextEvents(sessionId: string | null): void {
     // the isSessionRoot emitter, so subagent emissions never leak their own fill).
     // context_fill events deliberately omit fill_percent here; with merge
     // semantics they update only token totals, preserving the session-level fill.
+    // used_tokens/max_tokens follow the same session-root-only cache path as
+    // fill_percent, so the status bar can render a "N of M" tooltip.
     cleanups.push(
       onSessionEvent(sessionId, 'session_tokens', (data) => {
         if (!isSessionTokensData(data)) { reportDroppedEvent('session_tokens', data); return }
@@ -57,12 +59,15 @@ export function useContextEvents(sessionId: string | null): void {
           total_output_tokens: data.session_output_tokens,
           model: data.model,
           family: data.family,
-          // Only forward fill_percent when actually present. The type guard
-          // (isSessionTokensData) does not require this field, so coercing an
-          // absent value to 0 would overwrite a previously-valid fill and make
-          // ContextFillStatus show a false "0%". Omitting it lets the store's
-          // merge semantics preserve the last known session-level fill.
+          // Only forward fill_percent / used_tokens / max_tokens when actually
+          // present. The type guard (isSessionTokensData) does not require these
+          // fields, so coercing an absent value to 0 would overwrite a previously-
+          // valid fill and make ContextFillStatus show a false "0%". Omitting them
+          // lets the store's merge semantics preserve the last known session-level
+          // values.
           ...(typeof data.fill_percent === 'number' ? { fill_percent: data.fill_percent } : {}),
+          ...(typeof data.used_tokens === 'number' ? { used_tokens: data.used_tokens } : {}),
+          ...(typeof data.max_tokens === 'number' ? { max_tokens: data.max_tokens } : {}),
         })
       }),
     )
