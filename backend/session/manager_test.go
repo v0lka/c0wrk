@@ -1951,3 +1951,66 @@ func TestRestoreSession_ProjectResolverError(t *testing.T) {
 		t.Error("GetSession should return false when project resolver fails")
 	}
 }
+
+// TestManager_LastToolCallID_WiredByEmitterSink verifies that the per-session
+// tool_call_id tracking (written by the emitter's sink during ToolCall) is
+// readable via Manager.LastToolCallID, and that it is cleaned up on session
+// deletion. This is the bridge the desktop confirm callback uses to attach the
+// matching tool_call_id to the tool_confirm payload.
+func TestManager_LastToolCallID_WiredByEmitterSink(t *testing.T) {
+	agentDir := t.TempDir()
+	emitFunc := func(Event) {}
+
+	var capturedEmitter core.Emitter
+	factory := func(emitter core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+		capturedEmitter = emitter
+		return nil, nil
+	}
+	manager := NewManager(factory, emitFunc, agentDir)
+
+	info, err := manager.CreateSession("proj-toolcall", testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if capturedEmitter == nil {
+		t.Fatal("factory did not receive an emitter")
+	}
+
+	// Before any tool call, LastToolCallID is empty.
+	if id, tool := manager.LastToolCallID(info.ID); id != "" || tool != "" {
+		t.Fatalf("expected empty LastToolCallID before any tool call, got id=%q tool=%q", id, tool)
+	}
+
+	// Emit a tool call; the sink should record it for the session.
+	capturedEmitter.ToolCall(1, 0, "bash_exec", `{"command":"ls"}`, "core")
+	id, tool := manager.LastToolCallID(info.ID)
+	if id == "" {
+		t.Fatal("expected non-empty tool_call_id after ToolCall")
+	}
+	if tool != "bash_exec" {
+		t.Fatalf("expected tool=bash_exec, got %q", tool)
+	}
+
+	// A subsequent tool call overwrites the entry (only the latest is needed).
+	capturedEmitter.ToolCall(2, 0, "write_file", `{"path":"/x"}`, "core")
+	id2, tool2 := manager.LastToolCallID(info.ID)
+	if tool2 != "write_file" {
+		t.Fatalf("expected tool=write_file after second call, got %q", tool2)
+	}
+	if id2 == "" || id2 == id {
+		t.Errorf("expected a new distinct tool_call_id, got %q (prev %q)", id2, id)
+	}
+
+	// Unknown session returns empty.
+	if x, _ := manager.LastToolCallID("no-such-session"); x != "" {
+		t.Errorf("expected empty for unknown session, got %q", x)
+	}
+
+	// Deletion clears the entry.
+	if err := manager.DeleteSession(info.ID); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if x, _ := manager.LastToolCallID(info.ID); x != "" {
+		t.Errorf("expected empty tool_call_id after session deletion, got %q", x)
+	}
+}

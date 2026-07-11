@@ -87,11 +87,15 @@ type ErrorData struct {
 // --- Tool confirmation payloads ---
 
 // ToolConfirmPayload is sent to the frontend when a tool needs user confirmation.
+// ToolCallID carries the tool_call_id of the triggering tool_call event so the
+// frontend can anchor the confirmation card precisely (instead of matching by
+// tool name, which is ambiguous when two calls share a name).
 type ToolConfirmPayload struct {
-	ConfirmID string `json:"confirm_id"`
-	Tool      string `json:"tool"`
-	Args      string `json:"args"`
-	Reasoning string `json:"reasoning"`
+	ConfirmID  string `json:"confirm_id"`
+	Tool       string `json:"tool"`
+	Args       string `json:"args"`
+	Reasoning  string `json:"reasoning"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // JudgeRequestPayload is received from the frontend when the user requests an on-demand judge verdict.

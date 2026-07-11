@@ -168,7 +168,7 @@ export interface TokenInfo {
   total_output_tokens: number
   model: string
   family: string
-  fill_percent: number
+  fill_percent?: number
 }
 
 export interface TodoItem {

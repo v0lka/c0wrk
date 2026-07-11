@@ -18,16 +18,27 @@ export function handleToolConfirmEvent(sessionId: string, data: ToolConfirmData)
 
   let toolMsgId: string | undefined
   let toolPlanStepId: string | undefined
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    const m = msgs[i]!
-    if (m.type === 'tool_call' && m.metadata?.tool === data.tool) {
-      toolMsgId = m.id
-      toolPlanStepId = m.metadata?.plan_step_id as string | undefined
-      store.updateMessage(sessionId, m.id, {
-        metadata: { ...m.metadata, awaiting_confirmation: true },
-      })
-      break
+
+  // Link the confirmation to the tool_call that triggered it. Prefer a precise
+  // tool_call_id match (the backend attaches it when resolvable); fall back to
+  // the most recent tool_call with a matching tool name, which is ambiguous
+  // when two calls share a name.
+  const linkToToolCall = (predicate: (meta: Record<string, unknown>) => boolean): boolean => {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]!
+      if (m.type === 'tool_call' && m.metadata && predicate(m.metadata)) {
+        toolMsgId = m.id
+        toolPlanStepId = m.metadata.plan_step_id as string | undefined
+        store.updateMessage(sessionId, m.id, {
+          metadata: { ...m.metadata, awaiting_confirmation: true },
+        })
+        return true
+      }
     }
+    return false
+  }
+  if (!data.tool_call_id || !linkToToolCall(meta => meta.tool_call_id === data.tool_call_id)) {
+    linkToToolCall(meta => meta.tool === data.tool)
   }
 
   store.addMessage(sessionId, {
@@ -40,6 +51,7 @@ export function handleToolConfirmEvent(sessionId: string, data: ToolConfirmData)
       tool: data.tool,
       args: data.args,
       reasoning: data.reasoning,
+      tool_call_id: data.tool_call_id,
       tool_msg_id: toolMsgId,
       plan_step_id: toolPlanStepId,
     } as Record<string, unknown>,

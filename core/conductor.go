@@ -446,7 +446,13 @@ func (l *conductorLauncher) resolveTaskTools(t tools.DelegationTask) []sdktools.
 			// Read-only delegation: only the mandatory read + MCP + meta base.
 			return stripConductorOnlyTools(mandatory)
 		default:
-			return stripConductorOnlyTools(all)
+			// Unrecognized string (not "all"/""/"read-only"): fall back to the
+			// safe minimum, mirroring the unknown-type branch below. The
+			// delegate tool schema documents only "all"/"read-only"/array, so a
+			// bare string (e.g. a single tool name sent as a string) is invalid
+			// input. Granting the full mutating toolset here would fail open
+			// and defeat least-privilege / the Conductor's tool-selection intent.
+			return stripConductorOnlyTools(mandatory)
 		}
 	default:
 		// Explicit tool list: the Conductor is selecting MUTATING tools to

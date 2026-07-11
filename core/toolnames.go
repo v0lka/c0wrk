@@ -45,10 +45,19 @@ const (
 
 // FileMutatingTools is the set of tool names that can modify files on disk.
 // The PostExecuteHook uses this to decide whether to notify the vector index
-// manager of a potential content change after tool execution. The notification
-// is debounced and incremental indexing validates actual changes, so including
-// bash_exec (which may or may not touch files) is safe — a no-change pass is
-// cheap.
+// manager of a potential content change after tool execution. bash_exec is
+// included because it can mutate files in ways the in-process write_file/
+// edit_file tools cannot (e.g. sed, git checkout, build artifacts), and the
+// macOS file watcher alone may miss some of those changes.
+//
+// Cost note: the resulting debounced incremental pass is NOT free even when no
+// files changed — ValidateCollection reads and hashes every indexable file in
+// the workspace (O(files) disk/CPU). The 1s debounce coalesces rapid bursts
+// (e.g. a batch of edits) but NOT isolated bash_exec calls (each test run, git
+// status, or build triggers one full sweep). For large repos this is non-
+// trivial churn on a hot path. The tradeoff (freshness of search results after
+// shell-driven changes) is considered worth the per-call O(files) sweep;
+// revisit if profiling shows indexer pressure during heavy coding sessions.
 var FileMutatingTools = map[string]bool{
 	ToolWriteFile: true,
 	ToolEditFile:  true,

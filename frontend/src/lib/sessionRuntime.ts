@@ -174,16 +174,22 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
     // Link the confirmation to the tool_call that triggered it (mirroring the
     // live-event path in hitlHandlers) so that, once resolved, the decision
     // card anchors directly beneath the tool card rather than at the bottom.
+    // Prefer a precise tool_call_id match; fall back to tool-name matching.
     let toolMsgId: string | undefined
     let toolPlanStepId: string | undefined
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i]!
-      if (m.type === 'tool_call' && m.metadata?.tool === c.tool) {
-        toolMsgId = m.id
-        toolPlanStepId = m.metadata?.plan_step_id as string | undefined
-        break
+    const findTool = (predicate: (meta: Record<string, unknown>) => boolean): void => {
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i]!
+        if (m.type === 'tool_call' && m.metadata && predicate(m.metadata)) {
+          toolMsgId = m.id
+          toolPlanStepId = m.metadata.plan_step_id as string | undefined
+          return
+        }
       }
     }
+    if (c.tool_call_id) findTool(meta => meta.tool_call_id === c.tool_call_id)
+    if (!toolMsgId) findTool(meta => meta.tool === c.tool)
+
     store.addMessage(sessionId, {
       id,
       sessionId,
@@ -194,6 +200,7 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
         tool: c.tool,
         args: c.args,
         reasoning: c.reasoning ?? '',
+        tool_call_id: c.tool_call_id,
         tool_msg_id: toolMsgId,
         plan_step_id: toolPlanStepId,
       } as Record<string, unknown>,

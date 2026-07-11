@@ -42,11 +42,33 @@ type tokenState struct {
 type toolCallIDGen struct {
 	counter atomic.Int64
 	epoch   int64 // millisecond timestamp at creation, ensures uniqueness across session reloads
+
+	// toolCallSink, when set, is invoked after each ToolCall with the tool name
+	// and the generated tool_call_id. The session Manager registers it so the
+	// desktop confirmation callback can attach the matching tool_call_id to the
+	// tool_confirm payload — enabling precise tool_call ↔ tool_confirm
+	// correlation instead of fragile tool-name matching. Guarded by mu.
+	mu           sync.RWMutex
+	toolCallSink func(tool, toolCallID string)
 }
 
 func (g *toolCallIDGen) next() string {
 	n := g.counter.Add(1)
 	return fmt.Sprintf("tc_%d_%d", g.epoch, n)
+}
+
+// setSink registers the post-ToolCall callback (write-once at session creation).
+func (g *toolCallIDGen) setSink(fn func(tool, toolCallID string)) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.toolCallSink = fn
+}
+
+// sink returns the registered callback, or nil if none is set.
+func (g *toolCallIDGen) sink() func(tool, toolCallID string) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.toolCallSink
 }
 
 // EventEmitter implements core.Emitter and routes events to a callback function.
@@ -116,6 +138,17 @@ func (e *EventEmitter) SetTokenPersist(fn func(inputTokens, outputTokens int, mo
 	e.tokens.mu.Lock()
 	defer e.tokens.mu.Unlock()
 	e.tokens.tokenPersist = fn
+}
+
+// SetToolCallIDSink registers a callback invoked after each ToolCall with the
+// tool name and the generated tool_call_id. The session Manager sets it so the
+// desktop-layer confirmation callback can attach the matching tool_call_id to
+// the tool_confirm payload, enabling precise tool_call ↔ tool_confirm
+// correlation on the frontend (instead of matching by tool name, which is
+// ambiguous when two calls share a name). The sink lives on the shared gen, so
+// scoped copies (WithPlanStepID/WithRetryAttempt) report to the same store.
+func (e *EventEmitter) SetToolCallIDSink(fn func(tool, toolCallID string)) {
+	e.toolCallIDs.setSink(fn)
 }
 
 // WithPlanStepID returns a shallow copy of the emitter with planStepID set.
@@ -357,6 +390,12 @@ func (e *EventEmitter) ToolCall(stepNum, callIdx int, toolName, argsPreview, sou
 
 	// Generate unique tool_call_id
 	toolCallID := e.toolCallIDs.next()
+	// Record the last tool_call_id for this session so the desktop
+	// confirmation callback can correlate the (immediately-following)
+	// tool_confirm with this exact tool_call event.
+	if sink := e.toolCallIDs.sink(); sink != nil {
+		sink(toolName, toolCallID)
+	}
 	key := fmt.Sprintf("%d:%d", stepNum, callIdx)
 	if e.localToolIDs == nil {
 		e.localToolIDs = make(map[string]string)

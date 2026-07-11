@@ -36,6 +36,7 @@ type pendingConfirmData struct {
 	input       json.RawMessage
 	sessionID   string
 	reasoning   string
+	toolCallID  string // tool_call_id of the triggering tool_call (for precise frontend correlation)
 }
 
 // pendingStepLimitEntry wraps the step-limit response channel with the

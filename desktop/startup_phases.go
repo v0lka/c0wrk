@@ -431,6 +431,19 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmF
 
 		requestID := uuid.New().String()
 		ch := make(chan sdktools.ConfirmationResponse, 1)
+
+		// Resolve the tool_call_id of the triggering tool_call. The emitter
+		// records the most recent tool_call_id per session; since confirmation
+		// fires sequentially right after that ToolCall (same goroutine), the
+		// recorded id is the one being confirmed. The tool-name guard rejects
+		// a stale id left by a concurrent subagent call to a *different* tool.
+		var toolCallID string
+		if a.app != nil {
+			if id, tool := a.app.LastToolCallID(sessionID); id != "" && tool == req.ToolName {
+				toolCallID = id
+			}
+		}
+
 		a.pendingConfirmations.Store(requestID, &pendingConfirmData{
 			ch:          ch,
 			taskContext: sdktools.TaskContextFrom(ctx),
@@ -438,13 +451,15 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmF
 			input:       req.Input,
 			sessionID:   sessionID,
 			reasoning:   req.JudgeReasoning,
+			toolCallID:  toolCallID,
 		})
 
 		payload := session.ToolConfirmPayload{
-			ConfirmID: requestID,
-			Tool:      req.ToolName,
-			Args:      string(req.Input),
-			Reasoning: req.JudgeReasoning,
+			ConfirmID:  requestID,
+			Tool:       req.ToolName,
+			Args:       string(req.Input),
+			Reasoning:  req.JudgeReasoning,
+			ToolCallID: toolCallID,
 		}
 		uiEmit(session.Event{SessionID: sessionID, Type: "tool_confirm", Data: payload})
 

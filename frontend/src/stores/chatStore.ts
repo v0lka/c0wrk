@@ -184,11 +184,19 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   // Without preservation the card would disappear here and only reappear once
   // the (async) GetPendingActions reconcile re-adds it — a visible flicker, or
   // a permanent loss if that reconcile is skipped (e.g. the RPC fails).
-  // This cannot duplicate a persisted row: the live event handler
+  // HITL preservation cannot duplicate a persisted row: the live event handler
   // (hooks/events/hitlHandlers.ts) and the history→UI converter
   // (lib/chatUtilsHelpers.ts) derive the SAME semantic id
   // (`<type>-<request_id|confirm_id>`), and any message already in historyIds
   // is skipped above before this check runs.
+  // Caveat: this id-equivalence holds only for HITL messages. The
+  // `timestamp >= loadStartedAt` branch below preserves recent non-HITL live
+  // messages (e.g. the final assistant answer) that use random ids; those are
+  // only safe from duplication when the loaded history snapshot does not
+  // already contain them — a narrow window, since history is read from the DB
+  // and a live event can land during that RPC flight. If duplication of the
+  // final answer is ever observed, dedupe preserved non-HITL messages by
+  // (type, content) here, or have live handlers reuse a backend-supplied id.
   mergeHistoryMessages: (sessionId, history, loadStartedAt) => set((s) => {
     const liveIndex = s.messages[sessionId] ?? {}
     const liveOrder = s.messageOrder[sessionId] ?? []

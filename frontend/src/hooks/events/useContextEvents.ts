@@ -57,7 +57,12 @@ export function useContextEvents(sessionId: string | null): void {
           total_output_tokens: data.session_output_tokens,
           model: data.model,
           family: data.family,
-          fill_percent: data.fill_percent ?? 0,
+          // Only forward fill_percent when actually present. The type guard
+          // (isSessionTokensData) does not require this field, so coercing an
+          // absent value to 0 would overwrite a previously-valid fill and make
+          // ContextFillStatus show a false "0%". Omitting it lets the store's
+          // merge semantics preserve the last known session-level fill.
+          ...(typeof data.fill_percent === 'number' ? { fill_percent: data.fill_percent } : {}),
         })
       }),
     )

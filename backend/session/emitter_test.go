@@ -1038,6 +1038,47 @@ func TestEventEmitterToolResult_NoToolCallID(t *testing.T) {
 	}
 }
 
+// TestEventEmitterToolCallIDSink verifies that the post-ToolCall sink receives
+// the tool name and the exact tool_call_id emitted in the tool_call event. The
+// Manager uses this to let the desktop confirm callback attach the matching
+// tool_call_id to the tool_confirm payload.
+func TestEventEmitterToolCallIDSink(t *testing.T) {
+	var events []Event
+	emit := func(e Event) { events = append(events, e) }
+	emitter := NewEventEmitter("test-session", emit)
+
+	var sinkTool, sinkID string
+	emitter.SetToolCallIDSink(func(tool, toolCallID string) {
+		sinkTool, sinkID = tool, toolCallID
+	})
+
+	emitter.ToolCall(1, 0, "bash_exec", `{"command":"ls"}`, "core")
+
+	if sinkTool != "bash_exec" {
+		t.Errorf("sink tool = %q, want bash_exec", sinkTool)
+	}
+	data, ok := events[0].Data.(map[string]any)
+	if !ok {
+		t.Fatal("expected map[string]any data")
+	}
+	eventID, _ := data["tool_call_id"].(string)
+	if sinkID == "" {
+		t.Fatal("sink did not receive a tool_call_id")
+	}
+	if sinkID != eventID {
+		t.Errorf("sink id %q != event tool_call_id %q", sinkID, eventID)
+	}
+}
+
+// TestEventEmitterToolCallIDSink_NoSink verifies ToolCall is a no-op (no panic)
+// when no sink is registered.
+func TestEventEmitterToolCallIDSink_NoSink(t *testing.T) {
+	emit := func(Event) {}
+	emitter := NewEventEmitter("test-session", emit)
+	// No SetToolCallIDSink — must not panic.
+	emitter.ToolCall(1, 0, "bash", "ls", "core")
+}
+
 // TestEventEmitterWithRetryAttempt_PreservedByWithPlanStepID verifies that
 // retryAttempt is preserved when creating a plan-step-scoped copy.
 func TestEventEmitterWithRetryAttempt_PreservedByWithPlanStepID(t *testing.T) {

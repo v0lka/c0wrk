@@ -44,6 +44,7 @@ type Manager struct {
 	indexer     *Indexer
 	gitMonitor  *GitMonitor
 	indexCancel context.CancelFunc
+	indexCtx    context.Context
 	mu          sync.RWMutex
 
 	debounceMu    sync.Mutex
@@ -213,6 +214,7 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 		if m.indexCancel != nil {
 			m.indexCancel()
 			m.indexCancel = nil
+			m.indexCtx = nil
 		}
 		if m.gitMonitor != nil {
 			_ = m.gitMonitor.Stop()
@@ -233,6 +235,7 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 	if m.indexCancel != nil {
 		m.indexCancel()
 		m.indexCancel = nil
+		m.indexCtx = nil
 	}
 	if m.gitMonitor != nil {
 		_ = m.gitMonitor.Stop()
@@ -289,6 +292,7 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 	indexCtx, indexCancel := context.WithCancel(context.Background())
 	m.mu.Lock()
 	m.indexCancel = indexCancel
+	m.indexCtx = indexCtx
 	m.mu.Unlock()
 
 	go func() {
@@ -373,41 +377,62 @@ func (m *Manager) NotifyFileChange() {
 	if m.debounceTimer != nil {
 		m.debounceTimer.Stop()
 	}
-	m.scheduleIncrementalLocked(idx, ws)
+	m.scheduleIncrementalLocked()
 	m.debounceMu.Unlock()
 }
 
 // scheduleIncrementalLocked arms a 1s debounce that runs one incremental index
-// pass. The fired callback re-checks the in-flight flag (runIncrementalGuarded)
-// so that changes arriving while a pass is running are coalesced into a single
-// trailing run instead of queuing a redundant serial no-op pass. Embedding
-// overlap is already prevented by the service write lock (s.mu); this is an
-// efficiency guard, not a correctness one. The caller must hold m.debounceMu.
-func (m *Manager) scheduleIncrementalLocked(idx *Indexer, ws string) {
-	m.debounceTimer = time.AfterFunc(1*time.Second, func() {
-		m.runIncrementalGuarded(idx, ws)
-	})
+// pass. The fired callback (runIncrementalGuarded) re-reads the active
+// indexer/workspace/context under m.mu, so a project switch between arming and
+// firing is honored rather than indexing a stale workspace. The caller must
+// hold m.debounceMu.
+func (m *Manager) scheduleIncrementalLocked() {
+	m.debounceTimer = time.AfterFunc(1*time.Second, m.runIncrementalGuarded)
 }
 
 // runIncrementalGuarded runs a single incremental pass unless one is already in
 // flight, in which case it re-arms a debounce to coalesce trailing changes into
-// one final run. Note: this guard does NOT provide embedding serialization on
-// its own — IndexIncremental holds the service write lock around AddDocuments,
-// which is what guarantees peak concurrency of 1. The guard's value is purely
-// coalescing (fewer trailing passes), not preventing overlap.
-func (m *Manager) runIncrementalGuarded(idx *Indexer, ws string) {
+// one final run.
+//
+// On every fire it re-reads the active indexer, workspace path, and index
+// context together under m.mu. This is what makes a debounce-fired pass safe
+// across SwitchProject/Reindex/CancelIndexing: the context is the project's
+// cancellable index context, so cancelling it (on project switch/shutdown)
+// aborts an in-flight IndexIncremental at its next ctx.Err() check instead of
+// letting a stale pass apply an old project's diff to a freshly-switched
+// project's collection. Re-reading idx/ws (rather than capturing them in the
+// timer closure) additionally ensures a re-armed trailing pass targets the
+// current project, not the one active when the change arrived.
+//
+// Note: this guard does NOT provide embedding serialization on its own —
+// IndexIncremental holds the service write lock around AddDocuments, which is
+// what guarantees peak concurrency of 1. The guard's value is coalescing
+// (fewer trailing passes) plus the cancellation safety above.
+func (m *Manager) runIncrementalGuarded() {
 	if m.indexing.Load() {
 		// A pass is in flight: re-arm rather than launching a redundant
 		// trailing pass that would find no new changes.
 		m.debounceMu.Lock()
-		m.debounceTimer = time.AfterFunc(1*time.Second, func() {
-			m.runIncrementalGuarded(idx, ws)
-		})
+		m.debounceTimer = time.AfterFunc(1*time.Second, m.runIncrementalGuarded)
 		m.debounceMu.Unlock()
 		return
 	}
+	m.mu.Lock()
+	idx := m.indexer
+	ws := m.workspacePath
+	ctx := m.indexCtx
+	m.mu.Unlock()
+	// No active project (e.g. switched to No Project / CHAT mode): nothing to
+	// index. A nil indexCtx only happens before the first SwitchProject; fall
+	// back to a non-cancellable context in that edge case.
+	if idx == nil || ws == "" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.indexing.Store(true)
-	if idxErr := idx.IndexIncremental(context.Background(), ws); idxErr != nil {
+	if idxErr := idx.IndexIncremental(ctx, ws); idxErr != nil {
 		m.logger.Warn("incremental indexing failed", "error", idxErr)
 	}
 	m.indexing.Store(false)
@@ -419,6 +444,7 @@ func (m *Manager) CancelIndexing() {
 	if m.indexCancel != nil {
 		m.indexCancel()
 		m.indexCancel = nil
+		m.indexCtx = nil
 	}
 	m.mu.Unlock()
 
@@ -520,6 +546,7 @@ func (m *Manager) Reindex(ctx context.Context, workspacePath string) error {
 	if m.indexCancel != nil {
 		m.indexCancel()
 		m.indexCancel = nil
+		m.indexCtx = nil
 	}
 	m.mu.Unlock()
 
@@ -529,6 +556,7 @@ func (m *Manager) Reindex(ctx context.Context, workspacePath string) error {
 	indexCtx, indexCancel := context.WithCancel(ctx)
 	m.mu.Lock()
 	m.indexCancel = indexCancel
+	m.indexCtx = indexCtx
 	m.mu.Unlock()
 
 	m.reindexWG.Add(1)

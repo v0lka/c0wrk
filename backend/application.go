@@ -325,3 +325,14 @@ func (app *Application) EmitSessionEvent(evt session.Event) {
 		app.emitFunc(evt)
 	}
 }
+
+// LastToolCallID returns the most recently emitted tool_call_id for a session
+// (and its tool name). The desktop tool-confirmation callback uses it to
+// attach the matching tool_call_id to the tool_confirm payload so the frontend
+// can correlate a confirmation with the exact tool_call event.
+func (app *Application) LastToolCallID(sessionID string) (id, tool string) {
+	if app.manager == nil {
+		return "", ""
+	}
+	return app.manager.LastToolCallID(sessionID)
+}

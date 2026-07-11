@@ -84,6 +84,14 @@ type TokenPersistFunc func(sessionID string, inputTokens, outputTokens int, mode
 // ProjectResolverFunc resolves a project ID to its workspace directory path.
 type ProjectResolverFunc func(projectID string) (workspacePath string, err error)
 
+// toolCallIDEntry records the most recent tool_call_id emitted for a session,
+// alongside its tool name so the confirmation callback can sanity-check the
+// match (the last tool_call's name must equal the confirmed tool's name).
+type toolCallIDEntry struct {
+	id   string
+	tool string
+}
+
 // Manager manages multiple agent sessions.
 type Manager struct {
 	sessions            map[string]*Session
@@ -101,7 +109,16 @@ type Manager struct {
 	maxSummaryLen       int                 // character limit for auto-generated step summaries
 	projectResolver     ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
 	fileTracker         *FileCoherenceTracker
-	logger              *slog.Logger
+
+	// lastToolCallIDs maps sessionID → the most recently emitted tool_call_id
+	// (plus its tool name) for that session. The emitter's ToolCall sink writes
+	// here; the desktop confirmation callback reads here to attach the matching
+	// tool_call_id to the tool_confirm payload. Entries are overwritten on every
+	// ToolCall — only the latest is needed because tool confirmation fires
+	// sequentially, right after the triggering ToolCall, in the same goroutine.
+	lastToolCallIDs sync.Map // sessionID → toolCallIDEntry
+
+	logger *slog.Logger
 }
 
 // SetLogger sets the logger for the manager.
@@ -281,6 +298,11 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 
 	// Create event emitter for the session.
 	emitter := NewEventEmitter(id, m.emitFunc)
+	// Record each emitted tool_call_id so the desktop confirmation callback can
+	// attach the matching id to the tool_confirm payload.
+	emitter.SetToolCallIDSink(func(tool, toolCallID string) {
+		m.lastToolCallIDs.Store(id, toolCallIDEntry{id: toolCallID, tool: tool})
+	})
 
 	// Snapshot mutable fields under read lock.
 	m.mu.RLock()
@@ -544,6 +566,11 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 
 	// Create EventEmitter for this session
 	emitter := NewEventEmitter(id, m.emitFunc)
+	// Record each emitted tool_call_id so the desktop confirmation callback can
+	// attach the matching id to the tool_confirm payload.
+	emitter.SetToolCallIDSink(func(tool, toolCallID string) {
+		m.lastToolCallIDs.Store(id, toolCallIDEntry{id: toolCallID, tool: tool})
+	})
 
 	// Snapshot mutable fields under read lock
 	m.mu.RLock()
@@ -822,7 +849,24 @@ func (m *Manager) DeleteSession(id string) error {
 		},
 	})
 
+	// Drop the per-session tool_call_id tracking entry.
+	m.lastToolCallIDs.Delete(id)
+
 	return nil
+}
+
+// LastToolCallID returns the most recently emitted tool_call_id for a session
+// along with its tool name, or empty strings if none has been recorded. The
+// desktop confirmation callback uses this to attach the matching tool_call_id
+// to the tool_confirm payload so the frontend can correlate the confirmation
+// with the exact tool_call event (rather than matching by tool name).
+func (m *Manager) LastToolCallID(sessionID string) (id, tool string) {
+	if v, ok := m.lastToolCallIDs.Load(sessionID); ok {
+		if entry, ok := v.(toolCallIDEntry); ok {
+			return entry.id, entry.tool
+		}
+	}
+	return "", ""
 }
 
 // GetSession returns a session by ID.

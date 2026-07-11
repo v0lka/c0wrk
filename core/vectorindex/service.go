@@ -118,7 +118,12 @@ func (s *Service) SetProject(projectID, fullPath string) error {
 
 	// Persist the outgoing project's in-memory hashes before discarding them,
 	// and cancel any in-flight sidecar migration from the previous branch.
-	if s.fileHashes != nil && s.currentBranch != "" {
+	// Skip the save while a background migration is pending: loadFileHashes
+	// seeds s.fileHashes as an empty map during a migration, so persisting it
+	// would write an empty sidecar for the outgoing branch — the next open of
+	// that branch would then hit the (empty) sidecar fast path and re-embed
+	// every file. Leaving it absent lets the migration re-trigger on next open.
+	if s.fileHashes != nil && s.currentBranch != "" && !s.fileHashMigrationPending.Load() {
 		if err := s.saveFileHashes(); err != nil {
 			s.logger.Warn("failed to persist file-hash sidecar on project switch", "error", err)
 		}

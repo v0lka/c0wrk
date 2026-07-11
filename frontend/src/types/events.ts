@@ -38,7 +38,14 @@ export interface PlanData {
 export interface PlanStepStartData { step_id: string; description: string; summary?: string }
 export interface PlanStepCompleteData { step_id: string; success: boolean; duration: number; error?: string; progress?: number; current_step_index?: number; completed_count?: number; total_count?: number }
 
-export interface ToolConfirmData { confirm_id: string; tool: string; args: string; reasoning?: string }
+export interface ToolConfirmData {
+  confirm_id: string
+  tool: string
+  args: string
+  reasoning?: string
+  /** tool_call_id of the triggering tool_call, for precise correlation. */
+  tool_call_id?: string
+}
 
 export interface AskUserQuestion {
   id: string; question: string
@@ -55,7 +62,7 @@ export interface ContextFillData {
 }
 
 export interface ContextCompactionData { before_percent: number; after_percent: number; plan_step_id?: string }
-export interface SessionTokensData { session_input_tokens: number; session_output_tokens: number; model: string; family: string; fill_percent: number }
+export interface SessionTokensData { session_input_tokens: number; session_output_tokens: number; model: string; family: string; fill_percent?: number }
 export interface AssistantChunkData { content: string; accumulated_content?: string }
 export interface TaskCompleteData {
   session_id?: string; output?: string; attempt_count?: number; routing_decision?: Record<string, unknown>

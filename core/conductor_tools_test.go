@@ -177,6 +177,29 @@ func TestResolveTaskTools_UnexpectedTypeReturnsSafeMinimum(t *testing.T) {
 	}
 }
 
+// TestResolveTaskTools_UnknownStringReturnsSafeMinimum verifies that a string
+// tool request that is not "all"/""/"read-only" (e.g. a single tool name sent
+// as a bare string, which the delegate schema does not document) falls back to
+// the safe minimum instead of fail-opening to the full mutating toolset —
+// symmetric with the unknown-type branch above.
+func TestResolveTaskTools_UnknownStringReturnsSafeMinimum(t *testing.T) {
+	l := &conductorLauncher{deps: conductorDeps{toolRegistry: newSubagentTestRegistry(subagentToolSet())}}
+	task := tools.DelegationTask{Tools: "edit_file"} // bare string is not a documented tool request
+	got := l.resolveTaskTools(task)
+	names := descriptorNames(got)
+
+	for _, n := range []string{"edit_file", "write_file", "bash_exec", "create_directory"} {
+		if _, ok := names[n]; ok {
+			t.Errorf("unknown string tool request must not grant mutating tool %q", n)
+		}
+	}
+	for _, n := range []string{"read_file", "list_directory", "finish", "search_graph", "get_code_snippet"} {
+		if _, ok := names[n]; !ok {
+			t.Errorf("unknown string tool request must fall back to safe minimum (read/MCP tool %q missing)", n)
+		}
+	}
+}
+
 // mockSubagentTool is a minimal sdktools.Tool used only to populate a registry
 // for conductor tool-resolution tests.
 type mockSubagentTool struct {

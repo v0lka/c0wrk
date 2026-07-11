@@ -114,6 +114,7 @@ export interface PendingToolConfirm {
   tool: string
   args: string
   reasoning?: string
+  tool_call_id?: string
 }
 
 export interface PendingStepLimit {

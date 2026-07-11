@@ -18,10 +18,11 @@ type PendingActionsResponse struct {
 
 // PendingToolConfirm describes a pending tool confirmation.
 type PendingToolConfirm struct {
-	ConfirmID string `json:"confirm_id"`
-	Tool      string `json:"tool"`
-	Args      string `json:"args"`
-	Reasoning string `json:"reasoning,omitempty"`
+	ConfirmID  string `json:"confirm_id"`
+	Tool       string `json:"tool"`
+	Args       string `json:"args"`
+	Reasoning  string `json:"reasoning,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // PendingStepLimit describes a pending step-limit prompt.
@@ -73,10 +74,11 @@ func (a *App) GetPendingActions(sessionID string) (*PendingActionsResponse, erro
 		}
 		confirmID, _ := key.(string)
 		resp.ToolConfirms = append(resp.ToolConfirms, PendingToolConfirm{
-			ConfirmID: confirmID,
-			Tool:      pd.toolName,
-			Args:      string(pd.input),
-			Reasoning: pd.reasoning,
+			ConfirmID:  confirmID,
+			Tool:       pd.toolName,
+			Args:       string(pd.input),
+			Reasoning:  pd.reasoning,
+			ToolCallID: pd.toolCallID,
 		})
 		return true
 	})
