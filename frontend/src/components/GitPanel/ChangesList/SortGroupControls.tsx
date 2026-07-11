@@ -25,21 +25,17 @@ const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
 
 // ─────────────────────────── Sort/Group Controls ─────────────────────────────
 
-interface SortGroupControlsProps {
-  viewMode: 'flat' | 'tree'
-}
-
 const triggerClass =
   'flex items-center gap-1 px-1.5 py-0.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus:outline-none focus:ring-1 focus:ring-ring'
 
 /**
  * Compact sort & group mode selectors for the Changes list (D8).
  *
- * Sorting applies in both flat and tree view modes (leaves in tree view).
- * Grouping by directory is redundant in tree view (the tree already groups by
- * directory), so that option is disabled with a hint when tree mode is active.
+ * Rendered only in flat (list) view. In tree view the tree structure already
+ * groups by directory, so these controls are replaced by `TreeExpandControls`
+ * (expand-all / collapse-all) — see `ChangesList`.
  */
-export function SortGroupControls({ viewMode }: SortGroupControlsProps) {
+export function SortGroupControls() {
   const sortBy = useGitPanelStore((s) => s.sortBy)
   const groupBy = useGitPanelStore((s) => s.groupBy)
   const setSortBy = useGitPanelStore((s) => s.setSortBy)
@@ -47,7 +43,6 @@ export function SortGroupControls({ viewMode }: SortGroupControlsProps) {
 
   const sortLabel = SORT_OPTIONS.find((o) => o.value === sortBy)?.label ?? 'Path'
   const groupLabel = GROUP_OPTIONS.find((o) => o.value === groupBy)?.label ?? 'None'
-  const directoryDisabled = viewMode === 'tree'
 
   return (
     <div className="flex items-center gap-1 px-2 py-1 shrink-0 border-b border-border bg-secondary/20 text-xs">
@@ -87,17 +82,8 @@ export function SortGroupControls({ viewMode }: SortGroupControlsProps) {
             onValueChange={(v) => setGroupBy(v as GroupBy)}
           >
             {GROUP_OPTIONS.map((o) => (
-              <DropdownMenuRadioItem
-                key={o.value}
-                value={o.value}
-                disabled={o.value === 'directory' && directoryDisabled}
-              >
+              <DropdownMenuRadioItem key={o.value} value={o.value}>
                 {o.label}
-                {o.value === 'directory' && directoryDisabled && (
-                  <span className="ml-auto text-[10px] text-muted-foreground">
-                    tree
-                  </span>
-                )}
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>

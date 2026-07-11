@@ -84,6 +84,8 @@ interface GitPanelActions {
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
   toggleExpandedDir: (dir: string) => void
+  /** Replace the entire expanded-dirs set (used by expand-all / collapse-all). */
+  setExpandedDirs: (dirs: Set<string>) => void
   setRemoteOperationInProgress: (inProgress: boolean) => void
   setActiveTab: (tab: 'changes' | 'history' | 'graph') => void
   setMergeRebaseState: (state: MergeRebaseState) => void
@@ -217,6 +219,8 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
           }
           return { expandedDirs: next }
         }),
+
+      setExpandedDirs: (dirs) => set({ expandedDirs: dirs }),
 
       setRemoteOperationInProgress: (inProgress) =>
         set({ remoteOperationInProgress: inProgress }),

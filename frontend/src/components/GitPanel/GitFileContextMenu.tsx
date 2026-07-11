@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
-import { Trash2, EyeOff, FileCode, Loader2 } from 'lucide-react'
+import { Trash2, EyeOff, FileCode, Loader2, Plus, Minus } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { discardChanges, appendToGitignore } from '@/api/git'
+import { discardChanges, appendToGitignore, stageFile, unstageFile } from '@/api/git'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import {
@@ -36,9 +36,10 @@ function toRelativePath(path: string, workspaceRoot?: string): string {
 }
 
 /**
- * Contextual menu for a git file entry: Discard Changes (with confirm),
- * Add to .gitignore, and Open in Editor. Self-contained — calls the API and
- * stores directly, so no callback prop threading is required.
+ * Contextual menu for a git file entry: Stage/Unstage (first item, depends on
+ * the entry's staged state), Discard Changes (with confirm), Add to .gitignore,
+ * and Open in Editor. Self-contained — calls the API and stores directly, so
+ * no callback prop threading is required.
  */
 export function GitFileContextMenu({
   entry,
@@ -50,7 +51,29 @@ export function GitFileContextMenu({
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [isDiscarding, setIsDiscarding] = useState(false)
   const [isIgnoring, setIsIgnoring] = useState(false)
+  const [isStaging, setIsStaging] = useState(false)
   const relativePath = toRelativePath(entry.path, workspaceRoot)
+
+  // --- Stage / Unstage ---
+  const handleToggleStage = useCallback(async () => {
+    setIsStaging(true)
+    try {
+      if (entry.staged) {
+        await unstageFile(entry.path)
+      } else {
+        await stageFile(entry.path)
+      }
+    } catch (err) {
+      useGitPanelStore.getState().setError(
+        err instanceof Error ? err.message : 'Failed to toggle stage',
+      )
+    } finally {
+      setIsStaging(false)
+      // Close the menu regardless of outcome; errors are surfaced via the
+      // store-level error banner.
+      onClose()
+    }
+  }, [entry.path, entry.staged, onClose])
 
   // --- Discard (with confirmation) ---
   const handleConfirmDiscard = useCallback(async () => {
@@ -74,13 +97,15 @@ export function GitFileContextMenu({
     setIsIgnoring(true)
     try {
       await appendToGitignore(relativePath)
-      onClose()
     } catch (err) {
       useGitPanelStore.getState().setError(
         err instanceof Error ? err.message : 'Failed to update .gitignore',
       )
     } finally {
       setIsIgnoring(false)
+      // Close the menu regardless of outcome; errors are surfaced via the
+      // store-level error banner.
+      onClose()
     }
   }, [relativePath, onClose])
 
@@ -123,6 +148,25 @@ export function GitFileContextMenu({
             'animate-in fade-in-0 zoom-in-95',
           )}
         >
+          <button
+            role="menuitem"
+            disabled={isStaging}
+            onClick={() => void handleToggleStage()}
+            className={cn(
+              'relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
+              'hover:bg-muted/50 focus:bg-muted/50 disabled:opacity-50',
+              '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',
+            )}
+          >
+            {isStaging ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : entry.staged ? (
+              <Minus className="size-4" />
+            ) : (
+              <Plus className="size-4" />
+            )}
+            {entry.staged ? 'Unstage' : 'Stage'}
+          </button>
           <button
             role="menuitem"
             onClick={() => {

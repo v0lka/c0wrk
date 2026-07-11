@@ -144,9 +144,9 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `CheckoutBranch`       | name                    | error                         | Checkout a branch |
 | `CreateBranch`         | name                    | error                         | Create a new branch |
 | `GenerateCommitMessage`| diff                    | (string, error)               | AI-generate a commit message from diff |
-| `Pull`                 | remote                  | (string, error)               | Pull from remote |
-| `Push`                 | remote                  | (string, error)               | Push to remote |
-| `Fetch`                | remote                  | (string, error)               | Fetch from remote |
+| `Pull`                 | remote, flags []string  | (string, error)               | Pull from remote (flags: --ff-only, --rebase, --rebase --autostash) |
+| `Push`                 | remote, flags []string  | (string, error)               | Push to remote (flags: --force, --force-with-lease, --no-verify) |
+| `Fetch`                | remote, flags []string  | (string, error)               | Fetch from remote (flags: --tags, --prune) |
 | `GetCommitLog`         | limit, skip             | ([]CommitInfo, error)         | Paginated commit log |
 | `GetCommitFiles`       | sha                     | ([]CommitFile, error)         | Files changed in a commit |
 | `StashCreate`          | message                 | error                         | Create a stash entry |

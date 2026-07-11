@@ -1,6 +1,14 @@
 import { useState, useCallback } from 'react'
 import { DownloadCloud, UploadCloud, RefreshCw, Loader2, AlertCircle, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
 import { pull, push, fetch } from '@/api/git'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
@@ -13,13 +21,34 @@ const OP_LABEL: Record<RemoteOp, string> = {
   fetch: 'Fetch',
 }
 
+/** Additional flag options offered per remote operation via the chevron dropdown. */
+const OP_FLAGS: Record<RemoteOp, { label: string; flags: string[] }[]> = {
+  pull: [
+    { label: '--ff-only', flags: ['--ff-only'] },
+    { label: '--rebase', flags: ['--rebase'] },
+    { label: '--rebase --autostash', flags: ['--rebase', '--autostash'] },
+  ],
+  push: [
+    { label: '--force', flags: ['--force'] },
+    { label: '--force-with-lease', flags: ['--force-with-lease'] },
+    { label: '--no-verify', flags: ['--no-verify'] },
+  ],
+  fetch: [
+    { label: '--tags', flags: ['--tags'] },
+    { label: '--prune', flags: ['--prune'] },
+  ],
+}
+
 /**
  * Remote operations footer (Phase 5): Pull / Push / Fetch.
  *
- * Parallel remote ops are blocked via the shared `remoteOperationInProgress`
- * store flag (Zed `pending_remote_operation` pattern). An empty `remote`
- * argument lets git use the configured upstream. The backend emits
- * `git:status_changed` after each op, so `useGitStatusEvents` auto-refreshes.
+ * Each operation is a split button: the main part runs the default
+ * operation, and the chevron opens a dropdown of additional flag options
+ * (e.g. pull --rebase, push --force-with-lease). Parallel remote ops are
+ * blocked via the shared `remoteOperationInProgress` store flag. An empty
+ * `remote` argument lets git use the configured upstream. The backend
+ * emits `git:status_changed` after each op, so `useGitStatusEvents`
+ * auto-refreshes.
  */
 export function GitPanelFooter() {
   const remoteOperationInProgress = useGitPanelStore(
@@ -35,13 +64,16 @@ export function GitPanelFooter() {
   const [showOutput, setShowOutput] = useState(false)
 
   const runOp = useCallback(
-    async (op: RemoteOp) => {
+    async (op: RemoteOp, flags: string[] = []) => {
       setActiveOp(op)
       setError(null)
       setRemoteOperationInProgress(true)
       try {
         // Empty remote → backend uses the configured upstream.
-        const result = op === 'pull' ? await pull('') : op === 'push' ? await push('') : await fetch('')
+        const result =
+          op === 'pull' ? await pull('', flags) :
+          op === 'push' ? await push('', flags) :
+          await fetch('', flags)
         setOutput(result || `${OP_LABEL[op]} completed.`)
         setShowOutput(true)
       } catch (err) {
@@ -57,38 +89,63 @@ export function GitPanelFooter() {
     [setRemoteOperationInProgress],
   )
 
-  const handlePull = useCallback(() => void runOp('pull'), [runOp])
-  const handlePush = useCallback(() => void runOp('push'), [runOp])
-  const handleFetch = useCallback(() => void runOp('fetch'), [runOp])
-
   const busy = remoteOperationInProgress
 
-  const buttons: { op: RemoteOp; icon: typeof DownloadCloud; onClick: () => void }[] = [
-    { op: 'pull', icon: DownloadCloud, onClick: handlePull },
-    { op: 'push', icon: UploadCloud, onClick: handlePush },
-    { op: 'fetch', icon: RefreshCw, onClick: handleFetch },
+  const buttons: { op: RemoteOp; icon: typeof DownloadCloud }[] = [
+    { op: 'pull', icon: DownloadCloud },
+    { op: 'push', icon: UploadCloud },
+    { op: 'fetch', icon: RefreshCw },
   ]
 
   return (
     <div className="shrink-0 border-t border-border bg-secondary/30">
       <div className="flex items-center gap-1 px-2 py-1">
-        {buttons.map(({ op, icon: Icon, onClick }) => (
-          <Button
-            key={op}
-            variant="ghost"
-            size="xs"
-            disabled={busy}
-            onClick={onClick}
-            className="gap-1 text-xs"
-            title={OP_LABEL[op]}
-          >
-            {activeOp === op ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Icon className="size-3.5" />
-            )}
-            {OP_LABEL[op]}
-          </Button>
+        {buttons.map(({ op, icon: Icon }) => (
+          <DropdownMenu key={op}>
+            <div className="flex items-center">
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={busy}
+                onClick={() => void runOp(op)}
+                className="gap-1 rounded-r-none text-xs"
+                title={OP_LABEL[op]}
+              >
+                {activeOp === op ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Icon className="size-3.5" />
+                )}
+                {OP_LABEL[op]}
+              </Button>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={busy}
+                  className="rounded-l-none border-l border-border/50 px-1"
+                  aria-label={`${OP_LABEL[op]} options`}
+                >
+                  <ChevronDown className="size-3" />
+                </Button>
+              </DropdownMenuTrigger>
+            </div>
+            <DropdownMenuContent align="start">
+              <DropdownMenuLabel className="text-xs text-muted-foreground">
+                {OP_LABEL[op]} options
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {OP_FLAGS[op].map(({ label, flags }) => (
+                <DropdownMenuItem
+                  key={label}
+                  className="gap-2 font-mono text-xs"
+                  onClick={() => void runOp(op, flags)}
+                >
+                  {label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         ))}
 
         {error && (

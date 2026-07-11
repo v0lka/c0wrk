@@ -1699,7 +1699,7 @@ func TestPush_LocalRemote(t *testing.T) {
 
 	// New local commit to push via the RPC.
 	commitFile(t, localDir, "b.txt", "b\n")
-	if _, err := f.Push("origin"); err != nil {
+	if _, err := f.Push("origin", nil); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
 	if emitted != localDir {
@@ -1737,7 +1737,7 @@ func TestFetchAndPull_LocalRemote(t *testing.T) {
 	runGit(t, cloneDir, "push", "origin", branch)
 
 	// Fetch updates origin/<branch>; local is now behind by 1.
-	if _, err := f.Fetch("origin"); err != nil {
+	if _, err := f.Fetch("origin", nil); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	info, err := f.GetCurrentBranch()
@@ -1753,7 +1753,7 @@ func TestFetchAndPull_LocalRemote(t *testing.T) {
 	}
 
 	// Pull fast-forwards local to include b.txt.
-	if _, err := f.Pull("origin"); err != nil {
+	if _, err := f.Pull("origin", nil); err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(localDir, "b.txt")); err != nil {
@@ -1765,13 +1765,13 @@ func TestFetchAndPull_LocalRemote(t *testing.T) {
 
 func TestPhase5Git_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
-	if _, err := f.Pull("origin"); err == nil {
+	if _, err := f.Pull("origin", nil); err == nil {
 		t.Error("Pull: expected error")
 	}
-	if _, err := f.Push("origin"); err == nil {
+	if _, err := f.Push("origin", nil); err == nil {
 		t.Error("Push: expected error")
 	}
-	if _, err := f.Fetch("origin"); err == nil {
+	if _, err := f.Fetch("origin", nil); err == nil {
 		t.Error("Fetch: expected error")
 	}
 	if _, err := f.GetCommitLog(10, 0); err == nil {
@@ -1793,13 +1793,13 @@ func TestPhase5Git_NoProject(t *testing.T) {
 
 func TestPhase5Git_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
-	if _, err := f.Pull("origin"); err == nil {
+	if _, err := f.Pull("origin", nil); err == nil {
 		t.Error("Pull: expected error")
 	}
-	if _, err := f.Push("origin"); err == nil {
+	if _, err := f.Push("origin", nil); err == nil {
 		t.Error("Push: expected error")
 	}
-	if _, err := f.Fetch("origin"); err == nil {
+	if _, err := f.Fetch("origin", nil); err == nil {
 		t.Error("Fetch: expected error")
 	}
 	if _, err := f.GetCommitLog(10, 0); err == nil {
@@ -1816,5 +1816,131 @@ func TestPhase5Git_NoProjectMode(t *testing.T) {
 	}
 	if _, err := f.StashList(); err == nil {
 		t.Error("StashList: expected error")
+	}
+}
+
+// --- remote operation flag validation ---
+
+func TestValidateRemoteFlags(t *testing.T) {
+	tests := []struct {
+		name    string
+		op      string
+		flags   []string
+		wantErr bool
+	}{
+		{"pull no flags", "pull", nil, false},
+		{"pull ff-only", "pull", []string{"--ff-only"}, false},
+		{"pull rebase", "pull", []string{"--rebase"}, false},
+		{"pull rebase autostash", "pull", []string{"--rebase", "--autostash"}, false},
+		{"push force", "push", []string{"--force"}, false},
+		{"push force-with-lease", "push", []string{"--force-with-lease"}, false},
+		{"push no-verify", "push", []string{"--no-verify"}, false},
+		{"fetch tags", "fetch", []string{"--tags"}, false},
+		{"fetch prune", "fetch", []string{"--prune"}, false},
+		{"pull push-only flag", "pull", []string{"--force"}, true},
+		{"push pull-only flag", "push", []string{"--rebase"}, true},
+		{"fetch push-only flag", "fetch", []string{"--force"}, true},
+		{"pull unknown flag", "pull", []string{"--evil"}, true},
+		{"push unknown flag", "push", []string{"--evil"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRemoteFlags(tt.op, tt.flags)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateRemoteFlags(%q, %v) error = %v, wantErr %v",
+					tt.op, tt.flags, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestRemoteOp_RejectsInvalidFlags(t *testing.T) {
+	// No active project, but flag validation runs first — an invalid flag
+	// is rejected before the project check.
+	f := &FrontendAPI{}
+	if _, err := f.Pull("", []string{"--evil"}); err == nil {
+		t.Error("Pull with invalid flag: expected error")
+	}
+	if _, err := f.Push("", []string{"--evil"}); err == nil {
+		t.Error("Push with invalid flag: expected error")
+	}
+	if _, err := f.Fetch("", []string{"--evil"}); err == nil {
+		t.Error("Fetch with invalid flag: expected error")
+	}
+	// Cross-operation flags are rejected (--force is push-only).
+	if _, err := f.Pull("", []string{"--force"}); err == nil {
+		t.Error("Pull with push-only flag --force: expected error")
+	}
+}
+
+// TestPull_FFOnlyFlag_FastForward verifies that the --ff-only flag is
+// actually passed to git: when local is behind and can fast-forward,
+// pull --ff-only succeeds.
+func TestPull_FFOnlyFlag_FastForward(t *testing.T) {
+	remoteDir := t.TempDir()
+	gitOut(t, remoteDir, "init", "--bare")
+
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+	gitOut(t, localDir, "remote", "add", "origin", remoteDir)
+	branch := gitDefaultBranch(t, localDir)
+	gitOut(t, localDir, "push", "-u", "origin", branch)
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+
+	// Advance the remote from a clone so local falls behind.
+	cloneParent := t.TempDir()
+	cloneDir := filepath.Join(cloneParent, "clone")
+	gitOut(t, cloneParent, "clone", remoteDir, cloneDir)
+	runGit(t, cloneDir, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, "config", "user.name", "Test")
+	commitFile(t, cloneDir, "b.txt", "b\n")
+	runGit(t, cloneDir, "push", "origin", branch)
+
+	if _, err := f.Fetch("origin", nil); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if _, err := f.Pull("origin", []string{"--ff-only"}); err != nil {
+		t.Fatalf("Pull --ff-only (fast-forward): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(localDir, "b.txt")); err != nil {
+		t.Errorf("after pull --ff-only: b.txt should exist, stat err: %v", err)
+	}
+}
+
+// TestPull_FFOnlyFlag_Diverged verifies that the --ff-only flag is
+// actually passed to git: when local and remote have diverged, pull
+// --ff-only fails (not a fast-forward) instead of creating a merge.
+func TestPull_FFOnlyFlag_Diverged(t *testing.T) {
+	remoteDir := t.TempDir()
+	gitOut(t, remoteDir, "init", "--bare")
+
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+	gitOut(t, localDir, "remote", "add", "origin", remoteDir)
+	branch := gitDefaultBranch(t, localDir)
+	gitOut(t, localDir, "push", "-u", "origin", branch)
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+
+	// Advance the remote from a clone.
+	cloneParent := t.TempDir()
+	cloneDir := filepath.Join(cloneParent, "clone")
+	gitOut(t, cloneParent, "clone", remoteDir, cloneDir)
+	runGit(t, cloneDir, "config", "user.email", "test@test.com")
+	runGit(t, cloneDir, "config", "user.name", "Test")
+	commitFile(t, cloneDir, "b.txt", "b\n")
+	runGit(t, cloneDir, "push", "origin", branch)
+
+	// Diverge locally with a different commit.
+	commitFile(t, localDir, "c.txt", "c\n")
+
+	if _, err := f.Fetch("origin", nil); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if _, err := f.Pull("origin", []string{"--ff-only"}); err == nil {
+		t.Fatal("Pull --ff-only (diverged): expected error, got nil")
 	}
 }

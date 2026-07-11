@@ -2,6 +2,24 @@ import type { GitPanelEntry, SortBy } from '@/stores/gitPanelStore'
 import { compareEntries } from '@/lib/gitSortGroup'
 import type { TreeDirNode, TreeFileNode, TreeNode } from './types'
 
+// ──────────────────────────────── Helpers ────────────────────────────────────
+
+/**
+ * Compute the display-relative path for an entry (stripped of the workspace
+ * root prefix). Shared by `buildTree` and `collectAllDirPaths` so both use
+ * identical path semantics for the `expandedDirs` set.
+ */
+function displayPath(entry: GitPanelEntry, workspaceRoot: string): string {
+  // Match workspaceRoot only at a path-separator boundary to avoid a
+  // sibling directory sharing the same prefix (e.g. "/repo" vs "/repo-extra").
+  const isUnderRoot =
+    workspaceRoot !== '' &&
+    (entry.path === workspaceRoot || entry.path.startsWith(workspaceRoot + '/'))
+  return isUnderRoot
+    ? entry.path.slice(workspaceRoot.length).replace(/^\//, '')
+    : entry.path
+}
+
 // ──────────────────────────────── Tree Builder ───────────────────────────────
 
 /**
@@ -28,17 +46,10 @@ export function buildTree(
     entry: GitPanelEntry
     displayPath: string
   }
-  const indexed: IndexedEntry[] = entries.map((entry) => {
-    // Match workspaceRoot only at a path-separator boundary to avoid a
-    // sibling directory sharing the same prefix (e.g. "/repo" vs "/repo-extra").
-    const isUnderRoot =
-      workspaceRoot !== '' &&
-      (entry.path === workspaceRoot || entry.path.startsWith(workspaceRoot + '/'))
-    const displayPath = isUnderRoot
-      ? entry.path.slice(workspaceRoot.length).replace(/^\//, '')
-      : entry.path
-    return { entry, displayPath }
-  })
+  const indexed: IndexedEntry[] = entries.map((entry) => ({
+    entry,
+    displayPath: displayPath(entry, workspaceRoot),
+  }))
 
   // Sort entries by display path for deterministic ordering
   indexed.sort((a, b) => a.displayPath.localeCompare(b.displayPath))
@@ -110,4 +121,34 @@ export function buildTree(
   sortChildren(root)
 
   return root
+}
+
+// ──────────────────────── Directory Path Collector ───────────────────────────
+
+/**
+ * Collect every directory path that would appear in the tree built from the
+ * given entries. The returned paths use the same display-relative format as
+ * `TreeDirNode.fullPath` produced by `buildTree`, so they can be fed directly
+ * into `setExpandedDirs` to expand all nodes.
+ *
+ * Unlike `buildTree` this does not sort or allocate tree nodes — it only
+ * extracts the intermediate directory segments from each entry's display path.
+ */
+export function collectAllDirPaths(
+  entries: GitPanelEntry[],
+  workspaceRoot: string,
+): string[] {
+  const dirs = new Set<string>()
+  for (const entry of entries) {
+    const parts = displayPath(entry, workspaceRoot).split('/')
+    // Root-level files (single segment) contribute no directory paths.
+    let currentPath = ''
+    for (let i = 0; i < parts.length - 1; i++) {
+      currentPath = currentPath ? `${currentPath}/${parts[i]}` : parts[i]!
+      dirs.add(currentPath)
+    }
+  }
+  // Sort for deterministic output (Set iteration order follows insertion,
+  // which depends on backend status output order).
+  return Array.from(dirs).sort()
 }

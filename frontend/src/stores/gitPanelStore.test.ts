@@ -235,6 +235,37 @@ describe('gitPanelStore', () => {
     expect(useGitPanelStore.getState().expandedDirs.has('src/components')).toBe(true)
   })
 
+  // ── setExpandedDirs (expand-all / collapse-all) ──
+
+  it('setExpandedDirs replaces the entire set', () => {
+    const { toggleExpandedDir, setExpandedDirs } = useGitPanelStore.getState()
+    toggleExpandedDir('old-dir')
+
+    setExpandedDirs(new Set(['src', 'src/components', 'lib']))
+    expect(useGitPanelStore.getState().expandedDirs).toEqual(
+      new Set(['src', 'src/components', 'lib']),
+    )
+  })
+
+  it('setExpandedDirs with empty set collapses all directories', () => {
+    const { toggleExpandedDir, setExpandedDirs } = useGitPanelStore.getState()
+    toggleExpandedDir('src')
+    toggleExpandedDir('lib')
+
+    setExpandedDirs(new Set())
+    expect(useGitPanelStore.getState().expandedDirs).toEqual(new Set())
+  })
+
+  it('setExpandedDirs does not merge with previous state', () => {
+    const { toggleExpandedDir, setExpandedDirs } = useGitPanelStore.getState()
+    toggleExpandedDir('previous')
+
+    setExpandedDirs(new Set(['new']))
+    const dirs = useGitPanelStore.getState().expandedDirs
+    expect(dirs).toEqual(new Set(['new']))
+    expect(dirs.has('previous')).toBe(false)
+  })
+
   // ── setBranches ──
 
   it('setBranches updates the branch list', () => {

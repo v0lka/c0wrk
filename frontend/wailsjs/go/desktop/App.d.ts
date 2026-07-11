@@ -38,7 +38,7 @@ export function DiscardChanges(arg1:string):Promise<void>;
 
 export function EmitSessionEvent(arg1:session.Event):Promise<void>;
 
-export function Fetch(arg1:string):Promise<string>;
+export function Fetch(arg1:string,arg2:Array<string>):Promise<string>;
 
 export function GenerateCommitMessage():Promise<string>;
 
@@ -116,9 +116,9 @@ export function OptimizePrompt(arg1:string):Promise<backend.OptimizePromptRespon
 
 export function PickDirectory():Promise<string>;
 
-export function Pull(arg1:string):Promise<string>;
+export function Pull(arg1:string,arg2:Array<string>):Promise<string>;
 
-export function Push(arg1:string):Promise<string>;
+export function Push(arg1:string,arg2:Array<string>):Promise<string>;
 
 export function ReadFile(arg1:string):Promise<string>;
 

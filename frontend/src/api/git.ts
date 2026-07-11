@@ -174,10 +174,10 @@ export async function getCurrentBranch(): Promise<BranchInfo> {
 // --- Remote operations (Phase 5) ---
 // An empty `remote` argument lets git use the configured upstream.
 
-export async function pull(remote: string): Promise<string> {
+export async function pull(remote: string, flags: string[] = []): Promise<string> {
   try {
     const app = getApp()
-    const result = await app.Pull(remote)
+    const result = await app.Pull(remote, flags)
     if (typeof result !== 'string') {
       throw new Error('pull: backend returned non-string output')
     }
@@ -188,10 +188,10 @@ export async function pull(remote: string): Promise<string> {
   }
 }
 
-export async function push(remote: string): Promise<string> {
+export async function push(remote: string, flags: string[] = []): Promise<string> {
   try {
     const app = getApp()
-    const result = await app.Push(remote)
+    const result = await app.Push(remote, flags)
     if (typeof result !== 'string') {
       throw new Error('push: backend returned non-string output')
     }
@@ -202,10 +202,10 @@ export async function push(remote: string): Promise<string> {
   }
 }
 
-export async function fetch(remote: string): Promise<string> {
+export async function fetch(remote: string, flags: string[] = []): Promise<string> {
   try {
     const app = getApp()
-    const result = await app.Fetch(remote)
+    const result = await app.Fetch(remote, flags)
     if (typeof result !== 'string') {
       throw new Error('fetch: backend returned non-string output')
     }

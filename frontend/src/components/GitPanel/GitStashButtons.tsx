@@ -159,7 +159,7 @@ export function GitStashButtons({ onError }: GitStashButtonsProps) {
       </div>
 
       {isListOpen && (
-        <div className="absolute right-0 top-full z-50 mt-1 w-72 rounded-md border border-border bg-popover p-1 shadow-md">
+        <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-md border border-border bg-popover p-1 shadow-md">
           <GitStashList
             entries={stashEntries}
             isLoading={isLoadingList}

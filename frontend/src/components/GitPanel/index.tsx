@@ -25,7 +25,6 @@ export function GitPanel() {
   // specific slice changes (prevents infinite re-render loops per AGENTS.md).
   const isGitRepo = useGitPanelStore((s) => s.isGitRepo)
   const branch = useGitPanelStore((s) => s.branch)
-  const viewMode = useGitPanelStore((s) => s.viewMode)
   const isLoading = useGitPanelStore((s) => s.isLoading)
   const error = useGitPanelStore((s) => s.error)
   const activeTab = useGitPanelStore((s) => s.activeTab)
@@ -73,11 +72,6 @@ export function GitPanel() {
     }
   }, [])
 
-  /** Switch between flat and tree view modes. */
-  const onViewModeChange = useCallback((mode: 'flat' | 'tree') => {
-    useGitPanelStore.getState().setViewMode(mode)
-  }, [])
-
   // ── "Not a git repository" state ───────────────────────────────────────
 
   if (!isGitRepo && !isLoading) {
@@ -97,8 +91,6 @@ export function GitPanel() {
     <div className="flex flex-col h-full min-h-0">
       <GitPanelToolbar
         branch={branch}
-        viewMode={viewMode}
-        onViewModeChange={onViewModeChange}
       />
       {/* Changes | History | Graph tab switcher (Phase 5/6) */}
       <div className="flex shrink-0 border-b border-border bg-secondary/20">

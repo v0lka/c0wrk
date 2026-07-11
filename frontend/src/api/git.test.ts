@@ -482,13 +482,19 @@ describe('pull', () => {
     mockApp.Pull = vi.fn().mockResolvedValue('Already up to date.')
     const result = await pull('origin')
     expect(result).toBe('Already up to date.')
-    expect(mockApp.Pull).toHaveBeenCalledWith('origin')
+    expect(mockApp.Pull).toHaveBeenCalledWith('origin', [])
   })
 
   it('passes empty remote to use configured upstream', async () => {
     mockApp.Pull = vi.fn().mockResolvedValue('Updating abc..def')
     await pull('')
-    expect(mockApp.Pull).toHaveBeenCalledWith('')
+    expect(mockApp.Pull).toHaveBeenCalledWith('', [])
+  })
+
+  it('passes flags through to backend', async () => {
+    mockApp.Pull = vi.fn().mockResolvedValue('Fast-forward')
+    await pull('origin', ['--ff-only'])
+    expect(mockApp.Pull).toHaveBeenCalledWith('origin', ['--ff-only'])
   })
 
   it('throws when backend returns non-string', async () => {
@@ -511,7 +517,13 @@ describe('push', () => {
     mockApp.Push = vi.fn().mockResolvedValue('Everything up-to-date')
     const result = await push('origin')
     expect(result).toBe('Everything up-to-date')
-    expect(mockApp.Push).toHaveBeenCalledWith('origin')
+    expect(mockApp.Push).toHaveBeenCalledWith('origin', [])
+  })
+
+  it('passes flags through to backend', async () => {
+    mockApp.Push = vi.fn().mockResolvedValue('Forced update')
+    await push('origin', ['--force-with-lease'])
+    expect(mockApp.Push).toHaveBeenCalledWith('origin', ['--force-with-lease'])
   })
 
   it('throws when backend returns non-string', async () => {
@@ -534,7 +546,13 @@ describe('fetch', () => {
     mockApp.Fetch = vi.fn().mockResolvedValue('From origin\n   abc..def  main -> origin/main')
     const result = await fetch('origin')
     expect(result).toContain('origin/main')
-    expect(mockApp.Fetch).toHaveBeenCalledWith('origin')
+    expect(mockApp.Fetch).toHaveBeenCalledWith('origin', [])
+  })
+
+  it('passes flags through to backend', async () => {
+    mockApp.Fetch = vi.fn().mockResolvedValue('Pruning')
+    await fetch('origin', ['--prune'])
+    expect(mockApp.Fetch).toHaveBeenCalledWith('origin', ['--prune'])
   })
 
   it('throws when backend returns non-string', async () => {

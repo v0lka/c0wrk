@@ -645,43 +645,91 @@ func (f *FrontendAPI) GenerateCommitMessage() (string, error) {
 // longer than local git commands over a slow network.
 const remoteGitCmdTimeout = 2 * time.Minute
 
-// Pull fetches from and integrates the named remote into the current
-// branch (git pull <remote>). When remote is empty, git uses the
-// configured upstream. The combined stdout+stderr output is returned for
-// display in the UI. Parallel remote operations are serialized via
-// remoteOpMu. Emits git:status_changed on completion. Returns an error
-// when no project is active, the project is No Project, or the git
-// command fails.
-func (f *FrontendAPI) Pull(remote string) (string, error) {
-	return f.runRemoteOp("pull", remote)
+// allowedRemoteFlags maps each remote operation to the set of git flags
+// the frontend may pass via the flags parameter. This allowlist prevents
+// arbitrary flag injection through the RPC boundary: only the documented
+// per-operation options are accepted, and each flag is passed to git as a
+// separate argv element (never interpolated into the command line).
+var allowedRemoteFlags = map[string]map[string]bool{
+	"pull": {
+		"--ff-only":   true,
+		"--rebase":    true,
+		"--autostash": true,
+	},
+	"push": {
+		"--force":            true,
+		"--force-with-lease": true,
+		"--no-verify":        true,
+	},
+	"fetch": {
+		"--tags":  true,
+		"--prune": true,
+	},
 }
 
-// Push sends local commits to the named remote (git push <remote>). When
-// remote is empty, git uses the configured upstream. The combined
-// stdout+stderr output is returned for display in the UI. Parallel remote
-// operations are serialized via remoteOpMu. Emits git:status_changed on
-// completion. Returns an error when no project is active, the project is
-// No Project, or the git command fails.
-func (f *FrontendAPI) Push(remote string) (string, error) {
-	return f.runRemoteOp("push", remote)
+// validateRemoteFlags returns an error when any flag in flags is not in
+// the allowlist for the given operation. An empty or nil flags slice is
+// always valid (the default operation with no extra options).
+func validateRemoteFlags(op string, flags []string) error {
+	allowed := allowedRemoteFlags[op]
+	for _, flag := range flags {
+		if !allowed[flag] {
+			return fmt.Errorf("unsupported %s flag: %s", op, flag)
+		}
+	}
+	return nil
+}
+
+// Pull fetches from and integrates the named remote into the current
+// branch (git pull <remote> [flags...]). When remote is empty, git uses
+// the configured upstream. flags carries optional pull strategies
+// (--ff-only, --rebase, --rebase --autostash); each must be in the
+// allowedRemoteFlags allowlist. The combined stdout+stderr output is
+// returned for display in the UI. Parallel remote operations are
+// serialized via remoteOpMu. Emits git:status_changed on completion.
+// Returns an error when no project is active, the project is No Project,
+// a flag is not allowed, or the git command fails.
+func (f *FrontendAPI) Pull(remote string, flags []string) (string, error) {
+	return f.runRemoteOp("pull", remote, flags)
+}
+
+// Push sends local commits to the named remote (git push <remote>
+// [flags...]). When remote is empty, git uses the configured upstream.
+// flags carries optional push options (--force, --force-with-lease,
+// --no-verify); each must be in the allowedRemoteFlags allowlist. The
+// combined stdout+stderr output is returned for display in the UI.
+// Parallel remote operations are serialized via remoteOpMu. Emits
+// git:status_changed on completion. Returns an error when no project is
+// active, the project is No Project, a flag is not allowed, or the git
+// command fails.
+func (f *FrontendAPI) Push(remote string, flags []string) (string, error) {
+	return f.runRemoteOp("push", remote, flags)
 }
 
 // Fetch downloads objects and refs from the named remote without merging
-// (git fetch <remote>). When remote is empty, git uses the configured
-// upstream. The combined stdout+stderr output is returned for display in
-// the UI. Parallel remote operations are serialized via remoteOpMu.
-// Emits git:status_changed on completion so the frontend can refresh
+// (git fetch <remote> [flags...]). When remote is empty, git uses the
+// configured upstream. flags carries optional fetch options (--tags,
+// --prune); each must be in the allowedRemoteFlags allowlist. The
+// combined stdout+stderr output is returned for display in the UI.
+// Parallel remote operations are serialized via remoteOpMu. Emits
+// git:status_changed on completion so the frontend can refresh
 // ahead/behind indicators. Returns an error when no project is active,
-// the project is No Project, or the git command fails.
-func (f *FrontendAPI) Fetch(remote string) (string, error) {
-	return f.runRemoteOp("fetch", remote)
+// the project is No Project, a flag is not allowed, or the git command
+// fails.
+func (f *FrontendAPI) Fetch(remote string, flags []string) (string, error) {
+	return f.runRemoteOp("fetch", remote, flags)
 }
 
 // runRemoteOp executes a serialized remote git operation (pull/push/
 // fetch) and returns its combined output. It is the shared body of Pull,
-// Push and Fetch. It is intentionally unexported so it is not exposed as
-// a Wails RPC method.
-func (f *FrontendAPI) runRemoteOp(op, remote string) (string, error) {
+// Push and Fetch. flags are validated against allowedRemoteFlags and
+// appended to the git argv after the optional remote. It is intentionally
+// unexported so it is not exposed as a Wails RPC method.
+func (f *FrontendAPI) runRemoteOp(op, remote string, flags []string) (string, error) {
+	if err := validateRemoteFlags(op, flags); err != nil {
+		return "", err
+	}
+
 	repoPath, err := f.resolveGitRepoRoot()
 	if err != nil {
 		return "", err
@@ -691,6 +739,7 @@ func (f *FrontendAPI) runRemoteOp(op, remote string) (string, error) {
 	if r := strings.TrimSpace(remote); r != "" {
 		args = append(args, r)
 	}
+	args = append(args, flags...)
 
 	f.log().Debug("git remote operation", "op", op, "remote", remote)
 

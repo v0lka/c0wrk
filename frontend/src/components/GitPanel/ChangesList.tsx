@@ -5,6 +5,8 @@ import { useProjectStore } from '@/stores/projectStore'
 import { sortEntries } from '@/lib/gitSortGroup'
 import { Section } from './ChangesList/Section'
 import { SortGroupControls } from './ChangesList/SortGroupControls'
+import { TreeExpandControls } from './ChangesList/TreeExpandControls'
+import { ChangesToolbar } from './ChangesToolbar'
 import type { SectionData } from './ChangesList/types'
 
 // ─────────────────────────────────── Types ───────────────────────────────────
@@ -102,7 +104,12 @@ export function ChangesList({ onToggleFile, onOpenDiff }: ChangesListProps) {
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <SortGroupControls viewMode={viewMode} />
+      <ChangesToolbar />
+      {viewMode === 'flat' ? (
+        <SortGroupControls />
+      ) : (
+        <TreeExpandControls workspaceRoot={workspaceRoot} />
+      )}
 
       {isLoading && entries.length === 0 ? (
         // ── Loading state ──

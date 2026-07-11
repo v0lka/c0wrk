@@ -62,8 +62,8 @@ export function EmitSessionEvent(arg1) {
   return window['go']['desktop']['App']['EmitSessionEvent'](arg1);
 }
 
-export function Fetch(arg1) {
-  return window['go']['desktop']['App']['Fetch'](arg1);
+export function Fetch(arg1, arg2) {
+  return window['go']['desktop']['App']['Fetch'](arg1, arg2);
 }
 
 export function GenerateCommitMessage() {
@@ -218,12 +218,12 @@ export function PickDirectory() {
   return window['go']['desktop']['App']['PickDirectory']();
 }
 
-export function Pull(arg1) {
-  return window['go']['desktop']['App']['Pull'](arg1);
+export function Pull(arg1, arg2) {
+  return window['go']['desktop']['App']['Pull'](arg1, arg2);
 }
 
-export function Push(arg1) {
-  return window['go']['desktop']['App']['Push'](arg1);
+export function Push(arg1, arg2) {
+  return window['go']['desktop']['App']['Push'](arg1, arg2);
 }
 
 export function ReadFile(arg1) {
