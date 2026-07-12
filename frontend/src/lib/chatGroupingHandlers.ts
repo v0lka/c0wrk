@@ -85,8 +85,9 @@ export function handlePlanStepComplete(meta: Record<string, unknown> | undefined
   const step = openSteps.get(stepId)
   if (!step) return
   step.status = (meta?.success as boolean) ? 'completed' : 'failed'
-  // Subagents receive their duration from subagent_complete; the subsequent
-  // plan_step_complete fires with duration=0, so don't overwrite.
+  // Inline plan steps get their duration from plan_step_complete. Subagent
+  // blocks (kind 'subagent') already received their duration from
+  // subagent_complete, so don't overwrite it here.
   if (step.kind === 'plan_step' && meta?.duration !== undefined) step.duration = meta.duration as number
   if (!meta?.success && meta?.error) step.error = meta.error as string
   openSteps.delete(stepId)

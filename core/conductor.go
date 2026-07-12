@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/v0lka/c0wrk/core/tools"
@@ -1106,8 +1107,9 @@ type inlineStepLifecycle struct {
 	scoper    CurrentStepScopable // nil if emitter doesn't support dynamic scoping
 	bb        orchestration.Blackboard
 	mu        sync.Mutex
-	started   map[string]bool // stepIDs that received PlanStepStart but not PlanStepComplete
-	completed map[string]bool // stepIDs that already reached PlanStepComplete
+	started   map[string]bool    // stepIDs that received PlanStepStart but not PlanStepComplete
+	startedAt map[string]time.Time // wall-clock when PlanStepStart was emitted, for duration
+	completed map[string]bool    // stepIDs that already reached PlanStepComplete
 }
 
 func newInlineStepLifecycle(emitter Emitter, bb orchestration.Blackboard) *inlineStepLifecycle {
@@ -1117,6 +1119,7 @@ func newInlineStepLifecycle(emitter Emitter, bb orchestration.Blackboard) *inlin
 		scoper:    scoper,
 		bb:        bb,
 		started:   make(map[string]bool),
+		startedAt: make(map[string]time.Time),
 		completed: make(map[string]bool),
 	}
 }
@@ -1146,6 +1149,7 @@ func (l *inlineStepLifecycle) onChecklistUpdate(stepID string, items []agent.Tod
 	first := !l.started[stepID] && !alreadyCompleted
 	if first {
 		l.started[stepID] = true
+		l.startedAt[stepID] = time.Now()
 	}
 	l.mu.Unlock()
 
@@ -1185,18 +1189,28 @@ func (l *inlineStepLifecycle) completeStep(stepID string, success bool, errMsg s
 	}
 	l.mu.Lock()
 	wasStarted := l.started[stepID]
+	start := l.startedAt[stepID]
 	delete(l.started, stepID)
+	delete(l.startedAt, stepID)
 	l.completed[stepID] = true
 	l.mu.Unlock()
+
+	var duration time.Duration
+	if wasStarted {
+		duration = time.Since(start)
+	}
 
 	if !wasStarted {
 		if !planStepExists(l.bb, stepID) {
 			return
 		}
+		// Synthesized start: the Conductor completed the step without an
+		// inferred PlanStepStart, so the real start time is unknown — duration
+		// stays 0 (mirrors the pre-fix behavior for this edge case).
 		desc, summary := lookupStepDesc(l.bb, stepID)
 		l.emitter.PlanStepStart(stepID, desc, summary)
 	}
-	l.emitter.PlanStepComplete(stepID, success, 0, errMsg)
+	l.emitter.PlanStepComplete(stepID, success, duration, errMsg)
 	// Clear the dynamic step scope so events after completion (delegation,
 	// planning, the next step's update_checklist ToolCall) are not mis-tagged
 	// with the completed step's plan_step_id.
@@ -1237,11 +1251,14 @@ func (l *inlineStepLifecycle) completeAll(success bool, errMsg string) {
 	l.mu.Lock()
 	startedPending := make([]string, 0, len(l.started))
 	startedSet := make(map[string]bool, len(l.started))
+	startTimes := make(map[string]time.Time, len(l.started))
 	for id := range l.started {
 		startedPending = append(startedPending, id)
 		startedSet[id] = true
+		startTimes[id] = l.startedAt[id]
 	}
 	l.started = make(map[string]bool)
+	l.startedAt = make(map[string]time.Time)
 
 	// neverStarted = plan steps that are neither completed nor currently
 	// running. These need a synthesized PlanStepStart before the complete.
@@ -1258,7 +1275,7 @@ func (l *inlineStepLifecycle) completeAll(success bool, errMsg string) {
 	l.mu.Unlock()
 
 	for _, id := range startedPending {
-		l.emitter.PlanStepComplete(id, success, 0, errMsg)
+		l.emitter.PlanStepComplete(id, success, time.Since(startTimes[id]), errMsg)
 	}
 	for _, id := range neverStarted {
 		desc, summary := lookupStepDesc(l.bb, id)

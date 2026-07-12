@@ -2,6 +2,7 @@ package core
 
 import (
 	"testing"
+	"time"
 
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -129,6 +130,71 @@ func TestInlineStepLifecycle_CompleteStep_EmitsPlanStepComplete(t *testing.T) {
 	}
 	if !emitter.planStepCompletes[0].success {
 		t.Error("expected success=true")
+	}
+}
+
+func TestInlineStepLifecycle_CompleteStep_StartedStepReportsNonZeroDuration(t *testing.T) {
+	emitter := &mockEmitter{}
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{
+		Steps: []orchestration.PlanStep{{ID: "step_1", Summary: "S", Description: "D"}},
+	})
+
+	lc := newInlineStepLifecycle(emitter, bb)
+
+	// Start the step, then wait a measurable amount before completing.
+	lc.onChecklistUpdate("step_1", []agent.TodoItem{{Text: "A", Checked: false}})
+	time.Sleep(15 * time.Millisecond)
+	lc.completeStep("step_1", true, "")
+
+	if len(emitter.planStepCompletes) != 1 {
+		t.Fatalf("expected 1 PlanStepComplete, got %d", len(emitter.planStepCompletes))
+	}
+	if d := emitter.planStepCompletes[0].duration; d <= 0 {
+		t.Errorf("expected positive duration for a started step, got %v", d)
+	}
+}
+
+func TestInlineStepLifecycle_CompleteStep_NeverStartedStepReportsZeroDuration(t *testing.T) {
+	emitter := &mockEmitter{}
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{
+		Steps: []orchestration.PlanStep{{ID: "step_1", Summary: "S", Description: "D"}},
+	})
+
+	lc := newInlineStepLifecycle(emitter, bb)
+
+	// No inferred start — completeStep synthesizes one. The real start time
+	// is unknown, so duration must be 0 (not a bogus huge value).
+	lc.completeStep("step_1", true, "")
+
+	if len(emitter.planStepCompletes) != 1 {
+		t.Fatalf("expected 1 PlanStepComplete, got %d", len(emitter.planStepCompletes))
+	}
+	if d := emitter.planStepCompletes[0].duration; d != 0 {
+		t.Errorf("expected zero duration for a synthesized (never-started) step, got %v", d)
+	}
+}
+
+func TestInlineStepLifecycle_CompleteAll_StartedStepReportsNonZeroDuration(t *testing.T) {
+	emitter := &mockEmitter{}
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{
+		Steps: []orchestration.PlanStep{{ID: "step_1", Summary: "S", Description: "D"}},
+	})
+
+	lc := newInlineStepLifecycle(emitter, bb)
+
+	// Start the step, then let the finish fallback auto-complete it.
+	lc.onChecklistUpdate("step_1", []agent.TodoItem{{Text: "A", Checked: false}})
+	time.Sleep(15 * time.Millisecond)
+	lc.completeAll(true, "")
+
+	if len(emitter.planStepCompletes) != 1 {
+		t.Fatalf("expected 1 PlanStepComplete, got %d", len(emitter.planStepCompletes))
+	}
+	if d := emitter.planStepCompletes[0].duration; d <= 0 {
+		t.Errorf("expected positive duration for a started step, got %v", d)
 	}
 }
 
