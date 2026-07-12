@@ -3,7 +3,7 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isArrayOf } from '@/types/guards'
-import type { Branch, BranchInfo, CommitInfo, CommitFile, DiffStat, StashEntry, GraphCommit, HunkRange, MergeRebaseState } from '@/types/models'
+import type { Branch, BranchBase, BranchInfo, CommitFile, DiffStat, StashEntry, GitHistoryCommit, HunkRange, MergeRebaseState } from '@/types/models'
 
 // --- Type guards ---
 
@@ -23,15 +23,14 @@ function isBranchInfo(v: unknown): v is BranchInfo {
   )
 }
 
-function isCommitInfo(v: unknown): v is CommitInfo {
+function isBranchBase(v: unknown): v is BranchBase {
   if (typeof v !== 'object' || v === null) return false
   const o = v as Record<string, unknown>
   return (
-    typeof o.sha === 'string' &&
-    typeof o.author === 'string' &&
-    typeof o.email === 'string' &&
-    typeof o.date === 'string' &&
-    typeof o.message === 'string'
+    typeof o.ref === 'string' &&
+    typeof o.label === 'string' &&
+    typeof o.type === 'string' &&
+    typeof o.detail === 'string'
   )
 }
 
@@ -56,13 +55,16 @@ function isDiffStat(v: unknown): v is DiffStat {
   return typeof (v as Record<string, unknown>).added === 'number' && typeof (v as Record<string, unknown>).deleted === 'number'
 }
 
-function isGraphCommit(v: unknown): v is GraphCommit {
+function isGitHistoryCommit(v: unknown): v is GitHistoryCommit {
   if (typeof v !== 'object' || v === null) return false
   const o = v as Record<string, unknown>
   return (
     typeof o.sha === 'string' &&
     Array.isArray(o.parents) &&
     o.parents.every((p) => typeof p === 'string') &&
+    typeof o.author === 'string' &&
+    typeof o.email === 'string' &&
+    typeof o.date === 'string' &&
     typeof o.message === 'string' &&
     Array.isArray(o.refs) &&
     o.refs.every((r) => typeof r === 'string')
@@ -216,22 +218,7 @@ export async function fetch(remote: string, flags: string[] = []): Promise<strin
   }
 }
 
-// --- Commit history (Phase 5) ---
-
-export async function getCommitLog(limit: number, skip: number): Promise<CommitInfo[]> {
-  try {
-    const app = getApp()
-    const result = await app.GetCommitLog(limit, skip)
-    if (!isArrayOf(result, isCommitInfo)) {
-      logger.error('getCommitLog: unexpected response shape, returning []', result)
-      return []
-    }
-    return result
-  } catch (err) {
-    logger.error('getCommitLog failed:', err)
-    throw err
-  }
-}
+// --- Commit history ---
 
 export async function getCommitFiles(sha: string): Promise<CommitFile[]> {
   try {
@@ -306,12 +293,27 @@ export async function checkoutBranch(name: string): Promise<void> {
   }
 }
 
-export async function createBranch(name: string): Promise<void> {
+export async function createBranch(name: string, base: string): Promise<void> {
   try {
     const app = getApp()
-    await app.CreateBranch(name)
+    await app.CreateBranch(name, base)
   } catch (err) {
     logger.error('createBranch failed:', err)
+    throw err
+  }
+}
+
+export async function getBranchBases(): Promise<BranchBase[]> {
+  try {
+    const app = getApp()
+    const result = await app.GetBranchBases()
+    if (!isArrayOf(result, isBranchBase)) {
+      logger.error('getBranchBases: unexpected response shape', result)
+      return []
+    }
+    return result
+  } catch (err) {
+    logger.error('getBranchBases failed:', err)
     throw err
   }
 }
@@ -481,23 +483,27 @@ export async function getRebaseMergeState(): Promise<MergeRebaseState> {
 
 // --- Commit graph (Phase 6) ---
 
+// --- Unified history + graph (merged tab) ---
+
 /**
- * Fetch one page of the commit graph (SHAs, parents, messages, decorations)
- * for visualization. `limit` caps the page size and `skip` offsets from the
- * newest commit, enabling server-side lazy loading. A non-positive `limit`
- * defaults to 100 on the backend.
+ * Fetch one page of the unified commit history+graph: SHAs, parents,
+ * author, email, date, message, and ref decorations in a single call.
+ * `limit` caps the page size and `skip` offsets from the newest commit,
+ * enabling server-side lazy loading. A non-positive `limit` defaults to
+ * 50 on the backend. Replaces the separate GetCommitLog/GetGitGraph calls
+ * for the merged History tab.
  */
-export async function getGitGraph(limit: number, skip: number): Promise<GraphCommit[]> {
+export async function getGitHistory(limit: number, skip: number): Promise<GitHistoryCommit[]> {
   try {
     const app = getApp()
-    const result = await app.GetGitGraph(limit, skip)
-    if (!isArrayOf(result, isGraphCommit)) {
-      logger.error('getGitGraph: unexpected response shape, returning []', result)
+    const result = await app.GetGitHistory(limit, skip)
+    if (!isArrayOf(result, isGitHistoryCommit)) {
+      logger.error('getGitHistory: unexpected response shape, returning []', result)
       return []
     }
     return result
   } catch (err) {
-    logger.error('getGitGraph failed:', err)
+    logger.error('getGitHistory failed:', err)
     throw err
   }
 }

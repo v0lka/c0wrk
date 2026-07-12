@@ -496,6 +496,105 @@ func (f *FrontendAPI) GetCurrentBranch() (BranchInfo, error) {
 	return info, nil
 }
 
+// GetBranchBases returns all refs that can serve as a start-point for
+// CreateBranch: local branches, remote-tracking branches, tags, and the
+// 20 most recent commits. The currently checked-out branch is excluded
+// from the local list (it is the default HEAD base). Remote symbolic
+// refs (e.g. origin/HEAD) are skipped. Results are ordered local →
+// remote → tag → commit, matching for-each-ref's refname sort order.
+// Returns an empty slice (not nil) when no refs exist. Returns an error
+// when no project is active, the project is No Project, or a git command
+// fails.
+func (f *FrontendAPI) GetBranchBases() ([]BranchBase, error) {
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return nil, err
+	}
+
+	// Collect refs (local branches, remote-tracking branches, tags) via
+	// for-each-ref. Format: short-name<NUL>full-refname<NUL>HEAD-marker<NUL>
+	out, err := f.runGitCmd(repoPath, "for-each-ref",
+		"refs/heads/", "refs/remotes/", "refs/tags/",
+		"--format=%(refname:short)%00%(refname)%00%(HEAD)%00",
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var bases []BranchBase
+	out = strings.TrimSpace(out)
+	if out != "" {
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Split(line, "\x00")
+			if len(fields) < 3 {
+				continue
+			}
+			shortName := fields[0]
+			fullRef := fields[1]
+			isCurrent := fields[2] == "*"
+
+			var refType string
+			switch {
+			case strings.HasPrefix(fullRef, "refs/heads/"):
+				refType = "local"
+				// Exclude the currently checked-out branch — it is the
+				// default HEAD base and would be redundant in the list.
+				if isCurrent {
+					continue
+				}
+			case strings.HasPrefix(fullRef, "refs/remotes/"):
+				refType = "remote"
+				// Skip symbolic refs like origin/HEAD — not useful as a
+				// start-point.
+				if strings.HasSuffix(shortName, "/HEAD") {
+					continue
+				}
+			case strings.HasPrefix(fullRef, "refs/tags/"):
+				refType = "tag"
+			default:
+				continue
+			}
+
+			bases = append(bases, BranchBase{
+				Ref:   shortName,
+				Label: shortName,
+				Type:  refType,
+			})
+		}
+	}
+
+	// Recent commits: short SHA + subject. In a fresh repo with no
+	// commits git log fails — return what we have (branches/tags only).
+	commitOut, err := f.runGitCmd(repoPath, "log", "-20", "--format=%h%x00%s")
+	if err != nil {
+		if bases == nil {
+			return []BranchBase{}, nil
+		}
+		return bases, nil
+	}
+
+	commitOut = strings.TrimSpace(commitOut)
+	if commitOut != "" {
+		for _, line := range strings.Split(commitOut, "\n") {
+			fields := strings.Split(line, "\x00")
+			if len(fields) < 2 {
+				continue
+			}
+			bases = append(bases, BranchBase{
+				Ref:    fields[0],
+				Label:  fields[0],
+				Type:   "commit",
+				Detail: fields[1],
+			})
+		}
+	}
+
+	if bases == nil {
+		return []BranchBase{}, nil
+	}
+	return bases, nil
+}
+
 // ---------------------------------------------------------------------------
 // Branch management RPCs (Phase 4)
 // ---------------------------------------------------------------------------
@@ -526,12 +625,21 @@ func (f *FrontendAPI) CheckoutBranch(name string) error {
 	return nil
 }
 
-// CreateBranch creates a new branch from the current HEAD and checks it
-// out (git checkout -b <name>). Emits git:status_changed on success.
-// Returns an error when no project is active, the project is No Project,
-// the branch name is empty, the branch already exists, or the git
-// command fails.
-func (f *FrontendAPI) CreateBranch(name string) error {
+// ErrInvalidBaseRef is returned when CreateBranch is called with a base
+// ref that does not resolve to a commit (e.g. a non-existent branch, tag,
+// or SHA). Callers can match it with errors.Is.
+var ErrInvalidBaseRef = errors.New("invalid base ref")
+
+// CreateBranch creates a new branch and checks it out. When base is
+// empty the branch is created from the current HEAD (git checkout -b
+// <name>). When base is non-empty it is used as the start-point
+// (git checkout -b <name> <base>); if base is a remote-tracking branch,
+// --track is added so the new branch sets up upstream tracking
+// automatically. Emits git:status_changed on success. Returns an error
+// when no project is active, the project is No Project, the branch name
+// is empty, the branch already exists, the base ref is invalid, or the
+// git command fails.
+func (f *FrontendAPI) CreateBranch(name, base string) error {
 	branchName := strings.TrimSpace(name)
 	if branchName == "" {
 		return errors.New("branch name must not be empty")
@@ -542,7 +650,26 @@ func (f *FrontendAPI) CreateBranch(name string) error {
 		return err
 	}
 
-	if _, err := f.runGitCmd(repoPath, "checkout", "-b", branchName); err != nil {
+	baseRef := strings.TrimSpace(base)
+	args := []string{"checkout", "-b", branchName}
+	if baseRef != "" {
+		// Pre-validate the base ref with rev-parse so we can return a clear,
+		// version-independent error instead of relying on git checkout's
+		// stderr wording. ^{commit} peels annotated tags to their commit and
+		// rejects refs that don't resolve to a commit object.
+		if _, err := f.runGitCmd(repoPath, "rev-parse", "--verify", "--quiet", baseRef+"^{commit}"); err != nil {
+			return fmt.Errorf("base %q is not a valid ref: %w", baseRef, ErrInvalidBaseRef)
+		}
+		if f.isRemoteTrackingRef(repoPath, baseRef) {
+			// --track sets up upstream tracking when branching from a
+			// remote-tracking branch whose name doesn't match the new
+			// branch (git doesn't auto-track in that case).
+			args = append(args, "--track")
+		}
+		args = append(args, baseRef)
+	}
+
+	if _, err := f.runGitCmd(repoPath, args...); err != nil {
 		if isBranchAlreadyExists(err) {
 			return fmt.Errorf("branch %q already exists", branchName)
 		}
@@ -572,6 +699,14 @@ func isBranchAlreadyExists(err error) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "already exists")
+}
+
+// isRemoteTrackingRef reports whether ref resolves under refs/remotes/,
+// i.e. it is a remote-tracking branch. Used to decide whether to add
+// --track when creating a branch from a remote base.
+func (f *FrontendAPI) isRemoteTrackingRef(repoPath, ref string) bool {
+	_, err := f.runGitCmd(repoPath, "rev-parse", "--verify", "--quiet", "refs/remotes/"+ref)
+	return err == nil
 }
 
 // ---------------------------------------------------------------------------
@@ -760,76 +895,9 @@ func (f *FrontendAPI) runRemoteOp(op, remote string, flags []string) (string, er
 // Commit history RPCs (Phase 5)
 // ---------------------------------------------------------------------------
 
-// defaultCommitLogLimit is the page size used by GetCommitLog when the
+// defaultGitHistoryLimit is the page size used by GetGitHistory when the
 // caller does not request a positive limit.
-const defaultCommitLogLimit = 50
-
-// GetCommitLog returns a page of commit history from the active
-// project's repository. limit caps the number of commits returned; skip
-// offsets into the history for pagination ("Load more"). A non-positive
-// limit defaults to defaultCommitLogLimit; a negative skip is treated as
-// zero. Returns an empty slice (not nil) when there are no commits.
-// Returns an error when no project is active, the project is No Project,
-// or the git command fails.
-func (f *FrontendAPI) GetCommitLog(limit, skip int) ([]CommitInfo, error) {
-	if limit <= 0 {
-		limit = defaultCommitLogLimit
-	}
-	if skip < 0 {
-		skip = 0
-	}
-
-	repoPath, err := f.resolveGitRepoRoot()
-	if err != nil {
-		return nil, err
-	}
-
-	// Pretty format using control characters as separators so commit
-	// messages containing "|" or newlines do not corrupt parsing:
-	// %x1f (unit separator) between fields, %x1e (record separator)
-	// between commits.
-	out, err := f.runGitCmd(repoPath, "log",
-		"-n", strconv.Itoa(limit),
-		"--skip", strconv.Itoa(skip),
-		"--format=%H%x1f%an%x1f%ae%x1f%ad%x1f%s%x1e",
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return parseCommitLog(out), nil
-}
-
-// parseCommitLog parses git log output produced with the
-// --format=%H%x1f%an%x1f%ae%x1f%ad%x1f%s%x1e pretty format. Records are
-// separated by %x1e (record separator) and fields within a record by
-// %x1f (unit separator). Returns an empty slice when output is empty.
-func parseCommitLog(output string) []CommitInfo {
-	output = strings.TrimSpace(output)
-	if output == "" {
-		return []CommitInfo{}
-	}
-	records := strings.Split(output, "\x1e")
-	commits := make([]CommitInfo, 0, len(records))
-	for _, rec := range records {
-		rec = strings.TrimSpace(rec)
-		if rec == "" {
-			continue
-		}
-		fields := strings.Split(rec, "\x1f")
-		if len(fields) < 5 {
-			continue
-		}
-		commits = append(commits, CommitInfo{
-			SHA:     fields[0],
-			Author:  fields[1],
-			Email:   fields[2],
-			Date:    fields[3],
-			Message: fields[4],
-		})
-	}
-	return commits
-}
+const defaultGitHistoryLimit = 50
 
 // GetCommitFiles returns the list of files changed by the given commit
 // (git diff-tree --no-commit-id --name-status -r -M <sha>). -M enables
@@ -1262,23 +1330,18 @@ func isRebaseActive(gitDir string) bool {
 // Commit graph RPC (Phase 6)
 // ---------------------------------------------------------------------------
 
-// defaultGitGraphLimit is the page size used by GetGitGraph when the
-// caller does not request a positive limit.
-const defaultGitGraphLimit = 100
-
-// GetGitGraph returns a page of commit history for graph visualization,
-// each carrying its parent SHAs (so the frontend computes the lane
-// layout) and decorated ref names. limit caps the number of commits
-// returned; skip offsets into the history for lazy-load pagination ("Load
-// more"). A non-positive limit defaults to defaultGitGraphLimit; a
-// negative skip is treated as zero. The graph ASCII output (--graph) is
-// intentionally omitted: the frontend derives lanes from the parents.
-// Returns an empty slice (not nil) when there are no commits. Returns an
-// error when no project is active, the project is No Project, or the git
-// command fails.
-func (f *FrontendAPI) GetGitGraph(limit, skip int) ([]GraphCommit, error) {
+// GetGitHistory returns a page of commit history for the unified
+// history+graph view, each commit carrying the union of the
+// human-readable log fields (author/email/date/message) and the graph
+// topology fields (parents/refs). limit caps the number of commits
+// returned; skip offsets into the history for lazy-load pagination
+// ("Load more"). A non-positive limit defaults to defaultGitHistoryLimit;
+// a negative skip is treated as zero. Returns an empty slice (not nil)
+// when there are no commits. Returns an error when no project is active,
+// the project is No Project, or the git command fails.
+func (f *FrontendAPI) GetGitHistory(limit, skip int) ([]GitHistoryCommit, error) {
 	if limit <= 0 {
-		limit = defaultGitGraphLimit
+		limit = defaultGitHistoryLimit
 	}
 	if skip < 0 {
 		skip = 0
@@ -1289,48 +1352,57 @@ func (f *FrontendAPI) GetGitGraph(limit, skip int) ([]GraphCommit, error) {
 		return nil, err
 	}
 
+	// Pretty format using control characters as separators so commit
+	// messages containing "|" or newlines do not corrupt parsing:
+	// %x1f (unit separator) between fields, %x1e (record separator)
+	// between commits. Fields: SHA, parents, author, email, date,
+	// subject, ref decorations.
 	out, err := f.runGitCmd(repoPath, "log",
 		"-n", strconv.Itoa(limit),
 		"--skip", strconv.Itoa(skip),
-		"--format=%H%x1f%P%x1f%s%x1f%d%x1e",
+		"--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d%x1e",
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	return parseGitGraph(out), nil
+	return parseGitHistory(out), nil
 }
 
-// parseGitGraph parses git log output produced with the
-// --format=%H%x1f%P%x1f%s%x1f%d%x1e pretty format. Records are separated
-// by %x1e (record separator) and fields within a record by %x1f (unit
-// separator): SHA, parents (space-separated), subject, ref decorations.
-// Returns an empty slice when output is empty.
-func parseGitGraph(output string) []GraphCommit {
+// parseGitHistory parses git log output produced with the
+// --format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d%x1e pretty format.
+// Records are separated by %x1e (record separator) and fields within a
+// record by %x1f (unit separator): SHA, parents (space-separated), author,
+// email, date, subject, ref decorations. Returns an empty slice when
+// output is empty.
+func parseGitHistory(output string) []GitHistoryCommit {
 	output = strings.TrimSpace(output)
 	if output == "" {
-		return []GraphCommit{}
+		return []GitHistoryCommit{}
 	}
 	records := strings.Split(output, "\x1e")
-	commits := make([]GraphCommit, 0, len(records))
+	commits := make([]GitHistoryCommit, 0, len(records))
 	for _, rec := range records {
 		rec = strings.TrimSpace(rec)
 		if rec == "" {
 			continue
 		}
 		fields := strings.Split(rec, "\x1f")
-		if len(fields) < 4 {
+		if len(fields) < 7 {
 			continue
 		}
 		var parents []string
 		if p := strings.TrimSpace(fields[1]); p != "" {
 			parents = strings.Fields(p)
 		}
-		commits = append(commits, GraphCommit{
+		commits = append(commits, GitHistoryCommit{
 			SHA:     fields[0],
 			Parents: parents,
-			Message: fields[2],
-			Refs:    parseGitRefs(fields[3]),
+			Author:  fields[2],
+			Email:   fields[3],
+			Date:    fields[4],
+			Message: fields[5],
+			Refs:    parseGitRefs(fields[6]),
 		})
 	}
 	return commits

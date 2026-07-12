@@ -1,12 +1,12 @@
 // Unit tests for gitGraphLayout — pure commit-graph lane layout (Phase 6)
 
 import { describe, it, expect } from 'vitest'
-import { computeGraphLayout, shortSha } from './gitGraphLayout'
-import type { GraphCommit } from '@/types/models'
+import { computeGraphLayout, computeRowYLayout, shortSha, type RowYLayout } from './gitGraphLayout'
+import type { GitHistoryCommit } from '@/types/models'
 
 /** Helper: build a commit with minimal boilerplate. */
-function commit(sha: string, parents: string[], message = sha, refs: string[] = []): GraphCommit {
-  return { sha, parents, message, refs }
+function commit(sha: string, parents: string[], message = sha, refs: string[] = []): GitHistoryCommit {
+  return { sha, parents, author: '', email: '', date: '', message, refs }
 }
 
 describe('shortSha', () => {
@@ -122,5 +122,100 @@ describe('computeGraphLayout', () => {
       commit('d', ['c']),
     ])
     expect(nodes.map((n) => n.row)).toEqual([0, 1, 2, 3])
+  })
+})
+
+describe('computeRowYLayout', () => {
+  it('reproduces the fixed-height formula when all rows equal rowSpacing (backward compat)', () => {
+    const rowSpacing = 28
+    const rowHeights = [28, 28, 28, 28, 28]
+    const { yFor, totalHeight } = computeRowYLayout(rowHeights, rowSpacing)
+    for (let r = 0; r < rowHeights.length; r++) {
+      expect(yFor(r)).toBe(r * rowSpacing + rowSpacing / 2)
+    }
+    expect(totalHeight).toBe(rowHeights.length * rowSpacing + rowSpacing / 2)
+  })
+
+  it('matches the GitGraph.tsx formula exactly for fixed heights (r*28+14)', () => {
+    const { yFor, totalHeight } = computeRowYLayout([28, 28, 28, 28, 28], 28)
+    expect(yFor(0)).toBe(14)
+    expect(yFor(1)).toBe(42)
+    expect(yFor(2)).toBe(70)
+    expect(yFor(3)).toBe(98)
+    expect(yFor(4)).toBe(126)
+    expect(totalHeight).toBe(5 * 28 + 14) // 154
+  })
+
+  it('pushes all later rows down when one row is expanded', () => {
+    // Row 1 expands from 28 to 80 — a 52px delta that offsets every later row.
+    // The node sits at the TOP of each row (center of the commit-line area),
+    // so yFor(r) = sum(prev heights) + rowSpacing/2.
+    const { yFor, totalHeight } = computeRowYLayout([28, 80, 28, 28], 28)
+    expect(yFor(0)).toBe(14) // 0 + 28/2
+    expect(yFor(1)).toBe(42) // 28 + 28/2 (node at top of the expanded row)
+    expect(yFor(2)).toBe(122) // 28 + 80 + 28/2
+    expect(yFor(3)).toBe(150) // 28 + 80 + 28 + 28/2
+    expect(totalHeight).toBe(28 + 80 + 28 + 28 + 14) // 178
+  })
+
+  it('handles empty rowHeights with a half-spacing total height', () => {
+    const { yFor, totalHeight } = computeRowYLayout([], 28)
+    expect(totalHeight).toBe(28 / 2) // 14 — just the bottom pad, no rows
+    // No rows exist; yFor(0) returns the bottom content edge (0 for empty).
+    expect(yFor(0)).toBe(0)
+  })
+
+  it('lays out correctly when every row is expanded', () => {
+    // Node at top of each row: yFor(r) = sum(prev) + rowSpacing/2.
+    const { yFor, totalHeight } = computeRowYLayout([60, 60, 60], 28)
+    expect(yFor(0)).toBe(14) // 0 + 28/2
+    expect(yFor(1)).toBe(74) // 60 + 28/2
+    expect(yFor(2)).toBe(134) // 120 + 28/2
+    expect(totalHeight).toBe(60 + 60 + 60 + 28 / 2) // 180 + 14 = 194
+  })
+
+  it('does not mutate the input rowHeights array', () => {
+    const rowHeights = [28, 80, 28, 28]
+    const snapshot = [...rowHeights]
+    computeRowYLayout(rowHeights, 28)
+    expect(rowHeights).toEqual(snapshot)
+  })
+
+  it('returns a yFor closure independent of later caller mutations', () => {
+    const rowHeights = [28, 80, 28, 28]
+    const { yFor } = computeRowYLayout(rowHeights, 28)
+    const before = yFor(2)
+    rowHeights[1] = 999 // mutate after construction
+    expect(yFor(2)).toBe(before) // internal prefix-sum snapshot is unaffected
+  })
+
+  it('handles out-of-range rows defensively without NaN', () => {
+    const { yFor } = computeRowYLayout([28, 80], 28)
+    expect(yFor(-1)).toBe(0) // above the graph → top edge
+    expect(yFor(5)).toBe(28 + 80) // beyond last row → bottom content edge
+    expect(Number.isNaN(yFor(5))).toBe(false)
+  })
+
+  it('uses nodeOffset to position nodes within each row', () => {
+    // With nodeOffset=11, the node sits 11px from the top of each row
+    // (aligning with the first line of a two-line row), not at the center.
+    const { yFor, totalHeight } = computeRowYLayout([32, 32, 32], 32, 11)
+    expect(yFor(0)).toBe(11) // 0 + 11
+    expect(yFor(1)).toBe(43) // 32 + 11
+    expect(yFor(2)).toBe(75) // 64 + 11
+    // totalHeight is unaffected by nodeOffset (still rowSpacing/2 bottom pad).
+    expect(totalHeight).toBe(32 * 3 + 32 / 2)
+  })
+
+  it('defaults nodeOffset to rowSpacing/2 when omitted', () => {
+    const { yFor } = computeRowYLayout([32, 32], 32)
+    expect(yFor(0)).toBe(16) // 0 + 32/2
+    expect(yFor(1)).toBe(48) // 32 + 32/2
+  })
+
+  it('satisfies the RowYLayout interface shape', () => {
+    const layout: RowYLayout = computeRowYLayout([28, 28], 28)
+    expect(typeof layout.yFor).toBe('function')
+    expect(typeof layout.totalHeight).toBe('number')
   })
 })

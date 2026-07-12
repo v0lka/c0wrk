@@ -1075,6 +1075,24 @@ export namespace workspace {
 	        this.is_current = source["is_current"];
 	    }
 	}
+	export class BranchBase {
+	    ref: string;
+	    label: string;
+	    type: string;
+	    detail: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BranchBase(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ref = source["ref"];
+	        this.label = source["label"];
+	        this.type = source["type"];
+	        this.detail = source["detail"];
+	    }
+	}
 	export class BranchInfo {
 	    name: string;
 	    upstream: string;
@@ -1105,26 +1123,6 @@ export namespace workspace {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.status = source["status"];
 	        this.path = source["path"];
-	    }
-	}
-	export class CommitInfo {
-	    sha: string;
-	    author: string;
-	    email: string;
-	    date: string;
-	    message: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new CommitInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.sha = source["sha"];
-	        this.author = source["author"];
-	        this.email = source["email"];
-	        this.date = source["date"];
-	        this.message = source["message"];
 	    }
 	}
 	export class DiffStat {
@@ -1165,20 +1163,26 @@ export namespace workspace {
 	        this.gitignored = source["gitignored"];
 	    }
 	}
-	export class GraphCommit {
+	export class GitHistoryCommit {
 	    sha: string;
 	    parents: string[];
+	    author: string;
+	    email: string;
+	    date: string;
 	    message: string;
 	    refs: string[];
 	
 	    static createFrom(source: any = {}) {
-	        return new GraphCommit(source);
+	        return new GitHistoryCommit(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sha = source["sha"];
 	        this.parents = source["parents"];
+	        this.author = source["author"];
+	        this.email = source["email"];
+	        this.date = source["date"];
 	        this.message = source["message"];
 	        this.refs = source["refs"];
 	    }

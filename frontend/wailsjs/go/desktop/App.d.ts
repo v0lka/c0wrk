@@ -24,7 +24,7 @@ export function CheckoutBranch(arg1:string):Promise<void>;
 
 export function Commit(arg1:string):Promise<string>;
 
-export function CreateBranch(arg1:string):Promise<void>;
+export function CreateBranch(arg1:string,arg2:string):Promise<void>;
 
 export function CreateProject(arg1:string,arg2:string):Promise<project.ProjectInfo>;
 
@@ -44,11 +44,11 @@ export function GenerateCommitMessage():Promise<string>;
 
 export function GetBlackboardState(arg1:string):Promise<backend.BlackboardStateResponse>;
 
+export function GetBranchBases():Promise<Array<workspace.BranchBase>>;
+
 export function GetBranches():Promise<Array<workspace.Branch>>;
 
 export function GetCommitFiles(arg1:string):Promise<Array<workspace.CommitFile>>;
-
-export function GetCommitLog(arg1:number,arg2:number):Promise<Array<workspace.CommitInfo>>;
 
 export function GetConfig():Promise<backend.ConfigResponse>;
 
@@ -62,7 +62,7 @@ export function GetFileDiff(arg1:string):Promise<string>;
 
 export function GetFileIcon(arg1:string):Promise<backend.FileIconResponse>;
 
-export function GetGitGraph(arg1:number,arg2:number):Promise<Array<workspace.GraphCommit>>;
+export function GetGitHistory(arg1:number,arg2:number):Promise<Array<workspace.GitHistoryCommit>>;
 
 export function GetGitStatus(arg1:string):Promise<Record<string, workspace.GitStatusEntry>>;
 

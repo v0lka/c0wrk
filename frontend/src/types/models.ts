@@ -75,21 +75,20 @@ export interface Branch {
   is_current: boolean
 }
 
+/** A ref usable as a start-point for CreateBranch (local/remote/tag/commit). */
+export interface BranchBase {
+  ref: string
+  label: string
+  type: 'local' | 'remote' | 'tag' | 'commit'
+  detail: string
+}
+
 /** Current branch with upstream tracking + ahead/behind counts (Phase 5). */
 export interface BranchInfo {
   name: string
   upstream: string
   ahead: number
   behind: number
-}
-
-/** A commit in the history log (Phase 5). */
-export interface CommitInfo {
-  sha: string
-  author: string
-  email: string
-  date: string
-  message: string
 }
 
 /** A file changed by a given commit (Phase 5). Status is a single letter A/M/D/R/C. */
@@ -104,11 +103,19 @@ export interface StashEntry {
   message: string
 }
 
-/** A commit node in the commit graph (Phase 6). */
-export interface GraphCommit {
+/**
+ * A commit in the unified history+graph view. Carries both the
+ * human-readable log fields (author/email/date) and the graph topology
+ * fields (parents/refs) so the frontend can render lane topology and
+ * expandable commit details from one paginated source.
+ */
+export interface GitHistoryCommit {
   sha: string
   /** Parent commit SHAs (empty for the root commit). */
   parents: string[]
+  author: string
+  email: string
+  date: string
   message: string
   /** Git decorations: branch names, tags, HEAD pointer (e.g. `HEAD -> main`). */
   refs: string[]

@@ -11,7 +11,6 @@ import { ChangesList } from './ChangesList'
 import { CommitSection } from './CommitSection'
 import { BranchPicker } from './BranchPicker'
 import { GitHistoryTab } from './GitHistoryTab'
-import { GitGraph } from './GitGraph'
 import { GitPanelFooter } from './GitPanelFooter'
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -92,9 +91,9 @@ export function GitPanel() {
       <GitPanelToolbar
         branch={branch}
       />
-      {/* Changes | History | Graph tab switcher (Phase 5/6) */}
+      {/* Changes | History tab switcher (graph merged into History) */}
       <div className="flex shrink-0 border-b border-border bg-secondary/20">
-        {(['changes', 'history', 'graph'] as const).map((tab) => (
+        {(['changes', 'history'] as const).map((tab) => (
           <button
             key={tab}
             type="button"
@@ -121,10 +120,8 @@ export function GitPanel() {
           <ChangesList onToggleFile={onToggleFile} onOpenDiff={onOpenDiff} />
           <CommitSection />
         </>
-      ) : activeTab === 'history' ? (
-        <GitHistoryTab />
       ) : (
-        <GitGraph />
+        <GitHistoryTab />
       )}
       <GitPanelFooter />
       <BranchPicker />

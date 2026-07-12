@@ -34,8 +34,8 @@ export function Commit(arg1) {
   return window['go']['desktop']['App']['Commit'](arg1);
 }
 
-export function CreateBranch(arg1) {
-  return window['go']['desktop']['App']['CreateBranch'](arg1);
+export function CreateBranch(arg1, arg2) {
+  return window['go']['desktop']['App']['CreateBranch'](arg1, arg2);
 }
 
 export function CreateProject(arg1, arg2) {
@@ -74,16 +74,16 @@ export function GetBlackboardState(arg1) {
   return window['go']['desktop']['App']['GetBlackboardState'](arg1);
 }
 
+export function GetBranchBases() {
+  return window['go']['desktop']['App']['GetBranchBases']();
+}
+
 export function GetBranches() {
   return window['go']['desktop']['App']['GetBranches']();
 }
 
 export function GetCommitFiles(arg1) {
   return window['go']['desktop']['App']['GetCommitFiles'](arg1);
-}
-
-export function GetCommitLog(arg1, arg2) {
-  return window['go']['desktop']['App']['GetCommitLog'](arg1, arg2);
 }
 
 export function GetConfig() {
@@ -110,8 +110,8 @@ export function GetFileIcon(arg1) {
   return window['go']['desktop']['App']['GetFileIcon'](arg1);
 }
 
-export function GetGitGraph(arg1, arg2) {
-  return window['go']['desktop']['App']['GetGitGraph'](arg1, arg2);
+export function GetGitHistory(arg1, arg2) {
+  return window['go']['desktop']['App']['GetGitHistory'](arg1, arg2);
 }
 
 export function GetGitStatus(arg1) {

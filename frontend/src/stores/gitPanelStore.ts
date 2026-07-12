@@ -58,8 +58,8 @@ interface GitPanelState {
   error: string | null
   /** True while a pull/push/fetch is running — blocks parallel remote ops (Phase 5). */
   remoteOperationInProgress: boolean
-  /** Active GitPanel tab (Phase 5/6). */
-  activeTab: 'changes' | 'history' | 'graph'
+  /** Active GitPanel tab. 'graph' was merged into 'history' (unified view). */
+  activeTab: 'changes' | 'history'
   /** Transient: whether a merge or rebase is currently in progress (Phase 6). Not persisted. */
   mergeRebaseState: MergeRebaseState
   /** Transient: SHA of the most recently created commit (FE-1). Not persisted. */
@@ -87,7 +87,7 @@ interface GitPanelActions {
   /** Replace the entire expanded-dirs set (used by expand-all / collapse-all). */
   setExpandedDirs: (dirs: Set<string>) => void
   setRemoteOperationInProgress: (inProgress: boolean) => void
-  setActiveTab: (tab: 'changes' | 'history' | 'graph') => void
+  setActiveTab: (tab: 'changes' | 'history') => void
   setMergeRebaseState: (state: MergeRebaseState) => void
   setLastCommitSha: (sha: string | null) => void
   setSortBy: (mode: SortBy) => void

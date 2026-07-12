@@ -25,74 +25,6 @@ import (
 // commitFile / gitOut / gitDefaultBranch helpers defined in this package.
 
 // ---------------------------------------------------------------------------
-// parseGitGraph — deterministic, no git
-// ---------------------------------------------------------------------------
-
-func TestParseGitGraph(t *testing.T) {
-	// %H%x1f%P%x1f%s%x1f%d%x1e  (record sep = \x1e, field sep = \x1f)
-	tests := []struct {
-		name  string
-		input string
-		want  []GraphCommit
-	}{
-		{
-			name:  "empty",
-			input: "",
-			want:  []GraphCommit{},
-		},
-		{
-			name:  "whitespace only",
-			input: "  \n ",
-			want:  []GraphCommit{},
-		},
-		{
-			name:  "single root commit no refs",
-			input: "abc123\x1f\x1fadd file\x1f",
-			want: []GraphCommit{
-				{SHA: "abc123", Parents: nil, Message: "add file", Refs: []string{}},
-			},
-		},
-		{
-			name:  "single commit with parents and refs",
-			input: "def456\x1faaa bbb\x1ffeat: x\x1f (HEAD -> main, tag: v1.0)",
-			want: []GraphCommit{
-				{SHA: "def456", Parents: []string{"aaa", "bbb"}, Message: "feat: x", Refs: []string{"HEAD -> main", "tag: v1.0"}},
-			},
-		},
-		{
-			name:  "multiple commits",
-			input: "s1\x1fp1\x1fm1\x1f\x1es2\x1f\x1fm2\x1f (HEAD -> main)",
-			want: []GraphCommit{
-				{SHA: "s1", Parents: []string{"p1"}, Message: "m1", Refs: []string{}},
-				{SHA: "s2", Parents: nil, Message: "m2", Refs: []string{"HEAD -> main"}},
-			},
-		},
-		{
-			name:  "malformed record with too few fields is skipped",
-			input: "s1\x1fp1\x1fm1\x1f\x1eshort",
-			want: []GraphCommit{
-				{SHA: "s1", Parents: []string{"p1"}, Message: "m1", Refs: []string{}},
-			},
-		},
-		{
-			name:  "trailing record separator ignored",
-			input: "s1\x1f\x1fm1\x1f\x1e",
-			want: []GraphCommit{
-				{SHA: "s1", Parents: nil, Message: "m1", Refs: []string{}},
-			},
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := parseGitGraph(tc.input)
-			if diff := cmp.Diff(tc.want, got); diff != "" {
-				t.Errorf("parseGitGraph(%q) mismatch (-want +got):\n%s", tc.input, diff)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // parseGitRefs — deterministic, no git
 // ---------------------------------------------------------------------------
 
@@ -753,118 +685,6 @@ func TestGetRebaseMergeState_DoesNotEmit(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GetGitGraph — integration
-// ---------------------------------------------------------------------------
-
-func TestGetGitGraph_NoProject(t *testing.T) {
-	f := &FrontendAPI{}
-	if _, err := f.GetGitGraph(0, 0); err == nil {
-		t.Fatal("GetGitGraph: expected error when no active project")
-	}
-}
-
-func TestGetGitGraph_Success(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		// withGitRepo commits committed.txt (1 commit). Add a second.
-		commitFile(t, dir, "b.txt", "b\n")
-
-		graph, err := f.GetGitGraph(0, 0)
-		if err != nil {
-			t.Fatalf("GetGitGraph: %v", err)
-		}
-		if len(graph) != 2 {
-			t.Fatalf("len: got %d, want 2", len(graph))
-		}
-		// Newest first.
-		if graph[0].Message != "add b.txt" {
-			t.Errorf("graph[0].Message: got %q, want %q", graph[0].Message, "add b.txt")
-		}
-		if graph[0].SHA == "" {
-			t.Error("graph[0].SHA is empty")
-		}
-		// Second commit is the root: it has the first commit as parent, and
-		// the root commit has no parents.
-		if len(graph[0].Parents) != 1 {
-			t.Errorf("graph[0].Parents: got %d, want 1", len(graph[0].Parents))
-		} else if graph[0].Parents[0] != graph[1].SHA {
-			t.Errorf("graph[0].Parents[0]: got %q, want %q", graph[0].Parents[0], graph[1].SHA)
-		}
-		if len(graph[1].Parents) != 0 {
-			t.Errorf("graph[1].Parents: got %v, want empty (root)", graph[1].Parents)
-		}
-		// HEAD -> branch decoration sits on the newest commit (graph[0]);
-		// the root commit (graph[1]) carries no decoration.
-		if len(graph[0].Refs) == 0 {
-			t.Errorf("graph[0].Refs: got %v, want at least one (HEAD -> branch)", graph[0].Refs)
-		}
-		if len(graph[1].Refs) != 0 {
-			t.Errorf("graph[1].Refs: got %v, want empty (root has no decoration)", graph[1].Refs)
-		}
-	})
-}
-
-func TestGetGitGraph_Pagination(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		// withGitRepo creates 1 commit (committed.txt). Add two more so the
-		// repo has 3 commits: newest=oldest order is b2, b1, committed.
-		commitFile(t, dir, "b1.txt", "b1\n")
-		commitFile(t, dir, "b2.txt", "b2\n")
-
-		// limit caps the page size.
-		page, err := f.GetGitGraph(2, 0)
-		if err != nil {
-			t.Fatalf("GetGitGraph(2,0): %v", err)
-		}
-		if len(page) != 2 {
-			t.Fatalf("GetGitGraph(2,0) len: got %d, want 2", len(page))
-		}
-		// Newest first: the first page starts at the most recent commit.
-		if page[0].Message != "add b2.txt" {
-			t.Errorf("GetGitGraph(2,0)[0].Message: got %q, want %q", page[0].Message, "add b2.txt")
-		}
-
-		// skip offsets into older history: skipping 2 leaves the root commit.
-		older, err := f.GetGitGraph(2, 2)
-		if err != nil {
-			t.Fatalf("GetGitGraph(2,2): %v", err)
-		}
-		if len(older) != 1 {
-			t.Fatalf("GetGitGraph(2,2) len: got %d, want 1 (only root remains)", len(older))
-		}
-
-		// Non-positive limit defaults to defaultGitGraphLimit (100): with
-		// skip=1 the newest commit is skipped, returning the 2 older ones.
-		rest, err := f.GetGitGraph(0, 1)
-		if err != nil {
-			t.Fatalf("GetGitGraph(0,1): %v", err)
-		}
-		if len(rest) != 2 {
-			t.Fatalf("GetGitGraph(0,1) len: got %d, want 2", len(rest))
-		}
-		if rest[0].Message != "add b1.txt" {
-			t.Errorf("GetGitGraph(0,1)[0].Message: got %q, want %q", rest[0].Message, "add b1.txt")
-		}
-	})
-}
-
-func TestGetGitGraph_DoesNotEmit(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, _ string) {
-		emitted := false
-		f.emitEvent = func(name string, _ ...any) {
-			if name == EventGitStatusChanged {
-				emitted = true
-			}
-		}
-		if _, err := f.GetGitGraph(0, 0); err != nil {
-			t.Fatalf("GetGitGraph: %v", err)
-		}
-		if emitted {
-			t.Error("GetGitGraph emitted git:status_changed, want no emit")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // StageHunks — integration
 // ---------------------------------------------------------------------------
 
@@ -1052,9 +872,6 @@ func TestPhase6Git_NoProject(t *testing.T) {
 	if _, err := f.GetRebaseMergeState(); err == nil {
 		t.Error("GetRebaseMergeState: expected error")
 	}
-	if _, err := f.GetGitGraph(0, 0); err == nil {
-		t.Error("GetGitGraph: expected error")
-	}
 	if err := f.StageHunks("/f.txt", []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
 		t.Error("StageHunks: expected error")
 	}
@@ -1082,9 +899,6 @@ func TestPhase6Git_NoProjectMode(t *testing.T) {
 	}
 	if _, err := f.GetRebaseMergeState(); err == nil {
 		t.Error("GetRebaseMergeState: expected error")
-	}
-	if _, err := f.GetGitGraph(0, 0); err == nil {
-		t.Error("GetGitGraph: expected error")
 	}
 	if err := f.StageHunks(filepath.Join(f.activeProjectPath, "f.txt"), []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
 		t.Error("StageHunks: expected error")

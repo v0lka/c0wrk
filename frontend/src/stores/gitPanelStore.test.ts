@@ -431,9 +431,9 @@ describe('gitPanelStore', () => {
   })
 })
 
-// --- Phase 6: merge/rebase state & graph tab ---
+// --- Phase 6: merge/rebase state & history tab ---
 
-describe('gitPanelStore — Phase 6 (merge/rebase state & graph tab)', () => {
+describe('gitPanelStore — Phase 6 (merge/rebase state & history tab)', () => {
   beforeEach(() => {
     resetStore()
   })
@@ -475,10 +475,8 @@ describe('gitPanelStore — Phase 6 (merge/rebase state & graph tab)', () => {
     expect(s.activeTab).toBe('changes')
   })
 
-  it('setActiveTab accepts the graph and history tabs', () => {
+  it('setActiveTab switches between changes and history', () => {
     const { setActiveTab } = useGitPanelStore.getState()
-    setActiveTab('graph')
-    expect(useGitPanelStore.getState().activeTab).toBe('graph')
     setActiveTab('history')
     expect(useGitPanelStore.getState().activeTab).toBe('history')
     setActiveTab('changes')

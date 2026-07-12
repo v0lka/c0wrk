@@ -143,9 +143,9 @@ type Branch = workspace.Branch
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type BranchInfo = workspace.BranchInfo
 
-// CommitInfo describes a single commit in the repository history.
+// BranchBase represents a ref usable as a start-point for CreateBranch.
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
-type CommitInfo = workspace.CommitInfo
+type BranchBase = workspace.BranchBase
 
 // CommitFile describes a single file changed by a commit.
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
@@ -155,9 +155,9 @@ type CommitFile = workspace.CommitFile
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type StashEntry = workspace.StashEntry
 
-// GraphCommit describes a commit for graph visualization.
+// GitHistoryCommit describes a commit for the unified history+graph view.
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
-type GraphCommit = workspace.GraphCommit
+type GitHistoryCommit = workspace.GitHistoryCommit
 
 // HunkRange identifies a contiguous slice of a file in old-file line coordinates.
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.

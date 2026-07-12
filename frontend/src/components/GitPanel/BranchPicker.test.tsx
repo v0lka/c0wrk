@@ -31,6 +31,7 @@ const { gitMocks } = vi.hoisted(() => ({
     getBranches: vi.fn(),
     checkoutBranch: vi.fn(),
     createBranch: vi.fn(),
+    getBranchBases: vi.fn(),
   },
 }))
 
@@ -51,6 +52,7 @@ beforeEach(() => {
   gitMocks.getBranches.mockReset()
   gitMocks.checkoutBranch.mockReset()
   gitMocks.createBranch.mockReset()
+  gitMocks.getBranchBases.mockReset()
   // Default: resolve to an empty branch list so the effect always has a
   // thenable. Individual tests override this as needed.
   gitMocks.getBranches.mockResolvedValue([])
@@ -247,8 +249,59 @@ describe('BranchPicker', () => {
       await Promise.resolve()
     })
 
-    expect(gitMocks.createBranch).toHaveBeenCalledWith('feature/new')
+    expect(gitMocks.createBranch).toHaveBeenCalledWith('feature/new', '')
     expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(false)
+  })
+
+  it('creates a new branch from a selected base', async () => {
+    gitMocks.getBranches.mockResolvedValue([
+      { name: 'main', is_current: true },
+    ])
+    gitMocks.getBranchBases.mockResolvedValue([
+      { ref: 'develop', label: 'develop', type: 'local', detail: '' },
+      { ref: 'origin/main', label: 'origin/main', type: 'remote', detail: '' },
+    ])
+    gitMocks.createBranch.mockResolvedValue(undefined)
+    renderPicker()
+    await flush()
+
+    // Type the new branch name.
+    const newBranchInput = Array.from(body().querySelectorAll('input')).find(
+      (i) => i.getAttribute('placeholder') === 'branch-name',
+    )!
+    await act(async () => {
+      setInputValue(newBranchInput, 'feature/from-dev')
+    })
+
+    // Expand the "Choose base" collapsible.
+    const baseTrigger = allButtons().find((b) =>
+      b.textContent?.includes('Choose base'),
+    )!
+    await act(async () => {
+      baseTrigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // Select the 'develop' base.
+    const devBaseBtn = allButtons().find((b) =>
+      b.textContent?.includes('develop'),
+    )!
+    await act(async () => {
+      devBaseBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    // Click New.
+    const newBtn = allButtons().find((b) => b.textContent?.includes('New'))!
+    await act(async () => {
+      newBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(gitMocks.createBranch).toHaveBeenCalledWith('feature/from-dev', 'develop')
   })
 
   it('creates a new branch via Enter key in the new-branch input', async () => {
@@ -274,7 +327,7 @@ describe('BranchPicker', () => {
       await Promise.resolve()
     })
 
-    expect(gitMocks.createBranch).toHaveBeenCalledWith('release/v2')
+    expect(gitMocks.createBranch).toHaveBeenCalledWith('release/v2', '')
   })
 
   it('shows an error when createBranch fails', async () => {

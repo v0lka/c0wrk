@@ -91,6 +91,9 @@ export function BranchPicker() {
     [currentBranch, closeBranchPicker],
   )
 
+  const handleClearError = useCallback(() => setError(null), [])
+  const handleError = useCallback((msg: string) => setError(msg), [])
+
   return (
     <Dialog
       open={isOpen}
@@ -101,9 +104,9 @@ export function BranchPicker() {
       <DialogContent
         showCloseButton
         aria-describedby={undefined}
-        className="max-w-sm p-0"
+        className="max-w-sm p-0 flex flex-col max-h-[calc(100vh-2rem)] overflow-y-auto"
       >
-        <DialogHeader className="px-4 pt-4 pb-2">
+        <DialogHeader className="px-4 pt-4 pb-2 shrink-0">
           <DialogTitle className="flex items-center gap-2 text-sm">
             <GitBranch className="size-4" />
             Switch Branch
@@ -111,7 +114,7 @@ export function BranchPicker() {
         </DialogHeader>
 
         {/* Filter */}
-        <div className="px-4 pb-2">
+        <div className="px-4 pb-2 shrink-0">
           <div className="relative">
             <Search className="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -124,8 +127,8 @@ export function BranchPicker() {
           </div>
         </div>
 
-        {/* Branch list */}
-        <div className="max-h-[240px] min-h-[80px] overflow-y-auto px-2 pb-2">
+        {/* Branch list — flex-1 so it shrinks when the base selector expands */}
+        <div className="flex-1 min-h-[80px] overflow-y-auto px-2 pb-2">
           {loadingBranches ? (
             <div className="flex items-center justify-center py-6 text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />
@@ -157,14 +160,15 @@ export function BranchPicker() {
         <NewBranchSection
           key={isOpen ? 'open' : 'closed'}
           disabled={checkingOut !== null}
-          onClearError={() => setError(null)}
-          onError={(msg) => setError(msg)}
+          currentBranch={currentBranch.name}
+          onClearError={handleClearError}
+          onError={handleError}
           onCreated={closeBranchPicker}
         />
 
         {/* Error */}
         {error && (
-          <div className="flex items-center gap-1.5 border-t border-destructive/20 px-4 py-2 text-xs text-destructive">
+          <div className="flex items-center gap-1.5 border-t border-destructive/20 px-4 py-2 text-xs text-destructive shrink-0">
             <AlertCircle className="size-3.5 shrink-0" />
             <span className="truncate">{error}</span>
           </div>

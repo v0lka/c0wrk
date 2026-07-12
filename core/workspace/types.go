@@ -49,13 +49,15 @@ type BranchInfo struct {
 	Behind   int    `json:"behind"`
 }
 
-// CommitInfo describes a single commit in the repository history.
-type CommitInfo struct {
-	SHA     string `json:"sha"`
-	Author  string `json:"author"`
-	Email   string `json:"email"`
-	Date    string `json:"date"`
-	Message string `json:"message"`
+// BranchBase represents a ref that can serve as a start-point for
+// `git checkout -b`. Type distinguishes the ref category so the UI can
+// group and label items. Detail holds the commit subject for commits
+// (empty for branches and tags).
+type BranchBase struct {
+	Ref    string `json:"ref"`    // git ref: "main", "origin/main", "v1.0", "a3f5c1d"
+	Label  string `json:"label"`  // display: same as Ref for branches/tags; short SHA for commits
+	Type   string `json:"type"`   // "local" | "remote" | "tag" | "commit"
+	Detail string `json:"detail"` // commit subject for commits; "" for branches/tags
 }
 
 // CommitFile describes a single file changed by a commit.  Status is the
@@ -73,14 +75,16 @@ type StashEntry struct {
 	Message string `json:"message"`
 }
 
-// GraphCommit describes a single commit for graph visualization. Parents
-// holds the full SHAs of the commit's parents (empty for the root
-// commit); the frontend computes lane layout from these. Refs lists the
-// decorated ref names git attaches to the commit (e.g. "HEAD -> main",
-// "tag: v1.0"), empty when none.
-type GraphCommit struct {
+// GitHistoryCommit describes a single commit for the unified history+graph
+// view. It carries both the human-readable log fields (author/email/date)
+// and the graph topology fields (parents/refs) so the frontend can render
+// lane topology and expandable commit details from one paginated source.
+type GitHistoryCommit struct {
 	SHA     string   `json:"sha"`
 	Parents []string `json:"parents"`
+	Author  string   `json:"author"`
+	Email   string   `json:"email"`
+	Date    string   `json:"date"`
 	Message string   `json:"message"`
 	Refs    []string `json:"refs"`
 }

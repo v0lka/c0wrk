@@ -1118,14 +1118,14 @@ func TestCheckoutBranch_NonexistentBranch(t *testing.T) {
 
 func TestCreateBranch_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
-	if err := f.CreateBranch("main"); err == nil {
+	if err := f.CreateBranch("main", ""); err == nil {
 		t.Fatal("expected error when no active project")
 	}
 }
 
 func TestCreateBranch_EmptyName(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		if err := f.CreateBranch(""); err == nil {
+		if err := f.CreateBranch("", ""); err == nil {
 			t.Fatal("expected error for empty branch name")
 		}
 	})
@@ -1142,7 +1142,7 @@ func TestCreateBranch_Success(t *testing.T) {
 			}
 		}
 
-		if err := f.CreateBranch("new-feature"); err != nil {
+		if err := f.CreateBranch("new-feature", ""); err != nil {
 			t.Fatalf("CreateBranch: %v", err)
 		}
 
@@ -1162,7 +1162,7 @@ func TestCreateBranch_Success(t *testing.T) {
 func TestCreateBranch_AlreadyExists(t *testing.T) {
 	withGitRepo(t, func(f *FrontendAPI, dir string) {
 		// The default branch already exists.
-		err := f.CreateBranch(gitDefaultBranch(t, dir))
+		err := f.CreateBranch(gitDefaultBranch(t, dir), "")
 		if err == nil {
 			t.Fatal("expected error for existing branch")
 		}
@@ -1170,6 +1170,219 @@ func TestCreateBranch_AlreadyExists(t *testing.T) {
 			t.Errorf("expected 'already exists' message, got: %v", err)
 		}
 	})
+}
+
+func TestCreateBranch_FromLocalBranch(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// Create a second local branch to use as base.
+		gitOut(t, dir, "branch", "develop")
+
+		if err := f.CreateBranch("feature", "develop"); err != nil {
+			t.Fatalf("CreateBranch from local: %v", err)
+		}
+
+		current, err := f.GetCurrentBranch()
+		if err != nil {
+			t.Fatalf("GetCurrentBranch: %v", err)
+		}
+		if current.Name != "feature" {
+			t.Errorf("current branch: got %q, want %q", current.Name, "feature")
+		}
+	})
+}
+
+func TestCreateBranch_FromRemoteBranch_Track(t *testing.T) {
+	remoteDir := t.TempDir()
+	gitOut(t, remoteDir, "init", "--bare")
+
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+	gitOut(t, localDir, "remote", "add", "origin", remoteDir)
+	branch := gitDefaultBranch(t, localDir)
+	gitOut(t, localDir, "push", "-u", "origin", branch)
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+
+	if err := f.CreateBranch("feature", "origin/"+branch); err != nil {
+		t.Fatalf("CreateBranch from remote: %v", err)
+	}
+
+	current, err := f.GetCurrentBranch()
+	if err != nil {
+		t.Fatalf("GetCurrentBranch: %v", err)
+	}
+	if current.Name != "feature" {
+		t.Errorf("current branch: got %q, want %q", current.Name, "feature")
+	}
+	// --track should have set up upstream tracking automatically.
+	if current.Upstream != "origin/"+branch {
+		t.Errorf("upstream: got %q, want %q", current.Upstream, "origin/"+branch)
+	}
+}
+
+func TestCreateBranch_FromTag(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// Use update-ref to create a lightweight tag, bypassing the
+		// global tag.gpgsign=true config that would require an editor.
+		gitOut(t, dir, "update-ref", "refs/tags/v1.0", "HEAD")
+
+		if err := f.CreateBranch("release", "v1.0"); err != nil {
+			t.Fatalf("CreateBranch from tag: %v", err)
+		}
+
+		current, err := f.GetCurrentBranch()
+		if err != nil {
+			t.Fatalf("GetCurrentBranch: %v", err)
+		}
+		if current.Name != "release" {
+			t.Errorf("current branch: got %q, want %q", current.Name, "release")
+		}
+	})
+}
+
+func TestCreateBranch_FromCommit(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		sha := gitOut(t, dir, "rev-parse", "--short", "HEAD")
+
+		if err := f.CreateBranch("from-commit", sha); err != nil {
+			t.Fatalf("CreateBranch from commit: %v", err)
+		}
+
+		current, err := f.GetCurrentBranch()
+		if err != nil {
+			t.Fatalf("GetCurrentBranch: %v", err)
+		}
+		if current.Name != "from-commit" {
+			t.Errorf("current branch: got %q, want %q", current.Name, "from-commit")
+		}
+	})
+}
+
+func TestCreateBranch_InvalidBase(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		err := f.CreateBranch("feature", "nonexistent-ref")
+		if err == nil {
+			t.Fatal("expected error for invalid base ref")
+		}
+		if !strings.Contains(err.Error(), "not a valid ref") {
+			t.Errorf("expected 'not a valid ref' message, got: %v", err)
+		}
+		if !errors.Is(err, ErrInvalidBaseRef) {
+			t.Errorf("expected error to wrap ErrInvalidBaseRef, got: %v", err)
+		}
+	})
+}
+
+// --- GetBranchBases tests ---
+
+func TestGetBranchBases_NoProject(t *testing.T) {
+	f := &FrontendAPI{}
+	if _, err := f.GetBranchBases(); err == nil {
+		t.Fatal("expected error when no active project")
+	}
+}
+
+func TestGetBranchBases_Types(t *testing.T) {
+	// Set up a repo with local branches, a remote, tags, and commits.
+	remoteDir := t.TempDir()
+	gitOut(t, remoteDir, "init", "--bare")
+
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+	gitOut(t, localDir, "remote", "add", "origin", remoteDir)
+	branch := gitDefaultBranch(t, localDir)
+	gitOut(t, localDir, "push", "-u", "origin", branch)
+
+	// Create a second local branch and a tag.
+	gitOut(t, localDir, "branch", "develop")
+	// Use update-ref to create a lightweight tag, bypassing the
+	// global tag.gpgsign=true config that would require an editor.
+	gitOut(t, localDir, "update-ref", "refs/tags/v1.0", "HEAD")
+
+	// Extra commit so we have at least 2 in the log.
+	commitFile(t, localDir, "b.txt", "b\n")
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+	bases, err := f.GetBranchBases()
+	if err != nil {
+		t.Fatalf("GetBranchBases: %v", err)
+	}
+
+	if len(bases) == 0 {
+		t.Fatal("expected at least one base")
+	}
+
+	// Verify type ordering: local → remote → tag → commit.
+	typeOrder := map[string]int{"local": 0, "remote": 1, "tag": 2, "commit": 3}
+	var lastType string
+	for _, b := range bases {
+		ord, ok := typeOrder[b.Type]
+		if !ok {
+			t.Errorf("unexpected type %q for base %q", b.Type, b.Ref)
+			continue
+		}
+		if lastType != "" && typeOrder[lastType] > ord {
+			t.Errorf("type ordering: %q came after %q", b.Type, lastType)
+		}
+		lastType = b.Type
+	}
+
+	// Verify specific refs are present.
+	found := make(map[string]bool)
+	for _, b := range bases {
+		found[b.Ref] = true
+	}
+	if !found["develop"] {
+		t.Error("expected local branch 'develop' in bases")
+	}
+	if !found["origin/"+branch] {
+		t.Errorf("expected remote branch %q in bases", "origin/"+branch)
+	}
+	if !found["v1.0"] {
+		t.Error("expected tag 'v1.0' in bases")
+	}
+
+	// Commits should have non-empty Detail (subject).
+	for _, b := range bases {
+		if b.Type == "commit" && b.Detail == "" {
+			t.Errorf("commit %q has empty detail", b.Ref)
+		}
+	}
+}
+
+func TestGetBranchBases_ExcludesCurrent(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		branch := gitDefaultBranch(t, dir)
+
+		bases, err := f.GetBranchBases()
+		if err != nil {
+			t.Fatalf("GetBranchBases: %v", err)
+		}
+
+		for _, b := range bases {
+			if b.Type == "local" && b.Ref == branch {
+				t.Errorf("current branch %q should be excluded from local bases", branch)
+			}
+		}
+	})
+}
+
+func TestGetBranchBases_EmptyRepo(t *testing.T) {
+	// A repo with no commits — git log fails, for-each-ref returns
+	// nothing (unborn HEAD is not a ref yet).
+	tmpDir := t.TempDir()
+	gitInit(t, tmpDir)
+
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+	bases, err := f.GetBranchBases()
+	if err != nil {
+		t.Fatalf("GetBranchBases on empty repo: %v", err)
+	}
+	if len(bases) != 0 {
+		t.Errorf("expected 0 bases in empty repo, got %d", len(bases))
+	}
 }
 
 // --- GenerateCommitMessage tests ---
@@ -1274,39 +1487,6 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 
 // --- parser tests (deterministic, no git needed) ---
 
-func TestParseCommitLog(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  []CommitInfo
-	}{
-		{name: "empty", input: "", want: []CommitInfo{}},
-		{name: "single", input: "abc123\x1fAlice\x1falice@x\x1f2024-01-01\x1ffeat: add", want: []CommitInfo{
-			{SHA: "abc123", Author: "Alice", Email: "alice@x", Date: "2024-01-01", Message: "feat: add"},
-		}},
-		{name: "multiple", input: "s1\x1fA\x1fa@x\x1fd1\x1fm1\x1es2\x1fB\x1fb@x\x1fd2\x1fm2", want: []CommitInfo{
-			{SHA: "s1", Author: "A", Email: "a@x", Date: "d1", Message: "m1"},
-			{SHA: "s2", Author: "B", Email: "b@x", Date: "d2", Message: "m2"},
-		}},
-		{name: "pipe in message preserved", input: "s1\x1fA\x1fa@x\x1fd1\x1ffix: a | b", want: []CommitInfo{
-			{SHA: "s1", Author: "A", Email: "a@x", Date: "d1", Message: "fix: a | b"},
-		}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := parseCommitLog(tc.input)
-			if len(got) != len(tc.want) {
-				t.Fatalf("len: got %d, want %d (%+v)", len(got), len(tc.want), got)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("[%d]: got %+v, want %+v", i, got[i], tc.want[i])
-				}
-			}
-		})
-	}
-}
-
 func TestParseCommitFiles(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -1366,57 +1546,6 @@ func TestParseStashList(t *testing.T) {
 			}
 		})
 	}
-}
-
-// --- GetCommitLog ---
-
-func TestGetCommitLog(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		// withGitRepo already commits "committed.txt" (1 commit). Add two more.
-		commitFile(t, dir, "b.txt", "b\n")
-		commitFile(t, dir, "c.txt", "c\n")
-
-		log, err := f.GetCommitLog(10, 0)
-		if err != nil {
-			t.Fatalf("GetCommitLog: %v", err)
-		}
-		if len(log) != 3 {
-			t.Fatalf("len: got %d, want 3", len(log))
-		}
-		// Most recent first.
-		if log[0].Message != "add c.txt" {
-			t.Errorf("log[0].Message: got %q, want %q", log[0].Message, "add c.txt")
-		}
-		if log[0].SHA == "" || log[0].Author == "" || log[0].Date == "" {
-			t.Errorf("log[0]: expected populated fields, got %+v", log[0])
-		}
-
-		// Pagination: skip 2 -> oldest commit.
-		log2, err := f.GetCommitLog(10, 2)
-		if err != nil {
-			t.Fatalf("GetCommitLog skip: %v", err)
-		}
-		if len(log2) != 1 {
-			t.Fatalf("skip len: got %d, want 1", len(log2))
-		}
-		if log2[0].Message != "add committed.txt" {
-			t.Errorf("log2[0].Message: got %q, want %q", log2[0].Message, "add committed.txt")
-		}
-	})
-}
-
-func TestGetCommitLog_DefaultLimit(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		// Non-positive limit falls back to defaultCommitLogLimit; just verify
-		// it does not error and returns the single existing commit.
-		log, err := f.GetCommitLog(0, 0)
-		if err != nil {
-			t.Fatalf("GetCommitLog(0,0): %v", err)
-		}
-		if len(log) != 1 {
-			t.Errorf("len: got %d, want 1", len(log))
-		}
-	})
 }
 
 // --- GetCommitFiles ---
@@ -1774,9 +1903,6 @@ func TestPhase5Git_NoProject(t *testing.T) {
 	if _, err := f.Fetch("origin", nil); err == nil {
 		t.Error("Fetch: expected error")
 	}
-	if _, err := f.GetCommitLog(10, 0); err == nil {
-		t.Error("GetCommitLog: expected error")
-	}
 	if _, err := f.GetCommitFiles("abc"); err == nil {
 		t.Error("GetCommitFiles: expected error")
 	}
@@ -1801,9 +1927,6 @@ func TestPhase5Git_NoProjectMode(t *testing.T) {
 	}
 	if _, err := f.Fetch("origin", nil); err == nil {
 		t.Error("Fetch: expected error")
-	}
-	if _, err := f.GetCommitLog(10, 0); err == nil {
-		t.Error("GetCommitLog: expected error")
 	}
 	if _, err := f.GetCommitFiles("abc"); err == nil {
 		t.Error("GetCommitFiles: expected error")

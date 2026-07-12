@@ -25,12 +25,12 @@ import {
   getCurrentBranch,
   checkoutBranch,
   createBranch,
+  getBranchBases,
   generateCommitMessage,
   getDiffStat,
   pull,
   push,
   fetch,
-  getCommitLog,
   getCommitFiles,
   stashCreate,
   stashPop,
@@ -43,7 +43,7 @@ import {
   abortMerge,
   abortRebase,
   getRebaseMergeState,
-  getGitGraph,
+  getGitHistory,
 } from '@/api/git'
 
 // --- Type guard tests (import inline guards) ---
@@ -412,17 +412,47 @@ describe('createBranch', () => {
 
   it('calls app.CreateBranch with the branch name', async () => {
     mockApp.CreateBranch = vi.fn().mockResolvedValue(undefined)
-    await createBranch('feature/new')
-    expect(mockApp.CreateBranch).toHaveBeenCalledWith('feature/new')
+    await createBranch('feature/new', '')
+    expect(mockApp.CreateBranch).toHaveBeenCalledWith('feature/new', '')
   })
 
   it('propagates errors from backend', async () => {
     mockApp.CreateBranch = vi.fn().mockRejectedValue(
       new Error('branch "feature/new" already exists'),
     )
-    await expect(createBranch('feature/new')).rejects.toThrow(
+    await expect(createBranch('feature/new', '')).rejects.toThrow(
       'branch "feature/new" already exists',
     )
+  })
+})
+
+describe('getBranchBases', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.GetBranchBases and returns the result', async () => {
+    const bases = [
+      { ref: 'develop', label: 'develop', type: 'local', detail: '' },
+      { ref: 'origin/main', label: 'origin/main', type: 'remote', detail: '' },
+      { ref: 'v1.0', label: 'v1.0', type: 'tag', detail: '' },
+      { ref: 'a3f5c1d', label: 'a3f5c1d', type: 'commit', detail: 'fix: login bug' },
+    ]
+    mockApp.GetBranchBases = vi.fn().mockResolvedValue(bases)
+    const result = await getBranchBases()
+    expect(mockApp.GetBranchBases).toHaveBeenCalled()
+    expect(result).toEqual(bases)
+  })
+
+  it('returns empty array on unexpected response shape', async () => {
+    mockApp.GetBranchBases = vi.fn().mockResolvedValue('not-an-array')
+    const result = await getBranchBases()
+    expect(result).toEqual([])
+  })
+
+  it('propagates errors from backend', async () => {
+    mockApp.GetBranchBases = vi.fn().mockRejectedValue(new Error('no active project'))
+    await expect(getBranchBases()).rejects.toThrow('no active project')
   })
 })
 
@@ -566,49 +596,7 @@ describe('fetch', () => {
   })
 })
 
-// ── Phase 5: commit history ──
-
-describe('getCommitLog', () => {
-  beforeEach(() => {
-    Object.keys(mockApp).forEach(k => delete mockApp[k])
-  })
-
-  it('returns parsed commits from backend', async () => {
-    mockApp.GetCommitLog = vi.fn().mockResolvedValue([
-      { sha: 'abc1234', author: 'Alice', email: 'a@x.com', date: '2024-01-01', message: 'init' },
-      { sha: 'def5678', author: 'Bob', email: 'b@x.com', date: '2024-01-02', message: 'fix' },
-    ])
-    const result = await getCommitLog(25, 0)
-    expect(result).toHaveLength(2)
-    expect(result[0]!.sha).toBe('abc1234')
-    expect(mockApp.GetCommitLog).toHaveBeenCalledWith(25, 0)
-  })
-
-  it('returns empty array when backend returns non-array', async () => {
-    mockApp.GetCommitLog = vi.fn().mockResolvedValue('invalid')
-    const result = await getCommitLog(25, 0)
-    expect(result).toEqual([])
-  })
-
-  it('returns empty array when an element fails the guard', async () => {
-    mockApp.GetCommitLog = vi.fn().mockResolvedValue([
-      { sha: 'abc', author: 'A', email: 'a@x.com', date: 'd', message: 'm' },
-      { sha: 123, author: 'B', email: 'b@x.com', date: 'd', message: 'm' },
-    ])
-    const result = await getCommitLog(25, 0)
-    expect(result).toEqual([])
-  })
-
-  it('returns empty array for empty backend array', async () => {
-    mockApp.GetCommitLog = vi.fn().mockResolvedValue([])
-    expect(await getCommitLog(25, 0)).toEqual([])
-  })
-
-  it('propagates errors', async () => {
-    mockApp.GetCommitLog = vi.fn().mockRejectedValue(new Error('no repo'))
-    await expect(getCommitLog(25, 0)).rejects.toThrow('no repo')
-  })
-})
+// ── Commit history ──
 
 describe('getCommitFiles', () => {
   beforeEach(() => {
@@ -894,50 +882,58 @@ describe('getRebaseMergeState', () => {
   })
 })
 
-describe('getGitGraph', () => {
+describe('getGitHistory', () => {
   beforeEach(() => {
     Object.keys(mockApp).forEach(k => delete mockApp[k])
   })
 
-  it('returns parsed commits from backend', async () => {
-    mockApp.GetGitGraph = vi.fn().mockResolvedValue([
-      { sha: 'aaa', parents: ['bbb'], message: 'feat: x', refs: ['HEAD -> main'] },
-      { sha: 'bbb', parents: [], message: 'init', refs: [] },
+  it('returns parsed commits with all unified fields from backend', async () => {
+    mockApp.GetGitHistory = vi.fn().mockResolvedValue([
+      { sha: 'aaa', parents: ['bbb'], author: 'Jane', email: 'jane@x.io', date: '2026-07-10', message: 'feat: x', refs: ['HEAD -> main'] },
+      { sha: 'bbb', parents: [], author: 'Jane', email: 'jane@x.io', date: '2026-07-09', message: 'init', refs: [] },
     ])
-    const result = await getGitGraph(100, 0)
+    const result = await getGitHistory(25, 0)
     expect(result).toEqual([
-      { sha: 'aaa', parents: ['bbb'], message: 'feat: x', refs: ['HEAD -> main'] },
-      { sha: 'bbb', parents: [], message: 'init', refs: [] },
+      { sha: 'aaa', parents: ['bbb'], author: 'Jane', email: 'jane@x.io', date: '2026-07-10', message: 'feat: x', refs: ['HEAD -> main'] },
+      { sha: 'bbb', parents: [], author: 'Jane', email: 'jane@x.io', date: '2026-07-09', message: 'init', refs: [] },
     ])
   })
 
   it('returns empty array when backend returns a non-array', async () => {
-    mockApp.GetGitGraph = vi.fn().mockResolvedValue('invalid')
-    expect(await getGitGraph(100, 0)).toEqual([])
+    mockApp.GetGitHistory = vi.fn().mockResolvedValue('invalid')
+    expect(await getGitHistory(25, 0)).toEqual([])
   })
 
-  it('returns empty array when an element fails the guard', async () => {
-    mockApp.GetGitGraph = vi.fn().mockResolvedValue([
-      { sha: 'aaa', parents: [], message: 'ok', refs: [] },
-      { sha: 123, parents: [], message: 'bad', refs: [] },
+  it('returns empty array when an element fails the guard (bad sha type)', async () => {
+    mockApp.GetGitHistory = vi.fn().mockResolvedValue([
+      { sha: 'aaa', parents: [], author: 'Jane', email: 'j@x.io', date: 'd', message: 'ok', refs: [] },
+      { sha: 123, parents: [], author: 'Jane', email: 'j@x.io', date: 'd', message: 'bad', refs: [] },
     ])
-    expect(await getGitGraph(100, 0)).toEqual([])
-  })
-
-  it('returns empty array when backend returns empty array', async () => {
-    mockApp.GetGitGraph = vi.fn().mockResolvedValue([])
-    expect(await getGitGraph(100, 0)).toEqual([])
+    expect(await getGitHistory(25, 0)).toEqual([])
   })
 
   it('returns empty array when parents is not an array', async () => {
-    mockApp.GetGitGraph = vi.fn().mockResolvedValue([
-      { sha: 'aaa', parents: 'bbb', message: 'ok', refs: [] },
+    mockApp.GetGitHistory = vi.fn().mockResolvedValue([
+      { sha: 'aaa', parents: 'bbb', author: 'Jane', email: 'j@x.io', date: 'd', message: 'ok', refs: [] },
     ])
-    expect(await getGitGraph(100, 0)).toEqual([])
+    expect(await getGitHistory(25, 0)).toEqual([])
+  })
+
+  it('returns empty array when a required string field is missing', async () => {
+    mockApp.GetGitHistory = vi.fn().mockResolvedValue([
+      { sha: 'aaa', parents: [], author: 'Jane', email: 'j@x.io', date: 'd', message: 'ok', refs: [] },
+      { sha: 'bbb', parents: [], author: 'Jane', email: 'j@x.io', date: 'd', refs: [] },
+    ])
+    expect(await getGitHistory(25, 0)).toEqual([])
+  })
+
+  it('returns empty array when backend returns empty array', async () => {
+    mockApp.GetGitHistory = vi.fn().mockResolvedValue([])
+    expect(await getGitHistory(25, 0)).toEqual([])
   })
 
   it('propagates errors', async () => {
-    mockApp.GetGitGraph = vi.fn().mockRejectedValue(new Error('git error'))
-    await expect(getGitGraph(100, 0)).rejects.toThrow('git error')
+    mockApp.GetGitHistory = vi.fn().mockRejectedValue(new Error('git error'))
+    await expect(getGitHistory(25, 0)).rejects.toThrow('git error')
   })
 })
