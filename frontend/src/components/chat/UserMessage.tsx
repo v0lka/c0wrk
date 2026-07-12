@@ -1,7 +1,7 @@
 import { useRef, useState, useLayoutEffect, useCallback } from 'react'
 import type { DisplayItem } from '@/types/messages'
 import { UserMessageContent } from '@/components/chat/UserMessageContent'
-import { CopyButton } from '@/components/chat/CopyButton'
+import { MessageFooter } from '@/components/chat/MessageFooter'
 
 interface UserMessageProps {
   item: Extract<DisplayItem, { kind: 'user' }>
@@ -50,10 +50,7 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
         <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 overflow-hidden">
           <UserMessageContent content={content} />
         </div>
-        <span className="text-xs text-muted-foreground px-1">{formattedTime}</span>
-        <div className="self-start max-h-0 overflow-hidden opacity-0 group-hover:max-h-10 group-hover:opacity-100 transition-all duration-150 ease-out">
-          <CopyButton text={content} />
-        </div>
+        <MessageFooter copyText={content} time={formattedTime} />
       </div>
     )
   }
@@ -61,7 +58,7 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
   const shouldClip = isOverflowing && !effectiveExpanded
   return (
     <div
-      className={`relative transition-all duration-200 ${isOverflowing ? 'cursor-pointer' : ''}`}
+      className={`group relative transition-all duration-200 ${isOverflowing ? 'cursor-pointer' : ''}`}
       style={{ maxHeight: shouldClip ? maxHeight : undefined, overflow: shouldClip ? 'hidden' : undefined }}
       onClick={handleClick}
       onKeyDown={isOverflowing ? handleKeyDown : undefined}
@@ -73,7 +70,7 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
         <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 overflow-hidden">
           <UserMessageContent content={content} />
         </div>
-        <span className="text-xs text-muted-foreground px-1">{formattedTime}</span>
+        <MessageFooter copyText={content} time={formattedTime} />
       </div>
       {shouldClip && (
         <div className="absolute bottom-0 left-0 right-0 h-16 pointer-events-none bg-gradient-to-b from-transparent to-background" />
