@@ -5,7 +5,23 @@ import { useBlackboardState, useHasBlackboardState } from '@/stores/blackboardSt
 import { useSessionStore } from '@/stores/sessionStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
-import type { BlackboardState } from '@/types/models'
+import type { BlackboardState, BlackboardReflection } from '@/types/models'
+import { StepTooltip } from './StepTooltip'
+
+/** Builds the full markdown value of a reflection entry for the tooltip. */
+function reflectionMarkdown(r: BlackboardReflection): string {
+    return [
+        r.summary,
+        r.suggested_action && `**Action:** ${r.suggested_action}`,
+        r.root_cause && `**Root cause:** ${r.root_cause}`,
+        r.reasoning && `**Reasoning:** ${r.reasoning}`,
+        r.failure_analysis && `**Failure analysis:** ${r.failure_analysis}`,
+        r.action_plan && `**Action plan:** ${r.action_plan}`,
+        r.hypotheses?.length
+            ? `**Hypotheses:**\n${r.hypotheses.map(h => `- ${h}`).join('\n')}`
+            : '',
+    ].filter(Boolean).join('\n\n')
+}
 
 export function BlackboardPanel() {
     const activeSessionId = useSessionStore(s => s.activeSessionId)
@@ -119,11 +135,17 @@ function BlackboardContent({ state, search }: { state: BlackboardState; search: 
             {filteredSteps.length > 0 && (
                 <CollapsibleSection title="Step Results" count={filteredSteps.length}>
                     {filteredSteps.map(([id, sr]) => (
-                        <div key={id} className="py-0.5 pl-2 border-l border-border">
-                            <span className="font-medium text-foreground">{formatStepId(id)}</span>
-                            {sr.error && <span className="ml-1.5 text-destructive">[error]</span>}
-                            <p className="text-muted-foreground mt-0.5 line-clamp-2">{sr.summary}</p>
-                        </div>
+                        <StepTooltip
+                            key={id}
+                            description={sr.error ? `${sr.summary}\n\n**Error:** ${sr.error}` : sr.summary}
+                            enabled={!!sr.summary}
+                        >
+                            <div className="py-0.5 pl-2 border-l border-border cursor-default">
+                                <span className="font-medium text-foreground">{formatStepId(id)}</span>
+                                {sr.error && <span className="ml-1.5 text-destructive">[error]</span>}
+                                <p className="text-muted-foreground mt-0.5 line-clamp-2">{sr.summary}</p>
+                            </div>
+                        </StepTooltip>
                     ))}
                 </CollapsibleSection>
             )}
@@ -132,11 +154,17 @@ function BlackboardContent({ state, search }: { state: BlackboardState; search: 
             {filteredFacts.length > 0 && (
                 <CollapsibleSection title="Facts" count={filteredFacts.length}>
                     {filteredFacts.map((f) => (
-                        <div key={`${f.keywords.join(',')}-${f.author}-${f.content.slice(0, 40)}`} className="py-0.5 pl-2 border-l border-border">
-                            <span className="text-info font-medium">[{f.keywords.join(', ')}]</span>
-                            <span className="text-muted-foreground ml-1">{f.author}</span>
-                            <p className="text-foreground mt-0.5 line-clamp-3">{f.content}</p>
-                        </div>
+                        <StepTooltip
+                            key={`${f.keywords.join(',')}-${f.author}-${f.content.slice(0, 40)}`}
+                            description={f.content}
+                            enabled={!!f.content}
+                        >
+                            <div className="py-0.5 pl-2 border-l border-border cursor-default">
+                                <span className="text-info font-medium">[{f.keywords.join(', ')}]</span>
+                                <span className="text-muted-foreground ml-1">{f.author}</span>
+                                <p className="text-foreground mt-0.5 line-clamp-3">{f.content}</p>
+                            </div>
+                        </StepTooltip>
                     ))}
                 </CollapsibleSection>
             )}
@@ -145,15 +173,21 @@ function BlackboardContent({ state, search }: { state: BlackboardState; search: 
             {filteredReflections.length > 0 && (
                 <CollapsibleSection title="Reflections" count={filteredReflections.length}>
                     {filteredReflections.map((r) => (
-                        <div key={`${r.summary.slice(0, 40)}-${r.root_cause ?? ''}`} className="py-0.5 pl-2 border-l border-warning/40">
-                            <p className="text-foreground">{r.summary}</p>
-                            {r.suggested_action && (
-                                <span className="text-warning">Action: {r.suggested_action}</span>
-                            )}
-                            {r.root_cause && (
-                                <p className="text-muted-foreground mt-0.5">Root cause: {r.root_cause}</p>
-                            )}
-                        </div>
+                        <StepTooltip
+                            key={`${r.summary.slice(0, 40)}-${r.root_cause ?? ''}`}
+                            description={reflectionMarkdown(r)}
+                            enabled={!!r.summary}
+                        >
+                            <div className="py-0.5 pl-2 border-l border-warning/40 cursor-default">
+                                <p className="text-foreground">{r.summary}</p>
+                                {r.suggested_action && (
+                                    <span className="text-warning">Action: {r.suggested_action}</span>
+                                )}
+                                {r.root_cause && (
+                                    <p className="text-muted-foreground mt-0.5">Root cause: {r.root_cause}</p>
+                                )}
+                            </div>
+                        </StepTooltip>
                     ))}
                 </CollapsibleSection>
             )}
@@ -161,7 +195,9 @@ function BlackboardContent({ state, search }: { state: BlackboardState; search: 
             {/* Final Output */}
             {state.final_output && (!search || state.final_output.toLowerCase().includes(lowerSearch)) && (
                 <CollapsibleSection title="Final Output" count={0}>
-                    <p className="text-foreground line-clamp-4">{state.final_output}</p>
+                    <StepTooltip description={state.final_output} enabled={!!state.final_output}>
+                        <p className="text-foreground line-clamp-4 cursor-default">{state.final_output}</p>
+                    </StepTooltip>
                 </CollapsibleSection>
             )}
         </div>
