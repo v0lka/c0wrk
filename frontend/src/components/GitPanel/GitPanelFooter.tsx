@@ -92,9 +92,9 @@ export function GitPanelFooter() {
   const busy = remoteOperationInProgress
 
   const buttons: { op: RemoteOp; icon: typeof DownloadCloud }[] = [
+    { op: 'fetch', icon: RefreshCw },
     { op: 'pull', icon: DownloadCloud },
     { op: 'push', icon: UploadCloud },
-    { op: 'fetch', icon: RefreshCw },
   ]
 
   return (
@@ -123,7 +123,7 @@ export function GitPanelFooter() {
                   variant="ghost"
                   size="xs"
                   disabled={busy}
-                  className="rounded-l-none border-l border-border/50 px-1"
+                  className="rounded-l-none border-r border-border/50 px-1"
                   aria-label={`${OP_LABEL[op]} options`}
                 >
                   <ChevronDown className="size-3" />
