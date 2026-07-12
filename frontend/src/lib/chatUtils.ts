@@ -1,6 +1,6 @@
 import type { ChatMessageUI, MessageType, DisplayItem, GroupedMessages } from '@/types/messages'
 import type { ChatMessage, PlanGroup, PlanItem } from '@/types/models'
-import { reconstructContent, buildHistoryId, collapseThoughts, extractMeta } from './chatUtilsHelpers'
+import { reconstructContent, buildHistoryId, collapseThoughts, dedupThoughtVsAnswer, extractMeta } from './chatUtilsHelpers'
 import {
   handlePlanStepStart, handlePlanStepComplete, handleSubAgentLaunch, handleSubAgentComplete,
   handleReflection, handleStepTodoUpdate,
@@ -190,10 +190,10 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
 
   for (const item of items) {
     if (item.kind === 'plan_step' || item.kind === 'subagent') {
-      item.children = collapseThoughts(item.children)
+      item.children = collapseThoughts(dedupThoughtVsAnswer(item.children))
     }
   }
-  return { items: collapseThoughts(items) }
+  return { items: collapseThoughts(dedupThoughtVsAnswer(items)) }
 }
 
 /** Actions interface for plan store dependency injection. */

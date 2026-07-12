@@ -48,6 +48,58 @@ export function collapseThoughts(items: DisplayItem[]): DisplayItem[] {
   return result
 }
 
+/**
+ * Suppress the visible `content` of a thought that duplicates the final
+ * answer delivered as an assistant message.
+ *
+ * The executor emits a `Thought` event carrying the model's text `content`
+ * for every step — including the finish step. ThoughtBlock renders that
+ * `content` as visible Markdown. So when the agent writes its answer as text
+ * `content` AND delivers the same text via `finish` (task_complete.output),
+ * the identical text would otherwise render twice: once as a thought and
+ * once as the canonical assistant answer. The same duplication arises in the
+ * implicit text-only finish path, where the streamed content becomes both a
+ * thought and an assistant_done message.
+ *
+ * For each thought whose trimmed content exactly matches the trimmed content
+ * of a LATER assistant item in the same container, this clears the redundant
+ * thought content (preserving any reasoning) so the answer appears only as
+ * the assistant message. A thought left with neither content nor reasoning
+ * is dropped entirely. Only a LATER assistant is considered, so a thought is
+ * never suppressed by an answer from an earlier exchange.
+ *
+ * Applied before collapseThoughts so it operates on individual thought items.
+ */
+export function dedupThoughtVsAnswer(items: DisplayItem[]): DisplayItem[] {
+  const result: DisplayItem[] = []
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]!
+    if (it.kind === 'thought') {
+      const thoughtContent = (it.content ?? '').trim()
+      if (thoughtContent !== '') {
+        let duplicatesAnswer = false
+        for (let j = i + 1; j < items.length; j++) {
+          const later = items[j]!
+          if (later.kind === 'assistant' && (later.message.content ?? '').trim() === thoughtContent) {
+            duplicatesAnswer = true
+            break
+          }
+        }
+        if (duplicatesAnswer) {
+          // Keep the thought only if it still carries reasoning to show.
+          if (it.reasoning && it.reasoning.trim() !== '') {
+            result.push({ ...it, content: '' })
+          }
+          // Otherwise drop the now-empty thought entirely.
+          continue
+        }
+      }
+    }
+    result.push(it)
+  }
+  return result
+}
+
 // -- History reconstruction helpers (used by chatMessageToUI) --
 
 /** Reconstruct human-readable content from metadata to match live events. */

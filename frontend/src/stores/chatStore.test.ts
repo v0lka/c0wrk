@@ -224,6 +224,53 @@ describe('groupMessages', () => {
     expect(group.thoughts[1]!.content).toBe('Second thought')
   })
 
+  it('drops a thought whose content duplicates the following assistant answer (no reasoning)', () => {
+    // Explicit-finish path: the agent writes the answer as the finish step's
+    // text content (→ thought) AND delivers it via finish (→ task_complete
+    // assistant). The duplicating thought must be dropped so the answer
+    // appears only as the canonical assistant message.
+    const answer = 'Here is the final answer.'
+    const thought = makeUI({ type: 'thought', content: answer, metadata: { step_num: 1 } })
+    const assistant = makeUI({ type: 'assistant', content: answer })
+    const result = groupMessages([thought, assistant])
+    expect(result.items.map(i => i.kind)).toEqual(['assistant'])
+  })
+
+  it('clears a duplicating thought content but keeps its reasoning', () => {
+    const answer = 'The answer is 42.'
+    const thought = makeUI({ type: 'thought', content: answer, metadata: { step_num: 1, reasoning: 'deduced from inputs' } })
+    const assistant = makeUI({ type: 'assistant', content: answer })
+    const result = groupMessages([thought, assistant])
+    expect(result.items.map(i => i.kind)).toEqual(['thought', 'assistant'])
+    const t = result.items[0]! as DisplayItem & { kind: 'thought' }
+    expect(t.content).toBe('')
+    expect(t.reasoning).toBe('deduced from inputs')
+  })
+
+  it('keeps a thought whose content differs from the following assistant answer', () => {
+    const thought = makeUI({ type: 'thought', content: 'Let me verify...', metadata: { step_num: 1 } })
+    const assistant = makeUI({ type: 'assistant', content: 'The verified answer.' })
+    const result = groupMessages([thought, assistant])
+    expect(result.items.map(i => i.kind)).toEqual(['thought', 'assistant'])
+  })
+
+  it('does not suppress a thought that matches an earlier (not later) assistant', () => {
+    const answer = 'same answer'
+    const firstAssistant = makeUI({ type: 'assistant', content: answer })
+    const thought = makeUI({ type: 'thought', content: answer, metadata: { step_num: 1 } })
+    const result = groupMessages([firstAssistant, thought])
+    expect(result.items.map(i => i.kind)).toEqual(['assistant', 'thought'])
+  })
+
+  it('dedups a thought that duplicates the task_complete answer (explicit finish path)', () => {
+    const answer = 'The final deliverable.'
+    const user = makeUI({ type: 'user', content: 'do the task' })
+    const thought = makeUI({ type: 'thought', content: answer, metadata: { step_num: 3 } })
+    const assistant = makeUI({ type: 'assistant', content: answer })
+    const result = groupMessages([user, thought, assistant])
+    expect(result.items.map(i => i.kind)).toEqual(['user', 'assistant'])
+  })
+
   it('renders unresolved tool_confirm in items (sinks to end)', () => {
     const msg = makeUI({
       type: 'tool_confirm',
