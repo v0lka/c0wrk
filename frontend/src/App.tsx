@@ -83,14 +83,17 @@ function App() {
   useEffect(() => {
     return subscribe('startup_error', (data: unknown) => {
       if (!isStartupError(data)) return
-      setStartupError(data)
-      // When LLM is not configured, also open settings on the LLM tab
+      // When LLM is not configured on first start, open the settings dialog on
+      // the LLM tab instead of surfacing the top startup-error banner — the
+      // dialog itself guides the user to fix the configuration.
       if (data.error_code === 'missing_default_model') {
         const settingsState = useSettingsStore.getState()
         if (!settingsState.open) {
           settingsState.openSettings('llm')
         }
+        return
       }
+      setStartupError(data)
     })
   }, [])
 
