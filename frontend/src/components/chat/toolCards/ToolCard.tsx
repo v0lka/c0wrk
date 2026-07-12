@@ -3,6 +3,7 @@ import { Check, X, Loader2, AlertTriangle } from 'lucide-react'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
 import type { DisplayItem } from '@/types/messages'
 import { resolveCardConfig } from './toolCardRegistry'
+import { extractFileLine } from './extractors'
 import { FileLink } from './shared/FileLink'
 
 type ToolItem = Extract<DisplayItem, { kind: 'tool' }>
@@ -68,17 +69,21 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
   const isFileTool = !isCached && ['write_file', 'edit_file', 'read_file', 'read_skill_resource',
     'create_directory', 'delete_file', 'delete_directory', 'list_directory'].includes(baseToolName)
   const filePath = hint && isFileTool ? hint : undefined
+  const fileLine = useMemo(
+    () => (filePath ? extractFileLine(item.parsedArgs, item.args) : undefined),
+    [filePath, item.parsedArgs, item.args],
+  )
 
   const titleNode = useMemo(() => (
     <span className="text-sm min-w-0 truncate" title={filePath ? undefined : (hint || title)}>
       <span className="text-muted-foreground">{config.verb}: </span>
       {filePath ? (
-        <FileLink path={filePath} label={title} className="text-sm" />
+        <FileLink path={filePath} line={fileLine} label={title} className="text-sm" />
       ) : (
         title
       )}
     </span>
-  ), [config.verb, filePath, title, hint])
+  ), [config.verb, filePath, fileLine, title, hint])
 
   const cacheRangeNode = useMemo(() => cacheRange ? (
     <span className="text-xs text-hljs-comment">

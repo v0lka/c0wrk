@@ -3,7 +3,7 @@ import {
   extractBashTitle, extractFileTitle, extractDirTitle,
   extractSearchTitle, extractUrlTitle, extractMemoTitle,
   extractStepOutputTitle, extractFactsTitle,
-  extractFileHint, extractBashHint, extractSearchHint,
+  extractFileHint, extractFileLine, extractBashHint, extractSearchHint,
 } from './extractors'
 
 describe('extractBashTitle', () => {
@@ -96,6 +96,24 @@ describe('extractFileHint', () => {
   })
   it('returns undefined when no path', () => {
     expect(extractFileHint({}, '')).toBeUndefined()
+  })
+})
+
+describe('extractFileLine', () => {
+  it('returns start_line from parsedArgs', () => {
+    expect(extractFileLine({ path: '/a/b.ts', start_line: 10, end_line: 20 }, '')).toBe(10)
+  })
+  it('returns start_line without end_line', () => {
+    expect(extractFileLine({ path: '/a/b.ts', start_line: 5 }, '')).toBe(5)
+  })
+  it('falls back to raw args', () => {
+    expect(extractFileLine(undefined, '{"path":"/x/y.go","start_line":42}')).toBe(42)
+  })
+  it('returns undefined when no start_line', () => {
+    expect(extractFileLine({ path: '/a/b.ts' }, '')).toBeUndefined()
+  })
+  it('ignores non-positive start_line', () => {
+    expect(extractFileLine({ path: '/a/b.ts', start_line: 0 }, '')).toBeUndefined()
   })
 })
 

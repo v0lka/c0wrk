@@ -95,6 +95,16 @@ export function extractFileHint(args: Args, rawArgs: string): string | undefined
   return str(parsed, 'path') || str(parsed, 'file_path') || undefined
 }
 
+// extractFileLine returns the first line number to position the file viewer at
+// for file tools that carry a line range (e.g. read_file with start_line).
+// Returns undefined when no line is specified, so the file opens without a
+// cursor position. Mirrors the line logic in extractFileTitle.
+export function extractFileLine(args: Args, rawArgs: string): number | undefined {
+  const parsed = safeParseArgs(args, rawArgs)
+  const start = parsed.start_line
+  return typeof start === 'number' && start > 0 ? start : undefined
+}
+
 export function extractBashHint(args: Args, rawArgs: string): string | undefined {
   const parsed = safeParseArgs(args, rawArgs)
   const cmd = str(parsed, 'command')
