@@ -34,6 +34,15 @@ type tokenState struct {
 	lastFillStatus      string
 	lastModel           string                                                                  // last model used
 	lastFamily          string                                                                  // last model family used
+	// displayContextWindow is the model's advertised context-window size, injected
+	// by the orchestrator via SetDisplayContextWindow. When > 0, ContextFill
+	// recomputes fill relative to this real window instead of the executor's
+	// internal "effective max" (window − output limit − safety margin).
+	displayContextWindow int
+	// lastEffectiveMax caches the executor's effective max from the most recent
+	// ContextFill so ContextCompaction can scale its before/after percentages
+	// from the internal effective-max basis to the display (real window) basis.
+	lastEffectiveMax int
 	tokenPersist        func(inputTokens, outputTokens int, model, family string, fillPercent float64) // callback to persist tokens
 }
 
@@ -138,6 +147,18 @@ func (e *EventEmitter) SetTokenPersist(fn func(inputTokens, outputTokens int, mo
 	e.tokens.mu.Lock()
 	defer e.tokens.mu.Unlock()
 	e.tokens.tokenPersist = fn
+}
+
+// SetDisplayContextWindow injects the model's advertised context-window size
+// so ContextFill presents fill relative to the real window rather than the
+// executor's internal "effective max" (window − output limit − safety margin).
+// The orchestrator calls this after resolving the model meta, before the first
+// context_fill. A value <= 0 clears the override and falls back to the
+// executor-reported max.
+func (e *EventEmitter) SetDisplayContextWindow(window int) {
+	e.tokens.mu.Lock()
+	defer e.tokens.mu.Unlock()
+	e.tokens.displayContextWindow = window
 }
 
 // SetToolCallIDSink registers a callback invoked after each ToolCall with the
@@ -659,17 +680,39 @@ func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family st
 }
 
 // ContextFill emits a context fill status event, enriched with session-level token totals.
+//
+// The executor reports fill relative to its internal "effective max"
+// (context window − output limit − safety margin), which is the ceiling the
+// agent's compaction logic manages against. The user-facing display, however,
+// must reflect the model's advertised context window so the status bar never
+// exposes internal compaction thresholds. When a display context window has
+// been injected via SetDisplayContextWindow, the percent and max are
+// recomputed relative to that real window before emission and caching.
 func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {
 	// Cache fill state and read session totals atomically.
 	e.tokens.mu.Lock()
+	// The executor's maxTokens is the internal effective max; remember it so
+	// ContextCompaction can scale its before/after percentages to the display
+	// basis.
+	e.tokens.lastEffectiveMax = maxTokens
+	// Recompute display values relative to the real advertised context window
+	// (falling back to the executor-reported max when no window is known).
+	displayMax := e.tokens.displayContextWindow
+	if displayMax <= 0 {
+		displayMax = maxTokens
+	}
+	displayPercent := fillPercent
+	if displayMax > 0 {
+		displayPercent = float64(usedTokens) / float64(displayMax) * 100
+	}
 	// Only the session-root (conductor) emitter updates the session-level fill
 	// cache. Scoped copies (subagents) report their own fill via the emitted
 	// event and stepContextFill, but must not clobber the conductor's fill used
 	// by the status bar / persisted session tokens.
 	if e.isSessionRoot {
-		e.tokens.lastFillPercent = fillPercent
+		e.tokens.lastFillPercent = displayPercent
 		e.tokens.lastUsedTokens = usedTokens
-		e.tokens.lastMaxTokens = maxTokens
+		e.tokens.lastMaxTokens = displayMax
 		e.tokens.lastFillStatus = status
 	}
 	totalIn := e.tokens.sessionInputTokens
@@ -684,9 +727,9 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 		SessionID: e.sessionID,
 		Type:      "context_fill",
 		Data: ContextFillEventData{
-			FillPercent:         fillPercent,
+			FillPercent:         displayPercent,
 			UsedTokens:          usedTokens,
-			MaxTokens:           maxTokens,
+			MaxTokens:           displayMax,
 			Status:              status,
 			PlanStepID:          stepID,
 			SessionInputTokens:  totalIn,
@@ -740,14 +783,25 @@ func (e *EventEmitter) ExecutorDiagnostic(stepNum int, event string, details map
 
 // ContextCompaction emits a context compaction event with before/after fill percentages.
 func (e *EventEmitter) ContextCompaction(beforePercent, afterPercent float64, stepID string) {
+	// The executor reports compaction before/after relative to its internal
+	// effective max. Scale to the display basis (real context window) so the
+	// "Context compacted from X% to Y%" message stays consistent with the
+	// status bar, which also presents fill relative to the real window.
+	e.tokens.mu.Lock()
+	scale := 1.0
+	if e.tokens.lastMaxTokens > 0 && e.tokens.lastEffectiveMax > 0 {
+		scale = float64(e.tokens.lastEffectiveMax) / float64(e.tokens.lastMaxTokens)
+	}
+	e.tokens.mu.Unlock()
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "context_compaction",
 		Data: ContextCompactionEventData{
-			BeforePercent: beforePercent,
-			AfterPercent:  afterPercent,
+			BeforePercent: beforePercent * scale,
+			AfterPercent:  afterPercent * scale,
 			PlanStepID:    stepID,
 		},
 	})

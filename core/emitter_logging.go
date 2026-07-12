@@ -18,10 +18,11 @@ type loggingEmitter struct {
 // ensure loggingEmitter implements Emitter, PlanStepScopable, RetryAttemptScopable,
 // and CurrentStepScopable.
 var (
-	_ Emitter              = (*loggingEmitter)(nil)
-	_ PlanStepScopable     = (*loggingEmitter)(nil)
-	_ RetryAttemptScopable = (*loggingEmitter)(nil)
-	_ CurrentStepScopable  = (*loggingEmitter)(nil)
+	_ Emitter                    = (*loggingEmitter)(nil)
+	_ PlanStepScopable           = (*loggingEmitter)(nil)
+	_ RetryAttemptScopable       = (*loggingEmitter)(nil)
+	_ CurrentStepScopable        = (*loggingEmitter)(nil)
+	_ DisplayContextWindowSetter = (*loggingEmitter)(nil)
 )
 
 // NewLoggingEmitter wraps an Emitter to log all events via the given logger.
@@ -66,6 +67,15 @@ func (l *loggingEmitter) WithRetryAttempt(attempt int) Emitter {
 func (l *loggingEmitter) SetCurrentStepID(id string) {
 	if sc, ok := l.inner.(CurrentStepScopable); ok {
 		sc.SetCurrentStepID(id)
+	}
+}
+
+// SetDisplayContextWindow delegates to the inner emitter if it supports
+// display-context-window injection, so the orchestrator can route the
+// model's advertised window through the logging wrapper.
+func (l *loggingEmitter) SetDisplayContextWindow(window int) {
+	if s, ok := l.inner.(DisplayContextWindowSetter); ok {
+		s.SetDisplayContextWindow(window)
 	}
 }
 

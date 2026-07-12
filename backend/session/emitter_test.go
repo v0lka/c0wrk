@@ -355,6 +355,112 @@ func TestEventEmitterContextFill(t *testing.T) {
 	}
 }
 
+// TestEventEmitterContextFillDisplayWindow verifies that when a display context
+// window is injected, ContextFill recomputes the fill percent and max relative
+// to the real advertised window — not the executor's internal effective max.
+//
+// Scenario: a 1 000 000-token model with an effective max of 822 000 reports
+// 600 000 used tokens. Internally that is ~73% of 822K; the display must show
+// ~60% of 1M.
+func TestEventEmitterContextFillDisplayWindow(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SetDisplayContextWindow(1_000_000)
+	// Executor reports fill relative to its internal effective max (822K).
+	emitter.ContextFill(73.0, 600_000, 822_000, "warning", "")
+
+	data, ok := received.Data.(ContextFillEventData)
+	if !ok {
+		t.Fatalf("expected ContextFillEventData, got %T", received.Data)
+	}
+	if data.MaxTokens != 1_000_000 {
+		t.Errorf("expected display MaxTokens 1000000 (real window), got %v", data.MaxTokens)
+	}
+	wantPercent := float64(600_000) / float64(1_000_000) * 100 // 60.0
+	if data.FillPercent != wantPercent {
+		t.Errorf("expected display FillPercent %v (real-window basis), got %v", wantPercent, data.FillPercent)
+	}
+	if data.UsedTokens != 600_000 {
+		t.Errorf("expected UsedTokens unchanged 600000, got %v", data.UsedTokens)
+	}
+}
+
+// TestEventEmitterContextFillNoDisplayWindowFallback verifies that without an
+// injected display window the emitter falls back to the executor-reported max,
+// preserving the original behaviour.
+func TestEventEmitterContextFillNoDisplayWindowFallback(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.ContextFill(75.5, 75500, 100000, "compact", "")
+
+	data, _ := received.Data.(ContextFillEventData)
+	if data.MaxTokens != 100000 {
+		t.Errorf("expected fallback MaxTokens 100000, got %v", data.MaxTokens)
+	}
+	if data.FillPercent != 75.5 {
+		t.Errorf("expected fallback FillPercent 75.5, got %v", data.FillPercent)
+	}
+}
+
+// TestEventEmitterEmitSessionTokensForwardsDisplayFill verifies that
+// EmitSessionTokens forwards the display-corrected fill cached by ContextFill.
+func TestEventEmitterEmitSessionTokensForwardsDisplayFill(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SetDisplayContextWindow(1_000_000)
+	emitter.ContextFill(73.0, 600_000, 822_000, "warning", "")
+	emitter.EmitSessionTokens(1000, 500, "glm-5.2", "glm")
+
+	data, ok := received.Data.(SessionTokensEventData)
+	if !ok {
+		t.Fatalf("expected SessionTokensEventData, got %T", received.Data)
+	}
+	if data.MaxTokens != 1_000_000 {
+		t.Errorf("expected forwarded display MaxTokens 1000000, got %v", data.MaxTokens)
+	}
+	wantPercent := float64(600_000) / float64(1_000_000) * 100
+	if data.FillPercent != wantPercent {
+		t.Errorf("expected forwarded display FillPercent %v, got %v", wantPercent, data.FillPercent)
+	}
+}
+
+// TestEventEmitterContextCompactionScaling verifies that compaction before/after
+// percentages are scaled from the internal effective-max basis to the display
+// (real window) basis so the "compacted from X% to Y%" message is consistent
+// with the status bar.
+func TestEventEmitterContextCompactionScaling(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SetDisplayContextWindow(1_000_000)
+	// Prime the effective-max / display-max cache via ContextFill.
+	emitter.ContextFill(85.0, 698_700, 822_000, "emergency", "")
+
+	// Compaction reports 85% → 30% on the internal 822K basis.
+	emitter.ContextCompaction(85.0, 30.0, "step_1")
+
+	data, ok := received.Data.(ContextCompactionEventData)
+	if !ok {
+		t.Fatalf("expected ContextCompactionEventData, got %T", received.Data)
+	}
+	scale := float64(822_000) / float64(1_000_000) // 0.822
+	wantBefore := 85.0 * scale
+	wantAfter := 30.0 * scale
+	if data.BeforePercent != wantBefore {
+		t.Errorf("expected scaled BeforePercent %v, got %v", wantBefore, data.BeforePercent)
+	}
+	if data.AfterPercent != wantAfter {
+		t.Errorf("expected scaled AfterPercent %v, got %v", wantAfter, data.AfterPercent)
+	}
+}
+
 // TestEventEmitterEmitSessionTokensForwardFill verifies that EmitSessionTokens
 // forwards the cached context-window fill (percent + used/max tokens) populated
 // by a prior session-root ContextFill, so the status bar can render "N of M".

@@ -88,6 +88,21 @@ type CurrentStepScopable interface {
 	SetCurrentStepID(id string)
 }
 
+// DisplayContextWindowSetter is an optional interface that Emitter
+// implementations can implement to present context-fill information relative
+// to the model's advertised context window.
+//
+// The agent's internal compaction logic operates on an "effective max"
+// (context window − output limit − safety margin), and the executor reports
+// fill relative to that internal ceiling. The user-facing display, however,
+// must reflect the real context window so the status bar doesn't expose
+// internal compaction thresholds. The orchestrator resolves the model meta
+// and injects the advertised window via SetDisplayContextWindow before the
+// first context_fill emission.
+type DisplayContextWindowSetter interface {
+	SetDisplayContextWindow(window int)
+}
+
 // noopEmitter is a no-op implementation of Emitter.
 // Used as a default when nil emitter is provided.
 type noopEmitter struct {

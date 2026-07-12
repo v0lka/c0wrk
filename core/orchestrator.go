@@ -576,17 +576,25 @@ func (o *Orchestrator) readAgentsMD(path string) (string, error) {
 }
 
 // emitInitialContextFill emits a 0% context_fill so the frontend has a baseline.
+// It also injects the model's advertised context window into the emitter so that
+// the user-facing fill display (status bar, compaction messages) is computed
+// relative to the real window, not the internal "effective max" the executor
+// uses for compaction.
 func (o *Orchestrator) emitInitialContextFill(ctx context.Context) {
-	var effectiveMax int
+	var contextWindow int
 	if o.modelRegistry != nil {
 		model := o.config.Model
 		meta, _ := o.modelRegistry.Resolve(ctx, model)
 		if meta.ContextWindow > 0 {
-			safetyMargin := meta.ContextWindow * 5 / 100
-			effectiveMax = meta.ContextWindow - meta.OutputLimit - safetyMargin
+			contextWindow = meta.ContextWindow
 		}
 	}
-	o.emitter.ContextFill(0, 0, effectiveMax, "ok", "")
+	if contextWindow > 0 {
+		if setter, ok := o.emitter.(DisplayContextWindowSetter); ok {
+			setter.SetDisplayContextWindow(contextWindow)
+		}
+	}
+	o.emitter.ContextFill(0, 0, contextWindow, "ok", "")
 }
 
 // SetNoProjectMode configures this orchestrator for No Project mode:

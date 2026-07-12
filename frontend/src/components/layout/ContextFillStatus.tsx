@@ -13,8 +13,10 @@ interface ContextFillStatusProps {
 
 type FillTier = 'ok' | 'warn' | 'crit'
 
-// Thresholds mirror the backend compaction tiers (warning / emergency) so the
-// status bar colour matches the agent's internal context-pressure state.
+// Thresholds are intuitive fill levels relative to the model's advertised
+// context window (not the internal compaction ceiling). The status bar colour
+// reflects how full the real window is; compaction itself is a separate
+// internal mechanism announced via its own event.
 function fillTier(p: number): FillTier {
   if (p >= 85) return 'crit'
   if (p >= 70) return 'warn'
