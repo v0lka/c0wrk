@@ -113,12 +113,15 @@ export function CommitSection() {
         onKeyDown={handleKeyDown}
         placeholder="Describe your changes..."
         rows={2}
+        aria-invalid={error ? true : undefined}
         className={cn(
-          "w-full resize-none rounded-md border bg-input px-3 py-2 text-sm",
-          "text-foreground placeholder:text-muted-foreground",
-          "focus:outline-none focus:ring-1 focus:ring-ring",
-          "transition-colors",
-          error ? "border-destructive" : "border-border",
+          // Mirror the shared `c0-input` styling used by the search rows in
+          // the file panel (FileTreePanel) and the search panel
+          // (VectorSearchFilters) so the commit message window, its
+          // placeholder and its content share the same look.
+          "c0-input w-full resize-none rounded-md border border-input px-3 py-2 text-sm shadow-xs",
+          "transition-[color,box-shadow] outline-none",
+          "aria-invalid:border-destructive",
         )}
       />
 
