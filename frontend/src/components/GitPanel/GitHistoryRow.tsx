@@ -1,6 +1,8 @@
-import { ChevronDown, ChevronRight, GitCommit, Loader2 } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
+import { formatRelativeTime } from '@/lib/formatters'
 import { shortSha, type GraphNode } from '@/lib/gitGraphLayout'
+import { cn } from '@/lib/utils'
 import { ROW_SPACING, fileStatusColor, refColor } from './gitGraphRender'
 import type { CommitFile } from '@/types/models'
 
@@ -9,7 +11,7 @@ interface GitHistoryRowProps {
   node: GraphNode
   /** Commit author name (from the unified history payload). */
   author: string
-  /** Commit date string (from the unified history payload). */
+  /** Commit date string (from the unified history payload); shown in full inside the hover tooltip. */
   date: string
   /** Total pixel height of this row (ROW_SPACING + expansion when open). */
   height: number
@@ -26,9 +28,11 @@ interface GitHistoryRowProps {
 /**
  * A single commit row in the unified history+graph view. The first line
  * (message + refs + short SHA) sits at the top of the ROW_SPACING-pixel row
- * so the SVG lane node stays aligned with it; author and date render on a
- * second line below. Expanded changed files render below the two-line
- * header, pushing subsequent rows down.
+ * so the SVG lane node stays aligned with it; the author and a relative time
+ * (e.g. "3h") render on a second line below. Hovering the commit area
+ * reveals a tooltip carrying the full commit date and the commit subject.
+ * Expanded changed files render below the two-line header, pushing
+ * subsequent rows down.
  */
 export function GitHistoryRow({
   node,
@@ -42,36 +46,45 @@ export function GitHistoryRow({
 }: GitHistoryRowProps) {
   return (
     <div style={{ height }}>
-      <button
-        type="button"
-        onClick={onClick}
-        className="flex w-full flex-col justify-start gap-0.5 px-2 pt-1"
-        style={{ height: ROW_SPACING }}
-      >
-        <div className="flex items-center gap-2 text-sm leading-none">
-          {expanded ? (
-            <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
-          )}
-          <GitCommit className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 truncate flex-1">{node.message}</span>
-          {node.refs.map((ref) => (
-            <span
-              key={ref}
-              className={`shrink-0 rounded bg-muted/40 px-1 py-px text-[10px] font-medium ${refColor(ref)}`}
-            >
-              {ref.replace(/^tag:\s*/, '')}
-            </span>
-          ))}
-          <span className="shrink-0 font-mono text-[10px] text-info">{shortSha(node.sha)}</span>
-        </div>
-        <div className="flex items-center pl-7 text-[10px] leading-none text-muted-foreground">
-          <span className="min-w-0 truncate">
-            {author} · {date}
-          </span>
-        </div>
-      </button>
+      <Tooltip delayDuration={400}>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={onClick}
+            className="flex w-full flex-col justify-start gap-0.5 px-2 pt-1 text-left"
+            style={{ height: ROW_SPACING }}
+          >
+            <div className="flex items-center gap-2 text-sm leading-none">
+              {expanded ? (
+                <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+              )}
+              <span className="min-w-0 truncate flex-1">{node.message}</span>
+              {node.refs.map((ref) => (
+                <span
+                  key={ref}
+                  className={`shrink-0 rounded bg-muted/40 px-1 py-px text-[10px] font-medium ${refColor(ref)}`}
+                >
+                  {ref.replace(/^tag:\s*/, '')}
+                </span>
+              ))}
+              <span className="shrink-0 font-mono text-[10px] text-info">{shortSha(node.sha)}</span>
+            </div>
+            <div className="flex items-center pl-7 text-[10px] leading-none text-muted-foreground">
+              <span className="min-w-0 truncate">
+                {author} · {formatRelativeTime(date)}
+              </span>
+            </div>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs">
+          <div className="flex flex-col gap-1">
+            <span className="opacity-70">{date}</span>
+            <span className="text-balance">{node.message}</span>
+          </div>
+        </TooltipContent>
+      </Tooltip>
       {expanded && (
         <div className="px-2 pt-1 pb-1.5 pl-7">
           {loadingFiles ? (
