@@ -61,7 +61,7 @@ describe('MessageFooter', () => {
     render({ copyText: 'hello', time: '12:34' })
     const row = container.firstElementChild as HTMLElement
     // Fixed row height keeps the layout stable regardless of hover state.
-    expect(row.className).toContain('h-4')
+    expect(row.className).toContain('h-6')
     expect(row.className).not.toContain('max-h')
     // The copy control is present but starts transparent — revealed on
     // group-hover without changing the row height.

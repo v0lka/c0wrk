@@ -22,7 +22,7 @@ interface MessageFooterProps {
 export function MessageFooter({ copyText, time, className }: MessageFooterProps) {
   const hasCopy = !!copyText && copyText.trim().length > 0
   return (
-    <div className={cn('flex h-4 w-full items-center', className)}>
+    <div className={cn('flex h-6 w-full items-center', className)}>
       {hasCopy && (
         <div
           className="opacity-0 transition-opacity duration-150 group-hover:opacity-100"

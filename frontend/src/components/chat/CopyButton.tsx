@@ -49,7 +49,7 @@ export function CopyButton({ text, label = 'Copy', className }: CopyButtonProps)
       type="button"
       onClick={handleCopy}
       className={cn(
-        'inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors',
+        'inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors',
         className,
       )}
       title={currentLabel}
