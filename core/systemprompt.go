@@ -212,6 +212,25 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 	}
 	b.Core(workspaceCtxStr)
 
+	// Auxiliary work directories share the workspace's permissions. They are
+	// loaded fresh per task, so a mid-session change takes effect on the next
+	// message — which invalidates this cacheable prefix (acceptable, infrequent).
+	if workDirs := WorkDirectoriesFrom(ctx); len(workDirs) > 0 {
+		var sb strings.Builder
+		sb.WriteString("\n## Additional Work Directories\n")
+		sb.WriteString("The following auxiliary directories are available in this session with the same permissions as the workspace (all file operations, policies, and checks apply identically):\n")
+		for _, d := range workDirs {
+			sb.WriteString("- ")
+			sb.WriteString(d.Path)
+			if d.Description != "" {
+				sb.WriteString(" — ")
+				sb.WriteString(d.Description)
+			}
+			sb.WriteString("\n")
+		}
+		b.Core(sb.String())
+	}
+
 	// Mode-specific context (stable within a session).
 	if ctx.Value(PlanModeKey) != nil {
 		b.Core(prompts.OrchestratorPlanContext)

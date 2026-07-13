@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/v0lka/c0wrk/backend/project"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -1765,5 +1767,167 @@ func TestGetLatestTaskID_NoTasks(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Session work directories
+// ---------------------------------------------------------------------------
+
+func TestSessionWorkDir_SaveListUpdateDelete(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	// rec1 has an explicit older timestamp; rec2 auto-generates id + created_at
+	// (now). Ordered ASC by created_at, rec1 comes first.
+	rec1 := project.WorkDirectoryRecord{
+		ID:          "session-explicit-id",
+		Path:        "/tmp/sdir1",
+		Description: "build output",
+		CreatedAt:   "2024-06-01T12:00:00Z",
+	}
+	rec2 := project.WorkDirectoryRecord{Path: "/tmp/sdir2", Description: "logs"}
+	for _, rec := range []project.WorkDirectoryRecord{rec1, rec2} {
+		if err := store.SaveSessionWorkDir(context.Background(), sessionID, rec); err != nil {
+			t.Fatalf("failed to save work dir: %v", err)
+		}
+	}
+
+	// List returns both, ordered oldest-first.
+	listed, err := store.ListSessionWorkDirs(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("failed to list work dirs: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("expected 2 work dirs, got %d", len(listed))
+	}
+	// Explicit id + created_at preserved on the oldest row.
+	if listed[0].ID != "session-explicit-id" {
+		t.Errorf("ID mismatch: got %q, want session-explicit-id", listed[0].ID)
+	}
+	if listed[0].CreatedAt != "2024-06-01T12:00:00Z" {
+		t.Errorf("CreatedAt mismatch: got %q", listed[0].CreatedAt)
+	}
+	if listed[0].Path != "/tmp/sdir1" {
+		t.Errorf("Path mismatch on oldest: got %q, want /tmp/sdir1", listed[0].Path)
+	}
+	// Auto-generated id + created_at should be populated on the newer row.
+	if listed[1].ID == "" {
+		t.Error("auto-generated ID should not be empty")
+	}
+	if listed[1].CreatedAt == "" {
+		t.Error("auto-generated CreatedAt should not be empty")
+	}
+
+	// Update description on the explicit-id row.
+	if err := store.UpdateSessionWorkDirDescription(context.Background(), sessionID, "session-explicit-id", "updated description"); err != nil {
+		t.Fatalf("failed to update description: %v", err)
+	}
+	listed, err = store.ListSessionWorkDirs(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("failed to list after update: %v", err)
+	}
+	if listed[0].Description != "updated description" {
+		t.Errorf("description should be updated, got %q", listed[0].Description)
+	}
+
+	// Delete the explicit-id row.
+	if err := store.DeleteSessionWorkDir(context.Background(), sessionID, "session-explicit-id"); err != nil {
+		t.Fatalf("failed to delete work dir: %v", err)
+	}
+	listed, err = store.ListSessionWorkDirs(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("failed to list after delete: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID == "session-explicit-id" {
+		t.Errorf("expected only the auto-generated row to remain, got %#v", listed)
+	}
+}
+
+func TestSessionWorkDir_ListEmptyReturnsNonNilSlice(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	listed, err := store.ListSessionWorkDirs(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("failed to list empty work dirs: %v", err)
+	}
+	if listed == nil {
+		t.Fatal("expected non-nil slice for empty result")
+	}
+	if len(listed) != 0 {
+		t.Errorf("expected empty slice, got %d items", len(listed))
+	}
+}
+
+func TestSessionWorkDir_CascadeOnSessionDelete(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	if err := store.SaveSessionWorkDir(context.Background(), sessionID, project.WorkDirectoryRecord{
+		Path:        "/tmp/scascade",
+		Description: "should be removed",
+	}); err != nil {
+		t.Fatalf("failed to save work dir: %v", err)
+	}
+
+	// Confirm it exists.
+	listed, err := store.ListSessionWorkDirs(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("failed to list before delete: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("expected 1 work dir before cascade, got %d", len(listed))
+	}
+
+	// Delete the session — FK cascade must remove the work dir row.
+	if err := store.DeleteSession(context.Background(), sessionID); err != nil {
+		t.Fatalf("failed to delete session: %v", err)
+	}
+
+	listed, err = store.ListSessionWorkDirs(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("failed to list after session delete: %v", err)
+	}
+	if len(listed) != 0 {
+		t.Errorf("expected work dirs to cascade-delete with session, got %d", len(listed))
+	}
+}
+
+func TestSessionWorkDir_IsolationBySession(t *testing.T) {
+	store, _, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	// Create a second session under the same project.
+	const sessionB = "session-workdir-b"
+	if err := store.SaveSession(context.Background(), SessionInfo{
+		ID:        sessionB,
+		ProjectID: testProjectID,
+		Name:      "Session B",
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("failed to create session B: %v", err)
+	}
+	const sessionA = "task-test-session"
+	if err := store.SaveSessionWorkDir(context.Background(), sessionA, project.WorkDirectoryRecord{Path: "/tmp/a", Description: "a"}); err != nil {
+		t.Fatalf("failed to save work dir for A: %v", err)
+	}
+	if err := store.SaveSessionWorkDir(context.Background(), sessionB, project.WorkDirectoryRecord{Path: "/tmp/b", Description: "b"}); err != nil {
+		t.Fatalf("failed to save work dir for B: %v", err)
+	}
+
+	aDirs, err := store.ListSessionWorkDirs(context.Background(), sessionA)
+	if err != nil {
+		t.Fatalf("failed to list A work dirs: %v", err)
+	}
+	if len(aDirs) != 1 || aDirs[0].Path != "/tmp/a" {
+		t.Errorf("session A should only see its own work dir, got %#v", aDirs)
+	}
+	bDirs, err := store.ListSessionWorkDirs(context.Background(), sessionB)
+	if err != nil {
+		t.Fatalf("failed to list B work dirs: %v", err)
+	}
+	if len(bDirs) != 1 || bDirs[0].Path != "/tmp/b" {
+		t.Errorf("session B should only see its own work dir, got %#v", bDirs)
 	}
 }

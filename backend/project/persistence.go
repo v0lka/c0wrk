@@ -7,6 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/google/uuid"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // SQLiteProjectStore implements ProjectStore using SQLite.
@@ -43,6 +47,16 @@ func (s *SQLiteProjectStore) createTables() error {
 		active_file TEXT DEFAULT '',
 		updated_at TIMESTAMP NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS project_work_directories (
+		id TEXT PRIMARY KEY,
+		project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+		path TEXT NOT NULL,
+		description TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_project_work_dirs ON project_work_directories(project_id);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_project_work_dirs_unique ON project_work_directories(project_id, path);
 	`
 	_, err := s.db.ExecContext(context.Background(), schema)
 	return err
@@ -205,5 +219,97 @@ func (s *SQLiteProjectStore) LoadUIState(ctx context.Context, projectID string) 
 
 // Close is a no-op — the DB lifecycle is managed externally.
 func (s *SQLiteProjectStore) Close() error {
+	return nil
+}
+
+// isUniqueConstraintError reports whether err is a SQLite UNIQUE-constraint
+// violation (extended code SQLITE_CONSTRAINT_UNIQUE = 2067). Used to translate
+// duplicate (owner, path) inserts into ErrWorkDirAlreadyExists.
+func isUniqueConstraintError(err error) bool {
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		return sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
+	}
+	return false
+}
+
+// SaveProjectWorkDir inserts a project-scoped work directory record. If rec.ID
+// is empty a new UUID is generated; if CreatedAt is empty the current time is
+// used. Inserting a record with an existing ID is an error (upsert is not
+// supported — use UpdateProjectWorkDirDescription to mutate).
+func (s *SQLiteProjectStore) SaveProjectWorkDir(ctx context.Context, projectID string, rec WorkDirectoryRecord) error {
+	if rec.ID == "" {
+		rec.ID = uuid.New().String()
+	}
+	if rec.CreatedAt == "" {
+		rec.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO project_work_directories (id, project_id, path, description, created_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		rec.ID, projectID, rec.Path, rec.Description, rec.CreatedAt,
+	)
+	if err != nil {
+		if isUniqueConstraintError(err) {
+			return ErrWorkDirAlreadyExists
+		}
+		return fmt.Errorf("failed to save project work directory: %w", err)
+	}
+	return nil
+}
+
+// ListProjectWorkDirs returns all work directories for a project, ordered by
+// creation time (oldest first). Returns an empty (non-nil) slice when none exist.
+func (s *SQLiteProjectStore) ListProjectWorkDirs(ctx context.Context, projectID string) ([]WorkDirectoryRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, path, description, created_at
+		FROM project_work_directories
+		WHERE project_id = ?
+		ORDER BY created_at ASC`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list project work directories: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var recs []WorkDirectoryRecord
+	for rows.Next() {
+		var rec WorkDirectoryRecord
+		if err := rows.Scan(&rec.ID, &rec.Path, &rec.Description, &rec.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan project work directory: %w", err)
+		}
+		recs = append(recs, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating project work directories: %w", err)
+	}
+	if recs == nil {
+		recs = []WorkDirectoryRecord{}
+	}
+	return recs, nil
+}
+
+// UpdateProjectWorkDirDescription updates the human-readable description of a
+// project-scoped work directory by ID. projectID is required as a scope guard:
+// only a record owned by that project can be mutated, so a stale or
+// cross-scope ID cannot affect another project's row.
+func (s *SQLiteProjectStore) UpdateProjectWorkDirDescription(ctx context.Context, projectID, id, description string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE project_work_directories SET description = ? WHERE id = ? AND project_id = ?`,
+		description, id, projectID)
+	if err != nil {
+		return fmt.Errorf("failed to update project work directory description: %w", err)
+	}
+	return nil
+}
+
+// DeleteProjectWorkDir removes a project-scoped work directory by ID. projectID
+// is required as a scope guard so a cross-scope ID cannot delete another
+// project's record.
+func (s *SQLiteProjectStore) DeleteProjectWorkDir(ctx context.Context, projectID, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM project_work_directories WHERE id = ? AND project_id = ?`, id, projectID)
+	if err != nil {
+		return fmt.Errorf("failed to delete project work directory: %w", err)
+	}
 	return nil
 }

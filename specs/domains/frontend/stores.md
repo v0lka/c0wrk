@@ -41,6 +41,7 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 | `settingsStore`      | Settings modal open/close, active tab                              | No           |
 | `uiStore`            | Sidebar collapsed state (log level is fetched via `GetLogLevel` RPC, not stored) | localStorage |
 | `vectorIndexStore`   | Vector index status, progress, and search mode                     | localStorage (mode only) |
+| `workDirsStore`      | Auxiliary work directories (project-scoped + session-scoped lists), modal open/close state | No           |
 
 ## Critical Anti-Patterns
 

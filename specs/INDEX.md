@@ -24,6 +24,7 @@
 | LLM providers, model registry, tokens    | [domains/llm-providers.md](domains/llm-providers.md)                     |
 | Session create/resume/persist            | [domains/session-lifecycle.md](domains/session-lifecycle.md)             |
 | File tree, vector index, workspace       | [domains/workspace.md](domains/workspace.md)                             |
+| Auxiliary work directories               | [architecture/security-model.md](architecture/security-model.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Work Directories section), [domains/frontend/stores.md](domains/frontend/stores.md) (`workDirsStore`) |
 | Frontend stores, state management        | [domains/frontend/stores.md](domains/frontend/stores.md)                 |
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |
 | Message rendering, display items         | [domains/frontend/rendering.md](domains/frontend/rendering.md)           |

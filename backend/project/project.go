@@ -4,6 +4,7 @@ package project
 
 import (
 	"context"
+	"errors"
 
 	"github.com/v0lka/c0wrk/core"
 )
@@ -34,6 +35,24 @@ type ProjectUIState struct {
 	UpdatedAt      string   `json:"updated_at"`
 }
 
+// WorkDirectoryRecord is the persistence record for an auxiliary working
+// directory exposed to the agent as an additional containment root.
+//
+// Scope (project vs session) and owner are implied by which store method is
+// called, so they are not fields here. The minimal agent-facing shape lives in
+// core.WorkDirectory.
+type WorkDirectoryRecord struct {
+	ID          string `json:"id"`
+	Path        string `json:"path"`
+	Description string `json:"description"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// ErrWorkDirAlreadyExists is returned when a work directory with the same path
+// already exists for a given owner. Both project- and session-scoped stores
+// translate a unique-constraint violation into this sentinel.
+var ErrWorkDirAlreadyExists = errors.New("work directory already exists for this project or session")
+
 // ProjectStore provides persistent storage for projects.
 type ProjectStore interface {
 	SaveProject(ctx context.Context, info ProjectInfo) error
@@ -44,5 +63,12 @@ type ProjectStore interface {
 	UpdateProjectActivity(ctx context.Context, id string) error
 	SaveUIState(ctx context.Context, state ProjectUIState) error
 	LoadUIState(ctx context.Context, projectID string) (*ProjectUIState, error)
+
+	// Project-scoped work directories
+	SaveProjectWorkDir(ctx context.Context, projectID string, rec WorkDirectoryRecord) error
+	ListProjectWorkDirs(ctx context.Context, projectID string) ([]WorkDirectoryRecord, error)
+	UpdateProjectWorkDirDescription(ctx context.Context, projectID, id, description string) error
+	DeleteProjectWorkDir(ctx context.Context, projectID, id string) error
+
 	Close() error
 }

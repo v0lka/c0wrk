@@ -5,6 +5,7 @@ import { subscribe } from '@/api/runtime'
 import { listProjects } from '@/api/projects'
 import { AlertCircle, X } from 'lucide-react'
 import { SettingsModal } from '@/components/settings/SettingsModal'
+import { WorkDirsModal } from '@/components/chat/WorkDirsModal'
 import { ToolInstallSplash } from '@/components/ToolInstallSplash'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useProjectLoader } from '@/hooks/useProjectLoader'
@@ -12,7 +13,9 @@ import { useSessionLoader } from '@/hooks/useSessionLoader'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { useBackgroundSessionWatcher } from '@/hooks/useBackgroundSessionWatcher'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useWorkDirsStore } from '@/stores/workDirsStore'
 import type { ToolManagerToolInfo, ToolManagerProgressData } from '@/types/events'
 import { isStartupError, isRuntimeError, isVectorIndexPayload, isToolManagerStartData, isToolManagerProgressData } from '@/types/events'
 import type { StartupError, RuntimeError } from '@/types/events'
@@ -26,6 +29,13 @@ function App() {
   const [splashTools, setSplashTools] = useState<readonly ToolManagerToolInfo[] | null>(null)
   const [progressMap, setProgressMap] = useState<Map<string, ToolManagerProgressData>>(new Map())
   const activeSessionId = useSessionStore(s => s.activeSessionId)
+  const activeProjectId = useProjectStore(s => s.activeProjectId)
+
+  // Clear stale work-directory data on project/session switch so the modal
+  // doesn't briefly show entries from a previous context before loadAll runs.
+  useEffect(() => {
+    useWorkDirsStore.getState().clear()
+  }, [activeProjectId, activeSessionId])
 
   // Wire loaders — always run regardless of phase.
   useProjectLoader()
@@ -225,6 +235,7 @@ function App() {
       </div>
       <AppLayout />
       <SettingsModal />
+      <WorkDirsModal />
     </TooltipProvider>
   )
 }

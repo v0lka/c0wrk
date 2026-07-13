@@ -187,6 +187,18 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | ------------ | ---------- | -------------------- | ---------------------------------------- |
 | `ListSkills` | —          | []SkillDescriptorDTO | List available skills (name+description) |
 
+### Work Directories (`backend/frontend_api_workdirs.go`)
+
+| Method                          | Parameters                                  | Returns                           | Description |
+| ------------------------------- | ------------------------------------------- | --------------------------------- | ----------- |
+| `ListProjectWorkDirectories`    | projectID                                   | ([]WorkDirectoryRecord, error)    | Project-scoped auxiliary directories |
+| `ListSessionWorkDirectories`    | sessionID                                   | ([]WorkDirectoryRecord, error)    | Session-scoped auxiliary directories |
+| `AddWorkDirectory`              | scope, ownerID, path, description           | error                             | Add directory (validates existence + non-empty description; rejects project scope for No Project); emits `workdirs:changed` |
+| `UpdateWorkDirectoryDescription`| scope, id, description                      | error                             | Update a directory's description; emits `workdirs:changed` |
+| `DeleteWorkDirectory`           | scope, id                                   | error                             | Delete a directory; emits `workdirs:changed` |
+
+`scope` is `"project"` or `"session"`; `ownerID` is the corresponding project/session ID. `WorkDirectoryRecord` is `project.WorkDirectoryRecord{ID, Path, Description, CreatedAt}`. The `workdirs:changed` event triggers a UI reload; directories are loaded into the execution context on the next message (via `tools.WithAllowedRoots`).
+
 ## Event Protocol
 
 See [event-catalog.md](event-catalog.md) for complete event reference.

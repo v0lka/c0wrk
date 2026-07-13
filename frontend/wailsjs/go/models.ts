@@ -884,6 +884,24 @@ export namespace project {
 	        this.last_active_at = source["last_active_at"];
 	    }
 	}
+	export class WorkDirectoryRecord {
+	    id: string;
+	    path: string;
+	    description: string;
+	    created_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkDirectoryRecord(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.path = source["path"];
+	        this.description = source["description"];
+	        this.created_at = source["created_at"];
+	    }
+	}
 
 }
 

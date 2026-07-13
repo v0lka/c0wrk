@@ -179,6 +179,7 @@ Core bridges c0wrk-specific configuration into sp4rk engine components via small
 - If you change the `github.com/v0lka/sp4rk/tools.Tool` interface → update `github.com/v0lka/sp4rk/tools/mcp/mcptool.go`, ALL builtins, AND all test mocks implementing `Tool`
 - If you add a new sp4rk type that backend or desktop needs → import directly from the source package
 - If you modify `github.com/v0lka/sp4rk/tools.FileCoherenceChecker` → update `backend/session/file_coherence.go` implementation
+- If you change path-containment context helpers (`SessionRoots`, `WithAllowedRoots`/`AllowedRootsFrom`, `AllPathsInSessionRoots`, `WithWorkspacePath`, `WithTempDir`) → update `core/tools/registry.go` (auto-approval), `core/tools/registry_symlink.go` (symlink roots), `backend/session/manager_execution.go` (context injection), and the security-model spec
 - If you change `IsUntrusted()` semantics → update ALL built-in tool registrations (`github.com/v0lka/sp4rk/tools/builtins/*.go`) AND `github.com/v0lka/sp4rk/security/wrap.go`
 
 ## Related Specs

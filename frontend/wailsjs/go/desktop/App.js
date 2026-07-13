@@ -10,6 +10,10 @@ export function AbortRebase() {
   return window['go']['desktop']['App']['AbortRebase']();
 }
 
+export function AddWorkDirectory(arg1, arg2, arg3, arg4) {
+  return window['go']['desktop']['App']['AddWorkDirectory'](arg1, arg2, arg3, arg4);
+}
+
 export function AppendToGitignore(arg1) {
   return window['go']['desktop']['App']['AppendToGitignore'](arg1);
 }
@@ -52,6 +56,10 @@ export function DeleteProject(arg1) {
 
 export function DeleteSession(arg1) {
   return window['go']['desktop']['App']['DeleteSession'](arg1);
+}
+
+export function DeleteWorkDirectory(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['DeleteWorkDirectory'](arg1, arg2, arg3);
 }
 
 export function DiscardChanges(arg1) {
@@ -190,12 +198,20 @@ export function ListDirectory(arg1, arg2) {
   return window['go']['desktop']['App']['ListDirectory'](arg1, arg2);
 }
 
+export function ListProjectWorkDirectories(arg1) {
+  return window['go']['desktop']['App']['ListProjectWorkDirectories'](arg1);
+}
+
 export function ListProjects() {
   return window['go']['desktop']['App']['ListProjects']();
 }
 
 export function ListProviderModels(arg1) {
   return window['go']['desktop']['App']['ListProviderModels'](arg1);
+}
+
+export function ListSessionWorkDirectories(arg1) {
+  return window['go']['desktop']['App']['ListSessionWorkDirectories'](arg1);
 }
 
 export function ListSessions() {
@@ -352,6 +368,10 @@ export function UpdateSearchSettings(arg1) {
 
 export function UpdateSecuritySettings(arg1) {
   return window['go']['desktop']['App']['UpdateSecuritySettings'](arg1);
+}
+
+export function UpdateWorkDirectoryDescription(arg1, arg2, arg3, arg4) {
+  return window['go']['desktop']['App']['UpdateWorkDirectoryDescription'](arg1, arg2, arg3, arg4);
 }
 
 export function WatchDirectory(arg1) {

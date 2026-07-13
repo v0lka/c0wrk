@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/v0lka/c0wrk/backend/project"
 )
 
 // captureStore is a minimal SessionStore that records every saved message so
@@ -51,6 +53,16 @@ func (s *captureStore) SaveTerminalCommand(_ context.Context, _, _ string) error
 func (s *captureStore) LoadTerminalCommands(_ context.Context, _ string, _ int) ([]TerminalCommand, error) {
 	return nil, nil
 }
+func (s *captureStore) SaveSessionWorkDir(_ context.Context, _ string, _ project.WorkDirectoryRecord) error {
+	return nil
+}
+func (s *captureStore) ListSessionWorkDirs(_ context.Context, _ string) ([]project.WorkDirectoryRecord, error) {
+	return nil, nil
+}
+func (s *captureStore) UpdateSessionWorkDirDescription(_ context.Context, _, _, _ string) error {
+	return nil
+}
+func (s *captureStore) DeleteSessionWorkDir(_ context.Context, _, _ string) error { return nil }
 func (s *captureStore) Close() error { return nil }
 
 func (s *captureStore) snapshot() []ChatMessage {

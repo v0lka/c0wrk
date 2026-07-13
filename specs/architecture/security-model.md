@@ -47,16 +47,17 @@ Source: `core/tools/registry.go` `internalTools` map
 
 Rationale: these tools are agent-infrastructure, not user-facing operations. Blocking them would break the execution loop.
 
-## Session Roots: Workspace and Temp Directory
+## Session Roots: Workspace, Temp Directory, and Auxiliary Directories
 
-The session has two equal-peer root directories:
+The session has a set of equal-peer root directories, combined into the canonical list `tools.SessionRoots(ctx)` (workspace + temp directory + auxiliary directories):
 
 1. **Workspace** (`WorkspacePathFrom(ctx)`) — the project workspace directory. In CODE mode this is the project path; in CHAT (No Project) mode this is the per-session isolated workspace.
 2. **Session temp directory** (`TempDirFrom(ctx)`) — a per-session directory under `~/.c0wrk/projects/<projectID>/<sessionID>/temp/` used for scratch files, intermediate outputs, and plan review artifacts.
+3. **Auxiliary work directories** (`AllowedRootsFrom(ctx)`) — user-configured additional working directories, each an absolute path with a description. They are scoped to a **project** (apply to all sessions of that project) or to a single **session**. Both scopes are loaded fresh at each task execution (in `backend/session/manager_execution.go` via `injectWorkDirectories`) and injected via `tools.WithAllowedRoots`. Their path and description are also added to the system prompt alongside the workspace/temp descriptions.
 
-Both roots are treated as **equal peers**: any operation (read or write) permitted inside the workspace is permitted inside the temp directory and vice versa. The agent can do anything in the temp directory that it can do in the workspace. There are no second-class roots.
+All roots are treated as **equal peers**: any operation (read or write) permitted inside the workspace is permitted inside the temp directory and any auxiliary directory, and vice versa. There are no second-class roots. Relative paths still resolve against the workspace only; auxiliary directories are reachable only via absolute paths.
 
-The system temp directory (`os.TempDir()`) is NOT a session root. It is allowed as a `bash_exec` working directory (see `validateWorkDir` in `github.com/v0lka/sp4rk/tools/builtins/bash.go`) but does not participate in auto-approval or session-root containment checks.
+The system temp directory (`os.TempDir()`) is NOT a session root. It is allowed as a `bash_exec` working directory (see `validateWorkDir` in `github.com/v0lka/sp4rk/tools/builtins/workdir.go`) but does not participate in auto-approval or session-root containment checks.
 
 ## Operations Outside Session Roots
 
@@ -78,9 +79,9 @@ Only calls where the Judge returns `allow=false` **with non-empty reasoning** ar
 
 ## Workspace Auto-Approval
 
-After the PolicyAlwaysAllow Judge gate (if applicable), the registry checks if ALL file paths in the tool input fall within either session root (workspace or temp directory):
+After the PolicyAlwaysAllow Judge gate (if applicable), the registry checks if ALL file paths in the tool input fall within any session root — workspace, temp directory, or an auxiliary work directory — via the single `tools.AllPathsInSessionRoots(ctx, input)` check (which consults `SessionRoots(ctx)`):
 
-1. The session's temporary directory (`TempDirFrom(ctx)`)
+1. The session's temporary directory and any auxiliary directories (`TempDirFrom(ctx)` + `AllowedRootsFrom(ctx)`)
 2. The current workspace directory (`WorkspacePathFrom(ctx)`)
 
 If yes AND policy is NOT `always_deny`: tool executes without confirmation.

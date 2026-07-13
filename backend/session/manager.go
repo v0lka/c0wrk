@@ -103,6 +103,7 @@ type Manager struct {
 	tokenPersist        TokenPersistFunc
 	taskStore           TaskStore           // optional persistent task store
 	sessionStore        SessionStore        // optional persistent session store
+	projectStore        project.ProjectStore // optional persistent project store (project-scoped work dirs)
 	titleGen            *TitleGenerator     // optional title generator for auto-naming
 	envInfo             *sdktools.EnvInfo   // environment info for context injection
 	stopTimeout         time.Duration       // how long to wait for goroutine on cancel/delete
@@ -221,6 +222,14 @@ func (m *Manager) SetSessionStore(store SessionStore) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessionStore = store
+}
+
+// SetProjectStore sets the persistent project store, used to load project-scoped
+// auxiliary work directories into each task context.
+func (m *Manager) SetProjectStore(store project.ProjectStore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.projectStore = store
 }
 
 // SetProjectResolver sets the function used to resolve a project ID to its

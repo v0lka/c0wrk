@@ -15,6 +15,62 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
+// loadWorkDirectories fetches project-scoped and session-scoped auxiliary work
+// directories for the given session. It is best-effort: nil stores or listing
+// errors are logged and skipped. Project-scoped entries come first, then
+// session-scoped entries. Loaded fresh on every call so mid-session additions
+// take effect on the next task.
+func (m *Manager) loadWorkDirectories(session *Session) []core.WorkDirectory {
+	m.mu.RLock()
+	projStore := m.projectStore
+	sessStore := m.sessionStore
+	m.mu.RUnlock()
+
+	var dirs []core.WorkDirectory
+	if session.ProjectID != project.NoProjectID && projStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		recs, err := projStore.ListProjectWorkDirs(ctx, session.ProjectID)
+		cancel()
+		if err != nil {
+			m.log().Warn("failed to list project work directories", "project", session.ProjectID, "error", err)
+		} else {
+			for _, rec := range recs {
+				dirs = append(dirs, core.WorkDirectory{Path: rec.Path, Description: rec.Description})
+			}
+		}
+	}
+	if sessStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		recs, err := sessStore.ListSessionWorkDirs(ctx, session.ID)
+		cancel()
+		if err != nil {
+			m.log().Warn("failed to list session work directories", "session", session.ID, "error", err)
+		} else {
+			for _, rec := range recs {
+				dirs = append(dirs, core.WorkDirectory{Path: rec.Path, Description: rec.Description})
+			}
+		}
+	}
+	return dirs
+}
+
+// injectWorkDirectories loads the session's auxiliary work directories and
+// injects them into the context as both allowed roots (security containment)
+// and the prompt-facing directory list. Returns ctx unchanged when no
+// directories are configured.
+func (m *Manager) injectWorkDirectories(ctx context.Context, session *Session) context.Context {
+	dirs := m.loadWorkDirectories(session)
+	if len(dirs) == 0 {
+		return ctx
+	}
+	paths := make([]string, len(dirs))
+	for i := range dirs {
+		paths[i] = dirs[i].Path
+	}
+	ctx = sdktools.WithAllowedRoots(ctx, paths)
+	return core.WithWorkDirectories(ctx, dirs)
+}
+
 // SendMessage sends a user message to a session's orchestrator (async).
 // Runs in a goroutine, results come via events.
 func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills []string, modelOverride, reasoningEffort string) error {
@@ -55,6 +111,9 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 	if envInfo != nil {
 		taskCtx = sdktools.WithEnvInfo(taskCtx, envInfo)
 	}
+
+	// Inject auxiliary work directories (allowed roots + prompt list).
+	taskCtx = m.injectWorkDirectories(taskCtx, session)
 
 	// Emit message received event
 	m.emitFunc(Event{
@@ -288,6 +347,9 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 	if envInfo != nil {
 		taskCtx = sdktools.WithEnvInfo(taskCtx, envInfo)
 	}
+
+	// Inject auxiliary work directories (allowed roots + prompt list).
+	taskCtx = m.injectWorkDirectories(taskCtx, session)
 
 	// Emit resume event so the frontend knows a task is resuming.
 	m.emitFunc(Event{

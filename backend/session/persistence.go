@@ -10,6 +10,11 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/v0lka/c0wrk/backend/project"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // SessionInfo is the public-facing session metadata.
@@ -79,6 +84,12 @@ type SessionStore interface {
 	// Terminal command history
 	SaveTerminalCommand(ctx context.Context, sessionID, command string) error
 	LoadTerminalCommands(ctx context.Context, sessionID string, limit int) ([]TerminalCommand, error)
+
+	// Session-scoped work directories
+	SaveSessionWorkDir(ctx context.Context, sessionID string, rec project.WorkDirectoryRecord) error
+	ListSessionWorkDirs(ctx context.Context, sessionID string) ([]project.WorkDirectoryRecord, error)
+	UpdateSessionWorkDirDescription(ctx context.Context, sessionID, id, description string) error
+	DeleteSessionWorkDir(ctx context.Context, sessionID, id string) error
 
 	// Lifecycle
 	Close() error
@@ -185,6 +196,16 @@ func (s *SQLiteSessionStore) createTables() error {
 		created_at TIMESTAMP NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_terminal_commands_session_id ON terminal_commands(session_id);
+
+	CREATE TABLE IF NOT EXISTS session_work_directories (
+		id TEXT PRIMARY KEY,
+		session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+		path TEXT NOT NULL,
+		description TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_session_work_dirs ON session_work_directories(session_id);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_session_work_dirs_unique ON session_work_directories(session_id, path);
 
 	`
 	_, err := s.db.ExecContext(context.Background(), schema)
@@ -639,6 +660,97 @@ func (s *SQLiteSessionStore) LoadTerminalCommands(ctx context.Context, sessionID
 	}
 
 	return commands, nil
+}
+
+// SaveSessionWorkDir inserts a session-scoped work directory record. If rec.ID
+// is empty a new UUID is generated; if CreatedAt is empty the current time is
+// used. Inserting a record with an existing ID is an error (upsert is not
+// supported — use UpdateSessionWorkDirDescription to mutate).
+// isUniqueConstraintError reports whether err is a SQLite UNIQUE-constraint
+// violation (extended code SQLITE_CONSTRAINT_UNIQUE = 2067). Used to translate
+// duplicate (owner, path) inserts into project.ErrWorkDirAlreadyExists.
+func isUniqueConstraintError(err error) bool {
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		return sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
+	}
+	return false
+}
+
+func (s *SQLiteSessionStore) SaveSessionWorkDir(ctx context.Context, sessionID string, rec project.WorkDirectoryRecord) error {
+	if rec.ID == "" {
+		rec.ID = uuid.New().String()
+	}
+	if rec.CreatedAt == "" {
+		rec.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO session_work_directories (id, session_id, path, description, created_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		rec.ID, sessionID, rec.Path, rec.Description, rec.CreatedAt,
+	)
+	if err != nil {
+		if isUniqueConstraintError(err) {
+			return project.ErrWorkDirAlreadyExists
+		}
+		return fmt.Errorf("failed to save session work directory: %w", err)
+	}
+	return nil
+}
+
+// ListSessionWorkDirs returns all work directories for a session, ordered by
+// creation time (oldest first). Returns an empty (non-nil) slice when none exist.
+func (s *SQLiteSessionStore) ListSessionWorkDirs(ctx context.Context, sessionID string) ([]project.WorkDirectoryRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, path, description, created_at
+		FROM session_work_directories
+		WHERE session_id = ?
+		ORDER BY created_at ASC`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list session work directories: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var recs []project.WorkDirectoryRecord
+	for rows.Next() {
+		var rec project.WorkDirectoryRecord
+		if err := rows.Scan(&rec.ID, &rec.Path, &rec.Description, &rec.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan session work directory: %w", err)
+		}
+		recs = append(recs, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating session work directories: %w", err)
+	}
+	if recs == nil {
+		recs = []project.WorkDirectoryRecord{}
+	}
+	return recs, nil
+}
+
+// UpdateSessionWorkDirDescription updates the human-readable description of a
+// session-scoped work directory by ID. sessionID is required as a scope guard:
+// only a record owned by that session can be mutated.
+func (s *SQLiteSessionStore) UpdateSessionWorkDirDescription(ctx context.Context, sessionID, id, description string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE session_work_directories SET description = ? WHERE id = ? AND session_id = ?`,
+		description, id, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to update session work directory description: %w", err)
+	}
+	return nil
+}
+
+// DeleteSessionWorkDir removes a session-scoped work directory by ID. sessionID
+// is required as a scope guard so a cross-scope ID cannot delete another
+// session's record.
+func (s *SQLiteSessionStore) DeleteSessionWorkDir(ctx context.Context, sessionID, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_work_directories WHERE id = ? AND session_id = ?`, id, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to delete session work directory: %w", err)
+	}
+	return nil
 }
 
 // Close is a no-op — the DB lifecycle is managed externally.

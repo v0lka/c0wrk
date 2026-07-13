@@ -1054,6 +1054,34 @@ func TestAutoApproval_AlwaysAllow_WorkspacePath(t *testing.T) {
 	}
 }
 
+// TestAutoApproval_AllowedRoot verifies that a PolicyAlwaysAllow tool with a
+// path inside an additional allowed root (auxiliary work directory) auto-approves
+// without confirmation — the same treatment as workspace/temp paths, now that
+// auto-approval consults the full set of session roots.
+func TestAutoApproval_AllowedRoot(t *testing.T) {
+	registry := NewToolRegistry()
+	tool := newMockReadOnlyTool("readonly", "A read-only tool") // defaultPolicy: PolicyAlwaysAllow
+	registry.Register(tool)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmAllowOnce, nil
+	})
+
+	ctx := context.Background()
+	ctx = sdktools.WithAllowedRoots(ctx, []string{"/aux"})
+	input := json.RawMessage(`{"path": "/aux/file.txt"}`)
+
+	_, err := registry.Execute(ctx, "readonly", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if confirmCalled {
+		t.Error("expected confirmFunc NOT to be called for PolicyAlwaysAllow tools with paths inside an allowed root")
+	}
+}
+
 // TestAutoApproval_AlwaysAllow_JudgerFlagsBeforeAutoApprove is a regression
 // test for a security hole: when a PolicyAlwaysAllow tool implements ToolJudger
 // and the Judge flags the call (allow=false with non-empty reasoning), the call

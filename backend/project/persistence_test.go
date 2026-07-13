@@ -463,3 +463,177 @@ func TestLoadProjectUIState_NotFound(t *testing.T) {
 		t.Error("missing UI state should return nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Project work directories
+// ---------------------------------------------------------------------------
+
+// saveTestProject saves and returns a minimal project for work-directory tests.
+func saveTestProject(t *testing.T, store *SQLiteProjectStore, id string) ProjectInfo {
+	t.Helper()
+	proj := ProjectInfo{
+		ID:            id,
+		Name:          "Work Dir Project",
+		WorkspacePath: "/tmp/workdirs",
+		CreatedAt:     "2024-01-15T10:00:00Z",
+	}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+	return proj
+}
+
+func TestProjectWorkDir_SaveListUpdateDelete(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	proj := saveTestProject(t, store, "proj-workdir-1")
+
+	// rec1 has an explicit older timestamp; rec2 auto-generates id + created_at
+	// (now). Ordered ASC by created_at, rec1 comes first.
+	rec1 := WorkDirectoryRecord{
+		ID:          "explicit-id",
+		Path:        "/tmp/dir1",
+		Description: "build output",
+		CreatedAt:   "2024-06-01T12:00:00Z",
+	}
+	rec2 := WorkDirectoryRecord{Path: "/tmp/dir2", Description: "logs"}
+	for _, rec := range []WorkDirectoryRecord{rec1, rec2} {
+		if err := store.SaveProjectWorkDir(context.Background(), proj.ID, rec); err != nil {
+			t.Fatalf("failed to save work dir: %v", err)
+		}
+	}
+
+	// List returns both, ordered oldest-first.
+	listed, err := store.ListProjectWorkDirs(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to list work dirs: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("expected 2 work dirs, got %d", len(listed))
+	}
+	// Explicit id + created_at preserved on the oldest row.
+	if listed[0].ID != "explicit-id" {
+		t.Errorf("ID mismatch: got %q, want explicit-id", listed[0].ID)
+	}
+	if listed[0].CreatedAt != "2024-06-01T12:00:00Z" {
+		t.Errorf("CreatedAt mismatch: got %q", listed[0].CreatedAt)
+	}
+	if listed[0].Path != "/tmp/dir1" {
+		t.Errorf("Path mismatch on oldest: got %q, want /tmp/dir1", listed[0].Path)
+	}
+	// Auto-generated id + created_at should be populated on the newer row.
+	if listed[1].ID == "" {
+		t.Error("auto-generated ID should not be empty")
+	}
+	if listed[1].CreatedAt == "" {
+		t.Error("auto-generated CreatedAt should not be empty")
+	}
+
+	// Update description on the explicit-id row.
+	if err := store.UpdateProjectWorkDirDescription(context.Background(), proj.ID, "explicit-id", "updated description"); err != nil {
+		t.Fatalf("failed to update description: %v", err)
+	}
+	listed, err = store.ListProjectWorkDirs(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to list after update: %v", err)
+	}
+	if listed[0].Description != "updated description" {
+		t.Errorf("description should be updated, got %q", listed[0].Description)
+	}
+
+	// Delete the explicit-id row.
+	if err := store.DeleteProjectWorkDir(context.Background(), proj.ID, "explicit-id"); err != nil {
+		t.Fatalf("failed to delete work dir: %v", err)
+	}
+	listed, err = store.ListProjectWorkDirs(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to list after delete: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID == "explicit-id" {
+		t.Errorf("expected only the auto-generated row to remain, got %#v", listed)
+	}
+}
+
+func TestProjectWorkDir_ListEmptyReturnsNonNilSlice(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	proj := saveTestProject(t, store, "proj-workdir-empty")
+
+	listed, err := store.ListProjectWorkDirs(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to list empty work dirs: %v", err)
+	}
+	if listed == nil {
+		t.Fatal("expected non-nil slice for empty result")
+	}
+	if len(listed) != 0 {
+		t.Errorf("expected empty slice, got %d items", len(listed))
+	}
+}
+
+func TestProjectWorkDir_CascadeOnProjectDelete(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	proj := saveTestProject(t, store, "proj-workdir-cascade")
+	if err := store.SaveProjectWorkDir(context.Background(), proj.ID, WorkDirectoryRecord{
+		Path:        "/tmp/cascade",
+		Description: "should be removed",
+	}); err != nil {
+		t.Fatalf("failed to save work dir: %v", err)
+	}
+
+	// Confirm it exists.
+	listed, err := store.ListProjectWorkDirs(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to list before delete: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("expected 1 work dir before cascade, got %d", len(listed))
+	}
+
+	// Delete the project — FK cascade must remove the work dir row.
+	if err := store.DeleteProject(context.Background(), proj.ID); err != nil {
+		t.Fatalf("failed to delete project: %v", err)
+	}
+
+	listed, err = store.ListProjectWorkDirs(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to list after project delete: %v", err)
+	}
+	if len(listed) != 0 {
+		t.Errorf("expected work dirs to cascade-delete with project, got %d", len(listed))
+	}
+}
+
+func TestProjectWorkDir_IsolationByProject(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	projA := saveTestProject(t, store, "proj-workdir-a")
+	projB := saveTestProject(t, store, "proj-workdir-b")
+
+	if err := store.SaveProjectWorkDir(context.Background(), projA.ID, WorkDirectoryRecord{Path: "/tmp/a", Description: "a"}); err != nil {
+		t.Fatalf("failed to save work dir for A: %v", err)
+	}
+	if err := store.SaveProjectWorkDir(context.Background(), projB.ID, WorkDirectoryRecord{Path: "/tmp/b", Description: "b"}); err != nil {
+		t.Fatalf("failed to save work dir for B: %v", err)
+	}
+
+	aDirs, err := store.ListProjectWorkDirs(context.Background(), projA.ID)
+	if err != nil {
+		t.Fatalf("failed to list A work dirs: %v", err)
+	}
+	if len(aDirs) != 1 || aDirs[0].Path != "/tmp/a" {
+		t.Errorf("project A should only see its own work dir, got %#v", aDirs)
+	}
+	bDirs, err := store.ListProjectWorkDirs(context.Background(), projB.ID)
+	if err != nil {
+		t.Fatalf("failed to list B work dirs: %v", err)
+	}
+	if len(bDirs) != 1 || bDirs[0].Path != "/tmp/b" {
+		t.Errorf("project B should only see its own work dir, got %#v", bDirs)
+	}
+}

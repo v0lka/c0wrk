@@ -18,14 +18,14 @@ func (r *ToolRegistry) checkSymlinksAndConfirm(ctx context.Context, tool sdktool
 	}
 
 	// If every detected symlink traversal is benign OS-level infrastructure
-	// (a well-known OS symlink, or a symlink that is an ancestor of the
-	// workspace/temp root), skip the confirmation gate. Classification is
-	// delegated to sp4rk's IsOSLevelSymlink so the well-known list is never
-	// duplicated here — os_symlinks.go is the single source of truth shared by
-	// both the sp4rk symlink walker and this core gate.
-	workspace := sdktools.WorkspacePathFrom(ctx)
-	tempDir := sdktools.TempDirFrom(ctx)
-	if allTraversalsOSLevel(inside, outside, workspace, tempDir) {
+	// (a well-known OS symlink, or a symlink that is an ancestor of any session
+	// root), skip the confirmation gate. Classification is delegated to sp4rk's
+	// IsOSLevelSymlink so the well-known list is never duplicated here —
+	// os_symlinks.go is the single source of truth shared by both the sp4rk
+	// symlink walker and this core gate. All session roots (workspace, temp dir,
+	// and auxiliary work directories) are legitimate targets reachable through
+	// a symlink.
+	if allTraversalsOSLevel(inside, outside, sdktools.SessionRoots(ctx)...) {
 		return false, sdktools.ToolResult{}, nil
 	}
 

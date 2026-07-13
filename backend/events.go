@@ -65,6 +65,11 @@ const EventSkillsChanged = "skills:changed"
 // frontend knows which project was affected.
 const EventGitStatusChanged = "git:status_changed"
 
+// EventWorkDirsChanged is emitted when an auxiliary working directory is
+// added, updated, or removed (project- or session-scoped) so the frontend
+// refreshes its directory list.
+const EventWorkDirsChanged = "workdirs:changed"
+
 // EventSessionsLoaded is emitted when all sessions have been loaded from disk.
 const EventSessionsLoaded = "sessions:loaded"
 

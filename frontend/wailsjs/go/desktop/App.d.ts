@@ -12,6 +12,8 @@ export function AbortMerge():Promise<void>;
 
 export function AbortRebase():Promise<void>;
 
+export function AddWorkDirectory(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+
 export function AppendToGitignore(arg1:string):Promise<void>;
 
 export function ArchiveSession(arg1:string):Promise<void>;
@@ -33,6 +35,8 @@ export function CreateSession():Promise<session.SessionInfo>;
 export function DeleteProject(arg1:string):Promise<void>;
 
 export function DeleteSession(arg1:string):Promise<void>;
+
+export function DeleteWorkDirectory(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function DiscardChanges(arg1:string):Promise<void>;
 
@@ -102,9 +106,13 @@ export function Lifecycle():Promise<backend.FrontendAPILifecycle>;
 
 export function ListDirectory(arg1:string,arg2:boolean):Promise<Array<workspace.FileNode>>;
 
+export function ListProjectWorkDirectories(arg1:string):Promise<Array<project.WorkDirectoryRecord>>;
+
 export function ListProjects():Promise<Array<project.ProjectInfo>>;
 
 export function ListProviderModels(arg1:string):Promise<Array<string>>;
+
+export function ListSessionWorkDirectories(arg1:string):Promise<Array<project.WorkDirectoryRecord>>;
 
 export function ListSessions():Promise<Array<session.SessionInfo>>;
 
@@ -183,6 +191,8 @@ export function UpdateProxySettings(arg1:backend.ProxySettingsRequest):Promise<v
 export function UpdateSearchSettings(arg1:backend.SearchSettingsRequest):Promise<void>;
 
 export function UpdateSecuritySettings(arg1:backend.SecuritySettingsResponse):Promise<void>;
+
+export function UpdateWorkDirectoryDescription(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function WatchDirectory(arg1:string):Promise<void>;
 

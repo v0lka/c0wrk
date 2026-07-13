@@ -441,8 +441,8 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	}
 
 	// Workspace/temp auto-approval: if all paths in the input are within the
-	// session workspace or the session temp directory (equal peers), execute
-	// without confirmation.
+	// session roots (workspace, temp directory, and any additional allowed
+	// roots — equal peers), execute without confirmation.
 	// Auto-approval ONLY applies to sdktools.PolicyAlwaysAllow (or no explicit policy
 	// when the tool's own default permits it). sdktools.PolicyUserConfirm and
 	// sdktools.PolicyAlwaysDeny are NEVER weakened by path-locality heuristics — a
@@ -453,12 +453,8 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	// Judge-flagged calls (above) have already escalated to confirmation and
 	// never reach this point.
 	if policy == sdktools.PolicyAlwaysAllow {
-		if tempDir := sdktools.TempDirFrom(ctx); tempDir != "" && sdktools.AllPathsInDir(input, tempDir) {
-			r.log().Debug("auto-approved: all paths within session temp directory", "tool", name)
-			return tool.Execute(ctx, input)
-		}
-		if sdktools.AllPathsInWorkspace(ctx, input) {
-			r.log().Debug("auto-approved: all paths within workspace", "tool", name)
+		if sdktools.AllPathsInSessionRoots(ctx, input) {
+			r.log().Debug("auto-approved: all paths within session roots", "tool", name)
 			return tool.Execute(ctx, input)
 		}
 	}

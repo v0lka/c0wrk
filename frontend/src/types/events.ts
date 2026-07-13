@@ -191,6 +191,7 @@ export interface GlobalEventMap {
   readonly 'tool_manager:start': ToolManagerStartData
   readonly 'tool_manager:progress': ToolManagerProgressData
   readonly 'tool_manager:done': ToolManagerDoneData
+  readonly 'workdirs:changed': void
 }
 
 export type GlobalEventKey = keyof GlobalEventMap

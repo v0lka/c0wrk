@@ -736,6 +736,48 @@ func TestBuildSystemPrompt_SkillsInStablePart(t *testing.T) {
 	}
 }
 
+// TestBuildSystemPrompt_WorkDirectories verifies that auxiliary work
+// directories injected via core.WithWorkDirectories appear in the system
+// prompt's "Additional Work Directories" section (with each path and its
+// description) and that the section lands in the stable (cacheable) prefix.
+func TestBuildSystemPrompt_WorkDirectories(t *testing.T) {
+	ctx := tools.WithWorkspacePath(context.Background(), "/test/workspace")
+	ctx = WithWorkDirectories(ctx, []WorkDirectory{
+		{Path: "/aux/build", Description: "build artifacts"},
+		{Path: "/aux/logs"},
+	})
+	// Vector hints ensure the volatile tail is non-empty so CacheBreakMarker
+	// is preserved by Builder.Build().
+	ctx = WithVectorSearchHints(ctx, &VectorSearchHints{
+		Files: []VectorSearchHint{{FilePath: "hint.go", Summary: "hint"}},
+	})
+
+	modelMeta := llm.ModelMetadata{Family: "openai_flagship"}
+	result := buildSystemPrompt(ctx, "test message", modelMeta)
+
+	if !strings.Contains(result, "## Additional Work Directories") {
+		t.Error("expected 'Additional Work Directories' section in system prompt")
+	}
+	if !strings.Contains(result, "/aux/build") {
+		t.Error("expected auxiliary path /aux/build in system prompt")
+	}
+	if !strings.Contains(result, "build artifacts") {
+		t.Error("expected auxiliary directory description in system prompt")
+	}
+	if !strings.Contains(result, "/aux/logs") {
+		t.Error("expected auxiliary path /aux/logs in system prompt")
+	}
+
+	// The section must be in the stable (cacheable) prefix, before the marker.
+	parts := strings.SplitN(result, prompt.CacheBreakMarker, 2)
+	if len(parts) != 2 {
+		t.Fatalf("expected CacheBreakMarker to split prompt, got %d parts", len(parts))
+	}
+	if !strings.Contains(parts[0], "## Additional Work Directories") {
+		t.Error("work directories section should be in stable (cacheable) part")
+	}
+}
+
 // TestOrchestrator_VectorSearchHints_NilFunc verifies that when vectorSearchFunc is nil,
 // HandleMessage works normally without injecting hints (no panic).
 func TestOrchestrator_VectorSearchHints_NilFunc(t *testing.T) {

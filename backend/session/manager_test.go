@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/sp4rk/orchestration"
 )
@@ -1532,6 +1533,18 @@ func (m *mockSessionStoreForRestore) SaveTerminalCommand(_ context.Context, _, _
 }
 func (m *mockSessionStoreForRestore) LoadTerminalCommands(_ context.Context, _ string, _ int) ([]TerminalCommand, error) {
 	return []TerminalCommand{}, nil
+}
+func (m *mockSessionStoreForRestore) SaveSessionWorkDir(_ context.Context, _ string, _ project.WorkDirectoryRecord) error {
+	return nil
+}
+func (m *mockSessionStoreForRestore) ListSessionWorkDirs(_ context.Context, _ string) ([]project.WorkDirectoryRecord, error) {
+	return []project.WorkDirectoryRecord{}, nil
+}
+func (m *mockSessionStoreForRestore) UpdateSessionWorkDirDescription(_ context.Context, _, _, _ string) error {
+	return nil
+}
+func (m *mockSessionStoreForRestore) DeleteSessionWorkDir(_ context.Context, _, _ string) error {
+	return nil
 }
 func (m *mockSessionStoreForRestore) Close() error { return nil }
 
