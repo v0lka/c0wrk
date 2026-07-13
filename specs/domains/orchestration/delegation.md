@@ -6,6 +6,8 @@ The `delegate` tool lets the Conductor launch one or more subagents to execute u
 
 Delegation is an **execution** mechanism, not a planning one. It has its own UI progress tracking via `SubAgentLaunch`/`SubAgentComplete` events emitted by sp4rk's `RunSubAgent`. The Conductor should NOT call `declare_plan` to display or mirror delegated tasks — `declare_plan` is for user roadmaps and approval gates only.
 
+`delegate` is for **plan-less** tasks only. Once a plan is declared via `declare_plan`, `delegate` is disabled (enforced by the PlanChecker guard) and `execute_plan` must be used to run the plan steps instead. The two are orthogonal execution paths — `delegate` optimizes Conductor context; `execute_plan` executes a user-approved roadmap. See [conductor.md](conductor.md) for the `execute_plan` path and the `planStepEventTranslator` that adapts subagent events to plan-step lifecycle.
+
 ## Key Files
 
 - `core/tools/delegate.go` — `delegate` tool implementation

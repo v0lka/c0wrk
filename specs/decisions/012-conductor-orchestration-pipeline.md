@@ -113,6 +113,7 @@ lifecycle. Planning, decomposition, interaction, and reflection become
 | `ask_user` | Interactive: clarifications, plan approval, direction choice | Reused from `core/tools/askuser.go` |
 | `delegate` | Launch one or more subagents with a task, acceptance criteria, tool set, DAG dependencies, blocking or async mode | New, built on `github.com/v0lka/sp4rk/agent/subagent.go` `RunSubAgent` / `RunSubAgentsParallel` |
 | `declare_plan` | Publish a roadmap to the blackboard and UI plan panel; optionally block for user approval | New, reuses `core/plan_serializer.go` `SerializePlan` and the existing `PlanGenerated` event |
+| `execute_plan` | Execute all steps of a declared plan in DAG order with parallelism; emits plan_step events via emitter adapter | New, reuses `RunSubAgentsParallel` with `planStepEventTranslator` |
 | `reflect` | Invoke the Reflector on the current trajectory or a sub-task trajectory | New tool wrapping `github.com/v0lka/sp4rk/agent/reflector/reflector.go` `Reflect` |
 | `store_fact` / `search_facts` | Memory across delegations | Reused |
 | `read_step_output` | Read results of completed delegations | Reused |
@@ -144,6 +145,36 @@ to spawn further subagents, capped by a configurable depth (default 2) and a
 reduced step budget. This prevents unbounded delegation trees while allowing
 hierarchical decomposition when explicitly requested.
 
+### Plan-Step Execution vs Delegation
+
+Planning and delegation solve **different problems** and are orthogonal
+concerns. They must never be mixed within one Conductor run.
+
+- **Planning** (`declare_plan` + `execute_plan`) manages task **complexity**
+  and obtains user sign-off. `declare_plan` publishes a roadmap to the plan
+  panel and optionally blocks for approval; `execute_plan` then runs every
+  step of the declared plan in DAG order with parallelism.
+- **Delegation** (`delegate`) optimizes **Conductor context and session
+  time**. It is the mechanism for plan-less tasks where the Conductor wants
+  isolated subagents to carry heavy context and return summaries.
+
+These are mutually exclusive execution paths:
+
+- Once a plan is declared via `declare_plan`, `delegate` is **disabled**
+  (enforced by the `PlanChecker` guard). `execute_plan` is the only
+  execution path for plan steps.
+- For a plan-less task, `delegate` remains available for context
+  optimization, but `execute_plan` is not applicable (there is no declared
+  plan to execute).
+
+`execute_plan` reuses the same `RunSubAgentsParallel` primitive as
+`delegate`, but wraps it in a `planStepEventTranslator`. The translator
+adapts the sp4rk subagent events to the plan-step lifecycle on the root
+emitter: `SubAgentLaunch` → `PlanStepStart` and `SubAgentComplete` →
+`PlanStepComplete`. Child (subagent-scoped) events carry the `plan_step_id`
+via scoped emitter copies, so the UI correlates subagent activity back to
+the originating plan step.
+
 ### What is removed (clean break)
 
 - `github.com/v0lka/sp4rk/planner/planner.go` `Plan` / `Replan` / `PlanContinuation` as
@@ -164,6 +195,7 @@ hierarchical decomposition when explicitly requested.
   the `reflect` tool.
 - Router `routing.mode` (plan_execute vs react). The Router retains only
   domain, complexity, matched skills, and model selection.
+- The guidance that complexity-5 tasks should "delegate after approval". The Conductor guidance now routes complexity-5 tasks to `declare_plan` (await approval) followed by `execute_plan`; `delegate` is no longer the post-approval path for planned work. See [../domains/orchestration/conductor.md](../domains/orchestration/conductor.md).
 
 ### What is preserved (unchanged foundation)
 

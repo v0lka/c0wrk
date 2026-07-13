@@ -102,6 +102,14 @@ func (t *DelegateTool) Execute(ctx context.Context, input json.RawMessage) (sdkt
 		return sdktools.ErrorResult("delegate tool: no delegation launcher in context (not running inside a Conductor)"), nil
 	}
 
+	// Orthogonality guard: when a plan is declared on the blackboard, delegate
+	// is disabled — execute_plan is the only execution path for plan steps.
+	// delegate is for plan-less task optimization only. The PlanChecker is nil
+	// in subagent contexts, so this guard is inert for redelegation.
+	if pc := PlanCheckerFrom(ctx); pc != nil && pc.HasDeclaredPlan() {
+		return sdktools.ErrorResult("delegate is disabled while a plan is declared — use execute_plan to execute plan steps. delegate is for plan-less task optimization only."), nil
+	}
+
 	if err := validateDelegationTasks(params.Tasks, registry); err != nil {
 		return sdktools.ErrorResult("delegate validation failed: %v", err), nil
 	}
@@ -313,6 +321,31 @@ func WithDelegationLauncher(ctx context.Context, launcher DelegationLauncher) co
 // DelegationLauncherFrom extracts the launcher from the context, or returns nil.
 func DelegationLauncherFrom(ctx context.Context) DelegationLauncher {
 	if v, ok := ctx.Value(delegationLauncherKey{}).(DelegationLauncher); ok {
+		return v
+	}
+	return nil
+}
+
+// PlanChecker reports whether a plan has been declared on the blackboard.
+// Used by delegate to enforce orthogonality: once a plan is declared, delegate
+// is disabled and execute_plan is the only execution path for plan steps.
+// The PlanChecker is injected only into the Conductor's context — subagent
+// contexts do not carry it (subagentCtx strips Conductor-only values), so the
+// guard is inert for subagent redelegation.
+type PlanChecker interface {
+	HasDeclaredPlan() bool
+}
+
+type planCheckerKey struct{}
+
+// WithPlanChecker injects a PlanChecker into the context.
+func WithPlanChecker(ctx context.Context, pc PlanChecker) context.Context {
+	return context.WithValue(ctx, planCheckerKey{}, pc)
+}
+
+// PlanCheckerFrom extracts the PlanChecker from the context, or returns nil.
+func PlanCheckerFrom(ctx context.Context) PlanChecker {
+	if v, ok := ctx.Value(planCheckerKey{}).(PlanChecker); ok {
 		return v
 	}
 	return nil

@@ -1,12 +1,14 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -45,9 +47,9 @@ func (h *trajectoryHolder) Steps() []agent.Step {
 // launcher, publisher, and reflection runner. It mirrors the subset of
 // OrchestratorDeps required to build executors and publish plans.
 type conductorDeps struct {
-	contextFactory   ContextManagerFactory
-	toolExec         agent.ToolExecutor
-	toolRegistry     *sdktools.ToolRegistry
+	contextFactory ContextManagerFactory
+	toolExec       agent.ToolExecutor
+	toolRegistry   *sdktools.ToolRegistry
 	// disabledTools is the set of tool names disabled for the current mode
 	// (e.g. CHAT / No-Project mode disables glob/ripgrep/semantic_search). The
 	// Conductor uses it to (a) exclude dead tools from subagent toolsets and
@@ -76,6 +78,13 @@ type conductorDeps struct {
 	reasoningEffort  string
 	preWarningPct    int
 
+	// lifecycle is the inline plan-step lifecycle tracker. It is created in
+	// RunConductor (from emitter + blackboard) and threaded in here so the
+	// launcher can mark plan steps completed without post-construction field
+	// mutation. Nil when the launcher is used outside RunConductor (e.g. in
+	// tests); Execute guards every access with a nil check.
+	lifecycle *inlineStepLifecycle
+
 	// conversationHistory holds prior user/assistant exchanges from the
 	// session. Injected into the Conductor's ContextManager so the LLM sees
 	// dialogue context for follow-up messages. Nil for Resume (the Conductor
@@ -88,6 +97,236 @@ type conductorDeps struct {
 type conductorLauncher struct {
 	deps conductorDeps
 	bb   orchestration.Blackboard
+	// runPlanStepWave executes one wave of ready plan steps concurrently and
+	// returns their outcomes. Defaults to defaultPlanStepWave (which builds an
+	// isolated subagent executor per step and runs them via
+	// agent.RunSubAgentsParallel). Tests override it to exercise the Execute
+	// DAG scheduler — wave detection, failure cascade, cycle detection, and
+	// cancellation — without real LLM-driven executors.
+	runPlanStepWave func(ctx context.Context, ready []orchestration.PlanStep, registry *tools.DelegationRegistry) []planStepOutcome
+	// executed guards against a second Execute call for the same plan: each
+	// declared plan runs at most once so a retry re-runs every step.
+	executed bool
+}
+
+// HasDeclaredPlan implements tools.PlanChecker. Returns true when a plan has
+// been published to the blackboard via declare_plan. Used by the delegate guard
+// to enforce orthogonality: once a plan is declared, delegate is disabled and
+// execute_plan is the only execution path for plan steps.
+func (l *conductorLauncher) HasDeclaredPlan() bool {
+	return l.bb != nil && l.bb.GetPlan() != nil
+}
+
+// ExecutePlan runs all steps of the declared plan in DAG order with
+// parallelism for independent steps. It implements tools.PlanStepExecutor.
+//
+// Each step runs as an isolated subagent (its own Executor + ContextManager),
+// but events are emitted as plan_step_start/plan_step_complete (not
+// subagent_launch/subagent_complete) via the planStepEventTranslator. This
+// reuses the full subagent machinery (parallel execution, context isolation,
+// dependency injection) while presenting the work as plan steps in the UI.
+//
+// After each step completes, its result is:
+//   - stored on the blackboard (SetStepResult) — accessible via read_step_output
+//   - marked in the inlineStepLifecycle (markCompleted) — prevents the
+//     finish-fallback completeAll from double-completing
+func (l *conductorLauncher) Execute(ctx context.Context) ([]tools.PlanStepResult, error) {
+	plan := l.bb.GetPlan()
+	if plan == nil || len(plan.Steps) == 0 {
+		return nil, errors.New("no plan declared — call declare_plan first")
+	}
+
+	// Idempotency: execute_plan runs at most once per declared plan. A second
+	// call would re-run every step from scratch — wasting tokens/time and
+	// risking duplicated side effects (e.g. a file-mutating step runs twice).
+	// Reject it so the Conductor reflects and publishes a new plan to retry.
+	if l.executed {
+		return nil, errors.New("execute_plan already ran for this plan — a declared plan executes at most once; publish a new plan via declare_plan to retry")
+	}
+	l.executed = true
+
+	// Local registry for dependency resolution between plan steps. This is
+	// SEPARATE from the Conductor's main delegation registry — plan steps are
+	// not delegations and should not appear in cancel_delegation.
+	localReg := tools.NewDelegationRegistry()
+
+	// indexByID preserves plan-declaration order for deterministic result
+	// ordering (map iteration is randomised, so the aggregated result would
+	// otherwise be non-reproducible across runs).
+	indexByID := make(map[string]int, len(plan.Steps))
+	pending := make(map[string]orchestration.PlanStep, len(plan.Steps))
+	for i, step := range plan.Steps {
+		pending[step.ID] = step
+		indexByID[step.ID] = i
+		if err := localReg.Register(step.ID, step.Summary, step.DependsOn, "blocking"); err != nil {
+			return nil, fmt.Errorf("register plan step %q: %w", step.ID, err)
+		}
+	}
+
+	// Resolve the wave dispatcher: the production default builds isolated
+	// subagent executors per step; tests inject a stub to exercise the DAG
+	// scheduler without real LLM executors.
+	dispatch := l.runPlanStepWave
+	if dispatch == nil {
+		dispatch = l.defaultPlanStepWave
+	}
+
+	subCtx := subagentCtx(ctx)
+	results := make([]tools.PlanStepResult, 0, len(plan.Steps))
+
+	for len(pending) > 0 {
+		if ctx.Err() != nil {
+			for id, step := range pending {
+				results = append(results, tools.PlanStepResult{
+					StepID: id, Summary: step.Summary,
+					Status: "failed", Error: ctx.Err(),
+				})
+			}
+			return results, ctx.Err()
+		}
+
+		// Find ready steps (all dependencies completed successfully).
+		var ready []orchestration.PlanStep
+		for _, step := range pending {
+			if l.planStepDepsReady(step, localReg) {
+				ready = append(ready, step)
+			}
+		}
+		if len(ready) == 0 {
+			// Dependencies unsatisfiable — every remaining step is blocked by
+			// an upstream failure. None of them launched, so the translator
+			// never emitted PlanStepStart/Complete for them. Emit a terminal
+			// pair directly (mirroring completeAll) so they do not linger
+			// "pending" in the plan panel, then mark them completed so the
+			// finish fallback does not double-complete.
+			for id, step := range pending {
+				err := fmt.Errorf("step %q: dependencies could not be satisfied (upstream failure)", id)
+				results = append(results, tools.PlanStepResult{
+					StepID: id, Summary: step.Summary,
+					Status: "failed", Error: err,
+				})
+				// The step never launched, so the translator did not emit a
+				// terminal pair for it — emit one directly so it is not left
+				// "pending" in the plan panel.
+				l.emitNeverStartedStep(id, err.Error())
+				if l.deps.lifecycle != nil {
+					l.deps.lifecycle.markCompleted(id)
+				}
+			}
+			return results, nil
+		}
+
+		// Execute the ready wave (builds subagents + runs concurrently in
+		// production; returns canned outcomes under a test stub).
+		outcomes := dispatch(subCtx, ready, localReg)
+		for _, oc := range outcomes {
+			localReg.Complete(oc.stepID, oc.output, oc.err, oc.steps)
+			l.bb.SetStepResult(oc.stepID, oc.output, oc.err, oc.steps)
+
+			status := "completed"
+			if oc.err != nil {
+				status = "failed"
+			}
+			step := pending[oc.stepID]
+			results = append(results, tools.PlanStepResult{
+				StepID: oc.stepID, Summary: step.Summary,
+				Status: status, Output: oc.output, Error: oc.err,
+			})
+			if l.deps.lifecycle != nil {
+				l.deps.lifecycle.markCompleted(oc.stepID)
+			}
+			delete(pending, oc.stepID)
+		}
+	}
+
+	// Deterministic result ordering by plan-declaration index. Without this
+	// the aggregated summary order is randomised by map iteration.
+	slices.SortFunc(results, func(a, b tools.PlanStepResult) int {
+		return cmp.Compare(indexByID[a.StepID], indexByID[b.StepID])
+	})
+	return results, nil
+}
+
+// planStepOutcome is the result of executing one plan step within a wave. It
+// is the contract between Execute's DAG scheduler and the wave dispatcher.
+type planStepOutcome struct {
+	stepID string
+	output string
+	steps  []agent.Step
+	err    error
+}
+
+// defaultPlanStepWave is the production wave dispatcher: it builds an isolated
+// subagent executor per ready step and runs the wave concurrently via
+// agent.RunSubAgentsParallel. Steps whose task construction fails are returned
+// as failed outcomes with a directly-emitted terminal event pair (the
+// translator never ran, so no SubAgentLaunch/Complete fired for them).
+func (l *conductorLauncher) defaultPlanStepWave(ctx context.Context, ready []orchestration.PlanStep, registry *tools.DelegationRegistry) []planStepOutcome {
+	subTasks := make([]agent.SubAgentTask, 0, len(ready))
+	outcomes := make([]planStepOutcome, 0, len(ready))
+	for _, step := range ready {
+		task := tools.DelegationTask{
+			ID:        step.ID,
+			Summary:   step.Summary,
+			Task:      step.Description,
+			DependsOn: step.DependsOn,
+			Mode:      "blocking",
+		}
+		scopedEvents := l.scopePlanStepEvents(step.ID, step.Summary)
+		st, err := l.buildSubAgentTask(ctx, task, registry, scopedEvents)
+		if err != nil {
+			// Build failed — the subagent never launched, so the
+			// planStepEventTranslator did not emit PlanStepStart/Complete.
+			// Emit a terminal pair directly so the step is not left "pending".
+			l.emitNeverStartedStep(step.ID, err.Error())
+			outcomes = append(outcomes, planStepOutcome{stepID: step.ID, err: err})
+			continue
+		}
+		registry.Start(step.ID, nil)
+		subTasks = append(subTasks, st)
+	}
+
+	for _, sr := range agent.RunSubAgentsParallel(ctx, subTasks) {
+		var execErr error
+		if sr.Error != nil {
+			execErr = sr.Error
+		}
+		outcomes = append(outcomes, planStepOutcome{
+			stepID: sr.StepID,
+			output: sr.Output,
+			steps:  sr.Steps,
+			err:    execErr,
+		})
+	}
+	return outcomes
+}
+
+// emitNeverStartedStep emits the PlanStepStart + PlanStepComplete(success=false)
+// terminal pair for a plan step that never launched (unsatisfiable dependency
+// or build failure). PlanStepStart dedups on the root emitter, so this is safe
+// even if a stray start was already recorded.
+func (l *conductorLauncher) emitNeverStartedStep(stepID, errMsg string) {
+	if l.deps.emitter == nil {
+		return
+	}
+	desc, summary := lookupStepDesc(l.bb, stepID)
+	l.deps.emitter.PlanStepStart(stepID, desc, summary)
+	l.deps.emitter.PlanStepComplete(stepID, false, 0, errMsg)
+}
+
+// planStepDepsReady checks whether all dependencies of a plan step are
+// completed successfully in the local registry.
+func (l *conductorLauncher) planStepDepsReady(step orchestration.PlanStep, registry *tools.DelegationRegistry) bool {
+	for _, dep := range step.DependsOn {
+		if !registry.IsCompleted(dep) {
+			return false
+		}
+		d := registry.Get(dep)
+		if d != nil && (d.Status == tools.DelegationStatusFailed || d.Status == tools.DelegationStatusCancelled) {
+			return false
+		}
+	}
+	return true
 }
 
 func (l *conductorLauncher) Launch(ctx context.Context, tasks []tools.DelegationTask, registry *tools.DelegationRegistry) []tools.DelegationResult {
@@ -216,6 +455,7 @@ func subagentCtx(ctx context.Context) context.Context {
 	ctx = tools.WithDelegationLauncher(ctx, nil)
 	ctx = tools.WithPlanPublisher(ctx, nil)
 	ctx = tools.WithReflectionRunner(ctx, nil)
+	ctx = tools.WithPlanChecker(ctx, nil)
 	ctx = orchestration.WithDelegationRegistry(ctx, nil)
 	return ctx
 }
@@ -224,7 +464,7 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 	subCtx := subagentCtx(ctx)
 	subTasks := make([]agent.SubAgentTask, 0, len(tasks))
 	for _, t := range tasks {
-		st, err := l.buildSubAgentTask(subCtx, t, registry)
+		st, err := l.buildSubAgentTask(subCtx, t, registry, l.scopeEvents(t.ID))
 		if err != nil {
 			registry.Complete(t.ID, "", err, nil)
 			continue
@@ -278,7 +518,7 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	// Build the subagent task. The finishJoinExecutor in the sp4rk Conductor
 	// will guard against finish with pending async sub-delegations
 	// automatically, since the child registry is in the context.
-	st, err := l.buildSubAgentTask(taskCtx, t, registry)
+	st, err := l.buildSubAgentTask(taskCtx, t, registry, l.scopeEvents(t.ID))
 	if err != nil {
 		registry.Complete(t.ID, "", err, nil)
 		return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusFailed, Error: err}
@@ -321,7 +561,7 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 	// dispatches all async tasks here regardless of AllowRedelegate), so the
 	// Conductor-only context values must always be stripped — see subagentCtx.
 	ctx = subagentCtx(ctx)
-	subTask, err := l.buildSubAgentTask(ctx, t, registry)
+	subTask, err := l.buildSubAgentTask(ctx, t, registry, l.scopeEvents(t.ID))
 	if err != nil {
 		registry.Complete(t.ID, "", err, nil)
 		return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusFailed, Error: err}
@@ -349,7 +589,7 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 	return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusRunning}
 }
 
-func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.DelegationTask, registry *tools.DelegationRegistry) (agent.SubAgentTask, error) {
+func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.DelegationTask, registry *tools.DelegationRegistry, scopedEvents agent.Events) (agent.SubAgentTask, error) {
 	maxSteps := t.MaxSteps
 	if maxSteps <= 0 {
 		maxSteps = l.deps.subagentMaxSteps
@@ -379,7 +619,7 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}
 
 	caller := l.callerForStep(cm, t.ID)
-	executor := agent.NewExecutor(caller, l.deps.toolExec, maxSteps, agent.WithTokenCounter(l.deps.tokenCounter), agent.WithEvents(l.scopeEvents(t.ID)), agent.WithToolResultBudget(l.deps.toolResultBudget), agent.WithCircuitBreaker(l.deps.circuitBreaker), agent.WithHITL(l.deps.hitlHandler))
+	executor := agent.NewExecutor(caller, l.deps.toolExec, maxSteps, agent.WithTokenCounter(l.deps.tokenCounter), agent.WithEvents(scopedEvents), agent.WithToolResultBudget(l.deps.toolResultBudget), agent.WithCircuitBreaker(l.deps.circuitBreaker), agent.WithHITL(l.deps.hitlHandler))
 	executor.SetPlanContext(t.ID, 0, 0)
 	l.configureExecutor(executor)
 
@@ -389,7 +629,7 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 		CM:             cm,
 		TaskTools:      taskTools,
 		TaskDesc:       taskDesc,
-		Emitter:        l.scopeEvents(t.ID),
+		Emitter:        scopedEvents,
 		TodoUpdateFunc: subagentTodoCallback(l.deps.emitter),
 	}, nil
 }
@@ -402,6 +642,7 @@ var conductorOnlyToolNames = map[string]struct{}{
 	"delegate":          {},
 	"cancel_delegation": {},
 	"declare_plan":      {},
+	"execute_plan":      {},
 	"reflect":           {},
 }
 
@@ -413,6 +654,7 @@ var coreNonCacheableToolNames = []string{
 	"delegate",
 	"cancel_delegation",
 	"declare_plan",
+	"execute_plan",
 	"reflect",
 	"declare_step_complete",
 	"ask_user",
@@ -567,6 +809,7 @@ func (l *conductorLauncher) buildTaskDescription(t tools.DelegationTask, registr
 	fmt.Fprintf(&b, "[Delegation %s] %s\n\n", t.ID, t.Task)
 	fmt.Fprintf(&b, "Tool call budget: %d iterations. Plan your approach to finish within this budget.\n\n", l.effectiveMaxSteps(t))
 	b.WriteString("IMPORTANT: You are executing ONE delegated task. Complete ONLY this task's objective. Do NOT perform work outside the task scope.\n\n")
+	b.WriteString("## Checklist\nBuild a checklist at the start (update_checklist — omit step_id, it is inferred from your execution context) listing the concrete sub-tasks for this work, and report progress on each item as you complete it.\n\n")
 
 	if len(t.AcceptanceCriteria) > 0 {
 		b.WriteString("## Acceptance Criteria\n")
@@ -669,6 +912,55 @@ func (l *conductorLauncher) scopeEvents(stepID string) agent.Events {
 		return sc.WithPlanStepID(stepID)
 	}
 	return &agent.NoopEvents{}
+}
+
+// planStepEventTranslator wraps a scoped emitter and translates the sp4rk
+// subagent lifecycle events (SubAgentLaunch/SubAgentComplete — which are
+// hard-coded inside RunSubAgent) into plan-step lifecycle events
+// (PlanStepStart/PlanStepComplete). This lets plan steps reuse the same
+// subagent machinery (RunSubAgentsParallel, isolated context, parallel waves)
+// while appearing in the UI as plan steps, not delegations.
+//
+// The translator holds TWO emitter references:
+//   - scoped (embedded): the WithPlanStepID copy — child events (ToolCall,
+//     Thought, AssistantChunk, etc.) carry plan_step_id so they nest under
+//     the step block in the frontend.
+//   - root: the session-root emitter — PlanStepStart/PlanStepComplete are
+//     called here because the scoped copy does NOT share planStartedSet /
+//     planCompletedSet / planTotalSteps (WithPlanStepID creates a shallow
+//     copy without those fields). Calling on root ensures correct progress
+//     tracking and duplicate suppression.
+type planStepEventTranslator struct {
+	Emitter         // scoped copy (child events with plan_step_id)
+	root    Emitter // session-root emitter (plan-step lifecycle + progress)
+	summary string  // short UI label for PlanStepStart
+}
+
+func (t *planStepEventTranslator) SubAgentLaunch(stepID, description string) {
+	t.root.PlanStepStart(stepID, description, t.summary)
+}
+
+func (t *planStepEventTranslator) SubAgentComplete(stepID string, success bool, duration time.Duration) {
+	t.root.PlanStepComplete(stepID, success, duration, "")
+}
+
+// scopePlanStepEvents returns an agent.Events suitable for plan-step execution:
+// a planStepEventTranslator wrapping the WithPlanStepID-scoped emitter (for
+// child events) and the session-root emitter (for plan-step lifecycle events).
+// If the emitter does not support WithPlanStepID, returns NoopEvents.
+func (l *conductorLauncher) scopePlanStepEvents(stepID, summary string) agent.Events {
+	sc, ok := l.deps.emitter.(interface {
+		WithPlanStepID(string) Emitter
+	})
+	if !ok {
+		return &agent.NoopEvents{}
+	}
+	scoped := sc.WithPlanStepID(stepID)
+	return &planStepEventTranslator{
+		Emitter: scoped,
+		root:    l.deps.emitter,
+		summary: summary,
+	}
 }
 
 func (l *conductorLauncher) configureExecutor(executor *agent.Executor) {
@@ -884,28 +1176,42 @@ func compactionStrategyForDomain(domain string, complexity int) string {
 }
 
 // conductorGuidanceForComplexity returns a system-prompt section that guides
-// the Conductor on when to delegate, declare_plan, or handle inline, based on
-// the routing complexity.
+// the Conductor on when to plan, delegate, or handle inline, based on the
+// routing complexity.
 //
-// declare_plan and delegate serve DIFFERENT purposes:
-//   - declare_plan publishes a roadmap to the USER and optionally blocks for
-//     approval. Use it ONLY when user sign-off is needed before a large/risky
-//     change, or when an active skill prescribes an approval gate.
-//   - delegate launches subagents to execute work. It has its own UI progress
-//     tracking (subagent blocks in chat). delegate does NOT require a plan —
-//     calling declare_plan to "display" delegated tasks is an error.
+// Planning and delegation are ORTHOGONAL mechanisms:
+//   - Planning (declare_plan + execute_plan) is for managing task COMPLEXITY.
+//     declare_plan publishes a roadmap to the USER and optionally blocks for
+//     approval. execute_plan runs ALL plan steps in DAG order with parallelism.
+//   - Delegation (delegate) is for optimizing Conductor context usage and
+//     session time. It is for plan-less tasks only — once a plan is declared,
+//     delegate is disabled and execute_plan is the only execution path for
+//     plan steps.
+//
+// These two mechanisms must never be mixed: once a plan is declared, use
+// execute_plan, never delegate, to execute plan steps.
 func conductorGuidanceForComplexity(complexity int) string {
+	orthogonality := "\n\n## Planning vs Delegation (orthogonal mechanisms)\n" +
+		"Planning (declare_plan + execute_plan) manages task COMPLEXITY and gets user sign-off. " +
+		"Delegation (delegate) optimizes Conductor context and session time. " +
+		"They are ORTHOGONAL — never mix them. Once a plan is declared, delegate is disabled; use execute_plan to execute plan steps.\n"
 	switch {
 	case complexity <= 1:
-		return "## Conductor Guidance\nYou are the Conductor: you own this task end-to-end. This is a simple task — handle it inline (read files, search, answer, call finish). Do not call delegate or declare_plan for trivial tasks.\n"
-	case complexity <= 2:
-		return "## Conductor Guidance\nYou are the Conductor: you own this task end-to-end. Handle this task inline unless it clearly involves multiple files or subsystems — in that case, call delegate with one task. Call finish when the task is complete.\n"
-	case complexity <= 3:
-		return "## Conductor Guidance\nYou are the Conductor: you own this task end-to-end. For tasks involving multiple actions or some exploration, consider calling delegate to break coherent units of work into isolated subagents. Call finish when the task is complete.\n"
+		return "## Conductor Guidance\nYou are the Conductor: you own this task end-to-end. This is a simple task — handle it inline (read files, search, answer, call finish). No checklist, delegate, or plan needed.\n"
 	case complexity <= 4:
-		return "## Conductor Guidance\nYou are the Conductor: you own this task end-to-end. This is a complex task — call delegate to break it into subtasks. Each delegation has its own progress tracking in the UI; do NOT call declare_plan to display delegated tasks. Call declare_plan with mode=await_approval ONLY when an active skill prescribes an approval gate, or when the change is large enough that user sign-off is needed before implementing. Call finish when the task is complete.\n"
+		return "## Conductor Guidance\n" +
+			"You are the Conductor: you own this task end-to-end. This task does not warrant user sign-off, so do NOT call declare_plan or execute_plan.\n\n" +
+			"You MUST build a checklist (update_checklist with an empty step_id) at the start and report progress on each item as you complete it.\n\n" +
+			"You MAY call delegate to break coherent units of work into isolated subagents — to keep your context lean or to parallelize work. Each delegate also builds its own checklist and reports progress. delegate does NOT require a plan.\n\n" +
+			"Call finish when the task is complete." + orthogonality
 	default:
-		return "## Conductor Guidance\nYou are the Conductor: you own this task end-to-end. This is a large task that warrants user sign-off — call declare_plan with mode=await_approval to present a roadmap for user approval. After approval, call delegate to break the work into subtasks. Do NOT call declare_plan just to mirror delegated tasks — delegate has its own UI progress tracking. When the trajectory looks wrong, call reflect. Call finish when the task is complete.\n"
+		return "## Conductor Guidance\n" +
+			"You are the Conductor: you own this task end-to-end. This is a large task that warrants user sign-off.\n\n" +
+			"1. Call declare_plan with mode=await_approval to present a roadmap for user approval.\n" +
+			"2. After approval, call execute_plan — it executes ALL plan steps in DAG order with parallelism for independent steps. Each step executor builds its own checklist and reports progress.\n" +
+			"3. Do NOT use delegate to execute plan steps — execute_plan is the ONLY execution path for a declared plan.\n" +
+			"4. When the trajectory looks wrong, call reflect.\n" +
+			"5. Call finish when the task is complete." + orthogonality
 	}
 }
 
@@ -934,6 +1240,13 @@ func RunConductor(
 	deps conductorDeps,
 	plansDir string,
 ) (*orchestration.ExecutionResult, error) {
+	// Build the inline-step lifecycle up front so it can be threaded into deps
+	// (consumed by Execute) rather than wired by post-construction field
+	// mutation. It is shared with update_checklist / declare_step_complete via
+	// the context callbacks below.
+	inlineLifecycle := newInlineStepLifecycle(deps.emitter, bb)
+	deps.lifecycle = inlineLifecycle
+
 	registry := tools.NewDelegationRegistry()
 	launcher := &conductorLauncher{deps: deps, bb: bb}
 	publisher := &conductorPublisher{emitter: deps.emitter, bb: bb, plansDir: plansDir, logger: deps.logger}
@@ -952,16 +1265,18 @@ func RunConductor(
 	ctx = tools.WithDelegationLauncher(ctx, launcher)
 	ctx = tools.WithPlanPublisher(ctx, publisher)
 	ctx = tools.WithReflectionRunner(ctx, runner)
+	ctx = tools.WithPlanChecker(ctx, launcher)
 	ctx = agent.WithTrajectoryStore(ctx, trajHolder)
 	ctx = orchestration.WithDelegationRegistry(ctx, registry)
 
 	// Inject the inline-step lifecycle so update_checklist can emit
 	// StepTodoUpdate + inferred PlanStepStart, and declare_step_complete can
 	// emit PlanStepComplete. Subagents get their own (observation-only)
-	// callback via buildSubAgentTask.TodoUpdateFunc.
-	inlineLifecycle := newInlineStepLifecycle(deps.emitter, bb)
+	// callback via buildSubAgentTask.TodoUpdateFunc. The lifecycle was created
+	// above and is shared with the launcher via deps.lifecycle.
 	ctx = agent.WithStepTodoUpdateFunc(ctx, inlineLifecycle.onChecklistUpdate)
 	ctx = tools.WithStepCompleteFunc(ctx, inlineLifecycle.completeStep)
+	ctx = tools.WithPlanStepExecutor(ctx, launcher)
 
 	// Checklist guard: once a plan is declared, reject standalone (empty
 	// step_id) checklists. A standalone checklist is only valid for plan-less
@@ -1107,9 +1422,9 @@ type inlineStepLifecycle struct {
 	scoper    CurrentStepScopable // nil if emitter doesn't support dynamic scoping
 	bb        orchestration.Blackboard
 	mu        sync.Mutex
-	started   map[string]bool    // stepIDs that received PlanStepStart but not PlanStepComplete
+	started   map[string]bool      // stepIDs that received PlanStepStart but not PlanStepComplete
 	startedAt map[string]time.Time // wall-clock when PlanStepStart was emitted, for duration
-	completed map[string]bool    // stepIDs that already reached PlanStepComplete
+	completed map[string]bool      // stepIDs that already reached PlanStepComplete
 }
 
 func newInlineStepLifecycle(emitter Emitter, bb orchestration.Blackboard) *inlineStepLifecycle {
@@ -1217,6 +1532,22 @@ func (l *inlineStepLifecycle) completeStep(stepID string, success bool, errMsg s
 	if l.scoper != nil {
 		l.scoper.SetCurrentStepID("")
 	}
+}
+
+// markCompleted records a plan step as completed WITHOUT emitting any event.
+// Used by execute_plan after each step's SubAgentComplete has already emitted
+// PlanStepComplete via the planStepEventTranslator. This prevents completeAll
+// (the finish fallback) from double-completing steps that execute_plan already
+// drove to a terminal state through the emitter adapter.
+func (l *inlineStepLifecycle) markCompleted(stepID string) {
+	if l == nil || stepID == "" {
+		return
+	}
+	l.mu.Lock()
+	l.completed[stepID] = true
+	delete(l.started, stepID)
+	delete(l.startedAt, stepID)
+	l.mu.Unlock()
 }
 
 // completeAll auto-completes any plan steps that have not reached a terminal

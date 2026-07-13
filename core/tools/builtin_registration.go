@@ -124,6 +124,11 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	// Declare plan (approval callback optional; present mode works without it)
 	registry.Register(NewDeclarePlanTool(cfg.PlanApprovalFunc))
 
+	// Execute plan — reads the declared plan from the blackboard via a
+	// PlanStepExecutor injected into the Conductor context. No-op outside a
+	// Conductor run (the context value will be nil).
+	registry.Register(NewExecutePlanTool())
+
 	return nil
 }
 

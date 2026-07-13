@@ -2,21 +2,29 @@
 
 ## Boundary Rule
 
-Conductor tools (`delegate`, `declare_plan`, `reflect`, `cancel_delegation`) are internal tools registered in `core/tools/registry.go` and added to the Conductor's tool set in `core/conductor.go`. They are always allowed (bypass policy and judge) and are never available to regular plan-step executors — only to the Conductor and, selectively, to subagents with `allow_redelegate: true`.
+Conductor tools (`delegate`, `declare_plan`, `execute_plan`, `reflect`, `cancel_delegation`) are internal tools registered in `core/tools/registry.go` and added to the Conductor's tool set in `core/conductor.go`. They are always allowed (bypass policy and judge) and are never available to regular plan-step executors — only to the Conductor and, selectively, to subagents with `allow_redelegate: true`.
+
+Planning and delegation are **orthogonal** mechanisms:
+- **Planning** (`declare_plan` + `execute_plan`) manages task complexity and gets user sign-off. `execute_plan` runs all plan steps in DAG order with parallelism, emitting `plan_step_start`/`plan_step_complete` events.
+- **Delegation** (`delegate`) optimizes Conductor context usage and session time for plan-less tasks. It emits `subagent_launch`/`subagent_complete` events.
+- They must never be mixed: once a plan is declared, `delegate` is disabled (enforced by a `PlanChecker` guard) and `execute_plan` is the only execution path for plan steps.
 
 ## Interfaces
 
 | Interface | Package | Consumed By | Purpose |
 | --------- | ------- | ----------- | ------- |
-| `delegate` tool | `core/tools` | Conductor | Launch subagents with DAG + async |
+| `delegate` tool | `core/tools` | Conductor | Launch subagents with DAG + async (plan-less tasks only) |
 | `cancel_delegation` tool | `core/tools` | Conductor, subagent (redelegate) | Cancel a pending/running async delegation |
 | `declare_plan` tool | `core/tools` | Conductor | Publish a roadmap to the blackboard and UI; optionally block for user approval |
+| `execute_plan` tool | `core/tools` | Conductor | Execute all steps of the declared plan in DAG order with parallelism; emits plan-step events via emitter adapter |
 | `reflect` tool | `core/tools` | Conductor | Invoke the Reflector on the current trajectory or a sub-task trajectory |
 | `DelegationRegistry` | `core` | `delegate`, `cancel_delegation`, `read_step_output`, `finish` (via context) | Track active/completed delegations for one Conductor run |
-| `RunSubAgent` / `RunSubAgentsParallel` | `github.com/v0lka/sp4rk/agent` | `delegate` tool | Execute an isolated `Executor.Run` in a goroutine |
+| `RunSubAgent` / `RunSubAgentsParallel` | `github.com/v0lka/sp4rk/agent` | `delegate` tool, `execute_plan` tool | Execute an isolated `Executor.Run` in a goroutine |
+| `PlanStepExecutor` | `core/tools` | `execute_plan` tool | Execute the declared plan's steps in DAG order (implemented by `conductorLauncher`) |
+| `PlanChecker` | `core/tools` | `delegate` tool | Reports whether a plan is declared (enforces orthogonality guard) |
 | `Reflector.Reflect` | `github.com/v0lka/sp4rk/agent/reflector` | `reflect` tool | Produce a Reflection (root cause, action plan, suggested action) |
 | `SerializePlan` | `core/plan_serializer` | `declare_plan` tool | Serialize a Plan to markdown for UI display and plan-file persistence |
-| `Plan` / `PlanStep` / `FindReadySteps` | `github.com/v0lka/sp4rk/orchestration` | `delegate` tool, `declare_plan` tool | DAG data structures and traversal |
+| `Plan` / `PlanStep` / `FindReadySteps` | `github.com/v0lka/sp4rk/orchestration` | `delegate`, `declare_plan`, `execute_plan` tools | DAG data structures and traversal |
 
 ## Initialization
 
@@ -37,7 +45,7 @@ The Conductor tool set is assembled in `core/conductor.go`:
 ```
 conductorTools = filterByDomain(fileOps + search + web) +
                  internalTools +
-                 { delegate, declare_plan, reflect, cancel_delegation }
+                 { delegate, declare_plan, execute_plan, reflect, cancel_delegation }
 ```
 
 Subagent tool sets are assembled in the `delegate` tool based on the `tools` field of each task, plus internal tools, plus `delegate` + `cancel_delegation` only when `allow_redelegate: true`.
@@ -55,6 +63,8 @@ Conductor (ReAct loop)
 delegate.Execute(ctx, input)
   │
   ├─ Read DelegationRegistry from ctx
+  ├─ Orthogonality guard: if PlanChecker.HasDeclaredPlan() → reject
+  │  (delegate is disabled once a plan is declared; use execute_plan)
   ├─ Validate tasks (IDs, DAG, depth)
   ├─ Register tasks as "pending"
   ├─ For each ready task:
@@ -108,6 +118,49 @@ declare_plan.Execute(ctx, input)
 ```
 
 Direction: Conductor → `declare_plan` tool → blackboard + emitter + (optionally) `AskUserFunc`. The plan flows to the UI via the existing `PlanGenerated` event; the approval response flows back through the `AskUserFunc` callback (same mechanism as `ask_user`).
+
+### `execute_plan`
+
+```
+Conductor
+  │
+  ├─ tool_call: execute_plan({})   // no args; plan read from blackboard
+  │
+  ▼
+execute_plan.Execute(ctx, input)
+  │
+  ├─ Read PlanStepExecutor from ctx
+  ├─ executor.Execute(ctx):
+  │    ├─ Read Plan from blackboard (GetPlan)
+  │    ├─ Build a local DelegationRegistry for dependency resolution
+  │    ├─ Wave loop (DAG-ordered):
+  │    │    ├─ Find ready steps (all DependsOn completed)
+  │    │    ├─ For each ready step:
+  │    │    │    ├─ Build SubAgentTask with planStepEventTranslator
+  │    │    │    │  (translates SubAgentLaunch→PlanStepStart,
+  │    │    │    │   SubAgentComplete→PlanStepComplete on root emitter;
+  │    │    │    │   child events carry plan_step_id via scoped copy)
+  │    │    │    ├─ Task description includes checklist instruction +
+  │    │    │    │  dependency results from prior waves
+  │    │    │    └─ Each step executor builds its own checklist
+  │    │    ├─ RunSubAgentsParallel (independent steps run concurrently)
+  │    │    └─ For each result:
+  │    │         ├─ Store on blackboard (SetStepResult)
+  │    │         ├─ Mark completed in inlineStepLifecycle (no event —
+  │    │         │  PlanStepComplete already emitted by translator)
+  │    │         └─ Inject output into dependent steps' task descriptions
+  │    └─ Return aggregated PlanStepResult[]
+  │
+  └─ Return tool result: per-step status (completed/failed) + outputs
+```
+
+Direction: Conductor → `execute_plan` tool → `PlanStepExecutor.Execute` → `RunSubAgentsParallel` → subagent `Executor.Run` per step. Events flow through the `planStepEventTranslator` (PlanStepStart/Complete on root emitter; child events on scoped copies with `plan_step_id`). Results flow back to the Conductor as the aggregated tool result. The UI renders steps as plan steps (not subagents) because only `plan_step_start`/`plan_step_complete` events are emitted — the underlying `subagent_launch`/`subagent_complete` are intercepted by the translator.
+
+**Behavioral notes:**
+
+- **Idempotent per plan:** `execute_plan` runs at most once per declared plan. A second call is rejected with an error so the Conductor publishes a new plan via `declare_plan` to retry rather than re-running every step (which would waste tokens and risk duplicated side effects).
+- **Deterministic result ordering:** the aggregated `PlanStepResult[]` is sorted by plan-declaration index. Without this the order would be randomised by map iteration (steps within a parallel wave are dispatched in non-deterministic order).
+- **Never-started steps emit a terminal pair:** when a step never launches — because its dependencies became unsatisfiable (an upstream step failed) or because its `SubAgentTask` construction failed — the translator never fired `SubAgentLaunch`/`SubAgentComplete` for it. In that case `Execute` (or `defaultPlanStepWave` for build failures) emits a synthesized `PlanStepStart` + `PlanStepComplete(success=false)` directly on the root emitter, then `markCompleted` records it. This guarantees no plan step is left stuck "pending" in the plan panel after a failure cascade.
 
 ### `reflect`
 

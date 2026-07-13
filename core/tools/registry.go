@@ -29,6 +29,7 @@ var internalTools = map[string]struct{}{
 	"delegate":              {},
 	"cancel_delegation":     {},
 	"declare_plan":          {},
+	"execute_plan":          {},
 	"reflect":               {},
 	sdktools.ToolBatch:      {},
 }

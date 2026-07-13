@@ -8,6 +8,7 @@ A single `Executor.Run` instance that owns a user task end-to-end, using the ReA
 
 - `core/conductor.go` — Conductor entry point: builds system prompt, assembles tool set, injects Delegation Registry + ChecklistGuard into context, manages inlineStepLifecycle, launches `Executor.Run`
 - `core/tools/declare_step_complete.go` — `declare_step_complete` tool (inline plan-step completion signal)
+- `core/tools/execute_plan.go` — `execute_plan` tool (runs declared plan steps in DAG order)
 - `github.com/v0lka/sp4rk/agent/workspace.go` — `ChecklistGuardFunc` type + context helpers (`WithChecklistGuard`, `ChecklistGuardFromContext`)
 - `github.com/v0lka/sp4rk/tools/builtins/checklist.go` — `update_checklist` tool (consults `ChecklistGuardFunc` before emitting update)
 - `core/orchestrator_handle.go` — HandleMessage body that invokes the Conductor after routing
@@ -41,7 +42,7 @@ Conductor.Run(ctx, message, routing, activeSkills, opts)
 │     │    update_checklist, declare_step_complete, read_step_output,
 │     │    list_step_outputs, read_final_result, semantic_search
 │     └─ Conductor tools (always present):
-│          delegate, declare_plan, reflect, cancel_delegation
+│          delegate, declare_plan, execute_plan, reflect, cancel_delegation
 │
 ├─ 3. Create ContextManager via contextFactory
 │
@@ -55,6 +56,7 @@ Conductor.Run(ctx, message, routing, activeSkills, opts)
 │     │  - reads files, searches codebase → understanding
 │     │  - calls ask_user → clarifies requirements
 │     │  - calls declare_plan → publishes roadmap, optionally blocks for approval
+│     │  - calls execute_plan → runs all plan steps in DAG order with parallelism
 │     │  - calls delegate → launches subagent(s), awaits results
 │     │  - calls reflect → invokes Reflector on current trajectory
 │     │  - calls finish → ends the task with a final answer
@@ -73,9 +75,10 @@ The Conductor chooses how to handle a task based on its system prompt, not on a 
 | Signal | Guidance |
 | ------ | -------- |
 | Task is a single read/answer | Handle inline; do not call `delegate`. |
-| Task involves multiple files or subsystems | Call `delegate` with one task per coherent unit of work. |
+| Task involves multiple files or subsystems and warrants user sign-off | Call `declare_plan` with `mode: "await_approval"`, then `execute_plan` to run the steps. |
+| Plan-less task needs context optimization | Call `delegate` with one task per coherent unit of work. |
 | Requirements are ambiguous | Call `ask_user` before delegating or implementing. |
-| An interactive skill is active and prescribes an approval gate | Call `declare_plan` with `mode: "await_approval"` before implementing. |
+| An interactive skill is active and prescribes an approval gate | Call `declare_plan` with `mode: "await_approval"` before implementing; after approval, run `execute_plan` to execute the steps. |
 | Trajectory looks wrong after several delegations | Call `reflect`; act on the SuggestedAction (retry, replan, abort). |
 | A delegation failed | Call `reflect` on the failed trajectory, or retry with a revised task. |
 
@@ -131,6 +134,8 @@ When the Conductor executes a declared plan inline (without delegating to subage
 - **PlanStepComplete** is emitted by the `declare_step_complete` tool (explicit signal). The Conductor calls it after finishing an inline step.
 - **Finish fallback**: after `executor.Run` returns, `inlineStepLifecycle.completeAll()` auto-completes any steps that were started but not explicitly completed via `declare_step_complete`. This prevents steps from being stuck in "running" state.
 
+This inline lifecycle governs only steps the Conductor executes itself. When the Conductor instead calls **`execute_plan`**, each step runs as a parallel subagent via `RunSubAgentsParallel`, and plan-step lifecycle is driven by the `planStepEventTranslator` — not by `inlineStepLifecycle`. The translator emits `PlanStepStart` / `PlanStepComplete` on the root emitter (adapting `SubAgentLaunch` / `SubAgentComplete`). To prevent `completeAll()` from double-completing steps already finished by `execute_plan`, the `inlineStepLifecycle.markCompleted(stepID)` records each completed step; `completeAll()` skips any step already marked completed. Steps that never launched (unsatisfiable dependencies or `SubAgentTask` build failure) never trigger the translator, so `Execute` / `defaultPlanStepWave` emit a synthesized `PlanStepStart` + `PlanStepComplete(success=false)` pair directly before marking them — ensuring they are not left stuck "pending". `execute_plan` is idempotent: it runs at most once per declared plan, so a retry requires publishing a new plan.
+
 Checklist updates (`update_checklist`) are purely observational — they emit `step_todo_update` events but do not drive plan-step lifecycle. The checklist and plan-step lifecycle are decoupled: the checklist tracks work-in-progress **sub-tasks within a single step** (e.g. "read file X", "modify function Y", "run tests"); `declare_step_complete` marks the step done. A checklist must NOT list plan steps as its items — the plan panel already tracks plan steps, and duplicating them as checklist items is an error.
 
 A standalone checklist (no `step_id`) is emitted when the Conductor calls `update_checklist` without a declared plan. The `step_todo_update` event carries an empty `step_id`, and the frontend renders it as a first-class `DisplayItem.kind='checklist'` card in the chat (sinking to the end while active).
@@ -151,8 +156,9 @@ The guard is consulted in `UpdateChecklistTool.Execute` after parsing succeeds a
 ## Invariants
 
 - Exactly one Conductor `Executor.Run` instance is active per task at any time.
-- The Conductor tool set always includes `delegate`, `declare_plan`, `reflect`, `cancel_delegation`, `ask_user`, `finish`, `update_checklist`, `declare_step_complete`, `read_step_output`, `list_step_outputs`, `read_final_result`, and `search_facts`, regardless of routing domain, skill policy overrides, or No Project mode. These are internal tools and bypass policy.
+- The Conductor tool set always includes `delegate`, `declare_plan`, `execute_plan`, `reflect`, `cancel_delegation`, `ask_user`, `finish`, `update_checklist`, `declare_step_complete`, `read_step_output`, `list_step_outputs`, `read_final_result`, and `search_facts`, regardless of routing domain, skill policy overrides, or No Project mode. These are internal tools and bypass policy.
 - The Conductor installs a `ChecklistGuardFunc` that rejects standalone (empty `step_id`) `update_checklist` calls once a plan is declared; a standalone checklist is only valid for plan-less tasks.
+- When a plan is declared, `delegate` is disabled (PlanChecker guard); `execute_plan` is the only execution path for plan steps.
 - Active skill bodies are rendered verbatim in the Conductor system prompt (no truncation).
 - The Conductor context is isolated from subagent contexts: subagents carry their own `ContextManager`, and only their summaries return to the Conductor as tool results.
 - The Delegation Registry is scoped to a single Conductor run; it is injected into the context at launch and does not outlive the run.
