@@ -9,13 +9,14 @@ import { useCallback, useEffect, useRef } from 'react'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { listDirectory } from '@/api/workspace'
 import { subscribe } from '@/api/runtime'
-import picomatch from 'picomatch'
+import { createPathMatcher, isInvalidRegex, type FilterMode } from '@/lib/pathFilter'
 import { DEBOUNCE_SEARCH_MS } from '@/constants/timing'
 import type { FileEntry } from '@/types/models'
 
 interface UseFileSearchReturn {
   filterText: string
-  filterMode: 'glob' | 'regex'
+  filterMode: FilterMode
+  isInvalidFilter: boolean
   handleFilterChange: (value: string) => void
   toggleFilterMode: () => void
 }
@@ -61,15 +62,8 @@ export function useFileSearch(): UseFileSearchReturn {
       setIsSearching(true)
       try {
         const entries = await ensureFlatEntries()
-        const trimmed = value.trim()
-        const pattern = filterMode === 'regex' ? new RegExp(trimmed, 'i') : null
-        const isMatch = !pattern ? picomatch(trimmed, { nocase: true, contains: true }) : null
-        const filtered = entries.filter((e) => {
-          if (e.is_dir) return false
-          if (pattern) return pattern.test(e.name)
-          if (isMatch) return isMatch(e.name) || isMatch(e.path)
-          return false
-        })
+        const matcher = createPathMatcher(value, filterMode)
+        const filtered = matcher ? entries.filter((e) => !e.is_dir && matcher(e.path)) : []
         setSearchEntries(filtered)
       } catch {
         setSearchEntries([])
@@ -97,5 +91,7 @@ export function useFileSearch(): UseFileSearchReturn {
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
   }, [])
 
-  return { filterText, filterMode, handleFilterChange, toggleFilterMode }
+  const isInvalidFilter = isInvalidRegex(filterText, filterMode)
+
+  return { filterText, filterMode, isInvalidFilter, handleFilterChange, toggleFilterMode }
 }

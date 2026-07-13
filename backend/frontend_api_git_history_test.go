@@ -50,7 +50,7 @@ func TestParseGitHistory(t *testing.T) {
 			input: "s1\x1fp1\x1fA\x1fa@x\x1fd1\x1fm1\x1f (HEAD -> main)\x1es2\x1f\x1fB\x1fb@x\x1fd2\x1fm2\x1f",
 			want: []GitHistoryCommit{
 				{SHA: "s1", Parents: []string{"p1"}, Author: "A", Email: "a@x", Date: "d1", Message: "m1", Refs: []string{"HEAD -> main"}},
-				{SHA: "s2", Parents: nil, Author: "B", Email: "b@x", Date: "d2", Message: "m2", Refs: []string{}},
+				{SHA: "s2", Parents: []string{}, Author: "B", Email: "b@x", Date: "d2", Message: "m2", Refs: []string{}},
 			},
 		},
 		{
@@ -64,7 +64,7 @@ func TestParseGitHistory(t *testing.T) {
 			name:  "commit with no decorations parses refs as empty",
 			input: "abc123\x1f\x1fAlice\x1falice@x\x1f2024-01-01\x1fadd file\x1f",
 			want: []GitHistoryCommit{
-				{SHA: "abc123", Parents: nil, Author: "Alice", Email: "alice@x", Date: "2024-01-01", Message: "add file", Refs: []string{}},
+				{SHA: "abc123", Parents: []string{}, Author: "Alice", Email: "alice@x", Date: "2024-01-01", Message: "add file", Refs: []string{}},
 			},
 		},
 		{
@@ -78,7 +78,7 @@ func TestParseGitHistory(t *testing.T) {
 			name:  "trailing record separator ignored",
 			input: "s1\x1f\x1fA\x1fa@x\x1fd1\x1fm1\x1f\x1e",
 			want: []GitHistoryCommit{
-				{SHA: "s1", Parents: nil, Author: "A", Email: "a@x", Date: "d1", Message: "m1", Refs: []string{}},
+				{SHA: "s1", Parents: []string{}, Author: "A", Email: "a@x", Date: "d1", Message: "m1", Refs: []string{}},
 			},
 		},
 	}

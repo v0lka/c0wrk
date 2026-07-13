@@ -1606,6 +1606,169 @@ func TestGetCommitFiles_EmptySHA(t *testing.T) {
 	}
 }
 
+func TestGetCommitFiles_InvalidSha(t *testing.T) {
+	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	if _, err := f.GetCommitFiles("not-a-sha"); err == nil {
+		t.Fatal("expected error for non-hex SHA")
+	}
+	if _, err := f.GetCommitFiles("-n"); err == nil {
+		t.Fatal("expected error for option-like SHA")
+	}
+}
+
+// --- GetCommitFilesBatch ---
+
+func TestGetCommitFilesBatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	gitInit(t, tmpDir)
+	commitFile(t, tmpDir, "a.txt", "a\n")
+	sha1 := gitOut(t, tmpDir, "rev-parse", "HEAD")
+	commitFile(t, tmpDir, "b.txt", "b\n")
+	sha2 := gitOut(t, tmpDir, "rev-parse", "HEAD")
+
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	result, err := f.GetCommitFilesBatch([]string{sha1, sha2})
+	if err != nil {
+		t.Fatalf("GetCommitFilesBatch: %v", err)
+	}
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(result))
+	}
+
+	byPath1 := map[string]string{}
+	for _, cf := range result[sha1] {
+		byPath1[cf.Path] = cf.Status
+	}
+	if byPath1["a.txt"] != "A" {
+		t.Errorf("sha1 a.txt: got %q, want A", byPath1["a.txt"])
+	}
+
+	byPath2 := map[string]string{}
+	for _, cf := range result[sha2] {
+		byPath2[cf.Path] = cf.Status
+	}
+	if byPath2["b.txt"] != "A" {
+		t.Errorf("sha2 b.txt: got %q, want A", byPath2["b.txt"])
+	}
+}
+
+func TestGetCommitFilesBatch_EmptyList(t *testing.T) {
+	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	if _, err := f.GetCommitFilesBatch(nil); err == nil {
+		t.Fatal("expected error for nil sha list")
+	}
+	if _, err := f.GetCommitFilesBatch([]string{}); err == nil {
+		t.Fatal("expected error for empty sha list")
+	}
+	if _, err := f.GetCommitFilesBatch([]string{"  ", ""}); err == nil {
+		t.Fatal("expected error for whitespace-only sha list")
+	}
+}
+
+func TestGetCommitFilesBatch_NoProject(t *testing.T) {
+	f := &FrontendAPI{activeProjectPath: ""}
+	if _, err := f.GetCommitFilesBatch([]string{"abcdef1234"}); err == nil {
+		t.Fatal("expected error when no project is active")
+	}
+}
+
+func TestGetCommitFilesBatch_InvalidSha(t *testing.T) {
+	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	// Non-hex characters must be rejected.
+	if _, err := f.GetCommitFilesBatch([]string{"not-a-sha"}); err == nil {
+		t.Fatal("expected error for non-hex SHA")
+	}
+	// Option-like strings (starting with '-') must be rejected.
+	if _, err := f.GetCommitFilesBatch([]string{"-n"}); err == nil {
+		t.Fatal("expected error for option-like SHA")
+	}
+	// Too short (< 7 hex chars) must be rejected.
+	if _, err := f.GetCommitFilesBatch([]string{"abc"}); err == nil {
+		t.Fatal("expected error for too-short SHA")
+	}
+	// A valid SHA mixed with an invalid one must fail the whole batch.
+	if _, err := f.GetCommitFilesBatch([]string{"abcdef12345678", "xyz"}); err == nil {
+		t.Fatal("expected error when batch contains an invalid SHA")
+	}
+}
+
+func TestGetCommitFilesBatch_AbbreviatedShas(t *testing.T) {
+	tmpDir := t.TempDir()
+	gitInit(t, tmpDir)
+	commitFile(t, tmpDir, "a.txt", "a\n")
+	sha1Full := gitOut(t, tmpDir, "rev-parse", "HEAD")
+	sha1Abbrev := sha1Full[:7]
+	commitFile(t, tmpDir, "b.txt", "b\n")
+	sha2Full := gitOut(t, tmpDir, "rev-parse", "HEAD")
+	sha2Abbrev := sha2Full[:7]
+
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	// Pass abbreviated SHAs; the result should be keyed by full SHAs
+	// (resolved by git rev-parse before the log call).
+	result, err := f.GetCommitFilesBatch([]string{sha1Abbrev, sha2Abbrev})
+	if err != nil {
+		t.Fatalf("GetCommitFilesBatch: %v", err)
+	}
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(result))
+	}
+
+	byPath1 := map[string]string{}
+	for _, cf := range result[sha1Full] {
+		byPath1[cf.Path] = cf.Status
+	}
+	if byPath1["a.txt"] != "A" {
+		t.Errorf("sha1 a.txt: got %q, want A", byPath1["a.txt"])
+	}
+
+	byPath2 := map[string]string{}
+	for _, cf := range result[sha2Full] {
+		byPath2[cf.Path] = cf.Status
+	}
+	if byPath2["b.txt"] != "A" {
+		t.Errorf("sha2 b.txt: got %q, want A", byPath2["b.txt"])
+	}
+}
+
+func TestParseCommitFilesBatch(t *testing.T) {
+	shas := []string{"aaa", "bbb", "ccc"}
+	// Simulate output where "bbb" changed no files (e.g. a merge commit)
+	// and "ccc" is not present in the output at all.
+	output := "\x1eaaa\nA\tsrc/a.ts\nM\tREADME.md\n\x1ebbb\n"
+	result := parseCommitFilesBatch(output, shas)
+
+	if len(result) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(result))
+	}
+	if len(result["aaa"]) != 2 {
+		t.Errorf("aaa: expected 2 files, got %d", len(result["aaa"]))
+	}
+	if result["aaa"][0].Path != "src/a.ts" || result["aaa"][0].Status != "A" {
+		t.Errorf("aaa[0]: got %+v", result["aaa"][0])
+	}
+	if len(result["bbb"]) != 0 {
+		t.Errorf("bbb: expected 0 files, got %d", len(result["bbb"]))
+	}
+	if len(result["ccc"]) != 0 {
+		t.Errorf("ccc: expected 0 files (not in output), got %d", len(result["ccc"]))
+	}
+}
+
+func TestParseCommitFilesBatch_EmptyOutput(t *testing.T) {
+	shas := []string{"aaa", "bbb"}
+	result := parseCommitFilesBatch("", shas)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(result))
+	}
+	if len(result["aaa"]) != 0 || len(result["bbb"]) != 0 {
+		t.Error("expected empty file slices for all SHAs")
+	}
+}
+
 // --- Stash ---
 
 func TestStashCreateListPop(t *testing.T) {
@@ -1903,7 +2066,7 @@ func TestPhase5Git_NoProject(t *testing.T) {
 	if _, err := f.Fetch("origin", nil); err == nil {
 		t.Error("Fetch: expected error")
 	}
-	if _, err := f.GetCommitFiles("abc"); err == nil {
+	if _, err := f.GetCommitFiles("abcdef1234"); err == nil {
 		t.Error("GetCommitFiles: expected error")
 	}
 	if err := f.StashCreate("msg"); err == nil {
@@ -1928,7 +2091,7 @@ func TestPhase5Git_NoProjectMode(t *testing.T) {
 	if _, err := f.Fetch("origin", nil); err == nil {
 		t.Error("Fetch: expected error")
 	}
-	if _, err := f.GetCommitFiles("abc"); err == nil {
+	if _, err := f.GetCommitFiles("abcdef1234"); err == nil {
 		t.Error("GetCommitFiles: expected error")
 	}
 	if err := f.StashCreate("msg"); err == nil {

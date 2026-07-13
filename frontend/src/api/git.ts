@@ -235,6 +235,25 @@ export async function getCommitFiles(sha: string): Promise<CommitFile[]> {
   }
 }
 
+export async function getCommitFilesBatch(shas: string[]): Promise<Record<string, CommitFile[]>> {
+  try {
+    const app = getApp()
+    const result = await app.GetCommitFilesBatch(shas)
+    if (typeof result !== 'object' || result === null) {
+      logger.error('getCommitFilesBatch: unexpected response shape, returning {}', result)
+      return {}
+    }
+    const validated: Record<string, CommitFile[]> = {}
+    for (const [sha, files] of Object.entries(result)) {
+      validated[sha] = isArrayOf(files, isCommitFile) ? files : []
+    }
+    return validated
+  } catch (err) {
+    logger.error('getCommitFilesBatch failed:', err)
+    throw err
+  }
+}
+
 // --- Stash (Phase 5) ---
 
 export async function stashCreate(message: string): Promise<void> {

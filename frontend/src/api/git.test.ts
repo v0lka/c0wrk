@@ -32,6 +32,7 @@ import {
   push,
   fetch,
   getCommitFiles,
+  getCommitFilesBatch,
   stashCreate,
   stashPop,
   stashList,
@@ -635,6 +636,45 @@ describe('getCommitFiles', () => {
   })
 })
 
+describe('getCommitFilesBatch', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('returns parsed commit files map from backend', async () => {
+    mockApp.GetCommitFilesBatch = vi.fn().mockResolvedValue({
+      aaa: [{ path: 'src/a.ts', status: 'A' }],
+      bbb: [{ path: 'README.md', status: 'M' }],
+    })
+    const result = await getCommitFilesBatch(['aaa', 'bbb'])
+    expect(result).toEqual({
+      aaa: [{ path: 'src/a.ts', status: 'A' }],
+      bbb: [{ path: 'README.md', status: 'M' }],
+    })
+    expect(mockApp.GetCommitFilesBatch).toHaveBeenCalledWith(['aaa', 'bbb'])
+  })
+
+  it('returns empty object when backend returns non-object', async () => {
+    mockApp.GetCommitFilesBatch = vi.fn().mockResolvedValue('invalid')
+    expect(await getCommitFilesBatch(['aaa'])).toEqual({})
+  })
+
+  it('replaces entries with invalid file arrays with empty arrays', async () => {
+    mockApp.GetCommitFilesBatch = vi.fn().mockResolvedValue({
+      aaa: [{ path: 'a.ts', status: 'M' }],
+      bbb: 'not-an-array',
+    })
+    const result = await getCommitFilesBatch(['aaa', 'bbb'])
+    expect(result.aaa).toEqual([{ path: 'a.ts', status: 'M' }])
+    expect(result.bbb).toEqual([])
+  })
+
+  it('propagates errors', async () => {
+    mockApp.GetCommitFilesBatch = vi.fn().mockRejectedValue(new Error('bad sha'))
+    await expect(getCommitFilesBatch(['abc'])).rejects.toThrow('bad sha')
+  })
+})
+
 // ── Phase 5: stash ──
 
 describe('stashCreate', () => {
@@ -916,6 +956,16 @@ describe('getGitHistory', () => {
     mockApp.GetGitHistory = vi.fn().mockResolvedValue([
       { sha: 'aaa', parents: 'bbb', author: 'Jane', email: 'j@x.io', date: 'd', message: 'ok', refs: [] },
     ])
+    expect(await getGitHistory(25, 0)).toEqual([])
+  })
+
+  it('rejects commits with parents:null (guard requires arrays, backend sends [])', async () => {
+    mockApp.GetGitHistory = vi.fn().mockResolvedValue([
+      { sha: 'aaa', parents: ['bbb'], author: 'Jane', email: 'j@x.io', date: 'd', message: 'feat', refs: ['HEAD -> main'] },
+      { sha: 'bbb', parents: null, author: 'Jane', email: 'j@x.io', date: 'd', message: 'root', refs: null },
+    ])
+    // The guard rejects null arrays; the backend now sends [] via
+    // parents := []string{} so this scenario should not occur in practice.
     expect(await getGitHistory(25, 0)).toEqual([])
   })
 

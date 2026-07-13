@@ -54,6 +54,8 @@ export function GetBranches():Promise<Array<workspace.Branch>>;
 
 export function GetCommitFiles(arg1:string):Promise<Array<workspace.CommitFile>>;
 
+export function GetCommitFilesBatch(arg1:Array<string>):Promise<Record<string, Array<workspace.CommitFile>>>;
+
 export function GetConfig():Promise<backend.ConfigResponse>;
 
 export function GetCurrentBranch():Promise<workspace.BranchInfo>;

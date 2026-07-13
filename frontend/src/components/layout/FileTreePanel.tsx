@@ -6,10 +6,9 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { listDirectory, getGitStatus, watchDirectory, unwatchDirectory, getSessionWorkspace } from '@/api/workspace'
 import { subscribe } from '@/api/runtime'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { FilterBar } from '@/components/ui/FilterBar'
 import { FileIcon } from './FileIcon'
-import { ChevronRight, Loader2, Regex, FolderTree } from 'lucide-react'
+import { ChevronRight, Loader2, FolderTree } from 'lucide-react'
 import { useFileSearch } from '@/hooks/useFileSearch'
 import type { FileEntry, GitStatusEntry } from '@/types/models'
 
@@ -176,7 +175,7 @@ export function FileTreePanel() {
   const clearTree = useFileTreeStore((s) => s.clearTree)
   const searchEntries = useFileTreeStore((s) => s.searchEntries)
 
-  const { filterText, filterMode, handleFilterChange, toggleFilterMode } = useFileSearch()
+  const { filterText, filterMode, isInvalidFilter, handleFilterChange, toggleFilterMode } = useFileSearch()
 
   const { status: gitStatus, propagated: propagatedPaths } = useMemo(() => propagateGitStatus(gitStatusRaw), [gitStatusRaw])
 
@@ -293,24 +292,16 @@ export function FileTreePanel() {
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
-      <div className="flex shrink-0 gap-1 border-b border-border px-2 py-1">
-        <Input
-          value={filterText}
-          onChange={(e) => handleFilterChange(e.target.value)}
-          placeholder={"Filter files... (" + filterMode + ")"}
-          className="h-7 text-xs"
-        />
-        <Button
-          variant={filterMode === 'regex' ? 'default' : 'ghost'}
-          size="sm"
-          onClick={toggleFilterMode}
-          className="h-7 px-2"
-          title={filterMode === 'glob' ? 'Switch to regex' : 'Switch to glob'}
-        >
-          <Regex className="size-3.5" />
-        </Button>
-      </div>
-      {displayEntries && displayEntries.length > 0 ? (
+      <FilterBar
+        value={filterText}
+        onChange={handleFilterChange}
+        mode={filterMode}
+        onToggleMode={toggleFilterMode}
+        placeholder="Filter files"
+      />
+      {isInvalidFilter ? (
+        <p className="flex-1 p-4 text-center text-xs text-destructive">Invalid regex</p>
+      ) : displayEntries && displayEntries.length > 0 ? (
         <div className="custom-scrollbar flex-1 overflow-y-auto py-1" role="tree">
           {displayEntries.map((entry) => (
             <TreeNode key={entry.path} entry={entry} depth={0} gitStatus={gitStatus} propagatedPaths={propagatedPaths} />

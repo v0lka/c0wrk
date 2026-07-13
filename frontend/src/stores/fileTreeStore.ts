@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { FileEntry, GitStatusEntry } from '@/types/models'
+import type { FilterMode } from '@/lib/pathFilter'
 
 // --- State types ---
 
@@ -10,7 +11,7 @@ interface FileTreeState {
   gitStatus: Record<string, GitStatusEntry>
   rootPath: string | null
   filterText: string
-  filterMode: 'glob' | 'regex'
+  filterMode: FilterMode
   isSearching: boolean
   loadingDirs: Record<string, true>
   // Recursive flat listing of every entry under rootPath, cached for the
@@ -28,7 +29,7 @@ interface FileTreeActions {
   setSearchEntries: (entries: FileEntry[]) => void
   setGitStatus: (status: Record<string, GitStatusEntry>) => void
   setFilterText: (text: string) => void
-  setFilterMode: (mode: 'glob' | 'regex') => void
+  setFilterMode: (mode: FilterMode) => void
   setIsSearching: (searching: boolean) => void
   setFlatEntries: (rootPath: string, entries: FileEntry[]) => void
   clearFlatEntries: () => void

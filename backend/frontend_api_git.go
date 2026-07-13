@@ -899,6 +899,22 @@ func (f *FrontendAPI) runRemoteOp(op, remote string, flags []string) (string, er
 // caller does not request a positive limit.
 const defaultGitHistoryLimit = 50
 
+// validShaRe matches a plausible git SHA: 7-40 lowercase hex characters.
+// 7 is git's minimum abbreviated length; 40 is a full SHA. This is a
+// defense-in-depth measure to reject option-injection attempts when SHAs
+// are passed as trailing arguments to git commands (git log, git diff-tree).
+var validShaRe = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+
+// validateCommitSha checks that s is a plausible git SHA (7-40 hex chars).
+// It does not verify that the SHA exists in the repository — that is left
+// to git itself.
+func validateCommitSha(s string) error {
+	if !validShaRe.MatchString(s) {
+		return fmt.Errorf("invalid commit SHA %q: must be 7-40 hex characters", s)
+	}
+	return nil
+}
+
 // GetCommitFiles returns the list of files changed by the given commit
 // (git diff-tree --no-commit-id --name-status -r -M <sha>). -M enables
 // rename detection so renames are reported as a single "R" entry rather
@@ -912,6 +928,9 @@ func (f *FrontendAPI) GetCommitFiles(sha string) ([]CommitFile, error) {
 	if commit == "" {
 		return nil, errors.New("commit sha must not be empty")
 	}
+	if err := validateCommitSha(commit); err != nil {
+		return nil, err
+	}
 
 	repoPath, err := f.resolveGitRepoRoot()
 	if err != nil {
@@ -924,6 +943,125 @@ func (f *FrontendAPI) GetCommitFiles(sha string) ([]CommitFile, error) {
 	}
 
 	return parseCommitFiles(out), nil
+}
+
+// GetCommitFilesBatch returns changed files for multiple commits in a
+// single git invocation (git log --no-walk=unsorted --name-status -r -M).
+// This replaces N separate GetCommitFiles RPCs when the git history filter
+// needs files for every loaded commit. --no-walk=unsorted limits the log
+// to exactly the given SHAs without walking ancestors; --name-status -r -M
+// matches GetCommitFiles semantics (rename detection, per-file status).
+// SHAs are validated (7-40 hex chars) and resolved to full 40-char form
+// via git rev-parse before the log call, so the result map is always keyed
+// by full SHAs regardless of whether abbreviated SHAs were passed in.
+// Each SHA in the result maps to its changed files; commits that changed no
+// files (e.g. merge commits) map to an empty slice. SHAs not found in the
+// output also map to an empty slice so callers always get a complete map.
+// Returns an error when no project is active, the project is No Project,
+// the SHA list is empty/whitespace-only, any SHA is not valid hex, or the
+// git command fails.
+func (f *FrontendAPI) GetCommitFilesBatch(shas []string) (map[string][]CommitFile, error) {
+	var trimmed []string
+	for _, s := range shas {
+		t := strings.TrimSpace(s)
+		if t == "" {
+			continue
+		}
+		if err := validateCommitSha(t); err != nil {
+			return nil, err
+		}
+		trimmed = append(trimmed, t)
+	}
+	if len(trimmed) == 0 {
+		return nil, errors.New("at least one commit sha must be provided")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return nil, err
+	}
+
+	// Resolve SHAs to full 40-char form so the result-map keys match
+	// git log's %H output, even when abbreviated SHAs are passed in.
+	fullShas, err := f.resolveCommitShas(repoPath, trimmed)
+	if err != nil {
+		return nil, err
+	}
+
+	// %x1e (record separator) before each SHA delimits commits in the
+	// combined output so parseCommitFilesBatch can split them apart.
+	args := make([]string, 0, 6+len(fullShas))
+	args = append(args, "log", "--no-walk=unsorted", "--name-status", "-r", "-M", "--format=%x1e%H")
+	args = append(args, fullShas...)
+
+	out, err := f.runGitCmd(repoPath, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	return parseCommitFilesBatch(out, fullShas), nil
+}
+
+// resolveCommitShas resolves each SHA (possibly abbreviated) to its full
+// 40-character form via `git rev-parse`. This ensures the result-map keys
+// in GetCommitFilesBatch match git log's %H output regardless of whether
+// the caller passed abbreviated or full SHAs.
+func (f *FrontendAPI) resolveCommitShas(repoPath string, shas []string) ([]string, error) {
+	args := make([]string, 0, 1+len(shas))
+	args = append(args, "rev-parse")
+	args = append(args, shas...)
+	out, err := f.runGitCmd(repoPath, args...)
+	if err != nil {
+		return nil, fmt.Errorf("resolve commit SHAs: %w", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	full := make([]string, 0, len(lines))
+	for _, line := range lines {
+		l := strings.TrimSpace(line)
+		if l != "" {
+			full = append(full, l)
+		}
+	}
+	if len(full) != len(shas) {
+		return nil, fmt.Errorf("resolve commit SHAs: expected %d resolved SHAs, got %d", len(shas), len(full))
+	}
+	return full, nil
+}
+
+// parseCommitFilesBatch parses the combined output of
+// `git log --no-walk=unsorted --name-status --format=%x1e%H`. Each block
+// starts with a SHA line followed by zero or more name-status lines
+// (parsed by parseCommitFiles). All requested SHAs are pre-seeded with
+// empty slices so the caller always receives a complete map.
+func parseCommitFilesBatch(output string, shas []string) map[string][]CommitFile {
+	result := make(map[string][]CommitFile, len(shas))
+	for _, sha := range shas {
+		result[sha] = []CommitFile{}
+	}
+
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return result
+	}
+
+	blocks := strings.Split(output, "\x1e")
+	for _, block := range blocks {
+		block = strings.TrimSpace(block)
+		if block == "" {
+			continue
+		}
+		lines := strings.Split(block, "\n")
+		sha := strings.TrimSpace(lines[0])
+		if sha == "" {
+			continue
+		}
+		var fileLines string
+		if len(lines) > 1 {
+			fileLines = strings.Join(lines[1:], "\n")
+		}
+		result[sha] = parseCommitFiles(fileLines)
+	}
+	return result
 }
 
 // parseCommitFiles parses git diff-tree --name-status output. Each line
@@ -1391,7 +1529,10 @@ func parseGitHistory(output string) []GitHistoryCommit {
 		if len(fields) < 7 {
 			continue
 		}
-		var parents []string
+		// Initialize as an empty (non-nil) slice so JSON serialization
+		// produces "[]" instead of "null" for root commits — the frontend
+		// type guard checks Array.isArray(parents), which rejects null.
+		parents := []string{}
 		if p := strings.TrimSpace(fields[1]); p != "" {
 			parents = strings.Fields(p)
 		}
