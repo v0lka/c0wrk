@@ -100,14 +100,14 @@ function WorkDirRow({
   }, [scope, record.id, onDelete])
 
   return (
-    <div className="flex flex-col py-1.5">
+    <div className="flex flex-col gap-1 py-1.5">
+      <span
+        className="min-w-0 truncate font-mono text-xs text-muted-foreground"
+        title={record.path}
+      >
+        {record.path}
+      </span>
       <div className="flex items-center gap-2">
-        <span
-          className="flex-1 min-w-0 truncate font-mono text-xs text-muted-foreground"
-          title={record.path}
-        >
-          {record.path}
-        </span>
         <Input
           value={desc}
           onChange={(e) => {
@@ -122,7 +122,7 @@ function WorkDirRow({
             }
           }}
           placeholder="Description"
-          className="h-7 w-[180px] text-xs"
+          className="h-7 flex-1 text-xs"
           disabled={saving}
           aria-invalid={emptyHint}
         />

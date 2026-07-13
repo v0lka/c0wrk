@@ -27,6 +27,7 @@ export function StepLimitPrompt({ item }: { item: StepLimitItem }) {
   }, [requestId, sessionId, updateMessage, setActivityStatus, item.message.id])
 
   const handleAllowOnce = useCallback(() => handleResponse('allow_once'), [handleResponse])
+  const handleAllowMore = useCallback(() => handleResponse('allow_more'), [handleResponse])
   const handleAllowAlways = useCallback(() => handleResponse('allow_always'), [handleResponse])
   const handleDeny = useCallback(() => handleResponse('deny'), [handleResponse])
 
@@ -38,6 +39,17 @@ export function StepLimitPrompt({ item }: { item: StepLimitItem }) {
           <span>Step Limit</span>
         </div>
         <p className="mt-1.5 text-xs text-muted-foreground">Allowed once — continuing execution</p>
+      </div>
+    )
+  }
+  if (resolved === 'allow_more') {
+    return (
+      <div className="rounded-md border border-success/30 bg-success/5 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <Check className="h-3.5 w-3.5 shrink-0 text-success" />
+          <span>Step Limit</span>
+        </div>
+        <p className="mt-1.5 text-xs text-muted-foreground">Allowed more — continuing execution</p>
       </div>
     )
   }
@@ -94,6 +106,9 @@ export function StepLimitPrompt({ item }: { item: StepLimitItem }) {
       </div>
       <div className="mt-2 flex flex-wrap gap-2">
         <Button size="sm" onClick={handleAllowOnce} className="text-xs">Allow Once</Button>
+        {!reason && maxSteps > 0 && (
+          <Button size="sm" onClick={handleAllowMore} className="text-xs">Allow More</Button>
+        )}
         <Button size="sm" variant="secondary" onClick={handleAllowAlways} className="text-xs">Allow Always</Button>
         <Button size="sm" variant="outline" onClick={handleDeny} className="text-xs">Deny</Button>
       </div>

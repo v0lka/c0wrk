@@ -133,7 +133,7 @@ type StepLimitPayload struct {
 // past the step limit.
 type StepLimitResponsePayload struct {
 	RequestID string `json:"request_id"`
-	Response  string `json:"response"` // "allow_once", "allow_always", or "deny"
+	Response  string `json:"response"` // "allow_once", "allow_more", "allow_always", or "deny"
 }
 
 // --- Plan approval payloads ---

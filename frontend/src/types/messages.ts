@@ -60,7 +60,7 @@ export interface GroupedMessages {
 // -- Typed resolution metadata (write side) --
 
 export type ToolConfirmDecision = 'confirmed' | 'denied'
-export type StepLimitDecision = 'allow_once' | 'allow_always' | 'deny'
+export type StepLimitDecision = 'allow_once' | 'allow_more' | 'allow_always' | 'deny'
 export type ResumeDecision = 'resumed' | 'cancelled'
 export type PlanReviewDecision = 'approve' | 'request_changes' | 'abandon'
 
@@ -96,7 +96,7 @@ export function getToolConfirmResolution(metadata: Record<string, unknown> | und
     : null
 }
 
-const STEP_LIMIT_DECISIONS: ReadonlySet<string> = new Set(['allow_once', 'allow_always', 'deny'])
+const STEP_LIMIT_DECISIONS: ReadonlySet<string> = new Set(['allow_once', 'allow_more', 'allow_always', 'deny'])
 
 export function getStepLimitResolution(metadata: Record<string, unknown> | undefined): StepLimitDecision | null {
   if (!isObj(metadata) || metadata.resolved !== true) return null

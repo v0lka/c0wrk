@@ -277,22 +277,38 @@ func TestHandleAskUserResponse_MalformedAnswers(t *testing.T) {
 // --- handleStepLimitResponse ---
 
 func TestHandleStepLimitResponse_HappyPath(t *testing.T) {
-	a := &App{}
-	ch := make(chan agent.StepLimitResponse, 1)
-	a.pendingStepLimit.Store("sl-1", &pendingStepLimitEntry{ch: ch, sessionID: "s1"})
+	// The handler casts the decision string to agent.StepLimitResponse without
+	// rewriting it. These cases pin that contract: every valid decision value
+	// passes through unchanged.
+	tests := []struct {
+		name     string
+		response string
+	}{
+		{name: "allow once", response: "allow_once"},
+		{name: "allow more", response: "allow_more"},
+		{name: "allow always", response: "allow_always"},
+		{name: "deny", response: "deny"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := &App{}
+			ch := make(chan agent.StepLimitResponse, 1)
+			a.pendingStepLimit.Store("sl-1", &pendingStepLimitEntry{ch: ch, sessionID: "s1"})
 
-	a.handleStepLimitResponse(map[string]any{
-		"request_id": "sl-1",
-		"response":   "allow_always",
-	}, silentLogger())
+			a.handleStepLimitResponse(map[string]any{
+				"request_id": "sl-1",
+				"response":   tt.response,
+			}, silentLogger())
 
-	select {
-	case got := <-ch:
-		if got != agent.StepLimitResponse("allow_always") {
-			t.Errorf("got %v, want allow_always", got)
-		}
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("no value sent on channel")
+			select {
+			case got := <-ch:
+				if got != agent.StepLimitResponse(tt.response) {
+					t.Errorf("got %v, want %v", got, tt.response)
+				}
+			case <-time.After(100 * time.Millisecond):
+				t.Fatal("no value sent on channel")
+			}
+		})
 	}
 }
 
