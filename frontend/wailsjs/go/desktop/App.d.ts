@@ -162,6 +162,8 @@ export function StageHunks(arg1:string,arg2:Array<workspace.HunkRange>):Promise<
 
 export function StartTerminal(arg1:string):Promise<void>;
 
+export function StartTerminalInDir(arg1:string,arg2:string):Promise<void>;
+
 export function StashCreate(arg1:string):Promise<void>;
 
 export function StashDrop(arg1:number):Promise<void>;

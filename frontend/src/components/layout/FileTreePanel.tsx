@@ -8,6 +8,7 @@ import { listDirectory, getGitStatus, watchDirectory, unwatchDirectory, getSessi
 import { subscribe } from '@/api/runtime'
 import { FilterBar } from '@/components/ui/FilterBar'
 import { FileIcon } from './FileIcon'
+import { FileTreeContextMenu } from './FileTreeContextMenu'
 import { ChevronRight, Loader2, FolderTree } from 'lucide-react'
 import { useFileSearch } from '@/hooks/useFileSearch'
 import type { FileEntry, GitStatusEntry } from '@/types/models'
@@ -60,6 +61,7 @@ interface TreeNodeProps {
   depth: number
   gitStatus: Record<string, GitStatusEntry>
   propagatedPaths: Set<string>
+  onContextMenu: (entry: FileEntry, x: number, y: number) => void
 }
 
 function gitColorClass(s: GitStatusEntry | undefined): string {
@@ -85,7 +87,7 @@ export function collectDirsToReload(
   return Array.from(new Set([rootPath, ...Object.keys(expandedDirs)]))
 }
 
-function TreeNode({ entry, depth, gitStatus, propagatedPaths }: TreeNodeProps) {
+function TreeNode({ entry, depth, gitStatus, propagatedPaths, onContextMenu }: TreeNodeProps) {
   const expanded = useFileTreeStore((s) => s.expandedDirs[entry.path] === true)
   const loading = useFileTreeStore((s) => s.loadingDirs[entry.path] === true)
   const children = useFileTreeStore((s) => s.tree[entry.path])
@@ -116,6 +118,15 @@ function TreeNode({ entry, depth, gitStatus, propagatedPaths }: TreeNodeProps) {
     openFile(entry.path)
   }, [entry.path, entry.is_dir, openFile])
 
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      onContextMenu(entry, e.clientX, e.clientY)
+    },
+    [entry, onContextMenu],
+  )
+
   const statusEntry = gitStatus[entry.path]
   const colorCls = gitColorClass(statusEntry)
   const isPropagated = statusEntry ? propagatedPaths.has(entry.path) : false
@@ -129,6 +140,7 @@ function TreeNode({ entry, depth, gitStatus, propagatedPaths }: TreeNodeProps) {
         style={{ paddingLeft: `${depth * 16 + 4}px` }}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
+        onContextMenu={handleContextMenu}
         role="treeitem"
         aria-expanded={entry.is_dir ? expanded : undefined}
       >
@@ -154,7 +166,7 @@ function TreeNode({ entry, depth, gitStatus, propagatedPaths }: TreeNodeProps) {
       {entry.is_dir && expanded && children && (
         <div role="group">
           {children.map((child) => (
-            <TreeNode key={child.path} entry={child} depth={depth + 1} gitStatus={gitStatus} propagatedPaths={propagatedPaths} />
+            <TreeNode key={child.path} entry={child} depth={depth + 1} gitStatus={gitStatus} propagatedPaths={propagatedPaths} onContextMenu={onContextMenu} />
           ))}
         </div>
       )}
@@ -174,6 +186,14 @@ export function FileTreePanel() {
   const setGitStatus = useFileTreeStore((s) => s.setGitStatus)
   const clearTree = useFileTreeStore((s) => s.clearTree)
   const searchEntries = useFileTreeStore((s) => s.searchEntries)
+
+  const [contextMenu, setContextMenu] = useState<{ entry: FileEntry; x: number; y: number } | null>(null)
+
+  const handleContextMenu = useCallback((entry: FileEntry, x: number, y: number) => {
+    setContextMenu({ entry, x, y })
+  }, [])
+
+  const handleCloseContextMenu = useCallback(() => setContextMenu(null), [])
 
   const { filterText, filterMode, isInvalidFilter, handleFilterChange, toggleFilterMode } = useFileSearch()
 
@@ -304,7 +324,7 @@ export function FileTreePanel() {
       ) : displayEntries && displayEntries.length > 0 ? (
         <div className="custom-scrollbar flex-1 overflow-y-auto py-1" role="tree">
           {displayEntries.map((entry) => (
-            <TreeNode key={entry.path} entry={entry} depth={0} gitStatus={gitStatus} propagatedPaths={propagatedPaths} />
+            <TreeNode key={entry.path} entry={entry} depth={0} gitStatus={gitStatus} propagatedPaths={propagatedPaths} onContextMenu={handleContextMenu} />
           ))}
         </div>
       ) : isFiltering ? (
@@ -318,6 +338,21 @@ export function FileTreePanel() {
           Select a project to browse files
         </p>
       )}
+      <FileTreeContextMenu
+        entry={contextMenu?.entry ?? dummyEntry}
+        workspaceRoot={rootPath}
+        position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        onClose={handleCloseContextMenu}
+      />
     </div>
   )
+}
+
+/** Placeholder entry used when the context menu is closed (position is null,
+ *  so the menu renders nothing). Avoids conditional rendering of the menu
+ *  component and keeps hook order stable. */
+const dummyEntry: FileEntry = {
+  name: '',
+  path: '',
+  is_dir: false,
 }

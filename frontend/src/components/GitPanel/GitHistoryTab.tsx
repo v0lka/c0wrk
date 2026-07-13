@@ -1,9 +1,10 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { Loader2, AlertCircle } from 'lucide-react'
 import { computeGraphLayout, computeRowYLayout, type GraphNode } from '@/lib/gitGraphLayout'
 import { useGitHistory } from '@/hooks/useGitHistory'
 import { useGitHistoryFilter } from '@/hooks/useGitHistoryFilter'
 import { useGitHistoryAutofill } from '@/hooks/useGitHistoryAutofill'
+import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { FilterBar } from '@/components/ui/FilterBar'
 import { ROW_SPACING, NODE_OFFSET, expandedContentHeight } from './gitGraphRender'
 import { GitGraphGutter } from './GitGraphGutter'
@@ -41,6 +42,21 @@ export function GitHistoryTab() {
     pendingShas,
   } = useGitHistoryFilter(commits)
   const [expandedSha, setExpandedSha] = useState<string | null>(null)
+
+  // Consume a pending history filter set externally (e.g. "View History" from
+  // the file-tree context menu). The filter is applied once and then cleared
+  // from the store so it doesn't re-apply on subsequent renders. Subscribing
+  // reactively (rather than via getState()) ensures the effect re-runs even
+  // when the tab is already mounted — e.g. the user is already viewing history
+  // and right-clicks another file in the tree.
+  const pendingHistoryFilter = useGitPanelStore((s) => s.pendingHistoryFilter)
+  const clearPendingHistoryFilter = useGitPanelStore((s) => s.clearPendingHistoryFilter)
+  useEffect(() => {
+    if (pendingHistoryFilter !== null) {
+      setFilterText(pendingHistoryFilter)
+      clearPendingHistoryFilter()
+    }
+  }, [pendingHistoryFilter, setFilterText, clearPendingHistoryFilter])
 
   // While filtering, auto-load more pages until enough matched commits are
   // found (HISTORY_PAGE_SIZE), the log is exhausted, or the safety cap is

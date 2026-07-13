@@ -4,6 +4,7 @@ import { FileTreePanel } from "./FileTreePanel";
 import { VectorStorePanel } from "./VectorStorePanel";
 import { GitPanel } from "@/components/GitPanel";
 import { useProjectStore } from "@/stores/projectStore";
+import { useUIStore } from "@/stores/uiStore";
 import { FolderTree, GitBranch, Search } from "lucide-react";
 
 export function WorkspacePanel() {
@@ -17,6 +18,8 @@ export function WorkspacePanel() {
     const active = s.projects.find((p) => p.id === s.activeProjectId);
     return active?.is_no_project === true;
   });
+  const workspaceTab = useUIStore((s) => s.workspaceTab);
+  const setWorkspaceTab = useUIStore((s) => s.setWorkspaceTab);
 
   // In CHAT (No Project) mode, hide the tab strip entirely — only show the file
   // explorer with file-name search. Git and Semantics are unavailable anyway.
@@ -32,7 +35,7 @@ export function WorkspacePanel() {
 
   return (
     <TooltipProvider>
-      <Tabs defaultValue="explorer" className="flex h-full flex-col gap-0">
+      <Tabs value={workspaceTab} onValueChange={(v) => setWorkspaceTab(v as typeof workspaceTab)} className="flex h-full flex-col gap-0">
         <TabsList className="mx-1 h-8 shrink-0" variant="line">
           <Tooltip>
             <TooltipTrigger asChild>

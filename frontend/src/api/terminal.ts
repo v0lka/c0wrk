@@ -13,6 +13,16 @@ export async function startTerminal(sessionId: string): Promise<void> {
   }
 }
 
+export async function startTerminalInDir(sessionId: string, workDir: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.StartTerminalInDir(sessionId, workDir)
+  } catch (err) {
+    logger.error('Failed to start terminal in directory:', err)
+    throw err
+  }
+}
+
 export async function terminalInput(sessionId: string, data: string): Promise<void> {
   try {
     const app = getApp()

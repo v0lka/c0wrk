@@ -10,6 +10,8 @@ interface InputModeState {
   isExpanded: boolean
   /** Transient: set by insertTextIntoInput, consumed by ChatInput, cleared after dispatch. */
   pendingInsertion: string | null
+  /** Transient: set by "Open in Terminal" file-tree action, consumed by Terminal, cleared after use. */
+  pendingTerminalDir: string | null
   /** Per-message model override. null = use global default_model. Persisted. */
   selectedModel: string | null
   /** Per-message reasoning override. null = use family default (= max). Persisted. */
@@ -24,6 +26,10 @@ interface InputModeActions {
   insertTextIntoInput: (text: string) => void
   /** Clear the pending insertion after it has been consumed. */
   clearPendingInsertion: () => void
+  /** Queue a working directory for the next terminal start. */
+  setPendingTerminalDir: (dir: string) => void
+  /** Clear the pending terminal directory after it has been consumed. */
+  clearPendingTerminalDir: () => void
   /** Set the per-message model override. null = use global default. */
   setSelectedModel: (model: string | null) => void
   /** Set the per-message reasoning override. null = use family default. */
@@ -43,6 +49,7 @@ export const useInputModeStore = create<InputModeState & InputModeActions>()(
       collapsedHeight: DEFAULT_HEIGHT,
       isExpanded: false,
       pendingInsertion: null,
+      pendingTerminalDir: null,
       selectedModel: null,
       selectedReasoning: null,
 
@@ -68,6 +75,8 @@ export const useInputModeStore = create<InputModeState & InputModeActions>()(
 
       insertTextIntoInput: (text) => set({ pendingInsertion: text }),
       clearPendingInsertion: () => set({ pendingInsertion: null }),
+      setPendingTerminalDir: (dir) => set({ pendingTerminalDir: dir }),
+      clearPendingTerminalDir: () => set({ pendingTerminalDir: null }),
       setSelectedModel: (model) => set({ selectedModel: model }),
       setSelectedReasoning: (value) => set({ selectedReasoning: value }),
     }),

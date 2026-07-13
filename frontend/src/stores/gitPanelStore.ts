@@ -68,6 +68,8 @@ interface GitPanelState {
   sortBy: SortBy
   /** Grouping criterion for the Changes list, persisted across sessions (D8). */
   groupBy: GroupBy
+  /** Transient: set by "View History" file-tree action, consumed by GitHistoryTab, cleared after use. */
+  pendingHistoryFilter: string | null
 }
 
 interface GitPanelActions {
@@ -92,6 +94,10 @@ interface GitPanelActions {
   setLastCommitSha: (sha: string | null) => void
   setSortBy: (mode: SortBy) => void
   setGroupBy: (mode: GroupBy) => void
+  /** Queue a file-path filter for the git history tab. */
+  setPendingHistoryFilter: (filter: string) => void
+  /** Clear the pending history filter after it has been consumed. */
+  clearPendingHistoryFilter: () => void
   reset: () => void
 }
 
@@ -115,6 +121,7 @@ const initialState: GitPanelState = {
   lastCommitSha: null,
   sortBy: 'path',
   groupBy: 'none',
+  pendingHistoryFilter: null,
 }
 
 // --- Persist helpers (exported for direct unit testing) ---
@@ -234,6 +241,10 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
       setSortBy: (mode) => set({ sortBy: mode }),
 
       setGroupBy: (mode) => set({ groupBy: mode }),
+
+      setPendingHistoryFilter: (filter) => set({ pendingHistoryFilter: filter }),
+
+      clearPendingHistoryFilter: () => set({ pendingHistoryFilter: null }),
 
       reset: () => set({ ...initialState, expandedDirs: new Set<string>() }),
     }),

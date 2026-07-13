@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { terminalInput, terminalResize, startTerminal, stopTerminal } from '@/api/terminal'
+import { terminalInput, terminalResize, startTerminal, startTerminalInDir, stopTerminal } from '@/api/terminal'
 import { useTerminalEvents } from '@/hooks/events/useTerminalEvents'
 import { useXTermTheme } from '@/hooks/useXTermTheme'
+import { useInputModeStore } from '@/stores/inputModeStore'
 import { logger } from '@/lib/logger'
 
 interface TerminalProps {
@@ -54,7 +55,18 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
         termRef.current = term
         fitAddonRef.current = fitAddon
 
-        startTerminal(sessionId).then(() => {
+        // Consume a pending terminal directory (set by "Open in Terminal" from
+        // the file-tree context menu). When set, start the terminal in that
+        // directory instead of the session workspace default.
+        const pendingDir = useInputModeStore.getState().pendingTerminalDir
+        const startPromise = pendingDir
+          ? startTerminalInDir(sessionId, pendingDir)
+          : startTerminal(sessionId)
+        if (pendingDir) {
+          useInputModeStore.getState().clearPendingTerminalDir()
+        }
+
+        startPromise.then(() => {
             onReady?.()
         }).catch((err) => {
             logger.error('Failed to start terminal:', err)
@@ -95,6 +107,33 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
             fitAddonRef.current = null
         }
     }, [sessionId, onReady, theme])
+
+    // Watch for "Open in Terminal" requests from the file-tree context menu
+    // that arrive after the terminal is already running. The initial mount
+    // case is handled by the main effect above (which reads pendingTerminalDir
+    // from the store); this effect handles subsequent directory changes by
+    // restarting the terminal in the new directory.
+    const pendingTerminalDir = useInputModeStore((s) => s.pendingTerminalDir)
+    const isFirstDirRun = useRef(true)
+    useEffect(() => {
+        if (isFirstDirRun.current) {
+            isFirstDirRun.current = false
+            return
+        }
+        if (!pendingTerminalDir) return
+        startTerminalInDir(sessionId, pendingTerminalDir)
+            .then(() => {
+                useInputModeStore.getState().clearPendingTerminalDir()
+                termRef.current?.focus()
+            })
+            .catch((err) => {
+                logger.error('Failed to restart terminal in directory:', err)
+                termRef.current?.writeln(
+                    `\r\n\x1b[31mFailed to start terminal: ${err instanceof Error ? err.message : String(err)}\x1b[0m`,
+                )
+                useInputModeStore.getState().clearPendingTerminalDir()
+            })
+    }, [pendingTerminalDir, sessionId])
 
     useEffect(() => {
         let timer: ReturnType<typeof setTimeout> | undefined

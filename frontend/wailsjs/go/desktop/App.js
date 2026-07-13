@@ -310,6 +310,10 @@ export function StartTerminal(arg1) {
   return window['go']['desktop']['App']['StartTerminal'](arg1);
 }
 
+export function StartTerminalInDir(arg1, arg2) {
+  return window['go']['desktop']['App']['StartTerminalInDir'](arg1, arg2);
+}
+
 export function StashCreate(arg1) {
   return window['go']['desktop']['App']['StashCreate'](arg1);
 }
