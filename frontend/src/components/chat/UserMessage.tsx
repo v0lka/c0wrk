@@ -46,7 +46,7 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
 
   if (!isPinned) {
     return (
-      <div className="group flex flex-col items-end gap-1 max-w-[80%] ml-auto overflow-hidden min-w-0" data-message-id={item.message.id}>
+      <div className="group flex flex-col items-end gap-1 max-w-[80%] ml-auto overflow-hidden min-w-0 w-fit" data-message-id={item.message.id}>
         <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 overflow-hidden min-w-0">
           <UserMessageContent content={content} />
         </div>
@@ -66,7 +66,7 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
       tabIndex={isOverflowing ? 0 : undefined}
       aria-expanded={isOverflowing ? effectiveExpanded : undefined}
     >
-      <div ref={contentRef} className="flex flex-col items-end gap-1 max-w-[80%] ml-auto overflow-hidden min-w-0">
+      <div ref={contentRef} className="flex flex-col items-end gap-1 max-w-[80%] ml-auto overflow-hidden min-w-0 w-fit">
         <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 overflow-hidden min-w-0">
           <UserMessageContent content={content} />
         </div>
