@@ -61,11 +61,11 @@ export function GetBranchBases():Promise<Array<workspace.BranchBase>>;
 
 export function GetBranches():Promise<Array<workspace.Branch>>;
 
+export function GetCommitDiff(arg1:string):Promise<Array<workspace.ReviewFileDiff>>;
+
 export function GetCommitFiles(arg1:string):Promise<Array<workspace.CommitFile>>;
 
 export function GetCommitFilesBatch(arg1:Array<string>):Promise<Record<string, Array<workspace.CommitFile>>>;
-
-export function GetCommitDiff(arg1:string):Promise<Array<workspace.ReviewFileDiff>>;
 
 export function GetConfig():Promise<backend.ConfigResponse>;
 

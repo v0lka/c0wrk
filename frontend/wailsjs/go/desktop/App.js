@@ -106,16 +106,16 @@ export function GetBranches() {
   return window['go']['desktop']['App']['GetBranches']();
 }
 
+export function GetCommitDiff(arg1) {
+  return window['go']['desktop']['App']['GetCommitDiff'](arg1);
+}
+
 export function GetCommitFiles(arg1) {
   return window['go']['desktop']['App']['GetCommitFiles'](arg1);
 }
 
 export function GetCommitFilesBatch(arg1) {
   return window['go']['desktop']['App']['GetCommitFilesBatch'](arg1);
-}
-
-export function GetCommitDiff(arg1) {
-  return window['go']['desktop']['App']['GetCommitDiff'](arg1);
 }
 
 export function GetConfig() {

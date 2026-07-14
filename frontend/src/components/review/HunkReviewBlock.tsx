@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { useReviewStore, hunkCommentKey } from '@/stores/reviewStore'
 import * as reviewApi from '@/api/review'
 import { logger } from '@/lib/logger'
+import { detectHljsLanguage, highlightCodeLine } from './hunkCodeHighlight'
 
 interface HunkReviewBlockProps {
   sessionId: string
@@ -45,9 +46,17 @@ function parseHunkRaw(raw: string, oldStart: number, newStart: number): DiffLine
   return result
 }
 
-const LINE_COLORS: Record<DiffLine['type'], string> = {
-  add: 'bg-success/10 text-success',
-  del: 'bg-destructive/10 text-destructive',
+/**
+ * Background classes per diff line type.
+ *
+ * Add/del lines keep only a background tint — the text color comes from
+ * the syntax-highlighting spans (hljs-* classes) so the actual code
+ * language is visible. The background + line-number gutter still
+ * distinguish added from deleted lines.
+ */
+const LINE_BG: Record<DiffLine['type'], string> = {
+  add: 'bg-success/10',
+  del: 'bg-destructive/10',
   context: '',
   header: 'bg-info/10 text-info font-medium',
   noNewline: 'text-muted-foreground/50 italic',
@@ -64,6 +73,23 @@ export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex, readOnly
   const diffLines = useMemo(
     () => parseHunkRaw(hunk.raw, hunk.old_start, hunk.new_start),
     [hunk.raw, hunk.old_start, hunk.new_start],
+  )
+
+  // Detect the file's language once per file path, then highlight every
+  // code line (add/del/context). Header and no-newline lines are escaped
+  // as plain text (language = null) since they are not code.
+  const language = useMemo(() => detectHljsLanguage(filePath), [filePath])
+  const highlightedLines = useMemo(
+    () =>
+      diffLines.map((line) =>
+        highlightCodeLine(
+          line.text,
+          line.type === 'add' || line.type === 'del' || line.type === 'context'
+            ? language
+            : null,
+        ),
+      ),
+    [diffLines, language],
   )
 
   const openComment = () => {
@@ -103,16 +129,17 @@ export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex, readOnly
         <table className="w-full border-collapse">
           <tbody>
             {diffLines.map((line, i) => (
-              <tr key={i} className={LINE_COLORS[line.type]}>
+              <tr key={i} className={LINE_BG[line.type]}>
                 <td className="select-none text-right pr-2 pl-2 text-muted-foreground/50 w-10 tabular-nums align-top">
                   {line.oldNum ?? ''}
                 </td>
                 <td className="select-none text-right pr-2 text-muted-foreground/50 w-10 tabular-nums align-top">
                   {line.newNum ?? ''}
                 </td>
-                <td className="pr-3 whitespace-pre-wrap break-all">
-                  {line.type === 'header' ? line.text : line.text || ' '}
-                </td>
+                <td
+                  className="pr-3 whitespace-pre-wrap break-all"
+                  dangerouslySetInnerHTML={{ __html: highlightedLines[i] || ' ' }}
+                />
               </tr>
             ))}
           </tbody>
