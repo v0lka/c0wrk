@@ -22,12 +22,18 @@ const gitPanelMock = vi.hoisted(() => ({
 const uiMock = vi.hoisted(() => ({
   setWorkspaceTab: vi.fn(),
 }))
+const fileViewerMock = vi.hoisted(() => ({
+  openFile: vi.fn(),
+}))
 
 vi.mock('@/stores/gitPanelStore', () => ({
   useGitPanelStore: { getState: () => gitPanelMock },
 }))
 vi.mock('@/stores/uiStore', () => ({
   useUIStore: { getState: () => uiMock },
+}))
+vi.mock('@/stores/fileViewerStore', () => ({
+  useFileViewerStore: { getState: () => fileViewerMock },
 }))
 
 import { FileTreeContextMenu } from './FileTreeContextMenu'
@@ -217,5 +223,77 @@ describe('FileTreeContextMenu — View History', () => {
 
     expect(gitPanelMock.setPendingHistoryFilter).toHaveBeenCalledTimes(1)
     expect(gitPanelMock.setPendingHistoryFilter).toHaveBeenCalledWith('src/foo.ts')
+  })
+})
+
+describe('FileTreeContextMenu — Open in Viewer', () => {
+  let container: HTMLElement
+  let root: Root
+
+  const dirEntry: FileEntry = { name: 'src', path: '/ws/src', is_dir: true }
+  const fileEntry: FileEntry = { name: 'foo.ts', path: '/ws/src/foo.ts', is_dir: false }
+
+  beforeEach(() => {
+    Object.defineProperty(globalThis, 'runtime', {
+      configurable: true,
+      value: { ClipboardSetText: vi.fn().mockResolvedValue(true), EventsEmit: vi.fn() },
+    })
+    fileViewerMock.openFile.mockClear()
+    container = document.createElement('div')
+    document.body.replaceChildren(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => root.unmount())
+    document.body.replaceChildren()
+  })
+
+  function renderMenu(entry: FileEntry, workspaceRoot: string | null) {
+    act(() => {
+      root.render(
+        <FileTreeContextMenu
+          entry={entry}
+          workspaceRoot={workspaceRoot}
+          position={{ x: 10, y: 10 }}
+          onClose={() => {}}
+        />,
+      )
+    })
+  }
+
+  function menuItem(label: string): HTMLButtonElement {
+    const items = Array.from(container.querySelectorAll('[role="menuitem"]'))
+    const match = items.find((b) => b.textContent?.trim() === label)
+    if (!match) throw new Error(`menu item "${label}" not rendered`)
+    return match as HTMLButtonElement
+  }
+
+  it('renders "Open in Viewer" for a file', () => {
+    renderMenu(fileEntry, '/ws')
+    expect(() => menuItem('Open in Viewer')).not.toThrow()
+  })
+
+  it('does not render "Open in Viewer" for a directory', () => {
+    renderMenu(dirEntry, '/ws')
+    expect(() => menuItem('Open in Viewer')).toThrow()
+  })
+
+  it('opens the file in the viewer on click', async () => {
+    renderMenu(fileEntry, '/ws')
+
+    await act(async () => {
+      menuItem('Open in Viewer').click()
+      await Promise.resolve()
+    })
+
+    expect(fileViewerMock.openFile).toHaveBeenCalledTimes(1)
+    expect(fileViewerMock.openFile).toHaveBeenCalledWith('/ws/src/foo.ts')
+  })
+
+  it('is the first menu item for a file', () => {
+    renderMenu(fileEntry, '/ws')
+    const items = Array.from(container.querySelectorAll('[role="menuitem"]'))
+    expect(items[0]?.textContent?.trim()).toBe('Open in Viewer')
   })
 })

@@ -1,9 +1,10 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
-import { Terminal, Copy, EyeOff, History, Loader2 } from 'lucide-react'
+import { Terminal, Copy, Eye, EyeOff, History, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { appendToGitignore } from '@/api/git'
 import { emit, clipboardSetText } from '@/api/runtime'
 import { useInputModeStore } from '@/stores/inputModeStore'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useUIStore } from '@/stores/uiStore'
 import { logger } from '@/lib/logger'
@@ -34,8 +35,9 @@ function toRelativePath(path: string, workspaceRoot?: string | null): string {
 }
 
 /**
- * Contextual menu for a file-tree entry: Open in Terminal (directories only),
- * Copy Path, Copy Relative Path, Add to .gitignore, and View History.
+ * Contextual menu for a file-tree entry: Open in Viewer (files only),
+ * Open in Terminal (directories only), Copy Path, Copy Relative Path,
+ * Add to .gitignore, and View History.
  * Self-contained — calls the API and stores directly, so no callback prop
  * threading is required.
  */
@@ -48,6 +50,12 @@ export function FileTreeContextMenu({
   const menuRef = useRef<HTMLDivElement>(null)
   const [isIgnoring, setIsIgnoring] = useState(false)
   const relativePath = toRelativePath(entry.path, workspaceRoot ?? undefined)
+
+  // --- Open in Viewer (files only) ---
+  const handleOpenInViewer = useCallback(() => {
+    useFileViewerStore.getState().openFile(entry.path)
+    onClose()
+  }, [entry.path, onClose])
 
   // --- Open in Terminal (directories only) ---
   const handleOpenInTerminal = useCallback(() => {
@@ -155,6 +163,17 @@ export function FileTreeContextMenu({
             'animate-in fade-in-0 zoom-in-95',
           )}
         >
+          {!entry.is_dir && (
+            <button
+              role="menuitem"
+              onClick={handleOpenInViewer}
+              className={menuItemClass}
+            >
+              <Eye className="size-4" />
+              Open in Viewer
+            </button>
+          )}
+          {!entry.is_dir && <MenuSeparator />}
           {entry.is_dir && (
             <button
               role="menuitem"

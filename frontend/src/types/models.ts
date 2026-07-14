@@ -127,6 +127,21 @@ export interface HunkRange {
   end_line: number
 }
 
+/** Structured per-hunk diff info with staging status (for the hunk panel). */
+export interface HunkDiffInfo {
+  old_start: number
+  old_count: number
+  new_start: number
+  new_count: number
+  /** First actually-changed line in old-file coordinates (excludes context). */
+  old_change_start: number
+  /** First actually-changed line in new-file coordinates (excludes context). */
+  new_change_start: number
+  staged: boolean
+  /** Raw unified-diff block (header + body) for tooltip display. */
+  diff: string
+}
+
 /** Active merge/rebase state for the current repository (Phase 6). */
 export interface MergeRebaseState {
   is_merging: boolean

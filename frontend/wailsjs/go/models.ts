@@ -1205,6 +1205,32 @@ export namespace workspace {
 	        this.refs = source["refs"];
 	    }
 	}
+	export class HunkDiffInfo {
+	    old_start: number;
+	    old_count: number;
+	    new_start: number;
+	    new_count: number;
+	    old_change_start: number;
+	    new_change_start: number;
+	    staged: boolean;
+	    diff: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HunkDiffInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.old_start = source["old_start"];
+	        this.old_count = source["old_count"];
+	        this.new_start = source["new_start"];
+	        this.new_count = source["new_count"];
+	        this.old_change_start = source["old_change_start"];
+	        this.new_change_start = source["new_change_start"];
+	        this.staged = source["staged"];
+	        this.diff = source["diff"];
+	    }
+	}
 	export class HunkRange {
 	    start_line: number;
 	    end_line: number;

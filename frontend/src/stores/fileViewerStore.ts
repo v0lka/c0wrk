@@ -1,11 +1,14 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import type { HunkDiffInfo } from '@/types/models'
 
 // --- State types ---
 
 export interface FileData {
   content: string
   diff?: string
+  /** Structured per-hunk diff info with staging status (null = not yet fetched). */
+  hunks?: HunkDiffInfo[]
   language?: string
   loading: boolean
   error?: string
@@ -34,12 +37,14 @@ interface FileViewerActions {
   setActiveFile: (path: string) => void
   setFileContent: (path: string, content: string, language?: string) => void
   setFileDiff: (path: string, diff: string) => void
+  setFileHunks: (path: string, hunks: HunkDiffInfo[]) => void
   setFileError: (path: string, error: string) => void
   setFileBinary: (path: string) => void
   setFileLoading: (path: string, loading: boolean) => void
   setWidth: (width: number) => void
   setCollapsed: (collapsed: boolean) => void
   setFileIcon: (path: string, icon: string, iconColor: string) => void
+  setHighlightLine: (line: number) => void
   clearHighlightLine: () => void
   closeAllFiles: () => void
   restoreProjectFiles: (openTabs: string[], activeFile: string | null) => void
@@ -154,6 +159,14 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
         }
       }),
 
+      setFileHunks: (path, hunks) => set((s) => {
+        const existing = s.files[path]
+        if (!existing) return s
+        return {
+          files: { ...s.files, [path]: { ...existing, hunks } },
+        }
+      }),
+
       setFileError: (path, error) => set((s) => {
         const existing = s.files[path]
         return {
@@ -189,6 +202,8 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
       setFileIcon: (path, icon, iconColor) => set((s) => ({
         fileIcons: { ...s.fileIcons, [path]: { icon, iconColor } },
       })),
+
+      setHighlightLine: (line) => set({ highlightLine: line }),
 
       clearHighlightLine: () => set({ highlightLine: null }),
 

@@ -66,6 +66,10 @@ export function DiscardChanges(arg1) {
   return window['go']['desktop']['App']['DiscardChanges'](arg1);
 }
 
+export function DiscardHunks(arg1, arg2) {
+  return window['go']['desktop']['App']['DiscardHunks'](arg1, arg2);
+}
+
 export function EmitSessionEvent(arg1) {
   return window['go']['desktop']['App']['EmitSessionEvent'](arg1);
 }
@@ -116,6 +120,10 @@ export function GetDiffStats() {
 
 export function GetFileDiff(arg1) {
   return window['go']['desktop']['App']['GetFileDiff'](arg1);
+}
+
+export function GetFileDiffHunks(arg1) {
+  return window['go']['desktop']['App']['GetFileDiffHunks'](arg1);
 }
 
 export function GetFileIcon(arg1) {
@@ -352,6 +360,10 @@ export function UnstageAll() {
 
 export function UnstageFile(arg1) {
   return window['go']['desktop']['App']['UnstageFile'](arg1);
+}
+
+export function UnstageHunks(arg1, arg2) {
+  return window['go']['desktop']['App']['UnstageHunks'](arg1, arg2);
 }
 
 export function UnwatchDirectory(arg1) {

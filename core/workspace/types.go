@@ -98,6 +98,29 @@ type HunkRange struct {
 	EndLine   int `json:"end_line"`
 }
 
+// HunkDiffInfo describes a single diff hunk with its staging status and
+// raw unified-diff text. The frontend uses it to render per-hunk controls
+// (stage / unstage / discard) and hover tooltips with syntax-highlighted
+// diff content. OldStart/OldCount and NewStart/NewCount mirror the
+// unified-diff hunk header fields — these include context lines and
+// therefore point to the first context line, not the first changed line.
+// OldChangeStart/NewChangeStart are computed by walking the hunk body and
+// identify the first actually-changed line (first '+' or '-' line) in
+// old-file and new-file coordinates respectively. Staged is true for hunks
+// that appear in git diff --cached (HEAD vs index) and false for hunks in
+// git diff (index vs worktree). Diff is the hunk's unified-diff block
+// (header + body) suitable for re-parsing or syntax highlighting.
+type HunkDiffInfo struct {
+	OldStart       int    `json:"old_start"`
+	OldCount       int    `json:"old_count"`
+	NewStart       int    `json:"new_start"`
+	NewCount       int    `json:"new_count"`
+	OldChangeStart int    `json:"old_change_start"`
+	NewChangeStart int    `json:"new_change_start"`
+	Staged         bool   `json:"staged"`
+	Diff           string `json:"diff"`
+}
+
 // MergeRebaseState reports whether a merge or rebase is currently in
 // progress in the repository. The frontend uses it to reveal abort
 // controls in the git panel toolbar. Both flags are false when the

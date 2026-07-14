@@ -163,6 +163,11 @@ type GitHistoryCommit = workspace.GitHistoryCommit
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type HunkRange = workspace.HunkRange
 
+// HunkDiffInfo describes a single diff hunk with staging status and raw
+// diff text. Defined in core/workspace; re-exported here as a type alias
+// for ViewModel convenience.
+type HunkDiffInfo = workspace.HunkDiffInfo
+
 // MergeRebaseState reports whether a merge or rebase is in progress.
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type MergeRebaseState = workspace.MergeRebaseState

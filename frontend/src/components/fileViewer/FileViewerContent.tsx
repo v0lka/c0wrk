@@ -1,14 +1,13 @@
-import { useMemo } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useFileViewerData } from '@/hooks/useFileViewerData'
-import { parseUnifiedDiff, type DiffHunk } from '@/lib/diffParser'
 import { CodeMirrorFileViewer } from '@/components/fileViewer/CodeMirrorFileViewer'
 import { DiffHunkStageBar } from '@/components/fileViewer/DiffHunkStageBar'
 import { PlanEditor } from '@/components/fileViewer/PlanEditor'
+import type { HunkDiffInfo } from '@/types/models'
 
-/** Stable empty array reused by the hunks memo to avoid per-render allocation. */
-const EMPTY_HUNKS: DiffHunk[] = []
+/** Stable empty array reused when hunks are absent to avoid per-render allocation. */
+const EMPTY_HUNKS: HunkDiffInfo[] = []
 
 /**
  * FileViewerContent is the data-loading shell for the file viewer. It chooses
@@ -23,16 +22,6 @@ export function FileViewerContent() {
 
   // Subscribes to the active file and workspace tree changes.
   useFileViewerData(activeFile, openTabs)
-
-  // Parse the active file's diff into hunks for per-hunk staging (Phase 6).
-  // Memoized so the bar only re-parses when the diff text actually changes.
-  const hunks = useMemo<DiffHunk[]>(() => {
-    if (!activeFile) return EMPTY_HUNKS
-    const diff = files[activeFile]?.diff
-    if (!diff) return EMPTY_HUNKS
-    const result = parseUnifiedDiff(diff)
-    return result.hunks.length > 0 ? result.hunks : EMPTY_HUNKS
-  }, [activeFile, files])
 
   if (!activeFile) return null
   const fileData = files[activeFile]
@@ -67,6 +56,8 @@ export function FileViewerContent() {
   if (isPlanFile) {
     return <PlanEditor content={fileData.content} path={activeFile} />
   }
+
+  const hunks = fileData.hunks ?? EMPTY_HUNKS
 
   return (
     <div className="flex flex-1 flex-col min-h-0">

@@ -1730,3 +1730,245 @@ func hunkInRange(oldStart, oldCount int, ranges []HunkRange) bool {
 	}
 	return false
 }
+
+// applyHunkPatch writes patch to a temp file and applies it in the repo
+// with the given git-apply arguments (e.g. "--cached", "--reverse").
+// The temp file is always cleaned up. Returns an error when the temp
+// file cannot be created/written or git apply fails.
+func (f *FrontendAPI) applyHunkPatch(repoPath, patch string, applyArgs ...string) error {
+	tmp, err := os.CreateTemp("", "c0wrk-hunk-*.patch")
+	if err != nil {
+		return fmt.Errorf("create temp patch file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if _, err := tmp.WriteString(patch); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp patch file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp patch file: %w", err)
+	}
+
+	args := append(append([]string{"apply"}, applyArgs...), tmpPath)
+	if _, err := f.runGitCmd(repoPath, args...); err != nil {
+		return err
+	}
+	return nil
+}
+
+// parseHunkInfos parses a unified diff into a list of HunkDiffInfo
+// entries, one per hunk. Each entry's Diff field contains the hunk's
+// header and body text. The staged flag is set on every entry, allowing
+// the caller to distinguish staged (git diff --cached) from unstaged
+// (git diff) hunks. Returns nil when diff is empty.
+func parseHunkInfos(diff string, staged bool) []HunkDiffInfo {
+	if diff == "" {
+		return nil
+	}
+	lines := strings.Split(diff, "\n")
+	var hunks []HunkDiffInfo
+	i := 0
+	for i < len(lines) {
+		if !strings.HasPrefix(lines[i], "@@") {
+			i++
+			continue
+		}
+		m := hunkHeaderRe.FindStringSubmatch(lines[i])
+		if m == nil {
+			i++
+			continue
+		}
+		oldStart, _ := strconv.Atoi(m[1])
+		oldCount := 1
+		if m[2] != "" {
+			oldCount, _ = strconv.Atoi(m[2])
+		}
+		newStart, _ := strconv.Atoi(m[3])
+		newCount := 1
+		if m[4] != "" {
+			newCount, _ = strconv.Atoi(m[4])
+		}
+
+		// Collect the full hunk block: header + body up to the next hunk
+		// header or end of diff.
+		blockStart := i
+		i++
+		for i < len(lines) && !strings.HasPrefix(lines[i], "@@") {
+			i++
+		}
+		block := strings.Join(lines[blockStart:i], "\n")
+
+		// Walk the hunk body to find the first actually-changed line
+		// (first '+' or '-' line). The hunk header start includes context
+		// lines, so OldStart/NewStart point to the first context line, not
+		// the first changed line. We track old/new line numbers as we walk
+		// and record the position of the first non-context line.
+		oldLine := oldStart
+		newLine := newStart
+		oldChangeStart := oldStart
+		newChangeStart := newStart
+		found := false
+		for _, bodyLine := range lines[blockStart+1 : i] {
+			if bodyLine == "" {
+				continue
+			}
+			switch bodyLine[0] {
+			case ' ':
+				oldLine++
+				newLine++
+			case '-':
+				if !found {
+					oldChangeStart = oldLine
+					newChangeStart = newLine
+					found = true
+				}
+				oldLine++
+			case '+':
+				if !found {
+					oldChangeStart = oldLine
+					newChangeStart = newLine
+					found = true
+				}
+				newLine++
+			case '\\':
+				// "\ No newline at end of file" — skip
+			}
+		}
+
+		hunks = append(hunks, HunkDiffInfo{
+			OldStart:       oldStart,
+			OldCount:       oldCount,
+			NewStart:       newStart,
+			NewCount:       newCount,
+			OldChangeStart: oldChangeStart,
+			NewChangeStart: newChangeStart,
+			Staged:         staged,
+			Diff:           block,
+		})
+	}
+	return hunks
+}
+
+// GetFileDiffHunks returns structured per-hunk information for a file's
+// uncommitted changes, distinguishing staged hunks (HEAD vs index) from
+// unstaged hunks (index vs worktree). Each hunk carries its line-range
+// metadata, a staged flag, and the raw unified-diff block text (for
+// tooltip display). Emits nothing — this is a read-only RPC. Returns an
+// error when no project is active, the project is No Project, or the
+// path is outside the workspace.
+func (f *FrontendAPI) GetFileDiffHunks(filePath string) ([]HunkDiffInfo, error) {
+	repoPath, relPath, err := f.resolveGitPath(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Staged changes: HEAD vs index.
+	stagedDiff, err := f.runGitCmd(repoPath, "diff", "--cached", "--", relPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Unstaged changes: index vs worktree.
+	unstagedDiff, err := f.runGitCmd(repoPath, "diff", "--", relPath)
+	if err != nil {
+		return nil, err
+	}
+
+	hunks := parseHunkInfos(strings.TrimSpace(stagedDiff), true)
+	hunks = append(hunks, parseHunkInfos(strings.TrimSpace(unstagedDiff), false)...)
+	return hunks, nil
+}
+
+// UnstageHunks removes the selected hunks from the index, reversing
+// their staged changes back to the HEAD state. The diff is read with
+// git diff --cached -- <path> (HEAD vs index), the requested hunks are
+// extracted by their old-file line ranges, and the resulting patch is
+// reverse-applied to the index with git apply --cached --reverse.
+// HunkRange is in old-file (HEAD) coordinates. Emits git:status_changed
+// on success. Returns an error when no project is active, the project
+// is No Project, the path is outside the workspace, there are no staged
+// changes, no hunks match the requested ranges, or the patch cannot be
+// applied.
+func (f *FrontendAPI) UnstageHunks(path string, hunks []HunkRange) error {
+	if len(hunks) == 0 {
+		return nil
+	}
+
+	repoPath, relPath, err := f.resolveGitPath(path)
+	if err != nil {
+		return err
+	}
+
+	// Staged changes: HEAD vs index.
+	diffOut, err := f.runGitCmd(repoPath, "diff", "--cached", "--", relPath)
+	if err != nil {
+		return err
+	}
+	diffOut = strings.TrimSpace(diffOut)
+	if diffOut == "" {
+		return errors.New("no staged changes to unstage hunks from")
+	}
+
+	patch, selected, err := buildHunkPatch(diffOut, hunks)
+	if err != nil {
+		return err
+	}
+	if selected == 0 {
+		return errors.New("no hunks matched the requested ranges")
+	}
+
+	// Reverse-apply the patch to the index, removing the staged changes.
+	if err := f.applyHunkPatch(repoPath, patch, "--cached", "--reverse"); err != nil {
+		return err
+	}
+	f.emitGitStatusChanged(repoPath)
+	return nil
+}
+
+// DiscardHunks reverts the selected unstaged hunks in the worktree,
+// restoring those regions to the index state. The diff is read with
+// git diff -- <path> (index vs worktree), the requested hunks are
+// extracted by their old-file line ranges, and the resulting patch is
+// reverse-applied to the worktree with git apply --reverse. HunkRange
+// is in old-file (index) coordinates. Emits git:status_changed on
+// success. Returns an error when no project is active, the project is
+// No Project, the path is outside the workspace, there are no unstaged
+// changes, no hunks match the requested ranges, or the patch cannot be
+// applied.
+func (f *FrontendAPI) DiscardHunks(path string, hunks []HunkRange) error {
+	if len(hunks) == 0 {
+		return nil
+	}
+
+	repoPath, relPath, err := f.resolveGitPath(path)
+	if err != nil {
+		return err
+	}
+
+	// Unstaged changes: index vs worktree.
+	diffOut, err := f.runGitCmd(repoPath, "diff", "--", relPath)
+	if err != nil {
+		return err
+	}
+	diffOut = strings.TrimSpace(diffOut)
+	if diffOut == "" {
+		return errors.New("no unstaged changes to discard hunks from")
+	}
+
+	patch, selected, err := buildHunkPatch(diffOut, hunks)
+	if err != nil {
+		return err
+	}
+	if selected == 0 {
+		return errors.New("no hunks matched the requested ranges")
+	}
+
+	// Reverse-apply the patch to the worktree, reverting the changes.
+	if err := f.applyHunkPatch(repoPath, patch, "--reverse"); err != nil {
+		return err
+	}
+	f.emitGitStatusChanged(repoPath)
+	return nil
+}

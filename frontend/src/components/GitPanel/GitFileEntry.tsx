@@ -121,9 +121,10 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
         <File className="size-3.5 shrink-0 text-muted-foreground" />
       )}
 
-      {/* File name */}
+      {/* File name — grows to fill remaining space so the diff stat and
+          status badge are pushed to the right edge of the row. */}
       <span
-        className="min-w-0 truncate text-sm leading-none"
+        className="min-w-0 flex-1 truncate text-sm leading-none"
       >
         {dir && (
           <span className="text-muted-foreground/60">{dir}</span>
@@ -131,18 +132,7 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
         <span>{name}</span>
       </span>
 
-      {/* Status badge */}
-      <span
-        className={cn(
-          'shrink-0 rounded px-1.5 py-px text-[11px] font-semibold leading-none',
-          statusCls,
-          'bg-muted/60',
-        )}
-      >
-        {entry.status}
-      </span>
-
-      {/* Diff stat */}
+      {/* Diff stat — added/deleted line counts (rendered before the badge) */}
       {entry.diffStat && (
         <span className="shrink-0 flex items-center gap-1 text-[11px] leading-none font-mono">
           {entry.diffStat.added > 0 && (
@@ -153,6 +143,17 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
           )}
         </span>
       )}
+
+      {/* Status badge — change-type letter (M/A/D/R/…) */}
+      <span
+        className={cn(
+          'shrink-0 rounded px-1.5 py-px text-[11px] font-semibold leading-none',
+          statusCls,
+          'bg-muted/60',
+        )}
+      >
+        {entry.status}
+      </span>
     </div>
     <GitFileContextMenu
       entry={entry}

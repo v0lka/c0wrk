@@ -3,6 +3,7 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { subscribe } from '@/api/runtime'
 import { readFile, getFileDiff } from '@/api/workspace'
+import { getFileDiffHunks } from '@/api/git'
 import { isBinaryContent } from '@/lib/fileViewerUtils'
 import { detectLanguageFromPath } from '@/lib/cmLanguages'
 
@@ -19,6 +20,7 @@ import { detectLanguageFromPath } from '@/lib/cmLanguages'
 export function useFileViewerData(activeFile: string | null, openTabs: string[]): void {
   const setFileContent = useFileViewerStore((s) => s.setFileContent)
   const setFileDiff = useFileViewerStore((s) => s.setFileDiff)
+  const setFileHunks = useFileViewerStore((s) => s.setFileHunks)
   const setFileError = useFileViewerStore((s) => s.setFileError)
   const setFileBinary = useFileViewerStore((s) => s.setFileBinary)
   const setFileLoading = useFileViewerStore((s) => s.setFileLoading)
@@ -38,9 +40,13 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
         // previous load (e.g. changes reverted, or file moved to a non-git
         // context) are cleared and the hunk-staging panel does not linger.
         try { const diff = await getFileDiff(path); setFileDiff(path, diff) } catch { /* optional */ }
+        // Fetch structured hunk info (staging status, per-hunk diff text)
+        // for the hunk panel. Errors are non-fatal — the panel just won't
+        // render.
+        try { const hunks = await getFileDiffHunks(path); setFileHunks(path, hunks) } catch { setFileHunks(path, []) }
       }
     } catch (err) { setFileError(path, err instanceof Error ? err.message : String(err)) }
-  }, [setFileLoading, setFileBinary, setFileContent, setFileDiff, setFileError])
+  }, [setFileLoading, setFileBinary, setFileContent, setFileDiff, setFileHunks, setFileError])
 
   // Stable refs so the workspace event subscription does not re-bind on every
   // openTabs change. We re-read the current openTabs/loadFile inside the

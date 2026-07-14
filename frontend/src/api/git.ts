@@ -3,7 +3,7 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isArrayOf } from '@/types/guards'
-import type { Branch, BranchBase, BranchInfo, CommitFile, DiffStat, StashEntry, GitHistoryCommit, HunkRange, MergeRebaseState } from '@/types/models'
+import type { Branch, BranchBase, BranchInfo, CommitFile, DiffStat, StashEntry, GitHistoryCommit, HunkRange, HunkDiffInfo, MergeRebaseState } from '@/types/models'
 
 // --- Type guards ---
 
@@ -435,6 +435,63 @@ export async function stageHunks(path: string, hunks: HunkRange[]): Promise<void
     await app.StageHunks(path, hunks)
   } catch (err) {
     logger.error('stageHunks failed:', err)
+    throw err
+  }
+}
+
+function isHunkDiffInfo(v: unknown): v is HunkDiffInfo {
+  if (typeof v !== 'object' || v === null) return false
+  const o = v as Record<string, unknown>
+  return (
+    typeof o.old_start === 'number' &&
+    typeof o.old_count === 'number' &&
+    typeof o.new_start === 'number' &&
+    typeof o.new_count === 'number' &&
+    typeof o.staged === 'boolean' &&
+    typeof o.diff === 'string'
+  )
+}
+
+/** Fetch structured per-hunk diff info with staging status for a file. */
+export async function getFileDiffHunks(path: string): Promise<HunkDiffInfo[]> {
+  try {
+    const app = getApp()
+    const result = await app.GetFileDiffHunks(path)
+    if (!isArrayOf(result, isHunkDiffInfo)) {
+      logger.error('getFileDiffHunks: unexpected response shape, returning []', result)
+      return []
+    }
+    return result
+  } catch (err) {
+    logger.error('getFileDiffHunks failed:', err)
+    throw err
+  }
+}
+
+/** Unstage a subset of hunks for a single file (reverse-apply to index). */
+export async function unstageHunks(path: string, hunks: HunkRange[]): Promise<void> {
+  if (!isArrayOf(hunks, isHunkRange)) {
+    throw new Error('unstageHunks: invalid hunk ranges')
+  }
+  try {
+    const app = getApp()
+    await app.UnstageHunks(path, hunks)
+  } catch (err) {
+    logger.error('unstageHunks failed:', err)
+    throw err
+  }
+}
+
+/** Discard a subset of unstaged hunks for a single file (reverse-apply to worktree). */
+export async function discardHunks(path: string, hunks: HunkRange[]): Promise<void> {
+  if (!isArrayOf(hunks, isHunkRange)) {
+    throw new Error('discardHunks: invalid hunk ranges')
+  }
+  try {
+    const app = getApp()
+    await app.DiscardHunks(path, hunks)
+  } catch (err) {
+    logger.error('discardHunks failed:', err)
     throw err
   }
 }

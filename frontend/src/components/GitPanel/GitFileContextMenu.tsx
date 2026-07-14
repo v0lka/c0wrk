@@ -38,7 +38,7 @@ function toRelativePath(path: string, workspaceRoot?: string): string {
 /**
  * Contextual menu for a git file entry: Stage/Unstage (first item, depends on
  * the entry's staged state), Discard Changes (with confirm), Add to .gitignore,
- * and Open in Editor. Self-contained — calls the API and stores directly, so
+ * and Open in Viewer. Self-contained — calls the API and stores directly, so
  * no callback prop threading is required.
  */
 export function GitFileContextMenu({
@@ -109,8 +109,8 @@ export function GitFileContextMenu({
     }
   }, [relativePath, onClose])
 
-  // --- Open in Editor (normal mode, no diff) ---
-  const handleOpenInEditor = useCallback(() => {
+  // --- Open in Viewer (normal mode, no diff) ---
+  const handleOpenInViewer = useCallback(() => {
     useFileViewerStore.getState().openFile(entry.path)
     onClose()
   }, [entry.path, onClose])
@@ -144,10 +144,22 @@ export function GitFileContextMenu({
           aria-label="Git file actions"
           style={{ position: 'fixed', left: position.x, top: position.y, zIndex: 9999 }}
           className={cn(
-            'min-w-[12rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md',
+            'min-w-48 overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md',
             'animate-in fade-in-0 zoom-in-95',
           )}
         >
+          <button
+            role="menuitem"
+            onClick={handleOpenInViewer}
+            className={cn(
+              'relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
+              'hover:bg-muted/50 focus:bg-muted/50',
+              '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',
+            )}
+          >
+            <FileCode className="size-4" />
+            Open in Viewer
+          </button>
           <button
             role="menuitem"
             disabled={isStaging}
@@ -194,18 +206,6 @@ export function GitFileContextMenu({
           >
             {isIgnoring ? <Loader2 className="size-4 animate-spin" /> : <EyeOff className="size-4" />}
             Add to .gitignore
-          </button>
-          <button
-            role="menuitem"
-            onClick={handleOpenInEditor}
-            className={cn(
-              'relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
-              'hover:bg-muted/50 focus:bg-muted/50',
-              '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',
-            )}
-          >
-            <FileCode className="size-4" />
-            Open in Editor
           </button>
         </div>
       )}
