@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { useScrollContext } from './ScrollContext'
 import type { ChatMessageUI } from '@/types/messages'
+import { unresolvedReviewPromptIds } from '@/types/messages'
 import { ChatNewActivityBanner } from './ChatNewActivityBanner'
 
 interface ChatScrollManagerProps {
@@ -23,6 +24,11 @@ export function ChatScrollManager({
   // freshly-reset flag marks the first layout effect of each session switch.
   const isInitialMountRef = useRef(true)
   const prevScrollState = useRef({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 })
+  // IDs of review_prompt messages that still needed a decision the last time
+  // the auto-scroll effect ran. A newly-appearing unresolved prompt forces the
+  // chat to the bottom so the request is fully visible even if the user had
+  // scrolled up to read earlier output.
+  const prevReviewPromptIdsRef = useRef<Set<string>>(new Set())
   const [hasNewActivity, setHasNewActivity] = useState(false)
 
   const scrollToBottom = useCallback(() => {
@@ -70,10 +76,18 @@ export function ChatScrollManager({
 
   // Auto-scroll: on a session switch (component remount) always jump to the
   // latest content; on incremental content growth, stick to the bottom only if
-  // the user was already there.
+  // the user was already there. A freshly-appearing review-mode prompt is an
+  // exception: it requires a user decision, so the chat is forced to the
+  // bottom to reveal it even when the user had scrolled away.
   useLayoutEffect(() => {
     const viewport = viewportRef.current
     if (!viewport) return
+
+    const currentReviewPromptIds = unresolvedReviewPromptIds(messages)
+    const hasNewReviewPrompt =
+      !isInitialMountRef.current &&
+      [...currentReviewPromptIds].some((id) => !prevReviewPromptIdsRef.current.has(id))
+    prevReviewPromptIdsRef.current = currentReviewPromptIds
 
     if (isInitialMountRef.current) {
       // New session selected — always reveal the most recent messages so
@@ -86,7 +100,13 @@ export function ChatScrollManager({
       const prev = prevScrollState.current
       const wasAtBottom = prev.scrollTop + prev.clientHeight >= prev.scrollHeight - 50
 
-      if (wasAtBottom) {
+      if (hasNewReviewPrompt) {
+        // A fresh review-mode prompt needs a user decision — reveal it even
+        // when the user had scrolled away from the bottom.
+        viewport.scrollTop = viewport.scrollHeight
+        isAtBottomRef.current = true
+        setHasNewActivity(false)
+      } else if (wasAtBottom) {
         viewport.scrollTop = viewport.scrollHeight
         isAtBottomRef.current = true
       } else {

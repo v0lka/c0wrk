@@ -148,6 +148,23 @@ export function getReviewPromptResolution(metadata: Record<string, unknown> | un
   return typeof d === 'string' && REVIEW_PROMPT_DECISIONS.has(d) ? d as ReviewPromptDecision : null
 }
 
+/**
+ * Collect the IDs of review_prompt messages that still need a user decision
+ * (i.e. not yet resolved). The chat scroll manager diffs this set across
+ * renders to detect a freshly-appearing review-mode prompt and force the chat
+ * to the bottom, so the request is fully visible even when the user had
+ * scrolled up to read earlier output.
+ */
+export function unresolvedReviewPromptIds(messages: ChatMessageUI[]): Set<string> {
+  const ids = new Set<string>()
+  for (const m of messages) {
+    if (m.type === 'review_prompt' && !isResolved(m.metadata)) {
+      ids.add(m.id)
+    }
+  }
+  return ids
+}
+
 export function parseAskUserQuestions(metadata: Record<string, unknown> | undefined): AskUserQuestion[] {
   if (!isObj(metadata) || !Array.isArray(metadata.questions)) return []
   const questions: AskUserQuestion[] = []
