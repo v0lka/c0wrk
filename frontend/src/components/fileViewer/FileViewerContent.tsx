@@ -21,6 +21,7 @@ export function FileViewerContent() {
   const files = useFileViewerStore((s) => s.files)
   const openTabs = useFileViewerStore((s) => s.openTabs)
   const highlightLine = useFileViewerStore((s) => s.highlightLine)
+  const activeSessionId = useSessionStore((s) => s.activeSessionId)
 
   // Subscribes to the active file and workspace tree changes.
   useFileViewerData(activeFile, openTabs)
@@ -29,9 +30,8 @@ export function FileViewerContent() {
 
   // Review page: synthetic pseudo-path renders the review UI instead of a file
   if (activeFile === 'c0wrk:review') {
-    const sessionId = useSessionStore.getState().activeSessionId
-    if (!sessionId) return null
-    return <ReviewPage sessionId={sessionId} />
+    if (!activeSessionId) return null
+    return <ReviewPage sessionId={activeSessionId} />
   }
 
   const fileData = files[activeFile]

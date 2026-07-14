@@ -312,13 +312,22 @@ func (s *SQLiteReviewStore) ClearReview(ctx context.Context, sessionID string) e
 	if sessionID == "" {
 		return errors.New("session id is required")
 	}
-	if _, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM review_comments WHERE session_id = ?`, sessionID); err != nil {
 		return fmt.Errorf("failed to clear review comments: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM review_state WHERE session_id = ?`, sessionID); err != nil {
 		return fmt.Errorf("failed to clear review state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit review clear: %w", err)
 	}
 	return nil
 }

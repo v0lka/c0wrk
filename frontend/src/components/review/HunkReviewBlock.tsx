@@ -13,7 +13,7 @@ interface HunkReviewBlockProps {
 }
 
 interface DiffLine {
-  type: 'add' | 'del' | 'context' | 'header'
+  type: 'add' | 'del' | 'context' | 'header' | 'noNewline'
   text: string
   oldNum: number | null
   newNum: number | null
@@ -36,6 +36,8 @@ function parseHunkRaw(raw: string, oldStart: number, newStart: number): DiffLine
       result.push({ type: 'context', text: line.slice(1), oldNum: oldNum++, newNum: newNum++ })
     } else if (line === '') {
       result.push({ type: 'context', text: '', oldNum: oldNum++, newNum: newNum++ })
+    } else if (line.startsWith('\\')) {
+      result.push({ type: 'noNewline', text: 'No newline at end of file', oldNum: null, newNum: null })
     }
   }
   return result
@@ -46,10 +48,12 @@ const LINE_COLORS: Record<DiffLine['type'], string> = {
   del: 'bg-destructive/10 text-destructive',
   context: '',
   header: 'bg-info/10 text-info font-medium',
+  noNewline: 'text-muted-foreground/50 italic',
 }
 
 export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex }: HunkReviewBlockProps) {
   const [showComment, setShowComment] = useState(false)
+  const [draft, setDraft] = useState('')
   const hunkId = `hunk-${hunkIndex}`
   const commentKey = hunkCommentKey(filePath, hunkId)
   const comment = useReviewStore((s) => s.bySession[sessionId]?.hunkComments[commentKey] ?? '')
@@ -60,11 +64,17 @@ export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex }: HunkRe
     [hunk.raw, hunk.old_start, hunk.new_start],
   )
 
-  const handleSave = (text: string) => {
-    setHunkComment(sessionId, filePath, hunkId, text)
-    reviewApi.saveReviewHunkComment(sessionId, filePath, hunkId, text).catch((err) => {
+  const openComment = () => {
+    setDraft(comment)
+    setShowComment(true)
+  }
+
+  const handleSave = () => {
+    setHunkComment(sessionId, filePath, hunkId, draft)
+    reviewApi.saveReviewHunkComment(sessionId, filePath, hunkId, draft).catch((err) => {
       logger.error('Failed to save hunk comment:', err)
     })
+    setShowComment(false)
   }
 
   return (
@@ -76,7 +86,7 @@ export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex }: HunkRe
         <Button
           variant="ghost"
           size="xs"
-          onClick={() => setShowComment((v) => !v)}
+          onClick={() => (showComment ? setShowComment(false) : openComment())}
           className="text-xs"
         >
           <MessageSquare className="h-3 w-3 mr-1" />
@@ -112,15 +122,22 @@ export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex }: HunkRe
             <textarea
               className="flex-1 rounded-md border border-border bg-background p-2 text-xs resize-none"
               rows={2}
-              value={comment}
-              onChange={(e) => handleSave(e.target.value)}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
               placeholder="Leave a comment on this hunk..."
               autoFocus
             />
             <Button
+              size="xs"
+              onClick={handleSave}
+              className="shrink-0"
+            >
+              Save
+            </Button>
+            <Button
               variant="ghost"
               size="icon-xs"
-              onClick={() => { setShowComment(false); if (!comment) handleSave('') }}
+              onClick={() => setShowComment(false)}
               title="Close"
             >
               <X className="h-3 w-3" />

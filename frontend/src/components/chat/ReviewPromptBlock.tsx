@@ -53,13 +53,14 @@ export function ReviewPromptBlock({ item }: { item: ReviewPromptItem }) {
 
   const handleDecline = () => {
     updateMessage(sessionId, item.message.id, { metadata: reviewPromptResolved('decline') })
+    useReviewStore.getState().resetLoopFlags(sessionId)
   }
 
   return (
     <div className="rounded-md border border-info/30 bg-info/5 px-3 py-2">
       <div className="flex items-center gap-1.5 text-xs font-medium text-info">
         <GitPullRequest className="h-3.5 w-3.5 shrink-0" />
-        <span>Перейти в режим ревью?</span>
+        <span>Enter review mode?</span>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
         Task completed with changes. Review them before committing?

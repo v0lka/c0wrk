@@ -258,6 +258,7 @@ func (a *App) initStores(db *sql.DB, log *slog.Logger) (*project.SQLiteProjectSt
 	if rs, err := review.NewSQLiteReviewStore(db); err != nil {
 		log.Error("failed to init review store", "error", err)
 	} else {
+		rs.SetLogger(log)
 		reviewStore = rs
 	}
 	return projStore, sessStore, reviewStore

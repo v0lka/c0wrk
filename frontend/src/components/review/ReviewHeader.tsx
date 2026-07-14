@@ -11,6 +11,7 @@ interface ReviewHeaderProps {
 
 export function ReviewHeader({ sessionId }: ReviewHeaderProps) {
   const [showGeneral, setShowGeneral] = useState(false)
+  const [draft, setDraft] = useState('')
   const reviewState = useReviewStore((s) => s.bySession[sessionId])
   const setGeneralComment = useReviewStore((s) => s.setGeneralComment)
   const { hasComments, isStaging, isSubmitting, handleApprove, handleSubmit } = useReviewActions(sessionId)
@@ -19,9 +20,15 @@ export function ReviewHeader({ sessionId }: ReviewHeaderProps) {
   const totalComments = reviewState ? totalCommentCount(reviewState) : 0
   const isBusy = isStaging || isSubmitting
 
-  const handleGeneralSave = (text: string) => {
-    setGeneralComment(sessionId, text)
-    reviewApi.saveReviewGeneralComment(sessionId, text).catch(() => {})
+  const openGeneral = () => {
+    setDraft(generalComment)
+    setShowGeneral(true)
+  }
+
+  const handleGeneralSave = () => {
+    setGeneralComment(sessionId, draft)
+    reviewApi.saveReviewGeneralComment(sessionId, draft).catch(() => {})
+    setShowGeneral(false)
   }
 
   return (
@@ -39,7 +46,7 @@ export function ReviewHeader({ sessionId }: ReviewHeaderProps) {
           <Button
             variant="ghost"
             size="xs"
-            onClick={() => setShowGeneral((v) => !v)}
+            onClick={() => (showGeneral ? setShowGeneral(false) : openGeneral())}
             disabled={isBusy}
           >
             <MessageSquare className="h-3 w-3 mr-1" />
@@ -80,11 +87,18 @@ export function ReviewHeader({ sessionId }: ReviewHeaderProps) {
           <textarea
             className="flex-1 rounded-md border border-border bg-background p-2 text-xs resize-none"
             rows={2}
-            value={generalComment}
-            onChange={(e) => handleGeneralSave(e.target.value)}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
             placeholder="General review comment..."
             autoFocus
           />
+          <Button
+            size="xs"
+            onClick={handleGeneralSave}
+            className="shrink-0"
+          >
+            Save
+          </Button>
           <Button
             variant="ghost"
             size="icon-xs"
