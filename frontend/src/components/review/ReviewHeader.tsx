@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Check, Send, Loader2, MessageSquare, X } from 'lucide-react'
+import { Check, Send, Loader2, MessageSquare, X, GitCommit } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useReviewStore, totalCommentCount } from '@/stores/reviewStore'
 import * as reviewApi from '@/api/review'
@@ -7,9 +7,13 @@ import { useReviewActions } from './useReviewActions'
 
 interface ReviewHeaderProps {
   sessionId: string
+  /** Read-only mode: hide all controls (comment/submit/approve buttons). */
+  readOnly?: boolean
+  /** Commit SHA shown for context in read-only commit-review mode. */
+  commitSha?: string
 }
 
-export function ReviewHeader({ sessionId }: ReviewHeaderProps) {
+export function ReviewHeader({ sessionId, readOnly, commitSha }: ReviewHeaderProps) {
   const [showGeneral, setShowGeneral] = useState(false)
   const [draft, setDraft] = useState('')
   const reviewState = useReviewStore((s) => s.bySession[sessionId])
@@ -19,6 +23,23 @@ export function ReviewHeader({ sessionId }: ReviewHeaderProps) {
   const generalComment = reviewState?.generalComment ?? ''
   const totalComments = reviewState ? totalCommentCount(reviewState) : 0
   const isBusy = isStaging || isSubmitting
+
+  // Read-only mode: stripped-down header with no controls. All hooks above
+  // are still called unconditionally (React rules of hooks), but none of the
+  // interactive state is rendered.
+  if (readOnly) {
+    return (
+      <div className="shrink-0 border-b border-border bg-secondary/30 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <GitCommit className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="text-sm font-medium">Commit Review</span>
+          {commitSha && (
+            <code className="text-xs text-info font-mono">{commitSha.slice(0, 7)}</code>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   const openGeneral = () => {
     setDraft(generalComment)

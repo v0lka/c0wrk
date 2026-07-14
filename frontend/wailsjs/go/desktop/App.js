@@ -114,6 +114,10 @@ export function GetCommitFilesBatch(arg1) {
   return window['go']['desktop']['App']['GetCommitFilesBatch'](arg1);
 }
 
+export function GetCommitDiff(arg1) {
+  return window['go']['desktop']['App']['GetCommitDiff'](arg1);
+}
+
 export function GetConfig() {
   return window['go']['desktop']['App']['GetConfig']();
 }

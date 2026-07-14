@@ -34,6 +34,23 @@ const { gitMocks } = vi.hoisted(() => ({
 vi.mock('@/api/git', () => gitMocks)
 vi.mock('@/lib/logger', () => ({ logger: { error: vi.fn() } }))
 
+// Mock the file viewer store so we can assert that clicking a commit SHA
+// opens the read-only commit-review page via a synthetic pseudo-path.
+const { fileViewerMocks } = vi.hoisted(() => ({
+  fileViewerMocks: {
+    openFile: vi.fn(),
+    setCollapsed: vi.fn(),
+  },
+}))
+vi.mock('@/stores/fileViewerStore', () => ({
+  useFileViewerStore: {
+    getState: () => ({
+      openFile: fileViewerMocks.openFile,
+      setCollapsed: fileViewerMocks.setCollapsed,
+    }),
+  },
+}))
+
 // Mock the virtualizer so all rows render in jsdom (which has no layout
 // engine, so the scroll container's height is 0 and the real virtualizer
 // would mount zero items). The mock returns every item with correct
@@ -92,6 +109,8 @@ beforeEach(() => {
       Object.fromEntries(shas.map((sha) => [sha, FILES[sha] ?? []])),
     ),
   )
+  fileViewerMocks.openFile.mockReset()
+  fileViewerMocks.setCollapsed.mockReset()
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -235,5 +254,41 @@ describe('GitHistoryTab rendering', () => {
     await flush()
     // Both commits should render — the root commit has empty parents
     expect(graphNodes()).toBe(2)
+  })
+})
+
+describe('GitHistoryTab commit SHA click', () => {
+  it('opens a read-only commit-review page when the SHA is clicked', async () => {
+    renderTab()
+    await flush()
+    await flush()
+
+    // The SHA renders as a role="button" span with title "View commit changes".
+    const shaButton = container.querySelector('span[title="View commit changes"]') as HTMLSpanElement
+    expect(shaButton).toBeTruthy()
+    expect(shaButton.textContent).toBe('aaa')
+
+    await act(async () => { shaButton.click() })
+
+    // The file viewer should be asked to open the synthetic commit path
+    // and expand so the review is visible.
+    expect(fileViewerMocks.openFile).toHaveBeenCalledWith('c0wrk:commit:aaa')
+    expect(fileViewerMocks.setCollapsed).toHaveBeenCalledWith(false)
+  })
+
+  it('does not toggle the row expansion when the SHA is clicked', async () => {
+    renderTab()
+    await flush()
+    await flush()
+
+    const shaButton = container.querySelector('span[title="View commit changes"]') as HTMLSpanElement
+    // Before clicking the SHA, no commit is expanded.
+    expect(container.textContent).not.toContain('Loading files')
+    expect(container.textContent).not.toContain('src/a.ts')
+
+    await act(async () => { shaButton.click() })
+
+    // The row should NOT expand — stopPropagation prevents the row toggle.
+    expect(container.textContent).not.toContain('src/a.ts')
   })
 })

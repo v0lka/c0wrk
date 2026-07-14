@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/v0lka/c0wrk/backend/review"
 	"github.com/v0lka/c0wrk/core/workspace"
@@ -116,6 +117,42 @@ func (f *FrontendAPI) GetReviewDiff() ([]ReviewFileDiff, error) {
 	// reports staged and unstaged changes together. -U5 requests 5 lines
 	// of context around each change region.
 	out, err := f.runGitCmd(projectPath, "diff", "-U5", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+
+	return workspace.ParseReviewDiff(out), nil
+}
+
+// GetCommitDiff returns the per-file hunk diff introduced by a single commit
+// (the patch relative to its first parent), grouped per file with 5 lines of
+// context per hunk. It runs `git diff-tree --no-commit-id -p --root -U5 -M
+// <sha>` and parses the result into the same per-file hunk snapshot shape as
+// GetReviewDiff, so the review page can render a commit's changes in
+// read-only mode.
+//
+// Root commits (no parent) are diffed against an empty tree (--root) so every
+// file appears as added. Merge commits yield an empty slice (git diff-tree
+// does not emit a patch for merges by default), matching GetCommitFiles.
+//
+// This is a read-only RPC: it emits no events. Returns an error when no
+// project is active, the project is No Project, the sha is empty/invalid, or
+// the git command fails.
+func (f *FrontendAPI) GetCommitDiff(sha string) ([]ReviewFileDiff, error) {
+	commit := strings.TrimSpace(sha)
+	if commit == "" {
+		return nil, errors.New("commit sha must not be empty")
+	}
+	if err := validateCommitSha(commit); err != nil {
+		return nil, err
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := f.runGitCmd(repoPath, "diff-tree", "--no-commit-id", "-p", "--root", "-U5", "-M", commit)
 	if err != nil {
 		return nil, err
 	}

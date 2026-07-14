@@ -5,6 +5,7 @@ import { computeGraphLayout, computeRowYLayout, type GraphNode } from '@/lib/git
 import { useGitHistory } from '@/hooks/useGitHistory'
 import { useGitHistoryFilter } from '@/hooks/useGitHistoryFilter'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { FilterBar } from '@/components/ui/FilterBar'
 import { ROW_SPACING, NODE_OFFSET, LANE_SPACING, xFor, expandedContentHeight } from './gitGraphRender'
 import { GitGraphGutter } from './GitGraphGutter'
@@ -88,6 +89,16 @@ export function GitHistoryTab() {
     },
     [expandedSha, fetchFiles],
   )
+
+  // Open a read-only review page showing the given commit's diff in the file
+  // viewer. The commit SHA is encoded in a synthetic pseudo-path
+  // ("c0wrk:commit:<sha>") that FileViewerContent renders as a ReviewPage in
+  // read-only mode. The file viewer is expanded so the review is visible.
+  const handleShaClick = useCallback((sha: string) => {
+    const { openFile, setCollapsed } = useFileViewerStore.getState()
+    openFile(`c0wrk:commit:${sha}`)
+    setCollapsed(false)
+  }, [])
 
   // Pixel height of a single row, accounting for inline expansion.
   const rowHeightFor = useCallback(
@@ -218,6 +229,7 @@ export function GitHistoryTab() {
                         files={filesBySha[node.sha]}
                         loadingFiles={pendingShas.has(node.sha)}
                         onClick={() => void handleCommitClick(node.sha)}
+                        onShaClick={handleShaClick}
                       />
                     </div>
                   )
@@ -264,6 +276,7 @@ export function GitHistoryTab() {
                     files={filesBySha[node.sha]}
                     loadingFiles={pendingShas.has(node.sha)}
                     onClick={() => void handleCommitClick(node.sha)}
+                    onShaClick={handleShaClick}
                   />
                 </div>
               )

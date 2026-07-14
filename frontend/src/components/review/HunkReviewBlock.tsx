@@ -10,6 +10,8 @@ interface HunkReviewBlockProps {
   filePath: string
   hunk: reviewApi.ReviewHunk
   hunkIndex: number
+  /** Read-only mode: hide the comment button and inline comment editor. */
+  readOnly?: boolean
 }
 
 interface DiffLine {
@@ -51,7 +53,7 @@ const LINE_COLORS: Record<DiffLine['type'], string> = {
   noNewline: 'text-muted-foreground/50 italic',
 }
 
-export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex }: HunkReviewBlockProps) {
+export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex, readOnly }: HunkReviewBlockProps) {
   const [showComment, setShowComment] = useState(false)
   const [draft, setDraft] = useState('')
   const hunkId = `hunk-${hunkIndex}`
@@ -83,15 +85,17 @@ export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex }: HunkRe
         <code className="text-xs text-muted-foreground">
           {filePath} · hunk {hunkIndex + 1}
         </code>
-        <Button
-          variant="ghost"
-          size="xs"
-          onClick={() => (showComment ? setShowComment(false) : openComment())}
-          className="text-xs"
-        >
-          <MessageSquare className="h-3 w-3 mr-1" />
-          {comment ? 'Edit' : 'Comment'}
-        </Button>
+        {!readOnly && (
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={() => (showComment ? setShowComment(false) : openComment())}
+            className="text-xs"
+          >
+            <MessageSquare className="h-3 w-3 mr-1" />
+            {comment ? 'Edit' : 'Comment'}
+          </Button>
+        )}
       </div>
 
       {/* Diff block */}

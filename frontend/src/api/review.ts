@@ -133,3 +133,15 @@ export async function getReviewDiff(): Promise<ReviewFileDiff[]> {
     throw err
   }
 }
+
+export async function getCommitDiff(sha: string): Promise<ReviewFileDiff[]> {
+  try {
+    const app = getApp()
+    const result = await app.GetCommitDiff(sha)
+    if (!isArrayOf(result, isReviewFileDiff)) return []
+    return result
+  } catch (err) {
+    logger.error('getCommitDiff failed:', err)
+    throw err
+  }
+}

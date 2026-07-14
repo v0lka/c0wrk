@@ -23,6 +23,8 @@ interface GitHistoryRowProps {
   loadingFiles: boolean
   /** Toggle expansion (the parent lazy-loads files on first expand). */
   onClick: () => void
+  /** Open the read-only commit-diff review page for this commit's SHA. */
+  onShaClick?: (sha: string) => void
 }
 
 /**
@@ -43,7 +45,22 @@ export function GitHistoryRow({
   files,
   loadingFiles,
   onClick,
+  onShaClick,
 }: GitHistoryRowProps) {
+  const handleShaClick = (e: React.MouseEvent) => {
+    // Prevent the row-level expand/collapse toggle from firing.
+    e.stopPropagation()
+    onShaClick?.(node.sha)
+  }
+
+  const handleShaKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      e.stopPropagation()
+      onShaClick?.(node.sha)
+    }
+  }
+
   return (
     <div style={{ height }}>
       <Tooltip delayDuration={400}>
@@ -69,7 +86,20 @@ export function GitHistoryRow({
                   {ref.replace(/^tag:\s*/, '')}
                 </span>
               ))}
-              <span className="shrink-0 font-mono text-[10px] text-info select-text">{shortSha(node.sha)}</span>
+              {onShaClick ? (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={handleShaClick}
+                  onKeyDown={handleShaKeyDown}
+                  title="View commit changes"
+                  className="shrink-0 font-mono text-[10px] text-info cursor-pointer rounded px-0.5 hover:bg-info/15 hover:text-info hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-info/40"
+                >
+                  {shortSha(node.sha)}
+                </span>
+              ) : (
+                <span className="shrink-0 font-mono text-[10px] text-info select-text">{shortSha(node.sha)}</span>
+              )}
             </div>
             <div className="flex items-center pl-7 text-[10px] leading-none text-muted-foreground">
               <span className="min-w-0 truncate select-text">

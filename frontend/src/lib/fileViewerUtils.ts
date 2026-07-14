@@ -15,6 +15,11 @@ export function isBinaryContent(content: string): boolean {
  * portion after the colon, title-cased.
  */
 export function fileNameFromPath(path: string): string {
+  // Commit review tab: "c0wrk:commit:<sha>" → "Commit <short-sha>"
+  if (path.startsWith('c0wrk:commit:')) {
+    const sha = path.slice('c0wrk:commit:'.length)
+    return `Commit ${sha.slice(0, 7)}`
+  }
   if (path.startsWith('c0wrk:') && !path.includes('/')) {
     const label = path.slice('c0wrk:'.length)
     return label.charAt(0).toUpperCase() + label.slice(1)

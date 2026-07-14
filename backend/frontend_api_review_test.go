@@ -154,3 +154,118 @@ func TestGetReviewDiff_CleanTree(t *testing.T) {
 		}
 	})
 }
+
+// --- GetCommitDiff ---
+
+// TestGetCommitDiff_TwoFiles asserts the RPC returns the per-file hunk diff
+// introduced by a single commit (relative to its parent), grouped per file
+// with at least 5 context lines per hunk (-U5).
+func TestGetCommitDiff_TwoFiles(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		base := genReviewLines(30)
+		commitFile(t, dir, "file1.txt", base)
+		commitFile(t, dir, "file2.txt", base)
+
+		// file1: two change regions 18 lines apart => 2 distinct hunks.
+		f1 := replaceLine(t, base, 6, "CHG6")
+		f1 = replaceLine(t, f1, 24, "CHG24")
+		if err := os.WriteFile(filepath.Join(dir, "file1.txt"), []byte(f1), 0o644); err != nil {
+			t.Fatalf("write file1: %v", err)
+		}
+
+		// file2: one change region => 1 hunk.
+		f2 := replaceLine(t, base, 15, "CHG15")
+		if err := os.WriteFile(filepath.Join(dir, "file2.txt"), []byte(f2), 0o644); err != nil {
+			t.Fatalf("write file2: %v", err)
+		}
+		runGit(t, dir, "add", "-A")
+		runGit(t, dir, "commit", "-m", "two-file changes")
+
+		sha := gitOut(t, dir, "rev-parse", "HEAD")
+
+		files, err := f.GetCommitDiff(sha)
+		if err != nil {
+			t.Fatalf("GetCommitDiff: %v", err)
+		}
+		if len(files) != 2 {
+			t.Fatalf("expected 2 changed files, got %d", len(files))
+		}
+
+		counts := map[string]int{}
+		for _, file := range files {
+			counts[file.Path] = len(file.Hunks)
+		}
+		if counts["file1.txt"] != 2 {
+			t.Errorf("file1.txt: expected 2 hunks, got %d", counts["file1.txt"])
+		}
+		if counts["file2.txt"] != 1 {
+			t.Errorf("file2.txt: expected 1 hunk, got %d", counts["file2.txt"])
+		}
+
+		// Every hunk must carry at least 5 context lines (the -U5 effect).
+		for _, file := range files {
+			for _, h := range file.Hunks {
+				if c := hunkContextLines(h.Raw); c < 5 {
+					t.Errorf("%s hunk @ +%d: %d context lines, want >=5", file.Path, h.NewStart, c)
+				}
+			}
+		}
+	})
+}
+
+// TestGetCommitDiff_RootCommit verifies the RPC returns all files as added
+// for a root commit (no parent), via the --root flag.
+func TestGetCommitDiff_RootCommit(t *testing.T) {
+	tmpDir := t.TempDir()
+	gitInit(t, tmpDir)
+	if err := os.WriteFile(filepath.Join(tmpDir, "init.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write init: %v", err)
+	}
+	runGit(t, tmpDir, "add", "init.txt")
+	runGit(t, tmpDir, "commit", "-m", "initial")
+
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+	sha := gitOut(t, tmpDir, "rev-parse", "HEAD")
+
+	files, err := f.GetCommitDiff(sha)
+	if err != nil {
+		t.Fatalf("GetCommitDiff: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file for root commit, got %d", len(files))
+	}
+	if files[0].Path != "init.txt" {
+		t.Errorf("expected init.txt, got %s", files[0].Path)
+	}
+	if len(files[0].Hunks) != 1 {
+		t.Errorf("expected 1 hunk, got %d", len(files[0].Hunks))
+	}
+}
+
+// TestGetCommitDiff_EmptySHA verifies the RPC rejects an empty/whitespace SHA.
+func TestGetCommitDiff_EmptySHA(t *testing.T) {
+	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	if _, err := f.GetCommitDiff(""); err == nil {
+		t.Fatal("expected error for empty sha")
+	}
+	if _, err := f.GetCommitDiff("   "); err == nil {
+		t.Fatal("expected error for whitespace-only sha")
+	}
+}
+
+// TestGetCommitDiff_InvalidSha verifies the RPC rejects a non-hex SHA.
+func TestGetCommitDiff_InvalidSha(t *testing.T) {
+	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	if _, err := f.GetCommitDiff("not-a-sha"); err == nil {
+		t.Fatal("expected error for non-hex SHA")
+	}
+}
+
+// TestGetCommitDiff_NoProject verifies the RPC returns an error for No
+// Project mode (a commit diff requires a git repository).
+func TestGetCommitDiff_NoProject(t *testing.T) {
+	f := &FrontendAPI{activeProjectID: project.NoProjectID, activeProjectPath: t.TempDir()}
+	if _, err := f.GetCommitDiff("abcdef1234"); err == nil {
+		t.Fatal("expected error for No Project")
+	}
+}

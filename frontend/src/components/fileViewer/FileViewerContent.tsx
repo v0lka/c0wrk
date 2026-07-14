@@ -34,6 +34,14 @@ export function FileViewerContent() {
     return <ReviewPage sessionId={activeSessionId} />
   }
 
+  // Commit review: read-only view of a commit's diff. The SHA is encoded in
+  // the synthetic path after "c0wrk:commit:". No active session is required —
+  // the commit diff is fetched directly from the repository.
+  if (activeFile.startsWith('c0wrk:commit:')) {
+    const sha = activeFile.slice('c0wrk:commit:'.length)
+    return <ReviewPage commitSha={sha} />
+  }
+
   const fileData = files[activeFile]
   if (!fileData) return null
 

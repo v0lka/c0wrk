@@ -5,9 +5,11 @@ import { HunkReviewBlock } from './HunkReviewBlock'
 interface FileReviewBlockProps {
   sessionId: string
   file: ReviewFileDiff
+  /** Read-only mode: hide per-hunk comment controls. */
+  readOnly?: boolean
 }
 
-export function FileReviewBlock({ sessionId, file }: FileReviewBlockProps) {
+export function FileReviewBlock({ sessionId, file, readOnly }: FileReviewBlockProps) {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-1.5 px-1">
@@ -31,6 +33,7 @@ export function FileReviewBlock({ sessionId, file }: FileReviewBlockProps) {
           filePath={file.path}
           hunk={hunk}
           hunkIndex={i}
+          readOnly={readOnly}
         />
       ))}
     </div>

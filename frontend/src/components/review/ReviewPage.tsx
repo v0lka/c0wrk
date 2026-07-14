@@ -7,10 +7,14 @@ import { ReviewHeader } from './ReviewHeader'
 import { FileReviewBlock } from './FileReviewBlock'
 
 interface ReviewPageProps {
-  sessionId: string
+  /** Active session id — required for the interactive working-tree review. */
+  sessionId?: string
+  /** Commit SHA — when set, renders a read-only view of that commit's diff. */
+  commitSha?: string
 }
 
-export function ReviewPage({ sessionId }: ReviewPageProps) {
+export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
+  const readOnly = !!commitSha
   const [diff, setDiff] = useState<reviewApi.ReviewFileDiff[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -20,20 +24,26 @@ export function ReviewPage({ sessionId }: ReviewPageProps) {
     setLoading(true)
     setError(null)
     try {
-      const result = await reviewApi.getReviewDiff()
+      const result = commitSha
+        ? await reviewApi.getCommitDiff(commitSha)
+        : await reviewApi.getReviewDiff()
       setDiff(result)
     } catch (err) {
-      setError('Failed to load review diff')
-      console.error('getReviewDiff failed:', err)
+      setError(commitSha ? 'Failed to load commit diff' : 'Failed to load review diff')
+      console.error('fetchDiff failed:', err)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [commitSha])
 
   useEffect(() => {
     void fetchDiff()
-    void loadReview(sessionId)
-  }, [fetchDiff, loadReview, sessionId])
+    // Only load the persisted review buffer (comments/status) in interactive
+    // mode — a read-only commit view has no associated review buffer.
+    if (!readOnly && sessionId) {
+      void loadReview(sessionId)
+    }
+  }, [fetchDiff, loadReview, sessionId, readOnly])
 
   if (loading) {
     return (
@@ -57,10 +67,12 @@ export function ReviewPage({ sessionId }: ReviewPageProps) {
   if (diff.length === 0) {
     return (
       <div className="flex-1 flex flex-col">
-        <ReviewHeader sessionId={sessionId} />
+        <ReviewHeader sessionId={sessionId ?? ''} readOnly={readOnly} commitSha={commitSha} />
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-muted-foreground">
           <GitCommit className="h-8 w-8 opacity-50" />
-          <p className="text-sm">No uncommitted changes to review</p>
+          <p className="text-sm">
+            {readOnly ? 'No changes to display' : 'No uncommitted changes to review'}
+          </p>
           <Button size="xs" variant="ghost" onClick={() => void fetchDiff()}>
             <RefreshCw className="h-3 w-3 mr-1" />Refresh
           </Button>
@@ -71,13 +83,14 @@ export function ReviewPage({ sessionId }: ReviewPageProps) {
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <ReviewHeader sessionId={sessionId} />
+      <ReviewHeader sessionId={sessionId ?? ''} readOnly={readOnly} commitSha={commitSha} />
       <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-4">
         {diff.map((file) => (
           <FileReviewBlock
             key={file.path}
-            sessionId={sessionId}
+            sessionId={sessionId ?? ''}
             file={file}
+            readOnly={readOnly}
           />
         ))}
       </div>
