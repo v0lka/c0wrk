@@ -271,9 +271,10 @@ type BuilderToolTruncationConfig struct {
 
 // BuilderTimeoutsConfig holds timeout values (in seconds).
 type BuilderTimeoutsConfig struct {
-	BashMaxTimeout   int
-	BashWaitDelay    int
-	RipgrepTimeout   int
-	WebFetchTimeout  int
-	WebSearchTimeout int
+	BashMaxTimeout    int
+	BashWaitDelay     int
+	RipgrepTimeout    int
+	WebFetchTimeout   int
+	WebSearchTimeout  int
+	LLMRequestTimeout int
 }

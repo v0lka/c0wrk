@@ -34,6 +34,14 @@ export function CheckoutBranch(arg1) {
   return window['go']['desktop']['App']['CheckoutBranch'](arg1);
 }
 
+export function ClearReview(arg1) {
+  return window['go']['desktop']['App']['ClearReview'](arg1);
+}
+
+export function ClearReviewComments(arg1) {
+  return window['go']['desktop']['App']['ClearReviewComments'](arg1);
+}
+
 export function Commit(arg1) {
   return window['go']['desktop']['App']['Commit'](arg1);
 }
@@ -52,6 +60,10 @@ export function CreateSession() {
 
 export function DeleteProject(arg1) {
   return window['go']['desktop']['App']['DeleteProject'](arg1);
+}
+
+export function DeleteReviewComment(arg1) {
+  return window['go']['desktop']['App']['DeleteReviewComment'](arg1);
 }
 
 export function DeleteSession(arg1) {
@@ -170,6 +182,14 @@ export function GetRebaseMergeState() {
   return window['go']['desktop']['App']['GetRebaseMergeState']();
 }
 
+export function GetReview(arg1) {
+  return window['go']['desktop']['App']['GetReview'](arg1);
+}
+
+export function GetReviewDiff() {
+  return window['go']['desktop']['App']['GetReviewDiff']();
+}
+
 export function GetSecuritySettings() {
   return window['go']['desktop']['App']['GetSecuritySettings']();
 }
@@ -286,6 +306,14 @@ export function SaveProjectUIState(arg1) {
   return window['go']['desktop']['App']['SaveProjectUIState'](arg1);
 }
 
+export function SaveReviewGeneralComment(arg1, arg2) {
+  return window['go']['desktop']['App']['SaveReviewGeneralComment'](arg1, arg2);
+}
+
+export function SaveReviewHunkComment(arg1, arg2, arg3, arg4) {
+  return window['go']['desktop']['App']['SaveReviewHunkComment'](arg1, arg2, arg3, arg4);
+}
+
 export function SearchVectorStore(arg1) {
   return window['go']['desktop']['App']['SearchVectorStore'](arg1);
 }
@@ -296,6 +324,10 @@ export function SendMessage(arg1, arg2, arg3, arg4, arg5) {
 
 export function SetLogLevel(arg1) {
   return window['go']['desktop']['App']['SetLogLevel'](arg1);
+}
+
+export function SetReviewStatus(arg1, arg2) {
+  return window['go']['desktop']['App']['SetReviewStatus'](arg1, arg2);
 }
 
 export function SetWailsLogger(arg1) {

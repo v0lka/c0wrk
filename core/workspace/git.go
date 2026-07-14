@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -283,4 +284,150 @@ func GitIgnoredPaths(ctx context.Context, dir string) (map[string]bool, error) {
 		result[filepath.Join(dir, rel)] = true
 	}
 	return result, nil
+}
+
+// reviewHunkHeaderRe matches a unified-diff hunk header, capturing the
+// old/new start line and (optional) count. Counts default to 1 when git
+// omits them (single-line hunk side).
+var reviewHunkHeaderRe = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
+
+// ParseReviewDiff parses a multi-file unified diff — such as the output of
+// `git diff -U5 HEAD` — into per-file groups, each carrying its hunks.
+// Files are delimited by "diff --git a/<old> b/<new>" header lines: the
+// current path comes from the b/ side and OldPath is populated only for
+// renames/copies where the a/ and b/ sides differ. Paths are unquoted (git
+// quotes paths containing special characters when core.quotePath is set).
+// Returns an empty (non-nil) slice when diff is empty. The context-line
+// count of each hunk is whatever git emitted (controlled by the caller's
+// -U flag), not enforced here.
+func ParseReviewDiff(diff string) []ReviewFileDiff {
+	diff = strings.TrimSpace(diff)
+	if diff == "" {
+		return []ReviewFileDiff{}
+	}
+
+	lines := strings.Split(diff, "\n")
+	// Locate the start line of each file block. A real "diff --git "
+	// header has no leading space, which distinguishes it from an
+	// identical-looking context line inside a hunk body (" diff --git ").
+	var blockStarts []int
+	for i, line := range lines {
+		if strings.HasPrefix(line, "diff --git ") {
+			blockStarts = append(blockStarts, i)
+		}
+	}
+
+	files := make([]ReviewFileDiff, 0, len(blockStarts))
+	for idx, start := range blockStarts {
+		end := len(lines)
+		if idx+1 < len(blockStarts) {
+			end = blockStarts[idx+1]
+		}
+		files = append(files, parseReviewFileBlock(lines[start:end]))
+	}
+	return files
+}
+
+// parseReviewFileBlock parses a single file's diff block (the "diff --git"
+// header line plus its preamble and hunks) into a ReviewFileDiff.
+func parseReviewFileBlock(lines []string) ReviewFileDiff {
+	file := ReviewFileDiff{}
+	if len(lines) > 0 {
+		oldPath, newPath := parseDiffGitHeader(lines[0])
+		file.Path = newPath
+		if oldPath != "" && oldPath != newPath {
+			file.OldPath = oldPath
+		}
+	}
+
+	var hunks []ReviewHunk
+	i := 0
+	for i < len(lines) {
+		if !strings.HasPrefix(lines[i], "@@") {
+			i++
+			continue
+		}
+		m := reviewHunkHeaderRe.FindStringSubmatch(lines[i])
+		if m == nil {
+			i++
+			continue
+		}
+		oldStart, _ := strconv.Atoi(m[1])
+		oldCount := 1
+		if m[2] != "" {
+			oldCount, _ = strconv.Atoi(m[2])
+		}
+		newStart, _ := strconv.Atoi(m[3])
+		newCount := 1
+		if m[4] != "" {
+			newCount, _ = strconv.Atoi(m[4])
+		}
+
+		start := i
+		i++
+		for i < len(lines) && !strings.HasPrefix(lines[i], "@@") {
+			i++
+		}
+		hunks = append(hunks, ReviewHunk{
+			Raw:      strings.Join(lines[start:i], "\n"),
+			OldStart: oldStart,
+			OldCount: oldCount,
+			NewStart: newStart,
+			NewCount: newCount,
+		})
+	}
+	file.Hunks = hunks
+	return file
+}
+
+// parseDiffGitHeader extracts the old (a/) and new (b/) paths from a
+// "diff --git a/<old> b/<new>" header line, stripping the a//b/ prefixes
+// and unquoting git-quoted paths. Returns empty strings when the line does
+// not conform to the expected shape.
+func parseDiffGitHeader(line string) (oldPath, newPath string) {
+	rest := strings.TrimSpace(strings.TrimPrefix(line, "diff --git "))
+	oldRaw, after, ok := nextDiffPath(rest)
+	if !ok {
+		return "", ""
+	}
+	newRaw, _, ok := nextDiffPath(after)
+	if !ok {
+		return stripDiffPrefix(oldRaw), ""
+	}
+	return stripDiffPrefix(oldRaw), stripDiffPrefix(newRaw)
+}
+
+// nextDiffPath extracts the first path token from s: either a double-quoted
+// string (git escapes special characters when core.quotePath is set) or an
+// unquoted run up to the next space. It returns the unquoted token, the
+// remaining string, and whether a token was found.
+func nextDiffPath(s string) (token, rest string, ok bool) {
+	s = strings.TrimLeft(s, " ")
+	if s == "" {
+		return "", "", false
+	}
+	if s[0] == '"' {
+		for i := 1; i < len(s); i++ {
+			if s[i] == '\\' {
+				i++ // skip the escaped character
+				continue
+			}
+			if s[i] == '"' {
+				return unquoteGitPath(s[:i+1]), strings.TrimLeft(s[i+1:], " "), true
+			}
+		}
+		return unquoteGitPath(s), "", true
+	}
+	if idx := strings.IndexByte(s, ' '); idx >= 0 {
+		return s[:idx], strings.TrimLeft(s[idx+1:], " "), true
+	}
+	return s, "", true
+}
+
+// stripDiffPrefix removes the leading "a/" or "b/" prefix that git adds to
+// paths in the "diff --git" header.
+func stripDiffPrefix(p string) string {
+	p = strings.TrimPrefix(p, "a/")
+	p = strings.TrimPrefix(p, "b/")
+	return p
 }

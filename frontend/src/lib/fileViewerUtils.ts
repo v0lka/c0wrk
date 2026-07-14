@@ -11,7 +11,13 @@ export function isBinaryContent(content: string): boolean {
 
 /**
  * Extract file name from a full path.
+ * Handles synthetic pseudo-paths (e.g. 'c0wrk:review') by returning the
+ * portion after the colon, title-cased.
  */
 export function fileNameFromPath(path: string): string {
+  if (path.startsWith('c0wrk:') && !path.includes('/')) {
+    const label = path.slice('c0wrk:'.length)
+    return label.charAt(0).toUpperCase() + label.slice(1)
+  }
   return path.split('/').pop() ?? path
 }

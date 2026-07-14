@@ -21,6 +21,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/logger"
 	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/backend/review"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/terminal"
 	"github.com/v0lka/c0wrk/core/toolmanager"
@@ -231,11 +232,13 @@ func (a *App) initTerminalManager(log *slog.Logger) *terminal.Manager {
 	})
 }
 
-// initStores creates the project + session SQLite stores. Order matters: the
-// session store has an FK reference to the projects table.
-func (a *App) initStores(db *sql.DB, log *slog.Logger) (*project.SQLiteProjectStore, *session.SQLiteSessionStore) {
+// initStores creates the project + session + review SQLite stores. Order
+// matters: the session store has an FK reference to the projects table, and
+// the review store has FK references to the sessions table, so it must be
+// initialized after the session store.
+func (a *App) initStores(db *sql.DB, log *slog.Logger) (*project.SQLiteProjectStore, *session.SQLiteSessionStore, *review.SQLiteReviewStore) {
 	if db == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var projStore *project.SQLiteProjectStore
 	if ps, err := project.NewSQLiteProjectStore(db); err != nil {
@@ -249,7 +252,15 @@ func (a *App) initStores(db *sql.DB, log *slog.Logger) (*project.SQLiteProjectSt
 	} else {
 		sessStore = s
 	}
-	return projStore, sessStore
+	// Review store is initialized AFTER the session store because its tables
+	// carry FK references to the sessions table.
+	var reviewStore *review.SQLiteReviewStore
+	if rs, err := review.NewSQLiteReviewStore(db); err != nil {
+		log.Error("failed to init review store", "error", err)
+	} else {
+		reviewStore = rs
+	}
+	return projStore, sessStore, reviewStore
 }
 
 // preloadProjectsAndSessions emits projects + sessions from the most recent

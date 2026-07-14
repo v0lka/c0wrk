@@ -129,3 +129,26 @@ type MergeRebaseState struct {
 	IsMerging  bool `json:"is_merging"`
 	IsRebasing bool `json:"is_rebasing"`
 }
+
+// ReviewHunk describes a single unified-diff hunk for the code-review
+// page. It mirrors the "@@" header line numbers and carries the raw hunk
+// block (header + body) for rendering. Unlike HunkDiffInfo (which is tied
+// to the git panel's per-hunk staging controls), ReviewHunk is a minimal,
+// display-oriented snapshot of an uncommitted change region.
+type ReviewHunk struct {
+	Raw      string `json:"raw"`       // full hunk block: "@@ ..." header + body lines
+	OldStart int    `json:"old_start"` // first old-file line (1-based, includes context)
+	OldCount int    `json:"old_count"` // number of old-file lines in the hunk
+	NewStart int    `json:"new_start"` // first new-file line (1-based, includes context)
+	NewCount int    `json:"new_count"` // number of new-file lines in the hunk
+}
+
+// ReviewFileDiff groups the uncommitted hunks of a single file for the
+// code-review page. Path is the current (post-rename) path; OldPath is
+// populated only for renames/copies where the a/ and b/ sides of the diff
+// header differ. Hunks is empty for a pure rename with no content change.
+type ReviewFileDiff struct {
+	Path    string       `json:"path"`
+	OldPath string       `json:"old_path,omitempty"`
+	Hunks   []ReviewHunk `json:"hunks"`
+}

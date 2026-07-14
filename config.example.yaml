@@ -298,6 +298,7 @@ timeouts:
   webFetchTimeout: 30 # Timeout for web page fetching
   webSearchTimeout: 30 # Timeout for web search queries
   persistenceTimeout: 5 # Timeout for persistence (DB) operations
+  llmRequestTimeout: 600 # Timeout for a single LLM API call (10 min). 0 = use default 600s
 
 # ---------------------------------------------------------------------------
 # Orchestration Limits

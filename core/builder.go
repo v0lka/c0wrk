@@ -860,6 +860,12 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		modelRegistry.SetHTTPClient(proxyClient)
 	}
 
+	// Construct a dedicated HTTP client for LLM inference calls. Reasoning
+	// models can take several minutes to respond, so the LLM timeout must be
+	// much longer than the proxy/tools client (30s). Without this, the SDK
+	// falls back to http.DefaultClient which has NO timeout — a stalled
+	// upstream hangs the session indefinitely.
+	llmClient := buildLLMHTTPClient(proxyClient, cfg.Timeouts.LLMRequestTimeout)
 	initialBackoff, err := time.ParseDuration(cfg.LLM.Retry.InitialBackoff)
 	if err != nil && cfg.LLM.Retry.InitialBackoff != "" {
 		b.log().Warn("invalid initial_backoff, using default", "value", cfg.LLM.Retry.InitialBackoff, "error", err)
@@ -915,7 +921,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		MaxBackoff:          maxBackoff,
 		SafetyMarginPercent: cfg.Executor.Compaction.SafetyMarginPercent,
 		OutputTokenReserve:  cfg.Executor.OutputTokenReserve,
-		HTTPClient:          proxyClient,
+		HTTPClient:          llmClient,
 		Logger:              b.logger,
 		SamplingFunc: func(family string) *float64 {
 			return prompt.DefaultSampling(family).Temperature
@@ -934,6 +940,22 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	}
 
 	return llmRouter, modelRegistry, nil
+}
+
+// buildLLMHTTPClient creates an *http.Client dedicated to LLM inference
+// calls. It always sets a finite Timeout so a stalled upstream cannot hang
+// the session indefinitely. When proxyClient is non-nil, its transport
+// (proxy, TLS, dialer settings) is reused with the LLM-specific timeout.
+func buildLLMHTTPClient(proxyClient *http.Client, timeoutSec int) *http.Client {
+	timeout := time.Duration(timeoutSec) * time.Second
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	client := &http.Client{Timeout: timeout}
+	if proxyClient != nil && proxyClient.Transport != nil {
+		client.Transport = proxyClient.Transport
+	}
+	return client
 }
 
 // buildCoreAgents creates the core Router and Reflector.

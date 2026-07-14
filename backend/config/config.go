@@ -328,6 +328,7 @@ type TimeoutsConfig struct {
 	WebFetchTimeout    int `yaml:"webFetchTimeout"`    // seconds, default: 30
 	WebSearchTimeout   int `yaml:"webSearchTimeout"`   // seconds, default: 30
 	PersistenceTimeout int `yaml:"persistenceTimeout"` // seconds, default: 5
+	LLMRequestTimeout  int `yaml:"llmRequestTimeout"`  // seconds, default: 600 (10 min)
 }
 
 // OrchestrationConfig holds orchestration-specific limits and settings.

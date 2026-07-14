@@ -172,6 +172,16 @@ type HunkDiffInfo = workspace.HunkDiffInfo
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type MergeRebaseState = workspace.MergeRebaseState
 
+// ReviewHunk describes a single unified-diff hunk for the code-review page.
+// Defined in core/workspace; re-exported here as a type alias for ViewModel
+// convenience.
+type ReviewHunk = workspace.ReviewHunk
+
+// ReviewFileDiff groups the uncommitted hunks of a single file for the
+// code-review page. Defined in core/workspace; re-exported here as a type
+// alias for ViewModel convenience.
+type ReviewFileDiff = workspace.ReviewFileDiff
+
 // SessionTokensResponse holds token usage statistics for a session.
 type SessionTokensResponse struct {
 	TotalInputTokens  int     `json:"total_input_tokens"`

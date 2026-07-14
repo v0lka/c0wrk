@@ -171,7 +171,7 @@ func (a *App) Startup(ctx context.Context) {
 	a.db = db
 
 	// ── Phase 4: Stores + Project/Session Preload ────────────────────
-	projStore, sessStore := a.initStores(db, log)
+	projStore, sessStore, reviewStore := a.initStores(db, log)
 	log.Info("startup phase complete", "phase", "stores", "elapsed_ms", time.Since(startTime).Milliseconds())
 
 	var projectMgr *project.Manager
@@ -234,6 +234,7 @@ func (a *App) Startup(ctx context.Context) {
 		ConfigPath:      configPath,
 		Store:           sessStore,
 		ProjStore:       projStore,
+		ReviewStore:     reviewStore,
 		SessionLogger:   sessionLogger,
 		LogLevel:        logLevel,
 		ProjectManager:  projectMgr,

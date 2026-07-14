@@ -5,6 +5,9 @@ import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isAssistantChunkData, isThoughtData, isErrorData, isTaskCompleteData, isReflectionData } from '@/types/events'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
+import { useReviewStore } from '@/stores/reviewStore'
+import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { generateMessageId } from '@/lib/ids'
 import type { ChatMessageUI } from '@/types/messages'
 
@@ -159,6 +162,38 @@ export function useChatEvents(sessionId: string | null): void {
             content: `Task finished with ${data.completion ?? 'incomplete'} execution${failed}. The output above may be incomplete.`,
             timestamp: Date.now(),
           })
+        }
+
+        // --- Review triggers ---
+        // Only on successful task_complete. Two modes:
+        // 1) Auto-review loop: if reviewLoopActive[session] is set (user
+        //    previously clicked Submit), reopen the review page with fresh diff.
+        // 2) First-time prompt: if the project has git changes and the prompt
+        //    hasn't been shown for this task turn, inject a review_prompt block.
+        if (data.success !== false) {
+          const reviewStore = useReviewStore.getState()
+          const isLoopActive = !!reviewStore.reviewLoopActive[sessionId]
+          const gitState = useGitPanelStore.getState()
+          const hasChanges = gitState.isGitRepo && gitState.entries.length > 0
+
+          if (isLoopActive && hasChanges) {
+            const fvStore = useFileViewerStore.getState()
+            fvStore.openFile('c0wrk:review')
+            fvStore.setCollapsed(false)
+            reviewStore.openReviewPage(sessionId)
+            void reviewStore.loadReview(sessionId)
+          } else if (!isLoopActive && hasChanges) {
+            if (!reviewStore.promptShownForTask[sessionId]) {
+              reviewStore.markPromptShown(sessionId, 'task')
+              store.addMessage(sessionId, {
+                id: generateMessageId(),
+                sessionId,
+                type: 'review_prompt',
+                content: 'Task completed with changes.',
+                timestamp: Date.now(),
+              })
+            }
+          }
         }
       }),
     )

@@ -165,6 +165,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			RipgrepTimeout:   cfg.Timeouts.RipgrepTimeout,
 			WebFetchTimeout:  cfg.Timeouts.WebFetchTimeout,
 			WebSearchTimeout: cfg.Timeouts.WebSearchTimeout,
+			LLMRequestTimeout: cfg.Timeouts.LLMRequestTimeout,
 		},
 		Proxy: proxy.Config{
 			Enabled:      cfg.Proxy.Enabled,

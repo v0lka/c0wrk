@@ -7,6 +7,7 @@ import {backend} from '../models';
 import {config} from '../models';
 import {mcp} from '../models';
 import {desktop} from '../models';
+import {review} from '../models';
 
 export function AbortMerge():Promise<void>;
 
@@ -24,6 +25,10 @@ export function CancelUnfinishedTask(arg1:string):Promise<void>;
 
 export function CheckoutBranch(arg1:string):Promise<void>;
 
+export function ClearReview(arg1:string):Promise<void>;
+
+export function ClearReviewComments(arg1:string):Promise<void>;
+
 export function Commit(arg1:string):Promise<string>;
 
 export function CreateBranch(arg1:string,arg2:string):Promise<void>;
@@ -33,6 +38,8 @@ export function CreateProject(arg1:string,arg2:string):Promise<project.ProjectIn
 export function CreateSession():Promise<session.SessionInfo>;
 
 export function DeleteProject(arg1:string):Promise<void>;
+
+export function DeleteReviewComment(arg1:string):Promise<void>;
 
 export function DeleteSession(arg1:string):Promise<void>;
 
@@ -92,6 +99,10 @@ export function GetProxySettings():Promise<backend.ProxySettingsResponse>;
 
 export function GetRebaseMergeState():Promise<workspace.MergeRebaseState>;
 
+export function GetReview(arg1:string):Promise<review.Review>;
+
+export function GetReviewDiff():Promise<Array<workspace.ReviewFileDiff>>;
+
 export function GetSecuritySettings():Promise<backend.SecuritySettingsResponse>;
 
 export function GetSessionHistory(arg1:string):Promise<Array<session.ChatMessage>>;
@@ -150,11 +161,17 @@ export function SaveProjectSwitchState(arg1:backend.ProjectUIStateRequest):Promi
 
 export function SaveProjectUIState(arg1:backend.ProjectUIStateRequest):Promise<void>;
 
+export function SaveReviewGeneralComment(arg1:string,arg2:string):Promise<void>;
+
+export function SaveReviewHunkComment(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
+
 export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<backend.VectorStoreEntry>>;
 
 export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:string,arg5:string):Promise<void>;
 
 export function SetLogLevel(arg1:string):Promise<void>;
+
+export function SetReviewStatus(arg1:string,arg2:string):Promise<void>;
 
 export function SetWailsLogger(arg1:desktop.wailsLogAdapter):Promise<void>;
 

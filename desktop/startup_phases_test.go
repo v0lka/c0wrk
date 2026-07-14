@@ -99,12 +99,15 @@ func TestInitStores_BothInitialize(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	projStore, sessStore := a.initStores(db, testLoggerForPhases())
+	projStore, sessStore, reviewStore := a.initStores(db, testLoggerForPhases())
 	if projStore == nil {
 		t.Error("projStore is nil")
 	}
 	if sessStore == nil {
 		t.Error("sessStore is nil")
+	}
+	if reviewStore == nil {
+		t.Error("reviewStore is nil")
 	}
 
 	// Smoke test: the stores must be queryable.
@@ -116,9 +119,9 @@ func TestInitStores_BothInitialize(t *testing.T) {
 
 func TestInitStores_NilDB(t *testing.T) {
 	a := &App{}
-	projStore, sessStore := a.initStores(nil, testLoggerForPhases())
-	if projStore != nil || sessStore != nil {
-		t.Errorf("expected (nil, nil) for nil db, got (%v, %v)", projStore, sessStore)
+	projStore, sessStore, reviewStore := a.initStores(nil, testLoggerForPhases())
+	if projStore != nil || sessStore != nil || reviewStore != nil {
+		t.Errorf("expected (nil, nil, nil) for nil db, got (%v, %v, %v)", projStore, sessStore, reviewStore)
 	}
 }
 
@@ -143,7 +146,7 @@ func TestPreloadProjectsAndSessions_Empty(t *testing.T) {
 		t.Fatal("initDatabase failed")
 	}
 	defer func() { _ = db.Close() }()
-	projStore, sessStore := a.initStores(db, testLoggerForPhases())
+	projStore, sessStore, _ := a.initStores(db, testLoggerForPhases())
 	projectMgr := project.NewManager(projStore, dir)
 
 	got := a.preloadProjectsAndSessions(projectMgr, sessStore, testLoggerForPhases())
@@ -167,7 +170,7 @@ func TestPreloadProjectsAndSessions_WithSeededData(t *testing.T) {
 		t.Fatal("initDatabase failed")
 	}
 	defer func() { _ = db.Close() }()
-	projStore, sessStore := a.initStores(db, testLoggerForPhases())
+	projStore, sessStore, _ := a.initStores(db, testLoggerForPhases())
 	projectMgr := project.NewManager(projStore, dir)
 
 	// Seed: create a project with a session.
@@ -452,7 +455,7 @@ func TestEmitBackendReady_FreshQueryWithProjects(t *testing.T) {
 		t.Fatal("initDatabase failed")
 	}
 	defer func() { _ = db.Close() }()
-	projStore, _ := a.initStores(db, testLoggerForPhases())
+	projStore, _, _ := a.initStores(db, testLoggerForPhases())
 	projectMgr := project.NewManager(projStore, dir)
 	if _, err := projectMgr.CreateProject("Bar", ""); err != nil {
 		t.Fatalf("CreateProject: %v", err)

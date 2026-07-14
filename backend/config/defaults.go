@@ -285,6 +285,9 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Timeouts.PersistenceTimeout == 0 {
 		cfg.Timeouts.PersistenceTimeout = 5
 	}
+	if cfg.Timeouts.LLMRequestTimeout == 0 {
+		cfg.Timeouts.LLMRequestTimeout = 600
+	}
 
 	// Orchestration defaults
 	if cfg.Orchestration.MaxDependencyContextChars == 0 {

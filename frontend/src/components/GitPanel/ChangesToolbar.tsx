@@ -1,9 +1,13 @@
-import { List, FolderTree, Loader2, Plus, Minus, Ban } from 'lucide-react'
+import { List, FolderTree, Loader2, Plus, Minus, Ban, Eye } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useGitToolbarActions } from '@/hooks/useGitToolbarActions'
 import { GitStashButtons } from './GitStashButtons'
+import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { useReviewStore } from '@/stores/reviewStore'
+import { useSessionStore } from '@/stores/sessionStore'
+import * as reviewApi from '@/api/review'
 
 /**
  * Toolbar for the "Changes" section (D8/Phase 5/6).
@@ -25,6 +29,8 @@ export function ChangesToolbar() {
   const viewMode = useGitPanelStore((s) => s.viewMode)
   const setViewMode = useGitPanelStore((s) => s.setViewMode)
   const mergeRebaseState = useGitPanelStore((s) => s.mergeRebaseState)
+  const entries = useGitPanelStore((s) => s.entries)
+  const isGitRepo = useGitPanelStore((s) => s.isGitRepo)
   const {
     isStagingAll,
     isUnstagingAll,
@@ -39,6 +45,20 @@ export function ChangesToolbar() {
 
   const isAbortVisible =
     mergeRebaseState.is_merging || mergeRebaseState.is_rebasing
+
+  const canReview = isGitRepo && entries.length > 0
+
+  const handleOpenReview = () => {
+    const sessionId = useSessionStore.getState().activeSessionId
+    if (!sessionId) return
+    const { openFile, setCollapsed } = useFileViewerStore.getState()
+    const { openReviewPage } = useReviewStore.getState()
+    openFile('c0wrk:review')
+    setCollapsed(false)
+    openReviewPage(sessionId)
+    void useReviewStore.getState().loadReview(sessionId)
+    void reviewApi.setReviewStatus(sessionId, 'active').catch(() => {})
+  }
 
   return (
     <div className="flex items-center gap-1 px-2 py-1 min-h-[32px] shrink-0 border-b border-border bg-secondary/30">
@@ -105,6 +125,19 @@ export function ChangesToolbar() {
 
       {/* Stash / Pop stash */}
       <GitStashButtons onError={setError} />
+
+      {/* Review button — opens the review page in the file viewer */}
+      <Button
+        variant="ghost"
+        size="xs"
+        disabled={!canReview || isBusy}
+        onClick={handleOpenReview}
+        title="Review changes"
+        aria-label="Review changes"
+      >
+        <Eye className="h-3.5 w-3.5" />
+        Review
+      </Button>
 
       {/* Spacer */}
       <div className="flex-1" />

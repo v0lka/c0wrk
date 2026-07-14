@@ -14,6 +14,7 @@ import { ErrorBlock } from './ErrorBlock'
 import { ServiceMessage } from './ServiceMessage'
 import { ReflectionBlock } from './ReflectionBlock'
 import { PlanApprovalPanel } from './PlanApprovalPanel'
+import { ReviewPromptBlock } from './ReviewPromptBlock'
 import { ThoughtGroupBlock } from './ThoughtGroupBlock'
 import { ChecklistCard } from './ChecklistCard'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
@@ -71,6 +72,7 @@ const renderers: Record<DisplayItemKind, ItemRenderer> = {
   context_compaction: ContextCompactionBlock as ItemRenderer,
   memory_read: MemoryReadBlock as ItemRenderer,
   plan_review: PlanApprovalPanel as ItemRenderer,
+  review_prompt: ReviewPromptBlock as ItemRenderer,
   checklist: ChecklistCard as ItemRenderer,
 }
 

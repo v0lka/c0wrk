@@ -10,6 +10,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/logger"
 	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/backend/review"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/c0wrk/core/workspace"
@@ -29,8 +30,9 @@ type FrontendAPI struct {
 	configLoadErrors []string
 
 	// Persistence stores
-	store     *session.SQLiteSessionStore
-	projStore *project.SQLiteProjectStore
+	store       *session.SQLiteSessionStore
+	projStore   *project.SQLiteProjectStore
+	reviewStore *review.SQLiteReviewStore
 
 	// Session
 	sessionLogger *logger.SessionLogger
@@ -101,6 +103,7 @@ type FrontendAPIConfig struct {
 	ConfigPath      string
 	Store           *session.SQLiteSessionStore
 	ProjStore       *project.SQLiteProjectStore
+	ReviewStore     *review.SQLiteReviewStore
 	SessionLogger   *logger.SessionLogger
 	LogLevel        string
 	Watcher         *workspace.Watcher
@@ -121,6 +124,7 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 		configPath:      cfg.ConfigPath,
 		store:           cfg.Store,
 		projStore:       cfg.ProjStore,
+		reviewStore:     cfg.ReviewStore,
 		sessionLogger:   cfg.SessionLogger,
 		logLevel:        cfg.LogLevel,
 		watcher:         cfg.Watcher,
@@ -276,6 +280,11 @@ func (l *FrontendAPILifecycle) Cleanup() {
 	if f.projStore != nil {
 		if err := f.projStore.Close(); err != nil {
 			f.log().Error("failed to close project store", "error", err)
+		}
+	}
+	if f.reviewStore != nil {
+		if err := f.reviewStore.Close(); err != nil {
+			f.log().Error("failed to close review store", "error", err)
 		}
 	}
 	if f.sessionLogger != nil {

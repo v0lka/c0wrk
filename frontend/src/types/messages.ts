@@ -12,6 +12,7 @@ export type MessageType =
   | 'task_failed_resumable' | 'task_resumed' | 'step_limit' | 'context_compaction'
   | 'step_todo_update' | 'memory_read' | 'plan_review'
   | 'service'
+  | 'review_prompt'
 
 export interface ChatMessageUI {
   id: string
@@ -27,6 +28,7 @@ export type DisplayItemKind =
   | 'ask_user' | 'step_limit' | 'resume_action' | 'error' | 'service' | 'plan_step'
   | 'subagent' | 'reflection' | 'step_finish'
   | 'context_compaction' | 'memory_read' | 'plan_review' | 'checklist'
+  | 'review_prompt'
 
 export type DisplayItem =
   | { kind: 'user'; message: ChatMessageUI }
@@ -47,6 +49,7 @@ export type DisplayItem =
   | { kind: 'context_compaction'; id: string; beforePercent: number; afterPercent: number }
   | { kind: 'memory_read'; id: string; content: string; stepNum?: number }
   | { kind: 'plan_review'; message: ChatMessageUI }
+  | { kind: 'review_prompt'; message: ChatMessageUI }
   | { kind: 'checklist'; id: string; stepId: string | null; items: Array<{ text: string; checked: boolean }>; active: boolean }
 
 export interface GroupedMessages {
@@ -63,6 +66,7 @@ export type ToolConfirmDecision = 'confirmed' | 'denied'
 export type StepLimitDecision = 'allow_once' | 'allow_more' | 'allow_always' | 'deny'
 export type ResumeDecision = 'resumed' | 'cancelled'
 export type PlanReviewDecision = 'approve' | 'request_changes' | 'abandon'
+export type ReviewPromptDecision = 'enter' | 'decline'
 
 interface ToolConfirmResolved { resolved: true; decision: ToolConfirmDecision; [key: string]: unknown }
 interface StepLimitResolved { resolved: true; decision: StepLimitDecision; [key: string]: unknown }
@@ -130,6 +134,18 @@ export function getPlanReviewResolution(metadata: Record<string, unknown> | unde
 
 export function isResolved(metadata: Record<string, unknown> | undefined): boolean {
   return isObj(metadata) && metadata.resolved === true
+}
+
+const REVIEW_PROMPT_DECISIONS: ReadonlySet<string> = new Set(['enter', 'decline'])
+
+export function reviewPromptResolved(decision: ReviewPromptDecision) {
+  return { resolved: true, decision }
+}
+
+export function getReviewPromptResolution(metadata: Record<string, unknown> | undefined): ReviewPromptDecision | null {
+  if (!isResolved(metadata)) return null
+  const d = (metadata as { decision?: unknown }).decision
+  return typeof d === 'string' && REVIEW_PROMPT_DECISIONS.has(d) ? d as ReviewPromptDecision : null
 }
 
 export function parseAskUserQuestions(metadata: Record<string, unknown> | undefined): AskUserQuestion[] {

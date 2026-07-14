@@ -905,6 +905,71 @@ export namespace project {
 
 }
 
+export namespace review {
+	
+	export class HunkComment {
+	    id: string;
+	    session_id: string;
+	    file_path: string;
+	    hunk_id: string;
+	    body: string;
+	    created_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HunkComment(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.session_id = source["session_id"];
+	        this.file_path = source["file_path"];
+	        this.hunk_id = source["hunk_id"];
+	        this.body = source["body"];
+	        this.created_at = source["created_at"];
+	    }
+	}
+	export class Review {
+	    session_id: string;
+	    status: string;
+	    general_comment: string;
+	    hunk_comments: HunkComment[];
+	    updated_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Review(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.session_id = source["session_id"];
+	        this.status = source["status"];
+	        this.general_comment = source["general_comment"];
+	        this.hunk_comments = this.convertValues(source["hunk_comments"], HunkComment);
+	        this.updated_at = source["updated_at"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace session {
 	
 	export class ChatMessage {
@@ -1259,6 +1324,61 @@ export namespace workspace {
 	        this.is_rebasing = source["is_rebasing"];
 	    }
 	}
+	export class ReviewHunk {
+	    raw: string;
+	    old_start: number;
+	    old_count: number;
+	    new_start: number;
+	    new_count: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ReviewHunk(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.raw = source["raw"];
+	        this.old_start = source["old_start"];
+	        this.old_count = source["old_count"];
+	        this.new_start = source["new_start"];
+	        this.new_count = source["new_count"];
+	    }
+	}
+	export class ReviewFileDiff {
+	    path: string;
+	    old_path?: string;
+	    hunks: ReviewHunk[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ReviewFileDiff(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.old_path = source["old_path"];
+	        this.hunks = this.convertValues(source["hunks"], ReviewHunk);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class StashEntry {
 	    index: number;
 	    message: string;

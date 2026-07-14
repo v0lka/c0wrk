@@ -4,6 +4,8 @@ import { useFileViewerData } from '@/hooks/useFileViewerData'
 import { CodeMirrorFileViewer } from '@/components/fileViewer/CodeMirrorFileViewer'
 import { DiffHunkStageBar } from '@/components/fileViewer/DiffHunkStageBar'
 import { PlanEditor } from '@/components/fileViewer/PlanEditor'
+import { ReviewPage } from '@/components/review/ReviewPage'
+import { useSessionStore } from '@/stores/sessionStore'
 import type { HunkDiffInfo } from '@/types/models'
 
 /** Stable empty array reused when hunks are absent to avoid per-render allocation. */
@@ -24,6 +26,14 @@ export function FileViewerContent() {
   useFileViewerData(activeFile, openTabs)
 
   if (!activeFile) return null
+
+  // Review page: synthetic pseudo-path renders the review UI instead of a file
+  if (activeFile === 'c0wrk:review') {
+    const sessionId = useSessionStore.getState().activeSessionId
+    if (!sessionId) return null
+    return <ReviewPage sessionId={sessionId} />
+  }
+
   const fileData = files[activeFile]
   if (!fileData) return null
 
