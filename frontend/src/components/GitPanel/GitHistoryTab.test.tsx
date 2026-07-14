@@ -34,6 +34,33 @@ const { gitMocks } = vi.hoisted(() => ({
 vi.mock('@/api/git', () => gitMocks)
 vi.mock('@/lib/logger', () => ({ logger: { error: vi.fn() } }))
 
+// Mock the virtualizer so all rows render in jsdom (which has no layout
+// engine, so the scroll container's height is 0 and the real virtualizer
+// would mount zero items). The mock returns every item with correct
+// absolute offsets so the component's positioning logic is still exercised.
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: (options: {
+    count: number
+    estimateSize: (i: number) => number
+    getItemKey: (i: number) => string | number
+  }) => {
+    const items = Array.from({ length: options.count }, (_, i) => ({
+      index: i,
+      key: options.getItemKey(i),
+      start: Array.from({ length: i }, (_, j) => options.estimateSize(j)).reduce(
+        (a, b) => a + b,
+        0,
+      ),
+      size: options.estimateSize(i),
+    }))
+    const totalSize = items.reduce((sum, item) => sum + item.size, 0)
+    return {
+      getVirtualItems: () => items,
+      getTotalSize: () => totalSize,
+    }
+  },
+}))
+
 import { GitHistoryTab } from './GitHistoryTab'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
@@ -194,81 +221,7 @@ describe('GitHistoryTab file filter', () => {
   })
 })
 
-describe('GitHistoryTab "Load more" pagination', () => {
-  /** Generate a page of `count` commits with unique SHAs. */
-  function makePage(prefix: string, count: number, firstParent?: string) {
-    return Array.from({ length: count }, (_, i) => ({
-      sha: `${prefix}-${i}`,
-      parents: i > 0 ? [`${prefix}-${i - 1}`] : firstParent ? [firstParent] : [],
-      author: 'Jane',
-      email: 'j@x',
-      date: '2026-07-10',
-      message: `${prefix} commit ${i}`,
-      refs: [] as string[],
-    }))
-  }
-
-  /** Find the "Load more" button by text content. */
-  function loadMoreButton(): HTMLButtonElement | undefined {
-    return Array.from(container.querySelectorAll('button')).find(
-      (b) => b.textContent?.includes('Load more') || b.textContent?.includes('Loading'),
-    )
-  }
-
-  it('loads the next page on "Load more" click', async () => {
-    const page1 = makePage('p1', 25)
-    const page2 = makePage('p2', 25, 'p1-24')
-    gitMocks.getGitHistory.mockImplementation((_limit: number, skip: number) => {
-      if (skip === 0) return Promise.resolve(page1)
-      if (skip === 25) return Promise.resolve(page2)
-      return Promise.resolve([])
-    })
-
-    renderTab()
-    await flush()
-    await flush()
-    expect(graphNodes()).toBe(25)
-
-    const btn = loadMoreButton()
-    expect(btn).toBeTruthy()
-    await act(async () => { btn!.click() })
-    await flush()
-    await flush()
-
-    expect(graphNodes()).toBe(50)
-  })
-
-  it('prevents duplicate fetches on rapid double-click (ref guard)', async () => {
-    const page1 = makePage('p1', 25)
-    const page2 = makePage('p2', 25, 'p1-24')
-    gitMocks.getGitHistory.mockImplementation((_limit: number, skip: number) => {
-      if (skip === 0) return Promise.resolve(page1)
-      if (skip === 25) return Promise.resolve(page2)
-      return Promise.resolve([])
-    })
-
-    renderTab()
-    await flush()
-    await flush()
-    expect(graphNodes()).toBe(25)
-
-    const btn = loadMoreButton()
-    expect(btn).toBeTruthy()
-    // Rapid double-click before React can disable the button
-    await act(async () => {
-      btn!.click()
-      btn!.click()
-    })
-    await flush()
-    await flush()
-
-    // Only one fetch for skip=25 — not two
-    const skip25Calls = gitMocks.getGitHistory.mock.calls.filter(([, s]) => s === 25)
-    expect(skip25Calls).toHaveLength(1)
-    // 50 nodes, not 75 (no duplicate page appended)
-    expect(graphNodes()).toBe(50)
-  })
-
+describe('GitHistoryTab rendering', () => {
   it('renders root commits with empty parents array', async () => {
     // The backend sends [] (not null) for root commits via
     // parents := []string{}. The type guard rejects null arrays.
@@ -282,157 +235,5 @@ describe('GitHistoryTab "Load more" pagination', () => {
     await flush()
     // Both commits should render — the root commit has empty parents
     expect(graphNodes()).toBe(2)
-  })
-})
-
-describe('GitHistoryTab filter auto-load', () => {
-  /** Generate a page of `count` commits with unique SHAs. */
-  function makePage(prefix: string, count: number, firstParent?: string) {
-    return Array.from({ length: count }, (_, i) => ({
-      sha: `${prefix}-${i}`,
-      parents: i > 0 ? [`${prefix}-${i - 1}`] : firstParent ? [firstParent] : [],
-      author: 'Jane',
-      email: 'j@x',
-      date: '2026-07-10',
-      message: `${prefix} commit ${i}`,
-      refs: [] as string[],
-    }))
-  }
-
-  /** Find the "Load more" button by text content. */
-  function loadMoreButton(): HTMLButtonElement | undefined {
-    return Array.from(container.querySelectorAll('button')).find(
-      (b) => b.textContent?.includes('Load more') || b.textContent?.includes('Loading'),
-    )
-  }
-
-  /** Count rendered commit rows in the filtered view (each has a short-SHA span). */
-  function commitRowCount(): number {
-    return container.querySelectorAll('button span.text-info').length
-  }
-
-  /** Files mock: `matchCount` commits per page have `src/a.ts`, the rest have `other.txt`. */
-  function filesMock(matchCount: Record<string, number>) {
-    return (shas: string[]): Promise<Record<string, { path: string; status: string }[]>> => {
-      const result: Record<string, { path: string; status: string }[]> = {}
-      for (const sha of shas) {
-        const [prefix, idxStr] = sha.split('-') as [string, string]
-        const idx = parseInt(idxStr, 10)
-        const limit = matchCount[prefix] ?? 0
-        result[sha] =
-          idx < limit
-            ? [{ path: 'src/a.ts', status: 'M' }]
-            : [{ path: 'other.txt', status: 'M' }]
-      }
-      return Promise.resolve(result)
-    }
-  }
-
-  it('does not auto-load when no filter is active', async () => {
-    gitMocks.getGitHistory.mockImplementation((_limit: number, skip: number) => {
-      if (skip === 0) return Promise.resolve(makePage('p1', 25))
-      if (skip === 25) return Promise.resolve(makePage('p2', 25, 'p1-24'))
-      return Promise.resolve([])
-    })
-
-    renderTab()
-    await flush()
-    await flush()
-    for (let i = 0; i < 5; i++) await flush()
-
-    // Only the initial load (skip=0) — no auto-loading without a filter
-    expect(gitMocks.getGitHistory).toHaveBeenCalledTimes(1)
-    expect(loadMoreButton()).toBeTruthy()
-  })
-
-  it('auto-loads more pages until enough matches are found', async () => {
-    gitMocks.getGitHistory.mockImplementation((_limit: number, skip: number) => {
-      if (skip === 0) return Promise.resolve(makePage('p1', 25))
-      if (skip === 25) return Promise.resolve(makePage('p2', 25, 'p1-24'))
-      if (skip === 50) return Promise.resolve(makePage('p3', 25, 'p2-24'))
-      return Promise.resolve([])
-    })
-    // 3 matches in page 1 + 22 in page 2 = 25 (target reached)
-    gitMocks.getCommitFilesBatch.mockImplementation(filesMock({ p1: 3, p2: 22 }))
-
-    renderTab()
-    await flush()
-    await flush()
-
-    const input = container.querySelector('input') as HTMLInputElement
-    await act(async () => { setInputValue(input, 'src/a.ts') })
-    for (let i = 0; i < 8; i++) await flush()
-
-    // Auto-loaded page 2 (skip=25) but NOT page 3 (skip=50)
-    const skip25Calls = gitMocks.getGitHistory.mock.calls.filter(([, s]) => s === 25)
-    expect(skip25Calls).toHaveLength(1)
-    const skip50Calls = gitMocks.getGitHistory.mock.calls.filter(([, s]) => s === 50)
-    expect(skip50Calls).toHaveLength(0)
-
-    // 25 matched commits rendered
-    expect(commitRowCount()).toBe(25)
-  })
-
-  it('stops auto-loading when the log is exhausted', async () => {
-    gitMocks.getGitHistory.mockImplementation((_limit: number, skip: number) => {
-      if (skip === 0) return Promise.resolve(makePage('p1', 25))
-      // 10 < page size → hasMore becomes false
-      if (skip === 25) return Promise.resolve(makePage('p2', 10, 'p1-24'))
-      return Promise.resolve([])
-    })
-    // 3 matches in page 1 + 2 in page 2 = 5 (below target, but log exhausted)
-    gitMocks.getCommitFilesBatch.mockImplementation(filesMock({ p1: 3, p2: 2 }))
-
-    renderTab()
-    await flush()
-    await flush()
-
-    const input = container.querySelector('input') as HTMLInputElement
-    await act(async () => { setInputValue(input, 'src/a.ts') })
-    for (let i = 0; i < 8; i++) await flush()
-
-    // Loaded page 2 (skip=25) but NOT page 3 (skip=50)
-    const skip50Calls = gitMocks.getGitHistory.mock.calls.filter(([, s]) => s === 50)
-    expect(skip50Calls).toHaveLength(0)
-
-    // 5 matched commits, no "Load more" (log exhausted)
-    expect(commitRowCount()).toBe(5)
-    expect(loadMoreButton()).toBeUndefined()
-  })
-
-  it('shows "Load more" when the safety cap is reached', async () => {
-    // 9+ pages of 25 commits, none match the filter.
-    // After 8 pages (200 commits) the cap stops auto-loading.
-    gitMocks.getGitHistory.mockImplementation((_limit: number, skip: number) => {
-      if (skip >= 225) return Promise.resolve([])
-      const pageIndex = skip / 25
-      const firstParent = pageIndex > 0 ? `p${pageIndex - 1}-24` : undefined
-      return Promise.resolve(makePage(`p${pageIndex}`, 25, firstParent))
-    })
-    gitMocks.getCommitFilesBatch.mockImplementation(filesMock({}))
-
-    renderTab()
-    await flush()
-    await flush()
-
-    const input = container.querySelector('input') as HTMLInputElement
-    await act(async () => { setInputValue(input, 'src/a.ts') })
-
-    // Flush until "Load more" appears (cap reached) or max attempts
-    for (let i = 0; i < 40; i++) {
-      await flush()
-      if (loadMoreButton()?.textContent?.includes('Load more')) break
-    }
-
-    // "Load more" visible — cap reached, hasMore still true
-    const btn = loadMoreButton()
-    expect(btn).toBeTruthy()
-    expect(btn?.textContent).toContain('Load more')
-
-    // 8 calls total: 1 initial + 7 auto-loads (skip 0, 25, …, 175)
-    expect(gitMocks.getGitHistory).toHaveBeenCalledTimes(8)
-    // NOT called with skip=200 (cap prevents the 8th auto-load)
-    const skip200Calls = gitMocks.getGitHistory.mock.calls.filter(([, s]) => s === 200)
-    expect(skip200Calls).toHaveLength(0)
   })
 })

@@ -68,7 +68,7 @@ export function GetFileDiff(arg1:string):Promise<string>;
 
 export function GetFileIcon(arg1:string):Promise<backend.FileIconResponse>;
 
-export function GetGitHistory(arg1:number,arg2:number):Promise<Array<workspace.GitHistoryCommit>>;
+export function GetGitHistory():Promise<Array<workspace.GitHistoryCommit>>;
 
 export function GetGitStatus(arg1:string):Promise<Record<string, workspace.GitStatusEntry>>;
 

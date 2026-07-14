@@ -505,17 +505,14 @@ export async function getRebaseMergeState(): Promise<MergeRebaseState> {
 // --- Unified history + graph (merged tab) ---
 
 /**
- * Fetch one page of the unified commit history+graph: SHAs, parents,
- * author, email, date, message, and ref decorations in a single call.
- * `limit` caps the page size and `skip` offsets from the newest commit,
- * enabling server-side lazy loading. A non-positive `limit` defaults to
- * 50 on the backend. Replaces the separate GetCommitLog/GetGitGraph calls
- * for the merged History tab.
+ * Fetch the full unified commit history+graph: SHAs, parents, author,
+ * email, date, message, and ref decorations in a single call. Replaces
+ * the separate GetCommitLog/GetGitGraph calls for the merged History tab.
  */
-export async function getGitHistory(limit: number, skip: number): Promise<GitHistoryCommit[]> {
+export async function getGitHistory(): Promise<GitHistoryCommit[]> {
   try {
     const app = getApp()
-    const result = await app.GetGitHistory(limit, skip)
+    const result = await app.GetGitHistory()
     if (!isArrayOf(result, isGitHistoryCommit)) {
       logger.error('getGitHistory: unexpected response shape, returning []', result)
       return []

@@ -14,7 +14,7 @@ import (
 // cmp.Diff for struct/slice comparisons, mirroring TestParseGitGraph.
 // Integration tests exercise the real git binary through the FrontendAPI
 // RPC using the shared withGitRepo / commitFile helpers defined in this
-// package, mirroring TestGetGitGraph_Success / TestGetGitGraph_Pagination.
+// package, mirroring TestGetGitGraph_Success.
 
 // ---------------------------------------------------------------------------
 // parseGitHistory — deterministic, no git
@@ -98,7 +98,7 @@ func TestParseGitHistory(t *testing.T) {
 
 func TestGetGitHistory_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
-	if _, err := f.GetGitHistory(0, 0); err == nil {
+	if _, err := f.GetGitHistory(); err == nil {
 		t.Fatal("GetGitHistory: expected error when no active project")
 	}
 }
@@ -108,7 +108,7 @@ func TestGetGitHistory_Success(t *testing.T) {
 		// withGitRepo commits committed.txt (1 commit). Add a second.
 		commitFile(t, dir, "b.txt", "b\n")
 
-		history, err := f.GetGitHistory(0, 0)
+		history, err := f.GetGitHistory()
 		if err != nil {
 			t.Fatalf("GetGitHistory: %v", err)
 		}
@@ -141,64 +141,6 @@ func TestGetGitHistory_Success(t *testing.T) {
 		}
 		if len(history[1].Refs) != 0 {
 			t.Errorf("history[1].Refs: got %v, want empty (root has no decoration)", history[1].Refs)
-		}
-	})
-}
-
-func TestGetGitHistory_DefaultLimit(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, _ string) {
-		// Non-positive limit falls back to defaultGitHistoryLimit; just
-		// verify it does not error and returns the single existing commit.
-		history, err := f.GetGitHistory(0, 0)
-		if err != nil {
-			t.Fatalf("GetGitHistory(0,0): %v", err)
-		}
-		if len(history) != 1 {
-			t.Errorf("len: got %d, want 1", len(history))
-		}
-	})
-}
-
-func TestGetGitHistory_Pagination(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		// withGitRepo creates 1 commit (committed.txt). Add two more so the
-		// repo has 3 commits: newest=oldest order is b2, b1, committed.
-		commitFile(t, dir, "b1.txt", "b1\n")
-		commitFile(t, dir, "b2.txt", "b2\n")
-
-		// limit caps the page size.
-		page, err := f.GetGitHistory(2, 0)
-		if err != nil {
-			t.Fatalf("GetGitHistory(2,0): %v", err)
-		}
-		if len(page) != 2 {
-			t.Fatalf("GetGitHistory(2,0) len: got %d, want 2", len(page))
-		}
-		// Newest first: the first page starts at the most recent commit.
-		if page[0].Message != "add b2.txt" {
-			t.Errorf("GetGitHistory(2,0)[0].Message: got %q, want %q", page[0].Message, "add b2.txt")
-		}
-
-		// skip offsets into older history: skipping 2 leaves the root commit.
-		older, err := f.GetGitHistory(2, 2)
-		if err != nil {
-			t.Fatalf("GetGitHistory(2,2): %v", err)
-		}
-		if len(older) != 1 {
-			t.Fatalf("GetGitHistory(2,2) len: got %d, want 1 (only root remains)", len(older))
-		}
-
-		// Non-positive limit defaults to defaultGitHistoryLimit (50): with
-		// skip=1 the newest commit is skipped, returning the 2 older ones.
-		rest, err := f.GetGitHistory(0, 1)
-		if err != nil {
-			t.Fatalf("GetGitHistory(0,1): %v", err)
-		}
-		if len(rest) != 2 {
-			t.Fatalf("GetGitHistory(0,1) len: got %d, want 2", len(rest))
-		}
-		if rest[0].Message != "add b1.txt" {
-			t.Errorf("GetGitHistory(0,1)[0].Message: got %q, want %q", rest[0].Message, "add b1.txt")
 		}
 	})
 }

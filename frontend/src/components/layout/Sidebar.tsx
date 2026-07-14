@@ -22,7 +22,11 @@ export function Sidebar({ width, collapsed, onToggleCollapse }: SidebarProps) {
 
   if (collapsed) {
     return (
-      <div className="flex shrink-0 flex-col items-start pl-2 justify-center border-r border-border bg-background" style={{ width }}>
+      <div
+        className="flex shrink-0 flex-col items-start pl-2 justify-center border-r border-border bg-background select-none"
+        style={{ width }}
+        data-sidebar
+      >
         <Button variant="ghost" size="icon-xs" onClick={onToggleCollapse} aria-label="Expand sidebar">
           <PanelLeftOpen className="size-4" />
         </Button>
@@ -32,8 +36,9 @@ export function Sidebar({ width, collapsed, onToggleCollapse }: SidebarProps) {
 
   return (
     <div
-      className={cn('flex shrink-0 flex-col border-r border-border bg-background')}
+      className={cn('flex shrink-0 flex-col border-r border-border bg-background select-none')}
       style={{ width }}
+      data-sidebar
     >
       <SidebarHeader onToggleCollapse={onToggleCollapse} collapsed={collapsed} />
       {!isChatMode && <ProjectSelector />}

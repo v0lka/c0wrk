@@ -78,7 +78,7 @@ type StashEntry struct {
 // GitHistoryCommit describes a single commit for the unified history+graph
 // view. It carries both the human-readable log fields (author/email/date)
 // and the graph topology fields (parents/refs) so the frontend can render
-// lane topology and expandable commit details from one paginated source.
+// lane topology and expandable commit details from a single source.
 type GitHistoryCommit struct {
 	SHA     string   `json:"sha"`
 	Parents []string `json:"parents"`

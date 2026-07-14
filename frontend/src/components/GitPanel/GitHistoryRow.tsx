@@ -60,7 +60,7 @@ export function GitHistoryRow({
               ) : (
                 <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
               )}
-              <span className="min-w-0 truncate flex-1">{node.message}</span>
+              <span className="min-w-0 truncate flex-1 select-text">{node.message}</span>
               {node.refs.map((ref) => (
                 <span
                   key={ref}
@@ -69,10 +69,10 @@ export function GitHistoryRow({
                   {ref.replace(/^tag:\s*/, '')}
                 </span>
               ))}
-              <span className="shrink-0 font-mono text-[10px] text-info">{shortSha(node.sha)}</span>
+              <span className="shrink-0 font-mono text-[10px] text-info select-text">{shortSha(node.sha)}</span>
             </div>
             <div className="flex items-center pl-7 text-[10px] leading-none text-muted-foreground">
-              <span className="min-w-0 truncate">
+              <span className="min-w-0 truncate select-text">
                 {author} · {formatRelativeTime(date)}
               </span>
             </div>
@@ -100,7 +100,7 @@ export function GitHistoryRow({
                 <span className={cn('shrink-0 font-mono font-semibold', fileStatusColor(f.status))}>
                   {f.status}
                 </span>
-                <span className="min-w-0 truncate text-muted-foreground">{f.path}</span>
+                <span className="min-w-0 truncate text-muted-foreground select-text">{f.path}</span>
               </div>
             ))
           ) : (

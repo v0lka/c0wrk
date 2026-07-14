@@ -21,6 +21,7 @@
     "@codemirror/view": "^6.41.1",
     "@lezer/highlight": "^1.2.3",
     "@m234/nerd-fonts": "^0.5.1",
+    "@tanstack/react-virtual": "^3.14.6",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "ansi_up": "^6.0.6",

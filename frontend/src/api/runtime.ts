@@ -24,6 +24,7 @@ declare global {
     runtime: {
       EventsOn(eventName: string, callback: (...data: unknown[]) => void): () => void
       EventsEmit(eventName: string, ...data: unknown[]): void
+      ClipboardSetText(text: string): Promise<boolean>
     }
   }
 }
@@ -37,6 +38,7 @@ export function isWailsReady(): boolean {
 export function getRuntime(): {
   EventsOn(eventName: string, callback: (...data: unknown[]) => void): () => void
   EventsEmit(eventName: string, ...data: unknown[]): void
+  ClipboardSetText(text: string): Promise<boolean>
 } {
   if (typeof window === 'undefined' || !window.runtime) {
     throw new Error('Wails runtime is not available')
@@ -72,6 +74,21 @@ export function emit(eventName: string, data?: unknown): void {
   } else {
     rt.EventsEmit(eventName)
   }
+}
+
+/** Copy text to the system clipboard via the native Wails runtime.
+ *
+ *  Use this INSTEAD of `navigator.clipboard.writeText`. The Web Clipboard API
+ *  is unreliable inside the Wails webview: `navigator.clipboard` is `undefined`
+ *  in production builds (the webview origin is not a secure context — see
+ *  wailsapp/wails#1670) and, even when present, `writeText` rejects with
+ *  `NotAllowedError` under WKWebView's strict transient-activation rules for
+ *  clipboard writes triggered from context-menu item clicks. The native
+ *  runtime writes through Go and is unaffected by those restrictions, so it
+ *  works consistently for every entry. */
+export function clipboardSetText(text: string): Promise<boolean> {
+  const rt = getRuntime()
+  return rt.ClipboardSetText(text)
 }
 
 /**

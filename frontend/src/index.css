@@ -128,6 +128,24 @@ body {
 }
 
 /* ==========================================================================
+   Sidebar Selection Handling
+   The sidebar disables native text selection (user-select: none) across all
+   of its sections — header, project/session selectors, file tree, git panel,
+   and semantic search — to prevent accidental selection while clicking
+   around. The `select-none` utility is applied to the sidebar root, which
+   carries the `data-sidebar` attribute. Text-entry elements (inputs,
+   textareas, contenteditable) are exempted so users can still select and
+   edit the text they type. High-specificity descendant selectors override
+   the inherited `none` without resorting to !important.
+   ========================================================================== */
+
+[data-sidebar] input,
+[data-sidebar] textarea,
+[data-sidebar] [contenteditable="true"] {
+    user-select: text;
+}
+
+/* ==========================================================================
    highlight.js — One Dark Theme (self-contained, no external import)
    All colors reference design tokens defined in @theme.
    ========================================================================== */

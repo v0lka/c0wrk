@@ -97,7 +97,7 @@ function VectorStoreEntryItem({ entry, showScore }: { entry: VectorStoreEntry; s
       {/* Header line */}
       <div className="flex items-center gap-1.5 text-xs">
         <FileCode className="size-3 shrink-0 text-muted-foreground" />
-        <span className="truncate font-medium text-foreground">{fileName}</span>
+        <span className="truncate font-medium text-foreground select-text">{fileName}</span>
         {entry.start_line > 0 && (
           <span className="shrink-0 text-muted-foreground">
             L{entry.start_line}
@@ -133,10 +133,10 @@ function VectorStoreEntryItem({ entry, showScore }: { entry: VectorStoreEntry; s
       </div>
 
       {/* Directory path */}
-      {dirPath && <div className="truncate text-[10px] text-muted-foreground mt-0.5 pl-4.5">{dirPath}</div>}
+      {dirPath && <div className="truncate text-[10px] text-muted-foreground mt-0.5 pl-4.5 select-text">{dirPath}</div>}
 
       {/* Content preview */}
-      <pre className="mt-1 pl-4.5 text-[10px] leading-4 text-muted-foreground whitespace-pre-wrap break-all line-clamp-4">
+      <pre className="mt-1 pl-4.5 text-[10px] leading-4 text-muted-foreground whitespace-pre-wrap break-all line-clamp-4 select-text">
         {preview}
       </pre>
     </button>

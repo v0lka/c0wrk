@@ -2,7 +2,7 @@ import { useEffect, useCallback, useRef, useState } from 'react'
 import { Terminal, Copy, EyeOff, History, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { appendToGitignore } from '@/api/git'
-import { emit } from '@/api/runtime'
+import { emit, clipboardSetText } from '@/api/runtime'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -59,7 +59,7 @@ export function FileTreeContextMenu({
   // --- Copy Path (absolute) ---
   const handleCopyPath = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(entry.path)
+      await clipboardSetText(entry.path)
     } catch (err) {
       logger.error('Failed to copy path:', err)
       emit('runtime_error', {
@@ -73,7 +73,7 @@ export function FileTreeContextMenu({
   // --- Copy Relative Path ---
   const handleCopyRelativePath = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(relativePath)
+      await clipboardSetText(relativePath)
     } catch (err) {
       logger.error('Failed to copy relative path:', err)
       emit('runtime_error', {
@@ -106,9 +106,15 @@ export function FileTreeContextMenu({
   const handleViewHistory = useCallback(() => {
     useUIStore.getState().setWorkspaceTab('git')
     useGitPanelStore.getState().setActiveTab('history')
-    useGitPanelStore.getState().setPendingHistoryFilter(relativePath)
+    // For a directory, append the OS path separator so the glob filter
+    // matches only files *inside* it — not a sibling that shares the same
+    // prefix (e.g. "src/components" would otherwise also match
+    // "src/components-extra"). Uses the platform-aware separator so it
+    // works on Windows as well as macOS/Linux.
+    const filter = entry.is_dir ? relativePath + PATH_SEP : relativePath
+    useGitPanelStore.getState().setPendingHistoryFilter(filter)
     onClose()
-  }, [relativePath, onClose])
+  }, [entry.is_dir, relativePath, onClose])
 
   // Dismiss the dropdown on click-outside / Escape / scroll (mirrors
   // GitFileContextMenu).

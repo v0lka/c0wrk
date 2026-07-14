@@ -932,7 +932,7 @@ describe('getGitHistory', () => {
       { sha: 'aaa', parents: ['bbb'], author: 'Jane', email: 'jane@x.io', date: '2026-07-10', message: 'feat: x', refs: ['HEAD -> main'] },
       { sha: 'bbb', parents: [], author: 'Jane', email: 'jane@x.io', date: '2026-07-09', message: 'init', refs: [] },
     ])
-    const result = await getGitHistory(25, 0)
+    const result = await getGitHistory()
     expect(result).toEqual([
       { sha: 'aaa', parents: ['bbb'], author: 'Jane', email: 'jane@x.io', date: '2026-07-10', message: 'feat: x', refs: ['HEAD -> main'] },
       { sha: 'bbb', parents: [], author: 'Jane', email: 'jane@x.io', date: '2026-07-09', message: 'init', refs: [] },
@@ -941,7 +941,7 @@ describe('getGitHistory', () => {
 
   it('returns empty array when backend returns a non-array', async () => {
     mockApp.GetGitHistory = vi.fn().mockResolvedValue('invalid')
-    expect(await getGitHistory(25, 0)).toEqual([])
+    expect(await getGitHistory()).toEqual([])
   })
 
   it('returns empty array when an element fails the guard (bad sha type)', async () => {
@@ -949,14 +949,14 @@ describe('getGitHistory', () => {
       { sha: 'aaa', parents: [], author: 'Jane', email: 'j@x.io', date: 'd', message: 'ok', refs: [] },
       { sha: 123, parents: [], author: 'Jane', email: 'j@x.io', date: 'd', message: 'bad', refs: [] },
     ])
-    expect(await getGitHistory(25, 0)).toEqual([])
+    expect(await getGitHistory()).toEqual([])
   })
 
   it('returns empty array when parents is not an array', async () => {
     mockApp.GetGitHistory = vi.fn().mockResolvedValue([
       { sha: 'aaa', parents: 'bbb', author: 'Jane', email: 'j@x.io', date: 'd', message: 'ok', refs: [] },
     ])
-    expect(await getGitHistory(25, 0)).toEqual([])
+    expect(await getGitHistory()).toEqual([])
   })
 
   it('rejects commits with parents:null (guard requires arrays, backend sends [])', async () => {
@@ -966,7 +966,7 @@ describe('getGitHistory', () => {
     ])
     // The guard rejects null arrays; the backend now sends [] via
     // parents := []string{} so this scenario should not occur in practice.
-    expect(await getGitHistory(25, 0)).toEqual([])
+    expect(await getGitHistory()).toEqual([])
   })
 
   it('returns empty array when a required string field is missing', async () => {
@@ -974,16 +974,16 @@ describe('getGitHistory', () => {
       { sha: 'aaa', parents: [], author: 'Jane', email: 'j@x.io', date: 'd', message: 'ok', refs: [] },
       { sha: 'bbb', parents: [], author: 'Jane', email: 'j@x.io', date: 'd', refs: [] },
     ])
-    expect(await getGitHistory(25, 0)).toEqual([])
+    expect(await getGitHistory()).toEqual([])
   })
 
   it('returns empty array when backend returns empty array', async () => {
     mockApp.GetGitHistory = vi.fn().mockResolvedValue([])
-    expect(await getGitHistory(25, 0)).toEqual([])
+    expect(await getGitHistory()).toEqual([])
   })
 
   it('propagates errors', async () => {
     mockApp.GetGitHistory = vi.fn().mockRejectedValue(new Error('git error'))
-    await expect(getGitHistory(25, 0)).rejects.toThrow('git error')
+    await expect(getGitHistory()).rejects.toThrow('git error')
   })
 })

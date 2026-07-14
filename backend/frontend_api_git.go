@@ -306,6 +306,34 @@ func (f *FrontendAPI) runGitCmd(dir string, args ...string) (string, error) {
 	return string(out), nil
 }
 
+// runGitCmdWithStdin is like runGitCmd but feeds stdinData to the command's
+// standard input. This bypasses OS argument-length limits (ARG_MAX) when
+// passing a large number of revisions — e.g. thousands of commit SHAs to
+// `git log --stdin` or `git cat-file --batch-check`. Returns an error when
+// no arguments are provided or the command fails.
+func (f *FrontendAPI) runGitCmdWithStdin(dir, stdinData string, args ...string) (string, error) {
+	if len(args) == 0 {
+		return "", errors.New("runGitCmdWithStdin: no arguments")
+	}
+
+	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(stdinData)
+
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return "", fmt.Errorf("git: %w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return "", fmt.Errorf("git: %w", err)
+	}
+	return string(out), nil
+}
+
 // runGitCmdCombined executes a git sub-command in the given repository
 // directory and returns the combined stdout+stderr output. Unlike
 // runGitCmd, which only returns stdout, this helper preserves stderr
@@ -895,10 +923,6 @@ func (f *FrontendAPI) runRemoteOp(op, remote string, flags []string) (string, er
 // Commit history RPCs (Phase 5)
 // ---------------------------------------------------------------------------
 
-// defaultGitHistoryLimit is the page size used by GetGitHistory when the
-// caller does not request a positive limit.
-const defaultGitHistoryLimit = 50
-
 // validShaRe matches a plausible git SHA: 7-40 lowercase hex characters.
 // 7 is git's minimum abbreviated length; 40 is a full SHA. This is a
 // defense-in-depth measure to reject option-injection attempts when SHAs
@@ -952,8 +976,11 @@ func (f *FrontendAPI) GetCommitFiles(sha string) ([]CommitFile, error) {
 // to exactly the given SHAs without walking ancestors; --name-status -r -M
 // matches GetCommitFiles semantics (rename detection, per-file status).
 // SHAs are validated (7-40 hex chars) and resolved to full 40-char form
-// via git rev-parse before the log call, so the result map is always keyed
-// by full SHAs regardless of whether abbreviated SHAs were passed in.
+// via git cat-file --batch-check (stdin) before the log call, so the
+// result map is always keyed by full SHAs regardless of whether
+// abbreviated SHAs were passed in. Both the resolution and the log call
+// feed SHAs through stdin to bypass OS argument-length limits (ARG_MAX)
+// when the batch contains thousands of revisions.
 // Each SHA in the result maps to its changed files; commits that changed no
 // files (e.g. merge commits) map to an empty slice. SHAs not found in the
 // output also map to an empty slice so callers always get a complete map.
@@ -990,11 +1017,12 @@ func (f *FrontendAPI) GetCommitFilesBatch(shas []string) (map[string][]CommitFil
 
 	// %x1e (record separator) before each SHA delimits commits in the
 	// combined output so parseCommitFilesBatch can split them apart.
-	args := make([]string, 0, 6+len(fullShas))
-	args = append(args, "log", "--no-walk=unsorted", "--name-status", "-r", "-M", "--format=%x1e%H")
-	args = append(args, fullShas...)
-
-	out, err := f.runGitCmd(repoPath, args...)
+	// SHAs are fed through stdin (--stdin) instead of argv to bypass OS
+	// argument-length limits (ARG_MAX) when the batch contains thousands
+	// of revisions.
+	stdin := strings.Join(fullShas, "\n") + "\n"
+	out, err := f.runGitCmdWithStdin(repoPath, stdin,
+		"log", "--no-walk=unsorted", "--stdin", "--name-status", "-r", "-M", "--format=%x1e%H")
 	if err != nil {
 		return nil, err
 	}
@@ -1003,24 +1031,28 @@ func (f *FrontendAPI) GetCommitFilesBatch(shas []string) (map[string][]CommitFil
 }
 
 // resolveCommitShas resolves each SHA (possibly abbreviated) to its full
-// 40-character form via `git rev-parse`. This ensures the result-map keys
-// in GetCommitFilesBatch match git log's %H output regardless of whether
-// the caller passed abbreviated or full SHAs.
+// 40-character form via `git cat-file --batch-check --stdin`. SHAs are fed
+// through stdin instead of argv to bypass OS argument-length limits
+// (ARG_MAX) when the batch contains thousands of revisions. This ensures
+// the result-map keys in GetCommitFilesBatch match git log's %H output
+// regardless of whether the caller passed abbreviated or full SHAs.
 func (f *FrontendAPI) resolveCommitShas(repoPath string, shas []string) ([]string, error) {
-	args := make([]string, 0, 1+len(shas))
-	args = append(args, "rev-parse")
-	args = append(args, shas...)
-	out, err := f.runGitCmd(repoPath, args...)
+	stdin := strings.Join(shas, "\n") + "\n"
+	out, err := f.runGitCmdWithStdin(repoPath, stdin, "cat-file", "--batch-check")
 	if err != nil {
 		return nil, fmt.Errorf("resolve commit SHAs: %w", err)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	full := make([]string, 0, len(lines))
 	for _, line := range lines {
-		l := strings.TrimSpace(line)
-		if l != "" {
-			full = append(full, l)
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
 		}
+		if fields[1] == "missing" {
+			return nil, fmt.Errorf("resolve commit SHAs: %s not found", fields[0])
+		}
+		full = append(full, fields[0])
 	}
 	if len(full) != len(shas) {
 		return nil, fmt.Errorf("resolve commit SHAs: expected %d resolved SHAs, got %d", len(shas), len(full))
@@ -1468,23 +1500,13 @@ func isRebaseActive(gitDir string) bool {
 // Commit graph RPC (Phase 6)
 // ---------------------------------------------------------------------------
 
-// GetGitHistory returns a page of commit history for the unified
+// GetGitHistory returns the full commit history for the unified
 // history+graph view, each commit carrying the union of the
 // human-readable log fields (author/email/date/message) and the graph
-// topology fields (parents/refs). limit caps the number of commits
-// returned; skip offsets into the history for lazy-load pagination
-// ("Load more"). A non-positive limit defaults to defaultGitHistoryLimit;
-// a negative skip is treated as zero. Returns an empty slice (not nil)
-// when there are no commits. Returns an error when no project is active,
-// the project is No Project, or the git command fails.
-func (f *FrontendAPI) GetGitHistory(limit, skip int) ([]GitHistoryCommit, error) {
-	if limit <= 0 {
-		limit = defaultGitHistoryLimit
-	}
-	if skip < 0 {
-		skip = 0
-	}
-
+// topology fields (parents/refs). Returns an empty slice (not nil) when
+// there are no commits. Returns an error when no project is active, the
+// project is No Project, or the git command fails.
+func (f *FrontendAPI) GetGitHistory() ([]GitHistoryCommit, error) {
 	repoPath, err := f.resolveGitRepoRoot()
 	if err != nil {
 		return nil, err
@@ -1496,8 +1518,6 @@ func (f *FrontendAPI) GetGitHistory(limit, skip int) ([]GitHistoryCommit, error)
 	// between commits. Fields: SHA, parents, author, email, date,
 	// subject, ref decorations.
 	out, err := f.runGitCmd(repoPath, "log",
-		"-n", strconv.Itoa(limit),
-		"--skip", strconv.Itoa(skip),
 		"--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d%x1e",
 	)
 	if err != nil {

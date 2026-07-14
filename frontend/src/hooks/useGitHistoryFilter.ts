@@ -129,8 +129,8 @@ export function useGitHistoryFilter(commits: GitHistoryCommit[]): UseGitHistoryF
   )
 
   // When filtering, ensure every loaded commit's files are fetched so the
-  // matcher can test them. Re-runs when more commits are loaded (Load more)
-  // or when the filter becomes valid; fetchFilesBatch dedupes per SHA.
+  // matcher can test them. Re-runs when the filter becomes valid;
+  // fetchFilesBatch dedupes per SHA.
   useEffect(() => {
     if (!isFiltering || matcher === null) return
     const uncached = commits

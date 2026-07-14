@@ -1,12 +1,12 @@
-import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { Loader2, AlertCircle } from 'lucide-react'
 import { computeGraphLayout, computeRowYLayout, type GraphNode } from '@/lib/gitGraphLayout'
 import { useGitHistory } from '@/hooks/useGitHistory'
 import { useGitHistoryFilter } from '@/hooks/useGitHistoryFilter'
-import { useGitHistoryAutofill } from '@/hooks/useGitHistoryAutofill'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { FilterBar } from '@/components/ui/FilterBar'
-import { ROW_SPACING, NODE_OFFSET, expandedContentHeight } from './gitGraphRender'
+import { ROW_SPACING, NODE_OFFSET, LANE_SPACING, xFor, expandedContentHeight } from './gitGraphRender'
 import { GitGraphGutter } from './GitGraphGutter'
 import { GitHistoryRow } from './GitHistoryRow'
 
@@ -17,7 +17,7 @@ import { GitHistoryRow } from './GitHistoryRow'
  * date). Clicking a commit lazily expands its changed files inline; the
  * graph edges route around the expanded gap via variable row heights.
  *
- * Data comes from one paginated source (`useGitHistory` → `GetGitHistory`);
+ * Data comes from a single source (`useGitHistory` → `GetGitHistory`);
  * changed files are fetched lazily per commit via `GetCommitFiles` and
  * cached by `useGitHistoryFilter`.
  *
@@ -27,7 +27,7 @@ import { GitHistoryRow } from './GitHistoryRow'
  * (pushed left), since a filtered subset no longer forms a connected graph.
  */
 export function GitHistoryTab() {
-  const { commits, hasMore, isLoading, isLoadingMore, error, loadMore } = useGitHistory()
+  const { commits, isLoading, error } = useGitHistory()
   const {
     filterText,
     filterMode,
@@ -57,24 +57,6 @@ export function GitHistoryTab() {
       clearPendingHistoryFilter()
     }
   }, [pendingHistoryFilter, setFilterText, clearPendingHistoryFilter])
-
-  // While filtering, auto-load more pages until enough matched commits are
-  // found (HISTORY_PAGE_SIZE), the log is exhausted, or the safety cap is
-  // reached. The `allFilesResolved` guard prevents firing the next page
-  // load before the filter hook has fetched changed files for the newly
-  // loaded commits.
-  const allFilesResolved = commits.every((c) => filesBySha[c.sha] !== undefined)
-  const isAutofilling = useGitHistoryAutofill({
-    isFiltering,
-    isInvalidFilter,
-    isResolvingFiles,
-    filteredCount: filteredCommits.length,
-    loadedCount: commits.length,
-    allFilesResolved,
-    hasMore,
-    isLoadingMore,
-    loadMore,
-  })
 
   // Lane layout over the full commit set (used only while the graph shows).
   const nodes = useMemo(() => computeGraphLayout(commits), [commits])
@@ -116,6 +98,47 @@ export function GitHistoryTab() {
     [expandedSha, pendingShas, filesBySha],
   )
 
+  // ── Virtualization ───────────────────────────────────────────────────
+  // Only visible rows are mounted — essential now that GetGitHistory
+  // returns the full commit list without pagination. Two virtualizers are
+  // created (one per rendering mode); the inactive one has count 0 so it
+  // produces no items. Both share the same scroll element.
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  // SVG gutter width — needed to offset the row column past the graph.
+  const svgWidth = useMemo(() => {
+    if (nodes.length === 0) return 0
+    const maxLane = nodes.reduce((m, n) => Math.max(m, n.lane), 0)
+    return xFor(maxLane) + LANE_SPACING
+  }, [nodes])
+
+  // Exact per-row heights so the virtualizer can position items without
+  // DOM measurement (which returns 0 in jsdom and is unreliable for
+  // dynamically expanded rows).
+  const fullHeights = useMemo(
+    () => nodes.map((n) => rowHeightFor(n.sha)),
+    [nodes, rowHeightFor],
+  )
+  const filteredHeights = useMemo(
+    () => filteredCommits.map((c) => rowHeightFor(c.sha)),
+    [filteredCommits, rowHeightFor],
+  )
+
+  const fullVirtualizer = useVirtualizer({
+    count: isFiltering ? 0 : nodes.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (i: number) => fullHeights[i] ?? ROW_SPACING,
+    overscan: 8,
+    getItemKey: (i: number) => nodes[i]?.sha ?? i,
+  })
+  const filteredVirtualizer = useVirtualizer({
+    count: isFiltering ? filteredCommits.length : 0,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (i: number) => filteredHeights[i] ?? ROW_SPACING,
+    overscan: 8,
+    getItemKey: (i: number) => filteredCommits[i]?.sha ?? i,
+  })
+
   if (isLoading) {
     return (
       <div className="flex flex-1 items-center justify-center min-h-0">
@@ -152,51 +175,87 @@ export function GitHistoryTab() {
         onToggleMode={toggleFilterMode}
         placeholder="Filter by file"
       />
-      <div className="flex flex-col min-h-0 flex-1 overflow-y-auto custom-scrollbar">
+      <div
+        ref={scrollRef}
+        className="flex flex-col min-h-0 flex-1 overflow-y-auto custom-scrollbar"
+      >
         {isFiltering ? (
           // Filtered view: graph hidden, rows take the full width (left-aligned).
-          <div className="min-w-0">
-            {isInvalidFilter ? (
-              <p className="p-4 text-center text-xs text-destructive">Invalid regex</p>
-            ) : filteredCommits.length === 0 && !isResolvingFiles ? (
-              <p className="p-4 text-center text-xs text-muted-foreground">No matching commits</p>
-            ) : (
-              <>
-                {filteredCommits.map((commit) => {
+          isInvalidFilter ? (
+            <p className="p-4 text-center text-xs text-destructive">Invalid regex</p>
+          ) : filteredCommits.length === 0 && !isResolvingFiles ? (
+            <p className="p-4 text-center text-xs text-muted-foreground">No matching commits</p>
+          ) : (
+            <>
+              <div
+                style={{
+                  height: filteredVirtualizer.getTotalSize(),
+                  position: 'relative',
+                }}
+              >
+                {filteredVirtualizer.getVirtualItems().map((vi) => {
+                  const commit = filteredCommits[vi.index]
+                  if (!commit) return null
                   const node = shaToNode.get(commit.sha)
                   if (!node) return null
                   return (
-                    <GitHistoryRow
-                      key={node.sha}
-                      node={node}
-                      author={commit.author}
-                      date={commit.date}
-                      height={rowHeightFor(node.sha)}
-                      expanded={expandedSha === node.sha}
-                      files={filesBySha[node.sha]}
-                      loadingFiles={pendingShas.has(node.sha)}
-                      onClick={() => void handleCommitClick(node.sha)}
-                    />
+                    <div
+                      key={vi.key}
+                      style={{
+                        position: 'absolute',
+                        top: vi.start,
+                        left: 0,
+                        right: 0,
+                        height: vi.size,
+                      }}
+                    >
+                      <GitHistoryRow
+                        node={node}
+                        author={commit.author}
+                        date={commit.date}
+                        height={rowHeightFor(node.sha)}
+                        expanded={expandedSha === node.sha}
+                        files={filesBySha[node.sha]}
+                        loadingFiles={pendingShas.has(node.sha)}
+                        onClick={() => void handleCommitClick(node.sha)}
+                      />
+                    </div>
                   )
                 })}
-                {isResolvingFiles && (
-                  <div className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground">
-                    <Loader2 className="size-3.5 animate-spin" /> Resolving files…
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+              </div>
+              {isResolvingFiles && (
+                <div className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground">
+                  <Loader2 className="size-3.5 animate-spin" /> Resolving files…
+                </div>
+              )}
+            </>
+          )
         ) : (
-          // Full history + lane graph.
-          <div className="flex">
-            <GitGraphGutter nodes={nodes} rowY={rowY} />
-            <div className="flex-1 min-w-0">
-              {nodes.map((node, i) => {
-                const commit = commits[i]
-                return (
+          // Full history + lane graph. The SVG gutter is absolutely
+          // positioned so it scrolls in sync with the virtualized rows
+          // beside it. Only visible rows are mounted; the gutter still
+          // renders all nodes/edges (SVG elements are far lighter than
+          // React component trees).
+          <div style={{ height: rowY.totalHeight, position: 'relative' }}>
+            <div style={{ position: 'absolute', left: 0, top: 0 }}>
+              <GitGraphGutter nodes={nodes} rowY={rowY} />
+            </div>
+            {fullVirtualizer.getVirtualItems().map((vi) => {
+              const node = nodes[vi.index]
+              if (!node) return null
+              const commit = commits[vi.index]
+              return (
+                <div
+                  key={vi.key}
+                  style={{
+                    position: 'absolute',
+                    top: vi.start,
+                    left: svgWidth,
+                    right: 0,
+                    height: vi.size,
+                  }}
+                >
                   <GitHistoryRow
-                    key={node.sha}
                     node={node}
                     author={commit?.author ?? ''}
                     date={commit?.date ?? ''}
@@ -206,26 +265,11 @@ export function GitHistoryTab() {
                     loadingFiles={pendingShas.has(node.sha)}
                     onClick={() => void handleCommitClick(node.sha)}
                   />
-                )
-              })}
-            </div>
+                </div>
+              )
+            })}
           </div>
         )}
-        {isFiltering && (isAutofilling || isLoadingMore) ? (
-          <div className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground">
-            <Loader2 className="size-3.5 animate-spin" /> Loading more matches…
-          </div>
-        ) : hasMore ? (
-          <button
-            type="button"
-            onClick={loadMore}
-            disabled={isLoadingMore}
-            className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground hover:bg-muted/50 transition-colors disabled:opacity-50"
-          >
-            {isLoadingMore && <Loader2 className="size-3.5 animate-spin" />}
-            {isLoadingMore ? 'Loading…' : 'Load more'}
-          </button>
-        ) : null}
       </div>
     </div>
   )
