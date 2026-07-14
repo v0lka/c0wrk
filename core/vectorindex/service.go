@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/bmatcuk/doublestar/v4"
 	chromem "github.com/philippgille/chromem-go"
 
 	"github.com/v0lka/c0wrk/core/vectorindex/lexical"
@@ -206,12 +205,7 @@ func (s *Service) BrowseWithFilter(ctx context.Context, topK int, fileFilter str
 		sr := resultToSearchResult(r)
 
 		if fileFilter != "" {
-			matched, matchErr := doublestar.Match(fileFilter, sr.FilePath)
-			if matchErr != nil {
-				s.logger.Warn("invalid file filter pattern", "pattern", fileFilter, "error", matchErr)
-				continue
-			}
-			if !matched {
+			if !matchFilePathPattern(fileFilter, sr.FilePath) {
 				continue
 			}
 		}

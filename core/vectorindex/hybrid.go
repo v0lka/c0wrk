@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -546,17 +547,48 @@ func hybridFanout(topK int, hc HybridConfig) int {
 	return fanout
 }
 
+// matchFilePathPattern tests whether a file path matches a glob pattern.
+// It tries multiple strategies to handle the common case where file_path is
+// stored as an absolute path but the user enters a relative pattern like
+// "*.md" or "src/**":
+//   - Direct match (handles "**/*.go", absolute patterns)
+//   - "**/" prefix (handles "*.go" → "**/*.go", "src/**" → "**/src/**")
+//   - Basename match (handles "*.go" against the file's basename)
+//
+// This mirrors the frontend pathFilter logic (picomatch with contains:true
+// plus basename testing) so the sidebar file-pattern filter behaves
+// consistently with the file-tree filter.
+func matchFilePathPattern(pattern, filePath string) bool {
+	// Normalize to forward slashes for doublestar (which always uses /).
+	fp := filepath.ToSlash(filePath)
+
+	// Direct match — handles **/*.go, /absolute/path, etc.
+	if matched, _ := doublestar.Match(pattern, fp); matched {
+		return true
+	}
+	// Try with **/ prefix for relative patterns — this makes "*.md" match
+	// files at any directory depth, and "src/**" match any src/ directory.
+	if !strings.HasPrefix(pattern, "/") && !strings.HasPrefix(pattern, "**/") {
+		if matched, _ := doublestar.Match("**/"+pattern, fp); matched {
+			return true
+		}
+	}
+	// Try matching against the basename — this is a fallback for patterns
+	// like "*.md" that should match the file's name regardless of path.
+	if base := filepath.Base(fp); base != fp {
+		if matched, _ := doublestar.Match(pattern, base); matched {
+			return true
+		}
+	}
+	return false
+}
+
 // passesFilters returns true if the chromem result satisfies both the
 // file-path glob filter (if any) and all must-match tokens.
 func passesFilters(r chromem.Result, filePattern string, mustMatch []string, logger *slog.Logger) bool {
 	if filePattern != "" {
 		fp := r.Metadata["file_path"]
-		matched, err := doublestar.Match(filePattern, fp)
-		if err != nil {
-			logger.Warn("invalid file filter pattern", "pattern", filePattern, "error", err)
-			return false
-		}
-		if !matched {
+		if !matchFilePathPattern(filePattern, fp) {
 			return false
 		}
 	}

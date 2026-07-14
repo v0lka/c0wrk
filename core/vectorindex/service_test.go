@@ -997,3 +997,81 @@ func TestHybridSearch_AutoFallbackWhenLexicalEmpty(t *testing.T) {
 		t.Errorf("expected empty results for ModeLexical with empty index, got %d", len(results))
 	}
 }
+
+func TestMatchFilePathPattern(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		path    string
+		want    bool
+	}{
+		// Extension globs against absolute paths (the bug scenario).
+		{"*.md absolute root", "*.md", "/Users/vkochetkov/Repositories/c0wrk/README.md", true},
+		{"*.md absolute nested", "*.md", "/Users/vkochetkov/Repositories/c0wrk/specs/INDEX.md", true},
+		{"*.go absolute nested", "*.go", "/Users/vkochetkov/Repositories/c0wrk/core/vectorindex/hybrid.go", true},
+		{"*.go does not match .md", "*.go", "/Users/vkochetkov/Repositories/c0wrk/README.md", false},
+
+		// Directory-prefix globs against absolute paths.
+		{"src/** absolute", "src/**", "/Users/vkochetkov/Repositories/c0wrk/src/main.go", true},
+		{"core/** absolute", "core/**", "/Users/vkochetkov/Repositories/c0wrk/core/vectorindex/hybrid.go", true},
+		{"**/core/** absolute", "**/core/**", "/Users/vkochetkov/Repositories/c0wrk/core/vectorindex/hybrid.go", true},
+
+		// **/ prefix patterns (already worked before the fix).
+		{"**/*.md absolute", "**/*.md", "/Users/vkochetkov/Repositories/c0wrk/specs/INDEX.md", true},
+		{"**/*.go absolute", "**/*.go", "/Users/vkochetkov/Repositories/c0wrk/core/vectorindex/hybrid.go", true},
+
+		// Relative paths (still work).
+		{"*.md relative root", "*.md", "README.md", true},
+		{"*.md relative nested", "*.md", "specs/INDEX.md", true},
+		{"src/** relative", "src/**", "src/main.go", true},
+
+		// Exact filename.
+		{"exact filename absolute", "README.md", "/Users/vkochetkov/Repositories/c0wrk/README.md", true},
+		{"exact filename relative", "README.md", "README.md", true},
+
+		// Non-matching.
+		{"*.ts does not match .go", "*.ts", "/Users/vkochetkov/Repositories/c0wrk/src/main.go", false},
+		{"test/** does not match src/", "test/**", "/Users/vkochetkov/Repositories/c0wrk/src/main.go", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchFilePathPattern(tt.pattern, tt.path)
+			if got != tt.want {
+				t.Errorf("matchFilePathPattern(%q, %q) = %v, want %v", tt.pattern, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHybridSearch_FilePatternSimpleGlob(t *testing.T) {
+	// Verify that a simple extension glob like "*.go" (without **/ prefix)
+	// matches files at any directory depth — the user-facing bug scenario.
+	svc := seedHybridService(t)
+	results, err := svc.HybridSearch(context.Background(), SearchOptions{
+		Query: "MatcherFactory", TopK: 5, Mode: ModeHybrid, FilePattern: "*.go",
+	})
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results for *.go pattern, got none — simple glob should match absolute paths")
+	}
+	for _, r := range results {
+		if !strings.HasSuffix(r.FileName, ".go") {
+			t.Errorf("*.go pattern should only match .go files, got %q", r.FileName)
+		}
+	}
+}
+
+func TestHybridSearch_FilePatternDoesNotMatchWrongExtension(t *testing.T) {
+	svc := seedHybridService(t)
+	results, err := svc.HybridSearch(context.Background(), SearchOptions{
+		Query: "MatcherFactory", TopK: 5, Mode: ModeHybrid, FilePattern: "*.md",
+	})
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("*.md pattern should not match .go files, got %d results", len(results))
+	}
+}
