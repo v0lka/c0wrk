@@ -13,6 +13,10 @@ export function ReviewPromptBlock({ item }: { item: ReviewPromptItem }) {
   const { sessionId, metadata } = item.message
   const updateMessage = useChatStore((s) => s.updateMessage)
   const decision = getReviewPromptResolution(metadata)
+  // prompt_id from the persisted review_prompt message — used to record the
+  // enter/decline resolution on the backend message so it survives a reload.
+  const promptId = (metadata as { prompt_id?: unknown } | undefined)?.prompt_id
+  const promptIdStr = typeof promptId === 'string' ? promptId : undefined
 
   if (decision === 'enter') {
     return (
@@ -41,6 +45,7 @@ export function ReviewPromptBlock({ item }: { item: ReviewPromptItem }) {
 
   const handleEnter = () => {
     updateMessage(sessionId, item.message.id, { metadata: reviewPromptResolved('enter') })
+    if (promptIdStr) void reviewApi.resolveReviewPrompt(sessionId, promptIdStr, 'enter')
     const { openFile, setCollapsed } = useFileViewerStore.getState()
     const { openReviewPage, enterReviewLoop } = useReviewStore.getState()
     openFile('c0wrk:review')
@@ -53,6 +58,7 @@ export function ReviewPromptBlock({ item }: { item: ReviewPromptItem }) {
 
   const handleDecline = () => {
     updateMessage(sessionId, item.message.id, { metadata: reviewPromptResolved('decline') })
+    if (promptIdStr) void reviewApi.resolveReviewPrompt(sessionId, promptIdStr, 'decline')
     useReviewStore.getState().resetLoopFlags(sessionId)
   }
 
@@ -63,7 +69,7 @@ export function ReviewPromptBlock({ item }: { item: ReviewPromptItem }) {
         <span>Enter review mode?</span>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        Task completed with changes. Review them before committing?
+        Uncommitted changes detected in this repository. Review them now?
       </p>
       <div className="mt-2 flex gap-2">
         <Button size="sm" onClick={handleEnter} className="text-xs">

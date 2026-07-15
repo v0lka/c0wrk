@@ -322,6 +322,32 @@ describe('buildHistoryId (via chatMessageToUI)', () => {
     expect(result.id).toBe('ask-user-r1')
   })
 
+  it('review_prompt with prompt_id → "review-prompt-{id}" (stable across reload)', () => {
+    const result = chatMessageToUI(makeMsg({
+      role: 'review_prompt',
+      metadata: JSON.stringify({ prompt_id: 'p-abc' }),
+    }))
+    expect(result.id).toBe('review-prompt-p-abc')
+  })
+
+  it('resolved review_prompt keeps the same id (prompt_id retained)', () => {
+    // After ResolvePendingMessage merges {resolved,decision}, prompt_id stays,
+    // so the live card and reloaded history still dedupe by the same id.
+    const result = chatMessageToUI(makeMsg({
+      role: 'review_prompt',
+      metadata: JSON.stringify({ prompt_id: 'p-abc', resolved: true, decision: 'enter' }),
+    }))
+    expect(result.id).toBe('review-prompt-p-abc')
+  })
+
+  it('review_prompt without prompt_id → "history-{dbId}"', () => {
+    const result = chatMessageToUI(makeMsg({
+      role: 'review_prompt',
+      metadata: JSON.stringify({}),
+    }))
+    expect(result.id).toMatch(/^history-/)
+  })
+
   it('no metadata → id starts with "history-"', () => {
     const result = chatMessageToUI(makeMsg({
       role: 'tool_call',

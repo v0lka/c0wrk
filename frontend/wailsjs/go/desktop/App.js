@@ -318,6 +318,10 @@ export function SaveReviewHunkComment(arg1, arg2, arg3, arg4) {
   return window['go']['desktop']['App']['SaveReviewHunkComment'](arg1, arg2, arg3, arg4);
 }
 
+export function SaveReviewPrompt(arg1) {
+  return window['go']['desktop']['App']['SaveReviewPrompt'](arg1);
+}
+
 export function SearchVectorStore(arg1) {
   return window['go']['desktop']['App']['SearchVectorStore'](arg1);
 }

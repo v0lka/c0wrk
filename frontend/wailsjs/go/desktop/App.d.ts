@@ -167,6 +167,8 @@ export function SaveReviewGeneralComment(arg1:string,arg2:string):Promise<void>;
 
 export function SaveReviewHunkComment(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
 
+export function SaveReviewPrompt(arg1:string):Promise<backend.ReviewPromptMessage>;
+
 export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<backend.VectorStoreEntry>>;
 
 export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:string,arg5:string):Promise<void>;

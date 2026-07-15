@@ -8,6 +8,11 @@ function isStr(v: unknown): v is string {
   return typeof v === 'string'
 }
 
+function isReviewPromptResult(v: unknown): v is ReviewPromptResult {
+  const r = v as Record<string, unknown> | null
+  return isObj(r) && isStr(r.prompt_id) && isStr(r.content)
+}
+
 export interface ReviewHunkComment {
   id: string
   session_id: string
@@ -143,5 +148,47 @@ export async function getCommitDiff(sha: string): Promise<ReviewFileDiff[]> {
   } catch (err) {
     logger.error('getCommitDiff failed:', err)
     throw err
+  }
+}
+
+// Persisted review_prompt chat message. The prompt is injected client-side on
+// a successful task_complete with uncommitted changes; SaveReviewPrompt stores
+// it as a real session message (with a prompt_id in metadata) so it survives a
+// session switch / restart instead of vanishing like the old frontend-only
+// message. resolveReviewPrompt records the user's enter/decline decision on
+// that same persisted message via ResolvePendingMessage keyed on prompt_id.
+export type ReviewPromptDecision = 'enter' | 'decline'
+
+// Descriptor of the persisted review_prompt message returned by SaveReviewPrompt.
+// The content is the single source of truth (owned by the backend): the
+// frontend renders the live card from this value rather than duplicating the
+// string, so the in-memory and persisted wording always match.
+export interface ReviewPromptResult {
+  prompt_id: string
+  content: string
+}
+
+export async function saveReviewPrompt(sessionId: string): Promise<ReviewPromptResult> {
+  try {
+    const app = getApp()
+    const result = await app.SaveReviewPrompt(sessionId)
+    if (!isReviewPromptResult(result)) {
+      throw new Error(`saveReviewPrompt: backend returned invalid shape for session ${sessionId}`)
+    }
+    return result
+  } catch (err) {
+    logger.error('saveReviewPrompt failed:', err)
+    throw err
+  }
+}
+
+export async function resolveReviewPrompt(sessionId: string, promptId: string, decision: ReviewPromptDecision): Promise<void> {
+  try {
+    const app = getApp()
+    await app.ResolvePendingMessage(sessionId, 'review_prompt', 'prompt_id', promptId, { resolved: true, decision })
+  } catch (err) {
+    // Best-effort: the optimistic UI update already happened, and a missed
+    // persist is self-healing — the unresolved prompt just reappears on reload.
+    logger.error('resolveReviewPrompt failed:', err)
   }
 }

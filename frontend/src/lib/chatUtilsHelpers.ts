@@ -250,6 +250,14 @@ export function buildHistoryId(
       const requestId = meta.request_id as string | undefined
       return requestId ? `plan-review-${requestId}` : `history-${dbId}`
     }
+    case 'review_prompt': {
+      // Derive the id from the backend-assigned prompt_id so the live card
+      // (added right after SaveReviewPrompt) and the reloaded history share an
+      // id — mergeHistoryMessages then dedupes them instead of dropping the
+      // prompt on the next session switch.
+      const promptId = meta.prompt_id as string | undefined
+      return promptId ? `review-prompt-${promptId}` : `history-${dbId}`
+    }
     default:
       return `history-${dbId}`
   }

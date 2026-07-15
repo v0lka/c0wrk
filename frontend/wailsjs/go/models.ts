@@ -492,6 +492,20 @@ export namespace backend {
 	}
 	
 	
+	export class ReviewPromptMessage {
+	    prompt_id: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ReviewPromptMessage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.prompt_id = source["prompt_id"];
+	        this.content = source["content"];
+	    }
+	}
 	export class SearchRequest {
 	    query: string;
 	    top_k: number;

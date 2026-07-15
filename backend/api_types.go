@@ -182,6 +182,16 @@ type ReviewHunk = workspace.ReviewHunk
 // alias for ViewModel convenience.
 type ReviewFileDiff = workspace.ReviewFileDiff
 
+// ReviewPromptMessage is the descriptor of a persisted review_prompt chat
+// message, returned by SaveReviewPrompt. The frontend uses Content for the
+// live (pre-reload) card so the displayed text always matches the persisted
+// message — the backend is the single source of truth for the prompt wording,
+// so the string is not duplicated on the client.
+type ReviewPromptMessage struct {
+	PromptID string `json:"prompt_id"`
+	Content  string `json:"content"`
+}
+
 // SessionTokensResponse holds token usage statistics for a session.
 type SessionTokensResponse struct {
 	TotalInputTokens  int     `json:"total_input_tokens"`

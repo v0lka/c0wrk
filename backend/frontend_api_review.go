@@ -2,13 +2,24 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/v0lka/c0wrk/backend/review"
+	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/workspace"
 )
+
+// reviewPromptContent is the persisted body of the review_prompt chat message.
+// It is the single source of truth for the wording: the frontend derives its
+// copy from the Content returned by SaveReviewPrompt rather than duplicating
+// the string.
+const reviewPromptContent = "Uncommitted changes detected in this repository."
 
 // GetReview loads the persisted review buffer (status + general comment + hunk
 // comments) for a session. A session with no persisted review returns an empty,
@@ -90,6 +101,49 @@ func (f *FrontendAPI) ClearReview(sessionID string) error {
 		return fmt.Errorf("failed to clear review: %w", err)
 	}
 	return nil
+}
+
+// SaveReviewPrompt persists a "review_prompt" chat message for a session and
+// returns its descriptor (the generated prompt_id plus the message content).
+//
+// The review_prompt is injected client-side after a successful task_complete
+// when the repository has uncommitted changes. Persisting it here (rather than
+// keeping it as a frontend-only message) means it survives a session switch
+// and an app restart: getSessionHistory returns it like any other message, and
+// its resolution (enter/decline) is later recorded via ResolvePendingMessage
+// keyed on the returned prompt_id, so the resolved state round-trips too.
+//
+// The message content is the single source of truth (see reviewPromptContent):
+// the frontend renders the live card from the Content returned here rather
+// than duplicating the string, so the wording stays consistent across the
+// in-memory and persisted forms.
+//
+// Best-effort persistence on the store is not appropriate here: the frontend
+// only renders the prompt after this RPC succeeds, so a persist failure is
+// surfaced as an error instead of producing a prompt that would silently
+// vanish on the next session switch.
+func (f *FrontendAPI) SaveReviewPrompt(sessionID string) (*ReviewPromptMessage, error) {
+	if f.store == nil {
+		return nil, errors.New("session store not available")
+	}
+	promptID := uuid.NewString()
+	metadata, err := json.Marshal(map[string]any{"prompt_id": promptID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal review prompt metadata: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.store.SaveMessage(ctx, session.ChatMessage{
+		SessionID: sessionID,
+		Role:      "review_prompt",
+		Content:   reviewPromptContent,
+		Metadata:  metadata,
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}); err != nil {
+		f.log().Error("failed to save review_prompt message", "session", sessionID, "error", err)
+		return nil, fmt.Errorf("failed to save review prompt: %w", err)
+	}
+	return &ReviewPromptMessage{PromptID: promptID, Content: reviewPromptContent}, nil
 }
 
 // GetReviewDiff returns ALL uncommitted changes (staged and unstaged,

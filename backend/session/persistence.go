@@ -590,6 +590,14 @@ func (s *SQLiteSessionStore) ResolvePendingMessage(ctx context.Context, sessionI
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("error iterating messages: %w", err)
 	}
+	// Release the pooled connection before the UPDATE below. With a single
+	// pooled connection (the production config: db.SetMaxOpenConns(1)), holding
+	// the read cursor open while issuing ExecContext would deadlock — the UPDATE
+	// blocks waiting for the very connection the cursor still holds. Closing
+	// here frees it first; the deferred Close below is an idempotent safety net.
+	if cerr := rows.Close(); cerr != nil {
+		s.log().Warn("failed to close database rows", "error", cerr)
+	}
 
 	if targetID == 0 {
 		return nil

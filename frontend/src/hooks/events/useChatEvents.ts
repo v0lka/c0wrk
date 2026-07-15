@@ -8,6 +8,7 @@ import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import { useReviewStore } from '@/stores/reviewStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import * as reviewApi from '@/api/review'
 import { generateMessageId } from '@/lib/ids'
 import type { ChatMessageUI } from '@/types/messages'
 
@@ -184,14 +185,24 @@ export function useChatEvents(sessionId: string | null): void {
             void reviewStore.loadReview(sessionId)
           } else if (!isLoopActive && hasChanges) {
             if (!reviewStore.promptShownForTask[sessionId]) {
-              reviewStore.markPromptShown(sessionId, 'task')
-              store.addMessage(sessionId, {
-                id: generateMessageId(),
-                sessionId,
-                type: 'review_prompt',
-                content: 'Task completed with changes.',
-                timestamp: Date.now(),
-              })
+              // Persist the prompt as a real session message so it survives a
+              // session switch / restart (the old frontend-only message was
+              // dropped by mergeHistoryMessages on the next history reload).
+              // The id is derived from the backend-assigned prompt_id so the
+              // live card and the reloaded history share an id and dedupe
+              // cleanly. markPromptShown runs after the persist succeeds so a
+              // persist failure leaves the prompt retryable on a later turn.
+              void reviewApi.saveReviewPrompt(sessionId).then((prompt) => {
+                reviewStore.markPromptShown(sessionId, 'task')
+                store.addMessage(sessionId, {
+                  id: `review-prompt-${prompt.prompt_id}`,
+                  sessionId,
+                  type: 'review_prompt',
+                  content: prompt.content,
+                  metadata: { prompt_id: prompt.prompt_id },
+                  timestamp: Date.now(),
+                })
+              }).catch(() => { /* logged in the saveReviewPrompt wrapper */ })
             }
           }
         }

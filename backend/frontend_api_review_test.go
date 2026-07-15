@@ -1,6 +1,9 @@
 package backend
 
 import (
+	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/backend/session"
 )
 
 // genReviewLines returns n numbered lines ("l1\nl2\n…\n").
@@ -267,5 +271,135 @@ func TestGetCommitDiff_NoProject(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: project.NoProjectID, activeProjectPath: t.TempDir()}
 	if _, err := f.GetCommitDiff("abcdef1234"); err == nil {
 		t.Fatal("expected error for No Project")
+	}
+}
+
+// TestSaveReviewPrompt_PersistsAndResolves verifies the review_prompt message
+// is persisted with a prompt_id and that ResolvePendingMessage keyed on that
+// prompt_id records the user's decision — so the prompt (and its resolved
+// state) survives a session switch / restart instead of being a transient
+// frontend-only message.
+func TestSaveReviewPrompt_PersistsAndResolves(t *testing.T) {
+	ctx := context.Background()
+	// File-based temp db: with :memory: each pooled connection is a separate
+	// database, so the message saved on one connection is invisible to a
+	// query routed to another. A temp file guarantees a single shared store.
+	dbPath := filepath.Join(t.TempDir(), "review_prompt.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	// Mirror production's connection-pool and pragma config (see OpenDatabase):
+	// a single pooled connection (MaxOpenConns(1)) is the regime where a
+	// read cursor held open during a follow-up UPDATE would deadlock. WAL +
+	// busy_timeout keep the single connection usable, and foreign_keys=ON
+	// matches production so a constraint violation from SaveReviewPrompt
+	// would surface here too.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA foreign_keys=ON",
+	} {
+		if _, err := db.ExecContext(ctx, pragma); err != nil {
+			t.Fatalf("exec %s: %v", pragma, err)
+		}
+	}
+
+	// Prerequisite rows for the foreign-key chain session_messages → sessions →
+	// projects, now enforced because the test mirrors production's
+	// foreign_keys=ON. The session store creates sessions/session_messages; the
+	// projects table is owned by the project store, so create it here.
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS projects (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			workspace_path TEXT NOT NULL,
+			is_external BOOLEAN NOT NULL DEFAULT 0,
+			created_at TIMESTAMP NOT NULL,
+			last_active_at TIMESTAMP
+		)`); err != nil {
+		t.Fatalf("create projects table: %v", err)
+	}
+	store, err := session.NewSQLiteSessionStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteSessionStore: %v", err)
+	}
+	// Seed the project + session the prompt belongs to.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO projects (id, name, workspace_path, created_at) VALUES (?, ?, ?, ?)`,
+		"proj-review", "Review Project", "/tmp/review", "2024-01-15T10:00:00Z",
+	); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if err := store.SaveSession(ctx, session.SessionInfo{
+		ID:        "sess-review",
+		ProjectID: "proj-review",
+		Name:      "Review Session",
+		CreatedAt: "2024-01-15T10:00:00Z",
+	}); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	f := &FrontendAPI{store: store}
+
+	prompt, err := f.SaveReviewPrompt("sess-review")
+	if err != nil {
+		t.Fatalf("SaveReviewPrompt: %v", err)
+	}
+	if prompt.PromptID == "" {
+		t.Fatal("expected non-empty prompt_id")
+	}
+	if prompt.Content == "" {
+		t.Fatal("expected non-empty content returned to the frontend")
+	}
+	promptID := prompt.PromptID
+
+	// The message is persisted and reloads as a review_prompt with prompt_id.
+	msgs, err := store.LoadMessages(ctx, "sess-review")
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Role != "review_prompt" {
+		t.Fatalf("expected 1 review_prompt message, got %+v", msgs)
+	}
+	// The content returned to the frontend must equal what is persisted, so
+	// the live card and the reloaded message are identical (single source of
+	// truth for the wording).
+	if msgs[0].Content != prompt.Content {
+		t.Errorf("persisted content = %q, want %q (returned by SaveReviewPrompt)", msgs[0].Content, prompt.Content)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(msgs[0].Metadata, &meta); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	if meta["prompt_id"] != promptID {
+		t.Errorf("metadata prompt_id = %v, want %s", meta["prompt_id"], promptID)
+	}
+
+	// Resolve via ResolvePendingMessage keyed on prompt_id (mirrors the
+	// frontend resolveReviewPrompt wrapper).
+	if err := store.ResolvePendingMessage(ctx, "sess-review", "review_prompt", "prompt_id", promptID,
+		map[string]any{"resolved": true, "decision": "decline"}); err != nil {
+		t.Fatalf("ResolvePendingMessage: %v", err)
+	}
+
+	msgs2, err := store.LoadMessages(ctx, "sess-review")
+	if err != nil {
+		t.Fatalf("LoadMessages after resolve: %v", err)
+	}
+	if len(msgs2) != 1 {
+		t.Fatalf("expected 1 message after resolve, got %d", len(msgs2))
+	}
+	var meta2 map[string]any
+	if err := json.Unmarshal(msgs2[0].Metadata, &meta2); err != nil {
+		t.Fatalf("unmarshal metadata after resolve: %v", err)
+	}
+	if meta2["resolved"] != true || meta2["decision"] != "decline" {
+		t.Errorf("after resolve metadata = %+v, want resolved+decline", meta2)
+	}
+	if meta2["prompt_id"] != promptID {
+		t.Errorf("prompt_id dropped after resolve: %v", meta2["prompt_id"])
 	}
 }
