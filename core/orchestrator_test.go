@@ -92,7 +92,7 @@ func TestOrchestrator_HandleResultContainsRoutingDecision(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
 		LLM:            mockLLM,
 		ToolExec:       registry,
@@ -236,7 +236,7 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 
 	r := newCoreRouter(mockLLM, 5)
 
-	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
 		Router:         r,
 		LLM:            mockLLM,
 		ToolExec:       registry,
@@ -501,7 +501,7 @@ func TestHandleMessage_EmptySkillMessage_PropagatesNonEmptyTaskToConductor(t *te
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
 		LLM:            mockLLM,
 		ToolExec:       registry,
@@ -811,7 +811,7 @@ func TestOrchestrator_VectorSearchHints_NilFunc(t *testing.T) {
 	registry := createTestRegistry()
 	counter := llm.NewSimpleTokenCounter()
 
-	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
 		LLM:            mockLLM,
 		ToolExec:       registry,
@@ -1121,7 +1121,7 @@ func TestOrchestrator_AgentsMD_RouterPromptInjection(t *testing.T) {
 
 	r := newCoreRouter(mockLLM, 5)
 
-	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
 		Router:         r,
 		LLM:            mockLLM,
 		ToolExec:       registry,
@@ -1180,7 +1180,7 @@ func TestOrchestrator_AgentsMD_RouterPromptAbsentWhenNoWorkspace(t *testing.T) {
 
 	r := newCoreRouter(mockLLM, 5)
 
-	orchestrator := NewOrchestrator(OrchestratorConfig{MaxSteps: 10}, OrchestratorDeps{
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
 		Router:         r,
 		LLM:            mockLLM,
 		ToolExec:       registry,
@@ -1285,9 +1285,7 @@ func TestConversationHistory_NoTruncation(t *testing.T) {
 
 	r := newCoreRouter(mockLLM, 5)
 
-	orchestrator := NewOrchestrator(OrchestratorConfig{
-		MaxSteps: 10,
-	}, OrchestratorDeps{
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
 		Router:         r,
 		LLM:            mockLLM,
 		ToolExec:       registry,
@@ -1392,9 +1390,7 @@ func TestConversationHistory_RouterHistoryUnchanged(t *testing.T) {
 	// Router with HistoryWindow=2 (only last 2 messages).
 	r := newCoreRouter(mockLLM, 2)
 
-	orchestrator := NewOrchestrator(OrchestratorConfig{
-		MaxSteps: 10,
-	}, OrchestratorDeps{
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
 		Router:         r,
 		LLM:            mockLLM,
 		ToolExec:       registry,
@@ -1472,8 +1468,7 @@ func TestHandleMessage_ModelOverride_UpdatesConfigModel(t *testing.T) {
 	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{
-		MaxSteps: 10,
-		Model:    "default-model",
+		Model: "default-model",
 	}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
 		LLM:            mockLLM,
@@ -1549,8 +1544,7 @@ func TestHandleMessage_ModelOverride_CompositeID_UpdatesConfigModel(t *testing.T
 	}
 
 	orchestrator := NewOrchestrator(OrchestratorConfig{
-		MaxSteps: 10,
-		Model:    "deepseek-v4-pro",
+		Model: "deepseek-v4-pro",
 	}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
 		LLM:            mockLLM,

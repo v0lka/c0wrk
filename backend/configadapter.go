@@ -76,7 +76,6 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			HistoryWindow: cfg.Router.HistoryWindow,
 		},
 		Executor: core.BuilderExecutorConfig{
-			MaxReactSteps:      cfg.Executor.MaxReactSteps,
 			MaxRetries:         cfg.Executor.MaxRetries,
 			OutputTokenReserve: cfg.Executor.OutputTokenReserve,
 			Compaction: core.BuilderCompactionConfig{
@@ -160,11 +159,11 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			PerToolTruncation:   convertTruncationMap(cfg.ToolLimits.PerToolTruncation),
 		},
 		Timeouts: core.BuilderTimeoutsConfig{
-			BashMaxTimeout:   cfg.Timeouts.BashMaxTimeout,
-			BashWaitDelay:    cfg.Timeouts.BashWaitDelay,
-			RipgrepTimeout:   cfg.Timeouts.RipgrepTimeout,
-			WebFetchTimeout:  cfg.Timeouts.WebFetchTimeout,
-			WebSearchTimeout: cfg.Timeouts.WebSearchTimeout,
+			BashMaxTimeout:    cfg.Timeouts.BashMaxTimeout,
+			BashWaitDelay:     cfg.Timeouts.BashWaitDelay,
+			RipgrepTimeout:    cfg.Timeouts.RipgrepTimeout,
+			WebFetchTimeout:   cfg.Timeouts.WebFetchTimeout,
+			WebSearchTimeout:  cfg.Timeouts.WebSearchTimeout,
 			LLMRequestTimeout: cfg.Timeouts.LLMRequestTimeout,
 		},
 		Proxy: proxy.Config{

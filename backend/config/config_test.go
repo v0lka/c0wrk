@@ -222,9 +222,6 @@ llm:
 	}
 
 	// Check Executor defaults
-	if cfg.Executor.MaxReactSteps != 50 {
-		t.Errorf("Expected default max_react_steps 50, got %d", cfg.Executor.MaxReactSteps)
-	}
 	if cfg.Executor.MaxRetries != 2 {
 		t.Errorf("Expected default max_retries 2, got %d", cfg.Executor.MaxRetries)
 	}
@@ -1019,9 +1016,6 @@ func TestCreateDefault_CreatesFileWithDefaults(t *testing.T) {
 	}
 
 	// Returned config must have defaults applied.
-	if cfg.Executor.MaxReactSteps != 50 {
-		t.Errorf("MaxReactSteps = %d, want 50", cfg.Executor.MaxReactSteps)
-	}
 	if cfg.LogLevel != "DEBUG" {
 		t.Errorf("LogLevel = %q, want 'DEBUG'", cfg.LogLevel)
 	}
@@ -1038,8 +1032,8 @@ func TestCreateDefault_CreatesFileWithDefaults(t *testing.T) {
 	if err := yaml.Unmarshal(data, &loaded); err != nil {
 		t.Fatalf("created config is not valid YAML: %v", err)
 	}
-	if loaded.Executor.MaxReactSteps != 50 {
-		t.Errorf("round-tripped MaxReactSteps = %d, want 50", loaded.Executor.MaxReactSteps)
+	if loaded.Executor.MaxRetries != 2 {
+		t.Errorf("round-tripped max_retries = %d, want 2", loaded.Executor.MaxRetries)
 	}
 }
 
@@ -1074,8 +1068,8 @@ func TestResolveAndLoad_CreatesDefaultWhenMissing(t *testing.T) {
 	if resolved.Config == nil {
 		t.Fatal("expected non-nil Config")
 	}
-	if resolved.Config.Executor.MaxReactSteps != 50 {
-		t.Errorf("MaxReactSteps = %d, want 50", resolved.Config.Executor.MaxReactSteps)
+	if resolved.Config.Executor.MaxRetries != 2 {
+		t.Errorf("max_retries = %d, want 2", resolved.Config.Executor.MaxRetries)
 	}
 
 	// The config file must have been created on disk.

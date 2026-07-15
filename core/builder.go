@@ -325,8 +325,6 @@ func (b *OrchestratorBuilder) Build(
 
 	// Build orchestrator config
 	orchConfig := OrchestratorConfig{
-		MaxSteps:                  cfg.Executor.MaxReactSteps,
-		SubagentMaxSteps:          cfg.Executor.MaxReactSteps, // default: same as conductor; tunable later
 		KeepFirst:                 cfg.Executor.Compaction.SlidingWindow.KeepFirst,
 		KeepLast:                  cfg.Executor.Compaction.SlidingWindow.KeepLast,
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,

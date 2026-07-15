@@ -113,7 +113,7 @@ func routingFunctionalFactory(caller agent.LLMCaller) OrchestratorFactory {
 			SystemPrompt:  prompts.RouterSystem,
 			HistoryWindow: 5,
 		})
-		return core.NewOrchestrator(core.OrchestratorConfig{MaxSteps: 10}, core.OrchestratorDeps{
+		return core.NewOrchestrator(core.OrchestratorConfig{}, core.OrchestratorDeps{
 			LLM:            caller,
 			Router:         rtr,
 			ToolExec:       registry,

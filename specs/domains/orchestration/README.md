@@ -55,8 +55,6 @@ type Orchestrator struct {
 
 // Configuration
 type OrchestratorConfig struct {
-    MaxSteps                    int     // Conductor max ReAct iterations (default: 80)
-    SubagentMaxSteps            int     // per-delegation max ReAct iterations (default: 50)
     MaxRedelegationDepth        int     // cap on recursive delegation (default: 2)
     KeepFirst                   int     // context pruning: protected head messages
     KeepLast                    int     // context pruning: protected tail messages
@@ -191,8 +189,6 @@ From `config.yaml` (via BuilderConfig → OrchestratorConfig):
 
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
-| `conductor.maxSteps` | 80 | Max ReAct iterations for the Conductor |
-| `conductor.subagentMaxSteps` | 50 | Max ReAct iterations per delegation |
 | `conductor.maxRedelegationDepth` | 2 | Cap on recursive delegation when `allow_redelegate` is true |
 | `conductor.maxDependencyContextChars` | 8000 | Max chars from dependency outputs injected into a delegation task |
 | `executor.keepFirst` | 3 | Protected head messages during compaction |

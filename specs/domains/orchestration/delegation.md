@@ -54,7 +54,7 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
 | `tasks[].depends_on` | no | IDs of delegations that must complete before this one starts. Used to express a DAG across multiple `delegate` calls within one Conductor run. |
 | `tasks[].mode` | no | `"blocking"` (default): the tool result contains the subagent output. `"async"`: the tool result returns immediately with `delegation_id`; the Conductor reads results later via `read_step_output(id)`. |
 | `tasks[].model` | no | Composite model ID override for this subagent. Empty = Conductor's model. |
-| `tasks[].max_steps` | no | Per-subagent ReAct iteration cap. Empty = `config.Conductor.SubagentMaxSteps`. |
+| `tasks[].max_steps` | no | Per-subagent ReAct iteration cap. Empty = derived from routing complexity (`complexity × 20`, same formula as the Conductor). |
 | `tasks[].allow_redelegate` | no | `true` grants the subagent the `delegate` tool with a reduced budget and depth cap. Default `false` (flat). |
 | `tasks[].role` | no | Agent profile (coder/researcher/tester/executor) selecting system-prompt variant and pruning defaults. Empty = `executor`. |
 

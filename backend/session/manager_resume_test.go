@@ -40,11 +40,11 @@ func (f *finishLLM) Call(_ context.Context, _ llm.ChatRequest) (*llm.ChatRespons
 // and records whether CompleteTask / LoadTrajectory were called.
 type resumeTaskStore struct {
 	mockTaskStoreForResumable
-	mu               sync.Mutex
-	task             *TaskRecord
-	trajectory       json.RawMessage
-	loadTrajCalls    int
-	completedCalls   int
+	mu             sync.Mutex
+	task           *TaskRecord
+	trajectory     json.RawMessage
+	loadTrajCalls  int
+	completedCalls int
 }
 
 func (s *resumeTaskStore) GetUnfinishedTask(_ context.Context, _ string) (*TaskRecord, error) {
@@ -98,7 +98,7 @@ func functionalOrchestratorFactory(llmCaller agent.LLMCaller) OrchestratorFactor
 			})
 			return core.NewCoreContextManager(cw)
 		}
-		return core.NewOrchestrator(core.OrchestratorConfig{MaxSteps: 10}, core.OrchestratorDeps{
+		return core.NewOrchestrator(core.OrchestratorConfig{}, core.OrchestratorDeps{
 			LLM:            llmCaller,
 			ToolExec:       registry,
 			ToolRegistry:   registry,

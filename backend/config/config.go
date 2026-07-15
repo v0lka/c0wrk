@@ -207,7 +207,6 @@ type CircuitBreakerConfig struct {
 
 // ExecutorConfig holds executor settings.
 type ExecutorConfig struct {
-	MaxReactSteps      int                     `yaml:"max_react_steps"`
 	MaxRetries         int                     `yaml:"max_retries"`
 	OutputTokenReserve int                     `yaml:"output_token_reserve"`
 	Compaction         CompactionConfig        `yaml:"compaction"`

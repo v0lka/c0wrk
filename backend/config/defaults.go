@@ -52,9 +52,6 @@ func ApplyDefaults(cfg *Config) {
 	}
 
 	// Executor defaults
-	if cfg.Executor.MaxReactSteps == 0 {
-		cfg.Executor.MaxReactSteps = 50
-	}
 	if cfg.Executor.MaxRetries == 0 {
 		cfg.Executor.MaxRetries = 2
 	}

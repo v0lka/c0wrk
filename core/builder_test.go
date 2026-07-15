@@ -117,7 +117,6 @@ func TestBuilder_Build_FullPipeline(t *testing.T) {
 			MaxJudgeCacheSize:         1000,
 		},
 		Executor: BuilderExecutorConfig{
-			MaxReactSteps:      30,
 			MaxRetries:         2,
 			OutputTokenReserve: 1024,
 			Compaction: BuilderCompactionConfig{

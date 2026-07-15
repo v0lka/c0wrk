@@ -193,8 +193,6 @@ type conductorDeps struct {
 	circuitBreaker   agent.CircuitBreakerConfig
 	hitlHandler      agent.HITLHandler
 	reflector        *reflector.Reflector
-	maxSteps         int
-	subagentMaxSteps int
 	maxRedelegDepth  int
 	maxDepCtxChars   int
 	reasoningEffort  string
@@ -730,11 +728,14 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.DelegationTask, registry *tools.DelegationRegistry, scopedEvents agent.Events) (agent.SubAgentTask, error) {
 	maxSteps := t.MaxSteps
 	if maxSteps <= 0 {
-		maxSteps = l.deps.subagentMaxSteps
+		// Default budget derives from routing complexity (inherited via
+		// context), matching the Conductor's own limit. A per-task max_steps
+		// override takes precedence.
+		maxSteps = ComplexityFromContext(ctx) * stepsPerComplexity
 	}
 
 	taskTools := l.resolveTaskTools(t)
-	taskDesc := l.buildTaskDescription(t, registry)
+	taskDesc := l.buildTaskDescription(t, registry, maxSteps)
 
 	// Derive compaction strategy from the Conductor's routing domain +
 	// complexity (inherited via context). Subagents inherit the same
@@ -942,10 +943,10 @@ func (l *conductorLauncher) toolDescriptorByName(name string) (sdktools.ToolDesc
 	return sdktools.ToolDescriptor{}, false
 }
 
-func (l *conductorLauncher) buildTaskDescription(t tools.DelegationTask, registry *tools.DelegationRegistry) string {
+func (l *conductorLauncher) buildTaskDescription(t tools.DelegationTask, registry *tools.DelegationRegistry, maxSteps int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[Delegation %s] %s\n\n", t.ID, t.Task)
-	fmt.Fprintf(&b, "Tool call budget: %d iterations. Plan your approach to finish within this budget.\n\n", l.effectiveMaxSteps(t))
+	fmt.Fprintf(&b, "Tool call budget: %d iterations. Plan your approach to finish within this budget.\n\n", maxSteps)
 	b.WriteString("IMPORTANT: You are executing ONE delegated task. Complete ONLY this task's objective. Do NOT perform work outside the task scope.\n\n")
 	b.WriteString("## Checklist\nBuild a checklist at the start (update_checklist — omit step_id, it is inferred from your execution context) listing the concrete sub-tasks for this work, and report progress on each item as you complete it.\n\n")
 
@@ -991,13 +992,6 @@ func (l *conductorLauncher) buildTaskDescription(t tools.DelegationTask, registr
 
 	b.WriteString("Pass your result through the finish tool.\n")
 	return b.String()
-}
-
-func (l *conductorLauncher) effectiveMaxSteps(t tools.DelegationTask) int {
-	if t.MaxSteps > 0 {
-		return t.MaxSteps
-	}
-	return l.deps.subagentMaxSteps
 }
 
 func (l *conductorLauncher) resolveModelMeta(ctx context.Context) llm.ModelMetadata {
@@ -1292,6 +1286,13 @@ func (r *conductorReflectionRunner) Reflect(ctx context.Context, scope, delegati
 	}, nil
 }
 
+// stepsPerComplexity is the multiplier that derives the ReAct iteration
+// limit from the routing complexity: limit = complexity × stepsPerComplexity.
+// It applies uniformly to the Conductor's own loop and to every subagent
+// (delegates and plan-step executors) unless a delegation overrides it via
+// its per-task max_steps.
+const stepsPerComplexity = 20
+
 // compactionStrategyForDomain maps a routing domain + complexity to the
 // compaction strategy per ADR-012 / specs/domains/orchestration/router.md:
 //
@@ -1453,7 +1454,7 @@ func RunConductor(
 		ModelRegistry:       deps.modelRegistry,
 		ContextFactory:      adaptContextFactory(deps.contextFactory),
 		SystemPrompt:        systemPromptFactory,
-		MaxSteps:            deps.maxSteps,
+		MaxSteps:            complexity * stepsPerComplexity,
 		ToolResultBudget:    deps.toolResultBudget,
 		CircuitBreaker:      deps.circuitBreaker,
 		HITLHandler:         deps.hitlHandler,
@@ -1550,8 +1551,6 @@ func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orch
 		circuitBreaker:      o.circuitBreaker,
 		hitlHandler:         o.config.HITLHandler,
 		reflector:           o.reflector,
-		maxSteps:            o.config.MaxSteps,
-		subagentMaxSteps:    o.config.SubagentMaxSteps,
 		maxRedelegDepth:     o.config.MaxRedelegationDepth,
 		maxDepCtxChars:      o.config.MaxDependencyContextChars,
 		reasoningEffort:     o.config.ReasoningEffort,

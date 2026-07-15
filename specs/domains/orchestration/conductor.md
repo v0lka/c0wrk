@@ -125,7 +125,7 @@ checklist.
 
 ### Step Limit and Circuit Breakers
 
-The Conductor is subject to `config.Conductor.MaxSteps` (default 80) and the same circuit breakers as any `Executor.Run` instance (repeat, truncation, parse error, fruitless, same tool). On step-limit or circuit-breaker abort, `HITLHandler.OnStepLimit` is called with the same three options (AllowOnce, AllowAlways, Deny) as the prior executor. See [executor.md](executor.md) for circuit breaker details.
+The Conductor's ReAct iteration limit is derived from routing complexity, not configured: `complexity × stepsPerComplexity` (constant 20 in `core/conductor.go`), giving a budget of 20 (complexity 1) to 100 (complexity 5). The complexity is read from the routing context (`ComplexityFromContext`). The Conductor is subject to the same circuit breakers as any `Executor.Run` instance (repeat, truncation, parse error, fruitless, same tool). On step-limit or circuit-breaker abort, `HITLHandler.OnStepLimit` is called with the same three options (AllowOnce, AllowAlways, Deny) as the prior executor. See [executor.md](executor.md) for circuit breaker details.
 
 ### Wrap-Up Nudge
 

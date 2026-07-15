@@ -110,7 +110,6 @@ router:
 # Executor & Agent Execution
 # ---------------------------------------------------------------------------
 executor:
-  max_react_steps: 80 # Maximum ReAct loop iterations for the Conductor (default: 80)
   max_retries: 2 # Maximum retries on execution failure (legacy, retained for framework.go)
   output_token_reserve: 4096 # Tokens reserved for model output generation
   # --- Context Compaction ---------------------------------------------------

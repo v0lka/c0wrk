@@ -87,7 +87,6 @@ type BuilderRouterConfig struct {
 
 // BuilderExecutorConfig holds executor-level settings.
 type BuilderExecutorConfig struct {
-	MaxReactSteps      int
 	MaxRetries         int
 	OutputTokenReserve int
 	Compaction         BuilderCompactionConfig

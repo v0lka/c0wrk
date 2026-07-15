@@ -49,9 +49,7 @@ func newResumeTestOrchestrator(t *testing.T, mockLLM *mockLLMCaller, emitter *sp
 		}
 		return cm
 	}
-	return NewOrchestrator(OrchestratorConfig{
-		MaxSteps: 10,
-	}, OrchestratorDeps{
+	return NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
 		Router:         newCoreRouter(mockLLM, 5),
 		LLM:            mockLLM,
 		ToolExec:       registry,

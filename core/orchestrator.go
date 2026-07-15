@@ -58,8 +58,6 @@ var InjectionDefenseKey = injectionDefenseKeyType{}
 
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
-	MaxSteps                  int
-	SubagentMaxSteps          int    // max ReAct iterations per delegation (default: 50)
 	MaxRedelegationDepth      int    // cap on recursive delegation when allow_redelegate is true (default: 2)
 	KeepFirst                 int    // for sliding window compaction
 	KeepLast                  int    // for sliding window compaction
@@ -209,12 +207,6 @@ type OrchestratorDeps struct {
 // NewOrchestrator creates a new Orchestrator with all components.
 // reflector, logger, and emitter are optional (nil-safe).
 func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrator {
-	if cfg.MaxSteps == 0 {
-		cfg.MaxSteps = 80
-	}
-	if cfg.SubagentMaxSteps == 0 {
-		cfg.SubagentMaxSteps = 50
-	}
 	if cfg.MaxRedelegationDepth == 0 {
 		cfg.MaxRedelegationDepth = 2
 	}
