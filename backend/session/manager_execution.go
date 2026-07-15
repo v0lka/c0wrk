@@ -11,6 +11,7 @@ import (
 	"github.com/v0lka/c0wrk/core"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
@@ -174,6 +175,15 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 			session.mu.Unlock()
 		}()
 
+		// Continue an interrupted (unfinished) task if one exists: the new
+		// user message is appended as a final user-nudge turn to the prior
+		// trajectory and the ReAct cycle resumes — no routing, no new task,
+		// no conversation-history pair. Returns true when it took the path.
+		if m.tryContinueInterruptedTask(ctx, id, session, msg) {
+			return
+		}
+
+		// No unfinished task: run the normal route → plan → execute flow.
 		// Get last completed task ID for continuation
 		session.mu.Lock()
 		lastTaskID := session.lastCompletedTaskID
@@ -216,16 +226,12 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 		if err != nil {
 			// Check if it was a cancellation
 			if ctx.Err() == context.Canceled {
-				m.emitFunc(Event{
-					SessionID: id,
-					Type:      "task_cancelled",
-					Data: TaskCancelledData{
-						SessionID: id,
-					},
-				})
-				// Mark any in-progress task as cancelled so it's not left
-				// resumable and the persisted status reflects reality.
-				m.persistCancellationIfUnfinished(id)
+				// On shutdown, leave the task in_progress so it can be
+				// resumed after restart; only user-initiated cancels are
+				// persisted as cancelled.
+				if m.emitTaskCancelledUnlessShuttingDown(id) {
+					m.persistCancellationIfUnfinished(id)
+				}
 				return
 			}
 
@@ -252,14 +258,9 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 		// Safety net: if context was cancelled but orchestrator returned no error,
 		// still treat as cancellation — do not emit partial results as final.
 		if ctx.Err() == context.Canceled {
-			m.emitFunc(Event{
-				SessionID: id,
-				Type:      "task_cancelled",
-				Data: TaskCancelledData{
-					SessionID: id,
-				},
-			})
-			m.persistCancellationIfUnfinished(id)
+			if m.emitTaskCancelledUnlessShuttingDown(id) {
+				m.persistCancellationIfUnfinished(id)
+			}
 			return
 		}
 
@@ -269,6 +270,112 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 	}(taskCtx, text, activeSkills)
 
 	return nil
+}
+
+// tryContinueInterruptedTask checks whether the session has an unfinished
+// (interrupted) task and, if so, continues its ReAct cycle by appending the
+// user's new message as a final seeded user-nudge turn. It returns true when
+// it took the resume path (the caller must NOT proceed with the normal
+// HandleMessage flow), and false when there is no unfinished task (the caller
+// runs the normal route → plan → execute flow).
+//
+// The user message is rendered as a user turn in the LLM context (via the
+// trajectory's Step.UserNudge, which stepsToMessages emits as a {role:user}
+// message), so the agent sees the new instruction immediately after the prior
+// trajectory. The task is NOT re-routed, NO new task is created, and NO new
+// conversation-history pair is recorded — the task lifecycle simply continues.
+// (Resume's recordResumeOutcome records the assistant side only, mirroring the
+// app-restart ResumeTask path.)
+//
+// The message_received event has already been emitted by SendMessage, so the
+// UI shows the user message; the resumed task emits its own task lifecycle
+// events (routing/context_fill/steps/task_complete) on top.
+func (m *Manager) tryContinueInterruptedTask(ctx context.Context, id string, session *Session, message string) bool {
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts == nil {
+		return false
+	}
+
+	adapter := NewTaskStoreAdapter(ts)
+	taskID, err := adapter.GetUnfinishedTaskID(id)
+	if err != nil {
+		m.log().Warn("continue-interrupted-task: failed to look up unfinished task; falling back to fresh task", "session", id, "error", err)
+		return false
+	}
+	if taskID == "" {
+		return false
+	}
+
+	// Restore the blackboard (facts / step results) for the interrupted task.
+	bb, err := RestoreBlackboard(taskID, id, adapter, nil)
+	if err != nil {
+		m.log().Warn("continue-interrupted-task: failed to restore blackboard; falling back to fresh task", "session", id, "error", err)
+		return false
+	}
+	if bb == nil {
+		return false
+	}
+
+	// Load the persisted trajectory and append the user message as a final
+	// nudge step so it renders as a {role:user} turn after the prior steps.
+	resumeSteps, err := adapter.LoadTrajectory(taskID)
+	if err != nil {
+		m.log().Warn("continue-interrupted-task: failed to load trajectory; falling back to fresh task", "session", id, "error", err)
+		return false
+	}
+	resumeSteps = append(resumeSteps, agent.Step{UserNudge: message})
+
+	// Resolve the persisted routing decision (optional — Resume defaults to
+	// the general domain when nil). The task is never re-routed.
+	var routing *router.RoutingDecision
+	if state, stateErr := adapter.LoadTaskState(taskID); stateErr != nil {
+		m.log().Warn("continue-interrupted-task: failed to load task state; resuming without routing", "session", id, "error", stateErr)
+	} else if state != nil {
+		routing = state.RoutingDecision
+	}
+
+	// Resolve the prior task_failed_resumable banner so it does not linger
+	// after the resumed execution finishes.
+	m.resolveResumableTaskMessage(id, taskID, "resumed")
+
+	result, err := session.orchestrator.Resume(ctx, bb, routing, config.SessionPlansDir(m.agentDir, session.ProjectID, id), resumeSteps)
+
+	// Shared completion handling (mirrors ResumeTask's goroutine tail).
+	if err != nil && errors.Is(err, orchestration.ErrExecutionIncomplete) && result != nil {
+		m.log().Warn("continued task completed with incomplete execution", "session_id", id, "error", err)
+		err = nil
+	}
+
+	if err != nil {
+		if ctx.Err() == context.Canceled {
+			if m.emitTaskCancelledUnlessShuttingDown(id) {
+				bb.CancelTask()
+			}
+			return true
+		}
+		m.emitFunc(Event{
+			SessionID: id,
+			Type:      "error",
+			Data: ErrorData{
+				SessionID: id,
+				Error:     err.Error(),
+			},
+		})
+		m.emitResumableIfUnfinished(id)
+		return true
+	}
+
+	// Store the task ID for potential further continuations.
+	if pbb, ok := result.Blackboard.(*PersistentBlackboard); ok {
+		session.mu.Lock()
+		session.lastCompletedTaskID = pbb.TaskID()
+		session.mu.Unlock()
+	}
+
+	m.emitTaskComplete(id, result, nil)
+	return true
 }
 
 // ResumeTask checks for an unfinished task in the given session and resumes it.
@@ -309,17 +416,32 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 		return nil // task record not found (race condition or cleanup)
 	}
 
-	// Load routing decision from task state.
+	// Load task state. The routing decision and plan are OPTIONAL for resume:
+	// a persisted routing decision is reused (the task is not re-routed), and
+	// a plan is not required — the Conductor handles plan-less tasks via a
+	// standalone checklist. state may be nil when no state was persisted.
 	state, err := adapter.LoadTaskState(taskID)
 	if err != nil {
 		return fmt.Errorf("failed to load task state: %w", err)
 	}
-	if state == nil || state.RoutingDecision == nil {
-		return fmt.Errorf("cannot resume task %s: missing routing decision", taskID)
+
+	// Resolve the persisted routing decision (may be nil — Resume defaults to
+	// the general domain in that case) and original request (may be empty).
+	var routing *router.RoutingDecision
+	originalRequest := bb.GetOriginalRequest()
+	if state != nil {
+		routing = state.RoutingDecision
+		if state.OriginalRequest != "" {
+			originalRequest = state.OriginalRequest
+		}
 	}
 
-	if bb.GetPlan() == nil {
-		return fmt.Errorf("cannot resume task %s: no plan in restored state", taskID)
+	// Load the persisted trajectory so the resumed executor continues from the
+	// checkpoint instead of starting fresh. An empty/nil trajectory is valid —
+	// the Conductor simply starts a fresh ReAct loop.
+	resumeSteps, err := adapter.LoadTrajectory(taskID)
+	if err != nil {
+		return fmt.Errorf("failed to load trajectory: %w", err)
 	}
 
 	session.mu.Lock()
@@ -357,7 +479,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 		Type:      "task_resumed",
 		Data: MessageReceivedData{
 			SessionID: id,
-			Text:      state.OriginalRequest,
+			Text:      originalRequest,
 		},
 	})
 
@@ -378,7 +500,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 			session.mu.Unlock()
 		}()
 
-		result, err := session.orchestrator.Resume(taskCtx, bb, state.RoutingDecision, config.SessionPlansDir(m.agentDir, session.ProjectID, id))
+		result, err := session.orchestrator.Resume(taskCtx, bb, routing, config.SessionPlansDir(m.agentDir, session.ProjectID, id), resumeSteps)
 
 		// Treat partial execution like the SendMessage path — deliver best-effort
 		// output and rely on emitResumableIfUnfinished to expose resumability.
@@ -389,16 +511,12 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 
 		if err != nil {
 			if taskCtx.Err() == context.Canceled {
-				m.emitFunc(Event{
-					SessionID: id,
-					Type:      "task_cancelled",
-					Data: TaskCancelledData{
-						SessionID: id,
-					},
-				})
-				// Mark the restored task as cancelled so it's not left
-				// resumable and the persisted status reflects reality.
-				bb.CancelTask()
+				// On shutdown, leave the restored task in_progress so it can
+				// be resumed after restart; only user-initiated cancels mark
+				// the task as cancelled.
+				if m.emitTaskCancelledUnlessShuttingDown(id) {
+					bb.CancelTask()
+				}
 				return
 			}
 
@@ -497,6 +615,23 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 	}
 
 	return status, nil
+}
+
+// emitTaskCancelledUnlessShuttingDown emits the "task_cancelled" event for the
+// session unless the manager is shutting down. It returns true when the caller
+// should persist the cancellation (user-initiated cancel), and false when the
+// manager is shutting down — in that case the task must stay in_progress so it
+// remains resumable after restart, so the caller skips persistence entirely.
+func (m *Manager) emitTaskCancelledUnlessShuttingDown(id string) bool {
+	if m.shuttingDown.Load() {
+		return false
+	}
+	m.emitFunc(Event{
+		SessionID: id,
+		Type:      "task_cancelled",
+		Data:      TaskCancelledData{SessionID: id},
+	})
+	return true
 }
 
 // persistCancellationIfUnfinished marks the session's unfinished task (if any)

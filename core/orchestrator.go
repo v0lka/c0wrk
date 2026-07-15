@@ -36,6 +36,12 @@ var PlanModeKey = planModeKeyType{}
 // every system prompt.
 const DefaultAgentsMDMaxBytes = 65536
 
+// defaultResumeComplexity is the routing complexity used when a resumed task
+// has no persisted routing decision. It selects the standard Conductor mode
+// (checklist + optional delegation, no user sign-off plan) so the agent can
+// continue making progress without requiring a declared plan.
+const defaultResumeComplexity = 3
+
 // agentsMDCacheEntry holds a cached read of AGENTS.md from a workspace.
 type agentsMDCacheEntry struct {
 	content string
@@ -361,8 +367,8 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 // limit reached). Callers should check errors.Is(err, orchestration.ErrExecutionIncomplete)
 // and use the returned HandleResult for partial output, plan state, and blackboard.
 // All other errors indicate complete failure; the task is marked failed and nil is returned.
-func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision, plansDir string) (result *HandleResult, err error) {
-	o.logDebug("orchestrator: resume started")
+func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision, plansDir string, resumeSteps []agent.Step) (result *HandleResult, err error) {
+	o.logDebug("orchestrator: resume started", "resumeSteps", len(resumeSteps))
 
 	// Record the resumed execution's outcome in the in-memory conversation
 	// history so future routing and continuation planning see this exchange.
@@ -386,18 +392,38 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// Emit initial context_fill
 	o.emitInitialContextFill(ctx)
 
-	// Emit routing decision so the frontend can display the resumed context.
+	// Resolve effective domain/complexity for the resumed execution. The task
+	// is NOT re-routed: a persisted routing decision is reused so the system
+	// prompt and compaction strategy match the original run. When no routing
+	// was persisted (nil), the Conductor defaults to the "general" domain so
+	// it runs in standard mode without requiring a plan.
+	domain := "general"
+	complexity := defaultResumeComplexity
 	if routing != nil {
-		o.emitter.Routing("conductor", routing.Domain, strconv.Itoa(routing.Complexity))
+		if routing.Domain != "" {
+			domain = routing.Domain
+		}
+		if routing.Complexity > 0 {
+			complexity = routing.Complexity
+		}
 	}
+	ctx = WithDomain(ctx, domain)
+	ctx = WithComplexity(ctx, complexity)
 
-	o.logInfo("resume_task", "reflections", len(bb.GetReflections()))
+	// Emit routing decision so the frontend can display the resumed context.
+	o.emitter.Routing("conductor", domain, strconv.Itoa(complexity))
+
+	o.logInfo("resume_task", "reflections", len(bb.GetReflections()), "domain", domain, "complexity", complexity)
 
 	// Delegate to the Conductor. The restored blackboard carries facts and
 	// step results from the prior run; the Conductor reads them via tools
-	// (search_facts, read_step_output) and continues toward completion.
+	// (search_facts, read_step_output) and continues toward completion. The
+	// prior trajectory (resumeSteps) is seeded into the ContextManager and the
+	// Executor so the resumed run sees the full history and continues the step
+	// counter from where it left off. A plan is NOT required — the Conductor
+	// handles plan-less tasks via a standalone checklist.
 	availableTools := o.toolRegistry.ListFiltered(o.disabledToolNames())
-	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, nil)
+	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, nil, resumeSteps)
 	var incompleteErr error
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
 		if pbb, ok := bb.(PersistableBlackboard); ok {
@@ -887,7 +913,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	conductorHistory := truncateHistory(o.conversationHistory, o.config.ConductorHistoryWindow)
 
 	plansDir := opts.SessionPlansDir
-	execResult, err := o.runConductor(ctx, taskMessage, bb, availableTools, plansDir, conductorHistory)
+	execResult, err := o.runConductor(ctx, taskMessage, bb, availableTools, plansDir, conductorHistory, nil)
 	// C-5: propagate ErrExecutionIncomplete alongside best-effort result.
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
 		return nil, err

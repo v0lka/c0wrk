@@ -119,6 +119,33 @@ func (a *TaskStoreAdapter) PersistFacts(taskID string, facts []orchestration.Fac
 	return a.store.SaveFacts(context.Background(), taskID, data)
 }
 
+// SaveTrajectory JSON-marshals the full Conductor step trajectory and stores it
+// for a task, inserting or replacing any previously persisted trajectory.
+func (a *TaskStoreAdapter) SaveTrajectory(taskID string, steps []agent.Step) error {
+	data, err := json.Marshal(steps)
+	if err != nil {
+		return fmt.Errorf("marshal trajectory steps: %w", err)
+	}
+	return a.store.SaveTrajectory(context.Background(), taskID, data)
+}
+
+// LoadTrajectory loads the Conductor step trajectory for a task and unmarshals
+// it into []agent.Step. Returns nil, nil when no trajectory has been persisted.
+func (a *TaskStoreAdapter) LoadTrajectory(taskID string) ([]agent.Step, error) {
+	data, err := a.store.LoadTrajectory(context.Background(), taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load trajectory: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var steps []agent.Step
+	if err := json.Unmarshal(data, &steps); err != nil {
+		return nil, fmt.Errorf("unmarshal trajectory steps: %w", err)
+	}
+	return steps, nil
+}
+
 // LoadTaskState loads a task and its steps from the store, deserializes JSON back
 // to core types, and returns a populated *core.TaskState.
 // Returns nil, nil if the task is not found.

@@ -49,6 +49,12 @@ type TaskPersistence interface {
 	PersistFailure(taskID string) error
 	PersistCancellation(taskID string) error
 	PersistFacts(taskID string, facts []orchestration.Fact) error
+	// SaveTrajectory persists the Conductor's full []agent.Step trajectory for a
+	// task so it survives app restart.
+	SaveTrajectory(taskID string, steps []agent.Step) error
+	// LoadTrajectory restores the Conductor's []agent.Step trajectory for a task.
+	// Returns nil, nil when no trajectory has been persisted.
+	LoadTrajectory(taskID string) ([]agent.Step, error)
 	// Restoration
 	LoadTaskState(taskID string) (*TaskState, error)
 	GetUnfinishedTaskID(sessionID string) (string, error) // returns "" if none

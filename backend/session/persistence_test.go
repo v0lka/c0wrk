@@ -1524,6 +1524,111 @@ func TestTaskCascadeDelete(t *testing.T) {
 	}
 }
 
+func TestSaveAndLoadTrajectory(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	// Parent task must exist (trajectory FK references tasks).
+	if err := store.SaveTask(context.Background(), TaskRecord{
+		ID: "task-traj", SessionID: sessionID, OriginalRequest: "test",
+		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+
+	payload := json.RawMessage(`[{"thought":"plan","observation":"done"}]`)
+
+	// Save
+	if err := store.SaveTrajectory(context.Background(), "task-traj", payload); err != nil {
+		t.Fatalf("SaveTrajectory failed: %v", err)
+	}
+
+	// Load — should round-trip the exact bytes
+	loaded, err := store.LoadTrajectory(context.Background(), "task-traj")
+	if err != nil {
+		t.Fatalf("LoadTrajectory failed: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected non-nil trajectory")
+	}
+
+	var got []map[string]any
+	if err := json.Unmarshal(loaded, &got); err != nil {
+		t.Fatalf("unmarshal loaded trajectory: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(got))
+	}
+	if got[0]["thought"] != "plan" {
+		t.Errorf("thought: got %v", got[0]["thought"])
+	}
+	if got[0]["observation"] != "done" {
+		t.Errorf("observation: got %v", got[0]["observation"])
+	}
+
+	// Save again (replace) — should overwrite, not duplicate.
+	updated := json.RawMessage(`[{"thought":"new"}]`)
+	if err := store.SaveTrajectory(context.Background(), "task-traj", updated); err != nil {
+		t.Fatalf("SaveTrajectory (replace) failed: %v", err)
+	}
+	loaded2, err := store.LoadTrajectory(context.Background(), "task-traj")
+	if err != nil {
+		t.Fatalf("LoadTrajectory (replace) failed: %v", err)
+	}
+	if string(loaded2) != string(updated) {
+		t.Errorf("expected replaced trajectory %s, got %s", updated, loaded2)
+	}
+}
+
+func TestLoadTrajectory_NotFound(t *testing.T) {
+	store, _, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	// No trajectory persisted for this task → nil, nil (not an error).
+	loaded, err := store.LoadTrajectory(context.Background(), "missing-task")
+	if err != nil {
+		t.Fatalf("LoadTrajectory should not error on missing, got: %v", err)
+	}
+	if loaded != nil {
+		t.Errorf("expected nil trajectory for missing task, got %s", loaded)
+	}
+}
+
+func TestTaskTrajectory_CascadeDelete(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	if err := store.SaveTask(context.Background(), TaskRecord{
+		ID: "task-traj-cascade", SessionID: sessionID, OriginalRequest: "test",
+		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+	if err := store.SaveTrajectory(context.Background(), "task-traj-cascade", json.RawMessage(`[]`)); err != nil {
+		t.Fatalf("SaveTrajectory failed: %v", err)
+	}
+
+	// Confirm present.
+	if loaded, err := store.LoadTrajectory(context.Background(), "task-traj-cascade"); err != nil || loaded == nil {
+		t.Fatalf("expected trajectory present before cascade (loaded=%v, err=%v)", loaded, err)
+	}
+
+	// Deleting the task must cascade to the trajectory (FK ON DELETE CASCADE).
+	if _, err := store.db.ExecContext(context.Background(), `DELETE FROM tasks WHERE id = ?`, "task-traj-cascade"); err != nil {
+		t.Fatalf("delete task failed: %v", err)
+	}
+
+	loaded, err := store.LoadTrajectory(context.Background(), "task-traj-cascade")
+	if err != nil {
+		t.Fatalf("LoadTrajectory after cascade: %v", err)
+	}
+	if loaded != nil {
+		t.Error("trajectory should be deleted by task cascade")
+	}
+}
+
 func TestLoadTask_NotFound(t *testing.T) {
 	store, _, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()

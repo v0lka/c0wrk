@@ -189,6 +189,12 @@ func (s *SQLiteSessionStore) createTables() error {
 		updated_at TIMESTAMP NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS task_trajectory (
+		task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+		steps TEXT NOT NULL,
+		updated_at TIMESTAMP NOT NULL
+	);
+
 	CREATE TABLE IF NOT EXISTS terminal_commands (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -806,6 +812,12 @@ type TaskStore interface {
 	LoadTaskSteps(ctx context.Context, taskID string) ([]TaskStepRecord, error)
 	SaveFacts(ctx context.Context, taskID string, factsJSON json.RawMessage) error
 	LoadFacts(ctx context.Context, taskID string) (json.RawMessage, error)
+	// SaveTrajectory inserts or replaces the full Conductor step trajectory
+	// (JSON-marshaled []agent.Step) for a task.
+	SaveTrajectory(ctx context.Context, taskID string, stepsJSON json.RawMessage) error
+	// LoadTrajectory loads the Conductor step trajectory for a task.
+	// Returns nil, nil when no trajectory has been persisted.
+	LoadTrajectory(ctx context.Context, taskID string) (json.RawMessage, error)
 	GetUnfinishedTask(ctx context.Context, sessionID string) (*TaskRecord, error)
 	GetLatestTaskID(ctx context.Context, sessionID string) (string, error)
 	ReactivateTask(ctx context.Context, taskID string) error
@@ -1125,4 +1137,34 @@ func (s *SQLiteSessionStore) LoadFacts(ctx context.Context, taskID string) (json
 		return nil, nil
 	}
 	return json.RawMessage(factsStr), nil
+}
+
+// SaveTrajectory inserts or replaces the full Conductor step trajectory
+// (JSON-marshaled []agent.Step) for a task.
+func (s *SQLiteSessionStore) SaveTrajectory(ctx context.Context, taskID string, stepsJSON json.RawMessage) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO task_trajectory (task_id, steps, updated_at)
+		VALUES (?, ?, ?)`,
+		taskID, string(stepsJSON), time.Now(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save trajectory: %w", err)
+	}
+	return nil
+}
+
+// LoadTrajectory loads the Conductor step trajectory for a task.
+// Returns nil, nil when no trajectory has been persisted.
+func (s *SQLiteSessionStore) LoadTrajectory(ctx context.Context, taskID string) (json.RawMessage, error) {
+	var stepsStr string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT steps FROM task_trajectory WHERE task_id = ?`, taskID,
+	).Scan(&stepsStr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to load trajectory: %w", err)
+	}
+	return json.RawMessage(stepsStr), nil
 }

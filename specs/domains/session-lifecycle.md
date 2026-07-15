@@ -95,6 +95,11 @@ User sends message
       └─ On failure: emit task_failed_resumable or error
 ```
 
+> If the session has an **unfinished (interrupted) task**, the execution
+> goroutine takes the `tryContinueInterruptedTask` branch *before*
+> `HandleMessage` and resumes the prior ReAct cycle instead of routing a new
+> task. See [Continuing an interrupted task with a new message](#continuing-an-interrupted-task-with-a-new-message).
+
 ### Plan Review
 
 > **Note:** The plan review workflow described below (system-driven `HandlePlanReview` pipeline stage, `PlanReview` toggle in `HandleOptions`, `PlanReviewStore` persistence) is superseded by ADR-012. Under the Conductor pipeline, plan review becomes a tool call (`declare_plan` with `mode: "await_approval"`) invoked by the Conductor at a point of its own choosing, not a pipeline stage. The `PlanReviewStore` persistence and restart-survival logic may be retained or adapted for `declare_plan` approval state. This section must be rewritten during implementation of ADR-012; it is left in place as a reference for the current behaviour being replaced.
@@ -151,21 +156,66 @@ Previous plan files are not deleted on replan or rejection — they remain as hi
 
 ### Task Resumption
 
+Resume reconstructs the full prior ReAct trajectory from the task store and
+re-enters the Conductor at that checkpoint. **A plan and a routing decision are
+no longer required** — a persisted routing decision is reused if available
+(the task is never re-routed), and when none was persisted the Conductor runs
+in the default `general` domain. A plan-less task is handled by the Conductor's
+standalone checklist.
+
 ```
 User clicks "Resume" (after task_failed_resumable)
   → Frontend: ResumeTask(sessionId)
   → Backend: FrontendAPI.ResumeTask()
-      ├─ Restore Blackboard from SQLite (bbRestoreFunc)
-      ├─ Restore routing decision
-      └─ Call orchestrator.Resume(ctx, bb, routing)
-          (continues from last checkpoint)
+      ├─ Resolve unfinished task via TaskStoreAdapter.GetUnfinishedTaskID
+      ├─ Restore Blackboard from SQLite (RestoreBlackboard: facts + step results)
+      ├─ Load persisted trajectory via LoadTrajectory(taskID) → resumeSteps
+      ├─ Resolve routing decision (OPTIONAL — may be nil; defaults to "general")
+      ├─ Emit task_resumed (resolves the resumable banner; sets UI active)
+      └─ Call orchestrator.Resume(ctx, bb, routing, plansDir, resumeSteps)
+          ├─ Seeds resumeSteps into the ContextManager (StepSeedable.SeedSteps)
+          │   so they render as assistant+tool messages in BuildPrompt
+          ├─ Seeds resumeSteps into the Executor (WithResumeSteps) so the step
+          │   counter continues from len(resumeSteps)+1 and the full trajectory
+          │   syncs to the TrajectoryStore (persisted on every Sync)
+          └─ Conductor continues toward completion (no plan required)
 ```
+
+`recordResumeOutcome` appends **only the assistant side** of the resumed
+execution to the in-memory conversation history — no user/assistant pair is
+recorded (the user message that spawned the task was already recorded when the
+task first ran, or restored from the message store after a restart).
 
 `task_failed_resumable` is NOT emitted when the router decides
 `needs_clarification` (and the user did not explicitly invoke a /skill). In
 that case the planner never runs, so there is nothing to resume — the
 orchestrator marks the just-created task as completed and returns the
 clarification message instead.
+
+#### Continuing an interrupted task with a new message
+
+Sending a message to a session that has an **unfinished (interrupted) task**
+does NOT start a new task: `Manager.tryContinueInterruptedTask` appends the
+user message as a final **user-nudge** turn to the prior trajectory and resumes
+the same ReAct cycle via `orchestrator.Resume` — **no routing, no new task, no
+new conversation-history pair**. The nudge renders as a `{role:user}` message
+positioned after the prior steps, so the agent sees the new instruction
+immediately. Idle sessions (no unfinished task) behave exactly as before
+(route → plan → execute).
+
+```
+User sends message to session with unfinished task
+  → Frontend: SendMessage(...) — optimistically sets task active
+  → Backend: FrontendAPI.SendMessage() (goroutine)
+      └─ tryContinueInterruptedTask(ctx, id, session, message)
+          ├─ Resolve unfinished task via TaskStoreAdapter.GetUnfinishedTaskID
+          ├─ Restore Blackboard (facts + step results)
+          ├─ Load trajectory → append agent.Step{UserNudge: message}
+          ├─ Resolve routing decision (OPTIONAL)
+          ├─ Resolve the resumable banner (so it does not linger)
+          └─ orchestrator.Resume(ctx, bb, routing, plansDir, resumeSteps)
+              (task ID preserved; lifecycle events stream normally)
+```
 
 ### Discarding an Unfinished Task
 
@@ -387,7 +437,19 @@ type HandleResult struct {
 - Messages are persisted immediately on receive (not after processing)
 - Task state is checkpointed on each step completion (enables resume)
 - Cancellation is cooperative (executor checks context at each iteration)
-- A failed task can be resumed exactly once (subsequent failure = new task)
+- An unfinished task (`in_progress` or `failed`) is continued by the next user
+  message via `tryContinueInterruptedTask`: the message is appended as a
+  user-nudge turn to the prior trajectory and `orchestrator.Resume` is invoked
+  with **no routing, no new task, and no new conversation-history pair** (task
+  ID preserved). Explicit `CancelUnfinishedTask` is the only path that closes
+  it and lets the following message start fresh.
+- `orchestrator.Resume` reconstructs the full prior trajectory (`resumeSteps`)
+  and seeds it into both the ContextManager (`StepSeedable.SeedSteps`) and the
+  Executor (`WithResumeSteps`): the step counter continues from
+  `len(resumeSteps)+1` and the full trajectory syncs to the (persisted)
+  TrajectoryStore on every step. A routing decision and a plan are **optional**
+  — routing is reused if persisted (otherwise `general` domain), and a plan-less
+  task runs the Conductor's standalone checklist.
 - Router-driven `needs_clarification` never produces a resumable task: the
   planner has not run yet and the just-created task record is closed before
   the orchestrator returns.

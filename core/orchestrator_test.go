@@ -176,6 +176,8 @@ func (m *mockTaskStore) PersistCompletion(taskID, finalOutput string, attemptCou
 func (m *mockTaskStore) PersistFailure(taskID string) error                           { return nil }
 func (m *mockTaskStore) PersistCancellation(taskID string) error                      { return nil }
 func (m *mockTaskStore) PersistFacts(taskID string, facts []orchestration.Fact) error { return nil }
+func (m *mockTaskStore) SaveTrajectory(taskID string, steps []agent.Step) error       { return nil }
+func (m *mockTaskStore) LoadTrajectory(taskID string) ([]agent.Step, error)           { return nil, nil }
 func (m *mockTaskStore) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {
 		return nil, m.loadErr
@@ -306,6 +308,12 @@ func (m *mockTaskStoreWithReactivate) PersistFailure(taskID string) error      {
 func (m *mockTaskStoreWithReactivate) PersistCancellation(taskID string) error { return nil }
 func (m *mockTaskStoreWithReactivate) PersistFacts(taskID string, facts []orchestration.Fact) error {
 	return nil
+}
+func (m *mockTaskStoreWithReactivate) SaveTrajectory(taskID string, steps []agent.Step) error {
+	return nil
+}
+func (m *mockTaskStoreWithReactivate) LoadTrajectory(taskID string) ([]agent.Step, error) {
+	return nil, nil
 }
 func (m *mockTaskStoreWithReactivate) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {

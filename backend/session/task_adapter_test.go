@@ -8,6 +8,7 @@ import (
 
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
+	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
 )
 
@@ -236,5 +237,96 @@ func TestTaskStoreAdapter_LoadTaskState_NotFound(t *testing.T) {
 	}
 	if state != nil {
 		t.Error("expected nil state for missing task")
+	}
+}
+
+func TestTaskStoreAdapter_TrajectoryRoundTrip(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	adapter := NewTaskStoreAdapter(store)
+	taskID := "adapter-traj"
+
+	if err := adapter.PersistNewTask(taskID, sessionID, "build trajectory"); err != nil {
+		t.Fatalf("PersistNewTask failed: %v", err)
+	}
+
+	steps := []agent.Step{
+		{
+			Thought:          "thinking about the problem",
+			ReasoningContent: "step-by-step reasoning",
+			Action: llm.ToolCall{
+				ID:    "call-1",
+				Name:  "read_file",
+				Input: json.RawMessage(`{"path":"a.go"}`),
+			},
+			Observation:   "file contents here",
+			ResponseGroup: 42,
+		},
+		{
+			Thought:    "second thought",
+			Observation: "another observation",
+		},
+	}
+
+	if err := adapter.SaveTrajectory(taskID, steps); err != nil {
+		t.Fatalf("SaveTrajectory failed: %v", err)
+	}
+
+	loaded, err := adapter.LoadTrajectory(taskID)
+	if err != nil {
+		t.Fatalf("LoadTrajectory failed: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected non-nil loaded trajectory")
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("expected 2 steps, got %d", len(loaded))
+	}
+
+	// Verify all special fields round-trip: Thought, ReasoningContent,
+	// Action, Observation, ResponseGroup.
+	s := loaded[0]
+	if s.Thought != "thinking about the problem" {
+		t.Errorf("Thought: got %q", s.Thought)
+	}
+	if s.ReasoningContent != "step-by-step reasoning" {
+		t.Errorf("ReasoningContent: got %q", s.ReasoningContent)
+	}
+	if s.Observation != "file contents here" {
+		t.Errorf("Observation: got %q", s.Observation)
+	}
+	if s.ResponseGroup != 42 {
+		t.Errorf("ResponseGroup: got %d", s.ResponseGroup)
+	}
+	if s.Action.ID != "call-1" {
+		t.Errorf("Action.ID: got %q", s.Action.ID)
+	}
+	if s.Action.Name != "read_file" {
+		t.Errorf("Action.Name: got %q", s.Action.Name)
+	}
+	if string(s.Action.Input) != `{"path":"a.go"}` {
+		t.Errorf("Action.Input: got %s", s.Action.Input)
+	}
+}
+
+func TestTaskStoreAdapter_LoadTrajectory_NotFound(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	adapter := NewTaskStoreAdapter(store)
+	taskID := "adapter-traj-missing"
+
+	if err := adapter.PersistNewTask(taskID, sessionID, "test"); err != nil {
+		t.Fatalf("PersistNewTask failed: %v", err)
+	}
+
+	// No trajectory persisted → nil, nil (not an error).
+	loaded, err := adapter.LoadTrajectory(taskID)
+	if err != nil {
+		t.Fatalf("LoadTrajectory should not error on missing, got: %v", err)
+	}
+	if loaded != nil {
+		t.Errorf("expected nil trajectory, got %v", loaded)
 	}
 }

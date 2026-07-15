@@ -131,6 +131,16 @@ func (m *mockTaskPersistence) PersistFacts(taskID string, facts []orchestration.
 	return m.persistError
 }
 
+func (m *mockTaskPersistence) SaveTrajectory(taskID string, steps []agent.Step) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.persistError
+}
+
+func (m *mockTaskPersistence) LoadTrajectory(taskID string) ([]agent.Step, error) {
+	return nil, nil
+}
+
 func (m *mockTaskPersistence) LoadTaskState(taskID string) (*core.TaskState, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

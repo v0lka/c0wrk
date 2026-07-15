@@ -29,6 +29,8 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | `ToolCacheMeta`        | github.com/v0lka/sp4rk/agent     | github.com/v0lka/sp4rk/agent (executor)      | Cache entry metadata (paths, mtime)  |
 | `TodoItem`             | github.com/v0lka/sp4rk/agent     | core/types (adapter)                         | Step todo item                        |
 | `Executor.AddNonCacheableTools` | github.com/v0lka/sp4rk/agent | core/conductor                          | Extends the non-cacheable tool set with consumer-specific meta-tools (delegate, declare_plan, reflect, etc.) |
+| `WithResumeSteps` (Option) | github.com/v0lka/sp4rk/agent     | core/orchestrator (Resume)                   | Seeds prior ReAct steps into the Executor so the step counter resumes from `len(steps)+1` and the full trajectory syncs to the TrajectoryStore |
+| `Step.UserNudge`           | github.com/v0lka/sp4rk/agent     | core/session (tryContinueInterruptedTask)    | User message appended to a resumed trajectory; rendered as a `{role:user}` turn |
 | `ConductorConfig.NonCacheableTools` | github.com/v0lka/sp4rk/orchestration | core/conductor                     | Lists consumer-specific non-cacheable tool names passed to the sp4rk Conductor's executor |
 
 ### Consumed from `github.com/v0lka/sp4rk/orchestration`
@@ -38,6 +40,8 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | `Reflector`        | github.com/v0lka/sp4rk/orchestration | core (via github.com/v0lka/sp4rk/orchestration engine) | Failure analysis interface |
 | `Blackboard`       | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Shared task state          |
 | `Orchestrator`     | github.com/v0lka/sp4rk/orchestration | core/orchestrator (as `engine`)               | DAG execution engine       |
+| `StepSeedable`     | github.com/v0lka/sp4rk/orchestration | core/conductor                                | Optional `ContextManager` capability (`SeedSteps`) used to resume an executor from a checkpoint |
+| `ConductorConfig.ResumeSteps` | github.com/v0lka/sp4rk/orchestration | core/orchestrator (`runConductor`)    | Prior ReAct steps seeded into the ContextManager + Executor on resume |
 | `Config`           | github.com/v0lka/sp4rk/orchestration | core/orchestrator (NewOrchestrator)           | Engine configuration (incl. ToolCache, PerToolTruncation, StepDumpTracker) |
 | `Plan`, `PlanStep` | github.com/v0lka/sp4rk/orchestration | core/types (direct use)                       | Plan data structures       |
 | `CompletedStep`    | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Step result record         |
@@ -99,7 +103,7 @@ Proxy configuration moved from sp4rk to core/ per architectural extraction (c0wr
 
 | Interface / Type | Package                         | Consumed By                      | Purpose                        |
 | ---------------- | ------------------------------- | -------------------------------- | ------------------------------ |
-| `ContextWindow`  | github.com/v0lka/sp4rk/memory   | core (via ContextManagerFactory) | Token tracking + compaction    |
+| `ContextWindow`  | github.com/v0lka/sp4rk/memory   | core (via ContextManagerFactory) | Token tracking + compaction (implements `StepSeedable.SeedSteps` for resume)    |
 | Strategy impls   | github.com/v0lka/sp4rk/memory   | core/builder (wired in factory)  | Sliding, summary, hierarchical |
 
 ## Imports Pattern

@@ -852,6 +852,12 @@ func (m *mockTaskStoreForResumable) SaveFacts(_ context.Context, _ string, _ jso
 func (m *mockTaskStoreForResumable) LoadFacts(_ context.Context, _ string) (json.RawMessage, error) {
 	return nil, nil
 }
+func (m *mockTaskStoreForResumable) SaveTrajectory(_ context.Context, _ string, _ json.RawMessage) error {
+	return nil
+}
+func (m *mockTaskStoreForResumable) LoadTrajectory(_ context.Context, _ string) (json.RawMessage, error) {
+	return nil, nil
+}
 func (m *mockTaskStoreForResumable) GetUnfinishedTask(_ context.Context, _ string) (*TaskRecord, error) {
 	return m.unfinished, nil
 }

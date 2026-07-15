@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -110,6 +111,13 @@ type Manager struct {
 	maxSummaryLen       int                 // character limit for auto-generated step summaries
 	projectResolver     ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
 	fileTracker         *FileCoherenceTracker
+
+	// shuttingDown is set to true at the very start of Shutdown() so that the
+	// SendMessage/Resume goroutines, when they observe their context cancelled,
+	// can distinguish an app shutdown from a user-initiated cancellation. During
+	// shutdown the in-progress task is left untouched (stays resumable after
+	// restart) instead of being marked cancelled.
+	shuttingDown atomic.Bool
 
 	// lastToolCallIDs maps sessionID → the most recently emitted tool_call_id
 	// (plus its tool name) for that session. The emitter's ToolCall sink writes
@@ -1049,6 +1057,12 @@ func (m *Manager) EmitSessionEvent(sessionID, eventType string, data any) {
 // Shutdown closes all sessions and releases resources.
 // This should be called when the application is shutting down.
 func (m *Manager) Shutdown() {
+	// Signal that we are shutting down BEFORE cancelling any task. The
+	// SendMessage/Resume goroutines check this flag when they observe their
+	// context cancelled: on shutdown they leave the task in_progress (so it
+	// can be resumed after restart) instead of marking it cancelled.
+	m.shuttingDown.Store(true)
+
 	// Collect sessions and done channels under lock.
 	type pending struct {
 		session *Session

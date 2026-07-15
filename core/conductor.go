@@ -43,6 +43,128 @@ func (h *trajectoryHolder) Steps() []agent.Step {
 	return h.steps
 }
 
+// compositeTrajectoryStore implements agent.TrajectoryStore. It keeps an
+// in-memory copy of the current trajectory (so the reflect tool reads it
+// synchronously) AND persists the full trajectory to the DB on every Sync.
+//
+// The DB write is best-effort and non-blocking: at most one write is
+// outstanding at a time (a semaphore of size 1). If a previous write is still
+// in flight when Sync is called again, the new write is queued only by
+// retrying on the *next* Sync — it is never allowed to block the ReAct loop.
+// Because every write is a full-snapshot upsert, dropping an intermediate Sync
+// while a write is in flight is safe: the next completed Sync persists a
+// fresher snapshot, and the persisted trajectory never goes backwards.
+//
+// When taskStore is nil or taskID is empty (e.g. tests / non-persistent
+// sessions) the store degrades to the plain in-memory trajectoryHolder.
+type compositeTrajectoryStore struct {
+	memory *trajectoryHolder
+	taskID string
+	store  TaskPersistence
+	logger *slog.Logger
+
+	// sem limits concurrent DB writes to at most one. Send (non-blocking) to
+	// acquire a write slot; receive releases it from the writer goroutine.
+	sem chan struct{}
+
+	// wg tracks the in-flight async writer so Flush can drain it before
+	// performing a final synchronous write. Add(1) happens only when Sync
+	// acquires the slot; Done() fires when the write goroutine exits.
+	wg sync.WaitGroup
+}
+
+// newCompositeTrajectoryStore wires the in-memory holder together with the
+// DB-backed store. memory must be non-nil; store and logger may be nil.
+func newCompositeTrajectoryStore(memory *trajectoryHolder, taskID string, store TaskPersistence, logger *slog.Logger) *compositeTrajectoryStore {
+	return &compositeTrajectoryStore{
+		memory: memory,
+		taskID: taskID,
+		store:  store,
+		logger: logger,
+		sem:    make(chan struct{}, 1),
+	}
+}
+
+// Sync updates the in-memory holder synchronously (so the reflect tool sees
+// the latest trajectory immediately) and kicks off a best-effort, non-blocking
+// DB persist. The DB write runs on a background goroutine; a slow DB never
+// stalls the ReAct loop.
+//
+// Immutability invariant: the executor appends new steps to its trajectory but
+// never mutates an already-appended step in place. The defensive snapshot below
+// is therefore a shallow copy: it captures each Step value (slice headers
+// included), and the shared backing arrays for ReasoningItems / Arguments are
+// safe for the async writer to read concurrently because they are never written
+// after the step is published. If that invariant ever changes, the snapshot
+// must deep-copy the slice/byte backing arrays (see Issue #2 in the review).
+func (c *compositeTrajectoryStore) Sync(steps []agent.Step) {
+	c.memory.Sync(steps)
+
+	// Nothing to persist when there is no DB store or no task to key on.
+	if c.store == nil || c.taskID == "" {
+		return
+	}
+
+	// Acquire the single write slot without blocking. If a previous write is
+	// still in flight, skip — the next Sync (or the final Flush) persists a
+	// fresher snapshot.
+	select {
+	case c.sem <- struct{}{}:
+	default:
+		return
+	}
+
+	// Defensive copy: the caller's slice is mutated across iterations, so the
+	// async writer needs its own snapshot. Shallow copy is safe under the
+	// immutability invariant documented above.
+	snapshot := make([]agent.Step, len(steps))
+	copy(snapshot, steps)
+
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		defer func() { <-c.sem }()
+		if err := c.store.SaveTrajectory(c.taskID, snapshot); err != nil && c.logger != nil {
+			c.logger.Debug("trajectory persistence failed (best-effort)", "taskID", c.taskID, "error", err)
+		}
+	}()
+}
+
+// Flush blocks until any in-flight async DB write has drained, then performs a
+// final synchronous write of the current in-memory trajectory. This guarantees
+// the freshest snapshot is persisted even when the last Sync was dropped
+// because a write was already in flight.
+//
+// It is called once after the ReAct loop stops (success, error, or shutdown)
+// so an interrupted task's checkpoint reflects its final steps. At that point
+// the executor is no longer mutating its trajectory, so the snapshot is stable;
+// the brief blocking write is acceptable because the ReAct loop has ended.
+func (c *compositeTrajectoryStore) Flush() {
+	// Nothing to persist when there is no DB store or no task to key on.
+	if c.store == nil || c.taskID == "" {
+		return
+	}
+
+	// Wait for the outstanding async write to finish before doing our own: two
+	// concurrent full-snapshot upserts on the same taskID could interleave and
+	// leave the DB with a stale ordering.
+	c.wg.Wait()
+
+	steps := c.memory.Steps()
+	snapshot := make([]agent.Step, len(steps))
+	copy(snapshot, steps)
+
+	if err := c.store.SaveTrajectory(c.taskID, snapshot); err != nil && c.logger != nil {
+		c.logger.Debug("trajectory final flush failed (best-effort)", "taskID", c.taskID, "error", err)
+	}
+}
+
+// Steps delegates to the in-memory holder so the reflect tool reads the
+// current trajectory synchronously.
+func (c *compositeTrajectoryStore) Steps() []agent.Step {
+	return c.memory.Steps()
+}
+
 // conductorDeps bundles the runtime dependencies needed by the Conductor's
 // launcher, publisher, and reflection runner. It mirrors the subset of
 // OrchestratorDeps required to build executors and publish plans.
@@ -90,6 +212,22 @@ type conductorDeps struct {
 	// dialogue context for follow-up messages. Nil for Resume (the Conductor
 	// continues the same task — the original request is the task message).
 	conversationHistory []llm.Message
+
+	// taskStore is the optional DB-backed persistence store. When non-nil and
+	// the blackboard carries a task ID, the Conductor's trajectory is persisted
+	// (best-effort, non-blocking) on every ReAct iteration so it survives app
+	// restart. Nil in tests / non-persistent sessions — the trajectory stays
+	// purely in-memory.
+	taskStore TaskPersistence
+
+	// resumeSteps holds pre-existing ReAct steps for resuming an interrupted
+	// task from a checkpoint. When non-empty, RunConductor sets
+	// ConductorConfig.ResumeSteps so the sp4rk engine seeds the
+	// ContextManager (StepSeedable) and the Executor (WithResumeSteps) with
+	// these steps — the step counter continues from len(steps)+1 and the full
+	// prior trajectory appears in the context window. Zero-value (nil/empty)
+	// is the default fresh-start behavior.
+	resumeSteps []agent.Step
 }
 
 // conductorLauncher implements tools.DelegationLauncher by building a fresh
@@ -1106,7 +1244,7 @@ type conductorReflectionRunner struct {
 	bb        orchestration.Blackboard
 	emitter   Emitter
 	logger    *slog.Logger
-	traj      *trajectoryHolder
+	traj      agent.TrajectoryStore
 }
 
 func (r *conductorReflectionRunner) Reflect(ctx context.Context, scope, delegationID string) (tools.ReflectionResult, error) {
@@ -1250,8 +1388,19 @@ func RunConductor(
 	registry := tools.NewDelegationRegistry()
 	launcher := &conductorLauncher{deps: deps, bb: bb}
 	publisher := &conductorPublisher{emitter: deps.emitter, bb: bb, plansDir: plansDir, logger: deps.logger}
+
+	// Build the trajectory store. The in-memory holder feeds the reflect tool
+	// synchronously; the composite layer additionally persists the full
+	// trajectory to the DB (best-effort) so it survives app restart. The task
+	// ID is only available on a PersistableBlackboard — without it the store
+	// degrades to purely in-memory.
 	trajHolder := &trajectoryHolder{}
-	runner := &conductorReflectionRunner{reflector: deps.reflector, bb: bb, emitter: deps.emitter, logger: deps.logger, traj: trajHolder}
+	taskID := ""
+	if pbb, ok := bb.(PersistableBlackboard); ok {
+		taskID = pbb.TaskID()
+	}
+	trajStore := newCompositeTrajectoryStore(trajHolder, taskID, deps.taskStore, deps.logger)
+	runner := &conductorReflectionRunner{reflector: deps.reflector, bb: bb, emitter: deps.emitter, logger: deps.logger, traj: trajStore}
 
 	// Derive compaction strategy from routing domain + complexity.
 	domain := DomainFromContext(ctx)
@@ -1266,7 +1415,7 @@ func RunConductor(
 	ctx = tools.WithPlanPublisher(ctx, publisher)
 	ctx = tools.WithReflectionRunner(ctx, runner)
 	ctx = tools.WithPlanChecker(ctx, launcher)
-	ctx = agent.WithTrajectoryStore(ctx, trajHolder)
+	ctx = agent.WithTrajectoryStore(ctx, trajStore)
 	ctx = orchestration.WithDelegationRegistry(ctx, registry)
 
 	// Inject the inline-step lifecycle so update_checklist can emit
@@ -1314,6 +1463,7 @@ func RunConductor(
 		PreWarningPercent:   deps.preWarningPct,
 		NonCacheableTools:   coreNonCacheableToolNames,
 		ConversationHistory: deps.conversationHistory,
+		ResumeSteps:         deps.resumeSteps,
 	}
 
 	var events agent.Events = &agent.NoopEvents{}
@@ -1334,6 +1484,13 @@ func RunConductor(
 		errMsg = err.Error()
 	}
 	inlineLifecycle.completeAll(success, errMsg)
+
+	// Final trajectory flush: the ReAct loop has ended, so no more Syncs will
+	// arrive. This drains any in-flight async write and persists the freshest
+	// snapshot synchronously, guaranteeing an interrupted task's checkpoint
+	// reflects its final steps (the last Sync is the most likely to be dropped
+	// by the non-blocking semaphore).
+	trajStore.Flush()
 	return result, err
 }
 
@@ -1372,7 +1529,7 @@ func adaptContextFactory(cf ContextManagerFactory) orchestration.ContextManagerF
 // context. For HandleMessage, pass o.conversationHistory so the agent sees
 // previous exchanges. For Resume, pass nil — the Conductor continues the
 // same task and the original request is already the task message.
-func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message) (*orchestration.ExecutionResult, error) {
+func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, resumeSteps []agent.Step) (*orchestration.ExecutionResult, error) {
 	deps := conductorDeps{
 		contextFactory:      o.contextFactory,
 		toolExec:            o.toolExec,
@@ -1400,6 +1557,8 @@ func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orch
 		reasoningEffort:     o.config.ReasoningEffort,
 		preWarningPct:       o.config.PreWarningPercent,
 		conversationHistory: conversationHistory,
+		taskStore:           o.taskStore,
+		resumeSteps:         resumeSteps,
 	}
 	return RunConductor(ctx, message, bb, availableTools, deps, plansDir)
 }

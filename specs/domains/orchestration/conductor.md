@@ -113,6 +113,16 @@ would have no referent — the Conductor would see only the current message.
 same interrupted task, the original request is the task message, and the
 restored blackboard carries the task state (plan, step results, facts).
 
+Instead of conversation history, `Resume` seeds the persisted ReAct
+**trajectory** (`resumeSteps`) into the ContextManager via its optional
+`StepSeedable.SeedSteps` capability and into the Executor via the
+`WithResumeSteps` option. The seeded steps render as assistant+tool messages in
+the prompt, the step counter continues from `len(resumeSteps)+1`, and the full
+trajectory (seeded + new steps) syncs to the TrajectoryStore on every step. A
+routing decision and a plan are **optional** — routing is reused if persisted
+(otherwise the `general` domain), and a plan-less task runs the standalone
+checklist.
+
 ### Step Limit and Circuit Breakers
 
 The Conductor is subject to `config.Conductor.MaxSteps` (default 80) and the same circuit breakers as any `Executor.Run` instance (repeat, truncation, parse error, fruitless, same tool). On step-limit or circuit-breaker abort, `HITLHandler.OnStepLimit` is called with the same three options (AllowOnce, AllowAlways, Deny) as the prior executor. See [executor.md](executor.md) for circuit breaker details.
