@@ -88,6 +88,20 @@ type CurrentStepScopable interface {
 	SetCurrentStepID(id string)
 }
 
+// AttachmentNameResolver is an optional interface that Emitter implementations
+// can implement so that read_attachment tool-call events are enriched with the
+// attachment's original file name. The orchestrator wires a resolver backed by
+// the task's blackboard (which holds both freshly-attached and
+// continuation/resume-rehydrated attachments) when the blackboard is set up,
+// before any tool executes. This bakes the human-readable name into the
+// persisted tool-call metadata, so read_attachment cards render the file name
+// even after an app restart — when the frontend's in-memory name cache is
+// empty and the blackboard is no longer resident. Returning an empty string
+// (unknown id) leaves the event unenriched; the frontend falls back to the id.
+type AttachmentNameResolver interface {
+	SetAttachmentNameResolver(resolve func(attachmentID string) string)
+}
+
 // DisplayContextWindowSetter is an optional interface that Emitter
 // implementations can implement to present context-fill information relative
 // to the model's advertised context window.

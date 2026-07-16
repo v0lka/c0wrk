@@ -188,6 +188,7 @@ export function handleToolCall(
     resultLen: hasResult ? (meta?.result_len as number) : undefined,
     status: hasResult ? (isError ? 'error' : 'success') : (isAwaiting ? 'awaiting_confirmation' : 'running'),
     source: meta?.source as string | undefined,
+    attachmentName: meta?.attachment_name as string | undefined,
   }
   applyPending(toolItem, key, toolItemsByKey, pendingResults)
   // Record the tool card by its message id and the container it landed in,

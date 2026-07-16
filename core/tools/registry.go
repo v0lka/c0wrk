@@ -20,6 +20,7 @@ var internalTools = map[string]struct{}{
 	"read_final_result":     {},
 	"read_skill_resource":   {},
 	"read_step_output":      {},
+	"read_attachment":       {},
 	"search_facts":          {},
 	"tool_result_read":      {},
 	"semantic_search":       {},

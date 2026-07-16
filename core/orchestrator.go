@@ -414,6 +414,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	if pbb, ok := bb.(PersistableBlackboard); ok {
 		pbb.SetEmitter(o.emitter)
 	}
+	o.wireAttachmentNameResolver(bb)
 
 	// Emit initial context_fill
 	o.emitInitialContextFill(ctx)

@@ -43,6 +43,7 @@ export function useToolEvents(sessionId: string | null): void {
             parsed_args: data.parsed_args, plan_step_id: data.plan_step_id,
             source: data.source, call_idx: data.call_idx,
             retry_attempt: data.retry_attempt, tool_call_id: data.tool_call_id,
+            attachment_name: data.attachment_name,
           },
           timestamp: Date.now(),
         })

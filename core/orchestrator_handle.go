@@ -56,6 +56,7 @@ func (o *Orchestrator) setupBlackboard(message, sessionID, taskID string, pendin
 		for _, a := range pendingAttachments {
 			bb.AddAttachment(a)
 		}
+		o.wireAttachmentNameResolver(bb)
 		return bb, nil
 	}
 
@@ -89,7 +90,25 @@ func (o *Orchestrator) setupBlackboard(message, sessionID, taskID string, pendin
 	// Reactivate task
 	pbb.ReactivateTask()
 
+	o.wireAttachmentNameResolver(pbb)
 	return pbb, nil
+}
+
+// wireAttachmentNameResolver connects the emitter (when it supports attachment
+// name resolution) to the task's blackboard so read_attachment tool-call
+// events carry the original file name in their persisted metadata. The
+// resolver is a closure over bb and is read at event-emission time, so it sees
+// attachments regardless of whether they were flushed from pending or
+// rehydrated from persistence. Nil-safe: a nil emitter type-asserts to false.
+func (o *Orchestrator) wireAttachmentNameResolver(bb orchestration.Blackboard) {
+	if r, ok := o.emitter.(AttachmentNameResolver); ok {
+		r.SetAttachmentNameResolver(func(id string) string {
+			if a, found := bb.GetAttachment(id); found {
+				return a.OriginalName
+			}
+			return ""
+		})
+	}
 }
 
 // routeOrContinue wraps routeAndActivateSkills with a continuation fast-path.

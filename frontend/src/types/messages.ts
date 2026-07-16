@@ -35,7 +35,7 @@ export type DisplayItem =
   | { kind: 'assistant'; message: ChatMessageUI }
   | { kind: 'thought'; id: string; stepNum: number; content: string; reasoning?: string }
   | { kind: 'thought_group'; id: string; thoughts: Array<{ content: string; reasoning?: string }> }
-  | { kind: 'tool'; id: string; toolName: string; args: string; parsedArgs?: Record<string, unknown>; result?: string; resultLen?: number; status: 'running' | 'success' | 'error' | 'awaiting_confirmation'; source?: string }
+  | { kind: 'tool'; id: string; toolName: string; args: string; parsedArgs?: Record<string, unknown>; result?: string; resultLen?: number; status: 'running' | 'success' | 'error' | 'awaiting_confirmation'; source?: string; attachmentName?: string }
   | { kind: 'tool_confirm'; message: ChatMessageUI }
   | { kind: 'ask_user'; message: ChatMessageUI }
   | { kind: 'step_limit'; message: ChatMessageUI }

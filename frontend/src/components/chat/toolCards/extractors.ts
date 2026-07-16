@@ -72,10 +72,20 @@ export function extractFactsTitle(args: Args, rawArgs: string): string {
   return 'facts'
 }
 
-// extractAttachmentTitle returns the attachment id for read_attachment.
+// extractAttachmentTitle returns the attachment id (or the 'attachment' label)
+// for read_attachment. Delegates to extractAttachmentId so the attachment_id
+// parsing logic lives in exactly one place.
 export function extractAttachmentTitle(args: Args, rawArgs: string): string {
+  return extractAttachmentId(args, rawArgs) ?? 'attachment'
+}
+
+// extractAttachmentId returns the raw attachment_id from read_attachment args,
+// or undefined when absent. Unlike extractAttachmentTitle (which falls back to
+// the label 'attachment'), this returns only a real id so callers can look up
+// the attachment's file name and fall back to the id themselves.
+export function extractAttachmentId(args: Args, rawArgs: string): string | undefined {
   const parsed = safeParseArgs(args, rawArgs)
-  return str(parsed, 'attachment_id') || 'attachment'
+  return str(parsed, 'attachment_id') || undefined
 }
 
 export function extractMemoTitle(toolName: string, args: Args, rawArgs: string): string {

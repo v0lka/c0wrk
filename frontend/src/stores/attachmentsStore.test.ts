@@ -1,4 +1,5 @@
-// Unit tests for attachmentsStore — setAttachments / clear reducer.
+// Unit tests for attachmentsStore — setAttachments / clear reducer and the
+// id→name accumulation cache used to resolve read_attachment tool cards.
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
@@ -8,7 +9,7 @@ const A1: AttachmentInfoUI = { id: 'a1', originalName: 'report.pdf', format: 'pd
 const A2: AttachmentInfoUI = { id: 'a2', originalName: 'image.png', format: 'png', sizeBytes: 2048 }
 
 function resetStore() {
-  useAttachmentsStore.setState({ attachments: [] })
+  useAttachmentsStore.setState({ attachments: [], namesById: {} })
 }
 
 describe('attachmentsStore', () => {
@@ -49,5 +50,41 @@ describe('attachmentsStore', () => {
     useAttachmentsStore.getState().setAttachments([A1, A2])
     useAttachmentsStore.getState().clear()
     expect(useAttachmentsStore.getState().attachments).toEqual([])
+  })
+
+  describe('namesById accumulation', () => {
+    it('setAttachments folds attachment names into namesById', () => {
+      useAttachmentsStore.getState().setAttachments([A1, A2])
+      expect(useAttachmentsStore.getState().namesById).toEqual({
+        a1: 'report.pdf',
+        a2: 'image.png',
+      })
+    })
+
+    it('survives the send-flush empty list (committed attachments stay resolvable)', () => {
+      useAttachmentsStore.getState().setAttachments([A1, A2])
+      useAttachmentsStore.getState().setAttachments([])
+      expect(useAttachmentsStore.getState().attachments).toEqual([])
+      // namesById must NOT be cleared by an empty list.
+      expect(useAttachmentsStore.getState().namesById).toEqual({
+        a1: 'report.pdf',
+        a2: 'image.png',
+      })
+    })
+
+    it('accumulates across successive non-empty lists', () => {
+      useAttachmentsStore.getState().setAttachments([A1])
+      useAttachmentsStore.getState().setAttachments([A2])
+      expect(useAttachmentsStore.getState().namesById).toEqual({
+        a1: 'report.pdf',
+        a2: 'image.png',
+      })
+    })
+
+    it('clear resets namesById (e.g. on session switch)', () => {
+      useAttachmentsStore.getState().setAttachments([A1])
+      useAttachmentsStore.getState().clear()
+      expect(useAttachmentsStore.getState().namesById).toEqual({})
+    })
   })
 })

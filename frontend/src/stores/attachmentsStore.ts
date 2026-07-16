@@ -13,6 +13,16 @@ import type { AttachmentInfoUI } from '@/types/models'
 interface AttachmentsState {
   /** Pending attachments for the active session. */
   attachments: AttachmentInfoUI[]
+  /**
+   * Accumulated attachment-id → original-name map. Populated from every
+   * attachment list the store receives. The send-flush is a no-op for this
+   * cache since it carries an empty list. Entries are never removed
+   * individually so that committed attachments stay resolvable after the
+   * pending chips are cleared — the read_attachment tool card uses this to
+   * show the file name instead of the opaque attachment id. Cleared on
+   * session switch together with the pending list.
+   */
+  namesById: Record<string, string>
 }
 
 interface AttachmentsActions {
@@ -24,10 +34,24 @@ interface AttachmentsActions {
 
 export const useAttachmentsStore = create<AttachmentsState & AttachmentsActions>((set) => ({
   attachments: [],
+  namesById: {},
 
-  setAttachments: (attachments) => set({ attachments }),
+  setAttachments: (attachments) =>
+    set((state) => {
+      // Fold the freshly received attachment metadata into the id→name cache.
+      // Reusing the incoming list keeps the `attachments` reference stable for
+      // the chips selector; only namesById gets a new object.
+      let namesById = state.namesById
+      for (const a of attachments) {
+        if (namesById[a.id] !== a.originalName) {
+          if (namesById === state.namesById) namesById = { ...state.namesById }
+          namesById[a.id] = a.originalName
+        }
+      }
+      return { attachments, namesById }
+    }),
 
-  clear: () => set({ attachments: [] }),
+  clear: () => set({ attachments: [], namesById: {} }),
 }))
 
 /**
@@ -43,4 +67,14 @@ export function useAttachments(): AttachmentInfoUI[] {
 /** Whether there are any pending attachments (primitive — always stable). */
 export function useHasAttachments(): boolean {
   return useAttachmentsStore((s) => s.attachments.length > 0)
+}
+
+/**
+ * Resolve an attachment id to its original file name. Returns undefined when
+ * the id is unknown (e.g. an attachment committed before this session's store
+ * was seeded, such as after an app restart). A primitive selector, so it only
+ * re-renders when the resolved name actually changes.
+ */
+export function useAttachmentName(id: string | undefined | null): string | undefined {
+  return useAttachmentsStore((s) => (id ? s.namesById[id] : undefined))
 }

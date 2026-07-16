@@ -3,6 +3,7 @@ import {
   extractBashTitle, extractFileTitle, extractDirTitle,
   extractSearchTitle, extractUrlTitle, extractMemoTitle,
   extractStepOutputTitle, extractFactsTitle,
+  extractAttachmentTitle, extractAttachmentId,
   extractFileHint, extractFileLine, extractBashHint, extractSearchHint,
 } from './extractors'
 
@@ -157,5 +158,29 @@ describe('extractFactsTitle', () => {
   })
   it('returns fallback when no keywords', () => {
     expect(extractFactsTitle({}, '')).toBe('facts')
+  })
+})
+
+describe('extractAttachmentTitle', () => {
+  it('extracts attachment_id from parsedArgs', () => {
+    expect(extractAttachmentTitle({ attachment_id: 'att-42' }, '')).toBe('att-42')
+  })
+  it('falls back to raw args', () => {
+    expect(extractAttachmentTitle(undefined, '{"attachment_id":"att-7"}')).toBe('att-7')
+  })
+  it('returns fallback when empty', () => {
+    expect(extractAttachmentTitle(undefined, '{}')).toBe('attachment')
+  })
+})
+
+describe('extractAttachmentId', () => {
+  it('extracts attachment_id from parsedArgs', () => {
+    expect(extractAttachmentId({ attachment_id: 'att-42' }, '')).toBe('att-42')
+  })
+  it('falls back to raw args', () => {
+    expect(extractAttachmentId(undefined, '{"attachment_id":"att-7"}')).toBe('att-7')
+  })
+  it('returns undefined when absent (no fallback label)', () => {
+    expect(extractAttachmentId(undefined, '{}')).toBeUndefined()
   })
 })

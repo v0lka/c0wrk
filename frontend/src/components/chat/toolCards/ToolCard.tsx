@@ -2,8 +2,9 @@ import React, { useMemo } from 'react'
 import { Check, X, Loader2, AlertTriangle } from 'lucide-react'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
 import type { DisplayItem } from '@/types/messages'
+import { useAttachmentName } from '@/stores/attachmentsStore'
 import { resolveCardConfig } from './toolCardRegistry'
-import { extractFileLine } from './extractors'
+import { extractAttachmentId, extractFileLine } from './extractors'
 import { FileLink } from './shared/FileLink'
 
 type ToolItem = Extract<DisplayItem, { kind: 'tool' }>
@@ -32,13 +33,26 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
   const isBatched = item.toolName.endsWith(' (batched)')
   const cacheRange = useMemo(() => parseCacheRange(item.result), [item.result])
 
+  // read_attachment: resolve the opaque attachment id to the original file
+  // name so the card shows "Read: report.pdf" instead of "Read: att-42".
+  // Cached/batched variants never apply (read_attachment is non-cacheable).
+  // Prefer the persisted name (authoritative — baked into tool-call metadata
+  // by the backend, so it survives restart); fall back to the in-memory cache
+  // (useAttachmentName) for live calls whose event predates the backend
+  // resolver. Falls back to the id (config.extractTitle) when neither resolves.
+  const isReadAttachment = !isCached && !isBatched && item.toolName === 'read_attachment'
+  const storeName = useAttachmentName(
+    isReadAttachment ? extractAttachmentId(item.parsedArgs, item.args) : undefined,
+  )
+  const attachmentName = isReadAttachment ? (item.attachmentName ?? storeName) : undefined
+
   // For cached/batched tools, args are from tool_result_read or batch, not the original tool.
   // Show the original tool name as title; range info is patched into the header.
   const title = isBatched
     ? item.toolName.replace(' (batched)', '')
     : isCached
     ? item.toolName.replace(' (cached)', '')
-    : config.extractTitle(item.parsedArgs, item.args)
+    : attachmentName ?? config.extractTitle(item.parsedArgs, item.args)
   const hint = isCached ? undefined : config.extractHint?.(item.parsedArgs, item.args)
   const Icon = config.icon
   const Body = config.Body

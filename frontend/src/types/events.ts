@@ -14,6 +14,9 @@ export interface ToolCallData {
   tool_call_id?: string; step: number; tool: string; args: string
   parsed_args?: Record<string, unknown>; plan_step_id?: string
   source?: string; call_idx?: number; retry_attempt?: number
+  /** Original file name for read_attachment (resolved by the backend so cards
+   *  render the name after restart, when the frontend cache is empty). */
+  attachment_name?: string
 }
 
 export interface ToolResultData {

@@ -118,6 +118,13 @@ type EventEmitter struct {
 	// fill never overwrites the conductor's fill shown in the status bar.
 	isSessionRoot bool
 
+	// attachmentNameResolver resolves a read_attachment attachment_id to its
+	// original file name so the tool-call event (and thus the persisted
+	// message metadata) carries a human-readable name. Wired per-task by the
+	// orchestrator from the blackboard; nil when no task is active or the
+	// emitter predates resolver support. Guarded by mu.
+	attachmentNameResolver func(string) string
+
 	logger *slog.Logger
 }
 
@@ -172,6 +179,18 @@ func (e *EventEmitter) SetToolCallIDSink(fn func(tool, toolCallID string)) {
 	e.toolCallIDs.setSink(fn)
 }
 
+// SetAttachmentNameResolver wires a resolver that maps a read_attachment
+// attachment_id to its original file name, used to enrich read_attachment
+// tool-call events (and their persisted metadata) so cards render the file
+// name even after restart. Wired per-task by the orchestrator from the
+// blackboard. Scoped copies (WithPlanStepID/WithRetryAttempt) inherit the same
+// resolver so subagents/retries resolve names against the shared blackboard.
+func (e *EventEmitter) SetAttachmentNameResolver(resolve func(attachmentID string) string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.attachmentNameResolver = resolve
+}
+
 // WithPlanStepID returns a shallow copy of the emitter with planStepID set.
 // Events emitted by the copy will include "plan_step_id" in their Data map.
 func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
@@ -185,6 +204,9 @@ func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
 		toolCallIDs:   e.toolCallIDs,  // share tool call ID counter across copies
 		logger:        e.logger,       // propagate logger to copies
 		isSessionRoot: false,          // scoped copies are never the session root
+		// Inherit the task's attachment-name resolver so subagent/retry
+		// read_attachment calls resolve names against the shared blackboard.
+		attachmentNameResolver: e.attachmentNameResolver,
 	}
 }
 
@@ -201,6 +223,8 @@ func (e *EventEmitter) WithRetryAttempt(attempt int) core.Emitter {
 		toolCallIDs:   e.toolCallIDs, // share tool call ID counter across copies
 		logger:        e.logger,      // propagate logger to copies
 		isSessionRoot: false,         // scoped copies are never the session root
+		// Inherit the task's attachment-name resolver (see WithPlanStepID).
+		attachmentNameResolver: e.attachmentNameResolver,
 	}
 }
 
@@ -438,11 +462,46 @@ func (e *EventEmitter) ToolCall(stepNum, callIdx int, toolName, argsPreview, sou
 			data["parsed_args"] = parsed
 		}
 	}
+	// Enrich read_attachment calls with the attachment's original file name so
+	// the persisted tool-call metadata (and thus the card) shows the name even
+	// after an app restart, when the frontend's in-memory name cache is empty.
+	if toolName == "read_attachment" && e.attachmentNameResolver != nil {
+		if id := readAttachmentID(data); id != "" {
+			if name := e.attachmentNameResolver(id); name != "" {
+				data["attachment_name"] = name
+			}
+		}
+	}
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "tool_call",
 		Data:      data,
 	})
+}
+
+// readAttachmentID extracts the attachment_id argument from a read_attachment
+// tool-call event's data map — preferring the pre-parsed args and falling back
+// to the raw args JSON. Returns "" when absent.
+func readAttachmentID(data map[string]any) string {
+	if parsed, ok := data["parsed_args"].(map[string]any); ok {
+		if id, _ := parsed["attachment_id"].(string); id != "" {
+			return id
+		}
+	}
+	raw, ok := data["args"].(string)
+	if !ok {
+		return ""
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &m); err != nil {
+		return ""
+	}
+	id, _ := m["attachment_id"].(string)
+	return id
 }
 
 // ToolResult emits a tool result event.

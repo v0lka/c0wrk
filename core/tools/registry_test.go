@@ -1214,7 +1214,7 @@ func TestAutoApproval_OutsideWorkspace(t *testing.T) {
 // TestIsInternalTool_ReturnsTrueForInternalTools tests that IsInternalTool()
 // returns true for each internal tool.
 func TestIsInternalTool_ReturnsTrueForInternalTools(t *testing.T) {
-	internalToolNames := []string{"ask_user", "finish", "list_step_outputs", "read_final_result", "read_skill_resource", "read_step_output", "search_facts", "semantic_search", "update_checklist", "declare_step_complete", "store_fact", "tool_result_read", "delegate", "cancel_delegation", "declare_plan", "reflect", "batch"}
+	internalToolNames := []string{"ask_user", "finish", "list_step_outputs", "read_final_result", "read_skill_resource", "read_step_output", "read_attachment", "search_facts", "semantic_search", "update_checklist", "declare_step_complete", "store_fact", "tool_result_read", "delegate", "cancel_delegation", "declare_plan", "reflect", "batch"}
 
 	for _, name := range internalToolNames {
 		t.Run(name, func(t *testing.T) {

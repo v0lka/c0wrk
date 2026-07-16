@@ -155,6 +155,140 @@ func TestEventEmitterToolCall(t *testing.T) {
 	}
 }
 
+// TestEventEmitterToolCall_AttachmentNameEnriched verifies that a
+// read_attachment tool_call event is enriched with attachment_name when a
+// resolver is wired and resolves the attachment_id.
+func TestEventEmitterToolCall_AttachmentNameEnriched(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SetAttachmentNameResolver(func(id string) string {
+		if id == "att-42" {
+			return "report.pdf"
+		}
+		return ""
+	})
+
+	emitter.ToolCall(1, 0, "read_attachment", `{"attachment_id":"att-42"}`, "core")
+
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if name, _ := data["attachment_name"].(string); name != "report.pdf" {
+		t.Errorf("attachment_name = %q, want %q", name, "report.pdf")
+	}
+}
+
+// TestEventEmitterToolCall_AttachmentNameOmittedForOtherTools verifies that
+// attachment_name is only added for read_attachment, never for other tools.
+func TestEventEmitterToolCall_AttachmentNameOmittedForOtherTools(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SetAttachmentNameResolver(func(string) string { return "report.pdf" })
+
+	emitter.ToolCall(1, 0, "bash", `{"attachment_id":"att-42"}`, "core")
+
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if _, exists := data["attachment_name"]; exists {
+		t.Error("attachment_name should not be present for non-read_attachment tools")
+	}
+}
+
+// TestEventEmitterToolCall_AttachmentNameOmittedWhenUnknown verifies that no
+// attachment_name is added when the resolver returns "" (unknown id).
+func TestEventEmitterToolCall_AttachmentNameOmittedWhenUnknown(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SetAttachmentNameResolver(func(string) string { return "" })
+
+	emitter.ToolCall(1, 0, "read_attachment", `{"attachment_id":"missing"}`, "core")
+
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if _, exists := data["attachment_name"]; exists {
+		t.Error("attachment_name should be absent when resolver returns empty")
+	}
+}
+
+// TestEventEmitterToolCall_AttachmentNameOmittedWhenNoResolver verifies that
+// without a wired resolver, read_attachment events are unchanged (the frontend
+// falls back to its own name cache / the id).
+func TestEventEmitterToolCall_AttachmentNameOmittedWhenNoResolver(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+	emitter := NewEventEmitter("test-session", emit)
+
+	emitter.ToolCall(1, 0, "read_attachment", `{"attachment_id":"att-1"}`, "core")
+
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if _, exists := data["attachment_name"]; exists {
+		t.Error("attachment_name should be absent when no resolver is wired")
+	}
+}
+
+// TestEventEmitterSetAttachmentNameResolver_InheritedByScopedCopy verifies the
+// resolver propagates to WithPlanStepID copies so subagent read_attachment
+// calls resolve names against the shared blackboard.
+func TestEventEmitterSetAttachmentNameResolver_InheritedByScopedCopy(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+	base := NewEventEmitter("test-session", emit)
+	base.SetAttachmentNameResolver(func(id string) string {
+		if id == "att-1" {
+			return "doc.md"
+		}
+		return ""
+	})
+
+	scoped, ok := base.WithPlanStepID("step-1").(*EventEmitter)
+	if !ok {
+		t.Fatal("expected *EventEmitter from WithPlanStepID")
+	}
+	scoped.ToolCall(1, 0, "read_attachment", `{"attachment_id":"att-1"}`, "core")
+
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", received.Data)
+	}
+	if name, _ := data["attachment_name"].(string); name != "doc.md" {
+		t.Errorf("scoped copy attachment_name = %q, want %q", name, "doc.md")
+	}
+}
+
+// TestReadAttachmentID verifies the helper extracts the attachment_id from
+// parsed_args first, then falls back to parsing the raw args JSON.
+func TestReadAttachmentID(t *testing.T) {
+	tests := []struct {
+		name string
+		data map[string]any
+		want string
+	}{
+		{"from parsed_args", map[string]any{"parsed_args": map[string]any{"attachment_id": "att-1"}}, "att-1"},
+		{"fallback to raw args", map[string]any{"args": `{"attachment_id":"att-2"}`}, "att-2"},
+		{"parsed_args preferred", map[string]any{"parsed_args": map[string]any{"attachment_id": "att-a"}, "args": `{"attachment_id":"att-b"}`}, "att-a"},
+		{"missing id", map[string]any{"args": `{}`}, ""},
+		{"empty", map[string]any{}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := readAttachmentID(tt.data); got != tt.want {
+				t.Errorf("readAttachmentID = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestEventEmitterToolResult verifies ToolResult emits correct event.
 func TestEventEmitterToolResult(t *testing.T) {
 	var received Event
