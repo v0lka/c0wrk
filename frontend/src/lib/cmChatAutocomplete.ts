@@ -95,6 +95,16 @@ function relativePath(absPath: string, rootPath: string | null): string {
   return absPath
 }
 
+/**
+ * Text inserted into the chat input when a file is selected: a path made
+ * relative to the workspace root (when the file lives inside it) with spaces
+ * escaped, plus the given suffix (e.g. `' '` or `'/'`). Files outside the
+ * workspace keep their absolute path.
+ */
+function chatApplyPath(absPath: string, rootPath: string | null, suffix: string): string {
+  return relativePath(absPath, rootPath).replace(/ /g, '\\ ') + suffix
+}
+
 async function skillSource(ctx: CompletionContext): Promise<CompletionResult | null> {
   // Scan backward for '/' trigger.
   const line = ctx.state.doc.lineAt(ctx.pos)
@@ -174,7 +184,7 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
           label: relativePath(entry.path, rootPath),
           type: 'file',
           boost: 10,
-          apply: entry.path.replace(/ /g, '\\ ') + ' ',
+          apply: chatApplyPath(entry.path, rootPath, ' '),
           nerdIcon: entry.icon || DEFAULT_FILE_ICON,
           nerdIconColor: entry.icon_color,
         })
@@ -188,7 +198,7 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
         options.push({
           label: relativePath(f.path, rootPath),
           type: f.is_dir ? 'folder' : 'file',
-          apply: f.path.replace(/ /g, '\\ ') + suffix,
+          apply: chatApplyPath(f.path, rootPath, suffix),
           nerdIcon: f.is_dir ? (f.icon || DEFAULT_FOLDER_ICON) : (f.icon || DEFAULT_FILE_ICON),
           nerdIconColor: f.icon_color,
         })
@@ -204,7 +214,7 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
         label: relativePath(f.path, rootPath),
         type: f.is_dir ? 'folder' : 'file',
         boost: pinned ? 10 : 0,
-        apply: f.path.replace(/ /g, '\\ ') + suffix,
+        apply: chatApplyPath(f.path, rootPath, suffix),
         nerdIcon: f.is_dir ? (f.icon || DEFAULT_FOLDER_ICON) : (f.icon || DEFAULT_FILE_ICON),
         nerdIconColor: f.icon_color,
       })
