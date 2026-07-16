@@ -1330,27 +1330,40 @@ func compactionStrategyForDomain(domain string, complexity int) string {
 // These two mechanisms must never be mixed: once a plan is declared, use
 // execute_plan, never delegate, to execute plan steps.
 func conductorGuidanceForComplexity(complexity int) string {
+	// Skill-prescribed planning is a GLOBAL clause emitted once, above the
+	// complexity bands, so a future edit to an individual band cannot silently
+	// drop it. Dropping it is exactly the regression that made the `explore`
+	// skill stop entering Plan Mode: the band text said "do NOT call
+	// declare_plan" and there was no overriding clause. The clause is
+	// instruction-level ("soft by form") enforcement — c0wrk skills are pure
+	// markdown with no agent-specific metadata (see ADR-012), and their bodies
+	// are already injected into the system prompt, so the Conductor reads the
+	// approval-gate language directly from the active skill.
+	skillClause := "## Skill-prescribed planning — overrides the bands below\n" +
+		"If any active skill's instructions mandate presenting a plan or roadmap and obtaining user approval before implementation — e.g. an approval gate, a sign-off step, or an explicit \"do not proceed without an approved roadmap\" rule — you MUST call declare_plan with mode=await_approval before starting implementation, regardless of complexity. This supersedes any \"do not plan\" guidance in the bands below.\n\n"
+
 	orthogonality := "\n\n## Planning vs Delegation (orthogonal mechanisms)\n" +
 		"Planning (declare_plan + execute_plan) manages task COMPLEXITY and gets user sign-off. " +
 		"Delegation (delegate) optimizes Conductor context and session time. " +
 		"They are ORTHOGONAL — never mix them. Once a plan is declared, delegate is disabled; use execute_plan to execute plan steps.\n"
+
 	switch {
 	case complexity <= 1:
-		return "## Conductor Guidance\nYou are the Conductor: you own this task end-to-end. This is a simple task — handle it inline (read files, search, answer, call finish). No checklist, delegate, or plan needed.\n"
-	case complexity <= 4:
-		return "## Conductor Guidance\n" +
-			"You are the Conductor: you own this task end-to-end. This task does not warrant user sign-off, so do NOT call declare_plan or execute_plan.\n\n" +
-			"You MUST build a checklist (update_checklist with an empty step_id) at the start and report progress on each item as you complete it.\n\n" +
-			"You MAY call delegate to break coherent units of work into isolated subagents — to keep your context lean or to parallelize work. Each delegate also builds its own checklist and reports progress. delegate does NOT require a plan.\n\n" +
-			"Call finish when the task is complete." + orthogonality
+		return skillClause +
+			"## Conductor Guidance\nYou are the Conductor: you own this task end-to-end. This is a simple task — handle it inline (read files, search, answer, call finish). No checklist, delegate, or plan needed.\n"
 	default:
-		return "## Conductor Guidance\n" +
-			"You are the Conductor: you own this task end-to-end. This is a large task that warrants user sign-off.\n\n" +
-			"1. Call declare_plan with mode=await_approval to present a roadmap for user approval.\n" +
-			"2. After approval, call execute_plan — it executes ALL plan steps in DAG order with parallelism for independent steps. Each step executor builds its own checklist and reports progress.\n" +
-			"3. Do NOT use delegate to execute plan steps — execute_plan is the ONLY execution path for a declared plan.\n" +
-			"4. When the trajectory looks wrong, call reflect.\n" +
-			"5. Call finish when the task is complete." + orthogonality
+		// complexity >= 2: the Conductor decides for itself whether to plan.
+		// Planning is recommended (not required) above complexity 3 or when the
+		// task decomposes into a DAG of independent steps; the only mandatory
+		// trigger is the skill clause above.
+		return skillClause +
+			"## Conductor Guidance\n" +
+			"You are the Conductor: you own this task end-to-end. You decide whether this task needs a plan.\n\n" +
+			"Planning is RECOMMENDED (not required) when complexity is high (>3) OR when the task can be solved more efficiently by decomposing it into a DAG of independent steps — call declare_plan, then execute_plan runs the steps in dependency-ordered parallel waves. Otherwise handle it plan-less: proceed inline, or delegate coherent units to subagents. The decision is yours — weigh whether user sign-off or parallelism genuinely helps before planning.\n\n" +
+			"If you go plan-less, you MUST build a checklist (update_checklist with an empty step_id) at the start and report progress on each item as you complete it.\n\n" +
+			"You MAY call delegate to break coherent units of work into isolated subagents — to keep your context lean or to parallelize work. Each delegate also builds its own checklist and reports progress. delegate does NOT require a plan.\n\n" +
+			"When the trajectory looks wrong, call reflect.\n\n" +
+			"Call finish when the task is complete." + orthogonality
 	}
 }
 
