@@ -208,6 +208,8 @@ github.com/tkrajina/go-reflector v0.5.8 h1:yPADHrwmUbMq4RGEyaOUpz2H90sRsETNVpjzo
 github.com/tkrajina/go-reflector v0.5.8/go.mod h1:ECbqLgccecY5kPmPmXg1MrHW585yMcDkVl6IvJe64T4=
 github.com/v0lka/sp4rk v0.0.0-20260716211453-e6667efc6aa4 h1:Fz6cvgnNNqR65zOhBfQPDSO0A2jPfsv4ukLHbD3tqtw=
 github.com/v0lka/sp4rk v0.0.0-20260716211453-e6667efc6aa4/go.mod h1:LJ2zMX2SEyiOXRTERiNGrD+Lh499BeSxpMySM26yWoI=
+github.com/v0lka/sp4rk v0.0.0-20260716214649-c9825eb8ea01 h1:9IzJ+WLsrACpMRk8eNVnirR7mSCmkBKB9JeESYLCKRQ=
+github.com/v0lka/sp4rk v0.0.0-20260716214649-c9825eb8ea01/go.mod h1:LJ2zMX2SEyiOXRTERiNGrD+Lh499BeSxpMySM26yWoI=
 github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=
 github.com/valyala/bytebufferpool v1.0.0/go.mod h1:6bBcMArwyJ5K/AmCkWv1jt77kVWyCJ6HpOuEn7z0Csc=
 github.com/valyala/fasttemplate v1.2.2 h1:lxLXG0uE3Qnshl9QyaK6XJxMXlQZELvChBOCmQD0Loo=
