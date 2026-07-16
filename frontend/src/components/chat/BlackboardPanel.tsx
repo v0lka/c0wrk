@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { ChevronDown, ChevronRight, ClipboardList, Search, Paperclip } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatBytes } from '@/lib/formatters'
@@ -6,7 +6,8 @@ import { useBlackboardState, useHasBlackboardState } from '@/stores/blackboardSt
 import { useSessionStore } from '@/stores/sessionStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
-import type { BlackboardState, BlackboardReflection } from '@/types/models'
+import { getBlackboardAttachmentMarkdown } from '@/api/attachments'
+import type { BlackboardState, BlackboardReflection, BlackboardAttachment } from '@/types/models'
 import { StepTooltip } from './StepTooltip'
 
 /** Builds the full markdown value of a reflection entry for the tooltip. */
@@ -71,6 +72,49 @@ function formatStepId(id: string): string {
     const match = id.match(/^step_(\d+)$/i)
     if (match) return `Step ${match[1]}`
     return id
+}
+
+/**
+ * BlackboardAttachmentRow renders a committed blackboard attachment. Double-
+ * clicking opens its converted markdown in the file viewer via a virtual
+ * (non-disk-backed) pseudo-path keyed by the attachment id (uniqueness) with
+ * the original name as the final segment so the tab still shows the file name.
+ */
+function BlackboardAttachmentRow({ attachment }: { attachment: BlackboardAttachment }) {
+    const activeSessionId = useSessionStore(s => s.activeSessionId)
+    const openVirtualFile = useFileViewerStore(s => s.openVirtualFile)
+    const setCollapsed = useFileViewerStore(s => s.setCollapsed)
+    const setFileContent = useFileViewerStore(s => s.setFileContent)
+    const setFileError = useFileViewerStore(s => s.setFileError)
+
+    const handleOpen = useCallback(async () => {
+        if (!activeSessionId) return
+        // Virtual pseudo-path keyed by the attachment ID (uniqueness) with the
+        // original name as the final segment so the tab still shows the file
+        // name; content is supplied directly (no on-disk read).
+        const path = `c0wrk:attachment/${attachment.id}/${attachment.original_name}`
+        openVirtualFile(path, 'markdown')
+        setCollapsed(false)
+        try {
+            const markdown = await getBlackboardAttachmentMarkdown(activeSessionId, attachment.id)
+            setFileContent(path, markdown, 'markdown')
+        } catch (err) {
+            setFileError(path, err instanceof Error ? err.message : String(err))
+        }
+    }, [activeSessionId, attachment.id, attachment.original_name, openVirtualFile, setCollapsed, setFileContent, setFileError])
+
+    return (
+        <div
+            onDoubleClick={handleOpen}
+            title="Double-click to open in viewer"
+            className="py-0.5 pl-2 border-l border-border cursor-pointer flex items-center gap-1 hover:bg-muted/40 transition-colors"
+        >
+            <Paperclip className="h-3 w-3 shrink-0 text-muted-foreground" />
+            <span className="text-foreground truncate">{attachment.original_name}</span>
+            <span className="text-muted-foreground shrink-0">({attachment.format})</span>
+            <span className="text-muted-foreground shrink-0">{formatBytes(attachment.size_bytes)}</span>
+        </div>
+    )
 }
 
 function BlackboardBadges({ state }: { state: BlackboardState }) {
@@ -185,15 +229,7 @@ function BlackboardContent({ state, search }: { state: BlackboardState; search: 
             {filteredAttachments.length > 0 && (
                 <CollapsibleSection title="Attachments" count={filteredAttachments.length}>
                     {filteredAttachments.map((a) => (
-                        <div
-                            key={a.id}
-                            className="py-0.5 pl-2 border-l border-border cursor-default flex items-center gap-1"
-                        >
-                            <Paperclip className="h-3 w-3 shrink-0 text-muted-foreground" />
-                            <span className="text-foreground truncate">{a.original_name}</span>
-                            <span className="text-muted-foreground shrink-0">({a.format})</span>
-                            <span className="text-muted-foreground shrink-0">{formatBytes(a.size_bytes)}</span>
-                        </div>
+                        <BlackboardAttachmentRow key={a.id} attachment={a} />
                     ))}
                 </CollapsibleSection>
             )}

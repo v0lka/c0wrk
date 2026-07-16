@@ -94,3 +94,22 @@ export async function getAttachments(sessionId: string): Promise<AttachmentInfoU
     throw err
   }
 }
+
+/**
+ * Fetch the converted markdown content of a committed blackboard attachment.
+ * Used when the user opens an attachment in the file viewer. Returns the raw
+ * markdown string produced by markitdown.
+ */
+export async function getBlackboardAttachmentMarkdown(sessionId: string, attachmentId: string): Promise<string> {
+  try {
+    const app = getApp()
+    const result = await app.GetBlackboardAttachmentMarkdown(sessionId, attachmentId)
+    if (typeof result !== 'string') {
+      throw new Error('getBlackboardAttachmentMarkdown: backend returned non-string data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to get blackboard attachment markdown:', err)
+    throw err
+  }
+}

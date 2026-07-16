@@ -60,6 +60,8 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
   useEffect(() => {
     if (!activeFile) return
     const data = useFileViewerStore.getState().files[activeFile]
+    // Virtual files are not backed by a path on disk — never load from disk.
+    if (data?.virtual) return
     if (data && !data.loading && (data.content || data.error || data.isBinary)) return
     loadFileRef.current(activeFile, false)
   }, [activeFile])
@@ -68,6 +70,8 @@ export function useFileViewerData(activeFile: string | null, openTabs: string[])
   useEffect(() => {
     const unsub = subscribe('workspace:tree_changed', () => {
       for (const path of openTabsRef.current) {
+        // Virtual files have no on-disk counterpart to reload.
+        if (useFileViewerStore.getState().files[path]?.virtual) continue
         loadFileRef.current(path, true)
       }
     })

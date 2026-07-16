@@ -13,6 +13,13 @@ export interface FileData {
   loading: boolean
   error?: string
   isBinary?: boolean
+  /**
+   * Virtual files are not backed by a path on disk (e.g. a blackboard
+   * attachment opened as markdown). The file-viewer data loader skips them so
+   * it never tries to read or diff a non-existent path; content is supplied
+   * directly via setFileContent.
+   */
+  virtual?: boolean
 }
 
 interface FileIconData {
@@ -33,6 +40,7 @@ interface FileViewerState {
 interface FileViewerActions {
   openFile: (path: string) => void
   openFileAtLine: (path: string, line: number) => void
+  openVirtualFile: (path: string, language?: string) => void
   closeFile: (path: string) => void
   setActiveFile: (path: string) => void
   setFileContent: (path: string, content: string, language?: string) => void
@@ -104,6 +112,42 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
           files: {
             ...s.files,
             [path]: { content: '', loading: true },
+          },
+        }))
+      },
+
+      openVirtualFile: (path, language) => {
+        const { openTabs } = get()
+        // Already open: re-activate and mark loading so the caller's fresh
+        // fetch (setFileContent) visibly refreshes content rather than leaving
+        // a stale copy in view. Existing content is kept to avoid a flash.
+        if (openTabs.includes(path)) {
+          set((s) => ({
+            activeFile: path,
+            collapsed: false,
+            files: {
+              ...s.files,
+              [path]: {
+                ...s.files[path],
+                loading: true,
+                error: undefined,
+              } as FileData,
+            },
+          }))
+          return
+        }
+        set((s) => ({
+          openTabs: [...s.openTabs, path],
+          activeFile: path,
+          collapsed: false,
+          files: {
+            ...s.files,
+            [path]: {
+              content: '',
+              loading: true,
+              virtual: true,
+              ...(language !== undefined ? { language } : {}),
+            },
           },
         }))
       },
@@ -258,8 +302,12 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
         return state as FileViewerState & FileViewerActions
       },
       partialize: (state) => ({
-        openTabs: state.openTabs,
-        activeFile: state.activeFile,
+        // Virtual tabs (e.g. blackboard attachments) are ephemeral: their
+        // content lives only in memory, so never persist them — otherwise a
+        // restart would rehydrate a tab whose content is gone and that the
+        // data loader would mistake for a real on-disk file.
+        openTabs: state.openTabs.filter(p => !state.files[p]?.virtual),
+        activeFile: state.activeFile && state.files[state.activeFile]?.virtual ? null : state.activeFile,
         width: state.width,
         collapsed: state.collapsed,
         fileIcons: state.fileIcons,

@@ -41,3 +41,27 @@ func (f *FrontendAPI) GetAttachments(sessionID string) ([]session.AttachmentInfo
 	}
 	return f.app.Manager().GetSessionAttachments(sessionID)
 }
+
+// GetBlackboardAttachmentMarkdown returns the converted markdown content of a
+// committed blackboard attachment. The markdown is fetched on demand (e.g. when
+// the user opens an attachment in the file viewer) rather than embedded in the
+// blackboard state response, keeping that response free of potentially large
+// payloads.
+func (f *FrontendAPI) GetBlackboardAttachmentMarkdown(sessionID, attachmentID string) (string, error) {
+	if f.app == nil || f.app.Manager() == nil {
+		return "", errors.New("session manager not initialized")
+	}
+	bbState, err := f.app.Manager().GetBlackboardState(sessionID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get blackboard state: %w", err)
+	}
+	if bbState == nil || bbState.TaskState == nil {
+		return "", fmt.Errorf("no blackboard state for session %q", sessionID)
+	}
+	for _, att := range bbState.TaskState.Attachments {
+		if att.ID == attachmentID {
+			return att.MarkdownContent, nil
+		}
+	}
+	return "", fmt.Errorf("attachment %q not found in blackboard for session %q", attachmentID, sessionID)
+}

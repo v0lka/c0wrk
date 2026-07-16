@@ -59,6 +59,8 @@ export function GenerateCommitMessage():Promise<string>;
 
 export function GetAttachments(arg1:string):Promise<Array<session.AttachmentInfo>>;
 
+export function GetBlackboardAttachmentMarkdown(arg1:string,arg2:string):Promise<string>;
+
 export function GetBlackboardState(arg1:string):Promise<backend.BlackboardStateResponse>;
 
 export function GetBranchBases():Promise<Array<workspace.BranchBase>>;

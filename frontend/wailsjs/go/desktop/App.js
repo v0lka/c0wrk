@@ -102,6 +102,10 @@ export function GetAttachments(arg1) {
   return window['go']['desktop']['App']['GetAttachments'](arg1);
 }
 
+export function GetBlackboardAttachmentMarkdown(arg1, arg2) {
+  return window['go']['desktop']['App']['GetBlackboardAttachmentMarkdown'](arg1, arg2);
+}
+
 export function GetBlackboardState(arg1) {
   return window['go']['desktop']['App']['GetBlackboardState'](arg1);
 }
