@@ -122,6 +122,7 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 	toolsCfg.AskUserFunc = askUserFunc
 	toolsCfg.PlanApprovalFunc = planApprovalFunc
 	toolsCfg.HTTPClient = b.proxyClient
+	toolsCfg.Logger = logger
 	if err := tools.RegisterBuiltinTools(b.registry, toolsCfg); err != nil {
 		return nil, fmt.Errorf("registering built-in tools: %w", err)
 	}

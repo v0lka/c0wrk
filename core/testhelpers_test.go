@@ -125,6 +125,10 @@ func (m *mockToolExecutor) IsToolUntrusted(name string) bool {
 	return false
 }
 
+func (m *mockToolExecutor) CacheStrategy(_ context.Context, _ string, _ json.RawMessage) tools.CacheMode {
+	return tools.CacheModeDefault
+}
+
 // mockContextManager is a mock implementation of ContextManager for testing.
 type mockContextManager struct {
 	// steps records all steps added

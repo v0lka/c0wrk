@@ -69,6 +69,7 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | ---------------------- | ------------------------------ | ------------------------------ | ---------------------------------------------- |
 | `Tool`                 | github.com/v0lka/sp4rk/tools   | core/tools (embedded registry) | Tool interface (incl. IsUntrusted())          |
 | `BaseTool`             | github.com/v0lka/sp4rk/tools   | core/tools/builtins, MCP tools | Base impl with Untrusted field               |
+| `ContentBackedReader`  | github.com/v0lka/sp4rk/tools   | core/tools (`read_file_doc.go`) | Optional interface; `IsContentBacked` opts document-format `read_file` reads into content-backed caching |
 | `ToolRegistry`         | github.com/v0lka/sp4rk/tools   | core/tools (embedded)          | Basic tool store                |
 | `ListFiltered`         | github.com/v0lka/sp4rk/tools   | core/orchestrator              | Filtered tool listing (e.g., exclude disabled tools) |
 | `ToolDescriptor`       | github.com/v0lka/sp4rk/tools   | core/orchestrator, planner     | Tool metadata                                 |

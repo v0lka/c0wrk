@@ -7,6 +7,7 @@ c0wrk registers sp4rk's built-in tools plus the c0wrk-specific `ask_user` tool a
 ## Key Files
 
 - `core/tools/builtin_registration.go` — `RegisterBuiltinTools(registry, cfg)` + `BuiltinToolsConfig`
+- `core/tools/read_file_doc.go` — c0wrk `ReadFileDocTool` wrapper over sp4rk `ReadFileTool` that converts document formats (pdf, docx, pptx, xlsx, odt, html, htm) to markdown via `core/markitdown`; implements sp4rk's `ContentBackedReader` so converted results are content-backed cached
 - `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
 - `core/toolmanager/` — manages external binaries (`rg`, `rtk`, `uv`, `markitdown`), auto-downloaded on first run to `~/.c0wrk/tools/bin/`, PATH-prepended at startup (ADR-010)
 
@@ -19,7 +20,7 @@ c0wrk's registered tools and their default policy / trust classification:
 | Tool                  | Category  | Default Policy | Untrusted | Description                                        |
 | --------------------- | --------- | -------------- | --------- | -------------------------------------------------- |
 | `bash_exec`           | Execution | user_confirm   | yes       | Shell command execution with timeout and blacklist |
-| `read_file`           | File      | always_allow   | yes       | Read file contents (streaming, O(1) memory, default 2000-line window) |
+| `read_file`           | File      | always_allow   | yes       | Read file contents (streaming, O(1) memory, default 2000-line window); document formats (pdf, docx, pptx, xlsx, odt, html, htm) auto-converted to markdown via markitdown |
 | `write_file`          | File      | user_confirm   | no        | Create/overwrite file                              |
 | `edit_file`           | File      | user_confirm   | no        | Apply targeted edits to existing file              |
 | `list_directory`      | File      | always_allow   | no        | List directory contents                            |
@@ -53,6 +54,7 @@ Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_final_result`, 
 RegisterBuiltinTools(registry, cfg):
   1. bash_exec (with blacklist + timeouts)
   2. File tools (read, write, edit, list, mkdir, rmdir, rm)
+     — read_file is registered as `NewReadFileDocTool`, a wrapper over sp4rk `ReadFileTool` that transparently converts document formats to markdown (plain-text files delegate to the inner tool unchanged)
   3. finish
   4. web_fetch
   5. web_search (optional: needs search provider config)
@@ -77,11 +79,21 @@ The `ask_user` tool and its UI types (`AskUserFunc`, `AskUserRequest`, `AskUserR
 
 `ripgrep` invokes the `rg` binary via `exec.CommandContext` and parses the `rg --json` event stream (exit code 1 = "no matches", not an error; ≥ 2 = `IsError`). The `rg` binary is a managed runtime dependency provided by `core/toolmanager/` — downloaded on first run to `~/.c0wrk/tools/bin/` and PATH-prepended at startup (ADR-010).
 
+## Document Conversion (`read_file` wrapper)
+
+`read_file` is registered as `NewReadFileDocTool` (`core/tools/read_file_doc.go`), a wrapper that embeds sp4rk's `ReadFileTool`. Plain-text files delegate to the inner streaming reader unchanged. Document formats — pdf, docx, pptx, xlsx, odt, html, htm — are converted to markdown via `core/markitdown` (the managed markitdown CLI, ADR-010; the same converter used by the attachment flow in [../session-lifecycle.md](../session-lifecycle.md)).
+
+**Caching** — the wrapper implements sp4rk's optional `ContentBackedReader` interface (`IsContentBacked` returns true only for document extensions). The executor therefore stores converted results in memory (content-backed, paginatable via `tool_result_read`) instead of treating the file on disk as the backing store. Converted markdown is additionally persisted under `<session-temp>/conversions/<sha256(path+mtime+size)>.md`, so paginated reads and re-reads don't re-run the subprocess; the key changes when the source file is modified. Writes are atomic (temp file + rename) so concurrent readers never observe a half-written entry.
+
+**Fallback** — on conversion failure, or when markitdown is unavailable, the wrapper falls back to the inner streaming reader with a warning prepended (`[Warning: document conversion failed …; showing raw file content.]`).
+
+**Limits** — the same `DefaultFileLimits()` caps (`MaxLineBytes`, `MaxWindowLines`) apply to converted output, and the requested line range is validated up front to prevent inverted-range panics. The converter is lazily initialized on first document read (2-minute per-file timeout).
+
 ## Limits Configuration
 
 Per-tool output truncation is centralized in the executor's two-stage pipeline (see [../orchestration/executor.md](../orchestration/executor.md)). No individual tool performs per-tool output truncation; all truncation happens in Stage 1 → Stage 2 after the full result is cached.
 
-**`read_file` is special**: it uses a streaming line-range reader (sp4rk `ReadFileRange`) that reads only the requested window from disk — O(1) memory. The file on disk serves as the cache backing store (file-backed cache entry), so `ToolResultCache` stores zero bytes of content for `read_file` results.
+**`read_file` is special**: for plain-text files it uses a streaming line-range reader (sp4rk `ReadFileRange`) that reads only the requested window from disk — O(1) memory. The file on disk serves as the cache backing store (file-backed cache entry), so `ToolResultCache` stores zero bytes of content for plain-text `read_file` results. Document formats are the exception — converted markdown is content-backed cached (see [Document Conversion](#document-conversion-read_file-wrapper) below).
 
 | Config                              | Affects                    | Default            |
 | ----------------------------------- | -------------------------- | ------------------ |

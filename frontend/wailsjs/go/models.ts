@@ -1081,6 +1081,7 @@ export namespace session {
 	    model: string;
 	    family: string;
 	    fill_percent: number;
+	    has_unfinished_task: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
@@ -1100,6 +1101,7 @@ export namespace session {
 	        this.model = source["model"];
 	        this.family = source["family"];
 	        this.fill_percent = source["fill_percent"];
+	        this.has_unfinished_task = source["has_unfinished_task"];
 	    }
 	}
 	export class SessionRuntimeStatus {

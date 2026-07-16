@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -46,6 +47,10 @@ type BuiltinToolsConfig struct {
 
 	// VectorSearchWaitFunc blocks until the vector index is ready.
 	VectorSearchWaitFunc builtins.VectorSearchWaitFunc
+
+	// Logger is threaded through to tools that log (e.g. the read_file document
+	// converter). If nil, those tools fall back to a discard handler.
+	Logger *slog.Logger
 }
 
 // RegisterBuiltinTools creates and registers all built-in tools into the registry.
@@ -61,7 +66,10 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	registry.Register(bashTool)
 
 	// File operations
-	registry.Register(builtins.NewReadFileToolWithLimits(cfg.FileLimits))
+	// read_file is wrapped to transparently convert document formats (pdf,
+	// docx, pptx, etc.) to markdown via markitdown. Plain-text files delegate
+	// to the inner sp4rk ReadFileTool unchanged.
+	registry.Register(NewReadFileDocTool(cfg.FileLimits, cfg.Logger))
 	registry.Register(builtins.NewWriteFileTool())
 	registry.Register(builtins.NewEditFileTool())
 	registry.Register(builtins.NewListDirectoryTool())
