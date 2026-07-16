@@ -39,6 +39,48 @@ func (f *FrontendAPI) CreateSession() (*session.SessionInfo, error) {
 	return info, nil
 }
 
+// ForkSession creates an independent deep copy of a session (messages, tasks,
+// blackboard facts/plan/trajectory, terminal history, work directories, and
+// code review) with freshly generated identifiers so the fork shares no rows
+// with the original. Forking is only allowed when the session has no unfinished
+// (in-progress or failed) task. On success the new session is returned; the
+// caller switches the active session to it.
+func (f *FrontendAPI) ForkSession(sessionID string) (*session.SessionInfo, error) {
+	if f.app == nil || f.app.Manager() == nil {
+		return nil, errors.New("session manager not initialized")
+	}
+	if f.store == nil {
+		return nil, errors.New("session store not initialized")
+	}
+
+	ctx := context.Background()
+
+	// Guard: a session with an unfinished task cannot be forked — forking would
+	// duplicate a half-completed execution state.
+	unfinished, err := f.store.GetUnfinishedTask(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check session tasks: %w", err)
+	}
+	if unfinished != nil {
+		return nil, errors.New("cannot fork a session that has an unfinished task")
+	}
+
+	// Clone the review inside the same transaction as the fork so the whole
+	// operation (session + tasks + review) commits atomically; a review-copy
+	// failure rolls back the entire fork instead of leaving a review-less fork.
+	var reviewCloner session.ForkReviewCloner
+	if f.reviewStore != nil {
+		reviewCloner = f.reviewStore.CloneReviewTx
+	}
+
+	info, err := f.store.ForkSession(ctx, sessionID, reviewCloner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fork session: %w", err)
+	}
+
+	return info, nil
+}
+
 // DeleteSession removes a session.
 func (f *FrontendAPI) DeleteSession(id string) error {
 	if f.app == nil || f.app.Manager() == nil {

@@ -94,6 +94,10 @@ export function Fetch(arg1, arg2) {
   return window['go']['desktop']['App']['Fetch'](arg1, arg2);
 }
 
+export function ForkSession(arg1) {
+  return window['go']['desktop']['App']['ForkSession'](arg1);
+}
+
 export function GenerateCommitMessage() {
   return window['go']['desktop']['App']['GenerateCommitMessage']();
 }

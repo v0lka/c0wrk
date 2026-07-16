@@ -55,6 +55,8 @@ export function EmitSessionEvent(arg1:session.Event):Promise<void>;
 
 export function Fetch(arg1:string,arg2:Array<string>):Promise<string>;
 
+export function ForkSession(arg1:string):Promise<session.SessionInfo>;
+
 export function GenerateCommitMessage():Promise<string>;
 
 export function GetAttachments(arg1:string):Promise<Array<session.AttachmentInfo>>;

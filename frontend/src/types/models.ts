@@ -37,6 +37,8 @@ export interface SessionInfo {
   readonly total_output_tokens: number
   readonly model: string
   readonly family: string
+  /** True when the session has an in-progress or failed task (cannot be forked). */
+  readonly has_unfinished_task: boolean
 }
 
 export interface ChatMessage {

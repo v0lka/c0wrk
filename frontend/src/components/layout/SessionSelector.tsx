@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { useSessionStore } from "@/stores/sessionStore";
-import { createSession, renameSession, archiveSession, deleteSession } from "@/api/sessions";
+import { createSession, renameSession, archiveSession, deleteSession, forkSession } from "@/api/sessions";
 import { formatRelativeTime } from "@/lib/formatters";
 import { logger } from "@/lib/logger";
 import {
@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { ChevronDown, Check, Plus, Pencil, Archive, Trash2 } from "lucide-react";
+import { ChevronDown, Check, Plus, Pencil, Archive, Trash2, GitFork } from "lucide-react";
 import { useSessionStatusIndicator } from "@/hooks/useSessionStatusIndicator";
 
 export function SessionSelector() {
@@ -83,6 +83,20 @@ export function SessionSelector() {
       }
     },
     [updateSession],
+  );
+
+  const handleFork = useCallback(
+    async (id: string) => {
+      try {
+        const forked = await forkSession(id);
+        addSession(forked);
+        setActiveSessionId(forked.id);
+        setDropdownOpen(false);
+      } catch (error) {
+        logger.error("Failed to fork session:", error);
+      }
+    },
+    [addSession, setActiveSessionId],
   );
 
   const startRename = useCallback((id: string, currentName: string) => {
@@ -172,6 +186,7 @@ export function SessionSelector() {
                   }}
                   onRename={() => startRename(session.id, session.name)}
                   onArchive={() => handleArchive(session.id, session.archived)}
+                  onFork={() => handleFork(session.id)}
                   onDelete={() => handleDelete(session.id)}
                 />
               ))}
@@ -193,6 +208,7 @@ export function SessionSelector() {
                       }}
                       onRename={() => startRename(session.id, session.name)}
                       onArchive={() => handleArchive(session.id, session.archived)}
+                      onFork={() => handleFork(session.id)}
                       onDelete={() => handleDelete(session.id)}
                     />
                   ))}
@@ -216,15 +232,22 @@ export function SessionSelector() {
 
 // --- Session Item ---
 interface SessionItemProps {
-  session: { id: string; name: string; archived: boolean; last_active_at: string };
+  session: { id: string; name: string; archived: boolean; last_active_at: string; has_unfinished_task: boolean };
   isActive: boolean;
   onSelect: () => void;
   onRename: () => void;
   onArchive: () => void;
+  onFork: () => void;
   onDelete: () => void;
 }
-function SessionItem({ session, isActive, onSelect, onRename, onArchive, onDelete }: SessionItemProps) {
+function SessionItem({ session, isActive, onSelect, onRename, onArchive, onFork, onDelete }: SessionItemProps) {
   const status = useSessionStatusIndicator(session.id);
+  // Disable forking both while a task is actively running and when the session
+  // has an unfinished (in-progress or failed) task — the backend rejects both.
+  const forkDisabled = status === "active" || session.has_unfinished_task;
+  const forkDisabledReason = status === "active"
+    ? "Cannot fork while a task is running"
+    : "Cannot fork a session with an unfinished task";
   return (
     <DropdownMenuItem className="group/item gap-2" onSelect={onSelect}>
       <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -247,6 +270,15 @@ function SessionItem({ session, isActive, onSelect, onRename, onArchive, onDelet
         </button>
         <button type="button" className="rounded p-0.5 hover:bg-warning/15" onClick={onArchive}>
           <Archive className="size-3 text-warning" />
+        </button>
+        <button
+          type="button"
+          className="rounded p-0.5 hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+          onClick={onFork}
+          disabled={forkDisabled}
+          title={forkDisabled ? forkDisabledReason : "Fork session"}
+        >
+          <GitFork className="size-3 text-primary" />
         </button>
         <button type="button" className="rounded p-0.5 hover:bg-destructive/20" onClick={onDelete}>
           <Trash2 className="size-3 text-destructive" />

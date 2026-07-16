@@ -40,6 +40,7 @@ function makeSession(overrides: Partial<SessionInfo> & { id: string; project_id:
     total_output_tokens: overrides.total_output_tokens ?? 0,
     model: overrides.model ?? '',
     family: overrides.family ?? '',
+    has_unfinished_task: overrides.has_unfinished_task ?? false,
   }
 }
 

@@ -22,7 +22,7 @@
 | Context window, compaction               | [domains/memory/compaction.md](domains/memory/compaction.md)             |
 | Blackboard, facts, persistence           | [domains/memory/blackboard.md](domains/memory/blackboard.md)             |
 | LLM providers, model registry, tokens    | [domains/llm-providers.md](domains/llm-providers.md)                     |
-| Session create/resume/persist            | [domains/session-lifecycle.md](domains/session-lifecycle.md)             |
+| Session create/resume/persist/fork       | [domains/session-lifecycle.md](domains/session-lifecycle.md)             |
 | File attachments (pending → blackboard)  | [domains/session-lifecycle.md](domains/session-lifecycle.md), [domains/memory/blackboard.md](domains/memory/blackboard.md) |
 | File tree, vector index, workspace       | [domains/workspace.md](domains/workspace.md)                             |
 | Auxiliary work directories               | [architecture/security-model.md](architecture/security-model.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Work Directories section), [domains/frontend/stores.md](domains/frontend/stores.md) (`workDirsStore`) |

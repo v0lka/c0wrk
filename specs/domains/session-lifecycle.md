@@ -14,6 +14,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `github.com/v0lka/sp4rk/orchestration/step_dump_tracker.go` — StepDumpTracker (per-step LLM dump file management)
 - `backend/session/file_coherence.go` — FileCoherenceTracker (cross-session conflict detection)
 - `backend/session/persistence.go` — SessionStore (SQLite persistence including plan review state)
+- `backend/session/persistence_fork.go` — `(*SQLiteSessionStore).ForkSession` deep-copy (messages, tasks+steps/facts/attachments/trajectory, terminal commands, work directories) with regenerated identifiers in a single atomic transaction
 - `backend/session/events.go` — event data structs (session lifecycle + plan review)
 - `backend/session/emitter.go` — WailsEmitter (bridges events to frontend)
 - `backend/session/event_persister.go` — EventPersister (persists events to SQLite)
@@ -277,6 +278,41 @@ User clicks "Cancel"
           → emit task_cancelled
 ```
 
+### Session Forking
+
+A session can be deep-copied into an independent fork. The fork keeps the full
+conversation and task history but starts with fresh runtime accounting; it
+shares no rows with the original.
+
+```
+User clicks Fork (GitFork icon) in SessionSelector on a session item
+  → Frontend: forkSession(id) → RPC ForkSession
+      (button disabled while task active or when has_unfinished_task)
+  → Backend: FrontendAPI.ForkSession(id)
+      ├─ Guard: store.GetUnfinishedTask(id)
+      │   └─ non-nil → return error "cannot fork a session with an unfinished task"
+      ├─ Build optional ForkReviewCloner = reviewStore.CloneReviewTx
+      │   (nil when no review store is wired)
+      └─ store.ForkSession(ctx, id, cloneReview)  (single transaction)
+          ├─ INSERT new sessions row: same project, name "<src> (fork N)"
+          │   (N = highest existing fork number + 1), runtime counters reset
+          ├─ Copy session_messages (autoincrement id; JSON tool_call correlation
+          │   preserved verbatim — no id rewriting)
+          ├─ Copy terminal_commands (autoincrement id)
+          ├─ Copy session_work_directories (regenerated UUID PK)
+          ├─ For each task: new task id, copy tasks (NULL completed_at preserved)
+          │   + task_steps + task_facts + task_attachments + task_trajectory
+          ├─ cloneReview(src, new) on the same tx (review_state + review_comments)
+          └─ Commit (any error rolls back the whole fork; source untouched)
+  → Frontend: sessionStore.addSession(forked) + setActiveSessionId(forked.id)
+```
+
+Forking is rejected when the source session has an unfinished
+(`in_progress` or `failed`) task — copying would duplicate a half-completed
+execution state. The guard runs on the backend (authoritative); the frontend
+also disables the fork button preemptively via the session's
+`has_unfinished_task` flag and the live active status.
+
 ### Session Persistence
 
 Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/session/persistence.go` and `backend/project/persistence.go`:
@@ -290,6 +326,11 @@ Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/sess
 - `task_facts` — task_id, facts (JSON), updated_at
 - `task_attachments` — task_id, attachments (JSON-marshaled `[]orchestration.Attachment`), updated_at
 - `terminal_commands` — id, session_id, command, created_at
+
+`SessionInfo.HasUnfinishedTask` is not a stored column — it is derived at query
+time (`LoadSession`, `ListSessions`, `ListSessionsByProject`) via a correlated
+`EXISTS` subquery over `tasks` with status `in_progress` or `failed`. The fork
+guard (`ForkSession`) and the frontend fork-button disabled state consume it.
 
 Blackboard state is reconstructed from `tasks` + `task_steps` + `task_facts` + `task_attachments` on resume (no dedicated `blackboard` column). Events are streamed via the Wails runtime and are NOT persisted to a standalone table — any event state that must survive restart is folded into `session_messages` or `tasks`/`task_steps` via `backend/session/event_persister.go`.
 
@@ -424,6 +465,7 @@ type SessionInfo struct {
     PlanReviewPhase  string // "" | "awaiting_accept" | "awaiting_feedback"
     PlanReviewPath   string // path to .md plan file awaiting review
     PlanReviewContext string // JSON with {msg, mode, skills} for restart survival
+    HasUnfinishedTask bool  // derived (not stored): EXISTS unfinished in_progress/failed task; gates the fork button
 }
 
 // HandleOptions — execution mode + plan review + user-specified skill overrides
@@ -500,6 +542,13 @@ type HandleResult struct {
   `success` → `completed`; `partial` → left `in_progress` (resumable);
   `failed`/`aborted` → `failed` (resumable); `cancelled` → handled by the
   session manager's cancellation paths.
+- Session forking deep-copies all dependent rows (messages, tasks and their
+  steps/facts/attachments/trajectory, terminal commands, work directories,
+  and review data) with freshly generated identifiers in a single atomic
+  transaction, so the fork shares no rows with the original. A fork with any
+  unfinished (`in_progress` or `failed`) task is rejected by
+  `FrontendAPI.ForkSession` (backend guard) and the frontend fork button is
+  disabled preemptively via `has_unfinished_task` plus the live active status.
 - `task_complete` carries the typed success contract (`success`,
   `completion`, `failed_steps`). A degraded completion (`success=false`) is
   always followed by `task_failed_resumable` or a `service` warning — never

@@ -42,6 +42,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `DeleteSession`        | id                           | error                     | Delete session                                        |
 | `RenameSession`        | id, name                     | error                     | Rename session                                        |
 | `ArchiveSession`       | id                           | error                     | Archive/unarchive session                             |
+| `ForkSession`          | id                           | (\*SessionInfo, error)    | Deep-copy a session into an independent fork (messages, tasks+steps/facts/attachments/trajectory, terminal commands, work directories, review) with regenerated identifiers in one atomic transaction; runtime counters reset, name "`<src> (fork N)`". Rejected when the session has an unfinished (`in_progress`/`failed`) task. The returned session becomes the active session |
 | `ListSessions`         | —                            | ([]SessionInfo, error)    | List active project sessions                          |
 | `GetSessionHistory`    | id                           | ([]ChatMessage, error)    | Get message history                                   |
 | `GetSessionRuntimeStatus` | id                        | (SessionRuntimeStatus, error) | Live/persisted execution state: `{active, has_unfinished_task, unfinished_task_id?}`. Called after history load to reconcile the UI (running flag, resume banner, stale prompts) instead of defaulting to idle |

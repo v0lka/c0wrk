@@ -63,3 +63,17 @@ export async function archiveSession(id: string): Promise<void> {
     throw err
   }
 }
+
+export async function forkSession(id: string): Promise<SessionInfo> {
+  try {
+    const app = getApp()
+    const result = await app.ForkSession(id)
+    if (!isSessionInfo(result)) {
+      throw new Error('forkSession: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to fork session:', err)
+    throw err
+  }
+}
