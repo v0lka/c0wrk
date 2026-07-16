@@ -22,7 +22,7 @@ require (
 	github.com/epilande/go-devicons v0.0.0-20250505162540-0661cab71a28
 	github.com/google/go-cmp v0.7.0
 	github.com/philippgille/chromem-go v0.7.0
-	github.com/v0lka/sp4rk v0.0.0-20260715213611-82c3d0fb1253
+	github.com/v0lka/sp4rk v0.0.0-20260716082933-466a6cb698e2
 )
 
 require (
@@ -71,10 +71,12 @@ require (
 )
 
 require (
+	codeberg.org/readeck/go-readability/v2 v2.1.2 // indirect
 	github.com/araddon/dateparse v0.0.0-20210429162001-6b43995a97de // indirect
 	github.com/go-shiori/dom v0.0.0-20230515143342-73569d674e1c // indirect
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0 // indirect
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
+	github.com/itlightning/dateparse v0.2.1 // indirect
 )
 
 require (
