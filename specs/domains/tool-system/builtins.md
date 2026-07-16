@@ -40,6 +40,7 @@ c0wrk's registered tools and their default policy / trust classification:
 | `declare_step_complete` | Agent   | always_allow   | no        | Signal inline plan step completion (emits `plan_step_complete`) |
 | `store_fact`          | Agent     | always_allow   | no        | Store fact to blackboard                           |
 | `search_facts`        | Agent     | always_allow   | no        | Search blackboard facts                            |
+| `read_attachment`     | Agent     | always_allow   | no        | Read the markdown content of a user-attached file by ID (from the context-injected `AttachmentStore`) |
 | `batch`               | Agent     | always_allow   | no        | Execute multiple tool calls sequentially in one turn (intercepted at executor level) |
 | `read_skill_resource` | Agent     | always_allow   | no        | Read skill resource files                          |
 | `tool_result_read`    | Agent     | internal       | no        | Read cached tool result fragments by hash          |
@@ -59,10 +60,11 @@ RegisterBuiltinTools(registry, cfg):
   7. read_step_output, list_step_outputs, read_final_result
   8. update_checklist, declare_step_complete
   9. store_fact, search_facts
-  10. tool_result_read
-  11. batch
-  12. semantic_search (optional: needs vector search func)
-  13. ask_user (optional: needs ask_user func)
+  10. read_attachment (reads user-attached files via the context-injected `AttachmentStore`; attachment IDs are surfaced by `Orchestrator.augmentWithAttachments`)
+  11. tool_result_read
+  12. batch
+  13. semantic_search (optional: needs vector search func)
+  14. ask_user (optional: needs ask_user func)
 ```
 
 Note: `read_skill_resource` is registered separately in `NewOrchestratorBuilder` (not in `RegisterBuiltinTools`).

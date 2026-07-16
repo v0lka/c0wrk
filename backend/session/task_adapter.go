@@ -119,6 +119,15 @@ func (a *TaskStoreAdapter) PersistFacts(taskID string, facts []orchestration.Fac
 	return a.store.SaveFacts(context.Background(), taskID, data)
 }
 
+// PersistAttachments JSON-marshals attachments and stores them for a task.
+func (a *TaskStoreAdapter) PersistAttachments(taskID string, attachments []orchestration.Attachment) error {
+	data, err := json.Marshal(attachments)
+	if err != nil {
+		return fmt.Errorf("marshal attachments: %w", err)
+	}
+	return a.store.SaveAttachments(context.Background(), taskID, data)
+}
+
 // SaveTrajectory JSON-marshals the full Conductor step trajectory and stores it
 // for a task, inserting or replacing any previously persisted trajectory.
 func (a *TaskStoreAdapter) SaveTrajectory(taskID string, steps []agent.Step) error {
@@ -229,6 +238,17 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 	if len(factsJSON) > 0 {
 		if err := json.Unmarshal(factsJSON, &state.Facts); err != nil {
 			return nil, fmt.Errorf("unmarshal facts: %w", err)
+		}
+	}
+
+	// Load attachments
+	attachmentsJSON, err := a.store.LoadAttachments(context.Background(), taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load attachments: %w", err)
+	}
+	if len(attachmentsJSON) > 0 {
+		if err := json.Unmarshal(attachmentsJSON, &state.Attachments); err != nil {
+			return nil, fmt.Errorf("unmarshal attachments: %w", err)
 		}
 	}
 

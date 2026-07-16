@@ -259,6 +259,7 @@ func convertBlackboardState(state *core.TaskState) *BlackboardStateResponse {
 		StepResults:     make(map[string]BlackboardStepResponse, len(state.StepResults)),
 		Reflections:     make([]BlackboardReflectionResponse, 0, len(state.Reflections)),
 		Facts:           make([]BlackboardFactResponse, 0, len(state.Facts)),
+		Attachments:     make([]BlackboardAttachmentResponse, 0, len(state.Attachments)),
 	}
 
 	// Plan
@@ -309,6 +310,17 @@ func convertBlackboardState(state *core.TaskState) *BlackboardStateResponse {
 			Keywords: fact.Keywords,
 			Content:  fact.Content,
 			Author:   fact.Author,
+		})
+	}
+
+	// Attachments (metadata only — markdown content is excluded)
+	for _, att := range state.Attachments {
+		resp.Attachments = append(resp.Attachments, BlackboardAttachmentResponse{
+			ID:           att.ID,
+			OriginalName: att.OriginalName,
+			Format:       att.Format,
+			SizeBytes:    att.SizeBytes,
+			AttachedAt:   att.AttachedAt.Format(time.RFC3339),
 		})
 	}
 

@@ -20,6 +20,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/markitdown"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -62,6 +63,7 @@ type Session struct {
 	done                chan struct{}      // closed when task goroutine finishes
 	lastCompletedTaskID string             // tracks last completed task for continuations
 	mu                  sync.Mutex
+	pendingAttachments  []orchestration.Attachment // user-attached files staged via AttachFiles, flushed into the blackboard on the next SendMessage (guarded by mu)
 }
 
 // sessionTempDir returns the temp directory path for a session.
@@ -102,15 +104,17 @@ type Manager struct {
 	agentDir            string      // base agent directory (~/.c0wrk)
 	logLevel            string      // current log level for session loggers
 	tokenPersist        TokenPersistFunc
-	taskStore           TaskStore           // optional persistent task store
-	sessionStore        SessionStore        // optional persistent session store
+	taskStore           TaskStore            // optional persistent task store
+	sessionStore        SessionStore         // optional persistent session store
 	projectStore        project.ProjectStore // optional persistent project store (project-scoped work dirs)
-	titleGen            *TitleGenerator     // optional title generator for auto-naming
-	envInfo             *sdktools.EnvInfo   // environment info for context injection
-	stopTimeout         time.Duration       // how long to wait for goroutine on cancel/delete
-	maxSummaryLen       int                 // character limit for auto-generated step summaries
-	projectResolver     ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
+	titleGen            *TitleGenerator      // optional title generator for auto-naming
+	envInfo             *sdktools.EnvInfo    // environment info for context injection
+	stopTimeout         time.Duration        // how long to wait for goroutine on cancel/delete
+	maxSummaryLen       int                  // character limit for auto-generated step summaries
+	projectResolver     ProjectResolverFunc  // resolves projectID -> workspacePath for lazy session restoration
 	fileTracker         *FileCoherenceTracker
+	converter           *markitdown.Converter // lazy-init markitdown converter for AttachFiles
+	converterMu         sync.Mutex            // guards lazy converter initialization
 
 	// shuttingDown is set to true at the very start of Shutdown() so that the
 	// SendMessage/Resume goroutines, when they observe their context cancelled,

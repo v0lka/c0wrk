@@ -15,6 +15,7 @@ Manages real-time event subscription, validation, and store updates. Events flow
 - `frontend/src/hooks/events/useLifecycleEvents.ts` — routing, step_start, step_complete, retry, step_retry
 - `frontend/src/hooks/events/useSubagentEvents.ts` — subagent lifecycle
 - `frontend/src/hooks/events/useBlackboardEvents.ts` — blackboard state updates
+- `frontend/src/hooks/events/useAttachmentEvents.ts` — attachment list updates
 - `frontend/src/hooks/events/usePlanReviewEvents.ts` — plan review lifecycle (plan_review_ready, plan_validation_failed, etc.)
 - `frontend/src/hooks/events/useTerminalEvents.ts` — terminal output events
 - `frontend/src/hooks/events/useToolJudgeEvents.ts` — LLM judge response events
@@ -40,6 +41,7 @@ useSessionEvents(sessionId)
   │   ├─ useLifecycleEvents → chatStore (routing, step_start/complete, retry)
   │   ├─ useSubagentEvents → planStore
   │   ├─ useBlackboardEvents → blackboardStore
+  │   ├─ useAttachmentEvents → attachmentsStore
   │   ├─ usePlanReviewEvents → planStore + planReviewStore
   │   ├─ useTerminalEvents → terminal state
   │   └─ useToolJudgeEvents → tool confirmation state

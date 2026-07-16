@@ -343,6 +343,40 @@ func (o *Orchestrator) resolveTaskMessage(message string, userSkills []string) s
 	return o.buildSkillAugmentedRoutingMessage(message, userSkills)
 }
 
+// augmentWithAttachments appends a list of the session's attached files to the
+// user message so the LLM knows which attachments are available and can request
+// their content via the read_attachment tool. Only the Conductor sees this
+// section — the clean (un-augmented) message is still recorded in the
+// conversation history, so prior turns don't accumulate repeated attachment
+// listings. On continuation turns the blackboard is restored with all session
+// attachments, so every turn sees the full current set.
+func (o *Orchestrator) augmentWithAttachments(message string, bb orchestration.Blackboard) string {
+	attachments := bb.GetAttachments()
+	if len(attachments) == 0 {
+		return message
+	}
+	var sb strings.Builder
+	sb.WriteString(message)
+	if message != "" {
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("## Attached files\n\n")
+	sb.WriteString("The following files are attached to this conversation. ")
+	sb.WriteString("Call `read_attachment` with the attachment_id to read a file's content.\n\n")
+	for _, a := range attachments {
+		sb.WriteString("- attachment_id: ")
+		sb.WriteString(a.ID)
+		sb.WriteString(" | ")
+		sb.WriteString(a.OriginalName)
+		sb.WriteString(" (")
+		sb.WriteString(a.Format)
+		sb.WriteString(", ")
+		sb.WriteString(strconv.FormatInt(a.SizeBytes, 10))
+		sb.WriteString(" bytes)\n")
+	}
+	return sb.String()
+}
+
 // logDebug logs a DEBUG level message if logger is not nil.
 func (o *Orchestrator) logDebug(msg string, args ...any) {
 	if o.logger != nil {
@@ -857,10 +891,15 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	ctx = o.prepareRequestContext(ctx, taskMessage)
 
 	// 2. Setup blackboard (fresh or restored).
-	bb, err := o.setupBlackboard(taskMessage, sessionID, opts.TaskID)
+	bb, err := o.setupBlackboard(taskMessage, sessionID, opts.TaskID, opts.PendingAttachments)
 	if err != nil {
 		return nil, err
 	}
+
+	// Augment the Conductor's task message with the session's attached files.
+	// The router and conversation history keep the clean `taskMessage`; only the
+	// Conductor receives this section so the LLM can call read_attachment.
+	conductorMessage := o.augmentWithAttachments(taskMessage, bb)
 
 	// 2. Get available tools (exclude disabled tools in No Project mode).
 	availableTools := o.toolRegistry.ListFiltered(o.disabledToolNames())
@@ -905,7 +944,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	conductorHistory := truncateHistory(o.conversationHistory, o.config.ConductorHistoryWindow)
 
 	plansDir := opts.SessionPlansDir
-	execResult, err := o.runConductor(ctx, taskMessage, bb, availableTools, plansDir, conductorHistory, nil)
+	execResult, err := o.runConductor(ctx, conductorMessage, bb, availableTools, plansDir, conductorHistory, nil)
 	// C-5: propagate ErrExecutionIncomplete alongside best-effort result.
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
 		return nil, err

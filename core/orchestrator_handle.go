@@ -32,8 +32,10 @@ func (o *Orchestrator) prepareRequestContext(ctx context.Context, message string
 }
 
 // setupBlackboard creates a fresh Blackboard (first message) or restores an
-// existing one from persistence (continuation).
-func (o *Orchestrator) setupBlackboard(message, sessionID, taskID string) (orchestration.Blackboard, error) {
+// existing one from persistence (continuation). Pending attachments are flushed
+// into the blackboard in both paths so they are available to the task and
+// persisted alongside the rest of the blackboard state.
+func (o *Orchestrator) setupBlackboard(message, sessionID, taskID string, pendingAttachments []orchestration.Attachment) (orchestration.Blackboard, error) {
 	if taskID == "" {
 		// First message: create clean BB
 		id := uuid.New().String()
@@ -48,6 +50,11 @@ func (o *Orchestrator) setupBlackboard(message, sessionID, taskID string) (orche
 		// Wire emitter if PersistentBlackboard
 		if pbb, ok := bb.(PersistableBlackboard); ok {
 			pbb.SetEmitter(o.emitter)
+		}
+
+		// Flush pending attachments before execution.
+		for _, a := range pendingAttachments {
+			bb.AddAttachment(a)
 		}
 		return bb, nil
 	}
@@ -72,6 +79,11 @@ func (o *Orchestrator) setupBlackboard(message, sessionID, taskID string) (orche
 	// Emit MemoryRead if facts were restored from persistence.
 	if facts := pbb.GetFacts(); len(facts) > 0 {
 		o.emitter.MemoryRead(0, fmt.Sprintf("Loaded %d facts from previous execution", len(facts)))
+	}
+
+	// Flush pending attachments into the restored blackboard.
+	for _, a := range pendingAttachments {
+		pbb.AddAttachment(a)
 	}
 
 	// Reactivate task

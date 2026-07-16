@@ -262,6 +262,32 @@ func (pb *PersistentBlackboard) StoreFact(fact orchestration.Fact) {
 	pb.notifyChanged("fact")
 }
 
+// AddAttachment appends an attachment and persists the full attachments list.
+func (pb *PersistentBlackboard) AddAttachment(a orchestration.Attachment) {
+	pb.MapBlackboard.AddAttachment(a)
+	attachments := pb.GetAttachments()
+	pb.persistSafe("attachments", func() error {
+		return pb.store.PersistAttachments(pb.taskID, attachments)
+	})
+	pb.notifyChanged("attachment")
+}
+
+// RemoveAttachment removes an attachment and persists the full attachments list
+// when an attachment was actually removed. Read methods (GetAttachments /
+// GetAttachment) are promoted from the embedded MapBlackboard.
+func (pb *PersistentBlackboard) RemoveAttachment(id string) bool {
+	removed := pb.MapBlackboard.RemoveAttachment(id)
+	if !removed {
+		return false
+	}
+	attachments := pb.GetAttachments()
+	pb.persistSafe("attachments", func() error {
+		return pb.store.PersistAttachments(pb.taskID, attachments)
+	})
+	pb.notifyChanged("attachment")
+	return true
+}
+
 // SetFinalResult sets the final result string.
 // Does NOT call PersistCompletion — the orchestrator calls CompleteTask() separately.
 func (pb *PersistentBlackboard) SetFinalResult(result string) {
@@ -363,6 +389,9 @@ func RestoreBlackboard(taskID, sessionID string, store core.TaskPersistence, log
 	}
 	if len(state.Facts) > 0 {
 		mb.SetFacts(state.Facts)
+	}
+	if len(state.Attachments) > 0 {
+		mb.SetAttachments(state.Attachments)
 	}
 	if state.FinalOutput != "" {
 		mb.SetFinalResult(state.FinalOutput)

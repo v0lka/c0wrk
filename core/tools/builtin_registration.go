@@ -103,6 +103,11 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	registry.Register(builtins.NewStoreFactTool())
 	registry.Register(builtins.NewSearchFactsTool())
 
+	// Attachment reader — reads user-attached files from the blackboard via
+	// the context-injected AttachmentStore. The attachment IDs are surfaced to
+	// the LLM in the user message (see Orchestrator.augmentWithAttachments).
+	registry.Register(builtins.NewReadAttachmentTool())
+
 	// Semantic search (optional — requires vector index backend)
 	if cfg.VectorSearchFunc != nil {
 		registry.Register(builtins.NewVectorSearchTool(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc))

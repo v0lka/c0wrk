@@ -1,10 +1,11 @@
 import { Button } from '@/components/ui/button'
-import { Play, Square, MessageSquare, Terminal, Sparkles, Loader2, FolderPlus } from 'lucide-react'
+import { Play, Square, MessageSquare, Terminal, Sparkles, Loader2, FolderPlus, Paperclip } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { ChatInputController } from '@/hooks/useChatInputController'
 import { ModelCombobox } from './ModelCombobox'
 import { ReasoningCombobox } from './ReasoningCombobox'
 import { useWorkDirsStore } from '@/stores/workDirsStore'
+import { useAttachmentsInput } from '@/hooks/useAttachmentsInput'
 
 interface ChatInputToolbarProps {
   controller: ChatInputController
@@ -29,15 +30,28 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
     isOptimizing,
     optimizeError,
     sendError,
+    activeSessionId,
     handleSend,
     handleOptimize,
     cancel,
   } = controller
 
+  const { handleAttach } = useAttachmentsInput(activeSessionId)
+
   const blockingMessage = isNoProject ? 'Select or create a project' : null
 
   return (
     <div className="flex items-center px-3 py-1.5 min-h-[36px] shrink-0 gap-1">
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        onClick={handleAttach}
+        title="Attach files"
+        aria-label="Attach files"
+        className="text-muted-foreground hover:text-foreground"
+      >
+        <Paperclip className="size-3.5" />
+      </Button>
       <Button
         variant="ghost"
         size="icon-xs"

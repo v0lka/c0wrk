@@ -72,6 +72,12 @@ export function extractFactsTitle(args: Args, rawArgs: string): string {
   return 'facts'
 }
 
+// extractAttachmentTitle returns the attachment id for read_attachment.
+export function extractAttachmentTitle(args: Args, rawArgs: string): string {
+  const parsed = safeParseArgs(args, rawArgs)
+  return str(parsed, 'attachment_id') || 'attachment'
+}
+
 export function extractMemoTitle(toolName: string, args: Args, rawArgs: string): string {
   const parsed = safeParseArgs(args, rawArgs)
   if (toolName === 'update_checklist') return 'checklist'

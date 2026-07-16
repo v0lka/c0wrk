@@ -49,6 +49,9 @@ type TaskPersistence interface {
 	PersistFailure(taskID string) error
 	PersistCancellation(taskID string) error
 	PersistFacts(taskID string, facts []orchestration.Fact) error
+	// PersistAttachments persists the full attachments list for a task so that
+	// user-attached files survive app restart and are rehydrated on continuation.
+	PersistAttachments(taskID string, attachments []orchestration.Attachment) error
 	// SaveTrajectory persists the Conductor's full []agent.Step trajectory for a
 	// task so it survives app restart.
 	SaveTrajectory(taskID string, steps []agent.Step) error
@@ -76,6 +79,7 @@ type TaskState struct {
 	StepResults     map[string]orchestration.StepResult
 	Reflections     []orchestration.Reflection
 	FinalOutput     string
-	Facts           []orchestration.Fact // keyword-tagged facts
-	Status          string               // "in_progress", "completed", "failed", "cancelled"
+	Facts           []orchestration.Fact       // keyword-tagged facts
+	Attachments     []orchestration.Attachment // user-attached files converted to markdown
+	Status          string                     // "in_progress", "completed", "failed", "cancelled"
 }

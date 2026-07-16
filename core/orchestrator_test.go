@@ -176,6 +176,9 @@ func (m *mockTaskStore) PersistCompletion(taskID, finalOutput string, attemptCou
 func (m *mockTaskStore) PersistFailure(taskID string) error                           { return nil }
 func (m *mockTaskStore) PersistCancellation(taskID string) error                      { return nil }
 func (m *mockTaskStore) PersistFacts(taskID string, facts []orchestration.Fact) error { return nil }
+func (m *mockTaskStore) PersistAttachments(taskID string, attachments []orchestration.Attachment) error {
+	return nil
+}
 func (m *mockTaskStore) SaveTrajectory(taskID string, steps []agent.Step) error       { return nil }
 func (m *mockTaskStore) LoadTrajectory(taskID string) ([]agent.Step, error)           { return nil, nil }
 func (m *mockTaskStore) LoadTaskState(taskID string) (*TaskState, error) {
@@ -307,6 +310,9 @@ func (m *mockTaskStoreWithReactivate) PersistCompletion(taskID, finalOutput stri
 func (m *mockTaskStoreWithReactivate) PersistFailure(taskID string) error      { return nil }
 func (m *mockTaskStoreWithReactivate) PersistCancellation(taskID string) error { return nil }
 func (m *mockTaskStoreWithReactivate) PersistFacts(taskID string, facts []orchestration.Fact) error {
+	return nil
+}
+func (m *mockTaskStoreWithReactivate) PersistAttachments(taskID string, attachments []orchestration.Attachment) error {
 	return nil
 }
 func (m *mockTaskStoreWithReactivate) SaveTrajectory(taskID string, steps []agent.Step) error {
@@ -1567,4 +1573,62 @@ func TestHandleMessage_ModelOverride_CompositeID_UpdatesConfigModel(t *testing.T
 	if orchestrator.config.Model != "glm-5.2" {
 		t.Errorf("expected config.Model 'glm-5.2' (bare), got %q", orchestrator.config.Model)
 	}
+}
+
+// TestAugmentWithAttachments verifies the user message is extended with a list
+// of the session's attached files so the LLM can request their content via the
+// read_attachment tool. Only the Conductor sees this section; the clean message
+// is what gets recorded in conversation history.
+func TestAugmentWithAttachments(t *testing.T) {
+	o := new(Orchestrator)
+
+	t.Run("no attachments leaves message unchanged", func(t *testing.T) {
+		bb := orchestration.NewMapBlackboard()
+		got := o.augmentWithAttachments("do something", bb)
+		if got != "do something" {
+			t.Errorf("expected unchanged message, got %q", got)
+		}
+	})
+
+	t.Run("attachments appended with read_attachment guidance", func(t *testing.T) {
+		bb := orchestration.NewMapBlackboard()
+		bb.AddAttachment(orchestration.Attachment{
+			ID:           "att-1",
+			OriginalName: "report.pdf",
+			Format:       "pdf",
+			SizeBytes:    2048,
+		})
+		bb.AddAttachment(orchestration.Attachment{
+			ID:           "att-2",
+			OriginalName: "data.csv",
+			Format:       "csv",
+			SizeBytes:    512,
+		})
+
+		got := o.augmentWithAttachments("analyze these", bb)
+
+		if !strings.Contains(got, "analyze these") {
+			t.Errorf("augmented message lost the original text: %q", got)
+		}
+		if !strings.Contains(got, "## Attached files") {
+			t.Errorf("missing '## Attached files' header: %q", got)
+		}
+		if !strings.Contains(got, "read_attachment") {
+			t.Errorf("missing read_attachment guidance: %q", got)
+		}
+		for _, want := range []string{"att-1", "report.pdf", "pdf", "2048", "att-2", "data.csv", "csv", "512"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("augmented message missing %q: %q", want, got)
+			}
+		}
+	})
+
+	t.Run("empty message gets attachment section only", func(t *testing.T) {
+		bb := orchestration.NewMapBlackboard()
+		bb.AddAttachment(orchestration.Attachment{ID: "x", OriginalName: "x.md", Format: "md", SizeBytes: 1})
+		got := o.augmentWithAttachments("", bb)
+		if !strings.HasPrefix(got, "## Attached files") {
+			t.Errorf("expected attachment header at start for empty message, got %q", got)
+		}
+	})
 }

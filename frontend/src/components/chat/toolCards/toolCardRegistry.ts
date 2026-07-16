@@ -5,11 +5,12 @@ import {
   Search, FolderOpen, ClipboardCheck, StickyNote,
   Globe, Puzzle, Wrench,
   Brain, Layers, History, ListTree,
+  BookOpen,
 } from 'lucide-react'
 import {
   extractBashTitle, extractFileTitle, extractDirTitle,
   extractSearchTitle, extractUrlTitle, extractMemoTitle,
-  extractStepOutputTitle, extractFactsTitle,
+  extractStepOutputTitle, extractFactsTitle, extractAttachmentTitle,
   extractFileHint, extractBashHint, extractSearchHint, extractMcpHint,
 } from './extractors'
 import { BashBody } from './bodies/BashBody'
@@ -129,6 +130,13 @@ const MEMORY_SEARCH_CONFIG: CardConfig = {
   Body: MemoryBody,
 }
 
+// read_attachment: compact single-line card (like memory operations).
+const READ_ATTACHMENT_CONFIG: CardConfig = {
+  icon: BookOpen, verb: 'Read',
+  extractTitle: extractAttachmentTitle,
+  Body: null,
+}
+
 const WEB_FETCH_CONFIG: CardConfig = {
   icon: Globe, verb: 'Fetched',
   extractTitle: extractUrlTitle,
@@ -172,6 +180,7 @@ const TOOL_CONFIGS: Record<string, CardConfig> = {
   read_evidence: MEMORY_FINAL_CONFIG,
   list_step_outputs: MEMORY_LIST_CONFIG,
   search_facts: MEMORY_SEARCH_CONFIG,
+  read_attachment: READ_ATTACHMENT_CONFIG,
 }
 
 const CACHED_SUFFIX = ' (cached)'

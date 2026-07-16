@@ -2,7 +2,7 @@
 
 ## Role
 
-c0wrk persists and restores task state — plan, step results, reflections, and facts — across sessions on top of the sp4rk `Blackboard` abstraction. The `Blackboard` interface, the in-memory `MapBlackboard`, and the step-output / fact / final-result store adapters are **sp4rk engine** primitives; c0wrk adds SQLite-backed persistence and restore. See [the sp4rk blackboard spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/memory/blackboard.md) for the canonical interface and adapters.
+c0wrk persists and restores task state — plan, step results, reflections, facts, and attachments — across sessions on top of the sp4rk `Blackboard` abstraction. The `Blackboard` interface, the in-memory `MapBlackboard`, and the step-output / fact / final-result / attachment store adapters are **sp4rk engine** primitives; c0wrk adds SQLite-backed persistence and restore. See [the sp4rk blackboard spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/memory/blackboard.md) for the canonical interface and adapters.
 
 ## Key Files
 
@@ -18,7 +18,7 @@ Engine files (`github.com/v0lka/sp4rk/orchestration/blackboard.go` `MapBlackboar
 
 Wraps sp4rk `MapBlackboard` with SQLite persistence:
 
-- Automatically saves state on `SetStepResult`, `StoreFact`, `SetFinalResult`
+- Automatically saves state on `SetStepResult`, `StoreFact`, `AddAttachment`, `RemoveAttachment`, `SetFinalResult`
 - Supports `RestoreBlackboard()` for task resumption — recreates the full in-memory state from SQLite
 - Tracks task lifecycle: `ReactivateTask()`, `CompleteTask()`, `FailTask()`, `CancelTask()`
 - Emits warnings via `Emitter` if persistence fails (non-fatal)
@@ -40,7 +40,7 @@ HandleMessage(ctx, message, opts)
 `core/persistent_blackboard.go` defines the contract types the orchestrator relies on for restoration:
 
 - `PersistableBlackboard` — the persistence-capable Blackboard interface
-- `TaskPersistence` — the store interface (SQLite-backed) for task lifecycle + blackboard state
+- `TaskPersistence` — the store interface (SQLite-backed) for task lifecycle + blackboard state (including `PersistAttachments`)
 - `BlackboardRestoreFunc` / `BlackboardFactory` — injected into the orchestrator at build time
 
 ## c0wrk Usage of Blackboard State
@@ -52,6 +52,7 @@ c0wrk exposes Blackboard state to the agent through internal tools (in `core/too
 | `store_fact` / `search_facts` | `FactStore` | Inter-step/inter-delegation fact memory |
 | `read_step_output` / `list_step_outputs` | `StepOutputStore` | Read completed delegation outputs |
 | `read_final_result` | `FinalResultStore` | Recover a prior task's outcome (e.g. after restart, or when too large to inject verbatim) |
+| `read_attachment` | `AttachmentStore` | Read the markdown content of a user-attached file by ID |
 
 ### Fact Memory
 
@@ -60,6 +61,17 @@ Facts are the primary inter-step communication mechanism. A researcher delegatio
 ### Final Result
 
 The final result is set via `SetFinalResult(output)` after the Conductor finishes, then persisted to the `tasks.final_output` column by `CompleteTask` (called separately from `SetFinalResult`). For inline tasks (no delegations), the final result is the only blackboard state besides the plan and facts.
+
+### Attachments
+
+Attachments are user-attached files converted to markdown and made available to the agent as read-only context. The lifecycle has two phases:
+
+1. **Pending** (session-owned, not yet on the blackboard): staged by `Manager.AttachFiles` (see [../session-lifecycle.md](../session-lifecycle.md)) on `Session.pendingAttachments` as the user picks files. Pending attachments are metadata-only in the UI (the converted markdown never leaves the backend). Removing or sending the message clears the pending list.
+2. **Committed** (blackboard-owned): on `SendMessage` the session manager snapshots `pendingAttachments`, clears them, and passes them via `HandleOptions.PendingAttachments`. `Orchestrator.setupBlackboard` flushes them into the blackboard (`bb.AddAttachment`) in both the fresh and restored paths, so they are available to the task and persisted alongside the rest of the blackboard state.
+
+The Conductor's task message is augmented with an "Attached files" section listing attachment IDs (`Orchestrator.augmentWithAttachments`) so the model knows which files are available and can request their content via the `read_attachment` tool. Only the Conductor sees this section — the router and conversation history keep the clean message, so prior turns don't accumulate repeated attachment listings. On continuation turns the restored blackboard already carries all session attachments, so every turn sees the full current set.
+
+Committed attachments survive app restart: `PersistentBlackboard.AddAttachment` / `RemoveAttachment` persist the full list via `TaskPersistence.PersistAttachments`, and `RestoreBlackboard` rehydrates them from `TaskState.Attachments`.
 
 ## Error Handling
 
@@ -75,6 +87,7 @@ The final result is set via `SetFinalResult(output)` after the Conductor finishe
 - Facts accumulate monotonically (no deletion during a task)
 - `PersistentBlackboard` persists synchronously on each write
 - `RestoreBlackboard` recreates the full in-memory state from SQLite
+- Attachments are staged as pending on the session and flushed into the blackboard exactly once on the next `SendMessage` (the pending list is cleared after the snapshot)
 
 ## Related Specs
 

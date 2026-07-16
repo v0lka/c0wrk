@@ -58,6 +58,15 @@ export interface FileEntry {
   readonly gitignored?: boolean
 }
 
+/** UI-facing attachment record (camelCase). Mirrors the backend's
+ *  snake_case AttachmentInfo, mapped at the @/api/attachments boundary. */
+export interface AttachmentInfoUI {
+  readonly id: string
+  readonly originalName: string
+  readonly format: string
+  readonly sizeBytes: number
+}
+
 export interface GitStatusEntry {
   status: string
   staged: boolean
@@ -358,7 +367,17 @@ export interface BlackboardState {
   step_results: Record<string, BlackboardStepResult>
   reflections: BlackboardReflection[]
   facts: BlackboardFact[]
+  attachments: BlackboardAttachment[]
   final_output?: string
+}
+
+/** Committed attachment (flushed from pending on SendMessage). */
+export interface BlackboardAttachment {
+  id: string
+  original_name: string
+  format: string
+  size_bytes: number
+  attached_at: string
 }
 
 export interface BlackboardPlan {

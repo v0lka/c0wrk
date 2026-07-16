@@ -1,5 +1,25 @@
 export namespace backend {
 	
+	export class BlackboardAttachmentResponse {
+	    id: string;
+	    original_name: string;
+	    format: string;
+	    size_bytes: number;
+	    attached_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BlackboardAttachmentResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.original_name = source["original_name"];
+	        this.format = source["format"];
+	        this.size_bytes = source["size_bytes"];
+	        this.attached_at = source["attached_at"];
+	    }
+	}
 	export class BlackboardFactResponse {
 	    keywords: string[];
 	    content: string;
@@ -116,6 +136,7 @@ export namespace backend {
 	    step_results: Record<string, BlackboardStepResponse>;
 	    reflections: BlackboardReflectionResponse[];
 	    facts: BlackboardFactResponse[];
+	    attachments: BlackboardAttachmentResponse[];
 	    final_output?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -132,6 +153,7 @@ export namespace backend {
 	        this.step_results = this.convertValues(source["step_results"], BlackboardStepResponse, true);
 	        this.reflections = this.convertValues(source["reflections"], BlackboardReflectionResponse);
 	        this.facts = this.convertValues(source["facts"], BlackboardFactResponse);
+	        this.attachments = this.convertValues(source["attachments"], BlackboardAttachmentResponse);
 	        this.final_output = source["final_output"];
 	    }
 	
@@ -986,6 +1008,24 @@ export namespace review {
 
 export namespace session {
 	
+	export class AttachmentInfo {
+	    id: string;
+	    original_name: string;
+	    format: string;
+	    size_bytes: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new AttachmentInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.original_name = source["original_name"];
+	        this.format = source["format"];
+	        this.size_bytes = source["size_bytes"];
+	    }
+	}
 	export class ChatMessage {
 	    id: number;
 	    session_id: string;

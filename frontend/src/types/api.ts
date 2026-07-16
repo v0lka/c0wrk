@@ -5,6 +5,7 @@ import type {
   FileEntry, GitStatusEntry, ConfigResponse, SecuritySettingsResponse,
   LLMFullConfigRequest, SearchSettingsRequest,
   MCPServerStatus, MCPServerConfig, ToolInfo,
+  AttachmentInfoUI,
 } from './models'
 
 export interface ProjectAPI {
@@ -60,4 +61,11 @@ export interface McpAPI {
   updateMCPServers(servers: Record<string, MCPServerConfig>): Promise<void>
   getToolList(): Promise<ToolInfo[]>
   listProviderModels(provider: string): Promise<string[]>
+}
+
+export interface AttachmentAPI {
+  pickAttachmentFiles(): Promise<string[]>
+  attachFiles(sessionId: string, paths: string[]): Promise<AttachmentInfoUI[]>
+  removeAttachment(sessionId: string, attachmentId: string): Promise<void>
+  getAttachments(sessionId: string): Promise<AttachmentInfoUI[]>
 }

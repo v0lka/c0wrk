@@ -131,6 +131,12 @@ func (m *mockTaskPersistence) PersistFacts(taskID string, facts []orchestration.
 	return m.persistError
 }
 
+func (m *mockTaskPersistence) PersistAttachments(taskID string, attachments []orchestration.Attachment) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.persistError
+}
+
 func (m *mockTaskPersistence) SaveTrajectory(taskID string, steps []agent.Step) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

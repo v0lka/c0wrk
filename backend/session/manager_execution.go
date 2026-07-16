@@ -187,14 +187,26 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 		// Get last completed task ID for continuation
 		session.mu.Lock()
 		lastTaskID := session.lastCompletedTaskID
+		// Snapshot pending attachments and clear them so they are flushed exactly
+		// once into the blackboard for this SendMessage.
+		pendingAttachments := session.pendingAttachments
+		session.pendingAttachments = nil
 		session.mu.Unlock()
 
+		// Clear the pending-attachment chips now that the attachments have been
+		// flushed into the blackboard for this task. Only emit when there were
+		// pending attachments to avoid a spurious event on attachment-free sends.
+		if len(pendingAttachments) > 0 {
+			m.emitAttachmentsChanged(id, []AttachmentInfo{}, nil)
+		}
+
 		result, err := session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
-			TaskID:          lastTaskID,
-			UserSkills:      skills,
-			ModelOverride:   modelOverride,
-			ReasoningEffort: reasoningEffort,
-			SessionPlansDir: config.SessionPlansDir(m.agentDir, session.ProjectID, id),
+			TaskID:             lastTaskID,
+			UserSkills:         skills,
+			ModelOverride:      modelOverride,
+			ReasoningEffort:    reasoningEffort,
+			SessionPlansDir:    config.SessionPlansDir(m.agentDir, session.ProjectID, id),
+			PendingAttachments: pendingAttachments,
 		})
 
 		// Distinguish partial-success (incomplete plan) from total failure.
@@ -211,11 +223,12 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 			session.lastCompletedTaskID = ""
 			session.mu.Unlock()
 			result, err = session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
-				TaskID:          "",
-				UserSkills:      skills,
-				ModelOverride:   modelOverride,
-				ReasoningEffort: reasoningEffort,
-				SessionPlansDir: config.SessionPlansDir(m.agentDir, session.ProjectID, id),
+				TaskID:             "",
+				UserSkills:         skills,
+				ModelOverride:      modelOverride,
+				ReasoningEffort:    reasoningEffort,
+				SessionPlansDir:    config.SessionPlansDir(m.agentDir, session.ProjectID, id),
+				PendingAttachments: pendingAttachments,
 			})
 			if err != nil && errors.Is(err, orchestration.ErrExecutionIncomplete) && result != nil {
 				m.log().Warn("task completed with incomplete execution (after fallback)", "session_id", id, "error", err)

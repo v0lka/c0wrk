@@ -26,6 +26,7 @@ Frontend communicates with Go exclusively through Wails IPC. No direct Go import
 | `TerminalCommand`          | backend  | backend → frontend | Terminal command history            |
 | `VectorStoreEntry`         | backend  | backend → frontend | Vector search result                |
 | `BlackboardStateResponse`  | backend  | backend → frontend | Task state for resume UI            |
+| `AttachmentInfo`           | backend  | backend → frontend | Pending file-attachment metadata (snake_case; markdown content excluded) |
 
 ## RPC Surface
 
@@ -50,6 +51,14 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `ResumeTask`           | id                           | error                     | Resume failed task                                    |
 | `CancelUnfinishedTask` | id                           | error                     | Discard a resumable task (no resume prompt next time) |
 | `GetSessionTokens`    | sessionID                    | SessionTokensResponse     | Get token usage for session (getter, no error return) |
+
+### Attachments (`backend/frontend_api_attachment.go`)
+
+| Method              | Parameters               | Returns                       | Description |
+| ------------------- | ------------------------ | ----------------------------- | ----------- |
+| `AttachFiles`       | sessionID, paths         | ([]AttachmentInfo, error)     | Convert files to markdown via `core/markitdown` and stage them as pending attachments; emits `attachments:changed` (incremental per file + final with per-file failures). Returns the full pending list. System-level errors (session missing, converter init) return `error`; file-level failures (unsupported format, conversion error) are reported via the event payload's `Failed` field, not as `error`, so partial success is preserved |
+| `RemoveAttachment`  | sessionID, attachmentID   | error                         | Remove a staged (pending) attachment by ID; no-op if not found. Does not touch attachments already flushed into the blackboard |
+| `GetAttachments`    | sessionID                | ([]AttachmentInfo, error)     | Get the session's staged (pending) attachments as metadata-only values |
 
 ### Plan Review (`backend/frontend_api_plan_review.go`)
 
@@ -173,6 +182,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | Method           | Parameters | Returns       | Description |
 | ---------------- | ---------- | ------------- | ----------- |
 | `PickDirectory`  | —          | (string, error) | Native directory picker dialog |
+| `PickAttachmentFiles` | —     | ([]string, error) | Native multi-select file picker restricted to markitdown-supported document formats (filter built from `core/markitdown.SupportedExtensions()`). Returns `([]string{}, nil)` on cancel. Must remain on `App` — it requires the Wails context like `PickDirectory` |
 | `SetWailsLogger` | wl         | —             | Binding artifact: stores Wails log adapter (called internally, not from frontend) |
 
 ### Prompt (`backend/frontend_api_prompt.go`)

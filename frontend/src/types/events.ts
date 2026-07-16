@@ -97,6 +97,29 @@ export interface TerminalOutputData { data: string }
 export interface SkillsActivatedData { skills: string[] }
 export interface BlackboardUpdatedData { change_type: string }
 
+/** Backend AttachmentInfo record (snake_case), as emitted in the
+ *  `attachments:changed` event payload and returned by the attachment RPCs. */
+export interface AttachmentInfoRaw {
+  readonly id: string
+  readonly original_name: string
+  readonly format: string
+  readonly size_bytes: number
+}
+
+/** A single file that could not be converted/staged (snake_case backend record). */
+export interface AttachmentFailureRaw {
+  readonly path: string
+  readonly error: string
+}
+
+/** Payload of the `attachments:changed` event. `attachments` is the full current
+ *  pending list — replace the store. `failed` carries per-file failures from the
+ *  most recent attach operation (absent on remove/send-clear). */
+export interface AttachmentsChangedData {
+  readonly attachments: readonly AttachmentInfoRaw[]
+  readonly failed?: readonly AttachmentFailureRaw[]
+}
+
 export interface TodoItemData { text: string; checked: boolean }
 export interface StepTodoUpdateData {
   step_id: string
@@ -167,6 +190,8 @@ export interface SessionEventMap {
   readonly step_todo_update: StepTodoUpdateData
   readonly plan_review_ready: PlanReviewReadyData
   readonly memory_read: { readonly step_num: number; readonly content: string }
+  /** Attachment list + optional per-file failures. Replace the store, toast failures. */
+  readonly 'attachments:changed': AttachmentsChangedData
 }
 
 export type SessionEventKey = keyof SessionEventMap
@@ -263,6 +288,25 @@ export function isSkillsActivatedData(d: unknown): d is SkillsActivatedData { re
 export function isReflectionData(d: unknown): d is ReflectionData { return isObj(d) && has(d, 'summary', 'attempt') }
 export function isToolJudgeResponseData(d: unknown): d is ToolJudgeResponseData { return isObj(d) && has(d, 'confirm_id') }
 export function isBlackboardUpdatedData(d: unknown): d is BlackboardUpdatedData { return isObj(d) && has(d, 'change_type') }
+
+/** Guard for a single backend AttachmentInfo (snake_case). */
+export function isAttachmentInfoRaw(v: unknown): v is AttachmentInfoRaw {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    typeof (v as AttachmentInfoRaw).id === 'string' &&
+    typeof (v as AttachmentInfoRaw).original_name === 'string' &&
+    typeof (v as AttachmentInfoRaw).format === 'string' &&
+    typeof (v as AttachmentInfoRaw).size_bytes === 'number'
+  )
+}
+
+/** The `attachments:changed` payload is an object with an `attachments` array. */
+export function isAttachmentsChangedData(d: unknown): d is AttachmentsChangedData {
+  if (!isObj(d)) return false
+  const atts = d.attachments
+  return Array.isArray(atts) && atts.every(isAttachmentInfoRaw)
+}
 export function isStepTodoUpdateData(d: unknown): d is StepTodoUpdateData {
   return isObj(d) && has(d, 'step_id', 'items') && Array.isArray(d.items)
 }

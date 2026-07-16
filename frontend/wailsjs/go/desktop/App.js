@@ -22,6 +22,10 @@ export function ArchiveSession(arg1) {
   return window['go']['desktop']['App']['ArchiveSession'](arg1);
 }
 
+export function AttachFiles(arg1, arg2) {
+  return window['go']['desktop']['App']['AttachFiles'](arg1, arg2);
+}
+
 export function CancelTask(arg1) {
   return window['go']['desktop']['App']['CancelTask'](arg1);
 }
@@ -92,6 +96,10 @@ export function Fetch(arg1, arg2) {
 
 export function GenerateCommitMessage() {
   return window['go']['desktop']['App']['GenerateCommitMessage']();
+}
+
+export function GetAttachments(arg1) {
+  return window['go']['desktop']['App']['GetAttachments'](arg1);
 }
 
 export function GetBlackboardState(arg1) {
@@ -266,6 +274,10 @@ export function OptimizePrompt(arg1) {
   return window['go']['desktop']['App']['OptimizePrompt'](arg1);
 }
 
+export function PickAttachmentFiles() {
+  return window['go']['desktop']['App']['PickAttachmentFiles']();
+}
+
 export function PickDirectory() {
   return window['go']['desktop']['App']['PickDirectory']();
 }
@@ -284,6 +296,10 @@ export function ReadFile(arg1) {
 
 export function Rebase(arg1) {
   return window['go']['desktop']['App']['Rebase'](arg1);
+}
+
+export function RemoveAttachment(arg1, arg2) {
+  return window['go']['desktop']['App']['RemoveAttachment'](arg1, arg2);
 }
 
 export function RenameProject(arg1, arg2) {

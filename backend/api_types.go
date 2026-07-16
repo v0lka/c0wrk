@@ -297,6 +297,7 @@ type BlackboardStateResponse struct {
 	StepResults     map[string]BlackboardStepResponse `json:"step_results"`
 	Reflections     []BlackboardReflectionResponse    `json:"reflections"`
 	Facts           []BlackboardFactResponse          `json:"facts"`
+	Attachments     []BlackboardAttachmentResponse    `json:"attachments"`
 	FinalOutput     string                            `json:"final_output,omitempty"`
 }
 
@@ -337,6 +338,17 @@ type BlackboardFactResponse struct {
 	Keywords []string `json:"keywords"`
 	Content  string   `json:"content"`
 	Author   string   `json:"author"`
+}
+
+// BlackboardAttachmentResponse is a metadata-only view of a user-attached file
+// for the blackboard viewer. The markdown content is intentionally excluded so
+// large attachments do not bloat the API response.
+type BlackboardAttachmentResponse struct {
+	ID           string `json:"id"`
+	OriginalName string `json:"original_name"`
+	Format       string `json:"format"`
+	SizeBytes    int64  `json:"size_bytes"`
+	AttachedAt   string `json:"attached_at"`
 }
 
 // SkillDescriptorDTO is a lightweight skill descriptor exposed to the frontend.

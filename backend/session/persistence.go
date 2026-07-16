@@ -19,13 +19,13 @@ import (
 
 // SessionInfo is the public-facing session metadata.
 type SessionInfo struct {
-	ID                string `json:"id"`
-	ProjectID         string `json:"project_id"`
-	Name              string `json:"name"`
-	CreatedAt         string `json:"created_at"`     // RFC 3339 formatted timestamp
-	LastActiveAt      string `json:"last_active_at"` // RFC 3339 formatted timestamp
-	Archived          bool   `json:"archived"`
-	Active            bool   `json:"active"`
+	ID                string  `json:"id"`
+	ProjectID         string  `json:"project_id"`
+	Name              string  `json:"name"`
+	CreatedAt         string  `json:"created_at"`     // RFC 3339 formatted timestamp
+	LastActiveAt      string  `json:"last_active_at"` // RFC 3339 formatted timestamp
+	Archived          bool    `json:"archived"`
+	Active            bool    `json:"active"`
 	TotalInputTokens  int     `json:"total_input_tokens"`
 	TotalOutputTokens int     `json:"total_output_tokens"`
 	Model             string  `json:"model"`
@@ -186,6 +186,12 @@ func (s *SQLiteSessionStore) createTables() error {
 	CREATE TABLE IF NOT EXISTS task_facts (
 		task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
 		facts TEXT DEFAULT '[]',
+		updated_at TIMESTAMP NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS task_attachments (
+		task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+		attachments TEXT DEFAULT '[]',
 		updated_at TIMESTAMP NOT NULL
 	);
 
@@ -820,6 +826,12 @@ type TaskStore interface {
 	LoadTaskSteps(ctx context.Context, taskID string) ([]TaskStepRecord, error)
 	SaveFacts(ctx context.Context, taskID string, factsJSON json.RawMessage) error
 	LoadFacts(ctx context.Context, taskID string) (json.RawMessage, error)
+	// SaveAttachments inserts or replaces the attachments JSON blob
+	// (JSON-marshaled []orchestration.Attachment) for a task.
+	SaveAttachments(ctx context.Context, taskID string, attachmentsJSON json.RawMessage) error
+	// LoadAttachments loads the attachments JSON blob for a task.
+	// Returns nil, nil when no attachments have been persisted.
+	LoadAttachments(ctx context.Context, taskID string) (json.RawMessage, error)
 	// SaveTrajectory inserts or replaces the full Conductor step trajectory
 	// (JSON-marshaled []agent.Step) for a task.
 	SaveTrajectory(ctx context.Context, taskID string, stepsJSON json.RawMessage) error
@@ -1145,6 +1157,38 @@ func (s *SQLiteSessionStore) LoadFacts(ctx context.Context, taskID string) (json
 		return nil, nil
 	}
 	return json.RawMessage(factsStr), nil
+}
+
+// SaveAttachments inserts or replaces the attachments JSON blob for a task.
+func (s *SQLiteSessionStore) SaveAttachments(ctx context.Context, taskID string, attachmentsJSON json.RawMessage) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO task_attachments (task_id, attachments, updated_at)
+		VALUES (?, ?, ?)`,
+		taskID, string(attachmentsJSON), time.Now(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save attachments: %w", err)
+	}
+	return nil
+}
+
+// LoadAttachments loads the attachments JSON blob for a task.
+// Returns nil, nil when no attachments have been persisted.
+func (s *SQLiteSessionStore) LoadAttachments(ctx context.Context, taskID string) (json.RawMessage, error) {
+	var attachmentsStr string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT attachments FROM task_attachments WHERE task_id = ?`, taskID,
+	).Scan(&attachmentsStr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to load attachments: %w", err)
+	}
+	if attachmentsStr == "" || attachmentsStr == "[]" {
+		return nil, nil
+	}
+	return json.RawMessage(attachmentsStr), nil
 }
 
 // SaveTrajectory inserts or replaces the full Conductor step trajectory

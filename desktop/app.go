@@ -3,7 +3,9 @@ package desktop
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -11,6 +13,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend"
 	"github.com/v0lka/c0wrk/backend/logger"
+	"github.com/v0lka/c0wrk/core/markitdown"
 	"github.com/v0lka/c0wrk/core/vectorindex"
 )
 
@@ -90,6 +93,47 @@ func (a *App) SetWailsLogger(wl *wailsLogAdapter) {
 func (a *App) PickDirectory() (string, error) {
 	return wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
 		Title: "Select Workspace Directory",
+	})
+}
+
+// attachmentFilterPattern builds the Wails FileFilter pattern string for the
+// markitdown supported extensions, using the conventional "*.ext" form (e.g.
+// "*.pdf;*.docx;*.pptx"). This is the cross-platform Wails convention — on
+// macOS the backend strips the "*." prefix internally and matches by extension.
+func attachmentFilterPattern() string {
+	exts := markitdown.SupportedExtensions()
+	cleaned := make([]string, 0, len(exts))
+	for _, ext := range exts {
+		if e := strings.TrimPrefix(ext, "."); e != "" {
+			cleaned = append(cleaned, "*."+e)
+		}
+	}
+	return strings.Join(cleaned, ";")
+}
+
+// PickAttachmentFiles opens a native multi-select file picker restricted to the
+// document formats markitdown can convert. This must remain on App (not
+// FrontendAPI) because it requires the Wails context, exactly like PickDirectory.
+//
+// On cancel, OpenMultipleFilesDialog returns an empty slice and a nil error;
+// that ([]string{}, nil) is returned as-is.
+func (a *App) PickAttachmentFiles() ([]string, error) {
+	if a.ctx == nil {
+		return nil, errors.New("PickAttachmentFiles: application context is not initialized")
+	}
+
+	return wailsRuntime.OpenMultipleFilesDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "Attach files",
+		Filters: []wailsRuntime.FileFilter{
+			{
+				DisplayName: "Supported documents",
+				Pattern:     attachmentFilterPattern(),
+			},
+			{
+				DisplayName: "All files",
+				Pattern:     "*.*",
+			},
+		},
 	})
 }
 

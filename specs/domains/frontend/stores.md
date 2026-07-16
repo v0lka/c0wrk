@@ -20,6 +20,7 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 - `frontend/src/stores/settingsStore.ts`
 - `frontend/src/stores/uiStore.ts`
 - `frontend/src/stores/vectorIndexStore.ts`
+- `frontend/src/stores/attachmentsStore.ts`
 
 ## Store Catalog
 
@@ -42,6 +43,7 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 | `uiStore`            | Sidebar collapsed state (log level is fetched via `GetLogLevel` RPC, not stored) | localStorage |
 | `vectorIndexStore`   | Vector index status, progress, and search mode                     | localStorage (mode only) |
 | `workDirsStore`      | Auxiliary work directories (project-scoped + session-scoped lists), modal open/close state | No           |
+| `attachmentsStore`   | Pending file attachments for the active session (chips above the chat input)        | No           |
 
 ## Critical Anti-Patterns
 

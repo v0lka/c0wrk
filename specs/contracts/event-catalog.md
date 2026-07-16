@@ -106,6 +106,12 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | `session_renamed`  | `{id, old_name, new_name}` | useLifecycleEvents | Title changed (auto or manual) |
 | `message_received` | `{session_id, text}`       | useLifecycleEvents | User message persisted         |
 
+### Attachments
+
+| Event Type          | Payload                                                            | Handler Hook         | Description                 |
+| ------------------- | ------------------------------------------------------------------ | -------------------- | --------------------------- |
+| `attachments:changed` | `{attachments: AttachmentInfo[], failed?: {path, error}[]}`      | useAttachmentEvents  | Pending attachment list changed. `attachments` is the full current pending list — the UI replaces its store. `failed` carries per-file failures from the most recent attach operation (absent on remove/send-clear). On `SendMessage` the pending list is flushed into the blackboard and the event carries an empty `attachments` list, so chips clear automatically |
+
 ### Executor Internals
 
 | Event Type      | Payload                     | Handler Hook       | Description              |

@@ -12,6 +12,7 @@ import { useContextEvents } from './events/useContextEvents'
 import { useSubagentEvents } from './events/useSubagentEvents'
 import { useActionEvents } from './events/useActionEvents'
 import { useBlackboardEvents } from './events/useBlackboardEvents'
+import { useAttachmentEvents } from './events/useAttachmentEvents'
 import { useReviewRestore } from './events/useReviewRestore'
 
 export function useSessionEvents(sessionId: string | null): void {
@@ -51,5 +52,6 @@ export function useSessionEvents(sessionId: string | null): void {
   useSubagentEvents(sessionId)
   useActionEvents(sessionId)
   useBlackboardEvents(sessionId)
+  useAttachmentEvents(sessionId)
   useReviewRestore(sessionId)
 }

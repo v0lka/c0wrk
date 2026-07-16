@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
-import { ChevronDown, ChevronRight, ClipboardList, Search } from 'lucide-react'
+import { ChevronDown, ChevronRight, ClipboardList, Search, Paperclip } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { formatBytes } from '@/lib/formatters'
 import { useBlackboardState, useHasBlackboardState } from '@/stores/blackboardStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -76,12 +77,14 @@ function BlackboardBadges({ state }: { state: BlackboardState }) {
     const stepCount = Object.keys(state.step_results).length
     const factCount = state.facts.length
     const reflectionCount = state.reflections.length
+    const attachmentCount = state.attachments.length
 
     return (
         <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
             {stepCount > 0 && <span>{stepCount} results</span>}
             {factCount > 0 && <span>{factCount} facts</span>}
             {reflectionCount > 0 && <span>{reflectionCount} reflections</span>}
+            {attachmentCount > 0 && <span>{attachmentCount} files</span>}
         </span>
     )
 }
@@ -129,6 +132,15 @@ function BlackboardContent({ state, search }: { state: BlackboardState; search: 
         [stepEntries, lowerSearch, search],
     )
 
+    const filteredAttachments = useMemo(
+        () => state.attachments.filter(a =>
+            !search ||
+            a.original_name.toLowerCase().includes(lowerSearch) ||
+            a.format.toLowerCase().includes(lowerSearch)
+        ),
+        [state.attachments, lowerSearch, search],
+    )
+
     return (
         <div className="space-y-2 text-xs">
             {/* Step Results */}
@@ -165,6 +177,23 @@ function BlackboardContent({ state, search }: { state: BlackboardState; search: 
                                 <p className="text-foreground mt-0.5 line-clamp-3">{f.content}</p>
                             </div>
                         </StepTooltip>
+                    ))}
+                </CollapsibleSection>
+            )}
+
+            {/* Attachments (committed — flushed from pending on send) */}
+            {filteredAttachments.length > 0 && (
+                <CollapsibleSection title="Attachments" count={filteredAttachments.length}>
+                    {filteredAttachments.map((a) => (
+                        <div
+                            key={a.id}
+                            className="py-0.5 pl-2 border-l border-border cursor-default flex items-center gap-1"
+                        >
+                            <Paperclip className="h-3 w-3 shrink-0 text-muted-foreground" />
+                            <span className="text-foreground truncate">{a.original_name}</span>
+                            <span className="text-muted-foreground shrink-0">({a.format})</span>
+                            <span className="text-muted-foreground shrink-0">{formatBytes(a.size_bytes)}</span>
+                        </div>
                     ))}
                 </CollapsibleSection>
             )}

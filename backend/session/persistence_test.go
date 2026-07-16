@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/sp4rk/orchestration"
 
 	_ "modernc.org/sqlite"
 )
@@ -1626,6 +1628,131 @@ func TestTaskTrajectory_CascadeDelete(t *testing.T) {
 	}
 	if loaded != nil {
 		t.Error("trajectory should be deleted by task cascade")
+	}
+}
+
+func TestSaveAndLoadAttachments(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	// Parent task must exist (attachments FK references tasks).
+	if err := store.SaveTask(context.Background(), TaskRecord{
+		ID: "task-att", SessionID: sessionID, OriginalRequest: "test",
+		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+
+	original := []orchestration.Attachment{
+		{
+			ID:              "att-1",
+			OriginalName:    "report.pdf",
+			OriginalPath:    "/tmp/report.pdf",
+			Format:          "pdf",
+			SizeBytes:       2048,
+			MarkdownContent: "# Report\n\nLots of content.",
+			AttachedAt:      time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
+		},
+		{
+			ID:              "att-2",
+			OriginalName:    "data.xlsx",
+			OriginalPath:    "/tmp/data.xlsx",
+			Format:          "xlsx",
+			SizeBytes:       512,
+			MarkdownContent: "| a | b |\n|---|---|\n| 1 | 2 |",
+			AttachedAt:      time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC),
+		},
+	}
+
+	// Marshal + SaveAttachments.
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal attachments: %v", err)
+	}
+	if err := store.SaveAttachments(context.Background(), "task-att", data); err != nil {
+		t.Fatalf("SaveAttachments failed: %v", err)
+	}
+
+	// Reload via the adapter's LoadTaskState (full save→load round-trip).
+	adapter := NewTaskStoreAdapter(store)
+	state, err := adapter.LoadTaskState("task-att")
+	if err != nil {
+		t.Fatalf("LoadTaskState failed: %v", err)
+	}
+	if state == nil {
+		t.Fatal("expected non-nil task state")
+	}
+	if len(state.Attachments) != len(original) {
+		t.Fatalf("expected %d attachments, got %d", len(original), len(state.Attachments))
+	}
+	if !reflect.DeepEqual(state.Attachments, original) {
+		t.Errorf("attachments did not round-trip deep-equal:\n got=%+v\nwant=%+v", state.Attachments, original)
+	}
+
+	// Replace (INSERT OR REPLACE) should overwrite, not append.
+	updated := []orchestration.Attachment{original[0]}
+	updatedData, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatalf("marshal updated attachments: %v", err)
+	}
+	if err := store.SaveAttachments(context.Background(), "task-att", updatedData); err != nil {
+		t.Fatalf("SaveAttachments (replace) failed: %v", err)
+	}
+	state2, err := adapter.LoadTaskState("task-att")
+	if err != nil {
+		t.Fatalf("LoadTaskState (replace) failed: %v", err)
+	}
+	if len(state2.Attachments) != 1 {
+		t.Errorf("expected 1 attachment after replace, got %d", len(state2.Attachments))
+	}
+}
+
+func TestLoadAttachments_NotFound(t *testing.T) {
+	store, _, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	// No attachments persisted for this task → nil, nil (not an error).
+	loaded, err := store.LoadAttachments(context.Background(), "missing-task")
+	if err != nil {
+		t.Fatalf("LoadAttachments should not error on missing, got: %v", err)
+	}
+	if loaded != nil {
+		t.Errorf("expected nil attachments for missing task, got %s", loaded)
+	}
+}
+
+func TestTaskAttachments_CascadeDelete(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	if err := store.SaveTask(context.Background(), TaskRecord{
+		ID: "task-att-cascade", SessionID: sessionID, OriginalRequest: "test",
+		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+	if err := store.SaveAttachments(context.Background(), "task-att-cascade", json.RawMessage(`[]`)); err != nil {
+		t.Fatalf("SaveAttachments failed: %v", err)
+	}
+
+	// Confirm present.
+	if loaded, err := store.LoadAttachments(context.Background(), "task-att-cascade"); err != nil || loaded != nil {
+		t.Fatalf("expected attachments row present (empty) before cascade (loaded=%v, err=%v)", loaded, err)
+	}
+
+	// Deleting the task must cascade to attachments (FK ON DELETE CASCADE).
+	if _, err := store.db.ExecContext(context.Background(), `DELETE FROM tasks WHERE id = ?`, "task-att-cascade"); err != nil {
+		t.Fatalf("delete task failed: %v", err)
+	}
+
+	loaded, err := store.LoadAttachments(context.Background(), "task-att-cascade")
+	if err != nil {
+		t.Fatalf("LoadAttachments after cascade: %v", err)
+	}
+	if loaded != nil {
+		t.Error("attachments should be deleted by task cascade")
 	}
 }
 

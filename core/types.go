@@ -154,9 +154,10 @@ type HandleResult struct {
 
 // HandleOptions controls how a message is processed by HandleMessage.
 type HandleOptions struct {
-	TaskID          string   // non-empty = continuation of existing task
-	UserSkills      []string // explicitly requested by user via /skill refs (bypass router)
-	ModelOverride   string   // non-empty → use this model for all LLM calls; empty → router default
-	ReasoningEffort string   // non-empty → native reasoning value for all LLM calls; empty → use family default
-	SessionPlansDir string   // directory for session-scoped plan files (used by declare_plan tool)
+	TaskID             string                     // non-empty = continuation of existing task
+	UserSkills         []string                   // explicitly requested by user via /skill refs (bypass router)
+	ModelOverride      string                     // non-empty → use this model for all LLM calls; empty → router default
+	ReasoningEffort    string                     // non-empty → native reasoning value for all LLM calls; empty → use family default
+	SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)
+	PendingAttachments []orchestration.Attachment // attachments staged by AttachFiles, flushed into the blackboard before execution
 }

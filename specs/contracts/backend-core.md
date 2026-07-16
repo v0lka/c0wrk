@@ -12,7 +12,7 @@
 | `Orchestrator`        | core           | core → backend | Per-session orchestration engine      |
 | `BuilderConfig`       | core           | backend → core | Configuration transfer object         |
 | `HandleResult`        | core           | core → backend | Orchestration output                  |
-| `HandleOptions`       | core           | backend → core | Execution mode, plan review, model override, reasoning effort, user skill overrides, session plans dir |
+| `HandleOptions`       | core           | backend → core | Execution mode, plan review, model override, reasoning effort, user skill overrides, session plans dir, pending attachments |
 | `Emitter`             | core           | backend → core | Event emission interface              |
 | `Blackboard`          | github.com/v0lka/sp4rk/orchestration (direct) | core → backend | Task state (for persistence)          |
 | `RoutingDecision`     | github.com/v0lka/sp4rk/agent/router | core → backend | Routing classification                |
@@ -116,6 +116,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Reasoning effort       | backend → core | `HandleOptions.ReasoningEffort`          |
 | Session plans dir      | backend → core | `HandleOptions.SessionPlansDir`          |
 | Task ID (continuation) | backend → core | `HandleOptions.TaskID`                   |
+| Pending attachments    | backend → core | `HandleOptions.PendingAttachments` (user-attached files converted to markdown via `core/markitdown`; flushed into the blackboard once before execution — see [../domains/session-lifecycle.md](../domains/session-lifecycle.md)) |
 | Available tools config | backend → core | `BuiltinToolsConfig` (incl. ExtraBashBlacklist). Per-tool truncation via `BuilderConfig.ToolLimits.PerToolTruncation`. |
 | No Project mode        | backend → core | `Orchestrator.SetNoProjectMode()` (disables code tools, adds bash blacklist) |
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
@@ -145,5 +146,6 @@ The emitter implementation lives in `backend/session/` (not in core).
 - `vectorindex.ManagerConfig` no longer accepts model-path fields (`ModelPath`, `TokenizerPath`, `LibraryPath`, `MaxSeqLength`, `HiddenDim`); caller is now responsible for embedder lifecycle via `EmbeddingFunc` + `CloseFn`
 - `core/tools` AskUser* types are c0wrk-specific; import directly from `core/tools`
 - Adding `SessionPlansDir` to `HandleOptions` → update session manager `HandleOptions` construction in `backend/session/manager_execution.go`
+- Adding `PendingAttachments` to `HandleOptions` → update `backend/session/manager_execution.go` (snapshot + clear `session.pendingAttachments`, pass through both HandleMessage calls in `SendMessage`); attachments are flushed into the blackboard inside `core` (`Orchestrator.setupBlackboard`)
 - Removing `LogDir`/`ProjectsDir` from `ApplicationConfig` → update `desktop/startup.go` caller; use `backend/config/paths.go` functions instead
 - Changing directories under `~/.c0wrk/` → update `backend/config/paths.go` (single source of truth); verify all callers use path functions, not direct `filepath.Join`

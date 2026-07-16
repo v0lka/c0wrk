@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { resolveCardConfig } from './toolCardRegistry'
-import { Terminal, FilePen, Search, Puzzle, Wrench, Globe, Layers, History, ListTree, Brain, StickyNote } from 'lucide-react'
+import { Terminal, FilePen, Search, Puzzle, Wrench, Globe, Layers, History, ListTree, Brain, StickyNote, BookOpen } from 'lucide-react'
 
 describe('resolveCardConfig', () => {
   it('returns exec config for bash_exec', () => {
@@ -91,6 +91,15 @@ describe('resolveCardConfig', () => {
       expect(config.icon).toBe(StickyNote)
       expect(config.verb).toBe('Stored')
       expect(config.extractTitle({ keywords: ['api'] }, '')).toBe('fact: api')
+    })
+
+    it('renders read_attachment as a compact BookOpen card with no body', () => {
+      const config = resolveCardConfig('read_attachment')
+      expect(config.icon).toBe(BookOpen)
+      expect(config.verb).toBe('Read')
+      expect(config.extractTitle({ attachment_id: 'att-42' }, '')).toBe('att-42')
+      expect(config.extractTitle(undefined, '{}')).toBe('attachment')
+      expect(config.Body).toBeNull()
     })
   })
 })

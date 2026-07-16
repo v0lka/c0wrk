@@ -5,6 +5,7 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useChatInputController } from '@/hooks/useChatInputController'
 import { ChatInputToolbar } from '@/components/chat/ChatInputToolbar'
 import { ChatEditorPane } from '@/components/chat/ChatEditorPane'
+import { AttachmentChips } from '@/components/chat/AttachmentChips'
 import { cn } from '@/lib/utils'
 
 /**
@@ -74,6 +75,7 @@ export function ChatInput() {
         onMouseDown={handleResizeStart}
         onKeyDown={handleResizeKeyDown}
       />
+      <AttachmentChips />
       <ChatEditorPane controller={controller} />
       <ChatInputToolbar controller={controller} />
     </div>

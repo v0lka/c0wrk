@@ -17,7 +17,10 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/session/events.go` — event data structs (session lifecycle + plan review)
 - `backend/session/emitter.go` — WailsEmitter (bridges events to frontend)
 - `backend/session/event_persister.go` — EventPersister (persists events to SQLite)
-- `backend/session/task_adapter.go` — task step/fact adapter for persistence
+- `backend/session/task_adapter.go` — task step/fact/attachment adapter for persistence
+- `backend/session/manager_attachment.go` — file attachments: `AttachFiles`/`RemovePendingAttachment`/`GetSessionAttachments`, pending-attachment staging, `attachments:changed` emission
+- `backend/frontend_api_attachment.go` — FrontendAPI attachment RPC surface
+- `core/markitdown/converter.go` — markdown conversion of attached files (shells out to the managed `markitdown` CLI, ADR-010)
 - `backend/session/title.go` — auto title generation via LLM
 - `backend/frontend_api_session.go` — FrontendAPI session methods
 - `backend/frontend_api_project.go` — project switch state persistence + destination session fallback
@@ -99,6 +102,38 @@ User sends message
 > goroutine takes the `tryContinueInterruptedTask` branch *before*
 > `HandleMessage` and resumes the prior ReAct cycle instead of routing a new
 > task. See [Continuing an interrupted task with a new message](#continuing-an-interrupted-task-with-a-new-message).
+
+### File Attachments
+
+The user attaches files (PDFs, documents, spreadsheets, text) which are converted to markdown and made available to the agent. Attachments have a two-phase lifecycle (pending → committed); see [memory/blackboard.md](memory/blackboard.md) for the committed/blackboard side.
+
+```
+User clicks Attach (Paperclip) in the chat input toolbar
+  → Frontend: pickAttachmentFiles() → native multi-select picker (App.PickAttachmentFiles,
+      Wails context, restricted to markitdown-supported formats)
+  → Frontend: attachFiles(sessionId, paths) → RPC AttachFiles
+  → Backend: Manager.AttachFiles(sessionID, paths) (manager_attachment.go)
+      ├─ getOrRestoreSession (lazy restore)
+      ├─ converterOrInit() — lazily create core/markitdown.Converter (2min/file timeout)
+      ├─ per file:
+      │   ├─ markitdown.IsSupported? no → record AttachmentFailure, skip
+      │   ├─ os.Stat; converter.Convert(ctx, path) → markdown
+      │   └─ append orchestration.Attachment to session.pendingAttachments (guarded by mu)
+      │       emit attachments:changed (incremental — chips appear one-by-one)
+      └─ if any failures: emit attachments:changed {failed: [...]} (UI toasts names)
+
+User removes a chip:
+  → Frontend: removeAttachment(sessionId, id) → RPC RemoveAttachment
+  → Backend: Manager.RemovePendingAttachment — removes from pending only (committed attachments untouched)
+
+SendMessage flushes pending attachments into the blackboard:
+  → Manager.SendMessage snapshots session.pendingAttachments, clears it (flushed exactly once)
+  → emits attachments:changed {attachments: []} so chips clear
+  → passes PendingAttachments via HandleOptions → Orchestrator.setupBlackboard flushes them
+      into the blackboard (bb.AddAttachment) in both fresh and restored paths
+```
+
+`AttachFiles` returns a non-nil `error` only for system-level failures (session not found, converter init). File-level failures (unsupported format, conversion error, inaccessible file) are reported via the `attachments:changed` event payload's `failed` field — not as an error — so a partial success never discards the successfully attached files or triggers a generic error toast. The converted markdown content never reaches the UI: `AttachmentInfo` is metadata-only; the agent reads the content via the `read_attachment` tool.
 
 ### Plan Review
 
@@ -253,9 +288,10 @@ Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/sess
 - `tasks` — id, session_id, original_request, routing_decision (JSON), plan (JSON), reflections (JSON), final_output, attempt_count, status, created_at, completed_at
 - `task_steps` — step_id, task_id, summary, full_output, error_text, steps (JSON), created_at (PRIMARY KEY (task_id, step_id))
 - `task_facts` — task_id, facts (JSON), updated_at
+- `task_attachments` — task_id, attachments (JSON-marshaled `[]orchestration.Attachment`), updated_at
 - `terminal_commands` — id, session_id, command, created_at
 
-Blackboard state is reconstructed from `tasks` + `task_steps` + `task_facts` on resume (no dedicated `blackboard` column). Events are streamed via the Wails runtime and are NOT persisted to a standalone table — any event state that must survive restart is folded into `session_messages` or `tasks`/`task_steps` via `backend/session/event_persister.go`.
+Blackboard state is reconstructed from `tasks` + `task_steps` + `task_facts` + `task_attachments` on resume (no dedicated `blackboard` column). Events are streamed via the Wails runtime and are NOT persisted to a standalone table — any event state that must survive restart is folded into `session_messages` or `tasks`/`task_steps` via `backend/session/event_persister.go`.
 
 ### SessionStore Interface
 
@@ -399,6 +435,7 @@ type HandleOptions struct {
     ReasoningEffort string   // non-empty → native reasoning value for all LLM calls; empty → use family default
     PlanReview      bool     // true = pause after planning for user review
     SessionPlansDir string   // directory for session-scoped plan files
+    PendingAttachments []orchestration.Attachment // staged attachments flushed into the blackboard before execution
 }
 
 // HandleResult — orchestration output
@@ -478,6 +515,7 @@ type HandleResult struct {
 - `CancelTask` clears plan review state, persists the cleared state, completes the blackboard task, and emits `task_cancelled`
 - `DeleteSession` closes all per-step dump files via `Orchestrator.Cleanup()` before closing the session-level log and dump files
 - `Shutdown` closes all per-step dump files for every active session via `Orchestrator.Cleanup()` before canceling and closing session resources
+- Pending attachments are flushed into the blackboard exactly once on `SendMessage`: the session manager snapshots and clears `session.pendingAttachments`, then passes them via `HandleOptions.PendingAttachments` (both HandleMessage calls in `SendMessage` receive the same snapshot)
 
 ## Configuration
 
