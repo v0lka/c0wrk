@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
@@ -12,6 +13,7 @@ import (
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
+	"github.com/v0lka/sp4rk/ignore"
 	"github.com/v0lka/sp4rk/orchestration"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
@@ -55,12 +57,12 @@ func (m *Manager) loadWorkDirectories(session *Session) []core.WorkDirectory {
 	return dirs
 }
 
-// injectWorkDirectories loads the session's auxiliary work directories and
-// injects them into the context as both allowed roots (security containment)
-// and the prompt-facing directory list. Returns ctx unchanged when no
-// directories are configured.
-func (m *Manager) injectWorkDirectories(ctx context.Context, session *Session) context.Context {
-	dirs := m.loadWorkDirectories(session)
+// injectWorkDirectories injects the session's auxiliary work directories into
+// the context as both allowed roots (security containment) and the
+// prompt-facing directory list. dirs must be loaded by the caller (shared with
+// injectIgnoreChecker so loadWorkDirectories runs once per task rather than
+// twice). Returns ctx unchanged when no directories are configured.
+func (m *Manager) injectWorkDirectories(ctx context.Context, dirs []core.WorkDirectory) context.Context {
 	if len(dirs) == 0 {
 		return ctx
 	}
@@ -70,6 +72,72 @@ func (m *Manager) injectWorkDirectories(ctx context.Context, session *Session) c
 	}
 	ctx = sdktools.WithAllowedRoots(ctx, paths)
 	return core.WithWorkDirectories(ctx, dirs)
+}
+
+// injectIgnoreChecker builds a multi-root ignore resolver from the session's
+// workspace path plus its auxiliary work directories and attaches it to the
+// context via sdktools.WithIgnoreChecker. Read-style search/listing tools
+// (glob, ripgrep) consult it to honour each root's own .gitignore + .aiignore;
+// read_file remains unrestricted.
+//
+// dirs is the work-directory slice the caller already loaded (shared with
+// injectWorkDirectories) so loadWorkDirectories runs once per task rather than
+// twice. For No Project sessions (no workspace and no work directories) ctx is
+// returned unchanged, so behaviour is identical to before.
+//
+// Each root is symlink-resolved before being handed to the resolver so the
+// roots match the (symlink-resolved) form that glob/ripgrep query paths in. A
+// resolver is then built PER ROOT with skip-and-log on failure: a single bad
+// root (e.g. a vanished or unreadable work-directory entry) only drops that
+// root and must not disable ignore filtering for the healthy roots. The
+// survivors are combined via ignore.NewMultiFromResolvers.
+func (m *Manager) injectIgnoreChecker(ctx context.Context, session *Session, dirs []core.WorkDirectory) context.Context {
+	rawRoots := make([]string, 0, 1+len(dirs))
+	if session.WorkspacePath != "" {
+		rawRoots = append(rawRoots, session.WorkspacePath)
+	}
+	for _, d := range dirs {
+		if d.Path != "" {
+			rawRoots = append(rawRoots, d.Path)
+		}
+	}
+	if len(rawRoots) == 0 {
+		return ctx
+	}
+
+	// Symlink-resolve + dedupe roots so they match the (resolved) form
+	// glob/ripgrep query paths in.
+	roots := make([]string, 0, len(rawRoots))
+	seen := make(map[string]struct{}, len(rawRoots))
+	for _, r := range rawRoots {
+		resolved, err := filepath.EvalSymlinks(r)
+		if err != nil {
+			m.log().Debug("ignore checker: root symlink resolution failed, using raw path", "path", r, "error", err)
+			resolved = r
+		}
+		if _, dup := seen[resolved]; dup {
+			continue
+		}
+		seen[resolved] = struct{}{}
+		roots = append(roots, resolved)
+	}
+
+	// Build a resolver per root, skipping (rather than failing the whole
+	// workspace on) roots that cannot be built.
+	resolvers := make([]*ignore.Resolver, 0, len(roots))
+	for _, root := range roots {
+		r, err := ignore.NewResolver(root)
+		if err != nil {
+			m.log().Debug("ignore checker: skipping root, resolver build failed", "root", root, "error", err)
+			continue
+		}
+		resolvers = append(resolvers, r)
+	}
+	if len(resolvers) == 0 {
+		return ctx
+	}
+	checker := ignore.NewMultiFromResolvers(resolvers...)
+	return sdktools.WithIgnoreChecker(ctx, checker)
 }
 
 // SendMessage sends a user message to a session's orchestrator (async).
@@ -113,8 +181,14 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 		taskCtx = sdktools.WithEnvInfo(taskCtx, envInfo)
 	}
 
-	// Inject auxiliary work directories (allowed roots + prompt list).
-	taskCtx = m.injectWorkDirectories(taskCtx, session)
+	// Inject auxiliary work directories (allowed roots + prompt list), and
+	// attach a multi-root ignore checker so glob/ripgrep honour each root's
+	// own .gitignore + .aiignore. dirs is loaded once and shared so the
+	// (DB-hitting) loadWorkDirectories runs a single time per task. Both are
+	// no-ops for No Project sessions.
+	dirs := m.loadWorkDirectories(session)
+	taskCtx = m.injectWorkDirectories(taskCtx, dirs)
+	taskCtx = m.injectIgnoreChecker(taskCtx, session, dirs)
 
 	// Emit message received event
 	m.emitFunc(Event{
@@ -483,8 +557,14 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 		taskCtx = sdktools.WithEnvInfo(taskCtx, envInfo)
 	}
 
-	// Inject auxiliary work directories (allowed roots + prompt list).
-	taskCtx = m.injectWorkDirectories(taskCtx, session)
+	// Inject auxiliary work directories (allowed roots + prompt list), and
+	// attach a multi-root ignore checker so glob/ripgrep honour each root's
+	// own .gitignore + .aiignore. dirs is loaded once and shared so the
+	// (DB-hitting) loadWorkDirectories runs a single time per task. Both are
+	// no-ops for No Project sessions.
+	dirs := m.loadWorkDirectories(session)
+	taskCtx = m.injectWorkDirectories(taskCtx, dirs)
+	taskCtx = m.injectIgnoreChecker(taskCtx, session, dirs)
 
 	// Emit resume event so the frontend knows a task is resuming.
 	m.emitFunc(Event{

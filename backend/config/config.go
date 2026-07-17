@@ -31,7 +31,6 @@ type Config struct {
 	ToolLimits    ToolLimitsConfig    `yaml:"toolLimits"`
 	Timeouts      TimeoutsConfig      `yaml:"timeouts"`
 	Orchestration OrchestrationConfig `yaml:"orchestration"`
-	Workspace     WorkspaceConfig     `yaml:"workspace"`
 	VectorIndex   VectorIndexConfig   `yaml:"vector_index"`
 	Proxy         ProxyConfig         `yaml:"proxy"`
 }
@@ -50,17 +49,6 @@ type ProxyConfig struct {
 	// third-party Go libraries that read env vars at init time.
 	// Pointer-bool so callers can distinguish "unset" from "explicitly false".
 	SetGlobalEnv *bool `yaml:"set_global_env"`
-}
-
-// WorkspaceConfig holds workspace file/index ignore pattern configuration.
-type WorkspaceConfig struct {
-	// IgnoreDirs are directory names to exclude from file tree and vector index.
-	// Hidden directories (starting with '.') are always excluded regardless.
-	IgnoreDirs []string `yaml:"ignore_dirs"`
-	// IgnoreExtensions are file extensions to exclude from vector index.
-	IgnoreExtensions []string `yaml:"ignore_extensions"`
-	// IgnoreFileNames are specific file names to exclude from vector index.
-	IgnoreFileNames []string `yaml:"ignore_file_names"`
 }
 
 // VectorIndexConfig holds vector / hybrid search runtime settings.

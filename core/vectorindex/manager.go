@@ -23,9 +23,6 @@ type ManagerConfig struct {
 	CloseFn          func() error          // Optional: called in Shutdown (e.g., embedder.Close)
 	ChunkFn          ChunkFunc             // Optional: defaults to adapter over embedding.ChunkFile
 	HashFn           HashFunc              // Optional: defaults to embedding.ComputeFileHash
-	IgnoreDirs       []string              // user-configured dirs to skip (merged with defaults)
-	IgnoreExtensions []string              // user-configured extensions to skip
-	IgnoreFileNames  []string              // user-configured file names to skip
 	HybridConfig     HybridConfig          // RRF tuning + pre-fusion score thresholds (zero = defaults, thresholds off)
 	Logger           *slog.Logger
 }
@@ -69,11 +66,6 @@ type Manager struct {
 	currentFile  string
 	branch       string
 
-	// Ignore patterns for file filtering.
-	ignoreDirs       map[string]bool
-	ignoreExtensions map[string]bool
-	ignoreFileNames  map[string]bool
-
 	// workspacePath is the active project's workspace, stored during
 	// SwitchProject so that NotifyFileChange can trigger incremental
 	// indexing without the caller needing to supply the path each time.
@@ -104,17 +96,10 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		logger = slog.New(slog.DiscardHandler)
 	}
 
-	ignoreDirs := mergeMapWithSlice(defaultIgnoreDirs, cfg.IgnoreDirs)
-	ignoreExts := buildMap(cfg.IgnoreExtensions)
-	ignoreNames := buildMap(cfg.IgnoreFileNames)
-
 	svc, err := NewService(ServiceConfig{
-		EmbeddingFunc:    cfg.EmbeddingFunc,
-		Logger:           logger,
-		IgnoreDirs:       ignoreDirs,
-		IgnoreExtensions: ignoreExts,
-		IgnoreFileNames:  ignoreNames,
-		HybridConfig:     cfg.HybridConfig,
+		EmbeddingFunc: cfg.EmbeddingFunc,
+		Logger:        logger,
+		HybridConfig:  cfg.HybridConfig,
 	})
 	if err != nil {
 		return nil, err
@@ -131,37 +116,12 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	}
 
 	return &Manager{
-		service:          svc,
-		logger:           logger,
-		ignoreDirs:       ignoreDirs,
-		ignoreExtensions: ignoreExts,
-		ignoreFileNames:  ignoreNames,
-		chunkFn:          chunkFn,
-		hashFn:           hashFn,
-		closeFn:          cfg.CloseFn,
+		service: svc,
+		logger:  logger,
+		chunkFn: chunkFn,
+		hashFn:  hashFn,
+		closeFn: cfg.CloseFn,
 	}, nil
-}
-
-// buildMap returns a map from slice elements for O(1) lookup.
-func buildMap(items []string) map[string]bool {
-	m := make(map[string]bool, len(items))
-	for _, item := range items {
-		m[item] = true
-	}
-	return m
-}
-
-// mergeMapWithSlice returns a new map containing all entries from base
-// plus additional entries from the extra slice.
-func mergeMapWithSlice(base map[string]bool, extra []string) map[string]bool {
-	result := make(map[string]bool, len(base)+len(extra))
-	for k, v := range base {
-		result[k] = v
-	}
-	for _, item := range extra {
-		result[item] = true
-	}
-	return result
 }
 
 // Service returns the underlying Service for search operations.
@@ -268,14 +228,11 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 	userOnProgress := cbs.OnProgress
 	m.setStatus(map[string]any{"branch": branch})
 	indexer := NewIndexer(IndexerConfig{
-		Service:          m.service,
-		ChunkFn:          chunkFn,
-		HashFn:           m.hashFn,
-		OnProgress:       m.wrapProgress(userOnProgress),
-		Logger:           m.logger,
-		IgnoreDirs:       m.ignoreDirs,
-		IgnoreExtensions: m.ignoreExtensions,
-		IgnoreFileNames:  m.ignoreFileNames,
+		Service:    m.service,
+		ChunkFn:    chunkFn,
+		HashFn:     m.hashFn,
+		OnProgress: m.wrapProgress(userOnProgress),
+		Logger:     m.logger,
 	})
 
 	m.mu.Lock()

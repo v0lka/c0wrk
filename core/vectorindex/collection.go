@@ -16,6 +16,7 @@ import (
 	chromem "github.com/philippgille/chromem-go"
 
 	"github.com/v0lka/c0wrk/core/vectorindex/lexical"
+	"github.com/v0lka/sp4rk/ignore"
 )
 
 // sanitizeRe matches characters that are not alphanumeric, hyphens, or underscores.
@@ -111,8 +112,11 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 
 // ValidateCollection checks stored file hashes against current files on disk.
 // It returns lists of stale (modified), new, and deleted file paths.
-// workspacePath is the root directory to walk for source files.
-func (s *Service) ValidateCollection(ctx context.Context, workspacePath string) (staleFiles, newFiles, deletedFiles []string, err error) {
+// workspacePath is the root directory to walk for source files. checker is the
+// ignore resolver (over .gitignore + .aiignore) the caller already built for
+// this workspace; ValidateCollection reuses it so its walk applies exactly the
+// same filtering as the Indexer's IndexFull walk (preventing reindex loops).
+func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, checker ignore.IgnoreChecker) (staleFiles, newFiles, deletedFiles []string, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -134,7 +138,6 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string) 
 	if absErr != nil {
 		return nil, nil, nil, fmt.Errorf("resolving workspace path: %w", absErr)
 	}
-	gitignorePatterns := loadGitignorePatterns(absRoot)
 
 	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkDirErr error) error {
 		if walkDirErr != nil {
@@ -142,7 +145,7 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string) 
 		}
 
 		if d.IsDir() {
-			if isIgnoredDir(path, absRoot, gitignorePatterns, s.ignoreDirs) {
+			if isHiddenName(d.Name()) || checker.Ignored(path, true) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -152,7 +155,7 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string) 
 			return nil
 		}
 
-		if isIgnoredFile(path, absRoot, gitignorePatterns, s.ignoreExtensions, s.ignoreFileNames) {
+		if isHiddenName(d.Name()) || checker.Ignored(path, false) {
 			return nil
 		}
 
@@ -161,16 +164,24 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string) 
 			return nil //nolint:nilerr // skip unresolvable paths
 		}
 
+		// Bounded header pre-read: reject multi-GB binary assets before the
+		// full os.ReadFile. Binary and empty files are never added to the
+		// collection by processFile, so reporting them as "new" every pass
+		// would cause an infinite reindexing loop.
+		binary, bErr := isBinaryHeader(absPath)
+		if bErr != nil {
+			return nil //nolint:nilerr // skip unreadable files
+		}
+		if binary {
+			return nil //nolint:nilerr // skip binary files
+		}
+
 		content, readErr := os.ReadFile(absPath)
 		if readErr != nil {
 			return nil //nolint:nilerr // skip unreadable files
 		}
-
-		// Skip binary and empty files — they are never added to the
-		// collection by processFile, so reporting them as "new" every
-		// pass would cause an infinite reindexing loop.
-		if isBinaryFile(content) || len(content) == 0 {
-			return nil //nolint:nilerr // skip unindexable files
+		if len(content) == 0 {
+			return nil //nolint:nilerr // skip empty files
 		}
 
 		currentHash := computeHash(content)

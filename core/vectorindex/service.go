@@ -21,12 +21,6 @@ type ServiceConfig struct {
 	// (from Embedder.EmbeddingFunc()).
 	EmbeddingFunc chromem.EmbeddingFunc
 
-	// Ignore patterns for file filtering in ValidateCollection.
-	// nil means no extra patterns beyond hardcoded defaults.
-	IgnoreDirs       map[string]bool
-	IgnoreExtensions map[string]bool
-	IgnoreFileNames  map[string]bool
-
 	// HybridConfig tunes Reciprocal Rank Fusion (RRF k, fanout, and
 	// pre-fusion score thresholds). A zero value disables score
 	// thresholds and uses built-in defaults for k/fanout; production
@@ -76,11 +70,6 @@ type Service struct {
 	// hybridConfig holds resolved RRF tuning + pre-fusion score
 	// thresholds. Threshold fields of 0 mean "disabled".
 	hybridConfig HybridConfig
-
-	// Extra ignore patterns for ValidateCollection file filtering.
-	ignoreDirs       map[string]bool
-	ignoreExtensions map[string]bool
-	ignoreFileNames  map[string]bool
 }
 
 // NewService creates a new vector index Service.
@@ -95,13 +84,10 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	}
 
 	s := &Service{
-		embeddingFunc:    cfg.EmbeddingFunc,
-		readyCh:          make(chan struct{}),
-		logger:           logger,
-		hybridConfig:     ResolveHybridConfig(cfg.HybridConfig),
-		ignoreDirs:       cfg.IgnoreDirs,
-		ignoreExtensions: cfg.IgnoreExtensions,
-		ignoreFileNames:  cfg.IgnoreFileNames,
+		embeddingFunc: cfg.EmbeddingFunc,
+		readyCh:       make(chan struct{}),
+		logger:        logger,
+		hybridConfig:  ResolveHybridConfig(cfg.HybridConfig),
 	}
 
 	return s, nil

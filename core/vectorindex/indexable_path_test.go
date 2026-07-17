@@ -20,8 +20,15 @@ func TestIsIndexablePath(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, ".git", "objects", "pack"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// node_modules.
+	// node_modules and build are excluded via .gitignore now that hardcoded
+	// default ignore dirs have been removed.
 	if err := os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("node_modules/\nbuild/\n*.exe\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -84,16 +91,16 @@ func TestIsAnyIndexablePath(t *testing.T) {
 }
 
 // TestIsIndexablePath_GitignoreDir verifies that a directory excluded ONLY via
-// .gitignore (not present in defaultIgnoreDirs) is filtered by the watcher's
-// path check, mirroring the walker's isIgnoredDir. Before the fix, the watcher
-// filter matched gitignore patterns against the file path but not its
-// directory segments, so churn under such a directory fired a spurious reindex
-// the walker then silently dropped.
+// .gitignore (not a hidden directory) is filtered by the watcher's path check,
+// mirroring the walker's filtering. Before the fix, the watcher filter matched
+// gitignore patterns against the file path but not its directory segments, so
+// churn under such a directory fired a spurious reindex the walker then silently
+// dropped.
 func TestIsIndexablePath_GitignoreDir(t *testing.T) {
 	root := t.TempDir()
 
-	// "coverage_report/" and "logs/old/" are excluded only via .gitignore and
-	// are NOT in defaultIgnoreDirs (note: "build" IS, so it can't be used here).
+	// "coverage_report/" and "logs/old/" are excluded only via .gitignore
+	// (they are not hidden directories).
 	gitignore := "coverage_report/\nlogs/old/\n"
 	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(gitignore), 0o644); err != nil {
 		t.Fatal(err)

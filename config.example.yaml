@@ -308,65 +308,26 @@ orchestration:
   maxJudgeCacheSize: 1000 # Max entries in judge decision cache
 
 # ---------------------------------------------------------------------------
-# Workspace File/Ignore Patterns
+# Workspace Ignore Files (.gitignore / .aiignore)
 # ---------------------------------------------------------------------------
-# Control which files and directories are excluded from the file tree view
-# and vector index. Hidden directories (starting with '.') are always excluded
-# regardless of this configuration.
+# c0wrk respects repository ignore files to decide which files and directories
+# are excluded from the file tree view and the vector index:
 #
-# workspace:
-#   ignore_dirs:
-#     - vendor
-#     - node_modules
-#     - __pycache__
-#     - dist
-#     - build
-#     - target
-#     - bin
-#     - obj
-#   ignore_extensions:
-#     - .exe
-#     - .dll
-#     - .so
-#     - .dylib
-#     - .bin
-#     - .dat
-#     - .zip
-#     - .tar
-#     - .gz
-#     - .7z
-#     - .rar
-#     - .jpg
-#     - .jpeg
-#     - .png
-#     - .gif
-#     - .svg
-#     - .ico
-#     - .mp3
-#     - .mp4
-#     - .mov
-#     - .avi
-#     - .wav
-#     - .pdf
-#     - .doc
-#     - .docx
-#     - .xls
-#     - .xlsx
-#     - .ttf
-#     - .otf
-#     - .woff
-#     - .woff2
-#     - .pyc
-#     - .class
-#     - .o
-#     - .a
-#     - .lib
-#     - .lock
-#     - .min.js
-#     - .min.css
-#     - .onnx
-#     - .onnx_data
-#   ignore_file_names: []
+#   - .gitignore  — standard git ignore rules, consulted for every project.
+#   - .aiignore   — optional, AI-specific ignores layered on top of
+#                   .gitignore. Use it to hide files that git tracks but the
+#                   agent/indexer should not see (e.g. generated reports,
+#                   vendored snapshots).
+#
+# Recommended .aiignore recipe (files git tracks but the agent rarely needs):
+#
+#   go.sum
+#   package-lock.json
+#   *.lock
+#
+# Hidden directories (entries starting with '.') are always excluded regardless
+# of ignore files. There is no per-key workspace configuration: control what is
+# indexed by editing .gitignore / .aiignore at the project root.
 
 # ---------------------------------------------------------------------------
 # Vector Index / Hybrid Search

@@ -18,13 +18,6 @@ var defaultSkillDirs = []string{
 	"~/.c0wrk/.agents/skills",
 }
 
-// setDefault sets *ptr to val if *ptr is nil.
-func setDefault[T any](ptr *[]T, val []T) {
-	if *ptr == nil {
-		*ptr = val
-	}
-}
-
 // ApplyDefaults sets default values for zero-value fields in the configuration.
 func ApplyDefaults(cfg *Config) {
 	// Log level defaults to DEBUG for maximum diagnostic visibility.
@@ -297,26 +290,9 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Orchestration.MaxJudgeCacheSize = 1000
 	}
 
-	// Workspace ignore patterns.
-	setDefault(&cfg.Workspace.IgnoreDirs, []string{
-		"vendor", "node_modules", "__pycache__",
-		"dist", "build", "target", "bin", "obj",
-	})
-	setDefault(&cfg.Workspace.IgnoreExtensions, []string{
-		".exe", ".dll", ".so", ".dylib", ".bin", ".dat",
-		".zip", ".tar", ".gz", ".7z", ".rar",
-		".jpg", ".jpeg", ".png", ".gif", ".svg", ".ico",
-		".mp3", ".mp4", ".mov", ".avi", ".wav",
-		".pdf", ".doc", ".docx", ".xls", ".xlsx",
-		".ttf", ".otf", ".woff", ".woff2",
-		".pyc", ".class", ".o", ".a", ".lib",
-		".lock", ".min.js", ".min.css",
-		".onnx", ".onnx_data",
-	})
-	setDefault(&cfg.Workspace.IgnoreFileNames, []string{})
-
-	// Vector index / hybrid search defaults. The generic setDefault
-	// helper only supports slices, so we hand-roll this for *bool.
+	// Vector index / hybrid search defaults. Hybrid is a pointer-bool so
+	// callers can distinguish "unset" (defaults applied below) from an
+	// explicit false; set it directly here.
 	if cfg.VectorIndex.Hybrid == nil {
 		trueVal := true
 		cfg.VectorIndex.Hybrid = &trueVal

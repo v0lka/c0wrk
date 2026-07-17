@@ -446,13 +446,17 @@ func TestValidateCollection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create files that should be ignored by the filtering logic.
-	// Ignored extension (.png is in defaultIgnoreExtensions).
+	// Create files that should be ignored by the filtering logic. Now that
+	// hardcoded default ignores are gone, these are excluded via .gitignore.
+	if err := os.WriteFile(filepath.Join(wsDir, ".gitignore"), []byte("image.png\nbuild/\ngo.sum\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Ignored extension-less file listed in .gitignore.
 	ignoredByExt := filepath.Join(wsDir, "image.png")
 	if err := os.WriteFile(ignoredByExt, []byte("fake png data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Ignored directory ("build" is in defaultIgnoreDirs).
+	// Ignored directory ("build/" in .gitignore).
 	buildDir := filepath.Join(wsDir, "build")
 	if err := os.MkdirAll(buildDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -460,7 +464,7 @@ func TestValidateCollection(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(buildDir, "output.txt"), []byte("build output"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Ignored file name ("go.sum" is in defaultIgnoreFileNames).
+	// Ignored file name ("go.sum" in .gitignore).
 	if err := os.WriteFile(filepath.Join(wsDir, "go.sum"), []byte("checksum data"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -515,7 +519,7 @@ func TestValidateCollection(t *testing.T) {
 	}
 	svc.ReleaseWriteLock()
 
-	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), wsDir)
+	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), wsDir, testIgnoreChecker(t, wsDir))
 	if valErr != nil {
 		t.Fatalf("ValidateCollection failed: %v", valErr)
 	}

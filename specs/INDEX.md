@@ -128,3 +128,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [013-rrf-pre-fusion-score-thresholds.md](decisions/013-rrf-pre-fusion-score-thresholds.md) - Pre-fusion score thresholds and configurable RRF parameters for hybrid search
 - [014-sp4rk-separate-module.md](decisions/014-sp4rk-separate-module.md) - sp4rk as a separate Go module → Superseded by ADR-015
 - [015-sp4rk-external-module-dependency.md](decisions/015-sp4rk-external-module-dependency.md) - sp4rk as an external module dependency → Supersedes ADR-014
+- [016-aiignore.md](decisions/016-aiignore.md) - .gitignore + .aiignore as the ignore source of truth (removes workspace.* config ignores and hardcoded defaults)

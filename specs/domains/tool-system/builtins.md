@@ -79,6 +79,17 @@ The `ask_user` tool and its UI types (`AskUserFunc`, `AskUserRequest`, `AskUserR
 
 `ripgrep` invokes the `rg` binary via `exec.CommandContext` and parses the `rg --json` event stream (exit code 1 = "no matches", not an error; ≥ 2 = `IsError`). The `rg` binary is a managed runtime dependency provided by `core/toolmanager/` — downloaded on first run to `~/.c0wrk/tools/bin/` and PATH-prepended at startup (ADR-010).
 
+## Ignore Filtering (`glob` / `ripgrep`)
+
+Discovery tools honour the project's ignore files via an `ignore.IgnoreChecker` attached to the task context. The session manager builds a **multi-root resolver** over the symlink-resolved, deduplicated workspace path **plus** the session's auxiliary work directories (`backend/session/manager_execution.go` → `injectIgnoreChecker` → `tools.WithIgnoreChecker`) once per task; `glob` and `ripgrep` read it back through `tools.IgnoreCheckerFrom` and filter per the containing root's own `.gitignore` + `.aiignore`.
+
+- `glob` honours `.gitignore` **and** nested `.aiignore` files fully (resolver-based).
+- `ripgrep` honours `.gitignore` natively; the root-level `.aiignore` at the search root is passed to `rg` via `--ignore-file`. Nested `.aiignore` is **not** honoured by `rg` — a documented, accepted limitation.
+- When no checker is plumbed through the context (e.g., No Project with no workspace and no work directories), the tools keep their unfiltered behaviour.
+- `read_file` deliberately does **not** consult the checker: ignore filtering governs *discovery*, not *access*.
+
+See [ADR-016](../../decisions/016-aiignore.md) for the rationale and the engine primitive (`github.com/v0lka/sp4rk/ignore`).
+
 ## Document Conversion (`read_file` wrapper)
 
 `read_file` is registered as `NewReadFileDocTool` (`core/tools/read_file_doc.go`), a wrapper that embeds sp4rk's `ReadFileTool`. Plain-text files delegate to the inner streaming reader unchanged. Document formats — pdf, docx, pptx, xlsx, odt, html, htm — are converted to markdown via `core/markitdown` (the managed markitdown CLI, ADR-010; the same converter used by the attachment flow in [../session-lifecycle.md](../session-lifecycle.md)).

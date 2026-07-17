@@ -6,7 +6,22 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/v0lka/sp4rk/ignore"
 )
+
+// testIgnoreChecker builds an ignore resolver for root, failing the test on
+// error. Tests use it in place of the removed loadGitignorePatterns so the
+// walk and IsIndexablePath helpers exercise the real .gitignore/.aiignore
+// resolver.
+func testIgnoreChecker(t *testing.T, root string) ignore.IgnoreChecker {
+	t.Helper()
+	r, err := ignore.NewResolver(root)
+	if err != nil {
+		t.Fatalf("ignore.NewResolver(%q): %v", root, err)
+	}
+	return r
+}
 
 // fakeChunkFunc is a test ChunkFunc that splits content into a single chunk.
 func fakeChunkFunc(filePath string, content []byte, maxChunkSize, overlap int) ([]ChunkResult, error) {
@@ -349,7 +364,7 @@ func TestWalkProjectFiles(t *testing.T) {
 		}
 	}
 
-	files, err := walkProjectFiles(dir, nil, nil, nil, nil)
+	files, err := walkProjectFiles(dir, testIgnoreChecker(t, dir))
 	if err != nil {
 		t.Fatalf("walkProjectFiles: %v", err)
 	}
@@ -364,28 +379,33 @@ func TestWalkProjectFiles(t *testing.T) {
 		relFiles[rel] = true
 	}
 
-	// Should include.
-	shouldInclude := []string{"main.go", filepath.Join("lib", "utils.go"), "data.json"}
+	// With no ignore files present, everything non-hidden is included —
+	// including the former hardcoded-default exclusions (node_modules, vendor,
+	// build, *.png, go.sum, package-lock.json). Those are now only skipped when
+	// listed in .gitignore/.aiignore (see TestWalkProjectFiles_WithGitignore
+	// and TestWalkProjectFiles_WithAiignore).
+	shouldInclude := []string{
+		"main.go", filepath.Join("lib", "utils.go"), "data.json",
+		filepath.Join("node_modules", "pkg", "index.js"),
+		filepath.Join("vendor", "lib", "vendor.go"),
+		filepath.Join("build", "output.bin"),
+		"image.png", "go.sum", "package-lock.json",
+	}
 	for _, f := range shouldInclude {
 		if !relFiles[f] {
 			t.Errorf("expected %q to be included, got files: %v", f, relFiles)
 		}
 	}
 
-	// Should exclude.
+	// Only hidden entries (leading dot) are excluded by the universal guard.
 	shouldExclude := []string{
 		filepath.Join(".git", "config"),
-		filepath.Join("node_modules", "pkg", "index.js"),
-		filepath.Join("vendor", "lib", "vendor.go"),
-		"image.png",
 		".hidden_file",
 		filepath.Join(".hidden_dir", "file.go"),
-		"go.sum",
-		"package-lock.json",
 	}
 	for _, f := range shouldExclude {
 		if relFiles[f] {
-			t.Errorf("expected %q to be excluded", f)
+			t.Errorf("expected hidden %q to be excluded", f)
 		}
 	}
 }
@@ -417,7 +437,7 @@ func TestWalkProjectFiles_WithGitignore(t *testing.T) {
 		}
 	}
 
-	files, err := walkProjectFiles(dir, loadGitignorePatterns(dir), nil, nil, nil)
+	files, err := walkProjectFiles(dir, testIgnoreChecker(t, dir))
 	if err != nil {
 		t.Fatalf("walkProjectFiles: %v", err)
 	}
@@ -445,7 +465,77 @@ func TestWalkProjectFiles_WithGitignore(t *testing.T) {
 	}
 }
 
-func TestIsBinaryFile(t *testing.T) {
+// TestWalkProjectFiles_WithAiignore verifies that an .aiignore file is honoured
+// the same way .gitignore is, and documents that entries such as go.sum and
+// package-lock.json — no longer skipped by hardcoded defaults — are indexed
+// unless an ignore file lists them. A nested .aiignore is also honoured.
+func TestWalkProjectFiles_WithAiignore(t *testing.T) {
+	dir := t.TempDir()
+
+	// Root .aiignore lists the former default exclusions.
+	aiignore := "node_modules/\nvendor/\nbuild/\n*.png\ngo.sum\npackage-lock.json\n"
+	if err := os.WriteFile(filepath.Join(dir, ".aiignore"), []byte(aiignore), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	structure := map[string]string{
+		"main.go":                   "package main",
+		"src/app.go":                "package src",
+		"node_modules/pkg/index.js": "module.exports = {}",
+		"vendor/lib/vendor.go":      "package vendor",
+		"build/output.bin":          "binary",
+		"image.png":                 "fake png",
+		"go.sum":                    "checksum file",
+		"package-lock.json":         "lock file",
+		// Nested .aiignore scoped to its own directory.
+		"nested/.aiignore": "*.log\n",
+		"nested/debug.log": "log content",
+		"nested/keep.go":   "package nested",
+	}
+
+	for relPath, content := range structure {
+		absPath := filepath.Join(dir, relPath)
+		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	files, err := walkProjectFiles(dir, testIgnoreChecker(t, dir))
+	if err != nil {
+		t.Fatalf("walkProjectFiles: %v", err)
+	}
+
+	relFiles := make(map[string]bool, len(files))
+	for _, f := range files {
+		rel, _ := filepath.Rel(dir, f)
+		relFiles[rel] = true
+	}
+
+	for _, f := range []string{"main.go", filepath.Join("src", "app.go"), filepath.Join("nested", "keep.go")} {
+		if !relFiles[f] {
+			t.Errorf("expected %q to be included, got %v", f, relFiles)
+		}
+	}
+
+	for _, f := range []string{
+		filepath.Join("node_modules", "pkg", "index.js"),
+		filepath.Join("vendor", "lib", "vendor.go"),
+		filepath.Join("build", "output.bin"),
+		"image.png",
+		"go.sum",
+		"package-lock.json",
+		filepath.Join("nested", "debug.log"),
+	} {
+		if relFiles[f] {
+			t.Errorf("expected %q to be excluded by .aiignore", f)
+		}
+	}
+}
+
+func TestContainsNullByte(t *testing.T) {
 	tests := []struct {
 		name    string
 		content []byte
@@ -459,11 +549,57 @@ func TestIsBinaryFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isBinaryFile(tt.content)
+			got := containsNullByte(tt.content)
 			if got != tt.want {
-				t.Errorf("isBinaryFile() = %v, want %v", got, tt.want)
+				t.Errorf("containsNullByte() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestIsBinaryHeader verifies the bounded header pre-read: it must detect a
+// NUL byte in the leading bytes WITHOUT loading the whole file, so a large
+// binary asset is rejected before a full os.ReadFile.
+func TestIsBinaryHeader(t *testing.T) {
+	root := t.TempDir()
+
+	textPath := filepath.Join(root, "text.txt")
+	if err := os.WriteFile(textPath, []byte("just plain text"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(root, "blob.bin")
+	if err := os.WriteFile(binPath, []byte{0x48, 0x65, 0x00, 0x6c, 0x6f}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	emptyPath := filepath.Join(root, "empty.txt")
+	if err := os.WriteFile(emptyPath, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"text", textPath, false},
+		{"binary", binPath, true},
+		{"empty", emptyPath, false},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := isBinaryHeader(tt.path)
+			if err != nil {
+				t.Fatalf("isBinaryHeader(%q) error: %v", tt.path, err)
+			}
+			if got != tt.want {
+				t.Errorf("isBinaryHeader(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+
+	// Missing file reports an error rather than a false "not binary".
+	if _, err := isBinaryHeader(filepath.Join(root, "nope")); err == nil {
+		t.Error("expected error for missing file, got nil")
 	}
 }
 
@@ -482,26 +618,5 @@ func TestNewIndexer_Defaults(t *testing.T) {
 	}
 	if indexer.hashFn == nil {
 		t.Error("expected default hashFn")
-	}
-}
-
-func TestNormalizeGitignorePattern(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"*.log", "**/*.log"},
-		{"/build", "**/build"},
-		{"dist/", "**/dist"},
-		{"src/temp", "src/temp"},
-		{"node_modules", "**/node_modules"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := normalizeGitignorePattern(tt.input)
-			if got != tt.want {
-				t.Errorf("normalizeGitignorePattern(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/epilande/go-devicons"
+	"github.com/v0lka/sp4rk/ignore"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
@@ -272,7 +273,8 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 	}
 
 	var ignoredPaths map[string]bool
-	if f.isGitRepo(absRoot) {
+	isRepo := f.isGitRepo(absRoot)
+	if isRepo {
 		ignoredPaths, err = workspace.GitIgnoredPaths(f.ctx(), absRoot)
 		if err != nil {
 			return nil, err
@@ -292,6 +294,40 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 	}
 	if err != nil {
 		return nil, err
+	}
+
+	// Layer ignore-file flagging on top of the git-derived set. A single-root
+	// ignore.Resolver over the workspace compiles both .gitignore and .aiignore
+	// patterns. Two cases:
+	//
+	//   - Git repository: git already honoured .gitignore (with negation and
+	//     the global gitignore that the resolver does not), so only .aiignore-
+	//     sourced rules are layered on top via IgnoredByAIIgnore. OR-merging
+	//     the full resolver verdict here would let the resolver's negation-less
+	//     .gitignore matching override a git "un-ignore" (!pattern).
+	//   - Non-git workspace: there is no git to honour .gitignore, so the
+	//     resolver is the sole authority for both files (matching how the
+	//     indexer and search tools treat non-git workspaces). The full Ignored
+	//     verdict is applied.
+	//
+	// The resolver is therefore built unconditionally — No Project / non-git
+	// workspaces now honour .aiignore (and .gitignore) too, consistent with the
+	// indexer and glob/ripgrep tools. A construction failure is non-fatal: the
+	// listing still returns with whatever flags were already computed.
+	if r, rErr := ignore.NewResolver(absRoot); rErr == nil {
+		for i := range nodes {
+			if nodes[i].GitIgnored {
+				continue
+			}
+			ignored := r.IgnoredByAIIgnore(nodes[i].Path, nodes[i].IsDir)
+			if !isRepo {
+				// Non-git: resolver is the sole ignore authority.
+				ignored = r.Ignored(nodes[i].Path, nodes[i].IsDir)
+			}
+			if ignored {
+				nodes[i].GitIgnored = true
+			}
+		}
 	}
 
 	return nodes, nil

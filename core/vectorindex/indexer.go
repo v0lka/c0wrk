@@ -1,10 +1,10 @@
 package vectorindex
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -13,10 +13,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bmatcuk/doublestar/v4"
 	chromem "github.com/philippgille/chromem-go"
 
 	"github.com/v0lka/c0wrk/core/vectorindex/lexical"
+	"github.com/v0lka/sp4rk/ignore"
 )
 
 // IndexState represents the current state of the indexer.
@@ -76,11 +76,6 @@ type IndexerConfig struct {
 	Overlap      int
 	OnProgress   ProgressCallback
 	Logger       *slog.Logger
-
-	// Ignore patterns for file filtering (merged with defaults).
-	IgnoreDirs       map[string]bool
-	IgnoreExtensions map[string]bool
-	IgnoreFileNames  map[string]bool
 }
 
 // Indexer orchestrates initial and incremental indexing of project files.
@@ -93,18 +88,14 @@ type Indexer struct {
 	onProgress   ProgressCallback
 	logger       *slog.Logger
 
-	ignoreDirs       map[string]bool
-	ignoreExtensions map[string]bool
-	ignoreFileNames  map[string]bool
-
-	// gitignoreMu guards gitignoreRoot / gitignorePatterns, a cache of the
-	// workspace's .gitignore patterns loaded once (during the first walk or
-	// watcher filter) and reused thereafter, so the watcher does not re-read
-	// .gitignore on every debounce flush. The cache is per-project: the
-	// Indexer is recreated on SwitchProject.
-	gitignoreMu       sync.RWMutex
-	gitignoreRoot     string
-	gitignorePatterns []string
+	// ignoreMu guards ignoreRoot / ignoreChecker, a cache of the workspace's
+	// ignore.Resolver (.gitignore + .aiignore, root and nested) built once
+	// (during the first walk or watcher filter) and reused thereafter, so the
+	// watcher does not re-walk the workspace on every debounce flush. The
+	// cache is per-project: the Indexer is recreated on SwitchProject.
+	ignoreMu      sync.RWMutex
+	ignoreRoot    string
+	ignoreChecker ignore.IgnoreChecker
 }
 
 // NewIndexer creates a new Indexer with the given configuration.
@@ -130,16 +121,13 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 		onProgress = func(IndexPhase, IndexState, int, int, string) {}
 	}
 	return &Indexer{
-		service:          cfg.Service,
-		chunkFn:          cfg.ChunkFn,
-		hashFn:           hashFn,
-		maxChunkSize:     maxChunkSize,
-		overlap:          overlap,
-		onProgress:       onProgress,
-		logger:           logger,
-		ignoreDirs:       cfg.IgnoreDirs,
-		ignoreExtensions: cfg.IgnoreExtensions,
-		ignoreFileNames:  cfg.IgnoreFileNames,
+		service:      cfg.Service,
+		chunkFn:      cfg.ChunkFn,
+		hashFn:       hashFn,
+		maxChunkSize: maxChunkSize,
+		overlap:      overlap,
+		onProgress:   onProgress,
+		logger:       logger,
 	}
 }
 
@@ -149,7 +137,7 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) error {
 	idx.service.SetReady(false)
 
-	files, err := walkProjectFiles(workspacePath, idx.gitignorePatternsFor(workspacePath), idx.ignoreDirs, idx.ignoreExtensions, idx.ignoreFileNames)
+	files, err := walkProjectFiles(workspacePath, idx.resolverFor(workspacePath))
 	if err != nil {
 		return fmt.Errorf("walking project files: %w", err)
 	}
@@ -222,7 +210,7 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 		return fmt.Errorf("waiting for file-hash migration: %w", err)
 	}
 
-	stale, newFiles, deleted, err := idx.service.ValidateCollection(ctx, workspacePath)
+	stale, newFiles, deleted, err := idx.service.ValidateCollection(ctx, workspacePath, idx.resolverFor(workspacePath))
 	if err != nil {
 		idx.service.SetReady(true)
 		return fmt.Errorf("validating collection: %w", err)
@@ -359,13 +347,20 @@ func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBr
 // parallel chromem and lexical document slices keyed by the same shared
 // document ID.
 func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.Doc, error) {
+	// Bounded header pre-read for binary detection: reject multi-GB binary
+	// assets (e.g. .onnx, .safetensors, .psd) before loading them fully into
+	// memory. isBinaryHeader reads at most binaryHeaderSize bytes.
+	binary, bErr := isBinaryHeader(filePath)
+	if bErr != nil {
+		return nil, nil, fmt.Errorf("reading file %s: %w", filePath, bErr)
+	}
+	if binary {
+		return nil, nil, nil
+	}
+
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading file %s: %w", filePath, err)
-	}
-
-	if isBinaryFile(content) {
-		return nil, nil, nil
 	}
 
 	if len(content) == 0 {
@@ -515,9 +510,12 @@ func (idx *Indexer) collectDocumentIDs(ctx context.Context, filePaths []string) 
 }
 
 // walkProjectFiles walks the workspace and returns all indexable file paths.
-// gitignorePatterns must be pre-loaded by the caller (the Indexer caches them)
-// so the walk and the watcher filter share one source of truth.
-func walkProjectFiles(root string, gitignorePatterns []string, extraIgnoreDirs, extraIgnoreExtensions, extraIgnoreFileNames map[string]bool) ([]string, error) {
+// checker must be pre-built by the caller (the Indexer caches it) so the walk
+// and the watcher filter share one source of truth. Files and directories
+// ignored by .gitignore or .aiignore (root and nested, resolved via checker)
+// are skipped, as are hidden (leading-dot) entries. Binary content is not
+// detected here — it is a read-time guard applied in processFile.
+func walkProjectFiles(root string, checker ignore.IgnoreChecker) ([]string, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolving root path: %w", err)
@@ -530,7 +528,7 @@ func walkProjectFiles(root string, gitignorePatterns []string, extraIgnoreDirs, 
 		}
 
 		if d.IsDir() {
-			if isIgnoredDir(path, absRoot, gitignorePatterns, extraIgnoreDirs) {
+			if isHiddenName(d.Name()) || checker.Ignored(path, true) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -540,7 +538,7 @@ func walkProjectFiles(root string, gitignorePatterns []string, extraIgnoreDirs, 
 			return nil
 		}
 
-		if isIgnoredFile(path, absRoot, gitignorePatterns, extraIgnoreExtensions, extraIgnoreFileNames) {
+		if isHiddenName(d.Name()) || checker.Ignored(path, false) {
 			return nil
 		}
 
@@ -559,193 +557,75 @@ func walkProjectFiles(root string, gitignorePatterns []string, extraIgnoreDirs, 
 	return files, nil
 }
 
-// defaultIgnoreDirs are directory names that should always be skipped.
-var defaultIgnoreDirs = map[string]bool{
-	".git":         true,
-	"node_modules": true,
-	"vendor":       true,
-	"build":        true,
-	"dist":         true,
-	".cache":       true,
-	"__pycache__":  true,
-	".idea":        true,
-	".vscode":      true,
-	".next":        true,
-	".nuxt":        true,
-	"target":       true,
-	"coverage":     true,
-	".terraform":   true,
-	".svn":         true,
-	".hg":          true,
-}
+// noopIgnoreChecker is an IgnoreChecker that ignores nothing. It is the
+// fail-open fallback when an ignore.Resolver cannot be built for a root (e.g.
+// the root vanished mid-index): rather than indexing nothing, the indexer
+// proceeds and applies only the universal hidden-dot guard.
+type noopIgnoreChecker struct{}
 
-// defaultIgnoreExtensions are file extensions that should always be skipped.
-var defaultIgnoreExtensions = map[string]bool{
-	".exe": true, ".dll": true, ".so": true, ".dylib": true,
-	".bin": true, ".o": true, ".a": true,
-	".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
-	".ico": true, ".svg": true, ".webp": true, ".bmp": true,
-	".woff": true, ".woff2": true, ".ttf": true, ".eot": true,
-	".mp3": true, ".mp4": true, ".wav": true, ".avi": true,
-	".zip": true, ".tar": true, ".gz": true, ".bz2": true, ".xz": true, ".7z": true, ".rar": true,
-	".lock": true, ".pyc": true, ".pyo": true, ".class": true,
-	".db": true, ".sqlite": true,
-}
+func (noopIgnoreChecker) Ignored(string, bool) bool { return false }
 
-// defaultIgnoreFileNames are specific file names that should be skipped.
-var defaultIgnoreFileNames = map[string]bool{
-	"package-lock.json": true,
-	"go.sum":            true,
-	".DS_Store":         true,
-}
-
-// isIgnoredDir checks if a directory should be skipped during file walking.
-func isIgnoredDir(path, root string, gitignorePatterns []string, extraIgnoreDirs map[string]bool) bool {
-	base := filepath.Base(path)
-
-	// Always skip hidden directories (starting with .)
-	if strings.HasPrefix(base, ".") {
-		return true
-	}
-
-	if defaultIgnoreDirs[base] {
-		return true
-	}
-
-	if extraIgnoreDirs != nil && extraIgnoreDirs[base] {
-		return true
-	}
-
-	// Check gitignore patterns.
-	relPath, err := filepath.Rel(root, path)
+// buildIgnoreChecker constructs an ignore resolver over .gitignore + .aiignore
+// (root and nested) for root. On failure it returns a fail-open
+// noopIgnoreChecker together with the error so callers can log once without
+// re-attempting on every debounce flush.
+func buildIgnoreChecker(root string) (ignore.IgnoreChecker, error) {
+	r, err := ignore.NewResolver(root)
 	if err != nil {
-		return false
+		return noopIgnoreChecker{}, fmt.Errorf("building ignore resolver for %q: %w", root, err)
 	}
-	relPath = filepath.ToSlash(relPath) + "/"
-	for _, pattern := range gitignorePatterns {
-		if matched, _ := doublestar.Match(pattern, relPath); matched {
-			return true
-		}
-		// Also try matching without trailing slash.
-		if matched, _ := doublestar.Match(pattern, strings.TrimSuffix(relPath, "/")); matched {
-			return true
-		}
-	}
-
-	return false
+	return r, nil
 }
 
-// isIgnoredFile checks if a file should be skipped during file walking.
-func isIgnoredFile(path, root string, gitignorePatterns []string, extraIgnoreExtensions, extraIgnoreFileNames map[string]bool) bool {
-	base := filepath.Base(path)
-
-	if strings.HasPrefix(base, ".") {
-		return true
+// resolverFor returns the cached ignore resolver for root, building and caching
+// it on first use. The Indexer (and thus the cache) is recreated on every
+// SwitchProject, so the workspace is walked at most once per active project
+// instead of once per watcher debounce flush. A mid-session edit of .gitignore
+// or .aiignore is not picked up until the next source-driven index pass
+// triggers a cache miss — acceptable, since a stale filter only risks a
+// harmless no-op reindex that the walker then drops.
+func (idx *Indexer) resolverFor(root string) ignore.IgnoreChecker {
+	idx.ignoreMu.RLock()
+	if idx.ignoreRoot == root && idx.ignoreChecker != nil {
+		c := idx.ignoreChecker
+		idx.ignoreMu.RUnlock()
+		return c
 	}
+	idx.ignoreMu.RUnlock()
 
-	if defaultIgnoreFileNames[base] {
-		return true
-	}
-
-	if extraIgnoreFileNames != nil && extraIgnoreFileNames[base] {
-		return true
-	}
-
-	ext := strings.ToLower(filepath.Ext(base))
-	if defaultIgnoreExtensions[ext] {
-		return true
-	}
-
-	if extraIgnoreExtensions != nil && extraIgnoreExtensions[ext] {
-		return true
-	}
-
-	relPath, err := filepath.Rel(root, path)
+	c, err := buildIgnoreChecker(root)
 	if err != nil {
-		return false
+		idx.logger.Warn("failed to build ignore resolver; indexing all non-hidden files", "root", root, "error", err)
 	}
-	relPath = filepath.ToSlash(relPath)
-	for _, pattern := range gitignorePatterns {
-		if matched, _ := doublestar.Match(pattern, relPath); matched {
-			return true
-		}
-	}
-
-	return false
-}
-
-// IsIndexablePath reports whether absPath (which must be under root) refers to
-// a file or directory the indexer would process. It returns false if any
-// ancestor directory is ignored (e.g. .git, node_modules, hidden dirs) or if
-// the path itself matches ignore-file rules (e.g. .DS_Store, binary
-// extensions). It applies the same hardcoded defaults as walkProjectFiles.
-//
-// It is intended for the workspace watcher to decide whether a file change
-// warrants vector re-indexing, so that churn inside ignored locations (most
-// notably .git maintenance: gc, repack, reflog cleanup) does not trigger a
-// spurious — and costly (ONNX inference) — reindex pass that always ends with
-// "no changes detected". User-configured extra ignore patterns are NOT applied
-// here (they live on the Indexer); a change in an extra-ignored location would
-// at worst trigger a harmless no-op reindex.
-func IsIndexablePath(absPath, root string) bool {
-	return isIndexablePathWithPatterns(absPath, root, loadGitignorePatterns(root))
-}
-
-// IsAnyIndexablePath reports whether at least one of paths is indexable under
-// root. It loads .gitignore patterns once for the whole batch. An empty/nil
-// path list reports false (nothing indexable).
-func IsAnyIndexablePath(paths []string, root string) bool {
-	patterns := loadGitignorePatterns(root)
-	for _, p := range paths {
-		if isIndexablePathWithPatterns(p, root, patterns) {
-			return true
-		}
-	}
-	return false
-}
-
-// gitignorePatternsFor returns the cached .gitignore patterns for root, loading
-// and caching them on first use. The Indexer (and thus the cache) is recreated
-// on every SwitchProject, so patterns are re-read at most once per active
-// project instead of once per watcher debounce flush. A mid-session edit of
-// .gitignore is not picked up until the next source-driven index pass triggers
-// a cache miss — acceptable, since a stale filter only risks a harmless no-op
-// reindex that the walker then drops.
-func (idx *Indexer) gitignorePatternsFor(root string) []string {
-	idx.gitignoreMu.RLock()
-	if idx.gitignoreRoot == root && idx.gitignorePatterns != nil {
-		p := idx.gitignorePatterns
-		idx.gitignoreMu.RUnlock()
-		return p
-	}
-	idx.gitignoreMu.RUnlock()
-
-	patterns := loadGitignorePatterns(root)
-	idx.gitignoreMu.Lock()
-	idx.gitignoreRoot = root
-	idx.gitignorePatterns = patterns
-	idx.gitignoreMu.Unlock()
-	return patterns
+	idx.ignoreMu.Lock()
+	idx.ignoreRoot = root
+	idx.ignoreChecker = c
+	idx.ignoreMu.Unlock()
+	return c
 }
 
 // IsAnyIndexablePath reports whether at least one of changedPaths is indexable
-// under root, reusing the Indexer's cached .gitignore patterns. It is the
-// watcher-facing variant of the package-level IsAnyIndexablePath and avoids
-// re-reading .gitignore on every debounce flush.
+// under root, reusing the Indexer's cached ignore resolver. It is the
+// watcher-facing check and avoids re-walking the workspace on every debounce
+// flush.
 func (idx *Indexer) IsAnyIndexablePath(changedPaths []string, root string) bool {
-	patterns := idx.gitignorePatternsFor(root)
+	c := idx.resolverFor(root)
 	for _, p := range changedPaths {
-		if isIndexablePathWithPatterns(p, root, patterns) {
+		if isIndexablePath(p, root, c) {
 			return true
 		}
 	}
 	return false
 }
 
-// isIndexablePathWithPatterns is the core single-path check with pre-loaded
-// gitignore patterns. It avoids os.Stat by inspecting path segments directly,
-// so it works for both file and directory change events.
-func isIndexablePathWithPatterns(absPath, root string, gitignorePatterns []string) bool {
+// isIndexablePath is the core single-path check with a pre-built ignore
+// resolver. It avoids os.Stat by inspecting path segments directly, so it
+// works for both file and directory change events. A path is not indexable
+// when any segment is hidden (leading dot) or when the resolver reports the
+// path (or an ancestor directory) as ignored — the resolver walks ancestor
+// directories with directory semantics, so "once a directory is ignored, so
+// are its contents" holds in a single call.
+func isIndexablePath(absPath, root string, checker ignore.IgnoreChecker) bool {
 	relPath, err := filepath.Rel(root, absPath)
 	if err != nil {
 		return false
@@ -756,141 +636,61 @@ func isIndexablePathWithPatterns(absPath, root string, gitignorePatterns []strin
 		return false
 	}
 
-	segments := strings.Split(relPath, "/")
-	// Check directory components (every segment except the last).
-	dirRel := ""
-	for i := 0; i < len(segments)-1; i++ {
-		seg := segments[i]
-		if isIgnoredDirSegment(seg) {
-			return false
-		}
-		// Build the cumulative directory relative path and apply gitignore
-		// patterns (mirroring isIgnoredDir: match both "dir/" and "dir") so a
-		// directory excluded only via .gitignore (e.g. "coverage_report/") is
-		// filtered here too — otherwise the watcher would fire for churn under
-		// it and the walker would silently drop it, leaving a confusing gap.
-		if dirRel == "" {
-			dirRel = seg
-		} else {
-			dirRel += "/" + seg
-		}
-		if isGitIgnoredDir(dirRel, gitignorePatterns) {
+	// Any hidden segment (directory or file, leading dot) is not indexable.
+	for _, seg := range strings.Split(relPath, "/") {
+		if seg == "" || isHiddenName(seg) {
 			return false
 		}
 	}
 
-	// Check the last segment (the changed file/dir itself).
-	last := segments[len(segments)-1]
-	if last == "" || strings.HasPrefix(last, ".") {
-		return false // hidden file/dir
-	}
-	if defaultIgnoreDirs[last] || defaultIgnoreFileNames[last] {
-		return false
-	}
-	if ext := strings.ToLower(filepath.Ext(last)); defaultIgnoreExtensions[ext] {
-		return false
-	}
-
-	// gitignore pattern matching against the full relative path.
-	for _, pattern := range gitignorePatterns {
-		if matched, _ := doublestar.Match(pattern, relPath); matched {
-			return false
-		}
-	}
-	return true
+	// .gitignore / .aiignore, including directory-only rules via ancestor
+	// walking. The leaf is tested as a file (watcher events are predominantly
+	// file creates/modifies); ancestor dirs are treated as dirs by the resolver.
+	return !checker.Ignored(absPath, false)
 }
 
-// isIgnoredDirSegment reports whether a single path segment (a directory base
-// name) is ignored by default rules: hidden dirs (leading dot) or a member of
-// defaultIgnoreDirs.
-func isIgnoredDirSegment(seg string) bool {
-	if seg == "" {
-		return false
-	}
-	if strings.HasPrefix(seg, ".") {
-		return true
-	}
-	return defaultIgnoreDirs[seg]
+// isHiddenName reports whether name is a hidden entry — one whose base name
+// begins with a dot. This is the universal guard layered on top of the ignore
+// resolver: hidden directories (e.g. .git, .cache, .idea) and hidden files
+// (e.g. .DS_Store) are never indexed regardless of ignore-file contents.
+func isHiddenName(name string) bool {
+	return strings.HasPrefix(name, ".")
 }
 
-// isGitIgnoredDir reports whether a directory — given as a slash-relative path
-// without a trailing slash — is excluded by any gitignore pattern. It mirrors
-// isIgnoredDir by matching both "dir/" and "dir", so directory-only patterns
-// such as "build/" or "coverage/" are honoured by the watcher filter exactly as
-// they are by the walker.
-func isGitIgnoredDir(relDirPath string, patterns []string) bool {
-	if len(patterns) == 0 {
-		return false
-	}
-	withSlash := relDirPath + "/"
-	for _, pattern := range patterns {
-		if matched, _ := doublestar.Match(pattern, withSlash); matched {
-			return true
-		}
-		if matched, _ := doublestar.Match(pattern, relDirPath); matched {
+// binaryHeaderSize is the number of leading bytes inspected for binary
+// detection. It matches git's heuristic and is small enough that reading it
+// from a multi-GB file is effectively free.
+const binaryHeaderSize = 512
+
+// containsNullByte reports whether b contains a NUL byte, the classic binary
+// indicator (used by git and diff).
+func containsNullByte(b []byte) bool {
+	for i := 0; i < len(b); i++ {
+		if b[i] == 0 {
 			return true
 		}
 	}
 	return false
 }
 
-// isBinaryFile checks the first 512 bytes for null bytes, indicating a binary file.
-func isBinaryFile(content []byte) bool {
-	checkLen := len(content)
-	if checkLen > 512 {
-		checkLen = 512
-	}
-	for i := 0; i < checkLen; i++ {
-		if content[i] == 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// loadGitignorePatterns reads a .gitignore file from root and returns
-// doublestar-compatible patterns.
-func loadGitignorePatterns(root string) []string {
-	gitignorePath := filepath.Join(root, ".gitignore")
-	f, err := os.Open(gitignorePath)
+// isBinaryHeader reports whether the file at filePath begins with binary
+// content (a NUL byte within the first binaryHeaderSize bytes). It reads at
+// most binaryHeaderSize bytes and never loads the whole file, so it is safe to
+// call on very large files — this is the walk/read-time guard that prevents
+// multi-GB binary assets (e.g. .onnx, .safetensors, .psd) from being fully
+// read into memory before rejection. An open error is returned to the caller
+// so it can decide whether to skip or fail; short reads (fewer bytes than
+// requested) are normal and are scanned over whatever was read.
+func isBinaryHeader(filePath string) (bool, error) {
+	f, err := os.Open(filePath)
 	if err != nil {
-		return nil
+		return false, err
 	}
 	defer func() { _ = f.Close() }()
-
-	var patterns []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// Negation patterns are not supported in this simple implementation.
-		if strings.HasPrefix(line, "!") {
-			continue
-		}
-		// Strip trailing spaces (not preceded by backslash).
-		line = strings.TrimRight(line, " ")
-		// Normalize the pattern for doublestar matching.
-		pattern := normalizeGitignorePattern(line)
-		patterns = append(patterns, pattern)
-	}
-	return patterns
-}
-
-// normalizeGitignorePattern converts a .gitignore pattern to a
-// doublestar-compatible glob pattern.
-func normalizeGitignorePattern(pattern string) string {
-	// Remove leading slash (anchored to root).
-	pattern = strings.TrimPrefix(pattern, "/")
-
-	// Remove trailing slash (directory indicator) — we handle dirs separately.
-	pattern = strings.TrimSuffix(pattern, "/")
-
-	// If pattern doesn't contain a slash, it matches anywhere in the tree.
-	if !strings.Contains(pattern, "/") {
-		return "**/" + pattern
-	}
-
-	return pattern
+	header := make([]byte, binaryHeaderSize)
+	// io.ReadFull returns io.EOF only when zero bytes were read and
+	// io.ErrUnexpectedEOF when fewer than len(header) bytes were read — both
+	// are expected here; n holds the bytes actually read, which is all we scan.
+	n, _ := io.ReadFull(f, header)
+	return containsNullByte(header[:n]), nil
 }

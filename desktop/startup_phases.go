@@ -760,9 +760,6 @@ func (a *App) startVectorIndexBackground(
 		vectorMgr, err := vectorindex.NewManager(vectorindex.ManagerConfig{
 			EmbeddingFunc:    emb.EmbeddingFunc(),
 			CloseFn:          emb.Close,
-			IgnoreDirs:       cfg.Workspace.IgnoreDirs,
-			IgnoreExtensions: cfg.Workspace.IgnoreExtensions,
-			IgnoreFileNames:  cfg.Workspace.IgnoreFileNames,
 			HybridConfig: vectorindex.HybridConfig{
 				RRFK:              cfg.VectorIndex.HybridRRFK,
 				FanoutMultiplier:  cfg.VectorIndex.HybridFanoutMultiplier,

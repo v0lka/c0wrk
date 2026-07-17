@@ -359,6 +359,153 @@ func TestListDirectoryWalk_HiddenAndGitIgnored(t *testing.T) {
 	}
 }
 
+// --- ListDirectory .aiignore flagging tests ---
+
+// TestListDirectory_AiignoreFlagsFiles verifies that files matched by a root
+// .aiignore are flagged with GitIgnored=true, identically to .gitignore-ignored
+// files, while non-matched files remain unflagged. The workspace is a git repo
+// so the ignore resolver is built.
+func TestListDirectory_AiignoreFlagsFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	// Seed a few files: one matched by .aiignore, one matched by .gitignore,
+	// and one visible.
+	if err := os.WriteFile(filepath.Join(tmpDir, "visible.txt"), []byte("v"), 0o644); err != nil {
+		t.Fatalf("write visible: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "aiignored.log"), []byte("a"), 0o644); err != nil {
+		t.Fatalf("write aiignored: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "gitignored.tmp"), []byte("g"), 0o644); err != nil {
+		t.Fatalf("write gitignored: %v", err)
+	}
+
+	// .aiignore covers a pattern .gitignore does not.
+	if err := os.WriteFile(filepath.Join(tmpDir, ".aiignore"), []byte("*.log\n"), 0o644); err != nil {
+		t.Fatalf("write .aiignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("*.tmp\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	gitInit(t, tmpDir)
+
+	nodes, err := f.ListDirectory(tmpDir, false)
+	if err != nil {
+		t.Fatalf("ListDirectory: %v", err)
+	}
+
+	byName := make(map[string]FileNode, len(nodes))
+	for _, n := range nodes {
+		byName[n.Name] = n
+	}
+
+	// .aiignore-matched file must be flagged exactly like a .gitignored file.
+	if n, ok := byName["aiignored.log"]; !ok {
+		t.Error("aiignored.log missing from listing")
+	} else if !n.GitIgnored {
+		t.Errorf("aiignored.log: expected GitIgnored=true (matched by .aiignore), got false")
+	}
+
+	// .gitignore behaviour is unchanged.
+	if n, ok := byName["gitignored.tmp"]; !ok {
+		t.Error("gitignored.tmp missing from listing")
+	} else if !n.GitIgnored {
+		t.Errorf("gitignored.tmp: expected GitIgnored=true, got false")
+	}
+
+	// Visible file stays unflagged.
+	if n, ok := byName["visible.txt"]; !ok {
+		t.Error("visible.txt missing from listing")
+	} else if n.GitIgnored {
+		t.Errorf("visible.txt: expected GitIgnored=false, got true")
+	}
+}
+
+// TestListDirectory_AiignoreRecursiveAndDirs confirms the .aiignore flag is
+// applied in recursive listings and honours directory patterns (a directory
+// pattern flags both the directory and its contents).
+func TestListDirectory_AiignoreRecursiveAndDirs(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	// build/ directory with contents, plus a loose file.
+	if err := os.MkdirAll(filepath.Join(tmpDir, "build", "out"), 0o755); err != nil {
+		t.Fatalf("mkdir build: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "build", "out", "artifact.bin"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "keep.txt"), []byte("k"), 0o644); err != nil {
+		t.Fatalf("write keep: %v", err)
+	}
+
+	// Directory-only pattern: build/ is ignored by .aiignore.
+	if err := os.WriteFile(filepath.Join(tmpDir, ".aiignore"), []byte("build/\n"), 0o644); err != nil {
+		t.Fatalf("write .aiignore: %v", err)
+	}
+
+	gitInit(t, tmpDir)
+
+	nodes, err := f.ListDirectory(tmpDir, true)
+	if err != nil {
+		t.Fatalf("ListDirectory recursive: %v", err)
+	}
+
+	byPath := make(map[string]FileNode, len(nodes))
+	for _, n := range nodes {
+		byPath[n.Path] = n
+	}
+
+	// The ignored directory and everything beneath it must be flagged.
+	buildDir := filepath.Join(tmpDir, "build")
+	if n, ok := byPath[buildDir]; !ok {
+		t.Error("build dir missing from listing")
+	} else if !n.GitIgnored {
+		t.Errorf("build/: expected GitIgnored=true, got false")
+	}
+	artifact := filepath.Join(tmpDir, "build", "out", "artifact.bin")
+	if n, ok := byPath[artifact]; !ok {
+		t.Error("build/out/artifact.bin missing from listing")
+	} else if !n.GitIgnored {
+		t.Errorf("build/out/artifact.bin: expected GitIgnored=true (under ignored dir), got false")
+	}
+
+	// Unrelated file is untouched.
+	if n, ok := byPath[filepath.Join(tmpDir, "keep.txt")]; !ok {
+		t.Error("keep.txt missing from listing")
+	} else if n.GitIgnored {
+		t.Errorf("keep.txt: expected GitIgnored=false, got true")
+	}
+}
+
+// TestListDirectory_AiignoreNonGitNoError verifies the No-Project / non-git
+// path: when the workspace is not a git repository, ListDirectory returns no
+// error and applies no spurious GitIgnored flags.
+func TestListDirectory_AiignoreNonGitNoError(t *testing.T) {
+	tmpDir := t.TempDir()
+	// NOTE: no gitInit — this is a non-git workspace. No .aiignore is honoured
+	// here either (resolver is only built for git repos), matching the task
+	// requirement that the No-Project / non-git path is unchanged.
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "plain.txt"), []byte("p"), 0o644); err != nil {
+		t.Fatalf("write plain: %v", err)
+	}
+
+	nodes, err := f.ListDirectory(tmpDir, false)
+	if err != nil {
+		t.Fatalf("ListDirectory on non-git workspace: unexpected error: %v", err)
+	}
+
+	for _, n := range nodes {
+		if n.GitIgnored {
+			t.Errorf("non-git workspace: %s should not be flagged GitIgnored, got true", n.Name)
+		}
+	}
+}
+
 // --- ListDirectory icon attachment test ---
 
 func TestListDirectory_IconsAttached(t *testing.T) {

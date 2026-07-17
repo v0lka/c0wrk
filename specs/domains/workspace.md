@@ -72,8 +72,8 @@ type SearchOptions struct {
 
 - Loaded lazily on frontend request (not preloaded)
 - Depth-limited to avoid scanning huge directories
-- Excludes: `.git/`, `node_modules/`, `build/`, `.cache/`, etc. (configurable ignores)
-- Returns `FileNode` list: name, path, isDir, hidden, gitStatus, gitIgnored (flat list, no children)
+- Excludes files/dirs matching `.gitignore` or `.aiignore` rules (root and nested, resolved by an `ignore.Resolver` over the workspace) plus any hidden entry (leading-dot name); no hardcoded directory/extension list remains. See [ADR-016](../decisions/016-aiignore.md).
+- Returns `FileNode` list: name, path, isDir, hidden, gitStatus, gitIgnored (flat list, no children). The `gitIgnored` flag is set for paths excluded by `.gitignore` **or** `.aiignore`, not strictly git-ignored paths.
 
 ### Filesystem Watcher
 
@@ -96,7 +96,7 @@ session exists). Git operations and vector indexing remain skipped.
 - `GetGitStatus()` returns per-file status (modified, added, deleted, untracked)
 - `GetFileDiff(path)` returns unified diff for modified files
 - Status integrated into file tree nodes (icon indicators in UI)
-- `.gitignore` filtering in directory listings uses `git ls-files --others --ignored --exclude-standard --directory -z`
+- `.gitignore` filtering in directory listings uses `git ls-files --others --ignored --exclude-standard --directory -z`. In a git repo `.aiignore` is layered on top of that git-derived set via an `ignore.Resolver` (only `IgnoredByAIIgnore` is OR-merged, so the resolver's negation-less matching cannot override a git `!pattern` un-ignore). In a non-git workspace (including No Project) the resolver is the sole authority for both files. A resolver-construction failure is non-fatal; the listing returns with whatever flags were already computed.
 - `vectorindex.CurrentBranch(ctx, repoPath)` detects the active branch via `git symbolic-ref --short HEAD` (falls back to `git rev-parse --short=12 HEAD` for detached HEAD)
 - All git calls use `exec.CommandContext(ctx, "git", ...)` with stdout/stderr capture; errors are propagated, never swallowed
 - Non-repository paths are distinguished from failures by matching `"not a git repository"` in stderr; a legitimate non-repo returns an empty result, any other error is returned to the caller
@@ -157,7 +157,7 @@ Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4
 - Per-side filters (FilePattern, MustMatch) are applied BEFORE RRF fusion so vector and lexical rank spaces remain comparable
 - Pre-fusion score thresholds discard noise-tail hits (low cosine similarity or low BM25) before RRF fusion so they cannot earn a double RRF contribution; thresholds apply only in the hybrid path, not vector-only or lexical-only modes
 - A single `ready atomic.Bool` on `Service`; hybrid auto-falls-back to vector-only when `lexical.Count() == 0`
-- Binary files detected by null byte presence in first 8KB
+- The indexer rejects binary files via a bounded 512-byte header pre-read (null-byte presence, `binaryHeaderSize`) before loading the file into memory; the frontend file viewer detects binary content via null bytes in the first 8KB
 - File operations are sandboxed to workspace path (no directory traversal)
 - Every git invocation flows through `exec.CommandContext`; git errors propagate to the caller (no silent fallback)
 - Missing `git` binary is a fatal startup condition, never a runtime surprise
@@ -172,7 +172,7 @@ Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4
 | Parameter        | Source                | Description                        |
 | ---------------- | --------------------- | ---------------------------------- |
 | Workspace path   | Active project config | Root directory for file operations |
-| Ignore patterns  | config.yaml           | Patterns excluded from tree/index  |
+| Ignore patterns | `.gitignore` / `.aiignore` | Ignore files controlling which files/dirs are excluded from tree and index (hidden dirs always excluded) |
 | Index chunk size | Internal (hardcoded)  | Characters per embedding chunk     |
 | Hybrid RRF k     | `vector_index.hybrid_rrf_k` (default 60) | Reciprocal Rank Fusion constant k |
 | Hybrid fanout    | `vector_index.hybrid_fanout_multiplier` (default 4) / `hybrid_fanout_min` (default 100) | Per-side candidate pool size for RRF |
@@ -182,7 +182,13 @@ Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4
 
 ## Extension Points
 
-- **Custom ignore patterns**: add patterns to config.yaml to exclude directories from tree and index
+- **Custom ignore patterns**: add entries to the project's `.gitignore` (or `.aiignore` for AI-specific ignores) to exclude files/directories from tree and index. `.aiignore` is the recommended channel for files git tracks but the agent/indexer should not waste context on. Recommended `.aiignore` recipe:
+  ```
+  go.sum
+  package-lock.json
+  *.lock
+  ```
+  Hidden directories (entries starting with `.`) are always excluded regardless of ignore files. See [ADR-016](../decisions/016-aiignore.md) for the full rationale and the ripgrep nested-`.aiignore` limitation.
 - **Alternative embedding model**: replace ONNX Runtime with a different model by implementing the embedding interface
 - **Vector store backend**: replace chromem-go with an alternative vector database by implementing the service interface
 - **Git monitor hooks**: add custom callbacks on branch change detected by `GitMonitor`
