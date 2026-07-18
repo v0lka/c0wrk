@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -1040,11 +1039,11 @@ func (s *Session) DumpFile() *os.File {
 	if s.dumpFile == nil {
 		return nil
 	}
-	fd, err := syscall.Dup(int(s.dumpFile.Fd()))
+	f, err := dupFile(s.dumpFile)
 	if err != nil {
 		return nil
 	}
-	return os.NewFile(uintptr(fd), s.dumpFile.Name())
+	return f
 }
 
 // EmitSessionEvent emits a session-scoped event through the manager's emit

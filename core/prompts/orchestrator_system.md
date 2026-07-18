@@ -37,9 +37,9 @@ Fall back to Tier 3 when searching for exact string literals, error messages, co
 
 ### Tier 5 — Fallback
 
-- **bash_exec** — ONLY when no MCP or built-in tool covers the operation (build commands, git operations, package management, running tests).
+- **{shell_tool}** — ONLY when no MCP or built-in tool covers the operation (build commands, git operations, package management, running tests).
 
-### bash_exec Output Management
+### {shell_tool} Output Management
 
 Always use flags that produce minimal, structured output to avoid flooding the context window. Only request verbose output when compact output is insufficient to diagnose an issue.
 

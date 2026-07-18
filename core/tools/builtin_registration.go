@@ -55,15 +55,18 @@ type BuiltinToolsConfig struct {
 
 // RegisterBuiltinTools creates and registers all built-in tools into the registry.
 func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error {
-	// Bash (merge configured blacklist with any extra patterns)
+	// Shell execution (bash_exec on Unix, posh_exec on Windows).
+	// Merge configured blacklist with any extra patterns; the platform-specific
+	// constructor call lives in shelltool_{unix,windows}.go behind build tags,
+	// because sp4rk's bash.go and posh.go are mutually exclusive per OS.
 	allBlacklist := make([]string, 0, len(cfg.BashBlacklist)+len(cfg.ExtraBashBlacklist))
 	allBlacklist = append(allBlacklist, cfg.BashBlacklist...)
 	allBlacklist = append(allBlacklist, cfg.ExtraBashBlacklist...)
-	bashTool, err := builtins.NewBashExecToolWithTimeouts(allBlacklist, cfg.BashTimeouts)
+	shellTool, err := newShellExecTool(allBlacklist, cfg.BashTimeouts)
 	if err != nil {
-		return fmt.Errorf("bash tool: %w", err)
+		return fmt.Errorf("shell tool: %w", err)
 	}
-	registry.Register(bashTool)
+	registry.Register(shellTool)
 
 	// File operations
 	// read_file is wrapped to transparently convert document formats (pdf,

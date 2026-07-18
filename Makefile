@@ -83,7 +83,10 @@ lint:
 dev-desktop:
 	cd frontend && npm run dev
 
-# Download and extract ONNX Runtime library to the .app bundle
+# Download and extract ONNX Runtime library next to the executable.
+# Darwin/Linux: bash recipe below. Windows: delegate to scripts/fetch-onnx.ps1
+# (uses Expand-Archive; no /tmp, tar, unzip, or install_name_tool on the path).
+ifneq ($(filter $(UNAME_S),Darwin Linux),)
 fetch-onnx:
 	@mkdir -p $(APP_BUNDLE_DIR); \
 	if [ -f "$(APP_BUNDLE_DIR)/$(ONNX_LIB_OUT)" ]; then \
@@ -114,8 +117,15 @@ fetch-onnx:
 		rm -rf /tmp/$(ONNX_ARCHIVE) /tmp/$(ONNX_DIR); \
 		echo "ONNX Runtime library installed to $(APP_BUNDLE_DIR)/$(ONNX_LIB_OUT)"; \
 	fi
+else
+fetch-onnx:
+	@powershell -ExecutionPolicy Bypass -File scripts/fetch-onnx.ps1 -Version $(ONNX_VERSION) -OutputDir $(APP_BUNDLE_DIR) -CacheDir $(ONNX_CACHE_DIR)
+endif
 
-# Download embedding model and tokenizer to the .app bundle
+# Download embedding model and tokenizer next to the executable.
+# Darwin/Linux: bash recipe below. Windows: delegate to
+# scripts/fetch-embedding-model.ps1 (Invoke-WebRequest; no /tmp/tar on the path).
+ifneq ($(filter $(UNAME_S),Darwin Linux),)
 fetch-embedding-model:
 	@mkdir -p $(APP_MODELS_DIR); \
 	if [ -f "$(APP_MODELS_DIR)/$(EMBEDDING_MODEL_NAME)" ] && [ -f "$(APP_MODELS_DIR)/$(EMBEDDING_TOKENIZER_NAME)" ]; then \
@@ -135,6 +145,10 @@ fetch-embedding-model:
 		cp $(MODELS_CACHE_DIR)/$(EMBEDDING_TOKENIZER_NAME) $(APP_MODELS_DIR)/$(EMBEDDING_TOKENIZER_NAME); \
 		echo "Embedding model installed to $(APP_MODELS_DIR)/"; \
 	fi
+else
+fetch-embedding-model:
+	@powershell -ExecutionPolicy Bypass -File scripts/fetch-embedding-model.ps1 -OutputDir $(APP_MODELS_DIR) -CacheDir $(MODELS_CACHE_DIR) -ModelUrl $(EMBEDDING_MODEL_URL) -TokenizerUrl $(EMBEDDING_TOKENIZER_URL) -ModelName $(EMBEDDING_MODEL_NAME) -TokenizerName $(EMBEDDING_TOKENIZER_NAME)
+endif
 
 # Remove downloaded ONNX Runtime files
 clean-onnx:

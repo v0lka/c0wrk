@@ -6,7 +6,8 @@ c0wrk registers sp4rk's built-in tools plus the c0wrk-specific `ask_user` tool a
 
 ## Key Files
 
-- `core/tools/builtin_registration.go` — `RegisterBuiltinTools(registry, cfg)` + `BuiltinToolsConfig`
+- `core/tools/builtin_registration.go` — `RegisterBuiltinTools(registry, cfg)` + `BuiltinToolsConfig`; assembles the merged shell blacklist (config + No-Project extra patterns) and delegates the platform-specific constructor call to `newShellExecTool`
+- `core/tools/shelltool_unix.go` / `core/tools/shelltool_windows.go` — build-tag split for the shell-exec tool constructor (`builtins.NewBashExecToolWithTimeouts` on Unix, `builtins.NewPoshExecToolWithTimeouts` on Windows); sp4rk's `bash.go`/`posh.go` are mutually exclusive per OS
 - `core/tools/read_file_doc.go` — c0wrk `ReadFileDocTool` wrapper over sp4rk `ReadFileTool` that converts document formats (pdf, docx, pptx, xlsx, odt, html, htm) to markdown via `core/markitdown`; implements sp4rk's `ContentBackedReader` so converted results are content-backed cached
 - `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
 - `core/toolmanager/` — manages external binaries (`rg`, `rtk`, `uv`, `markitdown`), auto-downloaded on first run to `~/.c0wrk/tools/bin/`, PATH-prepended at startup (ADR-010)
@@ -19,7 +20,7 @@ c0wrk's registered tools and their default policy / trust classification:
 
 | Tool                  | Category  | Default Policy | Untrusted | Description                                        |
 | --------------------- | --------- | -------------- | --------- | -------------------------------------------------- |
-| `bash_exec`           | Execution | user_confirm   | yes       | Shell command execution with timeout and blacklist |
+| `bash_exec` / `posh_exec` | Execution | user_confirm | yes | Shell command execution with timeout and blacklist. `bash_exec` (bash) on Unix, `posh_exec` (PowerShell) on Windows — exactly one registers, selected by build tag (see [Shell-Execution Tool](#shell-execution-tool-bash_exec--posh_exec)) |
 | `read_file`           | File      | always_allow   | yes       | Read file contents (streaming, O(1) memory, default 2000-line window); document formats (pdf, docx, pptx, xlsx, odt, html, htm) auto-converted to markdown via markitdown |
 | `write_file`          | File      | user_confirm   | no        | Create/overwrite file                              |
 | `edit_file`           | File      | user_confirm   | no        | Apply targeted edits to existing file              |
@@ -48,11 +49,26 @@ c0wrk's registered tools and their default policy / trust classification:
 
 Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_final_result`, `read_step_output`, `tool_result_read`, `batch`, `search_facts`, `semantic_search`, `store_fact`, `read_skill_resource`, `update_checklist`, `declare_step_complete`) bypass policy checks during execution. `batch` is marked internal but is intercepted at the executor level before reaching the registry.
 
+### Shell-Execution Tool (`bash_exec` / `posh_exec`)
+
+The shell-execution tool is platform-specific: sp4rk's `bash.go` is `//go:build !windows` and `posh.go` is `//go:build windows`, and they are mutually exclusive per OS. A single unconditional constructor call would fail to compile on the other OS, so the registration path is split behind build tags:
+
+- `core/tools/shelltool_unix.go` → `builtins.NewBashExecToolWithTimeouts` → registers `bash_exec`
+- `core/tools/shelltool_windows.go` → `builtins.NewPoshExecToolWithTimeouts` → registers `posh_exec`
+
+Both expose the same constructor signature `newShellExecTool(blacklist, timeouts)`; the caller (`RegisterBuiltinTools`) assembles the merged blacklist (config + No-Project extra patterns) and passes it through unchanged. The registered name differs per platform, so all name-keyed configuration and policy lookups resolve through `core.activeShellToolName()` (`bash_exec` on Unix, `posh_exec` on Windows) — see [Blacklist / Policy Key](#blacklist--policy-key) below and [../../architecture/security-model.md](../../architecture/security-model.md).
+
+Prompt data references the shell tool through the `{shell_tool}` placeholder rather than a hardcoded name, so tool-priority guidance always points at the tool actually registered on the current platform. The placeholder is resolved by `prompts.SubstituteShellTool` at each prompt-assembly call site (`core/systemprompt.go`); the embedded prompt vars are kept as raw templates (placeholder recoverable).
+
+#### Blacklist / Policy Key
+
+The blacklist and per-tool policy are read from the policy entry whose key matches the platform's active shell tool name (`bash_exec` on Unix, `posh_exec` on Windows). In `core/builder.go` → `configToBuiltinToolsConfig`, the blacklist is sourced from `cfg.Security.ToolPolicies[activeShellToolName()].Blacklist`; in `applySecurityPolicies` the policy is resolved the same way. A Windows deployment therefore configures `posh_exec`, not `bash_exec`.
+
 ## Registration Order
 
 ```go
 RegisterBuiltinTools(registry, cfg):
-  1. bash_exec (with blacklist + timeouts)
+  1. shell-exec tool — `bash_exec` on Unix, `posh_exec` on Windows (with blacklist + timeouts; constructor call split by build tag in `core/tools/shelltool_{unix,windows}.go`)
   2. File tools (read, write, edit, list, mkdir, rmdir, rm)
      — read_file is registered as `NewReadFileDocTool`, a wrapper over sp4rk `ReadFileTool` that transparently converts document formats to markdown (plain-text files delegate to the inner tool unchanged)
   3. finish
@@ -112,7 +128,7 @@ Per-tool output truncation is centralized in the executor's two-stage pipeline (
 | `toolLimits.perToolTruncation`      | All cacheable tools (map)  | per-tool           |
 | `toolResultBudget.cacheTTLSeconds`  | ToolResultCache eviction   | 300                |
 
-Default per-tool Stage 1 truncation: `read_file` 2000 lines, `ripgrep` 5000, `glob` 2000, `list_directory` 2000, `bash_exec` 10000, `web_fetch` 2097152 bytes (2 MiB).
+Default per-tool Stage 1 truncation: `read_file` 2000 lines, `ripgrep` 5000, `glob` 2000, `list_directory` 2000, the shell-exec tool (`bash_exec`) 10000, `web_fetch` 2097152 bytes (2 MiB).
 
 `read_file` internal safety caps (hardcoded in `DefaultFileLimits()`, not configurable): `MaxLineBytes` 1 MiB (per-line), `MaxWindowLines` 50000 (hard cap per call).
 
@@ -120,9 +136,9 @@ Non-truncation tool limits:
 
 | Config                       | Affects                   | Default             |
 | ---------------------------- | ------------------------- | ------------------- |
-| `BashTimeouts.MaxTimeout`    | bash_exec                 | 120s                |
-| `BashTimeouts.WaitDelay`     | bash_exec                 | 5s                  |
-| `BashBlacklist`              | bash_exec                 | [] (regex patterns) |
+| `BashTimeouts.MaxTimeout`    | shell-exec (`bash_exec`/`posh_exec`) | 120s                |
+| `BashTimeouts.WaitDelay`     | shell-exec (`bash_exec`/`posh_exec`) | 5s                  |
+| `BashBlacklist`              | shell-exec (`bash_exec`/`posh_exec`) | [] (regex patterns) |
 | `WebSearchLimits.MaxResults` | web_search                | 5                   |
 
 ## Engine Behavior (canonical in sp4rk)

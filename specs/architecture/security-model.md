@@ -133,7 +133,7 @@ ToolRegistry.Execute()
 
 ## Symlink Confirmation
 
-Before policy resolution, the registry inspects ALL tool call inputs (both structured tools and `bash_exec`) for paths that traverse symlinks. If symlinks are detected, the call is forcibly routed to user confirmation regardless of the tool's resolved policy — except `always_deny`, which returns an error immediately.
+Before policy resolution, the registry inspects ALL tool call inputs (both structured tools and the shell-exec tool) for paths that traverse symlinks. If symlinks are detected, the call is forcibly routed to user confirmation regardless of the tool's resolved policy — except `always_deny`, which returns an error immediately.
 
 ### Detection
 
@@ -142,6 +142,8 @@ Path extraction differs by tool type:
 - **Structured tools** (JSON input): all string values in the JSON payload are extracted. Paths are identified by heuristics — the value must contain a `/` separator and must not be a URL. Extracted paths are resolved against the workspace directory.
 
 - **`bash_exec`** (shell command): the command is parsed with `mvdan.cc/sh/v3/syntax`. Literal strings, single-quoted and double-quoted strings from `syntax.Word` parts in `*syntax.CallExpr` arguments and redirect paths are extracted. Words containing shell expansions (`$var`, `$(cmd)`, `` `cmd` ``, `<(`) are flagged as **suspicious** — their resolved paths cannot be determined statically, so the entire call is treated as potentially path-masking.
+
+  The shell-command AST parse is dispatched by tool name in sp4rk's `DetectSymlinksInToolInput`, which matches the literal name `bash_exec`. On Windows the shell tool registers as `posh_exec`, so this special-cased command-parsing branch does not run there — a `posh_exec` call is treated as a structured tool (its `command` field is scanned by the generic string-value path heuristic above), and the bash-syntax suspicious-flag for shell expansions does not apply. This is a platform-specific limitation of symlink detection, not a policy gap: the policy/judge/blacklist/auto-approval layers all apply identically to `posh_exec`.
 
 ### Symlink Traversal
 
@@ -189,7 +191,7 @@ If the input contains suspicious (unexpandable) shell expressions, a warning is 
 
 ## Bash Blacklist
 
-The `bash_exec` tool has a regex-based blacklist (`config.yaml Security.BashBlacklist`) that blocks dangerous command patterns (e.g., `rm -rf /`, `chmod 777`, `curl | sh`). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's policy resolves to `AlwaysAllow`, `BashExecTool.Judge()` evaluates the command against compiled blacklist regexes. A match returns `allow=false` with a non-empty reasoning identifying the matched pattern, which escalates to user confirmation via the PolicyAlwaysAllow Judge Gate (above). The gate runs **before** workspace/temp auto-approval, so a blacklisted command with paths inside the workspace (e.g., `rm -rf /workspace/.git`) is still routed to confirmation.
+The shell-execution tool (`bash_exec` on Unix, `posh_exec` on Windows) has a regex-based blacklist (`config.yaml Security.BashBlacklist`) that blocks dangerous command patterns (e.g., `rm -rf /`, `chmod 777`, `curl | sh`). The blacklist is read from the policy entry keyed by the platform's active shell tool name — `cfg.Security.ToolPolicies[activeShellToolName()].Blacklist` — so on Windows the entry is configured under `posh_exec`, on Unix under `bash_exec` (see [builtins.md § Shell-Execution Tool](../domains/tool-system/builtins.md#shell-execution-tool-bash_exec--posh_exec)). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's policy resolves to `AlwaysAllow`, the tool's `Judge()` evaluates the command against compiled blacklist regexes. A match returns `allow=false` with a non-empty reasoning identifying the matched pattern, which escalates to user confirmation via the PolicyAlwaysAllow Judge Gate (above). The gate runs **before** workspace/temp auto-approval, so a blacklisted command with paths inside the workspace (e.g., `rm -rf /workspace/.git`) is still routed to confirmation.
 
 ## Indirect Prompt Injection Defense
 
@@ -209,7 +211,7 @@ The wrapping occurs in `github.com/v0lka/sp4rk/memory/context.go` `buildStepMess
 
 Untrusted tools:
 - All MCP tools (`IsUntrusted()` returns `true` on `github.com/v0lka/sp4rk/tools/mcp/mcptool.go`)
-- Built-in: `web_search`, `web_fetch`, `bash_exec`, `ripgrep`, `glob`, `read_file` (`Untrusted: true` on `BaseTool`)
+- Built-in: `web_search`, `web_fetch`, `bash_exec` (and `posh_exec` on Windows), `ripgrep`, `glob`, `read_file` (`Untrusted: true` on `BaseTool`)
 - `finish` tool is trusted (`IsUntrusted()` returns `false`)
 
 Trust classification is determined by `ToolExecutor.IsToolUntrusted()` which delegates to the `IsUntrusted() bool` method on the `Tool` interface. MCP-sourced tools are always considered untrusted regardless of their `IsUntrusted()` value. The executor sets `Step.IsUntrusted` after tool execution; the context builder reads it to decide whether to wrap.
@@ -291,7 +293,7 @@ In `config.yaml`:
 security:
   default_policy: "user_confirm" # default for tools without explicit override
   tool_policies:
-    bash_exec:
+    bash_exec:          # key must match the active shell tool: bash_exec (Unix) or posh_exec (Windows)
       policy: "user_confirm"
       blacklist:
         - "rm\\s+-rf\\s+/"

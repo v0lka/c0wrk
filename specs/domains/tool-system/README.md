@@ -84,7 +84,8 @@ From `config.yaml`:
 security:
   default_policy: "user_confirm"
   tool_policies:
-    bash_exec: { policy: "user_confirm" }
+  tool_policies:
+    bash_exec: { policy: "user_confirm" }  # key matches the active shell tool: bash_exec (Unix) / posh_exec (Windows)
     write_file: { policy: "user_confirm" }
 
 toolLimits:
@@ -94,7 +95,7 @@ toolLimits:
     glob: { maxLines: 5000 }
     list_directory: { maxLines: 5000 }
     web_fetch: { maxBytes: 2097152 }
-    bash_exec: { maxLines: 10000 }
+    bash_exec: { maxLines: 10000 }  # same key as policy: bash_exec (Unix) / posh_exec (Windows)
 
 toolResultBudget:
   cacheTTLSeconds: 300 # seconds before cache entries expire
@@ -118,7 +119,7 @@ Note: `security.*` keys use `snake_case`; `toolLimits.*` and `timeouts.*` keys u
 - `ToolJudger` interface — per-tool safety evaluation (implement on tool struct)
 - New built-in tools: implement the sp4rk `Tool` interface, set `Untrusted: true` on `BaseTool` if output comes from external sources, register in `RegisterBuiltinTools` (c0wrk-specific tools like `ask_user` go in `core/tools/`) — see [builtins.md](builtins.md)
 - To disable tools at runtime (e.g., for No Project mode): call `SetDisabledTools(names)` on the core registry; all tools including internal ones are blocked at execution time
-- To add runtime bash command restrictions: call `SetExtraBashBlacklist(patterns)` on the core registry; patterns are compiled regexps checked before `bash_exec` execution
+- To add runtime bash command restrictions: call `SetExtraBashBlacklist(patterns)` on the core registry; patterns are compiled regexps checked before the shell-exec tool (`bash_exec` on Unix, `posh_exec` on Windows) executes
 
 ## Related Specs
 

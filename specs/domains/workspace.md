@@ -107,7 +107,7 @@ session exists). Git operations and vector indexing remain skipped.
 
 - Dual-indexed: chromem-go vector store (cosine similarity on ONNX embeddings) and bleve BM25 lexical store with a custom `c0wrk_code` analyzer (camelCase splitter → lowercase → stop-en). Both indices share a deterministic document ID (`sha256(path)[:8hex]:{chunkIndex}`); lexical hits enrich their content via `chromem.Collection.GetByID`.
 - Embeddings computed via ONNX Runtime (local, no API calls)
-- Model: quantized embedding model downloaded by `make fetch-embedding-model`
+- Model: quantized embedding model downloaded by `make fetch-embedding-model` (Unix) or the Makefile-routed `scripts/fetch-embedding-model.ps1` (Windows); the Makefile is the single source of truth — version/URL/dir values are passed from Makefile variables to the PowerShell recipe
 - Collections are partitioned per git branch; switching branches produces a new pair of collections (`vector/` and `lexical/<branch>/`)
 - Storage location: `~/.c0wrk/projects/<projectID>/vector_index/` (per-project, co-located with session data)
 - Branch detection on project switch uses `vectorindex.CurrentBranch`; detection failure propagates and aborts the switch rather than silently degrading

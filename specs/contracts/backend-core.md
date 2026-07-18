@@ -21,7 +21,7 @@
 | `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. ExtraBashBlacklist). Per-tool truncation lives in `BuilderConfig.ToolLimits.PerToolTruncation`, not `BuiltinToolsConfig`. |
 | `StepDumpTracker`     | github.com/v0lka/sp4rk/orchestration (direct) | backend → core | Per-step LLM dump file manager        |
 | `Manager`             | core/vectorindex | core → backend | Vector index management (embedding, search, git monitoring) |
-| `terminal.Manager`    | core/terminal  | core → backend | PTY lifecycle, shell env, I/O         |
+| `terminal.Manager`    | core/terminal  | core → backend | PTY/ConPTY lifecycle, shell env, I/O (Unix PTY or Windows ConPTY, selected by build tag)         |
 | `Watcher`             | core/workspace | core → backend | Filesystem event watcher with debouncing |
 | `FileNode`            | core/workspace | core → backend | File tree node (type alias in backend) |
 | `GitStatusEntry`      | core/workspace | core → backend | Git porcelain status (type alias in backend) |

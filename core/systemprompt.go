@@ -204,7 +204,7 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 	// injection defense + workspace + mode + env + AGENTS.md + skills.
 	// All of this is session-invariant and benefits from prompt caching.
 	b := prompt.NewBuilder().
-		Core(prompts.OrchestratorSystem).
+		Core(prompts.SubstituteShellTool(prompts.OrchestratorSystem)).
 		Core(prompts.FamilyPrompt("orchestrator", family)).
 		Core(prompts.VerificationMandate)
 	if ctx.Value(InjectionDefenseKey) != nil {
@@ -233,7 +233,7 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 
 	// Mode-specific context (stable within a session).
 	if ctx.Value(PlanModeKey) != nil {
-		b.Core(prompts.OrchestratorPlanContext)
+		b.Core(prompts.SubstituteShellTool(prompts.OrchestratorPlanContext))
 	} else {
 		b.Core("## Completion\nYou are operating in single-step mode. When you have completed your work, you MUST call the `finish` tool with your final answer. Do not simply respond with text — the system only recognizes task completion through an explicit `finish` tool call.")
 	}

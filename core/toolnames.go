@@ -36,6 +36,7 @@ const (
 
 	// Execution tools.
 	ToolBashExec = "bash_exec"
+	ToolPoshExec = "posh_exec"
 	ToolSubAgent = "subagent"
 
 	// Web tools.

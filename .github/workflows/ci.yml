@@ -96,3 +96,72 @@ jobs:
 
       - name: Build
         run: make build
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      # onnxruntime_go (transitive via sp4rk/embedding) is CGO-dependent, so the
+      # C toolchain (MinGW-w64 gcc, installed below) must be enabled for compile,
+      # lint, test, and the wails build to succeed on Windows.
+      CGO_ENABLED: "1"
+    steps:
+      # Preserve LF line endings: MSYS2/Git may otherwise CRLF-convert checked-out
+      # sources, which breaks shell scripts and Go tooling that assume LF.
+      - run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up MinGW-w64 (gcc for CGO)
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc
+
+      - name: Expose MinGW gcc on PATH (for CGO in default shell)
+        # Ensures gcc is discoverable by `go test`/`golangci-lint`/`wails build`
+        # regardless of whether setup-msys2 prepends mingw64/bin to GITHUB_PATH.
+        run: echo "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin" >> $env:GITHUB_PATH
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm install
+
+      - name: Build frontend assets
+        run: cd frontend && npm run build
+
+      - name: Lint (Go)
+        run: golangci-lint run
+
+      - name: Lint (frontend)
+        run: cd frontend && npm run lint
+
+      - name: Test (Go)
+        run: go test ./...
+
+      - name: Test (frontend)
+        run: cd frontend && npm test
+
+      - name: Build (Wails)
+        run: wails build
+
+      - name: Fetch ONNX Runtime (Windows)
+        run: powershell -ExecutionPolicy Bypass -File scripts/fetch-onnx.ps1
+
+      - name: Fetch embedding model (Windows)
+        run: powershell -ExecutionPolicy Bypass -File scripts/fetch-embedding-model.ps1

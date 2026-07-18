@@ -71,7 +71,7 @@ The brain of c0wrk. Implements the conductor-driven orchestration cycle: the Rou
 Also owns domain services:
 - `core/vectorindex/` — embedding, BM25+chromem hybrid search, git branch monitoring for index freshness
 - `core/proxy/` — HTTP proxy configuration with PAC support
-- `core/terminal/` — PTY lifecycle management, shell environment, I/O
+- `core/terminal/` — PTY lifecycle management, shell environment, I/O. Unix PTY (`manager.go`, build tag `!windows`) and Windows ConPTY (`manager_windows.go`, build tag `windows`) twins behind a common `Manager`/`Session` surface; exactly one compiles per OS
 - `core/workspace/` — fsnotify watcher with debouncing, git status/diff operations, file tree walking
 - `core/tools/` — built-in tool registration, c0wrk-specific tool types (ask_user)
 

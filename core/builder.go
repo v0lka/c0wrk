@@ -1194,7 +1194,11 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 // configToBuiltinToolsConfig converts BuilderConfig to BuiltinToolsConfig.
 func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 	var bashBlacklist []string
-	if bashCfg, ok := cfg.Security.ToolPolicies[ToolBashExec]; ok {
+	// The shell-execution tool registers as bash_exec on Unix and posh_exec on
+	// Windows; read the blacklist from the policy entry that matches the tool
+	// actually registered on this platform so the configured blacklist applies
+	// to the correct tool name per platform.
+	if bashCfg, ok := cfg.Security.ToolPolicies[activeShellToolName()]; ok {
 		bashBlacklist = bashCfg.Blacklist
 	}
 
