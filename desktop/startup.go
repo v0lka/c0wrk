@@ -72,6 +72,72 @@ type pendingGoalProposalEntry struct {
 	payload   session.GoalProposalPayload
 }
 
+// wakeReloadDelay is how long deferredWakeReload waits between detecting a
+// power-state wake and re-navigating the frontend. The reload cannot run
+// inline inside the NSWorkspaceDidWake observer block: on macOS 26 the
+// notification fires mid-resume while the OS is still bringing the web-content
+// process back, and calling WindowReloadApp synchronously at that point races
+// the OS's own process restoration and silently kills the app. Deferring past
+// the resume window (~1.5s) moves the reload off the notification callback so
+// it no longer collides with the OS, while still refreshing a
+// suspended-but-alive render surface. See ADR-018.
+const wakeReloadDelay = 1500 * time.Millisecond
+
+// deferredWakeReload re-navigates the frontend to the start URL after a
+// power-state wake, with a delay and context-liveness guards so it is safe to
+// call from the synchronous NSWorkspace wake observer (which runs on the main
+// thread during resume). It:
+//   - returns immediately to the caller (it spawns a goroutine);
+//   - waits wakeReloadDelay, but cancels early if the app context is done
+//     (shutdown), via select;
+//   - re-checks a.ctx.Err() once more after the wait, so a shutdown that
+//     began during the delay never triggers a reload of a torn-down context.
+//
+// The delay is essential: calling WindowReloadApp inline inside the wake
+// observer races the OS's mid-resume web-content process and silently kills
+// the app. The 10-second debounce (lastWake) is applied by the caller and is
+// independent of this delay.
+//
+// If the web-content process actually died (rather than just suspending), the
+// runtime-injected -webViewWebContentProcessDidTerminate: hook
+// (powerstate_darwin.go) has already reloaded the webview via
+// -[WKWebView reload]; this deferred WindowReloadApp is then a harmless
+// re-navigation to the same URL.
+func (a *App) deferredWakeReload() {
+	if a.ctx == nil {
+		return
+	}
+	ctx := a.ctx
+	go func() {
+		timer := time.NewTimer(wakeReloadDelay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return // app is shutting down — cancel the deferred reload
+		case <-timer.C:
+		}
+		// Re-check after the wait: teardown may have begun during the delay.
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		log := a.log()
+		log.Info("power-state wake detected; reloading frontend to restore UI")
+		a.reloadFrontend(ctx)
+	}()
+}
+
+// reloadFrontend re-navigates the frontend to the start URL. Tests inject a
+// fake via a.reloadAppFn; production code uses wailsRuntime.WindowReloadApp.
+// Mirrors the a.wailsEmit override pattern so deferredWakeReload is testable
+// without a live Wails runtime.
+func (a *App) reloadFrontend(ctx context.Context) {
+	if a.reloadAppFn != nil {
+		a.reloadAppFn(ctx)
+		return
+	}
+	wailsRuntime.WindowReloadApp(ctx)
+}
+
 // Startup is called when the Wails app starts.
 func (a *App) Startup(ctx context.Context) {
 	// Catch any unrecovered panic during startup so a stack trace lands in
@@ -320,15 +386,24 @@ func (a *App) Startup(ctx context.Context) {
 	// stay blank until a manual restart. Reload the frontend on wake — the
 	// frontend is designed to survive a full reload (sessionRuntime state
 	// reconciliation + the on-mount listProjects() safety-net RPC), and the
-	// Go backend (DB, stores, sessions) persists across it. Rationale: see specs/decisions/017-macos-wake-reload.md.
+	// Go backend (DB, stores, sessions) persists across it. Rationale: see specs/decisions/018-macos-webview-recovery.md.
+	//
+	// The reload is deferred (deferredWakeReload) rather than invoked inline:
+	// the NSWorkspaceDidWake observer block runs synchronously on the main
+	// thread mid-resume, while the OS is still restoring the web-content
+	// process. Calling WindowReloadApp inline at that point races the OS and
+	// silently kills the app. deferredWakeReload spawns a goroutine that waits
+	// wakeReloadDelay, is cancellable via a.ctx.Done() (shutdown), and
+	// re-checks a.ctx.Err() before reloading.
+	//
+	// The wake path catches process SUSPENSION (alive but blank render
+	// surface); the runtime-injected -webViewWebContentProcessDidTerminate:
+	// hook installed by powerstate_darwin.go catches process DEATH. If the
+	// process died, the hook has already reloaded via -[WKWebView reload];
+	// the deferred WindowReloadApp is then a harmless re-navigation to the
+	// same URL.
 	var lastWake atomic.Int64
 	registerPowerWakeObserver(log, func() {
-		if a.ctx == nil {
-			return
-		}
-		if err := a.ctx.Err(); err != nil {
-			return // app is shutting down — don't reload a torn-down context
-		}
 		now := time.Now().UnixNano()
 		// Debounce: a single wake can post both NSWorkspaceDidWake and
 		// NSWorkspaceScreensDidWake. Skip repeats within 10s.
@@ -336,8 +411,8 @@ func (a *App) Startup(ctx context.Context) {
 			return
 		}
 		lastWake.Store(now)
-		log.Info("power-state wake detected; reloading frontend to restore UI")
-		wailsRuntime.WindowReloadApp(a.ctx)
+		// Deferred, context-cancellable reload — never block the observer.
+		a.deferredWakeReload()
 	})
 
 	// Store vector manager pointer for Shutdown fallback check (W3).

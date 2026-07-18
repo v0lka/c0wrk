@@ -66,6 +66,11 @@ type App struct {
 	// without a live Wails runtime (W-19/W-23). Production wiring keeps it nil.
 	wailsEmit func(eventName string, optionalData ...any)
 
+	// reloadAppFn, when non-nil, is used in place of wailsRuntime.WindowReloadApp
+	// by (*App).reloadFrontend. Lets tests observe the deferred wake reload
+	// without a live Wails runtime. Production wiring keeps it nil.
+	reloadAppFn func(ctx context.Context)
+
 	// toolsBinPath is the managed tools bin directory (e.g. ~/.c0wrk/tools/bin/),
 	// set during Phase 2 and prepended to PATH so exec.CommandContext calls
 	// resolve managed binaries (rg, rtk, uv, markitdown).

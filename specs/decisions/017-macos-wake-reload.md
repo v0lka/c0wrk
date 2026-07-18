@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-018](018-macos-webview-recovery.md)
 
 ## Context
 

@@ -36,6 +36,7 @@
 | Wails bindings, frontend RPC             | [contracts/desktop-frontend.md](contracts/desktop-frontend.md)           |
 | Event types, payloads, protocol          | [contracts/event-catalog.md](contracts/event-catalog.md)                 |
 | Canonical engine behavior (sp4rk)        | [sp4rk/specs/INDEX.md (GitHub)](https://github.com/v0lka/sp4rk/blob/main/specs/INDEX.md) |
+| macOS webview recovery / blank screen after sleep | [decisions/018-macos-webview-recovery.md](decisions/018-macos-webview-recovery.md) |
 | "Why was X designed this way?"           | [decisions/](decisions/)                                                 |
 
 ## Domain Dependency Graph
@@ -131,4 +132,6 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [014-sp4rk-separate-module.md](decisions/014-sp4rk-separate-module.md) - sp4rk as a separate Go module → Superseded by ADR-015
 - [015-sp4rk-external-module-dependency.md](decisions/015-sp4rk-external-module-dependency.md) - sp4rk as an external module dependency → Supersedes ADR-014
 - [016-aiignore.md](decisions/016-aiignore.md) - .gitignore + .aiignore as the ignore source of truth (removes workspace.* config ignores and hardcoded defaults)
-- [017-goal-mode.md](decisions/017-goal-mode.md) - Goal mode: self-agent + evidence-mandate, derive-then-confirm UX, persist + pause/resume, anti-spin auto-pause
+- [017-macos-wake-reload.md](decisions/017-macos-wake-reload.md) - Reload frontend on macOS power-state wake → Superseded by ADR-018
+- [018-macos-webview-recovery.md](decisions/018-macos-webview-recovery.md) - macOS webview recovery: native process-death hook + deferred wake reload → Supersedes ADR-017 (017-macos-wake-reload)
+- [019-goal-mode.md](decisions/019-goal-mode.md) - Goal mode: self-agent + evidence-mandate, derive-then-confirm UX, persist + pause/resume, anti-spin auto-pause
