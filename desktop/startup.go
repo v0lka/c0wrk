@@ -293,6 +293,35 @@ func (a *App) Startup(ctx context.Context) {
 	a.emitBackendReady(cachedProjects, projectMgr, cfg.LLM.DefaultModel == "", log)
 	log.Info("startup complete \u2014 backend ready", "total_elapsed_ms", time.Since(startTime).Milliseconds())
 
+	// ── Phase 6: macOS power-state wake recovery ──────────────────────
+	// On macOS 26 (Tahoe) the WKWebView's rendering surface is left blank
+	// after the system or the displays wake from sleep: the web content
+	// process is suspended/killed by the OS while the Go backend keeps
+	// running (the app still shuts down cleanly). Wails v2 does not forward
+	// webViewWebContentProcessDidTerminate, so without this the window would
+	// stay blank until a manual restart. Reload the frontend on wake — the
+	// frontend is designed to survive a full reload (sessionRuntime state
+	// reconciliation + the on-mount listProjects() safety-net RPC), and the
+	// Go backend (DB, stores, sessions) persists across it. Rationale: see specs/decisions/017-macos-wake-reload.md.
+	var lastWake atomic.Int64
+	registerPowerWakeObserver(log, func() {
+		if a.ctx == nil {
+			return
+		}
+		if err := a.ctx.Err(); err != nil {
+			return // app is shutting down — don't reload a torn-down context
+		}
+		now := time.Now().UnixNano()
+		// Debounce: a single wake can post both NSWorkspaceDidWake and
+		// NSWorkspaceScreensDidWake. Skip repeats within 10s.
+		if now-lastWake.Load() < int64(10*time.Second) {
+			return
+		}
+		lastWake.Store(now)
+		log.Info("power-state wake detected; reloading frontend to restore UI")
+		wailsRuntime.WindowReloadApp(a.ctx)
+	})
+
 	// Store vector manager pointer for Shutdown fallback check (W3).
 	a.vectorMgrPtr = &vectorMgrPtr
 
