@@ -39,6 +39,7 @@ type ApplicationConfig struct {
 	PlanApprovalFunc coretools.ApprovalFunc // declare_plan await_approval callback
 	ConfirmFunc      sdktools.ConfirmFunc   // tool confirmation callback
 	HITLHandler      agent.HITLHandler      // step limit and tool confirmation callback
+	GoalProposer     coretools.GoalProposer // propose_goal approval flow (nil disables goal mode)
 
 	// Vector search callbacks (optional — nil disables semantic_search tool).
 	VectorSearchFunc     builtins.VectorSearchFunc
@@ -66,6 +67,11 @@ type Application struct {
 	// approval) can emit events that survive app restarts.
 	emitFunc func(session.Event)
 
+	// goalProposer is the desktop goal-approval flow injected onto every
+	// per-session orchestrator by the factory. Set via SetGoalProposer after
+	// construction (desktop wires it once its pending-confirmation map is ready).
+	goalProposer coretools.GoalProposer
+
 	// hitlHandler is captured for the orchestrator factory closure.
 	hitlHandler agent.HITLHandler
 }
@@ -82,8 +88,9 @@ func (app *Application) log() *slog.Logger {
 // and event persister from the given configuration.
 func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	app := &Application{
-		logger:      cfg.Logger,
-		hitlHandler: cfg.HITLHandler,
+		logger:       cfg.Logger,
+		hitlHandler:  cfg.HITLHandler,
+		goalProposer: cfg.GoalProposer,
 	}
 
 	// Collect environment info once for all sessions.
@@ -153,7 +160,17 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 
 	// 5. Orchestrator factory closure for the session manager.
 	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
-		return builder.Build(ToBuilderConfig(cfg.Config), emitter, logger, workspacePath, bbFactory, app.hitlHandler, dumpWriter, stepDumpTracker)
+		orch, err := builder.Build(ToBuilderConfig(cfg.Config), emitter, logger, workspacePath, bbFactory, app.hitlHandler, dumpWriter, stepDumpTracker)
+		if err != nil {
+			return nil, err
+		}
+		// Inject the goal proposer so goal-mode derivation (propose_goal) can
+		// reach the desktop approval flow. Nil is valid — goal mode simply
+		// fails fast when invoked.
+		if app.goalProposer != nil {
+			orch.SetGoalProposer(app.goalProposer)
+		}
+		return orch, nil
 	}
 
 	// 6. Session manager.
@@ -192,6 +209,14 @@ func (app *Application) Manager() *session.Manager {
 // Builder returns the orchestrator builder for advanced operations.
 func (app *Application) Builder() *core.OrchestratorBuilder {
 	return app.builder
+}
+
+// SetGoalProposer sets the goal-proposer hook that the orchestrator factory
+// injects onto every per-session orchestrator. Desktop calls this after
+// construction, once its pending-confirmation map + emitter are ready, so the
+// proposer is in place before any session's orchestrator is built.
+func (app *Application) SetGoalProposer(proposer coretools.GoalProposer) {
+	app.goalProposer = proposer
 }
 
 // EnvInfo returns the collected environment info.

@@ -154,6 +154,20 @@ type PlanApprovalResponsePayload struct {
 	Feedback  string `json:"feedback"` // non-empty when decision="request_changes"
 }
 
+// --- Goal proposal payloads ---
+
+// GoalProposalPayload is sent to the frontend when the derivation agent calls
+// propose_goal to submit a candidate {condition, verify} goal for user sign-off.
+// It surfaces as a pending action that blocks the agent until the user responds.
+type GoalProposalPayload struct {
+	RequestID          string `json:"request_id"`
+	SessionID          string `json:"session_id"`
+	Condition          string `json:"condition"`
+	Verify             string `json:"verify"`
+	Clarification      string `json:"clarification,omitempty"`
+	NeedsClarification bool   `json:"needs_clarification"`
+}
+
 // --- Emitter event data types (typed Data field payloads) ---
 // These mirror the event data produced by the EventEmitter methods,
 // enabling type-safe assertions in the emitFunc / persistence layer.

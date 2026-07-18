@@ -22,11 +22,11 @@ func TestGetPendingActions_EmptyReturnsNonNilSlices(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if resp.ToolConfirms == nil || resp.StepLimits == nil || resp.PlanApprovals == nil || resp.AskUser == nil {
+	if resp.ToolConfirms == nil || resp.StepLimits == nil || resp.PlanApprovals == nil || resp.AskUser == nil || resp.GoalProposals == nil {
 		t.Fatalf("expected all slices non-nil, got %+v", resp)
 	}
 	if len(resp.ToolConfirms) != 0 || len(resp.StepLimits) != 0 ||
-		len(resp.PlanApprovals) != 0 || len(resp.AskUser) != 0 {
+		len(resp.PlanApprovals) != 0 || len(resp.AskUser) != 0 || len(resp.GoalProposals) != 0 {
 		t.Fatalf("expected all slices empty, got %+v", resp)
 	}
 
@@ -36,7 +36,7 @@ func TestGetPendingActions_EmptyReturnsNonNilSlices(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	asString := string(raw)
-	for _, want := range []string{`"tool_confirms":[]`, `"step_limits":[]`, `"plan_approvals":[]`, `"ask_user":[]`} {
+	for _, want := range []string{`"tool_confirms":[]`, `"step_limits":[]`, `"plan_approvals":[]`, `"ask_user":[]`, `"goal_proposals":[]`} {
 		if !strings.Contains(asString, want) {
 			t.Errorf("expected %s in JSON, got %s", want, asString)
 		}

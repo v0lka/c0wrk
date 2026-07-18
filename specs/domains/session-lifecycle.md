@@ -26,6 +26,9 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/frontend_api_session.go` — FrontendAPI session methods
 - `backend/frontend_api_project.go` — project switch state persistence + destination session fallback
 - `core/orchestrator.go` — Orchestrator.HandleMessage, Orchestrator.Resume
+- `core/orchestrator_goal.go` — goal mode (runGoalLoop, resumeGoalLoop, PauseGoal); see [goal-mode.md](goal-mode.md)
+- `backend/session/manager_goal.go` — ResumeGoal, PauseGoal, ClearGoal, SetGoalProposalResolver, ResolveGoalProposal
+- `backend/frontend_api_goal.go` — FrontendAPI.ConfirmGoal/CancelGoal/PauseGoal/ResumeGoal/ClearGoal (goal RPC surface)
 - `core/toolnames.go` — NoProjectDisabledTools, NoProjectBashBlacklist constants
 - `backend/project/manager.go` — EnsureNoProject (pseudo-project lifecycle)
 
@@ -206,9 +209,15 @@ User clicks "Resume" (after task_failed_resumable)
       ├─ Resolve unfinished task via TaskStoreAdapter.GetUnfinishedTaskID
       ├─ Restore Blackboard from SQLite (RestoreBlackboard: facts + step results)
       ├─ Load persisted trajectory via LoadTrajectory(taskID) → resumeSteps
+      ├─ Load persisted goal state via LoadGoalState(taskID) → goalState (nil for non-goal tasks)
       ├─ Resolve routing decision (OPTIONAL — may be nil; defaults to "general")
       ├─ Emit task_resumed (resolves the resumable banner; sets UI active)
-      └─ Call orchestrator.Resume(ctx, bb, routing, plansDir, resumeSteps)
+      └─ Call orchestrator.Resume(ctx, bb, routing, plansDir, resumeSteps, goalState)
+          ├─ IF goalState != nil && !goalState.Status.IsTerminal():
+          │   └─ resumeGoalLoop — re-activates a paused goal to `active`, seeds
+          │       resumeSteps into the first resumed turn, and continues the
+          │       multi-turn goal loop (turn counter continues from goalState.TurnCount).
+          │       See [goal-mode.md](#goal-resume) below.
           ├─ Seeds resumeSteps into the ContextManager (StepSeedable.SeedSteps)
           │   so they render as assistant+tool messages in BuildPrompt
           ├─ Seeds resumeSteps into the Executor (WithResumeSteps) so the step
@@ -216,6 +225,21 @@ User clicks "Resume" (after task_failed_resumable)
           │   syncs to the TrajectoryStore (persisted on every Sync)
           └─ Conductor continues toward completion (no plan required)
 ```
+
+#### Goal resume
+
+A task that was running a goal loop when it paused (or was interrupted) is
+re-entered into the goal loop rather than the plain Conductor path. This
+applies to the user-driven Pause/Resume flow (`FrontendAPI.ResumeGoal` →
+`Manager.ResumeGoal` → `ResumeTask`) and to the app-restart recovery path (the
+persisted non-terminal `GoalState` is loaded and passed to
+`orchestrator.Resume`).
+
+- `Orchestrator.Resume` guards on `goalState != nil && !goalState.Status.IsTerminal()`: a terminal goal (`met`/`exhausted`/`cancelled`) falls through to the normal resume path and is never re-entered.
+- A paused goal is re-activated to `active` so the turn loop's `for gs.Status == active` guard enters; the prior trajectory is seeded into the first resumed turn only (subsequent turns rely on the Conductor's accumulated trajectory).
+- The goal-loop pause signal is reinstalled fresh for the resumed loop and cleared on exit, so a stale signal from the prior run cannot affect a future request.
+
+See [goal-mode.md](goal-mode.md) for the full goal-mode lifecycle, budgets, anti-spin, and the single-flight/pause-signal interaction.
 
 `recordResumeOutcome` appends **only the assistant side** of the resumed
 execution to the in-memory conversation history — no user/assistant pair is

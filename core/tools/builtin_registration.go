@@ -140,6 +140,17 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	// Declare plan (approval callback optional; present mode works without it)
 	registry.Register(NewDeclarePlanTool(cfg.PlanApprovalFunc))
 
+	// Propose goal — reads the goal proposer from the request context, so it
+	// is safe to register unconditionally. It is a no-op outside a Conductor
+	// run (the context value will be nil), matching declare_plan's pattern.
+	registry.Register(NewProposeGoalTool())
+
+	// Declare goal status — writes a self-evaluation verdict into the
+	// context-injected GoalStatusSink. Safe to register unconditionally; it is
+	// a no-op outside a goal-loop run (the sink will be nil), matching
+	// propose_goal's pattern. Status "met" requires non-empty evidence.
+	registry.Register(NewDeclareGoalStatusTool())
+
 	// Execute plan — reads the declared plan from the blackboard via a
 	// PlanStepExecutor injected into the Conductor context. No-op outside a
 	// Conductor run (the context value will be nil).

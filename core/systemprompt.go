@@ -2,8 +2,10 @@ package core
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
+	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/c0wrk/core/prompts"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/llm"
@@ -175,16 +177,151 @@ func formatActiveSkills(ctx context.Context, preamble string) string {
 	return sb.String()
 }
 
-// buildSystemPrompt creates the system prompt for executors.
+// renderGoalModeSection builds the goal-mode prompt section from an active
+// GoalState. It substitutes the condition, verify clause, and a budget line
+// into the goal_mode.md template. Returns an empty string if the goal has no
+// condition (a goal with an empty condition carries no guidance worth emitting).
 //
+// The budget line reports turns/tokens/deadline with a clear "unlimited"
+// rendering when a cap is not set, so the agent can judge its remaining runway.
+func renderGoalModeSection(gs *goal.GoalState) string {
+	if gs == nil || strings.TrimSpace(gs.Condition) == "" {
+		return ""
+	}
+
+	verify := strings.TrimSpace(gs.VerifyClause)
+	if verify == "" {
+		verify = "(none — verify the condition by inspection and cite concrete evidence)"
+	}
+
+	return prompts.GoalModeSubstitute(prompts.GoalMode, gs.Condition, verify, formatGoalBudgetLine(gs.Budget, gs.TurnCount, gs.TokenCount))
+}
+
+// goalStaticBudgetNote replaces the per-turn budget line inside the cacheable
+// goal-mode prefix. The actual turn/token counts and deadline change every
+// turn, so emitting them here would bust the prompt cache across goal turns.
+// The live numbers are instead emitted by renderGoalModeVolatile, after the
+// CacheBreak boundary. Keeping a static placeholder preserves the Budget
+// subsection's prose in the cacheable prefix.
+const goalStaticBudgetNote = "Budget tracked per turn — see the volatile progress line below."
+
+// renderGoalModeStatic builds the session-invariant goal-mode prompt section
+// from an active GoalState: the condition, verify clause, and evidence mandate.
+// It substitutes a static budget note for the per-turn budget line, so the
+// result is stable across turns and benefits from prompt caching. Returns an
+// empty string if the goal has no condition.
+func renderGoalModeStatic(gs *goal.GoalState) string {
+	if gs == nil || strings.TrimSpace(gs.Condition) == "" {
+		return ""
+	}
+
+	verify := strings.TrimSpace(gs.VerifyClause)
+	if verify == "" {
+		verify = "(none — verify the condition by inspection and cite concrete evidence)"
+	}
+
+	return prompts.GoalModeSubstitute(prompts.GoalMode, gs.Condition, verify, goalStaticBudgetNote)
+}
+
+// renderGoalModeVolatile returns ONLY the per-turn budget line. Turn count,
+// token count, and deadline proximity change every turn, so this must live
+// after the CacheBreak boundary to avoid busting the cacheable prefix across
+// goal turns. Returns an empty string if the goal has no condition.
+func renderGoalModeVolatile(gs *goal.GoalState) string {
+	if gs == nil || strings.TrimSpace(gs.Condition) == "" {
+		return ""
+	}
+
+	return "[Goal budget] " + formatGoalBudgetLine(gs.Budget, gs.TurnCount, gs.TokenCount)
+}
+
+// formatGoalBudgetLine renders the budget as a single "turn N/max, tokens
+// used/max, deadline HH:MM" line. Zero caps render as "unlimited" so the agent
+// knows which constraints actually apply.
+func formatGoalBudgetLine(b goal.GoalBudget, turnCount, tokenCount int) string {
+	turns := "turn " + strconv.Itoa(turnCount) + "/"
+	if b.MaxTurns > 0 {
+		turns += strconv.Itoa(b.MaxTurns)
+	} else {
+		turns += "unlimited"
+	}
+
+	tokens := "tokens used " + strconv.Itoa(tokenCount) + "/"
+	if b.MaxTokens > 0 {
+		tokens += strconv.Itoa(b.MaxTokens)
+	} else {
+		tokens += "unlimited"
+	}
+
+	deadline := "deadline none"
+	if !b.Deadline.IsZero() {
+		deadline = "deadline " + b.Deadline.Format("15:04")
+	}
+
+	return turns + ", " + tokens + ", " + deadline
+}
+
+// systemPromptSpec parameterizes buildSystemPromptWith. The zero value builds
+// a prompt with only the core directive plus the shared project context; the
+// standard orchestrator run adds the mode block and goal sections.
+type systemPromptSpec struct {
+	// coreDirective is the primary role/behavior prompt (shell-tool
+	// substitution already applied by the caller). For a normal orchestrator
+	// run this is OrchestratorSystem; for a specialized run (goal derivation)
+	// it is the specialized directive (e.g. GoalDerivation).
+	coreDirective string
+
+	// specialized marks a run that substitutes its own core directive for
+	// OrchestratorSystem and defines its own completion semantics. When true,
+	// the plan/completion mode block and the goal-mode sections are omitted —
+	// the specialized prompt owns those concerns. This lets a specialized run
+	// (e.g. goal derivation) reuse the full shared prefix (family overlay,
+	// verification, injection defense, workspace, work dirs, env, AGENTS.md,
+	// skills, vector hints) without inheriting orchestrator-specific mode
+	// instructions that would conflict with its own directive.
+	specialized bool
+}
+
+// buildSystemPrompt assembles the system prompt for a normal orchestrator
+// Conductor run. It delegates to buildSystemPromptWith with the standard
+// OrchestratorSystem core directive (shell-tool-substituted) and the
+// orchestrator mode block + goal sections enabled.
+func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.ModelMetadata) string {
+	return buildSystemPromptWith(ctx, userMessage, modelMeta, systemPromptSpec{
+		coreDirective: prompts.SubstituteShellTool(prompts.OrchestratorSystem),
+	})
+}
+
+// buildSpecializedSystemPrompt assembles a system prompt for a specialized
+// Conductor run (e.g. goal derivation) that reuses the SAME shared prefix as a
+// normal run — family overlay, verification mandate, injection defense,
+// workspace, work directories, environment, AGENTS.md, active skills, and
+// vector search hints — so the specialized agent sees the full project
+// context. It substitutes the given coreDirective (shell-tool substitution
+// applied by the caller where needed) for OrchestratorSystem and omits the
+// plan/completion mode block and goal-mode sections, since the specialized
+// directive defines its own completion semantics and (for derivation) the goal
+// does not yet exist.
+//
+// This closes a gap where specialized runs previously received ONLY their bare
+// core directive and none of the project context that buildSystemPrompt injects
+// (AGENTS.md, workspace, env, conventions) — leaving the agent to re-discover
+// that context via tool calls instead of starting with it.
+func buildSpecializedSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.ModelMetadata, coreDirective string) string {
+	return buildSystemPromptWith(ctx, userMessage, modelMeta, systemPromptSpec{
+		coreDirective: coreDirective,
+		specialized:   true,
+	})
+}
+
 // The prompt is split by CacheBreak into a stable (cacheable) prefix and a
 // volatile tail. The stable prefix contains all session-invariant content
-// (core directives, family overlay, workspace, env, AGENTS.md, skills) so
+// (core directive, family overlay, workspace, env, AGENTS.md, skills) so
 // provider-side prompt caching (Anthropic ephemeral, DeepSeek automatic
-// prefix cache) can reuse it across ReAct iterations. Only vector search
-// hints — which may change between steps as the index warms up — remain in
-// the volatile tail.
-func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.ModelMetadata) string {
+// prefix cache) can reuse it across ReAct iterations. Only the per-turn goal
+// budget line and vector search hints — which may change between steps as the
+// index warms up — remain in the volatile tail.
+func buildSystemPromptWith(ctx context.Context, userMessage string, modelMeta llm.ModelMetadata, spec systemPromptSpec) string {
 	// Build workspace context string
 	var workspaceCtxStr string
 	if wsPath := tools.WorkspacePathFrom(ctx); wsPath != "" {
@@ -200,11 +337,14 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 		family = "default"
 	}
 
-	// Build stable prefix: core directives + family overlay + verification +
-	// injection defense + workspace + mode + env + AGENTS.md + skills.
-	// All of this is session-invariant and benefits from prompt caching.
+	// Build stable prefix: core directive + family overlay + verification +
+	// injection defense + workspace + (mode + goal) + env + AGENTS.md + skills.
+	// All of this is session-invariant and benefits from prompt caching. The
+	// core directive comes from the spec (OrchestratorSystem for normal runs,
+	// a specialized directive for derivation), so the shared project context
+	// is identical across run types.
 	b := prompt.NewBuilder().
-		Core(prompts.SubstituteShellTool(prompts.OrchestratorSystem)).
+		Core(spec.coreDirective).
 		Core(prompts.FamilyPrompt("orchestrator", family)).
 		Core(prompts.VerificationMandate)
 	if ctx.Value(InjectionDefenseKey) != nil {
@@ -231,11 +371,30 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 		b.Core(sb.String())
 	}
 
-	// Mode-specific context (stable within a session).
-	if ctx.Value(PlanModeKey) != nil {
-		b.Core(prompts.SubstituteShellTool(prompts.OrchestratorPlanContext))
-	} else {
-		b.Core("## Completion\nYou are operating in single-step mode. When you have completed your work, you MUST call the `finish` tool with your final answer. Do not simply respond with text — the system only recognizes task completion through an explicit `finish` tool call.")
+	// Resolve the active goal state once (nil for derivation, which runs
+	// before a goal exists).
+	gs := goalStateFromCtx(ctx)
+
+	// Mode-specific context (orchestrator runs only). Specialized runs define
+	// their own completion semantics in their core directive, so the
+	// plan/completion block and goal sections are omitted for them.
+	if !spec.specialized {
+		if ctx.Value(PlanModeKey) != nil {
+			b.Core(prompts.SubstituteShellTool(prompts.OrchestratorPlanContext))
+		} else {
+			b.Core("## Completion\nYou are operating in single-step mode. When you have completed your work, you MUST call the `finish` tool with your final answer. Do not simply respond with text — the system only recognizes task completion through an explicit `finish` tool call.")
+		}
+
+		// Goal-mode static section — appended ONLY when an active goal is present.
+		// Carries the condition, verify clause, and evidence mandate (session-
+		// invariant within a goal) so they benefit from prompt caching across goal
+		// turns. The per-turn budget line is volatile and is emitted after the
+		// CacheBreak boundary by renderGoalModeVolatile. Placed after the
+		// plan/completion mode block so goal context augments, rather than
+		// replaces, the mode directive.
+		if gs != nil {
+			b.Core(renderGoalModeStatic(gs))
+		}
 	}
 
 	// Environment block (stable: date doesn't change within a session).
@@ -249,9 +408,15 @@ func buildSystemPrompt(ctx context.Context, userMessage string, modelMeta llm.Mo
 		"The following skills have been activated for this task. Follow their instructions carefully.",
 	))
 
-	// CacheBreak: only vector hints remain in the volatile tail.
+	// CacheBreak: the volatile per-turn goal budget line and vector hints
+	// (which may change between steps as the index warms up) remain in the
+	// dynamic tail. Emitting the budget line here keeps changing turn/token
+	// counts from busting the cacheable prefix across goal turns.
+	b = b.CacheBreak()
+	if !spec.specialized && gs != nil {
+		b = b.Core(renderGoalModeVolatile(gs))
+	}
 	result := b.
-		CacheBreak().
 		Core(formatVectorSearchHints(ctx, "\nUse semantic_search tool for deeper investigation.")).
 		Build()
 

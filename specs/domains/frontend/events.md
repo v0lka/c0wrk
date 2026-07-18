@@ -17,6 +17,7 @@ Manages real-time event subscription, validation, and store updates. Events flow
 - `frontend/src/hooks/events/useBlackboardEvents.ts` — blackboard state updates
 - `frontend/src/hooks/events/useAttachmentEvents.ts` — attachment list updates
 - `frontend/src/hooks/events/usePlanReviewEvents.ts` — plan review lifecycle (plan_review_ready, plan_validation_failed, etc.)
+- `frontend/src/hooks/events/useGoalEvents.ts` — goal-mode events (`goal_proposal` pending action + `goal_status`/`goal_progress` service-phase events → goalStore + chat message)
 - `frontend/src/hooks/events/useTerminalEvents.ts` — terminal output events
 - `frontend/src/hooks/events/useToolJudgeEvents.ts` — LLM judge response events
 - `frontend/src/types/events.ts` — event payload type definitions
@@ -43,6 +44,7 @@ useSessionEvents(sessionId)
   │   ├─ useBlackboardEvents → blackboardStore
   │   ├─ useAttachmentEvents → attachmentsStore
   │   ├─ usePlanReviewEvents → planStore + planReviewStore
+  │   ├─ useGoalEvents → goalStore (goal status/progress) + chatStore (goal_proposal message)
   │   ├─ useTerminalEvents → terminal state
   │   └─ useToolJudgeEvents → tool confirmation state
   │
@@ -91,6 +93,7 @@ Certain events create "pending actions" that require user response:
 | `tool_confirm` | Tool confirmation    | Allow/Deny buttons | `tool_confirm_response` |
 | `ask_user`     | Multi-question form  | Form with inputs   | `ask_user_response`     |
 | `step_limit`   | Step budget decision | Allow/Deny/Always  | `step_limit_response`   |
+| `goal_proposal` | Goal sign-off | Approve (with editable condition/verify textareas) / Cancel | `goal_proposal_response` (event) or `ConfirmGoal`/`CancelGoal` RPC — both funnel through one resolver |
 | `plan_review_ready` | Plan review     | Approve/Reject + feedback | `ApprovePlan` / `RejectPlan` RPC |
 
 Pending actions are stored in chatStore and rendered by the PendingActionsBar component.

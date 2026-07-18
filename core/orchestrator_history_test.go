@@ -143,7 +143,7 @@ func TestConversationHistory_ResumeAppendsAssistant(t *testing.T) {
 		},
 	})
 
-	result, err := orchestrator.Resume(context.Background(), bb, nil, "", nil)
+	result, err := orchestrator.Resume(context.Background(), bb, nil, "", nil, nil)
 	if err != nil {
 		t.Fatalf("Resume failed: %v", err)
 	}

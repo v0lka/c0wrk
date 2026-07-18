@@ -176,6 +176,7 @@ describe('reconcilePendingActions', () => {
     step_limits: [],
     plan_approvals: [],
     ask_user: [],
+    goal_proposals: [],
   }
 
   it('resolves HITL prompts absent from the pending set and returns them', () => {

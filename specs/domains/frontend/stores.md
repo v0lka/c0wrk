@@ -43,6 +43,7 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 | `uiStore`            | Sidebar collapsed state (log level is fetched via `GetLogLevel` RPC, not stored) | localStorage |
 | `vectorIndexStore`   | Vector index status, progress, and search mode                     | localStorage (mode only) |
 | `workDirsStore`      | Auxiliary work directories (project-scoped + session-scoped lists), modal open/close state | No           |
+| `goalStore`          | Goal-mode state per session (lifecycle status, turn/budget, active goal condition, pending proposal); reconciled from `goal_status`/`goal_progress` service-phase events. The status-bar indicator (`GoalStatusIndicator`) reads `useGoalStatus` (primitive string) + `useActiveGoal` (direct ref) and offers Pause/Resume/Clear controls. | No           |
 | `attachmentsStore`   | Pending file attachments for the active session (chips above the chat input)        | No           |
 
 ## Critical Anti-Patterns

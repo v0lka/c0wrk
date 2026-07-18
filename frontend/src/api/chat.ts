@@ -5,10 +5,26 @@ import { logger } from '@/lib/logger'
 import { isChatMessage, isTokenInfo, isArrayOf } from '@/types/guards'
 import type { ChatMessage, TokenInfo } from '@/types/models'
 
-export async function sendMessage(sessionId: string, text: string, activeSkills: string[] = [], modelOverride: string = '', reasoningOverride: string = ''): Promise<void> {
+/**
+ * Send a user message to the session's agent.
+ *
+ * @param goal       Enable goal mode for the first message of a task (OR-ed
+ *                   with any /goal prefix the message text carries).
+ * @param goalBudget Optional JSON budget override tightening the goal's caps
+ *                   (e.g. `{"max_turns":5}`); empty = config defaults.
+ */
+export async function sendMessage(
+  sessionId: string,
+  text: string,
+  activeSkills: string[] = [],
+  modelOverride: string = '',
+  reasoningOverride: string = '',
+  goal: boolean = false,
+  goalBudget: string = '',
+): Promise<void> {
   try {
     const app = getApp()
-    await app.SendMessage(sessionId, text, activeSkills, modelOverride, reasoningOverride)
+    await app.SendMessage(sessionId, text, activeSkills, modelOverride, reasoningOverride, goal, goalBudget)
   } catch (err) {
     logger.error('Failed to send message:', err)
     throw err
@@ -135,11 +151,20 @@ export interface PendingAskUser {
   questions: Array<{ id: string; question: string; options: Array<{ label: string; value: string }>; multi_select?: boolean; recommended?: string[] }>
 }
 
+export interface PendingGoalProposal {
+  request_id: string
+  condition: string
+  verify: string
+  clarification?: string
+  needs_clarification: boolean
+}
+
 export interface PendingActionsResponse {
   tool_confirms: PendingToolConfirm[]
   step_limits: PendingStepLimit[]
   plan_approvals: PendingPlanApproval[]
   ask_user: PendingAskUser[]
+  goal_proposals: PendingGoalProposal[]
 }
 
 // isPendingActionsResponse validates the GetPendingActions response shape.
@@ -151,7 +176,7 @@ export interface PendingActionsResponse {
 function isPendingActionsResponse(d: unknown): boolean {
   if (typeof d !== 'object' || d === null) return false
   const o = d as Record<string, unknown>
-  const kinds = [o.tool_confirms, o.step_limits, o.plan_approvals, o.ask_user]
+  const kinds = [o.tool_confirms, o.step_limits, o.plan_approvals, o.ask_user, o.goal_proposals]
   return kinds.every(k => k === undefined || k === null || Array.isArray(k))
 }
 
@@ -178,6 +203,7 @@ export async function getPendingActions(sessionId: string): Promise<PendingActio
       step_limits: (o.step_limits as PendingStepLimit[] | undefined) ?? [],
       plan_approvals: (o.plan_approvals as PendingPlanApproval[] | undefined) ?? [],
       ask_user: (o.ask_user as PendingAskUser[] | undefined) ?? [],
+      goal_proposals: (o.goal_proposals as PendingGoalProposal[] | undefined) ?? [],
     }
   } catch (err) {
     logger.error('Failed to get pending actions:', err)

@@ -135,6 +135,56 @@ export interface StepTodoUpdateData {
 
 export interface PlanReviewReadyData { request_id: string; plan_path: string; plan_content: string }
 
+// --- Goal event payloads ---
+
+/**
+ * Pending goal proposal awaiting user sign-off. Emitted as a DISTINCT
+ * `goal_proposal` session event by the desktop goal proposer when the
+ * derivation agent calls propose_goal. Surfaces as a pending action that
+ * blocks the agent until the user confirms/cancels.
+ */
+export interface GoalProposalData {
+  readonly request_id: string
+  readonly session_id: string
+  readonly condition: string
+  readonly verify: string
+  readonly clarification?: string
+  readonly needs_clarification: boolean
+}
+
+/**
+ * Goal status snapshot. The backend emits this via ServiceWithMeta (the generic
+ * `service` channel) with `phase === 'goal_status'`, so the payload carries the
+ * service `content` plus the flattened goal meta fields.
+ */
+export interface GoalStatusData {
+  readonly content: string
+  readonly phase: 'goal_status'
+  readonly status: string
+  readonly turn: number
+  readonly condition: string
+  readonly max_turns: number
+  readonly max_tokens: number
+  readonly tokens: number
+  readonly deadline?: string
+  readonly verdict?: string
+  readonly reason?: string
+}
+
+/**
+ * Mid-loop goal progress telemetry. Emitted via ServiceWithMeta with
+ * `phase === 'goal_progress'` after a non-terminal turn.
+ */
+export interface GoalProgressData {
+  readonly content: string
+  readonly phase: 'goal_progress'
+  readonly turn: number
+  readonly max_turns: number
+  readonly tokens: number
+  readonly max_tokens: number
+  readonly condition: string
+}
+
 // --- Tool manager event payloads ---
 
 export interface ToolManagerToolInfo { readonly name: string; readonly version: string }
@@ -193,6 +243,12 @@ export interface SessionEventMap {
   readonly step_todo_update: StepTodoUpdateData
   readonly plan_review_ready: PlanReviewReadyData
   readonly memory_read: { readonly step_num: number; readonly content: string }
+  /** Goal lifecycle events: a pending proposal (distinct event) and the
+   *  status/progress snapshots carried on the phase-discriminated `service`
+   *  channel. */
+  readonly goal_proposal: GoalProposalData
+  readonly goal_status: GoalStatusData
+  readonly goal_progress: GoalProgressData
   /** Attachment list + optional per-file failures. Replace the store, toast failures. */
   readonly 'attachments:changed': AttachmentsChangedData
 }
@@ -316,6 +372,48 @@ export function isStepTodoUpdateData(d: unknown): d is StepTodoUpdateData {
 
 export function isPlanReviewReadyData(d: unknown): d is PlanReviewReadyData {
   return isObj(d) && typeof d.request_id === 'string' && typeof d.plan_path === 'string' && typeof d.plan_content === 'string'
+}
+
+// --- Goal event type guards ---
+
+/** Guard for a goal_proposal payload (distinct session event). */
+export function isGoalProposalData(d: unknown): d is GoalProposalData {
+  return isObj(d)
+    && typeof d.request_id === 'string'
+    && typeof d.session_id === 'string'
+    && typeof d.condition === 'string'
+    && typeof d.verify === 'string'
+    && typeof d.needs_clarification === 'boolean'
+}
+
+/**
+ * Guard for a goal_status payload. The backend emits goal_status via the
+ * `service` channel with `phase === 'goal_status'`, so the discriminator plus
+ * the required numeric/string goal fields must validate before consumption.
+ */
+export function isGoalStatusData(d: unknown): d is GoalStatusData {
+  if (!isObj(d)) return false
+  if (d.phase !== 'goal_status') return false
+  return typeof d.status === 'string'
+    && typeof d.turn === 'number'
+    && typeof d.condition === 'string'
+    && typeof d.max_turns === 'number'
+    && typeof d.max_tokens === 'number'
+    && typeof d.tokens === 'number'
+}
+
+/**
+ * Guard for a goal_progress payload. Emitted via the `service` channel with
+ * `phase === 'goal_progress'`.
+ */
+export function isGoalProgressData(d: unknown): d is GoalProgressData {
+  if (!isObj(d)) return false
+  if (d.phase !== 'goal_progress') return false
+  return typeof d.turn === 'number'
+    && typeof d.max_turns === 'number'
+    && typeof d.tokens === 'number'
+    && typeof d.max_tokens === 'number'
+    && typeof d.condition === 'string'
 }
 
 // --- Global event type guards ---

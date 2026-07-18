@@ -63,6 +63,15 @@ type pendingPlanApprovalEntry struct {
 	payload   session.PlanApprovalPayload
 }
 
+// pendingGoalProposalEntry wraps the goal-proposal response channel with the
+// session ID and payload, so GetPendingActions can filter by session and the
+// goal-proposal callback can resolve via the event or RPC paths.
+type pendingGoalProposalEntry struct {
+	ch        chan goalProposalResponse
+	sessionID string
+	payload   session.GoalProposalPayload
+}
+
 // Startup is called when the Wails app starts.
 func (a *App) Startup(ctx context.Context) {
 	// Catch any unrecovered panic during startup so a stack trace lands in
@@ -188,6 +197,7 @@ func (a *App) Startup(ctx context.Context) {
 	uiEmitFunc := a.buildUIEmitFunc()
 	askUserFunc := a.buildAskUserCallback(uiEmitFunc)
 	planApprovalFunc := a.buildPlanApprovalCallback(uiEmitFunc)
+	goalProposer := a.buildGoalProposalCallback(uiEmitFunc)
 	confirmFunc := a.buildConfirmCallback(uiEmitFunc)
 	hitlHandler := a.buildStepLimitCallback(uiEmitFunc)
 
@@ -217,6 +227,7 @@ func (a *App) Startup(ctx context.Context) {
 		UIEmitFunc:           uiEmitFunc,
 		AskUserFunc:          askUserFunc,
 		PlanApprovalFunc:     planApprovalFunc,
+		GoalProposer:         goalProposer,
 		ConfirmFunc:          confirmFunc,
 		HITLHandler:          hitlHandler,
 		VectorSearchFunc:     vectorSearchFunc,
@@ -226,6 +237,13 @@ func (a *App) Startup(ctx context.Context) {
 	if err != nil {
 		return
 	}
+
+	// Register the goal-proposal resolver so the RPC-based path
+	// (FrontendAPI.ConfirmGoal/CancelGoal) and the event-based path both
+	// funnel through a single resolution on the desktop pending map.
+	application.Manager().SetGoalProposalResolver(func(requestID, decision, condition, verify, clarification string) bool {
+		return a.resolveGoalProposal(requestID, decision, condition, verify, clarification)
+	})
 
 	a.buildFrontendAPI(application, backend.FrontendAPIConfig{
 		App:             application,
@@ -373,6 +391,16 @@ func (a *App) Shutdown(ctx context.Context) {
 		a.pendingPlanApprovals.Delete(key)
 		return true
 	})
+	a.pendingGoalProposals.Range(func(key, value any) bool {
+		if e, ok := value.(*pendingGoalProposalEntry); ok {
+			select {
+			case e.ch <- goalProposalResponse{Decision: "cancel"}:
+			default:
+			}
+		}
+		a.pendingGoalProposals.Delete(key)
+		return true
+	})
 
 	if a.sessionLogger != nil {
 		_ = a.sessionLogger.Close()
@@ -449,6 +477,14 @@ func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.
 			return
 		}
 		a.handlePlanApprovalResponse(payload, log)
+	})
+
+	wailsRuntime.EventsOn(a.ctx, backend.EventGoalProposalResponse, func(data ...any) {
+		payload, ok := extractPayload("goal_proposal response", data, log)
+		if !ok {
+			return
+		}
+		a.handleGoalProposalResponse(payload, log)
 	})
 }
 

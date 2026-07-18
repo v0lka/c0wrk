@@ -15,6 +15,8 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"PlannerInformed", PlannerInformed},
 		{"OrchestratorSystem", OrchestratorSystem},
 		{"OrchestratorPlanContext", OrchestratorPlanContext},
+		{"GoalMode", GoalMode},
+		{"GoalDerivation", GoalDerivation},
 		{"ReflectorSystem", ReflectorSystem},
 		{"RouterSystem", RouterSystem},
 		{"VerificationMandate", VerificationMandate},

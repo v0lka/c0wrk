@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -155,6 +156,33 @@ func (a *TaskStoreAdapter) LoadTrajectory(taskID string) ([]agent.Step, error) {
 	return steps, nil
 }
 
+// PersistGoalState JSON-marshals the goal-loop state and stores it for a task,
+// inserting or replacing any previously persisted goal state.
+func (a *TaskStoreAdapter) PersistGoalState(taskID string, gs *goal.GoalState) error {
+	data, err := json.Marshal(gs)
+	if err != nil {
+		return fmt.Errorf("marshal goal state: %w", err)
+	}
+	return a.store.SaveGoalState(context.Background(), taskID, data)
+}
+
+// LoadGoalState loads the goal-loop state for a task and unmarshals it into a
+// *goal.GoalState. Returns nil, nil when no goal state has been persisted.
+func (a *TaskStoreAdapter) LoadGoalState(taskID string) (*goal.GoalState, error) {
+	data, err := a.store.LoadGoalState(context.Background(), taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load goal state: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var gs goal.GoalState
+	if err := json.Unmarshal(data, &gs); err != nil {
+		return nil, fmt.Errorf("unmarshal goal state: %w", err)
+	}
+	return &gs, nil
+}
+
 // LoadTaskState loads a task and its steps from the store, deserializes JSON back
 // to core types, and returns a populated *core.TaskState.
 // Returns nil, nil if the task is not found.
@@ -252,6 +280,19 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 		}
 	}
 
+	// Load goal state (nil for non-goal tasks).
+	goalJSON, err := a.store.LoadGoalState(context.Background(), taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load goal state: %w", err)
+	}
+	if len(goalJSON) > 0 {
+		var gs goal.GoalState
+		if err := json.Unmarshal(goalJSON, &gs); err != nil {
+			return nil, fmt.Errorf("unmarshal goal state: %w", err)
+		}
+		state.GoalState = &gs
+	}
+
 	return state, nil
 }
 
@@ -266,4 +307,13 @@ func (a *TaskStoreAdapter) GetUnfinishedTaskID(sessionID string) (string, error)
 		return "", nil
 	}
 	return rec.ID, nil
+}
+
+// GetLatestTaskID returns the ID of the most recent task for the session,
+// regardless of status, or "" if none exists. Unlike GetUnfinishedTaskID it is
+// status-agnostic, so it still locates a task whose row was flipped to a
+// terminal status (e.g. cancelled/completed) by CancelTask — used by ClearGoal
+// to overwrite the goal state after the loop's exit persist has settled.
+func (a *TaskStoreAdapter) GetLatestTaskID(sessionID string) (string, error) {
+	return a.store.GetLatestTaskID(context.Background(), sessionID)
 }

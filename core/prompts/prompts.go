@@ -98,6 +98,21 @@ var OrchestratorSystem string
 //go:embed orchestrator_plan_context.md
 var OrchestratorPlanContext string
 
+// Goal mode — injected into the system prompt when a goal is active. Carries
+// the condition, verify clause, evidence mandate, and budget template; the
+// {goal_condition}, {goal_verify_clause}, and {goal_budget_line} placeholders
+// are substituted by renderGoalModeSection from the active GoalState.
+
+//go:embed goal_mode.md
+var GoalMode string
+
+// Goal derivation — the system prompt for the derivation agent that
+// investigates a user's request and derives a {condition, verify} goal pair
+// for sign-off via propose_goal. Used by (*Orchestrator).deriveGoal.
+
+//go:embed goal_derivation.md
+var GoalDerivation string
+
 // Orchestrator family-specific prompts
 
 //go:embed orchestrator_default.md

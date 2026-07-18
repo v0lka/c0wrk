@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/llm"
@@ -264,7 +265,7 @@ func TestTaskStoreAdapter_TrajectoryRoundTrip(t *testing.T) {
 			ResponseGroup: 42,
 		},
 		{
-			Thought:    "second thought",
+			Thought:     "second thought",
 			Observation: "another observation",
 		},
 	}
@@ -328,5 +329,158 @@ func TestTaskStoreAdapter_LoadTrajectory_NotFound(t *testing.T) {
 	}
 	if loaded != nil {
 		t.Errorf("expected nil trajectory, got %v", loaded)
+	}
+}
+
+func TestTaskStoreAdapter_SaveAndLoadGoalState(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	adapter := NewTaskStoreAdapter(store)
+	taskID := "adapter-goal"
+
+	if err := adapter.PersistNewTask(taskID, sessionID, "goal task"); err != nil {
+		t.Fatalf("PersistNewTask failed: %v", err)
+	}
+
+	gs := &goal.GoalState{
+		Condition:    "all goal tests pass",
+		VerifyClause: "go test ./core/goal/...",
+		Budget:       goal.GoalBudget{MaxTurns: 5},
+		TurnCount:    2,
+		TokenCount:   1024,
+		Status:       goal.StatusPaused,
+		LastVerdict: &goal.Verdict{
+			Status:     "not_met",
+			Reason:     "still working",
+			DeclaredAt: time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC),
+			Evidence:   []goal.GoalEvidence{{Type: goal.EvidenceTypeFile, Ref: "main.go", Summary: "wip"}},
+		},
+		CreatedAt: time.Date(2026, 7, 18, 11, 0, 0, 0, time.UTC),
+	}
+
+	if err := adapter.PersistGoalState(taskID, gs); err != nil {
+		t.Fatalf("PersistGoalState failed: %v", err)
+	}
+
+	loaded, err := adapter.LoadGoalState(taskID)
+	if err != nil {
+		t.Fatalf("LoadGoalState failed: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected non-nil loaded goal state")
+	}
+
+	// Verify the full state round-trips, including nested Budget and Verdict.
+	if loaded.Condition != gs.Condition {
+		t.Errorf("Condition: got %q, want %q", loaded.Condition, gs.Condition)
+	}
+	if loaded.VerifyClause != gs.VerifyClause {
+		t.Errorf("VerifyClause: got %q, want %q", loaded.VerifyClause, gs.VerifyClause)
+	}
+	if loaded.Status != goal.StatusPaused {
+		t.Errorf("Status: got %q, want %q", loaded.Status, goal.StatusPaused)
+	}
+	if loaded.Budget.MaxTurns != 5 {
+		t.Errorf("Budget.MaxTurns: got %d, want 5", loaded.Budget.MaxTurns)
+	}
+	if loaded.TurnCount != 2 || loaded.TokenCount != 1024 {
+		t.Errorf("counters: turn=%d token=%d, want 2/1024", loaded.TurnCount, loaded.TokenCount)
+	}
+	if loaded.LastVerdict == nil {
+		t.Fatal("LastVerdict should round-trip")
+	}
+	if loaded.LastVerdict.Status != "not_met" {
+		t.Errorf("LastVerdict.Status: got %q, want not_met", loaded.LastVerdict.Status)
+	}
+	if len(loaded.LastVerdict.Evidence) != 1 || loaded.LastVerdict.Evidence[0].Ref != "main.go" {
+		t.Errorf("LastVerdict.Evidence did not round-trip: %+v", loaded.LastVerdict.Evidence)
+	}
+}
+
+func TestTaskStoreAdapter_LoadGoalState_NotFound(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	adapter := NewTaskStoreAdapter(store)
+	taskID := "adapter-goal-missing"
+
+	if err := adapter.PersistNewTask(taskID, sessionID, "test"); err != nil {
+		t.Fatalf("PersistNewTask failed: %v", err)
+	}
+
+	// No goal state persisted → nil, nil (not an error).
+	loaded, err := adapter.LoadGoalState(taskID)
+	if err != nil {
+		t.Fatalf("LoadGoalState should not error on missing, got: %v", err)
+	}
+	if loaded != nil {
+		t.Errorf("expected nil goal state, got %+v", loaded)
+	}
+}
+
+// TestTaskStoreAdapter_LoadTaskState_PopulatesGoalState verifies that
+// LoadTaskState hydrates TaskState.GoalState from the persisted goal-state
+// blob (acceptance criterion #2). A task with no persisted goal state leaves
+// GoalState nil.
+func TestTaskStoreAdapter_LoadTaskState_PopulatesGoalState(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	adapter := NewTaskStoreAdapter(store)
+	taskID := "adapter-loadstate-goal"
+
+	if err := adapter.PersistNewTask(taskID, sessionID, "goal task"); err != nil {
+		t.Fatalf("PersistNewTask failed: %v", err)
+	}
+
+	gs := &goal.GoalState{
+		Condition: "ship the feature",
+		Status:    goal.StatusPaused,
+	}
+	if err := adapter.PersistGoalState(taskID, gs); err != nil {
+		t.Fatalf("PersistGoalState failed: %v", err)
+	}
+
+	state, err := adapter.LoadTaskState(taskID)
+	if err != nil {
+		t.Fatalf("LoadTaskState failed: %v", err)
+	}
+	if state == nil {
+		t.Fatal("expected non-nil task state")
+	}
+	if state.GoalState == nil {
+		t.Fatal("expected TaskState.GoalState to be populated")
+	}
+	if state.GoalState.Condition != "ship the feature" {
+		t.Errorf("GoalState.Condition = %q, want %q", state.GoalState.Condition, "ship the feature")
+	}
+	if state.GoalState.Status != goal.StatusPaused {
+		t.Errorf("GoalState.Status = %q, want %q", state.GoalState.Status, goal.StatusPaused)
+	}
+}
+
+// TestTaskStoreAdapter_LoadTaskState_NilGoalStateForNonGoalTask verifies that
+// a task with no persisted goal state leaves GoalState nil (non-goal tasks).
+func TestTaskStoreAdapter_LoadTaskState_NilGoalStateForNonGoalTask(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	adapter := NewTaskStoreAdapter(store)
+	taskID := "adapter-loadstate-nogoal"
+
+	if err := adapter.PersistNewTask(taskID, sessionID, "plain task"); err != nil {
+		t.Fatalf("PersistNewTask failed: %v", err)
+	}
+
+	state, err := adapter.LoadTaskState(taskID)
+	if err != nil {
+		t.Fatalf("LoadTaskState failed: %v", err)
+	}
+	if state == nil {
+		t.Fatal("expected non-nil task state")
+	}
+	if state.GoalState != nil {
+		t.Errorf("expected nil GoalState for non-goal task, got %+v", state.GoalState)
 	}
 }

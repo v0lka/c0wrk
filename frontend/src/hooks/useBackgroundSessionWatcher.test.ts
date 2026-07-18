@@ -138,6 +138,7 @@ describe('useBackgroundSessionWatcher', () => {
     expect(subscriptions.has('bg-1:tool_confirm')).toBe(true)
     expect(subscriptions.has('bg-1:step_limit')).toBe(true)
     expect(subscriptions.has('bg-1:plan_review_ready')).toBe(true)
+    expect(subscriptions.has('bg-1:goal_proposal')).toBe(true)
     expect(subscriptions.has('bg-1:ask_user')).toBe(true)
   })
 
@@ -154,6 +155,7 @@ describe('useBackgroundSessionWatcher', () => {
     expect(subscriptions.has('active-1:step_limit')).toBe(false)
     expect(subscriptions.has('active-1:plan_review_ready')).toBe(false)
     expect(subscriptions.has('active-1:ask_user')).toBe(false)
+    expect(subscriptions.has('active-1:goal_proposal')).toBe(false)
   })
 
   it('does not subscribe to sessions with taskActive === false', () => {
@@ -174,8 +176,8 @@ describe('useBackgroundSessionWatcher', () => {
 
     expect(subscriptions.has('bg-1:task_complete')).toBe(true)
     expect(subscriptions.has('bg-2:task_complete')).toBe(true)
-    // 7 events × 2 sessions = 14 subscriptions
-    expect(subscriptions.size).toBe(14)
+    // 8 events × 2 sessions = 16 subscriptions
+    expect(subscriptions.size).toBe(16)
   })
 
   it('resets taskActive to false on task_complete without touching the active session state', () => {
@@ -245,7 +247,7 @@ describe('useBackgroundSessionWatcher', () => {
     sessionStoreState.activeSessionId = 'active-1'
 
     useRenderWatcher()
-    expect(subscriptions.size).toBe(7)
+    expect(subscriptions.size).toBe(8)
 
     // Session completes via another path.
     chatStoreState.setTaskActive('bg-1', false)

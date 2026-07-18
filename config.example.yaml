@@ -408,3 +408,30 @@ orchestration:
 #                         # from leaking into third-party libraries that read
 #                         # env vars at init time.
 
+# ---------------------------------------------------------------------------
+# Goal — default budget caps applied to a newly declared goal.
+# ---------------------------------------------------------------------------
+# A goal captures the user's success condition and bounds how much work the
+# agent may spend reaching it. The settings below are the defaults applied when
+# the user does not specify an explicit budget for a goal; an individual goal
+# may declare a tighter budget at creation time.
+#
+# All fields are optional. Zero-value / empty fields fall back to defaults set
+# in backend/config/defaults.go (ApplyDefaults).
+#
+# goal:
+#   # Wall-clock deadline as a Go duration string, parsed into an absolute
+#   # time.Time deadline at goal creation (e.g. "30m", "2h", "1h30m").
+#   # "0" or empty means no wall-clock cap (unlimited). Default: "0".
+#   wall_clock_deadline: "0"
+#
+#   # Maximum input tokens the agent may spend pursuing the goal before it is
+#   # marked exhausted. 0 = a generous default (currently 1,000,000). Set
+#   # explicitly to tighten spending on costly models.
+#   token_cap_input: 0
+#
+#   # Maximum output tokens the agent may spend pursuing the goal. 0 = a
+#   # generous default (currently 200,000).
+#   token_cap_output: 0
+
+

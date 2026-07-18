@@ -173,6 +173,11 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			TLSCertDir:   config.ExpandEnvVars(cfg.Proxy.TLSCertDir),
 			SetGlobalEnv: derefBool(cfg.Proxy.SetGlobalEnv),
 		},
+		Goal: core.BuilderGoalConfig{
+			WallClockDeadline: cfg.Goal.WallClockDeadline,
+			TokenCapInput:     cfg.Goal.TokenCapInput,
+			TokenCapOutput:    cfg.Goal.TokenCapOutput,
+		},
 		ExpandEnvVars: config.ExpandEnvVars,
 	}
 }

@@ -13,6 +13,7 @@ export type MessageType =
   | 'step_todo_update' | 'memory_read' | 'plan_review'
   | 'service'
   | 'review_prompt'
+  | 'goal_proposal'
 
 export interface ChatMessageUI {
   id: string
@@ -29,6 +30,7 @@ export type DisplayItemKind =
   | 'subagent' | 'reflection' | 'step_finish'
   | 'context_compaction' | 'memory_read' | 'plan_review' | 'checklist'
   | 'review_prompt'
+  | 'goal_proposal'
 
 export type DisplayItem =
   | { kind: 'user'; message: ChatMessageUI }
@@ -50,6 +52,14 @@ export type DisplayItem =
   | { kind: 'memory_read'; id: string; content: string; stepNum?: number }
   | { kind: 'plan_review'; message: ChatMessageUI }
   | { kind: 'review_prompt'; message: ChatMessageUI }
+  | {
+      kind: 'goal_proposal'
+      message: ChatMessageUI
+      condition: string
+      verify: string
+      clarification?: string
+      needs_clarification: boolean
+    }
   | { kind: 'checklist'; id: string; stepId: string | null; items: Array<{ text: string; checked: boolean }>; active: boolean }
 
 export interface GroupedMessages {

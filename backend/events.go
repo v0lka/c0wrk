@@ -103,3 +103,8 @@ const EventStepLimitResponse = "step_limit_response"
 // EventPlanApprovalResponse is received from the frontend when the user
 // approves, requests changes to, or abandons a plan awaiting review.
 const EventPlanApprovalResponse = "plan_approval_response"
+
+// EventGoalProposalResponse is received from the frontend when the user
+// confirms (optionally with edits), asks for clarification, or cancels a
+// proposed goal awaiting sign-off.
+const EventGoalProposalResponse = "goal_proposal_response"

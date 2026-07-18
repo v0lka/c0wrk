@@ -21,17 +21,25 @@ export function ArchiveSession(arg1:string):Promise<void>;
 
 export function AttachFiles(arg1:string,arg2:Array<string>):Promise<Array<session.AttachmentInfo>>;
 
+export function CancelGoal(arg1:string,arg2:string):Promise<void>;
+
 export function CancelTask(arg1:string):Promise<void>;
 
 export function CancelUnfinishedTask(arg1:string):Promise<void>;
 
 export function CheckoutBranch(arg1:string):Promise<void>;
 
+export function ClarifyGoal(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function ClearGoal(arg1:string):Promise<void>;
+
 export function ClearReview(arg1:string):Promise<void>;
 
 export function ClearReviewComments(arg1:string):Promise<void>;
 
 export function Commit(arg1:string):Promise<string>;
+
+export function ConfirmGoal(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function CreateBranch(arg1:string,arg2:string):Promise<void>;
 
@@ -149,6 +157,8 @@ export function Merge(arg1:string):Promise<void>;
 
 export function OptimizePrompt(arg1:string):Promise<backend.OptimizePromptResponse>;
 
+export function PauseGoal(arg1:string):Promise<void>;
+
 export function PickAttachmentFiles():Promise<Array<string>>;
 
 export function PickDirectory():Promise<string>;
@@ -169,6 +179,8 @@ export function RenameSession(arg1:string,arg2:string):Promise<void>;
 
 export function ResolvePendingMessage(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Record<string, any>):Promise<void>;
 
+export function ResumeGoal(arg1:string):Promise<void>;
+
 export function ResumeTask(arg1:string):Promise<void>;
 
 export function SaveProjectSwitchState(arg1:backend.ProjectUIStateRequest):Promise<void>;
@@ -183,7 +195,7 @@ export function SaveReviewPrompt(arg1:string):Promise<backend.ReviewPromptMessag
 
 export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<backend.VectorStoreEntry>>;
 
-export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:string,arg5:string):Promise<void>;
+export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:string,arg5:string,arg6:boolean,arg7:string):Promise<void>;
 
 export function SetLogLevel(arg1:string):Promise<void>;
 

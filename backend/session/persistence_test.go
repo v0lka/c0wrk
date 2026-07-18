@@ -1631,6 +1631,100 @@ func TestTaskTrajectory_CascadeDelete(t *testing.T) {
 	}
 }
 
+func TestSaveAndLoadGoalState(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	// Parent task must exist (goal state FK references tasks).
+	if err := store.SaveTask(context.Background(), TaskRecord{
+		ID: "task-goal", SessionID: sessionID, OriginalRequest: "goal task",
+		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+
+	payload := json.RawMessage(`{"condition":"all tests pass","verify_clause":"go test ./...","budget":{"max_turns":5,"max_tokens":0},"turn_count":2,"token_count":1024,"status":"paused","created_at":"2026-07-18T12:00:00Z"}`)
+
+	// Save
+	if err := store.SaveGoalState(context.Background(), "task-goal", payload); err != nil {
+		t.Fatalf("SaveGoalState failed: %v", err)
+	}
+
+	// Load — should round-trip the exact bytes.
+	loaded, err := store.LoadGoalState(context.Background(), "task-goal")
+	if err != nil {
+		t.Fatalf("LoadGoalState failed: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected non-nil goal state")
+	}
+	if string(loaded) != string(payload) {
+		t.Errorf("goal state round-trip mismatch:\n got: %s\nwant: %s", loaded, payload)
+	}
+
+	// Save again (replace) — should overwrite, not duplicate.
+	updated := json.RawMessage(`{"condition":"new condition","status":"active"}`)
+	if err := store.SaveGoalState(context.Background(), "task-goal", updated); err != nil {
+		t.Fatalf("SaveGoalState (replace) failed: %v", err)
+	}
+	loaded2, err := store.LoadGoalState(context.Background(), "task-goal")
+	if err != nil {
+		t.Fatalf("LoadGoalState (replace) failed: %v", err)
+	}
+	if string(loaded2) != string(updated) {
+		t.Errorf("expected replaced goal state %s, got %s", updated, loaded2)
+	}
+}
+
+func TestLoadGoalState_NotFound(t *testing.T) {
+	store, _, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	// No goal state persisted for this task → nil, nil (not an error).
+	loaded, err := store.LoadGoalState(context.Background(), "missing-task")
+	if err != nil {
+		t.Fatalf("LoadGoalState should not error on missing, got: %v", err)
+	}
+	if loaded != nil {
+		t.Errorf("expected nil goal state for missing task, got %s", loaded)
+	}
+}
+
+func TestTaskGoalState_CascadeDelete(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	if err := store.SaveTask(context.Background(), TaskRecord{
+		ID: "task-goal-cascade", SessionID: sessionID, OriginalRequest: "test",
+		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+	if err := store.SaveGoalState(context.Background(), "task-goal-cascade", json.RawMessage(`{"status":"paused"}`)); err != nil {
+		t.Fatalf("SaveGoalState failed: %v", err)
+	}
+
+	// Confirm present.
+	if loaded, err := store.LoadGoalState(context.Background(), "task-goal-cascade"); err != nil || loaded == nil {
+		t.Fatalf("expected goal state present before cascade (loaded=%v, err=%v)", loaded, err)
+	}
+
+	// Deleting the task must cascade to the goal state (FK ON DELETE CASCADE).
+	if _, err := store.db.ExecContext(context.Background(), `DELETE FROM tasks WHERE id = ?`, "task-goal-cascade"); err != nil {
+		t.Fatalf("delete task failed: %v", err)
+	}
+
+	loaded, err := store.LoadGoalState(context.Background(), "task-goal-cascade")
+	if err != nil {
+		t.Fatalf("LoadGoalState after cascade: %v", err)
+	}
+	if loaded != nil {
+		t.Error("goal state should be deleted by task cascade")
+	}
+}
+
 func TestSaveAndLoadAttachments(t *testing.T) {
 	store, sessionID, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()

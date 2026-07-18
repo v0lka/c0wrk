@@ -15,6 +15,7 @@ import { ServiceMessage } from './ServiceMessage'
 import { ReflectionBlock } from './ReflectionBlock'
 import { PlanApprovalPanel } from './PlanApprovalPanel'
 import { ReviewPromptBlock } from './ReviewPromptBlock'
+import { GoalProposalPanel } from './GoalProposalPanel'
 import { ThoughtGroupBlock } from './ThoughtGroupBlock'
 import { ChecklistCard } from './ChecklistCard'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
@@ -73,6 +74,7 @@ const renderers: Record<DisplayItemKind, ItemRenderer> = {
   memory_read: MemoryReadBlock as ItemRenderer,
   plan_review: PlanApprovalPanel as ItemRenderer,
   review_prompt: ReviewPromptBlock as ItemRenderer,
+  goal_proposal: GoalProposalPanel as ItemRenderer,
   checklist: ChecklistCard as ItemRenderer,
 }
 

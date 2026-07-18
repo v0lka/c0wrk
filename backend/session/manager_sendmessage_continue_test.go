@@ -188,7 +188,7 @@ func TestSendMessage_UnfinishedTask_ContinuesCycle(t *testing.T) {
 	store.mu.Unlock()
 
 	// The user message must appear in the UI (message_received) regardless of path.
-	if err := mgr.SendMessage(context.Background(), info.ID, nudge, nil, "", ""); err != nil {
+	if err := mgr.SendMessage(context.Background(), info.ID, nudge, nil, "", "", false, ""); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 
@@ -306,7 +306,7 @@ func TestSendMessage_IdleSession_StartsNewTaskWithRouting(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 
-	if err := mgr.SendMessage(context.Background(), info.ID, userMsg, nil, "", ""); err != nil {
+	if err := mgr.SendMessage(context.Background(), info.ID, userMsg, nil, "", "", false, ""); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 

@@ -205,6 +205,12 @@ func (s *SQLiteSessionStore) createTables() error {
 		updated_at TIMESTAMP NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS task_goal_state (
+		task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+		goal_state TEXT NOT NULL,
+		updated_at TIMESTAMP NOT NULL
+	);
+
 	CREATE TABLE IF NOT EXISTS terminal_commands (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -847,6 +853,12 @@ type TaskStore interface {
 	// LoadTrajectory loads the Conductor step trajectory for a task.
 	// Returns nil, nil when no trajectory has been persisted.
 	LoadTrajectory(ctx context.Context, taskID string) (json.RawMessage, error)
+	// SaveGoalState inserts or replaces the goal-loop state
+	// (JSON-marshaled goal.GoalState) for a task.
+	SaveGoalState(ctx context.Context, taskID string, goalStateJSON json.RawMessage) error
+	// LoadGoalState loads the goal-loop state for a task.
+	// Returns nil, nil when no goal state has been persisted.
+	LoadGoalState(ctx context.Context, taskID string) (json.RawMessage, error)
 	GetUnfinishedTask(ctx context.Context, sessionID string) (*TaskRecord, error)
 	GetLatestTaskID(ctx context.Context, sessionID string) (string, error)
 	ReactivateTask(ctx context.Context, taskID string) error
@@ -1228,4 +1240,33 @@ func (s *SQLiteSessionStore) LoadTrajectory(ctx context.Context, taskID string) 
 		return nil, fmt.Errorf("failed to load trajectory: %w", err)
 	}
 	return json.RawMessage(stepsStr), nil
+}
+
+// SaveGoalState inserts or replaces the goal-loop state for a task.
+func (s *SQLiteSessionStore) SaveGoalState(ctx context.Context, taskID string, goalStateJSON json.RawMessage) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO task_goal_state (task_id, goal_state, updated_at)
+		VALUES (?, ?, ?)`,
+		taskID, string(goalStateJSON), time.Now(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save goal state: %w", err)
+	}
+	return nil
+}
+
+// LoadGoalState loads the goal-loop state for a task.
+// Returns nil, nil when no goal state has been persisted.
+func (s *SQLiteSessionStore) LoadGoalState(ctx context.Context, taskID string) (json.RawMessage, error) {
+	var goalStateStr string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT goal_state FROM task_goal_state WHERE task_id = ?`, taskID,
+	).Scan(&goalStateStr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to load goal state: %w", err)
+	}
+	return json.RawMessage(goalStateStr), nil
 }

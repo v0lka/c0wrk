@@ -4,6 +4,8 @@ package core
 import (
 	"time"
 
+	"github.com/v0lka/c0wrk/core/goal"
+	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -102,6 +104,18 @@ type AttachmentNameResolver interface {
 	SetAttachmentNameResolver(resolve func(attachmentID string) string)
 }
 
+// GoalProposerSetter is implemented by the Orchestrator so the backend can
+// inject the goal-proposer hook (the desktop approval flow that
+// propose_goal blocks on) AFTER construction. It mirrors the
+// AttachmentNameResolver pattern: the proposer depends on backend state (the
+// pending-confirmation channel + event emitter) that is not available at
+// Orchestrator construction time, so it is wired later by the session layer.
+// Without a proposer, goal derivation fails fast rather than silently running
+// a non-goal Conductor pass.
+type GoalProposerSetter interface {
+	SetGoalProposer(proposer tools.GoalProposer)
+}
+
 // DisplayContextWindowSetter is an optional interface that Emitter
 // implementations can implement to present context-fill information relative
 // to the model's advertised context window.
@@ -174,4 +188,20 @@ type HandleOptions struct {
 	ReasoningEffort    string                     // non-empty → native reasoning value for all LLM calls; empty → use family default
 	SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)
 	PendingAttachments []orchestration.Attachment // attachments staged by AttachFiles, flushed into the blackboard before execution
+
+	// Goal selects goal mode for the FIRST message of a task (opts.TaskID ==
+	// ""). When true, HandleMessage dispatches to runGoalLoop: the orchestrator
+	// first derives a crisp {condition, verify} goal via propose_goal (with user
+	// sign-off), then iterates the Conductor turn-by-turn until the agent
+	// declares the goal met (via declare_goal_status), the budget is
+	// exhausted, the agent goes idle (anti-spin), or the goal is paused. A
+	// non-first message (continuation) ignores this flag — goal mode is a
+	// first-message-only entry into the goal loop.
+	Goal bool
+
+	// GoalBudgetOverride, when non-nil, tightens the goal's resource caps below
+	// the config defaults. Applied at goal activation (turn 1) AFTER config
+	// defaults: any field > 0 / non-zero overrides the default; zero-valued
+	// fields fall back to the config default. Only meaningful when Goal is true.
+	GoalBudgetOverride *goal.GoalBudget
 }

@@ -14,6 +14,7 @@ type PendingActionsResponse struct {
 	StepLimits    []PendingStepLimit    `json:"step_limits"`
 	PlanApprovals []PendingPlanApproval `json:"plan_approvals"`
 	AskUser       []PendingAskUser      `json:"ask_user"`
+	GoalProposals []PendingGoalProposal `json:"goal_proposals"`
 }
 
 // PendingToolConfirm describes a pending tool confirmation.
@@ -46,6 +47,15 @@ type PendingAskUser struct {
 	Questions []coretools.AskUserQuestion `json:"questions"`
 }
 
+// PendingGoalProposal describes a pending goal-proposal sign-off prompt.
+type PendingGoalProposal struct {
+	RequestID          string `json:"request_id"`
+	Condition          string `json:"condition"`
+	Verify             string `json:"verify"`
+	Clarification      string `json:"clarification,omitempty"`
+	NeedsClarification bool   `json:"needs_clarification"`
+}
+
 // GetPendingActions returns all pending HITL prompts for a session — tool
 // confirmations, step-limit prompts, plan approvals, and ask-user questions
 // that are currently blocking the session's agent goroutine. The frontend
@@ -65,6 +75,7 @@ func (a *App) GetPendingActions(sessionID string) (*PendingActionsResponse, erro
 		StepLimits:    []PendingStepLimit{},
 		PlanApprovals: []PendingPlanApproval{},
 		AskUser:       []PendingAskUser{},
+		GoalProposals: []PendingGoalProposal{},
 	}
 
 	a.pendingConfirmations.Range(func(key, value any) bool {
@@ -118,6 +129,21 @@ func (a *App) GetPendingActions(sessionID string) (*PendingActionsResponse, erro
 		resp.AskUser = append(resp.AskUser, PendingAskUser{
 			RequestID: e.payload.RequestID,
 			Questions: e.payload.Questions,
+		})
+		return true
+	})
+
+	a.pendingGoalProposals.Range(func(_, value any) bool {
+		e, ok := value.(*pendingGoalProposalEntry)
+		if !ok || e.sessionID != sessionID {
+			return true
+		}
+		resp.GoalProposals = append(resp.GoalProposals, PendingGoalProposal{
+			RequestID:          e.payload.RequestID,
+			Condition:          e.payload.Condition,
+			Verify:             e.payload.Verify,
+			Clarification:      e.payload.Clarification,
+			NeedsClarification: e.payload.NeedsClarification,
 		})
 		return true
 	})

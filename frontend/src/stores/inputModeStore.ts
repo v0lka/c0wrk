@@ -16,6 +16,19 @@ interface InputModeState {
   selectedModel: string | null
   /** Per-message reasoning override. null = use family default (= max). Persisted. */
   selectedReasoning: string | null
+  /**
+   * Goal-mode toggle for the next sent message. When true, the backend enables
+   * goal mode for the first message of a task (OR-ed with any /goal prefix).
+   * Persisted.
+   */
+  goalEnabled: boolean
+  /**
+   * Goal budget override for the next sent message. A JSON string of the
+   * goal.GoalBudget fields (e.g. `{"max_turns":5}`) tightening the goal's
+   * resource caps below the config defaults; empty string = use config
+   * defaults (unlimited). Persisted.
+   */
+  goalBudget: string
 }
 
 interface InputModeActions {
@@ -34,6 +47,10 @@ interface InputModeActions {
   setSelectedModel: (model: string | null) => void
   /** Set the per-message reasoning override. null = use family default. */
   setSelectedReasoning: (value: string | null) => void
+  /** Toggle goal mode for the next sent message. */
+  setGoalEnabled: (enabled: boolean) => void
+  /** Set the goal budget override for the next sent message (JSON or empty). */
+  setGoalBudget: (budget: string) => void
 }
 
 const DEFAULT_HEIGHT = 200
@@ -52,6 +69,8 @@ export const useInputModeStore = create<InputModeState & InputModeActions>()(
       pendingTerminalDir: null,
       selectedModel: null,
       selectedReasoning: null,
+      goalEnabled: false,
+      goalBudget: '',
 
       setMode: (mode) => set({ mode }),
 
@@ -79,16 +98,26 @@ export const useInputModeStore = create<InputModeState & InputModeActions>()(
       clearPendingTerminalDir: () => set({ pendingTerminalDir: null }),
       setSelectedModel: (model) => set({ selectedModel: model }),
       setSelectedReasoning: (value) => set({ selectedReasoning: value }),
+      setGoalEnabled: (enabled) => set({ goalEnabled: enabled }),
+      setGoalBudget: (budget) => set({ goalBudget: budget }),
     }),
     {
       name: 'c0wrk-input-mode',
-      version: 2,
-      migrate: (persistedState, _version) => {
+      version: 4,
+      migrate: (persistedState, version) => {
         // v1→v2: added selectedReasoning, default to null.
+        // v2→v3: added goalEnabled (false) and goalBudget ('').
+        // v3→v4: STOPPED persisting goalEnabled/goalBudget (goal mode is
+        //        first-message-only and per-task, so persisting the toggle
+        //        silently re-activated goal mode on every fresh session). Strip
+        //        any stale goal flags from older persisted state so an old
+        //        `goalEnabled: true` does not leak back into the in-memory store.
         const state = persistedState as Record<string, unknown>
-        if (state.selectedReasoning === undefined) {
+        if (version < 2 && state.selectedReasoning === undefined) {
           state.selectedReasoning = null
         }
+        delete state.goalEnabled
+        delete state.goalBudget
         return state as typeof persistedState
       },
       partialize: (state) => ({
@@ -98,6 +127,10 @@ export const useInputModeStore = create<InputModeState & InputModeActions>()(
         isExpanded: state.isExpanded,
         selectedModel: state.selectedModel,
         selectedReasoning: state.selectedReasoning,
+        // goalEnabled/goalBudget are intentionally NOT persisted: goal mode is
+        // first-message-only and per-task, so persisting the toggle would
+        // silently activate goal mode on every fresh session. They live in
+        // memory only (reset to their defaults on reload).
       }),
     }
   )

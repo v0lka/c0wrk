@@ -23,6 +23,7 @@
 | Blackboard, facts, persistence           | [domains/memory/blackboard.md](domains/memory/blackboard.md)             |
 | LLM providers, model registry, tokens    | [domains/llm-providers.md](domains/llm-providers.md)                     |
 | Session create/resume/persist/fork       | [domains/session-lifecycle.md](domains/session-lifecycle.md)             |
+| Goal mode (multi-turn objective loop)    | [domains/goal-mode.md](domains/goal-mode.md), [decisions/017-goal-mode.md](decisions/017-goal-mode.md) |
 | File attachments (pending → blackboard)  | [domains/session-lifecycle.md](domains/session-lifecycle.md), [domains/memory/blackboard.md](domains/memory/blackboard.md) |
 | File tree, vector index, workspace       | [domains/workspace.md](domains/workspace.md)                             |
 | Auxiliary work directories               | [architecture/security-model.md](architecture/security-model.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Work Directories section), [domains/frontend/stores.md](domains/frontend/stores.md) (`workDirsStore`) |
@@ -94,6 +95,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 
 - [llm-providers.md](domains/llm-providers.md) - Thin c0wrk wiring note (provider config → core/builder → sp4rk Router)
 - [session-lifecycle.md](domains/session-lifecycle.md) - Session and task lifecycle
+- [goal-mode.md](domains/goal-mode.md) - Goal mode: multi-turn agent-driven loop over a user-approved success condition (derivation → approval → self-eval loop, budgets, anti-spin, pause/resume)
 - [workspace.md](domains/workspace.md) - File tree, vector index, workspace watcher
 
 ### domains/frontend/
@@ -129,3 +131,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [014-sp4rk-separate-module.md](decisions/014-sp4rk-separate-module.md) - sp4rk as a separate Go module → Superseded by ADR-015
 - [015-sp4rk-external-module-dependency.md](decisions/015-sp4rk-external-module-dependency.md) - sp4rk as an external module dependency → Supersedes ADR-014
 - [016-aiignore.md](decisions/016-aiignore.md) - .gitignore + .aiignore as the ignore source of truth (removes workspace.* config ignores and hardcoded defaults)
+- [017-goal-mode.md](decisions/017-goal-mode.md) - Goal mode: self-agent + evidence-mandate, derive-then-confirm UX, persist + pause/resume, anti-spin auto-pause

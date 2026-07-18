@@ -26,6 +26,10 @@ export function AttachFiles(arg1, arg2) {
   return window['go']['desktop']['App']['AttachFiles'](arg1, arg2);
 }
 
+export function CancelGoal(arg1, arg2) {
+  return window['go']['desktop']['App']['CancelGoal'](arg1, arg2);
+}
+
 export function CancelTask(arg1) {
   return window['go']['desktop']['App']['CancelTask'](arg1);
 }
@@ -38,6 +42,14 @@ export function CheckoutBranch(arg1) {
   return window['go']['desktop']['App']['CheckoutBranch'](arg1);
 }
 
+export function ClarifyGoal(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['ClarifyGoal'](arg1, arg2, arg3);
+}
+
+export function ClearGoal(arg1) {
+  return window['go']['desktop']['App']['ClearGoal'](arg1);
+}
+
 export function ClearReview(arg1) {
   return window['go']['desktop']['App']['ClearReview'](arg1);
 }
@@ -48,6 +60,10 @@ export function ClearReviewComments(arg1) {
 
 export function Commit(arg1) {
   return window['go']['desktop']['App']['Commit'](arg1);
+}
+
+export function ConfirmGoal(arg1, arg2, arg3, arg4) {
+  return window['go']['desktop']['App']['ConfirmGoal'](arg1, arg2, arg3, arg4);
 }
 
 export function CreateBranch(arg1, arg2) {
@@ -282,6 +298,10 @@ export function OptimizePrompt(arg1) {
   return window['go']['desktop']['App']['OptimizePrompt'](arg1);
 }
 
+export function PauseGoal(arg1) {
+  return window['go']['desktop']['App']['PauseGoal'](arg1);
+}
+
 export function PickAttachmentFiles() {
   return window['go']['desktop']['App']['PickAttachmentFiles']();
 }
@@ -322,6 +342,10 @@ export function ResolvePendingMessage(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['desktop']['App']['ResolvePendingMessage'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function ResumeGoal(arg1) {
+  return window['go']['desktop']['App']['ResumeGoal'](arg1);
+}
+
 export function ResumeTask(arg1) {
   return window['go']['desktop']['App']['ResumeTask'](arg1);
 }
@@ -350,8 +374,8 @@ export function SearchVectorStore(arg1) {
   return window['go']['desktop']['App']['SearchVectorStore'](arg1);
 }
 
-export function SendMessage(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5);
+export function SendMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
 export function SetLogLevel(arg1) {

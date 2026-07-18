@@ -55,7 +55,17 @@ export function useMessageSender(): UseMessageSenderResult {
     try {
       const modelOverride = useInputModeStore.getState().selectedModel ?? ''
       const reasoningOverride = useInputModeStore.getState().selectedReasoning ?? ''
-      await sendMessage(sessionId, messageText, activeSkills ?? [], modelOverride, reasoningOverride)
+      const goalEnabled = useInputModeStore.getState().goalEnabled
+      const goalBudget = useInputModeStore.getState().goalBudget
+      await sendMessage(sessionId, messageText, activeSkills ?? [], modelOverride, reasoningOverride, goalEnabled, goalBudget)
+      // Goal mode is first-message-only: once the goal-defining message is
+      // sent, the toggle no longer applies (continuation messages ignore the
+      // flag). Reset it so the user doesn't see a stale "on" toggle and so a
+      // later normal send to a NEW session doesn't silently re-enter goal mode.
+      if (goalEnabled) {
+        useInputModeStore.getState().setGoalEnabled(false)
+        useInputModeStore.getState().setGoalBudget('')
+      }
     } catch (error) {
       logger.error('Failed to send message:', error)
       const errorMessage = error instanceof Error ? error.message : String(error)

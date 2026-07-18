@@ -726,6 +726,26 @@ export namespace backend {
 
 export namespace desktop {
 	
+	export class PendingGoalProposal {
+	    request_id: string;
+	    condition: string;
+	    verify: string;
+	    clarification?: string;
+	    needs_clarification: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new PendingGoalProposal(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.request_id = source["request_id"];
+	        this.condition = source["condition"];
+	        this.verify = source["verify"];
+	        this.clarification = source["clarification"];
+	        this.needs_clarification = source["needs_clarification"];
+	    }
+	}
 	export class PendingAskUser {
 	    request_id: string;
 	    questions: tools.AskUserQuestion[];
@@ -817,6 +837,7 @@ export namespace desktop {
 	    step_limits: PendingStepLimit[];
 	    plan_approvals: PendingPlanApproval[];
 	    ask_user: PendingAskUser[];
+	    goal_proposals: PendingGoalProposal[];
 	
 	    static createFrom(source: any = {}) {
 	        return new PendingActionsResponse(source);
@@ -828,6 +849,7 @@ export namespace desktop {
 	        this.step_limits = this.convertValues(source["step_limits"], PendingStepLimit);
 	        this.plan_approvals = this.convertValues(source["plan_approvals"], PendingPlanApproval);
 	        this.ask_user = this.convertValues(source["ask_user"], PendingAskUser);
+	        this.goal_proposals = this.convertValues(source["goal_proposals"], PendingGoalProposal);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -848,6 +870,7 @@ export namespace desktop {
 		    return a;
 		}
 	}
+	
 	
 	
 	

@@ -367,6 +367,81 @@ type planApprovalResponse struct {
 	Feedback string
 }
 
+// goalProposalResponse carries the user's decision back to the blocked
+// propose_goal tool call.
+type goalProposalResponse struct {
+	Decision      string // "approve", "clarify", or "cancel"
+	Condition     string // approved condition (possibly user-edited)
+	Verify        string // approved verify clause (possibly user-edited)
+	Clarification string // clarifying answer (decision == "clarify")
+}
+
+// buildGoalProposalCallback returns the closure that turns propose_goal's
+// sign-off request into a Wails event and waits for the frontend response
+// (event- or RPC-based). Mirrors buildPlanApprovalCallback.
+func (a *App) buildGoalProposalCallback(uiEmit func(session.Event)) coretools.GoalProposer {
+	return &goalProposerAdapter{ctx: a.ctx, app: a, uiEmit: uiEmit}
+}
+
+// goalProposerAdapter implements tools.GoalProposer, bridging the core
+// propose_goal tool to the desktop pending-action flow.
+type goalProposerAdapter struct {
+	ctx    context.Context
+	app    *App
+	uiEmit func(session.Event)
+}
+
+func (g *goalProposerAdapter) Propose(ctx context.Context, proposal coretools.GoalProposal) (coretools.GoalProposalResponse, error) {
+	if g.ctx == nil {
+		return coretools.GoalProposalResponse{}, errors.New("goal proposal not available: no UI context")
+	}
+	sessionID := session.SessionIDFromContext(ctx)
+	if sessionID == "" {
+		return coretools.GoalProposalResponse{}, errors.New("goal proposal not available: no session context")
+	}
+
+	requestID := uuid.New().String()
+	ch := make(chan goalProposalResponse, 1)
+	payload := session.GoalProposalPayload{
+		RequestID:          requestID,
+		SessionID:          sessionID,
+		Condition:          proposal.Condition,
+		Verify:             proposal.Verify,
+		Clarification:      proposal.Clarification,
+		NeedsClarification: proposal.NeedsClarification,
+	}
+	g.app.pendingGoalProposals.Store(requestID, &pendingGoalProposalEntry{
+		ch:        ch,
+		sessionID: sessionID,
+		payload:   payload,
+	})
+	// Emit through the Application's combined UI + persistence path so the
+	// goal_proposal event survives app restarts. Fall back to the raw UI
+	// emitter when the Application is not yet initialized.
+	evt := session.Event{SessionID: sessionID, Type: "goal_proposal", Data: payload}
+	if g.app.app != nil {
+		g.app.app.EmitSessionEvent(evt)
+	} else {
+		g.uiEmit(evt)
+	}
+
+	select {
+	case resp := <-ch:
+		return coretools.GoalProposalResponse{
+			Decision:      resp.Decision,
+			Condition:     resp.Condition,
+			Verify:        resp.Verify,
+			Clarification: resp.Clarification,
+		}, nil
+	case <-ctx.Done():
+		g.app.pendingGoalProposals.Delete(requestID)
+		return coretools.GoalProposalResponse{}, ctx.Err()
+	case <-g.ctx.Done():
+		g.app.pendingGoalProposals.Delete(requestID)
+		return coretools.GoalProposalResponse{}, g.ctx.Err()
+	}
+}
+
 // buildPlanApprovalCallback returns the closure that turns declare_plan's
 // await_approval mode into a Wails event and waits for the frontend response.
 func (a *App) buildPlanApprovalCallback(uiEmit func(session.Event)) coretools.ApprovalFunc {
@@ -758,8 +833,8 @@ func (a *App) startVectorIndexBackground(
 		}
 
 		vectorMgr, err := vectorindex.NewManager(vectorindex.ManagerConfig{
-			EmbeddingFunc:    emb.EmbeddingFunc(),
-			CloseFn:          emb.Close,
+			EmbeddingFunc: emb.EmbeddingFunc(),
+			CloseFn:       emb.Close,
 			HybridConfig: vectorindex.HybridConfig{
 				RRFK:              cfg.VectorIndex.HybridRRFK,
 				FanoutMultiplier:  cfg.VectorIndex.HybridFanoutMultiplier,

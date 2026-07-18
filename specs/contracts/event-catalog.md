@@ -67,6 +67,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | `tool_confirm` | `{confirm_id, tool, args, reasoning}`            | useActionEvents | Confirmation required (`reasoning` is a human-readable explanation of why approval is needed — symlink traversal, judge flag, auto-approve denial, or the tool's default mutating-action policy; rendered as "Why approval is needed") |
 | `ask_user`     | `{request_id, questions: AskUserQuestion[]}`     | useActionEvents | Agent asks user                                |
 | `step_limit`   | `{request_id, current_step, max_steps, reason?}` | useActionEvents | Step limit or circuit breaker reached          |
+| `goal_proposal` | `{request_id, session_id, condition, verify, clarification?, needs_clarification}` | useGoalEvents | Goal-mode derivation agent called `propose_goal`; surfaces as a pending action that **blocks the agent** until the user responds. Persisted (role `goal_proposal`) so it reappears on reload; renders as a `goal_proposal` DisplayItem (Approve-with-edits / Cancel). See [domains/goal-mode.md](../domains/goal-mode.md). |
 
 ### Context & Memory
 
@@ -84,7 +85,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | `task_cancelled`        | `{session_id}`                                                                | useLifecycleEvents | Task cancelled by user                                      |
 | `task_failed_resumable` | `{message}`                                                                   | useLifecycleEvents | Task failed/incomplete, can resume                          |
 | `error`                 | `{session_id, error}`                                                         | useChatEvents      | Execution error                                             |
-| `service`               | `{content, ...meta}` (meta fields flattened directly, e.g. `phase`)           | useChatEvents      | Service/status message (via `Service` or `ServiceWithMeta`) |
+| `service`               | `{content, ...meta}` (meta fields flattened directly, e.g. `phase`)           | useChatEvents      | Service/status message (via `Service` or `ServiceWithMeta`). Goal mode reuses this channel with a `phase` discriminator: `phase: "goal_status"` (full goal snapshot — status, turn, condition, budget, verdict — emitted on every transition and after each turn) and `phase: "goal_progress"` (mid-loop turn/budget telemetry). See [../domains/goal-mode.md](../domains/goal-mode.md). |
 
 ### Agent Internals
 
@@ -152,6 +153,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | `tool_judge_request`    | frontend → backend | `{confirm_id}` (see `JudgeRequestPayload`)                        | Request LLM judge evaluation (response via `tool_judge_response` backend→frontend event) |
 | `ask_user_response`     | frontend → backend | `{request_id, answers}`                                           | User's answers to agent questions |
 | `step_limit_response`   | frontend → backend | `{request_id, response}` (`allow_once` / `allow_always` / `deny`) | User's step limit decision        |
+| `goal_proposal_response` | frontend → backend | `{request_id, decision, condition?, verify?, clarification?}` (`approve` / `clarify` / `cancel`) | User's sign-off on a proposed goal. Both the event path and the RPC path (`ConfirmGoal`/`CancelGoal`) funnel through a single resolver on the desktop pending map. See [../domains/goal-mode.md](../domains/goal-mode.md). |
 
 ## Event Handling Pattern (Frontend)
 

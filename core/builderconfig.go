@@ -17,6 +17,7 @@ type BuilderConfig struct {
 	ToolLimits    BuilderToolLimitsConfig
 	Timeouts      BuilderTimeoutsConfig
 	Proxy         proxy.Config
+	Goal          BuilderGoalConfig
 
 	// ExpandEnvVars resolves ${ENV_VAR} patterns in a string.
 	// Injected by the backend so core does not import os/config.
@@ -276,4 +277,19 @@ type BuilderTimeoutsConfig struct {
 	WebFetchTimeout   int
 	WebSearchTimeout  int
 	LLMRequestTimeout int
+}
+
+// ---------------------------------------------------------------------------
+// Goal
+// ---------------------------------------------------------------------------
+
+// BuilderGoalConfig mirrors config.GoalConfig for the builder. Carries the
+// default goal-budget knobs that Build() maps into OrchestratorConfig. Defined
+// in core so core never imports backend/config. WallClockDeadline is the raw
+// duration string ("30m", "2h"); "0"/"" = unlimited. TokenCapInput +
+// TokenCapOutput sum into GoalBudgetDefaults.MaxTokens (0+0 = 0 = unlimited).
+type BuilderGoalConfig struct {
+	WallClockDeadline string
+	TokenCapInput     int
+	TokenCapOutput    int
 }

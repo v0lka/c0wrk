@@ -17,6 +17,7 @@ require (
 require github.com/fsnotify/fsnotify v1.9.0
 
 require (
+	github.com/UserExistsError/conpty v0.1.4
 	github.com/blevesearch/bleve/v2 v2.6.0
 	github.com/creack/pty v1.1.24
 	github.com/epilande/go-devicons v0.0.0-20250505162540-0661cab71a28
@@ -71,7 +72,6 @@ require (
 
 require (
 	codeberg.org/readeck/go-readability/v2 v2.1.2 // indirect
-	github.com/UserExistsError/conpty v0.1.4 // indirect
 	github.com/go-shiori/dom v0.0.0-20230515143342-73569d674e1c // indirect
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
 	github.com/itlightning/dateparse v0.2.1 // indirect

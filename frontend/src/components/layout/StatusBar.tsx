@@ -9,6 +9,7 @@ import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { IndexingStatus } from "./IndexingStatus";
 import { ContextFillStatus } from "./ContextFillStatus";
+import { GoalStatusIndicator } from "./GoalStatusIndicator";
 
 function Sep() {
   return <Separator orientation="vertical" className="mx-1 h-4" />;
@@ -59,6 +60,9 @@ export function StatusBar() {
           <Sep />
         </>
       )}
+
+      {/* Goal status badge with Pause/Resume/Clear (only when goal active/paused) */}
+      <GoalStatusIndicator />
 
       {/* Spacer */}
       <div className="flex-1" />

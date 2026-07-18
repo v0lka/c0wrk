@@ -191,6 +191,11 @@ func (p *EventPersister) Persist(evt Event) {
 		return // transient — no persistence needed
 	case "plan_review_ready":
 		role = "plan_review"
+	case "goal_proposal":
+		// Persist the goal-proposal pending action so it reappears via
+		// GetPendingActions after a reload (the agent remains blocked until
+		// the user confirms/cancels via the goal_proposal_response flow).
+		role = "goal_proposal"
 	default:
 		// Unknown event types are dropped from history. Log so schema drift
 		// between emitters and the persister is visible instead of silent.

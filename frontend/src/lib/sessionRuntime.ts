@@ -18,6 +18,7 @@
  */
 import type { PendingActionsResponse, SessionRuntimeStatus } from '@/api/chat'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
+import { useGoalStore } from '@/stores/goalStore'
 import type { ChatMessageUI, MessageType } from '@/types/messages'
 import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
 
@@ -35,7 +36,8 @@ export function stalePromptMatchField(type: MessageType): string | null {
     case 'tool_confirm': return 'confirm_id'
     case 'ask_user':
     case 'step_limit':
-    case 'plan_review': return 'request_id'
+    case 'plan_review':
+    case 'goal_proposal': return 'request_id'
     case 'task_failed_resumable': return 'task_id'
     default: return null
   }
@@ -258,6 +260,45 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
         questions: a.questions,
       } as Record<string, unknown>,
       timestamp: Date.now(),
+    })
+  }
+
+  // Goal proposals. NOTE: goal_proposal is intentionally NOT added to the
+  // resolve-stale branch above: the backend's GetPendingActions does not yet
+  // report goal_proposals, so the pending set is always empty here, and
+  // treating "not in pending" as stale would falsely resolve every persisted
+  // proposal. The genuine stale case (restart with no running task) is handled
+  // by reconcileRuntimeStatus via HITL_PROMPT_TYPES. This add-missing branch is
+  // forward-compatible — it stays a no-op until the backend populates the
+  // goal_proposals field. Persisted proposals reappear via history reload
+  // (role goal_proposal) regardless.
+  for (const g of pending.goal_proposals) {
+    const id = `goal-proposal-${g.request_id}`
+    if (existingIDs.has(id)) continue
+    store.addMessage(sessionId, {
+      id,
+      sessionId,
+      type: 'goal_proposal',
+      content: g.needs_clarification && g.clarification ? g.clarification : g.condition,
+      metadata: {
+        request_id: g.request_id,
+        condition: g.condition,
+        verify: g.verify,
+        clarification: g.clarification ?? '',
+        needs_clarification: g.needs_clarification,
+        resolved: false,
+      } as Record<string, unknown>,
+      timestamp: Date.now(),
+    })
+    // Keep the goal store in sync for a background-delivered proposal that
+    // surfaces here on session switch.
+    useGoalStore.getState().setPendingProposal(sessionId, {
+      request_id: g.request_id,
+      session_id: sessionId,
+      condition: g.condition,
+      verify: g.verify,
+      clarification: g.clarification,
+      needs_clarification: g.needs_clarification,
     })
   }
 

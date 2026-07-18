@@ -175,7 +175,11 @@ func (f *FrontendAPI) ArchiveSession(id string) error {
 
 // SendMessage sends a user message to a session (async - results come via events).
 // activeSkills contains skill names explicitly referenced by the user via /skill-name syntax.
-func (f *FrontendAPI) SendMessage(id, text string, activeSkills []string, modelOverride, reasoningEffort string) error {
+// goal, when true, enables goal mode for the first message of a task (OR-ed with
+// any /goal command prefix the message text may carry). goalBudget is an optional
+// JSON budget override ({"max_turns":N,"max_tokens":M,"deadline":...}) tightening
+// the goal's resource caps below the config defaults; empty = use defaults.
+func (f *FrontendAPI) SendMessage(id, text string, activeSkills []string, modelOverride, reasoningEffort string, goal bool, goalBudget string) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
@@ -202,7 +206,7 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills []string, modelO
 	// Preprocess text for the orchestrator: strip /skill refs and convert @file refs to fileref:// URIs.
 	processedText := core.PreprocessMessageText(text, activeSkills)
 
-	if err := f.app.Manager().SendMessage(f.ctx(), id, processedText, activeSkills, modelOverride, reasoningEffort); err != nil {
+	if err := f.app.Manager().SendMessage(f.ctx(), id, processedText, activeSkills, modelOverride, reasoningEffort, goal, goalBudget); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 	return nil

@@ -50,6 +50,7 @@ type App struct {
 	pendingAskUser       sync.Map
 	pendingStepLimit     sync.Map
 	pendingPlanApprovals sync.Map
+	pendingGoalProposals sync.Map
 
 	// judgeWG tracks in-flight runJudgeEvaluation goroutines so Shutdown can
 	// wait for them before tearing down the backend application.

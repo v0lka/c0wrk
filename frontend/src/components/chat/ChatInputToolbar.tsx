@@ -4,7 +4,10 @@ import { cn } from '@/lib/utils'
 import type { ChatInputController } from '@/hooks/useChatInputController'
 import { ModelCombobox } from './ModelCombobox'
 import { ReasoningCombobox } from './ReasoningCombobox'
+import { GoalToggle } from './GoalToggle'
+import { BudgetCombobox } from './BudgetCombobox'
 import { useWorkDirsStore } from '@/stores/workDirsStore'
+import { useInputModeStore } from '@/stores/inputModeStore'
 import { useAttachmentsInput } from '@/hooks/useAttachmentsInput'
 
 interface ChatInputToolbarProps {
@@ -37,6 +40,9 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
   } = controller
 
   const { handleAttach } = useAttachmentsInput(activeSessionId)
+
+  // Budget selector is only meaningful when goal mode is enabled.
+  const goalEnabled = useInputModeStore((s) => s.goalEnabled)
 
   const blockingMessage = isNoProject ? 'Select or create a project' : null
 
@@ -97,6 +103,9 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
           <div className="w-px h-4 bg-border mx-1" />
           <ModelCombobox />
           <ReasoningCombobox />
+          <div className="w-px h-4 bg-border mx-1" />
+          <GoalToggle />
+          {goalEnabled && <BudgetCombobox />}
         </>
       )}
       <div className="flex-1" />

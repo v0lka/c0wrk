@@ -35,6 +35,8 @@ c0wrk's registered tools and their default policy / trust classification:
 | `web_search`          | Web       | always_allow   | yes       | Search the web (optional, needs API key)           |
 | `finish`              | Agent     | internal       | no        | Signal task/step completion                        |
 | `ask_user`            | Agent     | internal       | no        | Prompt user for information (c0wrk-specific, `core/tools/askuser.go`) |
+| `propose_goal`        | Agent     | internal       | no        | Goal-mode derivation: submit a {condition, verify} goal proposal for user sign-off. Blocks until the user approves (optionally with edits), clarifies, or cancels. A no-op outside a derivation Conductor run (no `GoalProposer` in context). See [../goal-mode.md](../goal-mode.md). |
+| `declare_goal_status` | Agent     | internal       | no        | Goal-mode self-evaluation: write a structured {status, evidence, reason} verdict into the context-injected `GoalStatusSink`. Status `"met"` **requires non-empty evidence** (each entry must have non-empty `type`/`ref`/`summary`). A no-op outside a goal-loop turn (no sink in context). See [../goal-mode.md](../goal-mode.md). |
 | `list_step_outputs`   | Agent     | internal       | no        | List completed step results                        |
 | `read_step_output`    | Agent     | internal       | no        | Read specific step output                          |
 | `read_final_result`   | Agent     | internal       | no        | Read the prior task's final result from the blackboard |
@@ -83,6 +85,8 @@ RegisterBuiltinTools(registry, cfg):
   12. batch
   13. semantic_search (optional: needs vector search func)
   14. ask_user (optional: needs ask_user func)
+  15. propose_goal — goal-mode derivation coordination primitive (always registered; a no-op outside a derivation Conductor run)
+  16. declare_goal_status — goal-mode self-evaluation verdict writer (always registered; a no-op outside a goal-loop turn; `met` requires non-empty evidence)
 ```
 
 Note: `read_skill_resource` is registered separately in `NewOrchestratorBuilder` (not in `RegisterBuiltinTools`).
@@ -90,6 +94,15 @@ Note: `read_skill_resource` is registered separately in `NewOrchestratorBuilder`
 ## `ask_user` (c0wrk-specific)
 
 The `ask_user` tool and its UI types (`AskUserFunc`, `AskUserRequest`, `AskUserResponse`, `AskUserQuestion`, `AskUserAnswer`, `AskUserOption`) live in `core/tools/` — they were moved out of sp4rk per ADR-011 because they are host-application UI concerns. The tool is registered only when an `ask_user` func is provided.
+
+## Goal-Mode Tools (`propose_goal`, `declare_goal_status`)
+
+Goal mode adds two internal coordination tools (both `PolicyAlwaysAllow` — they bypass the tool judge because they are coordination primitives, not user-facing capabilities). They are safe to register unconditionally and are no-ops outside a goal-mode run (the context value they read is nil).
+
+- **`propose_goal`** (`core/tools/propose_goal.go`) — used by the derivation agent to submit a {condition, verify, clarification?, needs_clarification?} goal for user sign-off. It reads a `GoalProposer` from the context (`GoalProposerFrom`), which the orchestrator injects during `deriveGoal` (desktop supplies the implementation that emits a `goal_proposal` event and blocks for the user response). The approved (possibly user-edited) values are echoed back so the agent commits to the user's wording. A no-op (clear error) when no proposer is in context.
+- **`declare_goal_status`** (`core/tools/declare_goal_status.go`) — the single channel through which the goal loop learns a structured verdict. It writes a typed `goal.Verdict` into the per-turn `GoalStatusSink` (`GoalStatusSinkFrom`), which `runGoalTurns` injects. **Declaring status `"met"` requires non-empty evidence** — enforced at the tool boundary so a bare "done" can never terminate the loop without a concrete, inspectable artifact. The tool executor does not validate inputs against the JSON schema, so the check rejects both an absent array and a present-but-empty entry (`evidence:[{}]`, `evidence:[{"ref":""}]`): each entry must have non-empty `type`, `ref`, and `summary`. A no-op (clear error) when no sink is in context.
+
+Both follow the same context-injection pattern as `declare_plan`/`ask_user`: the orchestrator injects the dependency via a context value before the relevant Conductor run; the tool reads it back at execution time. See [../goal-mode.md](../goal-mode.md) for the full goal-mode lifecycle.
 
 ## Tool-Manager Wiring (`rg`)
 

@@ -294,6 +294,73 @@ func (a *App) handlePlanApprovalResponse(payload map[string]any, log *slog.Logge
 	}
 }
 
+// resolveGoalProposal delivers a user decision to a blocked goal-proposal
+// channel and marks the persisted goal_proposal message resolved. Returns true
+// when a pending proposal was found and resolved, false otherwise. Shared by
+// the event-based path (handleGoalProposalResponse) and the RPC-based path
+// (FrontendAPI.ConfirmGoal/CancelGoal, via the manager resolver).
+func (a *App) resolveGoalProposal(requestID, decision, condition, verify, clarification string) bool {
+	if requestID == "" {
+		return false
+	}
+	dataVal, ok := a.pendingGoalProposals.Load(requestID)
+	if !ok {
+		return false
+	}
+	entry, ok := dataVal.(*pendingGoalProposalEntry)
+	if !ok {
+		a.pendingGoalProposals.Delete(requestID)
+		return false
+	}
+
+	resp := goalProposalResponse{
+		Decision:      decision,
+		Condition:     condition,
+		Verify:        verify,
+		Clarification: clarification,
+	}
+	select {
+	case entry.ch <- resp:
+	default:
+		// Channel already resolved or receiver gone — clean up the stale entry.
+	}
+	a.pendingGoalProposals.Delete(requestID)
+
+	// Mark the persisted goal_proposal message as resolved so it doesn't
+	// reappear as pending on session reload.
+	if err := a.resolvePendingMessage(entry.sessionID, "goal_proposal", "request_id", requestID, map[string]any{
+		"resolved":  true,
+		"decision":  decision,
+		"condition": condition,
+		"verify":    verify,
+	}); err != nil {
+		slog.Warn("failed to resolve persisted goal_proposal message", "request_id", requestID, "error", err)
+	}
+	return true
+}
+
+// handleGoalProposalResponse is the body of the EventGoalProposalResponse listener.
+// Extracted from wireWailsEventListeners so it can be unit-tested without a live
+// Wails runtime.
+func (a *App) handleGoalProposalResponse(payload map[string]any, log *slog.Logger) {
+	requestID, ok := stringField(payload, "request_id", "goal_proposal response", log)
+	if !ok {
+		return
+	}
+	decision, _ := payload["decision"].(string)
+	if decision == "" {
+		log.Warn("goal proposal response missing decision field", "request_id", requestID)
+		return
+	}
+	condition, _ := payload["condition"].(string)
+	verify, _ := payload["verify"].(string)
+	clarification, _ := payload["clarification"].(string)
+
+	if !a.resolveGoalProposal(requestID, decision, condition, verify, clarification) {
+		log.Warn("no pending goal proposal for request_id", "request_id", requestID)
+	}
+}
+
 // parseAskUserAnswers extracts the typed answers slice from the untyped JSON
 // payload. Missing or malformed entries are silently skipped — the question
 // IDs are owned by the orchestrator and unrecognized IDs would be rejected

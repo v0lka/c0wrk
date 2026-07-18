@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/llm"
@@ -179,8 +180,10 @@ func (m *mockTaskStore) PersistFacts(taskID string, facts []orchestration.Fact) 
 func (m *mockTaskStore) PersistAttachments(taskID string, attachments []orchestration.Attachment) error {
 	return nil
 }
-func (m *mockTaskStore) SaveTrajectory(taskID string, steps []agent.Step) error       { return nil }
-func (m *mockTaskStore) LoadTrajectory(taskID string) ([]agent.Step, error)           { return nil, nil }
+func (m *mockTaskStore) SaveTrajectory(taskID string, steps []agent.Step) error   { return nil }
+func (m *mockTaskStore) LoadTrajectory(taskID string) ([]agent.Step, error)       { return nil, nil }
+func (m *mockTaskStore) PersistGoalState(taskID string, gs *goal.GoalState) error { return nil }
+func (m *mockTaskStore) LoadGoalState(taskID string) (*goal.GoalState, error)     { return nil, nil }
 func (m *mockTaskStore) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {
 		return nil, m.loadErr
@@ -319,6 +322,12 @@ func (m *mockTaskStoreWithReactivate) SaveTrajectory(taskID string, steps []agen
 	return nil
 }
 func (m *mockTaskStoreWithReactivate) LoadTrajectory(taskID string) ([]agent.Step, error) {
+	return nil, nil
+}
+func (m *mockTaskStoreWithReactivate) PersistGoalState(taskID string, gs *goal.GoalState) error {
+	return nil
+}
+func (m *mockTaskStoreWithReactivate) LoadGoalState(taskID string) (*goal.GoalState, error) {
 	return nil, nil
 }
 func (m *mockTaskStoreWithReactivate) LoadTaskState(taskID string) (*TaskState, error) {

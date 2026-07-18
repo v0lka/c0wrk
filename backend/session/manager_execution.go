@@ -2,14 +2,18 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
+	goalpkg "github.com/v0lka/c0wrk/core/goal"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
@@ -17,6 +21,12 @@ import (
 	"github.com/v0lka/sp4rk/orchestration"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
+
+// ErrNoActiveTask is returned by CancelTask when the session has no task
+// currently running. Callers that don't care whether a task was actually
+// cancelled (e.g. ClearGoal, which only needs the task stopped so it can
+// persist a terminal goal state) can treat this as non-fatal via errors.Is.
+var ErrNoActiveTask = errors.New("no active task to cancel")
 
 // loadWorkDirectories fetches project-scoped and session-scoped auxiliary work
 // directories for the given session. It is best-effort: nil stores or listing
@@ -142,7 +152,7 @@ func (m *Manager) injectIgnoreChecker(ctx context.Context, session *Session, dir
 
 // SendMessage sends a user message to a session's orchestrator (async).
 // Runs in a goroutine, results come via events.
-func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills []string, modelOverride, reasoningEffort string) error {
+func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills []string, modelOverride, reasoningEffort string, goal bool, goalBudget string) error {
 	session, err := m.getOrRestoreSession(id)
 	if err != nil {
 		return fmt.Errorf("failed to restore session: %w", err)
@@ -274,13 +284,41 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 			m.emitAttachmentsChanged(id, []AttachmentInfo{}, nil)
 		}
 
-		result, err := session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
+		// Goal mode: a leading "/goal" command on a FIRST message (no prior
+		// task to continue) dispatches HandleMessage to the multi-turn goal
+		// loop instead of the single-pass route→Conductor flow. The command is
+		// stripped from the message; deriveGoal grounds the goal from the rest.
+		// An explicit goal flag from the caller (e.g. a UI toggle) also enables
+		// goal mode, OR-ed with the /goal command detection.
+		goalMsg, isGoal := core.DetectAndStripGoalMode(msg)
+		goalEnabled := (isGoal || goal) && lastTaskID == ""
+
+		// Parse the optional budget override (JSON or empty). Empty/invalid
+		// → nil (use config defaults). A parse error is logged but does not
+		// block the send; the goal simply uses the default budget.
+		var budgetOverride *goalpkg.GoalBudget
+		if goalEnabled {
+			budgetOverride = parseGoalBudget(goalBudget, m.log())
+		}
+
+		// When goal mode is enabled, the orchestrator receives the /goal-stripped
+		// message; otherwise it receives the original (preprocessed) message.
+		// goalMsg == msg when no /goal prefix is present, so this is safe even
+		// when goal mode was enabled by the flag rather than the command.
+		hmMsg := msg
+		if goalEnabled {
+			hmMsg = goalMsg
+		}
+
+		result, err := session.orchestrator.HandleMessage(ctx, hmMsg, id, core.HandleOptions{
 			TaskID:             lastTaskID,
 			UserSkills:         skills,
 			ModelOverride:      modelOverride,
 			ReasoningEffort:    reasoningEffort,
 			SessionPlansDir:    config.SessionPlansDir(m.agentDir, session.ProjectID, id),
 			PendingAttachments: pendingAttachments,
+			Goal:               goalEnabled,
+			GoalBudgetOverride: budgetOverride,
 		})
 
 		// Distinguish partial-success (incomplete plan) from total failure.
@@ -359,6 +397,24 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 	return nil
 }
 
+// parseGoalBudget parses a goal-budget override string into a *goal.GoalBudget.
+// The string is expected to be a JSON object with the goal.GoalBudget fields
+// (max_turns, max_tokens, deadline). An empty string returns nil (use config
+// defaults). An unparseable string is logged and returns nil so a malformed
+// budget never blocks the send — the goal simply falls back to defaults.
+func parseGoalBudget(raw string, log *slog.Logger) *goalpkg.GoalBudget {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var b goalpkg.GoalBudget
+	if err := json.Unmarshal([]byte(raw), &b); err != nil {
+		log.Warn("goal budget override is not valid JSON; falling back to config defaults", "raw", raw, "error", err)
+		return nil
+	}
+	return &b
+}
+
 // tryContinueInterruptedTask checks whether the session has an unfinished
 // (interrupted) task and, if so, continues its ReAct cycle by appending the
 // user's new message as a final seeded user-nudge turn. It returns true when
@@ -427,7 +483,7 @@ func (m *Manager) tryContinueInterruptedTask(ctx context.Context, id string, ses
 	// after the resumed execution finishes.
 	m.resolveResumableTaskMessage(id, taskID, "resumed")
 
-	result, err := session.orchestrator.Resume(ctx, bb, routing, config.SessionPlansDir(m.agentDir, session.ProjectID, id), resumeSteps)
+	result, err := session.orchestrator.Resume(ctx, bb, routing, config.SessionPlansDir(m.agentDir, session.ProjectID, id), resumeSteps, nil)
 
 	// Shared completion handling (mirrors ResumeTask's goroutine tail).
 	if err != nil && errors.Is(err, orchestration.ErrExecutionIncomplete) && result != nil {
@@ -531,6 +587,14 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 		return fmt.Errorf("failed to load trajectory: %w", err)
 	}
 
+	// Load the persisted goal state. When present and non-terminal (paused or
+	// still active), the orchestrator re-enters the goal loop instead of the
+	// plain Conductor path. A nil goal state (non-goal task) resumes normally.
+	goalState, err := adapter.LoadGoalState(taskID)
+	if err != nil {
+		return fmt.Errorf("failed to load goal state: %w", err)
+	}
+
 	session.mu.Lock()
 	if session.active {
 		session.mu.Unlock()
@@ -593,7 +657,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 			session.mu.Unlock()
 		}()
 
-		result, err := session.orchestrator.Resume(taskCtx, bb, routing, config.SessionPlansDir(m.agentDir, session.ProjectID, id), resumeSteps)
+		result, err := session.orchestrator.Resume(taskCtx, bb, routing, config.SessionPlansDir(m.agentDir, session.ProjectID, id), resumeSteps, goalState)
 
 		// Treat partial execution like the SendMessage path — deliver best-effort
 		// output and rely on emitResumableIfUnfinished to expose resumability.
@@ -878,7 +942,7 @@ func (m *Manager) CancelTask(id string) error {
 
 	if !session.active {
 		session.mu.Unlock()
-		return errors.New("no active task to cancel")
+		return ErrNoActiveTask
 	}
 
 	doneCh := session.done

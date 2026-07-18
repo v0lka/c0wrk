@@ -27,8 +27,9 @@ import { useEffect } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
-import { isToolConfirmData, isAskUserData, isStepLimitData, isPlanReviewReadyData } from '@/types/events'
+import { isToolConfirmData, isAskUserData, isStepLimitData, isPlanReviewReadyData, isGoalProposalData } from '@/types/events'
 import { handleToolConfirmEvent, handleAskUserEvent, handleStepLimitEvent, handlePlanReviewEvent } from './events/hitlHandlers'
+import { handleGoalProposalEvent } from './events/goalHandlers'
 
 /**
  * Watch all running background sessions for completion and HITL events.
@@ -109,6 +110,15 @@ export function useBackgroundSessionWatcher(): void {
         onSessionEvent(sessionId, 'plan_review_ready', (data) => {
           if (!isPlanReviewReadyData(data)) { reportDroppedEvent('plan_review_ready', data); return }
           handlePlanReviewEvent(sessionId, data)
+        }),
+      )
+      // Goal proposal — the derivation agent blocks on propose_goal until the
+      // user confirms/cancels. Without this listener a background session that
+      // hits a proposal would lose the event and hang (HITL parity).
+      cleanups.push(
+        onSessionEvent(sessionId, 'goal_proposal', (data) => {
+          if (!isGoalProposalData(data)) { reportDroppedEvent('goal_proposal', data); return }
+          handleGoalProposalEvent(sessionId, data)
         }),
       )
     }

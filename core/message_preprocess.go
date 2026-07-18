@@ -52,3 +52,28 @@ func PreprocessMessageText(text string, activeSkills []string) string {
 	result = multiSpaceRe.ReplaceAllString(result, " ")
 	return strings.TrimSpace(result)
 }
+
+// goalModePrefixRe matches a leading "/goal" command (optionally followed by
+// whitespace) that selects goal mode for the first message of a task. It must
+// be anchored at the start of the (trimmed) message and be followed by either
+// whitespace or end-of-string so it does not false-match "/goals-report".
+var goalModePrefixRe = regexp.MustCompile(`^/goal(?:\s+|$)`)
+
+// DetectAndStripGoalMode inspects a (preprocessed) user message for a leading
+// "/goal" command. When present, it returns the message with the command
+// stripped (trimmed) and isGoal=true; the caller sets HandleOptions.Goal so
+// HandleMessage dispatches to the multi-turn goal loop. When absent, the
+// message is returned unchanged and isGoal=false.
+//
+// The detection runs on the already-preprocessed text (after /skill stripping
+// and @file conversion) so a "/goal /skill-name …" invocation still works:
+// the /skill ref is stripped first, then /goal is detected. An empty remainder
+// after stripping (e.g. a bare "/goal") is returned empty with isGoal=true —
+// the orchestrator's deriveGoal will ground the goal from the (empty) message.
+func DetectAndStripGoalMode(text string) (cleaned string, isGoal bool) {
+	if !goalModePrefixRe.MatchString(text) {
+		return text, false
+	}
+	cleaned = goalModePrefixRe.ReplaceAllString(text, "")
+	return strings.TrimSpace(cleaned), true
+}

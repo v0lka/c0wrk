@@ -226,6 +226,24 @@ type conductorDeps struct {
 	// prior trajectory appears in the context window. Zero-value (nil/empty)
 	// is the default fresh-start behavior.
 	resumeSteps []agent.Step
+
+	// systemPromptOverride, when non-nil, overrides the default Conductor
+	// system-prompt factory (buildSystemPrompt + Conductor Guidance). Used by
+	// goal derivation (deriveGoal) to run the Conductor with the specialized
+	// derivation directive while STILL reusing the shared project-context
+	// prefix (AGENTS.md, workspace, env, skills, ...) via
+	// buildSpecializedSystemPrompt. All other conductor wiring — context
+	// injection, trajectory store, toolset — is reused unchanged. Zero-value
+	// (nil) is the default behavior: the standard orchestrator system prompt
+	// is assembled.
+	systemPromptOverride orchestration.SystemPromptFactory
+
+	// goalProposer is the backend hook that submits a {condition, verify}
+	// goal proposal to the user and blocks for approval. Used by deriveGoal,
+	// which wraps it in a capturingProposer (to record the agent's proposal)
+	// before injecting it into the Conductor context. Zero-value (nil) is the
+	// default: propose_goal returns "no goal proposer in context" if invoked.
+	goalProposer tools.GoalProposer
 }
 
 // conductorLauncher implements tools.DelegationLauncher by building a fresh
@@ -1457,6 +1475,14 @@ func RunConductor(
 		prompt += "\n\n" + guidance
 		return prompt
 	}
+	// Goal derivation (and other specialized runs) override the standard
+	// system prompt. The override is expected to build on the shared
+	// project-context prefix (via buildSpecializedSystemPrompt) rather than
+	// return a bare directive, so the specialized agent keeps the same
+	// project context as a normal run. All other conductor wiring is reused.
+	if deps.systemPromptOverride != nil {
+		systemPromptFactory = deps.systemPromptOverride
+	}
 
 	cfg := orchestration.ConductorConfig{
 		LLM:                 callerForConductor(deps),
@@ -1544,7 +1570,20 @@ func adaptContextFactory(cf ContextManagerFactory) orchestration.ContextManagerF
 // previous exchanges. For Resume, pass nil — the Conductor continues the
 // same task and the original request is already the task message.
 func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, resumeSteps []agent.Step) (*orchestration.ExecutionResult, error) {
-	deps := conductorDeps{
+	deps := o.buildConductorDeps(conversationHistory, resumeSteps)
+	return RunConductor(ctx, message, bb, availableTools, deps, plansDir)
+}
+
+// buildConductorDeps assembles the conductorDeps struct from the
+// orchestrator's stored fields, so a goal loop turn can build deps, swap in
+// counting wrappers (tool exec + LLM caller) and a goal-proposer override,
+// and then call RunConductor directly — without re-reading every stored field.
+// conversationHistory is the prior dialogue to inject into the Conductor's
+// context; resumeSteps holds pre-existing ReAct steps for resume (nil/empty =
+// fresh start). goalProposer, when non-nil, is injected into deps so the
+// propose_goal tool can reach the desktop approval flow during derivation.
+func (o *Orchestrator) buildConductorDeps(conversationHistory []llm.Message, resumeSteps []agent.Step) conductorDeps {
+	return conductorDeps{
 		contextFactory:      o.contextFactory,
 		toolExec:            o.toolExec,
 		toolRegistry:        o.toolRegistry,
@@ -1571,8 +1610,8 @@ func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orch
 		conversationHistory: conversationHistory,
 		taskStore:           o.taskStore,
 		resumeSteps:         resumeSteps,
+		goalProposer:        o.goalProposer,
 	}
-	return RunConductor(ctx, message, bb, availableTools, deps, plansDir)
 }
 
 // inlineStepLifecycle manages the lifecycle of plan steps that the Conductor

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/reflector"
@@ -29,6 +30,34 @@ type planModeKeyType struct{}
 
 // PlanModeKey is the context key for signaling plan-execute mode to buildSystemPrompt.
 var PlanModeKey = planModeKeyType{}
+
+// goalKeyType is the context key for the active goal state. When present, the
+// stored value is a *goal.GoalState that buildSystemPrompt renders into a
+// goal-mode prompt section carrying the condition, verify clause, evidence
+// mandate, and budget to the agent on every turn of the loop.
+type goalKeyType struct{}
+
+// GoalKey is the context key for the active goal. It mirrors PlanModeKey, but
+// the stored value carries the whole GoalState rather than acting as a mere
+// presence flag, so the prompt builder can read condition/verify/budget/turn-count.
+var GoalKey = goalKeyType{}
+
+// WithGoalState returns a context carrying the active goal state under GoalKey.
+// The value carries the whole GoalState; buildSystemPrompt renders the goal-mode
+// section only when a non-nil goal is present.
+func WithGoalState(ctx context.Context, gs *goal.GoalState) context.Context {
+	return context.WithValue(ctx, GoalKey, gs)
+}
+
+// goalStateFromCtx extracts the active goal state from the context, or nil if no
+// goal is active. Used by buildSystemPrompt to decide whether to render the
+// goal-mode section.
+func goalStateFromCtx(ctx context.Context) *goal.GoalState {
+	if gs, ok := ctx.Value(GoalKey).(*goal.GoalState); ok {
+		return gs
+	}
+	return nil
+}
 
 // DefaultAgentsMDMaxBytes is the default cap on AGENTS.md content injected into
 // prompts. AGENTS.md is treated as untrusted, user-controlled input; an
@@ -91,6 +120,23 @@ type OrchestratorConfig struct {
 	// Keeps the prompt bounded for long sessions while preserving enough
 	// dialogue context for the agent to understand follow-up references.
 	ConductorHistoryWindow int
+
+	// GoalBudgetDefaults is the default resource cap applied to a goal at
+	// activation when the caller did not supply an explicit
+	// HandleOptions.GoalBudgetOverride. Zero-valued fields (0 turns, 0 tokens,
+	// zero Deadline) mean "unlimited" for that dimension — see goal.GoalBudget.
+	// The goal loop merges this with an explicit override (override wins for
+	// any field it sets to a non-zero value).
+	GoalBudgetDefaults goal.GoalBudget
+
+	// GoalWallClockBudget is the parsed wall-clock duration for the default
+	// goal budget, derived from config.Goal.WallClockDeadline at build time.
+	// Zero means no wall-clock cap (unlimited). Because GoalBudget.Deadline is
+	// an activation-relative time.Time, this duration is resolved to
+	// time.Now().Add(GoalWallClockBudget) in runGoalLoop when the default
+	// Deadline is zero — so the countdown starts when the goal activates,
+	// rather than at process start.
+	GoalWallClockBudget time.Duration
 }
 
 // ContextManagerFactory creates a ContextManager for a new task.
@@ -130,6 +176,7 @@ type Orchestrator struct {
 	taskStore           TaskPersistence       // optional, for ContinueTask blackboard restoration
 	bbRestoreFunc       BlackboardRestoreFunc // optional, restores PersistableBlackboard from store
 	trackingCaller      *llm.TrackingCaller   // for per-step context tracker wiring
+	usageTracker        *llm.UsageTracker     // for goal-loop per-turn token budgeting (the session-wide tracker the trackingCaller records into)
 	tokenCounter        llm.TokenCounter      // for token counting in planner history compaction
 	vectorSearchFunc    builtins.VectorSearchFunc
 	skillManager        *skills.SkillManager // for skill discovery and activation
@@ -160,6 +207,37 @@ type Orchestrator struct {
 	// injectVectorSearchHints called from HandleMessage, which is
 	// single-flight per instance.
 	agentsMDCache map[string]agentsMDCacheEntry
+
+	// goalProposer is the backend hook that submits a {condition, verify}
+	// goal proposal to the user and blocks for approval. Injected by the
+	// builder (via the GoalProposerSetter interface or a constructor field);
+	// zero-value (nil) means goal derivation cannot run — deriveGoal returns
+	// an error, so opts.Goal on HandleMessage fails fast rather than
+	// silently running a non-goal Conductor pass.
+	goalProposer tools.GoalProposer
+
+	// goalTurnRunner runs ONE turn of the goal loop (route→plan→Conductor for
+	// turn 1; reused-routing ReAct→Conductor for turn >1) and reports how many
+	// tool calls the turn made plus its result. It is the single seam through
+	// which the loop drives the Conductor, kept as a field so tests can inject
+	// a mock that returns canned verdicts/tool-call counts without spinning up
+	// the full routing+LLM+executor stack. The default (nil) resolves to
+	// defaultGoalTurnRunner, which reuses runConductor under the hood.
+	goalTurnRunner func(ctx context.Context, turn int, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, deps conductorDeps) (toolCallCount int, result *orchestration.ExecutionResult, err error)
+
+	// activeGoalPause is the pause signal for the currently-running goal
+	// loop, if any. PauseGoal loads the pointer and sets the atomic; runGoalLoop
+	// polls it at the top of each turn iteration. It is swapped in at goal-loop
+	// entry and cleared (nil) on exit so a stale signal from a prior goal cannot
+	// pause a future non-goal request.
+	//
+	// The pointer field itself is an atomic.Pointer so the cross-goroutine read
+	// in PauseGoal (a Wails-RPC goroutine) and the write in runGoalLoop/
+	// resumeGoalLoop (the HandleMessage/Resume goroutine) race-free. The
+	// single-flight requestInFlight flag serializes HandleMessage calls against
+	// each other, but does NOT cover PauseGoal, which runs independently — hence
+	// the atomic pointer. The *atomic.Bool it points to is, of course, atomic.
+	activeGoalPause atomic.Pointer[atomic.Bool]
 }
 
 // ErrRequestInFlight is returned by HandleMessage when another HandleMessage
@@ -186,6 +264,7 @@ type OrchestratorDeps struct {
 	CircuitBreaker   agent.CircuitBreakerConfig
 	BBFactory        BlackboardFactory         // optional, nil = default MapBlackboard
 	TrackingCaller   *llm.TrackingCaller       // optional, for per-step context tracker wiring
+	UsageTracker     *llm.UsageTracker         // optional, for goal-loop per-turn token budgeting
 	VectorSearchFunc builtins.VectorSearchFunc // optional, for auto-RAG hint generation
 	SkillManager     *skills.SkillManager      // optional, for skill discovery and activation
 	CoreToolRegistry *tools.ToolRegistry       // core tool registry for skill policy overrides
@@ -240,6 +319,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		modelRegistry:    deps.ModelRegistry,
 		bbFactory:        deps.BBFactory,
 		trackingCaller:   deps.TrackingCaller,
+		usageTracker:     deps.UsageTracker,
 		tokenCounter:     deps.TokenCounter,
 		vectorSearchFunc: deps.VectorSearchFunc,
 		skillManager:     deps.SkillManager,
@@ -262,6 +342,18 @@ func (o *Orchestrator) Cleanup() {
 	// StepDumpTracker cleanup is owned by the session layer; the orchestrator
 	// only holds a reference for per-step dump wiring. No-op here.
 }
+
+// SetGoalProposer injects the goal-proposer hook (the desktop approval flow
+// that propose_goal blocks on) after construction. Implements
+// GoalProposerSetter so the backend session layer can wire the proposer once
+// its pending-confirmation channel + emitter are available. Without a
+// proposer, goal derivation (runGoalLoop) fails fast.
+func (o *Orchestrator) SetGoalProposer(proposer tools.GoalProposer) {
+	o.goalProposer = proposer
+}
+
+// compile-time assertion that *Orchestrator satisfies GoalProposerSetter.
+var _ GoalProposerSetter = (*Orchestrator)(nil)
 
 // logInfo logs an INFO level message if logger is not nil.
 func (o *Orchestrator) logInfo(msg string, args ...any) {
@@ -393,7 +485,7 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 // limit reached). Callers should check errors.Is(err, orchestration.ErrExecutionIncomplete)
 // and use the returned HandleResult for partial output, plan state, and blackboard.
 // All other errors indicate complete failure; the task is marked failed and nil is returned.
-func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision, plansDir string, resumeSteps []agent.Step) (result *HandleResult, err error) {
+func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision, plansDir string, resumeSteps []agent.Step, goalState *goal.GoalState) (result *HandleResult, err error) {
 	o.logDebug("orchestrator: resume started", "resumeSteps", len(resumeSteps))
 
 	// Record the resumed execution's outcome in the in-memory conversation
@@ -450,6 +542,17 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// counter from where it left off. A plan is NOT required — the Conductor
 	// handles plan-less tasks via a standalone checklist.
 	availableTools := o.toolRegistry.ListFiltered(o.disabledToolNames())
+
+	// If this task was running a goal loop that was paused (or is still active),
+	// re-enter the goal loop instead of the plain Conductor path. The prior
+	// trajectory (resumeSteps) is seeded into the executor so the resumed goal
+	// loop continues the step counter/history from the checkpoint. A nil or
+	// terminal goal state falls through to the normal resume path.
+	if goalState != nil && !goalState.Status.IsTerminal() {
+		o.logInfo("resume_task: resuming goal loop", "status", goalState.Status, "turn", goalState.TurnCount)
+		return o.resumeGoalLoop(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, routing, goalState, resumeSteps)
+	}
+
 	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, nil, resumeSteps)
 	var incompleteErr error
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
@@ -911,6 +1014,17 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		}
 	}
 	o.logDebug("orchestrator: tools loaded from registry", "total", len(availableTools), "mcp", mcpCount)
+
+	// GOAL MODE: a first-message goal request enters the multi-turn goal loop
+	// instead of the single-pass route→Conductor flow. The loop derives a
+	// crisp {condition, verify} goal (with user sign-off), then iterates the
+	// Conductor turn-by-turn until the agent declares the goal met, the budget
+	// is exhausted, the agent goes idle (anti-spin), or the goal is paused.
+	// Only the FIRST message of a task can enter goal mode — a continuation
+	// (TaskID != "") ignores the flag and runs the normal flow below.
+	if opts.Goal && opts.TaskID == "" {
+		return o.runGoalLoop(ctx, message, opts, bb, availableTools, opts.SessionPlansDir)
+	}
 
 	// 3. Route and activate skills.
 	// Continuation fast-path: routeOrContinue skips the router when a restored

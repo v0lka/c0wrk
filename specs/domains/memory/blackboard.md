@@ -40,8 +40,18 @@ HandleMessage(ctx, message, opts)
 `core/persistent_blackboard.go` defines the contract types the orchestrator relies on for restoration:
 
 - `PersistableBlackboard` — the persistence-capable Blackboard interface
-- `TaskPersistence` — the store interface (SQLite-backed) for task lifecycle + blackboard state (including `PersistAttachments`)
+- `TaskPersistence` — the store interface (SQLite-backed) for task lifecycle + blackboard state (including `PersistAttachments`, `SaveTrajectory`/`LoadTrajectory`, and `PersistGoalState`/`LoadGoalState` for goal-mode state)
 - `BlackboardRestoreFunc` / `BlackboardFactory` — injected into the orchestrator at build time
+
+### Goal State (goal mode)
+
+A task running in goal mode carries a `goal.GoalState` (condition, verify clause, budget, turn/token counts, lifecycle status, last verdict). It is persisted separately from the trajectory so a paused/active goal survives app restart and resumes into the loop:
+
+- `PersistGoalState(taskID, gs)` / `LoadGoalState(taskID)` — added to `TaskPersistence`; `RestoreBlackboard` rehydrates the state onto `TaskState.GoalState` (nil for non-goal tasks).
+- Persistence is **best-effort**: a missing store/task ID is a no-op, and a persistence failure is logged but never propagates — losing the checkpoint degrades only resumability, not the current run.
+- `Orchestrator.Resume` checks `goalState != nil && !goalState.Status.IsTerminal()` and re-enters the goal loop (`resumeGoalLoop`) with the prior trajectory seeded; terminal goals fall through to the normal resume path.
+
+See [../goal-mode.md](../goal-mode.md) for the full goal-mode lifecycle.
 
 ## c0wrk Usage of Blackboard State
 
@@ -88,6 +98,7 @@ Committed attachments survive app restart: `PersistentBlackboard.AddAttachment` 
 - `PersistentBlackboard` persists synchronously on each write
 - `RestoreBlackboard` recreates the full in-memory state from SQLite
 - Attachments are staged as pending on the session and flushed into the blackboard exactly once on the next `SendMessage` (the pending list is cleared after the snapshot)
+- `GoalState` persistence is best-effort: a missing store/task ID is a no-op and a failure is logged but never propagates (degrades only resumability); a non-terminal restored goal re-enters the goal loop on `Resume`
 
 ## Related Specs
 
@@ -95,4 +106,5 @@ Committed attachments survive app restart: `PersistentBlackboard.AddAttachment` 
 - [README.md](README.md) — memory overview
 - [../orchestration/conductor.md](../orchestration/conductor.md) — how the Conductor reads blackboard state
 - [../orchestration/delegation.md](../orchestration/delegation.md) — how `delegate` writes subagent results
+- [../goal-mode.md](../goal-mode.md) — goal-mode state persistence and resume
 - [../../architecture/data-flow.md](../../architecture/data-flow.md) — blackboard flow diagram

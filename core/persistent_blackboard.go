@@ -3,6 +3,7 @@ package core
 import (
 	"log/slog"
 
+	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -58,6 +59,12 @@ type TaskPersistence interface {
 	// LoadTrajectory restores the Conductor's []agent.Step trajectory for a task.
 	// Returns nil, nil when no trajectory has been persisted.
 	LoadTrajectory(taskID string) ([]agent.Step, error)
+	// PersistGoalState persists the goal-loop's *goal.GoalState for a task so a
+	// paused/active goal survives app restart and resumes into the loop.
+	PersistGoalState(taskID string, gs *goal.GoalState) error
+	// LoadGoalState restores the goal-loop's *goal.GoalState for a task.
+	// Returns nil, nil when no goal state has been persisted.
+	LoadGoalState(taskID string) (*goal.GoalState, error)
 	// Restoration
 	LoadTaskState(taskID string) (*TaskState, error)
 	GetUnfinishedTaskID(sessionID string) (string, error) // returns "" if none
@@ -81,5 +88,6 @@ type TaskState struct {
 	FinalOutput     string
 	Facts           []orchestration.Fact       // keyword-tagged facts
 	Attachments     []orchestration.Attachment // user-attached files converted to markdown
+	GoalState       *goal.GoalState            // goal-loop state (nil for non-goal tasks)
 	Status          string                     // "in_progress", "completed", "failed", "cancelled"
 }

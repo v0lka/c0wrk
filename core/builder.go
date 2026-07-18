@@ -18,6 +18,7 @@ import (
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 
+	"github.com/v0lka/c0wrk/core/goal"
 	coreprompts "github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/core/tools"
@@ -338,6 +339,10 @@ func (b *OrchestratorBuilder) Build(
 		PreWarningPercent:       cfg.Executor.Compaction.Thresholds.PreWarningPercent,
 		InjectionDefenseEnabled: cfg.Security.InjectionDefenseEnabled,
 		AgentsMDMaxBytes:        cfg.Security.AgentsMDMaxBytes,
+		GoalBudgetDefaults: goal.GoalBudget{
+			MaxTokens: cfg.Goal.TokenCapInput + cfg.Goal.TokenCapOutput,
+		},
+		GoalWallClockBudget: parseGoalWallClockDeadline(cfg.Goal.WallClockDeadline, logger),
 	}
 
 	// Create tool result cache (per-session lifetime).
@@ -408,6 +413,7 @@ func (b *OrchestratorBuilder) Build(
 		CircuitBreaker:    circuitBreaker,
 		BBFactory:         bbFactory,
 		TrackingCaller:    trackingCaller,
+		UsageTracker:      usageTracker,
 		VectorSearchFunc:  b.vectorSearchFunc,
 		SkillManager:      sessionSkillMgr,
 		CoreToolRegistry:  sessionRegistry, // for skill policy overrides (per-session)
@@ -1321,4 +1327,23 @@ func listAnthropicModels(ctx context.Context, baseURL, apiKey string, httpClient
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// parseGoalWallClockDeadline parses the GoalConfig.WallClockDeadline duration
+// string. The empty string and "0" mean unlimited and yield a zero duration.
+// An unparseable value is logged and treated as unlimited (zero) so a bad
+// config string never hard-blocks goal activation.
+func parseGoalWallClockDeadline(raw string, logger *slog.Logger) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "0" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("ignoring invalid goal wall_clock_deadline, leaving unlimited", "value", raw, "error", err)
+		}
+		return 0
+	}
+	return d
 }

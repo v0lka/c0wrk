@@ -130,6 +130,14 @@ type Manager struct {
 	// sequentially, right after the triggering ToolCall, in the same goroutine.
 	lastToolCallIDs sync.Map // sessionID → toolCallIDEntry
 
+	// goalProposalResolver delivers a user decision to a blocked goal-proposal
+	// channel held by the desktop layer. It is set by desktop after
+	// buildGoalProposalCallback registers its pending map, so that BOTH the
+	// event-based path (handleGoalProposalResponse) and the RPC-based path
+	// (FrontendAPI.ConfirmGoal/CancelGoal) funnel through a single resolution.
+	// Nil (before desktop wiring) makes ResolveGoalProposal a no-op.
+	goalProposalResolver func(requestID, decision, condition, verify, clarification string) bool
+
 	logger *slog.Logger
 }
 

@@ -30,4 +30,5 @@ export const HITL_PROMPT_TYPES: ReadonlySet<MessageType> = new Set([
   'ask_user',
   'step_limit',
   'plan_review',
+  'goal_proposal',
 ])

@@ -407,7 +407,7 @@ func TestManager_SendMessage_SessionNotFound(t *testing.T) {
 	manager, _, _ := testManager(t)
 
 	ctx := context.Background()
-	err := manager.SendMessage(ctx, "non-existent", "hello", nil, "", "")
+	err := manager.SendMessage(ctx, "non-existent", "hello", nil, "", "", false, "")
 	if err == nil {
 		t.Error("SendMessage should return error for non-existent session")
 	}
@@ -427,7 +427,7 @@ func TestManager_SendMessage_AlreadyActive(t *testing.T) {
 
 	// Try to send message while active
 	ctx := context.Background()
-	err := manager.SendMessage(ctx, info.ID, "hello", nil, "", "")
+	err := manager.SendMessage(ctx, info.ID, "hello", nil, "", "", false, "")
 	if err == nil {
 		t.Error("SendMessage should return error when session is already active")
 	}
@@ -807,7 +807,7 @@ func TestManager_SendMessage_AllowsParallelActiveSessions(t *testing.T) {
 
 	// Sending message to session 1 again should fail (same session double-send)
 	ctx := context.Background()
-	err = manager.SendMessage(ctx, info1.ID, "hello", nil, "", "")
+	err = manager.SendMessage(ctx, info1.ID, "hello", nil, "", "", false, "")
 	if err == nil {
 		t.Fatal("expected error when sending message to already-active session")
 	}
@@ -862,6 +862,12 @@ func (m *mockTaskStoreForResumable) SaveTrajectory(_ context.Context, _ string, 
 	return nil
 }
 func (m *mockTaskStoreForResumable) LoadTrajectory(_ context.Context, _ string) (json.RawMessage, error) {
+	return nil, nil
+}
+func (m *mockTaskStoreForResumable) SaveGoalState(_ context.Context, _ string, _ json.RawMessage) error {
+	return nil
+}
+func (m *mockTaskStoreForResumable) LoadGoalState(_ context.Context, _ string) (json.RawMessage, error) {
 	return nil, nil
 }
 func (m *mockTaskStoreForResumable) GetUnfinishedTask(_ context.Context, _ string) (*TaskRecord, error) {
