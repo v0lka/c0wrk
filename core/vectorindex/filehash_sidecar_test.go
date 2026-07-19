@@ -26,9 +26,13 @@ func TestGetCollectionFileHashes_NoEmbeddingAfterPopulation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+
+	// Create the temp dir BEFORE registering svc.Close so the LIFO cleanup
+	// order runs Close first and TempDir RemoveAll last. On Windows the bleve
+	// .bolt handles must be released before the temp dir is deleted.
+	dir := t.TempDir()
 	t.Cleanup(func() { _ = svc.Close() })
 
-	dir := t.TempDir()
 	if err := svc.SetProject("proj", dir); err != nil {
 		t.Fatalf("SetProject: %v", err)
 	}

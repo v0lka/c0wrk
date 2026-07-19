@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -14,6 +15,19 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
 )
+
+// criticalPathBudget returns the per-platform budget for the startup
+// critical-path tests. The default 500ms guards against regressions on the
+// fast dev path (Linux/macOS). Windows needs more headroom because CI
+// runners there are notably slower for SQLite cold starts (NTFS file
+// creation, Defender scanning, and modernc.org/sqlite CGO-free overhead),
+// which otherwise makes the test flap.
+func criticalPathBudget() time.Duration {
+	if runtime.GOOS == "windows" {
+		return 2 * time.Second
+	}
+	return 500 * time.Millisecond
+}
 
 // TestCriticalPathBudget verifies that the synchronous startup phases
 // (database, stores, project/session preload) complete within 500ms.
@@ -25,7 +39,7 @@ import (
 // The test exercises the same subsystems as Startup phases 2-4 but
 // without Wails context, ONNX models, MCP gateway, or network I/O.
 func TestCriticalPathBudget(t *testing.T) {
-	const budget = 500 * time.Millisecond
+	budget := criticalPathBudget()
 
 	dir := t.TempDir()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -89,7 +103,7 @@ func TestCriticalPathBudget(t *testing.T) {
 // the database before measuring the preload phase, ensuring that the
 // budget holds even when projects and sessions exist.
 func TestCriticalPathBudget_WithData(t *testing.T) {
-	const budget = 500 * time.Millisecond
+	budget := criticalPathBudget()
 
 	dir := t.TempDir()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
