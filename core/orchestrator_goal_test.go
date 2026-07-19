@@ -1462,3 +1462,226 @@ func TestRunGoalLoop_RoutingBeforeDerivation(t *testing.T) {
 		}
 	})
 }
+
+// ----------------------------------------------------------------------------
+// runGoalLoop continuation regression (step_5): goal mode activates on a
+// CONTINUATION (Goal=true + TaskID != "") and the restored blackboard (with
+// the prior task's inherited facts) is available to the goal loop — derivation
+// runs and the turn runner sees the inherited facts.
+// ----------------------------------------------------------------------------
+
+const (
+	// goalContinuationFactMarker is embedded in the restored task's facts. Its
+	// presence in the spy turn runner's blackboard proves the inherited facts
+	// reached the goal loop's turns.
+	goalContinuationFactMarker = "INHERITED-FACT-FROM-PRIOR-TASK-2b1d"
+	// goalContinuationTaskID is the restored prior task whose blackboard
+	// carries the inherited fact.
+	goalContinuationTaskID = "task-goal-cont-1"
+)
+
+// goalContinuationSpyTurnRunner captures the blackboard it receives so the
+// test can assert the inherited facts reached the goal loop's turn runner. It
+// declares a "met" verdict on turn 1 so runGoalTurns terminates immediately.
+type goalContinuationSpyTurnRunner struct {
+	mu    sync.Mutex
+	calls int
+	gotBB orchestration.Blackboard
+}
+
+func (s *goalContinuationSpyTurnRunner) run(
+	ctx context.Context,
+	_ int,
+	_ string,
+	bb orchestration.Blackboard,
+	_ []sdktools.ToolDescriptor,
+	_ string,
+	_ []llm.Message,
+	_ conductorDeps,
+) (int, *orchestration.ExecutionResult, error) {
+	s.mu.Lock()
+	s.calls++
+	s.gotBB = bb
+	s.mu.Unlock()
+	if sink := tools.GoalStatusSinkFrom(ctx); sink != nil {
+		sink.Declare(goal.Verdict{
+			Status:     "met",
+			Reason:     "continuation goal loop saw the inherited blackboard",
+			DeclaredAt: time.Now(),
+			Evidence: []goal.GoalEvidence{{
+				Type:    goal.EvidenceTypeFile,
+				Ref:     "core/orchestrator_goal_test.go",
+				Summary: "turn runner received the restored blackboard with inherited facts",
+			}},
+		})
+	}
+	// Report a non-zero tool-call count so the anti-spin guard sees a
+	// productive turn (the verdict already terminates the loop).
+	return 2, &orchestration.ExecutionResult{}, nil
+}
+
+// TestRunGoalLoop_ContinuationInheritsRestoredBlackboard verifies that goal
+// mode activates on a continuation (Goal=true + TaskID != "") and the restored
+// blackboard (with the prior task's facts) is available to the goal loop. It
+// drives the full HandleMessage → setupBlackboard (restore) → runGoalLoop path
+// with a mock task store carrying an inherited fact, an auto-approving
+// proposer, and a spy turn runner, then asserts:
+//
+//  1. setupBlackboard restored the prior task's blackboard — a MemoryRead event
+//     is emitted (setupBlackboard emits it when the restored blackboard has facts).
+//  2. The goal loop ran — the spy turn runner was called (on the OLD code Goal
+//     && TaskID != "" fell through to route→Conductor and the spy is never hit).
+//  3. The inherited fact reached the turn runner — bb.GetFacts() contains the
+//     marker (derivation + every turn inherit the SAME restored blackboard).
+//  4. The goal reached StatusMet end-to-end (termination wiring).
+//
+// On the OLD code (gate: opts.Goal && opts.TaskID == ""), HandleMessage with
+// Goal=true + TaskID != "" would fall through to the normal route→Conductor
+// flow, the spy turn runner would never be called, and no goal verdict would
+// be declared.
+func TestRunGoalLoop_ContinuationInheritsRestoredBlackboard(t *testing.T) {
+	// --- restored prior task state carrying an inherited fact ---
+	mockStore := &mockTaskStore{taskState: &TaskState{
+		TaskID:          goalContinuationTaskID,
+		SessionID:       "session-goal-cont",
+		OriginalRequest: "prior task that stored a fact",
+		Status:          "completed",
+		Plan: &orchestration.Plan{
+			Steps: []orchestration.PlanStep{
+				{ID: "step_1", Description: "prior step"},
+			},
+		},
+		Facts: []orchestration.Fact{
+			{Keywords: []string{"inherited", "fact"}, Content: goalContinuationFactMarker, Author: "step_1"},
+		},
+	}}
+
+	// --- mock LLM: router (call 1), derivation propose_goal (call 2), finish (>=3) ---
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			switch callIdx {
+			case 1: // router classification — routeOrContinue runs the full router
+				// because the restored blackboard's Routing() is nil.
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "code", "complexity": 3, "needs_clarification": false}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			case 2: // derivation conductor turn 1 → propose_goal
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role: "assistant",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "pg1",
+							Name:  "propose_goal",
+							Input: json.RawMessage(`{"condition":"continue toward the goal on the restored blackboard","verify":"turn runner sees inherited facts"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			default: // derivation conductor turn >= 2 → finish
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role: "assistant",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "fn1",
+							Name:  "finish",
+							Input: json.RawMessage(`{"answer":"goal derived on continuation"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+		},
+	}
+
+	registry := createTestRegistry()
+	registry.Register(tools.NewProposeGoalTool())
+
+	emitter := &spyEmitter{}
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
+		Router:         newCoreRouter(mockLLM, 5),
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   llm.NewSimpleTokenCounter(),
+		ContextFactory: testContextFactory,
+		Emitter:        emitter,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+	orchestrator.SetTaskStore(mockStore)
+	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
+	// Auto-approving proposer so derivation completes without real I/O.
+	orchestrator.SetGoalProposer(&mockProposer{
+		response: tools.GoalProposalResponse{
+			Decision:  "approve",
+			Condition: "continue on restored blackboard",
+			Verify:    "turn runner sees inherited facts",
+		},
+	})
+	spy := &goalContinuationSpyTurnRunner{}
+	orchestrator.goalTurnRunner = spy.run
+
+	ctx := sdktools.WithWorkspacePath(context.Background(), t.TempDir())
+	result, err := orchestrator.HandleMessage(ctx, "achieve the next goal", "session-goal-cont", HandleOptions{
+		Goal:   true,
+		TaskID: goalContinuationTaskID,
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	t.Run("setupBlackboard restored the prior task's facts (MemoryRead emitted)", func(t *testing.T) {
+		for _, c := range emitter.calls {
+			if c.method == "MemoryRead" {
+				return
+			}
+		}
+		t.Error("expected a MemoryRead event — setupBlackboard emits it when the restored blackboard has facts")
+	})
+
+	t.Run("goal loop ran (spy turn runner was called)", func(t *testing.T) {
+		spy.mu.Lock()
+		calls := spy.calls
+		spy.mu.Unlock()
+		if calls == 0 {
+			t.Fatal("spy turn runner was never called — the goal loop did not run on the continuation (on old code Goal+TaskID falls through to route→Conductor)")
+		}
+	})
+
+	t.Run("inherited facts reached the turn runner", func(t *testing.T) {
+		spy.mu.Lock()
+		gotBB := spy.gotBB
+		spy.mu.Unlock()
+		if gotBB == nil {
+			t.Fatal("spy turn runner captured a nil blackboard")
+		}
+		for _, f := range gotBB.GetFacts() {
+			if strings.Contains(f.Content, goalContinuationFactMarker) {
+				return
+			}
+		}
+		t.Errorf("inherited fact marker %q not found in the turn runner's blackboard facts — the restored blackboard did not reach the goal loop's turns", goalContinuationFactMarker)
+	})
+
+	t.Run("goal reached met (termination wiring end-to-end)", func(t *testing.T) {
+		spy.mu.Lock()
+		calls := spy.calls
+		spy.mu.Unlock()
+		if calls != 1 {
+			t.Errorf("expected spy turn runner called exactly once (met verdict on turn 1 terminates the loop), got %d", calls)
+		}
+		got := orchestration.ExecutionStatus("")
+		if result != nil {
+			got = result.Status
+		}
+		if got != orchestration.ExecutionStatusSuccess {
+			t.Errorf("HandleResult.Status = %q, want %q (StatusMet maps to success)", got, orchestration.ExecutionStatusSuccess)
+		}
+	})
+}

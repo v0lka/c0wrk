@@ -259,20 +259,13 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 			session.mu.Unlock()
 		}()
 
-		// Continue an interrupted (unfinished) task if one exists: the new
-		// user message is appended as a final user-nudge turn to the prior
-		// trajectory and the ReAct cycle resumes — no routing, no new task,
-		// no conversation-history pair. Returns true when it took the path.
-		if m.tryContinueInterruptedTask(ctx, id, session, msg) {
-			return
-		}
-
-		// No unfinished task: run the normal route → plan → execute flow.
-		// Get last completed task ID for continuation
+		// Snapshot pending attachments and clear them so they are flushed
+		// exactly once into the blackboard for this SendMessage — regardless
+		// of whether the message continues an interrupted task or starts a
+		// fresh one. Done before the continue check so the resume path also
+		// receives them (it bypasses HandleMessage, which would otherwise
+		// flush them via setupBlackboard).
 		session.mu.Lock()
-		lastTaskID := session.lastCompletedTaskID
-		// Snapshot pending attachments and clear them so they are flushed exactly
-		// once into the blackboard for this SendMessage.
 		pendingAttachments := session.pendingAttachments
 		session.pendingAttachments = nil
 		session.mu.Unlock()
@@ -284,14 +277,42 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 			m.emitAttachmentsChanged(id, []AttachmentInfo{}, nil)
 		}
 
-		// Goal mode: a leading "/goal" command on a FIRST message (no prior
-		// task to continue) dispatches HandleMessage to the multi-turn goal
-		// loop instead of the single-pass route→Conductor flow. The command is
-		// stripped from the message; deriveGoal grounds the goal from the rest.
-		// An explicit goal flag from the caller (e.g. a UI toggle) also enables
-		// goal mode, OR-ed with the /goal command detection.
+		// Detect goal mode (leading "/goal" command OR an explicit goal flag)
+		// BEFORE the resume check. A goal request starts a fresh goal pursuit
+		// rather than continuing an interrupted task, so the resume path is
+		// skipped and any unfinished task is abandoned (see
+		// abandonUnfinishedTaskForGoal). The two signals are OR-ed: a goal
+		// flag enables goal mode regardless of the message prefix.
 		goalMsg, isGoal := core.DetectAndStripGoalMode(msg)
-		goalEnabled := (isGoal || goal) && lastTaskID == ""
+		goalEnabled := isGoal || goal
+
+		if goalEnabled {
+			// Goal mode supersedes any interrupted task: cancel it so it does
+			// not linger as resumable WIP across the new goal task, then fall
+			// through to the goal dispatch below. Best-effort; a missing task
+			// store or no unfinished task is a no-op.
+			m.abandonUnfinishedTaskForGoal(id)
+		} else if m.tryContinueInterruptedTask(ctx, id, session, msg, modelOverride, reasoningEffort, pendingAttachments) {
+			// Continue an interrupted (unfinished) task if one exists: the new
+			// user message is appended as a final user-nudge turn to the prior
+			// trajectory and the ReAct cycle resumes — no routing, no new task,
+			// no conversation-history pair. Returns true when it took the path.
+			return
+		}
+
+		// No unfinished task took the resume path (or goal was requested): run
+		// the normal route → plan → execute flow, or dispatch to the goal loop.
+		// Get last completed task ID for continuation.
+		session.mu.Lock()
+		lastTaskID := session.lastCompletedTaskID
+		session.mu.Unlock()
+
+		// On a continuation (lastTaskID != ""), goal mode runs ON the restored
+		// blackboard of the prior completed task: the agent keeps the inherited
+		// facts and history, and a fresh goal is derived from the new message.
+		// When the goal request supplanted an interrupted task, that task was
+		// already cancelled above and lastTaskID refers to the last COMPLETED
+		// task (or "" for a fresh goal).
 
 		// Parse the optional budget override (JSON or empty). Empty/invalid
 		// → nil (use config defaults). A parse error is logged but does not
@@ -328,19 +349,25 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 			err = nil
 		}
 
-		// Fallback: if continuation failed (restore error) and we had a TaskID, retry fresh
+		// Fallback: if continuation failed (restore error) and we had a TaskID, retry fresh.
+		// Preserves goal mode: a failed goal-on-continuation retries as a fresh
+		// goal task rather than silently dropping the flag (and, when goal was
+		// enabled via the "/goal" prefix, leaking the prefix into the fresh task
+		// — hmMsg is already /goal-stripped, msg is not).
 		if err != nil && lastTaskID != "" {
 			m.log().Warn("continuation failed, falling back to fresh workflow", "session_id", id, "task_id", lastTaskID, "error", err)
 			session.mu.Lock()
 			session.lastCompletedTaskID = ""
 			session.mu.Unlock()
-			result, err = session.orchestrator.HandleMessage(ctx, msg, id, core.HandleOptions{
+			result, err = session.orchestrator.HandleMessage(ctx, hmMsg, id, core.HandleOptions{
 				TaskID:             "",
 				UserSkills:         skills,
 				ModelOverride:      modelOverride,
 				ReasoningEffort:    reasoningEffort,
 				SessionPlansDir:    config.SessionPlansDir(m.agentDir, session.ProjectID, id),
 				PendingAttachments: pendingAttachments,
+				Goal:               goalEnabled,
+				GoalBudgetOverride: budgetOverride,
 			})
 			if err != nil && errors.Is(err, orchestration.ErrExecutionIncomplete) && result != nil {
 				m.log().Warn("task completed with incomplete execution (after fallback)", "session_id", id, "error", err)
@@ -430,10 +457,23 @@ func parseGoalBudget(raw string, log *slog.Logger) *goalpkg.GoalBudget {
 // (Resume's recordResumeOutcome records the assistant side only, mirroring the
 // app-restart ResumeTask path.)
 //
+// Because this path bypasses HandleMessage (step 0 there applies them), the
+// per-request model/reasoning overrides are applied here via
+// orchestrator.ApplyRequestOverrides, and pending attachments are flushed into
+// the restored blackboard (mirroring HandleMessage's setupBlackboard
+// continuation path). Both are no-ops when empty.
+//
 // The message_received event has already been emitted by SendMessage, so the
 // UI shows the user message; the resumed task emits its own task lifecycle
 // events (routing/context_fill/steps/task_complete) on top.
-func (m *Manager) tryContinueInterruptedTask(ctx context.Context, id string, session *Session, message string) bool {
+func (m *Manager) tryContinueInterruptedTask(
+	ctx context.Context,
+	id string,
+	session *Session,
+	message string,
+	modelOverride, reasoningEffort string,
+	pendingAttachments []orchestration.Attachment,
+) bool {
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
@@ -459,6 +499,20 @@ func (m *Manager) tryContinueInterruptedTask(ctx context.Context, id string, ses
 	}
 	if bb == nil {
 		return false
+	}
+
+	// Apply per-request model/reasoning overrides. This path bypasses
+	// HandleMessage, where step 0 would otherwise apply them, so the resumed
+	// task picks up the model/reasoning the user selected for this message
+	// instead of silently inheriting the prior task's settings. No-op when
+	// both overrides are empty.
+	session.orchestrator.ApplyRequestOverrides(ctx, modelOverride, reasoningEffort)
+
+	// Flush attachments staged by AttachFiles into the restored blackboard
+	// (mirrors HandleMessage's setupBlackboard continuation path). bb is a
+	// *PersistentBlackboard, so AddAttachment persists to the store.
+	for _, a := range pendingAttachments {
+		bb.AddAttachment(a)
 	}
 
 	// Load the persisted trajectory and append the user message as a final
@@ -812,6 +866,43 @@ func (m *Manager) persistCancellationIfUnfinished(sessionID string) {
 	if err := adapter.PersistCancellation(tid); err != nil {
 		m.log().Warn("failed to persist cancellation", "task", tid, "error", err)
 	}
+}
+
+// abandonUnfinishedTaskForGoal cancels the session's unfinished task (if any)
+// so a goal request can start a fresh goal pursuit instead of resuming the
+// interrupted task. It persists the cancellation, resolves any pending
+// task_failed_resumable banner so it does not linger, and emits a service
+// event so the user sees the interrupted task was abandoned for the goal.
+// Best-effort: errors are logged only. No-op when there is no task store or
+// no unfinished task.
+func (m *Manager) abandonUnfinishedTaskForGoal(id string) {
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts == nil {
+		return
+	}
+	adapter := NewTaskStoreAdapter(ts)
+	tid, err := adapter.GetUnfinishedTaskID(id)
+	if err != nil {
+		m.log().Warn("goal-on-resume: failed to look up unfinished task to abandon", "session", id, "error", err)
+		return
+	}
+	if tid == "" {
+		return
+	}
+	if err := adapter.PersistCancellation(tid); err != nil {
+		m.log().Warn("goal-on-resume: failed to cancel unfinished task", "task", tid, "error", err)
+	}
+	m.resolveResumableTaskMessage(id, tid, "abandoned_for_goal")
+	m.emitFunc(Event{
+		SessionID: id,
+		Type:      "service",
+		Data: map[string]any{
+			"content": "Interrupted task abandoned to start goal mode.",
+			"phase":   "orchestration",
+		},
+	})
 }
 
 // emitResumableIfUnfinished checks whether the session has an unfinished task

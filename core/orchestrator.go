@@ -814,6 +814,26 @@ func (o *Orchestrator) SetReasoningEffort(effort string) {
 	}
 }
 
+// ApplyRequestOverrides applies per-request model and reasoning-effort
+// overrides to all LLM-calling components (router, reflector, the direct LLM
+// caller, and config.Model for metadata resolution). It is the shared step 0
+// of HandleMessage (fresh task and continuation) AND the session manager's
+// resume-an-interrupted-task path, which bypasses HandleMessage — without
+// calling this, a model/reasoning switch on a resume message would be
+// silently dropped. When both overrides are empty it is a no-op.
+func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride, reasoningEffort string) {
+	o.SetReasoningEffort(reasoningEffort)
+	if modelOverride != "" && o.modelSwitcher != nil {
+		if err := o.modelSwitcher.SetModel(ctx, modelOverride); err != nil {
+			if o.logger != nil {
+				o.logger.Warn("failed to apply model override", "model", modelOverride, "error", err)
+			}
+		} else {
+			o.config.Model = llm.BareModel(modelOverride)
+		}
+	}
+}
+
 // SetTaskStore sets the TaskPersistence store for blackboard restoration.
 // This is used by HandleMessage continuations to restore a completed task's blackboard.
 func (o *Orchestrator) SetTaskStore(store TaskPersistence) {
@@ -979,16 +999,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	}()
 
 	// 0. Apply per-request overrides to all LLM-calling components.
-	o.SetReasoningEffort(opts.ReasoningEffort)
-	if opts.ModelOverride != "" && o.modelSwitcher != nil {
-		if err := o.modelSwitcher.SetModel(ctx, opts.ModelOverride); err != nil {
-			if o.logger != nil {
-				o.logger.Warn("failed to apply model override", "model", opts.ModelOverride, "error", err)
-			}
-		} else {
-			o.config.Model = llm.BareModel(opts.ModelOverride)
-		}
-	}
+	o.ApplyRequestOverrides(ctx, opts.ModelOverride, opts.ReasoningEffort)
 
 	// 1. Prepare context (plan-mode key, injection-defense, vector hints, initial context_fill).
 	o.logDebug("orchestrator: handle_message started", "messageLength", len(message), "taskID", opts.TaskID)
@@ -1015,14 +1026,16 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	}
 	o.logDebug("orchestrator: tools loaded from registry", "total", len(availableTools), "mcp", mcpCount)
 
-	// GOAL MODE: a first-message goal request enters the multi-turn goal loop
-	// instead of the single-pass route→Conductor flow. The loop derives a
-	// crisp {condition, verify} goal (with user sign-off), then iterates the
-	// Conductor turn-by-turn until the agent declares the goal met, the budget
-	// is exhausted, the agent goes idle (anti-spin), or the goal is paused.
-	// Only the FIRST message of a task can enter goal mode — a continuation
-	// (TaskID != "") ignores the flag and runs the normal flow below.
-	if opts.Goal && opts.TaskID == "" {
+	// GOAL MODE: a goal request enters the multi-turn goal loop instead of the
+	// single-pass route→Conductor flow. The loop derives a crisp {condition,
+	// verify} goal (with user sign-off), then iterates the Conductor
+	// turn-by-turn until the agent declares the goal met, the budget is
+	// exhausted, the agent goes idle (anti-spin), or the goal is paused.
+	// Goal mode is entered on BOTH a fresh task (TaskID == "") and on a
+	// continuation (TaskID != ""): on a continuation the prior task's
+	// blackboard is restored and the agent runs the goal loop on the inherited
+	// facts/history, deriving a fresh goal from the new message.
+	if opts.Goal {
 		return o.runGoalLoop(ctx, message, opts, bb, availableTools, opts.SessionPlansDir)
 	}
 

@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Goal mode is a multi-turn, agent-driven execution loop that pursues a single user-approved success condition to completion. Instead of a single route→Conductor pass that finishes when the agent calls `finish`, a goal request derives a crisp {condition, verify} pair (with user sign-off), then iterates the Conductor turn-by-turn until the agent **declares the goal met**, the **budget is exhausted**, the agent goes **idle (anti-spin)**, or the goal is **paused**. Goal mode is selected by a leading `/goal` command on the first message of a task.
+Goal mode is a multi-turn, agent-driven execution loop that pursues a single user-approved success condition to completion. Instead of a single route→Conductor pass that finishes when the agent calls `finish`, a goal request derives a crisp {condition, verify} pair (with user sign-off), then iterates the Conductor turn-by-turn until the agent **declares the goal met**, the **budget is exhausted**, the agent goes **idle (anti-spin)**, or the goal is **paused**. Goal mode is selected by a leading `/goal` command or an explicit goal flag (e.g. a UI toggle) on any message — including a continuation message, in which case the goal loop runs on the restored blackboard of the prior task (see [Mechanism](#mechanism)).
 
 ## Key Files
 
 - `core/goal/types.go` — the `goal` domain package: `GoalStatus`, `GoalBudget`, `GoalEvidence`, `Verdict`, `GoalState` (the runtime state machine)
 - `core/orchestrator_goal.go` — the goal loop: `deriveGoal`, `runGoalLoop`, `resumeGoalLoop`, `runGoalTurns`, budget/pause/anti-spin logic, the `countingToolExec` wrapper (anti-spin tool-call counter), `emitGoalStatus`/`emitGoalProgress`, `PauseGoal`
-- `core/orchestrator.go` — `HandleMessage` dispatch (`opts.Goal && opts.TaskID == ""`), `Resume` goal-loop branch, `WithGoalState`, `OrchestratorConfig.GoalBudgetDefaults`, `activeGoalPause atomic.Pointer[atomic.Bool]` field (cross-goroutine pause signal), `usageTracker *llm.UsageTracker` field (per-turn token accounting)
+- `core/orchestrator.go` — `HandleMessage` dispatch (`opts.Goal`), `Resume` goal-loop branch, `WithGoalState`, `OrchestratorConfig.GoalBudgetDefaults`, `activeGoalPause atomic.Pointer[atomic.Bool]` field (cross-goroutine pause signal), `usageTracker *llm.UsageTracker` field (per-turn token accounting), `ApplyRequestOverrides` (shared step 0 for HandleMessage and the resume path)
 - `core/message_preprocess.go` — `DetectAndStripGoalMode` (`/goal` prefix detection)
 - `core/types.go` — `HandleOptions.Goal`, `HandleOptions.GoalBudgetOverride`
 - `core/systemprompt.go` — goal-mode system-prompt section rendering (`prompts.GoalModeSubstitute`) and the derivation prompt selection (`prompts.GoalDerivation`)
@@ -65,7 +65,12 @@ type GoalState struct {
 
 ## Mechanism
 
-Goal mode is a three-phase loop. Entry is **first-message-only**: `HandleMessage` checks `opts.Goal && opts.TaskID == ""` (a continuation message ignores the flag).
+Goal mode is a three-phase loop. Entry is **per-message**: `HandleMessage` checks `opts.Goal` and dispatches to `runGoalLoop`. This holds on **both a fresh task (`TaskID == ""`) and a continuation (`TaskID != ""`)** — there is no `TaskID` gate.
+
+- **Fresh task (`TaskID == ""`)** — the goal loop runs against a freshly-created blackboard; routing is decided by the full router (`routeOrContinue` falls through to `routeAndActivateSkills`).
+- **Continuation (`TaskID != ""`)** — the goal loop runs **on the restored blackboard of the prior task**. The restored blackboard carries the inherited facts, the prior plan/trajectory, and the accumulated conversation history. A fresh `{condition, verify}` goal is derived from the new continuation message (with user sign-off), and routing is **reused** from the restored task via `routeOrContinue`'s continuation fast-path when the restored blackboard carries BOTH a plan and a routing decision (the router is blind to the restored plan and would misclassify a continuation message); when no plan/routing was persisted it falls through to the full router, exactly as a normal continuation does. In short: **goal on a continuation inherits the prior task's blackboard (facts, plan, trajectory, history) and routing, and derives a new goal from the new message.**
+
+The continuation-inheritance semantics apply only on the goal-loop entry path (`runGoalLoop`); a non-goal continuation (`opts.Goal == false`) takes the normal Conductor continuation path unchanged. Goal state from the prior task is **not** inherited on a goal-on-continuation — a brand-new `GoalState` is derived from the new message and replaces any prior goal state, since the prior task had either completed (terminal) or never ran a goal loop.
 
 ### Phase 1 — Derivation (deriveGoal)
 
@@ -124,15 +129,16 @@ for gs.Status == active:
 
 A turn **error does not abort the loop** — the agent may recover next turn (`_ = terr`). The Conductor's conversation history accumulates across turns via the blackboard, so dialogue context is preserved.
 
-## Routing Invariant (One Routing Decision per Goal)
+## Routing Invariant (One Routing Decision per Goal Task)
 
 Routing is established **exactly once, at the top of `runGoalLoop`, before the derivation pass**, and inherited unchanged by derivation and every goal turn. It is **never** re-done on a continuation turn.
 
-**What happens, once.** `runGoalLoop`'s first act — before `deriveGoal` — is `routeAndActivateSkills`, a full routing pass that classifies the message and activates skills:
+**What happens, once.** `runGoalLoop`'s first act — before `deriveGoal` — is `routeOrContinue`, the same continuation-aware routing helper the normal `HandleMessage` path uses:
 
-- Produces the `RoutingDecision`: **domain** (`code`/`research`/`general`/`mixed`), **complexity** (`[1,5]`), and **matched skills**; merges in **user-specified skills** (`opts.UserSkills`).
-- Applies **skill-policy overrides** to the per-session tool registry.
-- Enriches the context (`WithDomain`, `WithComplexity`, `WithActiveSkills`, `WithUserSkills`) and persists the decision (`SetRouting`) so finalization and resume see it.
+- **Fresh task (`opts.TaskID == ""`)** — no restored routing exists, so `routeOrContinue` falls through to `routeAndActivateSkills`, a full routing pass that classifies the message and activates skills.
+- **Continuation (`opts.TaskID != ""`)** — when the restored blackboard carries BOTH a plan and a routing decision, `routeOrContinue` reuses the routing via its continuation fast-path and **does not** re-run the router; when neither is persisted it falls through to the full router. This is the same behavior the normal continuation path has; the goal loop just inherits it.
+
+Either way, the routing pass (when it runs) produces the `RoutingDecision`: **domain** (`code`/`research`/`general`/`mixed`), **complexity** (`[1,5]`), and **matched skills**; merges in **user-specified skills** (`opts.UserSkills`); applies **skill-policy overrides** to the per-session tool registry; enriches the context (`WithDomain`, `WithComplexity`, `WithActiveSkills`, `WithUserSkills`) and persists the decision (`SetRouting`) so finalization and resume see it.
 
 That enriched context is then threaded into **`deriveGoal` and every goal turn** (`runGoalTurns`). The turn runner (`defaultGoalTurnRunner` → `RunConductor`) only *consumes* routing from the context — it never calls the router. So **no turn, turn 1 included, re-routes**.
 
@@ -142,9 +148,9 @@ That enriched context is then threaded into **`deriveGoal` and every goal turn**
 - **Turns need domain/complexity for step-limit and compaction.** `RunConductor` derives the per-turn ReAct step ceiling from complexity (`stepsPerComplexity = 20`, i.e. `complexity × 20`) and the compaction strategy from domain+complexity (`compactionStrategyForDomain`). Both come from the single routing decision carried on the context.
 - **Skills drive tool-policy overrides.** Skill-activated policy overrides are applied once at routing time and inherited by every turn's registry; re-routing would re-apply (or drop) them mid-goal.
 
-**The invariant — one routing decision per goal task.** This mirrors the normal orchestrator's continuation fast-path (`routeOrContinue` skips the router when a restored task already has a routing decision): a goal-loop turn's message is a continuation of the same task, not a new request. Re-routing it would misclassify a continuation (e.g. the router sees "continue working" and picks a different domain/complexity), destabilizing the system prompt and skill set mid-goal. See [../decisions/017-goal-mode.md](../decisions/017-goal-mode.md) §6 and [orchestration/router.md](orchestration/router.md) (continuation fast-path) for the rationale.
+**The invariant — one routing decision per goal task.** This mirrors the normal orchestrator's continuation fast-path (`routeOrContinue` skips the router when a restored task already has a routing decision): a goal-loop turn's message is a continuation of the same task, not a new request. Re-routing it would misclassify a continuation (e.g. the router sees "continue working" and picks a different domain/complexity), destabilizing the system prompt and skill set mid-goal. Note that on a **goal-on-continuation** entry (a continuation message with `opts.Goal == true`), routing is reused from the restored task at the top of `runGoalLoop` via `routeOrContinue` — the goal loop never re-routes the inherited routing. See [../decisions/017-goal-mode.md](../decisions/017-goal-mode.md) §6 and [orchestration/router.md](orchestration/router.md) (continuation fast-path) for the rationale.
 
-**Resume reuses, never re-routes.** `resumeGoalLoop` receives the persisted `RoutingDecision` and re-installs it (`SetRouting`) **without** calling `routeAndActivateSkills`; when none was persisted it falls back to the `general` domain. A resumed goal therefore continues under the same routing it was started with.
+**Resume reuses, never re-routes.** `resumeGoalLoop` receives the persisted `RoutingDecision` and re-installs it (`SetRouting`) **without** calling `routeOrContinue`/`routeAndActivateSkills`; when none was persisted it falls back to the `general` domain. A resumed goal therefore continues under the same routing it was started with.
 
 ## Self-Evaluation: `declare_goal_status`
 
@@ -221,7 +227,7 @@ The `goal_status`/`goal_progress` events reuse the existing `ServiceWithMeta` ch
 
 - The Conductor owns the task within a turn until it calls `finish`; the loop then starts a new turn (a new `Executor.Run`).
 - The Conductor's conversation history accumulates across turns via the blackboard trajectory (the same mechanism normal continuation resume uses), so dialogue context is preserved across the turn boundary despite each turn being a fresh executor.
-- No turn routes. Routing (domain, complexity, matched+user skills, skill-policy overrides) is decided exactly once at the top of `runGoalLoop` — before derivation — and inherited unchanged by every turn; re-routing a continuation message would misclassify it. See [Routing Invariant](#routing-invariant-one-routing-decision-per-goal).
+- No turn routes. Routing (domain, complexity, matched+user skills, skill-policy overrides) is decided exactly once at the top of `runGoalLoop` — before derivation — and inherited unchanged by every turn; re-routing a continuation message would misclassify it. See [Routing Invariant](#routing-invariant-one-routing-decision-per-goal-task).
 - The goal state and a fresh `GoalStatusSink` are injected into each turn's context (`WithGoalState`, `WithGoalStatusSink`); the system prompt renders the goal-mode section from the `GoalState` on every turn.
 
 This is the same continuation convention the normal resume path uses (separate `Executor.Run`, trajectory-seeded), extended to iterate until the goal terminates.
@@ -246,8 +252,8 @@ The goal loop runs under the `Orchestrator` single-flight guard (`requestInFligh
 
 ## Invariants
 
-- Goal mode is **first-message-only**: `opts.Goal && opts.TaskID == ""`. A continuation message ignores the flag.
-- **One routing decision per goal task.** Routing (domain, complexity, matched+user skills, skill-policy overrides) is established exactly once at the top of `runGoalLoop`, before derivation, and inherited unchanged by derivation + every goal turn; no turn re-routes, and `resumeGoalLoop` reuses the persisted routing. See [Routing Invariant](#routing-invariant-one-routing-decision-per-goal).
+- Goal mode is **per-message, both fresh and continuation**: `opts.Goal` (no `TaskID` gate). A goal on a continuation runs on the **restored blackboard** of the prior task — inheriting facts, plan/trajectory, conversation history, and routing — and derives a fresh `{condition, verify}` goal from the new message (the prior task's `GoalState`, if any, is not inherited). See [Mechanism](#mechanism) and [Routing Invariant](#routing-invariant-one-routing-decision-per-goal-task).
+- **One routing decision per goal task.** Routing (domain, complexity, matched+user skills, skill-policy overrides) is established exactly once at the top of `runGoalLoop`, before derivation, and inherited unchanged by derivation + every goal turn; no turn re-routes, and `resumeGoalLoop` reuses the persisted routing. See [Routing Invariant](#routing-invariant-one-routing-decision-per-goal-task).
 - Each goal-loop turn is a **fresh `Executor.Run`** (via `RunConductor); the loop is a turn-of-Conductors, not one long-lived executor.
 - A `met` verdict **requires non-empty evidence** with each entry having non-empty `type`/`ref`/`summary` (enforced in `declare_goal_status`); a bare "done" cannot terminate the loop.
 - Anti-spin: a turn with **zero tool calls AND no verdict** halts as `blocked_idle`.

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/prompts"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
@@ -341,7 +342,7 @@ func TestTryContinueInterruptedTask_NoTaskStore_ReturnsFalse(t *testing.T) {
 	sess, _ := manager.GetSession(info.ID)
 
 	// No SetTaskStore → m.taskStore is nil.
-	if manager.tryContinueInterruptedTask(context.Background(), info.ID, sess, "anything") {
+	if manager.tryContinueInterruptedTask(context.Background(), info.ID, sess, "anything", "", "", nil) {
 		t.Error("expected false when no task store is configured")
 	}
 }
@@ -360,7 +361,7 @@ func TestTryContinueInterruptedTask_NoUnfinishedTask_ReturnsFalse(t *testing.T) 
 	store := &resumeTaskStore{task: nil} // no unfinished task
 	manager.SetTaskStore(store)
 
-	if manager.tryContinueInterruptedTask(context.Background(), info.ID, sess, "anything") {
+	if manager.tryContinueInterruptedTask(context.Background(), info.ID, sess, "anything", "", "", nil) {
 		t.Error("expected false when there is no unfinished task")
 	}
 	store.mu.Lock()
@@ -386,7 +387,485 @@ func TestTryContinueInterruptedTask_SkipsOrchestratorWhenIdle(t *testing.T) {
 	// testManager builds a nil orchestrator; the helper must return false
 	// without dereferencing it when there is no unfinished task.
 	manager.SetTaskStore(&resumeTaskStore{task: nil})
-	if manager.tryContinueInterruptedTask(context.Background(), info.ID, sess, "msg") {
+	if manager.tryContinueInterruptedTask(context.Background(), info.ID, sess, "msg", "", "", nil) {
 		t.Error("expected false (idle) and no orchestrator interaction")
 	}
+}
+
+// recordingScriptedLLM wraps scriptedLLM and implements SetReasoningEffort so
+// the resume path's ApplyRequestOverrides (which propagates reasoning effort
+// to the LLM via a type assertion) can be observed end-to-end.
+type recordingScriptedLLM struct {
+	*scriptedLLM
+	mu             sync.Mutex
+	reasoningEffort string
+}
+
+func (r *recordingScriptedLLM) SetReasoningEffort(effort string) {
+	r.mu.Lock()
+	r.reasoningEffort = effort
+	r.mu.Unlock()
+}
+
+func (r *recordingScriptedLLM) ReasoningEffort() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reasoningEffort
+}
+
+// attachmentsTrackingResumeStore wraps resumeTaskStore and records
+// SaveAttachments calls so a test can assert pending attachments were flushed
+// into the restored blackboard (AddAttachment persists the full list via the
+// adapter → SaveAttachments).
+type attachmentsTrackingResumeStore struct {
+	*resumeTaskStore
+	mu           sync.Mutex
+	saveAttCalls int
+	lastAttData  json.RawMessage
+}
+
+func (a *attachmentsTrackingResumeStore) SaveAttachments(_ context.Context, _ string, data json.RawMessage) error {
+	a.mu.Lock()
+	a.saveAttCalls++
+	a.lastAttData = data
+	a.mu.Unlock()
+	return nil
+}
+
+// overrideFunctionalFactory builds a real *core.Orchestrator wired with a mock
+// LLM, a real ContextWindow, and — critically — a ModelSwitcher (an *llm.Router)
+// so the resume path's ApplyRequestOverrides can switch the active model
+// end-to-end. The Orchestrator's Router field (the message classifier) is
+// intentionally left nil: the resume path never routes, so the classifier is
+// not needed (and a nil Router is safe because routeOrContinue/routeAndActivate
+// Skills are never reached on this path).
+func overrideFunctionalFactory(caller agent.LLMCaller, switcher *llm.Router) OrchestratorFactory {
+	return func(emitter core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+		registry := sdktools.NewToolRegistry()
+		cf := func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...orchestration.PruningOverride) core.ContextManager {
+			cw := memory.NewContextWindow(memory.ContextWindowConfig{
+				SystemPrompt: systemPrompt,
+				ModelMeta:    llm.ModelMetadata{ContextWindow: 128000, OutputLimit: 4096},
+			})
+			return core.NewCoreContextManager(cw)
+		}
+		return core.NewOrchestrator(core.OrchestratorConfig{Model: "resume-default"}, core.OrchestratorDeps{
+			LLM:            caller,
+			ModelSwitcher:  switcher,
+			ToolExec:       registry,
+			ToolRegistry:   registry,
+			TokenCounter:   llm.NewSimpleTokenCounter(),
+			ContextFactory: cf,
+			Emitter:        emitter,
+			CircuitBreaker: agent.CircuitBreakerConfig{RepeatNudgeThreshold: 3, RepeatAbortThreshold: 4},
+		}), nil
+	}
+}
+
+// TestSendMessage_ResumePath_AppliesOverridesAndFlushesAttachments verifies the
+// session manager's tryContinueInterruptedTask resume path applies the
+// per-request model + reasoning overrides and flushes pending attachments into
+// the restored blackboard. Because this path bypasses HandleMessage (whose step
+// 0 would otherwise apply the overrides and whose setupBlackboard would flush
+// attachments), both must be wired explicitly in tryContinueInterruptedTask.
+//
+// Setup: an interrupted task with a persisted trajectory, a pending attachment
+// staged on the session, and a SendMessage that BOTH continues the task AND
+// requests a model + reasoning-effort override.
+//
+// Asserts:
+//  1. Model override applied — the model switcher's ActiveModel() flips from
+//     the default to the override.
+//  2. Reasoning-effort override applied — the LLM's SetReasoningEffort was
+//     called with the override value.
+//  3. Pending attachments flushed into the restored blackboard — SaveAttachments
+//     was called with the staged attachment's marker content.
+//  4. Pending attachments cleared on the session — attachments_changed event
+//     fired and session.pendingAttachments is empty after the send.
+//
+// On the OLD code (overrides/attachments applied only inside HandleMessage,
+// which the resume path bypasses), assertions 1, 2, and 3 fail.
+func TestSendMessage_ResumePath_AppliesOverridesAndFlushesAttachments(t *testing.T) {
+	const (
+		nudge          = "resume with the new settings"
+		finishAnswer   = "resumed-with-overrides"
+		unfinishedTask = "task-resume-overrides-1"
+		attMarker      = "RESUME-ATTACHMENT-MARKER-5e8c"
+		attName        = "resumed-spec.md"
+		// ProviderEntry.Models lists BARE model names; ActiveModel() reports the
+		// composite "provider/bare-model" ID, so override assertions compare
+		// against the composite IDs derived below.
+		bareDefault   = "resume-default"
+		bareOverride  = "resume-override"
+		providerName  = "test"
+		reasoning     = "high"
+	)
+
+	// A single prior ReAct step persisted as the trajectory.
+	trajSteps := []agent.Step{
+		{Thought: "step one", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR-1"},
+	}
+	trajJSON, _ := json.Marshal(trajSteps)
+
+	store := &attachmentsTrackingResumeStore{
+		resumeTaskStore: &resumeTaskStore{
+			task: &TaskRecord{
+				ID: unfinishedTask, SessionID: "ignored", OriginalRequest: "long running task",
+				Status: "in_progress",
+			},
+			trajectory: trajJSON,
+		},
+	}
+
+	// Model switcher with two models so SetModel has a target.
+	switcher, err := llm.NewRouter(context.Background(), llm.RouterConfig{
+		Providers: []llm.ProviderEntry{
+			{Name: providerName, ProviderType: "openai", BaseURL: "http://localhost:9999", Models: []string{bareDefault, bareOverride}},
+		},
+		MaxRetries:     1,
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     100 * time.Millisecond,
+	}, nil)
+	if err != nil {
+		t.Fatalf("build llm router: %v", err)
+	}
+	// NewRouter selects the first provider's first model as the active model by
+	// default, so ActiveModel() starts at CompositeModelID(provider, bareDefault).
+	// SendMessage's resume path overrides it to bareOverride via SetModel.
+	defaultModel := llm.CompositeModelID(providerName, bareDefault)
+	overrideModel := llm.CompositeModelID(providerName, bareOverride)
+
+	caller := &recordingScriptedLLM{scriptedLLM: &scriptedLLM{scripted: []*llm.ChatResponse{
+		finishResponse(finishAnswer),
+	}}}
+	// A recorder goroutine buffers ALL events into a slice (sync.Mutex-guarded)
+	// so assertions can scan the full sequence without being consumed by
+	// waitForEvent (which drains events up to its target).
+	var (
+		allEventsMu sync.Mutex
+		allEvents   []Event
+	)
+	eventChan := make(chan Event, 100)
+	go func() {
+		for e := range eventChan {
+			allEventsMu.Lock()
+			allEvents = append(allEvents, e)
+			allEventsMu.Unlock()
+		}
+	}()
+	mgr := NewManager(overrideFunctionalFactory(caller, switcher), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr.Shutdown)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	// Stage a pending attachment directly on the session (mirrors what
+	// AttachFiles leaves behind before the next SendMessage consumes it).
+	attachment := orchestration.Attachment{
+		ID:              "att-resume-1",
+		OriginalName:    attName,
+		Format:          "md",
+		MarkdownContent: "# Spec\n" + attMarker,
+		AttachedAt:      time.Now(),
+	}
+	sess, _ := mgr.GetSession(info.ID)
+	if sess == nil {
+		t.Fatal("session not found after creation")
+	}
+	sess.mu.Lock()
+	sess.pendingAttachments = append(sess.pendingAttachments, attachment)
+	sess.mu.Unlock()
+
+	// Sanity: the switcher starts on the default model.
+	if got := switcher.ActiveModel(); got != defaultModel {
+		t.Fatalf("precondition: ActiveModel = %q, want %q", got, defaultModel)
+	}
+
+	// Send a message that BOTH continues the interrupted task AND overrides the
+	// model + reasoning effort.
+	if err := mgr.SendMessage(context.Background(), info.ID, nudge, nil, overrideModel, reasoning, false, ""); err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	// Wait for the task_complete event to appear in the buffered sequence
+	// (scans the recorder slice rather than draining the channel, so the
+	// attachments_changed event emitted earlier in the send is preserved).
+	if !waitForBufferedEvent(&allEventsMu, &allEvents, "message_received", 2*time.Second) {
+		t.Fatal("timeout waiting for message_received event")
+	}
+	if !waitForBufferedEvent(&allEventsMu, &allEvents, "task_complete", 5*time.Second) {
+		t.Fatal("timeout waiting for task_complete event")
+	}
+
+	t.Run("model override applied to the resumed orchestrator", func(t *testing.T) {
+		if got := switcher.ActiveModel(); got != overrideModel {
+			t.Errorf("ActiveModel after resume = %q, want %q (ApplyRequestOverrides must call SetModel on the resume path)", got, overrideModel)
+		}
+	})
+
+	t.Run("reasoning-effort override applied to the resumed LLM", func(t *testing.T) {
+		if got := caller.ReasoningEffort(); got != reasoning {
+			t.Errorf("LLM reasoning effort after resume = %q, want %q (ApplyRequestOverrides must propagate reasoning effort on the resume path)", got, reasoning)
+		}
+	})
+
+	t.Run("pending attachment flushed into the restored blackboard", func(t *testing.T) {
+		store.mu.Lock()
+		calls := store.saveAttCalls
+		data := store.lastAttData
+		store.mu.Unlock()
+		if calls == 0 {
+			t.Fatal("SaveAttachments was never called — the pending attachment was not flushed into the restored blackboard on the resume path")
+		}
+		if !strings.Contains(string(data), attMarker) {
+			t.Errorf("flushed attachment data does not contain the marker %q; got %s", attMarker, string(data))
+		}
+	})
+
+	t.Run("pending attachments cleared on the session (attachments_changed fired)", func(t *testing.T) {
+		// Scan the buffered event sequence for the attachments_changed emission
+		// (fired by the snapshot/clear step in SendMessage).
+		var sawAttachmentsChanged bool
+		allEventsMu.Lock()
+		for _, e := range allEvents {
+			if e.Type == "attachments:changed" {
+				sawAttachmentsChanged = true
+				break
+			}
+		}
+		allEventsMu.Unlock()
+		if !sawAttachmentsChanged {
+			t.Error("expected an attachments_changed event — the snapshot/clear fires it when there were pending attachments")
+		}
+		sess2, _ := mgr.GetSession(info.ID)
+		if sess2 == nil {
+			t.Fatal("session not found after send")
+		}
+		sess2.mu.Lock()
+		pending := sess2.pendingAttachments
+		sess2.mu.Unlock()
+		if len(pending) != 0 {
+			t.Errorf("expected session.pendingAttachments cleared after the send, got %d", len(pending))
+		}
+	})
+
+	// NOTE: the recorder goroutine is intentionally left running (the channel is
+	// buffered and the emitter may fire events during t.Cleanup's
+	// mgr.Shutdown); closing it would risk a send-on-closed-channel panic.
+}
+
+// waitForBufferedEvent polls a mutex-guarded event slice until an event of the
+// given type appears or the timeout elapses. Unlike waitForEvent (which drains
+// a channel), this preserves all events in the buffer for later scanning.
+func waitForBufferedEvent(mu *sync.Mutex, events *[]Event, eventType string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		for _, e := range *events {
+			if e.Type == eventType {
+				mu.Unlock()
+				return true
+			}
+		}
+		mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+// cancelTrackingResumeStore wraps resumeTaskStore and records CancelTask +
+// LoadTrajectory calls so a test can assert that a goal request abandoned the
+// interrupted task (CancelTask invoked) WITHOUT taking the resume path
+// (LoadTrajectory NOT invoked).
+type cancelTrackingResumeStore struct {
+	*resumeTaskStore
+	mu               sync.Mutex
+	cancelCalls      int
+	cancelledTaskID  string
+	loadTrajCalls    int
+}
+
+func (c *cancelTrackingResumeStore) CancelTask(_ context.Context, taskID string) error {
+	c.mu.Lock()
+	c.cancelCalls++
+	c.cancelledTaskID = taskID
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *cancelTrackingResumeStore) LoadTrajectory(_ context.Context, _ string) (json.RawMessage, error) {
+	c.mu.Lock()
+	c.loadTrajCalls++
+	c.mu.Unlock()
+	return c.trajectory, nil
+}
+
+// autoApproveProposer is a GoalProposer that auto-approves every goal proposal
+// so derivation completes without blocking on a real user-confirmation flow.
+type autoApproveProposer struct{}
+
+func (autoApproveProposer) Propose(_ context.Context, p coretools.GoalProposal) (coretools.GoalProposalResponse, error) {
+	return coretools.GoalProposalResponse{
+		Decision:  "approve",
+		Condition: p.Condition,
+		Verify:    p.Verify,
+	}, nil
+}
+
+// proposeGoalResponse builds an LLM response that calls propose_goal with a
+// minimal {condition, verify} pair (derivation turn 1).
+func proposeGoalResponse(condition, verify string) *llm.ChatResponse {
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:   "pg1",
+				Name: "propose_goal",
+				Input: json.RawMessage(`{"condition":"` + condition + `","verify":"` + verify + `","needs_clarification":false}`),
+			}},
+		},
+		StopReason: "tool_use",
+	}
+}
+
+// TestSendMessage_GoalOnResume_AbandonsInterruptedTaskAndRunsGoal verifies that
+// a goal request on a session with an UNFINISHED task does NOT take the resume
+// path. Instead, the interrupted task is cancelled (abandonUnfinishedTaskForGoal)
+// and the goal loop runs fresh. On the OLD code, goal was silently ignored on
+// the resume path and the WIP was resumed as a normal task.
+//
+// Setup: an interrupted task (in_progress) + a SendMessage with goal=true.
+// LLM: router classification → propose_goal → finish.
+// Asserts:
+//  1. CancelTask was called on the interrupted task (abandoned).
+//  2. LoadTrajectory was NOT called (resume path skipped).
+//  3. The goal loop ran — propose_goal was invoked (derivation ran).
+//  4. A "service" event about the abandoned task was emitted.
+func TestSendMessage_GoalOnResume_AbandonsInterruptedTaskAndRunsGoal(t *testing.T) {
+	const (
+		goalCondition     = "review all code"
+		goalVerify        = "no issues found"
+		finishAnswer      = "goal completed"
+		interruptedTaskID = "task-interrupted-goal-1"
+	)
+
+	trajSteps := []agent.Step{
+		{Thought: "prior step", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+	}
+	trajJSON, _ := json.Marshal(trajSteps)
+
+	store := &cancelTrackingResumeStore{
+		resumeTaskStore: &resumeTaskStore{
+			task: &TaskRecord{
+				ID: interruptedTaskID, SessionID: "ignored", OriginalRequest: "long running task",
+				Status: "in_progress",
+			},
+			trajectory: trajJSON,
+		},
+	}
+
+	caller := &scriptedLLM{scripted: []*llm.ChatResponse{
+		routingJSONResponse("general", 1),     // call 1: router classification
+		proposeGoalResponse(goalCondition, goalVerify), // call 2: derivation → propose_goal
+		finishResponse(finishAnswer),          // call 3+: goal turn → finish (declares met)
+		finishResponse(finishAnswer),          // extra safety: repeat
+	}}
+
+	var (
+		allEventsMu sync.Mutex
+		allEvents   []Event
+	)
+	eventChan := make(chan Event, 100)
+	go func() {
+		for e := range eventChan {
+			allEventsMu.Lock()
+			allEvents = append(allEvents, e)
+			allEventsMu.Unlock()
+		}
+	}()
+
+	mgr := NewManager(routingFunctionalFactory(caller), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr.Shutdown)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	// Inject an auto-approving goal proposer (the session manager's factory does
+	// not wire one; in production the Application layer does via SetGoalProposer).
+	sess, _ := mgr.GetSession(info.ID)
+	if sess == nil {
+		t.Fatal("session not found after creation")
+	}
+	sess.orchestrator.SetGoalProposer(autoApproveProposer{})
+
+	// Send a goal request that ALSO has an unfinished task to resume.
+	if err := mgr.SendMessage(context.Background(), info.ID, goalCondition, nil, "", "", true, ""); err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if !waitForBufferedEvent(&allEventsMu, &allEvents, "task_complete", 5*time.Second) {
+		t.Fatal("timeout waiting for task_complete event")
+	}
+
+	t.Run("interrupted task was cancelled (abandoned for goal)", func(t *testing.T) {
+		store.mu.Lock()
+		cancels := store.cancelCalls
+		cancelled := store.cancelledTaskID
+		store.mu.Unlock()
+		if cancels == 0 {
+			t.Error("expected CancelTask to be called on the interrupted task (abandonUnfinishedTaskForGoal), got 0 calls")
+		}
+		if cancelled != interruptedTaskID {
+			t.Errorf("cancelled task = %q, want %q", cancelled, interruptedTaskID)
+		}
+	})
+
+	t.Run("resume path was skipped (LoadTrajectory not called)", func(t *testing.T) {
+		store.mu.Lock()
+		loads := store.loadTrajCalls
+		store.mu.Unlock()
+		if loads != 0 {
+			t.Errorf("expected LoadTrajectory NOT called (goal supersedes resume), got %d calls", loads)
+		}
+	})
+
+	t.Run("goal loop ran (propose_goal invoked)", func(t *testing.T) {
+		// The goal loop's derivation calls propose_goal, which our auto-approving
+		// proposer accepts. The router call (call 1) and propose_goal call (call 2)
+		// both hit the LLM; if the goal loop did NOT run, only the router call
+		// would fire (or none, if the resume path took over).
+		calls := caller.Calls()
+		if len(calls) < 2 {
+			t.Errorf("expected at least 2 LLM calls (router + propose_goal), got %d — goal loop may not have run", len(calls))
+		}
+	})
+
+	t.Run("service event about abandoned task was emitted", func(t *testing.T) {
+		allEventsMu.Lock()
+		defer allEventsMu.Unlock()
+		for _, e := range allEvents {
+			if e.Type != "service" {
+				continue
+			}
+			if content, ok := e.Data.(map[string]any)["content"].(string); ok && strings.Contains(content, "abandoned") {
+				return
+			}
+		}
+		t.Error("expected a 'service' event mentioning the abandoned task, not found")
+	})
+
+	// NOTE: the recorder goroutine is intentionally left running (the channel is
+	// buffered and the emitter may fire events during t.Cleanup's Shutdown).
 }

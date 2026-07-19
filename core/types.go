@@ -189,14 +189,16 @@ type HandleOptions struct {
 	SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)
 	PendingAttachments []orchestration.Attachment // attachments staged by AttachFiles, flushed into the blackboard before execution
 
-	// Goal selects goal mode for the FIRST message of a task (opts.TaskID ==
-	// ""). When true, HandleMessage dispatches to runGoalLoop: the orchestrator
-	// first derives a crisp {condition, verify} goal via propose_goal (with user
-	// sign-off), then iterates the Conductor turn-by-turn until the agent
-	// declares the goal met (via declare_goal_status), the budget is
-	// exhausted, the agent goes idle (anti-spin), or the goal is paused. A
-	// non-first message (continuation) ignores this flag — goal mode is a
-	// first-message-only entry into the goal loop.
+	// Goal selects goal mode. When true, HandleMessage dispatches to
+	// runGoalLoop: the orchestrator first derives a crisp {condition, verify}
+	// goal via propose_goal (with user sign-off), then iterates the Conductor
+	// turn-by-turn until the agent declares the goal met (via
+	// declare_goal_status), the budget is exhausted, the agent goes idle
+	// (anti-spin), or the goal is paused. Goal mode is entered on BOTH a fresh
+	// task (TaskID == "") and a continuation (TaskID != ""): on a continuation
+	// the prior task's blackboard is restored and the goal loop runs on the
+	// inherited facts/history, deriving a fresh goal from the new message
+	// (reusing the restored routing via routeOrContinue).
 	Goal bool
 
 	// GoalBudgetOverride, when non-nil, tightens the goal's resource caps below

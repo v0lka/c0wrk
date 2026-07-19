@@ -58,10 +58,11 @@ export function useMessageSender(): UseMessageSenderResult {
       const goalEnabled = useInputModeStore.getState().goalEnabled
       const goalBudget = useInputModeStore.getState().goalBudget
       await sendMessage(sessionId, messageText, activeSkills ?? [], modelOverride, reasoningOverride, goalEnabled, goalBudget)
-      // Goal mode is first-message-only: once the goal-defining message is
-      // sent, the toggle no longer applies (continuation messages ignore the
-      // flag). Reset it so the user doesn't see a stale "on" toggle and so a
-      // later normal send to a NEW session doesn't silently re-enter goal mode.
+      // Goal is per-task opt-in: after a goal-defining message is sent, reset
+      // the toggle so the user explicitly re-enables it for the next goal
+      // (rather than silently staying in goal mode across every subsequent
+      // send). Goal is still available on continuations — a re-enabled toggle
+      // runs the goal loop on the inherited blackboard of the prior task.
       if (goalEnabled) {
         useInputModeStore.getState().setGoalEnabled(false)
         useInputModeStore.getState().setGoalBudget('')

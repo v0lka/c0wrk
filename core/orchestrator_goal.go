@@ -223,14 +223,16 @@ func ensureProposeGoalTool(list []sdktools.ToolDescriptor, registry *sdktools.To
 const goalLoopMaxTurns = 50
 
 // runGoalLoop is the multi-turn goal-mode driver. It is entered from
-// HandleMessage when opts.Goal is set and this is the first message of a task
-// (opts.TaskID == ""). The single-flight guard in HandleMessage is already
-// held, so the loop runs exclusively.
+// HandleMessage when opts.Goal is set — on BOTH a fresh task (TaskID == "")
+// and on a continuation (TaskID != ""). The single-flight guard in
+// HandleMessage is already held, so the loop runs exclusively.
 //
 // Flow:
-//  0. Route once and activate skills (full routing, since this is always a
-//     fresh first message); enrich ctx with domain/complexity/user-skills and
-//     persist the real routing. Derivation and every turn inherit this routing.
+//  0. Route and activate skills via routeOrContinue: on a continuation it
+//     reuses the restored routing decision (mirroring the normal continuation
+//     fast-path), and on a fresh task it runs the full router. Enrich ctx with
+//     domain/complexity/user-skills and persist the routing. Derivation and
+//     every turn inherit this routing.
 //  1. Derive the goal (deriveGoal): a full-context Conductor pass that grounds
 //     the {condition, verify} in the actual codebase and submits it for user
 //     sign-off via propose_goal. On cancel/error, the loop exits with the
@@ -263,13 +265,14 @@ func (o *Orchestrator) runGoalLoop(
 		return nil, ctx.Err()
 	}
 
-	// 0. Route once and activate skills. Goal entry always has opts.TaskID ==
-	// "" (guarded by HandleMessage), so this is always a fresh first message
-	// and the full routing path runs — never the continuation fast-path. The
-	// router augments the skill context itself, so the RAW `message` is passed
-	// (not the attachment-augmented conductorMessage) to avoid double-prefixing
-	// the skill reference.
-	ctx, routing, _, _, err := o.routeAndActivateSkills(ctx, message, opts, bb, availableTools)
+	// 0. Route and activate skills. On a continuation (opts.TaskID != "") this
+	// reuses the restored routing via routeOrContinue's fast-path (the router is
+	// blind to the restored plan and would misclassify a continuation message);
+	// on a fresh task it runs the full router. The router augments the skill
+	// context itself, so the RAW `message` is passed (not the
+	// attachment-augmented conductorMessage) to avoid double-prefixing the
+	// skill reference.
+	ctx, routing, _, _, err := o.routeOrContinue(ctx, message, opts, bb, availableTools)
 	if err != nil {
 		return nil, err
 	}

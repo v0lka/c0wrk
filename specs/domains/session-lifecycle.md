@@ -102,10 +102,23 @@ User sends message
       └─ On failure: emit task_failed_resumable or error
 ```
 
-> If the session has an **unfinished (interrupted) task**, the execution
-> goroutine takes the `tryContinueInterruptedTask` branch *before*
-> `HandleMessage` and resumes the prior ReAct cycle instead of routing a new
-> task. See [Continuing an interrupted task with a new message](#continuing-an-interrupted-task-with-a-new-message).
+> **Per-continuation parameters.** `goal`, `modelOverride`, `reasoningEffort`,
+> and `pendingAttachments` are **per-message** inputs: they are taken from the
+> *current* send, not persisted from the prior task. A continuation message can
+> therefore flip goal mode on (`/goal` prefix or the goal toggle), switch the
+> model or reasoning effort, and stage a fresh set of attachments — all are
+> applied to the continuation pass and override whatever the prior task used.
+> `TaskID`, `ExecutionMode`, `UserSkills`, and `SessionPlansDir` behave the same
+> way (per-message). Only the restored blackboard state (facts, plan/trajectory,
+> conversation history, routing decision) is *inherited* from the prior task; the
+> per-message parameters above are applied on top of it.
+
+> If the session has an **unfinished (interrupted) task** *and the message is
+> not a goal request*, the execution goroutine takes the
+> `tryContinueInterruptedTask` branch *before* `HandleMessage` and resumes the
+> prior ReAct cycle instead of routing a new task. A goal request (`/goal`
+> prefix or the goal toggle) supersedes this branch — the interrupted task is
+> abandoned and the goal loop runs instead (see [Continuing an interrupted task with a new message](#continuing-an-interrupted-task-with-a-new-message)).
 
 ### File Attachments
 
@@ -263,13 +276,40 @@ positioned after the prior steps, so the agent sees the new instruction
 immediately. Idle sessions (no unfinished task) behave exactly as before
 (route → plan → execute).
 
+> **Per-continuation parameters are applied on this path too.** Because the
+> resume path bypasses `HandleMessage`, the model/reasoning override and
+> staged attachments from the current send are applied **explicitly** inside
+> `tryContinueInterruptedTask`: after the blackboard is restored it calls
+> `orchestrator.ApplyRequestOverrides(ctx, modelOverride, reasoningEffort)`
+> (the same step 0 `HandleMessage` runs) and flushes the snapshot of
+> `pendingAttachments` into the restored blackboard via `bb.AddAttachment`.
+> Both calls are no-ops when their arguments are empty. The `pendingAttachments`
+> snapshot is taken (and `session.pendingAttachments` cleared) **before** the
+> continue-check so both the resume path and the fresh-task path consume the
+> staged attachments exactly once.
+
+> **Goal mode supersedes the resume path.** The goal flag is detected
+> (`/goal` prefix OR the goal toggle) **before** the resume check. When goal
+> mode is requested, the resume path is **skipped** and `abandonUnfinishedTaskForGoal`
+> cancels the interrupted task (persisting the cancellation, resolving the
+> `task_failed_resumable` banner, and emitting a service event) so it does not
+> linger as resumable WIP; the goal loop then runs on the last **completed**
+> task's blackboard (`lastTaskID`) — or fresh when there is none. In short: a
+> goal request always wins over an interrupted task, discarding the WIP rather
+> than silently resuming it as a non-goal task.
+
 ```
-User sends message to session with unfinished task
+User sends a NON-GOAL message to session with unfinished task
+  (a goal request would abandon the task via abandonUnfinishedTaskForGoal
+   and run the goal loop instead — see "Goal mode supersedes the resume path" above)
   → Frontend: SendMessage(...) — optimistically sets task active
   → Backend: FrontendAPI.SendMessage() (goroutine)
-      └─ tryContinueInterruptedTask(ctx, id, session, message)
+      └─ tryContinueInterruptedTask(ctx, id, session, message, modelOverride, reasoningEffort, pendingAttachments)
+          ├─ Snapshot pendingAttachments; clear session.pendingAttachments; emit attachments:changed
           ├─ Resolve unfinished task via TaskStoreAdapter.GetUnfinishedTaskID
           ├─ Restore Blackboard (facts + step results)
+          ├─ ApplyRequestOverrides(ctx, modelOverride, reasoningEffort)
+          ├─ for each staged attachment: bb.AddAttachment (persists to store)
           ├─ Load trajectory → append agent.Step{UserNudge: message}
           ├─ Resolve routing decision (OPTIONAL)
           ├─ Resolve the resumable banner (so it does not linger)
