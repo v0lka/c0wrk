@@ -323,3 +323,84 @@ func TestBuild_GoalBudgetMapping(t *testing.T) {
 		}
 	})
 }
+
+// TestStripMarkdownCodeFence verifies the defensive safety net that removes a
+// surrounding markdown code block from a model-generated commit message. The
+// prompt forbids fencing, but some models still emit it; the helper must
+// strip exactly one outer block and leave everything else untouched.
+func TestStripMarkdownCodeFence(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "no fencing, single line",
+			in:   "feat(auth): add token refresh on 401",
+			want: "feat(auth): add token refresh on 401",
+		},
+		{
+			name: "plain fenced block",
+			in:   "```\nfeat(auth): add token refresh\n```",
+			want: "feat(auth): add token refresh",
+		},
+		{
+			name: "fenced block with language tag",
+			in:   "```text\nfeat(auth): add token refresh\n```",
+			want: "feat(auth): add token refresh",
+		},
+		{
+			name: "fenced block with markdown language tag",
+			in:   "```markdown\nfeat(auth): add token refresh\n```",
+			want: "feat(auth): add token refresh",
+		},
+		{
+			name: "fenced block preserves multi-line body",
+			in:   "```\nfeat(auth): add token refresh\n\nRefetch the token when the API returns 401.\n```",
+			want: "feat(auth): add token refresh\n\nRefetch the token when the API returns 401.",
+		},
+		{
+			name: "fenced block with surrounding whitespace",
+			in:   "\n\n  ```\nfeat: add thing\n```\n\n",
+			want: "feat: add thing",
+		},
+		{
+			name: "trailing spaces after closing fence",
+			in:   "```\nfeat: add thing\n```   ",
+			want: "feat: add thing",
+		},
+		{
+			name: "inner backticks are preserved when not wrapping",
+			in:   "feat: use `git diff --staged`",
+			want: "feat: use `git diff --staged`",
+		},
+		{
+			name: "empty string stays empty",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "whitespace only collapses to empty",
+			in:   "   \n\t\n",
+			want: "",
+		},
+		{
+			name: "partial fence at start only is left unchanged",
+			in:   "```\nfeat: add thing",
+			want: "```\nfeat: add thing",
+		},
+		{
+			name: "single-line fence not treated as wrapper",
+			in:   "``feat``",
+			want: "``feat``",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripMarkdownCodeFence(tt.in); got != tt.want {
+				t.Errorf("stripMarkdownCodeFence(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}

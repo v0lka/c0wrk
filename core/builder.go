@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -596,6 +597,37 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 	return resp.Message.Content, nil
 }
 
+// commitMarkdownFenceRe matches a commit message that the model has wrapped
+// in a single markdown code block, e.g.:
+//
+//	```
+//	feat(auth): add token refresh
+//	```
+//
+// or with an optional language tag such as "text"/"markdown":
+//
+//	```text
+//	feat(auth): add token refresh
+//	```
+//
+// The opening fence must be at the very start and the closing fence at the
+// very end (after TrimSpace), so legitimate backticks inside a body are left
+// untouched. The captured group holds the inner content.
+var commitMarkdownFenceRe = regexp.MustCompile("(?s)^```[a-zA-Z0-9+-]*[ \t]*\n(.*)\n```[ \t]*$")
+
+// stripMarkdownCodeFence removes a single surrounding markdown code block from
+// s if the entire (trimmed) string is wrapped in one. It is a defensive
+// safety net for commit-message generation: the prompt already forbids
+// fencing, but some models still emit it. Input without fencing is returned
+// unchanged apart from leading/trailing whitespace trimming.
+func stripMarkdownCodeFence(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if m := commitMarkdownFenceRe.FindStringSubmatch(trimmed); m != nil {
+		return strings.TrimSpace(m[1])
+	}
+	return trimmed
+}
+
 // GenerateCommitMessage produces a Conventional Commits-formatted commit
 // message from the given staged diff using the cached LLM router. The diff
 // is typically the output of `git diff --staged`. The caller is responsible
@@ -661,7 +693,9 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 			"diff_bytes", len(diff), "provider", providerName)
 		return "", nil
 	}
-	return strings.TrimSpace(resp.Message.Content), nil
+	// Strip any stray markdown code fencing the model may have added
+	// despite the prompt instructing it not to.
+	return stripMarkdownCodeFence(resp.Message.Content), nil
 }
 
 // ListProviderModels returns available model names for a given provider.
