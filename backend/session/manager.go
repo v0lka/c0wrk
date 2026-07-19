@@ -97,6 +97,14 @@ type toolCallIDEntry struct {
 // Manager manages multiple agent sessions.
 type Manager struct {
 	sessions            map[string]*Session
+	// restoreInFlight deduplicates concurrent lazy restores of the same session
+	// ID (single-flight). Keyed by session ID; value is a channel closed when
+	// the in-progress restore finishes. Guarded by mu. Without this, many
+	// goroutines racing to restore the same session each open the log/dump
+	// files independently; on Windows the resulting concurrent open/close
+	// churn leaves the OS file lock briefly held even after every handle is
+	// closed, breaking TempDir cleanup.
+	restoreInFlight     map[string]chan struct{}
 	mu                  sync.RWMutex
 	orchestratorFactory OrchestratorFactory
 	emitFunc            func(Event) // shared event emission callback
@@ -162,6 +170,7 @@ func (m *Manager) log() *slog.Logger {
 func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir string) *Manager {
 	m := &Manager{
 		sessions:            make(map[string]*Session),
+		restoreInFlight:     make(map[string]chan struct{}),
 		orchestratorFactory: factory,
 		emitFunc:            emitFunc,
 		agentDir:            agentDir,
@@ -318,9 +327,50 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		}
 	}
 
+	// Single-flight reservation: if another goroutine is already restoring
+	// this same session, wait for it instead of opening duplicate log/dump
+	// files. On Windows, many concurrent open/close cycles on the same file
+	// cause "process cannot access the file" during TempDir cleanup even when
+	// every handle is closed — CloseHandle returns before the OS file lock is
+	// actually released (compounded by Defender real-time scanning on CI
+	// runners). Serializing restores so only one goroutine ever opens the
+	// files eliminates the contention at the source.
+	m.mu.Lock()
+	if existing, ok := m.sessions[id]; ok {
+		m.mu.Unlock()
+		return existing, nil
+	}
+	if waitCh, inflight := m.restoreInFlight[id]; inflight {
+		m.mu.Unlock()
+		<-waitCh
+		m.mu.RLock()
+		sess := m.sessions[id]
+		m.mu.RUnlock()
+		if sess != nil {
+			return sess, nil
+		}
+		// The restorer failed; the session is not restorable right now.
+		return nil, nil
+	}
+	waitCh := make(chan struct{})
+	m.restoreInFlight[id] = waitCh
+	m.mu.Unlock()
+
+	// finishRestore releases the reservation and wakes any waiters. It MUST be
+	// invoked on every return path below this point (success and error),
+	// otherwise concurrent and subsequent restores of the same session would
+	// block forever.
+	finishRestore := func() {
+		m.mu.Lock()
+		delete(m.restoreInFlight, id)
+		m.mu.Unlock()
+		close(waitCh)
+	}
+
 	// Create session logger.
 	logger, logFile, err := m.createSessionLogger(info.ProjectID, id)
 	if err != nil {
+		finishRestore()
 		return nil, fmt.Errorf("failed to create session logger: %w", err)
 	}
 
@@ -338,25 +388,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	persistFn := m.tokenPersist
 	ts := m.taskStore
 	maxSumLen := m.maxSummaryLen
-	// Fast-path existence check: if another goroutine already restored
-	// this session, skip expensive resource creation to avoid wasted I/O.
-	_, exists := m.sessions[id]
 	m.mu.RUnlock()
-
-	if exists {
-		// Another goroutine already restored the session. Return it directly
-		// without creating duplicate log/dump resources. Close the logFile we
-		// just opened (the restored session owns its own handle) — otherwise
-		// the handle leaks and on Windows TempDir cleanup fails with
-		// "process cannot access the file".
-		if logFile != nil {
-			_ = logFile.Close()
-		}
-		m.mu.RLock()
-		sess := m.sessions[id]
-		m.mu.RUnlock()
-		return sess, nil
-	}
 
 	// Wire token persistence callback if configured.
 	if persistFn != nil {
@@ -423,6 +455,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		if stepDumpTracker != nil {
 			_ = stepDumpTracker.CloseAll()
 		}
+		finishRestore()
 		return nil, fmt.Errorf("failed to create orchestrator for restored session: %w", err)
 	}
 
@@ -509,7 +542,10 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		lastCompletedTaskID: restoredTaskID,
 	}
 
-	// Double-check under write lock: another goroutine may have restored the same session.
+	// Double-check under write lock: in normal operation (single-flight
+	// reservation above) this is unreachable for concurrent restores of the
+	// same ID, but it guards against the rare case where the session was
+	// inserted by a code path that bypassed the reservation.
 	m.mu.Lock()
 	if existing, ok := m.sessions[id]; ok {
 		m.mu.Unlock()
@@ -523,11 +559,13 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		if stepDumpTracker != nil {
 			_ = stepDumpTracker.CloseAll()
 		}
+		finishRestore()
 		return existing, nil
 	}
 	m.sessions[id] = sess
 	m.mu.Unlock()
 
+	finishRestore()
 	m.log().Info("restored session from database", "session_id", id, "project_id", info.ProjectID)
 	return sess, nil
 }
