@@ -5,8 +5,10 @@ import (
 	"strings"
 )
 
-// fileRefPattern matches @path references (with optional backslash-escaped spaces and #LN or #LN-M suffix).
-var fileRefPattern = regexp.MustCompile(`(?:^|\s)@((?:[^\s\\]|\\.)+(?:#\d+(?:-\d+)?)?)`)
+// fileRefPattern matches @path references (with optional backslash-escaped spaces
+// and an optional line/line-range anchor). The anchor accepts GitHub-style forms:
+// #N, #N-M (legacy bare-number) and #LN, #LN-LN (e.g. #L20-L36).
+var fileRefPattern = regexp.MustCompile(`(?:^|\s)@((?:[^\s\\]|\\.)+(?:#L?\d+(?:-L?\d+)?)?)`)
 
 // multiSpaceRe collapses runs of 2+ spaces into one.
 var multiSpaceRe = regexp.MustCompile(`  +`)

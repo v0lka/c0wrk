@@ -4,60 +4,7 @@ import { useMemo, useCallback } from 'react'
 import { Markdown } from '@/lib/markdownConfig'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
-
-// Combined pattern for splitting: matches /skill-name or @path refs
-const REF_PATTERN = /(?:^|\s)(\/[\w-]+|@(?:[^\s\\]|\\.)+(?:#\d+(?:-\d+)?)?)/g
-
-interface Segment {
-    type: 'text' | 'skill' | 'file'
-    content: string
-    // For file refs:
-    path?: string
-    startLine?: number
-}
-
-function parseSegments(content: string): Segment[] {
-    const segments: Segment[] = []
-    let lastIndex = 0
-
-    REF_PATTERN.lastIndex = 0
-    let match: RegExpExecArray | null
-    while ((match = REF_PATTERN.exec(content)) !== null) {
-        const fullMatch = match[0]
-        const ref = match[1]
-        if (ref === undefined) continue
-        // Account for leading whitespace in match
-        const refStart = match.index + (fullMatch.length - ref.length)
-
-        // Push preceding text
-        if (refStart > lastIndex) {
-            segments.push({ type: 'text', content: content.slice(lastIndex, refStart) })
-        }
-
-        if (ref.startsWith('/')) {
-            segments.push({ type: 'skill', content: ref.slice(1) })
-        } else if (ref.startsWith('@')) {
-            const raw = ref.slice(1)
-            // Parse line number suffix
-            const lineMatch = raw.match(/#(\d+)(?:-(\d+))?$/)
-            let path = lineMatch ? raw.slice(0, raw.lastIndexOf('#')) : raw
-            // Unescape backslash-escaped spaces
-            path = path.replace(/\\ /g, ' ')
-            const lineStr = lineMatch?.[1]
-            const startLine = lineStr !== undefined ? parseInt(lineStr, 10) : undefined
-            segments.push({ type: 'file', content: ref, path, startLine })
-        }
-
-        lastIndex = refStart + ref.length
-    }
-
-    // Push remaining text
-    if (lastIndex < content.length) {
-        segments.push({ type: 'text', content: content.slice(lastIndex) })
-    }
-
-    return segments
-}
+import { parseSegments } from './userMessageSegments'
 
 interface UserMessageContentProps {
     content: string

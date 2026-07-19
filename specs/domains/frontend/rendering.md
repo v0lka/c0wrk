@@ -16,8 +16,9 @@ Transforms flat message arrays into a structured display tree, rendering each it
 - `frontend/src/components/chat/ChecklistCard.tsx` — checklist card (the visual reference style for pending-action cards)
 - `frontend/src/components/chat/UserMessage.tsx` — user message component (supports `isPinned` mode for sticky rendering inside ChatArea)
 - `frontend/src/components/chat/UserMessageContent.tsx` — renders user message content with skill chips and clickable file links (falls back to Markdown for messages without references)
+- `frontend/src/components/chat/userMessageSegments.ts` — pure parser for `@file`/`/skill`/free-text segments in user input; accepts GitHub-canonical line anchors (`@file#L20-L36`) and legacy bare-number forms (`@file#20-36`)
 - `frontend/src/lib/markdownConfig.tsx` — Markdown wrapper component with remark/rehype plugins and custom link handler for local file navigation
-- `frontend/src/lib/localFileLink.ts` — pure utility functions for detecting, parsing, and validating local file link hrefs in markdown output
+- `frontend/src/lib/localFileLink.ts` — pure utility functions for detecting, parsing, and normalizing local file link hrefs in markdown output; extracts line anchors in GitHub-canonical forms (`#L42`, `#L5-10`, `#L5-L10`, `#L20-L36`) and resolves both workspace-relative and absolute (out-of-workspace) paths
 - `frontend/src/components/chat/ChatScrollManager.tsx` — scroll lock / auto-scroll coordination
 - `frontend/src/components/chat/ChatNewActivityBanner.tsx` — “new activity” pill
 

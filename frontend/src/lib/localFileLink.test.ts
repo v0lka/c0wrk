@@ -66,6 +66,14 @@ describe('parseLocalFileHref', () => {
     expect(parseLocalFileHref('src/main.ts#L5-10')).toEqual({ path: 'src/main.ts', line: 5 })
   })
 
+  it('parses GitHub canonical range form #L5-L10, uses start line', () => {
+    expect(parseLocalFileHref('src/main.ts#L5-L10')).toEqual({ path: 'src/main.ts', line: 5 })
+  })
+
+  it('parses GitHub canonical range form #L20-L36, uses start line', () => {
+    expect(parseLocalFileHref('desktop/x.go#L20-L36')).toEqual({ path: 'desktop/x.go', line: 20 })
+  })
+
   it('handles absolute paths with line numbers', () => {
     expect(parseLocalFileHref('/abs/path.go#L100')).toEqual({ path: '/abs/path.go', line: 100 })
   })
@@ -100,6 +108,11 @@ describe('normalizePath', () => {
     expect(normalizePath(root, 'src/main.ts')).toBe('/workspace/project/src/main.ts')
   })
 
+  it('returns normalized absolute path for path traversal above workspace root', () => {
+    expect(normalizePath(root, '../../etc/passwd')).toBe('/etc/passwd')
+    expect(normalizePath(root, '../../../root/.ssh/id_rsa')).toBe('/root/.ssh/id_rsa')
+  })
+
   it('resolves paths with dot segments', () => {
     expect(normalizePath(root, './src/./main.ts')).toBe('/workspace/project/src/main.ts')
   })
@@ -108,20 +121,17 @@ describe('normalizePath', () => {
     expect(normalizePath(root, 'src/../lib/utils.ts')).toBe('/workspace/project/lib/utils.ts')
   })
 
-  it('rejects path traversal above workspace root', () => {
-    expect(normalizePath(root, '../../etc/passwd')).toBeNull()
-    expect(normalizePath(root, '../../../root/.ssh/id_rsa')).toBeNull()
-  })
-
   it('accepts absolute paths within workspace', () => {
     expect(normalizePath(root, '/workspace/project/src/a.ts')).toBe(
       '/workspace/project/src/a.ts',
     )
   })
 
-  it('rejects absolute paths outside workspace', () => {
-    expect(normalizePath(root, '/other/project/file.ts')).toBeNull()
-    expect(normalizePath(root, '/workspace/project-other/file.ts')).toBeNull()
+  it('returns normalized absolute path for out-of-workspace paths', () => {
+    expect(normalizePath(root, '/other/project/file.ts')).toBe('/other/project/file.ts')
+    expect(normalizePath(root, '/workspace/project-other/file.ts')).toBe(
+      '/workspace/project-other/file.ts',
+    )
   })
 
   it('handles path equal to root', () => {

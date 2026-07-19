@@ -94,7 +94,7 @@ session exists). Git operations and vector indexing remain skipped.
 ### Git Integration
 
 - `GetGitStatus()` returns per-file status (modified, added, deleted, untracked)
-- `GetFileDiff(path)` returns unified diff for modified files
+- `GetFileDiff(path)` returns unified diff for modified files; for paths outside the active project root (or a non-git path) it returns `("", nil)` — no baseline to diff against, so the frontend does not render a diff panel
 - Status integrated into file tree nodes (icon indicators in UI)
 - `.gitignore` filtering in directory listings uses `git ls-files --others --ignored --exclude-standard --directory -z`. In a git repo `.aiignore` is layered on top of that git-derived set via an `ignore.Resolver` (only `IgnoredByAIIgnore` is OR-merged, so the resolver's negation-less matching cannot override a git `!pattern` un-ignore). In a non-git workspace (including No Project) the resolver is the sole authority for both files. A resolver-construction failure is non-fatal; the listing returns with whatever flags were already computed.
 - `vectorindex.CurrentBranch(ctx, repoPath)` detects the active branch via `git symbolic-ref --short HEAD` (falls back to `git rev-parse --short=12 HEAD` for detached HEAD)
@@ -141,9 +141,9 @@ Project switched (after vector index ready)
 
 | Method                              | Description                                         |
 | ----------------------------------- | --------------------------------------------------- |
-| `ListDirectory(dirPath, recursive)` | Lazy directory tree with git status                 |
-| `ReadFile(path)`                    | Read file content (no backend-side binary detection; frontend `isBinaryContent` checks null bytes in first 8KB) |
-| `GetFileDiff(path)`                 | Unified git diff for file                           |
+| `ListDirectory(dirPath, recursive)` | Lazy directory tree with git status (workspace-contained) |
+| `ReadFile(path)`                    | Read file content (no backend-side binary detection; frontend `isBinaryContent` checks null bytes in first 8KB). Not workspace-contained — accepts any absolute path so the viewer can display out-of-workspace files the agent cites (e.g. SDK sources); a trailing `#L<n>`/`#L<n>-L<m>` line anchor is stripped before resolution |
+| `GetFileDiff(path)`                 | Unified git diff for file. Not workspace-contained, but returns `("", nil)` for files outside the active project root or a non-git path (no baseline to diff against) |
 | `GetGitStatus()`                    | Workspace-level git status summary                  |
 
 Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4rk/tools/builtins/glob.go`), not as a direct Workspace API method.
@@ -158,7 +158,7 @@ Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4
 - Pre-fusion score thresholds discard noise-tail hits (low cosine similarity or low BM25) before RRF fusion so they cannot earn a double RRF contribution; thresholds apply only in the hybrid path, not vector-only or lexical-only modes
 - A single `ready atomic.Bool` on `Service`; hybrid auto-falls-back to vector-only when `lexical.Count() == 0`
 - The indexer rejects binary files via a bounded 512-byte header pre-read (null-byte presence, `binaryHeaderSize`) before loading the file into memory; the frontend file viewer detects binary content via null bytes in the first 8KB
-- File operations are sandboxed to workspace path (no directory traversal)
+- Write-path and structural RPCs (`WriteFile`, `ListDirectory`) reject paths outside the workspace (directory-traversal containment); read-path RPCs (`ReadFile`, `GetFileIcon`, `GetFileDiff`) accept any absolute path so the viewer can display any file the agent cites — this is a display affordance that does not relax the agent's `read_file` tool containment
 - Every git invocation flows through `exec.CommandContext`; git errors propagate to the caller (no silent fallback)
 - Missing `git` binary is a fatal startup condition, never a runtime surprise
 - ONNX embedder loading runs asynchronously after EventBackendReady; it never blocks the critical startup path

@@ -64,6 +64,32 @@ func TestResolveWorkspacePath_WorkspaceRootItself(t *testing.T) {
 	}
 }
 
+// --- stripLineAnchor tests ---
+
+func TestStripLineAnchor(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"L range with L suffix", "/abs/path/x.go#L20-L36", "/abs/path/x.go"},
+		{"L range bare end", "/abs/path/x.go#L5-10", "/abs/path/x.go"},
+		{"L range both L", "/abs/path/x.go#L5-L10", "/abs/path/x.go"},
+		{"single L anchor", "/abs/path/x.go#L42", "/abs/path/x.go"},
+		{"bare single anchor", "/abs/path/x.go#42", "/abs/path/x.go"},
+		{"no anchor left intact", "/abs/path/x.go", "/abs/path/x.go"},
+		{"version fragment not stripped", "/abs/path/spec#v2.md", "/abs/path/spec#v2.md"},
+		{"numeric-only fragment not stripped", "/abs/path/file#123.txt", "/abs/path/file#123.txt"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripLineAnchor(tt.input); got != tt.want {
+				t.Errorf("stripLineAnchor(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 // --- ReadFile tests ---
 
 func TestReadFile_NoActiveProject(t *testing.T) {
@@ -74,13 +100,52 @@ func TestReadFile_NoActiveProject(t *testing.T) {
 	}
 }
 
-func TestReadFile_PathOutsideWorkspace(t *testing.T) {
+// TestReadFile_OutsideWorkspaceReadable verifies the relaxed read path: the
+// viewer may surface any file path the agent cites (e.g. SDK files, system
+// files referenced in chat), so an out-of-workspace file must be readable.
+func TestReadFile_OutsideWorkspaceReadable(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
 
-	_, err := f.ReadFile("/etc/passwd")
-	if err == nil {
-		t.Fatal("expected error for path outside workspace")
+	// ReadFile is now path-agnostic: the viewer may surface any file path
+	// surfaced by the agent (e.g. SDK files, system files referenced in
+	// chat). Create a temp file OUTSIDE the workspace subdir and assert it
+	// is readable.
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "external.txt")
+	wantContent := "external content\n"
+	if err := os.WriteFile(outsidePath, []byte(wantContent), 0o644); err != nil {
+		t.Fatalf("failed to write external file: %v", err)
+	}
+
+	got, err := f.ReadFile(outsidePath)
+	if err != nil {
+		t.Fatalf("expected out-of-workspace path to be readable, got error: %v", err)
+	}
+	if got != wantContent {
+		t.Errorf("expected content %q, got %q", wantContent, got)
+	}
+}
+
+// TestReadFile_LineAnchorStripped verifies that a trailing "#L<n>-L<m>" line
+// anchor fragment is stripped before os.ReadFile, so a viewer-provided path
+// to an existing file plus an anchor does not surface "no such file".
+func TestReadFile_LineAnchorStripped(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	filePath := filepath.Join(tmpDir, "x.go")
+	wantContent := "package x\n"
+	if err := os.WriteFile(filePath, []byte(wantContent), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	got, err := f.ReadFile(filePath + "#L20-L36")
+	if err != nil {
+		t.Fatalf("expected anchored path to read %q, got error: %v", filePath, err)
+	}
+	if got != wantContent {
+		t.Errorf("expected content %q, got %q", wantContent, got)
 	}
 }
 
@@ -143,19 +208,40 @@ func TestReadFile_NestedPath(t *testing.T) {
 
 func TestGetFileDiff_NoActiveProject(t *testing.T) {
 	f := &FrontendAPI{}
-	_, err := f.GetFileDiff("/some/path")
-	if err == nil {
-		t.Fatal("expected error when no active project")
+
+	// No active project at all means projectPath is empty, so any path is
+	// out-of-workspace → no git baseline. Consistent with the relaxed read
+	// path, GetFileDiff returns ("", nil) rather than an error.
+	diff, err := f.GetFileDiff("/some/path")
+	if err != nil {
+		t.Fatalf("expected no error with no active project, got: %v", err)
+	}
+	if diff != "" {
+		t.Errorf("expected empty diff with no active project, got %q", diff)
 	}
 }
 
-func TestGetFileDiff_PathOutsideWorkspace(t *testing.T) {
+// TestGetFileDiff_OutsideWorkspaceNoBaseline verifies that out-of-workspace
+// paths return ("", nil): there is no git baseline to diff against, so the
+// frontend does not render a diff panel (and no error is surfaced).
+func TestGetFileDiff_OutsideWorkspaceNoBaseline(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
 
-	_, err := f.GetFileDiff("/etc/passwd")
-	if err == nil {
-		t.Fatal("expected error for path outside workspace")
+	// Out-of-workspace paths have no git baseline — GetFileDiff returns
+	// ("", nil) instead of an error.
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "external.txt")
+	if err := os.WriteFile(outsidePath, []byte("external\n"), 0o644); err != nil {
+		t.Fatalf("failed to write external file: %v", err)
+	}
+
+	diff, err := f.GetFileDiff(outsidePath)
+	if err != nil {
+		t.Fatalf("expected no error for out-of-workspace path, got: %v", err)
+	}
+	if diff != "" {
+		t.Errorf("expected empty diff for out-of-workspace path, got %q", diff)
 	}
 }
 
@@ -569,7 +655,27 @@ func TestListDirectory_IconsAttached(t *testing.T) {
 	}
 }
 
-// --- helpers ---
+// --- GetFileIcon tests ---
+
+func TestGetFileIcon_OutsideWorkspace(t *testing.T) {
+	tmpDir := t.TempDir()
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+
+	// GetFileIcon is now path-agnostic: the viewer may request an icon for
+	// any file path surfaced by the agent (e.g. SDK files).
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "external.go")
+
+	resp, err := f.GetFileIcon(outsidePath)
+	if err != nil {
+		t.Fatalf("expected icon for out-of-workspace path, got error: %v", err)
+	}
+	if resp.Icon == "" {
+		t.Error("expected non-empty icon for out-of-workspace .go path")
+	}
+}
+
+// --- GetGitStatus tests ---
 
 func TestGetGitStatus(t *testing.T) {
 	tmpDir := t.TempDir()

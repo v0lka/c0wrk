@@ -57,7 +57,6 @@ const markdownComponents: Components = {
       const rootPath = useFileTreeStore.getState().rootPath
       if (!rootPath) return
       const resolved = normalizePath(rootPath, path)
-      if (!resolved) return
       if (line !== undefined) {
         useFileViewerStore.getState().openFileAtLine(resolved, line)
       } else {

@@ -102,14 +102,16 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 | Method                | Parameters         | Returns                              | Description                  |
 | --------------------- | ------------------ | ------------------------------------ | ---------------------------- |
-| `ListDirectory`       | dirPath, recursive | ([]FileNode, error)                  | List directory contents      |
-| `ReadFile`            | filePath           | (string, error)                      | Read file contents           |
-| `GetFileDiff`         | filePath           | (string, error)                      | Get git diff for file        |
+| `ListDirectory`       | dirPath, recursive | ([]FileNode, error)                  | List directory contents (workspace-contained) |
+| `ReadFile`            | filePath           | (string, error)                      | Read file contents (any absolute path; not constrained to workspace — the viewer surfaces paths the agent cites, including out-of-workspace files like SDK sources). A trailing `#L<n>` / `#L<n>-L<m>` line anchor is stripped before resolution |
+| `GetFileDiff`         | filePath           | (string, error)                      | Get git diff for file (any absolute path; returns `("", nil)` for files outside the active project root or a non-git path — no baseline to diff against) |
 | `GetGitStatus`        | dirPath            | (map[string]GitStatusEntry, error)   | Get git status for directory |
 | `GetSessionWorkspace` | sessionID          | (string, error)                      | Get session workspace path   |
-| `GetFileIcon`         | filePath           | (FileIconResponse, error)            | Get devicon for file         |
+| `GetFileIcon`         | filePath           | (FileIconResponse, error)            | Get devicon for file (any absolute path; not constrained to workspace) |
 | `WatchDirectory`      | dirPath            | error                                | Subscribe to dir changes     |
 | `UnwatchDirectory`    | dirPath            | error                                | Unsubscribe dir changes      |
+
+> **Path-containment boundary**: read-path RPCs (`ReadFile`, `GetFileIcon`, `GetFileDiff`) resolve via `resolveReadablePath` and are **not** workspace-contained — the file viewer must display any path the agent surfaces in chat. Structural/write RPCs (`WriteFile`, `ListDirectory`) resolve via `resolveWorkspacePath` and **retain** containment (reject paths outside the active project workspace). This is a UI-display affordance only and does **not** affect the agent's tool surface: the `read_file` agent tool enforces its own session-root containment independently (see [../architecture/security-model.md](../architecture/security-model.md)).
 
 ### MCP (`backend/frontend_api_mcp.go`)
 

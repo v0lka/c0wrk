@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/epilande/go-devicons"
 	"github.com/v0lka/sp4rk/ignore"
@@ -13,6 +14,23 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/workspace"
 )
+
+// lineAnchorRe matches a trailing line-anchor fragment appended to a file
+// path by the file viewer (e.g. ".../x.go#L20-L36" or ".../x.go#42"). The
+// viewer links the chat to specific lines; the backend must strip the
+// fragment before resolving the path so os.ReadFile sees the real file.
+// Forms supported: "#L<n>", "#L<n>-L<m>", "#L<n>-<m>", "#<n>", "#<n>-<n>".
+// Plain fragment identifiers like "#v2" or "#123" are NOT matched — only
+// fragments that look like a line range.
+var lineAnchorRe = regexp.MustCompile(`#L?\d+(?:-L?\d+)?$`)
+
+// stripLineAnchor removes a trailing "#L<n>" / "#L<n>-L<m>" line anchor
+// fragment from filePath. It is applied at the top of every read-path
+// resolver as a defence-in-depth safety net so the viewer can pass
+// line-anchored paths verbatim.
+func stripLineAnchor(p string) string {
+	return lineAnchorRe.ReplaceAllString(p, "")
+}
 
 // resolveWorkspacePath validates that filePath is within the active project
 // workspace and returns the resolved absolute path and workspace root.
@@ -39,7 +57,7 @@ func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot st
 		return "", "", errors.New("no active project")
 	}
 
-	absPath, err = filepath.Abs(filePath)
+	absPath, err = filepath.Abs(stripLineAnchor(filePath))
 	if err != nil {
 		return "", "", fmt.Errorf("invalid path: %w", err)
 	}
@@ -69,6 +87,23 @@ func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot st
 		absRoot = config.ProjectDir(f.agentDir, projectID)
 	}
 	return absPath, absRoot, nil
+}
+
+// resolveReadablePath resolves a file path for the read-path RPCs (ReadFile,
+// GetFileIcon, GetFileDiff). Unlike resolveWorkspacePath it does NOT enforce
+// workspace containment and does NOT require an active project — the file
+// viewer must be able to display any file path surfaced by the agent (e.g.
+// files in the sp4rk SDK, system files referenced in chat, paths from
+// external tools). Only the line-anchor fragment is stripped (defence in
+// depth) and the path is made absolute. Containment for the destructive /
+// trust-boundary RPCs (WriteFile, ListDirectory) remains enforced by
+// resolveWorkspacePath.
+func (f *FrontendAPI) resolveReadablePath(filePath string) (string, error) {
+	absPath, err := filepath.Abs(stripLineAnchor(filePath))
+	if err != nil {
+		return "", fmt.Errorf("invalid path: %w", err)
+	}
+	return absPath, nil
 }
 
 // resolveFileIcon returns the Nerd Font icon and hex color for a file or directory.
@@ -130,10 +165,11 @@ func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 	return activeProject, nil
 }
 
-// GetFileIcon returns the Nerd Font icon and hex color for a file path.
-// The path must be within the active project workspace.
+// GetFileIcon returns the Nerd Font icon and hex color for a file path. The
+// path is not constrained to the active project workspace — the viewer may
+// request an icon for any file path surfaced by the agent.
 func (f *FrontendAPI) GetFileIcon(filePath string) (FileIconResponse, error) {
-	absPath, _, err := f.resolveWorkspacePath(filePath)
+	absPath, err := f.resolveReadablePath(filePath)
 	if err != nil {
 		return FileIconResponse{}, err
 	}
@@ -175,9 +211,12 @@ func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, e
 	return workspace.GitStatus(f.ctx(), absRoot)
 }
 
-// ReadFile returns the content of a file within the active project workspace.
+// ReadFile returns the content of a file. The path is not constrained to the
+// active project workspace — the viewer may surface any file path surfaced by
+// the agent (e.g. SDK files, system files referenced in chat). Only the
+// line-anchor fragment is stripped and the path is made absolute.
 func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
-	absPath, _, err := f.resolveWorkspacePath(filePath)
+	absPath, err := f.resolveReadablePath(filePath)
 	if err != nil {
 		return "", err
 	}
@@ -190,32 +229,53 @@ func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
 	return string(content), nil
 }
 
-// GetFileDiff returns the unified diff of uncommitted changes for a single file
-// within the active project workspace. Uses the cached isGitRepo check to
-// avoid redundant git rev-parse calls, then delegates to GetFileDiffInRepo for
-// git repositories.
-// Returns an empty string for No Project (no git operations) and for non-git
-// paths (non-git workspaces, session-infra directories) — a diff requires a
-// git baseline, so the hunk-staging panel and synthetic diff view are not
-// shown for files outside a git repository.
+// GetFileDiff returns the unified diff of uncommitted changes for a single
+// file. Uses the cached isGitRepo check to avoid redundant git rev-parse
+// calls, then delegates to GetFileDiffInRepo for git repositories.
+//
+// The read path is not constrained to the workspace — the viewer may surface
+// any file path surfaced by the agent. A diff requires a git baseline, so for
+// files outside the active project root OR outside a git repository the RPC
+// returns ("", nil) (no error, no baseline): the hunk-staging panel and
+// synthetic diff view are not rendered. Returns ("", nil) early for No Project
+// (no git operations) as well.
 func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
-	// No Project: git diff is not available. Check before resolveWorkspacePath
+	// No Project: git diff is not available. Check before any path resolution
 	// to avoid misleading path-resolution errors.
 	f.activeProjectMu.RLock()
 	isNoProject := f.activeProjectID == project.NoProjectID
+	projectPath := f.activeProjectPath
 	f.activeProjectMu.RUnlock()
 	if isNoProject {
 		return "", nil
 	}
+	// No active project loaded at all (transient startup / closed-project
+	// state, distinct from No Project): there is no baseline to diff against.
+	// Guard explicitly because resolveReadablePath is path-agnostic and
+	// filepath.Abs("") would otherwise resolve to the app CWD, risking a
+	// diff against an unrelated git repo at the CWD.
+	if projectPath == "" {
+		return "", nil
+	}
 
-	absPath, absRoot, err := f.resolveWorkspacePath(filePath)
+	absPath, err := f.resolveReadablePath(filePath)
 	if err != nil {
 		return "", err
 	}
 
-	relPath, err := filepath.Rel(absRoot, absPath)
+	absRoot, err := filepath.Abs(projectPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to compute relative path: %w", err)
+		return "", fmt.Errorf("invalid workspace path: %w", err)
+	}
+
+	// Files outside the active project root have no git baseline to diff
+	// against. Return ("", nil) so the frontend does not render a diff panel.
+	ok, err := config.IsWithinPath(absRoot, absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to check path containment: %w", err)
+	}
+	if !ok {
+		return "", nil
 	}
 
 	if !f.isGitRepo(absRoot) {
@@ -223,6 +283,11 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 		// git baseline to diff against. Return an empty string so the frontend
 		// does not render a synthetic diff or the hunk-staging panel.
 		return "", nil
+	}
+
+	relPath, err := filepath.Rel(absRoot, absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to compute relative path: %w", err)
 	}
 	return workspace.GetFileDiffInRepo(f.ctx(), absRoot, relPath)
 }

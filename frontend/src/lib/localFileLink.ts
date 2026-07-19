@@ -14,12 +14,13 @@ export function isLocalFileHref(href: string | undefined): boolean {
   return true
 }
 
-const LINE_SUFFIX_RE = /#L(\d+)(?:-\d+)?$/
+const LINE_SUFFIX_RE = /#L(\d+)(?:-L?\d+)?$/
 
 /**
  * Extracts the file path and optional line number from a local file href.
- * Supports formats: `path/file.ts#L42` and `path/file.ts#L5-10` (uses start line).
- * Decodes URI-encoded characters in the path.
+ * Supports formats: `path/file.ts#L42`, `path/file.ts#L5-10`, and the GitHub
+ * canonical range forms `path/file.ts#L5-L10` / `path/file.ts#L20-L36`
+ * (uses start line). Decodes URI-encoded characters in the path.
  */
 export function parseLocalFileHref(href: string): { path: string; line?: number } {
   const match = LINE_SUFFIX_RE.exec(href)
@@ -44,10 +45,11 @@ export function parseLocalFileHref(href: string): { path: string; line?: number 
 
 /**
  * Resolves a file path against the workspace root, normalizes `.` and `..` segments,
- * and validates that the result stays within the workspace boundary.
- * Returns the normalized absolute path, or null if validation fails.
+ * and returns the normalized absolute path. Out-of-workspace paths (absolute paths
+ * outside the root or `..`-escapes that traverse above it) are returned normalized
+ * rather than rejected, so the viewer can open files anywhere on disk.
  */
-export function normalizePath(rootPath: string, filePath: string): string | null {
+export function normalizePath(rootPath: string, filePath: string): string {
   const abs = filePath.startsWith('/') ? filePath : rootPath + '/' + filePath
 
   const parts = abs.split('/')
@@ -62,13 +64,7 @@ export function normalizePath(rootPath: string, filePath: string): string | null
     }
   }
 
-  const normalized = '/' + segments.join('/')
-
-  if (normalized === rootPath || normalized.startsWith(rootPath + '/')) {
-    return normalized
-  }
-
-  return null
+  return '/' + segments.join('/')
 }
 
 /**

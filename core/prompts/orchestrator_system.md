@@ -161,7 +161,7 @@ User messages may contain `fileref://` URIs indicating files the user explicitly
 
 - `fileref://path/to/file.ts` — entire file is relevant context
 - `fileref://path/to/file.ts#L5` — line 5 is specifically relevant
-- `fileref://path/to/file.ts#L5-10` — lines 5-10 are specifically relevant
+- `fileref://path/to/file.ts#L5-L10` — lines 5-10 are specifically relevant
 
 These are explicit user hints about which files matter. Prioritize reading these files when planning your approach.
 
@@ -170,7 +170,7 @@ These are explicit user hints about which files matter. Prioritize reading these
 When referencing code locations in your responses, use markdown link format:
 
 - `[filename](path/to/file.ts#L42)` — link to a specific line
-- `[filename](path/to/file.ts#L5-10)` — link to a line range
+- `[filename](path/to/file.ts#L5-L10)` — link to a line range
 - `[filename](path/to/file.ts)` — link to an entire file
 
-Use workspace-relative paths. The interface renders these as clickable links that open the file in the viewer.
+Use workspace-relative paths by default; for files outside the workspace (e.g. SDK sources), absolute paths are also accepted and open correctly. The interface renders these as clickable links that open the file in the viewer.
