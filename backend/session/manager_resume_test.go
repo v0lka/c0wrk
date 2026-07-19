@@ -150,6 +150,7 @@ func TestResumeTask_LoadsTrajectoryAndResumesWithoutPlan(t *testing.T) {
 
 	eventChan := make(chan Event, 100)
 	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "resumed-done"}), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
 	mgr.SetTaskStore(store)
 
 	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
@@ -210,6 +211,7 @@ func TestResumeTask_ReusesRoutingDecision(t *testing.T) {
 
 	eventChan := make(chan Event, 100)
 	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "reused-routing"}), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
 	mgr.SetTaskStore(store)
 
 	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
@@ -252,6 +254,7 @@ func TestResumeTask_EmptyTrajectoryFallback(t *testing.T) {
 
 	eventChan := make(chan Event, 100)
 	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "fresh-start"}), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
 	mgr.SetTaskStore(store)
 
 	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))

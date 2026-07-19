@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -323,6 +324,29 @@ func (s *Service) DeleteProjectData(fullPath string) error {
 	if fullPath == "" {
 		return nil
 	}
+	// If this service currently has the project open (its lexical index and
+	// chromem DB point at a directory under fullPath), release those file
+	// handles BEFORE removing the directory. Windows refuses to delete files
+	// that still have open handles (unlinkat returns "process cannot access
+	// the file"); Unix would silently unlink them and leave the service
+	// holding stale, deleted inodes. Closing first makes both platforms
+	// behave consistently and avoids dangling references to removed data.
+	target := filepath.Clean(fullPath)
+	s.mu.Lock()
+	if filepath.Clean(s.projectPath) == target {
+		if s.lexical != nil {
+			if err := s.lexical.Close(); err != nil {
+				s.logger.Warn("failed to close lexical index before deleting project data", "error", err)
+			}
+			s.lexical = nil
+		}
+		s.db = nil
+		s.collection = nil
+		s.fileHashes = nil
+		s.currentBranch = ""
+	}
+	s.mu.Unlock()
+
 	if err := os.RemoveAll(fullPath); err != nil {
 		return fmt.Errorf("removing vector data for project: %w", err)
 	}

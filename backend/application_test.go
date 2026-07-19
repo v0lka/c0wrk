@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,6 +12,19 @@ import (
 // Application init. We hit the env-expansion, tilde-expansion, relative-
 // path-against-agent-dir, and empty-after-expansion branches.
 func TestResolveSkillDirs(t *testing.T) {
+	// Anchors that are genuinely absolute on the test OS. On Windows an
+	// absolute path needs a drive letter (e.g. C:\), so we derive a real
+	// volume from the temp dir; on Unix the volume name is empty and the
+	// leading separator is preserved, giving /etc/skills, /keep, etc.
+	volume := filepath.VolumeName(os.TempDir())
+	abs := func(parts ...string) string {
+		return filepath.Join(append([]string{volume, string(os.PathSeparator)}, parts...)...)
+	}
+
+	absSkills := abs("etc", "skills")
+	absKeep := abs("keep")
+	absExplicit := abs("explicit", "skills")
+
 	agentDir := "/agent"
 	home := "/users/test"
 	expandEnv := func(s string) string {
@@ -18,7 +32,7 @@ func TestResolveSkillDirs(t *testing.T) {
 			return ""
 		}
 		if s == "${HOME_OVERRIDE}/skills" {
-			return "/explicit/skills"
+			return absExplicit
 		}
 		return s
 	}
@@ -30,8 +44,8 @@ func TestResolveSkillDirs(t *testing.T) {
 	}{
 		{
 			name: "absolute path stays absolute",
-			in:   []string{"/etc/skills"},
-			want: []string{"/etc/skills"},
+			in:   []string{absSkills},
+			want: []string{absSkills},
 		},
 		{
 			name: "tilde expands to home",
@@ -45,13 +59,13 @@ func TestResolveSkillDirs(t *testing.T) {
 		},
 		{
 			name: "${MISSING} expands to empty and is dropped",
-			in:   []string{"${MISSING}", "/keep"},
-			want: []string{"/keep"},
+			in:   []string{"${MISSING}", absKeep},
+			want: []string{absKeep},
 		},
 		{
 			name: "env var expanding to absolute path is preserved",
 			in:   []string{"${HOME_OVERRIDE}/skills"},
-			want: []string{"/explicit/skills"},
+			want: []string{absExplicit},
 		},
 	}
 

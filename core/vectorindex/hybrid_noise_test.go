@@ -135,6 +135,13 @@ func seedNoiseCorpus(t *testing.T, hc HybridConfig) *Service {
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
 		t.Fatalf("SwitchBranch: %v", err)
 	}
+	// Close the service so its on-disk lexical store (.bolt/.zap) handles are
+	// released before TempDir cleanup — Windows refuses to delete open files.
+	t.Cleanup(func() {
+		if err := svc.Close(); err != nil {
+			t.Logf("seedNoiseCorpus Close: %v", err)
+		}
+	})
 
 	mkDoc := func(id, path, name, content string, sim float64) (chromem.Document, lexical.Doc) {
 		// Prepend the SIM marker so the scripted embedding function

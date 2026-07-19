@@ -103,6 +103,12 @@ func newProjectSwitchHarness(t *testing.T) *projectSwitchTestHarness {
 
 func (h *projectSwitchTestHarness) close(t *testing.T) {
 	t.Helper()
+	// Shut down the session manager first so it closes every session's
+	// log/dump file handle. On Windows TempDir cleanup fails (unlinkat
+	// EBUSY) if any handle to the dumps/*.jsonl file is still open.
+	if h.api != nil && h.api.app != nil && h.api.app.manager != nil {
+		h.api.app.manager.Shutdown()
+	}
 	if err := h.db.Close(); err != nil {
 		t.Fatalf("failed to close db: %v", err)
 	}

@@ -177,6 +177,7 @@ func TestSendMessage_UnfinishedTask_ContinuesCycle(t *testing.T) {
 	var orch *core.Orchestrator
 	eventChan := make(chan Event, 100)
 	mgr := NewManager(capturingFunctionalFactory(caller, &orch), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
 	mgr.SetTaskStore(store)
 
 	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
@@ -299,6 +300,7 @@ func TestSendMessage_IdleSession_StartsNewTaskWithRouting(t *testing.T) {
 	}}
 	eventChan := make(chan Event, 100)
 	mgr := NewManager(routingFunctionalFactory(caller), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
 	mgr.SetTaskStore(store)
 
 	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))

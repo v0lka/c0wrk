@@ -42,6 +42,10 @@ func testManager(t *testing.T) (manager *Manager, events chan Event, agentDir st
 	}
 
 	manager = NewManager(factory, emitFunc, agentDir)
+	// Ensure all session file handles (log/dump files) are closed so the
+	// TempDir cleanup can remove them — Windows refuses to delete files
+	// that still have open handles.
+	t.Cleanup(manager.Shutdown)
 	events = eventChan
 	return
 }
@@ -739,7 +743,7 @@ func TestManager_CreateSession_FactoryError(t *testing.T) {
 	}
 
 	manager := NewManager(factory, emitFunc, t.TempDir())
-
+	t.Cleanup(manager.Shutdown) // close handles before TempDir cleanup (Windows)
 	_, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
 	if err == nil {
 		t.Fatal("expected error from CreateSession when factory fails")
@@ -1337,7 +1341,7 @@ func TestSendMessage_StoresTaskIDForContinuation(t *testing.T) {
 	}
 
 	manager := NewManager(factory, emitFunc, t.TempDir())
-
+	t.Cleanup(manager.Shutdown) // close handles before TempDir cleanup (Windows)
 	// Create a session
 	wsPath := testWorkspacePath(t)
 	info, err := manager.CreateSession(testProjectID, wsPath)
@@ -1385,7 +1389,7 @@ func TestSendMessage_LastTaskIDClearedOnContinuationError(t *testing.T) {
 	}
 
 	manager := NewManager(factory, emitFunc, t.TempDir())
-
+	t.Cleanup(manager.Shutdown) // close handles before TempDir cleanup (Windows)
 	// Create a session
 	wsPath := testWorkspacePath(t)
 	info, err := manager.CreateSession(testProjectID, wsPath)
@@ -1587,7 +1591,7 @@ func restoreTestManager(t *testing.T) (*Manager, chan Event, *mockSessionStoreFo
 	}
 
 	mgr := NewManager(factory, emitFunc, agentDir)
-
+	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
 	store := newMockSessionStore()
 	mgr.SetSessionStore(store)
 	mgr.SetProjectResolver(func(projectID string) (string, error) {
@@ -1839,7 +1843,7 @@ func TestRestoreSession_NoProjectResolver(t *testing.T) {
 	}
 
 	mgr := NewManager(factory, emitFunc, t.TempDir())
-
+	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
 	// Set store but NOT project resolver.
 	store := newMockSessionStore()
 	mgr.SetSessionStore(store)
@@ -1968,7 +1972,7 @@ func TestRestoreSession_ProjectResolverError(t *testing.T) {
 	}
 
 	mgr := NewManager(factory, emitFunc, t.TempDir())
-
+	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
 	store := newMockSessionStore()
 	mgr.SetSessionStore(store)
 	mgr.SetProjectResolver(func(projectID string) (string, error) {
@@ -1998,7 +2002,7 @@ func TestManager_LastToolCallID_WiredByEmitterSink(t *testing.T) {
 		return nil, nil
 	}
 	manager := NewManager(factory, emitFunc, agentDir)
-
+	t.Cleanup(manager.Shutdown) // close handles before TempDir cleanup (Windows)
 	info, err := manager.CreateSession("proj-toolcall", testWorkspacePath(t))
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)

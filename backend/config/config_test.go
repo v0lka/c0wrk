@@ -1050,8 +1050,11 @@ func TestCreateDefault_FailsOnBadPath(t *testing.T) {
 // creates a default config file when no config file exists.
 func TestResolveAndLoad_CreatesDefaultWhenMissing(t *testing.T) {
 	// Use a temp directory as HOME so the primary config path doesn't exist.
+	// On Windows os.UserHomeDir() reads %USERPROFILE% (not %HOME%), so set
+	// both env vars to cover every platform Go supports.
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 
 	// Change to a temp dir where no local config.yaml exists either.
 	orig, _ := os.Getwd()

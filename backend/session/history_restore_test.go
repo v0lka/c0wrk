@@ -161,7 +161,7 @@ func restoreTestManagerWithTaskStore(t *testing.T, ts TaskStore) (*Manager, *moc
 	}
 
 	mgr := NewManager(factory, func(Event) {}, agentDir)
-
+	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
 	store := newMockSessionStore()
 	mgr.SetSessionStore(store)
 	mgr.SetTaskStore(ts)
