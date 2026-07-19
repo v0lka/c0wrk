@@ -345,7 +345,13 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 
 	if exists {
 		// Another goroutine already restored the session. Return it directly
-		// without creating duplicate log/dump resources.
+		// without creating duplicate log/dump resources. Close the logFile we
+		// just opened (the restored session owns its own handle) — otherwise
+		// the handle leaks and on Windows TempDir cleanup fails with
+		// "process cannot access the file".
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		m.mu.RLock()
 		sess := m.sessions[id]
 		m.mu.RUnlock()
