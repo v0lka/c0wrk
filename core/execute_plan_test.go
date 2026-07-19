@@ -158,6 +158,12 @@ func TestInlineStepLifecycle_MarkCompleted_NoEmission(t *testing.T) {
 
 // --- delegate guard (PlanChecker) tests ---
 
+// TestConductorLauncher_HasDeclaredPlan exercises the FALLBACK path used when
+// the launcher is constructed directly (no planRunState wired). This mirrors
+// how many tests build a bare conductorLauncher. Production wiring goes through
+// RunConductor, which shares a planRunState between the launcher and the
+// publisher — that path is covered by the TestConductorLauncher_PlanRunState
+// tests below.
 func TestConductorLauncher_HasDeclaredPlan(t *testing.T) {
 	bb := orchestration.NewMapBlackboard()
 	l := &conductorLauncher{bb: bb}
@@ -174,6 +180,126 @@ func TestConductorLauncher_HasDeclaredPlan(t *testing.T) {
 	}
 }
 
+// TestConductorLauncher_PlanRunState_NotDeclaredOnRestore verifies the core
+// fix: when a planRunState is wired (production path), HasDeclaredPlan is false
+// even if the blackboard carries a restored plan from a previous (completed)
+// task. A continuation must stay free to act plan-less, declare a new plan, or
+// delegate.
+func TestConductorLauncher_PlanRunState_NotDeclaredOnRestore(t *testing.T) {
+	bb := orchestration.NewMapBlackboard()
+	// Simulate a restored plan from a previous task.
+	bb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "s1"}}})
+
+	planState := &planRunState{}
+	l := &conductorLauncher{bb: bb, planState: planState}
+
+	if l.HasDeclaredPlan() {
+		t.Fatal("expected HasDeclaredPlan=false: a restored plan must NOT count as declared in the current run")
+	}
+
+	// And the raw blackboard plan is indeed present — proving the guard is
+	// what changed, not the underlying state.
+	if bb.GetPlan() == nil {
+		t.Fatal("blackboard plan unexpectedly nil")
+	}
+}
+
+// TestConductorLauncher_PlanRunState_DeclaredAfterPublish verifies that after
+// conductorPublisher.Publish runs (the only path that sets the plan in the
+// current run), both the launcher's HasDeclaredPlan and the planState reflect
+// the declaration.
+func TestConductorLauncher_PlanRunState_DeclaredAfterPublish(t *testing.T) {
+	bb := orchestration.NewMapBlackboard()
+	planState := &planRunState{}
+
+	tmp := t.TempDir()
+	emitter := &mockEmitter{}
+	publisher := &conductorPublisher{emitter: emitter, bb: bb, plansDir: tmp, planState: planState}
+	launcher := &conductorLauncher{bb: bb, planState: planState}
+
+	if _, err := publisher.Publish(context.Background(), []tools.PlanTaskInput{
+		{ID: "s1", Summary: "Do", Description: "Do it"},
+	}); err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	if !launcher.HasDeclaredPlan() {
+		t.Error("expected HasDeclaredPlan=true after Publish")
+	}
+	if !planState.isDeclared() {
+		t.Error("expected planState.isDeclared()=true after Publish")
+	}
+}
+
+// TestInlineStepLifecycle_CompleteAll_NoSynthesisForRestoredPlan verifies the
+// finish-fallback fix: on a plan-less continuation, the blackboard carries a
+// restored plan from a previous (completed) task, but planRunState is fresh
+// (not declared). completeAll must NOT synthesize terminal events for the
+// restored steps — the fresh lifecycle has empty started/completed sets, so
+// without the planDeclaredInRun gate every restored step would be treated as
+// "never started" and re-emit PlanStepComplete (PlanStepStart is deduped by
+// the emitter, but PlanStepComplete is not).
+func TestInlineStepLifecycle_CompleteAll_NoSynthesisForRestoredPlan(t *testing.T) {
+	emitter := &mockEmitter{}
+	bb := orchestration.NewMapBlackboard()
+	// Restored plan from a previous (completed) task.
+	bb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{
+		{ID: "s1", Summary: "old", Description: "old desc"},
+		{ID: "s2", Summary: "old2", Description: "old desc 2"},
+	}})
+
+	planState := &planRunState{} // fresh — NOT declared in this run
+	lc := newInlineStepLifecycle(emitter, bb)
+	lc.planState = planState
+
+	lc.completeAll(true, "")
+
+	if len(emitter.planStepStarts) != 0 {
+		t.Errorf("expected 0 PlanStepStart for restored plan, got %d", len(emitter.planStepStarts))
+	}
+	if len(emitter.planStepCompletes) != 0 {
+		t.Errorf("expected 0 PlanStepComplete for restored plan, got %d", len(emitter.planStepCompletes))
+	}
+}
+
+// TestInlineStepLifecycle_CompleteAll_SynthesizesWhenDeclaredInRun is the
+// positive counterpart: when a plan WAS declared in this run, completeAll
+// still synthesizes terminal events for never-started plan steps (the gate
+// does not suppress legitimate cleanup). Also confirms started steps complete.
+func TestInlineStepLifecycle_CompleteAll_SynthesizesWhenDeclaredInRun(t *testing.T) {
+	emitter := &mockEmitter{}
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{
+		{ID: "s1", Summary: "A", Description: "Desc A"},
+		{ID: "s2", Summary: "B", Description: "Desc B"},
+	}})
+
+	planState := &planRunState{}
+	planState.markDeclared() // a plan was declared in this run
+	lc := newInlineStepLifecycle(emitter, bb)
+	lc.planState = planState
+
+	// Start s1 via a checklist update so it lands in the started set; s2 is
+	// never touched (must be synthesized).
+	lc.onChecklistUpdate("s1", []agent.TodoItem{{Text: "A", Checked: false}})
+	lc.completeAll(true, "")
+
+	// s1: complete from startedPending; s2: synthesized start+complete.
+	if len(emitter.planStepCompletes) != 2 {
+		t.Fatalf("expected 2 PlanStepComplete (1 started + 1 synthesized), got %d", len(emitter.planStepCompletes))
+	}
+	// s2 needs a synthesized start; s1 was already started via checklist.
+	synthesizedStarts := 0
+	for _, s := range emitter.planStepStarts {
+		if s.stepID == "s2" {
+			synthesizedStarts++
+		}
+	}
+	if synthesizedStarts != 1 {
+		t.Fatalf("expected 1 synthesized PlanStepStart for s2, got %d", synthesizedStarts)
+	}
+}
+
 // --- Execute (conductorLauncher.Execute) error test ---
 
 func TestExecute_NoPlan_ReturnsError(t *testing.T) {
@@ -186,6 +312,71 @@ func TestExecute_NoPlan_ReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no plan declared") {
 		t.Errorf("expected 'no plan declared' error, got: %v", err)
+	}
+}
+
+// TestExecute_RestoredPlan_Refused verifies the restored-plan guard: when
+// planRunState is wired (production path) but NOT declared, Execute refuses to
+// run a plan restored from a previous (completed) task. Re-running a completed
+// task's steps would duplicate side effects, so the Conductor must declare a
+// new plan or use delegate instead.
+func TestExecute_RestoredPlan_Refused(t *testing.T) {
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "s1", Summary: "old"}}})
+
+	planState := &planRunState{} // fresh — NOT declared in this run
+	rec := &waveRecorder{}
+	l := &conductorLauncher{
+		bb:              bb,
+		planState:       planState,
+		runPlanStepWave: rec.dispatch,
+	}
+
+	_, err := l.Execute(context.Background())
+	if err == nil {
+		t.Fatal("expected error for restored (not declared) plan")
+	}
+	if !strings.Contains(err.Error(), "restored from a previous") {
+		t.Errorf("expected 'restored from a previous' error, got: %v", err)
+	}
+	// The wave dispatcher must NOT have been called — the guard rejects before
+	// any step runs.
+	if rec.calls != 0 {
+		t.Errorf("expected 0 dispatch calls (guard rejects before execution), got %d", rec.calls)
+	}
+	// executed flag must remain false so a later declare_plan+execute_plan works.
+	if l.executed {
+		t.Error("expected executed=false (guard must not flip the idempotency flag)")
+	}
+}
+
+// TestExecute_DeclaredInRun_Proceeds is the positive counterpart: when
+// planRunState IS declared, Execute runs the plan normally (the guard does not
+// suppress legitimate execution). Uses the waveRecorder stub to avoid real
+// subagent executors.
+func TestExecute_DeclaredInRun_Proceeds(t *testing.T) {
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "s1", Summary: "A"}}})
+
+	planState := &planRunState{}
+	planState.markDeclared() // a plan was declared in this run
+	rec := &waveRecorder{}
+	l := &conductorLauncher{
+		deps:            conductorDeps{emitter: &mockEmitter{}},
+		bb:              bb,
+		planState:       planState,
+		runPlanStepWave: rec.dispatch,
+	}
+
+	results, err := l.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("expected Execute to proceed for a declared plan, got error: %v", err)
+	}
+	if rec.calls != 1 {
+		t.Errorf("expected 1 dispatch call, got %d", rec.calls)
+	}
+	if len(results) != 1 || results[0].StepID != "s1" || results[0].Status != "completed" {
+		t.Errorf("unexpected results: %+v", results)
 	}
 }
 

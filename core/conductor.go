@@ -43,6 +43,34 @@ func (h *trajectoryHolder) Steps() []agent.Step {
 	return h.steps
 }
 
+// planRunState tracks whether a plan was declared during the CURRENT Conductor
+// run (via declare_plan → conductorPublisher.Publish). A plan restored from a
+// previous (completed) task is historical context only: on a continuation, the
+// Conductor is free to act plan-less (standalone checklist), declare a new
+// plan, or delegate — a restored plan must NOT lock it into the plan workflow.
+//
+// Both the ChecklistGuard (rejects standalone checklists) and the delegate
+// guard (PlanChecker.HasDeclaredPlan) consult this instead of the raw
+// blackboard plan, so a stale restored plan no longer trips either guard.
+type planRunState struct {
+	mu       sync.Mutex
+	declared bool
+}
+
+// markDeclared records that declare_plan ran in this Conductor run.
+func (s *planRunState) markDeclared() {
+	s.mu.Lock()
+	s.declared = true
+	s.mu.Unlock()
+}
+
+// isDeclared reports whether a plan was declared in this Conductor run.
+func (s *planRunState) isDeclared() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.declared
+}
+
 // compositeTrajectoryStore implements agent.TrajectoryStore. It keeps an
 // in-memory copy of the current trajectory (so the reflect tool reads it
 // synchronously) AND persists the full trajectory to the DB on every Sync.
@@ -261,18 +289,38 @@ type conductorLauncher struct {
 	// executed guards against a second Execute call for the same plan: each
 	// declared plan runs at most once so a retry re-runs every step.
 	executed bool
+	// planState tracks whether a plan was declared in THIS Conductor run. It
+	// is shared with the conductorPublisher so HasDeclaredPlan (the delegate
+	// guard) reflects only plans declared via declare_plan, not restored ones.
+	// Nil only under direct (test) construction — see HasDeclaredPlan fallback.
+	planState *planRunState
 }
 
 // HasDeclaredPlan implements tools.PlanChecker. Returns true when a plan has
-// been published to the blackboard via declare_plan. Used by the delegate guard
-// to enforce orthogonality: once a plan is declared, delegate is disabled and
-// execute_plan is the only execution path for plan steps.
+// been declared in the CURRENT Conductor run via declare_plan. Used by the
+// delegate guard to enforce orthogonality: once a plan is declared, delegate is
+// disabled and execute_plan is the only execution path for plan steps.
+//
+// Crucially, this consults planRunState (set by conductorPublisher.Publish),
+// NOT the raw blackboard plan: on a continuation, a restored plan from a
+// previous (completed) task must NOT lock the new run into the plan workflow.
+// When planState is nil (direct construction in tests), it falls back to the
+// blackboard-plan check so existing direct-construction tests keep working.
 func (l *conductorLauncher) HasDeclaredPlan() bool {
+	if l.planState != nil {
+		return l.planState.isDeclared()
+	}
 	return l.bb != nil && l.bb.GetPlan() != nil
 }
 
 // ExecutePlan runs all steps of the declared plan in DAG order with
 // parallelism for independent steps. It implements tools.PlanStepExecutor.
+//
+// A plan restored from a previous (completed) task is refused: planRunState
+// (fresh per run) tracks whether declare_plan ran in THIS run, and Execute
+// will not re-run a restored plan's steps (which would duplicate side
+// effects). The Conductor must publish a new plan via declare_plan, or use
+// delegate for plan-less work.
 //
 // Each step runs as an isolated subagent (its own Executor + ContextManager),
 // but events are emitted as plan_step_start/plan_step_complete (not
@@ -288,6 +336,18 @@ func (l *conductorLauncher) Execute(ctx context.Context) ([]tools.PlanStepResult
 	plan := l.bb.GetPlan()
 	if plan == nil || len(plan.Steps) == 0 {
 		return nil, errors.New("no plan declared — call declare_plan first")
+	}
+
+	// Restored-plan guard: on a continuation, the blackboard may carry a plan
+	// restored from a previous (completed) task. planRunState (wired in
+	// RunConductor) is fresh — not declared — so HasDeclaredPlan() returns
+	// false for such a plan. Refuse to execute it: re-running a completed
+	// task's steps would duplicate side effects (file edits, etc.) for no
+	// benefit. When planState is nil (direct test construction), this guard is
+	// inert and Execute proceeds on whatever plan is on the blackboard,
+	// preserving the behavior the DAG-scheduler tests rely on.
+	if l.planState != nil && !l.planState.isDeclared() {
+		return nil, errors.New("execute_plan: the plan on the blackboard was restored from a previous (completed) task and was not declared in this run — call declare_plan to publish a new plan, or use delegate for plan-less work")
 	}
 
 	// Idempotency: execute_plan runs at most once per declared plan. A second
@@ -1197,11 +1257,12 @@ var subagentReadOnlyToolNames = map[string]struct{}{
 
 // conductorPublisher implements tools.PlanPublisher.
 type conductorPublisher struct {
-	emitter  Emitter
-	bb       orchestration.Blackboard
-	plansDir string
-	logger   *slog.Logger
-	lastMD   string // markdown from the most recent Publish call
+	emitter   Emitter
+	bb        orchestration.Blackboard
+	plansDir  string
+	logger    *slog.Logger
+	lastMD    string // markdown from the most recent Publish call
+	planState *planRunState
 }
 
 func (p *conductorPublisher) Publish(ctx context.Context, tasks []tools.PlanTaskInput) (string, error) {
@@ -1238,6 +1299,13 @@ func (p *conductorPublisher) Publish(ctx context.Context, tasks []tools.PlanTask
 	}
 	p.emitter.PlanGenerated(len(plan.Steps), planEvents)
 	p.bb.SetPlan(plan)
+	// Record that a plan was declared in THIS Conductor run. This is what
+	// activates the ChecklistGuard / delegate guard — a restored plan from a
+	// previous (completed) task never reaches here, so continuations stay free
+	// to act plan-less, declare a new plan, or delegate.
+	if p.planState != nil {
+		p.planState.markDeclared()
+	}
 
 	if p.logger != nil {
 		p.logger.Debug("declare_plan: plan published", "path", path, "steps", len(plan.Steps))
@@ -1410,16 +1478,26 @@ func RunConductor(
 	deps conductorDeps,
 	plansDir string,
 ) (*orchestration.ExecutionResult, error) {
+	// planRunState is shared between the publisher (marks it on declare_plan),
+	// the launcher (HasDeclaredPlan reads it), and the inline-step lifecycle
+	// (completeAll gates plan-step synthesis on it). One fresh instance per
+	// Conductor run, so a restored plan from a previous (completed) task does
+	// not count as "declared" — a continuation stays free to act plan-less,
+	// declare a new plan, or delegate.
+	planState := &planRunState{}
+
 	// Build the inline-step lifecycle up front so it can be threaded into deps
 	// (consumed by Execute) rather than wired by post-construction field
 	// mutation. It is shared with update_checklist / declare_step_complete via
-	// the context callbacks below.
+	// the context callbacks below. planState is wired in so completeAll does
+	// not synthesize terminal events for a restored plan on a continuation.
 	inlineLifecycle := newInlineStepLifecycle(deps.emitter, bb)
+	inlineLifecycle.planState = planState
 	deps.lifecycle = inlineLifecycle
 
 	registry := tools.NewDelegationRegistry()
-	launcher := &conductorLauncher{deps: deps, bb: bb}
-	publisher := &conductorPublisher{emitter: deps.emitter, bb: bb, plansDir: plansDir, logger: deps.logger}
+	launcher := &conductorLauncher{deps: deps, bb: bb, planState: planState}
+	publisher := &conductorPublisher{emitter: deps.emitter, bb: bb, plansDir: plansDir, logger: deps.logger, planState: planState}
 
 	// Build the trajectory store. The in-memory holder feeds the reflect tool
 	// synchronously; the composite layer additionally persists the full
@@ -1459,11 +1537,15 @@ func RunConductor(
 	ctx = tools.WithStepCompleteFunc(ctx, inlineLifecycle.completeStep)
 	ctx = tools.WithPlanStepExecutor(ctx, launcher)
 
-	// Checklist guard: once a plan is declared, reject standalone (empty
-	// step_id) checklists. A standalone checklist is only valid for plan-less
-	// tasks. With a plan, every update_checklist must target a specific step.
+	// Checklist guard: once a plan is declared IN THIS RUN, reject standalone
+	// (empty step_id) checklists. A standalone checklist is only valid for
+	// plan-less tasks. With a plan, every update_checklist must target a
+	// specific step. This consults launcher.HasDeclaredPlan() (planRunState)
+	// rather than the raw blackboard plan, so a plan restored from a previous
+	// (completed) task does NOT trip the guard on a continuation — the
+	// continuation is free to act plan-less, declare its own plan, or delegate.
 	ctx = agent.WithChecklistGuard(ctx, func(stepID string) string {
-		if stepID == "" && bb.GetPlan() != nil {
+		if stepID == "" && launcher.HasDeclaredPlan() {
 			return "a plan has been declared; a standalone checklist (without step_id) is only valid for plan-less tasks — pass the step_id of the plan step you are executing, and do not list plan steps as checklist items (a checklist tracks sub-tasks within a single step)"
 		}
 		return ""
@@ -1631,6 +1713,12 @@ type inlineStepLifecycle struct {
 	emitter   Emitter
 	scoper    CurrentStepScopable // nil if emitter doesn't support dynamic scoping
 	bb        orchestration.Blackboard
+	// planState tracks whether a plan was declared in THIS Conductor run,
+	// shared with the conductorPublisher and conductorLauncher. Used by
+	// completeAll to avoid synthesizing terminal events for a restored plan
+	// from a previous (completed) task on a plan-less continuation. Nil only
+	// under direct (test) construction — see planDeclaredInRun fallback.
+	planState *planRunState
 	mu        sync.Mutex
 	started   map[string]bool      // stepIDs that received PlanStepStart but not PlanStepComplete
 	startedAt map[string]time.Time // wall-clock when PlanStepStart was emitted, for duration
@@ -1760,6 +1848,23 @@ func (l *inlineStepLifecycle) markCompleted(stepID string) {
 	l.mu.Unlock()
 }
 
+// planDeclaredInRun reports whether a plan was declared in the CURRENT
+// Conductor run. Mirrors conductorLauncher.HasDeclaredPlan: when planState is
+// wired (production path via RunConductor), it reflects only plans declared
+// via declare_plan; a restored plan from a previous (completed) task does NOT
+// count. When planState is nil (direct construction in tests), it falls back
+// to the raw blackboard plan so existing direct-construction tests keep
+// working.
+func (l *inlineStepLifecycle) planDeclaredInRun() bool {
+	if l == nil {
+		return false
+	}
+	if l.planState != nil {
+		return l.planState.isDeclared()
+	}
+	return l.bb != nil && l.bb.GetPlan() != nil
+}
+
 // completeAll auto-completes any plan steps that have not reached a terminal
 // state. Called as a finish fallback after the Conductor's executor.Run
 // returns. errMsg is propagated to each auto-completed step's PlanStepComplete
@@ -1772,8 +1877,10 @@ func (l *inlineStepLifecycle) markCompleted(stepID string) {
 //     PlanStepStart followed by PlanStepComplete.
 //
 // This guarantees no plan step is left stuck in "pending" or "running" once
-// the Conductor finishes. For plan-less tasks (no declared plan) it only
-// completes steps currently in the started set, matching prior behavior.
+// the Conductor finishes. For plan-less tasks (no plan declared in this run,
+// including continuations whose blackboard carries a restored plan from a
+// previous task) it only completes steps currently in the started set,
+// matching prior behavior.
 func (l *inlineStepLifecycle) completeAll(success bool, errMsg string) {
 	if l == nil || l.emitter == nil {
 		return
@@ -1781,11 +1888,21 @@ func (l *inlineStepLifecycle) completeAll(success bool, errMsg string) {
 
 	// Collect declared plan step IDs (if any). Read outside the lifecycle
 	// lock — the blackboard is independently synchronized.
+	//
+	// This is gated on planDeclaredInRun() (not the raw blackboard plan) so
+	// that a plan-less continuation — whose blackboard carries a restored
+	// plan from a previous (completed) task — does NOT synthesize terminal
+	// events for those restored steps. The fresh lifecycle has empty
+	// started/completed sets, so without this gate every restored step would
+	// fall into neverStarted and re-emit PlanStepComplete (PlanStepStart is
+	// deduped by the emitter, but PlanStepComplete is not).
 	var planStepIDs []string
-	if plan := l.bb.GetPlan(); plan != nil {
-		planStepIDs = make([]string, 0, len(plan.Steps))
-		for _, s := range plan.Steps {
-			planStepIDs = append(planStepIDs, s.ID)
+	if l.planDeclaredInRun() {
+		if plan := l.bb.GetPlan(); plan != nil {
+			planStepIDs = make([]string, 0, len(plan.Steps))
+			for _, s := range plan.Steps {
+				planStepIDs = append(planStepIDs, s.ID)
+			}
 		}
 	}
 
