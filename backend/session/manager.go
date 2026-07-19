@@ -1075,12 +1075,19 @@ func (m *Manager) Shutdown() {
 	m.shuttingDown.Store(true)
 
 	// Collect sessions and done channels under lock.
+	//
+	// NOTE: every session must be added to pendingList, not just the active
+	// ones. Idle sessions (session.done == nil) still hold open logFile and
+	// dumpFile handles that must be closed before the process exits —
+	// otherwise Windows cannot delete them and TempDir cleanup fails with
+	// "process cannot access the file". The done channel is optional and only
+	// waited on for sessions that had an in-flight task at shutdown time.
 	type pending struct {
 		session *Session
 		doneCh  chan struct{}
 	}
 	m.mu.Lock()
-	var pendingList []pending
+	pendingList := make([]pending, 0, len(m.sessions))
 	for id, session := range m.sessions {
 		session.mu.Lock()
 		// Close per-step dump files via orchestrator cleanup (idempotent).
@@ -1094,9 +1101,7 @@ func (m *Manager) Shutdown() {
 		doneCh := session.done
 		session.mu.Unlock()
 
-		if doneCh != nil {
-			pendingList = append(pendingList, pending{session: session, doneCh: doneCh})
-		}
+		pendingList = append(pendingList, pending{session: session, doneCh: doneCh})
 
 		// Remove from map
 		delete(m.sessions, id)
@@ -1105,13 +1110,17 @@ func (m *Manager) Shutdown() {
 
 	// Wait for active task goroutines to finish outside any lock.
 	for _, p := range pendingList {
+		if p.doneCh == nil {
+			continue
+		}
 		select {
 		case <-p.doneCh:
 		case <-time.After(m.stopTimeout):
 		}
 	}
 
-	// Only close file handles after all goroutines have stopped.
+	// Close file handles for ALL sessions (idle and active) after any active
+	// goroutines have stopped.
 	for _, p := range pendingList {
 		p.session.mu.Lock()
 		if p.session.logFile != nil {

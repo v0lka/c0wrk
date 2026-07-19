@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -21,6 +22,17 @@ func newRegistryForSymlinkTest(t *testing.T) *ToolRegistry {
 		BashTimeouts: builtins.BashTimeouts{MaxTimeout: 120 * time.Second, WaitDelay: 5 * time.Second},
 	})
 	return r
+}
+
+// shellExecToolName returns the platform-registered shell-execution tool name.
+// "bash_exec" on Unix, "posh_exec" on Windows — matches newShellExecTool in
+// shelltool_{unix,windows}.go. Use this instead of a hardcoded "bash_exec"
+// literal in tests that exercise the symlink/suspicion gate via the shell tool.
+func shellExecToolName() string {
+	if runtime.GOOS == "windows" {
+		return "posh_exec"
+	}
+	return "bash_exec"
 }
 
 func TestCheckSymlinksAndConfirm_InternalToolBypass(t *testing.T) {
@@ -181,7 +193,7 @@ func TestCheckSymlinksAndConfirm_BashExecWithSymlink(t *testing.T) {
 	input, _ := json.Marshal(map[string]string{"command": command, "working_directory": dir})
 	ctx := sdktools.WithWorkspacePath(context.Background(), dir)
 
-	result, err := r.Execute(ctx, "bash_exec", input)
+	result, err := r.Execute(ctx, shellExecToolName(), input)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -210,7 +222,7 @@ func TestCheckSymlinksAndConfirm_BashExecSuspiciousForceConfirm(t *testing.T) {
 	input, _ := json.Marshal(map[string]string{"command": "cat $HOME/file"})
 	ctx := context.Background()
 
-	result, err := r.Execute(ctx, "bash_exec", input)
+	result, err := r.Execute(ctx, shellExecToolName(), input)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}

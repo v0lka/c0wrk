@@ -94,7 +94,8 @@ func TestSwitchBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Close() }) // release lexical store handles before TempDir cleanup (Windows)
+	projectDir := t.TempDir()  // register cleanup BEFORE svc.Close (t.Cleanup is LIFO)
+	t.Cleanup(func() { _ = svc.Close() })
 
 	t.Run("fails without project", func(t *testing.T) {
 		err := svc.SwitchBranch(context.Background(), "main")
@@ -103,7 +104,7 @@ func TestSwitchBranch(t *testing.T) {
 		}
 	})
 
-	if err := svc.SetProject("test", t.TempDir()); err != nil {
+	if err := svc.SetProject("test", projectDir); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 
@@ -228,8 +229,9 @@ func TestSearchWithDocuments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Close() }) // release lexical store handles before TempDir cleanup (Windows)
-	if err := svc.SetProject("search-test", t.TempDir()); err != nil {
+	projectDir := t.TempDir()  // register cleanup BEFORE svc.Close (t.Cleanup is LIFO)
+	t.Cleanup(func() { _ = svc.Close() })
+	if err := svc.SetProject("search-test", projectDir); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -431,8 +433,9 @@ func TestValidateCollection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Close() }) // release lexical store handles before TempDir cleanup (Windows)
-	if err := svc.SetProject("validate-test", t.TempDir()); err != nil {
+	projectDir := t.TempDir()  // register cleanup BEFORE svc.Close (t.Cleanup is LIFO)
+	t.Cleanup(func() { _ = svc.Close() })
+	if err := svc.SetProject("validate-test", projectDir); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -566,8 +569,9 @@ func TestRebuildCollection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Close() }) // release lexical store handles before TempDir cleanup (Windows)
-	if err := svc.SetProject("rebuild-test", t.TempDir()); err != nil {
+	projectDir := t.TempDir()  // register cleanup BEFORE svc.Close (t.Cleanup is LIFO)
+	t.Cleanup(func() { _ = svc.Close() })
+	if err := svc.SetProject("rebuild-test", projectDir); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -611,8 +615,9 @@ func TestServiceClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Close() }) // release lexical store handles before TempDir cleanup (Windows)
-	if err := svc.SetProject("close-test", t.TempDir()); err != nil {
+	projectDir := t.TempDir()  // register cleanup BEFORE svc.Close (t.Cleanup is LIFO)
+	t.Cleanup(func() { _ = svc.Close() })
+	if err := svc.SetProject("close-test", projectDir); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 
@@ -658,8 +663,9 @@ func TestGetCollectionFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Close() }) // release lexical store handles before TempDir cleanup (Windows)
-	if err := svc.SetProject("files-test", t.TempDir()); err != nil {
+	projectDir := t.TempDir()  // register cleanup BEFORE svc.Close (t.Cleanup is LIFO)
+	t.Cleanup(func() { _ = svc.Close() })
+	if err := svc.SetProject("files-test", projectDir); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -733,8 +739,9 @@ func TestDeleteDocumentsByIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Close() }) // release lexical store handles before TempDir cleanup (Windows)
-	if err := svc.SetProject("delete-test", t.TempDir()); err != nil {
+	projectDir := t.TempDir()  // register cleanup BEFORE svc.Close (t.Cleanup is LIFO)
+	t.Cleanup(func() { _ = svc.Close() })
+	if err := svc.SetProject("delete-test", projectDir); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -803,8 +810,9 @@ func seedHybridService(t *testing.T) *Service {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Close() }) // release lexical store handles before TempDir cleanup (Windows)
-	if err := svc.SetProject("hybrid-proj", t.TempDir()); err != nil {
+	projectDir := t.TempDir()  // register cleanup BEFORE svc.Close (t.Cleanup is LIFO)
+	t.Cleanup(func() { _ = svc.Close() })
+	if err := svc.SetProject("hybrid-proj", projectDir); err != nil {
 		t.Fatalf("SetProject: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -963,8 +971,9 @@ func TestHybridSearch_AutoFallbackWhenLexicalEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Close() }) // release lexical store handles before TempDir cleanup (Windows)
-	if err := svc.SetProject("fallback-proj", t.TempDir()); err != nil {
+	projectDir := t.TempDir()  // register cleanup BEFORE svc.Close (t.Cleanup is LIFO)
+	t.Cleanup(func() { _ = svc.Close() })
+	if err := svc.SetProject("fallback-proj", projectDir); err != nil {
 		t.Fatalf("SetProject: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {

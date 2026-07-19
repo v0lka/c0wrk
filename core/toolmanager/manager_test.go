@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -88,7 +89,13 @@ func TestManager_GetToolPath_Installed(t *testing.T) {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// GetToolPath appends ".exe" on Windows for StaticBinary tools (see
+	// Manager.binaryPath), so the on-disk fixture must match the platform's
+	// expected name.
 	binPath := filepath.Join(binDir, "rg")
+	if runtime.GOOS == "windows" {
+		binPath += ".exe"
+	}
 	if err := os.WriteFile(binPath, []byte("fake"), 0o755); err != nil {
 		t.Fatal(err)
 	}
