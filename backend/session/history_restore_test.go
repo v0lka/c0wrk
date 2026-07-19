@@ -32,7 +32,7 @@ func TestConvertChatMessagesToLLM_CollapsesAssistantRuns(t *testing.T) {
 		{Role: "assistant", Content: "tests added"},
 	}
 
-	history := m.convertChatMessagesToLLM(msgs)
+	history := m.convertChatMessagesToLLM(msgs, "")
 	if len(history) != 4 {
 		t.Fatalf("expected 4 messages after collapsing, got %d: %+v", len(history), history)
 	}
@@ -57,7 +57,7 @@ func TestConvertChatMessagesToLLM_ErrorAndCancelledNotes(t *testing.T) {
 		{Role: "task_cancelled", Content: `{"session_id":"s1"}`, Metadata: json.RawMessage(`{"session_id":"s1"}`)},
 	}
 
-	history := m.convertChatMessagesToLLM(msgs)
+	history := m.convertChatMessagesToLLM(msgs, "")
 	if len(history) != 4 {
 		t.Fatalf("expected 4 messages, got %d: %+v", len(history), history)
 	}
@@ -80,7 +80,7 @@ func TestConvertChatMessagesToLLM_ErrorNoteReplacesPartialOutput(t *testing.T) {
 		{Role: "error", Content: `{"error":"step 2 failed"}`, Metadata: json.RawMessage(`{"error":"step 2 failed"}`)},
 	}
 
-	history := m.convertChatMessagesToLLM(msgs)
+	history := m.convertChatMessagesToLLM(msgs, "")
 	if len(history) != 2 {
 		t.Fatalf("expected 2 messages, got %d: %+v", len(history), history)
 	}
@@ -91,7 +91,8 @@ func TestConvertChatMessagesToLLM_ErrorNoteReplacesPartialOutput(t *testing.T) {
 
 // TestConvertChatMessagesToLLM_PreprocessesUserText verifies that the raw
 // stored user text (with @file markers) is normalized the same way the
-// orchestrator preprocessed it live.
+// orchestrator preprocessed it live, including resolving relative @file
+// paths against the session workspace to absolute form.
 func TestConvertChatMessagesToLLM_PreprocessesUserText(t *testing.T) {
 	m := &Manager{}
 	msgs := []ChatMessage{
@@ -99,11 +100,11 @@ func TestConvertChatMessagesToLLM_PreprocessesUserText(t *testing.T) {
 		{Role: "assistant", Content: "explained"},
 	}
 
-	history := m.convertChatMessagesToLLM(msgs)
+	history := m.convertChatMessagesToLLM(msgs, "/ws")
 	if len(history) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(history))
 	}
-	want := "explain fileref://main.go please"
+	want := "explain fileref:///ws/main.go please"
 	if history[0].Content != want {
 		t.Errorf("expected preprocessed user text %q, got %q", want, history[0].Content)
 	}
@@ -121,7 +122,7 @@ func TestConvertChatMessagesToLLM_SkipsNonConversationalRoles(t *testing.T) {
 		{Role: "assistant", Content: "done"},
 	}
 
-	history := m.convertChatMessagesToLLM(msgs)
+	history := m.convertChatMessagesToLLM(msgs, "")
 	if len(history) != 2 {
 		t.Fatalf("expected 2 messages, got %d: %+v", len(history), history)
 	}

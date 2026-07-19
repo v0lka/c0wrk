@@ -204,7 +204,15 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills []string, modelO
 	}
 
 	// Preprocess text for the orchestrator: strip /skill refs and convert @file refs to fileref:// URIs.
-	processedText := core.PreprocessMessageText(text, activeSkills)
+	// Relative @file paths are resolved against the session's own workspace path (authoritative for
+	// both project and No Project sessions) so the LLM receives unambiguous absolute paths. This
+	// mirrors the preprocessing applied during history restore and avoids the project-level
+	// activeProjectPath, which is empty for No Project sessions and may not match the session's project.
+	workspacePath := ""
+	if wp, ok := f.app.Manager().GetSessionWorkspacePath(id); ok {
+		workspacePath = wp
+	}
+	processedText := core.PreprocessMessageText(text, activeSkills, workspacePath)
 
 	if err := f.app.Manager().SendMessage(f.ctx(), id, processedText, activeSkills, modelOverride, reasoningEffort, goal, goalBudget); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)

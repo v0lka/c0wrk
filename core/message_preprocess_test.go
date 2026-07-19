@@ -11,6 +11,7 @@ func TestPreprocessMessageText(t *testing.T) {
 		name         string
 		text         string
 		activeSkills []string
+		workspace    string
 		want         string
 	}{
 		// GitHub-style L-anchored refs (the core regression this test guards).
@@ -87,14 +88,54 @@ func TestPreprocessMessageText(t *testing.T) {
 			text: "   @x.go#L5-L10   ",
 			want: "fileref://x.go#L5-L10",
 		},
+
+		// Relative @file paths are resolved against the workspace so the LLM
+		// prompt carries unambiguous absolute paths. The line anchor is split
+		// off during resolution and re-attached verbatim.
+		{
+			name:      "relative path resolved against workspace",
+			text:      "see @main.go here",
+			workspace: "/ws",
+			want:      "see fileref:///ws/main.go here",
+		},
+		{
+			name:      "nested relative path with L-range anchor",
+			text:      "@desktop/x.go#L20-L36",
+			workspace: "/ws",
+			want:      "fileref:///ws/desktop/x.go#L20-L36",
+		},
+		{
+			name:      "relative path with dot segment cleaned",
+			text:      "@./src/a.go#L5",
+			workspace: "/ws",
+			want:      "fileref:///ws/src/a.go#L5",
+		},
+		{
+			name:      "absolute path left unchanged",
+			text:      "@/abs/path/x.go",
+			workspace: "/ws",
+			want:      "fileref:///abs/path/x.go",
+		},
+		{
+			name:      "home-relative path left unchanged",
+			text:      "@~/notes/x.go",
+			workspace: "/ws",
+			want:      "fileref://~/notes/x.go",
+		},
+		{
+			name:      "no workspace leaves relative path untouched",
+			text:      "@x.go#L10",
+			workspace: "",
+			want:      "fileref://x.go#L10",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := PreprocessMessageText(tt.text, tt.activeSkills)
+			got := PreprocessMessageText(tt.text, tt.activeSkills, tt.workspace)
 			if got != tt.want {
-				t.Errorf("PreprocessMessageText(%q, %v) =\n  got:  %q\n  want: %q",
-					tt.text, tt.activeSkills, got, tt.want)
+				t.Errorf("PreprocessMessageText(%q, %v, %q) =\n  got:  %q\n  want: %q",
+					tt.text, tt.activeSkills, tt.workspace, got, tt.want)
 			}
 		})
 	}

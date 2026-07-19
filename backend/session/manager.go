@@ -491,7 +491,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		if loadErr != nil {
 			m.log().Warn("failed to load session messages for history restore", "session_id", id, "error", loadErr)
 		} else {
-			history := m.convertChatMessagesToLLM(storedMsgs)
+			history := m.convertChatMessagesToLLM(storedMsgs, workspacePath)
 			if len(history) > 0 {
 				orchestrator.SetConversationHistory(history)
 				m.log().Debug("restored conversation history from store", "session_id", id, "messages", len(history))
@@ -1194,7 +1194,7 @@ func (m *Manager) Shutdown() {
 //
 // Other roles (tool calls, thoughts, status, etc.) are non-conversational and
 // skipped.
-func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage) []llm.Message {
+func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage, workspacePath string) []llm.Message {
 	result := make([]llm.Message, 0, len(msgs))
 	appendAssistant := func(lm llm.Message) {
 		if len(result) > 0 && result[len(result)-1].Role == "assistant" {
@@ -1209,8 +1209,9 @@ func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage) []llm.Message {
 			// The store keeps the raw text (with /skill and @file markers)
 			// for display; the live history stored the preprocessed form.
 			// Skill names are unknown at restore time, so only the @file
-			// normalization is applied.
-			result = append(result, llm.Message{Role: "user", Content: core.PreprocessMessageText(msg.Content, nil)})
+			// normalization is applied. Relative @file paths are resolved
+			// against the session workspace, mirroring the live preprocessing.
+			result = append(result, llm.Message{Role: "user", Content: core.PreprocessMessageText(msg.Content, nil, workspacePath)})
 		case "assistant":
 			lm := llm.Message{Role: "assistant", Content: msg.Content}
 			if msg.ReasoningContent != nil {

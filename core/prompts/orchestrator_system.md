@@ -157,11 +157,11 @@ WORKSPACE-CONTEXT
 
 ## File References
 
-User messages may contain `fileref://` URIs indicating files the user explicitly referenced:
+User messages may contain `fileref://` URIs indicating files the user explicitly referenced. Paths are absolute (resolved against the workspace root) and may carry a GitHub-style line anchor:
 
-- `fileref://path/to/file.ts` — entire file is relevant context
-- `fileref://path/to/file.ts#L5` — line 5 is specifically relevant
-- `fileref://path/to/file.ts#L5-L10` — lines 5-10 are specifically relevant
+- `fileref:///abs/path/to/file.ts` — entire file is relevant context
+- `fileref:///abs/path/to/file.ts#L5` — line 5 is specifically relevant
+- `fileref:///abs/path/to/file.ts#L5-L10` — lines 5-10 are specifically relevant
 
 These are explicit user hints about which files matter. Prioritize reading these files when planning your approach.
 

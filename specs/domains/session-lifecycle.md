@@ -86,7 +86,7 @@ User sends message
       ├─ Persist original text to DB (preserves /skill and @file refs)
       ├─ Preprocess text for orchestrator:
       │   ├─ Strip /skill references from text
-      │   └─ Convert @file references to fileref:// URIs
+      │   └─ Convert @file references to fileref:// URIs (relative paths resolved to absolute against the session workspace)
       ├─ Get or create Orchestrator for session (via factory)
       ├─ Create emitter (WailsEmitter + EventPersister)
       ├─ Enrich task context:
