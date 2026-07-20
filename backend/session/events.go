@@ -43,6 +43,12 @@ type SessionArchivedData struct {
 	Archived bool   `json:"archived"`
 }
 
+// SessionPinnedData is the payload for "session_pinned" / "session_unpinned" events.
+type SessionPinnedData struct {
+	ID     string `json:"id"`
+	Pinned bool   `json:"pinned"`
+}
+
 // MessageReceivedData is the payload for "message_received" events.
 type MessageReceivedData struct {
 	SessionID string `json:"session_id"`

@@ -1098,6 +1098,7 @@ export namespace session {
 	    created_at: string;
 	    last_active_at: string;
 	    archived: boolean;
+	    pinned: boolean;
 	    active: boolean;
 	    total_input_tokens: number;
 	    total_output_tokens: number;
@@ -1118,6 +1119,7 @@ export namespace session {
 	        this.created_at = source["created_at"];
 	        this.last_active_at = source["last_active_at"];
 	        this.archived = source["archived"];
+	        this.pinned = source["pinned"];
 	        this.active = source["active"];
 	        this.total_input_tokens = source["total_input_tokens"];
 	        this.total_output_tokens = source["total_output_tokens"];

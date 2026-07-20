@@ -65,9 +65,9 @@ func (s *SQLiteSessionStore) ForkSession(ctx context.Context, srcID string, clon
 
 	// 1. New session row (fresh runtime accounting: tokens/fill/model/family reset).
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens, model, family, fill_percent)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		newSessionID, src.ProjectID, forkName, now, now, false, 0, 0, "", "", 0,
+		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		newSessionID, src.ProjectID, forkName, now, now, false, false, 0, 0, "", "", 0,
 	); err != nil {
 		return nil, fmt.Errorf("failed to insert forked session: %w", err)
 	}

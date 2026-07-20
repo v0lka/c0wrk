@@ -25,6 +25,7 @@ type SessionInfo struct {
 	CreatedAt         string  `json:"created_at"`     // RFC 3339 formatted timestamp
 	LastActiveAt      string  `json:"last_active_at"` // RFC 3339 formatted timestamp
 	Archived          bool    `json:"archived"`
+	Pinned            bool    `json:"pinned"`
 	Active            bool    `json:"active"`
 	TotalInputTokens  int     `json:"total_input_tokens"`
 	TotalOutputTokens int     `json:"total_output_tokens"`
@@ -66,6 +67,7 @@ type SessionStore interface {
 	ListSessionsByProject(ctx context.Context, projectID string) ([]SessionInfo, error)
 	DeleteSession(ctx context.Context, id string) error
 	ArchiveSession(ctx context.Context, id string, archived bool) error
+	PinSession(ctx context.Context, id string, pinned bool) error
 	RenameSession(ctx context.Context, id, name string) error
 
 	// Token tracking
@@ -141,6 +143,7 @@ func (s *SQLiteSessionStore) createTables() error {
 		created_at TIMESTAMP NOT NULL,
 		last_active_at TIMESTAMP,
 		archived BOOLEAN DEFAULT FALSE,
+		pinned BOOLEAN DEFAULT FALSE,
 		total_input_tokens INTEGER DEFAULT 0,
 		total_output_tokens INTEGER DEFAULT 0,
 		model TEXT DEFAULT '',
@@ -289,6 +292,28 @@ func (s *SQLiteSessionStore) createTables() error {
 		}
 	}
 
+	// Migration: add pinned column to sessions for persisting the pinned flag
+	// across app restarts.
+	if !s.columnExists("sessions", "pinned") {
+		var lastErr error
+		for attempt := range 3 {
+			_, lastErr = s.db.ExecContext(context.Background(),
+				`ALTER TABLE sessions ADD COLUMN pinned BOOLEAN DEFAULT FALSE`)
+			if lastErr == nil {
+				break
+			}
+			if !strings.Contains(lastErr.Error(), "database is locked") {
+				break
+			}
+			if attempt < 2 {
+				time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
+			}
+		}
+		if lastErr != nil {
+			s.log().Warn("migration ALTER TABLE failed", "table", "sessions", "column", "pinned", "error", lastErr)
+		}
+	}
+
 	return nil
 }
 
@@ -315,18 +340,19 @@ func (s *SQLiteSessionStore) SaveSession(ctx context.Context, info SessionInfo) 
 		lastActiveAt = info.CreatedAt
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens, model, family, fill_percent)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			last_active_at = excluded.last_active_at,
 			archived = excluded.archived,
+			pinned = excluded.pinned,
 			total_input_tokens = excluded.total_input_tokens,
 			total_output_tokens = excluded.total_output_tokens,
 			model = excluded.model,
 			family = excluded.family,
 			fill_percent = excluded.fill_percent`,
-		info.ID, info.ProjectID, info.Name, info.CreatedAt, lastActiveAt, info.Archived, info.TotalInputTokens, info.TotalOutputTokens, info.Model, info.Family, info.FillPercent,
+		info.ID, info.ProjectID, info.Name, info.CreatedAt, lastActiveAt, info.Archived, info.Pinned, info.TotalInputTokens, info.TotalOutputTokens, info.Model, info.Family, info.FillPercent,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
@@ -338,11 +364,11 @@ func (s *SQLiteSessionStore) SaveSession(ctx context.Context, info SessionInfo) 
 func (s *SQLiteSessionStore) LoadSession(ctx context.Context, id string) (*SessionInfo, error) {
 	var info SessionInfo
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(fill_percent, 0),
+		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(pinned, 0), COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(fill_percent, 0),
 		EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'failed'))
 		FROM sessions WHERE id = ?`,
 		id,
-	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask)
+	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -360,6 +386,7 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 		SELECT id, project_id, name, created_at,
 		       COALESCE(last_active_at, created_at),
 		       archived,
+		       COALESCE(pinned, 0),
 		       COALESCE(total_input_tokens, 0),
 		       COALESCE(total_output_tokens, 0),
 		       COALESCE(model, ''),
@@ -367,7 +394,7 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 		       COALESCE(fill_percent, 0),
 		       EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'failed'))
 		FROM sessions
-		ORDER BY COALESCE(last_active_at, created_at) DESC`)
+		ORDER BY pinned DESC, COALESCE(last_active_at, created_at) DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list sessions: %w", err)
 	}
@@ -380,7 +407,7 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 	var sessions []SessionInfo
 	for rows.Next() {
 		var info SessionInfo
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask); err != nil {
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask); err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
 		}
 		sessions = append(sessions, info)
@@ -401,11 +428,11 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 // ListSessionsByProject returns all sessions for a given project, ordered by last activity (newest first).
 func (s *SQLiteSessionStore) ListSessionsByProject(ctx context.Context, projectID string) ([]SessionInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(fill_percent, 0),
+		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(pinned, 0), COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(fill_percent, 0),
 		EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'failed'))
 		FROM sessions
 		WHERE project_id = ?
-		ORDER BY COALESCE(last_active_at, created_at) DESC`, projectID)
+		ORDER BY pinned DESC, COALESCE(last_active_at, created_at) DESC`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list sessions by project: %w", err)
 	}
@@ -418,7 +445,7 @@ func (s *SQLiteSessionStore) ListSessionsByProject(ctx context.Context, projectI
 	var sessions []SessionInfo
 	for rows.Next() {
 		var info SessionInfo
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask); err != nil {
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask); err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
 		}
 		sessions = append(sessions, info)
@@ -447,6 +474,15 @@ func (s *SQLiteSessionStore) ArchiveSession(ctx context.Context, id string, arch
 	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET archived = ? WHERE id = ?`, archived, id)
 	if err != nil {
 		return fmt.Errorf("failed to archive session: %w", err)
+	}
+	return nil
+}
+
+// PinSession sets the pinned flag on a session.
+func (s *SQLiteSessionStore) PinSession(ctx context.Context, id string, pinned bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET pinned = ? WHERE id = ?`, pinned, id)
+	if err != nil {
+		return fmt.Errorf("failed to pin session: %w", err)
 	}
 	return nil
 }

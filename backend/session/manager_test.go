@@ -388,6 +388,69 @@ func TestManager_ArchiveSession(t *testing.T) {
 	}
 }
 
+func TestManager_PinSession(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+
+	// Pin non-existent session
+	err := manager.PinSession("non-existent")
+	if err == nil {
+		t.Error("PinSession should return error for non-existent session")
+	}
+
+	// Create session
+	info, _ := manager.CreateSession(testProjectID, testWorkspacePath(t))
+
+	// Drain the session_created event
+	drainEvents(eventChan)
+	if info.Pinned {
+		t.Error("New session should not be pinned")
+	}
+
+	// Pin session
+	err = manager.PinSession(info.ID)
+	if err != nil {
+		t.Fatalf("PinSession failed: %v", err)
+	}
+
+	// Verify pinned
+	session, _ := manager.GetSession(info.ID)
+	if !session.Pinned {
+		t.Error("Session should be pinned")
+	}
+
+	// Verify event was emitted
+	select {
+	case event := <-eventChan:
+		if event.Type != "session_pinned" {
+			t.Errorf("Expected session_pinned event, got %s", event.Type)
+		}
+	case <-time.After(time.Second):
+		t.Error("Timeout waiting for session_pinned event")
+	}
+
+	// Unpin session
+	err = manager.PinSession(info.ID)
+	if err != nil {
+		t.Fatalf("PinSession (unpin) failed: %v", err)
+	}
+
+	// Verify unpinned
+	session, _ = manager.GetSession(info.ID)
+	if session.Pinned {
+		t.Error("Session should be unpinned")
+	}
+
+	// Verify unpin event was emitted
+	select {
+	case event := <-eventChan:
+		if event.Type != "session_unpinned" {
+			t.Errorf("Expected session_unpinned event, got %s", event.Type)
+		}
+	case <-time.After(time.Second):
+		t.Error("Timeout waiting for session_unpinned event")
+	}
+}
+
 func TestManager_CancelTask(t *testing.T) {
 	manager, _, _ := testManager(t)
 
@@ -1533,6 +1596,9 @@ func (m *mockSessionStoreForRestore) ListSessionsByProject(_ context.Context, _ 
 }
 func (m *mockSessionStoreForRestore) DeleteSession(_ context.Context, _ string) error { return nil }
 func (m *mockSessionStoreForRestore) ArchiveSession(_ context.Context, _ string, _ bool) error {
+	return nil
+}
+func (m *mockSessionStoreForRestore) PinSession(_ context.Context, _ string, _ bool) error {
 	return nil
 }
 func (m *mockSessionStoreForRestore) RenameSession(_ context.Context, _, _ string) error { return nil }

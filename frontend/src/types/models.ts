@@ -32,6 +32,7 @@ export interface SessionInfo {
   readonly created_at: string
   readonly last_active_at: string
   readonly archived: boolean
+  readonly pinned: boolean
   readonly active: boolean
   readonly total_input_tokens: number
   readonly total_output_tokens: number

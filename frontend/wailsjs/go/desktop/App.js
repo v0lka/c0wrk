@@ -310,6 +310,10 @@ export function PickDirectory() {
   return window['go']['desktop']['App']['PickDirectory']();
 }
 
+export function PinSession(arg1) {
+  return window['go']['desktop']['App']['PinSession'](arg1);
+}
+
 export function Pull(arg1, arg2) {
   return window['go']['desktop']['App']['Pull'](arg1, arg2);
 }

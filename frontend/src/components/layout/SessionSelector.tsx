@@ -1,7 +1,7 @@
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useMemo, useCallback, useRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { useSessionStore } from "@/stores/sessionStore";
-import { createSession, renameSession, archiveSession, deleteSession, forkSession } from "@/api/sessions";
+import { createSession, renameSession, archiveSession, deleteSession, forkSession, pinSession } from "@/api/sessions";
 import { formatRelativeTime } from "@/lib/formatters";
 import { logger } from "@/lib/logger";
 import {
@@ -10,12 +10,34 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { ChevronDown, Check, Plus, Pencil, Archive, Trash2, GitFork } from "lucide-react";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import {
+  ChevronDown,
+  ChevronRight,
+  Check,
+  Plus,
+  Pencil,
+  Archive,
+  ArchiveRestore,
+  Trash2,
+  GitFork,
+  Pin,
+  PinOff,
+} from "lucide-react";
 import { useSessionStatusIndicator } from "@/hooks/useSessionStatusIndicator";
+
+/** Minimal session shape consumed by a list item. */
+interface SessionItemSummary {
+  id: string;
+  name: string;
+  archived: boolean;
+  pinned: boolean;
+  last_active_at: string;
+  has_unfinished_task: boolean;
+}
 
 export function SessionSelector() {
   const sessions = useSessionStore((s) => s.sessions);
@@ -30,6 +52,9 @@ export function SessionSelector() {
   const [renameValue, setRenameValue] = useState("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  // Archived sessions are collapsed by default; the header shows the count and
+  // expands on click.
+  const [archivedCollapsed, setArchivedCollapsed] = useState(true);
   const renameRef = useRef<HTMLInputElement>(null);
 
   const activeSessionsList = useMemo(() => (sessions ?? []).filter((s) => !s.archived), [sessions]);
@@ -80,6 +105,18 @@ export function SessionSelector() {
         updateSession(id, { archived: !isArchived });
       } catch (error) {
         logger.error("Failed to archive session:", error);
+      }
+    },
+    [updateSession],
+  );
+
+  const handlePin = useCallback(
+    async (id: string, isPinned: boolean) => {
+      try {
+        await pinSession(id);
+        updateSession(id, { pinned: !isPinned });
+      } catch (error) {
+        logger.error("Failed to pin session:", error);
       }
     },
     [updateSession],
@@ -137,6 +174,26 @@ export function SessionSelector() {
     );
   }
 
+  const renderSessionItem = (session: SessionItemSummary) => (
+    <SessionItem
+      key={session.id}
+      session={session}
+      isActive={session.id === activeSessionId}
+      onSelect={() => {
+        setActiveSessionId(session.id);
+        setDropdownOpen(false);
+      }}
+      onRename={() => startRename(session.id, session.name)}
+      onArchive={() => handleArchive(session.id, session.archived)}
+      onPin={() => handlePin(session.id, session.pinned)}
+      onFork={() => handleFork(session.id)}
+      onDelete={() => handleDelete(session.id)}
+    />
+  );
+
+  const visibleActive = activeSessionsList.filter((s) => filterFn(s.name));
+  const visibleArchived = archivedList.filter((s) => filterFn(s.name));
+
   return (
     <div className="border-b border-border px-2 py-1">
       {createError && (
@@ -173,45 +230,24 @@ export function SessionSelector() {
               </>
             )}
 
-            {activeSessionsList
-              .filter((s) => filterFn(s.name))
-              .map((session) => (
-                <SessionItem
-                  key={session.id}
-                  session={session}
-                  isActive={session.id === activeSessionId}
-                  onSelect={() => {
-                    setActiveSessionId(session.id);
-                    setDropdownOpen(false);
-                  }}
-                  onRename={() => startRename(session.id, session.name)}
-                  onArchive={() => handleArchive(session.id, session.archived)}
-                  onFork={() => handleFork(session.id)}
-                  onDelete={() => handleDelete(session.id)}
-                />
-              ))}
+            {visibleActive.map(renderSessionItem)}
 
-            {archivedList.filter((s) => filterFn(s.name)).length > 0 && (
+            {visibleArchived.length > 0 && (
               <>
                 <DropdownMenuSeparator />
-                <DropdownMenuLabel className="text-xs text-muted-foreground">Archived</DropdownMenuLabel>
-                {archivedList
-                  .filter((s) => filterFn(s.name))
-                  .map((session) => (
-                    <SessionItem
-                      key={session.id}
-                      session={session}
-                      isActive={session.id === activeSessionId}
-                      onSelect={() => {
-                        setActiveSessionId(session.id);
-                        setDropdownOpen(false);
-                      }}
-                      onRename={() => startRename(session.id, session.name)}
-                      onArchive={() => handleArchive(session.id, session.archived)}
-                      onFork={() => handleFork(session.id)}
-                      onDelete={() => handleDelete(session.id)}
-                    />
-                  ))}
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-1 rounded-sm px-2 py-1 text-xs text-muted-foreground hover:bg-muted/50"
+                  onClick={() => setArchivedCollapsed((c) => !c)}
+                >
+                  {archivedCollapsed ? (
+                    <ChevronRight className="size-3" />
+                  ) : (
+                    <ChevronDown className="size-3" />
+                  )}
+                  Archived ({visibleArchived.length})
+                </button>
+                {!archivedCollapsed && visibleArchived.map(renderSessionItem)}
               </>
             )}
 
@@ -232,15 +268,48 @@ export function SessionSelector() {
 
 // --- Session Item ---
 interface SessionItemProps {
-  session: { id: string; name: string; archived: boolean; last_active_at: string; has_unfinished_task: boolean };
+  session: SessionItemSummary;
   isActive: boolean;
   onSelect: () => void;
   onRename: () => void;
   onArchive: () => void;
+  onPin: () => void;
   onFork: () => void;
   onDelete: () => void;
 }
-function SessionItem({ session, isActive, onSelect, onRename, onArchive, onFork, onDelete }: SessionItemProps) {
+
+function SessionAction({
+  label,
+  onClick,
+  disabled,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={disabled}
+          className={cn(
+            "rounded p-0.5",
+            disabled && "cursor-not-allowed opacity-30 hover:bg-transparent",
+          )}
+        >
+          {children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="left">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function SessionItem({ session, isActive, onSelect, onRename, onArchive, onPin, onFork, onDelete }: SessionItemProps) {
   const status = useSessionStatusIndicator(session.id);
   // Disable forking both while a task is actively running and when the session
   // has an unfinished (in-progress or failed) task — the backend rejects both.
@@ -248,6 +317,7 @@ function SessionItem({ session, isActive, onSelect, onRename, onArchive, onFork,
   const forkDisabledReason = status === "active"
     ? "Cannot fork while a task is running"
     : "Cannot fork a session with an unfinished task";
+
   return (
     <DropdownMenuItem className="group/item gap-2" onSelect={onSelect}>
       <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -256,33 +326,39 @@ function SessionItem({ session, isActive, onSelect, onRename, onArchive, onFork,
         )}
         {status === "active" && <span className="size-1.5 shrink-0 rounded-full bg-success" title="Task running" />}
         {isActive && <Check className="size-3.5 shrink-0" />}
+        {session.pinned && <Pin className="size-3 shrink-0 text-primary" />}
         <span className={cn("min-w-0 flex-1 truncate", isActive && "font-medium")}>{session.name}</span>
       </div>
-      <span className="ml-auto text-[10px] text-muted-foreground">{formatRelativeTime(session.last_active_at)}</span>
+      <span className="text-[10px] text-muted-foreground">{formatRelativeTime(session.last_active_at)}</span>
+
+      {/* Action overlay — absolutely positioned over the right portion of the
+          item. Appears on hover/focus, with a gradient background so the
+          underlying time text stays readable underneath the buttons. */}
       <span
-        className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover/item:opacity-100 group-focus-within/item:opacity-100"
+        className="absolute inset-y-0 right-0 flex items-center gap-0.5 pl-7 pr-1 opacity-0 transition-opacity bg-gradient-to-l from-popover via-popover to-popover/0 group-hover/item:opacity-100 group-focus-within/item:opacity-100"
         onPointerDown={(e) => e.stopPropagation()}
         onPointerUp={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
-        <button type="button" className="rounded p-0.5 hover:bg-info/15" onClick={onRename}>
-          <Pencil className="size-3 text-info" />
-        </button>
-        <button type="button" className="rounded p-0.5 hover:bg-warning/15" onClick={onArchive}>
-          <Archive className="size-3 text-warning" />
-        </button>
-        <button
-          type="button"
-          className="rounded p-0.5 hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
-          onClick={onFork}
-          disabled={forkDisabled}
-          title={forkDisabled ? forkDisabledReason : "Fork session"}
-        >
+        <SessionAction label={session.pinned ? "Unpin" : "Pin"} onClick={onPin}>
+          {session.pinned ? <PinOff className="size-3 text-primary" /> : <Pin className="size-3 text-primary" />}
+        </SessionAction>
+        <SessionAction label={forkDisabled ? forkDisabledReason : "Fork session"} onClick={onFork} disabled={forkDisabled}>
           <GitFork className="size-3 text-primary" />
-        </button>
-        <button type="button" className="rounded p-0.5 hover:bg-destructive/20" onClick={onDelete}>
+        </SessionAction>
+        <SessionAction label="Rename" onClick={onRename}>
+          <Pencil className="size-3 text-info" />
+        </SessionAction>
+        <SessionAction label={session.archived ? "Unarchive" : "Archive"} onClick={onArchive}>
+          {session.archived ? (
+            <ArchiveRestore className="size-3 text-warning" />
+          ) : (
+            <Archive className="size-3 text-warning" />
+          )}
+        </SessionAction>
+        <SessionAction label="Delete" onClick={onDelete}>
           <Trash2 className="size-3 text-destructive" />
-        </button>
+        </SessionAction>
       </span>
     </DropdownMenuItem>
   );

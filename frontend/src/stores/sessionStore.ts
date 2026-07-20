@@ -5,6 +5,9 @@ import type { SessionInfo } from '@/types/models'
 
 function sortByActivity(sessions: SessionInfo[]): SessionInfo[] {
   return [...sessions].sort((a, b) => {
+    // Pinned sessions always surface to the top, mirroring the backend's
+    // `ORDER BY pinned DESC, COALESCE(last_active_at, created_at) DESC`.
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
     const aTime = new Date(a.last_active_at || a.created_at).getTime()
     const bTime = new Date(b.last_active_at || b.created_at).getTime()
     return bTime - aTime

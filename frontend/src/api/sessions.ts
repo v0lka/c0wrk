@@ -64,6 +64,16 @@ export async function archiveSession(id: string): Promise<void> {
   }
 }
 
+export async function pinSession(id: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.PinSession(id)
+  } catch (err) {
+    logger.error('Failed to pin session:', err)
+    throw err
+  }
+}
+
 export async function forkSession(id: string): Promise<SessionInfo> {
   try {
     const app = getApp()

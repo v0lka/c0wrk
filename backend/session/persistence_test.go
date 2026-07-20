@@ -311,6 +311,56 @@ func TestArchiveSession(t *testing.T) {
 	}
 }
 
+func TestPinSession(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	session := SessionInfo{
+		ID:        "pin-test",
+		ProjectID: testProjectID,
+		Name:      "Pin Test",
+		CreatedAt: time.Now().Format(time.RFC3339),
+		Pinned:    false,
+	}
+	if err := store.SaveSession(context.Background(), session); err != nil {
+		t.Fatalf("failed to save session: %v", err)
+	}
+
+	// Pin the session
+	if err := store.PinSession(context.Background(), session.ID, true); err != nil {
+		t.Fatalf("failed to pin session: %v", err)
+	}
+
+	// Verify pinned
+	loaded, err := store.LoadSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("failed to load session: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loaded session should not be nil")
+	}
+	if !loaded.Pinned {
+		t.Error("session should be pinned")
+	}
+
+	// Unpin the session
+	if err := store.PinSession(context.Background(), session.ID, false); err != nil {
+		t.Fatalf("failed to unpin session: %v", err)
+	}
+
+	// Verify unpinned
+	loaded, err = store.LoadSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("failed to load session: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loaded session should not be nil")
+	}
+	if loaded.Pinned {
+		t.Error("session should not be pinned")
+	}
+}
+
 func TestRenameSession(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

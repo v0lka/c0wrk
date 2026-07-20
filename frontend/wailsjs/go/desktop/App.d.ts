@@ -163,6 +163,8 @@ export function PickAttachmentFiles():Promise<Array<string>>;
 
 export function PickDirectory():Promise<string>;
 
+export function PinSession(arg1:string):Promise<void>;
+
 export function Pull(arg1:string,arg2:Array<string>):Promise<string>;
 
 export function Push(arg1:string,arg2:Array<string>):Promise<string>;

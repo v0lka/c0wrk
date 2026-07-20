@@ -29,6 +29,9 @@ func (s *captureStore) DeleteSession(_ context.Context, _ string) error { return
 func (s *captureStore) ArchiveSession(_ context.Context, _ string, _ bool) error {
 	return nil
 }
+func (s *captureStore) PinSession(_ context.Context, _ string, _ bool) error {
+	return nil
+}
 func (s *captureStore) RenameSession(_ context.Context, _, _ string) error { return nil }
 func (s *captureStore) UpdateSessionTokens(_ context.Context, _ string, _, _ int, _, _ string, _ float64) error {
 	return nil

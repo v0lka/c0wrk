@@ -52,6 +52,7 @@ type Session struct {
 	CreatedAt           time.Time
 	LastActiveAt        time.Time
 	Archived            bool
+	Pinned              bool
 	WorkspacePath       string // workspace directory (from project)
 	TempDir             string // session-specific temp directory
 	orchestrator        *core.Orchestrator
@@ -533,6 +534,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		Name:                info.Name,
 		CreatedAt:           createdAt,
 		Archived:            info.Archived,
+		Pinned:              info.Pinned,
 		WorkspacePath:       workspacePath,
 		TempDir:             tempDir,
 		orchestrator:        orchestrator,
@@ -600,6 +602,7 @@ func (m *Manager) ListSessionsByProject(projectID string) ([]SessionInfo, error)
 		if s, ok := m.sessions[sessions[i].ID]; ok {
 			s.mu.Lock()
 			sessions[i].Active = s.active
+			sessions[i].Pinned = s.Pinned
 			s.mu.Unlock()
 		}
 	}
@@ -790,6 +793,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		CreatedAt:    session.CreatedAt.Format(time.RFC3339),
 		LastActiveAt: session.CreatedAt.Format(time.RFC3339),
 		Archived:     session.Archived,
+		Pinned:       session.Pinned,
 		Active:       false,
 	}, nil
 }
@@ -981,6 +985,7 @@ func (m *Manager) ListSessions() []SessionInfo {
 			CreatedAt:    s.CreatedAt.Format(time.RFC3339),
 			LastActiveAt: lastActive.Format(time.RFC3339),
 			Archived:     s.Archived,
+			Pinned:       s.Pinned,
 			Active:       s.active,
 		})
 		s.mu.Unlock()
@@ -1062,7 +1067,37 @@ func (m *Manager) ArchiveSession(id string) error {
 	return nil
 }
 
-// SendMessage, ResumeTask, CancelTask, CancelUnfinishedTask,
+// PinSession toggles the pinned flag.
+func (m *Manager) PinSession(id string) error {
+	session, err := m.getOrRestoreSession(id)
+	if err != nil {
+		return fmt.Errorf("failed to restore session: %w", err)
+	}
+	if session == nil {
+		return fmt.Errorf("session not found: %s", id)
+	}
+
+	session.mu.Lock()
+	session.Pinned = !session.Pinned
+	pinned := session.Pinned
+	session.mu.Unlock()
+
+	// Emit session pinned/unpinned event
+	eventType := "session_unpinned"
+	if pinned {
+		eventType = "session_pinned"
+	}
+	m.emitFunc(Event{
+		SessionID: id,
+		Type:      eventType,
+		Data: SessionPinnedData{
+			ID:     id,
+			Pinned: pinned,
+		},
+	})
+
+	return nil
+}
 // emitResumableIfUnfinished, GetBlackboardState, and the BlackboardState
 // helper type live in manager_execution.go. They share the *Manager and
 // *Session types defined in this file (W-21 file split).

@@ -35,6 +35,7 @@ function makeSession(overrides: Partial<SessionInfo> & { id: string; project_id:
     created_at: overrides.created_at ?? '2026-01-01T00:00:00Z',
     last_active_at: overrides.last_active_at ?? '2026-01-01T00:00:00Z',
     archived: overrides.archived ?? false,
+    pinned: overrides.pinned ?? false,
     active: overrides.active ?? false,
     total_input_tokens: overrides.total_input_tokens ?? 0,
     total_output_tokens: overrides.total_output_tokens ?? 0,

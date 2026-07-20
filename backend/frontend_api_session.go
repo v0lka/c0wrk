@@ -173,6 +173,31 @@ func (f *FrontendAPI) ArchiveSession(id string) error {
 	return nil
 }
 
+// PinSession pins/unpins a session.
+func (f *FrontendAPI) PinSession(id string) error {
+	if f.app == nil || f.app.Manager() == nil {
+		return errors.New("session manager not initialized")
+	}
+	manager := f.app.Manager()
+	// Only pin in manager if session exists in memory
+	if _, exists := manager.GetSession(id); exists {
+		if err := manager.PinSession(id); err != nil {
+			return fmt.Errorf("failed to pin session: %w", err)
+		}
+	}
+	// Toggle pin in store
+	// Best-effort persistence: log and continue to avoid disrupting the user session.
+	if f.store != nil {
+		info, err := f.store.LoadSession(context.Background(), id)
+		if err == nil && info != nil {
+			if err := f.store.PinSession(context.Background(), id, !info.Pinned); err != nil {
+				f.log().Error("failed to pin session in store", "error", err)
+			}
+		}
+	}
+	return nil
+}
+
 // SendMessage sends a user message to a session (async - results come via events).
 // activeSkills contains skill names explicitly referenced by the user via /skill-name syntax.
 // goal, when true, enables goal mode for the first message of a task (OR-ed with
