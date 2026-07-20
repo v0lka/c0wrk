@@ -107,7 +107,16 @@ a compile-time Objective-C category.
   the web-content process and re-fetches the `wails://` start URL.
   `WindowReloadApp` / `evaluateJavaScript` cannot revive a dead process —
   the JS runtime is gone — so the delegate path must use `reload` directly
-  on the webview rather than routing through Wails's JS-based reload.
+  on the webview rather than routing through Wails's JS-based reload. The
+  wake path (§2) uses the same primitive — `c0wrkReloadWebview` — because
+  the suspended-but-alive process does not fire the death hook and Wails's
+  `evaluateJavaScript`-based reload is a no-op when the URL is unchanged
+  (see §2). `c0wrkReloadWebview` locates the webview at call time via a
+  recursive search of `NSApp`'s window content views
+  (`c0wrkFindWKWebViewInView`): the death-hook IMP receives `self` and can
+  read `ctx.webview` directly, but the Go wake callback has no such handle,
+  so it reaches the webview through the window hierarchy. Both helpers log
+  the outcome (`c0wrkLogWebviewRecovery`) so recovery is never silent.
 
 ### 2. Deferred wake reload — `desktop/startup.go` (Phase 6)
 
@@ -116,16 +125,34 @@ The wake observer (`NSWorkspaceDidWakeNotification` +
 deferred out of the synchronous observer block.
 
 - **`wakeReloadDelay` (1500ms)** moves the reload past the OS's resume
-  window. The delay is essential: calling `WindowReloadApp` inline inside
-  the wake observer races the OS's mid-resume web-content process and
-  silently kills the app.
+  window. The delay is essential: calling the reload inline inside the wake
+  observer races the OS's mid-resume web-content process and silently kills
+  the app.
 - **`deferredWakeReload`** returns immediately to the caller (it spawns a
   goroutine), so the observer callback never blocks. It captures
   `ctx := a.ctx`, waits via `time.NewTimer(wakeReloadDelay)`, and `select`s
   between `<-ctx.Done()` (cancel — app is shutting down) and `<-timer.C`. It
   re-checks `ctx.Err()` once more after the wait, so a shutdown that began
   during the delay never triggers a reload of a torn-down context. Only then
-  does it call `wailsRuntime.WindowReloadApp(ctx)`.
+  does it call `(*App).reloadFrontend(ctx)`.
+- **Native reload over `WindowReloadApp`.** `reloadFrontend` prefers a
+  **native `-[WKWebView reload]`** (via `reloadWebviewNative`) over Wails's
+  `WindowReloadApp`. Wails's helper is an
+  `evaluateJavaScript("window.location.href = startURL")` call (Wails
+  v2.12.0 darwin `frontend.go:214`, `WailsContext.m:451`). It is the wrong
+  primitive for post-wake recovery for two reasons: (a) it is a **no-op in
+  WebKit when the URL is unchanged** — the webview is already at the start
+  URL, so re-assigning `window.location.href` to the same value triggers no
+  fresh load and never rebuilds the volatile-marked render surface; (b) it
+  **cannot run until the suspended web-content process fully resumes**, so a
+  call during the resume window may be queued then dropped. Because this
+  machine's sleep **suspends** (does not kill) the web-content process, the
+  process-death hook does NOT fire on wake, making a native `reload` the only
+  reliable recovery primitive. `reload` always re-fetches the current
+  request and rebuilds the render surface at the native level, independent of
+  JS-runtime and URL state. On non-darwin builds `reloadWebviewNative`
+  returns false and `WindowReloadApp` is used (the bug is
+  macOS/WKWebView-specific).
 - The 10-second `lastWake` debounce (a single wake posts both notifications)
   is preserved in the observer callback and is independent of the 1500ms
   delay.
@@ -136,9 +163,9 @@ deferred out of the synchronous observer block.
   process **death**.
 - The wake path handles process **suspension** (alive but blank render
   surface) — the case ADR-017 originally described.
-- If the process died, the delegate has already reloaded via
-  `-[WKWebView reload]`; the deferred `WindowReloadApp` is then a harmless
-  re-navigation to the same URL.
+- **Both paths use a native `-[WKWebView reload]`.** If the process died, the
+  delegate has already reloaded; the wake-path native reload is then a
+  harmless second reload of the same view.
 
 The darwin implementation is build-tag-guarded; non-darwin builds get a
 no-op stub (`desktop/powerstate_other.go`). This adds cgo to c0wrk's own Go
@@ -167,8 +194,9 @@ Negative:
 - cgo is now present in c0wrk's own code (darwin-only). CI must have the
   macOS SDK available for darwin builds — already required by Wails.
 - Two recovery paths can both fire on a single sleep/wake cycle (death +
-  wake). The dual-trigger design makes this harmless (the second is a no-op
-  re-navigation), but it adds reasoning surface.
+  wake). The dual-trigger design makes this harmless (the second is a native
+  reload of an already-reloaded view — WebKit coalesces it), but it adds
+  reasoning surface.
 - If Wails v2 later gains native `webViewWebContentProcessDidTerminate`
   handling, the installer's `class_getInstanceMethod` pre-check detects it
   and defers (status 2), so there is no method conflict or double reload;

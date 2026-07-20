@@ -100,6 +100,67 @@ static void c0wrkWebContentProcessDidTerminateIMP(id self, SEL _cmd, WKWebView *
     });
 }
 
+// c0wrkFindWKWebViewInView recursively searches an NSView hierarchy for the
+// first WKWebView. The c0wrk app is single-window with one webview; this is
+// how the wake-reload path reaches it. The -webViewWebContentProcessDidTerminate:
+// IMP receives self and can read ctx.webview directly, but the Go wake callback
+// has no such handle — so it locates the webview through the window hierarchy
+// at wake time (long after startup, the webview always exists).
+static WKWebView *c0wrkFindWKWebViewInView(NSView *view) {
+    if (view == nil) {
+        return nil;
+    }
+    if ([view isKindOfClass:[WKWebView class]]) {
+        return (WKWebView *)view;
+    }
+    for (NSView *sub in [view subviews]) {
+        WKWebView *found = c0wrkFindWKWebViewInView(sub);
+        if (found != nil) {
+            return found;
+        }
+    }
+    return nil;
+}
+
+// c0wrkReloadWebview forces a native -[WKWebView reload] on the main thread.
+// It is the wake-path counterpart to the -webViewWebContentProcessDidTerminate:
+// recovery: both reload the webview NATIVELY. Wails's WindowReloadApp is an
+// evaluateJavaScript("window.location.href = startURL") call (Wails v2.12.0
+// darwin frontend.go:214, WailsContext.m:451), which is the WRONG primitive
+// for post-wake recovery:
+//   - It cannot run until the SUSPENDED web-content process fully resumes; a
+//     call during the resume window may be queued then dropped.
+//   - When the webview is already at the start URL, re-assigning
+//     window.location.href to the same value is a no-op in WebKit — no fresh
+//     load, so the volatile-marked render surface is never rebuilt.
+// Because this machine's sleep SUSPENDS (does not kill) the web-content
+// process, -webViewWebContentProcessDidTerminate: does NOT fire on wake, so
+// this native reload is the only reliable recovery primitive. reload always
+// re-fetches the current request and rebuilds the render surface at the native
+// level, independent of JS-runtime and URL state. The outcome (webview found
+// vs not found) is logged from the dispatched block so the result is never
+// silent. Declared static — like c0wrkInstallWebviewRecovery and
+// c0wrkRegisterWakeObserver — because cgo's //export path compiles the
+// preamble into multiple object files; a non-static definition would collide
+// (duplicate symbol). cgo can call static C functions directly.
+static void c0wrkReloadWebview(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView *wv = nil;
+        for (NSWindow *win in [NSApp windows]) {
+            wv = c0wrkFindWKWebViewInView([win contentView]);
+            if (wv != nil) {
+                break;
+            }
+        }
+        if (wv == nil) {
+            c0wrkLogWebviewRecovery((char *)"wake-reload: webview not found in window hierarchy");
+            return;
+        }
+        c0wrkLogWebviewRecovery((char *)"wake-reload");
+        [wv reload];
+    });
+}
+
 // c0wrkInstallWebviewRecovery attaches the web-content-process-termination
 // hook to the real WailsContext class at runtime. Returns:
 //   0 — hook installed (the normal case under Wails v2.12.0).
@@ -226,4 +287,19 @@ func c0wrkLogWebviewRecovery(reason *C.char) {
 	} else {
 		log.Info("WKWebView web-content process terminated; reloading to recover")
 	}
+}
+
+// reloadWebviewNative forces a NATIVE -[WKWebView reload] on the main thread.
+// It is the wake-path recovery primitive: Wails's WindowReloadApp is an
+// evaluateJavaScript("window.location.href = startURL") call that cannot
+// restore a post-wake blank webview (no-op when URL unchanged; cannot run
+// until the suspended process resumes). See powerstate_darwin.go and ADR-018.
+// The reload is dispatched to the main queue inside the C helper and returns
+// immediately to the caller; the result is logged from the block. Returns
+// true so reloadFrontend knows a native reload was issued and skips the
+// JS-based fallback. On non-darwin builds the stub returns false (the bug is
+// macOS/WKWebView-specific).
+func reloadWebviewNative() bool {
+	C.c0wrkReloadWebview()
+	return true
 }

@@ -93,16 +93,16 @@ const wakeReloadDelay = 1500 * time.Millisecond
 //   - re-checks a.ctx.Err() once more after the wait, so a shutdown that
 //     began during the delay never triggers a reload of a torn-down context.
 //
-// The delay is essential: calling WindowReloadApp inline inside the wake
-// observer races the OS's mid-resume web-content process and silently kills
-// the app. The 10-second debounce (lastWake) is applied by the caller and is
+// The delay is essential: calling the reload inline inside the wake observer
+// races the OS's mid-resume web-content process and silently kills the app.
+// The 10-second debounce (lastWake) is applied by the caller and is
 // independent of this delay.
 //
-// If the web-content process actually died (rather than just suspending), the
-// runtime-injected -webViewWebContentProcessDidTerminate: hook
-// (powerstate_darwin.go) has already reloaded the webview via
-// -[WKWebView reload]; this deferred WindowReloadApp is then a harmless
-// re-navigation to the same URL.
+// reloadFrontend issues a NATIVE -[WKWebView reload]. If the web-content
+// process actually died (rather than just suspending), the runtime-injected
+// -webViewWebContentProcessDidTerminate: hook (powerstate_darwin.go) has
+// already reloaded via -[WKWebView reload]; the native reload here is then a
+// harmless second reload of the same view.
 func (a *App) deferredWakeReload() {
 	if a.ctx == nil {
 		return
@@ -126,13 +126,24 @@ func (a *App) deferredWakeReload() {
 	}()
 }
 
-// reloadFrontend re-navigates the frontend to the start URL. Tests inject a
-// fake via a.reloadAppFn; production code uses wailsRuntime.WindowReloadApp.
-// Mirrors the a.wailsEmit override pattern so deferredWakeReload is testable
-// without a live Wails runtime.
+// reloadFrontend re-navigates the frontend after a power-state wake. It prefers
+// a NATIVE -[WKWebView reload] (reloadWebviewNative) over Wails's
+// WindowReloadApp: Wails's helper is evaluateJavaScript("window.location.href
+// = startURL") (Wails v2.12.0 darwin frontend.go:214, WailsContext.m:451),
+// which cannot restore a post-wake blank webview — it is a no-op when the URL
+// is unchanged and cannot run until the SUSPENDED web-content process fully
+// resumes. Because this machine's sleep suspends rather than kills the process,
+// -webViewWebContentProcessDidTerminate: does NOT fire on wake, so a native
+// reload is the only reliable recovery primitive. On non-darwin builds
+// reloadWebviewNative returns false and WindowReloadApp is used (the bug is
+// macOS/WKWebView-specific). Tests inject a fake via a.reloadAppFn, which
+// takes precedence over both paths. Mirrors the a.wailsEmit override pattern.
 func (a *App) reloadFrontend(ctx context.Context) {
 	if a.reloadAppFn != nil {
 		a.reloadAppFn(ctx)
+		return
+	}
+	if reloadWebviewNative() {
 		return
 	}
 	wailsRuntime.WindowReloadApp(ctx)
@@ -381,7 +392,7 @@ func (a *App) Startup(ctx context.Context) {
 	// On macOS 26 (Tahoe) the WKWebView's rendering surface is left blank
 	// after the system or the displays wake from sleep: the web content
 	// process is suspended/killed by the OS while the Go backend keeps
-	// running (the app still shuts down cleanly). Wails v2 does not forward
+	// running. Wails v2 does not forward
 	// webViewWebContentProcessDidTerminate, so without this the window would
 	// stay blank until a manual restart. Reload the frontend on wake — the
 	// frontend is designed to survive a full reload (sessionRuntime state
@@ -391,17 +402,21 @@ func (a *App) Startup(ctx context.Context) {
 	// The reload is deferred (deferredWakeReload) rather than invoked inline:
 	// the NSWorkspaceDidWake observer block runs synchronously on the main
 	// thread mid-resume, while the OS is still restoring the web-content
-	// process. Calling WindowReloadApp inline at that point races the OS and
+	// process. Calling the reload inline at that point races the OS and
 	// silently kills the app. deferredWakeReload spawns a goroutine that waits
 	// wakeReloadDelay, is cancellable via a.ctx.Done() (shutdown), and
 	// re-checks a.ctx.Err() before reloading.
 	//
-	// The wake path catches process SUSPENSION (alive but blank render
-	// surface); the runtime-injected -webViewWebContentProcessDidTerminate:
-	// hook installed by powerstate_darwin.go catches process DEATH. If the
-	// process died, the hook has already reloaded via -[WKWebView reload];
-	// the deferred WindowReloadApp is then a harmless re-navigation to the
-	// same URL.
+	// Both paths use a NATIVE -[WKWebView reload] (reloadFrontend on the wake
+	// path; the IMP in powerstate_darwin.go on the death path). Wails's
+	// WindowReloadApp is an evaluateJavaScript("window.location.href =
+	// startURL") call that cannot restore a post-wake blank webview (no-op
+	// when URL unchanged; cannot run until the suspended process resumes), so
+	// it is used only as a non-darwin fallback. The wake path catches process
+	// SUSPENSION (alive but blank render surface); the runtime-injected
+	// -webViewWebContentProcessDidTerminate: hook catches process DEATH. If
+	// the process died, the hook has already reloaded; the wake-path native
+	// reload is then a harmless second reload of the same view.
 	var lastWake atomic.Int64
 	registerPowerWakeObserver(log, func() {
 		now := time.Now().UnixNano()
