@@ -113,7 +113,7 @@ The identifier is derived from the repository's **absolute path**: replace every
 
 ### Stack
 
-React 19 + TypeScript ~5.7 + Vite 6 + Tailwind CSS v4 + Zustand 5. UI primitives from shadcn/ui (new-york style) + Radix UI. Icons via lucide-react. Markdown rendered with react-markdown 10 + remark-gfm/emoji/breaks + rehype-highlight/sanitize/external-links/slug/autolink-headings. Syntax highlighting via highlight.js 11 (selective language registration). Mermaid 11 lazy-loaded for diagrams. File tree icons via Nerd Fonts (SauceCodePro NF).
+React 19 + TypeScript ~5.7 + Vite 6 + Tailwind CSS v4 + Zustand 5. UI primitives from shadcn/ui (new-york style) + Radix UI. Icons via lucide-react. Markdown rendered with react-markdown 10 + remark-gfm/emoji/breaks + rehype-highlight/sanitize/external-links/slug/autolink-headings. Syntax highlighting via highlight.js 11 (selective language registration). Mermaid 11 lazy-loaded for diagrams. In-app code/markdown editing via CodeMirror 6 (`@codemirror/*` + `@lezer/highlight`). Embedded terminal via xterm.js (`@xterm/xterm` v6 + `@xterm/addon-fit`). Virtualized lists via `@tanstack/react-virtual`. Character-level diffs via `diff` v9. File tree icons via Nerd Fonts (`@m234/nerd-fonts`, SauceCodePro NF).
 
 ### Layout
 
@@ -123,8 +123,8 @@ Three-column panel layout (no router): Sidebar (default innerWidth/5, clamped 18
 
 1. **RPC**: `window.go.desktop.App.*` — async promise-based calls for CRUD and data fetching.
 2. **Events**: `window.runtime.EventsOn/EventsEmit` — real-time streaming during task execution.
-   - **Session-scoped** events: `session:${sessionId}:${eventType}` (37 event types for task lifecycle).
-   - **Global** events: `startup_error`, `runtime_error`, `backend:ready`, `projects:loaded`, `sessions:loaded`, `project:*`, `workspace:tree_changed`, `skills:changed`, `git:status_changed`, `vector_index:status`, `tool_manager:start`, `tool_manager:progress`, `tool_manager:done`.
+   - **Session-scoped** events: `session:${sessionId}:${eventType}` (41 event types for task lifecycle).
+   - **Global** events: `startup_error`, `runtime_error`, `backend:ready`, `projects:loaded`, `sessions:loaded`, `project:*`, `session:renamed`, `workspace:tree_changed`, `skills:changed`, `git:status_changed`, `vector_index:status`, `tool_manager:start`, `tool_manager:progress`, `tool_manager:done`, `workdirs:changed`.
 
 ### State management (Zustand stores)
 
@@ -142,6 +142,10 @@ Three-column panel layout (no router): Sidebar (default innerWidth/5, clamped 18
 | `settingsStore`      | Settings modal open/close, active tab                                                          |
 | `uiStore`            | Sidebar collapsed state, log level                                                             |
 | `vectorIndexStore`   | Vector index status/progress                                                                   |
+| `goalStore`          | Goal lifecycle: pending proposal (condition/verify/clarification), status verdict, progress    |
+| `reviewStore`        | Review / human-in-the-loop prompts (plan review, review_prompt items)                         |
+| `attachmentsStore`   | Message attachments (per-session file list, per-file failure tracking)                         |
+| `workDirsStore`      | Additional working directories (multi-repo workspace roots)                                    |
 
 Cross-component scroll coordination uses a React context (`ScrollContext.tsx`), not a Zustand store.
 
@@ -149,7 +153,7 @@ Cross-component scroll coordination uses a React context (`ScrollContext.tsx`), 
 
 - Backend persists `ChatMessage` (id, session_id, role, content, reasoning_content, tool_calls, metadata JSON, created_at).
 - Frontend converts to `ChatMessageUI` (semantic string ID, sessionId, MessageType, content, metadata, timestamp).
-- `groupMessages()` transforms flat `ChatMessageUI[]` into a `DisplayItem[]` tree (19 kinds: user, assistant, thought, thought_group, tool, tool_confirm, ask_user, step_limit, resume_action, error, service, plan_step, subagent, reflection, step_finish, context_compaction, memory_read, plan_review, checklist).
+- `groupMessages()` transforms flat `ChatMessageUI[]` into a `DisplayItem[]` tree (21 kinds: user, assistant, thought, thought_group, tool, tool_confirm, ask_user, step_limit, resume_action, error, service, plan_step, subagent, reflection, step_finish, context_compaction, memory_read, plan_review, review_prompt, goal_proposal, checklist).
 - Grouping handles: plan step nesting, tool call/result correlation (via tool_call_id or composite key), thought collapsing, pending action extraction, special tool handling (subagent skipped, finish/memory compact).
 
 ### Key components
