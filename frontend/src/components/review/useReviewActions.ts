@@ -40,7 +40,7 @@ export function useReviewActions(sessionId: string) {
     if (!reviewState) return
     setIsSubmitting(true)
     try {
-      // Build prompt from comments
+      // Build formatted comments
       const parts: string[] = []
       if (reviewState.generalComment.trim()) {
         parts.push(`General comment:\n${reviewState.generalComment.trim()}`)
@@ -52,7 +52,7 @@ export function useReviewActions(sessionId: string) {
         const hunkId = key.slice(idx + 2)
         parts.push(`File: ${filePath}, ${hunkId}:\n${body.trim()}`)
       }
-      const prompt = `The user provided review comments that need to be addressed:\n\n${parts.join('\n\n')}`
+      const commentsText = parts.join('\n\n')
 
       // Flush buffer and set status
       await reviewApi.clearReviewComments(sessionId)
@@ -60,10 +60,13 @@ export function useReviewActions(sessionId: string) {
       clearSessionReview(sessionId)
       enterReviewLoop(sessionId)
 
-      // Close review page and send follow-up message
+      // Close review page and send follow-up message. reviewMode: true tells
+      // the orchestrator to treat this message as actionable review feedback
+      // (a Code Review section is added to the system prompt), so the message
+      // text itself stays as the clean user comments without an instruction prefix.
       useFileViewerStore.getState().closeFile('c0wrk:review')
       closeReviewPage()
-      await chatApi.sendMessage(sessionId, prompt)
+      await chatApi.sendMessage(sessionId, commentsText, [], '', '', false, '', true)
     } catch (err) {
       logger.error('Submit flow failed:', err)
     } finally {

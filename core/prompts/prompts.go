@@ -168,6 +168,14 @@ var VerificationMandate string
 //go:embed injection_defense.md
 var InjectionDefense string
 
+// Code review mode — injected into the system prompt when the user submitted
+// review feedback (ReviewModeKey). Directs the agent to treat the user's
+// message as actionable review comments and edit code to address them, so the
+// review loop (specs/domains/review.md) makes progress toward approval.
+
+//go:embed code_review_mode.md
+var CodeReviewMode string
+
 // Compaction summarize prompt
 
 //go:embed compaction_summarize.md

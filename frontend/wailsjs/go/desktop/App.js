@@ -374,8 +374,8 @@ export function SearchVectorStore(arg1) {
   return window['go']['desktop']['App']['SearchVectorStore'](arg1);
 }
 
-export function SendMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
-  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+export function SendMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
 }
 
 export function SetLogLevel(arg1) {

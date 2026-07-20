@@ -46,11 +46,13 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
 
   if (!isPinned) {
     return (
-      <div className="group flex flex-col items-end gap-1 max-w-[80%] ml-auto overflow-hidden min-w-0 w-fit" data-message-id={item.message.id}>
-        <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 overflow-hidden min-w-0">
-          <UserMessageContent content={content} />
+      <div className="group flex justify-end" data-message-id={item.message.id}>
+        <div className="flex flex-col gap-1 max-w-[80%] min-w-0">
+          <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 w-full overflow-hidden min-w-0 break-words">
+            <UserMessageContent content={content} />
+          </div>
+          <MessageFooter copyText={content} time={formattedTime} />
         </div>
-        <MessageFooter copyText={content} time={formattedTime} />
       </div>
     )
   }
@@ -58,7 +60,7 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
   const shouldClip = isOverflowing && !effectiveExpanded
   return (
     <div
-      className={`group relative transition-all duration-200 ${isOverflowing ? 'cursor-pointer' : ''}`}
+      className={`group relative flex justify-end transition-all duration-200 ${isOverflowing ? 'cursor-pointer' : ''}`}
       style={{ maxHeight: shouldClip ? maxHeight : undefined, overflow: shouldClip ? 'hidden' : undefined }}
       onClick={handleClick}
       onKeyDown={isOverflowing ? handleKeyDown : undefined}
@@ -66,8 +68,8 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
       tabIndex={isOverflowing ? 0 : undefined}
       aria-expanded={isOverflowing ? effectiveExpanded : undefined}
     >
-      <div ref={contentRef} className="flex flex-col items-end gap-1 max-w-[80%] ml-auto overflow-hidden min-w-0 w-fit">
-        <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 overflow-hidden min-w-0">
+      <div ref={contentRef} className="flex flex-col gap-1 max-w-[80%] min-w-0">
+        <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 w-full overflow-hidden min-w-0 break-words">
           <UserMessageContent content={content} />
         </div>
         <MessageFooter copyText={content} time={formattedTime} />

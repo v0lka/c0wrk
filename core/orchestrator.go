@@ -59,6 +59,27 @@ func goalStateFromCtx(ctx context.Context) *goal.GoalState {
 	return nil
 }
 
+// reviewModeKeyType is the context key signaling that the user's message carries
+// code review feedback. It is a presence flag (like PlanModeKey), not a value
+// carrier: buildSystemPrompt renders a "Code Review" section when it is set,
+// instructing the agent to address the comments by editing code.
+type reviewModeKeyType struct{}
+
+// ReviewModeKey is the context key for review-feedback mode.
+var ReviewModeKey = reviewModeKeyType{}
+
+// WithReviewMode returns a context carrying ReviewModeKey so buildSystemPrompt
+// renders the Code Review section for this Conductor run.
+func WithReviewMode(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ReviewModeKey, struct{}{})
+}
+
+// reviewModeFromCtx reports whether review-feedback mode is active for this run.
+func reviewModeFromCtx(ctx context.Context) bool {
+	return ctx.Value(ReviewModeKey) != nil
+}
+
+
 // DefaultAgentsMDMaxBytes is the default cap on AGENTS.md content injected into
 // prompts. AGENTS.md is treated as untrusted, user-controlled input; an
 // unbounded read would let a workspace inject arbitrarily large content into
@@ -1004,6 +1025,12 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// 1. Prepare context (plan-mode key, injection-defense, vector hints, initial context_fill).
 	o.logDebug("orchestrator: handle_message started", "messageLength", len(message), "taskID", opts.TaskID)
 	ctx = o.prepareRequestContext(ctx, taskMessage)
+
+	// Signal review-feedback mode so the system prompt instructs the agent to
+	// treat the user's message as actionable review comments (see review domain).
+	if opts.ReviewMode {
+		ctx = WithReviewMode(ctx)
+	}
 
 	// 2. Setup blackboard (fresh or restored).
 	bb, err := o.setupBlackboard(taskMessage, sessionID, opts.TaskID, opts.PendingAttachments)

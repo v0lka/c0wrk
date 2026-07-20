@@ -38,9 +38,18 @@ task_complete (success, has changes)
 
 ReviewPage:
   ├─ 0 comments → "Approve" → stageAll + ClearReview + close
-  └─ ≥1 comment → "Submit" → build prompt from comments → SendMessage → ClearComments → enterReviewLoop → close
+  └─ ≥1 comment → "Submit" → send comments as a clean user message
+       (general + per-hunk, no instruction prefix) via SendMessage with
+       reviewMode=true → ClearComments → enterReviewLoop → close
        └─ next task_complete → auto-reopen with fresh diff (loop repeats until Approve)
 ```
+
+The actionable framing is **not** embedded in the message text. `reviewMode=true`
+threads through `Manager.SendMessage` → `core.HandleOptions.ReviewMode` →
+`ReviewModeKey` context key → a "Code Review Feedback" section in the Conductor
+system prompt (`core/prompts/code_review_mode.md`). That section directs the
+agent to treat the user's comments as actionable change requests and edit code,
+keeping the displayed user message as the verbatim review comments.
 
 ### Persistence
 

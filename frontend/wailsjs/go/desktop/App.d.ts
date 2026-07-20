@@ -195,7 +195,7 @@ export function SaveReviewPrompt(arg1:string):Promise<backend.ReviewPromptMessag
 
 export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<backend.VectorStoreEntry>>;
 
-export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:string,arg5:string,arg6:boolean,arg7:string):Promise<void>;
+export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:string,arg5:string,arg6:boolean,arg7:string,arg8:boolean):Promise<void>;
 
 export function SetLogLevel(arg1:string):Promise<void>;
 

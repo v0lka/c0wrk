@@ -152,7 +152,9 @@ func (m *Manager) injectIgnoreChecker(ctx context.Context, session *Session, dir
 
 // SendMessage sends a user message to a session's orchestrator (async).
 // Runs in a goroutine, results come via events.
-func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills []string, modelOverride, reasoningEffort string, goal bool, goalBudget string) error {
+// reviewMode, when true, marks the message as carrying code review feedback
+// the agent must address (see core HandleOptions.ReviewMode).
+func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, reviewMode bool) error {
 	session, err := m.getOrRestoreSession(id)
 	if err != nil {
 		return fmt.Errorf("failed to restore session: %w", err)
@@ -340,6 +342,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 			PendingAttachments: pendingAttachments,
 			Goal:               goalEnabled,
 			GoalBudgetOverride: budgetOverride,
+			ReviewMode:         reviewMode,
 		})
 
 		// Distinguish partial-success (incomplete plan) from total failure.
@@ -368,6 +371,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 				PendingAttachments: pendingAttachments,
 				Goal:               goalEnabled,
 				GoalBudgetOverride: budgetOverride,
+				ReviewMode:         reviewMode,
 			})
 			if err != nil && errors.Is(err, orchestration.ErrExecutionIncomplete) && result != nil {
 				m.log().Warn("task completed with incomplete execution (after fallback)", "session_id", id, "error", err)

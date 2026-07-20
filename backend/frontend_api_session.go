@@ -179,7 +179,10 @@ func (f *FrontendAPI) ArchiveSession(id string) error {
 // any /goal command prefix the message text may carry). goalBudget is an optional
 // JSON budget override ({"max_turns":N,"max_tokens":M,"deadline":...}) tightening
 // the goal's resource caps below the config defaults; empty = use defaults.
-func (f *FrontendAPI) SendMessage(id, text string, activeSkills []string, modelOverride, reasoningEffort string, goal bool, goalBudget string) error {
+// reviewMode, when true, marks the message as carrying code review feedback the
+// agent must address (review status == "submitted"); the system prompt gains a
+// Code Review section directing the agent to edit code.
+func (f *FrontendAPI) SendMessage(id, text string, activeSkills []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, reviewMode bool) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
@@ -214,7 +217,7 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills []string, modelO
 	}
 	processedText := core.PreprocessMessageText(text, activeSkills, workspacePath)
 
-	if err := f.app.Manager().SendMessage(f.ctx(), id, processedText, activeSkills, modelOverride, reasoningEffort, goal, goalBudget); err != nil {
+	if err := f.app.Manager().SendMessage(f.ctx(), id, processedText, activeSkills, modelOverride, reasoningEffort, goal, goalBudget, reviewMode); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 	return nil

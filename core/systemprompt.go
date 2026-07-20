@@ -385,6 +385,17 @@ func buildSystemPromptWith(ctx context.Context, userMessage string, modelMeta ll
 			b.Core("## Completion\nYou are operating in single-step mode. When you have completed your work, you MUST call the `finish` tool with your final answer. Do not simply respond with text — the system only recognizes task completion through an explicit `finish` tool call.")
 		}
 
+		// Code-review mode — appended ONLY when the user submitted review
+		// feedback (ReviewModeKey). The user's message contains the review
+		// comments (general + per-hunk); this section directs the agent to
+		// address them by editing code rather than merely acknowledging them,
+		// so the review loop (see specs/domains/review.md) makes real progress
+		// toward approval. Placed after the mode block so it augments the
+		// completion directive. Session-invariant for the task → cacheable.
+		if reviewModeFromCtx(ctx) {
+			b.Core(prompts.CodeReviewMode)
+		}
+
 		// Goal-mode static section — appended ONLY when an active goal is present.
 		// Carries the condition, verify clause, and evidence mandate (session-
 		// invariant within a goal) so they benefit from prompt caching across goal

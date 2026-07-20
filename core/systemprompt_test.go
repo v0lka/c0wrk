@@ -230,6 +230,27 @@ func TestBuildSystemPrompt_GoalSection_AbsentWhenInactive(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPrompt_ReviewSection_PresentWhenActive(t *testing.T) {
+	ctx := WithReviewMode(context.Background())
+
+	sysprompt := buildSystemPrompt(ctx, "address these comments", llmModelMetaForTests())
+	if !strings.Contains(sysprompt, "Code Review Feedback") {
+		t.Error("buildSystemPrompt omitted Code Review section when ReviewModeKey is set")
+	}
+	if !strings.Contains(sysprompt, "actionable change requests") {
+		t.Error("buildSystemPrompt omitted the actionable-feedback directive")
+	}
+}
+
+func TestBuildSystemPrompt_ReviewSection_AbsentWhenInactive(t *testing.T) {
+	ctx := context.Background()
+
+	sysprompt := buildSystemPrompt(ctx, "do the thing", llmModelMetaForTests())
+	if strings.Contains(sysprompt, "Code Review Feedback") {
+		t.Error("buildSystemPrompt included Code Review section when no review is active")
+	}
+}
+
 // llmModelMetaForTests returns a minimal ModelMetadata sufficient for
 // buildSystemPrompt to assemble a prompt without panicking on family lookup.
 func llmModelMetaForTests() llm.ModelMetadata {

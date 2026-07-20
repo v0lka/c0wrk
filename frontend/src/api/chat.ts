@@ -12,6 +12,8 @@ import type { ChatMessage, TokenInfo } from '@/types/models'
  *                   with any /goal prefix the message text carries).
  * @param goalBudget Optional JSON budget override tightening the goal's caps
  *                   (e.g. `{"max_turns":5}`); empty = config defaults.
+ * @param reviewMode Marks the message as code review feedback the agent must
+ *                   address (the system prompt gains a Code Review section).
  */
 export async function sendMessage(
   sessionId: string,
@@ -21,10 +23,11 @@ export async function sendMessage(
   reasoningOverride: string = '',
   goal: boolean = false,
   goalBudget: string = '',
+  reviewMode: boolean = false,
 ): Promise<void> {
   try {
     const app = getApp()
-    await app.SendMessage(sessionId, text, activeSkills, modelOverride, reasoningOverride, goal, goalBudget)
+    await app.SendMessage(sessionId, text, activeSkills, modelOverride, reasoningOverride, goal, goalBudget, reviewMode)
   } catch (err) {
     logger.error('Failed to send message:', err)
     throw err

@@ -189,6 +189,15 @@ type HandleOptions struct {
 	SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)
 	PendingAttachments []orchestration.Attachment // attachments staged by AttachFiles, flushed into the blackboard before execution
 
+	// ReviewMode marks a message as carrying code review feedback the agent
+	// must act on. Set by the backend when a review is submitted (review
+	// status == "submitted"): the user's message contains the review comments
+	// (general + per-hunk). When true, HandleMessage sets ReviewModeKey so the
+	// system prompt gains a "Code Review" section instructing the agent to
+	// address the comments by editing code rather than merely acknowledging
+	// them. See specs/domains/review.md.
+	ReviewMode bool
+
 	// Goal selects goal mode. When true, HandleMessage dispatches to
 	// runGoalLoop: the orchestrator first derives a crisp {condition, verify}
 	// goal via propose_goal (with user sign-off), then iterates the Conductor
