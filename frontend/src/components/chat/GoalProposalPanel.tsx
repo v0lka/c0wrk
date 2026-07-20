@@ -125,7 +125,6 @@ export function GoalProposalPanel({ item }: GoalProposalPanelProps) {
         verify: verify || undefined,
         status: 'active',
         turn: 0,
-        tokens: 0,
       })
     } catch (err) {
       logger.error('Failed to confirm goal proposal:', err)

@@ -164,9 +164,6 @@ export interface GoalStatusData {
   readonly turn: number
   readonly condition: string
   readonly max_turns: number
-  readonly max_tokens: number
-  readonly tokens: number
-  readonly deadline?: string
   readonly verdict?: string
   readonly reason?: string
 }
@@ -180,8 +177,6 @@ export interface GoalProgressData {
   readonly phase: 'goal_progress'
   readonly turn: number
   readonly max_turns: number
-  readonly tokens: number
-  readonly max_tokens: number
   readonly condition: string
 }
 
@@ -398,8 +393,6 @@ export function isGoalStatusData(d: unknown): d is GoalStatusData {
     && typeof d.turn === 'number'
     && typeof d.condition === 'string'
     && typeof d.max_turns === 'number'
-    && typeof d.max_tokens === 'number'
-    && typeof d.tokens === 'number'
 }
 
 /**
@@ -411,8 +404,6 @@ export function isGoalProgressData(d: unknown): d is GoalProgressData {
   if (d.phase !== 'goal_progress') return false
   return typeof d.turn === 'number'
     && typeof d.max_turns === 'number'
-    && typeof d.tokens === 'number'
-    && typeof d.max_tokens === 'number'
     && typeof d.condition === 'string'
 }
 

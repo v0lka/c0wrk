@@ -1694,7 +1694,7 @@ func TestSaveAndLoadGoalState(t *testing.T) {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
 
-	payload := json.RawMessage(`{"condition":"all tests pass","verify_clause":"go test ./...","budget":{"max_turns":5,"max_tokens":0},"turn_count":2,"token_count":1024,"status":"paused","created_at":"2026-07-18T12:00:00Z"}`)
+	payload := json.RawMessage(`{"condition":"all tests pass","verify_clause":"go test ./...","budget":{"max_turns":5},"turn_count":2,"status":"paused","created_at":"2026-07-18T12:00:00Z"}`)
 
 	// Save
 	if err := store.SaveGoalState(context.Background(), "task-goal", payload); err != nil {

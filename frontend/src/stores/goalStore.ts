@@ -20,12 +20,6 @@ export interface ActiveGoal {
   turn: number
   /** Optional turn budget cap (0 = unlimited). */
   maxTurns?: number
-  /** Optional token budget cap (0 = unlimited). */
-  maxTokens?: number
-  /** Tokens consumed so far. */
-  tokens: number
-  /** Optional wall-clock deadline (RFC3339). */
-  deadline?: string
   /** Agent's last self-declared verdict status, if any. */
   verdict?: string
   /** Agent's last verdict reason, if any. */
@@ -36,8 +30,6 @@ export interface ActiveGoal {
 export interface GoalProgress {
   turn: number
   maxTurns?: number
-  tokens: number
-  maxTokens?: number
   condition: string
 }
 
@@ -125,9 +117,7 @@ export const useGoalStore = create<GoalState & GoalActions>((set) => ({
             [sessionId]: {
               ...s.activeGoal[sessionId]!,
               turn: progress.turn,
-              tokens: progress.tokens,
               maxTurns: progress.maxTurns,
-              maxTokens: progress.maxTokens,
               condition: progress.condition,
             },
           }

@@ -202,8 +202,8 @@ func (f *FrontendAPI) PinSession(id string) error {
 // activeSkills contains skill names explicitly referenced by the user via /skill-name syntax.
 // goal, when true, enables goal mode for the first message of a task (OR-ed with
 // any /goal command prefix the message text may carry). goalBudget is an optional
-// JSON budget override ({"max_turns":N,"max_tokens":M,"deadline":...}) tightening
-// the goal's resource caps below the config defaults; empty = use defaults.
+// JSON budget override ({"max_turns":N}) tightening the goal's turn cap;
+// empty = use defaults (unlimited).
 // reviewMode, when true, marks the message as carrying code review feedback the
 // agent must address (review status == "submitted"); the system prompt gains a
 // Code Review section directing the agent to edit code.

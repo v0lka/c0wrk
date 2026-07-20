@@ -10,8 +10,8 @@ import type { ChatMessage, TokenInfo } from '@/types/models'
  *
  * @param goal       Enable goal mode for the first message of a task (OR-ed
  *                   with any /goal prefix the message text carries).
- * @param goalBudget Optional JSON budget override tightening the goal's caps
- *                   (e.g. `{"max_turns":5}`); empty = config defaults.
+ * @param goalBudget Optional JSON budget override ({"max_turns":N});
+ *                   empty = unlimited.
  * @param reviewMode Marks the message as code review feedback the agent must
  *                   address (the system prompt gains a Code Review section).
  */

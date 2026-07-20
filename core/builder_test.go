@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/c0wrk/core/tools"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
@@ -258,70 +257,6 @@ func TestListAnthropicModels_MalformedBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for malformed response, got nil")
 	}
-}
-
-// TestParseGoalWallClockDeadline covers the duration parser used by Build() to
-// resolve the GoalConfig.WallClockDeadline string into an absolute-duration
-// field on OrchestratorConfig. The empty string and "0" both mean unlimited
-// (zero duration); an unparseable value falls back to zero.
-func TestParseGoalWallClockDeadline(t *testing.T) {
-	cases := []struct {
-		name string
-		raw  string
-		want time.Duration
-	}{
-		{"30m", "30m", 30 * time.Minute},
-		{"2h", "2h", 2 * time.Hour},
-		{"1h30m", "1h30m", 90 * time.Minute},
-		{"empty is unlimited", "", 0},
-		{"zero string is unlimited", "0", 0},
-		{"invalid yields zero", "not-a-duration", 0},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := parseGoalWallClockDeadline(tc.raw, nil)
-			if got != tc.want {
-				t.Errorf("parseGoalWallClockDeadline(%q) = %v, want %v", tc.raw, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestBuild_GoalBudgetMapping documents the exact mapping Build() applies from
-// BuilderGoalConfig to OrchestratorConfig: token caps are SUMMED into
-// GoalBudgetDefaults.MaxTokens, and WallClockDeadline is parsed into
-// GoalWallClockBudget. A full Build() requires a live LLM provider, so the
-// mapping is exercised at the OrchestratorConfig construction level using the
-// same expressions Build() uses.
-func TestBuild_GoalBudgetMapping(t *testing.T) {
-	t.Run("caps summed, deadline parsed", func(t *testing.T) {
-		cfg := BuilderGoalConfig{WallClockDeadline: "30m", TokenCapInput: 1000, TokenCapOutput: 2000}
-		oc := OrchestratorConfig{
-			GoalBudgetDefaults: goal.GoalBudget{
-				MaxTokens: cfg.TokenCapInput + cfg.TokenCapOutput,
-			},
-			GoalWallClockBudget: parseGoalWallClockDeadline(cfg.WallClockDeadline, nil),
-		}
-		if got := oc.GoalBudgetDefaults.MaxTokens; got != 3000 {
-			t.Errorf("GoalBudgetDefaults.MaxTokens = %d, want 3000", got)
-		}
-		if oc.GoalWallClockBudget != 30*time.Minute {
-			t.Errorf("GoalWallClockBudget = %v, want %v", oc.GoalWallClockBudget, 30*time.Minute)
-		}
-	})
-
-	t.Run("zero config stays unlimited", func(t *testing.T) {
-		oc := OrchestratorConfig{
-			GoalBudgetDefaults:  goal.GoalBudget{MaxTokens: 0},
-			GoalWallClockBudget: parseGoalWallClockDeadline("", nil),
-		}
-		if !oc.GoalBudgetDefaults.IsUnlimited() {
-			t.Errorf("zero goal config must be unlimited, got %+v", oc.GoalBudgetDefaults)
-		}
-		if oc.GoalWallClockBudget != 0 {
-			t.Errorf("GoalWallClockBudget = %v, want 0", oc.GoalWallClockBudget)
-		}
-	})
 }
 
 // TestStripMarkdownCodeFence verifies the defensive safety net that removes a

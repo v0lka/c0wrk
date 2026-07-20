@@ -8,7 +8,7 @@ Goal mode is a multi-turn, agent-driven execution loop that pursues a single use
 
 - `core/goal/types.go` — the `goal` domain package: `GoalStatus`, `GoalBudget`, `GoalEvidence`, `Verdict`, `GoalState` (the runtime state machine)
 - `core/orchestrator_goal.go` — the goal loop: `deriveGoal`, `runGoalLoop`, `resumeGoalLoop`, `runGoalTurns`, budget/pause/anti-spin logic, the `countingToolExec` wrapper (anti-spin tool-call counter), `emitGoalStatus`/`emitGoalProgress`, `PauseGoal`
-- `core/orchestrator.go` — `HandleMessage` dispatch (`opts.Goal`), `Resume` goal-loop branch, `WithGoalState`, `OrchestratorConfig.GoalBudgetDefaults`, `activeGoalPause atomic.Pointer[atomic.Bool]` field (cross-goroutine pause signal), `usageTracker *llm.UsageTracker` field (per-turn token accounting), `ApplyRequestOverrides` (shared step 0 for HandleMessage and the resume path)
+- `core/orchestrator.go` — `HandleMessage` dispatch (`opts.Goal`), `Resume` goal-loop branch, `WithGoalState`, `activeGoalPause atomic.Pointer[atomic.Bool]` field (cross-goroutine pause signal), `ApplyRequestOverrides` (shared step 0 for HandleMessage and the resume path)
 - `core/message_preprocess.go` — `DetectAndStripGoalMode` (`/goal` prefix detection)
 - `core/types.go` — `HandleOptions.Goal`, `HandleOptions.GoalBudgetOverride`
 - `core/systemprompt.go` — goal-mode system-prompt section rendering (`prompts.GoalModeSubstitute`) and the derivation prompt selection (`prompts.GoalDerivation`)
@@ -19,7 +19,6 @@ Goal mode is a multi-turn, agent-driven execution loop that pursues a single use
 - `backend/frontend_api_goal.go` — RPC surface: `ConfirmGoal`/`CancelGoal`/`PauseGoal`/`ResumeGoal`/`ClearGoal`
 - `backend/session/manager_goal.go` — `ResumeGoal`, `SetGoalProposalResolver`, `ResolveGoalProposal`, `PauseGoal`, `ClearGoal`
 - `backend/session/events.go` — `GoalProposalPayload`
-- `backend/config/config.go` / `backend/config/defaults.go` — `GoalConfig` + budget defaults
 
 ## Core Types
 
@@ -33,9 +32,7 @@ Goal mode is a multi-turn, agent-driven execution loop that pursues a single use
 //   cancelled     — abandoned by the user (terminal)
 
 type GoalBudget struct {
-    MaxTurns  int       // 0 = unlimited
-    MaxTokens int       // 0 = unlimited
-    Deadline  time.Time // zero = no wall-clock deadline
+    MaxTurns int // 0 = unlimited
 }
 
 type GoalEvidence struct {
@@ -56,7 +53,6 @@ type GoalState struct {
     VerifyClause string     // checkable predicate for the condition
     Budget       GoalBudget
     TurnCount    int        // turns spent so far
-    TokenCount   int        // tokens spent so far
     Status       GoalStatus
     LastVerdict  *Verdict   // most recent verification outcome (nil = none yet)
     CreatedAt    time.Time
@@ -87,7 +83,7 @@ If the agent never calls `propose_goal`, the run cancelled, or the user cancelle
 
 ### Phase 2 — Activation
 
-`runGoalLoop` resolves the budget (`resolveGoalBudget`: config defaults, then `opts.GoalBudgetOverride` wins field-by-field for any field it sets to a non-zero value), stamps `Status = active`, persists the `GoalState`, and installs the pause signal. Conversation history is truncated once to the configured window; the trajectory accumulates across turns via the blackboard.
+`runGoalLoop` resolves the budget (`resolveGoalBudget`: applies `opts.GoalBudgetOverride` — `MaxTurns` when set, otherwise unlimited), stamps `Status = active`, persists the `GoalState`, and installs the pause signal. Conversation history is truncated once to the configured window; the trajectory accumulates across turns via the blackboard.
 
 ### Phase 3 — Turn iteration (runGoalTurns)
 
@@ -101,13 +97,6 @@ for gs.Status == active:
   │   — NO turn routes — routing was decided once at the top of runGoalLoop,
   │     before derivation (re-routing a continuation misclassifies it; see Routing Invariant)
   │   — tool executor wrapped in countingToolExec (per-turn tool-call count for anti-spin)
-  │   — per-turn token usage = delta of the session UsageTracker.Totals() across the turn.
-  │     RunConductor selects its caller via callerForConductor (which returns
-  │     deps.trackingCaller in production and bypasses deps.llm), so wrapping
-  │     deps.llm cannot observe the real calls — the session-wide UsageTracker
-  │     that trackingCaller records into is the only accurate sink. Single-flight
-  │     guarantees no other request runs concurrently to add to the tracker
-  │     mid-turn, so the before/after delta is exact.
   │   — context carries a fresh GoalStatusSink (declare_goal_status writes into it)
   │   — context carries the GoalState (WithGoalState) so the system prompt renders the goal
   │
@@ -120,8 +109,6 @@ for gs.Status == active:
   │
   ├─ budget checks (any hit → Status=exhausted, break):
   │     MaxTurns > 0 && TurnCount >= MaxTurns
-  │     MaxTokens > 0 && TokenCount >= MaxTokens
-  │     !Deadline.IsZero() && now.After(Deadline)
   │     MaxTurns == 0 && TurnCount >= goalLoopMaxTurns (hard ceiling = 50, only when no explicit turn cap is set)
   │
   └─ emit goal_progress (turn/budget telemetry) + goal_status (full snapshot)
@@ -184,20 +171,17 @@ Terminal states (`met`, `exhausted`, `cancelled`) are never re-entered — `Resu
 
 ## Budgets
 
-`GoalBudget` caps the resources the agent may spend. **Zero-values mean "unlimited"** for that dimension. The agent stops only when the budget that IS set is exceeded.
+`GoalBudget` caps the resources the agent may spend. **It is turn-only**: the single dimension is `MaxTurns`, and `MaxTurns == 0` means "unlimited". The agent stops only when the turn cap is exceeded.
 
-- **Resolution**: `resolveGoalBudget(config.GoalBudgetDefaults, opts.GoalBudgetOverride)` — the override wins for any dimension it sets to a non-zero value; zero-valued override fields fall back to the default. This lets a caller tighten one dimension (e.g. `MaxTurns`) without re-specifying the others.
-- **Config defaults** (`config.yaml` → `goal`): `wall_clock_deadline` (duration string; `"0"`/empty = unlimited), `token_cap_input` (0 = generous default of 1,000,000), `token_cap_output` (0 = generous default of 200,000). See [../../config.example.yaml](../../config.example.yaml) and `backend/config/defaults.go`.
-- **Override path**: parsed from a JSON string in `SendMessage`'s goal-budget field (`backend/session/manager_execution.go` `parseGoalBudget`); an empty/invalid string falls back to config defaults so a malformed budget never blocks a send.
-- **Hard ceiling**: `goalLoopMaxTurns = 50` is a safety net applied **only when no explicit turn cap is set** (`Budget.MaxTurns == 0`). It does **not** override an explicitly-set `MaxTurns`: the override contract ("the override wins for any field it sets") means a caller that sets `MaxTurns > goalLoopMaxTurns` is entitled to that many turns. The ceiling only guards the no-cap case so a truly-unlimited goal is never an actually-infinite loop.
+- **Resolution**: `resolveGoalBudget(opts.GoalBudgetOverride)` — the override sets MaxTurns when it is non-zero; a nil override (or `MaxTurns == 0`) means unlimited. There are no config-level defaults now; the budget is resolved entirely from the per-message override.
+- **Override path**: parsed from a JSON string in `SendMessage`'s goal-budget field (`backend/session/manager_execution.go` `parseGoalBudget`); an empty/invalid string falls back to unlimited so a malformed budget never blocks a send. The frontend `BudgetCombobox` offers ∞ / 3 / 5 / 10 turns plus a custom turn-count input, producing `{"max_turns":N}`.
+- **Hard ceiling**: `goalLoopMaxTurns = 50` is a safety net applied **only when no explicit turn cap is set** (`Budget.MaxTurns == 0`). It does **not** override an explicitly-set `MaxTurns`: the override contract ("the override wins for the field it sets") means a caller that sets `MaxTurns > goalLoopMaxTurns` is entitled to that many turns. The ceiling only guards the no-cap case so a truly-unlimited goal is never an actually-infinite loop.
 
 Budgets are applied at **activation (turn 1)**, not at derivation — derivation only decides WHAT the goal is, not how much it may cost.
 
 ## Anti-Spin
 
 A turn that made **zero tool calls AND declared no verdict** is idle — the agent is stuck and further turns would likely repeat the same non-action. The loop halts such a turn as `blocked_idle` rather than spinning. The per-turn tool-call count comes from the `countingToolExec` wrapper installed around the turn's tool executor.
-
-Per-turn token usage — the input to the `MaxTokens` budget check — is **not** gathered by an LLM-caller wrapper (the production caller is selected inside `RunConductor` via `callerForConductor` and bypasses `deps.llm`, so it cannot be observed by wrapping). Instead the loop snapshots the session-wide `UsageTracker.Totals()` before and after each turn and accumulates the delta into `gs.TokenCount`; single-flight guarantees the delta is exact (no other request adds to the tracker mid-turn). See [Phase 3 — Turn iteration](#phase-3--turn-iteration-rungoalturns).
 
 ## Persistence & Resume
 
@@ -216,8 +200,8 @@ Goal mode uses two channels: a dedicated session event for the proposal sign-off
 | ----- | --------- | --------------- | ------ | ----------- |
 | `goal_proposal` | backend → frontend | `GoalProposalPayload {request_id, session_id, condition, verify, clarification?, needs_clarification}` | `goalProposerAdapter.Propose` | Derivation agent called `propose_goal`; surfaces as a pending action that **blocks the agent** until the user responds. Persisted (role `goal_proposal`) so it reappears on reload. |
 | `goal_proposal_response` | frontend → backend | `{request_id, decision, condition?, verify?, clarification?}` | `GoalProposalPanel` (Approve/Cancel) | User's sign-off decision. Both the event path and the RPC path (`ConfirmGoal`/`CancelGoal`) funnel through a single resolver on the desktop pending map. |
-| `goal_status` | backend → frontend | `service` event, `phase: "goal_status"`, meta: `{status, turn, condition, max_turns, max_tokens, tokens, deadline?, verdict?, reason?}` | `emitGoalStatus` | Full goal snapshot, emitted on every state transition (paused/met/exhausted/blocked_idle) and after each turn. |
-| `goal_progress` | backend → frontend | `service` event, `phase: "goal_progress"`, meta: `{turn, max_turns, tokens, max_tokens, condition}` | `emitGoalProgress` | Mid-loop turn/budget telemetry (emitted after a non-terminal turn). |
+| `goal_status` | backend → frontend | `service` event, `phase: "goal_status"`, meta: `{status, turn, condition, max_turns, verdict?, reason?}` | `emitGoalStatus` | Full goal snapshot, emitted on every state transition (paused/met/exhausted/blocked_idle) and after each turn. |
+| `goal_progress` | backend → frontend | `service` event, `phase: "goal_progress"`, meta: `{turn, max_turns, condition}` | `emitGoalProgress` | Mid-loop turn/budget telemetry (emitted after a non-terminal turn). |
 
 The `goal_status`/`goal_progress` events reuse the existing `ServiceWithMeta` channel with a `phase` discriminator — no new `Emitter`-interface methods. The frontend goal store (`useGoalEvents`) reconciles the store from these events; the `goal_proposal` event is handled by the goal handlers hook which writes both the goal store and a chat message (`goal_proposal` DisplayItem). See [../contracts/event-catalog.md](../contracts/event-catalog.md) and [frontend/events.md](frontend/events.md).
 
@@ -243,12 +227,11 @@ The goal loop runs under the `Orchestrator` single-flight guard (`requestInFligh
 
 ## Configuration
 
+The goal budget is **turn-only**. There are no config-level token or wall-clock caps; a per-goal turn limit is selected in the UI (`BudgetCombobox`: ∞ / 3 / 5 / 10 turns, or a custom number). An unlimited goal (∞) is bounded only by the internal `goalLoopMaxTurns = 50` safety ceiling.
+
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
-| `goal.wall_clock_deadline` | `"0"` (unlimited) | Duration string (`"30m"`, `"2h"`) parsed into an absolute deadline; `"0"`/empty = no wall-clock cap |
-| `goal.token_cap_input` | `1_000_000` | Max input tokens before `exhausted`; 0 → generous default |
-| `goal.token_cap_output` | `200_000` | Max output tokens before `exhausted`; 0 → generous default |
-| `HandleOptions.GoalBudgetOverride` | nil | Per-request JSON override; any non-zero field wins over the config default |
+| `HandleOptions.GoalBudgetOverride` | nil | Per-request JSON override (`{"max_turns":N}`); `MaxTurns` when set, otherwise unlimited |
 
 ## Invariants
 

@@ -348,7 +348,6 @@ func TestTaskStoreAdapter_SaveAndLoadGoalState(t *testing.T) {
 		VerifyClause: "go test ./core/goal/...",
 		Budget:       goal.GoalBudget{MaxTurns: 5},
 		TurnCount:    2,
-		TokenCount:   1024,
 		Status:       goal.StatusPaused,
 		LastVerdict: &goal.Verdict{
 			Status:     "not_met",
@@ -384,8 +383,8 @@ func TestTaskStoreAdapter_SaveAndLoadGoalState(t *testing.T) {
 	if loaded.Budget.MaxTurns != 5 {
 		t.Errorf("Budget.MaxTurns: got %d, want 5", loaded.Budget.MaxTurns)
 	}
-	if loaded.TurnCount != 2 || loaded.TokenCount != 1024 {
-		t.Errorf("counters: turn=%d token=%d, want 2/1024", loaded.TurnCount, loaded.TokenCount)
+	if loaded.TurnCount != 2 {
+		t.Errorf("TurnCount: got %d, want 2", loaded.TurnCount)
 	}
 	if loaded.LastVerdict == nil {
 		t.Fatal("LastVerdict should round-trip")

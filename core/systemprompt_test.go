@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/c0wrk/core/prompts"
@@ -134,17 +133,13 @@ func TestRenderGoalModeSection_NilOrEmpty(t *testing.T) {
 }
 
 func TestRenderGoalModeSection_ContainsGoalFields(t *testing.T) {
-	deadline := time.Date(2026, 7, 18, 14, 30, 0, 0, time.UTC)
 	gs := &goal.GoalState{
 		Condition:    "All tests in the auth package pass.",
 		VerifyClause: "go test ./auth/... exits 0",
 		Budget: goal.GoalBudget{
-			MaxTurns:  8,
-			MaxTokens: 200000,
-			Deadline:  deadline,
+			MaxTurns: 8,
 		},
-		TurnCount:  3,
-		TokenCount: 45000,
+		TurnCount: 3,
 	}
 
 	got := renderGoalModeSection(gs)
@@ -166,15 +161,9 @@ func TestRenderGoalModeSection_ContainsGoalFields(t *testing.T) {
 	if !strings.Contains(got, "declare_goal_status") {
 		t.Error("missing declare_goal_status reference in evidence mandate")
 	}
-	// Budget line reflects turn/token counts and caps, plus deadline.
+	// Budget line reflects the turn count and cap.
 	if !strings.Contains(got, "turn 3/8") {
 		t.Error("missing turn budget segment")
-	}
-	if !strings.Contains(got, "tokens used 45000/200000") {
-		t.Error("missing token budget segment")
-	}
-	if !strings.Contains(got, "deadline 14:30") {
-		t.Error("missing deadline segment")
 	}
 }
 
@@ -186,12 +175,6 @@ func TestRenderGoalModeSection_UnlimitedBudget(t *testing.T) {
 	got := renderGoalModeSection(gs)
 	if !strings.Contains(got, "turn 0/unlimited") {
 		t.Errorf("expected unlimited turn rendering, got %q", got)
-	}
-	if !strings.Contains(got, "tokens used 0/unlimited") {
-		t.Error("expected unlimited token rendering")
-	}
-	if !strings.Contains(got, "deadline none") {
-		t.Error("expected 'deadline none' rendering for zero deadline")
 	}
 	// Empty verify clause falls back to an explicit placeholder, not a bare blank.
 	if !strings.Contains(got, "verify the condition") {
@@ -265,9 +248,8 @@ func TestRenderGoalModeStatic_ExcludesBudgetLine(t *testing.T) {
 	gs := &goal.GoalState{
 		Condition:    "All tests pass.",
 		VerifyClause: "go test ./...",
-		Budget:       goal.GoalBudget{MaxTurns: 8, MaxTokens: 200000},
+		Budget:       goal.GoalBudget{MaxTurns: 8},
 		TurnCount:    3,
-		TokenCount:   45000,
 	}
 	got := renderGoalModeStatic(gs)
 	if !strings.Contains(got, "All tests pass.") {
@@ -280,9 +262,6 @@ func TestRenderGoalModeStatic_ExcludesBudgetLine(t *testing.T) {
 	if strings.Contains(got, "turn 3/8") {
 		t.Error("static section leaked the volatile turn budget — would bust prompt cache")
 	}
-	if strings.Contains(got, "tokens used 45000") {
-		t.Error("static section leaked the volatile token count — would bust prompt cache")
-	}
 	if strings.Contains(got, goalStaticBudgetNote) {
 		// the static budget note SHOULD be present (it is session-invariant).
 	} else {
@@ -291,21 +270,17 @@ func TestRenderGoalModeStatic_ExcludesBudgetLine(t *testing.T) {
 }
 
 // TestRenderGoalModeVolatile_OnlyBudgetLine verifies the volatile goal section
-// contains ONLY the per-turn budget line (turn/token counts + deadline), which
-// is the data that legitimately changes every turn.
+// contains ONLY the per-turn budget line (turn count + cap), which is the data
+// that legitimately changes every turn.
 func TestRenderGoalModeVolatile_OnlyBudgetLine(t *testing.T) {
 	gs := &goal.GoalState{
-		Condition:  "Ship it.",
-		Budget:     goal.GoalBudget{MaxTurns: 5, MaxTokens: 100000},
-		TurnCount:  2,
-		TokenCount: 10000,
+		Condition: "Ship it.",
+		Budget:    goal.GoalBudget{MaxTurns: 5},
+		TurnCount: 2,
 	}
 	got := renderGoalModeVolatile(gs)
 	if !strings.Contains(got, "turn 2/5") {
 		t.Errorf("volatile section missing the turn budget, got %q", got)
-	}
-	if !strings.Contains(got, "tokens used 10000/100000") {
-		t.Errorf("volatile section missing the token budget, got %q", got)
 	}
 	// The condition (which belongs in the static section) must NOT appear.
 	if strings.Contains(got, "Ship it.") {
@@ -334,7 +309,6 @@ func TestBuildSystemPrompt_GoalSection_BudgetLineAfterCacheBreak(t *testing.T) {
 		VerifyClause: "go test -bench=. -benchmem shows 0 allocs/op",
 		Budget:       goal.GoalBudget{MaxTurns: 4},
 		TurnCount:    1,
-		TokenCount:   500,
 	}
 	ctx := WithGoalState(context.Background(), gs)
 
@@ -357,9 +331,6 @@ func TestBuildSystemPrompt_GoalSection_BudgetLineAfterCacheBreak(t *testing.T) {
 	// that changes every turn and would invalidate the cache.
 	if strings.Contains(stable, "turn 1/4") {
 		t.Error("stable prefix contains the volatile turn budget — would bust prompt cache across goal turns")
-	}
-	if strings.Contains(stable, "tokens used 500") {
-		t.Error("stable prefix contains the volatile token count — would bust prompt cache across goal turns")
 	}
 
 	// The dynamic (post-CacheBreak) tail MUST contain the volatile budget line.

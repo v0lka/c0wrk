@@ -151,9 +151,9 @@ func (c *capturingProposer) outcome() (tools.GoalProposal, tools.GoalProposalRes
 // in the response; unedited fields fall back to the proposal). On "cancel" or
 // any non-approve decision it returns an error.
 //
-// The budget is left unlimited here; caps from config are applied when the
-// goal is activated (turn 1), not at derivation time — derivation only decides
-// WHAT the goal is, not how much it may cost.
+// The budget is left unlimited here; the turn cap from config is applied when
+// the goal is activated (turn 1), not at derivation time — derivation only
+// decides WHAT the goal is, not how much it may cost.
 func buildGoalState(proposal tools.GoalProposal, resp tools.GoalProposalResponse, now time.Time) (*goal.GoalState, error) {
 	switch resp.Decision {
 	case "approve":
@@ -216,10 +216,10 @@ func ensureProposeGoalTool(list []sdktools.ToolDescriptor, registry *sdktools.To
 // ----------------------------------------------------------------------------
 
 // goalLoopMaxTurns is the hard ceiling on goal-loop iterations applied when no
-// budget (config default or override) sets MaxTurns. It is a safety net against
-// an accidental infinite loop, not a user-facing default — a goal without an
-// explicit turn cap is "unlimited" per the goal.GoalBudget contract, but no
-// loop is truly infinite.
+// budget override sets MaxTurns. It is a safety net against an accidental
+// infinite loop, not a user-facing default — a goal without an explicit turn
+// cap is "unlimited" per the goal.GoalBudget contract, but no loop is truly
+// infinite.
 const goalLoopMaxTurns = 50
 
 // runGoalLoop is the multi-turn goal-mode driver. It is entered from
@@ -237,8 +237,8 @@ const goalLoopMaxTurns = 50
 //     the {condition, verify} in the actual codebase and submits it for user
 //     sign-off via propose_goal. On cancel/error, the loop exits with the
 //     original message as output.
-//  2. Resolve the budget: config defaults overridden by opts.GoalBudgetOverride
-//     (any field the override sets wins). Persist the active GoalState.
+//  2. Resolve the budget: opts.GoalBudgetOverride sets MaxTurns when present
+//     (otherwise unlimited). Persist the active GoalState.
 //  3. Install the pause signal (PauseGoal flips the atomic; the loop polls it).
 //  4. Iterate turns while Status == active:
 //     - top of turn: if paused → Status=paused, break (release single-flight).
@@ -249,8 +249,8 @@ const goalLoopMaxTurns = 50
 //     - read the verdict sink: a "met" verdict → Status=met, break.
 //     - anti-spin: a turn that made ZERO tool calls AND declared no verdict →
 //     Status=blocked_idle, break (the agent is stuck/idling).
-//     - budget: increment turn/token counters; if any cap hit →
-//     Status=exhausted, break; check the wall-clock deadline.
+//     - budget: increment the turn counter; if MaxTurns is hit →
+//     Status=exhausted, break.
 //     - emit goal_progress (turn/budget) and goal_status events.
 //  5. Return a HandleResult carrying the final goal outcome.
 func (o *Orchestrator) runGoalLoop(
@@ -308,16 +308,11 @@ func (o *Orchestrator) runGoalLoop(
 		return o.goalLoopResult(conductorMessage, bb, nil, goal.StatusActive, ""), nil
 	}
 
-	// Resolve the budget: config defaults, then override field-by-field. The
-	// wall-clock default is stored as a duration (activation-relative) and
-	// resolved to an absolute deadline here, only when no explicit deadline is
-	// already set on the defaults. resolveGoalBudget still lets a per-goal
-	// override win for any non-zero field.
-	defaults := o.config.GoalBudgetDefaults
-	if o.config.GoalWallClockBudget > 0 && defaults.Deadline.IsZero() {
-		defaults.Deadline = time.Now().Add(o.config.GoalWallClockBudget)
-	}
-	gs.Budget = resolveGoalBudget(defaults, opts.GoalBudgetOverride)
+	// Resolve the budget: the per-message override sets MaxTurns when present;
+	// otherwise the goal is unlimited (the only cap is the goalLoopMaxTurns
+	// hard ceiling). There are no config-level defaults now — the budget is
+	// turn-only.
+	gs.Budget = resolveGoalBudget(opts.GoalBudgetOverride)
 	if gs.CreatedAt.IsZero() {
 		gs.CreatedAt = time.Now()
 	}
@@ -458,7 +453,7 @@ func (o *Orchestrator) persistGoalStateBestEffort(bb orchestration.Blackboard, g
 //     learns the turn's tool-call count).
 //   - verdict sink "met" → Status=met, break.
 //   - anti-spin: zero tool calls AND no verdict → Status=blocked_idle, break.
-//   - budget (turns/tokens/deadline) or hard ceiling hit → Status=exhausted, break.
+//   - budget (MaxTurns) or hard ceiling hit → Status=exhausted, break.
 //   - emit goal_progress + goal_status each iteration.
 func (o *Orchestrator) runGoalTurns(
 	ctx context.Context,
@@ -491,34 +486,15 @@ func (o *Orchestrator) runGoalTurns(
 		// Build per-turn deps with a fresh verdict sink and counting wrappers.
 		sink := &memGoalStatusSink{}
 		deps := o.buildConductorDeps(conversationHistory, nil)
-		// Count tool calls for this turn only (anti-spin detection). Token usage
-		// is accumulated below from the session UsageTracker instead of a per-turn
-		// LLM wrapper: RunConductor selects its caller via callerForConductor,
-		// which returns deps.trackingCaller (the production path) and bypasses
-		// deps.llm — so wrapping deps.llm cannot observe the real calls. The
-		// session UsageTracker is the same sink trackingCaller records into.
+		// Count tool calls for this turn only (anti-spin detection).
 		counter := &turnUsageCounter{}
 		deps.toolExec = &countingToolExec{inner: deps.toolExec, counter: counter}
-		// Snapshot session-wide token usage before the turn; the delta after the
-		// turn is this turn's usage. Single-flight guarantees no other request
-		// runs concurrently to add to the tracker mid-turn, so the delta is exact.
-		tokensBefore := 0
-		if o.usageTracker != nil {
-			inB, outB := o.usageTracker.Totals()
-			tokensBefore = inB + outB
-		}
 
 		toolCalls, execResult, terr := turnRunner(
 			tools.WithGoalStatusSink(WithGoalState(ctx, gs), sink),
 			turn, message, bb, availableTools, plansDir, conversationHistory, deps,
 		)
 		gs.TurnCount = turn
-		if o.usageTracker != nil {
-			inA, outA := o.usageTracker.Totals()
-			if delta := (inA + outA) - tokensBefore; delta > 0 {
-				gs.TokenCount += delta
-			}
-		}
 
 		// Read the agent's verdict (nil if declare_goal_status was not called).
 		if v := sink.Last(); v != nil {
@@ -552,18 +528,6 @@ func (o *Orchestrator) runGoalTurns(
 		if gs.Budget.MaxTurns > 0 && gs.TurnCount >= gs.Budget.MaxTurns {
 			gs.Status = goal.StatusExhausted
 			o.logInfo("goal_loop: turn budget exhausted", "turn", gs.TurnCount, "max", gs.Budget.MaxTurns)
-			o.emitGoalStatus(ctx, gs)
-			break
-		}
-		if gs.Budget.MaxTokens > 0 && gs.TokenCount >= gs.Budget.MaxTokens {
-			gs.Status = goal.StatusExhausted
-			o.logInfo("goal_loop: token budget exhausted", "tokens", gs.TokenCount, "max", gs.Budget.MaxTokens)
-			o.emitGoalStatus(ctx, gs)
-			break
-		}
-		if !gs.Budget.Deadline.IsZero() && time.Now().After(gs.Budget.Deadline) {
-			gs.Status = goal.StatusExhausted
-			o.logInfo("goal_loop: wall-clock deadline exceeded", "deadline", gs.Budget.Deadline)
 			o.emitGoalStatus(ctx, gs)
 			break
 		}
@@ -626,25 +590,19 @@ func (o *Orchestrator) defaultGoalTurnRunner(
 	return toolCalls, result, err
 }
 
-// resolveGoalBudget merges the config defaults with an optional override. The
-// override wins for any dimension it sets to a non-zero value; zero-valued
-// override fields fall back to the default. This lets a caller tighten one
-// dimension (e.g. MaxTurns) without re-specifying the others.
-func resolveGoalBudget(defaults goal.GoalBudget, override *goal.GoalBudget) goal.GoalBudget {
-	b := defaults
+// resolveGoalBudget applies the optional per-message override. The budget is
+// turn-only: when the override sets MaxTurns to a non-zero value it is used; a
+// nil override (or MaxTurns == 0) means unlimited. There are no config-level
+// defaults — the only safety net for an unlimited goal is the goalLoopMaxTurns
+// hard ceiling.
+func resolveGoalBudget(override *goal.GoalBudget) goal.GoalBudget {
 	if override == nil {
-		return b
+		return goal.GoalBudget{}
 	}
 	if override.MaxTurns > 0 {
-		b.MaxTurns = override.MaxTurns
+		return goal.GoalBudget{MaxTurns: override.MaxTurns}
 	}
-	if override.MaxTokens > 0 {
-		b.MaxTokens = override.MaxTokens
-	}
-	if !override.Deadline.IsZero() {
-		b.Deadline = override.Deadline
-	}
-	return b
+	return goal.GoalBudget{}
 }
 
 // goalLoopResult builds a HandleResult summarizing the goal loop's outcome.
@@ -670,16 +628,11 @@ func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard
 // {"phase":"goal_status", ...} without a core Emitter-interface change.
 func (o *Orchestrator) emitGoalStatus(_ context.Context, gs *goal.GoalState) {
 	meta := map[string]any{
-		"phase":      "goal_status",
-		"status":     string(gs.Status),
-		"turn":       gs.TurnCount,
-		"condition":  gs.Condition,
-		"max_turns":  gs.Budget.MaxTurns,
-		"max_tokens": gs.Budget.MaxTokens,
-		"tokens":     gs.TokenCount,
-	}
-	if !gs.Budget.Deadline.IsZero() {
-		meta["deadline"] = gs.Budget.Deadline.Format(time.RFC3339)
+		"phase":     "goal_status",
+		"status":    string(gs.Status),
+		"turn":      gs.TurnCount,
+		"condition": gs.Condition,
+		"max_turns": gs.Budget.MaxTurns,
 	}
 	if gs.LastVerdict != nil {
 		meta["verdict"] = gs.LastVerdict.Status
@@ -695,12 +648,10 @@ func (o *Orchestrator) emitGoalProgress(_ context.Context, gs *goal.GoalState) {
 	o.emitter.ServiceWithMeta(
 		fmt.Sprintf("Goal turn %d complete", gs.TurnCount),
 		map[string]any{
-			"phase":      "goal_progress",
-			"turn":       gs.TurnCount,
-			"max_turns":  gs.Budget.MaxTurns,
-			"tokens":     gs.TokenCount,
-			"max_tokens": gs.Budget.MaxTokens,
-			"condition":  gs.Condition,
+			"phase":     "goal_progress",
+			"turn":      gs.TurnCount,
+			"max_turns": gs.Budget.MaxTurns,
+			"condition": gs.Condition,
 		},
 	)
 }
@@ -722,8 +673,6 @@ func (o *Orchestrator) PauseGoal() {
 // turnUsageCounter tallies the tool calls of a single goal-loop turn. It is
 // shared with the countingToolExec wrapper installed for that turn, then read
 // by the loop after the turn completes for the anti-spin (idle-turn) check.
-// Token usage is accumulated separately from the session UsageTracker (see
-// runGoalTurns), so it is not tracked here.
 type turnUsageCounter struct {
 	toolCalls int
 }

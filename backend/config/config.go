@@ -33,7 +33,6 @@ type Config struct {
 	Orchestration OrchestrationConfig `yaml:"orchestration"`
 	VectorIndex   VectorIndexConfig   `yaml:"vector_index"`
 	Proxy         ProxyConfig         `yaml:"proxy"`
-	Goal          GoalConfig          `yaml:"goal"`
 }
 
 // ProxyConfig holds HTTP/HTTPS proxy settings for all outbound connections.
@@ -324,24 +323,6 @@ type OrchestrationConfig struct {
 	MaxDependencyContextChars int `yaml:"maxDependencyContextChars"` // default: 8000
 	MaxSummaryLength          int `yaml:"maxSummaryLength"`          // default: 500
 	MaxJudgeCacheSize         int `yaml:"maxJudgeCacheSize"`         // default: 1000
-}
-
-// GoalConfig holds the default budget caps applied to a new goal when the user
-// does not specify an explicit budget. These are ceilings; an individual goal
-// may declare a tighter budget.
-//
-// All fields are optional (zero-value => default applied by ApplyDefaults):
-//
-//   - WallClockDeadline: a duration string (e.g. "30m", "2h") parsed into a
-//     time.Time deadline at goal creation. The string "0" or empty means no
-//     wall-clock cap (unlimited).
-//   - TokenCapInput / TokenCapOutput: maximum input/output tokens the agent may
-//     spend pursuing the goal before it is marked exhausted. 0 => a generous
-//     default; set explicitly to tighten.
-type GoalConfig struct {
-	WallClockDeadline string `yaml:"wall_clock_deadline"` // duration string ("30m","2h"); "0"/empty = unlimited
-	TokenCapInput     int    `yaml:"token_cap_input"`     // max input tokens; 0 = default
-	TokenCapOutput    int    `yaml:"token_cap_output"`    // max output tokens; 0 = default
 }
 
 // SkillsConfig holds Agent Skills discovery configuration.

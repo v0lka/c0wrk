@@ -2,11 +2,7 @@ package goal
 
 import (
 	"testing"
-	"time"
 )
-
-// testDeadline is a non-zero time used by budget tests.
-var testDeadline = time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 
 func TestGoalStatus_IsTerminal(t *testing.T) {
 	cases := []struct {
@@ -35,9 +31,6 @@ func TestGoalBudget_IsUnlimited(t *testing.T) {
 	}{
 		{"all zero", GoalBudget{}, true},
 		{"only turns set", GoalBudget{MaxTurns: 5}, false},
-		{"only tokens set", GoalBudget{MaxTokens: 1000}, false},
-		{"only deadline set", GoalBudget{Deadline: testDeadline}, false},
-		{"all set", GoalBudget{MaxTurns: 5, MaxTokens: 1000, Deadline: testDeadline}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

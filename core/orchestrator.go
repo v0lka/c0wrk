@@ -141,23 +141,6 @@ type OrchestratorConfig struct {
 	// Keeps the prompt bounded for long sessions while preserving enough
 	// dialogue context for the agent to understand follow-up references.
 	ConductorHistoryWindow int
-
-	// GoalBudgetDefaults is the default resource cap applied to a goal at
-	// activation when the caller did not supply an explicit
-	// HandleOptions.GoalBudgetOverride. Zero-valued fields (0 turns, 0 tokens,
-	// zero Deadline) mean "unlimited" for that dimension — see goal.GoalBudget.
-	// The goal loop merges this with an explicit override (override wins for
-	// any field it sets to a non-zero value).
-	GoalBudgetDefaults goal.GoalBudget
-
-	// GoalWallClockBudget is the parsed wall-clock duration for the default
-	// goal budget, derived from config.Goal.WallClockDeadline at build time.
-	// Zero means no wall-clock cap (unlimited). Because GoalBudget.Deadline is
-	// an activation-relative time.Time, this duration is resolved to
-	// time.Now().Add(GoalWallClockBudget) in runGoalLoop when the default
-	// Deadline is zero — so the countdown starts when the goal activates,
-	// rather than at process start.
-	GoalWallClockBudget time.Duration
 }
 
 // ContextManagerFactory creates a ContextManager for a new task.
@@ -197,7 +180,6 @@ type Orchestrator struct {
 	taskStore           TaskPersistence       // optional, for ContinueTask blackboard restoration
 	bbRestoreFunc       BlackboardRestoreFunc // optional, restores PersistableBlackboard from store
 	trackingCaller      *llm.TrackingCaller   // for per-step context tracker wiring
-	usageTracker        *llm.UsageTracker     // for goal-loop per-turn token budgeting (the session-wide tracker the trackingCaller records into)
 	tokenCounter        llm.TokenCounter      // for token counting in planner history compaction
 	vectorSearchFunc    builtins.VectorSearchFunc
 	skillManager        *skills.SkillManager // for skill discovery and activation
@@ -285,7 +267,6 @@ type OrchestratorDeps struct {
 	CircuitBreaker   agent.CircuitBreakerConfig
 	BBFactory        BlackboardFactory         // optional, nil = default MapBlackboard
 	TrackingCaller   *llm.TrackingCaller       // optional, for per-step context tracker wiring
-	UsageTracker     *llm.UsageTracker         // optional, for goal-loop per-turn token budgeting
 	VectorSearchFunc builtins.VectorSearchFunc // optional, for auto-RAG hint generation
 	SkillManager     *skills.SkillManager      // optional, for skill discovery and activation
 	CoreToolRegistry *tools.ToolRegistry       // core tool registry for skill policy overrides
@@ -340,7 +321,6 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		modelRegistry:    deps.ModelRegistry,
 		bbFactory:        deps.BBFactory,
 		trackingCaller:   deps.TrackingCaller,
-		usageTracker:     deps.UsageTracker,
 		tokenCounter:     deps.TokenCounter,
 		vectorSearchFunc: deps.VectorSearchFunc,
 		skillManager:     deps.SkillManager,

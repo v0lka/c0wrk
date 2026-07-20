@@ -317,8 +317,8 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 		// task (or "" for a fresh goal).
 
 		// Parse the optional budget override (JSON or empty). Empty/invalid
-		// → nil (use config defaults). A parse error is logged but does not
-		// block the send; the goal simply uses the default budget.
+		// → nil (unlimited). A parse error is logged but does not block the
+		// send; the goal simply runs unlimited.
 		var budgetOverride *goalpkg.GoalBudget
 		if goalEnabled {
 			budgetOverride = parseGoalBudget(goalBudget, m.log())
@@ -429,10 +429,10 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 }
 
 // parseGoalBudget parses a goal-budget override string into a *goal.GoalBudget.
-// The string is expected to be a JSON object with the goal.GoalBudget fields
-// (max_turns, max_tokens, deadline). An empty string returns nil (use config
-// defaults). An unparseable string is logged and returns nil so a malformed
-// budget never blocks the send — the goal simply falls back to defaults.
+// The string is expected to be a JSON object with the goal.GoalBudget field
+// (max_turns). An empty string returns nil (unlimited). An unparseable string
+// is logged and returns nil so a malformed budget never blocks the send — the
+// goal simply falls back to unlimited.
 func parseGoalBudget(raw string, log *slog.Logger) *goalpkg.GoalBudget {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -440,7 +440,7 @@ func parseGoalBudget(raw string, log *slog.Logger) *goalpkg.GoalBudget {
 	}
 	var b goalpkg.GoalBudget
 	if err := json.Unmarshal([]byte(raw), &b); err != nil {
-		log.Warn("goal budget override is not valid JSON; falling back to config defaults", "raw", raw, "error", err)
+		log.Warn("goal budget override is not valid JSON; falling back to unlimited", "raw", raw, "error", err)
 		return nil
 	}
 	return &b

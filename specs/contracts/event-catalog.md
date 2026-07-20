@@ -87,7 +87,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | `task_cancelled`        | `{session_id}`                                                                | useLifecycleEvents | Task cancelled by user                                      |
 | `task_failed_resumable` | `{message, task_id?}`                                                         | useLifecycleEvents | Task failed/incomplete, can resume (`task_id` lets the persisted message be matched/resolved on resume or cancel) |
 | `error`                 | `{session_id, error}`                                                         | useChatEvents      | Execution error                                             |
-| `service`               | `{content, ...meta}` (meta fields flattened directly, e.g. `phase`)           | useChatEvents      | Service/status message (via `Service` or `ServiceWithMeta`). Goal mode reuses this channel with a `phase` discriminator: `phase: "goal_status"` (full goal snapshot — status, turn, condition, budget, verdict — emitted on every transition and after each turn) and `phase: "goal_progress"` (mid-loop turn/budget telemetry). See [../domains/goal-mode.md](../domains/goal-mode.md). |
+| `service`               | `{content, ...meta}` (meta fields flattened directly, e.g. `phase`)           | useChatEvents      | Service/status message (via `Service` or `ServiceWithMeta`). Goal mode reuses this channel with a `phase` discriminator: `phase: "goal_status"` (full goal snapshot — status, turn, condition, max_turns, verdict — emitted on every transition and after each turn) and `phase: "goal_progress"` (mid-loop turn/max_turns telemetry). See [../domains/goal-mode.md](../domains/goal-mode.md). |
 
 ### Agent Internals
 

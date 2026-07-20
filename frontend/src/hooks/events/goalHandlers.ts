@@ -47,9 +47,6 @@ export function handleGoalStatusEvent(sessionId: string, data: GoalStatusData): 
     status: data.status,
     turn: data.turn,
     maxTurns: data.max_turns,
-    maxTokens: data.max_tokens,
-    tokens: data.tokens,
-    deadline: data.deadline,
     verdict: data.verdict,
     reason: data.reason,
   }
@@ -68,8 +65,6 @@ export function handleGoalProgressEvent(sessionId: string, data: GoalProgressDat
   const progress: GoalProgress = {
     turn: data.turn,
     maxTurns: data.max_turns,
-    tokens: data.tokens,
-    maxTokens: data.max_tokens,
     condition: data.condition,
   }
   useGoalStore.getState().setGoalProgress(sessionId, progress)

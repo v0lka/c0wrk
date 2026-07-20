@@ -326,18 +326,4 @@ func ApplyDefaults(cfg *Config) {
 		trueVal := true
 		cfg.Proxy.SetGlobalEnv = &trueVal
 	}
-
-	// Goal budget defaults. WallClockDeadline empty/zero means unlimited (no
-	// wall-clock cap). Token caps default to generous ceilings so a goal without
-	// an explicit budget does not silently terminate a long-running task, while
-	// still providing a sane upper bound against runaway spend.
-	if cfg.Goal.WallClockDeadline == "" {
-		cfg.Goal.WallClockDeadline = "0" // "0" = unlimited (no deadline)
-	}
-	if cfg.Goal.TokenCapInput == 0 {
-		cfg.Goal.TokenCapInput = 1_000_000 // generous default input cap
-	}
-	if cfg.Goal.TokenCapOutput == 0 {
-		cfg.Goal.TokenCapOutput = 200_000 // generous default output cap
-	}
 }

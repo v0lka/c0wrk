@@ -9,8 +9,8 @@
 // of attempting to verify the condition, along with the evidence backing it.
 //
 // Zero-values are meaningful throughout this package:
-//   - A GoalBudget with MaxTurns == 0, MaxTokens == 0, and a zero Deadline
-//     means "unlimited" — the goal imposes no hard resource cap.
+//   - A GoalBudget with MaxTurns == 0 means "unlimited" — the goal imposes no
+//     turn cap.
 //   - A nil LastVerdict means no verification has been performed yet.
 package goal
 
@@ -44,20 +44,16 @@ const (
 
 // GoalBudget caps the resources the agent may spend pursuing a goal.
 //
-// Zero-values mean "unlimited": MaxTurns == 0 imposes no turn cap, MaxTokens
-// == 0 imposes no token cap, and a zero-value time.Time Deadline means there
-// is no wall-clock expiry. The agent stops only when the budget that IS set is
-// exceeded (e.g. MaxTurns == 5 allows five turns; a Deadline in the past means
-// "already expired").
+// This is a turn-only cap: MaxTurns == 0 imposes no turn limit. The agent stops
+// when the turn budget that IS set is exceeded (e.g. MaxTurns == 5 allows five
+// turns).
 type GoalBudget struct {
-	MaxTurns  int       `json:"max_turns"`  // 0 = unlimited
-	MaxTokens int       `json:"max_tokens"` // 0 = unlimited
-	Deadline  time.Time `json:"deadline"`   // zero = no wall-clock deadline
+	MaxTurns int `json:"max_turns"` // 0 = unlimited
 }
 
 // IsUnlimited reports whether the budget imposes no resource cap at all.
 func (b GoalBudget) IsUnlimited() bool {
-	return b.MaxTurns == 0 && b.MaxTokens == 0 && b.Deadline.IsZero()
+	return b.MaxTurns == 0
 }
 
 // GoalEvidence is a single piece of evidence supporting a verdict. Evidence is
@@ -113,7 +109,6 @@ type GoalState struct {
 	VerifyClause string     `json:"verify_clause"` // checkable predicate for the condition
 	Budget       GoalBudget `json:"budget"`        // resource caps (zero = unlimited)
 	TurnCount    int        `json:"turn_count"`    // turns spent so far
-	TokenCount   int        `json:"token_count"`   // tokens spent so far
 	Status       GoalStatus `json:"status"`        // current lifecycle state
 	LastVerdict  *Verdict   `json:"last_verdict"`  // most recent verification outcome (nil = none yet)
 	CreatedAt    time.Time  `json:"created_at"`    // when the goal was created

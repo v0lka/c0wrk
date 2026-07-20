@@ -294,8 +294,7 @@ func TestCapturingProposer_DelegateErrorIsPropagated(t *testing.T) {
 // stack, so LLM/tool/context dependencies are not needed.
 func newGoalTestOrchestrator() *Orchestrator {
 	return &Orchestrator{
-		emitter:      &mockEmitter{},
-		usageTracker: llm.NewUsageTracker(),
+		emitter: &mockEmitter{},
 	}
 }
 
@@ -304,16 +303,10 @@ func newGoalTestOrchestrator() *Orchestrator {
 // (reported as toolCallCount) and/or declaring a verdict via the context sink.
 // The turnVerds/turnCalls slices are indexed by turn (1-based), defaulting to a
 // no-op idle turn when exhausted.
-//
-// turnTokens (optional) records that turn's LLM token usage into usageTracker,
-// simulating what the real Conductor does via the session TrackingCaller. This
-// lets the goal loop's UsageTracker-delta token accumulation be exercised.
 type mockGoalTurnRunner struct {
-	turnVerds    []*goal.Verdict  // verdict to declare on turn N (1-based)
-	turnCalls    []int            // tool-call count to report on turn N (1-based)
-	turnTokens   []int            // input tokens the turn's LLM calls consume (1-based)
-	usageTracker *llm.UsageTracker // optional sink for turnTokens recording
-	calls        int
+	turnVerds []*goal.Verdict // verdict to declare on turn N (1-based)
+	turnCalls []int           // tool-call count to report on turn N (1-based)
+	calls     int
 }
 
 func (m *mockGoalTurnRunner) run(
@@ -331,12 +324,6 @@ func (m *mockGoalTurnRunner) run(
 	toolCalls := 0
 	if turn-1 < len(m.turnCalls) {
 		toolCalls = m.turnCalls[turn-1]
-	}
-	// Record the configured token usage into the session tracker, mirroring how
-	// the real TrackingCaller records each LLM call so the loop's delta reflects
-	// the turn's spend.
-	if m.usageTracker != nil && turn-1 < len(m.turnTokens) && m.turnTokens[turn-1] > 0 {
-		m.usageTracker.Record(llm.TokenUsage{InputTokens: m.turnTokens[turn-1]}, "test-model", "test-family")
 	}
 	// Declare the configured verdict into the sink, if any.
 	if turn-1 < len(m.turnVerds) && m.turnVerds[turn-1] != nil {
@@ -532,33 +519,27 @@ func TestRunGoalTurns_AgentBlockedVerdict(t *testing.T) {
 	}
 }
 
-// TestResolveGoalBudget verifies the merge logic: override wins for set fields,
-// defaults fill the rest.
+// TestResolveGoalBudget verifies the turn-only resolution: a non-zero
+// override sets MaxTurns; nil or a zero MaxTurns means unlimited.
 func TestResolveGoalBudget(t *testing.T) {
-	t.Run("nil override returns defaults", func(t *testing.T) {
-		defaults := goal.GoalBudget{MaxTurns: 5, MaxTokens: 1000}
-		got := resolveGoalBudget(defaults, nil)
-		if got != defaults {
-			t.Errorf("got %+v, want %+v", got, defaults)
+	t.Run("nil override is unlimited", func(t *testing.T) {
+		got := resolveGoalBudget(nil)
+		if !got.IsUnlimited() {
+			t.Errorf("got %+v, want unlimited", got)
 		}
 	})
-	t.Run("override wins for set fields", func(t *testing.T) {
-		defaults := goal.GoalBudget{MaxTurns: 5, MaxTokens: 1000}
+	t.Run("override wins for set turns", func(t *testing.T) {
 		ovr := &goal.GoalBudget{MaxTurns: 2}
-		got := resolveGoalBudget(defaults, ovr)
+		got := resolveGoalBudget(ovr)
 		if got.MaxTurns != 2 {
 			t.Errorf("MaxTurns = %d, want 2 (overridden)", got.MaxTurns)
 		}
-		if got.MaxTokens != 1000 {
-			t.Errorf("MaxTokens = %d, want 1000 (default)", got.MaxTokens)
-		}
 	})
-	t.Run("zero override fields fall back", func(t *testing.T) {
-		defaults := goal.GoalBudget{MaxTurns: 5}
-		ovr := &goal.GoalBudget{MaxTurns: 0, MaxTokens: 0}
-		got := resolveGoalBudget(defaults, ovr)
-		if got.MaxTurns != 5 {
-			t.Errorf("MaxTurns = %d, want 5 (zero override falls back)", got.MaxTurns)
+	t.Run("zero override is unlimited", func(t *testing.T) {
+		ovr := &goal.GoalBudget{MaxTurns: 0}
+		got := resolveGoalBudget(ovr)
+		if !got.IsUnlimited() {
+			t.Errorf("got %+v, want unlimited (zero override)", got)
 		}
 	})
 }
@@ -1017,48 +998,6 @@ func TestPauseGoal_NoopWithoutSignal(t *testing.T) {
 	o.PauseGoal()
 }
 
-// TestRunGoalTurns_TokenBudgetExhausted verifies the token budget cap halts the
-// loop as exhausted when accumulated tokens reach MaxTokens. The mock turn
-// runner records per-turn token usage into the orchestrator's session
-// UsageTracker (mirroring the real TrackingCaller), so the loop's
-// UsageTracker-delta accumulation drives the budget — exercising the actual
-// production accounting path (the per-turn LLM wrapper is intentionally NOT
-// used, since callerForConductor bypasses it).
-func TestRunGoalTurns_TokenBudgetExhausted(t *testing.T) {
-	o := newGoalTestOrchestrator()
-	runner := &mockGoalTurnRunner{
-		// Two turns available so the loop doesn't anti-spin halt first; each
-		// turn makes a tool call and consumes 600 tokens.
-		turnCalls:      []int{1, 1},
-		turnTokens:     []int{600, 600},
-		usageTracker:   o.usageTracker,
-	}
-	// Tight token budget: after turn 1 (600 tokens) the loop has not yet hit
-	// the cap (600 < 1000), so it iterates; turn 2 pushes the total to 1200,
-	// exceeding MaxTokens=1000 → exhausted.
-	gs := &goal.GoalState{
-		Status:     goal.StatusActive,
-		Budget:     goal.GoalBudget{MaxTokens: 1000, MaxTurns: 10},
-		TurnCount:  0,
-		TokenCount: 0,
-	}
-	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
-
-	result := o.runGoalTurns(
-		context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run,
-	)
-	if result.Status != goal.StatusExhausted {
-		t.Fatalf("Status = %q, want %q", result.Status, goal.StatusExhausted)
-	}
-	if result.TurnCount != 2 {
-		t.Errorf("TurnCount = %d, want 2 (token budget hit after turn 2)", result.TurnCount)
-	}
-	if result.TokenCount != 1200 {
-		t.Errorf("TokenCount = %d, want 1200 (600+600 accumulated from UsageTracker)", result.TokenCount)
-	}
-}
-
 // TestRunGoalTurns_HardCeilingExhausted verifies the goalLoopMaxTurns hard
 // ceiling halts an otherwise-unlimited goal as exhausted.
 func TestRunGoalTurns_HardCeilingExhausted(t *testing.T) {
@@ -1116,27 +1055,6 @@ func TestRunGoalTurns_HardCeilingRespectsExplicitMaxTurns(t *testing.T) {
 	}
 }
 
-// TestRunGoalTurns_WallClockDeadlineExhausted verifies an expired wall-clock
-// deadline halts the loop as exhausted.
-func TestRunGoalTurns_WallClockDeadlineExhausted(t *testing.T) {
-	o := newGoalTestOrchestrator()
-	runner := &mockGoalTurnRunner{turnCalls: []int{1}}
-	// Deadline in the past → already expired.
-	gs := &goal.GoalState{
-		Status:   goal.StatusActive,
-		Budget:   goal.GoalBudget{Deadline: time.Now().Add(-1 * time.Hour)},
-	}
-	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
-
-	result := o.runGoalTurns(
-		context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run,
-	)
-	if result.Status != goal.StatusExhausted {
-		t.Fatalf("Status = %q, want %q (deadline exceeded)", result.Status, goal.StatusExhausted)
-	}
-}
-
 // TestRunGoalTurns_ContextCancelledPauses verifies that a cancelled context
 // transitions the goal to paused (not an error — the loop can resume later).
 func TestRunGoalTurns_ContextCancelledPauses(t *testing.T) {
@@ -1180,18 +1098,16 @@ func TestGoalLoopResult_MapsStatus(t *testing.T) {
 	}
 }
 
-// TestEmitGoalStatus_AllFields verifies emitGoalStatus includes deadline and
-// verdict metadata when present.
+// TestEmitGoalStatus_AllFields verifies emitGoalStatus includes verdict
+// metadata when present.
 func TestEmitGoalStatus_AllFields(t *testing.T) {
 	emitter := &spyEmitter{}
 	o := &Orchestrator{emitter: emitter}
-	deadline := time.Now().Add(30 * time.Minute)
 	gs := &goal.GoalState{
-		Status:     goal.StatusActive,
-		TurnCount:  3,
-		Condition:  "ship it",
-		Budget:     goal.GoalBudget{MaxTurns: 10, MaxTokens: 1000, Deadline: deadline},
-		TokenCount: 500,
+		Status:      goal.StatusActive,
+		TurnCount:   3,
+		Condition:   "ship it",
+		Budget:      goal.GoalBudget{MaxTurns: 10},
 		LastVerdict: &goal.Verdict{Status: "not_met", Reason: "wip"},
 	}
 	o.emitGoalStatus(context.Background(), gs)

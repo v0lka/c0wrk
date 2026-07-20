@@ -55,7 +55,7 @@ type Orchestrator struct {
 // NOTE: This is an illustrative subset. The full struct also carries
 // Conductor-run dependencies (reflector, toolExec, toolCache, perToolTrunc,
 // toolResultBudget, circuitBreaker, stepDumpTracker, providerName) and
-// goal-loop plumbing (usageTracker, goalProposer, goalTurnRunner,
+// goal-loop plumbing (goalProposer, goalTurnRunner,
 // activeGoalPause). The fields above are the ones consumed by the
 // route→Conductor flow.
 

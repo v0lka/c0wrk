@@ -182,8 +182,8 @@ func formatActiveSkills(ctx context.Context, preamble string) string {
 // into the goal_mode.md template. Returns an empty string if the goal has no
 // condition (a goal with an empty condition carries no guidance worth emitting).
 //
-// The budget line reports turns/tokens/deadline with a clear "unlimited"
-// rendering when a cap is not set, so the agent can judge its remaining runway.
+// The budget line reports turns with a clear "unlimited" rendering when the
+// turn cap is not set, so the agent can judge its remaining runway.
 func renderGoalModeSection(gs *goal.GoalState) string {
 	if gs == nil || strings.TrimSpace(gs.Condition) == "" {
 		return ""
@@ -194,15 +194,15 @@ func renderGoalModeSection(gs *goal.GoalState) string {
 		verify = "(none — verify the condition by inspection and cite concrete evidence)"
 	}
 
-	return prompts.GoalModeSubstitute(prompts.GoalMode, gs.Condition, verify, formatGoalBudgetLine(gs.Budget, gs.TurnCount, gs.TokenCount))
+	return prompts.GoalModeSubstitute(prompts.GoalMode, gs.Condition, verify, formatGoalBudgetLine(gs.Budget, gs.TurnCount))
 }
 
 // goalStaticBudgetNote replaces the per-turn budget line inside the cacheable
-// goal-mode prefix. The actual turn/token counts and deadline change every
-// turn, so emitting them here would bust the prompt cache across goal turns.
-// The live numbers are instead emitted by renderGoalModeVolatile, after the
-// CacheBreak boundary. Keeping a static placeholder preserves the Budget
-// subsection's prose in the cacheable prefix.
+// goal-mode prefix. The actual turn count changes every turn, so emitting it
+// here would bust the prompt cache across goal turns. The live number is
+// instead emitted by renderGoalModeVolatile, after the CacheBreak boundary.
+// Keeping a static placeholder preserves the Budget subsection's prose in the
+// cacheable prefix.
 const goalStaticBudgetNote = "Budget tracked per turn — see the volatile progress line below."
 
 // renderGoalModeStatic builds the session-invariant goal-mode prompt section
@@ -223,22 +223,22 @@ func renderGoalModeStatic(gs *goal.GoalState) string {
 	return prompts.GoalModeSubstitute(prompts.GoalMode, gs.Condition, verify, goalStaticBudgetNote)
 }
 
-// renderGoalModeVolatile returns ONLY the per-turn budget line. Turn count,
-// token count, and deadline proximity change every turn, so this must live
-// after the CacheBreak boundary to avoid busting the cacheable prefix across
-// goal turns. Returns an empty string if the goal has no condition.
+// renderGoalModeVolatile returns ONLY the per-turn budget line. The turn count
+// changes every turn, so this must live after the CacheBreak boundary to avoid
+// busting the cacheable prefix across goal turns. Returns an empty string if
+// the goal has no condition.
 func renderGoalModeVolatile(gs *goal.GoalState) string {
 	if gs == nil || strings.TrimSpace(gs.Condition) == "" {
 		return ""
 	}
 
-	return "[Goal budget] " + formatGoalBudgetLine(gs.Budget, gs.TurnCount, gs.TokenCount)
+	return "[Goal budget] " + formatGoalBudgetLine(gs.Budget, gs.TurnCount)
 }
 
-// formatGoalBudgetLine renders the budget as a single "turn N/max, tokens
-// used/max, deadline HH:MM" line. Zero caps render as "unlimited" so the agent
-// knows which constraints actually apply.
-func formatGoalBudgetLine(b goal.GoalBudget, turnCount, tokenCount int) string {
+// formatGoalBudgetLine renders the budget as a single "turn N/max" line. A
+// zero MaxTurns cap renders as "unlimited" so the agent knows which constraint
+// actually applies.
+func formatGoalBudgetLine(b goal.GoalBudget, turnCount int) string {
 	turns := "turn " + strconv.Itoa(turnCount) + "/"
 	if b.MaxTurns > 0 {
 		turns += strconv.Itoa(b.MaxTurns)
@@ -246,19 +246,7 @@ func formatGoalBudgetLine(b goal.GoalBudget, turnCount, tokenCount int) string {
 		turns += "unlimited"
 	}
 
-	tokens := "tokens used " + strconv.Itoa(tokenCount) + "/"
-	if b.MaxTokens > 0 {
-		tokens += strconv.Itoa(b.MaxTokens)
-	} else {
-		tokens += "unlimited"
-	}
-
-	deadline := "deadline none"
-	if !b.Deadline.IsZero() {
-		deadline = "deadline " + b.Deadline.Format("15:04")
-	}
-
-	return turns + ", " + tokens + ", " + deadline
+	return turns
 }
 
 // systemPromptSpec parameterizes buildSystemPromptWith. The zero value builds
