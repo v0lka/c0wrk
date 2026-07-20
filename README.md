@@ -4,6 +4,8 @@
 > **Early Alpha Stage** — This project is under active development and not yet stable.
 > Features, APIs, and configuration formats may change without notice.
 > Use at your own risk. Do not rely on it for production or critical workflows.
+>
+> 📦 Prebuilt desktop builds are available from GitHub Releases — see [RELEASE.md](RELEASE.md) for how to cut a release and install the unsigned artifacts.
 
 Desktop AI research and development agent for really complex tasks.
 

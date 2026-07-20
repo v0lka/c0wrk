@@ -1,0 +1,226 @@
+name: Release
+
+# Builds c0wrk-desktop for macOS arm64, Linux amd64, and Windows amd64,
+# packages each platform as an archive, and publishes a GitHub Release with
+# all three artifacts plus auto-generated release notes.
+#
+# Triggers:
+#   - push of a v* tag (normal release path)
+#   - manual workflow_dispatch with an explicit tag_name (dry-runs / test
+#     releases; default tag_name=v0.0.0-test). A workflow_dispatch run does
+#     NOT move git, so tag_name is only used to name the resulting release.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag name to publish the release under (e.g. v0.0.0-test)"
+        required: true
+        default: "v0.0.0-test"
+
+# The release job creates/updates a git ref (the Release), so it needs write
+# access to the repository contents.
+permissions:
+  contents: write
+
+# A given ref should only have one release build in flight at a time. We do
+# NOT cancel in-progress runs because a half-finished release upload could
+# leave a published Release in a partial state.
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.26.3"
+  NODE_VERSION: "22"
+  WAILS_VERSION: "v2.12.0"
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install system dependencies
+        run: brew install ripgrep
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm install
+
+      # make build runs `wails build` + fetch-onnx + fetch-embedding-model,
+      # producing build/bin/c0wrk-desktop.app with the dylib + models bundled.
+      - name: Build
+        run: make build
+
+      - name: Package macOS app bundle
+        # ditto preserves the .app bundle structure (symlinks, permissions,
+        # extended attributes) which zip mangles; required for a launchable app.
+        working-directory: build/bin
+        run: ditto -c -k --keepParent c0wrk-desktop.app c0wrk-desktop-macos-arm64.zip
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: c0wrk-desktop-macos-arm64
+          path: build/bin/c0wrk-desktop-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  build-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install system dependencies
+        # webkit2gtk-4.1 is required by Wails on Ubuntu 24.04; the Makefile
+        # applies the matching `webkit2_41` build tag. xvfb provides a virtual
+        # display for the wails build step.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config ripgrep xvfb
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm install
+
+      # xvfb-run gives the build a virtual display; make build applies the
+      # webkit2_41 tag and fetches ONNX + embedding model into build/bin.
+      - name: Build
+        run: xvfb-run make build
+
+      - name: Package Linux build
+        # Tar the entire build/bin directory (binary + onnxruntime.so + models)
+        # preserving relative paths.
+        working-directory: build/bin
+        run: tar -czf c0wrk-desktop-linux-amd64.tar.gz .
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: c0wrk-desktop-linux-amd64
+          path: build/bin/c0wrk-desktop-linux-amd64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      # onnxruntime_go (transitive via sp4rk/embedding) is CGO-dependent, so the
+      # C toolchain (MinGW-w64 gcc, installed below) must be enabled for the
+      # wails build to succeed on Windows.
+      CGO_ENABLED: "1"
+    steps:
+      # Preserve LF line endings: MSYS2/Git may otherwise CRLF-convert checked-out
+      # sources, which breaks shell scripts and Go tooling that assume LF.
+      - run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up MinGW-w64 (gcc for CGO)
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc
+
+      - name: Expose MinGW gcc on PATH (for CGO in default shell)
+        # Ensures gcc is discoverable by `wails build` regardless of whether
+        # setup-msys2 prepends mingw64/bin to GITHUB_PATH.
+        run: echo "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin" >> $env:GITHUB_PATH
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm install
+
+      # On Windows we call wails build directly (no Makefile), then fetch the
+      # ONNX Runtime + embedding model via the dedicated PowerShell scripts.
+      - name: Build (Wails)
+        run: wails build
+
+      - name: Fetch ONNX Runtime (Windows)
+        run: powershell -ExecutionPolicy Bypass -File scripts/fetch-onnx.ps1
+
+      - name: Fetch embedding model (Windows)
+        run: powershell -ExecutionPolicy Bypass -File scripts/fetch-embedding-model.ps1
+
+      - name: Package Windows build
+        run: Compress-Archive -Path build\bin\* -DestinationPath c0wrk-desktop-windows-amd64.zip
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: c0wrk-desktop-windows-amd64
+          path: c0wrk-desktop-windows-amd64.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Download all build artifacts into artifacts/<name>/. Each artifact
+      # contains exactly one archive file.
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten archives into release-assets
+        # Move every .zip/.tar.gz up into a single flat directory so the
+        # release action can glob them with `files: release-assets/*`.
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp {} release-assets/ \;
+          echo "=== release-assets ==="
+          ls -la release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # On a v* tag push, github.ref_name is the tag. On a workflow_dispatch
+          # run there is no tag ref, so we fall back to the supplied tag_name
+          # (the Release will be created against that name; the action will tag
+          # the commit the workflow ran on if the tag does not yet exist).
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release-assets/*
