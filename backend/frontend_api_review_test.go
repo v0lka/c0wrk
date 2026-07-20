@@ -159,6 +159,74 @@ func TestGetReviewDiff_CleanTree(t *testing.T) {
 	})
 }
 
+// TestGetReviewDiff_IncludesUntracked verifies the RPC surfaces untracked
+// files (never added to the index) alongside tracked changes: `git diff
+// HEAD` omits them, so BuildReviewDiff emits each as a new-file diff against
+// /dev/null. Git-ignored files must still be excluded.
+func TestGetReviewDiff_IncludesUntracked(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// An untracked file that must appear as a full-file addition.
+		if err := os.WriteFile(filepath.Join(dir, "newfile.txt"), []byte("hello\nworld\n"), 0o644); err != nil {
+			t.Fatalf("write newfile: %v", err)
+		}
+		// An untracked file in a subdirectory (rel path must round-trip).
+		if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+			t.Fatalf("mkdir sub: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "sub", "nested.txt"), []byte("nested\n"), 0o644); err != nil {
+			t.Fatalf("write nested: %v", err)
+		}
+		// A git-ignored untracked file that must NOT appear.
+		if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ignored.txt\n"), 0o644); err != nil {
+			t.Fatalf("write gitignore: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "ignored.txt"), []byte("nope\n"), 0o644); err != nil {
+			t.Fatalf("write ignored: %v", err)
+		}
+
+		files, err := f.GetReviewDiff()
+		if err != nil {
+			t.Fatalf("GetReviewDiff: %v", err)
+		}
+
+		// Note: .gitignore is itself untracked and therefore appears too.
+		paths := map[string]bool{}
+		for _, file := range files {
+			paths[file.Path] = true
+		}
+		if !paths["newfile.txt"] {
+			t.Errorf("expected untracked newfile.txt in review diff, got paths: %v", paths)
+		}
+		if !paths["sub/nested.txt"] {
+			t.Errorf("expected untracked sub/nested.txt in review diff, got paths: %v", paths)
+		}
+		if paths["ignored.txt"] {
+			t.Errorf("git-ignored ignored.txt must not appear in review diff, got paths: %v", paths)
+		}
+
+		// An untracked file is a pure addition: a single hunk at new line 1
+		// with the whole file added, marked as new (old side empty).
+		var newFile *ReviewFileDiff
+		for i := range files {
+			if files[i].Path == "newfile.txt" {
+				newFile = &files[i]
+				break
+			}
+		}
+		if newFile == nil {
+			t.Fatalf("newfile.txt missing from review diff")
+		}
+		if len(newFile.Hunks) != 1 {
+			t.Fatalf("newfile.txt: expected 1 hunk, got %d", len(newFile.Hunks))
+		}
+		h := newFile.Hunks[0]
+		if h.OldCount != 0 || h.NewStart != 1 {
+			t.Errorf("newfile.txt hunk = old %+d new @%d count %d, want pure addition at new line 1",
+				h.OldCount, h.NewStart, h.NewCount)
+		}
+	})
+}
+
 // --- GetCommitDiff ---
 
 // TestGetCommitDiff_TwoFiles asserts the RPC returns the per-file hunk diff

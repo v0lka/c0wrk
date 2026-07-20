@@ -210,6 +210,83 @@ func GetFileDiffNoRepo(ctx context.Context, repoPath, relPath string) (string, e
 	return diff, nil
 }
 
+// BuildReviewDiff returns the combined unified diff of ALL uncommitted
+// changes relative to HEAD — staged and unstaged tracked changes together
+// with untracked files — for a git repository, with contextLines lines of
+// context per hunk. The result is suitable for ParseReviewDiff.
+//
+// Tracked changes come from `git diff -U{contextLines} HEAD`, which reports
+// staged and unstaged changes together. That command omits untracked files
+// (they have no index entry), so each untracked file — present in the work
+// tree but never added to the index, and not git-ignored — is diffed against
+// /dev/null via `git diff --no-index` and appended. The result is empty when
+// the working tree is clean.
+//
+// The caller must ensure repoPath is a git repository.
+func BuildReviewDiff(ctx context.Context, repoPath string, contextLines int) (string, error) {
+	var result strings.Builder
+
+	tracked, err := runGitDiffHead(ctx, repoPath, contextLines)
+	if err != nil {
+		return "", fmt.Errorf("git diff HEAD: %w", err)
+	}
+	result.WriteString(tracked)
+
+	untracked, err := listUntrackedFiles(ctx, repoPath)
+	if err != nil {
+		return "", fmt.Errorf("listing untracked files: %w", err)
+	}
+	for _, rel := range untracked {
+		d, dErr := runGitDiffNoIndex(ctx, repoPath, rel)
+		if dErr != nil {
+			return "", fmt.Errorf("git diff --no-index %s: %w", rel, dErr)
+		}
+		result.WriteString(d)
+	}
+
+	return result.String(), nil
+}
+
+// runGitDiffHead runs `git diff -U{contextLines} HEAD`, which reports both
+// staged and unstaged changes to tracked files relative to HEAD in a single
+// invocation. Untracked files are not included (they have no index entry).
+func runGitDiffHead(ctx context.Context, dir string, contextLines int) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", "-U"+strconv.Itoa(contextLines), "HEAD")
+	cmd.Dir = dir
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = nil
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git diff HEAD: %w", err)
+	}
+	return stdout.String(), nil
+}
+
+// listUntrackedFiles returns the repository-relative paths of untracked
+// files (present in the work tree but not in the index), respecting
+// .gitignore via --exclude-standard. It runs `git ls-files --others
+// --exclude-standard -z` and splits the NUL-delimited output. Individual
+// files are listed rather than their containing directories.
+func listUntrackedFiles(ctx context.Context, dir string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--exclude-standard", "-z")
+	cmd.Dir = dir
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = nil
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("git ls-files failed: %w", err)
+	}
+	var files []string
+	for _, entry := range bytes.Split(stdout.Bytes(), []byte{'\x00'}) {
+		rel := string(entry)
+		if rel == "" {
+			continue
+		}
+		files = append(files, rel)
+	}
+	return files, nil
+}
+
 // runGitDiff executes a git diff command and returns its output.
 func runGitDiff(ctx context.Context, dir string, cached bool, relPath string) (string, error) {
 	args := []string{"diff"}

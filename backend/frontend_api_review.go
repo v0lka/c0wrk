@@ -146,16 +146,15 @@ func (f *FrontendAPI) SaveReviewPrompt(sessionID string) (*ReviewPromptMessage, 
 	return &ReviewPromptMessage{PromptID: promptID, Content: reviewPromptContent}, nil
 }
 
-// GetReviewDiff returns ALL uncommitted changes (staged and unstaged,
-// combined relative to HEAD) for the active project's repository, grouped
-// per file with 5 lines of context per hunk. It runs `git diff -U5 HEAD`
-// and parses the result into per-file hunk snapshots for the review page.
+// GetReviewDiff returns ALL uncommitted changes (staged and unstaged tracked
+// changes plus untracked files) for the active project's repository, grouped
+// per file with 5 lines of context per hunk. It builds the combined diff via
+// workspace.BuildReviewDiff and parses the result into per-file hunk
+// snapshots for the review page.
 //
 // This is a read-only RPC: it emits no events. It returns an empty slice
 // (never an error) when no project is active, the project is No Project,
 // the workspace is not a git repository, or the working tree is clean.
-// Untracked files (never added to the index) are not included — `git diff
-// HEAD` only reports tracked changes.
 func (f *FrontendAPI) GetReviewDiff() ([]ReviewFileDiff, error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
@@ -167,10 +166,13 @@ func (f *FrontendAPI) GetReviewDiff() ([]ReviewFileDiff, error) {
 		return []ReviewFileDiff{}, nil
 	}
 
-	// `git diff HEAD` compares the working tree against HEAD, so it
-	// reports staged and unstaged changes together. -U5 requests 5 lines
-	// of context around each change region.
-	out, err := f.runGitCmd(projectPath, "diff", "-U5", "HEAD")
+	// BuildReviewDiff combines `git diff -U5 HEAD` (staged + unstaged
+	// tracked changes) with a per-file `git diff --no-index` for every
+	// untracked file. `git diff HEAD` alone omits untracked files because
+	// they have no index entry, so they are emitted separately here.
+	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
+	defer cancel()
+	out, err := workspace.BuildReviewDiff(ctx, projectPath, 5)
 	if err != nil {
 		return nil, err
 	}
