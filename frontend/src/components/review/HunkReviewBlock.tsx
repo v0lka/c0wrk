@@ -106,7 +106,9 @@ export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex, readOnly
   }
 
   return (
-    <div className="border border-border/50 rounded-md overflow-hidden">
+    // `data-review-hunk` marks each hunk as a navigation target for the
+    // prev/next chunk buttons in the review header (queried in document order).
+    <div data-review-hunk="" className="border border-border/50 rounded-md overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1.5 bg-secondary/30 border-b border-border/50">
         <code className="text-xs text-muted-foreground">
           {filePath} · hunk {hunkIndex + 1}

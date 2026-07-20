@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { Check, Send, Loader2, MessageSquare, X, GitCommit } from 'lucide-react'
+import { Check, Send, Loader2, MessageSquare, X, GitCommit, ChevronUp, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import { useReviewStore, totalCommentCount } from '@/stores/reviewStore'
 import * as reviewApi from '@/api/review'
 import { useReviewActions } from './useReviewActions'
@@ -11,9 +12,25 @@ interface ReviewHeaderProps {
   readOnly?: boolean
   /** Commit SHA shown for context in read-only commit-review mode. */
   commitSha?: string
+  /** Currently-focused hunk index (0-based) for chunk navigation. */
+  currentHunk?: number
+  /** Total number of hunks across all files in the review diff. */
+  totalHunks?: number
+  /** Scroll the review pane so the previous hunk sits at the top. */
+  onPrevHunk?: () => void
+  /** Scroll the review pane so the next hunk sits at the top. */
+  onNextHunk?: () => void
 }
 
-export function ReviewHeader({ sessionId, readOnly, commitSha }: ReviewHeaderProps) {
+export function ReviewHeader({
+  sessionId,
+  readOnly,
+  commitSha,
+  currentHunk = 0,
+  totalHunks = 0,
+  onPrevHunk,
+  onNextHunk,
+}: ReviewHeaderProps) {
   const [showGeneral, setShowGeneral] = useState(false)
   const [draft, setDraft] = useState('')
   const reviewState = useReviewStore((s) => s.bySession[sessionId])
@@ -36,6 +53,13 @@ export function ReviewHeader({ sessionId, readOnly, commitSha }: ReviewHeaderPro
           {commitSha && (
             <code className="text-xs text-info font-mono">{commitSha.slice(0, 7)}</code>
           )}
+          <HunkNavControls
+            className="ml-auto"
+            currentHunk={currentHunk}
+            totalHunks={totalHunks}
+            onPrevHunk={onPrevHunk}
+            onNextHunk={onNextHunk}
+          />
         </div>
       </div>
     )
@@ -62,6 +86,13 @@ export function ReviewHeader({ sessionId, readOnly, commitSha }: ReviewHeaderPro
               {totalComments} comment{totalComments !== 1 ? 's' : ''}
             </span>
           )}
+          <HunkNavControls
+            className="ml-1"
+            currentHunk={currentHunk}
+            totalHunks={totalHunks}
+            onPrevHunk={onPrevHunk}
+            onNextHunk={onNextHunk}
+          />
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -130,6 +161,56 @@ export function ReviewHeader({ sessionId, readOnly, commitSha }: ReviewHeaderPro
           </Button>
         </div>
       )}
+    </div>
+  )
+}
+
+interface HunkNavControlsProps {
+  currentHunk: number
+  totalHunks: number
+  onPrevHunk?: () => void
+  onNextHunk?: () => void
+  className?: string
+}
+
+/**
+ * Prev/next chunk navigation: two arrow buttons + a "current/total" indicator.
+ * Sits next to the review title and jumps the review pane so the target hunk's
+ * top edge aligns with the top of the scroll viewport.
+ */
+function HunkNavControls({
+  currentHunk,
+  totalHunks,
+  onPrevHunk,
+  onNextHunk,
+  className,
+}: HunkNavControlsProps) {
+  if (totalHunks <= 0) return null
+  return (
+    <div className={cn('flex items-center gap-0.5', className)}>
+      <span className="mr-0.5 text-xs tabular-nums text-muted-foreground">
+        {currentHunk + 1}/{totalHunks}
+      </span>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        onClick={onPrevHunk}
+        disabled={currentHunk === 0}
+        title="Previous hunk"
+        aria-label="Previous hunk"
+      >
+        <ChevronUp className="h-3 w-3" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        onClick={onNextHunk}
+        disabled={currentHunk >= totalHunks - 1}
+        title="Next hunk"
+        aria-label="Next hunk"
+      >
+        <ChevronDown className="h-3 w-3" />
+      </Button>
     </div>
   )
 }

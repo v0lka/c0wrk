@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Loader2, RefreshCw, GitCommit } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import * as reviewApi from '@/api/review'
@@ -45,6 +45,65 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
     }
   }, [fetchDiff, loadReview, sessionId, readOnly])
 
+  // ─── Hunk navigation ────────────────────────────────────────────────────
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [currentHunk, setCurrentHunk] = useState(0)
+  const totalHunks = useMemo(
+    () => diff.reduce((count, file) => count + file.hunks.length, 0),
+    [diff],
+  )
+
+  // Reset the cursor whenever the diff is (re)loaded.
+  useEffect(() => {
+    setCurrentHunk(0)
+  }, [diff])
+
+  // Track which hunk is pinned to the top of the scroll viewport so the
+  // prev/next buttons stay in sync with manual scrolling.
+  useEffect(() => {
+    if (totalHunks <= 0) return
+    const container = scrollRef.current
+    if (!container) return
+    let raf = 0
+    const onScroll = () => {
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => {
+        const hunkEls = container.querySelectorAll<HTMLElement>('[data-review-hunk]')
+        if (hunkEls.length === 0) return
+        const viewportTop = container.getBoundingClientRect().top
+        let active = 0
+        hunkEls.forEach((el, i) => {
+          if (el.getBoundingClientRect().top - viewportTop <= 8) active = i
+        })
+        setCurrentHunk(active)
+      })
+    }
+    container.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      cancelAnimationFrame(raf)
+      container.removeEventListener('scroll', onScroll)
+    }
+  }, [totalHunks])
+
+  // Scroll a hunk so its top edge aligns with the top of the review pane.
+  const goToHunk = useCallback((index: number) => {
+    const container = scrollRef.current
+    if (!container) return
+    const target = container.querySelectorAll<HTMLElement>('[data-review-hunk]')[index]
+    if (!target) return
+    const delta = target.getBoundingClientRect().top - container.getBoundingClientRect().top
+    container.scrollBy({ top: delta, behavior: 'smooth' })
+    setCurrentHunk(index)
+  }, [])
+
+  const goToPrevHunk = useCallback(() => {
+    goToHunk(Math.max(currentHunk - 1, 0))
+  }, [currentHunk, goToHunk])
+
+  const goToNextHunk = useCallback(() => {
+    goToHunk(Math.min(currentHunk + 1, totalHunks - 1))
+  }, [currentHunk, totalHunks, goToHunk])
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -83,8 +142,16 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <ReviewHeader sessionId={sessionId ?? ''} readOnly={readOnly} commitSha={commitSha} />
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-4">
+      <ReviewHeader
+        sessionId={sessionId ?? ''}
+        readOnly={readOnly}
+        commitSha={commitSha}
+        currentHunk={currentHunk}
+        totalHunks={totalHunks}
+        onPrevHunk={goToPrevHunk}
+        onNextHunk={goToNextHunk}
+      />
+      <div ref={scrollRef} className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-4">
         {diff.map((file) => (
           <FileReviewBlock
             key={file.path}
