@@ -72,6 +72,34 @@ Frontend-only: `cd frontend && npm run lint | build | dev | test`. Frontend test
   - `core/pathsegments.go` — cross-layer path segment constants (e.g., `SkillsRelativePath`).
   - NEVER inline `strings.HasPrefix(path, root+"/")`, `filepath.Rel`+`HasPrefix(rel,"..")`, or `filepath.Join(ws, ".agents", "skills")` for containment or path construction. Always use `pathutil.IsWithinPath`, `config.IsWithinPath`, `config.ProjectSkillsPath`, or the relevant constant.
 
+## Codebase navigation via `codebase-memory-mcp` (if available)
+
+If the `codebase-memory-mcp` MCP server is connected (e.g. its tools appear with an `[MCP]` prefix), prefer it for code discovery, call-graph tracing, and architecture questions instead of broad manual `grep`/`glob` sweeps. **Every project-scoped tool requires a project identifier.** Calling such a tool without the correct identifier returns an error of the form `project not found or not indexed` (with a hint listing the available projects).
+
+### Project identifier
+
+The identifier is derived from the repository's **absolute path**: replace every path separator (`/`) with `-` and drop the leading slash.
+
+| Repository path                     | Project identifier                       |
+| ----------------------------------- | ---------------------------------------- |
+| `/path/to/repo`                     | `path-to-repo`                           |
+
+`index_repository` accepts an optional `name` argument that overrides this derived identifier. **Do not set it** — it creates a separate project entry alongside the path-derived one and breaks the predictable identifier rule. Always let the identifier be derived from the path.
+
+### Required workflow
+
+1. **Verify the project is indexed** — call `list_projects` first (it takes no arguments). Compute the expected identifier from the repo path (rule above) and check it against the returned `projects[].name` list (or match by `root_path`).
+2. **Index if absent** — if the project is missing, call `index_repository(repo_path=<absolute path>)` (omit `name`). Read the returned `project` field to confirm the actual identifier; it equals the path-derived form. Use `mode="fast"` for a quick pass, `"full"` when you need similarity/semantic edges.
+3. **Pass the identifier to the tools** — supply it as the `project` argument to every project-scoped tool. Without it, the tool errors out and will not query the graph.
+
+### Tools by purpose
+
+- **Discover** — `search_graph` (BM25 + semantic + regex over functions/classes/routes), `search_code` (grep augmented by the call graph), `get_architecture` (packages, clusters, layers, hotspots).
+- **Read code** — `get_code_snippet` (read a function/class by `qualified_name`; resolve it first via `search_graph`).
+- **Trace relationships** — `trace_path` (callers/callees, data flow, cross-service hops), `query_graph` (raw Cypher for multi-hop/aggregate queries).
+- **Change & impact** — `detect_changes` (diff vs a git ref + blast radius), `get_graph_schema` (node labels / edge types).
+- **Index management** — `index_repository`, `index_status`, `list_projects`, `delete_project`, `ingest_traces` (runtime traces), `manage_adr` (Architecture Decision Records).
+
 ## Things NOT to do
 
 - Don't add `go.work` — this is a single Go module that depends on `github.com/v0lka/sp4rk` as a normal external dependency (no `replace` directive). `go.work` is a local-development tool that is not published; keep it out of the repo. See ADR-015.
