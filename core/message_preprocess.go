@@ -1,7 +1,7 @@
 package core
 
 import (
-	"path/filepath"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -82,25 +82,34 @@ func PreprocessMessageText(text string, activeSkills []string, workspacePath str
 //   - Absolute paths (leading "/") and home-relative paths (leading "~/") are
 //     left as-is — they are already unambiguous.
 //   - All other (relative) paths are joined with workspacePath and cleaned.
-func resolveFileRefPath(path, workspacePath string) string {
+//
+// The result is the path component of a fileref:// URI, which is a logical
+// identifier rather than an OS filesystem path. The POSIX-oriented path
+// package is therefore used instead of filepath: it always emits forward
+// slashes and is platform-independent, whereas filepath.Join would produce
+// OS-native separators (backslashes on Windows) and filepath.IsAbs would
+// reject Unix-style absolute paths on Windows — both breaking the URI.
+func resolveFileRefPath(refPath, workspacePath string) string {
 	if workspacePath == "" {
-		return path
+		return refPath
 	}
-	// Split a trailing line anchor (#N, #L20-L36, …) so filepath.Join does
+	// Split a trailing line anchor (#N, #L20-L36, …) so path.Join does
 	// not treat it as a path component.
 	anchor := ""
-	if loc := lineAnchorSuffixRe.FindStringIndex(path); loc != nil {
-		anchor = path[loc[0]:]
-		path = path[:loc[0]]
+	if loc := lineAnchorSuffixRe.FindStringIndex(refPath); loc != nil {
+		anchor = refPath[loc[0]:]
+		refPath = refPath[:loc[0]]
 	}
-	if path == "" {
+	if refPath == "" {
 		return anchor
 	}
 	// Leave already-absolute and home-relative paths untouched.
-	if filepath.IsAbs(path) || strings.HasPrefix(path, "~") {
-		return path + anchor
+	if strings.HasPrefix(refPath, "/") || strings.HasPrefix(refPath, "~") {
+		return refPath + anchor
 	}
-	return filepath.Join(workspacePath, path) + anchor
+	// path.Join cleans dot segments (./, ../) and joins with a forward slash,
+	// yielding a stable URI path component on every platform.
+	return path.Join(workspacePath, refPath) + anchor
 }
 
 // goalModePrefixRe matches a leading "/goal" command (optionally followed by
