@@ -3,245 +3,92 @@
 > [!WARNING]
 > **Early Alpha Stage** — This project is under active development and not yet stable.
 > Features, APIs, and configuration formats may change without notice.
-> Use at your own risk. Do not rely on it for production or critical workflows.
->
-> 📦 Prebuilt desktop builds are available from GitHub Releases — see [RELEASE.md](RELEASE.md) for how to cut a release and install the unsigned artifacts.
+> Use at your own risk.
 
-Desktop AI research and development agent for really complex tasks.
+A desktop AI agent for work that won't fit in a single reply — research, coding, writing, anything multi-step.
 
 ![c0wrk main view](docs/screenshots/main_view.png)
 
-## Features
+## What makes c0wrk different
 
-- ReAct-style step execution driven by a **DAG planner**, **router**, and **reflector** (replan on failure)
-- **Normal / Advanced** execution modes selectable from the UI (single-step vs full multi-step plan)
-- Desktop UI with chat, execution panels (DAG view), workspace tree, and file viewer with diff overlay
-- Tool execution with **per-tool / per-skill / default** security policies (`always_allow`, `user_confirm`, `always_deny`) plus an **LLM judge** for risky paths
-- **MCP** server integration (stdio and HTTP transports), MCP tools obey the same policy pipeline
-- **Built-in PTY terminal** with per-session shell sessions (xterm.js frontend, `creack/pty` backend)
-- **Agent skills system** — discoverable, composable skill modules per the AgentSkills.io spec, with priority-ordered directory scanning
-- **Built-in web search** via Tavily API with configurable provider settings
-- **Configurable reasoning effort** per agent role (orchestrator, planner, coder, tester, researcher, router, reflector, etc.) with automatic role-based adaptation
-- **Sub-agent spawning** for parallel or delegated task execution within a session
-- **LLM retry with exponential backoff** — configurable max retries, backoff durations for API resilience
-- **HTTP/HTTPS proxy support** for all outbound connections (LLM, web search, MCP) with bypass list and custom CA certs
-- **Hybrid code search**: ONNX Runtime-embedded vector search (chromem-go, jina-embeddings-v2-small-en model) + BM25 lexical (bleve) with **Reciprocal Rank Fusion** (k=60), partitioned per git branch
-- **Cross-session file coherence** with TOCTOU protection
-- **Circuit breakers** for repeat / truncation / parse-error / fruitless / same-tool loops
-- Configurable **context compaction** (sliding window / summarization / hierarchical) tied to task domain
-- SQLite persistence (CGO-free `modernc.org/sqlite`) — full session resume across restarts
-- Configurable LLM providers: **Anthropic, OpenAI-compatible, ChatGPT** (Gemini, LM Studio, and other OpenAI-compatible models via `openai_compatible` provider) with per-role reasoning effort
-- Configurable runtime limits (timeouts, tool output caps, compaction thresholds, bash blacklist)
+- **Tackles genuinely hard, multi-part tasks.** Rather than answering in one shot, c0wrk plans the work, takes it step by step, and replans when something goes wrong, so a complicated request gets carried all the way to a finished result.
+- **Goals that run to the finish.** Start a message with `/goal` and c0wrk commits to a concrete, checkable definition of "done" that you sign off on up front — then keeps working turn after turn, checking its own progress, until it can prove the goal is met, it's stuck, the budget runs out, or you hit pause. No stopping at the first plausible-looking answer.
+- **A real desktop workspace.** Chat sits next to a file tree, a code viewer with inline diffs, and live panels that show what the agent is doing and why.
+- **Two modes for two kinds of work.** **CODE** points the agent at a real project: full toolset, in-place file edits, inline diffs, and git. **CHAT** is for when you want to reason, research, or draft without touching a codebase — each CHAT session gets its own isolated scratch workspace, code-modifying tools are switched off, and no git is required.
+- **You stay in control.** Every potentially risky action can require your approval, with an optional AI "judge" that reasons about borderline calls so you're not drowned in prompts — or drowned in risk.
+- **Defense in depth.** The agent stays inside your project workspace by default; any step outside it — reading or writing files elsewhere on disk — needs your explicit OK. Shell commands go through a hardened denylist (tighter still in CHAT mode), web fetches are SSRF-protected, and every safety check runs *before* an operation can auto-approve.
+- **Bring your own model.** Works with Anthropic, OpenAI, ChatGPT, Gemini, LM Studio, and any OpenAI- or Anthropic-compatible endpoint. Set it up once, switch models per task.
+- **Connects to your tools.** Plug in external services through the Model Context Protocol (MCP), extend behaviour with composable agent skills, and run shell commands directly in a built-in terminal.
+- **Knows your codebase.** Semantic + keyword search means c0wrk finds the right file or symbol even when you describe it loosely, not just when keywords happen to match.
+- **Picks up where you left off.** Full session history is persisted, so you can close the app and resume a task exactly as it was.
+- **Searches the live web.** Pulls up-to-date information via Tavily when the task needs current knowledge.
+- **Plays nice with corporate networks.** HTTP/HTTPS proxy support with custom CA certs and bypass lists.
 
-## Architecture
+## Download & install
 
-High-level layers and responsibilities:
+Prebuilt desktop builds are published on the [GitHub Releases](https://github.com/v0lka/c0wrk/releases) page. Builds are currently **unsigned** — see the per-OS notes below for the one-time workaround.
 
-- **`desktop/`** — Wails app lifecycle; embeds `*backend.FrontendAPI` whose promoted methods are exposed to the frontend via Wails bindings.
-- **`backend/`** — application/view-model layer: config loading, session/project management, persistence wiring, installer/watcher behavior. Frontend-callable methods split across `backend/frontend_api_*.go` by area.
-- **`core/`** — orchestration logic: planner, router, reflector, tool registry, MCP gateway, security policy application.
-- **`frontend/`** — React + TypeScript UI; communicates with Go via generated Wails bindings (`frontend/wailsjs/go/desktop/App`).
+Each release bundles three artifacts:
 
-> Important layering rule: `backend/` and `desktop/` import `core` directly. `core/` remains the primary consumer of sp4rk. No convenience re-export layers exist — all types are imported from their source packages. See `specs/decisions/008-backend-sp4rk-direct-import.md`.
+| Artifact                            | Target                   |
+| ----------------------------------- | ------------------------ |
+| `c0wrk-desktop-macos-arm64.zip`     | macOS (Apple Silicon)    |
+| `c0wrk-desktop-linux-amd64.tar.gz`  | Linux (amd64)            |
+| `c0wrk-desktop-windows-amd64.zip`   | Windows (amd64)          |
 
-### Frontend Stack
+The ONNX Runtime library and the embedding models ship inside every archive, so vector search works without an extra download on your end.
 
-- **React 19** + **TypeScript ~5.7** + **Vite 6**
-- **Tailwind CSS v4** (One Dark theme via `@theme` custom properties)
-- **Zustand 5** for state management (12 domain stores: chat, plan, session, projects, file tree, file viewer, input mode, blackboard, git panel, settings, UI, vector index)
-- **shadcn/ui** (new-york style) + **Radix UI** primitives
-- **lucide-react** icons, **react-markdown** 10, **highlight.js** 11, **Mermaid** 11 (lazy-loaded)
-- Communication with Go via Wails-generated RPC bindings + session-scoped events (37 event types)
+### macOS (Apple Silicon)
 
-## Requirements
+1. Download `c0wrk-desktop-macos-arm64.zip` and unzip it.
+2. The app is unsigned, so macOS Gatekeeper will block first launch. Clear the quarantine attribute:
 
-Verified from project configuration and build files:
+   ```bash
+   xattr -cr /path/to/c0wrk-desktop.app
+   ```
 
-- **Go 1.26.3**
-- **Node.js + npm** (used by Wails frontend commands and `frontend/package.json` scripts)
-- **Wails v2.12.0 CLI** (`wails build`, `wails dev` are used by Makefile)
-- **golangci-lint** (for `make lint`)
-- **`git`** — required for CODE mode only; checked on first project switch. CHAT mode (No Project) works without git.
-- **`rg` (ripgrep)** — auto-downloaded by the tool-manager on first run; no manual install needed.
-- Platform support in Makefile ONNX fetch logic:
-  - macOS (`arm64`, `x86_64`)
-  - Linux (`aarch64`, `x64`)
-  - Windows (`x64`, via zip runtime artifact path)
+   Alternatively, right-click `c0wrk-desktop.app` → **Open** on first launch, then confirm in the Gatekeeper dialog.
+3. Launch `c0wrk-desktop.app`.
 
-### Linux System Dependencies
+### Linux (amd64)
 
-Wails v2 requires native libraries for the WebKit GTK backend:
+1. Download `c0wrk-desktop-linux-amd64.tar.gz` and extract it:
 
-**Ubuntu/Debian 24.04+:**
+   ```bash
+   tar -xzf c0wrk-desktop-linux-amd64.tar.gz
+   ```
 
-```bash
-sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config
-```
+2. Run the binary:
 
-**Fedora 39+:**
+   ```bash
+   ./c0wrk-desktop
+   ```
 
-```bash
-sudo dnf install gtk3-devel webkit2gtk4.1-devel gcc pkg-config
-```
+3. If the binary can't find `libonnxruntime.so`, run it from the extraction directory or add that directory to `LD_LIBRARY_PATH`.
 
-**Arch Linux:**
-
-```bash
-sudo pacman -S gtk3 webkit2gtk-4.1 base-devel
-```
-
-For CI/headless builds, also install `xvfb` (`sudo apt install xvfb` on Debian/Ubuntu).
-
-**Runtime only** (for end users, not developers):
+**Runtime dependencies** (end users only need these shared libraries, not the `-dev` packages):
 
 ```bash
 # Ubuntu/Debian
 sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0
 ```
 
-## Installation
+### Windows (amd64)
 
-### 1) Clone repository
+1. Download `c0wrk-desktop-windows-amd64.zip` and extract it.
+2. The app is unsigned, so Windows SmartScreen may warn "Windows protected your PC". Click **More info** → **Run anyway**.
+3. Run `c0wrk-desktop.exe`.
 
-```bash
-git clone <your-fork-or-repo-url> c0wrk
-cd c0wrk
-```
-
-### 2) Prepare frontend dependencies
-
-```bash
-make frontend-deps
-```
-
-### 3) Create user config
-
-Copy the example config and place your runtime config at:
-
-- **`~/.c0wrk/config.yaml`**
-
-Example setup:
-
-```bash
-mkdir -p ~/.c0wrk
-cp config.example.yaml ~/.c0wrk/config.yaml
-```
-
-Then edit provider credentials (for example `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `TAVILY_API_KEY`) and adjust provider/model settings in `~/.c0wrk/config.yaml`.
-
-## Configuration
-
-Primary config reference: **`config.example.yaml`**.
-
-Key points:
-
-- Environment placeholders are supported as `${ENV_VAR}`.
-- Active LLM provider is resolved from `llm.default_model` — the Router looks up which provider has the model in its enabled `models` list.
-- MCP servers are configured under `mcp.servers`.
-- Security defaults and per-tool policies are configured under `security`.
-- Runtime limits are configurable under `toolLimits`, `timeouts`, and `executor`.
-- SQLite database is always stored at `~/.c0wrk/database.db` (the `memory.database` config key has been retired).
-
-## Development Commands
-
-Project-level commands (from `Makefile`):
-
-```bash
-make frontend-deps   # npm install in frontend/
-make test            # go test ./... && cd frontend && npm test (vitest)
-make lint            # golangci-lint run && cd frontend && npm run lint
-make dev-desktop     # frontend Vite dev server only
-make build           # wails build + fetch ONNX runtime + fetch embedding model
-make clean           # remove build/bin, .cache, frontend/dist
-```
-
-Asset/runtime fetch commands:
-
-```bash
-make fetch-onnx            # download/copy ONNX Runtime library into app bundle
-make fetch-embedding-model # download/copy embedding model + tokenizer into app bundle
-make clean-onnx            # remove ONNX runtime libs from app bundle/cache
-```
-
-## Build / Run
-
-### Development
-
-- Frontend-only development server:
-
-```bash
-make dev-desktop
-```
-
-- Full desktop hot-reload workflow (from repo root):
-
-```bash
-wails dev
-```
-
-### Production build
-
-```bash
-make build
-```
-
-This runs:
-
-1. frontend dependency install,
-2. `wails build`,
-3. ONNX runtime fetch/copy,
-4. embedding model/tokenizer fetch/copy.
-
-### ONNX runtime requirement
-
-The app bundle needs the ONNX runtime library in `build/bin/c0wrk-desktop.app/Contents/MacOS/`.
-
-After `make build`, this is handled automatically. If you run `wails build` directly, run this afterward:
-
-```bash
-make fetch-onnx
-```
-
-## Project Structure
-
-```text
-.
-├── desktop/        # Wails app entrypoints, lifecycle, embeds backend.FrontendAPI
-├── backend/        # App/view-model layer: config/session/project/persistence/workspace services
-├── core/           # Planner/router/reflector/orchestration/tool + MCP wiring
-├── frontend/       # React + TS app and generated Wails JS bindings
-├── specs/          # System specs: architecture, contracts, domains, decisions (see specs/INDEX.md)
-├── config.example.yaml
-├── wails.json
-└── Makefile
-```
-
-## Troubleshooting / Notes
-
-- **Config not detected**: ensure file is exactly at `~/.c0wrk/config.yaml`.
-- **App fails after build due to missing ONNX library**: run `make fetch-onnx`.
-- **Missing embedding model files**: run `make fetch-embedding-model`.
-- **`make dev-desktop` shows only frontend**: this command runs Vite only; use `wails dev` for full desktop runtime loop.
-- **Generated Wails bindings drift** (`frontend/wailsjs/go/desktop/App.*`): regenerate via `wails build` or `wails dev` (do not hand-edit generated files).
-
----
+On first launch c0wrk creates its config automatically, then — once all runtime dependencies are in place — opens a dialog to set up an LLM provider.
 
 ## Contributing
 
-CI runs on pushes to `main` and pull requests targeting `main` (see `.github/workflows/ci.yml`). Before opening a PR, also run the full local validation sequence:
-
-```bash
-make build
-make lint
-make test
-```
-
-All three must pass clean. `make test` runs both Go tests (`go test ./...`) and frontend tests (`cd frontend && npm test` via vitest).
+Interested in hacking on c0wrk? Architecture, build instructions, and the release process live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Licensed under the [MIT License](LICENSE) — see [LICENSE](LICENSE) for details.
+Licensed under the [MIT License](LICENSE).
 
 ## About
 
-Built by c0wrk team with warmth, love, and c0wrk.
+Built by the c0wrk team with warmth, love, and c0wrk.
