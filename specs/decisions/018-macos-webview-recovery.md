@@ -38,11 +38,13 @@ ADR-017 was a first attempt: a native wake observer calling
   revived by re-navigation triggered from a path that never fires when the
   process is merely killed outside a sleep cycle.
 
-A pre-existing numbering collision exists: two ADR-017 files were created —
-`017-goal-mode.md` (the active goal-mode decision, unrelated) and
-`017-macos-wake-reload.md` (this recovery's first attempt). The retired
-`017-macos-wake-reload.md` keeps its number for traceability; superseded ADRs
-are never renumbered. ADR-018 continues the sequence.
+A pre-existing numbering collision once existed: two ADR-017 files were
+briefly created — `017-goal-mode.md` (the active goal-mode decision, unrelated)
+and `017-macos-wake-reload.md` (this recovery's first attempt). The collision
+was later resolved by renumbering the goal-mode decision to
+[019-goal-mode.md](019-goal-mode.md). The retired `017-macos-wake-reload.md`
+keeps its number for traceability; superseded ADRs are never renumbered.
+ADR-018 continues the sequence.
 
 Forces:
 
@@ -241,10 +243,12 @@ Negative:
 ## Related
 
 - Supersedes [ADR-017 (macOS wake reload)](017-macos-wake-reload.md).
-- A pre-existing numbering collision means two ADR-017 files exist:
-  [017-goal-mode.md](017-goal-mode.md) (active, unrelated) and
-  [017-macos-wake-reload.md](017-macos-wake-reload.md) (superseded by this
-  ADR). The retired file keeps its number for traceability; superseded ADRs
-  are never renumbered.
+- A pre-existing numbering collision once meant two ADR-017 files existed:
+  `017-goal-mode.md` (unrelated, active) and
+  `017-macos-wake-reload.md` (superseded by this ADR). The collision was
+  later resolved by renumbering the goal-mode decision to
+  [019-goal-mode.md](019-goal-mode.md) (see ADR-019). The retired
+  `017-macos-wake-reload.md` keeps its number for traceability; superseded
+  ADRs are never renumbered.
 - Upstream tracking: wailsapp/wails#4592 (webview crash on macOS 26),
   wailsapp/wails#4709 (blank screen after suspend/background).

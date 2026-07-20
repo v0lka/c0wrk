@@ -30,7 +30,7 @@ c0wrk's registered tools and their default policy / trust classification:
 | `delete_file`         | File      | user_confirm   | no        | Remove single file                                 |
 | `glob`                | Search    | always_allow   | yes       | Glob pattern file matching                         |
 | `ripgrep`             | Search    | always_allow   | yes       | Fast regex content search (shells out to `rg`)     |
-| `semantic_search`     | Search    | always_allow   | no        | Vector similarity search (optional)                |
+| `semantic_search`     | Search    | internal       | no        | Vector similarity search (optional)                |
 | `web_fetch`           | Web       | always_allow   | yes       | Fetch URL content                                  |
 | `web_search`          | Web       | always_allow   | yes       | Search the web (optional, needs API key)           |
 | `finish`              | Agent     | internal       | no        | Signal task/step completion                        |
@@ -40,16 +40,21 @@ c0wrk's registered tools and their default policy / trust classification:
 | `list_step_outputs`   | Agent     | internal       | no        | List completed step results                        |
 | `read_step_output`    | Agent     | internal       | no        | Read specific step output                          |
 | `read_final_result`   | Agent     | internal       | no        | Read the prior task's final result from the blackboard |
-| `update_checklist`    | Agent     | always_allow   | no        | Update checklist for current step or standalone. Rejects standalone (empty step_id) when a plan is declared via a `ChecklistGuard` in context. |
-| `declare_step_complete` | Agent   | always_allow   | no        | Signal inline plan step completion (emits `plan_step_complete`) |
-| `store_fact`          | Agent     | always_allow   | no        | Store fact to blackboard                           |
-| `search_facts`        | Agent     | always_allow   | no        | Search blackboard facts                            |
-| `read_attachment`     | Agent     | always_allow   | no        | Read the markdown content of a user-attached file by ID (from the context-injected `AttachmentStore`) |
-| `batch`               | Agent     | always_allow   | no        | Execute multiple tool calls sequentially in one turn (intercepted at executor level) |
-| `read_skill_resource` | Agent     | always_allow   | no        | Read skill resource files                          |
+| `update_checklist`    | Agent     | internal       | no        | Update checklist for current step or standalone. Rejects standalone (empty step_id) when a plan is declared via a `ChecklistGuard` in context. |
+| `declare_step_complete` | Agent   | internal       | no        | Signal inline plan step completion (emits `plan_step_complete`) |
+| `store_fact`          | Agent     | internal       | no        | Store fact to blackboard                           |
+| `search_facts`        | Agent     | internal       | no        | Search blackboard facts                            |
+| `read_attachment`     | Agent     | internal       | no        | Read the markdown content of a user-attached file by ID (from the context-injected `AttachmentStore`) |
+| `batch`               | Agent     | internal       | no        | Execute multiple tool calls sequentially in one turn (intercepted at executor level) |
+| `read_skill_resource` | Agent     | internal       | no        | Read skill resource files                          |
 | `tool_result_read`    | Agent     | internal       | no        | Read cached tool result fragments by hash          |
+| `delegate`            | Agent     | internal       | no        | Launch a subagent for a delegated task (`core/tools/delegate.go`) |
+| `cancel_delegation`   | Agent     | internal       | no        | Cancel a running delegation (`core/tools/cancel_delegation.go`) |
+| `reflect`             | Agent     | internal       | no        | Trigger a reflection pass over the task (`core/tools/reflect.go`) |
+| `declare_plan`        | Agent     | internal       | no        | Publish a plan for user sign-off (`core/tools/declare_plan.go`) |
+| `execute_plan`        | Agent     | internal       | no        | Execute a declared plan inline (`core/tools/execute_plan.go`) |
 
-Internal tools (`finish`, `ask_user`, `list_step_outputs`, `read_final_result`, `read_step_output`, `tool_result_read`, `batch`, `search_facts`, `semantic_search`, `store_fact`, `read_skill_resource`, `update_checklist`, `declare_step_complete`) bypass policy checks during execution. `batch` is marked internal but is intercepted at the executor level before reaching the registry.
+The internal-tools set is defined in `core/tools/registry.go` (`internalTools`): `ask_user`, `delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `propose_goal`, `declare_goal_status`, `reflect`, `finish`, `list_step_outputs`, `read_step_output`, `read_final_result`, `read_skill_resource`, `read_attachment`, `search_facts`, `semantic_search`, `update_checklist`, `declare_step_complete`, `store_fact`, `tool_result_read`, and `batch` (`sdktools.ToolBatch`). All of them bypass policy/judge checks during execution. `batch` is additionally intercepted at the executor level before reaching the registry.
 
 ### Shell-Execution Tool (`bash_exec` / `posh_exec`)
 
@@ -77,16 +82,18 @@ RegisterBuiltinTools(registry, cfg):
   4. web_fetch
   5. web_search (optional: needs search provider config)
   6. glob, ripgrep
-  7. read_step_output, list_step_outputs, read_final_result
-  8. update_checklist, declare_step_complete
-  9. store_fact, search_facts
-  10. read_attachment (reads user-attached files via the context-injected `AttachmentStore`; attachment IDs are surfaced by `Orchestrator.augmentWithAttachments`)
-  11. tool_result_read
-  12. batch
+  7. tool_result_read
+  8. batch
+  9. read_step_output, list_step_outputs, read_final_result
+  10. update_checklist, declare_step_complete
+  11. store_fact, search_facts
+  12. read_attachment (reads user-attached files via the context-injected `AttachmentStore`; attachment IDs are surfaced by `Orchestrator.augmentWithAttachments`)
   13. semantic_search (optional: needs vector search func)
   14. ask_user (optional: needs ask_user func)
-  15. propose_goal — goal-mode derivation coordination primitive (always registered; a no-op outside a derivation Conductor run)
-  16. declare_goal_status — goal-mode self-evaluation verdict writer (always registered; a no-op outside a goal-loop turn; `met` requires non-empty evidence)
+  15. delegate, cancel_delegation, reflect — delegation/reflection coordination primitives (always registered; no-ops without a `DelegationRegistry`/`ReflectionRunner`)
+  16. declare_plan, execute_plan — plan declaration/execution coordination primitives (always registered; `declare_plan`'s `await_approval` mode needs a `PlanApprovalFunc`)
+  17. propose_goal — goal-mode derivation coordination primitive (always registered; a no-op outside a derivation Conductor run)
+  18. declare_goal_status — goal-mode self-evaluation verdict writer (always registered; a no-op outside a goal-loop turn; `met` requires non-empty evidence)
 ```
 
 Note: `read_skill_resource` is registered separately in `NewOrchestratorBuilder` (not in `RegisterBuiltinTools`).

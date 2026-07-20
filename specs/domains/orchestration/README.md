@@ -14,7 +14,7 @@ The orchestration domain coordinates the full lifecycle of a user request: class
 - `core/tools/declare_plan.go` — `declare_plan` tool (roadmap publish + approval gate)
 - `core/tools/reflect.go` — `reflect` tool (invokes Reflector on trajectory)
 - `core/tools/cancel_delegation.go` — `cancel_delegation` tool (async cancellation)
-- `core/delegation_registry.go` — Delegation Registry (active/completed delegations per Conductor run)
+- `core/tools/delegation_registry.go` — Delegation Registry (active/completed delegations per Conductor run)
 - `github.com/v0lka/sp4rk/agent/router/router.go` — request classification (Route)
 - `core/router_adapter.go` — core adapter wrapping sp4rk router
 - `github.com/v0lka/sp4rk/agent/executor.go` — ReAct loop (Conductor and subagents are both `Executor.Run` instances)
@@ -50,17 +50,20 @@ type Orchestrator struct {
     vectorSearchFunc     builtins.VectorSearchFunc
     skillManager         *skills.SkillManager
     isNoProject          bool
-    currentRequestCtx    atomic.Pointer[context.Context]
-    currentRequestSkills atomic.Pointer[[]skills.SkillDescriptor]
+    requestInFlight      atomic.Bool // single-flight guard: one active HandleMessage per *Orchestrator
 }
+// NOTE: This is an illustrative subset. The full struct also carries
+// Conductor-run dependencies (reflector, toolExec, toolCache, perToolTrunc,
+// toolResultBudget, circuitBreaker, stepDumpTracker, providerName) and
+// goal-loop plumbing (usageTracker, goalProposer, goalTurnRunner,
+// activeGoalPause). The fields above are the ones consumed by the
+// route→Conductor flow.
 
 // Configuration
 type OrchestratorConfig struct {
     MaxRedelegationDepth        int     // cap on recursive delegation (default: 2)
     KeepFirst                   int     // context pruning: protected head messages
     KeepLast                    int     // context pruning: protected tail messages
-    PlannerHistoryBudgetTokens int     // retained for router history compaction
-    PlannerHistoryKeepRecentRatio float64
     MaxDependencyContextChars   int     // chars from dependency outputs injected into delegation task
     PreWarningPercent           int     // context-fill notification threshold
     Model                       string
@@ -68,14 +71,20 @@ type OrchestratorConfig struct {
     HITLHandler                 agent.HITLHandler
     InjectionDefenseEnabled     bool
     AgentsMDMaxBytes            int
+    ConductorHistoryWindow      int     // recent conversation messages injected into the Conductor context (default: 20)
 }
 
-// Routing result — domain, complexity, skills, model only.
-// No mode, no clarification: the Conductor handles both.
+// Routing result — domain, complexity, skills, and a clarification flag.
+// No `mode` (removed): the Conductor decides execution granularity.
+// `NeedsClarification` still exists on the sp4rk type but c0wrk IGNORES it
+// (core/orchestrator_handle.go: "Router.NeedsClarification is ignored: the
+// Conductor decides when to ask") — clarification is a Conductor `ask_user`
+// decision, not a routing-driven pipeline branch.
 type RoutingDecision struct {
-    Domain         string   // "code" | "research" | "general" | "mixed"
-    Complexity     int      // 1-5
-    MatchedSkills  []string
+    Domain             string   // "code" | "research" | "general" | "mixed"
+    Complexity         int      // 1-5
+    NeedsClarification bool     // present on the type; c0wrk does not branch on it
+    MatchedSkills      []string
 }
 
 // Handle options
@@ -95,8 +104,8 @@ type HandleResult struct {
     RoutingDecision *RoutingDecision
     Plan            *Plan               // last plan declared via declare_plan, if any
     Blackboard      Blackboard
+    Reflections     []orchestration.Reflection           // reflect-tool outputs, if any
     Status          orchestration.ExecutionStatus  // success | partial | failed | aborted | cancelled
-    Delegations     []DelegationSummary             // active/completed delegations at finish
 }
 ```
 
@@ -162,7 +171,7 @@ HandleMessage(ctx, message, sessionID, opts)
 │     success → completed; partial → left in_progress (resumable);
 │     failed/aborted → failed (resumable)
 │
-└─ 8. Return HandleResult (carries Status + Delegations summary).
+└─ 8. Return HandleResult (carries Status + Reflections).
       A recordConversationOutcome defer updates conversationHistory for EVERY
       terminal outcome (success, failure, cancel).
 ```
@@ -191,7 +200,7 @@ There is no `executionMode` toggle. The Conductor chooses its own granularity ba
 - Blackboard is created once per first message and restored for continuations.
 - Vector search hints are non-blocking (2s timeout, failure is acceptable).
 - Skills are activated task-wide and rendered verbatim in the Conductor system prompt (no truncation).
-- currentRequestCtx and currentRequestSkills are cleared at end of HandleMessage.
+- requestInFlight (atomic.Bool) enforces the "one active request per `*Orchestrator`" invariant: HandleMessage CompareAndSwap's it to true on entry and stores false on defer; a concurrent caller is refused with `ErrRequestInFlight`.
 - conversationHistory is updated for every terminal outcome of HandleMessage and Resume.
 - When the assistant output contains tool-call syntax printed as text (failure-mode detected by `agent.DetectToolCallSyntaxInContent`), the history records a `HistoryNoteFailed(...)` note instead of the hallucinated text.
 - isNoProject: routing domain "code" is overridden to "general" after classification.
@@ -203,14 +212,17 @@ From `config.yaml` (via BuilderConfig → OrchestratorConfig):
 
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
-| `conductor.maxRedelegationDepth` | 2 | Cap on recursive delegation when `allow_redelegate` is true |
-| `conductor.maxDependencyContextChars` | 8000 | Max chars from dependency outputs injected into a delegation task |
-| `executor.keepFirst` | 3 | Protected head messages during compaction |
-| `executor.keepLast` | 10 | Protected tail messages during compaction |
-| `orchestration.plannerHistoryBudgetTokens` | 4000 | Max tokens for conversation history sent to router (triggers summarisation compaction when exceeded) |
-| `orchestration.plannerHistoryKeepRecentRatio` | 0.75 | Fraction of budget reserved for recent messages during compaction |
+| `orchestration.maxDependencyContextChars` | 8000 | Max chars from dependency outputs injected into a delegation task |
+| `executor.compaction.sliding_window.keep_first` | 3 | Protected head messages during sliding-window compaction |
+| `executor.compaction.sliding_window.keep_last` | 10 | Protected tail messages during sliding-window compaction |
+| `executor.compaction.thresholds.pre_warning_percent` | 75 | Context-fill % that triggers the pre-compaction store_fact nudge |
+| `security.agents_md_max_bytes` | 65536 | Cap on AGENTS.md content injected into prompts (0 = default; -1 = unlimited) |
 
-Note: yaml key casing is mixed across config sections — `executor.*` keys use `snake_case`, while `orchestration.*` and `conductor.*` keys use `camelCase`. This matches the struct tags in `backend/config/config.go`.
+Not wired from `config.yaml` (hardcoded defaults in code):
+- `OrchestratorConfig.MaxRedelegationDepth` — default 2 (set in `NewOrchestrator`; not exposed as a config key).
+- `OrchestratorConfig.ConductorHistoryWindow` — default 20 (set in `NewOrchestrator`; not exposed as a config key).
+
+Note: yaml key casing is mixed within and across config sections (see the struct tags in `backend/config/config.go`). `orchestration.*` uses `camelCase` (`maxDependencyContextChars`). `executor.compaction.sliding_window.*` uses `snake_case` (`keep_first`/`keep_last`), while sibling `executor.*` subsections use `camelCase` (`toolOutputPruning`, `historyMutation`, `circuitBreaker`). There is no top-level `conductor:` config section — `MaxRedelegationDepth` and `ConductorHistoryWindow` are not user-tunable via config.
 
 ## Extension Points
 

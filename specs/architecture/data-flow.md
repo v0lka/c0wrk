@@ -15,7 +15,7 @@ User types message in frontend
 Frontend: chatStore.sendMessage(text)
          │
          ▼
-RPC: window.go.desktop.App.SendMessage(sessionId, text, mode, skills, modelOverride, reasoningEffort, planReview)
+RPC: window.go.desktop.App.SendMessage(id, text, activeSkills, modelOverride, reasoningEffort, goal, goalBudget, reviewMode)
          │
          ▼
 backend/frontend_api_session.go: FrontendAPI.SendMessage()
@@ -27,32 +27,31 @@ backend/session/manager_execution.go: Manager.SendMessage()
   └─ Calls orchestrator.HandleMessage()
          │
          ▼
-core/orchestrator.go: Orchestrator.HandleMessage(ctx, msg, opts)
+core/orchestrator.go: Orchestrator.HandleMessage(ctx, msg, sessionID, opts)
   │
-  ├─ 1. ROUTE: Router.Route(ctx, msg, tools, history, skills)
-  │      → RoutingDecision {domain, complexity, matchedSkills}
-  │      → Emitter.Routing(mode, domain, complexity)
+  ├─ 0. SETUP: setupBlackboard()
+  │      ├─ New task: create Blackboard via bbFactory(taskID) (PersistentBlackboard
+  │      │   wraps MapBlackboard + SQLite store); set original request; flush attachments
+  │      └─ Continuation (opts.TaskID set): restore Blackboard from persistence,
+  │          emit MemoryRead for restored facts, reactivate task
   │
-  ├─ 2. PLAN:
-  │      ├─ Normal mode (mode == "normal"):
-  │      │    → Planner.Plan(singleStep=true) → exactly 1 step
-  │      ├─ Advanced mode:
-  │      │    → Planner.Plan(singleStep=false) → DAG of PlanSteps
-  │      └─ → Emitter.PlanGenerated(stepCount, steps)
+  ├─ 1. ROUTE (routeOrContinue):
+  │      ├─ Continuation fast-path: restored plan + routing → router is skipped,
+  │      │   existing RoutingDecision is reused
+  │      └─ Otherwise: Router.Route(ctx, msg, tools, history, skills)
+  │           → RoutingDecision {domain, complexity, matchedSkills}
+  │           → Emitter.Routing("conductor", domain, complexity)
+  │           → Activate matched skills + apply skill-derived tool policy overrides
   │
-  ├─ 3. EXECUTE: engine.Execute(ctx, plan, task)
-  │      ├─ For each ready step (parallel if DAG allows):
-  │      │    → Executor.Run(ctx, stepTask, tools, systemPrompt)
-  │      │    → ReAct loop: LLM → ToolCall → Observe → repeat
-  │      │    → Emitter: AssistantChunk, ToolCall, ToolResult, etc.
-  │      └─ Step results stored on Blackboard
+  ├─ 2. CONDUCTOR: runConductor() — a single ReAct loop owns the task end-to-end
+  │      ├─ Executor drives the Conductor: LLM ↔ tool-call ↔ observe ↔ repeat
+  │      ├─ Planning (declare_plan), delegation (delegate), reflection (reflect),
+  │      │   and user interaction (ask_user) are TOOL CALLS inside the loop —
+  │      │   NOT separate pipeline phases
+  │      └─ Emitter: AssistantChunk, ToolCall, ToolResult, PlanStep, Reflection, etc.
   │
-  ├─ 4. REFLECT (on failure):
-  │      → Reflector.Reflect(ctx, trajectory, plan, prevReflections)
-  │      → Emitter.Reflection(reflection, attempt, maxAttempts)
-  │      → Retry or replan (back to step 2)
-  │
-  └─ 5. RETURN: HandleResult {output, routingDecision, plan, blackboard}
+  └─ 3. RETURN: finalizeResult() → HandleResult
+         {output, routingDecision, plan, blackboard, reflections, status}
          │
          ▼
 backend: Emitter.TaskComplete(output) → persists to SQLite
@@ -108,20 +107,20 @@ backend/config/: config.Load()
          ▼
 backend/configadapter.go: ToBuilderConfig(cfg)
   → Converts config.Config → core.BuilderConfig
-  → Builds ProviderConfigs map from all providers with non-empty Models
+  → Builds ProviderConfigs map from all providers (including those with no models enabled)
   → Sets DefaultModel (cross-provider, resolves to owning provider)
   → Single conversion point (all config mapping here)
          │
          ▼
 core/builder.go: NewOrchestratorBuilder(builderCfg)
-  ├─ Synchronous: tool registry, built-in tools, security policies
-  ├─  Creates ToolResultCache with cacheTTLSeconds
-  ├─  Converts perToolTruncation map to per-tool truncation config
-  └─ Async (goroutine): MCP gateway, LLM router, model registry
+  ├─ Synchronous: proxy client, tool registry, built-in tools, security policies
+  └─ Async (goroutine): MCP gateway, LLM router, model registry, tool judge
          │
          ▼
 core/builder.go: Build() → per-session Orchestrator
   → Blocks until async init complete (initDone channel)
+  → Creates ToolResultCache with cacheTTLSeconds (per-session lifetime)
+  → Converts perToolTruncation map to per-tool truncation config
 ```
 
 Vector index initialization is separate from the builder pipeline:
@@ -190,17 +189,21 @@ github.com/v0lka/sp4rk/agent/executor.go: calls ToolExecutor.Execute(ctx, name, 
 core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
   │
   ├─ 1. Lookup tool by name
-  ├─ 2. Internal tool? → execute immediately, skip all checks
-  ├─ 3. PreExecuteHook? → call (may block for indexing gate)
-  ├─ 4. ParamManager? → transform input
-  ├─ 5. Symlink gate: detect symlinks in input paths → force confirmation
-  ├─ 6. Resolve policy: per-tool > skill > default > tool's own
-  ├─ 7. PolicyAlwaysAllow Judge gate: ToolJudger flags call? → confirmation
-  ├─ 8. Auto-approval check: paths in workspace/temp? → execute
-  └─ 9. Apply policy:
+  ├─ 2. Disabled-tools check (No Project mode) — applies to ALL tools, including internal
+  ├─ 3. Internal tool? → execute immediately, bypass policy/judge (disabled check above still applies)
+  ├─ 4. Register PostExecuteHook (deferred, runs on every non-early return path)
+  ├─ 5. Extra bash blacklist check (per-session, e.g. No Project mode) — bash_exec only
+  ├─ 6. PreExecuteHook? → call (may block for indexing gate)
+  ├─ 7. ParamManager? → transform input (InjectParams)
+  ├─ 8. Symlink gate: detect symlinks in input paths → force confirmation
+  ├─ 9. Resolve policy: per-tool > skill > default > tool's own
+  ├─ 10. PolicyAlwaysAllow Judge gate: ToolJudger flags call (reason != "")? → confirmation
+  ├─ 11. Auto-approval check (PolicyAlwaysAllow only): all paths in session roots? → execute
+  └─ 12. Apply policy:
        ├─ AlwaysAllow → execute (Judge gate already ran above)
        ├─ AlwaysDeny → return error result
        └─ UserConfirm → confirmFunc() blocks until user responds
+                (session-root auto-approve of write tools via autoApproveWorkspaceWrites + ToolJudger may short-circuit)
                 │
                 ▼ (if confirmed)
          tool.Execute(ctx, input)
@@ -221,7 +224,7 @@ github.com/v0lka/sp4rk/agent/executor.go: cache + two-stage truncation
 
 ## Blackboard Flow
 
-The Blackboard is shared state for the Plan&Execute loop:
+The Blackboard is shared state for the Conductor loop (plan steps from `declare_plan`, delegated subagent outputs, facts, and reflections all live here):
 
 ```
 Orchestrator.HandleMessage()
@@ -229,14 +232,14 @@ Orchestrator.HandleMessage()
   ├─ Creates Blackboard via bbFactory(taskID)
   │   (PersistentBlackboard wraps MapBlackboard + SQLite store)
   │
-  ├─ Engine stores plan on Blackboard
+  ├─ Conductor stores plan on Blackboard (via declare_plan tool call)
   │
-  ├─ Each step executor:
+  ├─ Each plan step (executed inline or via a delegated subagent):
   │   ├─ Reads dependency outputs: bb.GetStepResult(depID)
   │   ├─ Writes own result: bb.SetStepResult(stepID, output, err, steps)
   │   └─ Stores facts: bb.StoreFact(fact)
   │
-  ├─ Reflector reads: bb.GetAllStepResults(), bb.GetReflections()
+  ├─ reflect tool reads: bb.GetAllStepResults(), bb.GetReflections()
   │
   └─ Final: bb.SetFinalResult(output)
        → PersistentBlackboard.Save() persists to SQLite

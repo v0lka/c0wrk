@@ -18,12 +18,12 @@ Planning and delegation are **orthogonal** mechanisms:
 | `declare_plan` tool | `core/tools` | Conductor | Publish a roadmap to the blackboard and UI; optionally block for user approval |
 | `execute_plan` tool | `core/tools` | Conductor | Execute all steps of the declared plan in DAG order with parallelism; emits plan-step events via emitter adapter |
 | `reflect` tool | `core/tools` | Conductor | Invoke the Reflector on the current trajectory or a sub-task trajectory |
-| `DelegationRegistry` | `core` | `delegate`, `cancel_delegation`, `read_step_output`, `finish` (via context) | Track active/completed delegations for one Conductor run |
+| `DelegationRegistry` | `core/tools` | `delegate`, `cancel_delegation`, `read_step_output`, `finish` (via context) | Track active/completed delegations for one Conductor run |
 | `RunSubAgent` / `RunSubAgentsParallel` | `github.com/v0lka/sp4rk/agent` | `delegate` tool, `execute_plan` tool | Execute an isolated `Executor.Run` in a goroutine |
 | `PlanStepExecutor` | `core/tools` | `execute_plan` tool | Execute the declared plan's steps in DAG order (implemented by `conductorLauncher`) |
 | `PlanChecker` | `core/tools` | `delegate` tool | Reports whether a plan is declared (enforces orthogonality guard) |
 | `Reflector.Reflect` | `github.com/v0lka/sp4rk/agent/reflector` | `reflect` tool | Produce a Reflection (root cause, action plan, suggested action) |
-| `SerializePlan` | `core/plan_serializer` | `declare_plan` tool | Serialize a Plan to markdown for UI display and plan-file persistence |
+| `SerializePlan` | `core` | `declare_plan` tool | Serialize a Plan to markdown for UI display and plan-file persistence |
 | `Plan` / `PlanStep` / `FindReadySteps` | `github.com/v0lka/sp4rk/orchestration` | `delegate`, `declare_plan`, `execute_plan` tools | DAG data structures and traversal |
 
 ## Initialization
@@ -32,10 +32,11 @@ Conductor tools are registered at startup in `core/tools/builtin_registration.go
 
 ```go
 var internalTools = map[string]struct{}{
-    // ... existing internal tools ...
+    // ... other internal tools (ask_user, finish, read_step_output, store_fact, update_checklist, ...) ...
     "delegate":           {},
     "cancel_delegation":  {},
     "declare_plan":       {},
+    "execute_plan":       {},
     "reflect":            {},
 }
 ```

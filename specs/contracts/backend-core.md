@@ -92,7 +92,7 @@ backend.Application
        └─ Owns event persistence (SQLite)
 ```
 
-The session manager never touches core internals — it treats the Orchestrator as a black box with `HandleMessage()`, `Resume()`, `PlanWithFeedback()`, `SemanticValidatePlan()`, and `PlanReviewPhase` signalling on `HandleResult` entry points.
+The session manager never touches core internals — it treats the Orchestrator as a black box with `HandleMessage()` and `Resume()` as its entry points.
 
 ## Event Emission
 
@@ -122,7 +122,6 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
 | Security policies      | backend → core | `BuilderConfig.Security`                 |
 | Execution result       | core → backend | `*HandleResult`                          |
-| Plan review path       | core → backend | `HandleResult.PlanReviewPath`            |
 | Lifecycle events       | core → backend | `Emitter` method calls                   |
 | Blackboard state       | core → backend | `Blackboard` interface (for persistence) |
 
@@ -138,8 +137,6 @@ The emitter implementation lives in `backend/session/` (not in core).
 - Adding a new per-tool truncation entry → update `backend/configadapter.go` `convertTruncationMap()` (maps to `BuilderConfig.ToolLimits.PerToolTruncation`, not `BuiltinToolsConfig`)
 - Changing `OrchestratorFactory` signature → update factory closure in `backend/application.go` and all test factory mocks
 - Changing `HandleResult` fields → update session event emission in backend
-- Adding `PlanReview` to `HandleOptions` → update `backend/frontend_api_session.go` + `backend/session/manager_execution.go`
-- Adding `PlanReviewPhase`/`PlanReviewPath` to `HandleResult` → update session manager goroutine branching
 - Changing `Emitter` interface → update backend emitter implementation
 - Adding new `OrchestratorBuilder` method → update `backend/application.go` if exposed to frontend
 - Changing tool config types → update `BuiltinToolsConfig` re-exports in `core/tools/builtin_registration.go`

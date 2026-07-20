@@ -7,9 +7,9 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 ## Key Files
 
 - `backend/session/manager.go` — SessionManager (session CRUD, message routing, plan review state)
-- `backend/session/manager_execution.go` — SendMessage, ApprovePlan, RejectPlan, CancelTask execution flows
-- `core/plan_review.go` — HandlePlanReview, PlanWithFeedback, SemanticValidatePlan (plan review orchestration)
-- `backend/frontend_api_plan_review.go` — FrontendAPI.ApprovePlan, FrontendAPI.RejectPlan (plan review RPC surface)
+- `backend/session/manager_execution.go` — SendMessage, CancelTask execution flows
+- `core/tools/declare_plan.go` — `declare_plan` tool (`present` / `await_approval` modes); under ADR-012 plan review is a Conductor-invoked tool, not a pipeline stage
+- `backend/events.go` — `EventPlanApprovalResponse` constant (frontend → backend plan-approval decision event)
 - `backend/config/paths.go` — centralized path functions (single source of truth for ~/.c0wrk/ directory structure)
 - `github.com/v0lka/sp4rk/orchestration/step_dump_tracker.go` — StepDumpTracker (per-step LLM dump file management)
 - `backend/session/file_coherence.go` — FileCoherenceTracker (cross-session conflict detection)
@@ -81,7 +81,7 @@ Backend SwitchProject path
 
 ```
 User sends message
-  → Frontend: SendMessage(sessionId, text, mode, activeSkills, modelOverride, reasoningEffort, planReview)
+  → Frontend: SendMessage(sessionId, text, activeSkills, modelOverride, reasoningEffort, goal, goalBudget, reviewMode)
   → Backend: FrontendAPI.SendMessage()
       ├─ Persist original text to DB (preserves /skill and @file refs)
       ├─ Preprocess text for orchestrator:
@@ -93,7 +93,7 @@ User sends message
       │   ├─ WithWorkspacePath (project workspace)
       │   ├─ WithTempDir (session-specific temp directory)
       │   └─ WithCoherence (FileCoherenceTracker for cross-session conflict detection)
-      ├─ Determine opts: {TaskID, ExecutionMode, UserSkills, ModelOverride, ReasoningEffort}
+      ├─ Determine opts: {TaskID, UserSkills, ModelOverride, ReasoningEffort, Goal, GoalBudgetOverride, ReviewMode}
       │   ├─ First message: TaskID=""
       │   └─ Continuation: TaskID=lastCompletedTaskID
       ├─ Call orchestrator.HandleMessage(ctx, preprocessedText, sessionId, opts)
@@ -108,10 +108,10 @@ User sends message
 > therefore flip goal mode on (`/goal` prefix or the goal toggle), switch the
 > model or reasoning effort, and stage a fresh set of attachments — all are
 > applied to the continuation pass and override whatever the prior task used.
-> `TaskID`, `ExecutionMode`, `UserSkills`, and `SessionPlansDir` behave the same
-> way (per-message). Only the restored blackboard state (facts, plan/trajectory,
-> conversation history, routing decision) is *inherited* from the prior task; the
-> per-message parameters above are applied on top of it.
+> `TaskID`, `UserSkills`, `SessionPlansDir`, `goalBudget`, and `reviewMode`
+> behave the same way (per-message). Only the restored blackboard state (facts,
+> plan/trajectory, conversation history, routing decision) is *inherited* from
+> the prior task; the per-message parameters above are applied on top of it.
 
 > If the session has an **unfinished (interrupted) task** *and the message is
 > not a goal request*, the execution goroutine takes the
@@ -154,57 +154,31 @@ SendMessage flushes pending attachments into the blackboard:
 
 ### Plan Review
 
-> **Note:** The plan review workflow described below (system-driven `HandlePlanReview` pipeline stage, `PlanReview` toggle in `HandleOptions`, `PlanReviewStore` persistence) is superseded by ADR-012. Under the Conductor pipeline, plan review becomes a tool call (`declare_plan` with `mode: "await_approval"`) invoked by the Conductor at a point of its own choosing, not a pipeline stage. The `PlanReviewStore` persistence and restart-survival logic may be retained or adapted for `declare_plan` approval state. This section must be rewritten during implementation of ADR-012; it is left in place as a reference for the current behaviour being replaced.
+Plan review is **not** a pipeline stage — under ADR-012 (Conductor pipeline) it is a tool call (`declare_plan`, `core/tools/declare_plan.go`) invoked by the Conductor at a point of its own choosing. The tool has two modes:
 
-When `PlanReview` is true in HandleOptions, the orchestrator pauses after planning.
-The session enters one of two plan review states (`awaiting_accept` or `awaiting_feedback`).
+- `mode: "present"` (default) — the plan is published to the plan panel/blackboard and execution continues immediately.
+- `mode: "await_approval"` — the tool **blocks** until the user approves, requests changes, or abandons. The Conductor decides when (and whether) to gate on approval; it is not driven by a `HandleOptions` flag.
 
 ```
-SendMessage(PlanReview=true)
-  → orchestrator.HandleMessage(PlanReview=true)
-      └─ HandlePlanReview(): plan → serialize → save to session-scoped plans dir
-          (~/.c0wrk/projects/<pid>/<sid>/plans/)
-          → return HandleResult{PlanReviewPhase: "awaiting_accept", PlanReviewPath: path}
-  → Manager detects PlanReviewPhase != ""
-      ├─ Store planReviewPhase, planReviewPath, planReviewMsg, planReviewMode,
-      │   planReviewSkills, planReviewBB on Session (guarded by mu)
-      ├─ Persist to SQLite via UpdateSessionPlanReview()
-      ├─ Emit plan_review_ready {plan_path, plan_content}
-      └─ GOROUTINE EXITS (session.active = false, planReviewPhase != none)
+Conductor calls declare_plan(tasks, mode="await_approval")
+  → core/tools/declare_plan.go Execute()
+      ├─ Publish the plan via the context's PlanPublisher
+      ├─ mode != await_approval? → return immediately (present)
+      └─ ApprovalFunc(ctx, planPath, planMarkdown)  (cfg.PlanApprovalFunc, wired in desktop/startup.go)
+          ├─ Register a pending plan-approval entry (request_id → response channel)
+          ├─ Emit plan_review_ready {request_id, plan_path, plan_content}
+          │   (session-scoped event; persisted via EmitSessionEvent so it reappears on reload)
+          └─ BLOCK on the channel until the user responds
 
-User clicks Accept:
-  → Frontend: ApprovePlan(sessionId, planPath)
-  → Backend: Manager.ApprovePlan()
-      ├─ Read .md from disk
-      ├─ ParsePlanMarkdown() — structural validation
-      ├─ If structural errors → emit plan_validation_failed, return error
-      ├─ MergePlanSteps(parsed, original) — restore hidden fields
-      ├─ SemanticValidatePlan() — LLM-based validation
-      ├─ If semantic errors → emit plan_validation_failed, return error
-      ├─ bb.SetPlan(mergedPlan), clear plan review state, persist cleared state
-      ├─ Emit plan_review_accepted
-      └─ Launch execution goroutine → orchestrator.Resume(ctx, bb, nil)
-          (same pattern as ResumeTask)
-
-User clicks Reject with feedback:
-  → Frontend: RejectPlan(sessionId, feedback)
-  → Backend: Manager.RejectPlan()
-      ├─ Read previous plan .md from disk
-      ├─ orchestrator.PlanWithFeedback(originalMsg, prevPlanMD, feedback)
-      ├─ Serialize new plan → save to NEW .md file
-      ├─ Update planReviewPhase/planReviewPath, persist, emit plan_review_ready
-      └─ (User can Accept or Reject the new plan)
-
-User clicks Reject without feedback:
-  → Frontend: RejectPlan(sessionId, "")
-  → Backend: Manager.RejectPlan()
-      ├─ Set planReviewPhase = "awaiting_feedback", persist
-      ├─ Emit plan_review_awaiting_feedback
-      └─ User sends a message describing what needs changing → replan with feedback
+User responds (frontend emits plan_approval_response):
+  → desktop/event_handlers.go handlePlanApprovalResponse
+      ├─ decision: "approve"     → tool returns; Conductor continues to implementation
+      ├─ decision: "request_changes" → tool returns the feedback; Conductor revises
+      │   the plan and calls declare_plan again (loop until approve/abandon)
+      └─ decision: "abandon"     → tool returns; Conductor abandons the plan
 ```
 
-Plan files are stored at `~/.c0wrk/projects/<projectID>/<sessionID>/plans/<session_prefix>_<random6>.md`.
-Previous plan files are not deleted on replan or rejection — they remain as history.
+There is **no dedicated plan-review RPC** (no `ApprovePlan`/`RejectPlan`): the decision flows back through the `plan_approval_response` event (`backend/events.go` `EventPlanApprovalResponse`) into the pending-approval resolver on the desktop `App`. Plan files are written to the session-scoped plans dir (`~/.c0wrk/projects/<pid>/<sid>/plans/`); previous plan files are not deleted on a revise/abandon — they remain as history.
 
 ### Task Resumption
 
@@ -333,11 +307,6 @@ User clicks "Cancel" on the resume prompt
 User clicks "Cancel"
   → Frontend: CancelTask(sessionId)
   → Backend: FrontendAPI.CancelTask()
-      ├─ If planReviewPhase != none:
-      │   ├─ Clear planReviewPhase, planReviewPath, planReviewBB
-      │   ├─ Persist cleared state via UpdateSessionPlanReview()
-      │   ├─ Complete blackboard task (not resumable)
-      │   └─ Emit task_cancelled → return
       └─ Cancel context → executor stops at next iteration
           → emit task_cancelled
 ```
@@ -383,13 +352,16 @@ Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/sess
 
 - `projects` — project roster (in `backend/project/persistence.go`)
 - `project_ui_state` — project_id, saved_session_id, open_tabs (JSON), active_file, updated_at; stores per-project switch UI restoration state
-- `sessions` — id, project_id, name, created_at, last_active_at, archived, total_input_tokens, total_output_tokens, model, family, plan_review_phase, plan_review_path, plan_review_context
+- `sessions` — id, project_id, name, created_at, last_active_at, archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent
 - `session_messages` — id, session_id, role, content, metadata (JSON), created_at
 - `tasks` — id, session_id, original_request, routing_decision (JSON), plan (JSON), reflections (JSON), final_output, attempt_count, status, created_at, completed_at
 - `task_steps` — step_id, task_id, summary, full_output, error_text, steps (JSON), created_at (PRIMARY KEY (task_id, step_id))
 - `task_facts` — task_id, facts (JSON), updated_at
 - `task_attachments` — task_id, attachments (JSON-marshaled `[]orchestration.Attachment`), updated_at
+- `task_trajectory` — task_id, steps (JSON), updated_at (persisted ReAct trajectory for resume)
+- `task_goal_state` — task_id, goal_state (JSON), updated_at (goal-mode state for resume; see [goal-mode.md](goal-mode.md))
 - `terminal_commands` — id, session_id, command, created_at
+- `session_work_directories` — id, session_id, path, description, created_at (session-scoped additional work dirs; UNIQUE(session_id, path))
 
 `SessionInfo.HasUnfinishedTask` is not a stored column — it is derived at query
 time (`LoadSession`, `ListSessions`, `ListSessionsByProject`) via a correlated
@@ -410,25 +382,21 @@ The `backend/session/persistence.go` defines the `SessionStore` interface:
 | `ListSessionsByProject(ctx, projectID)`                      | List sessions for a specific project                             |
 | `DeleteSession(ctx, id)`                                     | Delete session and cascade messages                              |
 | `ArchiveSession(ctx, id, archived)`                          | Set archived flag on session                                     |
+| `PinSession(ctx, id, pinned)`                                | Set pinned flag on session                                       |
 | `RenameSession(ctx, id, name)`                               | Update session name                                              |
-| `UpdateSessionTokens(ctx, id, input, output, model, family)` | Update accumulated token counts and model info                   |
+| `UpdateSessionTokens(ctx, id, input, output, model, family, fillPercent)` | Update accumulated token counts, model info, and context-fill %  |
 | `UpdateSessionActivity(ctx, id)`                             | Update last_active_at timestamp to now                           |
 | `SaveMessage(ctx, msg)`                                      | Insert a new chat message                                        |
 | `LoadMessages(ctx, sessionID)`                               | Load all messages for session (ordered by created_at)            |
 | `DeleteMessages(ctx, sessionID)`                             | Delete all messages for session                                  |
+| `ResolvePendingMessage(ctx, sessionID, role, matchField, matchValue, extra)` | Patch metadata of the most recent matching HITL message (tool_confirm/ask_user/step_limit/plan_review) as resolved so it doesn't reappear as pending on reload |
 | `SaveTerminalCommand(ctx, sessionID, command)`               | Save terminal command to history                                 |
 | `LoadTerminalCommands(ctx, sessionID, limit)`                | Load most recent terminal commands                               |
+| `SaveSessionWorkDir(ctx, sessionID, rec)`                    | Insert a session-scoped work directory record                    |
+| `ListSessionWorkDirs(ctx, sessionID)`                        | List session-scoped work directories                             |
+| `UpdateSessionWorkDirDescription(ctx, sessionID, id, description)` | Update a work directory's description                      |
+| `DeleteSessionWorkDir(ctx, sessionID, id)`                   | Delete a session-scoped work directory                           |
 | `Close()`                                                    | Close the store (no-op for SQLite, lifecycle managed externally) |
-
-### PlanReviewStore Interface
-
-A separate `PlanReviewStore` interface (in `backend/session/persistence.go`) provides plan review workflow persistence. `SQLiteSessionStore` implements both `SessionStore` and `PlanReviewStore`.
-
-| Method                                                              | Description                                                      |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `UpdateSessionPlanReview(ctx, id, phase, planPath)`                 | Persist plan review phase and path for restart survival           |
-| `UpdateSessionPlanReviewContext(ctx, id, phase, planPath, ctxJSON)` | Persist plan review state including restart-survival context (original message, mode, skills as JSON) |
-| `GetSessionsInPlanReview(ctx, projectID)`                           | Query sessions currently in a plan review phase                   |
 
 ### Conversation History
 
@@ -437,10 +405,9 @@ that accumulates one user/assistant pair per exchange, without truncation:
 
 - Updated centrally for EVERY terminal outcome of `HandleMessage` (via a
   `recordConversationOutcome` defer): success, partial success, clarification,
-  plan review initiation (user message only), failure (`[Task failed before
-  completion: …]` note), and cancellation (`[Task was cancelled before
-  completion]` note). `Orchestrator.Resume` (interrupted-task resume, plan
-  review approval) appends the assistant-side outcome the same way.
+  failure (`[Task failed before completion: …]` note), and cancellation
+  (`[Task was cancelled before completion]` note). `Orchestrator.Resume`
+  (interrupted-task resume) appends the assistant-side outcome the same way.
 - When the assistant output contains tool-call syntax printed as text (failure-mode
   detected by `agent.DetectToolCallSyntaxInContent` — e.g. `` ```bash_exec ``
   typed as prose instead of a `tool_use` block), the history records a
@@ -526,36 +493,32 @@ type SessionInfo struct {
     TotalOutputTokens int
     Model            string
     Family           string
-    PlanReviewPhase  string // "" | "awaiting_accept" | "awaiting_feedback"
-    PlanReviewPath   string // path to .md plan file awaiting review
-    PlanReviewContext string // JSON with {msg, mode, skills} for restart survival
+    Pinned           bool
+    FillPercent      float64 // context-fill percentage (stored in sessions.fill_percent)
     HasUnfinishedTask bool  // derived (not stored): EXISTS unfinished in_progress/failed task; gates the fork button
 }
 
-// HandleOptions — execution mode + plan review + user-specified skill overrides
+// HandleOptions — user-specified skill overrides + per-message model/reasoning/goal/review toggles
 type HandleOptions struct {
-    TaskID          string
-    ExecutionMode   string   // "normal" | "advanced"
-    UserSkills      []string
-    ModelOverride   string   // non-empty → use this model for all LLM calls; empty → router default
-    ReasoningEffort string   // non-empty → native reasoning value for all LLM calls; empty → use family default
-    PlanReview      bool     // true = pause after planning for user review
-    SessionPlansDir string   // directory for session-scoped plan files
+    TaskID             string                     // non-empty = continuation of existing task
+    UserSkills         []string                   // explicitly requested by user via /skill refs (bypass router)
+    ModelOverride      string                     // non-empty → use this model for all LLM calls; empty → router default
+    ReasoningEffort    string                     // non-empty → native reasoning value for all LLM calls; empty → use family default
+    SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)
     PendingAttachments []orchestration.Attachment // staged attachments flushed into the blackboard before execution
+    ReviewMode         bool                       // true = message carries code-review feedback the agent must act on (sets ReviewModeKey)
+    Goal               bool                       // true = dispatch to runGoalLoop (goal mode)
+    GoalBudgetOverride *goal.GoalBudget           // non-nil = tighten goal resource caps below config defaults (applied at activation)
 }
 
 // HandleResult — orchestration output
 type HandleResult struct {
-    Output          string           `json:"output"`
-    RoutingDecision *RoutingDecision `json:"routing_decision"`
-    Plan            *Plan            `json:"plan,omitempty"`
-    Blackboard      Blackboard       `json:"-"`
-    AttemptCount    int              `json:"attempt_count,omitempty"`
-    Reflections     []Reflection     `json:"reflections,omitempty"`
-    Status          ExecutionStatus  `json:"status,omitempty"`      // typed outcome: success | partial | failed | aborted | cancelled
-    FailedSteps     int              `json:"failed_steps,omitempty"` // steps that finished with an error in the final attempt
-    PlanReviewPhase string           `json:"plan_review_phase,omitempty"` // non-empty = paused for review
-    PlanReviewPath  string           `json:"plan_review_path,omitempty"`  // path to .md plan file
+    Output          string                        `json:"output"`
+    RoutingDecision *router.RoutingDecision       `json:"routing_decision"`
+    Plan            *orchestration.Plan           `json:"plan,omitempty"`
+    Blackboard      orchestration.Blackboard      `json:"-"`
+    Reflections     []orchestration.Reflection    `json:"reflections,omitempty"`
+    Status          orchestration.ExecutionStatus `json:"status,omitempty"` // typed outcome: success | partial | failed | aborted | cancelled
 }
 ```
 
@@ -621,11 +584,8 @@ type HandleResult struct {
   has_unfinished_task, unfinished_task_id}`; the frontend calls it after
   every history load to reconcile UI state (running flag, resume banner,
   stale step_limit prompts) instead of defaulting to idle.
-- Plan review state survives app restart via SQLite persistence in the sessions table
-- Startup recovery queries `GetSessionsInPlanReview()` for all projects and re-emits `plan_review_ready` events
-- Stale plan review state (missing .md file) is cleared on recovery to prevent stuck sessions
-- Plan files live at `~/.c0wrk/projects/<pid>/<sid>/plans/` and are not deleted on rejection or replanning
-- `CancelTask` clears plan review state, persists the cleared state, completes the blackboard task, and emits `task_cancelled`
+- A `plan_review_ready` event (emitted by `declare_plan` await_approval) is persisted to `session_messages` (role `plan_review`) so it reappears in history after a restart; the pending plan approval is also surfaced via `GetPendingActions` (`desktop/pending_actions.go` `PlanApprovals`)
+- Plan files live at `~/.c0wrk/projects/<pid>/<sid>/plans/` (written by `declare_plan`); previous plan files are not deleted when the Conductor revises (request_changes) or abandons
 - `DeleteSession` closes all per-step dump files via `Orchestrator.Cleanup()` before closing the session-level log and dump files
 - `Shutdown` closes all per-step dump files for every active session via `Orchestrator.Cleanup()` before canceling and closing session resources
 - Pending attachments are flushed into the blackboard exactly once on `SendMessage`: the session manager snapshots and clears `session.pendingAttachments`, then passes them via `HandleOptions.PendingAttachments` (both HandleMessage calls in `SendMessage` receive the same snapshot)

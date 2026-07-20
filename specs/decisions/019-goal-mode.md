@@ -1,4 +1,4 @@
-# ADR-017: Goal Mode
+# ADR-019: Goal Mode
 
 ## Status
 

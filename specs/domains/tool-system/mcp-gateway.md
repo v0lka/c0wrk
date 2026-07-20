@@ -8,7 +8,7 @@ c0wrk wires sp4rk's MCP (Model Context Protocol) gateway into the orchestration 
 
 - `core/builder.go` — `NewOrchestratorBuilder` starts the gateway in `runAsyncInit()` (goroutine) and registers discovered tools into the core registry
 - `backend/frontend_api_mcp.go` (or matching `frontend_api_*.go`) — `GetMCPStatus` / `ReconfigureMCP` surface for the frontend MCP management UI
-- `core/tools/registry.go` — `RegisterWithSource(mcpTool, "mcp:"+serverName)` registers MCP tools with the `mcp` source tag
+- `core/tools/registry.go` — exposes the wrapped sp4rk `ToolRegistry` (via `r.ToolRegistry`) on which the sp4rk gateway registers MCP tools (see below)
 
 Engine files (`github.com/v0lka/sp4rk/tools/mcp/gateway.go` `Gateway`, `server.go` `Server`, `mcptool.go` `mcp.Tool`) are documented in [the sp4rk mcp-gateway spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/mcp-gateway.md).
 
@@ -20,12 +20,11 @@ Engine files (`github.com/v0lka/sp4rk/tools/mcp/gateway.go` `Gateway`, `server.g
 NewOrchestratorBuilder()
 │
 ├─ runAsyncInit() (goroutine):
-│   ├─ gateway.Start(ctx, configs)        // per-server Connect + DiscoverTools (partial failure = non-fatal)
-│   └─ gateway.RegisterTools(registry)    // sanitize schema + RegisterWithSource("mcp:"+serverName)
+│   └─ mcp.StartGateway(ctx, cfg, b.registry.ToolRegistry, …)  // Connect + DiscoverTools + RegisterTools (RegisterWithSourceCategory with SourceCategoryMCP; partial failure = non-fatal)
 │
 ├─ Application running...
 │   ├─ Tool execution: mcp.Tool.Execute() → server.CallTool(name, input)
-│   └─ ReconfigureMCP() → Stop + Start with new config (atomic)
+│   └─ ReconfigureMCP() → gateway.Reconfigure (atomic: unregister old, stop, start new)
 │
 └─ Shutdown:
     └─ gateway.Stop() → close all server connections
@@ -35,11 +34,11 @@ NewOrchestratorBuilder()
 
 ### Registration into the Core Registry
 
-MCP tools are wrapped in sp4rk `mcp.Tool` (implements the `Tool` interface) and registered via the core registry's `RegisterWithSource`:
+MCP tools are wrapped in sp4rk `mcp.Tool` (implements the `Tool` interface) and registered by the sp4rk gateway via `RegisterWithSourceCategory(mcpTool, serverName, SourceCategoryMCP)` on the embedded sp4rk `ToolRegistry` (`b.registry.ToolRegistry`):
 
 - `DefaultPolicy()` → `PolicyUserConfirm` (external tools, conservative default)
 - `IsUntrusted()` → `true` (all MCP tool output is wrapped in `&lt;untrusted-content>` tags)
-- Source tag: `mcp:<server_name>`
+- Source tag: the MCP server's name (e.g. `filesystem`); source category `SourceCategoryMCP`
 
 ### Status Reporting (frontend UI)
 
@@ -71,7 +70,7 @@ Env vars are expanded as `${VAR}`. Transport types (stdio/http), schema sanitiza
 ## Invariants
 
 - MCP gateway failure is non-fatal (application starts without MCP tools)
-- MCP tools always have source tag `mcp:<server_name>`
+- MCP tools always carry source category `SourceCategoryMCP` (source tag = the server name)
 - MCP tools default to `PolicyUserConfirm` (never auto-execute untrusted external tools)
 - All MCP tools are untrusted (`IsUntrusted()` returns `true`)
 - `ReconfigureMCP()` is atomic: old servers stopped before new ones started

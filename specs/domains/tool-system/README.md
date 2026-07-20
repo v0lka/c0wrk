@@ -7,7 +7,7 @@ c0wrk provides tool infrastructure for the agent on top of sp4rk's `Tool`/`ToolR
 ## Key Files
 
 - `core/tools/registry.go` — core `ToolRegistry` (wraps the sp4rk registry; adds policy resolution, judge, hooks, symlink gate, disabled-tool and bash-blacklist enforcement)
-- `core/tools/symlink.go` — symlink detection/traversal integration calling sp4rk `DetectSymlinksInToolInput`
+- `core/tools/registry_symlink.go` — symlink detection/traversal integration calling sp4rk `DetectSymlinksInToolInput`
 - `core/tools/builtin_registration.go` — `RegisterBuiltinTools` function + `BuiltinToolsConfig`
 - `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
 - `core/toolnames.go` — tool name constants, `NoProjectDisabledTools`, `NoProjectBashBlacklist`
@@ -49,15 +49,15 @@ core ToolRegistry.Execute(ctx, name, input)
 │
 ├─ 1. Lookup tool by name → not found? return error result
 ├─ 2. Disabled tool (No Project mode)? → return error result (applies to ALL tools including internal)
-├─ 3. Extra bash blacklist match? → return error result (per-session, e.g., No Project blocks dev commands)
-├─ 4. Internal tool? → execute immediately (bypass remaining policy/judge/hook checks)
-├─ 5. PreExecuteHook (blocking gate, e.g., index ready)
-├─ 6. ParamManager (transform input, e.g., scope paths)
-├─ 7. Symlink Gate: detect symlinks in input paths
+├─ 3. Internal tool? → execute immediately (bypass remaining policy/judge/hook checks)
+├─ 4. PostExecuteHook deferred (runs on every later return path)
+├─ 5. Extra bash blacklist match? → return error result (per-session, e.g., No Project blocks dev commands)
+├─ 6. PreExecuteHook (blocking gate, e.g., index ready)
+├─ 7. ParamManager (transform input, e.g., scope paths)
+├─ 8. Symlink Gate: detect symlinks in input paths
 │      ├─ Symlinks found → force confirmation (unless always_deny)
 │      └─ No symlinks → continue
-├─ 8. resolvePolicy: per-tool > skill > default > tool's own
-├─ 9. Auto-approval: all paths in workspace/temp? → execute
+├─ 9. resolvePolicy: per-tool > skill > default > tool's own
 └─ 10. Apply policy:
       ├─ AlwaysAllow → execute (unless ToolJudger flags)
       ├─ AlwaysDeny → error result
@@ -69,7 +69,7 @@ The policy resolution, auto-approval (session roots), and symlink gate are c0wrk
 ## Invariants
 
 - Tool names are unique within the registry
-- Internal tools (`ask_user`, `batch`, `finish`, `list_step_outputs`, `read_step_output`, `read_skill_resource`, `search_facts`, `semantic_search`, `update_checklist`, `declare_step_complete`, `store_fact`, `tool_result_read`) bypass policy and judge checks. The disabled-tool check (No Project mode) applies to all tools including internal ones, but the extra-bash-blacklist check runs AFTER the internal-tool bypass. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
+- Internal tools bypass policy and judge checks. The set (in `core/tools/registry.go` `internalTools`) is: `ask_user`, `delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `propose_goal`, `declare_goal_status`, `reflect`, `finish`, `list_step_outputs`, `read_step_output`, `read_final_result`, `read_skill_resource`, `read_attachment`, `search_facts`, `semantic_search`, `update_checklist`, `declare_step_complete`, `store_fact`, `tool_result_read`, and `batch` (`sdktools.ToolBatch`). The disabled-tool check (No Project mode) applies to all tools including internal ones, but the extra-bash-blacklist check runs AFTER the internal-tool bypass. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
 - The symlink gate runs before policy resolution for every non-internal tool call
 - MCP tools are tagged with source `mcp`; core built-in tools with source `core`
 - Disabled tools are blocked at execution time; `SetDisabledTools`/`DisabledTools` deep-copy the map to prevent concurrent mutation

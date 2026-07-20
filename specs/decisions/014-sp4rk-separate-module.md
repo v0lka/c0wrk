@@ -54,5 +54,5 @@ Split sp4rk (the `sdk/` directory) into a separate Go module with the path `gith
 
 - Supersedes [ADR-001](001-single-module.md) — single-module decision is superseded for the sp4rk layer only; the root module remains a single module for `core/`, `backend/`, `desktop/`.
 - Builds on [ADR-011](011-sp4rk-to-core-extraction.md) — the extraction of c0wrk-specific concepts made sp4rk module-independent.
-- Canonical sp4rk decision: [sdk/specs/decisions/001-separate-module.md](../../sdk/specs/decisions/001-separate-module.md)
+- Canonical sp4rk decision: [sp4rk: specs/decisions/001-separate-module.md](https://github.com/v0lka/sp4rk/blob/main/specs/decisions/001-separate-module.md) (lives in the external `github.com/v0lka/sp4rk` repository; the in-repo `sdk/` directory referenced by this ADR no longer exists — see [ADR-015](015-sp4rk-external-module-dependency.md))
 - Aligned with [specs/architecture/layers.md](../architecture/layers.md) — import rules now enforced at module level.

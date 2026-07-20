@@ -10,13 +10,14 @@ Manages real-time event subscription, validation, and store updates. Events flow
 - `frontend/src/hooks/events/useChatEvents.ts` — streaming, thoughts, errors, task lifecycle (task_complete, task_cancelled, task_failed_resumable)
 - `frontend/src/hooks/events/usePlanEvents.ts` — plan generation, step lifecycle
 - `frontend/src/hooks/events/useToolEvents.ts` — tool call/result correlation
-- `frontend/src/hooks/events/useActionEvents.ts` — confirmations, ask_user, step limits
+- `frontend/src/hooks/events/useActionEvents.ts` — confirmations, ask_user, step limits, and plan review (`plan_review_ready`) via shared handlers
 - `frontend/src/hooks/events/useContextEvents.ts` — context fill, compaction
 - `frontend/src/hooks/events/useLifecycleEvents.ts` — routing, step_start, step_complete, retry, step_retry
 - `frontend/src/hooks/events/useSubagentEvents.ts` — subagent lifecycle
 - `frontend/src/hooks/events/useBlackboardEvents.ts` — blackboard state updates
 - `frontend/src/hooks/events/useAttachmentEvents.ts` — attachment list updates
-- `frontend/src/hooks/events/usePlanReviewEvents.ts` — plan review lifecycle (plan_review_ready, plan_validation_failed, etc.)
+- `frontend/src/hooks/events/hitlHandlers.ts` — shared HITL event handlers (`handleToolConfirmEvent`, `handleAskUserEvent`, `handleStepLimitEvent`, `handlePlanReviewEvent`) used by `useActionEvents` (foreground) and the background-session watcher
+- `frontend/src/hooks/events/useReviewRestore.ts` — restores code-review buffer state on session activation (reloads comments, reopens review page if mid-loop, reconciles stale loop flags)
 - `frontend/src/hooks/events/useGoalEvents.ts` — goal-mode events (`goal_proposal` pending action + `goal_status`/`goal_progress` service-phase events → goalStore + chat message)
 - `frontend/src/hooks/events/useTerminalEvents.ts` — terminal output events
 - `frontend/src/hooks/events/useToolJudgeEvents.ts` — LLM judge response events
@@ -43,7 +44,7 @@ useSessionEvents(sessionId)
   │   ├─ useSubagentEvents → planStore
   │   ├─ useBlackboardEvents → blackboardStore
   │   ├─ useAttachmentEvents → attachmentsStore
-  │   ├─ usePlanReviewEvents → planStore + planReviewStore
+  │   ├─ useActionEvents (plan_review_ready) → chatStore (plan_review pending action via hitlHandlers)
   │   ├─ useGoalEvents → goalStore (goal status/progress) + chatStore (goal_proposal message)
   │   ├─ useTerminalEvents → terminal state
   │   └─ useToolJudgeEvents → tool confirmation state
@@ -94,7 +95,7 @@ Certain events create "pending actions" that require user response:
 | `ask_user`     | Multi-question form  | Form with inputs   | `ask_user_response`     |
 | `step_limit`   | Step budget decision | Allow/Deny/Always  | `step_limit_response`   |
 | `goal_proposal` | Goal sign-off | Approve (with editable condition/verify textareas) / Cancel | `goal_proposal_response` (event) or `ConfirmGoal`/`CancelGoal` RPC — both funnel through one resolver |
-| `plan_review_ready` | Plan review     | Approve/Reject + feedback | `ApprovePlan` / `RejectPlan` RPC |
+| `plan_review_ready` | Plan review     | Approve/Request-Changes/Abandon + feedback | `plan_approval_response` event |
 
 Pending actions are stored in chatStore and rendered by the PendingActionsBar component.
 

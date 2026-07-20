@@ -6,8 +6,8 @@ c0wrk does not implement compaction strategies — they are **sp4rk engine** pri
 
 ## Key Files
 
-- `core/builder.go` / `core/orchestrator.go` — `ContextManagerFactory` selects the strategy from `routing.Domain` (see [README.md](README.md) for the domain → strategy table)
-- `core/orchestrator.go` — `plannerHistory()` uses sp4rk `CompactConversationHistory` to trim conversation history to a token budget before passing it to the router (separate from executor step-level compaction; keeps recent messages at the configured ratio)
+- `core/builder.go` — `buildContextFactory` constructs the `ContextManagerFactory`; the strategy is selected by the caller (`compactionStrategyForDomain`, see below) and passed in as an argument
+- `core/conductor.go` — `compactionStrategyForDomain(domain, complexity)` selects the strategy from `routing.Domain` + complexity (see [README.md](README.md) for the domain → strategy table); the context factory also applies optional per-step `PruningOverride` values from `StepConfig` (passed as variadic args)
 
 Engine files (`github.com/v0lka/sp4rk/memory/compaction_sliding.go`, `compaction_summary.go`, `compaction_hierarchy.go`, `compaction_conversation.go`, `context.go`) are documented in [the sp4rk compaction spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/memory/compaction.md).
 
@@ -21,14 +21,15 @@ Engine files (`github.com/v0lka/sp4rk/memory/compaction_sliding.go`, `compaction
 
 Tool-output pruning (predictive threshold) and regular history mutation (per-`BuildPrompt`, replaces old tool results with `ToolResultCache` references) are engine mechanisms — see the sp4rk compaction spec.
 
-## Per-Step Pruning Overrides (c0wrk consumption)
+## Tool-Output Pruning Config (c0wrk consumption)
 
-c0wrk's `coreStepConfigurator` applies role-based pruning defaults via `PruningOverride`:
+c0wrk configures tool-output pruning centrally in `core/builder.go` (`buildContextFactory`) from `cfg.Executor.ToolOutputPruning`:
 
-| Role | KeepLastN |
-| ---- | --------- |
-| `researcher` | 10 (needs more research context) |
-| `coder`, `tester`, `executor` | 5 (recent edits suffice) |
+- `keepLastN` — how many recent tool results to keep inline before evicting older ones to `ToolResultCache` references
+- `protectedTools` — tool names whose outputs are never pruned regardless of `keepLastN`
+- `thresholdPercent` — fill percentage that triggers a pruning pass
+
+Per-step pruning overrides are supported via the `PruningOverride` variadic argument on `ContextManagerFactory`; when a step's `StepConfig` carries a positive `KeepLastN`, it replaces the global value for that step's executor.
 
 ## Trigger Thresholds (c0wrk config)
 

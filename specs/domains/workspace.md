@@ -19,7 +19,8 @@ Manages the project workspace: file tree loading, filesystem watching for change
 - `core/vectorindex/hybrid.go` — hybrid search (vector ∪ lexical) with RRF fusion, per-side filters
 - `core/vectorindex/lexical/` — bleve/BM25 lexical index with `c0wrk_code` analyzer (camelCase split + lowercase + stop-en)
 - `github.com/v0lka/sp4rk/embedding/` — embedding model interface
-- `backend/frontend_api_vector.go` — FrontendAPI vector methods + lazy manager access (SetVectorManager/getVectorManager with RWMutex)
+- `backend/frontend_api_vector.go` — FrontendAPI vector RPC methods (call the lazy `getVectorManager` accessor)
+- `backend/frontend_api.go` — lazy vector-manager accessors + state: `SetVectorManager` (on `FrontendAPILifecycle`, kept off the Wails RPC surface), `getVectorManager`, and the `vectorManagerMu sync.RWMutex` guarding the `vectorManager` field
 - `backend/api_types.go` — `VectorIndexStatus` struct (shared API response type, also used by frontend_api_vector.go)
 
 ## Core Types
@@ -78,7 +79,7 @@ type SearchOptions struct {
 ### Filesystem Watcher
 
 ```
-backend/workspace.StartWatcher(projectPath)
+core/workspace.NewWatcher(projectPath, onChange)  // wired in backend/frontend_api_project.go
   → fsnotify watches project directory (recursive)
   → On file change:
       ├─ Debounce (batch rapid changes)

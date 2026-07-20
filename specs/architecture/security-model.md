@@ -33,14 +33,24 @@ These tools bypass ALL policy checks, judge evaluation, and confirmation flow:
 
 - `ask_user` — prompts the user for information
 - `finish` — signals task completion
-- `list_step_outputs` — reads completed step metadata
+- `list_step_outputs` — lists completed step outputs
+- `read_final_result` — reads the final result of the previously completed task
 - `read_skill_resource` — reads a resource file from an activated skill
 - `read_step_output` — reads a specific step's output
+- `read_attachment` — reads a user-attached file by ID
 - `search_facts` — searches stored facts by keywords
+- `tool_result_read` — reads a previously cached tool result in fragments
 - `semantic_search` — searches the project codebase by semantic similarity
 - `update_checklist` — updates the checklist for the current step or standalone
+- `declare_step_complete` — marks an inline plan step complete/failed
 - `store_fact` — stores a fact for later retrieval
-- `tool_result_read` — reads a previously cached tool result in fragments
+- `delegate` — launches subagents for a plan step
+- `cancel_delegation` — cancels an active delegation
+- `declare_plan` — publishes an execution plan
+- `execute_plan` — begins executing a declared plan
+- `propose_goal` — proposes a goal for user sign-off
+- `declare_goal_status` — declares self-evaluation verdict on the active goal
+- `reflect` — triggers reflection on the current trajectory
 - `batch` — executes multiple tool calls sequentially
 
 Source: `core/tools/registry.go` `internalTools` map
@@ -84,7 +94,7 @@ After the PolicyAlwaysAllow Judge gate (if applicable), the registry checks if A
 1. The session's temporary directory and any auxiliary directories (`TempDirFrom(ctx)` + `AllowedRootsFrom(ctx)`)
 2. The current workspace directory (`WorkspacePathFrom(ctx)`)
 
-If yes AND policy is NOT `always_deny`: tool executes without confirmation.
+If yes AND policy is `always_allow`: tool executes without confirmation. (The `AllPathsInSessionRoots` auto-approval path applies only to `PolicyAlwaysAllow`. `PolicyUserConfirm` write tools are auto-approved by a separate mechanism: when `security.auto_approve_workspace_writes` is enabled and the tool's `ToolJudger.Judge()` reports the target is within session roots, the tool executes; otherwise it is confirmed. `PolicyAlwaysDeny` is never weakened.)
 
 Rationale: operations within the session roots are the normal working mode. Requiring confirmation for every file read/write within the project or temp directory would be unusable.
 
@@ -191,7 +201,7 @@ If the input contains suspicious (unexpandable) shell expressions, a warning is 
 
 ## Bash Blacklist
 
-The shell-execution tool (`bash_exec` on Unix, `posh_exec` on Windows) has a regex-based blacklist (`config.yaml Security.BashBlacklist`) that blocks dangerous command patterns (e.g., `rm -rf /`, `chmod 777`, `curl | sh`). The blacklist is read from the policy entry keyed by the platform's active shell tool name — `cfg.Security.ToolPolicies[activeShellToolName()].Blacklist` — so on Windows the entry is configured under `posh_exec`, on Unix under `bash_exec` (see [builtins.md § Shell-Execution Tool](../domains/tool-system/builtins.md#shell-execution-tool-bash_exec--posh_exec)). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's policy resolves to `AlwaysAllow`, the tool's `Judge()` evaluates the command against compiled blacklist regexes. A match returns `allow=false` with a non-empty reasoning identifying the matched pattern, which escalates to user confirmation via the PolicyAlwaysAllow Judge Gate (above). The gate runs **before** workspace/temp auto-approval, so a blacklisted command with paths inside the workspace (e.g., `rm -rf /workspace/.git`) is still routed to confirmation.
+The shell-execution tool (`bash_exec` on Unix, `posh_exec` on Windows) has a regex-based blacklist (the `blacklist` list on the shell tool's `Security.ToolPolicies` entry) that blocks dangerous command patterns (e.g., `rm -rf /`, `chmod 777`, `curl | sh`). The blacklist is read from the policy entry keyed by the platform's active shell tool name — `cfg.Security.ToolPolicies[activeShellToolName()].Blacklist` — so on Windows the entry is configured under `posh_exec`, on Unix under `bash_exec` (see [builtins.md § Shell-Execution Tool](../domains/tool-system/builtins.md#shell-execution-tool-bash_exec--posh_exec)). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's policy resolves to `AlwaysAllow`, the tool's `Judge()` evaluates the command against compiled blacklist regexes. A match returns `allow=false` with a non-empty reasoning identifying the matched pattern, which escalates to user confirmation via the PolicyAlwaysAllow Judge Gate (above). The gate runs **before** workspace/temp auto-approval, so a blacklisted command with paths inside the workspace (e.g., `rm -rf /workspace/.git`) is still routed to confirmation.
 
 ## Indirect Prompt Injection Defense
 

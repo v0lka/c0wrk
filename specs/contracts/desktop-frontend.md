@@ -42,6 +42,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `DeleteSession`        | id                           | error                     | Delete session                                        |
 | `RenameSession`        | id, name                     | error                     | Rename session                                        |
 | `ArchiveSession`       | id                           | error                     | Archive/unarchive session                             |
+| `PinSession`           | id                           | error                     | Toggle session pin (affects ordering/filtering)       |
 | `ForkSession`          | id                           | (\*SessionInfo, error)    | Deep-copy a session into an independent fork (messages, tasks+steps/facts/attachments/trajectory, terminal commands, work directories, review) with regenerated identifiers in one atomic transaction; runtime counters reset, name "`<src> (fork N)`". Rejected when the session has an unfinished (`in_progress`/`failed`) task. The returned session becomes the active session |
 | `ListSessions`         | —                            | ([]SessionInfo, error)    | List active project sessions                          |
 | `GetSessionHistory`    | id                           | ([]ChatMessage, error)    | Get message history                                   |
@@ -60,14 +61,6 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `AttachFiles`       | sessionID, paths         | ([]AttachmentInfo, error)     | Convert files to markdown via `core/markitdown` and stage them as pending attachments; emits `attachments:changed` (incremental per file + final with per-file failures). Returns the full pending list. System-level errors (session missing, converter init) return `error`; file-level failures (unsupported format, conversion error) are reported via the event payload's `Failed` field, not as `error`, so partial success is preserved |
 | `RemoveAttachment`  | sessionID, attachmentID   | error                         | Remove a staged (pending) attachment by ID; no-op if not found. Does not touch attachments already flushed into the blackboard |
 | `GetAttachments`    | sessionID                | ([]AttachmentInfo, error)     | Get the session's staged (pending) attachments as metadata-only values |
-
-### Plan Review (`backend/frontend_api_plan_review.go`)
-
-| Method          | Parameters            | Returns | Description                                                  |
-| --------------- | --------------------- | ------- | ------------------------------------------------------------ |
-| `WriteFile`     | sessionID, path, content | error   | Write content to a file within the workspace (with path containment) |
-| `ApprovePlan`   | sessionID, planPath   | error   | Validate and approve a plan for execution after user review   |
-| `RejectPlan`    | sessionID, feedback   | error   | Reject a plan; empty feedback = await user message, non-empty = replan with feedback |
 
 ### Project (`backend/frontend_api_project.go`)
 
@@ -103,6 +96,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | Method                | Parameters         | Returns                              | Description                  |
 | --------------------- | ------------------ | ------------------------------------ | ---------------------------- |
 | `ListDirectory`       | dirPath, recursive | ([]FileNode, error)                  | List directory contents (workspace-contained) |
+| `WriteFile`           | sessionID, path, content | error                          | Write content to a file (workspace-contained; structural/write RPC, resolves via `resolveWorkspacePath`) |
 | `ReadFile`            | filePath           | (string, error)                      | Read file contents (any absolute path; not constrained to workspace — the viewer surfaces paths the agent cites, including out-of-workspace files like SDK sources). A trailing `#L<n>` / `#L<n>-L<m>` line anchor is stripped before resolution |
 | `GetFileDiff`         | filePath           | (string, error)                      | Get git diff for file (any absolute path; returns `("", nil)` for files outside the active project root or a non-git path — no baseline to diff against) |
 | `GetGitStatus`        | dirPath            | (map[string]GitStatusEntry, error)   | Get git status for directory |
@@ -184,6 +178,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 | Method           | Parameters | Returns       | Description |
 | ---------------- | ---------- | ------------- | ----------- |
+| `GetPendingActions` | sessionID  | (*PendingActionsResponse, error) | Unresolved pending actions for a session (tool confirmations, ask-user forms, step-limit/resume prompts, goal proposals) |
 | `PickDirectory`  | —          | (string, error) | Native directory picker dialog |
 | `PickAttachmentFiles` | —     | ([]string, error) | Native multi-select file picker restricted to markitdown-supported document formats (filter built from `core/markitdown.SupportedExtensions()`). Returns `([]string{}, nil)` on cancel. Must remain on `App` — it requires the Wails context like `PickDirectory` |
 | `SetWailsLogger` | wl         | —             | Binding artifact: stores Wails log adapter (called internally, not from frontend) |
@@ -199,6 +194,17 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | Method       | Parameters | Returns              | Description                              |
 | ------------ | ---------- | -------------------- | ---------------------------------------- |
 | `ListSkills` | —          | []SkillDescriptorDTO | List available skills (name+description) |
+
+### Goal (`backend/frontend_api_goal.go`)
+
+| Method          | Parameters                              | Returns | Description                                                                                          |
+| --------------- | --------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------- |
+| `ConfirmGoal`   | sessionID, requestID, condition, verify | error   | Approve a proposed goal (optionally with edits). Resolves the pending `goal_proposal` action          |
+| `CancelGoal`    | sessionID, requestID                    | error   | Cancel a proposed goal                                                                               |
+| `ClarifyGoal`   | sessionID, requestID, clarification     | error   | Ask the derivation agent for clarification on a proposed goal                                        |
+| `PauseGoal`     | sessionID                               | error   | Pause an active goal loop                                                                            |
+| `ResumeGoal`    | sessionID                               | error   | Resume a paused goal loop                                                                            |
+| `ClearGoal`     | sessionID                               | error   | Clear the active goal for a session                                                                  |
 
 ### Work Directories (`backend/frontend_api_workdirs.go`)
 

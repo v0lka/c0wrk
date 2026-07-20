@@ -12,7 +12,7 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
 
 - `core/tools/delegate.go` — `delegate` tool implementation
 - `core/tools/cancel_delegation.go` — `cancel_delegation` tool (async cancellation)
-- `core/delegation_registry.go` — Delegation Registry (active/completed delegations per Conductor run)
+- `core/tools/delegation_registry.go` — Delegation Registry (active/completed delegations per Conductor run)
 - `github.com/v0lka/sp4rk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (the primitive that runs an isolated executor in a goroutine)
 - `github.com/v0lka/sp4rk/orchestration/dag.go` — `FindReadySteps` and DAG traversal (reused for dependency resolution)
 - `github.com/v0lka/sp4rk/orchestration/types.go` — `Plan` and `PlanStep` types (reused as delegation task descriptors)
@@ -137,7 +137,7 @@ type DelegationRegistry struct {
 type Delegation struct {
     ID          string
     Summary     string
-    Status      string  // "pending" | "running" | "completed" | "failed" | "cancelled"
+    Status      DelegationStatus  // "pending" | "running" | "completed" | "failed" | "cancelled"
     Output      string
     Error       error
     Steps       []agent.Step
@@ -152,13 +152,18 @@ Operations:
 
 | Operation | Purpose |
 | --------- | ------- |
-| `Register(task)` | Add a new delegation as "pending" |
+| `Register(id, summary, dependsOn, mode)` | Add a new delegation as "pending" (errors on duplicate ID) |
 | `Start(id, cancelFunc)` | Mark "running", store the cancellation handle |
-| `Complete(id, result)` | Mark "completed" or "failed", store output/error/steps |
+| `Complete(id, output, err, steps)` | Mark "completed" or "failed", store output/error/steps |
 | `Cancel(id)` | Cancel via the stored CancelFunc, mark "cancelled" |
 | `Get(id)` | Read a delegation (used by `read_step_output`) |
-| `ListPending()` | Return all pending/running delegations (used by `finish` join check) |
-| `NextDepth()` | Return depth+1 for child registries (enforces `MaxRedelegationDepth`) |
+| `ListPending()` | Return IDs of all pending/running delegations (used by `finish` join check) |
+| `Has(id)` | Report whether a delegation ID is registered |
+| `IsCompleted(id)` | Report whether a delegation is in a terminal state (completed/failed/cancelled) |
+| `All()` | Snapshot of all delegations in insertion order |
+| `Depth()` | Return the registry's delegation depth (0 for the Conductor's root registry) |
+
+Child registries (for `allow_redelegate`) are created at an incremented depth via `NewDelegationRegistryWithDepth(depth)`; the launcher checks `registry.Depth() >= config.Conductor.MaxRedelegationDepth` before building a redelegating subagent.
 
 ### Finish Join Semantics
 
@@ -184,15 +189,15 @@ When `allow_redelegate: true`:
 
 ### Dependency Context Injection
 
-Before a subagent runs, outputs from its `depends_on` delegations are injected into its task description, using the same logic as the prior step dependency injection:
+Before a subagent runs, outputs from its `depends_on` delegations are injected into its task description (`conductorLauncher.buildTaskDescription`):
 
 ```
-subagent task = task field + "\n\n## Context from previous delegations\n"
-  + For each dep in depends_on:
-      "### {dep.Summary}\n{truncate(dep.Output, budget)}\n"
+subagent task = task field + "\n## Context from previous delegations\n"
+  + For each dep in depends_on (in declaration order):
+      "\n### [{dep.ID}]: {dep.Summary}\n{dep.Output}\n"
 ```
 
-Budget: `config.Conductor.MaxDependencyContextChars` (default 8000) divided among dependencies.
+The **combined** context is tail-truncated to `config.Conductor.MaxDependencyContextChars` (default 8000), shared across all dependencies (not divided per-dependency), and aligned forward to a UTF-8 rune boundary so the tail does not begin inside a multi-byte sequence.
 
 ## Error Handling
 

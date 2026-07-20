@@ -20,11 +20,12 @@ Engine file: `github.com/v0lka/sp4rk/agent/router/router.go` (Router struct, `Ro
 {
   "domain": "code",
   "complexity": 3,
+  "needs_clarification": false,
   "matched_skills": ["go-testing", "go-error-handling"]
 }
 ```
 
-The `needs_clarification` and `mode` fields present in the prior pipeline are removed. Clarification is a Conductor tool call (`ask_user`); execution mode is a Conductor decision (`delegate` or not).
+The `mode` field from the prior pipeline is removed (the Conductor decides execution granularity via `delegate` or not). The `needs_clarification` field **still exists** on the sp4rk `RoutingDecision` type, but c0wrk **ignores** it (`core/orchestrator_handle.go`: "Router.NeedsClarification is ignored: the Conductor decides when to ask") — clarification is a Conductor tool call (`ask_user`), not a routing-driven pipeline branch.
 
 ### Domain → Compaction Strategy (c0wrk consumption)
 
@@ -76,7 +77,7 @@ In No Project (CHAT) mode, `routing.Domain` is overridden from `"code"` to `"gen
 - Route always returns a valid `RoutingDecision` (no nil on success)
 - The orchestrator's continuation fast-path skips the router entirely when `opts.TaskID` is non-empty AND the restored blackboard has an existing routing decision
 - The router never modifies the tool registry or any state (pure classification)
-- The router never produces a clarification decision — clarification is a Conductor responsibility via `ask_user`
+- c0wrk never branches on `RoutingDecision.NeedsClarification` (explicitly ignored in `orchestrator_handle.go`); clarification is a Conductor responsibility via `ask_user`. The field may still be set by the engine, but it drives no c0wrk pipeline branch.
 - User-specified skills are merged with router-matched skills in the orchestrator, not in the router
 
 ## Related Specs

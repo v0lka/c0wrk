@@ -13,18 +13,17 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 - `frontend/src/stores/fileTreeStore.ts`
 - `frontend/src/stores/fileViewerStore.ts`
 - `frontend/src/stores/inputModeStore.ts`
-- `frontend/src/stores/executionModeStore.ts`
 - `frontend/src/stores/blackboardStore.ts`
-- `frontend/src/stores/planReviewStore.ts`
 - `frontend/src/stores/gitPanelStore.ts`
 - `frontend/src/stores/settingsStore.ts`
 - `frontend/src/stores/uiStore.ts`
 - `frontend/src/stores/vectorIndexStore.ts`
 - `frontend/src/stores/attachmentsStore.ts`
+- `frontend/src/stores/workDirsStore.ts`
+- `frontend/src/stores/goalStore.ts`
+- `frontend/src/stores/reviewStore.ts`
 
 ## Store Catalog
-
-> **Note:** `executionModeStore` and `planReviewStore` are affected by ADR-012. Under the Conductor pipeline there is no execution-mode toggle (the Conductor chooses its own granularity) and no system-driven plan-review toggle (approval is a `declare_plan` tool call). These stores are expected to be removed or repurposed during implementation of ADR-012.
 
 | Store                | Responsibility                                                     | Persistence  |
 | -------------------- | ------------------------------------------------------------------ | ------------ |
@@ -35,15 +34,14 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 | `fileTreeStore`      | Lazy-loaded directory tree, expanded dirs, search, git status      | No           |
 | `fileViewerStore`    | Open files (content/diff/language), tabs, panel width, project-switch file restore (`restoreProjectFiles`) | localStorage |
 | `inputModeStore`     | Chat/terminal input mode, panel height, expanded state, selected model override, selected reasoning effort | localStorage |
-| `executionModeStore` | Normal/advanced execution mode toggle                              | localStorage |
 | `blackboardStore`    | Blackboard facts and metadata for current session                  | No           |
-| `planReviewStore`    | Plan review toggle state (enabled/disabled)                        | localStorage |
-| `gitPanelStore`      | Git panel UI state (branch selection, commit draft, diff view mode) | No           |
+| `gitPanelStore`      | Git panel UI state (branch info ahead/behind, merge/rebase state, sort/filter, commit draft) | localStorage |
 | `settingsStore`      | Settings modal open/close, active tab                              | No           |
 | `uiStore`            | Sidebar collapsed state (log level is fetched via `GetLogLevel` RPC, not stored) | localStorage |
 | `vectorIndexStore`   | Vector index status, progress, and search mode                     | localStorage (mode only) |
 | `workDirsStore`      | Auxiliary work directories (project-scoped + session-scoped lists), modal open/close state | No           |
 | `goalStore`          | Goal-mode state per session (lifecycle status, turn/budget, active goal condition, pending proposal); reconciled from `goal_status`/`goal_progress` service-phase events. The status-bar indicator (`GoalStatusIndicator`) reads `useGoalStatus` (primitive string) + `useActiveGoal` (direct ref) and offers Pause/Resume/Clear controls. | No           |
+| `reviewStore`        | Code-review buffer per session (general comment, hunk comments keyed by `filePath::hunkId`, review status `active`/`submitted`/`approved`), review-page open state, review-loop flags, and prompt-shown tracking; restored on session activation via `useReviewRestore`. | localStorage |
 | `attachmentsStore`   | Pending file attachments for the active session (chips above the chat input)        | No           |
 
 ## Critical Anti-Patterns

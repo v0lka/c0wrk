@@ -39,10 +39,10 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | ------------------ | ------------------------------------ | --------------------------------------------- | -------------------------- |
 | `Reflector`        | github.com/v0lka/sp4rk/orchestration | core (via github.com/v0lka/sp4rk/orchestration engine) | Failure analysis interface |
 | `Blackboard`       | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Shared task state          |
-| `Orchestrator`     | github.com/v0lka/sp4rk/orchestration | core/orchestrator (as `engine`)               | DAG execution engine       |
+| `Conductor`       | github.com/v0lka/sp4rk/orchestration | core/conductor (`RunConductor`)               | DAG execution engine (built via `orchestration.NewConductor(cfg ConductorConfig)`) |
 | `StepSeedable`     | github.com/v0lka/sp4rk/orchestration | core/conductor                                | Optional `ContextManager` capability (`SeedSteps`) used to resume an executor from a checkpoint |
 | `ConductorConfig.ResumeSteps` | github.com/v0lka/sp4rk/orchestration | core/orchestrator (`runConductor`)    | Prior ReAct steps seeded into the ContextManager + Executor on resume |
-| `Config`           | github.com/v0lka/sp4rk/orchestration | core/orchestrator (NewOrchestrator)           | Engine configuration (incl. ToolCache, PerToolTruncation, StepDumpTracker) |
+| `ConductorConfig`  | github.com/v0lka/sp4rk/orchestration | core/conductor (`RunConductor`)           | Engine configuration (incl. `ToolCache`, `PerToolTruncation`, `NonCacheableTools`, `ResumeSteps`) |
 | `Plan`, `PlanStep` | github.com/v0lka/sp4rk/orchestration | core/types (direct use)                       | Plan data structures       |
 | `CompletedStep`    | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Step result record         |
 | `Reflection`       | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Reflector output           |
@@ -137,7 +137,7 @@ import "github.com/v0lka/c0wrk/core/tools"       // → coretools.AskUserFunc
 3. Starts MCP gateway (async)
 4. Creates `ToolResultCache` with TTL and passes per-tool truncation to orchestrator config
 5. Creates a `github.com/v0lka/sp4rk/llm.Router` with providers (async)
-6. `Build()` creates per-session `Orchestrator` which internally creates a `github.com/v0lka/sp4rk/orchestration.Orchestrator`
+6. `Build()` creates per-session `Orchestrator` which internally builds a `github.com/v0lka/sp4rk/orchestration.Conductor` (via `core/conductor.go` `RunConductor` → `orchestration.NewConductor(cfg)`)
 
 ## Adapter Pattern
 
@@ -178,8 +178,8 @@ Core bridges c0wrk-specific configuration into sp4rk engine components via small
 ## Breaking Change Checklist
 
 - If you modify a `github.com/v0lka/sp4rk/orchestration` interface → update adapter in `core/orchestrator.go`
-- If you add a field to `github.com/v0lka/sp4rk/orchestration.Config` → update `NewOrchestrator` in `core/orchestrator.go`
-- If you change `CallerForStep` signature (github.com/v0lka/sp4rk/orchestration or github.com/v0lka/sp4rk/planner) → update all closures in `core/orchestrator.go` and `core/builder.go`, plus all call sites in `github.com/v0lka/sp4rk/orchestration/orchestrator.go` and `github.com/v0lka/sp4rk/planner/planner.go`
+- If you add a field to `github.com/v0lka/sp4rk/orchestration.ConductorConfig` → update `RunConductor` in `core/conductor.go`
+- If you change `CallerForStep` signature (github.com/v0lka/sp4rk/planner) → update all closures in `core/builder.go`, plus all call sites in `github.com/v0lka/sp4rk/planner/planner.go` (note: core no longer uses the planner pipeline after ADR-012; `CallerForStep` is not referenced from `core/`)
 - If you modify `github.com/v0lka/sp4rk/agent.AgentEvents` → update `core.Emitter` interface AND `noopEmitter`
 - If you change the `github.com/v0lka/sp4rk/tools.Tool` interface → update `github.com/v0lka/sp4rk/tools/mcp/mcptool.go`, ALL builtins, AND all test mocks implementing `Tool`
 - If you add a new sp4rk type that backend or desktop needs → import directly from the source package

@@ -6,24 +6,25 @@ c0wrk wires sp4rk's context-management engine into the orchestration cycle: it s
 
 ## Key Files
 
-- `core/builder.go` / `core/orchestrator.go` — `ContextManagerFactory` closure: constructs a `github.com/v0lka/sp4rk/agent.ContextManager` (backed by a sp4rk `ContextWindow`) per executor, selecting the compaction strategy from `routing.Domain`
-- `core/orchestrator.go` — `plannerHistory()` trims conversation history to a token budget before passing it to the router (uses sp4rk `CompactConversationHistory`)
+- `core/builder.go` — `buildContextFactory` constructs the `ContextManagerFactory` closure: builds a `github.com/v0lka/sp4rk/agent.ContextManager` (backed by a sp4rk `ContextWindow`) per executor, selecting the compaction strategy passed in by the caller
+- `core/conductor.go` — `compactionStrategyForDomain(domain, complexity)` maps the router's `routing.Domain` + complexity to a compaction strategy (see the table below); the resulting strategy is passed into the context factory
 - `backend/session/persistent_blackboard.go` — `PersistentBlackboard` (SQLite-backed Blackboard for c0wrk persistence/restore) — see [blackboard.md](blackboard.md)
 
 Engine files (`github.com/v0lka/sp4rk/memory/context.go`, `compaction*.go`, `steps.go`) and the `ContextWindow` struct are documented in [the sp4rk memory spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/memory/README.md).
 
 ## Domain → Strategy Mapping (c0wrk consumption)
 
-c0wrk's `ContextManagerFactory` selects the compaction strategy from the router's `routing.Domain`:
+c0wrk's `compactionStrategyForDomain` (in `core/conductor.go`) selects the compaction strategy from the router's `routing.Domain` (plus complexity):
 
 | Domain (from Router)        | Strategy       | Rationale                            |
 | --------------------------- | -------------- | ------------------------------------ |
-| `code`                      | sliding_window | Keeps recent file edits visible      |
+| `code`                      | sliding_window | Keeps recent file edits visible (handled by the default branch) |
 | `research`                  | summarization  | Condenses findings into key points   |
 | `general` (complexity < 4)  | sliding_window | Default safe choice                  |
 | `general` (complexity >= 4) | hierarchical   | Balanced retention for complex tasks |
+| `mixed`                     | sliding_window | Default safe choice (handled by the default branch) |
 
-Unrecognized domains fall back to `sliding_window`.
+Any unrecognized domain (including `code` and `mixed`) falls back to `sliding_window`.
 
 ## Flow
 

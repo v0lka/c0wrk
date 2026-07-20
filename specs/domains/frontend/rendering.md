@@ -33,13 +33,13 @@ Backend persists: ChatMessage[] (flat, role-based)
 Frontend converts: ChatMessageUI[] (semantic type, metadata)
          │
          ▼
-groupMessages(): GroupedMessages { items: DisplayItem[], pendingActions: ... } (tree structure, 19 kinds)
+groupMessages(): GroupedMessages { items: DisplayItem[] } (tree structure, 21 kinds)
          │
          ▼
 ChatMessageRenderer: renders each DisplayItem by type
 ```
 
-### Display Item Types (18 kinds)
+### Display Item Types (21 kinds)
 
 | Type                 | Description               | Visual Treatment                                                              |
 | -------------------- | ------------------------- | ----------------------------------------------------------------------------- |
@@ -55,7 +55,9 @@ ChatMessageRenderer: renders each DisplayItem by type
 | `error`              | Error message             | Red accent, error icon                                                        |
 | `service`            | System/status message     | Muted, small text (routing, retry, status events are grouped here)            |
 | `plan_step`          | Plan step indicator       | Step badge with status                                                        |
+| `subagent`           | Delegated subagent block  | Collapsible container (status badge, title, optional duration/error); nested children (plan steps, tools, thoughts) grouped inside. Rendered by `SubAgentBlock`. |
 | `plan_review`        | Plan review message       | Checklist-style card (info accent); Approve/Request-Changes/Abandon UI. Sinks while unresolved; settles at stream position when decided. Only the last unresolved `plan_review` is kept (replan cycle supersedes earlier unresolved ones); resolved plan_reviews remain at their stream position. |
+| `review_prompt`      | Code-review prompt        | Checklist-style card (info accent); Enter/Decline UI. "Enter" opens the review page (`ReviewPage` via the `c0wrk:review` tab) and enters the review loop; "Decline" dismisses. Sinks while unresolved; settles at stream position when decided (enter → success accent, decline → muted). Rendered by `ReviewPromptBlock`. |
 | `goal_proposal`      | Goal sign-off prompt      | Checklist-style card (info accent); two **pre-filled editable** textareas (condition + verify) seeded from the proposal, Approve (submits edited values) / Cancel UI. Needs-clarification mode renders the clarification question prominently and focuses the verify field. Sinks while unresolved; settles at stream position when resolved (collapses to a settled "Goal approved"/"Goal cancelled" card). Only emitted in goal mode. |
 | `reflection`         | Reflector analysis        | Warning accent, collapsible                                                   |
 | `step_finish`        | Step completion marker    | Success/fail indicator (emitted by `finish` tool call)                        |
@@ -71,7 +73,7 @@ Key transformations in `groupMessages()`:
 2. **Thought collapsing**: consecutive thought messages grouped into `thought_group`
 3. **Plan step nesting**: messages between `plan_step_start` and `plan_step_complete` nested under step
 4. **Pending action sinking**: unresolved confirmations/questions (`tool_confirm`, `ask_user`, `step_limit`, `plan_review`, `goal_proposal`, `resume_action`) are pushed into the **root** items (never nested in a plan step or subagent, regardless of `plan_step_id`) and moved to the very end of the chat so they stay visible at the bottom while new content streams in above. Resolved actions remain at their stream position (like settled checklists). Only the last unresolved `plan_review` is kept (replan cycle).
-5. **Subagent handling**: subagent messages (`subagent_launch`/`subagent_complete`) are skipped entirely (not rendered as display items)
+5. **Subagent handling**: a `subagent_launch` message creates a `subagent` DisplayItem (collapsible container); subsequent messages are nested as its children until the matching `subagent_complete` closes the container. `subagent_complete` finalizes status/duration. Rendered by `SubAgentBlock`.
 6. **Special tool handling**: `finish` tool call → `step_finish` item; `memory_read` event → `memory_read` item; `plan_review_*` events → `plan_review` item; `context_compaction` event → `context_compaction` item (with before/after fill %); `routing`/`retry`/`status` events → `service` item
 7. **Checklist sinking**: `step_todo_update` messages → `checklist` DisplayItem; latest per key (stepId || standalone) supersedes previous; active (unchecked items) checklists are moved to the end of their container (root items for standalone, step children for step-associated) so they stay visible at the bottom while new content streams in above; settled (all-checked) checklists remain at their stream position
 
@@ -108,7 +110,7 @@ All user messages always render in the chat history. The most recent user messag
 - **Markdown rendering**: `react-markdown` wraps parse failures in a `<pre>` block with the error message; invalid markdown does not crash the component
 - **Syntax highlighting**: `highlight.js` falls back to plain text rendering when the language is not recognized (no error boundary needed)
 - **Mermaid diagrams**: rendering failures are caught by the Mermaid error callback and displayed as an error snippet instead of a blank diagram; lazy loading failures produce a "Diagram unavailable" placeholder
-- **Streaming interruption**: if the WebSocket/event stream disconnects mid-stream, `chatStore.flushStreamingToMessage()` preserves the partial content as a permanent message
+- **Streaming interruption**: streaming text lives per-session in `chatStore.streamingText[sessionId]`; it is flushed to a permanent message on `assistant_done` (`addMessage` + `clearStreamingText`), and any leftover streaming state is cleared on task lifecycle events (`task_complete`, `task_cancelled`)
 - **File viewer errors**: binary detection (null byte) returns a "binary file" notice; read failures from backend display the error message in the viewer pane
 - **Missing message types**: `ChatMessageRenderer` renders unknown display item types as a muted "Unsupported message type" fallback
 - **Scroll lock resilience**: `ChatScrollManager` handles edge cases where the scroll target element is unmounted during a transition (no-op, no exception)

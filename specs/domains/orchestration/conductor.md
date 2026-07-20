@@ -15,7 +15,7 @@ A single `Executor.Run` instance that owns a user task end-to-end, using the ReA
 - `github.com/v0lka/sp4rk/agent/executor.go` — `Executor.Run` (the ReAct loop; the Conductor is an Executor configured with Conductor-specific tools and prompt)
 - `core/systemprompt.go` — `buildSystemPrompt` and Conductor-specific prompt sections
 - `core/prompts/shell_substitute.go` — `SubstituteShellTool` resolves the `{shell_tool}` placeholder in embedded prompt markdown to the active platform's shell-exec tool name (`bash_exec` on Unix, `posh_exec` on Windows); applied at each prompt-assembly call site so embedded prompts stay platform-agnostic raw templates
-- `core/delegation_registry.go` — Delegation Registry injected into the Conductor context
+- `core/tools/delegation_registry.go` — Delegation Registry injected into the Conductor context
 
 ## Behavior
 
