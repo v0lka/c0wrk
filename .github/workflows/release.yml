@@ -116,15 +116,19 @@ jobs:
 
       - name: Package Linux build
         # Tar the entire build/bin directory (binary + onnxruntime.so + models)
-        # preserving relative paths.
+        # preserving relative paths. The archive is written to the PARENT
+        # directory (build/) on purpose: if it landed inside build/bin (the very
+        # tree being archived as '.'), GNU tar would detect its own output file
+        # mutating the directory and abort with "file changed as we read it"
+        # (exit 1 under `bash -e`). Writing outside the source tree avoids that.
         working-directory: build/bin
-        run: tar -czf c0wrk-desktop-linux-amd64.tar.gz .
+        run: tar -czf ../c0wrk-desktop-linux-amd64.tar.gz .
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: c0wrk-desktop-linux-amd64
-          path: build/bin/c0wrk-desktop-linux-amd64.tar.gz
+          path: build/c0wrk-desktop-linux-amd64.tar.gz
           if-no-files-found: error
           retention-days: 7
 
