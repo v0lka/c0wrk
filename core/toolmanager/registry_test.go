@@ -1,6 +1,8 @@
 package toolmanager
 
 import (
+	"path"
+	"strings"
 	"testing"
 )
 
@@ -87,4 +89,87 @@ func TestManagedTools_MarkitdownIsPythonPackage(t *testing.T) {
 		}
 	}
 	t.Error("markitdown not found in ManagedTools()")
+}
+
+// TestManagedTools_ArchiveNameMatchesURL is the regression test for a
+// Windows-only bug where ArchiveName was hardcoded to ".tar.gz" even though
+// upstream ships ".zip" archives on Windows. The download saved zip bytes
+// under a ".tar.gz" filename; the checksum passed (whole-file hash) but the
+// installer then tried gzip extraction on a zip and failed with
+// "gzip: invalid header". The ArchiveName must always match the real format
+// advertised by the download URL for the current platform.
+func TestManagedTools_ArchiveNameMatchesURL(t *testing.T) {
+	platform := Platform()
+	tools, err := ManagedTools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools {
+		if tool.Type != StaticBinary {
+			continue
+		}
+		url, ok := tool.URLs[platform]
+		if !ok || url == "" {
+			continue // no URL for this platform — skip
+		}
+		want := path.Base(url)
+		if tool.ArchiveName != want {
+			t.Errorf("tool %q ArchiveName = %q, want %q (URL basename) for platform %q",
+				tool.Name, tool.ArchiveName, want, platform)
+		}
+	}
+}
+
+// TestArchiveNameForPlatform_WindowsZip directly verifies the Windows fix on
+// any host platform (CI runs Linux/macOS, never Windows, so a
+// run-platform-only assertion could not catch this regression). The uv/rg/rtk
+// Windows URLs serve ".zip" archives, so the resolved cache filename must end
+// in ".zip" — never the ".tar.gz" that triggered "gzip: invalid header".
+func TestArchiveNameForPlatform_WindowsZip(t *testing.T) {
+	tools, err := ManagedTools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools {
+		if tool.Type != StaticBinary {
+			continue
+		}
+		url := tool.URLs["windows-amd64"]
+		if url == "" {
+			continue
+		}
+		got := archiveNameForPlatform(tool, "windows-amd64")
+		want := path.Base(url)
+		if got != want {
+			t.Errorf("tool %q windows ArchiveName = %q, want %q", tool.Name, got, want)
+		}
+		if !strings.HasSuffix(got, ".zip") {
+			t.Errorf("tool %q windows ArchiveName %q must be a .zip archive", tool.Name, got)
+		}
+	}
+}
+
+// TestArchiveNameForPlatform_NonWindowsTarGz ensures the Unix/macOS behavior
+// is unchanged: those URLs serve ".tar.gz", so the derived name keeps that
+// extension.
+func TestArchiveNameForPlatform_NonWindowsTarGz(t *testing.T) {
+	tools, err := ManagedTools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools {
+		if tool.Type != StaticBinary {
+			continue
+		}
+		for _, platform := range []string{"darwin-arm64", "linux-amd64"} {
+			url := tool.URLs[platform]
+			if url == "" {
+				continue
+			}
+			got := archiveNameForPlatform(tool, platform)
+			if !strings.HasSuffix(got, ".tar.gz") {
+				t.Errorf("tool %q %s ArchiveName %q must be a .tar.gz archive", tool.Name, platform, got)
+			}
+		}
+	}
 }

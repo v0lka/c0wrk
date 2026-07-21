@@ -72,14 +72,12 @@ func (i *FSInstaller) InstallStaticBinary(archivePath string, tool ToolSpec, bin
 		return nil, fmt.Errorf("tool %q: unsupported archive format: %s", tool.Name, filepath.Ext(archivePath))
 	}
 
-	// Locate the binary inside the extracted tree.
-	src := filepath.Join(tmpDir, tool.BinPathInArchive)
-	if _, err := os.Stat(src); os.IsNotExist(err) {
-		// Try a flat extraction (binary directly in tmpDir).
-		src = filepath.Join(tmpDir, tool.BinName)
-		if _, err2 := os.Stat(src); os.IsNotExist(err2) {
-			return nil, fmt.Errorf("tool %q: binary %q not found in archive (looked for %s)", tool.Name, tool.BinName, tool.BinPathInArchive)
-		}
+	// Locate the binary inside the extracted tree. Archives use different
+	// layouts (subdir vs. flat) and Windows adds an ".exe" suffix, so try
+	// the declared path and a flat fallback, each with/without ".exe".
+	src, ok := resolveBinaryInTree(tmpDir, tool.BinPathInArchive, tool.BinName, runtime.GOOS)
+	if !ok {
+		return nil, fmt.Errorf("tool %q: binary %q not found in archive (looked for %s)", tool.Name, tool.BinName, tool.BinPathInArchive)
 	}
 
 	// Ensure binDir exists.
@@ -203,6 +201,36 @@ func createWrapper(wrapperPath, pythonBin, moduleName string) error {
 	}
 	content := fmt.Sprintf("#!/bin/sh\nexec \"%s\" -m %s \"$@\"\n", pythonBin, moduleName) //nolint:gocritic // shell script, not Go string
 	return os.WriteFile(wrapperPath, []byte(content), 0o755)
+}
+
+// resolveBinaryInTree locates the extracted binary by trying the declared
+// in-archive path and a flat fallback. On Windows (goos == "windows") it
+// prefers the ".exe" variant because upstream archives ship executables
+// with that suffix. The goos parameter makes the lookup testable on any
+// host platform. Returns the resolved path and whether a match was found.
+func resolveBinaryInTree(tmpDir, binPathInArchive, binName, goos string) (string, bool) {
+	bases := []string{
+		filepath.Join(tmpDir, binPathInArchive),
+		filepath.Join(tmpDir, binName),
+	}
+	wantExe := goos == "windows"
+	for _, base := range bases {
+		if wantExe {
+			if exe := base + ".exe"; pathExists(exe) {
+				return exe, true
+			}
+		}
+		if pathExists(base) {
+			return base, true
+		}
+	}
+	return "", false
+}
+
+// pathExists reports whether a file exists at path (file or otherwise).
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // extractTarGz extracts a .tar.gz archive to destDir.

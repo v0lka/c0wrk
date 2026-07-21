@@ -1,5 +1,9 @@
 package toolmanager
 
+import (
+	"path"
+)
+
 // ToolType classifies how a managed tool is installed and invoked.
 type ToolType string
 
@@ -152,14 +156,32 @@ func ManagedTools() ([]ToolSpec, error) {
 
 	// Apply per-tool overrides for tools whose upstream naming convention
 	// differs from PlatformTriple for specific platforms.
+	platform := Platform()
 	for i := range tools {
-		if tools[i].ArchiveNameOverride != "" {
-			tools[i].ArchiveName = tools[i].ArchiveNameOverride
-		}
+		tools[i].ArchiveName = archiveNameForPlatform(tools[i], platform)
 		if tools[i].BinPathInArchiveOverride != "" {
 			tools[i].BinPathInArchive = tools[i].BinPathInArchiveOverride
 		}
 	}
 
 	return tools, nil
+}
+
+// archiveNameForPlatform resolves the local cache filename for a tool on the
+// given platform. The download URL is the source of truth for the archive
+// format — upstream ships ".zip" on Windows but ".tar.gz" elsewhere — so
+// deriving the name from the URL basename keeps the on-disk extension
+// consistent with the actual bytes and lets the installer pick the correct
+// extractor. ArchiveNameOverride wins when set; the triple-derived
+// ArchiveName is the fallback when there is no URL for the platform.
+func archiveNameForPlatform(tool ToolSpec, platform string) string {
+	if tool.ArchiveNameOverride != "" {
+		return tool.ArchiveNameOverride
+	}
+	if url, ok := tool.URLs[platform]; ok && url != "" {
+		if base := path.Base(url); base != "" && base != "." && base != "/" {
+			return base
+		}
+	}
+	return tool.ArchiveName
 }
