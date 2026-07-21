@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useThemeStore } from '@/stores/themeStore'
 
 interface MermaidBlockProps {
   code: string
@@ -8,6 +9,7 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState(false)
   const idRef = useRef(`mermaid-${crypto.randomUUID()}`)
+  const theme = useThemeStore((s) => s.theme)
 
   useEffect(() => {
     let cancelled = false
@@ -17,7 +19,7 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
       try {
         const { default: mermaid } = await import('mermaid')
         if (cancelled) return
-        mermaid.initialize({ startOnLoad: false, theme: 'dark' })
+        mermaid.initialize({ startOnLoad: false, theme: theme === 'light' ? 'default' : 'dark' })
         const { svg } = await mermaid.render(idRef.current, code.trim())
         if (cancelled) return
         const parser = new DOMParser()
@@ -36,7 +38,7 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
 
     renderDiagram()
     return () => { cancelled = true }
-  }, [code])
+  }, [code, theme])
 
   if (error) {
     return (

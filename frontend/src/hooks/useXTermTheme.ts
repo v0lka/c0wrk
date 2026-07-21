@@ -80,10 +80,14 @@ function resolveThemeFromCSS(): ITheme {
 
 /**
  * Hook that returns an XTerm theme object resolved from CSS custom properties.
- * Resolves once at mount (empty dependency array) — sufficient for the
- * current single-theme setup. If multi-theme support is added later,
- * introduce a theme-id dependency to trigger re-resolution.
+ * Re-resolves whenever `theme` changes so the terminal follows the active
+ * color palette without restarting the session. `theme` is a cache-busting
+ * key: the CSS variables only change when the <html data-theme> attribute
+ * flips, so re-resolution is keyed on it rather than on the vars themselves.
  */
-export function useXTermTheme(): ITheme {
-  return useMemo(() => resolveThemeFromCSS(), [])
+export function useXTermTheme(theme: 'dark' | 'light'): ITheme {
+  return useMemo(() => {
+    void theme
+    return resolveThemeFromCSS()
+  }, [theme])
 }

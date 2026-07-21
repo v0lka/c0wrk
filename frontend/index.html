@@ -3,6 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Anti-FOUC: apply the persisted theme before first paint. The body CSS uses
+      var(--color-*) which default to One Dark; without this a light-theme user
+      would see a dark flash before main.tsx runs. Reads the zustand-persist key
+      written by stores/themeStore.ts (shape: {"state":{"theme":"light"},"version":1}).
+      Blocking (no type="module") so it executes during parse, before the CSS
+      <link> injected by the production build applies. main.tsx re-applies the
+      attribute after rehydration; both calls are idempotent.
+    -->
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('c0wrk-theme');
+          if (raw) {
+            var t = JSON.parse(raw).state.theme;
+            if (t === 'light' || t === 'dark') {
+              document.documentElement.setAttribute('data-theme', t);
+            }
+          }
+        } catch (e) {
+          /* ignore — fall through to default One Dark */
+        }
+      })();
+    </script>
     <title>c0wrk</title>
   </head>
   <body>

@@ -63,11 +63,87 @@
     --color-terminal-selection: #3e4451;
     --color-terminal-bright-white: #ffffff;
 
+    /* Elevation — used by floating surfaces (tooltips, popovers). Adaptive per
+       theme so shadows stay soft on light backgrounds. */
+    --color-shadow: rgba(0, 0, 0, 0.3);
+
     /* Border radii */
     --radius-sm: 0.25rem;
     --radius-md: 0.375rem;
     --radius-lg: 0.5rem;
     --radius-xl: 0.75rem;
+}
+
+/* ==========================================================================
+   Light Theme Override — One Light (OneLite)
+   Activated by <html data-theme="light">. Overrides only the color tokens
+   declared in @theme above; every utility and component style cascades
+   automatically because they reference var(--color-*). The default (no
+   attribute, or data-theme="dark") keeps the One Dark palette from @theme.
+   ========================================================================== */
+
+/* One Dark is the default color-scheme; the [data-theme="light"] override
+   below sets `color-scheme: light` to drive native form controls, scrollbars,
+   and the UA chrome in light mode. */
+:root {
+    color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+    /* Core palette */
+    --color-background: #fafafa;
+    --color-foreground: #383a42;
+
+    /* Surfaces */
+    --color-card: #ffffff;
+    --color-card-foreground: #383a42;
+    --color-popover: #ffffff;
+    --color-popover-foreground: #383a42;
+
+    /* Primary / Accent — One Light blue accent */
+    --color-primary: #4078f2;
+    --color-primary-foreground: #ffffff;
+    --color-accent: #526fff;
+    --color-accent-foreground: #ffffff;
+
+    /* Secondary / Muted */
+    --color-secondary: #e5e5e6;
+    --color-secondary-foreground: #696c77;
+    --color-muted: #ededed;
+    --color-muted-foreground: #696c77;
+
+    /* Semantic */
+    --color-destructive: #e45649;
+    --color-destructive-foreground: #ffffff;
+    --color-success: #50a14f;
+    --color-warning: #c18401;
+    --color-info: #0184bc;
+    --color-highlight: #986801;
+
+    /* Borders & inputs */
+    --color-border: #e5e5e6;
+    --color-input: #e5e5e6;
+    --color-ring: #383a42;
+
+    /* RGB variants for rgba() usage */
+    --color-success-rgb: 80, 161, 79;
+    --color-destructive-rgb: 228, 86, 73;
+    --color-primary-rgb: 64, 120, 242;
+
+    /* highlight.js One Light tokens */
+    --color-hljs-comment: #a0a1a7;
+    --color-hljs-keyword: #a626a4;
+    --color-hljs-literal: #0184bc;
+
+    /* Terminal (XTerm) tokens — ANSI 16-color mapping */
+    --color-terminal-cursor: #4078f2;
+    --color-terminal-selection: #d0d0d4;
+    --color-terminal-bright-white: #383a42;
+
+    /* Elevation — softer on light backgrounds */
+    --color-shadow: rgba(0, 0, 0, 0.12);
+
+    color-scheme: light;
 }
 
 /* ==========================================================================
@@ -91,7 +167,6 @@ html {
 }
 
 body {
-    color-scheme: dark;
     background-color: var(--color-background);
     color: var(--color-foreground);
 }
@@ -626,7 +701,7 @@ body {
     background: var(--color-popover);
     border: 1px solid var(--color-border);
     border-radius: 0.375rem;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 4px 12px var(--color-shadow);
     overflow: hidden;
 }
 

@@ -5,6 +5,13 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { registerLanguages } from './lib/hljsLanguages'
 import '@xterm/xterm/css/xterm.css'
 import './index.css'
+import { useThemeStore, applyThemeToDocument } from './stores/themeStore'
+
+// Apply the persisted theme before first paint to avoid a flash of the
+// default (dark) theme. Accessing getState() rehydrates from localStorage
+// synchronously; applyThemeToDocument writes <html data-theme> so the CSS
+// token override is in place before React renders anything.
+applyThemeToDocument(useThemeStore.getState().theme)
 
 registerLanguages()
 

@@ -5,6 +5,7 @@ import { terminalInput, terminalResize, startTerminal, startTerminalInDir, stopT
 import { useTerminalEvents } from '@/hooks/events/useTerminalEvents'
 import { useXTermTheme } from '@/hooks/useXTermTheme'
 import { useInputModeStore } from '@/stores/inputModeStore'
+import { useThemeStore } from '@/stores/themeStore'
 import { logger } from '@/lib/logger'
 
 interface TerminalProps {
@@ -17,7 +18,14 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
     const containerRef = useRef<HTMLDivElement>(null)
     const termRef = useRef<XTerm | null>(null)
     const fitAddonRef = useRef<FitAddon | null>(null)
-    const theme = useXTermTheme()
+    const appTheme = useThemeStore((s) => s.theme)
+    const theme = useXTermTheme(appTheme)
+    // Latest theme kept in a ref so the terminal-creation effect can read the
+    // current palette at construction time without listing `theme` in its
+    // dependency array (which would tear down and restart the session on every
+    // theme switch). A separate effect below applies theme changes live.
+    const themeRef = useRef(theme)
+    themeRef.current = theme
 
     // Subscribe to terminal output at the top level; the callback safely accesses
     // termRef.current (set in useEffect below, but events only flow after startTerminal).
@@ -34,7 +42,7 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
             cursorBlink: true,
             fontSize: 10,
             fontFamily: 'SauceCodePro NF, Menlo, Monaco, "Courier New", monospace',
-            theme,
+            theme: themeRef.current,
             scrollback: 10000,
         })
 
@@ -106,7 +114,16 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
             termRef.current = null
             fitAddonRef.current = null
         }
-    }, [sessionId, onReady, theme])
+    }, [sessionId, onReady])
+
+    // Apply theme changes to the live terminal without restarting the session.
+    // xterm.js re-renders when options.theme is reassigned, so switching the
+    // palette updates the running terminal in place.
+    useEffect(() => {
+        if (termRef.current) {
+            termRef.current.options.theme = theme
+        }
+    }, [theme])
 
     // Watch for "Open in Terminal" requests from the file-tree context menu
     // that arrive after the terminal is already running. The initial mount
