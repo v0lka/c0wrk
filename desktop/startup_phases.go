@@ -819,12 +819,13 @@ func (a *App) startVectorIndexBackground(
 			return
 		}
 		emb, embErr := embedding.NewEmbedder(embedding.EmbedderConfig{
-			ModelPath:     modelPath,
-			TokenizerPath: tokenizerPath,
-			LibraryPath:   libraryPath,
-			MaxSeqLength:  512,
-			HiddenDim:     512,
-			Logger:        log,
+			ModelPath:      modelPath,
+			TokenizerPath:  tokenizerPath,
+			LibraryPath:    libraryPath,
+			MaxSeqLength:   512,
+			HiddenDim:      512,
+			IntraOpThreads: cfg.VectorIndex.EmbeddingThreads,
+			Logger:         log,
 		})
 		if embErr != nil {
 			log.Warn("vector search unavailable", "error", embErr)

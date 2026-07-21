@@ -1136,3 +1136,70 @@ mcp:
 		t.Errorf("Env[API_KEY] = %q, want secret", server.Env["API_KEY"])
 	}
 }
+
+// TestVectorIndexConfig_EmbeddingThreads_YAMLRoundTrip verifies that
+// EmbeddingThreads parses from YAML and that a zero/unset value stays 0
+// (the legacy "use all cores" default).
+func TestVectorIndexConfig_EmbeddingThreads_YAMLRoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want int
+	}{
+		{
+			name: "unset defaults to 0 (legacy all-cores)",
+			yaml: `
+hybrid: true
+`,
+			want: 0,
+		},
+		{
+			name: "explicit zero is 0 (legacy all-cores)",
+			yaml: `
+embedding_threads: 0
+`,
+			want: 0,
+		},
+		{
+			name: "single thread (minimum load)",
+			yaml: `
+embedding_threads: 1
+`,
+			want: 1,
+		},
+		{
+			name: "two threads (balanced)",
+			yaml: `
+embedding_threads: 2
+`,
+			want: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg VectorIndexConfig
+			if err := yaml.Unmarshal([]byte(tt.yaml), &cfg); err != nil {
+				t.Fatalf("yaml.Unmarshal() failed: %v", err)
+			}
+			if cfg.EmbeddingThreads != tt.want {
+				t.Errorf("EmbeddingThreads = %d, want %d", cfg.EmbeddingThreads, tt.want)
+			}
+		})
+	}
+
+	// Round-trip: a set value must survive marshal + unmarshal unchanged.
+	original := VectorIndexConfig{EmbeddingThreads: 4}
+	data, err := yaml.Marshal(&original)
+	if err != nil {
+		t.Fatalf("yaml.Marshal() failed: %v", err)
+	}
+
+	var restored VectorIndexConfig
+	if err := yaml.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("yaml.Unmarshal() failed: %v", err)
+	}
+	if restored.EmbeddingThreads != 4 {
+		t.Errorf("round-tripped EmbeddingThreads = %d, want 4", restored.EmbeddingThreads)
+	}
+}

@@ -378,6 +378,15 @@ orchestration:
 #     hits. BM25 magnitudes vary widely across queries, so a relative
 #     threshold is more robust than an absolute one.
 #
+# Embedding thread pool (ONNX intra-op). Controls how many threads the
+# embedding model may use during (re)indexing. Unset or 0 = all cores
+# (legacy default, maximum throughput but a CPU spike). Set it to cap
+# CPU usage at the cost of indexing speed:
+#
+#   embedding_threads: 0   # all cores (default; legacy behaviour)
+#   embedding_threads: 1   # minimum CPU load, slowest indexing
+#   embedding_threads: 2   # balance between quiet operation and speed
+#
 # vector_index:
 #   hybrid: true
 #   hybrid_rrf_k: 60
@@ -386,6 +395,7 @@ orchestration:
 #   hybrid_vector_score_floor: 0.0
 #   hybrid_vector_score_ratio: 0.25
 #   hybrid_lexical_score_ratio: 0.1
+#   embedding_threads: 0
 
 # ---------------------------------------------------------------------------
 # Proxy — HTTP/HTTPS proxy for all outbound connections.

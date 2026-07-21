@@ -78,6 +78,12 @@ type VectorIndexConfig struct {
 	HybridVectorScoreFloor  *float64 `yaml:"hybrid_vector_score_floor"`
 	HybridVectorScoreRatio  *float64 `yaml:"hybrid_vector_score_ratio"`
 	HybridLexicalScoreRatio *float64 `yaml:"hybrid_lexical_score_ratio"`
+
+	// EmbeddingThreads controls the ONNX intra-op thread pool used by the
+	// embedding model during indexing. 0 (or unset) lets ONNX use all cores —
+	// the legacy behaviour and default. Set 1..N to cap intra-op threads and
+	// lower the CPU spike during (re)indexing at the cost of throughput.
+	EmbeddingThreads int `yaml:"embedding_threads"`
 }
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.
