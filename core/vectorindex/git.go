@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/v0lka/c0wrk/internal/sysproc"
 )
 
 const (
@@ -67,7 +68,7 @@ func runGit(ctx context.Context, repoPath string, args ...string) (string, error
 	full = append(full, "-C", repoPath)
 	full = append(full, args...)
 
-	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd := sysproc.GitCmd(ctx, full...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

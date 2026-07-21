@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/v0lka/c0wrk/internal/sysproc"
 )
 
 // supportedExts is the whitelist of document/text extensions that the
@@ -117,7 +119,9 @@ func (c *Converter) Convert(ctx context.Context, path string) (string, error) {
 		defer cancel()
 	}
 
-	out, err := exec.CommandContext(runCtx, "markitdown", path).CombinedOutput()
+	mdCmd := exec.CommandContext(runCtx, "markitdown", path)
+	sysproc.HideConsole(mdCmd) // avoid flashing console windows on Windows (GUI app)
+	out, err := mdCmd.CombinedOutput()
 	if err != nil {
 		// Distinguish deadline/cancellation from a genuine CLI failure so the
 		// caller can errors.Is the context cause.

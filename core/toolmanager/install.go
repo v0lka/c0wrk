@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/v0lka/c0wrk/internal/sysproc"
 )
 
 // InstallResult reports the outcome of a tool installation step.
@@ -121,6 +123,7 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 	// Step 1: Install portable Python via uv.
 	installCmd := exec.CommandContext(ctx, uvBin, "python", "install", tool.PythonVersion,
 		"--install-dir", installDir)
+	sysproc.HideConsole(installCmd) // avoid flashing console windows on Windows (GUI app)
 	if out, err := installCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("tool %q: uv python install failed: %w\n%s", tool.Name, err, out)
 	}
@@ -131,6 +134,7 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 		return nil, fmt.Errorf("tool %q: python binary not found in %s after uv install", tool.Name, installDir)
 	}
 	venvCmd := exec.CommandContext(ctx, uvBin, "venv", venvDir, "--python", pythonBin)
+	sysproc.HideConsole(venvCmd) // avoid flashing console windows on Windows (GUI app)
 	if out, err := venvCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("tool %q: uv venv failed: %w\n%s", tool.Name, err, out)
 	}
@@ -142,6 +146,7 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 		return nil, fmt.Errorf("tool %q: python binary not found in venv %s", tool.Name, venvDir)
 	}
 	pipCmd := exec.CommandContext(ctx, uvBin, "pip", "install", "--python", venvPython, tool.PipSpec)
+	sysproc.HideConsole(pipCmd) // avoid flashing console windows on Windows (GUI app)
 	if out, err := pipCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("tool %q: uv pip install failed: %w\n%s", tool.Name, err, out)
 	}

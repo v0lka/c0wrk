@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/v0lka/c0wrk/internal/sysproc"
 )
 
 // unquoteGitPath strips surrounding double-quotes and unescapes C-style
@@ -42,7 +44,7 @@ func errNotGitRepo(err error, stderr string) bool {
 // IsGitRepo reports whether dir is inside a git work tree. This function
 // does not cache results — caching is the caller's responsibility if needed.
 func IsGitRepo(ctx context.Context, dir string) bool {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--is-inside-work-tree")
+	cmd := sysproc.GitCmd(ctx, "-C", dir, "rev-parse", "--is-inside-work-tree")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run() == nil
@@ -50,7 +52,7 @@ func IsGitRepo(ctx context.Context, dir string) bool {
 
 // IsGitTracked reports whether relPath is tracked by git in dir.
 func IsGitTracked(ctx context.Context, dir, relPath string) bool {
-	cmd := exec.CommandContext(ctx, "git", "ls-files", "--error-unmatch", relPath)
+	cmd := sysproc.GitCmd(ctx, "ls-files", "--error-unmatch", relPath)
 	cmd.Dir = dir
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -63,7 +65,7 @@ func IsGitTracked(ctx context.Context, dir, relPath string) bool {
 // present.  For backward compatibility the legacy Status/Staged fields
 // reflect the index side when available, falling back to the work tree.
 func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry, error) {
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-uall")
+	cmd := sysproc.GitCmd(ctx, "status", "--porcelain", "-uall")
 	cmd.Dir = repoPath
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -251,7 +253,7 @@ func BuildReviewDiff(ctx context.Context, repoPath string, contextLines int) (st
 // staged and unstaged changes to tracked files relative to HEAD in a single
 // invocation. Untracked files are not included (they have no index entry).
 func runGitDiffHead(ctx context.Context, dir string, contextLines int) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", "-U"+strconv.Itoa(contextLines), "HEAD")
+	cmd := sysproc.GitCmd(ctx, "diff", "-U"+strconv.Itoa(contextLines), "HEAD")
 	cmd.Dir = dir
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -268,7 +270,7 @@ func runGitDiffHead(ctx context.Context, dir string, contextLines int) (string, 
 // --exclude-standard -z` and splits the NUL-delimited output. Individual
 // files are listed rather than their containing directories.
 func listUntrackedFiles(ctx context.Context, dir string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--exclude-standard", "-z")
+	cmd := sysproc.GitCmd(ctx, "ls-files", "--others", "--exclude-standard", "-z")
 	cmd.Dir = dir
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -295,7 +297,7 @@ func runGitDiff(ctx context.Context, dir string, cached bool, relPath string) (s
 	}
 	args = append(args, "--", relPath)
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := sysproc.GitCmd(ctx, args...)
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -311,7 +313,7 @@ func runGitDiff(ctx context.Context, dir string, cached bool, relPath string) (s
 // against /dev/null. git diff --no-index exits with code 1 when differences
 // exist, so we treat that as success.
 func runGitDiffNoIndex(ctx context.Context, dir, relPath string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", "--no-index", os.DevNull, relPath)
+	cmd := sysproc.GitCmd(ctx, "diff", "--no-index", os.DevNull, relPath)
 	cmd.Dir = dir
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -333,7 +335,7 @@ func runGitDiffNoIndex(ctx context.Context, dir, relPath string) (string, error)
 // in the given directory. Returns (nil, nil) when the directory is not a
 // git repository (no filtering) or when there are no ignored paths.
 func GitIgnoredPaths(ctx context.Context, dir string) (map[string]bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+	cmd := sysproc.GitCmd(ctx, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

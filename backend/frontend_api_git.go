@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/internal/sysproc"
 	"github.com/v0lka/sp4rk/pathutil"
 )
 
@@ -107,7 +108,7 @@ func (f *FrontendAPI) GetDiffStat(path string) (*DiffStat, error) {
 	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "diff", "--numstat", "--", relPath)
+	cmd := sysproc.GitCmd(ctx, "diff", "--numstat", "--", relPath)
 	cmd.Dir = repoPath
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -289,7 +290,7 @@ func (f *FrontendAPI) runGitCmd(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := sysproc.GitCmd(ctx, args...)
 	cmd.Dir = dir
 
 	out, err := cmd.Output()
@@ -319,7 +320,7 @@ func (f *FrontendAPI) runGitCmdWithStdin(dir, stdinData string, args ...string) 
 	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := sysproc.GitCmd(ctx, args...)
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(stdinData)
 
@@ -351,7 +352,7 @@ func (f *FrontendAPI) runGitCmdCombined(dir string, timeout time.Duration, args 
 	ctx, cancel := context.WithTimeout(f.ctx(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := sysproc.GitCmd(ctx, args...)
 	cmd.Dir = dir
 
 	// Capture stdout and stderr separately (each stream gets its own copy
