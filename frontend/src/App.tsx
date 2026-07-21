@@ -6,6 +6,7 @@ import { listProjects } from '@/api/projects'
 import { AlertCircle, X } from 'lucide-react'
 import { SettingsModal } from '@/components/settings/SettingsModal'
 import { WorkDirsModal } from '@/components/chat/WorkDirsModal'
+import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
 import { ToolInstallSplash } from '@/components/ToolInstallSplash'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useProjectLoader } from '@/hooks/useProjectLoader'
@@ -21,6 +22,20 @@ import { isStartupError, isRuntimeError, isVectorIndexPayload, isToolManagerStar
 import type { StartupError, RuntimeError } from '@/types/events'
 
 type AppPhase = 'splash' | 'waiting_ready' | 'main'
+
+/**
+ * Create Project dialog mounted at the App root (outside the Sidebar) so it
+ * renders even when the sidebar is collapsed. The sidebar early-returns a
+ * minimal collapsed view and does not mount SidebarHeader, so the dialog must
+ * not live there — otherwise the CODE-first startup auto-open
+ * (useProjectLoader) would set createDialogOpen=true with no dialog rendered,
+ * leaving the user stuck. See code-review Issue #1.
+ */
+function CreateProjectDialogAlwaysMounted() {
+  const createDialogOpen = useProjectStore((s) => s.createDialogOpen)
+  const setCreateProjectDialogOpen = useProjectStore((s) => s.setCreateProjectDialogOpen)
+  return <CreateProjectDialog open={createDialogOpen} onOpenChange={setCreateProjectDialogOpen} />
+}
 
 function App() {
   const [runtimeError, setRuntimeError] = useState<RuntimeError | null>(null)
@@ -236,6 +251,7 @@ function App() {
       <AppLayout />
       <SettingsModal />
       <WorkDirsModal />
+      <CreateProjectDialogAlwaysMounted />
     </TooltipProvider>
   )
 }

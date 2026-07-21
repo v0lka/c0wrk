@@ -1,9 +1,8 @@
-import { useCallback, useState } from 'react'
+import { useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useProjectSwitchState } from '@/hooks/useProjectSwitchState'
-import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
 import { cn } from '@/lib/utils'
 import { PanelLeftClose, PanelLeftOpen, Settings, MessageCircle, Code2 } from 'lucide-react'
 
@@ -17,13 +16,12 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
   const projects = useProjectStore((s) => s.projects)
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const lastRealProjectId = useProjectStore((s) => s.lastRealProjectId)
+  const setCreateProjectDialogOpen = useProjectStore((s) => s.setCreateProjectDialogOpen)
   const switchProjectWithState = useProjectSwitchState()
 
   const noProject = projects?.find((p) => p.is_no_project)
   const isChatMode = noProject ? activeProjectId === noProject.id : false
   const hasRealProject = projects?.some((p) => !p.is_no_project)
-
-  const [createDialogOpen, setCreateDialogOpen] = useState(false)
 
   const handleToggleMode = useCallback(async (mode: 'chat' | 'code') => {
     try {
@@ -31,7 +29,7 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
         await switchProjectWithState(noProject.id)
       } else if (mode === 'code') {
         if (!hasRealProject) {
-          setCreateDialogOpen(true)
+          setCreateProjectDialogOpen(true)
           return
         }
         // Resolve target: lastRealProjectId if it still exists, otherwise first real project.
@@ -46,11 +44,7 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
     } catch {
       // runtime_error toast already shown by global event listener
     }
-  }, [noProject, activeProjectId, lastRealProjectId, projects, hasRealProject, switchProjectWithState])
-
-  const handleCreateDialogClose = useCallback((open: boolean) => {
-    setCreateDialogOpen(open)
-  }, [])
+  }, [noProject, activeProjectId, lastRealProjectId, projects, hasRealProject, switchProjectWithState, setCreateProjectDialogOpen])
 
   return (
     <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2">
@@ -90,7 +84,6 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
       <Button variant="ghost" size="icon-xs" onClick={() => openSettings()} aria-label="Settings">
         <Settings className="size-4" />
       </Button>
-      <CreateProjectDialog open={createDialogOpen} onOpenChange={handleCreateDialogClose} />
     </div>
   )
 }

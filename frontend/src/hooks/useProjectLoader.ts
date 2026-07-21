@@ -6,6 +6,22 @@ import { listProjects } from '@/api/projects'
 import { useProjectSwitchState } from '@/hooks/useProjectSwitchState'
 import { useProjectStore } from '@/stores/projectStore'
 import { isProjectInfo, isProjectRenamed } from '@/types/guards'
+import type { ProjectInfo } from '@/types/models'
+
+/**
+ * Pick the most recently active REAL (non-No-Project) project by activity
+ * timestamp. Returns null when no real projects exist. Used for the CODE-first
+ * startup default.
+ */
+export function pickMostRecentRealProject(projects: ProjectInfo[]): ProjectInfo | null {
+  const real = projects.filter((p) => !p.is_no_project)
+  if (real.length === 0) return null
+  return [...real].sort((a, b) => {
+    const at = Date.parse(a.last_active_at || a.created_at) || 0
+    const bt = Date.parse(b.last_active_at || b.created_at) || 0
+    return bt - at
+  })[0]!
+}
 
 export function useProjectLoader(): void {
   const switchProjectWithState = useProjectSwitchState()
@@ -32,8 +48,19 @@ export function useProjectLoader(): void {
         if (cancelled) return
         store().setProjects(projects)
         if (!store().activeProjectId && projects.length > 0) {
-          const firstId = projects[0]!.id
-          await switchProjectWithState(firstId).catch(() => { })
+          // CODE-first startup default: prefer the most recently active REAL
+          // project. No Project (CHAT) is only entered when the user explicitly
+          // toggles to it — it is never auto-selected on startup.
+          const target = pickMostRecentRealProject(projects)
+          if (target) {
+            await switchProjectWithState(target.id).catch(() => { })
+          } else {
+            // No real project exists yet: open the Create Project dialog to
+            // onboard the user into CODE mode. The chat input stays disabled
+            // ("Select or create a project to start") until a project is
+            // created; clicking the CODE toggle also reopens this dialog.
+            store().setCreateProjectDialogOpen(true)
+          }
         }
       } catch {
         /* will retry on next backend:ready */
