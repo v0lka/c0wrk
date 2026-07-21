@@ -66,7 +66,7 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
             title="Assistant mode"
             className={cn(
               'flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors',
-              isChatMode ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              isChatMode ? 'bg-background text-muted-foreground shadow-sm' : 'text-foreground/60 hover:text-foreground'
             )}
           >
             <MessageCircle className="size-3" />
@@ -78,7 +78,7 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
             title="Coding agent mode"
             className={cn(
               'flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors',
-              !isChatMode ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              !isChatMode ? 'bg-background text-muted-foreground shadow-sm' : 'text-foreground/60 hover:text-foreground'
             )}
           >
             <Code2 className="size-3" />
