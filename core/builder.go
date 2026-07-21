@@ -53,6 +53,13 @@ type OrchestratorBuilder struct {
 	proxyClient      *http.Client // proxy-configured HTTP client (nil = direct connection)
 	paramManager     sdktools.ParamManager
 
+	// lmStudioOverrides holds context-window overrides resolved from probing
+	// OpenAI-compatible (LM Studio) endpoints. It is populated once at startup
+	// (runAsyncInit) and re-resolved on config changes (RebuildRouter), then
+	// reused by every buildRouter call so the network probe does NOT run on
+	// each per-session Build. Guarded by mu.
+	lmStudioOverrides map[string]llm.ModelMetadata
+
 	// Cached reasoning effort string. Always empty at builder level;
 	// per-request overrides flow through HandleOptions.ReasoningEffort
 	// → Orchestrator.SetReasoningEffort, which propagates to router,
@@ -169,6 +176,12 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 
 	// Schema sanitizer is configured via GatewayConfig.SchemaSanitizer above;
 	// the unified ParamManager handles both sanitization and injection.
+
+	// LM Studio context-window probe (best-effort, non-fatal). Resolved once
+	// here at startup and cached on the builder so per-session Build calls do
+	// NOT re-probe the network. buildRouter consumes the cache via
+	// mergeLMStudioOverrides.
+	b.resolveLMStudioOverrides(ctx, cfg)
 
 	// LLM Router
 	llmRouter, modelReg, err := b.buildRouter(ctx, cfg)
@@ -429,6 +442,10 @@ func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	if err := b.waitReady(waitCtx); err != nil {
 		return err
 	}
+	// Re-resolve the LM Studio context-window probe so a model reload /
+	// context-length change is picked up when the config changes. The result
+	// is cached and consumed by buildRouter via mergeLMStudioOverrides.
+	b.resolveLMStudioOverrides(context.Background(), cfg)
 	llmRouter, modelReg, err := b.buildRouter(context.Background(), cfg)
 	if err != nil {
 		return err
@@ -873,6 +890,118 @@ func activeSkillPathResolver(ctx context.Context, skillName string) (string, boo
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+// resolveLMStudioOverrides probes each OpenAI-compatible provider and caches
+// the resulting model→context-window overrides on the builder.
+//
+// It is called from the startup path (runAsyncInit) and the config-change path
+// (RebuildRouter) — but NOT from the per-session Build path — so the network
+// probe runs at most once per config change instead of on every session
+// creation. The cached map is consumed by buildRouter via mergeLMStudioOverrides.
+//
+// The probe is best-effort and non-fatal: only providers with ProviderType
+// "openai" and a non-empty BaseURL are probed (anthropic has no BaseURL), and
+// network/timeout/parse failures are logged at Warn and skipped. Each provider
+// is bounded by a 3s timeout inside probeLMStudioModels, so the total cost of
+// this method is at most 3s × (number of OpenAI-compatible providers).
+func (b *OrchestratorBuilder) resolveLMStudioOverrides(ctx context.Context, cfg *BuilderConfig) {
+	// Snapshot proxyClient under lock to avoid data races with RebuildProxy.
+	b.mu.RLock()
+	proxyClient := b.proxyClient
+	b.mu.RUnlock()
+
+	overrides := make(map[string]llm.ModelMetadata)
+	b.enrichOverridesFromLMStudio(ctx, cfg, overrides, proxyClient)
+
+	b.mu.Lock()
+	b.lmStudioOverrides = overrides
+	b.mu.Unlock()
+}
+
+// mergeLMStudioOverrides layers the cached LM Studio overrides into the given
+// overrides map, which already holds the config.yaml entries (cfg.LLM.Models).
+// A model already present in overrides is never overwritten, so config.yaml
+// always wins over the probe — this is the single place where that priority is
+// enforced now that the probe no longer runs inline inside buildRouter.
+func (b *OrchestratorBuilder) mergeLMStudioOverrides(overrides map[string]llm.ModelMetadata) {
+	b.mu.RLock()
+	cached := b.lmStudioOverrides
+	b.mu.RUnlock()
+	for name, md := range cached {
+		if _, exists := overrides[name]; !exists {
+			overrides[name] = md
+		}
+	}
+}
+
+// enrichOverridesFromLMStudio probes each OpenAI-compatible provider and, when
+// the endpoint is an LM Studio server, fills overrides with the real
+// (runtime-preferring) context window for every enabled model that is not
+// already present. This lets token budgets reflect what LM Studio is actually
+// running with instead of the static 8192 default.
+//
+// The probe is best-effort and non-fatal:
+//   - Only providers with ProviderType "openai" and a non-empty BaseURL are
+//     probed (the built-in anthropic provider has no BaseURL).
+//   - A model already present in overrides is never overwritten. Within a single
+//     call this enforces first-provider-wins for duplicate model IDs; config.yaml
+//     priority is enforced by the caller (mergeLMStudioOverrides) when the cached
+//     result is layered into the config-derived overrides.
+//   - Network errors, timeouts, 5xx server errors, 404s (non-LM-Studio servers
+//     such as real OpenAI/vLLM) and empty results are logged at Warn and skipped.
+//
+// In production this is called only from resolveLMStudioOverrides (startup /
+// config-change paths) so the result is cached; see mergeLMStudioOverrides for
+// how buildRouter consumes the cache without re-probing on every session.
+func (b *OrchestratorBuilder) enrichOverridesFromLMStudio(
+	ctx context.Context,
+	cfg *BuilderConfig,
+	overrides map[string]llm.ModelMetadata,
+	proxyClient *http.Client,
+) {
+	for name, pc := range cfg.LLM.ProviderConfigs {
+		if pc.ProviderType != "openai" {
+			continue
+		}
+		baseURL := cfg.ExpandEnvVars(pc.BaseURL)
+		if baseURL == "" {
+			continue
+		}
+		apiKey := cfg.ExpandEnvVars(pc.APIKey)
+		probe, err := probeLMStudioModels(ctx, baseURL, apiKey, proxyClient)
+		if err != nil {
+			b.log().Warn("lm studio context probe failed/skipped", "provider", name, "base_url", baseURL, "error", err)
+			continue
+		}
+		if len(probe) == 0 {
+			// 404 or empty payload: the endpoint is not an LM Studio server
+			// (or has no models loaded). Non-fatal — keep building the
+			// registry with whatever overrides already exist.
+			b.log().Warn("lm studio context probe failed/skipped", "provider", name, "base_url", baseURL, "error", "no models reported")
+			continue
+		}
+		for _, model := range pc.Models {
+			window, ok := probe[model]
+			if !ok {
+				continue
+			}
+			if _, exists := overrides[model]; exists {
+				// config.yaml override wins.
+				continue
+			}
+			overrides[model] = llm.ModelMetadata{
+				ContextWindow: window,
+				// OutputLimit intentionally mirrors the sp4rk SDK's built-in
+				// fallback (4096) so local LM Studio models are not regressed
+				// relative to their Priority-5 SDK default. LM Studio does not
+				// expose a per-model output-token cap in /api/v0/models, so we
+				// use the same safe default the SDK would have chosen anyway.
+				OutputLimit:   4096,
+				TokenizerType: "approximate",
+			}
+		}
+	}
+}
+
 // buildRouter creates a fresh LLM Router + ModelRegistry from config.
 func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfig) (*llm.Router, *llm.ModelRegistry, error) {
 	// Snapshot proxyClient under lock to avoid data races with RebuildProxy.
@@ -888,6 +1017,12 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 			TokenizerType: "approximate",
 		}
 	}
+	// Layer in the cached LM Studio context-window overrides. The network probe
+	// itself runs once at startup (runAsyncInit) and on config changes
+	// (RebuildRouter) via resolveLMStudioOverrides; here we only read the cache
+	// so per-session Build does NOT hit the network. config.yaml always wins:
+	// mergeLMStudioOverrides never overwrites a model already in overrides.
+	b.mergeLMStudioOverrides(overrides)
 	modelRegistry := llm.NewModelRegistry(overrides)
 	if proxyClient != nil {
 		modelRegistry.SetHTTPClient(proxyClient)
