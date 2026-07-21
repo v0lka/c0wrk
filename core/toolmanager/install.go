@@ -126,7 +126,7 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 	}
 
 	// Step 2: Create a virtual environment.
-	pythonBin := findPythonInDir(installDir, tool.PythonVersion)
+	pythonBin := findPythonInDir(installDir, tool.PythonVersion, runtime.GOOS)
 	if pythonBin == "" {
 		return nil, fmt.Errorf("tool %q: python binary not found in %s after uv install", tool.Name, installDir)
 	}
@@ -137,7 +137,7 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 
 	// Step 3: Install the package. Use findPythonInDir on the venv to get the
 	// platform-correct python path (venv/bin/python3 on Unix, venv/Scripts/python.exe on Windows).
-	venvPython := findPythonInDir(venvDir, tool.PythonVersion)
+	venvPython := findPythonInDir(venvDir, tool.PythonVersion, runtime.GOOS)
 	if venvPython == "" {
 		return nil, fmt.Errorf("tool %q: python binary not found in venv %s", tool.Name, venvDir)
 	}
@@ -154,37 +154,65 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 	return &InstallResult{ToolName: tool.Name, BinPath: wrapperPath, Installed: true}, nil
 }
 
-// findPythonInDir searches dir for a python3 or python binary, preferring
-// an exact version match when pythonVersion is non-empty.
-func findPythonInDir(dir, pythonVersion string) string {
-	names := []string{"python3", "python"}
-	if runtime.GOOS == "windows" {
-		for i, n := range names {
-			names[i] = n + ".exe"
+// findPythonInDir searches dir for a Python interpreter binary, preferring an
+// exact version match when pythonVersion is non-empty.
+//
+// The interpreter location depends on both the directory's provenance and the
+// host platform:
+//
+//   - uv-managed install (uv python install --install-dir <dir>): the version
+//     lives under <dir>/cpython-<version>-<platform>/. On Unix the interpreter
+//     is at <version-dir>/bin/python3; on Windows python-build-standalone
+//     places "python.exe" at the version-dir root — there is no "bin"
+//     subdirectory (see uv's executable_path_from_base, which returns
+//     base/python.exe on Windows vs base/bin/python3 on Unix).
+//   - virtual environment (uv venv <dir>): <dir>/bin/python3 on Unix,
+//     <dir>/Scripts/python.exe on Windows.
+//
+// The goos parameter ("windows" vs anything else) makes the lookup testable
+// on any host platform, mirroring resolveBinaryInTree.
+func findPythonInDir(dir, pythonVersion, goos string) string {
+	var names []string
+	var subDirs []string
+	if goos == "windows" {
+		// python-build-standalone ships only "python.exe" (never "python3.exe").
+		// A managed install places it at the version-dir root; a venv places it
+		// under "Scripts". "bin" is a defensive last resort.
+		names = []string{"python.exe"}
+		subDirs = []string{"", "Scripts", "bin"}
+	} else {
+		names = []string{"python3", "python"}
+		subDirs = []string{"bin"}
+	}
+
+	// 1. Versioned managed install: <dir>/cpython-<version>-*/<sub>/<name>.
+	if pythonVersion != "" {
+		for _, sub := range subDirs {
+			for _, name := range names {
+				pattern := filepath.Join(dir, "cpython-"+pythonVersion+"-*", sub, name)
+				if matches, _ := filepath.Glob(pattern); len(matches) > 0 {
+					return matches[0]
+				}
+			}
 		}
 	}
 
-	// Try version-specific path first: <dir>/cpython-<version>-*/bin/<name>
-	if pythonVersion != "" {
+	// 2. Any version directory: <dir>/*/<sub>/<name>.
+	for _, sub := range subDirs {
 		for _, name := range names {
-			pattern := filepath.Join(dir, "cpython-"+pythonVersion+"-*", "bin", name)
-			matches, _ := filepath.Glob(pattern)
-			if len(matches) > 0 {
+			if matches, err := filepath.Glob(filepath.Join(dir, "*", sub, name)); err == nil && len(matches) > 0 {
 				return matches[0]
 			}
 		}
 	}
 
-	// Fallback: search any subdirectory.
-	for _, name := range names {
-		matches, err := filepath.Glob(filepath.Join(dir, "*", "bin", name))
-		if err == nil && len(matches) > 0 {
-			return matches[0]
-		}
-		// Also try direct bin/ under the dir.
-		p := filepath.Join(dir, "bin", name)
-		if _, err := os.Stat(p); err == nil {
-			return p
+	// 3. Directly under dir (e.g. a venv's Scripts): <dir>/<sub>/<name>.
+	for _, sub := range subDirs {
+		for _, name := range names {
+			p := filepath.Join(dir, sub, name)
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
 		}
 	}
 	return ""
