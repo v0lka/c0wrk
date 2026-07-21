@@ -283,19 +283,33 @@ func (b *OrchestratorBuilder) Build(
 	stepDumpTracker *orchestration.StepDumpTracker,
 ) (*Orchestrator, error) {
 	// Wait for async initialization to complete before building an orchestrator.
+	// Timing: waitReady can block for seconds if the MCP gateway or LM Studio
+	// context-window probe (runAsyncInit) hasn't finished yet — e.g. when the
+	// user creates a session shortly after app launch, before the background
+	// init goroutine has closed initDone.
+	buildStart := time.Now()
 	waitCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	waitReadyStart := time.Now()
 	if err := b.waitReady(waitCtx); err != nil {
 		return nil, fmt.Errorf("orchestrator builder not ready: %w", err)
+	}
+	waitElapsed := time.Since(waitReadyStart)
+	if waitElapsed > 50*time.Millisecond {
+		b.log().Warn("build waited for async init", "elapsed_ms", waitElapsed.Milliseconds())
 	}
 
 	// Wrap emitter with logging
 	emitter = NewLoggingEmitter(emitter, logger)
 
 	// Build per-session LLM router + model registry
+	routerStart := time.Now()
 	llmRouter, modelReg, err := b.buildRouter(context.Background(), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build LLM router: %w", err)
+	}
+	if d := time.Since(routerStart); d > 50*time.Millisecond {
+		b.log().Warn("build_router slow", "elapsed_ms", d.Milliseconds())
 	}
 	// Verify at least one provider has models enabled.
 	hasModels := false
@@ -405,6 +419,12 @@ func (b *OrchestratorBuilder) Build(
 	// through to auto-execute when ConfirmFunc is nil (CLI-mode behavior), which
 	// is the intended path — the HITL handler already intercepted at the executor
 	// level. No explicit ConfirmFunc bridge is needed.
+
+	totalElapsed := time.Since(buildStart)
+	if totalElapsed > 100*time.Millisecond {
+		b.log().Warn("orchestrator Build slow", "elapsed_ms", totalElapsed.Milliseconds(),
+			"wait_ready_ms", waitElapsed.Milliseconds())
+	}
 
 	return NewOrchestrator(orchConfig, OrchestratorDeps{
 		Router:            coreRouter,

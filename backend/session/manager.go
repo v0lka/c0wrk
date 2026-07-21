@@ -614,9 +614,30 @@ func (m *Manager) ListSessionsByProject(projectID string) ([]SessionInfo, error)
 // CreateSession creates a new session with a fresh orchestrator.
 // The projectID ties the session to a project; workspacePath is the project's workspace directory.
 func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, error) {
+	// Per-phase timing (DEBUG only) so session-creation latency can be
+	// pinpointed in real-world environments where MCP gateways, large skill
+	// directories, or slow filesystems add overhead not visible in unit tests.
+	overallStart := time.Now()
+
 	// Generate UUID for session ID
 	id := uuid.New().String()
 
+	var phaseT0, phaseT1 time.Time
+	debugTiming := strings.EqualFold(m.logLevel, "DEBUG")
+	phaseStart := func() {
+		if debugTiming {
+			phaseT0 = time.Now()
+		}
+	}
+	phaseMark := func(name string) {
+		if debugTiming {
+			phaseT1 = time.Now()
+			m.log().Debug("create_session phase", "phase", name, "elapsed_ms", phaseT1.Sub(phaseT0).Milliseconds(), "session_id", id)
+			phaseT0 = phaseT1
+		}
+	}
+
+	phaseStart()
 	// For No Project, each session gets its own isolated workspace.
 	if projectID == project.NoProjectID {
 		workspacePath = config.NoProjectSessionWorkspace(m.agentDir, id)
@@ -632,12 +653,14 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 			return nil, fmt.Errorf("failed to create per-session workspace: %w", err)
 		}
 	}
+	phaseMark("workspace_setup")
 
 	// Create session-specific logger
 	logger, logFile, err := m.createSessionLogger(projectID, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session logger: %w", err)
 	}
+	phaseMark("logger")
 
 	// Create EventEmitter for this session
 	emitter := NewEventEmitter(id, m.emitFunc)
@@ -709,6 +732,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	}
 
 	// Create orchestrator using the factory (called outside the lock — can be slow)
+	phaseStart()
 	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile, stepDumpTracker)
 	if err != nil {
 		// Close the log file since we're not creating the session
@@ -723,6 +747,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		}
 		return nil, fmt.Errorf("failed to create orchestrator: %w", err)
 	}
+	phaseMark("orchestrator_build")
 
 	// Configure No Project mode: disable code tools + extended bash blacklist.
 	if projectID == project.NoProjectID {
@@ -785,6 +810,19 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 			CreatedAt: session.CreatedAt,
 		},
 	})
+
+	// Log total CreateSession wall-clock time (always at INFO so it shows up
+	// without DEBUG). If >250ms, log at WARN so a regression in this
+	// critical-path method is visible by default.
+	totalElapsed := time.Since(overallStart)
+	switch {
+	case totalElapsed > time.Second:
+		m.log().Warn("create_session slow (>1s)", "elapsed_ms", totalElapsed.Milliseconds(), "session_id", id, "project_id", projectID)
+	case totalElapsed > 250*time.Millisecond:
+		m.log().Warn("create_session slow (>250ms)", "elapsed_ms", totalElapsed.Milliseconds(), "session_id", id, "project_id", projectID)
+	default:
+		m.log().Debug("create_session complete", "elapsed_ms", totalElapsed.Milliseconds(), "session_id", id, "project_id", projectID)
+	}
 
 	return &SessionInfo{
 		ID:           session.ID,
