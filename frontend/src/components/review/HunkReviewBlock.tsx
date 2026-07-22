@@ -5,6 +5,9 @@ import { useReviewStore, hunkCommentKey } from '@/stores/reviewStore'
 import * as reviewApi from '@/api/review'
 import { logger } from '@/lib/logger'
 import { detectHljsLanguage, highlightCodeLine } from './hunkCodeHighlight'
+import { parseHunkRaw } from './diffParsing'
+import { UnifiedDiffTable } from './UnifiedDiffTable'
+import { SplitDiffTable } from './SplitDiffTable'
 
 interface HunkReviewBlockProps {
   sessionId: string
@@ -15,53 +18,6 @@ interface HunkReviewBlockProps {
   readOnly?: boolean
 }
 
-interface DiffLine {
-  type: 'add' | 'del' | 'context' | 'header' | 'noNewline'
-  text: string
-  oldNum: number | null
-  newNum: number | null
-}
-
-function parseHunkRaw(raw: string, oldStart: number, newStart: number): DiffLine[] {
-  const lines = raw.split('\n')
-  const result: DiffLine[] = []
-  let oldNum = oldStart
-  let newNum = newStart
-
-  for (const line of lines) {
-    if (line.startsWith('@@')) {
-      result.push({ type: 'header', text: line, oldNum: null, newNum: null })
-    } else if (line.startsWith('+')) {
-      result.push({ type: 'add', text: line.slice(1), oldNum: null, newNum: newNum++ })
-    } else if (line.startsWith('-')) {
-      result.push({ type: 'del', text: line.slice(1), oldNum: oldNum++, newNum: null })
-    } else if (line.startsWith(' ')) {
-      result.push({ type: 'context', text: line.slice(1), oldNum: oldNum++, newNum: newNum++ })
-    } else if (line === '') {
-      result.push({ type: 'context', text: '', oldNum: oldNum++, newNum: newNum++ })
-    } else if (line.startsWith('\\')) {
-      result.push({ type: 'noNewline', text: 'No newline at end of file', oldNum: null, newNum: null })
-    }
-  }
-  return result
-}
-
-/**
- * Background classes per diff line type.
- *
- * Add/del lines keep only a background tint — the text color comes from
- * the syntax-highlighting spans (hljs-* classes) so the actual code
- * language is visible. The background + line-number gutter still
- * distinguish added from deleted lines.
- */
-const LINE_BG: Record<DiffLine['type'], string> = {
-  add: 'bg-success/10',
-  del: 'bg-destructive/10',
-  context: '',
-  header: 'bg-info/10 text-info font-medium',
-  noNewline: 'text-muted-foreground/50 italic',
-}
-
 export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex, readOnly }: HunkReviewBlockProps) {
   const [showComment, setShowComment] = useState(false)
   const [draft, setDraft] = useState('')
@@ -69,6 +25,7 @@ export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex, readOnly
   const commentKey = hunkCommentKey(filePath, hunkId)
   const comment = useReviewStore((s) => s.bySession[sessionId]?.hunkComments[commentKey] ?? '')
   const setHunkComment = useReviewStore((s) => s.setHunkComment)
+  const diffViewMode = useReviewStore((s) => s.diffViewMode)
 
   const diffLines = useMemo(
     () => parseHunkRaw(hunk.raw, hunk.old_start, hunk.new_start),
@@ -127,26 +84,11 @@ export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex, readOnly
       </div>
 
       {/* Diff block */}
-      <div className="overflow-x-auto font-mono text-xs leading-relaxed">
-        <table className="w-full border-collapse">
-          <tbody>
-            {diffLines.map((line, i) => (
-              <tr key={i} className={LINE_BG[line.type]}>
-                <td className="select-none text-right pr-2 pl-2 text-muted-foreground/50 w-10 tabular-nums align-top">
-                  {line.oldNum ?? ''}
-                </td>
-                <td className="select-none text-right pr-2 text-muted-foreground/50 w-10 tabular-nums align-top">
-                  {line.newNum ?? ''}
-                </td>
-                <td
-                  className="pr-3 whitespace-pre-wrap break-all"
-                  dangerouslySetInnerHTML={{ __html: highlightedLines[i] || ' ' }}
-                />
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {diffViewMode === 'split' ? (
+        <SplitDiffTable diffLines={diffLines} highlightedLines={highlightedLines} />
+      ) : (
+        <UnifiedDiffTable diffLines={diffLines} highlightedLines={highlightedLines} />
+      )}
 
       {/* Inline comment */}
       {showComment && (

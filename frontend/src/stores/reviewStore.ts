@@ -28,6 +28,7 @@ interface ReviewState {
   activeReviewSession: string | null
   reviewLoopActive: Record<string, boolean>
   promptShownForTask: Record<string, string | true>
+  diffViewMode: 'unified' | 'split'
 }
 
 interface ReviewActions {
@@ -43,6 +44,7 @@ interface ReviewActions {
   markPromptShown: (sessionId: string, taskId: string) => void
   clearSessionReview: (sessionId: string) => void
   resetLoopFlags: (sessionId: string) => void
+  setDiffViewMode: (mode: 'unified' | 'split') => void
 }
 
 function ensureSession(state: ReviewState, sessionId: string): SessionReviewState {
@@ -57,6 +59,7 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
       activeReviewSession: null,
       reviewLoopActive: {},
       promptShownForTask: {},
+      diffViewMode: 'unified',
 
       loadReview: async (sessionId) => {
         try {
@@ -160,12 +163,15 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
           delete prompts[sessionId]
           return { reviewLoopActive: loops, promptShownForTask: prompts }
         }),
+
+      setDiffViewMode: (mode) => set({ diffViewMode: mode }),
     }),
     {
       name: 'c0wrk-review',
       partialize: (state) => ({
         reviewLoopActive: state.reviewLoopActive,
         promptShownForTask: state.promptShownForTask,
+        diffViewMode: state.diffViewMode,
       }),
     },
   ),

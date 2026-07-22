@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Check, Send, Loader2, MessageSquare, X, GitCommit, ChevronUp, ChevronDown } from 'lucide-react'
+import { Check, Send, Loader2, MessageSquare, X, GitCommit, ChevronUp, ChevronDown, Columns2, Rows3 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useReviewStore, totalCommentCount } from '@/stores/reviewStore'
@@ -35,6 +35,8 @@ export function ReviewHeader({
   const [draft, setDraft] = useState('')
   const reviewState = useReviewStore((s) => s.bySession[sessionId])
   const setGeneralComment = useReviewStore((s) => s.setGeneralComment)
+  const diffViewMode = useReviewStore((s) => s.diffViewMode)
+  const setDiffViewMode = useReviewStore((s) => s.setDiffViewMode)
   const { hasComments, isStaging, isSubmitting, handleApprove, handleSubmit } = useReviewActions(sessionId)
 
   const generalComment = reviewState?.generalComment ?? ''
@@ -53,8 +55,13 @@ export function ReviewHeader({
           {commitSha && (
             <code className="text-xs text-info font-mono">{commitSha.slice(0, 7)}</code>
           )}
-          <HunkNavControls
+          <DiffViewModeToggle
+            diffViewMode={diffViewMode}
+            setDiffViewMode={setDiffViewMode}
             className="ml-auto"
+          />
+          <HunkNavControls
+            className="ml-1"
             currentHunk={currentHunk}
             totalHunks={totalHunks}
             onPrevHunk={onPrevHunk}
@@ -92,6 +99,10 @@ export function ReviewHeader({
             totalHunks={totalHunks}
             onPrevHunk={onPrevHunk}
             onNextHunk={onNextHunk}
+          />
+          <DiffViewModeToggle
+            diffViewMode={diffViewMode}
+            setDiffViewMode={setDiffViewMode}
           />
         </div>
         <div className="flex items-center gap-2">
@@ -210,6 +221,56 @@ function HunkNavControls({
         aria-label="Next hunk"
       >
         <ChevronDown className="h-3 w-3" />
+      </Button>
+    </div>
+  )
+}
+
+interface DiffViewModeToggleProps {
+  diffViewMode: 'unified' | 'split'
+  setDiffViewMode: (mode: 'unified' | 'split') => void
+  className?: string
+}
+
+/**
+ * Unified / split diff view-mode toggle. A global preference (no session
+ * affinity): lives in the review store and is shared across the interactive
+ * and read-only commit-review headers. Mirrors the `ChangesToolbar`
+ * view-mode pattern — a bordered container with two `icon-xs` ghost buttons;
+ * the active button gets `text-primary bg-muted/50`.
+ */
+function DiffViewModeToggle({
+  diffViewMode,
+  setDiffViewMode,
+  className,
+}: DiffViewModeToggleProps) {
+  return (
+    <div className={cn('flex items-center rounded-md border border-border/50 overflow-hidden', className)}>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        className={cn(
+          'rounded-none text-muted-foreground hover:text-foreground',
+          diffViewMode === 'unified' && 'text-primary bg-muted/50',
+        )}
+        onClick={() => setDiffViewMode('unified')}
+        title="Unified view"
+        aria-label="Switch to unified view"
+      >
+        <Rows3 className="size-3.5" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        className={cn(
+          'rounded-none text-muted-foreground hover:text-foreground',
+          diffViewMode === 'split' && 'text-primary bg-muted/50',
+        )}
+        onClick={() => setDiffViewMode('split')}
+        title="Split view"
+        aria-label="Switch to split view"
+      >
+        <Columns2 className="size-3.5" />
       </Button>
     </div>
   )
