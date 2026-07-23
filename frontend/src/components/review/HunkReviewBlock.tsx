@@ -3,6 +3,7 @@ import { MessageSquare, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useReviewStore, hunkCommentKey } from '@/stores/reviewStore'
 import * as reviewApi from '@/api/review'
+import { emit } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 import { detectHljsLanguage, highlightCodeLine } from './hunkCodeHighlight'
 import { parseHunkRaw } from './diffParsing'
@@ -54,12 +55,21 @@ export function HunkReviewBlock({ sessionId, filePath, hunk, hunkIndex, readOnly
     setShowComment(true)
   }
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    const previous = comment
     setHunkComment(sessionId, filePath, hunkId, draft)
-    reviewApi.saveReviewHunkComment(sessionId, filePath, hunkId, draft).catch((err) => {
-      logger.error('Failed to save hunk comment:', err)
-    })
     setShowComment(false)
+    try {
+      await reviewApi.saveReviewHunkComment(sessionId, filePath, hunkId, draft)
+    } catch (err) {
+      logger.error('Failed to save hunk comment:', err)
+      // Roll back the optimistic update so the UI matches the DB state.
+      setHunkComment(sessionId, filePath, hunkId, previous)
+      emit('runtime_error', {
+        id: crypto.randomUUID(),
+        message: 'Failed to save hunk comment',
+      })
+    }
   }
 
   return (

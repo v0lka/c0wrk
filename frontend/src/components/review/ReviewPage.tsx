@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Loader2, RefreshCw, GitCommit } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import * as reviewApi from '@/api/review'
+import { subscribe } from '@/api/runtime'
 import { useReviewStore } from '@/stores/reviewStore'
 import { ReviewHeader } from './ReviewHeader'
 import { FileReviewBlock } from './FileReviewBlock'
@@ -20,8 +21,11 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
   const [error, setError] = useState<string | null>(null)
   const loadReview = useReviewStore((s) => s.loadReview)
 
-  const fetchDiff = useCallback(async () => {
-    setLoading(true)
+  const fetchDiff = useCallback(async (silent = false) => {
+    // `silent` background refreshes (triggered by git status changes) keep the
+    // existing diff on screen instead of flashing the full-screen spinner —
+    // only the initial load / explicit retry shows the loader.
+    if (!silent) setLoading(true)
     setError(null)
     try {
       const result = commitSha
@@ -32,7 +36,10 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
       setError(commitSha ? 'Failed to load commit diff' : 'Failed to load review diff')
       console.error('fetchDiff failed:', err)
     } finally {
-      setLoading(false)
+      // Only the fetch that turned the loader on may turn it off — a silent
+      // background re-fetch must never dismiss a concurrently-running initial
+      // load's spinner, nor can two in-flight requests race on setLoading.
+      if (!silent) setLoading(false)
     }
   }, [commitSha])
 
@@ -44,6 +51,34 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
       void loadReview(sessionId)
     }
   }, [fetchDiff, loadReview, sessionId, readOnly])
+
+  // ─── Working-tree sync ──────────────────────────────────────────────────
+  // The interactive review mirrors `git diff HEAD`, which changes whenever
+  // files are staged/unstaged/discarded/committed/edited in the Git panel's
+  // "Changes" section or externally. Re-fetch on git status changes so the
+  // review never drifts from the live working tree. Commit-review mode is
+  // excluded — a commit's diff is immutable. Both events share a single
+  // debounce (matching useGitStatusEvents) so a UI git op followed by the
+  // watcher's workspace:tree_changed coalesce into one silent re-fetch.
+  useEffect(() => {
+    if (readOnly) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const debouncedFetch = () => {
+      if (timer !== null) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = null
+        void fetchDiff(true)
+      }, 150)
+    }
+    const unsubs = [
+      subscribe('git:status_changed', debouncedFetch),
+      subscribe('workspace:tree_changed', debouncedFetch),
+    ]
+    return () => {
+      for (const unsub of unsubs) unsub()
+      if (timer !== null) clearTimeout(timer)
+    }
+  }, [readOnly, fetchDiff])
 
   // ─── Hunk navigation ────────────────────────────────────────────────────
   const scrollRef = useRef<HTMLDivElement>(null)

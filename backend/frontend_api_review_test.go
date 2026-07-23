@@ -227,6 +227,74 @@ func TestGetReviewDiff_IncludesUntracked(t *testing.T) {
 	})
 }
 
+// TestGetReviewDiff_EmptyUntrackedFile reproduces the regression where a single
+// content-less file (here an empty untracked file — git emits a "diff --git"
+// header with no @@ hunk) caused parseReviewFileBlock to leave Hunks as a nil
+// slice. Go serialises a nil slice as JSON null, the frontend's isArrayOf guard
+// (Array.isArray) rejects that element, and because the guard checks every
+// element the ENTIRE diff array was discarded — so the review page showed "No
+// uncommitted changes to review" even with real changes present. The fix is
+// that Hunks is always a non-nil slice (JSON []); this test pins that contract.
+func TestGetReviewDiff_EmptyUntrackedFile(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// A real, content-bearing change so there is something to review.
+		if err := os.WriteFile(filepath.Join(dir, "committed.txt"), []byte("changed\n"), 0o644); err != nil {
+			t.Fatalf("write committed.txt: %v", err)
+		}
+		// An empty (0-byte) untracked file — git diff --no-index emits a
+		// header with no @@ hunk for it.
+		if err := os.WriteFile(filepath.Join(dir, "empty.txt"), []byte{}, 0o644); err != nil {
+			t.Fatalf("write empty.txt: %v", err)
+		}
+
+		files, err := f.GetReviewDiff()
+		if err != nil {
+			t.Fatalf("GetReviewDiff: %v", err)
+		}
+
+		byPath := map[string]ReviewFileDiff{}
+		for _, file := range files {
+			byPath[file.Path] = file
+		}
+
+		// The empty file must NOT be silently dropped.
+		empty, ok := byPath["empty.txt"]
+		if !ok {
+			t.Fatalf("empty.txt missing from review diff; got paths: %v", keysOf(byPath))
+		}
+		// Hunks must be a non-nil, zero-length slice so JSON serialises it as
+		// [] (not null) and the frontend Array.isArray guard accepts it.
+		if empty.Hunks == nil {
+			t.Fatal("empty.txt Hunks is nil — would serialise to JSON null and poison the frontend guard")
+		}
+		if len(empty.Hunks) != 0 {
+			t.Errorf("empty.txt: expected 0 hunks, got %d", len(empty.Hunks))
+		}
+		raw, err := json.Marshal(empty)
+		if err != nil {
+			t.Fatalf("marshal empty.txt diff: %v", err)
+		}
+		if !strings.Contains(string(raw), `"hunks":[]`) {
+			t.Errorf("empty.txt JSON must contain \"hunks\":[], got: %s", raw)
+		}
+
+		// The regression: the content-bearing file must STILL be present even
+		// though a content-less file is in the same result set.
+		if _, ok := byPath["committed.txt"]; !ok {
+			t.Errorf("committed.txt missing — a content-less file poisoned the result; got paths: %v", keysOf(byPath))
+		}
+	})
+}
+
+// keysOf returns the map keys of m (test helper, order not guaranteed).
+func keysOf(m map[string]ReviewFileDiff) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 // --- GetCommitDiff ---
 
 // TestGetCommitDiff_TwoFiles asserts the RPC returns the per-file hunk diff

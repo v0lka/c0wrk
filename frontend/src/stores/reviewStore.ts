@@ -9,6 +9,7 @@ export interface SessionReviewState {
   status: ReviewStatus
   generalComment: string
   hunkComments: Record<string, string> // key: `${filePath}::${hunkId}`
+  fileComments: Record<string, string> // key: filePath
   loaded: boolean
 }
 
@@ -19,7 +20,7 @@ export function hunkCommentKey(filePath: string, hunkId: string): string {
 }
 
 function emptySessionState(): SessionReviewState {
-  return { status: 'active', generalComment: '', hunkComments: {}, loaded: false }
+  return { status: 'active', generalComment: '', hunkComments: {}, fileComments: {}, loaded: false }
 }
 
 interface ReviewState {
@@ -35,6 +36,7 @@ interface ReviewActions {
   loadReview: (sessionId: string) => Promise<void>
   setGeneralComment: (sessionId: string, text: string) => void
   setHunkComment: (sessionId: string, filePath: string, hunkId: string, text: string) => void
+  setFileComment: (sessionId: string, filePath: string, text: string) => void
   removeHunkComment: (sessionId: string, filePath: string, hunkId: string) => void
   setStatus: (sessionId: string, status: ReviewStatus) => void
   openReviewPage: (sessionId: string) => void
@@ -68,6 +70,10 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
           for (const hc of data.hunk_comments) {
             hunkComments[hunkCommentKey(hc.file_path, hc.hunk_id)] = hc.body
           }
+          const fileComments: Record<string, string> = {}
+          for (const fc of data.file_comments) {
+            fileComments[fc.file_path] = fc.body
+          }
           set((s) => ({
             bySession: {
               ...s.bySession,
@@ -75,6 +81,7 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
                 status: (data.status as ReviewStatus) || 'active',
                 generalComment: data.general_comment || '',
                 hunkComments,
+                fileComments,
                 loaded: true,
               },
             },
@@ -114,6 +121,20 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
           delete hunkComments[hunkCommentKey(filePath, hunkId)]
           return {
             bySession: { ...s.bySession, [sessionId]: { ...prev, hunkComments } },
+          }
+        }),
+
+      setFileComment: (sessionId, filePath, text) =>
+        set((s) => {
+          const prev = ensureSession(s, sessionId)
+          const fileComments = { ...prev.fileComments }
+          if (text) {
+            fileComments[filePath] = text
+          } else {
+            delete fileComments[filePath]
+          }
+          return {
+            bySession: { ...s.bySession, [sessionId]: { ...prev, fileComments } },
           }
         }),
 
@@ -177,9 +198,10 @@ export const useReviewStore = create<ReviewState & ReviewActions>()(
   ),
 )
 
-/** Count total comments (general + hunks) for a session — used for button label derivation. */
+/** Count total comments (general + files + hunks) for a session — used for button label derivation. */
 export function totalCommentCount(state: SessionReviewState): number {
   let count = state.generalComment.trim() ? 1 : 0
+  count += Object.values(state.fileComments).filter((c) => c.trim()).length
   count += Object.values(state.hunkComments).filter((c) => c.trim()).length
   return count
 }

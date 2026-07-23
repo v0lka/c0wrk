@@ -419,7 +419,14 @@ func parseReviewFileBlock(lines []string) ReviewFileDiff {
 		}
 	}
 
-	var hunks []ReviewHunk
+	// Initialise as a non-nil slice so that a file block with no @@ hunks
+	// (e.g. an empty untracked file, a mode-only change, or a pure rename
+	// without content) serialises to JSON `[]` rather than `null`. The
+	// frontend guard validates hunks with Array.isArray, which rejects null
+	// and — because isArrayOf checks every element — would otherwise discard
+	// the entire diff array, making the review page show "no changes" whenever
+	// a single content-less file is present.
+	hunks := []ReviewHunk{}
 	i := 0
 	for i < len(lines) {
 		if !strings.HasPrefix(lines[i], "@@") {

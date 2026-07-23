@@ -362,6 +362,10 @@ export function SaveProjectUIState(arg1) {
   return window['go']['desktop']['App']['SaveProjectUIState'](arg1);
 }
 
+export function SaveReviewFileComment(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['SaveReviewFileComment'](arg1, arg2, arg3);
+}
+
 export function SaveReviewGeneralComment(arg1, arg2) {
   return window['go']['desktop']['App']['SaveReviewGeneralComment'](arg1, arg2);
 }

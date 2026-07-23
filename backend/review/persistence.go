@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,6 +38,8 @@ const (
 	KindGeneral CommentKind = "general"
 	// KindHunk is a comment scoped to a (file_path, hunk_id) pair.
 	KindHunk CommentKind = "hunk"
+	// KindFile is a comment scoped to a single file_path (whole-file feedback).
+	KindFile CommentKind = "file"
 )
 
 // HunkComment is a review comment scoped to a specific file hunk.
@@ -49,13 +52,24 @@ type HunkComment struct {
 	CreatedAt string `json:"created_at"` // RFC 3339 formatted timestamp
 }
 
+// FileComment is a review comment scoped to a whole file (not a specific hunk).
+type FileComment struct {
+	ID        string `json:"id"`
+	SessionID string `json:"session_id"`
+	FilePath  string `json:"file_path"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"` // RFC 3339 formatted timestamp
+}
+
 // Review is the aggregate view of a session's review buffer returned by
-// GetReview. HunkComments is never nil (an empty slice means no hunk comments).
+// GetReview. HunkComments and FileComments are never nil (an empty slice means
+// no comments of that kind).
 type Review struct {
 	SessionID      string        `json:"session_id"`
 	Status         ReviewStatus  `json:"status"`
 	GeneralComment string        `json:"general_comment"`
 	HunkComments   []HunkComment `json:"hunk_comments"`
+	FileComments   []FileComment `json:"file_comments"`
 	UpdatedAt      string        `json:"updated_at"` // RFC 3339 formatted timestamp of the last status change
 }
 
@@ -75,6 +89,9 @@ func NewSQLiteReviewStore(db *sql.DB) (*SQLiteReviewStore, error) {
 	store := &SQLiteReviewStore{db: db}
 	if err := store.createTables(); err != nil {
 		return nil, fmt.Errorf("failed to create review tables: %w", err)
+	}
+	if err := store.migrateCommentsSchema(); err != nil {
+		return nil, fmt.Errorf("failed to migrate review comments schema: %w", err)
 	}
 	return store, nil
 }
@@ -103,7 +120,7 @@ func (s *SQLiteReviewStore) createTables() error {
 	CREATE TABLE IF NOT EXISTS review_comments (
 		id TEXT PRIMARY KEY,
 		session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-		kind TEXT NOT NULL CHECK (kind IN ('general','hunk')),
+		kind TEXT NOT NULL CHECK (kind IN ('general','hunk','file')),
 		file_path TEXT,
 		hunk_id TEXT,
 		body TEXT NOT NULL,
@@ -125,6 +142,87 @@ func (s *SQLiteReviewStore) createTables() error {
 	return err
 }
 
+// migrateCommentsSchema upgrades the review_comments CHECK constraint to
+// include the 'file' kind. SQLite cannot ALTER a CHECK constraint in place, so
+// for legacy databases the table is rebuilt (create new with the updated
+// constraint, copy rows, drop+rename, recreate indexes) inside a single
+// transaction. Fresh databases already get the new constraint from
+// createTables, in which case this is a no-op. The migration is idempotent: a
+// second run detects the new constraint and does nothing.
+func (s *SQLiteReviewStore) migrateCommentsSchema() error {
+	var ddl string
+	err := s.db.QueryRowContext(context.Background(),
+		`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'review_comments'`).Scan(&ddl)
+	if err != nil {
+		return fmt.Errorf("failed to inspect review_comments schema: %w", err)
+	}
+	// The 'file' kind is present only in the new constraint — nothing to do.
+	if containsFileKind(ddl) {
+		return nil
+	}
+
+	// PRAGMA foreign_keys is a no-op inside a transaction, so toggle it on the
+	// connection before beginning the rebuild — the canonical SQLite
+	// table-rebuild pattern. There are currently no inbound foreign keys
+	// referencing review_comments, but disabling defensively guards against a
+	// future inbound reference being added.
+	if _, err := s.db.ExecContext(context.Background(), `PRAGMA foreign_keys=OFF`); err != nil {
+		return fmt.Errorf("failed to disable foreign keys for migration: %w", err)
+	}
+	// Always re-enable foreign keys on exit, even on the error path. This defer
+	// is registered before the rollback defer, so LIFO ordering runs rollback
+	// first (a no-op after a successful commit) then the PRAGMA restore.
+	defer func() {
+		if _, err := s.db.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`); err != nil {
+			s.log().Error("failed to re-enable foreign keys after migration", "err", err)
+		}
+	}()
+
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin migration transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmts := []string{
+		`CREATE TABLE review_comments_new (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			kind TEXT NOT NULL CHECK (kind IN ('general','hunk','file')),
+			file_path TEXT,
+			hunk_id TEXT,
+			body TEXT NOT NULL,
+			created_at TIMESTAMP NOT NULL
+		)`,
+		`INSERT INTO review_comments_new (id, session_id, kind, file_path, hunk_id, body, created_at)
+		SELECT id, session_id, kind, file_path, hunk_id, body, created_at FROM review_comments`,
+		`DROP TABLE review_comments`,
+		`ALTER TABLE review_comments_new RENAME TO review_comments`,
+		// Recreate indexes (dropped with the table).
+		`CREATE INDEX IF NOT EXISTS idx_review_comments_session ON review_comments(session_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_review_comments_hunk ON review_comments(session_id, file_path, hunk_id)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(context.Background(), stmt); err != nil {
+			return fmt.Errorf("failed to migrate review_comments: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit review_comments migration: %w", err)
+	}
+	s.log().Info("migrated review_comments schema to support 'file' comment kind")
+	return nil
+}
+
+// containsFileKind reports whether a CREATE TABLE statement's CHECK constraint
+// already includes the 'file' kind. Matching the full constraint clause (not
+// just the 'file' literal) avoids false positives from a future column name,
+// comment, or default value that happens to contain 'file'.
+func containsFileKind(createSQL string) bool {
+	return strings.Contains(createSQL, "IN ('general','hunk','file')")
+}
+
 // nowRFC3339 returns the current time as an RFC 3339 string in UTC.
 func nowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339)
@@ -141,6 +239,7 @@ func (s *SQLiteReviewStore) GetReview(ctx context.Context, sessionID string) (*R
 		SessionID:    sessionID,
 		Status:       StatusActive,
 		HunkComments: []HunkComment{},
+		FileComments: []FileComment{},
 	}
 
 	// Status (optional — defaults to active).
@@ -156,7 +255,8 @@ func (s *SQLiteReviewStore) GetReview(ctx context.Context, sessionID string) (*R
 		review.UpdatedAt = updatedAt
 	}
 
-	// Comments: a single general row (if any) plus zero or more hunk rows.
+	// Comments: a single general row (if any), zero or more file rows, plus
+	// zero or more hunk rows.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, kind, file_path, hunk_id, body, created_at
 		FROM review_comments
@@ -179,18 +279,27 @@ func (s *SQLiteReviewStore) GetReview(ctx context.Context, sessionID string) (*R
 		if err := rows.Scan(&id, &kind, &filePath, &hunkID, &body, &createdAt); err != nil {
 			return nil, fmt.Errorf("failed to scan review comment: %w", err)
 		}
-		if CommentKind(kind) == KindGeneral {
+		switch CommentKind(kind) {
+		case KindGeneral:
 			review.GeneralComment = body
-			continue
+		case KindFile:
+			review.FileComments = append(review.FileComments, FileComment{
+				ID:        id,
+				SessionID: sessionID,
+				FilePath:  filePath.String,
+				Body:      body,
+				CreatedAt: createdAt,
+			})
+		default: // KindHunk
+			review.HunkComments = append(review.HunkComments, HunkComment{
+				ID:        id,
+				SessionID: sessionID,
+				FilePath:  filePath.String,
+				HunkID:    hunkID.String,
+				Body:      body,
+				CreatedAt: createdAt,
+			})
 		}
-		review.HunkComments = append(review.HunkComments, HunkComment{
-			ID:        id,
-			SessionID: sessionID,
-			FilePath:  filePath.String,
-			HunkID:    hunkID.String,
-			Body:      body,
-			CreatedAt: createdAt,
-		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating review comments: %w", err)
@@ -260,6 +369,40 @@ func (s *SQLiteReviewStore) UpsertHunkComment(ctx context.Context, sessionID, fi
 	return id, nil
 }
 
+// UpsertFileComment inserts or replaces the comment for a single file and
+// returns the resulting comment id. The id is deterministic
+// (sessionID + ":file:" + filePath) and stable across updates, so a second call
+// for the same file mutates the existing row in place. An empty body removes
+// the file comment.
+func (s *SQLiteReviewStore) UpsertFileComment(ctx context.Context, sessionID, filePath, body string) (string, error) {
+	if sessionID == "" {
+		return "", errors.New("session id is required")
+	}
+	if filePath == "" {
+		return "", errors.New("file path is required")
+	}
+	// An empty body removes the file comment so the buffer stays tidy.
+	if body == "" {
+		if _, err := s.db.ExecContext(ctx,
+			`DELETE FROM review_comments WHERE session_id = ? AND kind = 'file' AND file_path = ?`,
+			sessionID, filePath); err != nil {
+			return "", fmt.Errorf("failed to clear file comment: %w", err)
+		}
+		return "", nil
+	}
+
+	id := fileCommentID(sessionID, filePath)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO review_comments (id, session_id, kind, file_path, hunk_id, body, created_at)
+		VALUES (?, ?, 'file', ?, NULL, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET body = excluded.body`,
+		id, sessionID, filePath, body, nowRFC3339())
+	if err != nil {
+		return "", fmt.Errorf("failed to upsert file comment: %w", err)
+	}
+	return id, nil
+}
+
 // DeleteComment removes a single comment by id. Deleting a non-existent id is
 // not an error.
 func (s *SQLiteReviewStore) DeleteComment(ctx context.Context, id string) error {
@@ -293,8 +436,8 @@ func (s *SQLiteReviewStore) SetReviewStatus(ctx context.Context, sessionID strin
 	return nil
 }
 
-// ClearComments removes all comments (general + hunk) for a session while
-// preserving the review status.
+// ClearComments removes all comments (general + hunk + file) for a session
+// while preserving the review status.
 func (s *SQLiteReviewStore) ClearComments(ctx context.Context, sessionID string) error {
 	if sessionID == "" {
 		return errors.New("session id is required")
@@ -336,4 +479,10 @@ func (s *SQLiteReviewStore) ClearReview(ctx context.Context, sessionID string) e
 // comment, used as the ON CONFLICT(id) target for UpsertGeneralComment.
 func generalCommentID(sessionID string) string {
 	return sessionID + ":general"
+}
+
+// fileCommentID is the deterministic row id for a session's comment on a given
+// file, used as the ON CONFLICT(id) target for UpsertFileComment.
+func fileCommentID(sessionID, filePath string) string {
+	return sessionID + ":file:" + filePath
 }

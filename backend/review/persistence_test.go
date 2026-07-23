@@ -102,6 +102,12 @@ func TestGetReviewEmptyDefaultsToActive(t *testing.T) {
 	if len(rev.HunkComments) != 0 {
 		t.Errorf("hunk comments len = %d, want 0", len(rev.HunkComments))
 	}
+	if rev.FileComments == nil {
+		t.Fatal("FileComments should be non-nil for a session with no comments")
+	}
+	if len(rev.FileComments) != 0 {
+		t.Errorf("file comments len = %d, want 0", len(rev.FileComments))
+	}
 }
 
 func TestUpsertGeneralCommentRoundTrip(t *testing.T) {
@@ -231,6 +237,88 @@ func TestUpsertHunkCommentRoundTrip(t *testing.T) {
 	}
 }
 
+// TestUpsertFileCommentRoundTrip mirrors the hunk round-trip for the
+// whole-file comment kind: insert, in-place update (stable id), multiple files,
+// empty-body delete, and exactly one row per file.
+func TestUpsertFileCommentRoundTrip(t *testing.T) {
+	store, db, cleanup := setupTestStore(t)
+	defer cleanup()
+	insertSession(t, db, "sess-1")
+
+	id1, err := store.UpsertFileComment(context.Background(), "sess-1", "main.go", "simplify the entrypoint")
+	if err != nil {
+		t.Fatalf("UpsertFileComment: %v", err)
+	}
+	if id1 == "" {
+		t.Fatal("returned id should not be empty on insert")
+	}
+
+	// Upserting the same file returns the same id (deterministic) and updates the body.
+	id2, err := store.UpsertFileComment(context.Background(), "sess-1", "main.go", "actually keep it")
+	if err != nil {
+		t.Fatalf("UpsertFileComment (update): %v", err)
+	}
+	if id2 != id1 {
+		t.Errorf("upsert id changed: got %q, want %q", id2, id1)
+	}
+
+	// A second file comment is stored separately.
+	if _, err := store.UpsertFileComment(context.Background(), "sess-1", "util.go", "extract helper"); err != nil {
+		t.Fatalf("UpsertFileComment (second file): %v", err)
+	}
+
+	rev, err := store.GetReview(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("GetReview: %v", err)
+	}
+	if len(rev.FileComments) != 2 {
+		t.Fatalf("file comments len = %d, want 2", len(rev.FileComments))
+	}
+
+	// The updated body is reflected on the stable-id row.
+	var sawUpdated bool
+	for _, fc := range rev.FileComments {
+		if fc.ID == id1 {
+			sawUpdated = true
+			if fc.Body != "actually keep it" {
+				t.Errorf("file body = %q, want %q", fc.Body, "actually keep it")
+			}
+			if fc.FilePath != "main.go" {
+				t.Errorf("file path = %q, want main.go", fc.FilePath)
+			}
+			if fc.SessionID != "sess-1" {
+				t.Errorf("file comment session_id = %q, want sess-1", fc.SessionID)
+			}
+		}
+	}
+	if !sawUpdated {
+		t.Error("updated file comment not found in results")
+	}
+
+	// Empty body deletes the file comment.
+	if _, err := store.UpsertFileComment(context.Background(), "sess-1", "main.go", ""); err != nil {
+		t.Fatalf("UpsertFileComment (clear): %v", err)
+	}
+	rev, err = store.GetReview(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("GetReview (clear): %v", err)
+	}
+	if len(rev.FileComments) != 1 {
+		t.Errorf("file comments after clear = %d, want 1", len(rev.FileComments))
+	}
+
+	// Defensive: ensure only one file row ever exists per (session, file).
+	var n int
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM review_comments WHERE session_id = ? AND kind = 'file' AND file_path = 'main.go'`,
+		"sess-1").Scan(&n); err != nil {
+		t.Fatalf("count file: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("file rows for cleared file = %d, want 0", n)
+	}
+}
+
 func TestGeneralAndHunkCommentsCoexist(t *testing.T) {
 	store, db, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -242,6 +330,9 @@ func TestGeneralAndHunkCommentsCoexist(t *testing.T) {
 	if _, err := store.UpsertHunkComment(context.Background(), "sess-1", "a.go", "h1", "hunk nit"); err != nil {
 		t.Fatalf("UpsertHunkComment: %v", err)
 	}
+	if _, err := store.UpsertFileComment(context.Background(), "sess-1", "a.go", "file nit"); err != nil {
+		t.Fatalf("UpsertFileComment: %v", err)
+	}
 
 	rev, err := store.GetReview(context.Background(), "sess-1")
 	if err != nil {
@@ -252,6 +343,14 @@ func TestGeneralAndHunkCommentsCoexist(t *testing.T) {
 	}
 	if len(rev.HunkComments) != 1 || rev.HunkComments[0].Body != "hunk nit" {
 		t.Errorf("unexpected hunk comments: %+v", rev.HunkComments)
+	}
+	if len(rev.FileComments) != 1 || rev.FileComments[0].Body != "file nit" {
+		t.Errorf("unexpected file comments: %+v", rev.FileComments)
+	}
+	// A whole-file comment and a hunk comment on the same file must coexist
+	// independently (distinct kind rows, not collapsed into one).
+	if rev.FileComments[0].FilePath != "a.go" {
+		t.Errorf("file comment path = %q, want a.go", rev.FileComments[0].FilePath)
 	}
 }
 
@@ -337,6 +436,9 @@ func TestClearCommentsPreservesStatus(t *testing.T) {
 	if _, err := store.UpsertHunkComment(context.Background(), "sess-1", "a.go", "h1", "hunk"); err != nil {
 		t.Fatalf("UpsertHunkComment: %v", err)
 	}
+	if _, err := store.UpsertFileComment(context.Background(), "sess-1", "a.go", "file"); err != nil {
+		t.Fatalf("UpsertFileComment: %v", err)
+	}
 	if err := store.SetReviewStatus(context.Background(), "sess-1", StatusSubmitted); err != nil {
 		t.Fatalf("SetReviewStatus: %v", err)
 	}
@@ -348,7 +450,7 @@ func TestClearCommentsPreservesStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetReview: %v", err)
 	}
-	if rev.GeneralComment != "" || len(rev.HunkComments) != 0 {
+	if rev.GeneralComment != "" || len(rev.HunkComments) != 0 || len(rev.FileComments) != 0 {
 		t.Errorf("comments not cleared: %+v", rev)
 	}
 	// Status must survive ClearComments.
@@ -368,6 +470,9 @@ func TestClearReviewResetsEverything(t *testing.T) {
 	if _, err := store.UpsertHunkComment(context.Background(), "sess-1", "a.go", "h1", "hunk"); err != nil {
 		t.Fatalf("UpsertHunkComment: %v", err)
 	}
+	if _, err := store.UpsertFileComment(context.Background(), "sess-1", "a.go", "file"); err != nil {
+		t.Fatalf("UpsertFileComment: %v", err)
+	}
 	if err := store.SetReviewStatus(context.Background(), "sess-1", StatusApproved); err != nil {
 		t.Fatalf("SetReviewStatus: %v", err)
 	}
@@ -379,7 +484,7 @@ func TestClearReviewResetsEverything(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetReview: %v", err)
 	}
-	if rev.GeneralComment != "" || len(rev.HunkComments) != 0 {
+	if rev.GeneralComment != "" || len(rev.HunkComments) != 0 || len(rev.FileComments) != 0 {
 		t.Errorf("comments not cleared: %+v", rev)
 	}
 	if rev.Status != StatusActive {
@@ -410,6 +515,9 @@ func TestCascadeOnSessionDelete(t *testing.T) {
 	if _, err := store.UpsertHunkComment(context.Background(), "sess-1", "a.go", "h1", "h1"); err != nil {
 		t.Fatalf("UpsertHunkComment: %v", err)
 	}
+	if _, err := store.UpsertFileComment(context.Background(), "sess-1", "a.go", "f1"); err != nil {
+		t.Fatalf("UpsertFileComment: %v", err)
+	}
 	if err := store.SetReviewStatus(context.Background(), "sess-1", StatusSubmitted); err != nil {
 		t.Fatalf("SetReviewStatus: %v", err)
 	}
@@ -426,7 +534,7 @@ func TestCascadeOnSessionDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetReview sess-1 after cascade: %v", err)
 	}
-	if rev.GeneralComment != "" || len(rev.HunkComments) != 0 {
+	if rev.GeneralComment != "" || len(rev.HunkComments) != 0 || len(rev.FileComments) != 0 {
 		t.Errorf("sess-1 review should be empty after cascade: %+v", rev)
 	}
 	if rev.Status != StatusActive {
@@ -541,6 +649,12 @@ func TestValidationErrors(t *testing.T) {
 	if _, err := store.UpsertHunkComment(ctx, "s", "f", "", "x"); err == nil {
 		t.Error("UpsertHunkComment with empty hunk id should error")
 	}
+	if _, err := store.UpsertFileComment(ctx, "", "f", "x"); err == nil {
+		t.Error("UpsertFileComment with empty session should error")
+	}
+	if _, err := store.UpsertFileComment(ctx, "s", "", "x"); err == nil {
+		t.Error("UpsertFileComment with empty file path should error")
+	}
 	if err := store.DeleteComment(ctx, ""); err == nil {
 		t.Error("DeleteComment with empty id should error")
 	}
@@ -552,5 +666,92 @@ func TestValidationErrors(t *testing.T) {
 	}
 	if err := store.ClearReview(ctx, ""); err == nil {
 		t.Error("ClearReview with empty session should error")
+	}
+}
+
+// TestMigrateCommentsSchema_LegacyDBAcceptsFileKind simulates a legacy database
+// whose review_comments CHECK constraint predates the 'file' kind, then verifies
+// that NewSQLiteReviewStore (which runs migrateCommentsSchema) rebuilds the
+// constraint so file comments can be persisted and read back.
+func TestMigrateCommentsSchema_LegacyDBAcceptsFileKind(t *testing.T) {
+	db := openTestDB(t)
+	defer func() { _ = db.Close() }()
+	createSessionsTable(t, db)
+	insertSession(t, db, "sess-1")
+
+	// Build a *legacy* schema: the CHECK constraint omits the 'file' kind.
+	legacySchema := `
+	CREATE TABLE review_comments (
+		id TEXT PRIMARY KEY,
+		session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+		kind TEXT NOT NULL CHECK (kind IN ('general','hunk')),
+		file_path TEXT,
+		hunk_id TEXT,
+		body TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_review_comments_session ON review_comments(session_id);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_review_comments_hunk ON review_comments(session_id, file_path, hunk_id);
+
+	CREATE TABLE IF NOT EXISTS review_state (
+		session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+		status TEXT NOT NULL CHECK (status IN ('active','submitted','approved')),
+		updated_at TIMESTAMP NOT NULL
+	);`
+	if _, err := db.ExecContext(context.Background(), legacySchema); err != nil {
+		t.Fatalf("failed to create legacy schema: %v", err)
+	}
+
+	// Insert a pre-existing general comment so we can assert migration preserves data.
+	if _, err := db.ExecContext(context.Background(),
+		`INSERT INTO review_comments (id, session_id, kind, file_path, hunk_id, body, created_at)
+		 VALUES (?, ?, 'general', NULL, NULL, ?, ?)`,
+		"sess-1:general", "sess-1", "legacy general", nowRFC3339()); err != nil {
+		t.Fatalf("failed to seed legacy row: %v", err)
+	}
+
+	// Constructing the store runs the migration: the table is rebuilt with the
+	// 'file' kind allowed.
+	store, err := NewSQLiteReviewStore(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteReviewStore on legacy db: %v", err)
+	}
+
+	// A file comment must now be accepted (previously rejected by the CHECK).
+	id, err := store.UpsertFileComment(context.Background(), "sess-1", "main.go", "migrated file comment")
+	if err != nil {
+		t.Fatalf("UpsertFileComment after migration: %v", err)
+	}
+	if id == "" {
+		t.Fatal("file comment id should not be empty")
+	}
+
+	rev, err := store.GetReview(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("GetReview after migration: %v", err)
+	}
+	// Migration must preserve pre-existing data.
+	if rev.GeneralComment != "legacy general" {
+		t.Errorf("general comment not preserved by migration: got %q", rev.GeneralComment)
+	}
+	// And the new file comment is readable.
+	if len(rev.FileComments) != 1 || rev.FileComments[0].Body != "migrated file comment" {
+		t.Errorf("file comment not readable after migration: %+v", rev.FileComments)
+	}
+
+	// Idempotency: constructing the store again must not error or drop data.
+	store2, err := NewSQLiteReviewStore(db)
+	if err != nil {
+		t.Fatalf("second NewSQLiteReviewStore (idempotent): %v", err)
+	}
+	rev2, err := store2.GetReview(context.Background(), "sess-1")
+	if err != nil {
+		t.Fatalf("GetReview after second construction: %v", err)
+	}
+	if rev2.GeneralComment != "legacy general" {
+		t.Errorf("general comment lost on re-migration: got %q", rev2.GeneralComment)
+	}
+	if len(rev2.FileComments) != 1 {
+		t.Errorf("file comment lost on re-migration: %+v", rev2.FileComments)
 	}
 }

@@ -966,6 +966,26 @@ export namespace project {
 
 export namespace review {
 	
+	export class FileComment {
+	    id: string;
+	    session_id: string;
+	    file_path: string;
+	    body: string;
+	    created_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FileComment(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.session_id = source["session_id"];
+	        this.file_path = source["file_path"];
+	        this.body = source["body"];
+	        this.created_at = source["created_at"];
+	    }
+	}
 	export class HunkComment {
 	    id: string;
 	    session_id: string;
@@ -993,6 +1013,7 @@ export namespace review {
 	    status: string;
 	    general_comment: string;
 	    hunk_comments: HunkComment[];
+	    file_comments: FileComment[];
 	    updated_at: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1005,6 +1026,7 @@ export namespace review {
 	        this.status = source["status"];
 	        this.general_comment = source["general_comment"];
 	        this.hunk_comments = this.convertValues(source["hunk_comments"], HunkComment);
+	        this.file_comments = this.convertValues(source["file_comments"], FileComment);
 	        this.updated_at = source["updated_at"];
 	    }
 	

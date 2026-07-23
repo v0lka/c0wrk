@@ -22,11 +22,20 @@ export interface ReviewHunkComment {
   created_at: string
 }
 
+export interface ReviewFileComment {
+  id: string
+  session_id: string
+  file_path: string
+  body: string
+  created_at: string
+}
+
 export interface ReviewData {
   session_id: string
   status: string
   general_comment: string
   hunk_comments: ReviewHunkComment[]
+  file_comments: ReviewFileComment[]
   updated_at: string
 }
 
@@ -45,7 +54,14 @@ export interface ReviewFileDiff {
 }
 
 function isReviewData(v: unknown): v is ReviewData {
-  return isObj(v) && isStr(v.session_id) && isStr(v.status) && isStr(v.general_comment) && Array.isArray(v.hunk_comments)
+  return (
+    isObj(v) &&
+    isStr(v.session_id) &&
+    isStr(v.status) &&
+    isStr(v.general_comment) &&
+    Array.isArray(v.hunk_comments) &&
+    Array.isArray(v.file_comments)
+  )
 }
 
 function isReviewFileDiff(v: unknown): v is ReviewFileDiff {
@@ -72,6 +88,17 @@ export async function saveReviewGeneralComment(sessionId: string, body: string):
     await app.SaveReviewGeneralComment(sessionId, body)
   } catch (err) {
     logger.error('saveReviewGeneralComment failed:', err)
+    throw err
+  }
+}
+
+export async function saveReviewFileComment(sessionId: string, filePath: string, body: string): Promise<string> {
+  try {
+    const app = getApp()
+    const result = await app.SaveReviewFileComment(sessionId, filePath, body)
+    return typeof result === 'string' ? result : ''
+  } catch (err) {
+    logger.error('saveReviewFileComment failed:', err)
     throw err
   }
 }

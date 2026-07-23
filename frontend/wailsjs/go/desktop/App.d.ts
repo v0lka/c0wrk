@@ -189,6 +189,8 @@ export function SaveProjectSwitchState(arg1:backend.ProjectUIStateRequest):Promi
 
 export function SaveProjectUIState(arg1:backend.ProjectUIStateRequest):Promise<void>;
 
+export function SaveReviewFileComment(arg1:string,arg2:string,arg3:string):Promise<string>;
+
 export function SaveReviewGeneralComment(arg1:string,arg2:string):Promise<void>;
 
 export function SaveReviewHunkComment(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;

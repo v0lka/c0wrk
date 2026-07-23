@@ -57,6 +57,20 @@ func (f *FrontendAPI) SaveReviewHunkComment(sessionID, filePath, hunkID, body st
 	return id, nil
 }
 
+// SaveReviewFileComment upserts a file-scoped review comment for the given
+// filePath and returns the resulting comment id. An empty body removes the
+// comment (returning an empty id).
+func (f *FrontendAPI) SaveReviewFileComment(sessionID, filePath, body string) (string, error) {
+	if f.reviewStore == nil {
+		return "", errors.New("review store not initialized")
+	}
+	id, err := f.reviewStore.UpsertFileComment(context.Background(), sessionID, filePath, body)
+	if err != nil {
+		return "", fmt.Errorf("failed to save file review comment: %w", err)
+	}
+	return id, nil
+}
+
 // DeleteReviewComment removes a single review comment by id.
 func (f *FrontendAPI) DeleteReviewComment(id string) error {
 	if f.reviewStore == nil {

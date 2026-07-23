@@ -6,6 +6,7 @@ function makeState(overrides: Partial<SessionReviewState> = {}): SessionReviewSt
     status: 'active',
     generalComment: '',
     hunkComments: {},
+    fileComments: {},
     loaded: true,
     ...overrides,
   }
