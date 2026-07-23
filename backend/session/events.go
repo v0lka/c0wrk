@@ -82,6 +82,10 @@ type TaskCancelledData struct {
 type TaskFailedResumableData struct {
 	Message string `json:"message"`
 	TaskID  string `json:"task_id,omitempty"`
+	// Reason carries a concise, contextual cause for the failure (e.g. an
+	// execution error or the completion outcome) so the banner can explain
+	// WHY the task is resumable rather than always showing a generic message.
+	Reason string `json:"reason,omitempty"`
 }
 
 // ErrorData is the payload for "error" events.

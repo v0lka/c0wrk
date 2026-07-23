@@ -69,7 +69,7 @@ func (g *TitleGenerator) Generate(ctx context.Context, userMessage string, activ
 func truncateTitle(title string) string {
 	runes := []rune(title)
 	if len(runes) > 60 {
-		return string(runes[:57]) + "..."
+		return string(runes[:57]) + "…"
 	}
 	return title
 }

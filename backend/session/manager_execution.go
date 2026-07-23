@@ -400,7 +400,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 					Error:     err.Error(),
 				},
 			})
-			m.emitResumableIfUnfinished(id)
+			m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
 			return
 		}
 
@@ -564,7 +564,7 @@ func (m *Manager) tryContinueInterruptedTask(
 				Error:     err.Error(),
 			},
 		})
-		m.emitResumableIfUnfinished(id)
+		m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
 		return true
 	}
 
@@ -743,7 +743,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 					Error:     err.Error(),
 				},
 			})
-			m.emitResumableIfUnfinished(id)
+			m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
 			return
 		}
 
@@ -909,39 +909,96 @@ func (m *Manager) abandonUnfinishedTaskForGoal(id string) {
 	})
 }
 
-// emitResumableIfUnfinished checks whether the session has an unfinished task
-// in the task store and, if so, emits a "task_failed_resumable" event so the
-// frontend can offer a Resume button. It returns true when the event was
-// emitted, so callers that KNOW the execution was degraded can surface a
-// fallback warning when the resumable safety net is unavailable (nil task
-// store, lookup error, or no unfinished record).
-func (m *Manager) emitResumableIfUnfinished(sessionID string) bool {
+// unfinishedTaskID returns the ID of the most recent unfinished (in_progress
+// or failed) task for the session, or "" if there is none, no task store is
+// configured, or the lookup errors. It is a pure lookup — it never emits.
+func (m *Manager) unfinishedTaskID(sessionID string) string {
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
 	if ts == nil {
-		return false
+		return ""
 	}
 
 	adapter := NewTaskStoreAdapter(ts)
 	taskID, err := adapter.GetUnfinishedTaskID(sessionID)
 	if err != nil {
 		m.log().Warn("failed to get unfinished task ID", "session", sessionID, "error", err)
-		return false
+		return ""
 	}
+	return taskID
+}
+
+// emitResumableIfUnfinished checks whether the session has an unfinished task
+// in the task store and, if so, emits a "task_failed_resumable" event so the
+// frontend can offer a Resume button. It returns true when the event was
+// emitted, so callers that KNOW the execution was degraded can surface a
+// fallback warning when the resumable safety net is unavailable (nil task
+// store, lookup error, or no unfinished record). reason is a concise,
+// contextual cause prepended to the banner message and carried in the
+// structured Reason field; pass "" for the generic message.
+func (m *Manager) emitResumableIfUnfinished(sessionID, reason string) bool {
+	taskID := m.unfinishedTaskID(sessionID)
 	if taskID == "" {
 		return false
+	}
+
+	message := "Plan execution failed. You can resume to retry from where it left off."
+	if reason != "" {
+		message = reason + " You can resume to retry from where it left off."
 	}
 
 	m.emitFunc(Event{
 		SessionID: sessionID,
 		Type:      "task_failed_resumable",
 		Data: TaskFailedResumableData{
-			Message: "Plan execution failed. You can resume to retry from where it left off.",
+			Message: message,
 			TaskID:  taskID,
+			Reason:  reason,
 		},
 	})
 	return true
+}
+
+// completionReason maps a completion outcome to a concise, readable reason
+// sentence for the resume banner. Returns "" for a full success (the caller
+// must not call emitResumableIfUnfinished for successes — see emitTaskComplete).
+func completionReason(completion string) string {
+	switch completion {
+	case "partial":
+		return "Execution reached a partial state."
+	case "failed":
+		return "Execution failed."
+	case "aborted":
+		return "Execution was aborted."
+	default:
+		return ""
+	}
+}
+
+// resumableReasonFromError derives a concise, user-facing reason for the
+// resume banner from a terminal execution error. It trims to the first line,
+// capitalizes the first letter, and caps the length so the banner stays
+// readable. Returns "" when err is nil, leaving the generic message intact.
+func resumableReasonFromError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return ""
+	}
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		msg = msg[:i]
+	}
+	const maxReasonRunes = 140
+	if r := []rune(msg); len(r) > maxReasonRunes {
+		msg = string(r[:maxReasonRunes-1]) + "…"
+	}
+	if r := []rune(msg); len(r) > 0 {
+		msg = strings.ToUpper(string(r[0])) + string(r[1:])
+	}
+	return msg
 }
 
 // resolveResumableTaskMessage marks the persisted "task_failed_resumable"
@@ -1008,8 +1065,18 @@ func (m *Manager) emitTaskComplete(sessionID string, result *core.HandleResult, 
 	}
 	m.emitFunc(Event{SessionID: sessionID, Type: "task_complete", Data: data})
 
-	resumableEmitted := m.emitResumableIfUnfinished(sessionID)
-	if !success && !resumableEmitted {
+	// On a genuinely successful completion, NEVER offer a resume action — the
+	// result above is final. If the task that just ran is still marked
+	// unfinished, the completion write raced or was dropped; surface a
+	// persistence warning instead of a misleading "resume" banner (see
+	// warnIfCompletionDidNotPersist).
+	if success {
+		m.warnIfCompletionDidNotPersist(sessionID, result)
+		return
+	}
+
+	resumableEmitted := m.emitResumableIfUnfinished(sessionID, completionReason(completion))
+	if !resumableEmitted {
 		m.log().Warn("degraded task completion without resumable safety net", "session", sessionID, "completion", completion)
 		m.emitFunc(Event{
 			SessionID: sessionID,
@@ -1017,6 +1084,35 @@ func (m *Manager) emitTaskComplete(sessionID string, result *core.HandleResult, 
 			Data: map[string]any{
 				"content": fmt.Sprintf("Task finished with %s execution, but it cannot be resumed. Review the output above.", completion),
 				"phase":   "orchestration",
+			},
+		})
+	}
+}
+
+// warnIfCompletionDidNotPersist checks whether the task that just completed
+// successfully is still marked unfinished. When it is, the completion write
+// (CompleteTask) raced or was dropped, so a service warning is emitted so the
+// user knows a persistence issue occurred — but the result above is valid and
+// no misleading "resume" banner is offered. A different (stale) unfinished
+// task is ignored, as it predates this successful execution.
+func (m *Manager) warnIfCompletionDidNotPersist(sessionID string, result *core.HandleResult) {
+	var completedTaskID string
+	if result != nil {
+		if pbb, ok := result.Blackboard.(core.PersistableBlackboard); ok {
+			completedTaskID = pbb.TaskID()
+		}
+	}
+	if completedTaskID == "" {
+		return
+	}
+	if unfinished := m.unfinishedTaskID(sessionID); unfinished == completedTaskID {
+		m.log().Error("task succeeded but completion did not persist", "session", sessionID, "task", completedTaskID)
+		m.emitFunc(Event{
+			SessionID: sessionID,
+			Type:      "service",
+			Data: map[string]any{
+				"content": "Task completed successfully, but a persistence issue was detected. The result above is valid.",
+				"phase":   "persistence",
 			},
 		})
 	}

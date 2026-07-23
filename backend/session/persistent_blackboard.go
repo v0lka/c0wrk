@@ -125,12 +125,18 @@ func (pb *PersistentBlackboard) persistSafe(operation string, fn func() error) {
 	pb.waitPersistenceResult(operation, done)
 }
 
-// persistBlocking enqueues a persistence operation with a blocking send.
-// Used for critical finalizing operations (CompleteTask, FailTask, CancelTask)
-// where dropping the write would leave the task in a permanently inconsistent state.
-// The caller blocks until the operation completes or the timeout expires.
-// Falls back gracefully when the channel has already been shut down (e.g.,
-// duplicate CompleteTask+FailTask calls on the same blackboard — test-only scenario).
+// persistBlocking enqueues a persistence operation, guaranteeing it is never
+// silently dropped. Used for critical finalizing operations (CompleteTask,
+// FailTask, CancelTask) where skipping the write would leave the task in a
+// permanently inconsistent state.
+//
+// The send is bounded by the configured timeout. If the worker is dead or the
+// buffer is saturated and the send cannot complete in time, the operation
+// falls back to a synchronous direct write on the caller goroutine — better
+// to block briefly here than leave the task unresolved or hang the conductor
+// forever. Falls back gracefully when the channel has already been shut down
+// (e.g., duplicate CompleteTask+FailTask calls on the same blackboard —
+// test-only scenario).
 func (pb *PersistentBlackboard) persistBlocking(operation string, fn func() error) {
 	done := make(chan error, 1)
 	op := persistOp{operation: operation, fn: fn, done: done}
@@ -141,10 +147,60 @@ func (pb *PersistentBlackboard) persistBlocking(operation string, fn func() erro
 		return
 	}
 
-	// Blocking send: guarantee the operation is queued before proceeding.
-	pb.persistCh <- op
+	timeout := pb.persistenceTimeout
+	if timeout == 0 {
+		timeout = defaultPersistenceTimeout
+	}
 
-	pb.waitPersistenceResult(operation, done)
+	// Bounded send: enqueue to the worker when possible, but fall back to a
+	// direct synchronous write if the worker cannot accept the operation in
+	// time (backed-up buffer or a dead worker). A direct write is preferable
+	// to blocking the conductor goroutine indefinitely on a full channel.
+	// A recover guards the send: if shutdownPersister closes the channel
+	// between the nil-check above and the send, the panic is caught and the
+	// operation degrades to a direct synchronous write instead of crashing.
+	defer func() {
+		if r := recover(); r != nil {
+			pb.persistDirectly(operation, fn)
+		}
+	}()
+	select {
+	case pb.persistCh <- op:
+		pb.waitPersistenceResult(operation, done)
+	case <-time.After(timeout):
+		pb.persistDirectly(operation, fn)
+	}
+}
+
+// persistDirectly executes a persistence operation synchronously on the
+// caller goroutine, bypassing the background worker. Used as a fallback when
+// the persistence channel cannot accept an operation in time. Errors are
+// logged and optionally emitted to the user.
+func (pb *PersistentBlackboard) persistDirectly(operation string, fn func() error) {
+	pb.logWarn("persistence worker busy or unavailable; running "+operation+" directly", "task_id", pb.taskID)
+
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic in direct persistence: %v", r)
+			}
+		}()
+		err = fn()
+	}()
+
+	if err != nil {
+		pb.logWarn("persistence failure: "+operation, "task_id", pb.taskID, "error", err)
+		pb.emitterMu.RLock()
+		em := pb.emitter
+		pb.emitterMu.RUnlock()
+		if em != nil {
+			em.ServiceWithMeta(
+				fmt.Sprintf("Warning: failed to persist %s (execution continues)", operation),
+				map[string]any{"phase": "persistence", "error": err.Error()},
+			)
+		}
+	}
 }
 
 // waitPersistenceResult waits for a persistence operation to complete or timeout.

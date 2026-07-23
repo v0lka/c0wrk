@@ -1082,6 +1082,12 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	execResult, err := o.runConductor(ctx, conductorMessage, bb, availableTools, plansDir, conductorHistory, nil)
 	// C-5: propagate ErrExecutionIncomplete alongside best-effort result.
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
+		// Mark the task as failed so it is not left lingering in_progress
+		// (which would make it a silent-resume candidate). Mirrors the Resume
+		// path and the routing-error path below.
+		if pbb, ok := bb.(PersistableBlackboard); ok {
+			pbb.FailTask()
+		}
 		return nil, err
 	}
 	incompleteErr := err

@@ -960,7 +960,7 @@ func TestEmitResumableIfUnfinished_EmitsWhenUnfinishedTaskExists(t *testing.T) {
 	drainEvents(eventChan)
 
 	// Call the method under test.
-	manager.emitResumableIfUnfinished("sess-1")
+	manager.emitResumableIfUnfinished("sess-1", "Network error during execution.")
 
 	// Expect a task_failed_resumable event.
 	select {
@@ -977,6 +977,9 @@ func TestEmitResumableIfUnfinished_EmitsWhenUnfinishedTaskExists(t *testing.T) {
 		}
 		if data.Message == "" {
 			t.Error("expected non-empty message in TaskFailedResumableData")
+		}
+		if data.Reason != "Network error during execution." {
+			t.Errorf("expected Reason to carry the contextual cause, got %q", data.Reason)
 		}
 		if data.TaskID != "task-123" {
 			t.Errorf("expected TaskID task-123 (so the banner can be resolved by task_id), got %q", data.TaskID)
@@ -1001,7 +1004,7 @@ func TestEmitResumableIfUnfinished_NoEventWhenNoUnfinishedTask(t *testing.T) {
 	drainEvents(eventChan)
 
 	// Call the method under test.
-	manager.emitResumableIfUnfinished("sess-1")
+	manager.emitResumableIfUnfinished("sess-1", "")
 
 	// No event should be emitted.
 	select {
@@ -1021,7 +1024,7 @@ func TestEmitResumableIfUnfinished_NoEventWithoutTaskStore(t *testing.T) {
 
 	drainEvents(eventChan)
 
-	manager.emitResumableIfUnfinished("sess-1")
+	manager.emitResumableIfUnfinished("sess-1", "")
 
 	select {
 	case event := <-eventChan:
@@ -1098,6 +1101,42 @@ func TestEmitTaskComplete_SuccessEmitsTypedContract(t *testing.T) {
 	}
 	if !data.Success || data.Completion != "full" {
 		t.Errorf("expected success=true/completion=full, got %v/%q", data.Success, data.Completion)
+	}
+}
+
+// TestEmitTaskComplete_SuccessDoesNotEmitResumeBadge is the core regression
+// test for the false-failure badge: a genuinely successful completion must
+// NEVER offer a resume action, even when the task store still reports an
+// unfinished task (e.g. the completion write raced or was dropped). Only the
+// task_complete event should be emitted.
+func TestEmitTaskComplete_SuccessDoesNotEmitResumeBadge(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+	// The task store still reports an unfinished task — simulating a
+	// completion write that raced/dropped (the original bug).
+	manager.SetTaskStore(&mockTaskStoreForResumable{
+		unfinished: &TaskRecord{ID: "task-1", SessionID: "sess-1", Status: "in_progress"},
+	})
+	drainEvents(eventChan)
+
+	manager.emitTaskComplete("sess-1", &core.HandleResult{
+		Output: "done",
+		Status: orchestration.ExecutionStatusSuccess,
+	}, nil)
+
+	// Only task_complete should be emitted — no task_failed_resumable.
+	events := collectEvents(eventChan, 2)
+	if len(events) != 1 {
+		t.Fatalf("expected exactly 1 event (task_complete only), got %d: %+v", len(events), events)
+	}
+	if events[0].Type != "task_complete" {
+		t.Fatalf("expected task_complete, got %s", events[0].Type)
+	}
+	data, ok := events[0].Data.(TaskCompleteData)
+	if !ok {
+		t.Fatalf("expected TaskCompleteData, got %T", events[0].Data)
+	}
+	if !data.Success {
+		t.Error("expected success=true — a resume banner must not shadow a successful result")
 	}
 }
 
