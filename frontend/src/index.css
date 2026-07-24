@@ -344,6 +344,14 @@ body {
     padding: 0.125rem 0.25rem;
 }
 
+/* Strip the backtick wrappers that @tailwindcss/typography injects
+   around inline code via `code::before`/`code::after { content: "\`" }`.
+   Fenced blocks (pre code) are already excluded by the plugin. */
+.prose :where(code):not(:where(pre *))::before,
+.prose :where(code):not(:where(pre *))::after {
+    content: none;
+}
+
 /* Code blocks */
 .prose pre {
     background-color: var(--tw-prose-pre-bg);
