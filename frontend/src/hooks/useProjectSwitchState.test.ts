@@ -204,4 +204,48 @@ describe('useProjectSwitchState', () => {
     expect(sessionState.activeSessionId).toBe('session-1')
     expect(mocks.createSessionMock).not.toHaveBeenCalled()
   })
+
+  it('does not restore stale backend open tabs on initial (startup) activation', async () => {
+    // Reproduces the persistence bug: on app startup loadAndActivate calls
+    // switchProjectWithState with NO previously active project. The backend
+    // per-project switch state is stale on restart (it is only persisted when
+    // switching *away* from a project), so it may still reference tabs the
+    // user dismissed — e.g. a plan that was opened then closed. The file-viewer
+    // store was already rehydrated from localStorage with the tabs that were
+    // actually open at shutdown; the backend tabs must NOT overwrite them.
+    useProjectStore.setState({ projects: null, activeProjectId: null })
+
+    // Simulate the localStorage-rehydrated state: user had a single source
+    // file open and the plan was already closed (not present here).
+    useFileViewerStore.setState({
+      files: { 'src/main.ts': { content: '', loading: true } },
+      openTabs: ['src/main.ts'],
+      activeFile: 'src/main.ts',
+    })
+
+    // Backend still has the stale snapshot from days ago, including the plan.
+    mocks.getProjectSwitchStateMock.mockResolvedValue({
+      project_id: 'target-project',
+      saved_session_id: '',
+      open_tabs: ['src/main.ts', 'plans/old-plan.md'],
+      active_file: 'plans/old-plan.md',
+      updated_at: '2026-03-01T00:00:00Z',
+    })
+
+    mocks.listSessionsMock.mockResolvedValue([
+      makeSession({ id: 'latest-session', project_id: 'target-project', last_active_at: '2026-06-01T10:00:00Z' }),
+    ])
+
+    const { useProjectSwitchState } = await import('@/hooks/useProjectSwitchState')
+    const runSwitch = useProjectSwitchState()
+    await runSwitch('target-project')
+
+    // The localStorage-rehydrated tabs must be preserved untouched — the stale
+    // backend plan must NOT be reopened.
+    const fileState = useFileViewerStore.getState()
+    expect(fileState.openTabs).toEqual(['src/main.ts'])
+    expect(fileState.activeFile).toBe('src/main.ts')
+    // No source project to save on initial activation.
+    expect(mocks.saveProjectSwitchStateMock).not.toHaveBeenCalled()
+  })
 })

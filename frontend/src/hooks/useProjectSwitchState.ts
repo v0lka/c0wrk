@@ -35,6 +35,18 @@ export function useProjectSwitchState() {
       return
     }
 
+    // No previously active project ⇒ this is the initial (startup) activation.
+    // The file-viewer store was already rehydrated from localStorage with
+    // exactly the tabs that were open at the last shutdown — the
+    // authoritative, fresh source for open tabs (see fileViewerStore
+    // `partialize`). The backend per-project switch state below, by contrast,
+    // is only persisted when switching *away* from a project, so on restart it
+    // is stale and may still reference tabs the user already dismissed (e.g. a
+    // closed plan). Applying it on startup would silently reopen those stale
+    // tabs, so we must NOT restore from the backend here — trust localStorage.
+    // Mirrors the savedSessionId staleness handling at the bottom of this hook.
+    const isInitialActivation = !currentProjectId
+
     // Best-effort save of source project UI state before changing active project.
     if (currentProjectId) {
       try {
@@ -77,7 +89,13 @@ export function useProjectSwitchState() {
       logger.warn('Failed to restore persisted project switch state; using fallback', error)
     }
 
-    fileViewer.restoreProjectFiles(savedTabs, savedActiveFile)
+    // NOTE: on the initial (startup) activation we intentionally keep the
+    // localStorage-rehydrated tabs untouched and skip this restore. The backend
+    // savedTabs are stale on restart (only written on switch-away), so applying
+    // them would reopen tabs the user already closed (e.g. a dismissed plan).
+    if (!isInitialActivation) {
+      fileViewer.restoreProjectFiles(savedTabs, savedActiveFile)
+    }
 
     let sessions: SessionInfo[] = []
     try {
