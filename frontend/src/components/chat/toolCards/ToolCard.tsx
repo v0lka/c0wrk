@@ -6,6 +6,7 @@ import { useAttachmentName } from '@/stores/attachmentsStore'
 import { resolveCardConfig } from './toolCardRegistry'
 import { extractAttachmentId, extractFileLine } from './extractors'
 import { FileLink } from './shared/FileLink'
+import { EllipsisHint } from './shared/EllipsisHint'
 
 type ToolItem = Extract<DisplayItem, { kind: 'tool' }>
 
@@ -88,16 +89,17 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
     [filePath, item.parsedArgs, item.args],
   )
 
+  const fullText = filePath ?? hint ?? title
   const titleNode = useMemo(() => (
-    <span className="text-sm min-w-0 truncate" title={filePath ? undefined : (hint || title)}>
+    <EllipsisHint fullText={fullText} alwaysShow={Boolean(filePath)} className="text-sm truncate">
       <span className="text-muted-foreground">{config.verb}: </span>
       {filePath ? (
-        <FileLink path={filePath} line={fileLine} label={title} className="text-sm" />
+        <FileLink path={filePath} line={fileLine} label={title} className="text-sm" nativeTitle={false} />
       ) : (
         title
       )}
-    </span>
-  ), [config.verb, filePath, fileLine, title, hint])
+    </EllipsisHint>
+  ), [config.verb, filePath, fileLine, title, fullText])
 
   const cacheRangeNode = useMemo(() => cacheRange ? (
     <span className="text-xs text-hljs-comment">
