@@ -32,6 +32,21 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
         ? await reviewApi.getCommitDiff(commitSha)
         : await reviewApi.getReviewDiff()
       setDiff(result)
+      // Only an explicit (non-silent) load resets the hunk cursor. A silent
+      // background re-fetch (git stage/discard/commit during a review) must
+      // preserve the user's current position rather than snapping to the top.
+      if (!silent) {
+        setCurrentHunk(0)
+      } else {
+        // Clamp the cursor into range in case the re-fetch shrank the diff
+        // (e.g. the user discarded/committed hunks). The scroll-tracker
+        // recomputes from the DOM shortly after, so this is just to avoid a
+        // transient out-of-range indicator value.
+        setCurrentHunk((prev) => {
+          const total = result.reduce((count, file) => count + file.hunks.length, 0)
+          return total === 0 ? 0 : Math.min(prev, total - 1)
+        })
+      }
     } catch (err) {
       setError(commitSha ? 'Failed to load commit diff' : 'Failed to load review diff')
       console.error('fetchDiff failed:', err)
@@ -88,10 +103,9 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
     [diff],
   )
 
-  // Reset the cursor whenever the diff is (re)loaded.
-  useEffect(() => {
-    setCurrentHunk(0)
-  }, [diff])
+  // Note: the hunk cursor is reset to 0 inside fetchDiff on non-silent loads
+  // (initial load / explicit retry). A silent background re-fetch preserves
+  // the user's current position instead of snapping back to the top.
 
   // Track which hunk is pinned to the top of the scroll viewport so the
   // prev/next buttons stay in sync with manual scrolling.

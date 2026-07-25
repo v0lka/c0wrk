@@ -42,6 +42,7 @@ type PersistentBlackboard struct {
 	persistenceTimeout time.Duration           // timeout for persistence operations
 	onChanged          func(changeType string) // optional callback for BB change notifications, nil-safe
 	persistCh          chan persistOp          // buffered channel for serializing DB writes
+	persistMu          sync.Mutex             // guards persistCh lifecycle (send vs. shutdown close)
 
 	// routing is cached when SetRouting is called, so that Routing() can return
 	// the value without a DB round-trip in active execution paths.
@@ -104,86 +105,51 @@ func (pb *PersistentBlackboard) notifyChanged(changeType string) {
 // Persistence safety wrapper
 // ---------------------------------------------------------------------------
 
-// persistSafe enqueues a persistence operation to the background worker.
-// The caller blocks until the operation completes or the timeout expires.
-// Errors are logged and optionally emitted to the user.
-// Uses a non-blocking send: if the channel is full, the operation is dropped
-// (acceptable for non-critical writes like step results or facts).
+// persistSafe enqueues a non-critical persistence operation (step results,
+// facts, reflections, attachments) to the background worker. The caller blocks
+// until the operation completes or the timeout expires; errors are logged and
+// optionally emitted to the user. A non-blocking send drops the operation if
+// the buffer is full or the worker has already been shut down — acceptable for
+// non-critical writes. Channel access is guarded by persistMu so the send is
+// race-free against shutdownPersister's close (no recover needed).
 func (pb *PersistentBlackboard) persistSafe(operation string, fn func() error) {
 	done := make(chan error, 1)
 	op := persistOp{operation: operation, fn: fn, done: done}
 
-	// Non-blocking send: if the channel is closed (shutting down) or full,
-	// we skip persistence gracefully.
+	pb.persistMu.Lock()
+	ch := pb.persistCh
+	if ch == nil {
+		pb.persistMu.Unlock()
+		pb.logWarn("persistence worker already shut down; skipping "+operation, "task_id", pb.taskID)
+		return
+	}
 	select {
-	case pb.persistCh <- op:
+	case ch <- op:
+		pb.persistMu.Unlock()
 	default:
-		pb.logWarn("persistence worker unavaiable; skipping "+operation, "task_id", pb.taskID)
+		pb.persistMu.Unlock()
+		pb.logWarn("persistence worker full; skipping "+operation, "task_id", pb.taskID)
 		return
 	}
 
 	pb.waitPersistenceResult(operation, done)
 }
 
-// persistBlocking enqueues a persistence operation, guaranteeing it is never
-// silently dropped. Used for critical finalizing operations (CompleteTask,
-// FailTask, CancelTask) where skipping the write would leave the task in a
-// permanently inconsistent state.
-//
-// The send is bounded by the configured timeout. If the worker is dead or the
-// buffer is saturated and the send cannot complete in time, the operation
-// falls back to a synchronous direct write on the caller goroutine — better
-// to block briefly here than leave the task unresolved or hang the conductor
-// forever. Falls back gracefully when the channel has already been shut down
-// (e.g., duplicate CompleteTask+FailTask calls on the same blackboard —
-// test-only scenario).
-func (pb *PersistentBlackboard) persistBlocking(operation string, fn func() error) {
-	done := make(chan error, 1)
-	op := persistOp{operation: operation, fn: fn, done: done}
-
-	// Guard against sends on a closed/nil channel (already shut down).
-	if pb.persistCh == nil {
-		pb.logWarn("persistence worker already shut down; skipping "+operation, "task_id", pb.taskID)
-		return
-	}
-
-	timeout := pb.persistenceTimeout
-	if timeout == 0 {
-		timeout = defaultPersistenceTimeout
-	}
-
-	// Bounded send: enqueue to the worker when possible, but fall back to a
-	// direct synchronous write if the worker cannot accept the operation in
-	// time (backed-up buffer or a dead worker). A direct write is preferable
-	// to blocking the conductor goroutine indefinitely on a full channel.
-	// A recover guards the send: if shutdownPersister closes the channel
-	// between the nil-check above and the send, the panic is caught and the
-	// operation degrades to a direct synchronous write instead of crashing.
-	defer func() {
-		if r := recover(); r != nil {
-			pb.persistDirectly(operation, fn)
-		}
-	}()
-	select {
-	case pb.persistCh <- op:
-		pb.waitPersistenceResult(operation, done)
-	case <-time.After(timeout):
-		pb.persistDirectly(operation, fn)
-	}
-}
-
-// persistDirectly executes a persistence operation synchronously on the
-// caller goroutine, bypassing the background worker. Used as a fallback when
-// the persistence channel cannot accept an operation in time. Errors are
-// logged and optionally emitted to the user.
-func (pb *PersistentBlackboard) persistDirectly(operation string, fn func() error) {
-	pb.logWarn("persistence worker busy or unavailable; running "+operation+" directly", "task_id", pb.taskID)
-
+// persistSynchronously executes a critical finalizing write (CompleteTask,
+// FailTask, CancelTask) directly on the caller goroutine, bypassing the
+// background worker. Finalizers must complete before the method returns: a
+// completion that is merely queued (and may not drain within the result-wait
+// timeout) leaves the task marked unfinished and trips a spurious "persistence
+// issue was detected" warning. Running synchronously removes that race — the
+// write either succeeds (task marked done) or fails (logged/emitted; the
+// follow-up warning is then legitimate, not spurious). Panics are recovered so
+// the conductor is never crashed by a persistence failure.
+func (pb *PersistentBlackboard) persistSynchronously(operation string, fn func() error) {
 	var err error
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				err = fmt.Errorf("panic in direct persistence: %v", r)
+				err = fmt.Errorf("panic in persistence: %v", r)
 			}
 		}()
 		err = fn()
@@ -246,10 +212,14 @@ func (pb *PersistentBlackboard) persistenceWorker(ch <-chan persistOp) {
 }
 
 // shutdownPersister closes the persistence channel, causing the worker
-// goroutine to exit after draining any queued operations.
-// Sets pb.persistCh to nil so subsequent persistBlocking calls can detect
-// a shut-down channel and skip gracefully (nil-channel guard).
+// goroutine to exit after draining any queued operations. Guards the close
+// with persistMu so it is race-free against concurrent persistSafe sends and
+// idempotent against duplicate finalizer calls (CompleteTask + FailTask on the
+// same blackboard). The worker drains remaining buffered ops via
+// `for op := range ch` before exiting.
 func (pb *PersistentBlackboard) shutdownPersister() {
+	pb.persistMu.Lock()
+	defer pb.persistMu.Unlock()
 	if pb.persistCh != nil {
 		close(pb.persistCh)
 		pb.persistCh = nil
@@ -373,10 +343,13 @@ func (pb *PersistentBlackboard) Routing() *router.RoutingDecision {
 
 // CompleteTask marks the task as completed.
 // Called by the orchestrator after Handle() succeeds.
-// Uses blocking persistence to guarantee the completion is never dropped.
+// Writes the completion synchronously (bypassing the worker) so it is
+// guaranteed to be persisted before this method returns — a queued write that
+// drains after the result-wait timeout would leave the task marked unfinished
+// and trip a spurious persistence warning.
 func (pb *PersistentBlackboard) CompleteTask(attemptCount int) {
 	finalOutput := pb.GetFinalResult()
-	pb.persistBlocking("task completion", func() error {
+	pb.persistSynchronously("task completion", func() error {
 		return pb.store.PersistCompletion(pb.taskID, finalOutput, attemptCount)
 	})
 	pb.notifyChanged("completed")
@@ -384,18 +357,20 @@ func (pb *PersistentBlackboard) CompleteTask(attemptCount int) {
 }
 
 // FailTask marks the task as failed.
-// Uses blocking persistence to guarantee the failure is never dropped.
+// Writes the failure synchronously (bypassing the worker) to guarantee the
+// status change is persisted before returning.
 func (pb *PersistentBlackboard) FailTask() {
-	pb.persistBlocking("task failure", func() error {
+	pb.persistSynchronously("task failure", func() error {
 		return pb.store.PersistFailure(pb.taskID)
 	})
 	pb.shutdownPersister()
 }
 
 // CancelTask marks the task as cancelled (user-initiated cancellation).
-// Uses blocking persistence to guarantee the cancellation is persisted.
+// Writes the cancellation synchronously (bypassing the worker) to guarantee
+// the status change is persisted before returning.
 func (pb *PersistentBlackboard) CancelTask() {
-	pb.persistBlocking("task cancellation", func() error {
+	pb.persistSynchronously("task cancellation", func() error {
 		return pb.store.PersistCancellation(pb.taskID)
 	})
 	pb.shutdownPersister()

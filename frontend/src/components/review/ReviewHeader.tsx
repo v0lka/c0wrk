@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { Check, Send, Loader2, MessageSquare, X, GitCommit, ChevronUp, ChevronDown, Columns2, Rows3 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { logger } from '@/lib/logger'
 import { useReviewStore, totalCommentCount } from '@/stores/reviewStore'
 import * as reviewApi from '@/api/review'
+import { emit } from '@/api/runtime'
 import { useReviewActions } from './useReviewActions'
 
 interface ReviewHeaderProps {
@@ -77,10 +79,21 @@ export function ReviewHeader({
     setShowGeneral(true)
   }
 
-  const handleGeneralSave = () => {
+  const handleGeneralSave = async () => {
+    const previous = generalComment
     setGeneralComment(sessionId, draft)
-    reviewApi.saveReviewGeneralComment(sessionId, draft).catch(() => {})
     setShowGeneral(false)
+    try {
+      await reviewApi.saveReviewGeneralComment(sessionId, draft)
+    } catch (err) {
+      logger.error('Failed to save general comment:', err)
+      // Roll back the optimistic update so the UI matches the DB state.
+      setGeneralComment(sessionId, previous)
+      emit('runtime_error', {
+        id: crypto.randomUUID(),
+        message: 'Failed to save general comment',
+      })
+    }
   }
 
   return (

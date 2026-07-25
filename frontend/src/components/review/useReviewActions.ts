@@ -15,11 +15,11 @@ export function useReviewActions(sessionId: string) {
   const exitReviewLoop = useReviewStore((s) => s.exitReviewLoop)
   const clearSessionReview = useReviewStore((s) => s.clearSessionReview)
 
-  const hasComments = !!reviewState && (
-    reviewState.generalComment.trim() ||
-    Object.values(reviewState.fileComments).some((c) => c.trim()) ||
-    Object.values(reviewState.hunkComments).some((c) => c.trim())
-  )
+  const hasComments =
+    !!reviewState &&
+    (!!reviewState.generalComment.trim() ||
+      Object.values(reviewState.fileComments).some((c) => c.trim()) ||
+      Object.values(reviewState.hunkComments).some((c) => c.trim()))
 
   const handleApprove = useCallback(async () => {
     setIsStaging(true)
@@ -84,25 +84,41 @@ export function useReviewActions(sessionId: string) {
       }
       const commentsText = parts.join('\n\n')
 
-      // Flush buffer and set status
+      // Send the review message FIRST — it is the only carrier of the review
+      // text. If it throws, the review must stay intact so the user can retry.
+      // Earlier versions cleared comments and set status='submitted' before
+      // the send; a send failure then permanently lost the review (cleared DB
+      // + a review loop expecting feedback that never arrived).
+      //
+      // Set the auto-reopen loop flag up front (non-destructive — it only
+      // reopens the review page on the next task_complete event). If the send
+      // fails, clear the flag so no spurious reopen happens.
+      enterReviewLoop(sessionId)
+      try {
+        await chatApi.sendMessage(sessionId, commentsText, [], '', '', false, '', true)
+      } catch (err) {
+        exitReviewLoop(sessionId)
+        throw err
+      }
+
+      // The send succeeded — the review text is on its way. Now it is safe to
+      // tear down the persisted review state and close the UI.
       await reviewApi.clearReviewComments(sessionId)
       await reviewApi.setReviewStatus(sessionId, 'submitted')
       clearSessionReview(sessionId)
-      enterReviewLoop(sessionId)
 
-      // Close review page and send follow-up message. reviewMode: true tells
-      // the orchestrator to treat this message as actionable review feedback
-      // (a Code Review section is added to the system prompt), so the message
-      // text itself stays as the clean user comments without an instruction prefix.
+      // Close review page. reviewMode: true tells the orchestrator to treat
+      // this message as actionable review feedback (a Code Review section is
+      // added to the system prompt), so the message text itself stays as the
+      // clean user comments without an instruction prefix.
       useFileViewerStore.getState().closeFile('c0wrk:review')
       closeReviewPage()
-      await chatApi.sendMessage(sessionId, commentsText, [], '', '', false, '', true)
     } catch (err) {
       logger.error('Submit flow failed:', err)
     } finally {
       setIsSubmitting(false)
     }
-  }, [sessionId, reviewState, closeReviewPage, enterReviewLoop, clearSessionReview])
+  }, [sessionId, reviewState, closeReviewPage, enterReviewLoop, exitReviewLoop, clearSessionReview])
 
   return {
     hasComments,

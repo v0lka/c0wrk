@@ -108,7 +108,7 @@ export function FileReviewBlock({ sessionId, file, readOnly }: FileReviewBlockPr
 
       {file.hunks.map((hunk, i) => (
         <HunkReviewBlock
-          key={i}
+          key={`${hunk.old_start}-${hunk.new_start}`}
           sessionId={sessionId}
           filePath={file.path}
           hunk={hunk}

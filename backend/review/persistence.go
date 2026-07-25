@@ -150,8 +150,9 @@ func (s *SQLiteReviewStore) createTables() error {
 // createTables, in which case this is a no-op. The migration is idempotent: a
 // second run detects the new constraint and does nothing.
 func (s *SQLiteReviewStore) migrateCommentsSchema() error {
+	ctx := context.Background()
 	var ddl string
-	err := s.db.QueryRowContext(context.Background(),
+	err := s.db.QueryRowContext(ctx,
 		`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'review_comments'`).Scan(&ddl)
 	if err != nil {
 		return fmt.Errorf("failed to inspect review_comments schema: %w", err)
@@ -161,24 +162,37 @@ func (s *SQLiteReviewStore) migrateCommentsSchema() error {
 		return nil
 	}
 
-	// PRAGMA foreign_keys is a no-op inside a transaction, so toggle it on the
-	// connection before beginning the rebuild — the canonical SQLite
-	// table-rebuild pattern. There are currently no inbound foreign keys
+	// Pin the rebuild to a single pooled connection. PRAGMA foreign_keys is
+	// per-connection, while *sql.DB is a connection pool — toggling the pragma
+	// via db.ExecContext would run on an arbitrary connection and BeginTx could
+	// grab a different one where foreign_keys is still ON. Acquiring a *sql.Conn
+	// guarantees the PRAGMA and the transaction share one connection, so the
+	// canonical SQLite table-rebuild pattern (foreign_keys=OFF for the rebuild,
+	// then back ON) actually holds. There are currently no inbound foreign keys
 	// referencing review_comments, but disabling defensively guards against a
 	// future inbound reference being added.
-	if _, err := s.db.ExecContext(context.Background(), `PRAGMA foreign_keys=OFF`); err != nil {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire connection for migration: %w", err)
+	}
+	// Release the connection back to the pool when the migration is done. The
+	// PRAGMA restore below also runs on this same connection via conn.
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
 		return fmt.Errorf("failed to disable foreign keys for migration: %w", err)
 	}
 	// Always re-enable foreign keys on exit, even on the error path. This defer
 	// is registered before the rollback defer, so LIFO ordering runs rollback
-	// first (a no-op after a successful commit) then the PRAGMA restore.
+	// first (a no-op after a successful commit) then the PRAGMA restore — both
+	// on the same pinned connection.
 	defer func() {
-		if _, err := s.db.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`); err != nil {
+		if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
 			s.log().Error("failed to re-enable foreign keys after migration", "err", err)
 		}
 	}()
 
-	tx, err := s.db.BeginTx(context.Background(), nil)
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin migration transaction: %w", err)
 	}
@@ -203,7 +217,7 @@ func (s *SQLiteReviewStore) migrateCommentsSchema() error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_review_comments_hunk ON review_comments(session_id, file_path, hunk_id)`,
 	}
 	for _, stmt := range stmts {
-		if _, err := tx.ExecContext(context.Background(), stmt); err != nil {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("failed to migrate review_comments: %w", err)
 		}
 	}
