@@ -530,9 +530,6 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	ctx = WithDomain(ctx, domain)
 	ctx = WithComplexity(ctx, complexity)
 
-	// Emit routing decision so the frontend can display the resumed context.
-	o.emitter.Routing("conductor", domain, strconv.Itoa(complexity))
-
 	o.logInfo("resume_task", "reflections", len(bb.GetReflections()), "domain", domain, "complexity", complexity)
 
 	// Delegate to the Conductor. The restored blackboard carries facts and

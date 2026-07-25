@@ -180,6 +180,11 @@ func TestResume_SeedsContextManagerWithTrajectory(t *testing.T) {
 // TestResume_DefaultsDomainWithoutRouting verifies that when no routing decision
 // was persisted, Resume defaults to the "general" domain (and a standard
 // Conductor complexity) instead of re-routing or failing.
+// TestResume_DefaultsDomainWithoutRouting verifies that when no routing decision
+// was persisted, Resume defaults to the "general" domain (applied to the
+// conductor context internally) instead of re-routing or failing. It must NOT
+// emit a Routing event: the task is not re-routed, and the previous
+// display-only emit was removed as misleading.
 func TestResume_DefaultsDomainWithoutRouting(t *testing.T) {
 	mockLLM := &mockLLMCaller{responses: []*llm.ChatResponse{
 		executorFinishResponse("ok"),
@@ -194,20 +199,14 @@ func TestResume_DefaultsDomainWithoutRouting(t *testing.T) {
 		t.Fatalf("Resume failed: %v", err)
 	}
 
-	mode, domain, _, ok := routingCall(emitter)
-	if !ok {
-		t.Fatal("expected a Routing event to be emitted")
-	}
-	if mode != "conductor" {
-		t.Errorf("routing mode = %q, want conductor", mode)
-	}
-	if domain != "general" {
-		t.Errorf("default domain = %q, want general", domain)
+	if _, _, _, ok := routingCall(emitter); ok {
+		t.Fatal("resume must not emit a Routing event (the task is not re-routed)")
 	}
 }
 
 // TestResume_ReusesRoutingDomain verifies that a persisted routing decision is
-// reused (not re-routed) for the resumed execution's domain and compaction.
+// reused (applied to the conductor context) rather than re-routing. It must NOT
+// emit a Routing event — the display-only resume emit was removed.
 func TestResume_ReusesRoutingDomain(t *testing.T) {
 	mockLLM := &mockLLMCaller{responses: []*llm.ChatResponse{
 		executorFinishResponse("ok"),
@@ -223,15 +222,8 @@ func TestResume_ReusesRoutingDomain(t *testing.T) {
 		t.Fatalf("Resume failed: %v", err)
 	}
 
-	_, domain, complexity, ok := routingCall(emitter)
-	if !ok {
-		t.Fatal("expected a Routing event to be emitted")
-	}
-	if domain != "research" {
-		t.Errorf("reused domain = %q, want research", domain)
-	}
-	if complexity != "5" {
-		t.Errorf("reused complexity = %q, want 5", complexity)
+	if _, _, _, ok := routingCall(emitter); ok {
+		t.Fatal("resume must not emit a Routing event (routing decision is reused, not re-routed)")
 	}
 }
 
