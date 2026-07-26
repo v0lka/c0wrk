@@ -394,6 +394,13 @@ export async function generateCommitMessage(): Promise<string> {
     if (typeof result !== 'string') {
       throw new Error('generateCommitMessage: backend returned non-string data')
     }
+    // Guard against an empty result: previously a backend that returned "" was
+    // treated as success, leaving the textarea empty with no error — making a
+    // real failure indistinguishable from a no-op. The backend now errors on
+    // empty content, but keep this as a defensive net.
+    if (result.trim().length === 0) {
+      throw new Error('the model produced an empty commit message; try again or use a different model')
+    }
     return result
   } catch (err) {
     logger.error('generateCommitMessage failed:', err)

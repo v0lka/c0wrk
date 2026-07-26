@@ -681,13 +681,22 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 		return "", errors.New("llm router not available")
 	}
 
+	// Reasoning models (OpenAI o-series / Codex via the Responses API, or
+	// DeepSeek-reasoner) count reasoning tokens against the output-token
+	// budget (max_output_tokens). A small budget would be exhausted entirely
+	// by the model's internal reasoning, leaving no tokens for the actual
+	// commit-message text — the response then comes back with empty content
+	// (status=incomplete, reason=max_output_tokens). 2048 comfortably covers
+	// reasoning plus a short Conventional Commits message while still capping
+	// runaway output. Non-reasoning models stop naturally well before this.
+	const commitMsgMaxTokens = 2048
 	temp := 0.4
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
 			{Role: "system", Content: coreprompts.CommitMessage},
 			{Role: "user", Content: "## Staged Diff\n\n" + diff},
 		},
-		MaxTokens:       200,
+		MaxTokens:       commitMsgMaxTokens,
 		Temperature:     &temp,
 		ReasoningEffort: reasoningEffort,
 	}
@@ -726,7 +735,28 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 	}
 	// Strip any stray markdown code fencing the model may have added
 	// despite the prompt instructing it not to.
-	return stripMarkdownCodeFence(resp.Message.Content), nil
+	message := stripMarkdownCodeFence(resp.Message.Content)
+	if message == "" {
+		// The LLM call succeeded (no error) but produced no usable text.
+		// This is the failure mode that previously surfaced as a silent
+		// no-op in the UI: with a reasoning model, a too-small output
+		// budget is consumed by reasoning tokens and the model emits no
+		// text content (status=incomplete, reason=max_output_tokens).
+		// Surface it explicitly instead of returning an empty string so
+		// the UI reports an error and operators see a log entry.
+		hasReasoning := resp.Message.ReasoningContent != "" || resp.Reasoning != ""
+		b.log().Warn("commit message generation produced empty content",
+			"diff_bytes", len(diff), "provider", providerName,
+			"stop_reason", resp.StopReason, "has_reasoning", hasReasoning)
+		if hasReasoning {
+			return "", errors.New("the model produced no commit message text " +
+				"(its output budget was likely consumed by reasoning); " +
+				"try a non-reasoning model, a smaller staged diff, or a larger model")
+		}
+		return "", errors.New("the model produced an empty commit message; " +
+			"try again or use a different model")
+	}
+	return message, nil
 }
 
 // ListProviderModels returns available model names for a given provider.

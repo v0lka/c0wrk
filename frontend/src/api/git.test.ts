@@ -500,6 +500,23 @@ describe('generateCommitMessage', () => {
       'llm router not available',
     )
   })
+
+  it('throws when backend resolves with an empty string', async () => {
+    // Regression: a backend that returned "" used to be treated as success,
+    // silently leaving the textarea empty with no error. An empty message is
+    // a failure and must surface to the user.
+    mockApp.GenerateCommitMessage = vi.fn().mockResolvedValue('')
+    await expect(generateCommitMessage()).rejects.toThrow(
+      'empty commit message',
+    )
+  })
+
+  it('throws when backend resolves with only whitespace', async () => {
+    mockApp.GenerateCommitMessage = vi.fn().mockResolvedValue('   \n\t  ')
+    await expect(generateCommitMessage()).rejects.toThrow(
+      'empty commit message',
+    )
+  })
 })
 
 // ── Phase 5: remote operations ──
