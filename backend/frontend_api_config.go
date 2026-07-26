@@ -207,6 +207,23 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 
+	// Invariant: after provider changes, the persisted default model must
+	// still resolve to a model that is enabled in some provider. If the
+	// provider/model that owned the default was removed or had its model
+	// disabled, clear it instead of persisting a dangling selector — a stale
+	// default would fail router validation. The settings dialog blocks close
+	// until the user picks a new default, so this never leaves the app in a
+	// state where LLM calls have no target model.
+	//
+	// Note: an incoming empty `default_model` is intentionally ignored above
+	// (to avoid wiping a valid selection during debounced partial edits), so
+	// this re-validation is the only path that clears a now-invalid default.
+	if f.config.LLM.DefaultModel != "" {
+		if _, _, err := f.config.LLM.ResolveDefaultModelProvider(); err != nil {
+			f.config.LLM.DefaultModel = ""
+		}
+	}
+
 	if err := f.persistConfig(); err != nil {
 		f.log().Warn("failed to persist LLM config", "error", err)
 	}

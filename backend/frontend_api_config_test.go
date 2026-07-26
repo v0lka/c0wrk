@@ -271,6 +271,74 @@ func TestUpdateLLMConfig_NilConfig(t *testing.T) {
 	}
 }
 
+// TestUpdateLLMConfig_ClearsDanglingDefaultOnProviderRemoval verifies that
+// deleting the provider that owned the default model (without naming a new
+// default in the same request) clears the now-invalid default_model rather
+// than persisting a dangling selector. The settings dialog then blocks close
+// until the user picks a new default.
+func TestUpdateLLMConfig_ClearsDanglingDefaultOnProviderRemoval(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	// Seed an OpenAI-compatible provider that owns the default model, using a
+	// composite selector so ResolveDefaultModelProvider can pin the provider.
+	f.config.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
+		"lmstudio": {BaseURL: "http://localhost:1234/v1", Models: []string{"gpt-4"}},
+	}
+	f.config.LLM.DefaultModel = "lmstudio/gpt-4"
+
+	// Remove the provider without setting a new default. An empty
+	// default_model is normally skipped, but the re-validation step must
+	// clear the now-unresolvable default.
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		OpenAICompatible: map[string]ProviderConfigRequest{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if f.config.LLM.DefaultModel != "" {
+		t.Errorf("default_model = %q, want \"\" after owning provider removed", f.config.LLM.DefaultModel)
+	}
+}
+
+// TestUpdateLLMConfig_ClearsDanglingDefaultOnModelDisabled verifies that
+// disabling the single model backing the default (in a fixed provider) clears
+// the dangling default_model.
+func TestUpdateLLMConfig_ClearsDanglingDefaultOnModelDisabled(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	// Default harness: default_model "claude-3-opus" owned by anthropic.
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		Anthropic: &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if f.config.LLM.DefaultModel != "" {
+		t.Errorf("default_model = %q, want \"\" after backing model disabled", f.config.LLM.DefaultModel)
+	}
+}
+
+// TestUpdateLLMConfig_PreservesDefaultWhenStillResolvable ensures the
+// re-validation step does NOT clear a default that still resolves (e.g. when
+// only API keys change), guarding against a regression that wipes valid state.
+func TestUpdateLLMConfig_PreservesDefaultWhenStillResolvable(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	want := f.config.LLM.DefaultModel
+
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		Anthropic: &ProviderConfigRequest{APIKey: "sk-new", Models: []string{"claude-3-opus"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if f.config.LLM.DefaultModel != want {
+		t.Errorf("default_model = %q, want %q (should be preserved)", f.config.LLM.DefaultModel, want)
+	}
+}
+
 // --- UpdateSearchSettings ---
 
 func TestUpdateSearchSettings_PersistsAndRebuilds(t *testing.T) {
@@ -502,7 +570,13 @@ func newUpdateLLMConfigProjectHarness(t *testing.T) (*FrontendAPI, *project.Proj
 	cfgPath := filepath.Join(dir, "config.yaml")
 	cfg := &config.Config{}
 	config.ApplyDefaults(cfg)
+	// Configure the provider backing the default model so the default is
+	// resolvable (matches a valid post-save state). Without this, the
+	// re-validation invariant in UpdateLLMConfig would clear a dangling
+	// default before EnsureNoProject runs.
 	cfg.LLM.DefaultModel = "claude-3-opus"
+	cfg.LLM.Anthropic.APIKey = "sk-test"
+	cfg.LLM.Anthropic.Models = []string{"claude-3-opus"}
 
 	rec := &eventRecorder{}
 	f := &FrontendAPI{

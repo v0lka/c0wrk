@@ -35,6 +35,27 @@ export function isCompositeModelId(id: string): boolean {
 }
 
 /**
+ * Decompose a composite "provider/name" id into its two parts.
+ *
+ * The FIRST "/" is the separator (mirrors the backend `llm.ParseCompositeModelID`):
+ * everything before it is the provider config key, everything after it is the
+ * bare model name — which may itself contain "/" (e.g. some local/Ollama-style
+ * ids like `ollama/org/path/model`). Returns `null` when `id` has no "/", i.e.
+ * it is already a bare name.
+ *
+ * Centralizing the split keeps a single source of truth for the separator
+ * convention so the frontend and backend agree on how a composite id is parsed;
+ * callers must not hand-split on the first "/".
+ */
+export function decomposeCompositeModelId(
+  id: string,
+): { provider: string; model: string } | null {
+  const idx = id.indexOf('/')
+  if (idx < 0) return null
+  return { provider: id.slice(0, idx), model: id.slice(idx + 1) }
+}
+
+/**
  * Find the {@link ModelInfo} for an effective model selector.
  *
  * The selector may be:

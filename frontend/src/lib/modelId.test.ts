@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { compositeModelId, bareModel, isCompositeModelId, findModelInfo } from './modelId'
+import { compositeModelId, bareModel, isCompositeModelId, decomposeCompositeModelId, findModelInfo } from './modelId'
 import type { ModelInfo } from '@/types/models'
 
 const reasoning = { options: ['low', 'medium', 'high'], default: 'high' }
@@ -45,6 +45,39 @@ describe('isCompositeModelId', () => {
 
   it('is false for an empty string', () => {
     expect(isCompositeModelId('')).toBe(false)
+  })
+})
+
+describe('decomposeCompositeModelId', () => {
+  it('splits a "provider/name" id at the first "/"', () => {
+    expect(decomposeCompositeModelId('anthropic/claude-sonnet-4')).toEqual({
+      provider: 'anthropic',
+      model: 'claude-sonnet-4',
+    })
+  })
+
+  it('treats everything after the first "/" as the model name', () => {
+    // A bare name may itself contain "/" (e.g. local/Ollama-style ids like
+    // "ollama/org/path/model"); the first "/" is always the separator.
+    expect(decomposeCompositeModelId('ollama/org/path/model')).toEqual({
+      provider: 'ollama',
+      model: 'org/path/model',
+    })
+  })
+
+  it('returns null for a bare model name without "/"', () => {
+    expect(decomposeCompositeModelId('claude-sonnet-4')).toBeNull()
+  })
+
+  it('returns null for an empty string', () => {
+    expect(decomposeCompositeModelId('')).toBeNull()
+  })
+
+  it('is the inverse of compositeModelId for single-segment names', () => {
+    const id = compositeModelId('chatgpt', 'gpt-4o')
+    const parts = decomposeCompositeModelId(id)
+    expect(parts?.provider).toBe('chatgpt')
+    expect(parts?.model).toBe('gpt-4o')
   })
 })
 

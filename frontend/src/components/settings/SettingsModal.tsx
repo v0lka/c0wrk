@@ -34,6 +34,11 @@ export function SettingsModal() {
     if (open && !prevOpenRef.current) {
       setBannerRefreshKey((k) => k + 1)
       setCloseBlocked(false)
+      // Pessimistically reset the cached default so the close fast-path can't
+      // fire on a stale value left over from a previous open. LLMSettings
+      // remounts on open and its loadConfig reports the effective default via
+      // onDefaultModelChange, repopulating this before the user can act.
+      setCurrentDefaultModel('')
     }
     prevOpenRef.current = open
   }, [open])
@@ -47,8 +52,18 @@ export function SettingsModal() {
 
   const handleSettingsSaved = useCallback(() => {
     setBannerRefreshKey((k) => k + 1)
-    setCloseBlocked(false)
-  }, [])
+    // A save can REMOVE the default (provider/model deletion), so we cannot
+    // blindly clear closeBlocked. But a save that PRESERVES a valid default
+    // should not leave a stale "default not configured" banner on screen: if
+    // local UI state already has a model, clear the block defensively. The
+    // valid-default case is also reported through handleDefaultModelChange
+    // (fired with a non-empty model), and close-block correctness is
+    // ultimately driven by the authoritative getConfig re-check in
+    // handleOpenChange.
+    if (currentDefaultModel) {
+      setCloseBlocked(false)
+    }
+  }, [currentDefaultModel])
 
   const handleOpenChange = useCallback(async (isOpen: boolean) => {
     if (!isOpen) {
