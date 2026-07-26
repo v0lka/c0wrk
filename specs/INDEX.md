@@ -125,7 +125,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [007-shell-parser-dependency.md](decisions/007-shell-parser-dependency.md) - mvdan.cc/sh shell parser for symlink detection
 - [008-backend-sp4rk-direct-import.md](decisions/008-backend-sp4rk-direct-import.md) - Backend allowed to import sp4rk directly
 - [009-backend-domain-logic-extraction.md](decisions/009-backend-domain-logic-extraction.md) - Extraction of domain logic from App/UI layer
-- [010-tool-manager.md](decisions/010-tool-manager.md) - Tool manager for external binary dependencies (rg, rtk, uv, markitdown)
+- [010-tool-manager.md](decisions/010-tool-manager.md) - Tool manager for external binary dependencies (rg, uv, markitdown)
 - [011-sp4rk-to-core-extraction.md](decisions/011-sp4rk-to-core-extraction.md) - Move vector index and proxy from sp4rk to Core
 - [012-conductor-orchestration-pipeline.md](decisions/012-conductor-orchestration-pipeline.md) - Conductor-driven ReAct pipeline replacing system-driven plan-execute-reflect
 - [013-rrf-pre-fusion-score-thresholds.md](decisions/013-rrf-pre-fusion-score-thresholds.md) - Pre-fusion score thresholds and configurable RRF parameters for hybrid search

@@ -73,7 +73,7 @@ type App struct {
 
 	// toolsBinPath is the managed tools bin directory (e.g. ~/.c0wrk/tools/bin/),
 	// set during Phase 2 and prepended to PATH so exec.CommandContext calls
-	// resolve managed binaries (rg, rtk, uv, markitdown).
+	// resolve managed binaries (rg, uv, markitdown).
 	toolsBinPath string
 }
 

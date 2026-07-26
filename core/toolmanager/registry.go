@@ -17,7 +17,7 @@ const (
 // ToolSpec describes a managed external tool, including per-platform
 // download URLs, checksums, and archive layout.
 type ToolSpec struct {
-	Name        string // unique name, e.g. "rg", "rtk", "uv", "markitdown"
+	Name        string // unique name, e.g. "rg", "uv", "markitdown"
 	Version     string // pinned upstream version
 	Type        ToolType
 	Description string
@@ -59,12 +59,12 @@ type ToolSpec struct {
 
 // ManagedTools returns the registry of all tools managed by the tool-manager
 // in dependency order: uv first (needed to bootstrap markitdown), then static
-// binaries (rg, rtk), then markitdown last.
+// binary (rg), then markitdown last.
 //
-// Note: rtk and markitdown are infrastructure-only at this stage — the
-// tool-manager downloads and installs them, but no built-in tool wrappers
-// consume them yet. Wrappers will be added in github.com/v0lka/sp4rk/tools/builtins/ when the
-// agent is ready to invoke these tools.
+// Note: markitdown is infrastructure-only at this stage — the
+// tool-manager downloads and installs it, but no built-in tool wrapper
+// consumes it yet. Wrappers will be added in github.com/v0lka/sp4rk/tools/builtins/ when the
+// agent is ready to invoke it.
 func ManagedTools() ([]ToolSpec, error) {
 	triple, err := PlatformTriple()
 	if err != nil {
@@ -115,29 +115,6 @@ func ManagedTools() ([]ToolSpec, error) {
 				"linux-amd64":   "4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e",
 				"linux-arm64":   "c827481c4ff4ea10c9dc7a4022c8de5db34a5737cb74484d62eb94a95841ab2f",
 				"windows-amd64": "d0f534024c42afd6cb4d38907c25cd2b249b79bbe6cc1dbee8e3e37c2b6e25a1",
-			},
-		},
-		{
-			Name:             "rtk",
-			Version:          "0.28.2",
-			Type:             StaticBinary,
-			Description:      "CLI proxy that reduces LLM token consumption on common dev commands (infrastructure-only: installed but not yet consumed by the agent)",
-			BinName:          "rtk",
-			ArchiveName:      "rtk-" + triple + ".tar.gz",
-			BinPathInArchive: "rtk",
-			URLs: map[string]string{
-				"darwin-amd64":  "https://github.com/rtk-ai/rtk/releases/download/v0.28.2/rtk-x86_64-apple-darwin.tar.gz",
-				"darwin-arm64":  "https://github.com/rtk-ai/rtk/releases/download/v0.28.2/rtk-aarch64-apple-darwin.tar.gz",
-				"linux-amd64":   "https://github.com/rtk-ai/rtk/releases/download/v0.28.2/rtk-x86_64-unknown-linux-musl.tar.gz",
-				"linux-arm64":   "https://github.com/rtk-ai/rtk/releases/download/v0.28.2/rtk-aarch64-unknown-linux-gnu.tar.gz",
-				"windows-amd64": "https://github.com/rtk-ai/rtk/releases/download/v0.28.2/rtk-x86_64-pc-windows-msvc.zip",
-			},
-			Checksums: map[string]string{
-				"darwin-amd64":  "5ce5dab3b744a6ecce7ff9deea9fd4606f72c6490c9ee447d74883d9393dcbc7",
-				"darwin-arm64":  "5dede8ac36648960a3ad52611856b9047a7817b755750d2bdbda8d4e9931db4d",
-				"linux-amd64":   "c7b61e87b8430e42b04ab84fbe1b3b41b563454b0181247fd04844b8e9194371",
-				"linux-arm64":   "9dbf6dd22cfdf8b85b916505a5e96e1721d7af4cbe2f3dc90b87c9d677d01636",
-				"windows-amd64": "8bd4ae58b8657f9afd82c76f28e06232b0e8f994e949176206425dcc6005936a",
 			},
 		},
 		{

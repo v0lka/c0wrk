@@ -10,7 +10,7 @@ c0wrk registers sp4rk's built-in tools plus the c0wrk-specific `ask_user` tool a
 - `core/tools/shelltool_unix.go` / `core/tools/shelltool_windows.go` — build-tag split for the shell-exec tool constructor (`builtins.NewBashExecToolWithTimeouts` on Unix, `builtins.NewPoshExecToolWithTimeouts` on Windows); sp4rk's `bash.go`/`posh.go` are mutually exclusive per OS
 - `core/tools/read_file_doc.go` — c0wrk `ReadFileDocTool` wrapper over sp4rk `ReadFileTool` that converts document formats (pdf, docx, pptx, xlsx, odt, html, htm) to markdown via `core/markitdown`; implements sp4rk's `ContentBackedReader` so converted results are content-backed cached
 - `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
-- `core/toolmanager/` — manages external binaries (`rg`, `rtk`, `uv`, `markitdown`), auto-downloaded on first run to `~/.c0wrk/tools/bin/`, PATH-prepended at startup (ADR-010)
+- `core/toolmanager/` — manages external binaries (`rg`, `uv`, `markitdown`), auto-downloaded on first run to `~/.c0wrk/tools/bin/`, PATH-prepended at startup (ADR-010)
 
 Engine files (`github.com/v0lka/sp4rk/tools/builtins/*.go`, including `file_reader.go`, `ripgrep.go`, `tool_result_read.go`, `web_search/`, `batch.go`, `checklist.go`, `coherence.go`) are documented in [the sp4rk builtins spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/builtins.md).
 

@@ -326,6 +326,10 @@ export function ReadFile(arg1) {
   return window['go']['desktop']['App']['ReadFile'](arg1);
 }
 
+export function ReadFileAsDataURL(arg1) {
+  return window['go']['desktop']['App']['ReadFileAsDataURL'](arg1);
+}
+
 export function Rebase(arg1) {
   return window['go']['desktop']['App']['Rebase'](arg1);
 }

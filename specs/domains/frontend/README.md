@@ -10,7 +10,7 @@ React 19 application providing the user interface for c0wrk: chat interaction, p
 - `frontend/src/stores/` — Zustand state management (16 stores)
 - `frontend/src/hooks/` — custom React hooks (event handlers, data loading)
 - `frontend/src/api/` — backend RPC wrapper layer
-- `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config, local file link detection, CodeMirror extensions)
+- `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config + local image resolution, local file link detection, CodeMirror extensions)
 - `frontend/src/components/` — UI component tree
 - `frontend/src/types/` — TypeScript type definitions
 - `frontend/src/index.css` — design tokens (Tailwind v4 @theme)

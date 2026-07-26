@@ -514,7 +514,9 @@ body {
 }
 
 .cm-viewer-container .cm-gutters {
-    background: transparent;
+    /* Opaque (not transparent) so horizontally scrolling code stays hidden
+       behind the sticky gutter instead of showing through the line numbers. */
+    background: var(--color-background);
     border-right: none;
     color: var(--color-hljs-comment);
 }

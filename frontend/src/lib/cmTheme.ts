@@ -42,11 +42,16 @@ export function createOneDarkHighlightStyle(): HighlightStyle {
 
 /**
  * Read-only One Dark theme for the file viewer.
- * Cursor and caret are hidden; gutters are transparent.
+ * Cursor and caret are hidden. The gutter uses an opaque background so that
+ * horizontally scrolling code is hidden behind the sticky line-number column
+ * rather than showing through it (colliding with the numbers).
  */
 export function createOneDarkCMTheme(): Extension {
   const fg = getCSSVar('--color-foreground')
   const gutterFg = getCSSVar('--color-hljs-comment')
+  // Match the file-viewer panel background so the sticky gutter masks code
+  // scrolling beneath it. Falls back to transparent if the var is unset.
+  const gutterBg = getCSSVar('--color-background') || 'transparent'
   const selection = getCSSVar('--color-muted')
 
   const theme = EditorView.theme({
@@ -69,7 +74,7 @@ export function createOneDarkCMTheme(): Extension {
       backgroundColor: 'transparent',
     },
     '.cm-gutters': {
-      backgroundColor: 'transparent',
+      backgroundColor: gutterBg,
       color: gutterFg,
       borderRight: 'none',
     },

@@ -253,7 +253,7 @@ func (m *Manager) cleanupOldArchives(tool ToolSpec, cacheDir string) {
 			continue
 		}
 		// Remove archives that start with the tool name prefix
-		// (e.g. "uv-", "ripgrep-", "rtk-").
+		// (e.g. "uv-", "ripgrep-").
 		if strings.HasPrefix(name, tool.Name+"-") || strings.HasPrefix(name, tool.Name+".") {
 			path := filepath.Join(cacheDir, name)
 			if err := os.Remove(path); err != nil {

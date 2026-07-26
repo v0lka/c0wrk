@@ -17,8 +17,10 @@ Transforms flat message arrays into a structured display tree, rendering each it
 - `frontend/src/components/chat/UserMessage.tsx` — user message component (supports `isPinned` mode for sticky rendering inside ChatArea)
 - `frontend/src/components/chat/UserMessageContent.tsx` — renders user message content with skill chips and clickable file links (falls back to Markdown for messages without references)
 - `frontend/src/components/chat/userMessageSegments.ts` — pure parser for `@file`/`/skill`/free-text segments in user input; accepts GitHub-canonical line anchors (`@file#L20-L36`) and legacy bare-number forms (`@file#20-36`)
-- `frontend/src/lib/markdownConfig.tsx` — Markdown wrapper component with remark/rehype plugins and custom link handler for local file navigation
-- `frontend/src/lib/localFileLink.ts` — pure utility functions for detecting, parsing, and normalizing local file link hrefs in markdown output; extracts line anchors in GitHub-canonical forms (`#L42`, `#L5-10`, `#L5-L10`, `#L20-L36`) and resolves both workspace-relative and absolute (out-of-workspace) paths
+- `frontend/src/lib/markdownConfig.tsx` — `Markdown` wrapper component with remark/rehype plugins and custom element handlers: local file links open the File Viewer; external URLs (http/https/mailto/ftp/data) are dispatched to the system browser via `openExternalURL` (`runtime.BrowserOpenURL`) since the webview ignores `<a target="_blank">`; local image `src` values are resolved to base64 `data:` URLs (see `markdownImageResolve.ts`). Accepts optional `baseFilePath` + `workspaceRoot` props for relative-image resolution (file viewer passes both; chat rendering omits them, so local-image embedding is a file-viewer feature)
+- `frontend/src/lib/markdownImageResolve.ts` — pure helpers for resolving markdown image `src` values to local disk paths: `EXTERNAL_SRC_RE` (pass-through for external/data URLs), `normalizeAbsolutePath`, and `candidateImagePaths` (ordered list: absolute `src` → single candidate; relative `src` → markdown-file directory first, then workspace root). Pure so it can be unit-tested in isolation and the component file stays component-only (React Fast Refresh)
+- `frontend/src/lib/localFileLink.ts` — pure utility functions for markdown link hrefs: `isLocalFileHref`, `isExternalUrl` (scheme-based detection for external URLs routed to the system browser), `parseLocalFileHref`, `normalizePath`; extracts line anchors in GitHub-canonical forms (`#L42`, `#L5-10`, `#L5-L10`, `#L20-L36`) and resolves both workspace-relative and absolute (out-of-workspace) paths
+- `frontend/src/hooks/useWorkspacePath.ts` — resolves the active workspace root path for the current view (project `workspace_path` for regular projects; per-session workspace fetched via `GetSessionWorkspace` for No Project, with the project path as a loading fallback). Used by the file viewer for relative-path display and as the `workspaceRoot` for markdown image resolution
 - `frontend/src/components/chat/ChatScrollManager.tsx` — scroll lock / auto-scroll coordination
 - `frontend/src/components/chat/ChatNewActivityBanner.tsx` — “new activity” pill
 
@@ -95,6 +97,14 @@ All user messages always render in the chat history. The most recent user messag
 - Provides context for what the agent is working on when the original message is off-screen
 - Does not scroll with message list (sticky positioning)
 
+## Markdown Element Handling
+
+The `Markdown` component (`markdownConfig.tsx`) supplies custom `react-markdown` element handlers on top of its remark/rehype plugin chain:
+
+- **Local file links** — `href` values that are not external URLs are treated as workspace paths. Clicking resolves the path against the workspace root (`localFileLink.normalizePath`) and opens it in the File Viewer (`openFile` / `openFileAtLine` when a `#L<n>` anchor is present). Rendered as a keyboard-accessible `<span role="link">`.
+- **External URLs** — `http`/`https`/`mailto`/`ftp`/`data:` hrefs (`localFileLink.isExternalUrl`) are dispatched to the system browser via `openExternalURL` → `runtime.BrowserOpenURL` (`open` / `xdg-open` / Windows shell handler). The Wails webview has no default browser, so `<a target="_blank">` is either ignored or opens inside the webview, which cannot render arbitrary pages; clicks are intercepted (`preventDefault`) and routed through the native runtime instead.
+- **Local images** — a local `src` (relative or absolute disk path, not an external/data URL) is resolved to a base64 `data:` URL via the `ReadFileAsDataURL` RPC, because the webview cannot load `file://` or project-root-relative URLs. Candidates are tried in order (`markdownImageResolve.candidateImagePaths`): absolute `src` → single candidate; relative `src` → the markdown document's directory first, then the workspace root. A 1×1 transparent-PNG placeholder shows while loading or on failure (avoids the broken-image flicker). External/data `src` values pass through unchanged. Image embedding is a **file-viewer** feature: the file viewer passes `baseFilePath` + `workspaceRoot` to `Markdown`, chat rendering does not.
+
 ## Invariants
 
 - groupMessages() is a pure function (testable without rendering)
@@ -112,6 +122,7 @@ All user messages always render in the chat history. The most recent user messag
 - **Mermaid diagrams**: rendering failures are caught by the Mermaid error callback and displayed as an error snippet instead of a blank diagram; lazy loading failures produce a "Diagram unavailable" placeholder
 - **Streaming interruption**: streaming text lives per-session in `chatStore.streamingText[sessionId]`; it is flushed to a permanent message on `assistant_done` (`addMessage` + `clearStreamingText`), and any leftover streaming state is cleared on task lifecycle events (`task_complete`, `task_cancelled`)
 - **File viewer errors**: binary detection (null byte) returns a "binary file" notice; read failures from backend display the error message in the viewer pane
+- **Local image resolution**: each candidate path is tried in order; a failed `ReadFileAsDataURL` falls through to the next candidate, and if all fail the original `src` is used as-is (which cannot load in the webview, matching prior behavior). Resolution is cancelled on unmount/src-change to avoid setState-after-unmount
 - **Missing message types**: `ChatMessageRenderer` renders unknown display item types as a muted "Unsupported message type" fallback
 - **Scroll lock resilience**: `ChatScrollManager` handles edge cases where the scroll target element is unmounted during a transition (no-op, no exception)
 

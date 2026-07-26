@@ -82,6 +82,26 @@ export async function readFile(filePath: string): Promise<string> {
   }
 }
 
+/**
+ * Fetch a local file's bytes as a `data:` URL (base64-encoded). Used by the
+ * markdown renderer to embed images that live on disk — the webview cannot
+ * load file:// or project-root-relative URLs directly, so binary content is
+ * round-tripped through this IPC. Returns the data URL string on success.
+ */
+export async function readFileAsDataURL(filePath: string): Promise<string> {
+  try {
+    const app = getApp()
+    const result = await app.ReadFileAsDataURL(filePath)
+    if (typeof result !== 'string') {
+      throw new Error('readFileAsDataURL: backend returned non-string data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to read file as data URL:', err)
+    throw err
+  }
+}
+
 export async function getFileDiff(filePath: string): Promise<string> {
   try {
     const app = getApp()

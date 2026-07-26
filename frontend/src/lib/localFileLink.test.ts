@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isLocalFileHref, parseLocalFileHref, normalizePath, relativePath } from './localFileLink'
+import { isLocalFileHref, isExternalUrl, parseLocalFileHref, normalizePath, relativePath } from './localFileLink'
 
 describe('isLocalFileHref', () => {
   it('returns false for http URLs', () => {
@@ -50,6 +50,41 @@ describe('isLocalFileHref', () => {
   it('returns true for paths with line number suffix', () => {
     expect(isLocalFileHref('src/main.ts#L42')).toBe(true)
     expect(isLocalFileHref('src/main.ts#L5-10')).toBe(true)
+  })
+})
+
+describe('isExternalUrl', () => {
+  it('returns true for http/https URLs', () => {
+    expect(isExternalUrl('http://example.com')).toBe(true)
+    expect(isExternalUrl('https://example.com/path?q=1')).toBe(true)
+  })
+
+  it('returns true for mailto/tel/ftp', () => {
+    expect(isExternalUrl('mailto:user@example.com')).toBe(true)
+    expect(isExternalUrl('tel:+1234567890')).toBe(true)
+    expect(isExternalUrl('ftp://server.com/file')).toBe(true)
+  })
+
+  it('returns true for data URIs', () => {
+    expect(isExternalUrl('data:text/plain;base64,abc')).toBe(true)
+  })
+
+  it('returns false for anchor links', () => {
+    expect(isExternalUrl('#section-id')).toBe(false)
+    expect(isExternalUrl('#')).toBe(false)
+  })
+
+  it('returns false for relative and absolute file paths', () => {
+    expect(isExternalUrl('src/main.ts')).toBe(false)
+    expect(isExternalUrl('./relative.ts')).toBe(false)
+    expect(isExternalUrl('../parent/file.ts')).toBe(false)
+    expect(isExternalUrl('/absolute/path.ts')).toBe(false)
+    expect(isExternalUrl('src/main.ts#L42')).toBe(false)
+  })
+
+  it('returns false for undefined or empty href', () => {
+    expect(isExternalUrl(undefined)).toBe(false)
+    expect(isExternalUrl('')).toBe(false)
   })
 })
 

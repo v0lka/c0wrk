@@ -1,8 +1,10 @@
 package backend
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"mime"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -227,6 +229,58 @@ func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
 	}
 
 	return string(content), nil
+}
+
+// mimeByExtension returns the media type for a path based on its extension,
+// falling back to application/octet-stream when unknown. The standard
+// library's mime map is aware of the common image formats
+// (png, jpg/jpeg, gif, webp, svg, bmp, ico).
+func mimeByExtension(path string) string {
+	mt := mime.TypeByExtension(filepath.Ext(path))
+	if mt != "" {
+		return mt
+	}
+	return "application/octet-stream"
+}
+
+// ReadFileAsDataURL returns the bytes of a file encoded as a data URL
+// (RFC 2397): "data:<mime>;base64,<payload>". This lets the file-viewer
+// markdown renderer embed images that live on the local filesystem (the
+// webview cannot load file:// or project-root-relative URLs directly).
+//
+// Containment is enforced via resolveWorkspacePath: only files within the
+// active project workspace (or session-infra dirs) may be embedded. Unlike
+// ReadFile — which intentionally reads arbitrary paths surfaced by the agent
+// (e.g. SDK/system files) — image embedding only ever needs project-local
+// files, and images are auto-fetched during markdown rendering without an
+// explicit user action. Containment therefore prevents a malicious markdown
+// document from silently reading arbitrary files (e.g. "../../.ssh/id_rsa" or
+// "/Users/.../.aws/credentials") into the webview DOM via the render pipeline.
+// A size guard caps the payload at 8 MiB to avoid streaming huge binaries
+// through the IPC channel; oversized files return an error.
+func (f *FrontendAPI) ReadFileAsDataURL(filePath string) (string, error) {
+	absPath, _, err := f.resolveWorkspacePath(filePath)
+	if err != nil {
+		return "", err
+	}
+
+	const maxSize = 8 << 20 // 8 MiB
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to stat file: %w", err)
+	}
+	if info.Size() > maxSize {
+		return "", fmt.Errorf("file too large (%d bytes, max %d)", info.Size(), maxSize)
+	}
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file: %w", err)
+	}
+
+	mimeType := mimeByExtension(absPath)
+	encoded := base64.StdEncoding.EncodeToString(data)
+	return "data:" + mimeType + ";base64," + encoded, nil
 }
 
 // GetFileDiff returns the unified diff of uncommitted changes for a single

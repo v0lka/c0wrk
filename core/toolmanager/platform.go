@@ -1,6 +1,6 @@
 // Package toolmanager manages the lifecycle of external CLI tools required
 // by c0wrk at runtime. It downloads, installs, and version-tracks tools such
-// as ripgrep, rtk, uv, and markitdown into a managed tools directory under
+// as ripgrep, uv, and markitdown into a managed tools directory under
 // the agent directory (~/.c0wrk/tools/).
 package toolmanager
 

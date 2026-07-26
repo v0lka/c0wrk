@@ -11,8 +11,8 @@ func TestManagedTools_Count(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools) != 4 {
-		t.Errorf("ManagedTools() returned %d tools, want 4", len(tools))
+	if len(tools) != 3 {
+		t.Errorf("ManagedTools() returned %d tools, want 3", len(tools))
 	}
 }
 
@@ -122,7 +122,7 @@ func TestManagedTools_ArchiveNameMatchesURL(t *testing.T) {
 
 // TestArchiveNameForPlatform_WindowsZip directly verifies the Windows fix on
 // any host platform (CI runs Linux/macOS, never Windows, so a
-// run-platform-only assertion could not catch this regression). The uv/rg/rtk
+// run-platform-only assertion could not catch this regression). The uv/rg
 // Windows URLs serve ".zip" archives, so the resolved cache filename must end
 // in ".zip" — never the ".tar.gz" that triggered "gzip: invalid header".
 func TestArchiveNameForPlatform_WindowsZip(t *testing.T) {

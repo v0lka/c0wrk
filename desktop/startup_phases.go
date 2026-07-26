@@ -84,7 +84,7 @@ func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogge
 }
 
 // initConfigAndDeps loads the config file and ensures managed tools
-// (rg, rtk, uv, markitdown) are downloaded/installed — all in parallel.
+// (rg, uv, markitdown) are downloaded/installed — all in parallel.
 // On first run, tool downloads may take 3–10 minutes; subsequent runs check
 // the .versions file and skip.
 //
@@ -121,7 +121,7 @@ func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved
 	return resolved, toolsBinPath, toolsInstalled, true
 }
 
-// initTools ensures managed tools (rg, rtk, uv, markitdown) are downloaded and
+// initTools ensures managed tools (rg, uv, markitdown) are downloaded and
 // installed in <agentDir>/tools/. On first run this blocks startup for several
 // minutes. On subsequent runs it returns immediately (version check). If a tool
 // cannot be installed, a fatal modal is shown and the function returns an empty

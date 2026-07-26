@@ -25,6 +25,7 @@ declare global {
       EventsOn(eventName: string, callback: (...data: unknown[]) => void): () => void
       EventsEmit(eventName: string, ...data: unknown[]): void
       ClipboardSetText(text: string): Promise<boolean>
+      BrowserOpenURL(url: string): void
     }
   }
 }
@@ -39,6 +40,7 @@ export function getRuntime(): {
   EventsOn(eventName: string, callback: (...data: unknown[]) => void): () => void
   EventsEmit(eventName: string, ...data: unknown[]): void
   ClipboardSetText(text: string): Promise<boolean>
+  BrowserOpenURL(url: string): void
 } {
   if (typeof window === 'undefined' || !window.runtime) {
     throw new Error('Wails runtime is not available')
@@ -89,6 +91,20 @@ export function emit(eventName: string, data?: unknown): void {
 export function clipboardSetText(text: string): Promise<boolean> {
   const rt = getRuntime()
   return rt.ClipboardSetText(text)
+}
+
+/** Open a URL in the user's default system browser.
+ *
+ *  Use this INSTEAD of relying on `<a target="_blank">` navigation. The Wails
+ *  webview has no concept of a "default browser": a plain anchor with
+ *  `target="_blank"` is either silently ignored or opens inside the webview
+ *  itself (which cannot render arbitrary web pages). The native runtime
+ *  dispatches the URL to the OS — `open` on macOS, `xdg-open` on Linux, and
+ *  the default protocol handler on Windows — so external links open in the
+ *  system browser consistently across all three platforms. */
+export function openExternalURL(url: string): void {
+  const rt = getRuntime()
+  rt.BrowserOpenURL(url)
 }
 
 /**

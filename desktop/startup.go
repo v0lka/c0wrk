@@ -168,7 +168,7 @@ func (a *App) Startup(ctx context.Context) {
 	//
 	// NOTE: On first run, Phase 2 may take 3–10 minutes while the
 	// tool-manager downloads and installs required external tools
-	// (rg, rtk, uv, markitdown). Subsequent runs skip via .versions check.
+	// (rg, uv, markitdown). Subsequent runs skip via .versions check.
 	//
 	// CRITICAL PATH (blocks UI):
 	//   Phase 1: shell_env + logger      — budget: 50ms
@@ -223,7 +223,7 @@ func (a *App) Startup(ctx context.Context) {
 	}
 
 	// Prepend managed tools/bin/ to PATH so subsequent exec.CommandContext
-	// calls (rg, rtk, markitdown) resolve to the managed binaries.
+	// calls (rg, markitdown) resolve to the managed binaries.
 	a.toolsBinPath = toolsBinPath
 	if toolsBinPath != "" {
 		os.Setenv("PATH", toolsBinPath+string(os.PathListSeparator)+os.Getenv("PATH")) //nolint:errcheck // Setenv error is non-actionable at startup

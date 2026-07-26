@@ -14,6 +14,17 @@ export function isLocalFileHref(href: string | undefined): boolean {
   return true
 }
 
+/**
+ * Returns true if the href is an external URL with a scheme
+ * (http, https, mailto, ftp, etc.). Such links must be dispatched to the
+ * system browser via `openExternalURL` — the Wails webview ignores
+ * `<a target="_blank">` or opens it inside the webview, which cannot render
+ * arbitrary web pages.
+ */
+export function isExternalUrl(href: string | undefined): boolean {
+  return !!href && PROTOCOL_RE.test(href)
+}
+
 const LINE_SUFFIX_RE = /#L(\d+)(?:-L?\d+)?$/
 
 /**

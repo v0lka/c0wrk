@@ -14,7 +14,6 @@ import (
 //
 //	uv  -> flat:            uv.exe
 //	rg  -> subdir:          ripgrep-14.1.1-x86_64-pc-windows-msvc/rg.exe
-//	rtk -> flat:            rtk.exe
 //
 // resolveBinaryInTree must locate the ".exe" variant on Windows regardless of
 // whether the archive uses a flat or subdirectory layout.
@@ -41,13 +40,6 @@ func TestResolveBinaryInTree_WindowsExe(t *testing.T) {
 			binName:            "rg",
 			relBinaryInArchive: "ripgrep-14.1.1-x86_64-pc-windows-msvc/rg.exe",
 			wantSuffix:         "rg.exe",
-		},
-		{
-			name:               "rtk flat rtk.exe",
-			binPathInArchive:   "rtk",
-			binName:            "rtk",
-			relBinaryInArchive: "rtk.exe",
-			wantSuffix:         "rtk.exe",
 		},
 	}
 
