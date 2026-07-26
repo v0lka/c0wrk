@@ -98,6 +98,15 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
   // ─── Hunk navigation ────────────────────────────────────────────────────
   const scrollRef = useRef<HTMLDivElement>(null)
   const [currentHunk, setCurrentHunk] = useState(0)
+  // While a prev/next click is animating a smooth scroll, this holds the
+  // requested target index so the scroll-position tracker (below) knows to
+  // ignore the animation's intermediate frames. Without it, those frames still
+  // pin the *previous* hunk at the top of the viewport and would snap the
+  // indicator back (the "new → old → new" flicker). See goToHunk / onScroll.
+  const pendingNav = useRef<number | null>(null)
+  // Safety net: clears pendingNav if the target can't be scrolled to the very
+  // top (e.g. the last hunk near the bottom) so manual-scroll tracking resumes.
+  const pendingNavTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const totalHunks = useMemo(
     () => diff.reduce((count, file) => count + file.hunks.length, 0),
     [diff],
@@ -124,6 +133,23 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
         hunkEls.forEach((el, i) => {
           if (el.getBoundingClientRect().top - viewportTop <= 8) active = i
         })
+        // A prev/next click is animating the viewport. The intermediate frames
+        // of the smooth scroll still show the previous hunk pinned at the top,
+        // so ignore them until the viewport actually reaches the requested
+        // target — otherwise the indicator snaps back mid-animation. (The
+        // pendingNavTimer handles the case where the target can't reach the
+        // top, e.g. the last hunk.)
+        const target = pendingNav.current
+        if (target !== null) {
+          if (active === target) {
+            pendingNav.current = null
+            if (pendingNavTimer.current !== null) {
+              clearTimeout(pendingNavTimer.current)
+              pendingNavTimer.current = null
+            }
+          }
+          return
+        }
         setCurrentHunk(active)
       })
     }
@@ -140,6 +166,17 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
     if (!container) return
     const target = container.querySelectorAll<HTMLElement>('[data-review-hunk]')[index]
     if (!target) return
+    // Arm the guard before kicking off the animation so the scroll tracker
+    // ignores the intermediate frames (see onScroll). A safety timer clears
+    // it when the target genuinely can't reach the viewport top (e.g. the
+    // last hunk, where scrollBy hits the bottom edge first) — otherwise
+    // manual-scroll tracking would stay frozen.
+    pendingNav.current = index
+    if (pendingNavTimer.current !== null) clearTimeout(pendingNavTimer.current)
+    pendingNavTimer.current = setTimeout(() => {
+      pendingNav.current = null
+      pendingNavTimer.current = null
+    }, 600)
     const delta = target.getBoundingClientRect().top - container.getBoundingClientRect().top
     container.scrollBy({ top: delta, behavior: 'smooth' })
     setCurrentHunk(index)
