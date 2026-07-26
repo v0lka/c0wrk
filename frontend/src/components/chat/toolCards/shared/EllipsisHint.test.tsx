@@ -45,7 +45,7 @@ describe('EllipsisHint', () => {
     expect(container.textContent).toContain('short')
   })
 
-  it('applies the truncating classes (block + min-w-0 + className)', () => {
+  it('applies the truncating classes (min-w-0 + className)', () => {
     render(
       <EllipsisHint fullText="full" className="text-sm truncate">
         short
@@ -53,7 +53,6 @@ describe('EllipsisHint', () => {
     )
     const span = container.querySelector('span')
     expect(span).not.toBeNull()
-    expect(span!.className).toContain('block')
     expect(span!.className).toContain('min-w-0')
     expect(span!.className).toContain('truncate')
     expect(span!.className).toContain('text-sm')

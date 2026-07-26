@@ -11,10 +11,14 @@ import { EllipsisHint } from './shared/EllipsisHint'
 type ToolItem = Extract<DisplayItem, { kind: 'tool' }>
 
 function StatusIcon({ status }: { status: ToolItem['status'] }) {
-  if (status === 'success') return <Check className="h-3.5 w-3.5 text-success" />
-  if (status === 'error') return <X className="h-3.5 w-3.5 text-destructive" />
-  if (status === 'awaiting_confirmation') return <AlertTriangle className="h-3.5 w-3.5 text-warning" />
-  return <Loader2 className="h-3.5 w-3.5 text-muted-foreground animate-spin" />
+  // `shrink-0` is required: inside a width-capped flex header the SVG is a flex
+  // item, and for SVGs `min-width: auto` resolves to 0 (SVG has overflow:hidden),
+  // so without `flex-shrink:0` the status glyph shrinks toward 0 the more the
+  // title overflows — verified in headless Chromium (14px -> 7.77px without it).
+  if (status === 'success') return <Check className="h-3.5 w-3.5 shrink-0 text-success" />
+  if (status === 'error') return <X className="h-3.5 w-3.5 shrink-0 text-destructive" />
+  if (status === 'awaiting_confirmation') return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warning" />
+  return <Loader2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground animate-spin" />
 }
 
 /** Parse cached result header: "[Lines X-Y of Z from cached TOOL result | hash: H]" */
@@ -89,7 +93,16 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
     [filePath, item.parsedArgs, item.args],
   )
 
-  const fullText = filePath ?? hint ?? title
+  // fullText mirrors the visible title so the tooltip reveals exactly what the
+  // header shows (verb + value) rather than a bare hint. This matters when
+  // extractHint omits the value (e.g. bash commands ≤60 chars where the
+  // command IS the title): without this, fullText would fall back to a bare
+  // hint that is undefined, and the tooltip would never appear.
+  const fullText = filePath
+    ? `${config.verb}: ${filePath}`
+    : hint
+      ? `${config.verb}: ${hint}`
+      : `${config.verb}: ${title}`
   const titleNode = useMemo(() => (
     <EllipsisHint fullText={fullText} alwaysShow={Boolean(filePath)} className="text-sm truncate">
       <span className="text-muted-foreground">{config.verb}: </span>
@@ -111,7 +124,7 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
   // Body-less cards: single-line flat display
   if (!Body) {
     return (
-      <div className="flex items-center gap-1.5 text-muted-foreground flex-wrap">
+      <div className="flex items-center gap-1.5 text-muted-foreground min-w-0">
         <StatusIcon status={item.status} />
         <Icon className={`h-3.5 w-3.5 shrink-0 ${item.status === 'error' ? 'text-destructive' : ''}`} />
         {titleNode}
@@ -126,7 +139,7 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
   // Cards with body: collapsible
   return (
     <CollapsibleBlock
-      icon={<Icon className={`h-3.5 w-3.5 ${item.status === 'error' ? 'text-destructive' : ''}`} />}
+      icon={<Icon className={`h-3.5 w-3.5 shrink-0 ${item.status === 'error' ? 'text-destructive' : ''}`} />}
       label={titleNode}
       statusIcon={<StatusIcon status={item.status} />}
       badge={<>{cachedBadge}{batchedBadge}{mcpBadge}</>}

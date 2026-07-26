@@ -63,7 +63,7 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
 
   const label = useMemo(() => (
     <StepTooltip description={fullDesc} enabled={!!description}>
-      <span className={cn('text-sm truncate', description && 'cursor-default')}>
+      <span className={cn('text-sm min-w-0 truncate', description && 'cursor-default')}>
         Step {stepNum}: {title}
       </span>
     </StepTooltip>

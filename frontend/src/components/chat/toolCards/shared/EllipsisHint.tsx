@@ -9,8 +9,8 @@ interface EllipsisHintProps {
   children: ReactNode
   /**
    * Classes for the truncating span. Pass `truncate` (and a size like `text-sm`)
-   * to enable single-line ellipsis. `block` + `min-w-0` are always applied so the
-   * span becomes the width-constrained, truncating element.
+   * to enable single-line ellipsis. `min-w-0` is always applied so the span — a
+   * flex item in every context — can shrink below its content size and ellipsize.
    */
   className?: string
   /**
@@ -30,11 +30,18 @@ interface EllipsisHintProps {
  *   clipped by the chat column's overflow / width.
  * - Its content is capped (`max-w-md`) and wraps long / unbreakable strings
  *   (`break-words`), so very long titles fold instead of running off-screen.
- * - The span is forced to `block` + `min-w-0` so it is always the
- *   width-constrained, truncating element — whether it is a direct flex child
- *   (body-less tool cards) or nested inside another truncating wrapper
- *   (`CollapsibleBlock` headers). Overflow is then detected via
- *   `scrollWidth > clientWidth`.
+ * - The trigger span carries `min-w-0` (plus the caller's `truncate` / size). It
+ *   is ALWAYS rendered as a flex item — a direct child of the card's flex row
+ *   (body-less cards) or, for collapsible cards, a direct child of the
+ *   `CollapsibleBlock` trigger (which renders node labels WITHOUT its own
+ *   wrapper span). As a flex item, `min-w-0` lets it shrink below its content
+ *   size so `truncate`'s `overflow:hidden` + `text-overflow:ellipsis` clip and
+ *   ellipsize the text, and `scrollWidth > clientWidth` reliably reports
+ *   overflow so the tooltip can be gated on it. It must NOT use `inline-block`:
+ *   an atomic inline-block child inside a `text-overflow:ellipsis` container is
+ *   clipped but never produces the ellipsis glyph (and its `max-width:100%` does
+ *   not force the content to reflow), so the title runs past the chat edge, no
+ *   overflow is detected, and the tooltip never appears.
  * - By default the tooltip is gated on overflow; pass `alwaysShow` to reveal the
  *   full value on every hover regardless of overflow.
  */
@@ -71,7 +78,7 @@ export function EllipsisHint({ fullText, children, className, alwaysShow = false
     if (el) setOverflowing(el.scrollWidth - el.clientWidth > 1)
   }
 
-  const merged = cn('block min-w-0', className)
+  const merged = cn('min-w-0', className)
 
   // Nothing to reveal: render a plain truncating span, no tooltip wrapper.
   if (!fullText) {

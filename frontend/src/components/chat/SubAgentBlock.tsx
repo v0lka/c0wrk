@@ -37,7 +37,7 @@ export function SubAgentBlock({ item }: { item: SubAgentItem }) {
 
   const label = useMemo(() => (
     <StepTooltip description={description || ''} enabled={!!description}>
-      <span className={cn('text-sm truncate', description && 'cursor-default')}>
+      <span className={cn('text-sm min-w-0 truncate', description && 'cursor-default')}>
         Delegated: {stepId}
       </span>
     </StepTooltip>
