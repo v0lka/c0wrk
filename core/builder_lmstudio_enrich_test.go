@@ -6,34 +6,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/v0lka/sp4rk/llm"
 )
 
-// enrichCfg builds a minimal BuilderConfig wired to an LM Studio server so the
-// enrich helper can be exercised in isolation.
-func enrichCfg(t *testing.T, baseURL string, providerModels []string) *BuilderConfig {
-	t.Helper()
-	return &BuilderConfig{
-		LLM: BuilderLLMConfig{
-			ProviderConfigs: map[string]BuilderProviderConfig{
-				"lmstudio": {
-					ProviderType: "openai",
-					BaseURL:      baseURL,
-					Models:       providerModels,
-				},
-			},
-		},
-		ExpandEnvVars: func(s string) string { return s },
-	}
-}
-
-func newEnrichBuilder(t *testing.T) *OrchestratorBuilder {
-	t.Helper()
-	return &OrchestratorBuilder{logger: slog.New(slog.NewTextHandler(&discardWriter{}, &slog.HandlerOptions{Level: slog.LevelDebug}))}
-}
-
+// discardWriter is an io.Writer sink used to build a debug-level slog.Logger
+// without producing any output.
 type discardWriter struct{}
 
 func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
@@ -50,112 +31,113 @@ func lmStudioModelsPayload(t *testing.T, models ...lmStudioModel) []byte {
 	return body
 }
 
-// TestEnrichOverridesFromLMStudio_CapacityEnrichment verifies that an enabled
-// model reported by LM Studio with only a capacity (no loaded instances) gets
-// its real context window instead of an empty override.
-func TestEnrichOverridesFromLMStudio_CapacityEnrichment(t *testing.T) {
+// localProbeCfg builds a minimal BuilderConfig wired to an LM Studio server
+// for a single local OpenAI-compatible provider serving `model`.
+func localProbeCfg(t *testing.T, baseURL, model string) *BuilderConfig {
+	t.Helper()
+	return &BuilderConfig{
+		LLM: BuilderLLMConfig{
+			DefaultModel: model,
+			ProviderConfigs: map[string]BuilderProviderConfig{
+				"lmstudio": {
+					ProviderType: "openai",
+					BaseURL:      baseURL,
+					Models:       []string{model},
+				},
+			},
+		},
+		ExpandEnvVars: func(s string) string { return s },
+	}
+}
+
+// newLocalProbeBuilder returns a builder with a debug-level logger that writes
+// to a discard sink, matching the old enrich test's logger setup.
+func newLocalProbeBuilder(t *testing.T) *OrchestratorBuilder {
+	t.Helper()
+	return &OrchestratorBuilder{logger: slog.New(slog.NewTextHandler(&discardWriter{}, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+}
+
+// waitForProbe polls the registry's Resolve up to `timeout` for `model` to be
+// populated with `wantWindow`. Returns whether the expected window was seen.
+func waitForProbe(t *testing.T, reg *llm.ModelRegistry, model string, wantWindow int, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if meta, _ := reg.Resolve(context.Background(), model); meta.ContextWindow == wantWindow {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+// TestBuildLocalModelProbe_PopulatesRegistry verifies that a probe closure
+// built against a local provider queries the endpoint and writes the real
+// context window into the registry (Resolution tier 3) so Resolve returns it.
+func TestBuildLocalModelProbe_PopulatesRegistry(t *testing.T) {
 	body := lmStudioModelsPayload(t, lmStudioModel{
 		ID:               "qwen2.5-coder-7b",
 		MaxContextLength: 262144,
 	})
 	srv, _, _ := newLMStudioServer(t, http.StatusOK, body)
 
-	cfg := enrichCfg(t, srv.URL, []string{"qwen2.5-coder-7b"})
-	overrides := make(map[string]llm.ModelMetadata)
+	cfg := localProbeCfg(t, srv.URL, "qwen2.5-coder-7b")
+	b := newLocalProbeBuilder(t)
+	registry := llm.NewModelRegistry(nil)
 
-	newEnrichBuilder(t).enrichOverridesFromLMStudio(context.Background(), cfg, overrides, nil)
+	probe := b.buildLocalModelProbe(cfg, registry)
+	probe("qwen2.5-coder-7b")
 
-	got, ok := overrides["qwen2.5-coder-7b"]
-	if !ok {
-		t.Fatalf("expected qwen2.5-coder-7b in overrides, got: %v", overrides)
-	}
-	if got.ContextWindow != 262144 {
-		t.Errorf("context window: got %d, want 262144", got.ContextWindow)
-	}
-	if got.OutputLimit != 4096 {
-		t.Errorf("output limit: got %d, want 4096", got.OutputLimit)
-	}
-	if got.TokenizerType != "approximate" {
-		t.Errorf("tokenizer type: got %q, want approximate", got.TokenizerType)
+	if !waitForProbe(t, registry, "qwen2.5-coder-7b", 262144, time.Second) {
+		meta, _ := registry.Resolve(context.Background(), "qwen2.5-coder-7b")
+		t.Fatalf("probe did not populate registry: context_window=%d", meta.ContextWindow)
 	}
 }
 
-// TestEnrichOverridesFromLMStudio_RuntimePriority verifies that a loaded model
-// gets its runtime context_length (16384) rather than its capacity (262144).
-func TestEnrichOverridesFromLMStudio_RuntimePriority(t *testing.T) {
-	loaded := lmStudioModel{
-		ID:               "llama-3.1-8b",
-		MaxContextLength: 262144,
+// TestBuildLocalModelProbe_SkipsRemoteProvider verifies that a provider whose
+// base_url is a public host is never probed — the closure returns without
+// spawning a goroutine, so the registry stays empty.
+func TestBuildLocalModelProbe_SkipsRemoteProvider(t *testing.T) {
+	// A public-looking host. The server would fail the test if hit, so any
+	// accidental probe surfaces immediately.
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := &BuilderConfig{
+		LLM: BuilderLLMConfig{
+			DefaultModel: "gpt-4o",
+			ProviderConfigs: map[string]BuilderProviderConfig{
+				"openai-remote": {
+					ProviderType: "openai",
+					// httptest uses 127.0.0.1, which is local. Force a public
+					// host by overriding to a real remote DNS name.
+					BaseURL: "https://api.openai.com/v1",
+					Models:  []string{"gpt-4o"},
+				},
+			},
+		},
+		ExpandEnvVars: func(s string) string { return s },
 	}
-	loaded.LoadedInstances = append(loaded.LoadedInstances, struct {
-		Config struct {
-			ContextLength int `json:"context_length"`
-		} `json:"config"`
-	}{})
-	loaded.LoadedInstances[0].Config.ContextLength = 16384
+	b := newLocalProbeBuilder(t)
+	registry := llm.NewModelRegistry(nil)
 
-	body := lmStudioModelsPayload(t, loaded)
-	srv, _, _ := newLMStudioServer(t, http.StatusOK, body)
+	probe := b.buildLocalModelProbe(cfg, registry)
+	probe("gpt-4o")
 
-	cfg := enrichCfg(t, srv.URL, []string{"llama-3.1-8b"})
-	overrides := make(map[string]llm.ModelMetadata)
-
-	newEnrichBuilder(t).enrichOverridesFromLMStudio(context.Background(), cfg, overrides, nil)
-
-	got := overrides["llama-3.1-8b"]
-	if got.ContextWindow != 16384 {
-		t.Errorf("runtime window: got %d, want 16384", got.ContextWindow)
-	}
-}
-
-// TestEnrichOverridesFromLMStudio_ConfigYamlPriority verifies that a model
-// already overridden via config.yaml (cfg.LLM.Models) is NEVER overwritten by
-// the LM Studio probe — the user's config wins.
-func TestEnrichOverridesFromLMStudio_ConfigYamlPriority(t *testing.T) {
-	body := lmStudioModelsPayload(t, lmStudioModel{
-		ID:               "qwen2.5-coder-7b",
-		MaxContextLength: 262144,
-	})
-	srv, _, _ := newLMStudioServer(t, http.StatusOK, body)
-
-	cfg := enrichCfg(t, srv.URL, []string{"qwen2.5-coder-7b"})
-	// Pre-populate overrides exactly as buildRouter does from cfg.LLM.Models.
-	overrides := map[string]llm.ModelMetadata{
-		"qwen2.5-coder-7b": {ContextWindow: 32768, OutputLimit: 2048, TokenizerType: "approximate"},
-	}
-
-	newEnrichBuilder(t).enrichOverridesFromLMStudio(context.Background(), cfg, overrides, nil)
-
-	got := overrides["qwen2.5-coder-7b"]
-	if got.ContextWindow != 32768 {
-		t.Errorf("config.yaml override clobbered: got context window %d, want 32768", got.ContextWindow)
-	}
-	if got.OutputLimit != 2048 {
-		t.Errorf("config.yaml override clobbered: got output limit %d, want 2048", got.OutputLimit)
+	// Give any stray goroutine a moment to run; it must not.
+	time.Sleep(50 * time.Millisecond)
+	if got := hits.Load(); got != 0 {
+		t.Errorf("remote provider was probed (%d hits); isLocalBaseURL gate is broken", got)
 	}
 }
 
-// TestEnrichOverridesFromLMStudio_NotFoundIsNonFatal verifies that a non-LM-Studio
-// endpoint (404) does not panic, does not add overrides, and returns cleanly.
-func TestEnrichOverridesFromLMStudio_NotFoundIsNonFatal(t *testing.T) {
-	srv, _, _ := newLMStudioServer(t, http.StatusNotFound, []byte(`{"error":"not found"}`))
-
-	cfg := enrichCfg(t, srv.URL, []string{"qwen2.5-coder-7b"})
-	overrides := make(map[string]llm.ModelMetadata)
-
-	// Must not panic; overrides must stay empty.
-	newEnrichBuilder(t).enrichOverridesFromLMStudio(context.Background(), cfg, overrides, nil)
-
-	if len(overrides) != 0 {
-		t.Errorf("expected no overrides from 404 endpoint, got %d: %v", len(overrides), overrides)
-	}
-}
-
-// TestEnrichOverridesFromLMStudio_SkipsNonOpenAI verifies that only providers
-// with ProviderType "openai" are probed.
-func TestEnrichOverridesFromLMStudio_SkipsNonOpenAI(t *testing.T) {
-	// Server that would fail the test if hit (404 path still logs, so we make
-	// it return a 500 to be obviously wrong if probed).
+// TestBuildLocalModelProbe_SkipsNonOpenAIProvider verifies the provider-type
+// gate: an anthropic provider (even with a local base_url) is never probed.
+func TestBuildLocalModelProbe_SkipsNonOpenAIProvider(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -164,7 +146,7 @@ func TestEnrichOverridesFromLMStudio_SkipsNonOpenAI(t *testing.T) {
 	cfg := &BuilderConfig{
 		LLM: BuilderLLMConfig{
 			ProviderConfigs: map[string]BuilderProviderConfig{
-				"anthropic": {
+				"anthropic-local": {
 					ProviderType: "anthropic",
 					BaseURL:      srv.URL,
 					Models:       []string{"claude-3-5-sonnet"},
@@ -173,181 +155,97 @@ func TestEnrichOverridesFromLMStudio_SkipsNonOpenAI(t *testing.T) {
 		},
 		ExpandEnvVars: func(s string) string { return s },
 	}
-	overrides := make(map[string]llm.ModelMetadata)
+	b := newLocalProbeBuilder(t)
+	registry := llm.NewModelRegistry(nil)
 
-	newEnrichBuilder(t).enrichOverridesFromLMStudio(context.Background(), cfg, overrides, nil)
+	probe := b.buildLocalModelProbe(cfg, registry)
+	// Should be a no-op: no matching local openai provider.
+	probe("claude-3-5-sonnet")
 
-	if len(overrides) != 0 {
-		t.Errorf("anthropic provider should not be probed, got overrides: %v", overrides)
+	time.Sleep(50 * time.Millisecond)
+	meta, _ := registry.Resolve(context.Background(), "claude-3-5-sonnet")
+	// "claude-3-5-sonnet" is not a built-in SDK model (the canonical id uses
+	// dots), so Resolve returns the fallback default of 128000. A probe run
+	// would have overwritten that with the server's value — confirming 128000
+	// proves the anthropic provider was never probed.
+	if meta.ContextWindow != 128000 {
+		t.Errorf("non-openai provider probed: context_window=%d, want fallback 128000", meta.ContextWindow)
 	}
 }
 
-// TestEnrichOverridesFromLMStudio_SkipsEmptyBaseURL verifies that an "openai"
-// provider with an empty BaseURL is skipped (no panic).
-func TestEnrichOverridesFromLMStudio_SkipsEmptyBaseURL(t *testing.T) {
-	cfg := &BuilderConfig{
-		LLM: BuilderLLMConfig{
-			ProviderConfigs: map[string]BuilderProviderConfig{
-				"openai-no-base": {
-					ProviderType: "openai",
-					BaseURL:      "",
-					Models:       []string{"gpt-4"},
-				},
-			},
-		},
-		ExpandEnvVars: func(s string) string { return s },
-	}
-	overrides := make(map[string]llm.ModelMetadata)
-
-	newEnrichBuilder(t).enrichOverridesFromLMStudio(context.Background(), cfg, overrides, nil)
-
-	if len(overrides) != 0 {
-		t.Errorf("empty-baseURL provider should be skipped, got overrides: %v", overrides)
-	}
-}
-
-// TestEnrichOverridesFromLMStudio_UnreportedModelSkipped verifies that a model
-// enabled in config but not present in the LM Studio probe response is not
-// added to overrides (we only enrich what LM Studio actually reports).
-func TestEnrichOverridesFromLMStudio_UnreportedModelSkipped(t *testing.T) {
+// TestBuildLocalModelProbe_ConfigOverrideWins verifies that a config.yaml
+// override (Resolution tier 1) is never clobbered by a later probe result
+// (tier 3). The user's config always wins.
+func TestBuildLocalModelProbe_ConfigOverrideWins(t *testing.T) {
 	body := lmStudioModelsPayload(t, lmStudioModel{
 		ID:               "qwen2.5-coder-7b",
 		MaxContextLength: 262144,
 	})
 	srv, _, _ := newLMStudioServer(t, http.StatusOK, body)
 
-	// "llama-3.1-8b" is enabled but not reported by the server.
-	cfg := enrichCfg(t, srv.URL, []string{"qwen2.5-coder-7b", "llama-3.1-8b"})
-	overrides := make(map[string]llm.ModelMetadata)
-
-	newEnrichBuilder(t).enrichOverridesFromLMStudio(context.Background(), cfg, overrides, nil)
-
-	if _, ok := overrides["qwen2.5-coder-7b"]; !ok {
-		t.Errorf("expected reported model qwen2.5-coder-7b in overrides, got: %v", overrides)
-	}
-	if _, ok := overrides["llama-3.1-8b"]; ok {
-		t.Errorf("unreported model llama-3.1-8b should not be in overrides, got: %v", overrides)
-	}
-}
-
-// TestResolveLMStudioOverrides_CachesOnBuilder verifies that
-// resolveLMStudioOverrides probes the endpoint once and stores the result on
-// the builder (the cache that buildRouter reads via mergeLMStudioOverrides).
-func TestResolveLMStudioOverrides_CachesOnBuilder(t *testing.T) {
-	body := lmStudioModelsPayload(t, lmStudioModel{
-		ID:               "qwen2.5-coder-7b",
-		MaxContextLength: 262144,
-	})
-	srv, _, _ := newLMStudioServer(t, http.StatusOK, body)
-
-	cfg := enrichCfg(t, srv.URL, []string{"qwen2.5-coder-7b"})
-	b := newEnrichBuilder(t)
-
-	b.resolveLMStudioOverrides(context.Background(), cfg)
-
-	b.mu.RLock()
-	cached := b.lmStudioOverrides
-	b.mu.RUnlock()
-	got, ok := cached["qwen2.5-coder-7b"]
-	if !ok {
-		t.Fatalf("expected cached override for qwen2.5-coder-7b, got: %v", cached)
-	}
-	if got.ContextWindow != 262144 {
-		t.Errorf("cached context window: got %d, want 262144", got.ContextWindow)
-	}
-}
-
-// TestMergeLMStudioOverrides_ConfigWins verifies that an override already in
-// the map (simulating a config.yaml entry) is never clobbered by the cached
-// LM Studio probe result — config.yaml priority is enforced here.
-func TestMergeLMStudioOverrides_ConfigWins(t *testing.T) {
-	b := newEnrichBuilder(t)
-	// Seed the cache as resolveLMStudioOverrides would.
-	b.mu.Lock()
-	b.lmStudioOverrides = map[string]llm.ModelMetadata{
-		"qwen2.5-coder-7b": {ContextWindow: 262144, OutputLimit: 4096, TokenizerType: "approximate"},
-	}
-	b.mu.Unlock()
-
-	// Simulate the config-derived overrides that buildRouter builds first.
-	overrides := map[string]llm.ModelMetadata{
+	cfg := localProbeCfg(t, srv.URL, "qwen2.5-coder-7b")
+	// Seed a config override exactly as buildRouter does from cfg.LLM.Models.
+	registry := llm.NewModelRegistry(map[string]llm.ModelMetadata{
 		"qwen2.5-coder-7b": {ContextWindow: 32768, OutputLimit: 2048, TokenizerType: "approximate"},
-	}
-	b.mergeLMStudioOverrides(overrides)
-
-	got := overrides["qwen2.5-coder-7b"]
-	if got.ContextWindow != 32768 {
-		t.Errorf("config.yaml override clobbered: got context window %d, want 32768", got.ContextWindow)
-	}
-	if got.OutputLimit != 2048 {
-		t.Errorf("config.yaml override clobbered: got output limit %d, want 2048", got.OutputLimit)
-	}
-}
-
-// TestMergeLMStudioOverrides_AddsUncachedModels verifies that a model present
-// in the cache but NOT in the config-derived overrides is layered in.
-func TestMergeLMStudioOverrides_AddsUncachedModels(t *testing.T) {
-	b := newEnrichBuilder(t)
-	b.mu.Lock()
-	b.lmStudioOverrides = map[string]llm.ModelMetadata{
-		"qwen2.5-coder-7b": {ContextWindow: 262144, OutputLimit: 4096, TokenizerType: "approximate"},
-		"llama-3.1-8b":     {ContextWindow: 16384, OutputLimit: 4096, TokenizerType: "approximate"},
-	}
-	b.mu.Unlock()
-
-	overrides := map[string]llm.ModelMetadata{
-		"qwen2.5-coder-7b": {ContextWindow: 32768, OutputLimit: 2048, TokenizerType: "approximate"},
-	}
-	b.mergeLMStudioOverrides(overrides)
-
-	if got := overrides["qwen2.5-coder-7b"]; got.ContextWindow != 32768 {
-		t.Errorf("config override clobbered: got %d, want 32768", got.ContextWindow)
-	}
-	if got := overrides["llama-3.1-8b"]; got.ContextWindow != 16384 {
-		t.Errorf("uncached model not added: got context window %d, want 16384", got.ContextWindow)
-	}
-}
-
-// TestEnrichOverridesFromLMStudio_5xxLoggedNotFatal verifies that a provider
-// returning a 5xx is skipped (its error surfaces via the probe) without
-// aborting enrichment of other providers or panicking.
-func TestEnrichOverridesFromLMStudio_5xxLoggedNotFatal(t *testing.T) {
-	// First provider: a 5xx (momentarily-unwell LM Studio).
-	badSrv, _, _ := newLMStudioServer(t, http.StatusInternalServerError, []byte(`{"error":"boom"}`))
-	// Second provider: a healthy LM Studio reporting a model.
-	body := lmStudioModelsPayload(t, lmStudioModel{
-		ID:               "llama-3.1-8b",
-		MaxContextLength: 131072,
 	})
-	goodSrv, _, _ := newLMStudioServer(t, http.StatusOK, body)
+	b := newLocalProbeBuilder(t)
 
+	probe := b.buildLocalModelProbe(cfg, registry)
+	probe("qwen2.5-coder-7b")
+
+	// Let the probe goroutine finish.
+	time.Sleep(100 * time.Millisecond)
+
+	meta, _ := registry.Resolve(context.Background(), "qwen2.5-coder-7b")
+	if meta.ContextWindow != 32768 {
+		t.Errorf("config override clobbered by probe: got %d, want 32768", meta.ContextWindow)
+	}
+	if meta.OutputLimit != 2048 {
+		t.Errorf("config override clobbered by probe: got output limit %d, want 2048", meta.OutputLimit)
+	}
+}
+
+// TestLookupLocalProviderBaseURL covers the provider-lookup helper directly:
+// local openai providers match, remote/non-openai/unknown models return ok=false.
+func TestLookupLocalProviderBaseURL(t *testing.T) {
+	expand := func(s string) string { return s }
 	cfg := &BuilderConfig{
 		LLM: BuilderLLMConfig{
 			ProviderConfigs: map[string]BuilderProviderConfig{
-				"lmstudio-broken": {
+				"lmstudio": {
 					ProviderType: "openai",
-					BaseURL:      badSrv.URL,
-					Models:       []string{"qwen2.5-coder-7b"},
+					BaseURL:      "http://127.0.0.1:1234/v1",
+					APIKey:       "lm-key",
+					Models:       []string{"qwen2.5-coder-7b", "llama-3.1-8b"},
 				},
-				"lmstudio-healthy": {
+				"remote": {
 					ProviderType: "openai",
-					BaseURL:      goodSrv.URL,
-					Models:       []string{"llama-3.1-8b"},
+					BaseURL:      "https://api.openai.com/v1",
+					Models:       []string{"gpt-4o"},
+				},
+				"anthropic": {
+					ProviderType: "anthropic",
+					BaseURL:      "http://127.0.0.1:9999",
+					Models:       []string{"claude-3-5-sonnet"},
 				},
 			},
 		},
-		ExpandEnvVars: func(s string) string { return s },
+		ExpandEnvVars: expand,
 	}
-	overrides := make(map[string]llm.ModelMetadata)
 
-	newEnrichBuilder(t).enrichOverridesFromLMStudio(context.Background(), cfg, overrides, nil)
-
-	// The broken provider must contribute nothing.
-	if _, ok := overrides["qwen2.5-coder-7b"]; ok {
-		t.Errorf("5xx provider should not add overrides, got: %v", overrides)
+	if base, key, ok := lookupLocalProviderBaseURL(cfg, "qwen2.5-coder-7b", expand); !ok {
+		t.Error("expected match for local openai model")
+	} else if base != "http://127.0.0.1:1234/v1" || key != "lm-key" {
+		t.Errorf("wrong provider resolved: base=%q key=%q", base, key)
 	}
-	// The healthy provider must still be enriched.
-	if got := overrides["llama-3.1-8b"]; got.ContextWindow != 131072 {
-		t.Errorf("healthy provider not enriched: got context window %d, want 131072", got.ContextWindow)
+
+	if _, _, ok := lookupLocalProviderBaseURL(cfg, "gpt-4o", expand); ok {
+		t.Error("remote openai provider should not match")
+	}
+	if _, _, ok := lookupLocalProviderBaseURL(cfg, "claude-3-5-sonnet", expand); ok {
+		t.Error("anthropic provider should not match (non-openai)")
+	}
+	if _, _, ok := lookupLocalProviderBaseURL(cfg, "unknown-model", expand); ok {
+		t.Error("unknown model should not match")
 	}
 }

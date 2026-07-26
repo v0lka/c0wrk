@@ -30,6 +30,17 @@ type ManagerConfig struct {
 // ProjectCallbacks holds callbacks for project-level indexing events.
 type ProjectCallbacks struct {
 	OnProgress ProgressCallback
+	// OnFailure is invoked when asynchronous project initialization fails on
+	// an init-fatal step (persistent DB open, branch detection, branch
+	// collection switch), so the caller can surface a terminal status — e.g.
+	// emit EventVectorIndexStatus{State: "unavailable"} — reflecting that
+	// vector search is disabled for the active project.
+	//
+	// Failures are otherwise swallowed inside the init goroutine because
+	// SwitchProject has already returned (init runs off the RPC path). It is
+	// NOT called for the non-fatal git-monitor creation/start failures: those
+	// leave search functional (only branch-switch re-indexing degrades).
+	OnFailure func(err error)
 }
 
 // Manager owns the full lifecycle of vector indexing:
@@ -79,6 +90,18 @@ type Manager struct {
 
 	// WaitGroup for tracking in-flight reindex goroutines (vs Shutdown).
 	reindexWG sync.WaitGroup
+
+	// initCancel cancels the in-flight async project initialization
+	// (initProject), which runs SetProject + SwitchBranch + indexer setup +
+	// background indexing + git monitor off the SwitchProject RPC path.
+	// The next SwitchProject / Shutdown cancels it so a stale init can't
+	// touch a freshly-switched (or closed) service. Set under m.mu.
+	initCancel context.CancelFunc
+	// initWG tracks the initProject goroutine. Shutdown waits on it before
+	// closing the service so the init goroutine never operates on a closed
+	// service. initProject checks initCtx between each step and aborts early
+	// when cancelled (e.g. by a rapid follow-up SwitchProject).
+	initWG sync.WaitGroup
 
 	// closeFn is called during Shutdown to release the embedder (if provided).
 	closeFn func() error
@@ -158,9 +181,16 @@ func (m *Manager) IsAnyIndexablePath(changedPaths []string) bool {
 }
 
 // SwitchProject sets up vector indexing for the given project and workspace.
-// It cancels any in-flight indexing, configures the service for the project,
-// detects the git branch, creates an indexer, starts background indexing,
-// and starts a git branch monitor.
+//
+// For a CODE project the heavy initialization — opening the persistent chromem
+// DB (which synchronously gob-decodes every document of every branch into
+// RAM), detecting the branch, switching the branch collection, creating the
+// indexer, launching background indexing, and starting the git branch monitor
+// — runs in a background goroutine (see initProject) so it does not block the
+// frontend's project-load waterfall. SwitchProject returns once the previous
+// project is torn down and readiness is dropped; vector search then gates on
+// WaitReady until init + indexing settle. For No Project (CHAT mode) the
+// teardown + reset stays fully synchronous.
 func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath string, cbs ProjectCallbacks) error {
 	// No Project (CHAT mode): the vector index subsystem is fully disabled.
 	// Tear down any previous project's in-flight indexing and reset the
@@ -170,6 +200,18 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 	// no git branch is detected, and no indexing goroutine or git monitor is
 	// started.
 	if projectID == core.NoProjectID {
+		// Cancel any in-flight async init from a prior CODE project and wait
+		// for that goroutine to exit before resetting the service, so it
+		// can't (re)set a collection/db after we go in-memory below. Mirrors
+		// the CODE path's single-flight teardown.
+		m.mu.Lock()
+		if m.initCancel != nil {
+			m.initCancel()
+			m.initCancel = nil
+		}
+		m.mu.Unlock()
+		m.initWG.Wait()
+
 		m.mu.Lock()
 		if m.indexCancel != nil {
 			m.indexCancel()
@@ -190,7 +232,22 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 		return nil
 	}
 
-	// Cancel previous indexing and any pending debounced incremental runs.
+	// Displace any previous project. Cancel its async init's context and
+	// WAIT for that init goroutine to fully exit before touching shared
+	// state, so only one init runs at a time — no two inits can overlap and
+	// race on m.indexer / m.gitMonitor / the service. In normal use the
+	// previous project's init completed long ago (search became ready), so
+	// this returns immediately; it only blocks during a rapid double-switch,
+	// and then for no longer than the previous synchronous SwitchProject did
+	// (≈ one chromem open).
+	m.mu.Lock()
+	if m.initCancel != nil {
+		m.initCancel()
+		m.initCancel = nil
+	}
+	m.mu.Unlock()
+	m.initWG.Wait()
+
 	m.mu.Lock()
 	if m.indexCancel != nil {
 		m.indexCancel()
@@ -206,44 +263,126 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 
 	m.stopDebounce()
 
-	// Set project on service.
+	// Drop the previous project's readiness synchronously so a search RPC
+	// issued right after SwitchProject returns blocks on WaitReady instead of
+	// racing the async init. initProject (or, on failure, its SetReady(true)
+	// fallback) restores readiness.
+	m.service.SetReady(false)
+
+	// Launch project initialization off the RPC path. initProject opens the
+	// persistent chromem DB (the dominant cost — gob-decoding every document
+	// of every branch collection into RAM), then detects the branch, switches
+	// the branch collection (bleve.Open), creates the indexer, launches a
+	// background indexing goroutine, and starts the git branch monitor. None
+	// of that needs to block the frontend's project-load waterfall: vector
+	// search gates on WaitReady, which only unblocks once init + indexing
+	// settle. The next SwitchProject / Shutdown cancels initCtx; the goroutine
+	// aborts at its next ctx check.
+	//
+	// Error semantics: init failures (chromem open, branch detect, bleve
+	// open) are logged here, not returned, because SwitchProject has already
+	// returned. Vector indexing is an optional, asynchronously-loaded
+	// subsystem; a failed init leaves search returning clean "no collection"
+	// errors instead of blocking the whole project switch. This is a
+	// deliberate softening of the prior hard-failure behavior.
+	initCtx, initCancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.initCancel = initCancel
+	m.mu.Unlock()
+	m.initWG.Add(1)
+	go m.initProject(initCtx, projectID, workspacePath, vectorIndexFullPath, cbs)
+
+	return nil
+}
+
+// initProject performs the asynchronous portion of SwitchProject for a CODE
+// project: open the persistent chromem DB, detect the git branch, switch the
+// branch collection, create the indexer, launch background indexing, and start
+// the git branch monitor. It runs off the SwitchProject RPC path so the
+// frontend's project-load waterfall is not blocked by chromem's synchronous
+// gob-decode of all branch documents. ctx is checked between steps so a
+// follow-up SwitchProject / Shutdown (which cancels it) aborts a stale init
+// early instead of doing needless work.
+//
+// Failures are logged (not returned): SwitchProject has already returned, and
+// vector indexing is optional. On failure readiness is flipped to true so
+// WaitReady callers unblock and search returns a clear "no collection" error
+// instead of hanging.
+func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vectorIndexFullPath string, cbs ProjectCallbacks) {
+	defer m.initWG.Done()
+
+	// SetProject loads the persistent chromem DB. This is the dominant cost
+	// (gob-decoding every document of every branch collection into RAM) and
+	// holds the service write lock for the duration.
 	if err := m.service.SetProject(projectID, vectorIndexFullPath); err != nil {
-		return err
+		m.logger.Warn("vector index init failed; search disabled",
+			"project", projectID, "step", "open persistent DB", "error", err)
+		// Surface the soft failure so the backend can emit a terminal
+		// "unavailable" status instead of leaving the UI on a stale state.
+		m.notifyInitFailure(cbs, err)
+		// Unblock WaitReady; queries then fail fast with "no collection".
+		m.service.SetReady(true)
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		m.logger.Info("vector index init cancelled after open", "project", projectID)
+		return
 	}
 
 	// Detect branch. CurrentBranch returns DefaultBranch for non-git
-	// directories; any other error (git misbehaving, disk corruption,
-	// etc.) is a hard failure — git is a declared prerequisite, so we
-	// refuse to silently paper over real problems.
-	branch, err := CurrentBranch(context.Background(), workspacePath)
+	// directories; git-on-PATH is already verified synchronously by the
+	// backend before SwitchProject is called, so a failure here indicates a
+	// genuinely broken repo.
+	branch, err := CurrentBranch(ctx, workspacePath)
 	if err != nil {
-		return fmt.Errorf("detecting branch for vector index: %w", err)
+		m.logger.Warn("vector index init failed; search disabled",
+			"project", projectID, "step", "detect branch", "error", err)
+		m.notifyInitFailure(cbs, err)
+		m.service.SetReady(true)
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		m.logger.Info("vector index init cancelled after branch detect", "project", projectID)
+		return
 	}
 
-	// Create chunker using the resolved chunk function.
-	chunkFn := m.chunkFn
-
 	// Create indexer with a wrapped progress callback that also updates
-	// the Manager's internal status for GetVectorIndexStatus.
-	userOnProgress := cbs.OnProgress
+	// the Manager's internal status for GetVectorIndexStatus. The indexer is
+	// kept in a local until SwitchBranch succeeds: only then is it published
+	// to m.indexer. This prevents NotifyFileChange / debounce / Reindex from
+	// arming an incremental pass against a service whose collection is still
+	// nil (SwitchBranch opens it), which on every file change would otherwise
+	// drive doomed passes logging "no collection available" until the next
+	// SwitchProject. The background indexing goroutine and git-monitor
+	// callback below capture this local via closure, so they are unaffected.
 	m.setStatus(map[string]any{"branch": branch})
 	indexer := NewIndexer(IndexerConfig{
 		Service:    m.service,
-		ChunkFn:    chunkFn,
+		ChunkFn:    m.chunkFn,
 		HashFn:     m.hashFn,
-		OnProgress: m.wrapProgress(userOnProgress),
+		OnProgress: m.wrapProgress(cbs.OnProgress),
 		Logger:     m.logger,
 	})
 
+	// Switch to branch collection (opens the per-branch bleve index).
+	if switchErr := m.service.SwitchBranch(ctx, branch); switchErr != nil {
+		m.logger.Warn("vector index init failed; search disabled",
+			"project", projectID, "step", "switch branch", "error", switchErr)
+		m.notifyInitFailure(cbs, switchErr)
+		m.service.SetReady(true)
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		m.logger.Info("vector index init cancelled after branch switch", "project", projectID)
+		return
+	}
+
+	// SwitchBranch succeeded: publish the indexer + workspace now that the
+	// collection is live and incremental passes can do useful work.
 	m.mu.Lock()
 	m.indexer = indexer
 	m.workspacePath = workspacePath
 	m.mu.Unlock()
-
-	// Switch to branch collection.
-	if switchErr := m.service.SwitchBranch(context.Background(), branch); switchErr != nil {
-		return fmt.Errorf("switching vector index branch: %w", switchErr)
-	}
 
 	// Start background indexing.
 	indexCtx, indexCancel := context.WithCancel(context.Background())
@@ -303,16 +442,18 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 		m.logger,
 	)
 	if monErr != nil {
-		return fmt.Errorf("creating git monitor: %w", monErr)
+		m.logger.Warn("vector index init: failed to create git monitor",
+			"project", projectID, "error", monErr)
+		return
 	}
 	m.mu.Lock()
 	m.gitMonitor = gitMon
 	m.mu.Unlock()
 	if startErr := gitMon.Start(); startErr != nil {
-		return fmt.Errorf("starting git monitor: %w", startErr)
+		m.logger.Warn("vector index init: failed to start git monitor",
+			"project", projectID, "error", startErr)
+		return
 	}
-
-	return nil
 }
 
 // NotifyFileChange triggers debounced incremental indexing for the active
@@ -436,6 +577,22 @@ func (m *Manager) wrapProgress(userFn ProgressCallback) ProgressCallback {
 	}
 }
 
+// notifyInitFailure surfaces an asynchronous init-project failure to the
+// caller (when it registered OnFailure) and records a terminal "unavailable"
+// state internally so GetIndexStatus reflects that vector search is disabled
+// for the active project rather than a stale prior state. It is called from
+// initProject's init-fatal paths (DB open / branch detect / branch switch);
+// the caller then flips readiness to true so WaitReady unblocks.
+func (m *Manager) notifyInitFailure(cbs ProjectCallbacks, err error) {
+	m.statusMu.Lock()
+	m.currentState = IndexStateUnavailable
+	m.currentPhase = ""
+	m.statusMu.Unlock()
+	if cbs.OnFailure != nil {
+		cbs.OnFailure(err)
+	}
+}
+
 // setStatus updates the Manager's internal index status from a map.
 // Used for initial/reset values.
 func (m *Manager) setStatus(vals map[string]any) {
@@ -540,10 +697,18 @@ func (m *Manager) Reindex(ctx context.Context, workspacePath string) error {
 	return nil
 }
 
-// Shutdown performs orderly cleanup: cancel indexing, stop monitor,
-// close service, and close the embedder via CloseFn (if provided).
+// Shutdown performs orderly cleanup: cancel indexing and async init, stop
+// monitor, close service, and close the embedder via CloseFn (if provided).
 func (m *Manager) Shutdown() {
+	// Cancel the async init goroutine first and wait for it to exit before
+	// closing the service, so it can't touch a closed service. initProject
+	// checks ctx between steps and aborts after its current step (the chromem
+	// open, which is not itself interruptible) completes.
 	m.mu.Lock()
+	if m.initCancel != nil {
+		m.initCancel()
+		m.initCancel = nil
+	}
 	if m.indexCancel != nil {
 		m.indexCancel()
 		m.indexCancel = nil
@@ -556,6 +721,7 @@ func (m *Manager) Shutdown() {
 	}
 	m.mu.Unlock()
 
+	m.initWG.Wait()
 	m.stopDebounce()
 
 	if m.service != nil {

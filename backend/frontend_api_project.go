@@ -389,12 +389,19 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 		return nil
 	}
 
-	branch, branchErr := vectorindex.CurrentBranch(f.ctx(), p.WorkspacePath)
-	if branchErr != nil {
-		return fmt.Errorf("detecting git branch for project %s: %w", p.ID, branchErr)
-	}
-	capturedBranch := branch
-
+	// Vector init (chromem DB open, branch detect, branch-collection switch,
+	// background indexing, git monitor) runs asynchronously inside the
+	// manager's initProject goroutine, so SwitchProject returns at once. The
+	// branch for the progress callback's display field is detected by
+	// initProject and surfaced via vm.GetIndexStatus().Branch — no duplicate
+	// synchronous CurrentBranch call here (it would block the RPC path the
+	// async refactor unblocks and run git twice per switch).
+	//
+	// OnFailure covers the init-fatal paths (DB open / branch detect / branch
+	// switch): init has already returned soft-nil, so without this the UI
+	// would keep showing a stale prior state. Emit "unavailable" so the
+	// frontend's deriveDotStatus renders the dormant pill the No-Project path
+	// already uses.
 	if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, config.ProjectVectorIndexPath(f.agentDir, p.ID), vectorindex.ProjectCallbacks{
 		OnProgress: func(phase vectorindex.IndexPhase, state vectorindex.IndexState, indexed, total int, file string) {
 			f.emitEvent(EventVectorIndexStatus, VectorIndexStatus{
@@ -405,7 +412,15 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 				FilesIndexed: indexed,
 				TotalFiles:   total,
 				CurrentFile:  file,
-				Branch:       capturedBranch,
+				Branch:       vm.GetIndexStatus().Branch,
+			})
+		},
+		OnFailure: func(err error) {
+			f.log().Warn("vector index init failed for project; search unavailable",
+				"project", p.ID, "error", err)
+			f.emitEvent(EventVectorIndexStatus, VectorIndexStatus{
+				State:   string(vectorindex.IndexStateUnavailable),
+				Indices: []string{},
 			})
 		},
 	}); switchErr != nil {

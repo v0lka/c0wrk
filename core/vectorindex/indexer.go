@@ -29,6 +29,13 @@ const (
 	IndexStateReindexing IndexState = "reindexing"
 	// IndexStateReady indicates the index is ready for queries.
 	IndexStateReady IndexState = "ready"
+	// IndexStateUnavailable indicates vector indexing is disabled for the
+	// active project because asynchronous initialization failed (e.g. the
+	// persistent DB could not be opened, or the git branch collection could
+	// not be switched). Search then returns a clean "no collection" error.
+	// It mirrors the state string the frontend already renders as dormant
+	// (see indexPhaseStatus.deriveDotStatus), so no UI changes are needed.
+	IndexStateUnavailable IndexState = "unavailable"
 )
 
 // IndexPhase describes which side(s) of the dual index are being produced

@@ -238,3 +238,48 @@ func TestProbeLMStudioModels_NilHTTPClientDefaults(t *testing.T) {
 		t.Errorf("window = %d, want 4096", w)
 	}
 }
+
+func TestIsLocalBaseURL(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		// Names recognized as local.
+		{"localhost", "http://localhost:1234/v1", true},
+		{"localhost no port", "http://localhost", true},
+		{"localhost subdomain", "http://api.localhost:1234", true},
+		{"mdns local", "http://macbook.local:1234", true},
+
+		// Loopback IPs.
+		{"ipv4 loopback", "http://127.0.0.1:1234", true},
+		{"ipv4 loopback no port", "http://127.0.0.1", true},
+		{"ipv6 loopback", "http://[::1]:1234", true},
+
+		// RFC 1918 private ranges.
+		{"private 10/8", "http://10.0.0.5:1234", true},
+		{"private 172.16/12", "http://172.16.4.20:1234", true},
+		{"private 192.168/16", "http://192.168.1.50:1234", true},
+
+		// Link-local.
+		{"link-local ipv4", "http://169.254.10.1:1234", true},
+		{"link-local ipv6", "http://[fe80::1]:1234", true},
+
+		// Remote / public — must NOT be probed.
+		{"public dns", "https://api.openai.com/v1", false},
+		{"public ipv4", "http://8.8.8.8:1234", false},
+		{"example.com", "https://models.example.com/v1", false},
+		{"vllm public host", "https://infer.mycompany.io/v1", false},
+
+		// Edge cases.
+		{"empty", "", false},
+		{"scheme-less unparsable", "://not a url", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isLocalBaseURL(tc.url); got != tc.want {
+				t.Errorf("isLocalBaseURL(%q) = %v, want %v", tc.url, got, tc.want)
+			}
+		})
+	}
+}

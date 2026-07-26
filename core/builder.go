@@ -53,22 +53,22 @@ type OrchestratorBuilder struct {
 	proxyClient      *http.Client // proxy-configured HTTP client (nil = direct connection)
 	paramManager     sdktools.ParamManager
 
-	// lmStudioOverrides holds context-window overrides resolved from probing
-	// OpenAI-compatible (LM Studio) endpoints. It is populated once at startup
-	// (runAsyncInit) and re-resolved on config changes (RebuildRouter), then
-	// reused by every buildRouter call so the network probe does NOT run on
-	// each per-session Build. Guarded by mu.
-	lmStudioOverrides map[string]llm.ModelMetadata
-
 	// Cached reasoning effort string. Always empty at builder level;
 	// per-request overrides flow through HandleOptions.ReasoningEffort
 	// → Orchestrator.SetReasoningEffort, which propagates to router,
 	// planner, reflector, and the sp4rk P&E engine.
 	reasoningEffort string
 
-	// Async initialization: MCP gateway and LLM router are initialized in the
-	// background so that NewOrchestratorBuilder returns immediately.
+	// Async initialization: LLM router and tool judge are initialized in the
+	// background (gated by initDone) so that NewOrchestratorBuilder returns
+	// immediately. MCP gateway startup is decoupled from initDone: it runs in
+	// its own goroutine (gated by mcpDone) so that Build()/session restore is
+	// not blocked on MCP server discovery, which can take seconds for remote
+	// servers. MCP tools register into the shared sp4rk registry live, so
+	// orchestrators built before MCP is ready simply don't advertise MCP tools
+	// until the next message (graceful degradation).
 	initDone   chan struct{}
+	mcpDone    chan struct{}
 	initErr    error
 	gatewayErr error // non-nil if MCP gateway startup failed
 }
@@ -100,6 +100,7 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 	b := &OrchestratorBuilder{
 		logger:   logger,
 		initDone: make(chan struct{}),
+		mcpDone:  make(chan struct{}),
 	}
 
 	// 0. Build proxy client (fast — no network, just config parsing)
@@ -145,16 +146,23 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 	// 2. Security policies (fast — synchronous)
 	b.applySecurityPolicies(cfg)
 
-	// 3. Start slow initialization (MCP gateway + LLM router) asynchronously
+	// 3. Start slow initialization asynchronously.
+	// MCP gateway runs in its own goroutine (mcpDone), decoupled from initDone,
+	// so Build()/session restore is not blocked on MCP server discovery.
+	go b.runMCPInit(cfg)
+	// LLM router + tool judge still gate initDone so Build() waits for them.
 	go b.runAsyncInit(cfg)
 
 	return b, nil
 }
 
-// runAsyncInit performs the slow network-dependent initialization:
-// MCP gateway startup and LLM router creation.
-func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
-	defer close(b.initDone)
+// runMCPInit starts the MCP gateway in a dedicated goroutine, decoupled from
+// initDone. It registers MCP tools into the shared sp4rk registry, so
+// orchestrators built before completion simply won't advertise MCP tools until
+// the next message (graceful degradation). mcpDone is closed on exit,
+// including when startup fails or panics, so waiters never block forever.
+func (b *OrchestratorBuilder) runMCPInit(cfg *BuilderConfig) {
+	defer close(b.mcpDone)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -176,12 +184,16 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 
 	// Schema sanitizer is configured via GatewayConfig.SchemaSanitizer above;
 	// the unified ParamManager handles both sanitization and injection.
+}
 
-	// LM Studio context-window probe (best-effort, non-fatal). Resolved once
-	// here at startup and cached on the builder so per-session Build calls do
-	// NOT re-probe the network. buildRouter consumes the cache via
-	// mergeLMStudioOverrides.
-	b.resolveLMStudioOverrides(ctx, cfg)
+// runAsyncInit performs the slow network-dependent initialization gated by
+// initDone: LLM router creation and the tool judge. MCP gateway startup is
+// handled separately by runMCPInit (decoupled, gated by mcpDone).
+func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
+	defer close(b.initDone)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// LLM Router
 	llmRouter, modelReg, err := b.buildRouter(ctx, cfg)
@@ -213,6 +225,22 @@ func (b *OrchestratorBuilder) waitReady(ctx context.Context) error {
 	}
 }
 
+// waitMCPReady blocks until the MCP gateway startup goroutine completes (or the
+// context is cancelled). This is separate from waitReady/initDone because MCP
+// startup is intentionally decoupled from Build()/restore: the gateway can take
+// seconds to discover remote servers, and we don't want to block session
+// restore on it. Methods that must observe the gateway's final state
+// (MCPGateway, StopGateway, ReconfigureMCP, SetMCPWorkDir) call this so the
+// "MCP is still starting" race window is closed before they read/act on b.gateway.
+func (b *OrchestratorBuilder) waitMCPReady(ctx context.Context) error {
+	select {
+	case <-b.mcpDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // WaitReady blocks until async initialization completes or the context is cancelled.
 // Returns the init error if the initial LLM router setup failed.
 // Exported for use by the backend package.
@@ -237,11 +265,14 @@ func (b *OrchestratorBuilder) ToolRegistry() *tools.ToolRegistry {
 }
 
 // MCPGateway returns the MCP gateway, or nil if not started.
-// Waits up to 30 seconds for async initialization to complete.
+// Waits up to 30 seconds for the MCP startup goroutine to complete (note: MCP
+// startup is decoupled from initDone/WaitReady, so it may still be in flight
+// when initDone is closed). Returns nil if the gateway failed to start or was
+// not configured.
 func (b *OrchestratorBuilder) MCPGateway() *mcp.Gateway {
 	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_ = b.waitReady(waitCtx)
+	_ = b.waitMCPReady(waitCtx)
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.gateway
@@ -283,10 +314,13 @@ func (b *OrchestratorBuilder) Build(
 	stepDumpTracker *orchestration.StepDumpTracker,
 ) (*Orchestrator, error) {
 	// Wait for async initialization to complete before building an orchestrator.
-	// Timing: waitReady can block for seconds if the MCP gateway or LM Studio
-	// context-window probe (runAsyncInit) hasn't finished yet — e.g. when the
-	// user creates a session shortly after app launch, before the background
-	// init goroutine has closed initDone.
+	// Timing: waitReady blocks only for the LLM router + tool judge (runAsyncInit,
+	// gated by initDone) — it does NOT wait for the MCP gateway, which runs in a
+	// separate goroutine (runMCPInit, gated by mcpDone). MCP tools register into
+	// the shared sp4rk registry live, so an orchestrator built before MCP is
+	// ready simply won't advertise MCP tools until the next message (graceful
+	// degradation), e.g. when the user creates a session shortly after app
+	// launch, before the background router/judge init has closed initDone.
 	buildStart := time.Now()
 	waitCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -426,6 +460,17 @@ func (b *OrchestratorBuilder) Build(
 			"wait_ready_ms", waitElapsed.Milliseconds())
 	}
 
+	// Construct the lazy local-model probe for this session. It closes over the
+	// per-session model registry so the discovered context window lands exactly
+	// where Resolve will read it. The probe is a no-op for remote/non-local
+	// models, so wiring it unconditionally is free for cloud-only setups.
+	localProbe := b.buildLocalModelProbe(cfg, modelReg)
+	// Probe the session's default model once at construction so the first
+	// request benefits from the real context window if it is served locally.
+	if defaultModel := llm.BareModel(llmRouter.ActiveModel()); defaultModel != "" {
+		localProbe(defaultModel)
+	}
+
 	return NewOrchestrator(orchConfig, OrchestratorDeps{
 		Router:            coreRouter,
 		LLM:               loggedLLM,
@@ -449,6 +494,7 @@ func (b *OrchestratorBuilder) Build(
 		PerToolTruncation: perToolTruncation,
 		StepDumpTracker:   stepDumpTracker,
 		ProviderName:      cfg.LLM.DefaultProviderName(),
+		LocalModelProbe:   localProbe,
 	}), nil
 }
 
@@ -462,10 +508,6 @@ func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	if err := b.waitReady(waitCtx); err != nil {
 		return err
 	}
-	// Re-resolve the LM Studio context-window probe so a model reload /
-	// context-length change is picked up when the config changes. The result
-	// is cached and consumed by buildRouter via mergeLMStudioOverrides.
-	b.resolveLMStudioOverrides(context.Background(), cfg)
 	llmRouter, modelReg, err := b.buildRouter(context.Background(), cfg)
 	if err != nil {
 		return err
@@ -940,118 +982,6 @@ func activeSkillPathResolver(ctx context.Context, skillName string) (string, boo
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-// resolveLMStudioOverrides probes each OpenAI-compatible provider and caches
-// the resulting model→context-window overrides on the builder.
-//
-// It is called from the startup path (runAsyncInit) and the config-change path
-// (RebuildRouter) — but NOT from the per-session Build path — so the network
-// probe runs at most once per config change instead of on every session
-// creation. The cached map is consumed by buildRouter via mergeLMStudioOverrides.
-//
-// The probe is best-effort and non-fatal: only providers with ProviderType
-// "openai" and a non-empty BaseURL are probed (anthropic has no BaseURL), and
-// network/timeout/parse failures are logged at Warn and skipped. Each provider
-// is bounded by a 3s timeout inside probeLMStudioModels, so the total cost of
-// this method is at most 3s × (number of OpenAI-compatible providers).
-func (b *OrchestratorBuilder) resolveLMStudioOverrides(ctx context.Context, cfg *BuilderConfig) {
-	// Snapshot proxyClient under lock to avoid data races with RebuildProxy.
-	b.mu.RLock()
-	proxyClient := b.proxyClient
-	b.mu.RUnlock()
-
-	overrides := make(map[string]llm.ModelMetadata)
-	b.enrichOverridesFromLMStudio(ctx, cfg, overrides, proxyClient)
-
-	b.mu.Lock()
-	b.lmStudioOverrides = overrides
-	b.mu.Unlock()
-}
-
-// mergeLMStudioOverrides layers the cached LM Studio overrides into the given
-// overrides map, which already holds the config.yaml entries (cfg.LLM.Models).
-// A model already present in overrides is never overwritten, so config.yaml
-// always wins over the probe — this is the single place where that priority is
-// enforced now that the probe no longer runs inline inside buildRouter.
-func (b *OrchestratorBuilder) mergeLMStudioOverrides(overrides map[string]llm.ModelMetadata) {
-	b.mu.RLock()
-	cached := b.lmStudioOverrides
-	b.mu.RUnlock()
-	for name, md := range cached {
-		if _, exists := overrides[name]; !exists {
-			overrides[name] = md
-		}
-	}
-}
-
-// enrichOverridesFromLMStudio probes each OpenAI-compatible provider and, when
-// the endpoint is an LM Studio server, fills overrides with the real
-// (runtime-preferring) context window for every enabled model that is not
-// already present. This lets token budgets reflect what LM Studio is actually
-// running with instead of the static 8192 default.
-//
-// The probe is best-effort and non-fatal:
-//   - Only providers with ProviderType "openai" and a non-empty BaseURL are
-//     probed (the built-in anthropic provider has no BaseURL).
-//   - A model already present in overrides is never overwritten. Within a single
-//     call this enforces first-provider-wins for duplicate model IDs; config.yaml
-//     priority is enforced by the caller (mergeLMStudioOverrides) when the cached
-//     result is layered into the config-derived overrides.
-//   - Network errors, timeouts, 5xx server errors, 404s (non-LM-Studio servers
-//     such as real OpenAI/vLLM) and empty results are logged at Warn and skipped.
-//
-// In production this is called only from resolveLMStudioOverrides (startup /
-// config-change paths) so the result is cached; see mergeLMStudioOverrides for
-// how buildRouter consumes the cache without re-probing on every session.
-func (b *OrchestratorBuilder) enrichOverridesFromLMStudio(
-	ctx context.Context,
-	cfg *BuilderConfig,
-	overrides map[string]llm.ModelMetadata,
-	proxyClient *http.Client,
-) {
-	for name, pc := range cfg.LLM.ProviderConfigs {
-		if pc.ProviderType != "openai" {
-			continue
-		}
-		baseURL := cfg.ExpandEnvVars(pc.BaseURL)
-		if baseURL == "" {
-			continue
-		}
-		apiKey := cfg.ExpandEnvVars(pc.APIKey)
-		probe, err := probeLMStudioModels(ctx, baseURL, apiKey, proxyClient)
-		if err != nil {
-			b.log().Warn("lm studio context probe failed/skipped", "provider", name, "base_url", baseURL, "error", err)
-			continue
-		}
-		if len(probe) == 0 {
-			// 404 or empty payload: the endpoint is not an LM Studio server
-			// (or has no models loaded). Non-fatal — keep building the
-			// registry with whatever overrides already exist.
-			b.log().Warn("lm studio context probe failed/skipped", "provider", name, "base_url", baseURL, "error", "no models reported")
-			continue
-		}
-		for _, model := range pc.Models {
-			window, ok := probe[model]
-			if !ok {
-				continue
-			}
-			if _, exists := overrides[model]; exists {
-				// config.yaml override wins.
-				continue
-			}
-			overrides[model] = llm.ModelMetadata{
-				ContextWindow: window,
-				// OutputLimit intentionally mirrors the sp4rk SDK's built-in
-				// fallback (4096) so local LM Studio models are not regressed
-				// relative to their Priority-5 SDK default. LM Studio does not
-				// expose a per-model output-token cap in /api/v0/models, so we
-				// use the same safe default the SDK would have chosen anyway.
-				OutputLimit:   4096,
-				TokenizerType: "approximate",
-			}
-		}
-	}
-}
-
 // buildRouter creates a fresh LLM Router + ModelRegistry from config.
 func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfig) (*llm.Router, *llm.ModelRegistry, error) {
 	// Snapshot proxyClient under lock to avoid data races with RebuildProxy.
@@ -1059,6 +989,11 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	proxyClient := b.proxyClient
 	b.mu.RUnlock()
 
+	// Only config.yaml-derived user overrides are seeded into the registry at
+	// construction (Resolution tier 1). LM Studio / local-server context-window
+	// discovery is performed lazily per-session — see Build + probeLocalModel —
+	// and written into the registry via SetCachedMetadata (tier 3) so config
+	// always wins and the network is never touched at startup.
 	overrides := make(map[string]llm.ModelMetadata)
 	for name, override := range cfg.LLM.Models {
 		overrides[name] = llm.ModelMetadata{
@@ -1067,12 +1002,6 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 			TokenizerType: "approximate",
 		}
 	}
-	// Layer in the cached LM Studio context-window overrides. The network probe
-	// itself runs once at startup (runAsyncInit) and on config changes
-	// (RebuildRouter) via resolveLMStudioOverrides; here we only read the cache
-	// so per-session Build does NOT hit the network. config.yaml always wins:
-	// mergeLMStudioOverrides never overwrites a model already in overrides.
-	b.mergeLMStudioOverrides(overrides)
 	modelRegistry := llm.NewModelRegistry(overrides)
 	if proxyClient != nil {
 		modelRegistry.SetHTTPClient(proxyClient)
@@ -1158,6 +1087,94 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	}
 
 	return llmRouter, modelRegistry, nil
+}
+
+// buildLocalModelProbe returns a LocalModelProbe that, for the given model,
+// locates its OpenAI-compatible provider, checks whether the provider's
+// base_url refers to a local/LAN host, and — only then — fires an asynchronous
+// context-window probe whose result is written into the per-session model
+// registry via SetCachedMetadata.
+//
+// Non-local providers, non-OpenAI providers, and models not found in any
+// provider config are silent no-ops: the closure returns immediately without
+// spawning a goroutine, so there is zero overhead for cloud-only setups.
+//
+// The network probe runs on a detached goroutine with a fresh
+// context.Background() (bounded to 3s inside probeLMStudioModels) so it is not
+// tied to the caller's request lifetime and never blocks HandleMessage /
+// session creation. Results land in the registry cache (Resolution tier 3), so
+// a config.yaml override (tier 1) or a built-in spec (tier 2) always wins.
+func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry *llm.ModelRegistry) LocalModelProbe {
+	// Snapshot proxyClient under read lock once at probe construction so the
+	// closure does not touch b.mu on every invocation.
+	b.mu.RLock()
+	proxyClient := b.proxyClient
+	b.mu.RUnlock()
+	log := b.log()
+	expand := cfg.ExpandEnvVars
+
+	return func(model string) {
+		if model == "" || registry == nil {
+			return
+		}
+		baseURL, apiKey, ok := lookupLocalProviderBaseURL(cfg, model, expand)
+		if !ok {
+			return
+		}
+		go func() {
+			probe, err := probeLMStudioModels(context.Background(), baseURL, apiKey, proxyClient)
+			if err != nil {
+				log.Warn("lazy local model probe failed", "model", model, "base_url", baseURL, "error", err)
+				return
+			}
+			window, reported := probe[model]
+			if !reported || window <= 0 {
+				return
+			}
+			// SetCachedMetadata writes to Resolution tier 3, which is shadowed
+			// by config overrides (tier 1) and built-in specs (tier 2), so a
+			// well-known or user-overridden model is never clobbered.
+			registry.SetCachedMetadata(model, llm.ModelMetadata{
+				ContextWindow: window,
+				// OutputLimit mirrors the SDK's built-in fallback so local LM
+				// Studio models are not regressed; LM Studio does not expose a
+				// per-model output cap in /api/v0/models.
+				OutputLimit:   4096,
+				TokenizerType: "approximate",
+			})
+			log.Debug("lazy local model probe populated context window",
+				"model", model, "context_window", window)
+		}()
+	}
+}
+
+// lookupLocalProviderBaseURL searches the provider configs for the one that
+// serves `model`, returns its expanded base_url + api key, and reports whether
+// that base_url points at a local/LAN host. The second return is false when no
+// OpenAI-compatible provider serves the model or when the matching provider is
+// not local (remote providers must not be probed).
+func lookupLocalProviderBaseURL(cfg *BuilderConfig, model string, expand func(string) string) (baseURL, apiKey string, ok bool) {
+	for _, pc := range cfg.LLM.ProviderConfigs {
+		if pc.ProviderType != "openai" {
+			continue
+		}
+		enabled := false
+		for _, m := range pc.Models {
+			if m == model {
+				enabled = true
+				break
+			}
+		}
+		if !enabled {
+			continue
+		}
+		raw := expand(pc.BaseURL)
+		if raw == "" || !isLocalBaseURL(raw) {
+			continue
+		}
+		return raw, expand(pc.APIKey), true
+	}
+	return "", "", false
 }
 
 // buildLLMHTTPClient creates an *http.Client dedicated to LLM inference

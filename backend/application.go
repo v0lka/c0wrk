@@ -59,7 +59,6 @@ type Application struct {
 	manager   *session.Manager
 	persister *session.EventPersister
 	titleGen  *session.TitleGenerator
-	envInfo   *sdktools.EnvInfo
 	logger    *slog.Logger
 
 	// emitFunc is the combined session-event emitter (UI + persistence).
@@ -92,10 +91,6 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 		hitlHandler:  cfg.HITLHandler,
 		goalProposer: cfg.GoalProposer,
 	}
-
-	// Collect environment info once for all sessions.
-	envInfo := sdktools.CollectEnvInfo()
-	app.envInfo = envInfo
 
 	// 1. Event persister (SQLite persistence, separate from UI emission).
 	app.persister = session.NewEventPersister(cfg.SessionStore)
@@ -187,7 +182,11 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	if cfg.TaskStore != nil {
 		manager.SetTaskStore(cfg.TaskStore)
 	}
-	manager.SetEnvInfo(envInfo)
+	// Launch environment-info collection in the background. envInfo is
+	// optional (SendMessage/ResumeTask tolerate nil) and only enriches the
+	// system prompt once ready — collecting it synchronously here blocked
+	// cold startup on ~7 subprocess probes (~0.75s).
+	manager.StartEnvInfoCollection()
 	manager.SetMaxSummaryLen(cfg.Config.Orchestration.MaxSummaryLength)
 	if cfg.SessionStore != nil {
 		manager.SetSessionStore(cfg.SessionStore)
@@ -217,11 +216,6 @@ func (app *Application) Builder() *core.OrchestratorBuilder {
 // proposer is in place before any session's orchestrator is built.
 func (app *Application) SetGoalProposer(proposer coretools.GoalProposer) {
 	app.goalProposer = proposer
-}
-
-// EnvInfo returns the collected environment info.
-func (app *Application) EnvInfo() *sdktools.EnvInfo {
-	return app.envInfo
 }
 
 // TitleGenerator returns the session title generator.

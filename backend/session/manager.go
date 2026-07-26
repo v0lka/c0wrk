@@ -117,6 +117,8 @@ type Manager struct {
 	projectStore        project.ProjectStore // optional persistent project store (project-scoped work dirs)
 	titleGen            *TitleGenerator      // optional title generator for auto-naming
 	envInfo             *sdktools.EnvInfo    // environment info for context injection
+	envInfoDone         chan struct{}        // closed when the background env-info collection finishes (WriteOnce)
+	envInfoOnce         sync.Once            // guards StartEnvInfoCollection against double-launch
 	stopTimeout         time.Duration        // how long to wait for goroutine on cancel/delete
 	maxSummaryLen       int                  // character limit for auto-generated step summaries
 	projectResolver     ProjectResolverFunc  // resolves projectID -> workspacePath for lazy session restoration
@@ -183,6 +185,7 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir stri
 		agentDir:            agentDir,
 		logLevel:            "DEBUG",
 		stopTimeout:         10 * time.Second,
+		envInfoDone:         make(chan struct{}),
 	}
 	m.fileTracker = NewFileCoherenceTracker(m.resolveSessionName)
 	return m
@@ -236,6 +239,38 @@ func (m *Manager) SetEnvInfo(info *sdktools.EnvInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.envInfo = info
+}
+
+// StartEnvInfoCollection launches environment-info collection in a background
+// goroutine and stores the result via SetEnvInfo when ready. It is safe to call
+// SendMessage/ResumeTask concurrently — they tolerate a nil envInfo until the
+// collection completes. WaitEnvInfo allows callers (notably tests) to block
+// until the result is available.
+//
+// Calling this method more than once is a no-op: the underlying goroutine is
+// launched exactly once (guarded by envInfoOnce), so envInfoDone is closed a
+// single time and never panics on a double close.
+func (m *Manager) StartEnvInfoCollection() {
+	m.envInfoOnce.Do(func() {
+		go func() {
+			defer close(m.envInfoDone)
+			m.SetEnvInfo(sdktools.CollectEnvInfo())
+		}()
+	})
+}
+
+// WaitEnvInfo blocks until the background environment-info collection finishes
+// (or ctx is cancelled). It returns nil once envInfo is ready, or ctx.Err() if
+// the context expires first. Because StartEnvInfoCollection closes envInfoDone
+// via defer (even on panic), WaitEnvInfo never blocks forever after collection
+// has been started.
+func (m *Manager) WaitEnvInfo(ctx context.Context) error {
+	select {
+	case <-m.envInfoDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // SetMaxSummaryLen sets the character limit for auto-generated step summaries.

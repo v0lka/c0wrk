@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -127,4 +129,51 @@ func probeLMStudioModels(ctx context.Context, baseURL, apiKey string, httpClient
 		result[m.ID] = window
 	}
 	return result, nil
+}
+
+// isLocalBaseURL reports whether the host part of baseURL refers to the local
+// machine or a node on an attached local network. It is the gate for lazy LM
+// Studio context-window probing: only models served from a local/LAN endpoint
+// are probed at session start, so remote providers are never hit with the extra
+// HTTP request that used to run eagerly for every OpenAI-compatible provider.
+//
+// Recognized as local:
+//   - The "localhost" name or any "*.localhost" suffix.
+//   - A ".local" mDNS suffix (e.g. "macbook.local").
+//   - An IPv4/IPv6 host that is a loopback, private (RFC 1918/4193), or
+//     link-local address. The Go stdlib's net.IP.IsPrivate covers 10/8,
+//     172.16/12, 192.168/16, and fc00::/7; IsLoopback and IsLinkLocalUnicast
+//     add 127.0.0.0/8, ::1, 169.254/16, and fe80::/10.
+//
+// Anything else (a public DNS name or global IP) is treated as remote and
+// returns false. Parse/lookup failures are conservative: a URL whose host
+// cannot be resolved to an IP is considered remote unless it matches the name
+// heuristics above.
+func isLocalBaseURL(baseURL string) bool {
+	if baseURL == "" {
+		return false
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return false
+	}
+	lower := strings.ToLower(host)
+	if lower == "localhost" || strings.HasSuffix(lower, ".localhost") {
+		return true
+	}
+	if strings.HasSuffix(lower, ".local") {
+		return true
+	}
+	// Try to interpret the host as a literal IP first (covers 127.0.0.1,
+	// ::1, 10.0.0.5, 169.254.x.x, fc00::, fe80::, …) without a DNS lookup.
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+	}
+	// A non-IP hostname that is not localhost/.local is assumed to be a
+	// public DNS name — do not probe it.
+	return false
 }

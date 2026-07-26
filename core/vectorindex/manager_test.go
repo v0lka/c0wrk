@@ -297,3 +297,117 @@ func TestManagerSwitchProject_NoProjectDisabled(t *testing.T) {
 		t.Fatal("expected service to be not-ready for No Project (no indexing ran)")
 	}
 }
+
+// TestManagerSwitchProject_AsyncInitFailureIsSoft verifies that when the
+// asynchronous project initialization fails (here: an uncreatable vector index
+// directory), SwitchProject still returns nil — because init runs off the RPC
+// path — and the failure is handled softly: readiness is flipped to true so
+// WaitReady doesn't hang, and the collection stays nil so search returns a
+// clean "no collection" error instead of blocking the whole project switch.
+//
+// This is the observable behavior change vs. the prior synchronous
+// SwitchProject, which ran SetProject inline and returned its error directly.
+// Under async init that error cannot propagate synchronously, so init failures
+// become logged soft failures (vector indexing is an optional subsystem).
+func TestManagerSwitchProject_AsyncInitFailureIsSoft(t *testing.T) {
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+
+	mgr := &Manager{
+		service: svc,
+		logger:  slog.New(slog.DiscardHandler),
+		chunkFn: defaultChunkFn,
+		hashFn:  embedding.ComputeFileHash,
+	}
+
+	// An uncreatable vector index path: a subpath beneath a regular file, so
+	// os.MkdirAll inside SetProject fails.
+	blocker := filepath.Join(t.TempDir(), "not_a_dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	badVectorPath := filepath.Join(blocker, "vector_index")
+
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+
+	// SwitchProject must return nil: init (including SetProject) runs in a
+	// background goroutine, so its failure cannot propagate synchronously.
+	if err := mgr.SwitchProject("project-bad", ws, badVectorPath, ProjectCallbacks{}); err != nil {
+		t.Fatalf("SwitchProject returned error (init should be async+soft): %v", err)
+	}
+
+	// The failed init flips readiness to true so search RPCs fail fast
+	// rather than hanging on WaitReady.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := svc.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady after soft init failure: %v", err)
+	}
+
+	if col := svc.GetCollection(); col != nil {
+		t.Fatalf("expected nil collection after soft init failure, got count=%d", col.Count())
+	}
+}
+
+// TestManagerSwitchProject_InitFailureThenRecover verifies that a soft init
+// failure does not wedge the manager: the failed init's goroutine exits
+// cleanly (so the next SwitchProject's cancel+wait teardown returns at once),
+// and a subsequent valid SwitchProject initializes normally with a populated
+// collection.
+func TestManagerSwitchProject_InitFailureThenRecover(t *testing.T) {
+	persistDir := t.TempDir()
+
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+
+	mgr := &Manager{
+		service: svc,
+		logger:  slog.New(slog.DiscardHandler),
+		chunkFn: defaultChunkFn,
+		hashFn:  embedding.ComputeFileHash,
+	}
+
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+
+	// 1) A failing init (uncreatable path).
+	blocker := filepath.Join(t.TempDir(), "not_a_dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	badVectorPath := filepath.Join(blocker, "vector_index")
+	if err := mgr.SwitchProject("project-bad", ws, badVectorPath, ProjectCallbacks{}); err != nil {
+		t.Fatalf("SwitchProject bad: %v", err)
+	}
+	ctxWait, cancelWait := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelWait()
+	if err := svc.WaitReady(ctxWait); err != nil {
+		t.Fatalf("WaitReady after soft failure: %v", err)
+	}
+
+	// 2) A valid SwitchProject recovers and indexes normally.
+	goodVectorPath := filepath.Join(persistDir, "project-good")
+	if err := mgr.SwitchProject("project-good", ws, goodVectorPath, ProjectCallbacks{}); err != nil {
+		t.Fatalf("SwitchProject good: %v", err)
+	}
+	ctxReady, cancelReady := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelReady()
+	if err := svc.WaitReady(ctxReady); err != nil {
+		t.Fatalf("WaitReady good: %v", err)
+	}
+	col := svc.GetCollection()
+	if col == nil || col.Count() == 0 {
+		t.Fatal("expected recovered project collection to have documents")
+	}
+}

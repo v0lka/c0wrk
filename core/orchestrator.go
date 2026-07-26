@@ -175,6 +175,7 @@ type Orchestrator struct {
 	logger              *slog.Logger
 	emitter             Emitter
 	modelRegistry       *llm.ModelRegistry
+	localModelProbe     LocalModelProbe // lazily probes local LM Studio endpoints for the runtime context window
 	bbFactory           BlackboardFactory
 	conversationHistory []llm.Message
 	taskStore           TaskPersistence       // optional, for ContinueTask blackboard restoration
@@ -249,6 +250,21 @@ type Orchestrator struct {
 // responsible for serializing per-session.
 var ErrRequestInFlight = errors.New("orchestrator: request already in flight")
 
+// LocalModelProbe is a best-effort, non-blocking hook that discovers the real
+// context window for a model served from a local OpenAI-compatible endpoint
+// (e.g. LM Studio) and writes the result into the session's ModelRegistry.
+//
+// It is a no-op for remote/non-local models and for models whose provider is
+// not OpenAI-compatible. The orchestrator invokes it when a model is selected
+// — once for the session's default model at construction, and again on every
+// mid-chat model switch — so token budgets reflect the runtime context window
+// without paying the probe cost at app startup or blocking the request path.
+//
+// Implementations must be safe for concurrent use and must return quickly
+// (the network probe, if any, runs on an internal goroutine with a detached
+// context so it is not tied to the caller's request lifetime).
+type LocalModelProbe func(model string)
+
 // OrchestratorDeps holds the runtime dependencies for the Orchestrator.
 // Grouping them into a single struct improves readability when the constructor
 // is called (one struct literal instead of 19 positional arguments).
@@ -283,6 +299,13 @@ type OrchestratorDeps struct {
 	// ProviderName is the active provider name for DEBUG-level LLM logging
 	// in per-step callers (LoggingLLMCaller wrapping).
 	ProviderName string
+
+	// LocalModelProbe lazily discovers the runtime context window for a local
+	// (loopback/LAN) OpenAI-compatible model and feeds it to ModelRegistry.
+	// Nil when no local providers are configured — in that case mid-chat model
+	// switches and the default model are not probed (they fall back to the
+	// registry's built-in/override metadata). Optional, nil-safe.
+	LocalModelProbe LocalModelProbe
 }
 
 // NewOrchestrator creates a new Orchestrator with all components.
@@ -319,6 +342,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		logger:           deps.Logger,
 		emitter:          emitter,
 		modelRegistry:    deps.ModelRegistry,
+		localModelProbe:  deps.LocalModelProbe,
 		bbFactory:        deps.BBFactory,
 		trackingCaller:   deps.TrackingCaller,
 		tokenCounter:     deps.TokenCounter,
@@ -828,6 +852,13 @@ func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride,
 			}
 		} else {
 			o.config.Model = llm.BareModel(modelOverride)
+			// Lazily probe the newly-selected model's real context window when
+			// it is served from a local endpoint. The probe is fire-and-forget
+			// (returns immediately); the discovered window lands in the model
+			// registry and is picked up by subsequent context-budget math.
+			if o.localModelProbe != nil {
+				o.localModelProbe(llm.BareModel(modelOverride))
+			}
 		}
 	}
 }

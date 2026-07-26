@@ -135,3 +135,132 @@ func TestManagerNotifyFileChangeSerializesOverlappingPasses(t *testing.T) {
 		t.Errorf("expected at most 1 concurrent embed call (serialized passes), got peak %d", peak)
 	}
 }
+
+// TestManagerSwitchProject_RapidDoubleSwitchCancelsInFlight exercises the
+// single-flight contract (initCancel + initWG + indexCancel) when a second
+// SwitchProject fires while the first project's background indexing is still
+// in flight and blocked on the embedder — which holds the service write lock
+// mid-AddDocuments.
+//
+// The second switch must: cancel the first's index context (unblocking the
+// embedder via chromem's ctx propagation and so releasing the write lock),
+// wait out the first's init goroutine, then initialize cleanly so the second
+// project's collection wins — no deadlock, no leaked indexing goroutine, and
+// readiness restored.
+//
+// Determinism: the embedder is ctx-aware, so SwitchProject B's indexCancel
+// unblocks A's blocked embedder (it returns ctx.Err()) rather than relying on
+// wall-clock timing. We block on embedCalls > 0 to guarantee A is genuinely
+// in flight before issuing the double-switch.
+func TestManagerSwitchProject_RapidDoubleSwitchCancelsInFlight(t *testing.T) {
+	persistDir := t.TempDir()
+
+	var embedCalls atomic.Int32
+	block := make(chan struct{})
+	var gateOnce sync.Once
+	release := func() { gateOnce.Do(func() { close(block) }) }
+
+	// ctx-aware embedder: blocks on `block` until released OR the index
+	// context is cancelled. The ctx path is what lets SwitchProject's
+	// indexCancel deterministically unblock an in-flight pass.
+	embed := func(ctx context.Context, _ string) ([]float32, error) {
+		embedCalls.Add(1)
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return []float32{0.01, 0.02}, nil
+	}
+
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: embed})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+
+	mgr := &Manager{
+		service: svc,
+		logger:  slog.New(slog.DiscardHandler),
+		chunkFn: defaultChunkFn,
+		hashFn:  embedding.ComputeFileHash,
+	}
+	t.Cleanup(func() {
+		release() // unblock any goroutine still waiting on the gate
+		mgr.Shutdown()
+	})
+
+	// Two workspaces with distinct files so the winning project is unambiguous.
+	wsA := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsA, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+	wsB := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsB, "b.go"), []byte("package b\n"), 0o644); err != nil {
+		t.Fatalf("write b.go: %v", err)
+	}
+	viPathA := filepath.Join(persistDir, "project-a")
+	viPathB := filepath.Join(persistDir, "project-b")
+
+	// 1) SwitchProject A: its indexing goroutine reaches the embedder and
+	//    blocks (gate closed), holding the service write lock mid-AddDocuments.
+	if err := mgr.SwitchProject("project-a", wsA, viPathA, ProjectCallbacks{}); err != nil {
+		t.Fatalf("SwitchProject A: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if embedCalls.Load() > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if embedCalls.Load() == 0 {
+		t.Fatal("project A indexing never reached the embedder before the double-switch")
+	}
+
+	// 2) Rapid double-switch to B while A's indexing is in flight. This must
+	//    cancel A's index context (unblocking the embedder + releasing the
+	//    write lock), wait out A's init goroutine, and not deadlock.
+	if err := mgr.SwitchProject("project-b", wsB, viPathB, ProjectCallbacks{}); err != nil {
+		t.Fatalf("SwitchProject B: %v", err)
+	}
+
+	// 3) Open the gate so B's indexing can proceed (A's embedder already
+	//    unblocked via ctx cancellation in step 2).
+	release()
+
+	// 4) B must win: readiness restored and B's collection populated with
+	//    b.go (not A's a.go). WaitReady succeeding also proves no deadlock —
+	//    it requires B's SetProject to have acquired the write lock A held.
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer readyCancel()
+	if err := svc.WaitReady(readyCtx); err != nil {
+		t.Fatalf("WaitReady B after rapid double-switch: %v", err)
+	}
+	col := svc.GetCollection()
+	if col == nil || col.Count() == 0 {
+		t.Fatal("expected project B collection to have documents after double-switch")
+	}
+	files, err := svc.GetCollectionFiles()
+	if err != nil {
+		t.Fatalf("GetCollectionFiles: %v", err)
+	}
+	for fp := range files {
+		if filepath.Base(fp) != "b.go" {
+			t.Errorf("project B collection contains unexpected file from A: %s", fp)
+		}
+	}
+
+	// 5) No leaked indexing pass: the indexing flag settles to false (A's
+	//    goroutine exited via ctx cancellation; B's completed normally).
+	settleDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(settleDeadline) {
+		if !mgr.indexing.Load() {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if mgr.indexing.Load() {
+		t.Error("expected indexing flag to settle to false after double-switch")
+	}
+}
