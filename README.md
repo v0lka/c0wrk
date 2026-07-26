@@ -11,17 +11,12 @@ A desktop AI agent for work that won't fit in a single reply — research, codin
 
 ## What makes c0wrk different
 
-- **Tackles genuinely hard, multi-part tasks.** Rather than answering in one shot, c0wrk plans the work, takes it step by step, and replans when something goes wrong, so a complicated request gets carried all the way to a finished result.
+- **Plans before it acts.** For anything non-trivial, c0wrk maps the work to a plan as a dependency graph you can review and approve before it runs a single step — so a wrong approach gets caught in seconds, not after twenty minutes of work. Big jobs get split into isolated sub-tasks handed to sub-agents that run in parallel, each with its own focus, so the independent parts finish together instead of one after another.
 - **Goals that run to the finish.** Start a message with `/goal` and c0wrk commits to a concrete, checkable definition of "done" that you sign off on up front — then keeps working turn after turn, checking its own progress, until it can prove the goal is met, it's stuck, the budget runs out, or you hit pause. No stopping at the first plausible-looking answer.
-- **A real desktop workspace.** Chat sits next to a file tree, a code viewer with inline diffs, and live panels that show what the agent is doing and why.
 - **Two modes for two kinds of work.** **CODE** points the agent at a real project: full toolset, in-place file edits, inline diffs, and git. **CHAT** is for when you want to reason, research, or draft without touching a codebase — each CHAT session gets its own isolated scratch workspace, code-modifying tools are switched off, and no git is required.
-- **You stay in control.** Every potentially risky action can require your approval, with an optional AI "judge" that reasons about borderline calls so you're not drowned in prompts — or drowned in risk.
-- **Defense in depth.** The agent stays inside your project workspace by default; any step outside it — reading or writing files elsewhere on disk — needs your explicit OK. Shell commands go through a hardened denylist (tighter still in CHAT mode), web fetches are SSRF-protected, and every safety check runs *before* an operation can auto-approve.
-- **Bring your own model.** Works with Anthropic, OpenAI, ChatGPT, Gemini, LM Studio, and any OpenAI- or Anthropic-compatible endpoint. Set it up once, switch models per task.
-- **Connects to your tools.** Plug in external services through the Model Context Protocol (MCP), extend behaviour with composable agent skills, and run shell commands directly in a built-in terminal.
-- **Knows your codebase.** Semantic + keyword search means c0wrk finds the right file or symbol even when you describe it loosely, not just when keywords happen to match.
-- **Picks up where you left off.** Full session history is persisted, so you can close the app and resume a task exactly as it was.
-- **Searches the live web.** Pulls up-to-date information via Tavily when the task needs current knowledge.
+- **Safe by default, never in your way.** c0wrk stays inside your project and checks every risky step *before* it runs, so nothing destructive ever happens by surprise — and an optional AI judge quietly clears the routine calls so you're asked only about what genuinely matters, not every file write. Since the web pages and files it reads can't hijack it either, you can hand it real, messy work and trust it to stay on task.
+- **Bring your own model.** Works with Anthropic, OpenAI, ChatGPT and any OpenAI- or Anthropic-compatible endpoint. Set it up once, switch models per task.
+- **Knows your codebase.** Semantic + lexical search means c0wrk finds the right file or symbol even when you describe it loosely, not just when keywords happen to match.
 - **Plays nice with corporate networks.** HTTP/HTTPS proxy support with custom CA certs and bypass lists.
 
 ## Download & install

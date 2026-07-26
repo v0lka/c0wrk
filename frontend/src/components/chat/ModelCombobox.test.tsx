@@ -33,6 +33,13 @@ vi.hoisted(() => {
 import { ModelCombobox } from './ModelCombobox'
 import { useInputModeStore } from '@/stores/inputModeStore'
 
+// Spies created via vi.hoisted so they exist before vi.mock factories run and
+// are also referenceable inside the test bodies.
+const spies = vi.hoisted(() => ({
+  setDefaultModel: vi.fn<(model: string) => Promise<void>>(),
+  invalidateConfigCache: vi.fn(),
+}))
+
 // Mock the config hook so the combobox renders synchronously with canned
 // models, without touching the Wails backend.
 vi.mock('@/hooks/useConfigData', () => ({
@@ -44,14 +51,29 @@ vi.mock('@/hooks/useConfigData', () => ({
     defaultModel: 'claude-sonnet',
     loaded: true,
   }),
-  invalidateConfigCache: () => {},
+  invalidateConfigCache: spies.invalidateConfigCache,
 }) as typeof import('@/hooks/useConfigData'))
+
+// Mock the config API so picking a model persists default_model without a real
+// Wails round-trip. Partial mock without a type cast — ModelCombobox only calls
+// setDefaultModel — matching the project convention (BlackboardPanel.test,
+// ReviewPage.test, useProjectSwitchState.test) where @/api/* modules are
+// partially mocked without `as typeof import(...)`, which would otherwise
+// require covering every export of the mocked module.
+vi.mock('@/api/config', () => ({
+  setDefaultModel: spies.setDefaultModel,
+}))
 
 let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
   useInputModeStore.setState({ selectedModel: null })
+  spies.setDefaultModel.mockReset()
+  // By default the persist succeeds; individual tests override with
+  // mockRejectedValue to exercise the failure path.
+  spies.setDefaultModel.mockResolvedValue(undefined)
+  spies.invalidateConfigCache.mockReset()
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -138,5 +160,90 @@ describe('ModelCombobox portal', () => {
     // The selected value is the composite selector "provider/name".
     expect(useInputModeStore.getState().selectedModel).toBe('chatgpt/gpt-4o')
     expect(document.body.querySelector('[role="listbox"]')).toBeNull()
+  })
+})
+
+describe('ModelCombobox default-model persistence', () => {
+  it('persists the picked model as default_model and invalidates the config cache', async () => {
+    openDropdown()
+    const options = document.body.querySelectorAll('[role="listbox"] button')
+
+    spies.setDefaultModel.mockResolvedValue(undefined)
+
+    act(() => {
+      // Last option button is the 'gpt-4o' model.
+      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    // The picked model is written to default_model (LLM section) as the
+    // composite selector "provider/name".
+    expect(spies.setDefaultModel).toHaveBeenCalledTimes(1)
+    expect(spies.setDefaultModel).toHaveBeenCalledWith('chatgpt/gpt-4o')
+
+    // The per-message override is also set, so the next message uses the
+    // picked model immediately.
+    expect(useInputModeStore.getState().selectedModel).toBe('chatgpt/gpt-4o')
+
+    // After the persist resolves, the config cache is invalidated so every
+    // consumer (settings, reasoning combobox) refreshes the new default.
+    await vi.waitFor(() => {
+      expect(spies.invalidateConfigCache).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('does NOT persist default_model when the "Default" option is chosen', async () => {
+    openDropdown()
+    const options = document.body.querySelectorAll('[role="listbox"] button')
+
+    spies.setDefaultModel.mockResolvedValue(undefined)
+
+    act(() => {
+      // First option button is the "Default" entry (resets to global default).
+      options[0]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    // Choosing "Default" clears the per-message override but must NOT rewrite
+    // default_model — it already points at the global default.
+    expect(useInputModeStore.getState().selectedModel).toBeNull()
+    expect(spies.setDefaultModel).not.toHaveBeenCalled()
+    expect(spies.invalidateConfigCache).not.toHaveBeenCalled()
+  })
+
+  it('still invalidates the cache even if persist rejects', async () => {
+    openDropdown()
+    const options = document.body.querySelectorAll('[role="listbox"] button')
+
+    spies.setDefaultModel.mockRejectedValue(new Error('boom'))
+
+    act(() => {
+      // Last option button is the 'gpt-4o' model.
+      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await vi.waitFor(() => {
+      expect(spies.invalidateConfigCache).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('rolls back the per-message override when persist fails (no silent divergence)', async () => {
+    openDropdown()
+    const options = document.body.querySelectorAll('[role="listbox"] button')
+
+    spies.setDefaultModel.mockRejectedValue(new Error('boom'))
+
+    act(() => {
+      // Last option button is the 'gpt-4o' model.
+      options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    // Optimistically applied synchronously on click …
+    expect(useInputModeStore.getState().selectedModel).toBe('chatgpt/gpt-4o')
+
+    // … then rolled back once the persist rejects, so the selector never
+    // advertises a default that was not actually saved.
+    await vi.waitFor(() => {
+      expect(useInputModeStore.getState().selectedModel).toBeNull()
+    })
+    expect(spies.invalidateConfigCache).toHaveBeenCalledTimes(1)
   })
 })

@@ -728,8 +728,8 @@ func (a *App) buildFrontendAPI(
 			return proj.WorkspacePath, nil
 		})
 	}
+	application.Manager().SetLogger(log)
 
-	// Validate LLM provider configuration at startup (fail-fast).
 	if cfg.Config != nil && cfg.Config.LLM.DefaultModel == "" {
 		log.Error("no default model configured - check your config.yaml")
 		a.emit(backend.EventStartupError, map[string]string{

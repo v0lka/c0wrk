@@ -1,7 +1,8 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useInputModeStore } from '@/stores/inputModeStore'
-import { useConfigData } from '@/hooks/useConfigData'
+import { useConfigData, invalidateConfigCache } from '@/hooks/useConfigData'
+import { setDefaultModel } from '@/api/config'
 import { useDropdown } from '@/hooks/useDropdown'
 import { computeDropdownPosition, type DropdownPosition } from '@/lib/dropdownPosition'
 import { compositeModelId, bareModel, findModelInfo } from '@/lib/modelId'
@@ -158,6 +159,34 @@ export function ModelCombobox() {
     triggerRef.current?.focus()
   }
 
+  // Persist the picked model as the global default_model (LLM section of the
+  // config). UpdateLLMConfig is a partial merge so only default_model is
+  // written — provider configs and API keys are untouched. The per-message
+  // override (selectedModel) is applied optimistically so the next message
+  // uses the picked model immediately, even before the rebuilt router
+  // propagates.
+  //
+  // Race handling: if the persist fails, the override is rolled back to its
+  // previous value so the selector never advertises a default that was not
+  // actually saved — otherwise the UI would show the picked model while the
+  // backend default stayed unchanged, silently reverting on the next "Default"
+  // selection or restart. The previous value is read fresh from the store
+  // (not the render-scoped `selectedModel`) so it reflects any intervening
+  // pick at click time. The config cache is invalidated on settle regardless,
+  // so every consumer re-syncs with the actual backend state.
+  const handleSelectModel = (id: string) => {
+    const prev = useInputModeStore.getState().selectedModel
+    setSelectedModel(id)
+    setIsOpen(false)
+    setDefaultModel(id)
+      .catch(() => {
+        // Persist failed: reconcile the override. setDefaultModel (api/config)
+        // already logs the error, so nothing to surface here.
+        setSelectedModel(prev)
+      })
+      .finally(() => invalidateConfigCache())
+  }
+
   return (
     <div className="relative shrink-0" ref={containerRef}>
       <button
@@ -231,7 +260,7 @@ export function ModelCombobox() {
                         key={entry.id}
                         type="button"
                         className={`flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted ${isSelected ? 'bg-primary/10 font-medium' : ''}`}
-                        onClick={() => { setSelectedModel(entry.id); setIsOpen(false) }}
+                        onClick={() => { handleSelectModel(entry.id) }}
                       >
                         <span className="flex-1 text-left truncate">{entry.model}</span>
                         {isSelected && (

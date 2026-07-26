@@ -124,6 +124,12 @@ type Manager struct {
 	converter           *markitdown.Converter // lazy-init markitdown converter for AttachFiles
 	converterMu         sync.Mutex            // guards lazy converter initialization
 
+	// ignoreCache caches per-root ignore.Resolver instances so the directory
+	// tree is walked only once per root (not on every SendMessage). The key
+	// is the symlink-resolved absolute root path. Resolvers are immutable
+	// after construction so they are safe for concurrent use once cached.
+	ignoreCache sync.Map // string (resolved root) → *ignore.Resolver
+
 	// shuttingDown is set to true at the very start of Shutdown() so that the
 	// SendMessage/Resume goroutines, when they observe their context cancelled,
 	// can distinguish an app shutdown from a user-initiated cancellation. During

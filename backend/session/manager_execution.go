@@ -19,6 +19,7 @@ import (
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/ignore"
 	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/pathutil"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
@@ -132,16 +133,29 @@ func (m *Manager) injectIgnoreChecker(ctx context.Context, session *Session, dir
 		roots = append(roots, resolved)
 	}
 
-	// Build a resolver per root, skipping (rather than failing the whole
-	// workspace on) roots that cannot be built.
+	// Build a resolver per root from the cache. Roots that are not yet cached
+	// are built asynchronously — the resolver is expensive (it walks the
+	// entire directory tree for .gitignore/.aiignore files) and blocking
+	// SendMessage on a large directory (e.g. the Go module cache with tens of
+	// thousands of entries) causes multi-minute hangs. On the first message
+	// after startup the checker may be incomplete; subsequent messages pick up
+	// the cached resolver once the background walk finishes.
 	resolvers := make([]*ignore.Resolver, 0, len(roots))
 	for _, root := range roots {
-		r, err := ignore.NewResolver(root)
-		if err != nil {
-			m.log().Debug("ignore checker: skipping root, resolver build failed", "root", root, "error", err)
+		if cached, loaded := m.ignoreCache.Load(root); loaded {
+			// The cache only ever stores *ignore.Resolver (a real resolver or
+			// the building sentinel), but assert with the comma-ok form so an
+			// unexpected type is skipped instead of panicking.
+			r, ok := cached.(*ignore.Resolver)
+			if !ok {
+				continue
+			}
+			resolvers = append(resolvers, r)
 			continue
 		}
-		resolvers = append(resolvers, r)
+		// Kick off async build — deduplicated via LoadOrStore of a sentinel
+		// so concurrent SendMessage calls don't launch duplicate walks.
+		m.startIgnoreBuild(root)
 	}
 	if len(resolvers) == 0 {
 		return ctx
@@ -150,7 +164,96 @@ func (m *Manager) injectIgnoreChecker(ctx context.Context, session *Session, dir
 	return sdktools.WithIgnoreChecker(ctx, checker)
 }
 
-// SendMessage sends a user message to a session's orchestrator (async).
+// startIgnoreBuild launches a background goroutine to walk root and cache its
+// ignore.Resolver. It is deduplicated: if another goroutine has already started
+// (or completed) a build for the same root, this is a no-op.
+func (m *Manager) startIgnoreBuild(root string) {
+	// Deduplicate via a sentinel "building" marker stored in the cache map.
+	// sync.Map.LoadOrStore guarantees exactly one goroutine wins the race.
+	sentinel := &ignore.Resolver{}
+	if actual, loaded := m.ignoreCache.LoadOrStore(root, sentinel); loaded {
+		// Already cached (real resolver or in-flight sentinel) — nothing to do.
+		_ = actual
+		return
+	}
+
+	go func() {
+		r, err := ignore.NewResolver(root)
+		if err != nil {
+			m.log().Debug("ignore checker: background resolver build failed", "root", root, "error", err)
+			// Remove the sentinel so a future call can retry.
+			m.ignoreCache.Delete(root)
+			return
+		}
+		m.ignoreCache.Store(root, r)
+	}()
+}
+
+// ignoreFileNames are the files whose change invalidates a cached resolver.
+// ignore.NewResolver walks the whole root collecting every occurrence of these,
+// so a change to any one of them — anywhere under a root — makes that root's
+// cached resolver stale.
+var ignoreFileNames = map[string]struct{}{
+	".gitignore":  {},
+	".aiignore":   {},
+	".ignore":     {}, // .ignore is honoured by ripgrep and some tools
+}
+
+// InvalidateIgnoreCache evicts cached ignore resolvers whose root contains one
+// of changedPaths when that path is an ignore-rule file (.gitignore/.aiignore/
+// .ignore). It is the invalidation half of the async ignore cache: without it,
+// edits to ignore files would be invisible until the app restarts.
+//
+// It only DELETEs cache entries — it never rebuilds synchronously. The rebuild
+// is triggered lazily and asynchronously by the next injectIgnoreChecker call:
+// startIgnoreBuild launches a background goroutine and deduplicates concurrent
+// builds via a sentinel. Because the rebuild never blocks SendMessage, this
+// cannot regress the multi-minute-build case on roots with hundreds of
+// thousands of files — at worst the first message after invalidation runs
+// without ignore filtering (the no-checker / sentinel path), exactly like the
+// first message after startup, until the background walk completes.
+//
+// changedPaths are expected to be absolute filesystem paths (as reported by the
+// workspace watcher / fsnotify); the cache is keyed by symlink-resolved roots.
+// pathutil.IsWithinPath resolves symlinks on both sides, so the match is
+// correct even when the workspace lives behind an OS symlink.
+func (m *Manager) InvalidateIgnoreCache(changedPaths []string) {
+	affected := make(map[string]struct{})
+	for _, p := range changedPaths {
+		base := filepath.Base(p)
+		if _, isIgnoreFile := ignoreFileNames[base]; isIgnoreFile {
+			affected[p] = struct{}{}
+		}
+	}
+	if len(affected) == 0 {
+		return
+	}
+
+	// For each affected ignore file, evict every cached root that contains it.
+	// The cache typically holds only a handful of roots (workspace + a few
+	// auxiliary work directories), so a full Range per affected file is cheap.
+	m.ignoreCache.Range(func(key, _ any) bool {
+		root, ok := key.(string)
+		if !ok {
+			return true
+		}
+		for ignoreFile := range affected {
+			within, err := pathutil.IsWithinPath(root, ignoreFile)
+			if err != nil {
+				// Resolve failure (e.g. vanished root) — evict to be safe; the
+				// lazy rebuild will re-add it (or skip it) on next use.
+				m.ignoreCache.Delete(root)
+				m.log().Debug("ignore checker: evicted root on resolve error", "root", root, "error", err)
+				continue
+			}
+			if within {
+				m.ignoreCache.Delete(root)
+				m.log().Debug("ignore checker: invalidated root after ignore-file change", "root", root, "trigger", ignoreFile)
+			}
+		}
+		return true
+	})
+}
 // Runs in a goroutine, results come via events.
 // reviewMode, when true, marks the message as carrying code review feedback
 // the agent must address (see core HandleOptions.ReviewMode).

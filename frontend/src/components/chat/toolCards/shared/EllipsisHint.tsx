@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
@@ -42,16 +42,29 @@ export function EllipsisHint({ fullText, children, className, alwaysShow = false
   const ref = useRef<HTMLSpanElement>(null)
   const [overflowing, setOverflowing] = useState(false)
 
-  // Re-measure after every DOM commit so the overflow gate stays accurate as
-  // content or layout changes (e.g. streaming updates that shorten the title).
-  // Deliberately no dependency array — we want to measure on every render.
-  // setOverflowing is a stable setter and a no-op when the value is unchanged,
-  // so this cannot cause a render loop.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useLayoutEffect(() => {
+  // Measure on mount, when fullText changes, and on element resize.
+  // A deps-less useEffect would read scrollWidth/clientWidth on every render,
+  // forcing a layout reflow per instance — with many ToolCards visible this
+  // freezes the UI for seconds. ResizeObserver catches container-width changes
+  // (panel resize, streaming content growth) without per-render reflow.
+  //
+  // useEffect (not useLayoutEffect): the ResizeObserver fires asynchronously
+  // regardless, so a synchronous post-paint measurement adds an extra forced
+  // reflow at mount with no offsetting benefit. The initial paint may show the
+  // span without the overflow tooltip for one frame; the overflow gate settles
+  // on the first ResizeObserver callback, which is imperceptible.
+  useEffect(() => {
     const el = ref.current
-    if (el) setOverflowing(el.scrollWidth - el.clientWidth > 1)
-  })
+    if (!el) return
+
+    const measure = () => setOverflowing(el.scrollWidth - el.clientWidth > 1)
+    measure()
+
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+
+    return () => observer.disconnect()
+  }, [fullText])
 
   const measure = () => {
     const el = ref.current

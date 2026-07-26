@@ -292,6 +292,14 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 	watcher, err := workspace.NewWatcher(p.WorkspacePath, func(changedPaths []string) {
 		f.emitEvent(EventWorkspaceTreeChanged, nil)
 
+		// An ignore-rule file (.gitignore/.aiignore/.ignore) change anywhere
+		// under a watched root makes the cached ignore resolver stale. Evict
+		// the affected roots so the next task rebuilds them (async, lazy) —
+		// without this, ignore edits are invisible until restart.
+		if f.app != nil && f.app.Manager() != nil {
+			f.app.Manager().InvalidateIgnoreCache(changedPaths)
+		}
+
 		// Project-local skills live under <workspace>/.agents/skills, so a
 		// workspace change may have added/removed/modified them. Invalidate
 		// the skill cache so the next ListSkills call rescans.
@@ -342,10 +350,14 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return fmt.Errorf("failed to create session workspace for watcher: %w", err)
 	}
-	watcher, err := workspace.NewWatcher(root, func(_ []string) {
+	watcher, err := workspace.NewWatcher(root, func(changedPaths []string) {
 		f.emitEvent(EventWorkspaceTreeChanged, nil)
 		// Invalidate skill cache in case project-local skills changed.
 		f.invalidateSkillCache()
+		// Same ignore-cache invalidation as CODE mode (see switchProjectSetupWatcher).
+		if f.app != nil && f.app.Manager() != nil {
+			f.app.Manager().InvalidateIgnoreCache(changedPaths)
+		}
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start workspace file watcher: %w", err)

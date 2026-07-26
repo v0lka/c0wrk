@@ -56,6 +56,17 @@ export async function updateLLMConfig(req: LLMFullConfigRequest): Promise<void> 
   }
 }
 
+/**
+ * Persist a new `default_model` (LLM section) without touching provider
+ * configs or API keys. The backend's UpdateLLMConfig is a partial merge: when
+ * only `default_model` is set, provider maps and credentials are left intact.
+ * Callers should invalidate the config cache afterwards so model selectors and
+ * the "default" badge refresh.
+ */
+export async function setDefaultModel(model: string): Promise<void> {
+  await updateLLMConfig({ default_model: model })
+}
+
 export async function updateSearchSettings(settings: SearchSettingsRequest): Promise<void> {
   try {
     const app = getApp()

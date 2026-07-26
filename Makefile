@@ -1,4 +1,4 @@
-.PHONY: build test lint dev-desktop fetch-onnx fetch-embedding-model clean-onnx clean frontend-deps
+.PHONY: build test lint dev-desktop bump fetch-onnx fetch-embedding-model clean-onnx clean frontend-deps
 
 # ONNX Runtime version
 ONNX_VERSION := 1.24.1
@@ -163,3 +163,30 @@ clean-onnx:
 clean:
 	rm -rf build/bin .cache frontend/dist
 	@echo "All build artifacts removed"
+
+# --- sp4rk dependency ------------------------------------------------------------
+
+# sp4rk SDK module path and its public VCS remote. The remote is queried
+# directly (git ls-remote) to discover the latest commit WITHOUT requiring a
+# local checkout — the sibling ../sp4rk clone is optional and may be absent.
+# Override the remote for a fork:
+#   make bump SP4RK_REMOTE=https://github.com/yourfork/sp4rk
+SP4RK_MODULE := github.com/v0lka/sp4rk
+SP4RK_REMOTE ?= https://github.com/v0lka/sp4rk
+
+# Bump the sp4rk dependency pseudo-version to the latest commit of its remote
+# repository. The commit is resolved directly from the remote (git ls-remote
+# HEAD), so NO local checkout is needed. GOWORK=off forces resolution from the
+# module source (proxy/VCS) instead of the local workspace replacement defined
+# in the parent go.work.
+bump:
+	@set -eu; \
+	COMMIT=$$(git ls-remote $(SP4RK_REMOTE) HEAD | awk '{print $$1}'); \
+	if [ -z "$$COMMIT" ]; then \
+		echo "bump: could not resolve HEAD from $(SP4RK_REMOTE)" >&2; \
+		echo "      check network access or override: make bump SP4RK_REMOTE=<url>" >&2; \
+		exit 1; \
+	fi; \
+	echo "Bumping $(SP4RK_MODULE) to $$COMMIT ($(SP4RK_REMOTE) HEAD) ..."; \
+	GOWORK=off go get $(SP4RK_MODULE)@$$COMMIT; \
+	GOWORK=off go mod tidy
