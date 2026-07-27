@@ -330,7 +330,10 @@ func persistTaskOutcome(pbb PersistableBlackboard, execResult *orchestration.Exe
 	case orchestration.ExecutionStatusFailed, orchestration.ExecutionStatusAborted:
 		pbb.FailTask()
 	default:
-		// Success or legacy empty status.
+		// Success or legacy empty status. Record the Conductor's output as the
+		// final result before completion; CompleteTask then persists it to the
+		// tasks.final_output column (see specs/domains/memory/blackboard.md).
+		pbb.SetFinalResult(execResult.Output)
 		pbb.CompleteTask(execResult.AttemptCount)
 	}
 }
