@@ -110,8 +110,16 @@ type GoalState struct {
 	Budget       GoalBudget `json:"budget"`        // resource caps (zero = unlimited)
 	TurnCount    int        `json:"turn_count"`    // turns spent so far
 	Status       GoalStatus `json:"status"`        // current lifecycle state
-	LastVerdict  *Verdict   `json:"last_verdict"`  // most recent verification outcome (nil = none yet)
-	CreatedAt    time.Time  `json:"created_at"`    // when the goal was created
+	LastVerdict  *Verdict   `json:"last_verdict"`  // most recent self-evaluation verdict (nil = none yet)
+	// LastVerification records the outcome of the independent verifier on the
+	// most recent "met" verdict attempt: "" (no verification ran / a fresh
+	// turn), "confirmed", "rejected", or "off" (verification disabled). It is
+	// the single marker the goal loop threads through emitGoalStatus (the
+	// goal_status event meta) and renderGoalModeVolatile (the next-turn prompt
+	// rejection notice). It is reset to "" at the top of each agent turn so the
+	// marker only describes the immediately-preceding met attempt.
+	LastVerification string    `json:"last_verification"`
+	CreatedAt        time.Time `json:"created_at"` // when the goal was created
 }
 
 // IsTerminal reports whether the status is a terminal (non-resumable) state.

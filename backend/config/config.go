@@ -31,6 +31,7 @@ type Config struct {
 	ToolLimits    ToolLimitsConfig    `yaml:"toolLimits"`
 	Timeouts      TimeoutsConfig      `yaml:"timeouts"`
 	Orchestration OrchestrationConfig `yaml:"orchestration"`
+	GoalLoop      GoalLoopConfig      `yaml:"goal_loop"`
 	VectorIndex   VectorIndexConfig   `yaml:"vector_index"`
 	Proxy         ProxyConfig         `yaml:"proxy"`
 }
@@ -331,6 +332,17 @@ type OrchestrationConfig struct {
 	MaxJudgeCacheSize         int `yaml:"maxJudgeCacheSize"`         // default: 1000
 }
 
+// GoalLoopConfig holds settings for the goal-derivation / verification loop.
+//
+// Verification controls whether the loop runs the independent verifier.
+//   - "independent" (default): the goal loop uses an independent verifier turn
+//     to confirm task completion before declaring success.
+//   - "off": the verifier is disabled; the loop relies solely on the agent's
+//     own declare_goal_status verdict.
+type GoalLoopConfig struct {
+	Verification string `yaml:"verification"` // "independent" | "off"; default "independent"
+}
+
 // SkillsConfig holds Agent Skills discovery configuration.
 type SkillsConfig struct {
 	// Dirs lists skill discovery directories in priority order (highest first).
@@ -581,6 +593,17 @@ func validate(cfg *Config) error {
 		if tools.IsInternalTool(toolName) {
 			return fmt.Errorf("tool %q is an internal tool and cannot have a custom policy", toolName)
 		}
+	}
+
+	// Validate goal_loop.verification enum.
+	switch cfg.GoalLoop.Verification {
+	case "independent", "off":
+		// valid
+	default:
+		return fmt.Errorf(
+			"goal_loop.verification %q is not valid; must be one of: independent, off",
+			cfg.GoalLoop.Verification,
+		)
 	}
 
 	return nil

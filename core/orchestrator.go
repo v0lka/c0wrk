@@ -141,6 +141,18 @@ type OrchestratorConfig struct {
 	// Keeps the prompt bounded for long sessions while preserving enough
 	// dialogue context for the agent to understand follow-up references.
 	ConductorHistoryWindow int
+
+	// GoalLoop holds settings for the goal-derivation / verification loop.
+	// GoalLoop.Verification gates the independent verifier turn; "off"
+	// disables it so the loop relies solely on the agent's own verdict.
+	GoalLoop GoalLoopSettings
+}
+
+// GoalLoopSettings mirrors the config-layer GoalLoopConfig for the
+// orchestrator's runtime config field. Verification is "independent"
+// (default) or "off".
+type GoalLoopSettings struct {
+	Verification string
 }
 
 // ContextManagerFactory creates a ContextManager for a new task.
@@ -229,6 +241,24 @@ type Orchestrator struct {
 	// defaultGoalTurnRunner, which reuses runConductor under the hood.
 	goalTurnRunner func(ctx context.Context, turn int, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, deps conductorDeps) (toolCallCount int, result *orchestration.ExecutionResult, err error)
 
+	// goalVerifier is the independent verifier that re-checks an agent's "met"
+	// goal verdict. When the goal loop reaches a "met" verdict and independent
+	// verification is configured (config.GoalLoop.Verification == "independent"),
+	// the verifier runs an ISOLATED Conductor pass — bounded by
+	// verificationMaxSteps, restricted to a read-only/test toolset — that
+	// inherits the active skills + project-context prefix via the
+	// goal-verification system prompt. It reports a structured outcome through
+	// declare_verification.
+	//
+	// It is the single seam through which the loop drives verification, kept as
+	// a field so tests can inject a mock that returns a canned outcome without
+	// spinning up the full Conductor stack. The default (nil) resolves to
+	// defaultGoalVerifier, which reuses RunConductor under the hood (mirroring
+	// goalTurnRunner). It carries message + bb so it can drive RunConductor on
+	// the same blackboard the agent's work lives on (the verifier reads prior
+	// facts / step outputs to inspect the claimed artifacts).
+	goalVerifier func(ctx context.Context, gs *goal.GoalState, verdict *goal.Verdict, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, deps conductorDeps) (*tools.VerificationOutcome, error)
+
 	// activeGoalPause is the pause signal for the currently-running goal
 	// loop, if any. PauseGoal loads the pointer and sets the atomic; runGoalLoop
 	// polls it at the top of each turn iteration. It is swapped in at goal-loop
@@ -243,6 +273,15 @@ type Orchestrator struct {
 	// the atomic pointer. The *atomic.Bool it points to is, of course, atomic.
 	activeGoalPause atomic.Pointer[atomic.Bool]
 }
+
+// verificationMaxSteps bounds the independent goal-verification pass. It is a
+// small fixed constant — NOT derived from routing complexity — so a focused
+// re-check of an already-completed goal cannot run unbounded. The budget is
+// enough for the verifier to read a few files, re-run the verify clause via the
+// shell tool, inspect the live output, and declare its verdict; it deliberately
+// favors a tight, cheap pass over an exhaustive re-implementation. Wired into a
+// specialized Conductor run via conductorDeps.maxStepsOverride.
+const verificationMaxSteps = 12
 
 // ErrRequestInFlight is returned by HandleMessage when another HandleMessage
 // call on the same *Orchestrator is already running. The orchestrator is

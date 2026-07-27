@@ -14,6 +14,7 @@ type BuilderConfig struct {
 	Search        BuilderSearchConfig
 	MCP           BuilderMCPConfig
 	Orchestration BuilderOrchestrationConfig
+	GoalLoop      BuilderGoalLoopConfig
 	ToolLimits    BuilderToolLimitsConfig
 	Timeouts      BuilderTimeoutsConfig
 	Proxy         proxy.Config
@@ -242,6 +243,11 @@ type BuilderMCPServer struct {
 type BuilderOrchestrationConfig struct {
 	MaxDependencyContextChars int
 	MaxJudgeCacheSize         int
+}
+
+// BuilderGoalLoopConfig holds goal-loop settings.
+type BuilderGoalLoopConfig struct {
+	Verification string // "independent" (default) | "off"
 }
 
 // ---------------------------------------------------------------------------

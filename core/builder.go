@@ -400,6 +400,9 @@ func (b *OrchestratorBuilder) Build(
 		PreWarningPercent:       cfg.Executor.Compaction.Thresholds.PreWarningPercent,
 		InjectionDefenseEnabled: cfg.Security.InjectionDefenseEnabled,
 		AgentsMDMaxBytes:        cfg.Security.AgentsMDMaxBytes,
+		GoalLoop: GoalLoopSettings{
+			Verification: cfg.GoalLoop.Verification,
+		},
 	}
 
 	// Create tool result cache (per-session lifetime).

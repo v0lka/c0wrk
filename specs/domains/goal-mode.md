@@ -6,14 +6,17 @@ Goal mode is a multi-turn, agent-driven execution loop that pursues a single use
 
 ## Key Files
 
-- `core/goal/types.go` — the `goal` domain package: `GoalStatus`, `GoalBudget`, `GoalEvidence`, `Verdict`, `GoalState` (the runtime state machine)
-- `core/orchestrator_goal.go` — the goal loop: `deriveGoal`, `runGoalLoop`, `resumeGoalLoop`, `runGoalTurns`, budget/pause/anti-spin logic, the `countingToolExec` wrapper (anti-spin tool-call counter), `emitGoalStatus`/`emitGoalProgress`, `PauseGoal`
-- `core/orchestrator.go` — `HandleMessage` dispatch (`opts.Goal`), `Resume` goal-loop branch, `WithGoalState`, `activeGoalPause atomic.Pointer[atomic.Bool]` field (cross-goroutine pause signal), `ApplyRequestOverrides` (shared step 0 for HandleMessage and the resume path)
+- `core/goal/types.go` — the `goal` domain package: `GoalStatus`, `GoalBudget`, `GoalEvidence`, `Verdict`, `GoalState` (the runtime state machine; `LastVerification` carries the independent-verifier outcome marker `""`/`confirmed`/`rejected`/`off`)
+- `core/orchestrator_goal.go` — the goal loop: `deriveGoal`, `runGoalLoop`, `resumeGoalLoop`, `runGoalTurns`, budget/pause/anti-spin logic, the `countingToolExec` wrapper (anti-spin tool-call counter), `emitGoalStatus`/`emitGoalProgress`, `PauseGoal`; the **independent-verification gate** in `runGoalTurns` (the "met" branch); `defaultGoalVerifier` (the production verifier pass), `resolveGoalVerifier` (verifier nil→default resolution + test seam), `verifierToolFilter`/`verifierExcludedToolNames` (the read-only/test toolset), `verificationMaxSteps` (the fixed step cap), `goalVerifierDefaultRejectReason` (synthesized rejection reason), `renderReportedEvidence`
+- `core/orchestrator.go` — `HandleMessage` dispatch (`opts.Goal`), `Resume` goal-loop branch, `WithGoalState`, `activeGoalPause atomic.Pointer[atomic.Bool]` field (cross-goroutine pause signal), `ApplyRequestOverrides` (shared step 0 for HandleMessage and the resume path), the `goalVerifier` field (the verifier injection seam), `GoalLoopSettings.Verification` (runtime config field mirroring the config layer)
 - `core/message_preprocess.go` — `DetectAndStripGoalMode` (`/goal` prefix detection)
 - `core/types.go` — `HandleOptions.Goal`, `HandleOptions.GoalBudgetOverride`
-- `core/systemprompt.go` — goal-mode system-prompt section rendering (`prompts.GoalModeSubstitute`) and the derivation prompt selection (`prompts.GoalDerivation`)
+- `core/systemprompt.go` — goal-mode system-prompt section rendering (`prompts.GoalModeSubstitute`) and the derivation prompt selection (`prompts.GoalDerivation`); `renderGoalModeVolatile` (the per-turn volatile section, including the one-shot rejection notice when the prior "met" was rejected by the verifier)
 - `core/tools/propose_goal.go` — `propose_goal` tool + `GoalProposer` interface + context plumbing (`WithGoalProposer`/`GoalProposerFrom`)
-- `core/tools/declare_goal_status.go` — `declare_goal_status` tool + `GoalStatusSink` interface + context plumbing (`WithGoalStatusSink`/`GoalStatusSinkFrom`)
+- `core/tools/declare_goal_status.go` — `declare_goal_status` tool + `GoalStatusSink` interface + context plumbing (`WithGoalStatusSink`/`GoalStatusSinkFrom`) — the agent's **primary** self-evaluation verdict channel
+- `core/tools/declare_verification.go` — `declare_verification` tool (`PolicyAlwaysAllow` internal tool — the verifier's ONLY verdict channel) + `VerificationOutcome` + `VerificationSink` interface (`Declare`/`Last`) + context plumbing (`WithVerificationSink`/`VerificationSinkFrom`). Mirrors `declare_goal_status`'s evidence mandate (`confirmed=true` requires non-empty evidence)
+- `core/prompts/goal_verification_substitute.go` — `GoalVerificationSubstitute` (resolves the `prompts.GoalVerification` directive's condition/verify/reported-evidence placeholders and substitutes the shell-tool name)
+- `backend/config/config.go` / `backend/config/defaults.go` — `GoalLoopConfig.Verification` (`independent` default | `off`), validated in `Validate`
 - `desktop/startup_phases.go` — `goalProposerAdapter` (the desktop `GoalProposer` that emits `goal_proposal` and blocks for the user response)
 - `desktop/startup.go` — goal-proposal pending map, `goal_proposal_response` event handler, goal-proposal resolver wiring
 - `backend/frontend_api_goal.go` — RPC surface: `ConfirmGoal`/`CancelGoal`/`PauseGoal`/`ResumeGoal`/`ClearGoal`
@@ -101,7 +104,17 @@ for gs.Status == active:
   │   — context carries the GoalState (WithGoalState) so the system prompt renders the goal
   │
   ├─ read the verdict sink:
-  │     "met"     → Status=met, break
+  │     "met"     → INDEPENDENT VERIFICATION GATE (see § Independent Verification):
+  │                  ┌─ verification "off" → Status=met, break (evidence-mandate-only)
+  │                  ├─ verifier resolved (resolveGoalVerifier; nil seam → confirm)
+  │                  ├─ confirmed → Status=met, break (the agent's verdict stands)
+  │                  └─ rejected (Confirmed=false, nil outcome, or error)
+  │                       → synthesize not_met {reason} into gs.LastVerdict,
+  │                         set gs.LastVerification="rejected", emit goal_status,
+  │                         CONTINUE the loop (no break, no TurnCount re-increment
+  │                         — the agent turn already counted; falls through to
+  │                         anti-spin / budget guards). A rejected "met" can
+  │                         NEVER terminate the goal as met.
   │     "blocked" → Status=blocked_idle, break
   │     "not_met" → keep iterating
   │
@@ -145,7 +158,34 @@ The single channel through which the loop learns a structured verdict is the `de
 
 **Evidence mandate**: declaring status `"met"` **requires non-empty evidence** — at least one `{type, ref, summary}` artifact (changed file path, test output, command result). Enforced at the tool boundary so a bare "done" can never terminate the goal loop without a concrete, inspectable artifact. The tool executor does **not** validate inputs against the JSON schema, so the check rejects both an absent array **and** a present-but-empty entry (e.g. `evidence:[{}]` or `evidence:[{"ref":""}]`): each entry must have non-empty `type`, `ref`, and `summary` after trimming. A `met` verdict that fails this check is rejected with an error and the loop keeps iterating.
 
-The agent is self-evaluating its own work — see the ADR for the rationale (self-agent + evidence-mandate vs. an external evaluator).
+The agent is self-evaluating its own work — see the ADR for the rationale (self-agent + evidence-mandate as the primary verdict, with an independent verification backstop).
+
+## Independent Verification
+
+The agent's `declare_goal_status` verdict is the **primary** signal, but it is a single unverified assertion — a sufficiently convincing agent can declare `"met"` with fabricated-but-plausible evidence. An **independent verification backstop** re-checks each claimed `"met"` before the goal terminates. It is the mechanism Decision 1 of [../decisions/019-goal-mode.md](../decisions/019-goal-mode.md) adopts (the constrained A2+C form — a verifier that reuses the working agent's own skills, read-only/test toolset, and project context, with a verify-by-executing directive).
+
+**When it runs.** Only after the agent declares `"met"` **with evidence** (i.e. the evidence mandate already passed). It runs **once per claimed "met"**, never on every turn, and never on `not_met`/`blocked`/idle turns.
+
+**What it is — a control-plane pass, NOT a goal turn.** The verifier is an **isolated `RunConductor` pass** launched inside the held single-flight, **between two agent turns**. It is explicitly **not** a goal-loop turn:
+
+- It does **not** increment `TurnCount` and is **not** counted against `MaxTurns`. A rejected `"met"` therefore costs the budget **one agent turn + one verifier pass** (the agent turn already counted; the verifier is free of the turn budget).
+- It does **not** route — it inherits the routing decision established once at goal entry (see [Routing Invariant](#routing-invariant-one-routing-decision-per-goal-task)). It is part of the control plane that *governs* the turn loop, not part of it.
+- It reuses all Conductor wiring (context injection, trajectory, tool executor/registry) and inherits the **active skills + project-context prefix** via `buildSpecializedSystemPrompt` + `prompts.GoalVerification` (resolved by `GoalVerificationSubstitute` with the condition, the verify clause, and the agent's **reported evidence presented as unverified claims** to re-check).
+
+**Bounded and read-only.** The pass is bounded by `verificationMaxSteps` — a small **fixed** step cap (`12`), **not** derived from routing complexity — so a focused re-check cannot run unbounded. Its toolset is built by `verifierToolFilter`: read-only/meta tools, the platform shell-execution tool (`bash_exec`/`posh_exec`, so it can re-run the verify clause e.g. `go test`), MCP tools, and `declare_verification`. It **hard-excludes** (`verifierExcludedToolNames`) all mutating tools (`write_file`/`edit_file`/`delete_*`/`create_directory`) and all goal-control/coordination tools (`declare_goal_status`, `declare_step_complete`, `declare_plan`, `delegate`, `subagent`, `propose_goal`, `reflect`, `cancel_delegation`) — the verifier's ONLY output channel is `declare_verification`; it cannot loop the loop, change the goal it is judging, or escape its read-only mandate.
+
+**The verdict — `declare_verification` into a `VerificationSink`.** The verifier reports a `tools.VerificationOutcome {Confirmed, Reason, Evidence, DeclaredAt}` through `declare_verification` (an internal `PolicyAlwaysAllow` tool, mirroring `declare_goal_status`) into a fresh per-pass `VerificationSink` (`memVerificationSink`). A confirmed verdict **requires non-empty evidence**, mirroring the evidence mandate on the agent's own `"met"` — the verifier must back its confirmation with concrete artifacts too. A pass that ends **without** declaring a verdict (hit the step budget, errored, or context cancelled) is treated as a **REJECT** — the condition could not be independently confirmed.
+
+**The gate in `runGoalTurns`.** The `"met"` branch is intercepted:
+
+- **`verification: "off"`** → `Status=met`, break (evidence-mandate-only behavior; reproduces the original loop exactly).
+- **No verifier resolved** (`resolveGoalVerifier` returns nil — the defensive seam) → `Status=met`, break (treated as confirmed).
+- **Confirmed** → `Status=met`, break. The agent's verdict stands; termination is unchanged from the pre-verifier behavior (plus one verifier pass).
+- **Rejected** (`Confirmed==false`, a nil outcome, or an error) → the `"met"` is overridden: a synthesized `not_met` verdict carrying the rejection reason (the verifier's `Reason`, or `goalVerifierDefaultRejectReason` when none) is assigned to `gs.LastVerdict`, `gs.LastVerification` is set to `"rejected"`, `goal_status` is emitted, and the loop **CONTINUES** — no break, no `TurnCount` re-increment (the agent turn already counted). The turn then falls through to the normal anti-spin / budget guards. **A `"met"` rejected by the verifier can never terminate the goal as met.**
+
+**Rejection feedback to the next agent turn.** The marker `gs.LastVerification` (`""` / `"confirmed"` / `"rejected"` / `"off"`) is the single value threaded through two consumers. It is reset to `""` at the top of each agent turn — **after** that turn's prompt already rendered the prior marker — so the rejection notice is **one-shot**: it surfaces on exactly the turn after the rejected `"met"` claim, then is gone. `renderGoalModeVolatile` (`core/systemprompt.go`) reads `LastVerification == "rejected"` and prepends a prominent notice — *"Previous met claim was REJECTED by independent verification: \<reason\>. Address this before re-declaring met."* (reason from the synthesized `gs.LastVerdict.Reason`) — before the budget line. `emitGoalStatus` carries the same marker out via the `verification` event meta key (see [Events](#events)). This makes the rejection visible to exactly the one turn that must address it, without trajectory-plumbing.
+
+**Configuration.** Gated by `goal_loop.verification` (`independent` default | `off`), defined in `backend/config/config.go` (`GoalLoopConfig`), defaulted in `backend/config/defaults.go`, and validated in `Validate`. See [Budgets](#budgets) / [Configuration](#configuration).
 
 ## Lifecycle States
 
@@ -200,7 +240,7 @@ Goal mode uses two channels: a dedicated session event for the proposal sign-off
 | ----- | --------- | --------------- | ------ | ----------- |
 | `goal_proposal` | backend → frontend | `GoalProposalPayload {request_id, session_id, condition, verify, clarification?, needs_clarification}` | `goalProposerAdapter.Propose` | Derivation agent called `propose_goal`; surfaces as a pending action that **blocks the agent** until the user responds. Persisted (role `goal_proposal`) so it reappears on reload. |
 | `goal_proposal_response` | frontend → backend | `{request_id, decision, condition?, verify?, clarification?}` | `GoalProposalPanel` (Approve/Cancel) | User's sign-off decision. Both the event path and the RPC path (`ConfirmGoal`/`CancelGoal`) funnel through a single resolver on the desktop pending map. |
-| `goal_status` | backend → frontend | `service` event, `phase: "goal_status"`, meta: `{status, turn, condition, max_turns, verdict?, reason?}` | `emitGoalStatus` | Full goal snapshot, emitted on every state transition (paused/met/exhausted/blocked_idle) and after each turn. |
+| `goal_status` | backend → frontend | `service` event, `phase: "goal_status"`, meta: `{status, turn, condition, max_turns, verdict?, reason?, verification?}` | `emitGoalStatus` | Full goal snapshot, emitted on every state transition (paused/met/exhausted/blocked_idle) and after each turn. The `verification` meta key carries the independent-verifier outcome (`"confirmed"` / `"rejected"` / `"off"`) — present only when `gs.LastVerification` is one of those three values, i.e. immediately after a claimed `"met"` was adjudicated. `verdict`/`reason` reflect `gs.LastVerdict`; on a rejection, the synthesized `not_met` verdict carries the verifier's rejection reason. |
 | `goal_progress` | backend → frontend | `service` event, `phase: "goal_progress"`, meta: `{turn, max_turns, condition}` | `emitGoalProgress` | Mid-loop turn/budget telemetry (emitted after a non-terminal turn). |
 
 The `goal_status`/`goal_progress` events reuse the existing `ServiceWithMeta` channel with a `phase` discriminator — no new `Emitter`-interface methods. The frontend goal store (`useGoalEvents`) reconciles the store from these events; the `goal_proposal` event is handled by the goal handlers hook which writes both the goal store and a chat message (`goal_proposal` DisplayItem). See [../contracts/event-catalog.md](../contracts/event-catalog.md) and [frontend/events.md](frontend/events.md).
@@ -216,6 +256,8 @@ The `goal_status`/`goal_progress` events reuse the existing `ServiceWithMeta` ch
 
 This is the same continuation convention the normal resume path uses (separate `Executor.Run`, trajectory-seeded), extended to iterate until the goal terminates.
 
+> **The independent verifier is a fresh `RunConductor`, but NOT a goal turn.** The [Independent Verification](#independent-verification) backstop also launches an isolated `RunConductor` pass — but it is a **control-plane** pass, not one of the per-turn `Executor.Run`s this invariant covers: it does not increment `TurnCount`, is not counted against `MaxTurns`, and runs only after a claimed `"met"` with evidence.
+
 ## Single-Flight / Pause-Signal Interaction
 
 The goal loop runs under the `Orchestrator` single-flight guard (`requestInFlight.CompareAndSwap`), acquired in `HandleMessage` **before** `runGoalLoop` is entered. The loop holds that guard for its entire multi-turn duration.
@@ -227,11 +269,12 @@ The goal loop runs under the `Orchestrator` single-flight guard (`requestInFligh
 
 ## Configuration
 
-The goal budget is **turn-only**. There are no config-level token or wall-clock caps; a per-goal turn limit is selected in the UI (`BudgetCombobox`: ∞ / 3 / 5 / 10 turns, or a custom number). An unlimited goal (∞) is bounded only by the internal `goalLoopMaxTurns = 50` safety ceiling.
+The goal budget is **turn-only**. There are no config-level token or wall-clock caps; a per-goal turn limit is selected in the UI (`BudgetCombobox`: ∞ / 3 / 5 / 10 turns, or a custom number). An unlimited goal (∞) is bounded only by the internal `goalLoopMaxTurns = 50` safety ceiling. The independent verifier is gated by the config-level `goal_loop.verification` toggle (see [Independent Verification](#independent-verification)).
 
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
 | `HandleOptions.GoalBudgetOverride` | nil | Per-request JSON override (`{"max_turns":N}`); `MaxTurns` when set, otherwise unlimited |
+| `goal_loop.verification` | `independent` | Whether the independent verification backstop re-checks each claimed `"met"` before the goal terminates. `independent` (default): run the bounded, read-only/test verifier pass — a rejected/ non-declaring verdict keeps the loop going; `off`: rely solely on the agent's `declare_goal_status` verdict + the evidence mandate (reproduces the pre-verifier loop). Defined in `backend/config/config.go` (`GoalLoopConfig`), defaulted in `backend/config/defaults.go`, validated in `Validate` (`independent`/`off`), surfaced at runtime as `OrchestratorConfig.GoalLoop.Verification` (`GoalLoopSettings`). |
 
 ## Invariants
 
@@ -239,6 +282,8 @@ The goal budget is **turn-only**. There are no config-level token or wall-clock 
 - **One routing decision per goal task.** Routing (domain, complexity, matched+user skills, skill-policy overrides) is established exactly once at the top of `runGoalLoop`, before derivation, and inherited unchanged by derivation + every goal turn; no turn re-routes, and `resumeGoalLoop` reuses the persisted routing. See [Routing Invariant](#routing-invariant-one-routing-decision-per-goal-task).
 - Each goal-loop turn is a **fresh `Executor.Run`** (via `RunConductor); the loop is a turn-of-Conductors, not one long-lived executor.
 - A `met` verdict **requires non-empty evidence** with each entry having non-empty `type`/`ref`/`summary` (enforced in `declare_goal_status`); a bare "done" cannot terminate the loop.
+- **Independent verification is control-plane, not a goal turn.** When enabled (`goal_loop.verification: independent`, the default), the verifier pass that re-checks a claimed `"met"` runs **between two agent turns** inside the held single-flight; it does **not** increment `TurnCount` and is **not** counted against `MaxTurns` — a rejected `"met"` costs the budget one agent turn + one verifier pass (the agent turn already counted). See [Independent Verification](#independent-verification).
+- **A `"met"` rejected by the verifier can never terminate the goal as met.** Only a *confirmed* claim (or `verification: off`, or the nil-verifier seam) terminates as `met`; a rejected/non-declaring claim synthesizes a `not_met` verdict, feeds the reason back into the next agent turn, and continues the loop without re-incrementing the turn counter.
 - Anti-spin: a turn with **zero tool calls AND no verdict** halts as `blocked_idle`.
 - The pause signal is cleared on loop exit; a stale signal never affects a future request.
 - The loop holds the single-flight guard for its entire multi-turn run; `PauseGoal` releases it by breaking out.

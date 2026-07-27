@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -443,6 +444,11 @@ func (o *Orchestrator) persistGoalStateBestEffort(bb orchestration.Blackboard, g
 	}
 }
 
+// goalVerifierDefaultRejectReason is the synthesized reason assigned to a met
+// verdict the verifier rejected without supplying a concrete reason (e.g. a nil
+// outcome). It surfaces a clear, actionable explanation to the next agent turn.
+const goalVerifierDefaultRejectReason = "the independent verifier could not confirm the goal's success condition is met"
+
 // runGoalTurns is the turn-iteration core of the goal loop, extracted so it can
 // be unit-tested with a mock turn runner and a pre-built GoalState (bypassing
 // the LLM-driven deriveGoal). It mutates and returns gs.
@@ -495,17 +501,91 @@ func (o *Orchestrator) runGoalTurns(
 			turn, message, bb, availableTools, plansDir, conversationHistory, deps,
 		)
 		gs.TurnCount = turn
+		// The verification marker described the PREVIOUS turn's met attempt and
+		// has now been rendered into THIS turn's system prompt (built inside
+		// turnRunner → RunConductor from this same gs pointer). Clear it so the
+		// rejection notice is one-shot: it surfaces on exactly the turn after
+		// the rejected met claim, then is gone. The current turn's own met
+		// attempt (if any) re-populates the marker below before emitGoalStatus.
+		gs.LastVerification = ""
 
 		// Read the agent's verdict (nil if declare_goal_status was not called).
 		if v := sink.Last(); v != nil {
 			gs.LastVerdict = v
 			if v.Status == "met" {
-				gs.Status = goal.StatusMet
-				o.logInfo("goal_loop: goal met", "turn", turn, "evidence", len(v.Evidence))
-				o.emitGoalStatus(ctx, gs)
-				break
-			}
-			if v.Status == "blocked" {
+				// Independent verification gate. When verification is "off"
+				// (or no verifier is configured), a "met" verdict terminates
+				// the goal exactly as before — the loop relies solely on the
+				// agent's self-evaluation. Otherwise the verifier re-checks
+				// the claimed outcome via an isolated Conductor pass:
+				//   - confirmed (or a nil-verifier seam returning confirm)
+				//     → StatusMet, break (the agent's met verdict stands).
+				//   - rejected (Confirmed==false, nil outcome, or error) → the
+				//     met verdict is overridden: a synthesized not_met verdict
+				//     carrying the rejection reason is assigned to
+				//     gs.LastVerdict, the goal stays active, and the loop
+				//     CONTINUES (does NOT break, does NOT re-increment the turn
+				//     counter — this turn already counted).
+				// A met rejected by the verifier must NEVER terminate the goal
+				// as met.
+				verificationMode := o.config.GoalLoop.Verification
+				if verificationMode == "off" {
+					gs.LastVerification = "off"
+					gs.Status = goal.StatusMet
+					o.logInfo("goal_loop: goal met (verification off)", "turn", turn, "evidence", len(v.Evidence))
+					o.emitGoalStatus(ctx, gs)
+					break
+				}
+				verifier := o.resolveGoalVerifier()
+				if verifier == nil {
+					// Defensive seam: a nil verifier with verification enabled
+					// treats the met claim as confirmed (same as "off"). This
+					// preserves today's behavior when the seam returns nil.
+					gs.LastVerification = "confirmed"
+					gs.Status = goal.StatusMet
+					o.logInfo("goal_loop: goal met (no verifier configured)", "turn", turn, "evidence", len(v.Evidence))
+					o.emitGoalStatus(ctx, gs)
+					break
+				}
+				outcome, verr := verifier(ctx, gs, v, message, bb, availableTools, deps)
+				if outcome != nil && outcome.Confirmed {
+					gs.LastVerification = "confirmed"
+					gs.Status = goal.StatusMet
+					o.logInfo("goal_loop: goal met (verification confirmed)", "turn", turn, "evidence", len(v.Evidence))
+					o.emitGoalStatus(ctx, gs)
+					break
+				}
+				// Rejected. Synthesize a not_met verdict carrying the rejection
+				// reason so the next agent turn (and renderGoalModeVolatile)
+				// sees it in gs.LastVerdict. Keep the agent's original evidence
+				// so the UI/next turn retains context on what was attempted.
+				rejectReason := goalVerifierDefaultRejectReason
+				if outcome != nil && strings.TrimSpace(outcome.Reason) != "" {
+					rejectReason = outcome.Reason
+				}
+				gs.LastVerdict = &goal.Verdict{
+					Status:     "not_met",
+					Reason:     rejectReason,
+					Evidence:   v.Evidence,
+					DeclaredAt: time.Now(),
+				}
+				gs.LastVerification = "rejected"
+				if verr != nil {
+					o.logInfo("goal_loop: met verdict rejected by verifier (verifier error)", "turn", turn, "error", verr, "reason", rejectReason)
+				} else {
+					o.logInfo("goal_loop: met verdict rejected by verifier", "turn", turn, "reason", rejectReason)
+				}
+				// Fall through to the post-turn (anti-spin / budget / progress)
+				// path WITHOUT breaking and WITHOUT re-incrementing the turn
+				// counter — the agent turn already counted above. This lets a
+				// rejected met claim be retried on the next turn while still
+				// respecting the budget and idle guards.
+				//
+				// NOTE: goal_status is NOT emitted here; the bottom-of-loop
+				// emitGoalProgress + emitGoalStatus handle it (exactly like a
+				// "not_met" verdict). Emitting here would double-emit goal_status
+				// since there is no break.
+			} else if v.Status == "blocked" {
 				gs.Status = goal.StatusBlockedIdle
 				o.logInfo("goal_loop: agent declared blocked", "turn", turn, "reason", v.Reason)
 				o.emitGoalStatus(ctx, gs)
@@ -626,6 +706,12 @@ func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard
 // state snapshot. Uses ServiceWithMeta (the existing generic channel) rather
 // than adding new Emitter methods, so the frontend can subscribe to
 // {"phase":"goal_status", ...} without a core Emitter-interface change.
+//
+// When gs.LastVerification is set ("confirmed", "rejected", or "off"), a
+// "verification" meta key carries that outcome so the UI can surface the
+// independent verifier's verdict alongside the agent's self-evaluation. The
+// marker is the single channel through which the goal loop reports the
+// verification result of the most recent met attempt.
 func (o *Orchestrator) emitGoalStatus(_ context.Context, gs *goal.GoalState) {
 	meta := map[string]any{
 		"phase":     "goal_status",
@@ -637,6 +723,9 @@ func (o *Orchestrator) emitGoalStatus(_ context.Context, gs *goal.GoalState) {
 	if gs.LastVerdict != nil {
 		meta["verdict"] = gs.LastVerdict.Status
 		meta["reason"] = gs.LastVerdict.Reason
+	}
+	if v := gs.LastVerification; v == "confirmed" || v == "rejected" || v == "off" {
+		meta["verification"] = v
 	}
 	o.emitter.ServiceWithMeta("Goal status: "+string(gs.Status), meta)
 }
@@ -720,8 +809,238 @@ func (s *memGoalStatusSink) Last() *goal.Verdict {
 	return s.verdict
 }
 
+// ----------------------------------------------------------------------------
+// Verification sink (in-memory implementation)
+// ----------------------------------------------------------------------------
+
+// memVerificationSink is the concrete VerificationSink used by the verifier
+// pass. It holds the most recent outcome behind a mutex (declare_verification
+// may be called at most once per pass, but the guard keeps it correct under any
+// re-entrancy). Last returns nil until an outcome is declared.
+type memVerificationSink struct {
+	mu      sync.Mutex
+	outcome *tools.VerificationOutcome
+}
+
+func (s *memVerificationSink) Declare(v tools.VerificationOutcome) {
+	s.mu.Lock()
+	s.outcome = &v
+	s.mu.Unlock()
+}
+
+func (s *memVerificationSink) Last() *tools.VerificationOutcome {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.outcome
+}
+
+// verifierExcludedToolNames are tools the verification pass MUST NOT have. They
+// are split into two groups:
+//
+//  1. Mutating tools — the verifier is read-only/test-only; it must never edit
+//     the codebase, create/delete files, or otherwise change state. (bash_exec /
+//     posh_exec are allowed because the verify clause is often a shell command —
+//     e.g. `go test`, `npm run build` — which the verifier must re-run to check
+//     the claimed outcome.)
+//
+//  2. Goal-control / coordination tools — the verifier's ONLY output channel is
+//     declare_verification. It must not change the goal lifecycle
+//     (declare_goal_status, propose_goal), declare or execute plans
+//     (declare_plan, declare_step_complete), delegate or spin off subagents
+//     (delegate, subagent, cancel_delegation), or self-reflect (reflect). Each
+//     of those would let the verifier either tamper with the goal it is judging
+//     or escape its isolated read-only mandate.
+//
+// These names without a core constant (delete_file, delete_directory,
+// create_directory, declare_goal_status, declare_plan, delegate, propose_goal,
+// reflect, cancel_delegation) are referenced as literals because the sp4rk SDK
+// does not export constants for them; they match the built-in tool names.
+var verifierExcludedToolNames = map[string]struct{}{
+	// Mutating file tools.
+	ToolWriteFile: {}, ToolEditFile: {},
+	"delete_file": {}, "delete_directory": {}, "create_directory": {},
+	// Goal-control / coordination tools.
+	"declare_goal_status": {}, ToolDeclareStepComplete: {},
+	"declare_plan": {}, "delegate": {}, ToolSubAgent: {},
+	"propose_goal": {}, "reflect": {}, "cancel_delegation": {},
+}
+
+// verifierToolFilter builds the read-only/test toolset for the verification
+// pass from the full availableTools list. A tool is INCLUDED when it is:
+//
+//   - a non-mutating read-only / meta tool (subagentReadOnlyToolNames), OR
+//   - the platform shell-execution tool (activeShellToolName — bash_exec on
+//     Unix, posh_exec on Windows), needed to re-run the verify clause, OR
+//   - an MCP-sourced tool (all of them — MCP tools are user-installed
+//     capabilities and may include read-only checkers/tests), OR
+//   - declare_verification itself — the verifier's verdict channel (the only
+//     internal coordination tool the verifier is allowed; without it the pass
+//     could never report an outcome).
+//
+// Every tool in verifierExcludedToolNames is then HARD-EXCLUDED regardless of
+// the include criteria (so e.g. declare_step_complete — present in
+// subagentReadOnlyToolNames — is stripped), and finally any tool disabled in
+// the current mode (deps.disabledTools, e.g. glob/ripgrep in CHAT mode) is
+// dropped. This mirrors conductorLauncher.mandatorySubagentTools but with the
+// verification-specific exclusion set layered on top.
+func verifierToolFilter(all []sdktools.ToolDescriptor, disabled map[string]bool) []sdktools.ToolDescriptor {
+	out := make([]sdktools.ToolDescriptor, 0, len(all))
+	seen := make(map[string]struct{}, len(all))
+	shell := activeShellToolName()
+	for _, d := range all {
+		if _, ok := seen[d.Name]; ok {
+			continue
+		}
+		// Mode-disabled tools are never available (e.g. glob/ripgrep/
+		// semantic_search in CHAT / No-Project mode).
+		if disabled[d.Name] {
+			continue
+		}
+		// Hard exclusion: mutating + goal-control tools are stripped even when
+		// they match an include criterion (e.g. declare_step_complete is in
+		// subagentReadOnlyToolNames but must be excluded here).
+		if _, excluded := verifierExcludedToolNames[d.Name]; excluded {
+			continue
+		}
+		isMCP := d.SourceCategory == sdktools.SourceCategoryMCP
+		_, isReadOnly := subagentReadOnlyToolNames[d.Name]
+		isShell := d.Name == shell
+		isVerdict := d.Name == "declare_verification" // the verifier's verdict channel
+		if !isMCP && !isReadOnly && !isShell && !isVerdict {
+			continue
+		}
+		seen[d.Name] = struct{}{}
+		out = append(out, d)
+	}
+	return out
+}
+
+// renderReportedEvidence formats the agent's self-reported verdict into the
+// string injected into the goal-verification directive's {reported_evidence}
+// placeholder. The directive treats this as UNVERIFIED claims the verifier must
+// re-check independently; this helper only presents them, never vouches for
+// them. A nil verdict (the agent did not declare one) yields a placeholder note
+// so the directive still renders cleanly.
+func renderReportedEvidence(verdict *goal.Verdict) string {
+	if verdict == nil {
+		return "(The agent reported no self-evaluation verdict. Verify the condition by inspection and cite concrete evidence.)"
+	}
+	var b strings.Builder
+	if reason := strings.TrimSpace(verdict.Reason); reason != "" {
+		fmt.Fprintf(&b, "Agent's reported reason: %s\n", reason)
+	}
+	if len(verdict.Evidence) == 0 {
+		b.WriteString("The agent reported NO concrete evidence for its verdict.\n")
+	} else {
+		b.WriteString("The agent's reported evidence (treat as UNVERIFIED claims — re-check each one):\n")
+		for i, ev := range verdict.Evidence {
+			fmt.Fprintf(&b, "  %d. [%s] %s — %s\n", i+1, ev.Type, ev.Ref, ev.Summary)
+		}
+	}
+	return b.String()
+}
+
+// defaultGoalVerifier is the production independent verifier. It runs an
+// ISOLATED Conductor pass that reuses all wiring (context injection,
+// trajectory, tool executor/registry) and inherits the active skills +
+// project-context prefix via the goal-verification system prompt override
+// (buildSpecializedSystemPrompt + prompts.GoalVerification). The pass is bounded
+// by verificationMaxSteps and restricted to a read-only/test toolset
+// (verifierToolFilter); the verifier reports its structured verdict through
+// declare_verification into a fresh memVerificationSink injected into the
+// per-pass context.
+//
+// It mirrors deriveGoal: build fresh conductor deps, swap in the specialized
+// directive (placeholders resolved + shell-tool substituted), bound the loop,
+// filter the toolset, inject the sink, run RunConductor, and read the outcome.
+// A pass that ends WITHOUT declaring a verdict (nil sink) is treated as a
+// REJECT — the condition could not be independently confirmed (e.g. the pass
+// hit the step budget or errored before declaring).
+func (o *Orchestrator) defaultGoalVerifier(
+	ctx context.Context,
+	gs *goal.GoalState,
+	verdict *goal.Verdict,
+	message string,
+	bb orchestration.Blackboard,
+	availableTools []sdktools.ToolDescriptor,
+	deps conductorDeps,
+) (*tools.VerificationOutcome, error) {
+	// Build fresh deps so the verifier is isolated from the goal loop's
+	// per-turn wiring (verdict sink, counting wrappers). Preserve the prior
+	// conversation history so the verifier sees the same dialogue context the
+	// agent had. Verification never resumes from a checkpoint.
+	deps = o.buildConductorDeps(deps.conversationHistory, nil)
+	deps.resumeSteps = nil
+
+	// Substitute the goal-verification directive with the active goal's
+	// condition/verify clause and the agent's REPORTED evidence (treated as
+	// unverified claims the verifier must re-check). Shell-tool substitution is
+	// applied here (via GoalVerificationSubstitute), matching
+	// buildSpecializedSystemPrompt's contract that the caller supplies a
+	// shell-tool-substituted directive — so the directive names the
+	// platform-correct tool while active skills + the shared project-context
+	// prefix are kept by the specialized prompt builder.
+	directive := prompts.GoalVerificationSubstitute(
+		prompts.GoalVerification, gs.Condition, gs.VerifyClause, renderReportedEvidence(verdict),
+	)
+	deps.systemPromptOverride = func(ctx context.Context, msg string, modelMeta llm.ModelMetadata) string {
+		return buildSpecializedSystemPrompt(ctx, msg, modelMeta, directive)
+	}
+	// Bound the verification pass independently of routing complexity so a
+	// focused re-check cannot run unbounded.
+	deps.maxStepsOverride = verificationMaxSteps
+
+	// Restrict the toolset to read-only/test tools (no mutating, no
+	// goal-control). verifierToolFilter guarantees declare_verification is
+	// present so the verifier can report its verdict.
+	verifierTools := verifierToolFilter(availableTools, deps.disabledTools)
+
+	// Inject a fresh sink so this pass's outcome is captured in isolation.
+	sink := &memVerificationSink{}
+	verifierCtx := tools.WithVerificationSink(ctx, sink)
+
+	if _, err := RunConductor(verifierCtx, message, bb, verifierTools, deps, ""); err != nil {
+		if o.logger != nil {
+			o.logger.Debug("goal verification conductor run returned error", "error", err)
+		}
+	}
+
+	if outcome := sink.Last(); outcome != nil {
+		return outcome, nil
+	}
+
+	// The verifier never declared a verdict. Treat as a REJECT — the condition
+	// could not be independently confirmed (the pass hit the step budget or
+	// errored before declaring). Surface the conductor/context error if any so
+	// the loop has a concrete reason.
+	reason := "verification pass ended without a verdict: the condition could not be independently confirmed"
+	if err := ctx.Err(); err != nil {
+		reason = fmt.Sprintf("verification pass ended without a verdict (context error: %s)", err)
+	}
+	return &tools.VerificationOutcome{
+		Confirmed:  false,
+		Reason:     reason,
+		DeclaredAt: time.Now(),
+	}, nil
+}
+
+// resolveGoalVerifier returns the configured goal verifier, falling back to
+// defaultGoalVerifier when no override is injected. This is the nil→default
+// resolution the goal loop applies before launching the independent
+// verification pass, mirroring how goalTurnRunner resolves to
+// defaultGoalTurnRunner. Centralized as a method so the resolution is testable
+// in isolation: a nil field yields the production default, an injected verifier
+// is honored verbatim (the test seam the goal loop relies on).
+func (o *Orchestrator) resolveGoalVerifier() func(ctx context.Context, gs *goal.GoalState, verdict *goal.Verdict, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, deps conductorDeps) (*tools.VerificationOutcome, error) {
+	if o.goalVerifier != nil {
+		return o.goalVerifier
+	}
+	return o.defaultGoalVerifier
+}
+
 // compile-time assertions that the wrappers satisfy their interfaces.
 var (
-	_ agent.ToolExecutor   = (*countingToolExec)(nil)
-	_ tools.GoalStatusSink = (*memGoalStatusSink)(nil)
+	_ agent.ToolExecutor     = (*countingToolExec)(nil)
+	_ tools.GoalStatusSink   = (*memGoalStatusSink)(nil)
+	_ tools.VerificationSink = (*memVerificationSink)(nil)
 )

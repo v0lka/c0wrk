@@ -12,7 +12,9 @@ You are pursuing a declared goal: a persistent success condition backed by a res
 
 ### Evidence Mandate
 
-When declaring the goal met via `declare_goal_status`, you MUST cite concrete evidence — file paths changed, test output, command results. A bare "done" without evidence fails evaluation. Every claim that the condition holds must be backed by an artifact the user (or an evaluator) can inspect: a changed file path, a test run's output, or a command's result.
+Declare the goal met via `declare_goal_status` only after you have VERIFIED the condition — not merely after you believe you have done the work. The Verify Clause above is the test for "done": a runnable, command-type verify clause (e.g. one that reads "go test ./... exits 0") MUST be executed, and its real exit code and output cited as evidence, before you declare the goal met. Never declare "met" from an assumption that a command would pass — run it and report what actually happened.
+
+Every `met` verdict MUST cite concrete evidence — file paths changed, test output, command results. A bare "done" without evidence fails evaluation. Each claim that the condition holds must be backed by an artifact the user (or an evaluator) can inspect: a changed file path, a test run's output, or a command's result.
 
 ### Budget
 

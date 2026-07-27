@@ -1203,3 +1203,79 @@ embedding_threads: 2
 		t.Errorf("round-tripped EmbeddingThreads = %d, want 4", restored.EmbeddingThreads)
 	}
 }
+
+// TestGoalLoopConfig_DefaultsToIndependent verifies that goal_loop.verification
+// defaults to "independent" when not specified in the config.
+func TestGoalLoopConfig_DefaultsToIndependent(t *testing.T) {
+	content := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	if cfg.GoalLoop.Verification != "independent" {
+		t.Errorf("expected default goal_loop.verification 'independent', got %q", cfg.GoalLoop.Verification)
+	}
+}
+
+// TestGoalLoopConfig_ValidValues verifies that "independent" and "off" are
+// accepted by validation and preserved verbatim.
+func TestGoalLoopConfig_ValidValues(t *testing.T) {
+	for _, val := range []string{"independent", "off"} {
+		t.Run(val, func(t *testing.T) {
+			content := fmt.Sprintf(`
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+goal_loop:
+  verification: %s
+`, val)
+			configPath := writeTestConfig(t, content)
+
+			cfg, err := Load(configPath)
+			if err != nil {
+				t.Fatalf("Load() failed for verification=%q: %v", val, err)
+			}
+			if cfg.GoalLoop.Verification != val {
+				t.Errorf("expected goal_loop.verification %q, got %q", val, cfg.GoalLoop.Verification)
+			}
+		})
+	}
+}
+
+// TestGoalLoopConfig_RejectsInvalidValue verifies that validation rejects an
+// invalid goal_loop.verification value with a clear error message.
+func TestGoalLoopConfig_RejectsInvalidValue(t *testing.T) {
+	content := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+goal_loop:
+  verification: weird
+`
+	configPath := writeTestConfig(t, content)
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatalf("expected error for invalid goal_loop.verification 'weird', got nil")
+	}
+
+	if !contains(err.Error(), "goal_loop.verification") {
+		t.Errorf("expected error to mention 'goal_loop.verification', got: %v", err)
+	}
+}

@@ -34,28 +34,64 @@ goes idle, or the goal is paused.
 
 Six core decisions shape goal mode.
 
-### 1. Self-agent + evidence-mandate (not an external evaluator)
+### 1. Self-agent + evidence-mandate as the primary verdict, with an independent verification backstop
 
-The agent that does the work also evaluates whether the goal is met, via the
-`declare_goal_status` tool. There is **no separate verifier loop** (e.g. a
-second LLM call, a CI runner, or a test-execution harness) that the orchestrator
-consults. Termination is driven by the working agent's structured verdict.
+The agent that does the work is the **primary** evaluator of whether the goal is
+met, via the `declare_goal_status` tool. Termination is driven by the working
+agent's structured verdict.
 
-To keep a self-evaluation trustworthy, declaring status `"met"` **requires
+To keep that self-evaluation trustworthy, declaring status `"met"` **requires
 non-empty evidence** — at least one `{type, ref, summary}` artifact (changed
 file path, test output, command result). The evidence mandate is enforced at
 the tool boundary so a bare "done" can never terminate the loop.
 
-**Rationale.** An external evaluator was rejected because (a) it doubles the
-LLM cost per turn for a benefit that the evidence-mandate achieves more
-cheaply; (b) a generic evaluator cannot know the project-specific verification
-predicate — that knowledge already lives in the working agent that grounded the
-goal in the codebase; (c) wiring a real verifier (running tests, executing
-commands) is project-and-stack-specific and out of scope for the core loop.
-The working agent is the cheapest party that already has the context to
-self-assess, and the evidence-mandate forces that assessment to be concrete
-rather than a bare assertion. The evidence is inspectable by the user, so a
-false "met" is auditable.
+On top of the primary verdict, an **independent verification backstop** now
+re-checks each claimed "met" before the goal terminates. When the agent declares
+`"met"` (with evidence) and verification is enabled (the default), the loop runs
+an **isolated control-plane Conductor pass** — bounded by `verificationMaxSteps`
+(a small fixed step cap, not derived from routing complexity), restricted to a
+read-only/test toolset, and reporting through `declare_verification` — that
+re-runs the verify clause against the claimed artifacts. The verifier is
+**control-plane, not a goal turn**: it does not increment `TurnCount` and is not
+counted against `MaxTurns`. A confirmed claim terminates exactly as a bare "met"
+did before; a **rejected** (or non-declaring) claim cannot terminate the goal —
+the loop continues and the rejection reason is fed back into the next agent
+turn's prompt. The backstop is configurable: `goal_loop.verification` =
+`independent` (default) | `off` (`off` reproduces the original
+evidence-mandate-only behavior). The full mechanics are in
+[../domains/goal-mode.md](../domains/goal-mode.md) § Independent Verification.
+
+**Rationale revisited.** The original version of this decision rejected an
+external evaluator on three grounds. That rejection is **revisited** here: a
+backstop verifier is adopted, but in a constrained form — call it A2+C: a
+verifier (A2) that reuses the working agent's own skills, read-only/test
+toolset, and project context, plus a verify-by-executing directive (C) — that
+answers each of the three original objections:
+
+- **(a) Cost.** The original objection was that an evaluator *doubles the LLM
+  cost per turn*. The backstop is a single bounded pass (`verificationMaxSteps`,
+  a fixed cap independent of routing complexity), not a second full agent per
+  turn — it runs **once per claimed "met"**, never on every turn — and it is
+  fully disable-able via `goal_loop.verification: off`.
+- **(b) Project-specific knowledge.** The original objection was that *a generic
+  evaluator cannot know the project-specific verification predicate*. The
+  verifier is not generic: it **inherits the active skills and project-context
+  prefix** via `buildSpecializedSystemPrompt` + `prompts.GoalVerification`, and is
+  pointed at the **verify clause** — which is exactly the project-specific
+  predicate the derivation agent grounded in the codebase (e.g. `go test ./core/...
+  passes`).
+- **(c) Out-of-scope harness.** The original objection was that *wiring a real
+  verifier (running tests, executing commands) is project-and-stack-specific and
+  out of scope for the core loop*. No new test-execution harness is built: the
+  verifier reuses the **existing** `bash_exec` (to re-run the verify clause) and
+  the existing read-only tools on the same tool surface the working agent uses.
+
+The self-agent + evidence-mandate remains the primary verdict: the backstop runs
+only after a "met" with evidence, and a confirmed claim terminates unchanged. It
+closes the gap the original Negative consequence flagged — a sufficiently
+convincing agent declaring "met" with fabricated-but-plausible evidence — by
+making termination contingent on an independent re-check rather than on a single
+unverified assertion. The evidence is still inspectable by the user.
 
 ### 2. Derive-then-confirm UX (not a slash-command for the condition)
 
@@ -153,9 +189,13 @@ task has existing routing). See [../domains/goal-mode.md](../domains/goal-mode.m
 **Negative:**
 
 - Self-evaluation can be wrong: a sufficiently convincing agent could declare
-  `met` with fabricated-but-plausible evidence. Mitigated by the evidence
-  mandate (concrete, inspectable artifacts) and the user's ability to audit; a
-  real external verifier is deliberately out of scope (Decision 1).
+  `met` with fabricated-but-plausible evidence. Mitigated on two layers — the
+  evidence mandate (concrete, inspectable artifacts) and, by default, the
+  independent verification backstop (Decision 1), which re-checks each claimed
+  "met" via a read-only/test pass and never lets a non-confirmed claim
+  terminate the goal; a "met" the verifier rejects loops back with its reason.
+  Set `goal_loop.verification: off` to rely solely on the evidence mandate +
+  audit, in which case this risk reverts to the original mitigation.
 - A goal holds the single-flight lock for its entire multi-turn run, so a
   second request on the same orchestrator is rejected until the goal
   pauses/exits. Pause/Resume is the intended control flow, not concurrent
@@ -166,9 +206,14 @@ task has existing routing). See [../domains/goal-mode.md](../domains/goal-mode.m
 ## Alternatives Considered
 
 - **External evaluator / verifier loop.** A second LLM call or a
-  test-execution harness consulted by the loop to confirm "met". Rejected
-  (Decision 1): doubles cost, lacks project-specific knowledge, and is out of
-  scope for the core loop. The evidence-mandate is the cheaper substitute.
+  test-execution harness consulted by the loop to confirm "met". The *unbounded*
+  form (a generic evaluator, every turn, with a bespoke test harness) is
+  rejected (Decision 1) — it doubles cost without project-specific knowledge and
+  is out of scope. Decision 1's *revisitation* adopts a **constrained** verifier
+  backstop (A2+C): a single bounded, read-only/test pass that inherits the
+  active skills + project context and re-runs the verify clause, gated behind
+  `goal_loop.verification` (`independent` default / `off`). It closes the
+  fabricated-evidence gap without re-introducing the unbounded evaluator.
 - **Slash-command condition authoring.** `/goal <condition>` where the user
   writes the condition/verify directly. Rejected (Decision 2): high-friction,
   error-prone entry; the agent is better positioned to draft a verifiable

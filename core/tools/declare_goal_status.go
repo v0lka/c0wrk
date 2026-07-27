@@ -11,7 +11,7 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolDeclareGoalStatusDescription = `Declare your self-evaluation verdict on whether the active goal has been reached. Use this after you believe you have done the work the goal describes — it is the single channel through which the goal loop learns your structured verdict {status, evidence, reason}.
+const toolDeclareGoalStatusDescription = `Declare your self-evaluation verdict on whether the active goal has been reached. Use this after you have VERIFIED the goal — not merely after you believe you have done the work. Execute the verify clause (running any command it names) and cite its real exit code / output as evidence before declaring "met"; do not declare the goal met from an assumption that a check would pass. This is the single channel through which the goal loop learns your structured verdict {status, evidence, reason}.
 
 status is one of:
   - "met":      you have satisfied the goal's success condition. REQUIRES concrete evidence (file paths changed, test output, command results). A bare "done" without evidence fails evaluation.

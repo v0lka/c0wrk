@@ -292,9 +292,18 @@ func TestCapturingProposer_DelegateErrorIsPropagated(t *testing.T) {
 // emitter so the loop's ServiceWithMeta event emissions don't panic. All other
 // fields are zero — the mock turn runner never touches the real Conductor
 // stack, so LLM/tool/context dependencies are not needed.
+//
+// Verification is set to "off" so these turn-mechanics tests reproduce today's
+// behavior exactly (a "met" verdict terminates immediately, no verifier
+// invoked). Tests that exercise the verification gate use
+// newVerificationTestOrchestrator (orchestrator_verification_gating_test.go),
+// which enables "independent" mode and injects a verifier.
 func newGoalTestOrchestrator() *Orchestrator {
 	return &Orchestrator{
 		emitter: &mockEmitter{},
+		config: OrchestratorConfig{
+			GoalLoop: GoalLoopSettings{Verification: "off"},
+		},
 	}
 }
 
@@ -1300,6 +1309,11 @@ func TestRunGoalLoop_RoutingBeforeDerivation(t *testing.T) {
 	})
 	spy := &goalRoutingSpyTurnRunner{}
 	orchestrator.goalTurnRunner = spy.run
+	// Inject a confirming verifier so the spy's met verdict passes the
+	// independent-verification gate and terminates the loop on turn 1. This test
+	// exercises routing/continuation wiring, not verification — a real verifier
+	// would need the full Conductor stack. Confirms every met claim immediately.
+	orchestrator.goalVerifier = confirmingVerifierFn
 
 	ctx := sdktools.WithWorkspacePath(context.Background(), wsDir)
 	result, err := orchestrator.HandleMessage(ctx, "achieve the routing-before-derivation goal", "session-goal-routing", HandleOptions{Goal: true})
@@ -1542,6 +1556,10 @@ func TestRunGoalLoop_ContinuationInheritsRestoredBlackboard(t *testing.T) {
 	})
 	spy := &goalContinuationSpyTurnRunner{}
 	orchestrator.goalTurnRunner = spy.run
+	// Inject a confirming verifier so the spy's met verdict passes the
+	// independent-verification gate and terminates the loop on turn 1. This test
+	// exercises blackboard-restore/continuation wiring, not verification.
+	orchestrator.goalVerifier = confirmingVerifierFn
 
 	ctx := sdktools.WithWorkspacePath(context.Background(), t.TempDir())
 	result, err := orchestrator.HandleMessage(ctx, "achieve the next goal", "session-goal-cont", HandleOptions{

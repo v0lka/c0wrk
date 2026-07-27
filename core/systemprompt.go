@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -223,16 +224,38 @@ func renderGoalModeStatic(gs *goal.GoalState) string {
 	return prompts.GoalModeSubstitute(prompts.GoalMode, gs.Condition, verify, goalStaticBudgetNote)
 }
 
-// renderGoalModeVolatile returns ONLY the per-turn budget line. The turn count
-// changes every turn, so this must live after the CacheBreak boundary to avoid
-// busting the cacheable prefix across goal turns. Returns an empty string if
-// the goal has no condition.
+// renderGoalModeVolatile returns the per-turn volatile goal-mode section: the
+// budget line, and — when the immediately-preceding met claim was REJECTED by
+// the independent verifier — a prominent notice directing the agent to address
+// the rejection before re-declaring met. Both change every turn, so they must
+// live after the CacheBreak boundary to avoid busting the cacheable prefix
+// across goal turns. Returns an empty string if the goal has no condition.
+//
+// The rejection notice is keyed on gs.LastVerification == "rejected", which the
+// goal loop sets (and then clears one turn later) when a met verdict fails
+// independent verification. It carries the verifier's reason via the
+// synthesized not_met verdict in gs.LastVerdict (whose Reason is the rejection
+// reason). This makes the rejection visible to exactly the one turn that must
+// address it — the turn after the rejected met claim.
 func renderGoalModeVolatile(gs *goal.GoalState) string {
 	if gs == nil || strings.TrimSpace(gs.Condition) == "" {
 		return ""
 	}
 
-	return "[Goal budget] " + formatGoalBudgetLine(gs.Budget, gs.TurnCount)
+	var b strings.Builder
+	// Rejection notice: prepend before the budget line so it is the first
+	// volatile item the agent sees. Only emitted for a genuine verifier
+	// rejection (not for "confirmed", "off", or a clean "" turn).
+	if gs.LastVerification == "rejected" {
+		reason := goalVerifierDefaultRejectReason
+		if gs.LastVerdict != nil && strings.TrimSpace(gs.LastVerdict.Reason) != "" {
+			reason = gs.LastVerdict.Reason
+		}
+		fmt.Fprintf(&b, "Previous met claim was REJECTED by independent verification: %s. Address this before re-declaring met.\n", reason)
+	}
+	b.WriteString("[Goal budget] ")
+	b.WriteString(formatGoalBudgetLine(gs.Budget, gs.TurnCount))
+	return b.String()
 }
 
 // formatGoalBudgetLine renders the budget as a single "turn N/max" line. A

@@ -151,6 +151,13 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	// propose_goal's pattern. Status "met" requires non-empty evidence.
 	registry.Register(NewDeclareGoalStatusTool())
 
+	// Declare verification — writes a verifier verdict into the
+	// context-injected VerificationSink. Safe to register unconditionally; it
+	// is a no-op outside a verification run (the sink will be nil), matching
+	// declare_goal_status's pattern. confirmed=true requires non-empty
+	// evidence.
+	registry.Register(NewDeclareVerificationTool())
+
 	// Execute plan — reads the declared plan from the blackboard via a
 	// PlanStepExecutor injected into the Conductor context. No-op outside a
 	// Conductor run (the context value will be nil).

@@ -308,6 +308,19 @@ orchestration:
   maxJudgeCacheSize: 1000 # Max entries in judge decision cache
 
 # ---------------------------------------------------------------------------
+# Goal Loop
+# ---------------------------------------------------------------------------
+# Controls the goal-derivation / verification loop. verification gates the
+# independent verifier turn that confirms task completion before success:
+#
+#   independent  (default) — the loop runs an independent verifier turn.
+#   off                    — the verifier is disabled; the loop relies solely
+#                            on the agent's own declare_goal_status verdict.
+#
+# goal_loop:
+#   verification: independent
+
+# ---------------------------------------------------------------------------
 # Workspace Ignore Files (.gitignore / .aiignore)
 # ---------------------------------------------------------------------------
 # c0wrk respects repository ignore files to decide which files and directories

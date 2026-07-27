@@ -290,6 +290,12 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Orchestration.MaxJudgeCacheSize = 1000
 	}
 
+	// Goal loop defaults. Verification defaults to "independent" so the
+	// independent verifier turn runs unless explicitly disabled via "off".
+	if cfg.GoalLoop.Verification == "" {
+		cfg.GoalLoop.Verification = "independent"
+	}
+
 	// Vector index / hybrid search defaults. Hybrid is a pointer-bool so
 	// callers can distinguish "unset" (defaults applied below) from an
 	// explicit false; set it directly here.

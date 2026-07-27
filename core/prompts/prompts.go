@@ -113,6 +113,19 @@ var GoalMode string
 //go:embed goal_derivation.md
 var GoalDerivation string
 
+// Goal verification — the directive for the isolated read-only/test agent that
+// independently confirms or rejects a "met" claim for a declared goal. Used by
+// the verification step that runs after an agent emits a "met" verdict via
+// declare_goal_status. The {goal_condition}, {goal_verify_clause}, and
+// {reported_evidence} placeholders are substituted by GoalVerificationSubstitute
+// from the active GoalState and the agent's reported evidence; the
+// {shell_tool} placeholder is resolved via SubstituteShellTool (delegated by
+// GoalVerificationSubstitute) so the directive names the platform-correct
+// shell-execution tool.
+
+//go:embed goal_verification.md
+var GoalVerification string
+
 // Orchestrator family-specific prompts
 
 //go:embed orchestrator_default.md

@@ -161,6 +161,15 @@ func TestRenderGoalModeSection_ContainsGoalFields(t *testing.T) {
 	if !strings.Contains(got, "declare_goal_status") {
 		t.Error("missing declare_goal_status reference in evidence mandate")
 	}
+	// Evidence mandate must demand executed verification, not mere belief.
+	if !strings.Contains(got, "VERIFIED") {
+		t.Error("evidence mandate should demand executed verification (VERIFIED), not mere belief")
+	}
+	// A runnable, command-type verify clause must be executed with its real
+	// exit code / output cited as evidence.
+	if !strings.Contains(got, "exit code") {
+		t.Error("evidence mandate should require citing a command's real exit code")
+	}
 	// Budget line reflects the turn count and cap.
 	if !strings.Contains(got, "turn 3/8") {
 		t.Error("missing turn budget segment")

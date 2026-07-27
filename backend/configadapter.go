@@ -153,6 +153,9 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 			MaxJudgeCacheSize:         cfg.Orchestration.MaxJudgeCacheSize,
 		},
+		GoalLoop: core.BuilderGoalLoopConfig{
+			Verification: cfg.GoalLoop.Verification,
+		},
 		ToolLimits: core.BuilderToolLimitsConfig{
 			ReadDefaultLines:    cfg.ToolLimits.ReadDefaultLines,
 			WebSearchMaxResults: cfg.ToolLimits.WebSearchMaxResults,

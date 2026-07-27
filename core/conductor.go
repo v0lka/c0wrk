@@ -272,6 +272,15 @@ type conductorDeps struct {
 	// before injecting it into the Conductor context. Zero-value (nil) is the
 	// default: propose_goal returns "no goal proposer in context" if invoked.
 	goalProposer tools.GoalProposer
+
+	// maxStepsOverride, when >0, pins the Conductor's ReAct iteration limit to
+	// a fixed value INSTEAD of the complexity-derived budget (complexity ×
+	// stepsPerComplexity). Used by specialized passes that must be bounded
+	// independently of routing complexity — notably the goal-verification pass
+	// (verificationMaxSteps) so a focused re-check of an already-completed goal
+	// cannot run unbounded. Zero-value (0) is the default: the complexity-
+	// derived limit applies, preserving the behavior of every normal run.
+	maxStepsOverride int
 }
 
 // conductorLauncher implements tools.DelegationLauncher by building a fresh
@@ -1566,6 +1575,17 @@ func RunConductor(
 		systemPromptFactory = deps.systemPromptOverride
 	}
 
+	// maxSteps bounds the ReAct loop. The default derives from routing
+	// complexity (limit = complexity × stepsPerComplexity); a specialized pass
+	// (e.g. goal verification) may pin it to a small constant via
+	// deps.maxStepsOverride so it cannot run unbounded. A positive override
+	// takes precedence over the complexity-derived budget; zero (the default)
+	// keeps the normal behavior.
+	maxSteps := complexity * stepsPerComplexity
+	if deps.maxStepsOverride > 0 {
+		maxSteps = deps.maxStepsOverride
+	}
+
 	cfg := orchestration.ConductorConfig{
 		LLM:                 callerForConductor(deps),
 		Tools:               deps.toolExec,
@@ -1575,7 +1595,7 @@ func RunConductor(
 		ModelRegistry:       deps.modelRegistry,
 		ContextFactory:      adaptContextFactory(deps.contextFactory),
 		SystemPrompt:        systemPromptFactory,
-		MaxSteps:            complexity * stepsPerComplexity,
+		MaxSteps:            maxSteps,
 		ToolResultBudget:    deps.toolResultBudget,
 		CircuitBreaker:      deps.circuitBreaker,
 		HITLHandler:         deps.hitlHandler,
