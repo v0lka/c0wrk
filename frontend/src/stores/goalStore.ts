@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { GoalProposalData } from '@/types/events'
+import type { GoalProposalData, GoalEvidence } from '@/types/events'
 
 // --- Per-session goal state shapes ---
 
@@ -24,6 +24,19 @@ export interface ActiveGoal {
   verdict?: string
   /** Agent's last verdict reason, if any. */
   reason?: string
+  /** Agent's supporting artifacts backing the verdict. Present whenever a
+   *  verdict is declared. Surfaced so the settled goal card can render
+   *  clickable file evidence rather than a bare verdict. */
+  evidence?: readonly GoalEvidence[]
+  /** Independent verifier outcome on the most recent "met" attempt
+   *  ("confirmed" | "rejected" | "off"), if a verification pass ran. */
+  verification?: string
+  /** Independent verifier's reason for confirming the goal (present only when
+   *  verification === 'confirmed'). */
+  verificationReason?: string
+  /** Independent verifier's supporting artifacts (present only when
+   *  verification === 'confirmed'). */
+  verificationEvidence?: readonly GoalEvidence[]
   /** Per-goal verification mode ('executable' | 're_derivation'); carried from
    *  the goal_status snapshot and preserved across turns. Absent means the
    *  default ('executable'). */

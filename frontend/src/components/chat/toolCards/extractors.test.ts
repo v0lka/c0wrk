@@ -4,7 +4,10 @@ import {
   extractSearchTitle, extractUrlTitle, extractMemoTitle,
   extractStepOutputTitle, extractFactsTitle,
   extractAttachmentTitle, extractAttachmentId,
+  extractDelegationId,
   extractFileHint, extractFileLine, extractBashHint, extractSearchHint,
+  extractDelegateTitle, extractReflectTitle, extractDeclarePlanTitle,
+  extractExecutePlanTitle, extractProposeGoalTitle,
 } from './extractors'
 
 describe('extractBashTitle', () => {
@@ -182,5 +185,80 @@ describe('extractAttachmentId', () => {
   })
   it('returns undefined when absent (no fallback label)', () => {
     expect(extractAttachmentId(undefined, '{}')).toBeUndefined()
+  })
+})
+
+describe('extractDelegationId', () => {
+  it('extracts id from parsedArgs', () => {
+    expect(extractDelegationId({ id: 'del_1' }, '')).toBe('del_1')
+  })
+  it('falls back to raw args', () => {
+    expect(extractDelegationId(undefined, '{"id":"del_2"}')).toBe('del_2')
+  })
+  it('returns fallback when empty', () => {
+    expect(extractDelegationId(undefined, '{}')).toBe('delegation')
+  })
+})
+
+describe('extractDelegateTitle', () => {
+  it('returns task count for multiple tasks', () => {
+    expect(extractDelegateTitle({ tasks: [{ id: 'del_1' }, { id: 'del_2' }, { id: 'del_3' }] }, '')).toBe('3 tasks')
+  })
+  it('uses singular for a single task', () => {
+    expect(extractDelegateTitle({ tasks: [{ id: 'del_1' }] }, '')).toBe('1 task')
+  })
+  it('falls back to raw args', () => {
+    expect(extractDelegateTitle(undefined, '{"tasks":[{"id":"del_1"}]}')).toBe('1 task')
+  })
+  it('returns fallback when no tasks', () => {
+    expect(extractDelegateTitle(undefined, '{}')).toBe('tasks')
+  })
+})
+
+describe('extractReflectTitle', () => {
+  it('extracts scope from parsedArgs', () => {
+    expect(extractReflectTitle({ scope: 'delegation' }, '')).toBe('delegation')
+  })
+  it('defaults to trajectory when omitted', () => {
+    expect(extractReflectTitle({}, '')).toBe('trajectory')
+  })
+  it('falls back to raw args', () => {
+    expect(extractReflectTitle(undefined, '{"scope":"delegation"}')).toBe('delegation')
+  })
+  it('defaults to trajectory when empty', () => {
+    expect(extractReflectTitle(undefined, '{}')).toBe('trajectory')
+  })
+})
+
+describe('extractDeclarePlanTitle', () => {
+  it('renders mode and task count', () => {
+    expect(extractDeclarePlanTitle({ mode: 'await_approval', tasks: [{ id: 'step_1' }, { id: 'step_2' }] }, '')).toBe('await_approval · 2 tasks')
+  })
+  it('defaults mode to present', () => {
+    expect(extractDeclarePlanTitle({ tasks: [{ id: 'step_1' }] }, '')).toBe('present · 1 task')
+  })
+  it('falls back to raw args', () => {
+    expect(extractDeclarePlanTitle(undefined, '{"tasks":[{"id":"s1"},{"id":"s2"}]}')).toBe('present · 2 tasks')
+  })
+  it('returns bare label when no tasks', () => {
+    expect(extractDeclarePlanTitle(undefined, '{}')).toBe('present · tasks')
+  })
+})
+
+describe('extractExecutePlanTitle', () => {
+  it('returns static label', () => {
+    expect(extractExecutePlanTitle()).toBe('plan')
+  })
+})
+
+describe('extractProposeGoalTitle', () => {
+  it('extracts condition from parsedArgs', () => {
+    expect(extractProposeGoalTitle({ condition: 'all tests pass' }, '')).toBe('all tests pass')
+  })
+  it('falls back to raw args', () => {
+    expect(extractProposeGoalTitle(undefined, '{"condition":"build green"}')).toBe('build green')
+  })
+  it('returns fallback when empty', () => {
+    expect(extractProposeGoalTitle(undefined, '{}')).toBe('goal')
   })
 })

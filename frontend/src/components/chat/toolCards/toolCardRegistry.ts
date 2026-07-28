@@ -5,13 +5,17 @@ import {
   Search, FolderOpen, ClipboardCheck, StickyNote,
   Globe, Puzzle, Wrench,
   Brain, Layers, History, ListTree,
-  BookOpen,
+  BookOpen, Ban,
+  Users, RotateCcw, ClipboardList, PlayCircle, Target,
 } from 'lucide-react'
 import {
   extractBashTitle, extractFileTitle, extractDirTitle,
   extractSearchTitle, extractUrlTitle, extractMemoTitle,
   extractStepOutputTitle, extractFactsTitle, extractAttachmentTitle,
+  extractDelegationId,
   extractFileHint, extractBashHint, extractSearchHint, extractMcpHint,
+  extractDelegateTitle, extractReflectTitle, extractDeclarePlanTitle,
+  extractExecutePlanTitle, extractProposeGoalTitle,
 } from './extractors'
 import { BashBody } from './bodies/BashBody'
 import { FileChangeBody } from './bodies/FileChangeBody'
@@ -137,6 +141,52 @@ const READ_ATTACHMENT_CONFIG: CardConfig = {
   Body: null,
 }
 
+// cancel_delegation: minimal cancellation marker. No body — just the verb
+// "Cancelled" + the delegation id (e.g. "Cancelled: del_1").
+const CANCEL_DELEGATION_CONFIG: CardConfig = {
+  icon: Ban, verb: 'Cancelled',
+  extractTitle: extractDelegationId,
+  Body: null,
+}
+
+// --- Orchestration primitives ---
+// These coordination tools (delegate, reflect, declare_plan, execute_plan,
+// propose_goal) carry large JSON arg blobs whose dump adds noise. They render
+// as compact single-line "Verb: title" markers (Body=null) — the verb + a
+// short extracted title is enough context, and the marker precedes the
+// richer lifecycle blocks (subagent events, plan panel, goal proposal) that
+// follow these calls.
+
+const DELEGATE_CONFIG: CardConfig = {
+  icon: Users, verb: 'Delegated',
+  extractTitle: extractDelegateTitle,
+  Body: null,
+}
+
+const REFLECT_CONFIG: CardConfig = {
+  icon: RotateCcw, verb: 'Reflected',
+  extractTitle: extractReflectTitle,
+  Body: null,
+}
+
+const DECLARE_PLAN_CONFIG: CardConfig = {
+  icon: ClipboardList, verb: 'Planned',
+  extractTitle: extractDeclarePlanTitle,
+  Body: null,
+}
+
+const EXECUTE_PLAN_CONFIG: CardConfig = {
+  icon: PlayCircle, verb: 'Executing',
+  extractTitle: extractExecutePlanTitle,
+  Body: null,
+}
+
+const PROPOSE_GOAL_CONFIG: CardConfig = {
+  icon: Target, verb: 'Proposed',
+  extractTitle: extractProposeGoalTitle,
+  Body: null,
+}
+
 const WEB_FETCH_CONFIG: CardConfig = {
   icon: Globe, verb: 'Fetched',
   extractTitle: extractUrlTitle,
@@ -181,6 +231,13 @@ const TOOL_CONFIGS: Record<string, CardConfig> = {
   list_step_outputs: MEMORY_LIST_CONFIG,
   search_facts: MEMORY_SEARCH_CONFIG,
   read_attachment: READ_ATTACHMENT_CONFIG,
+  cancel_delegation: CANCEL_DELEGATION_CONFIG,
+  // Orchestration primitives
+  delegate: DELEGATE_CONFIG,
+  reflect: REFLECT_CONFIG,
+  declare_plan: DECLARE_PLAN_CONFIG,
+  execute_plan: EXECUTE_PLAN_CONFIG,
+  propose_goal: PROPOSE_GOAL_CONFIG,
 }
 
 const CACHED_SUFFIX = ' (cached)'

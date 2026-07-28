@@ -517,6 +517,8 @@ func (o *Orchestrator) runGoalTurns(
 		// the rejected met claim, then is gone. The current turn's own met
 		// attempt (if any) re-populates the marker below before emitGoalStatus.
 		gs.LastVerification = ""
+		gs.LastVerificationReason = ""
+		gs.LastVerificationEvidence = nil
 
 		// Read the agent's verdict (nil if declare_goal_status was not called).
 		if v := sink.Last(); v != nil {
@@ -559,6 +561,13 @@ func (o *Orchestrator) runGoalTurns(
 				outcome, verr := verifier(ctx, gs, v, message, execResultOutput(execResult), bb, availableTools, deps)
 				if outcome != nil && outcome.Confirmed {
 					gs.LastVerification = "confirmed"
+					// Surface the verifier's structured outcome (reason + evidence)
+					// so emitGoalStatus can carry WHY the goal was confirmed (and
+					// the artifacts backing it) in the goal_status event, not just
+					// a bare "confirmed" marker. The agent's own evidence stays on
+					// gs.LastVerdict.Evidence; this is the independent verifier's.
+					gs.LastVerificationReason = outcome.Reason
+					gs.LastVerificationEvidence = outcome.Evidence
 					gs.Status = goal.StatusMet
 					o.logInfo("goal_loop: goal met (verification confirmed)", "turn", turn, "evidence", len(v.Evidence))
 					o.emitGoalStatus(ctx, gs)
@@ -734,6 +743,12 @@ func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard
 // independent verifier's verdict alongside the agent's self-evaluation. The
 // marker is the single channel through which the goal loop reports the
 // verification result of the most recent met attempt.
+//
+// When a verdict is present, an "evidence" meta key carries the agent's
+// supporting artifacts ([]goal.GoalEvidence) so a verdict is never a bare
+// assertion. When the verifier confirmed the goal, "verification_reason" and
+// "verification_evidence" carry the independent pass's structured outcome
+// (reason + evidence) backing the confirmation.
 func (o *Orchestrator) emitGoalStatus(_ context.Context, gs *goal.GoalState) {
 	meta := map[string]any{
 		"phase":             "goal_status",
@@ -746,9 +761,19 @@ func (o *Orchestrator) emitGoalStatus(_ context.Context, gs *goal.GoalState) {
 	if gs.LastVerdict != nil {
 		meta["verdict"] = gs.LastVerdict.Status
 		meta["reason"] = gs.LastVerdict.Reason
+		meta["evidence"] = gs.LastVerdict.Evidence
 	}
 	if v := gs.LastVerification; v == "confirmed" || v == "rejected" || v == "off" {
 		meta["verification"] = v
+	}
+	// When the independent verifier confirmed the goal, surface its structured
+	// outcome (reason + evidence) so the UI can show WHY the goal was verified
+	// met rather than a bare "confirmed" marker. These mirror the agent's own
+	// verdict evidence (meta["evidence"]) but come from the independent
+	// verification pass stored on gs.LastVerificationReason/Evidence.
+	if gs.LastVerification == "confirmed" {
+		meta["verification_reason"] = gs.LastVerificationReason
+		meta["verification_evidence"] = gs.LastVerificationEvidence
 	}
 	o.emitter.ServiceWithMeta("Goal status: "+string(gs.Status), meta)
 }

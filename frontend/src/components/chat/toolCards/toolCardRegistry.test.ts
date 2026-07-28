@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { resolveCardConfig } from './toolCardRegistry'
-import { Terminal, FilePen, Search, Puzzle, Wrench, Globe, Layers, History, ListTree, Brain, StickyNote, BookOpen } from 'lucide-react'
+import { Terminal, FilePen, Search, Puzzle, Wrench, Globe, Layers, History, ListTree, Brain, StickyNote, BookOpen, Ban, Users, RotateCcw, ClipboardList, PlayCircle, Target } from 'lucide-react'
 
 describe('resolveCardConfig', () => {
   it('returns exec config for bash_exec', () => {
@@ -99,6 +99,64 @@ describe('resolveCardConfig', () => {
       expect(config.verb).toBe('Read')
       expect(config.extractTitle({ attachment_id: 'att-42' }, '')).toBe('att-42')
       expect(config.extractTitle(undefined, '{}')).toBe('attachment')
+      expect(config.Body).toBeNull()
+    })
+  })
+
+  describe('delegation operations', () => {
+    it('renders cancel_delegation as a minimal Cancelled marker with no body', () => {
+      const config = resolveCardConfig('cancel_delegation')
+      expect(config.icon).toBe(Ban)
+      expect(config.verb).toBe('Cancelled')
+      expect(config.extractTitle({ id: 'del_1' }, '')).toBe('del_1')
+      expect(config.extractTitle(undefined, '{}')).toBe('delegation')
+      expect(config.Body).toBeNull()
+    })
+  })
+
+  describe('orchestration primitives', () => {
+    it('renders delegate as a compact Delegated task-count marker with no body', () => {
+      const config = resolveCardConfig('delegate')
+      expect(config.icon).toBe(Users)
+      expect(config.verb).toBe('Delegated')
+      expect(config.extractTitle({ tasks: [{ id: 'del_1' }, { id: 'del_2' }] }, '')).toBe('2 tasks')
+      expect(config.extractTitle({ tasks: [{ id: 'del_1' }] }, '')).toBe('1 task')
+      expect(config.extractTitle(undefined, '{}')).toBe('tasks')
+      expect(config.Body).toBeNull()
+    })
+
+    it('renders reflect as a compact Reflected scope marker with no body', () => {
+      const config = resolveCardConfig('reflect')
+      expect(config.icon).toBe(RotateCcw)
+      expect(config.verb).toBe('Reflected')
+      expect(config.extractTitle({ scope: 'delegation' }, '')).toBe('delegation')
+      expect(config.extractTitle(undefined, '')).toBe('trajectory')
+      expect(config.Body).toBeNull()
+    })
+
+    it('renders declare_plan as a compact Planned mode·count marker with no body', () => {
+      const config = resolveCardConfig('declare_plan')
+      expect(config.icon).toBe(ClipboardList)
+      expect(config.verb).toBe('Planned')
+      expect(config.extractTitle({ mode: 'await_approval', tasks: [{ id: 's1' }, { id: 's2' }] }, '')).toBe('await_approval · 2 tasks')
+      expect(config.extractTitle({ tasks: [{ id: 's1' }] }, '')).toBe('present · 1 task')
+      expect(config.Body).toBeNull()
+    })
+
+    it('renders execute_plan as a compact Executing marker with no body', () => {
+      const config = resolveCardConfig('execute_plan')
+      expect(config.icon).toBe(PlayCircle)
+      expect(config.verb).toBe('Executing')
+      expect(config.extractTitle(undefined, '')).toBe('plan')
+      expect(config.Body).toBeNull()
+    })
+
+    it('renders propose_goal as a compact Proposed condition marker with no body', () => {
+      const config = resolveCardConfig('propose_goal')
+      expect(config.icon).toBe(Target)
+      expect(config.verb).toBe('Proposed')
+      expect(config.extractTitle({ condition: 'all tests pass' }, '')).toBe('all tests pass')
+      expect(config.extractTitle(undefined, '{}')).toBe('goal')
       expect(config.Body).toBeNull()
     })
   })

@@ -64,6 +64,14 @@ export function extractStepOutputTitle(args: Args, rawArgs: string): string {
   return str(parsed, 'step_id') || 'step output'
 }
 
+// extractDelegationId returns the delegation id from cancel_delegation args,
+// falling back to the 'delegation' label when absent. Mirrors
+// extractStepOutputTitle's single-id-with-label-fallback shape.
+export function extractDelegationId(args: Args, rawArgs: string): string {
+  const parsed = safeParseArgs(args, rawArgs)
+  return str(parsed, 'id') || 'delegation'
+}
+
 // extractFactsTitle returns the searched keywords for search_facts.
 export function extractFactsTitle(args: Args, rawArgs: string): string {
   const parsed = safeParseArgs(args, rawArgs)
@@ -102,6 +110,48 @@ export function extractMemoTitle(toolName: string, args: Args, rawArgs: string):
 
 export function extractGenericTitle(toolName: string): string {
   return toolName
+}
+
+// tasksCount renders a compact "N tasks" / "1 task" marker from a `tasks`
+// array arg, falling back to the bare label when absent. Shared by the
+// delegate / declare_plan tool cards.
+function tasksCount(parsed: Record<string, unknown>): string {
+  const tasks = parsed.tasks
+  if (Array.isArray(tasks) && tasks.length > 0) {
+    return `${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'}`
+  }
+  return 'tasks'
+}
+
+// extractDelegateTitle returns a compact subagent count for delegate.
+export function extractDelegateTitle(args: Args, rawArgs: string): string {
+  return tasksCount(safeParseArgs(args, rawArgs))
+}
+
+// extractReflectTitle returns the reflection scope (trajectory | delegation),
+// defaulting to "trajectory" when omitted.
+export function extractReflectTitle(args: Args, rawArgs: string): string {
+  return str(safeParseArgs(args, rawArgs), 'scope') || 'trajectory'
+}
+
+// extractDeclarePlanTitle returns a compact "mode · N tasks" marker for
+// declare_plan. Mode defaults to "present".
+export function extractDeclarePlanTitle(args: Args, rawArgs: string): string {
+  const parsed = safeParseArgs(args, rawArgs)
+  const mode = str(parsed, 'mode') || 'present'
+  return `${mode} · ${tasksCount(parsed)}`
+}
+
+// extractExecutePlanTitle returns a static label: execute_plan takes no args
+// (it runs the previously-declared plan), so there is nothing to extract.
+export function extractExecutePlanTitle(): string {
+  return 'plan'
+}
+
+// extractProposeGoalTitle returns the proposed goal condition, falling back to
+// the bare label when absent.
+export function extractProposeGoalTitle(args: Args, rawArgs: string): string {
+  return str(safeParseArgs(args, rawArgs), 'condition') || 'goal'
 }
 
 // --- Hint extractors ---

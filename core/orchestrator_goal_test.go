@@ -1168,16 +1168,20 @@ func TestGoalLoopResult_MapsStatus(t *testing.T) {
 }
 
 // TestEmitGoalStatus_AllFields verifies emitGoalStatus includes verdict
-// metadata when present.
+// metadata when present, and surfaces the agent's verdict evidence so a
+// verdict is never a bare assertion.
 func TestEmitGoalStatus_AllFields(t *testing.T) {
 	emitter := &spyEmitter{}
 	o := &Orchestrator{emitter: emitter}
+	verdictEvidence := []goal.GoalEvidence{
+		{Type: goal.EvidenceTypeFile, Ref: "core/x.go", Summary: "changed"},
+	}
 	gs := &goal.GoalState{
 		Status:      goal.StatusActive,
 		TurnCount:   3,
 		Condition:   "ship it",
 		Budget:      goal.GoalBudget{MaxTurns: 10},
-		LastVerdict: &goal.Verdict{Status: "not_met", Reason: "wip"},
+		LastVerdict: &goal.Verdict{Status: "not_met", Reason: "wip", Evidence: verdictEvidence},
 	}
 	o.emitGoalStatus(context.Background(), gs)
 	if len(emitter.calls) != 1 {
@@ -1186,6 +1190,128 @@ func TestEmitGoalStatus_AllFields(t *testing.T) {
 	c := emitter.calls[0]
 	if c.method != "ServiceWithMeta" {
 		t.Errorf("method = %q, want ServiceWithMeta", c.method)
+	}
+	meta, ok := c.args[1].(map[string]any)
+	if !ok {
+		t.Fatalf("args[1] is %T, want map[string]any", c.args[1])
+	}
+	if got := meta["verdict"]; got != "not_met" {
+		t.Errorf("meta[verdict] = %v, want not_met", got)
+	}
+	if got := meta["reason"]; got != "wip" {
+		t.Errorf("meta[reason] = %v, want wip", got)
+	}
+	gotEvidence, ok := meta["evidence"].([]goal.GoalEvidence)
+	if !ok {
+		t.Fatalf("meta[evidence] is %T, want []goal.GoalEvidence", meta["evidence"])
+	}
+	if len(gotEvidence) != 1 || gotEvidence[0].Ref != "core/x.go" {
+		t.Errorf("meta[evidence] = %+v, want one entry ref=core/x.go", gotEvidence)
+	}
+}
+
+// TestEmitGoalStatus_VerificationConfirmed verifies that when the independent
+// verifier confirmed the goal, emitGoalStatus surfaces the verifier's reason
+// and evidence alongside the "confirmed" marker.
+func TestEmitGoalStatus_VerificationConfirmed(t *testing.T) {
+	emitter := &spyEmitter{}
+	o := &Orchestrator{emitter: emitter}
+	verifierEvidence := []goal.GoalEvidence{
+		{Type: goal.EvidenceTypeCommand, Ref: "go test ./...", Summary: "all pass"},
+	}
+	gs := &goal.GoalState{
+		Status:                   goal.StatusMet,
+		TurnCount:                2,
+		Condition:                "ship it",
+		Budget:                   goal.GoalBudget{MaxTurns: 10},
+		LastVerdict:              &goal.Verdict{Status: "met", Reason: "done"},
+		LastVerification:         "confirmed",
+		LastVerificationReason:   "independent verifier: tests green",
+		LastVerificationEvidence: verifierEvidence,
+	}
+	o.emitGoalStatus(context.Background(), gs)
+	if len(emitter.calls) != 1 {
+		t.Fatalf("expected 1 emission, got %d", len(emitter.calls))
+	}
+	meta, ok := emitter.calls[0].args[1].(map[string]any)
+	if !ok {
+		t.Fatalf("emission args[1] is %T, want map[string]any", emitter.calls[0].args[1])
+	}
+	if got := meta["verification"]; got != "confirmed" {
+		t.Errorf("meta[verification] = %v, want confirmed", got)
+	}
+	if got := meta["verification_reason"]; got != "independent verifier: tests green" {
+		t.Errorf("meta[verification_reason] = %v, want the verifier reason", got)
+	}
+	gotEvidence, ok := meta["verification_evidence"].([]goal.GoalEvidence)
+	if !ok {
+		t.Fatalf("meta[verification_evidence] is %T, want []goal.GoalEvidence", meta["verification_evidence"])
+	}
+	if len(gotEvidence) != 1 || gotEvidence[0].Ref != "go test ./..." {
+		t.Errorf("meta[verification_evidence] = %+v, want one entry ref=go test ./...", gotEvidence)
+	}
+}
+
+// TestEmitGoalStatus_VerificationEvidenceJSONShape guards the wire contract
+// between the Go emitter and the TypeScript frontend. The unit test above
+// (TestEmitGoalStatus_VerificationConfirmed) asserts the raw Go value in the
+// meta map; this test asserts the value survives encoding/json as a JSON array
+// of {type,ref,summary} objects — exactly what crosses the Wails boundary and
+// what GoalProposalPanel deserializes. If someone renames a json tag or drops
+// the slice, this catches it before it ships a silent frontend regression.
+func TestEmitGoalStatus_VerificationEvidenceJSONShape(t *testing.T) {
+	emitter := &spyEmitter{}
+	o := &Orchestrator{emitter: emitter}
+	verifierEvidence := []goal.GoalEvidence{
+		{Type: goal.EvidenceTypeCommand, Ref: "go test ./...", Summary: "all pass"},
+	}
+	gs := &goal.GoalState{
+		Status:                   goal.StatusMet,
+		TurnCount:                2,
+		Condition:                "ship it",
+		Budget:                   goal.GoalBudget{MaxTurns: 10},
+		LastVerdict:              &goal.Verdict{Status: "met", Reason: "done"},
+		LastVerification:         "confirmed",
+		LastVerificationReason:   "independent verifier: tests green",
+		LastVerificationEvidence: verifierEvidence,
+	}
+	o.emitGoalStatus(context.Background(), gs)
+	if len(emitter.calls) != 1 {
+		t.Fatalf("expected 1 emission, got %d", len(emitter.calls))
+	}
+	meta, ok := emitter.calls[0].args[1].(map[string]any)
+	if !ok {
+		t.Fatalf("emission args[1] is %T, want map[string]any", emitter.calls[0].args[1])
+	}
+
+	// Serialize the whole meta map the same way the Wails bridge would before
+	// pushing it over the event channel, then decode just the evidence key.
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("json.Marshal(meta) failed: %v", err)
+	}
+	var decoded struct {
+		Evidence []struct {
+			Type    string `json:"type"`
+			Ref     string `json:"ref"`
+			Summary string `json:"summary"`
+		} `json:"verification_evidence"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if len(decoded.Evidence) != 1 {
+		t.Fatalf("json[verification_evidence] = %d items, want 1", len(decoded.Evidence))
+	}
+	e := decoded.Evidence[0]
+	if e.Type != goal.EvidenceTypeCommand {
+		t.Errorf("json[verification_evidence][0].type = %q, want %q", e.Type, goal.EvidenceTypeCommand)
+	}
+	if e.Ref != "go test ./..." {
+		t.Errorf("json[verification_evidence][0].ref = %q, want %q", e.Ref, "go test ./...")
+	}
+	if e.Summary != "all pass" {
+		t.Errorf("json[verification_evidence][0].summary = %q, want %q", e.Summary, "all pass")
 	}
 }
 

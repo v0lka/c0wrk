@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import type { ActiveGoal } from '@/stores/goalStore'
 
 vi.hoisted(() => {
   const g = globalThis as Record<string, unknown>
@@ -9,12 +10,16 @@ vi.hoisted(() => {
 })
 
 // Mock the stores with minimal state the component selects.
-const { updateMessage, clearPendingProposal, confirmGoal, cancelGoal, clarifyGoal } = vi.hoisted(() => ({
+const { updateMessage, clearPendingProposal, confirmGoal, cancelGoal, clarifyGoal, useActiveGoal } = vi.hoisted(() => ({
   updateMessage: vi.fn(),
   clearPendingProposal: vi.fn(),
   confirmGoal: vi.fn(async () => {}),
   cancelGoal: vi.fn(async () => {}),
   clarifyGoal: vi.fn(async () => {}),
+  // Typed so mockReturnValue accepts an ActiveGoal | undefined (the real hook's
+  // return type); an untyped vi.fn() would infer a () => undefined signature and
+  // reject a goal snapshot argument.
+  useActiveGoal: vi.fn<(sessionId: string | null) => ActiveGoal | undefined>(() => undefined),
 }))
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: {
@@ -29,6 +34,7 @@ vi.mock('@/stores/goalStore', () => ({
   useGoalStore: {
     getState: () => ({ clearPendingProposal }),
   },
+  useActiveGoal,
 }))
 
 // Mock the api so no real Wails binding is touched. The component imports
@@ -227,6 +233,57 @@ describe('GoalProposalPanel', () => {
     try {
       expect(r.container.textContent).toContain('Clarification sent')
     } finally {
+      act(() => { r.root.unmount() })
+    }
+  })
+
+  it('settled approve card shows "Goal approved" when no verdict yet', () => {
+    act(() => { root.unmount() })
+    // No active goal / no verdict → plain placeholder.
+    useActiveGoal.mockReturnValue(undefined)
+    const item = makeItem({})
+    item.message.metadata = { request_id: 'req-1', resolved: true, decision: 'approve' }
+    const r = render(<GoalProposalPanel item={item} />)
+    try {
+      expect(r.container.textContent).toContain('Goal approved')
+    } finally {
+      useActiveGoal.mockReturnValue(undefined)
+      act(() => { r.root.unmount() })
+    }
+  })
+
+  it('settled approve card surfaces the verdict badge, reason, and clickable file evidence', () => {
+    act(() => { root.unmount() })
+    useActiveGoal.mockReturnValue({
+      condition: 'ship it',
+      status: 'met',
+      turn: 3,
+      verdict: 'met',
+      reason: 'all green',
+      evidence: [
+        { type: 'file', ref: 'core/main.go', summary: 'the fix' },
+        { type: 'command', ref: 'go test ./...', summary: 'all pass' },
+      ],
+    })
+    const item = makeItem({})
+    item.message.metadata = { request_id: 'req-1', resolved: true, decision: 'approve' }
+    const r = render(<GoalProposalPanel item={item} />)
+    try {
+      const text = r.container.textContent ?? ''
+      // Verdict badge + reason + evidence summary are surfaced.
+      expect(text).toContain('met')
+      expect(text).toContain('all green')
+      expect(text).toContain('the fix')
+      // The plain placeholder is replaced by the verdict body.
+      expect(text).not.toContain('Goal approved')
+      // File-typed evidence renders as a clickable FileLink (role=button, full
+      // path in the title hint), and the non-file evidence ref shows inline.
+      const fileLink = r.container.querySelector('[role="button"][title="core/main.go"]')
+      expect(fileLink).toBeTruthy()
+      expect(fileLink!.textContent).toContain('main.go')
+      expect(text).toContain('go test ./...')
+    } finally {
+      useActiveGoal.mockReturnValue(undefined)
       act(() => { r.root.unmount() })
     }
   })

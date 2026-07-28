@@ -52,6 +52,10 @@ export function handleGoalStatusEvent(sessionId: string, data: GoalStatusData): 
     maxTurns: data.max_turns,
     verdict: data.verdict,
     reason: data.reason,
+    evidence: data.evidence,
+    verification: data.verification,
+    verificationReason: data.verification_reason,
+    verificationEvidence: data.verification_evidence,
   }
   const store = useGoalStore.getState()
   const prev = store.activeGoal[sessionId]

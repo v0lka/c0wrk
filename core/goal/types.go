@@ -147,8 +147,18 @@ type GoalState struct {
 	// goal_status event meta) and renderGoalModeVolatile (the next-turn prompt
 	// rejection notice). It is reset to "" at the top of each agent turn so the
 	// marker only describes the immediately-preceding met attempt.
-	LastVerification string    `json:"last_verification"`
-	CreatedAt        time.Time `json:"created_at"` // when the goal was created
+	LastVerification string `json:"last_verification"`
+	// LastVerificationReason and LastVerificationEvidence carry the independent
+	// verifier's structured outcome (reason + evidence) for the most recent
+	// "met" verification attempt, paired with LastVerification. They are reset
+	// alongside LastVerification at the top of each agent turn (one-shot, same
+	// lifecycle). When the verifier confirms the goal, they hold WHY it was
+	// confirmed and the concrete artifacts backing that confirmation, so
+	// emitGoalStatus can surface them in the goal_status event and the UI can
+	// show the verifier's reasoning rather than a bare "confirmed" marker.
+	LastVerificationReason   string         `json:"last_verification_reason"`
+	LastVerificationEvidence []GoalEvidence `json:"last_verification_evidence"`
+	CreatedAt                time.Time      `json:"created_at"` // when the goal was created
 }
 
 // IsTerminal reports whether the status is a terminal (non-resumable) state.

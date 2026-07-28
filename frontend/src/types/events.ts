@@ -158,6 +158,24 @@ export interface GoalProposalData {
 }
 
 /**
+ * A single piece of evidence supporting a verdict. Mirrors the backend
+ * `goal.GoalEvidence` struct. Evidence is what makes a verdict trustworthy
+ * rather than a bare assertion: each entry points at something concrete the
+ * agent (or user) can inspect.
+ *
+ * `type` categorizes the evidence:
+ *  - test_output — output of a test run (Ref = test name/id or command).
+ *  - file        — a file on disk (Ref = path). Rendered as a clickable link.
+ *  - command     — a shell command and its output (Ref = command string).
+ *  - qualitative — a human judgment (Ref is free text).
+ */
+export interface GoalEvidence {
+  readonly type: string    // test_output | file | command | qualitative
+  readonly ref: string     // artifact reference (path, command, id, or note)
+  readonly summary: string // human-readable description of what this shows
+}
+
+/**
  * Goal status snapshot. The backend emits this via ServiceWithMeta (the generic
  * `service` channel) with `phase === 'goal_status'`, so the payload carries the
  * service `content` plus the flattened goal meta fields.
@@ -171,6 +189,18 @@ export interface GoalStatusData {
   readonly max_turns: number
   readonly verdict?: string
   readonly reason?: string
+  /** The agent's supporting artifacts backing the verdict (goal.LastVerdict.
+   *  Evidence). Present whenever a verdict is declared; absent otherwise. */
+  readonly evidence?: readonly GoalEvidence[]
+  /** Outcome of the independent verifier on the most recent "met" attempt:
+   *  "confirmed", "rejected", or "off". Absent when no verification ran. */
+  readonly verification?: string
+  /** The independent verifier's reason for confirming the goal (present only
+   *  when verification === 'confirmed'). */
+  readonly verification_reason?: string
+  /** The independent verifier's supporting artifacts (present only when
+   *  verification === 'confirmed'). */
+  readonly verification_evidence?: readonly GoalEvidence[]
   /** Per-goal verification mode echoed from GoalState ('executable' |
    *  're_derivation'). Absent on older backend snapshots; consumers fall back
    *  to a previously-seen value or the default ('executable'). */

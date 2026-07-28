@@ -172,6 +172,10 @@ export function handleToolCall(
 ) {
   const toolName = (meta?.tool as string) || ''
   if (toolName === 'subagent') return
+  // Goal verdict tools (declare_goal_status / declare_verification) never render
+  // a "Used:" card — their structured verdict reaches the UI exclusively through
+  // the goal_status / goal_proposal session events (see useGoalEvents.ts).
+  if (toolName === 'declare_goal_status' || toolName === 'declare_verification') return
   if (toolName === 'finish') {
     const num = planStepId ? stepIndexMap.get(planStepId)?.num : undefined
     pushItem({ kind: 'step_finish', id: msg.id, stepNum: num }, planStepId)
