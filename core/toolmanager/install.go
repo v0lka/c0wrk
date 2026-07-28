@@ -402,9 +402,11 @@ func copyFile(src, dst string, mode os.FileMode) error {
 
 	if _, err := io.Copy(out, in); err != nil {
 		_ = out.Close()
+		_ = os.Remove(dst) // don't leave a partial file that looks "installed"
 		return err
 	}
 	if err := out.Close(); err != nil {
+		_ = os.Remove(dst) // don't leave a partial file that looks "installed"
 		return err
 	}
 	return os.Chmod(dst, mode)

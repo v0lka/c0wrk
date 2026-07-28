@@ -41,7 +41,6 @@ interface ChatActions {
   setStepContextFill: (stepId: string, fill: number) => void
   clearStepContextFill: () => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
-  clearSession: (sessionId: string) => void
 }
 
 // --- Helpers ---
@@ -259,24 +258,6 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     const existing = s.sessionTokens[sessionId]
     return {
       sessionTokens: { ...s.sessionTokens, [sessionId]: { ...existing, ...tokens } as TokenInfo },
-    }
-  }),
-
-  clearSession: (sessionId) => set((s) => {
-    const { [sessionId]: _msgs, ...restMessages } = s.messages
-    const { [sessionId]: _order, ...restOrder } = s.messageOrder
-    const { [sessionId]: _active, ...restActive } = s.taskActive
-    const { [sessionId]: _tokens, ...restTokens } = s.sessionTokens
-    const { [sessionId]: _stream, ...restStream } = s.streamingText
-    const { [sessionId]: _status, ...restStatus } = s.activityStatus
-    return {
-      messages: restMessages,
-      messageOrder: restOrder,
-      taskActive: restActive,
-      sessionTokens: restTokens,
-      streamingText: restStream,
-      activityStatus: restStatus,
-      stepContextFill: {},
     }
   }),
 }))

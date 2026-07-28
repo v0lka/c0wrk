@@ -194,6 +194,17 @@ func (m *Manager) Resize(sessionID string, cols, rows int) error {
 	return nil
 }
 
+// teardown releases all resources owned by a session: it cancels the context
+// and closes the ConPTY (which terminates the child process and releases all
+// handles). It must only be called by the goroutine that just removed the
+// session from m.sessions, so cleanup is never performed twice.
+func (m *Manager) teardown(sess *Session, sessionID string) {
+	sess.cancel()
+	if err := sess.cpty.Close(); err != nil {
+		m.logger.Warn("failed to close conpty", "session_id", sessionID, "error", err)
+	}
+}
+
 // Stop terminates the shell and closes the ConPTY for the given session.
 func (m *Manager) Stop(sessionID string) error {
 	m.mu.Lock()
@@ -205,14 +216,7 @@ func (m *Manager) Stop(sessionID string) error {
 	delete(m.sessions, sessionID)
 	m.mu.Unlock()
 
-	// Cancel the context first to signal readLoop.
-	sess.cancel()
-
-	// Close terminates the child process and releases all ConPTY handles,
-	// which unblocks the readLoop's pending Read.
-	if err := sess.cpty.Close(); err != nil {
-		m.logger.Warn("failed to close conpty", "session_id", sessionID, "error", err)
-	}
+	m.teardown(sess, sessionID)
 
 	m.logger.Info("terminal stopped", "session_id", sessionID)
 	return nil
@@ -267,12 +271,18 @@ func (m *Manager) readLoop(ctx context.Context, sessionID string, cpty *conpty.C
 		}
 	}
 
-	// Clean up the session when the process exits naturally.
+	// Clean up the session when the process exits naturally. Stop() cannot
+	// reclaim the context/handles once the session is gone from the map, so
+	// readLoop must mirror its teardown to avoid leaking the per-session
+	// context and ConPTY handles.
 	m.mu.Lock()
 	if sess, exists := m.sessions[sessionID]; exists && sess.cpty == cpty {
 		delete(m.sessions, sessionID)
+		m.mu.Unlock()
+		m.teardown(sess, sessionID)
+	} else {
+		m.mu.Unlock()
 	}
-	m.mu.Unlock()
 
 	m.emit(sessionID, []byte("\r\n\x1b[31m[Terminal session ended]\x1b[0m\r\n"))
 	m.logger.Info("terminal process exited", "session_id", sessionID)

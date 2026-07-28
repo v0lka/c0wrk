@@ -70,6 +70,13 @@ func (w *wailsLogAdapter) Warning(message string) {
 func (w *wailsLogAdapter) Error(message string) {
 	w.write(slog.LevelError, strings.TrimRight(message, "\n"))
 }
+
+// Fatal logs the message at Error level but intentionally does NOT call
+// os.Exit, diverging from Wails' default logger contract. For a desktop GUI
+// app, staying alive after a Wails-internal fatal (e.g. an RPC serialization
+// failure) is preferable to an abrupt crash — the error is captured to disk
+// so it is not lost, and the top-level panic recovery in main.go remains the
+// last-resort safety net for truly unrecoverable states.
 func (w *wailsLogAdapter) Fatal(message string) {
 	w.write(slog.LevelError, strings.TrimRight(message, "\n"))
 }

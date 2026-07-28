@@ -157,10 +157,7 @@ func TestBuildHunkPatch(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			patch, sel, err := buildHunkPatch(tc.diff, tc.ranges)
-			if err != nil {
-				t.Fatalf("buildHunkPatch: unexpected error: %v", err)
-			}
+			patch, sel := buildHunkPatch(tc.diff, tc.ranges)
 			if sel != tc.wantSel {
 				t.Errorf("selected: got %d, want %d", sel, tc.wantSel)
 			}

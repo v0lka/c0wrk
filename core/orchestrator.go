@@ -783,10 +783,11 @@ func (o *Orchestrator) readAgentsMD(path string) (string, error) {
 		maxBytes = DefaultAgentsMDMaxBytes
 	}
 	if maxBytes > 0 && originalSize > maxBytes {
-		trimmed := contentStr[:maxBytes]
-		if idx := strings.LastIndex(trimmed, "\n"); idx > 0 {
-			trimmed = trimmed[:idx]
-		}
+		// Truncate at a UTF-8 rune boundary, then snap back to the last
+		// newline. The naive byte slice (contentStr[:maxBytes]) could split a
+		// multibyte rune (emoji, CJK, …) and inject invalid UTF-8 into the
+		// system prompt on every request.
+		trimmed := strutil.TruncateUTF8AtLineBoundary(contentStr, maxBytes)
 		contentStr = trimmed + fmt.Sprintf("\n\n[…AGENTS.md truncated at %d bytes; original was %d bytes]", maxBytes, originalSize)
 		o.logDebug("AGENTS.md truncated", "path", path, "originalSize", originalSize, "cap", maxBytes)
 	}

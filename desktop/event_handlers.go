@@ -40,9 +40,9 @@ func parseConfirmDecision(payload map[string]any, log *slog.Logger) (sdktools.Co
 
 	switch v := decisionVal.(type) {
 	case float64:
-		return sdktools.ConfirmationResponse(int(v)), true
+		return numericConfirmDecision(int(v), log)
 	case int:
-		return sdktools.ConfirmationResponse(v), true
+		return numericConfirmDecision(v, log)
 	case string:
 		switch v {
 		case "allow_once":
@@ -59,6 +59,18 @@ func parseConfirmDecision(payload map[string]any, log *slog.Logger) (sdktools.Co
 		log.Warn("tool confirmation decision has unsupported type", "type", fmt.Sprintf("%T", decisionVal))
 		return 0, false
 	}
+}
+
+// numericConfirmDecision converts an integer confirmation decision and rejects
+// values outside the valid ConfirmationResponse enum range, mirroring the
+// validation the string branch already applies to its known enum values.
+func numericConfirmDecision(v int, log *slog.Logger) (sdktools.ConfirmationResponse, bool) {
+	d := sdktools.ConfirmationResponse(v)
+	if d < sdktools.ConfirmAllowOnce || d > sdktools.ConfirmDenyAndStop {
+		log.Warn("numeric confirmation decision out of range", "decision", v)
+		return 0, false
+	}
+	return d, true
 }
 
 // parseStepLimitResponse validates a frontend-supplied step-limit response

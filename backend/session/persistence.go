@@ -960,6 +960,11 @@ func (s *SQLiteSessionStore) SaveTaskStep(ctx context.Context, taskID string, st
 // AddTaskReflection appends a reflection JSON object to the task's reflections array.
 func (s *SQLiteSessionStore) AddTaskReflection(ctx context.Context, taskID string, reflectionJSON json.RawMessage) error {
 	// BEGIN IMMEDIATE prevents SQLITE_BUSY from deferred->write upgrade in WAL mode.
+	// NOTE: the raw BEGIN/COMMIT (rather than *sql.Tx) is only safe because the
+	// connection pool is pinned to a single connection via db.SetMaxOpenConns(1)
+	// (see backend.OpenDatabase) — this guarantees the BEGIN and its subsequent
+	// statements share one connection. Raising MaxOpenConns would break this and
+	// must be accompanied by a switch to *sql.Tx (which pins its own connection).
 	_, err := s.db.ExecContext(ctx, "BEGIN IMMEDIATE")
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)

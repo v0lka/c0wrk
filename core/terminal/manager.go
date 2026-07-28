@@ -159,6 +159,22 @@ func (m *Manager) Resize(sessionID string, cols, rows int) error {
 	return nil
 }
 
+// teardown releases all resources owned by a session: it cancels the context
+// (which kills the process via exec.CommandContext), closes the PTY fd, and
+// signals the shell to terminate. It must only be called by the goroutine that
+// just removed the session from m.sessions, so cleanup is never performed twice.
+func (m *Manager) teardown(sess *Session, sessionID string) {
+	sess.cancel()
+	if err := sess.ptmx.Close(); err != nil {
+		m.logger.Warn("failed to close pty", "session_id", sessionID, "error", err)
+	}
+	if sess.cmd.Process != nil {
+		if err := sess.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			m.logger.Warn("failed to kill shell process", "session_id", sessionID, "error", err)
+		}
+	}
+}
+
 // Stop terminates the shell and closes the PTY for the given session.
 func (m *Manager) Stop(sessionID string) error {
 	m.mu.Lock()
@@ -170,18 +186,7 @@ func (m *Manager) Stop(sessionID string) error {
 	delete(m.sessions, sessionID)
 	m.mu.Unlock()
 
-	// Cancel the context first to signal readLoop and kill the process.
-	sess.cancel()
-
-	if err := sess.ptmx.Close(); err != nil {
-		m.logger.Warn("failed to close pty", "session_id", sessionID, "error", err)
-	}
-
-	if sess.cmd.Process != nil {
-		if err := sess.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			m.logger.Warn("failed to kill shell process", "session_id", sessionID, "error", err)
-		}
-	}
+	m.teardown(sess, sessionID)
 
 	m.logger.Info("terminal stopped", "session_id", sessionID)
 	return nil
@@ -236,12 +241,18 @@ func (m *Manager) readLoop(ctx context.Context, sessionID string, ptmx *os.File)
 		}
 	}
 
-	// Clean up the session when the process exits naturally.
+	// Clean up the session when the process exits naturally. Stop() cannot
+	// reclaim the fd/context once the session is gone from the map, so
+	// readLoop must mirror its teardown to avoid leaking the PTY fd and the
+	// per-session context.
 	m.mu.Lock()
 	if sess, exists := m.sessions[sessionID]; exists && sess.ptmx == ptmx {
 		delete(m.sessions, sessionID)
+		m.mu.Unlock()
+		m.teardown(sess, sessionID)
+	} else {
+		m.mu.Unlock()
 	}
-	m.mu.Unlock()
 
 	m.emit(sessionID, []byte("\r\n\x1b[31m[Terminal session ended]\x1b[0m\r\n"))
 	m.logger.Info("terminal process exited", "session_id", sessionID)

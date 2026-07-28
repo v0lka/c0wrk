@@ -244,14 +244,14 @@ func (a *App) Startup(ctx context.Context) {
 	var termManager *terminal.Manager
 	var phase3 sync.WaitGroup
 	phase3.Add(2)
-	go func() {
+	safeGo(log, "database", func() {
 		defer phase3.Done()
 		db = a.initDatabase(dbPath, log)
-	}()
-	go func() {
+	})
+	safeGo(log, "terminal", func() {
 		defer phase3.Done()
 		termManager = a.initTerminalManager(log)
-	}()
+	})
 	phase3.Wait()
 	log.Info("startup phase complete", "phase", "database", "elapsed_ms", time.Since(startTime).Milliseconds())
 	a.db = db

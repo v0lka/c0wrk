@@ -1630,10 +1630,7 @@ func (f *FrontendAPI) StageHunks(path string, hunks []HunkRange) error {
 		return errors.New("no unstaged changes to stage hunks from")
 	}
 
-	patch, selected, err := buildHunkPatch(diffOut, hunks)
-	if err != nil {
-		return err
-	}
+	patch, selected := buildHunkPatch(diffOut, hunks)
 	if selected == 0 {
 		return errors.New("no hunks matched the requested ranges")
 	}
@@ -1663,9 +1660,10 @@ func (f *FrontendAPI) StageHunks(path string, hunks []HunkRange) error {
 
 // buildHunkPatch extracts the hunks of diff whose old-file line range
 // matches one of ranges and assembles them into a single unified-diff
-// patch (file header + selected hunk blocks). It returns the patch text,
-// the number of hunks selected, and any parse error.
-func buildHunkPatch(diff string, ranges []HunkRange) (patch string, selected int, err error) {
+// patch (file header + selected hunk blocks). It returns the patch text
+// and the number of hunks selected. Parse failures (malformed hunk
+// headers) are skipped, so it never returns an error.
+func buildHunkPatch(diff string, ranges []HunkRange) (patch string, selected int) {
 	lines := strings.Split(diff, "\n")
 
 	var header, patchBuf strings.Builder
@@ -1714,7 +1712,7 @@ func buildHunkPatch(diff string, ranges []HunkRange) (patch string, selected int
 		}
 	}
 
-	return patchBuf.String(), selected, nil
+	return patchBuf.String(), selected
 }
 
 // hunkInRange reports whether the hunk with the given old-file start line
@@ -1912,10 +1910,7 @@ func (f *FrontendAPI) UnstageHunks(path string, hunks []HunkRange) error {
 		return errors.New("no staged changes to unstage hunks from")
 	}
 
-	patch, selected, err := buildHunkPatch(diffOut, hunks)
-	if err != nil {
-		return err
-	}
+	patch, selected := buildHunkPatch(diffOut, hunks)
 	if selected == 0 {
 		return errors.New("no hunks matched the requested ranges")
 	}
@@ -1958,10 +1953,7 @@ func (f *FrontendAPI) DiscardHunks(path string, hunks []HunkRange) error {
 		return errors.New("no unstaged changes to discard hunks from")
 	}
 
-	patch, selected, err := buildHunkPatch(diffOut, hunks)
-	if err != nil {
-		return err
-	}
+	patch, selected := buildHunkPatch(diffOut, hunks)
 	if selected == 0 {
 		return errors.New("no hunks matched the requested ranges")
 	}

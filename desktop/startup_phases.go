@@ -77,10 +77,29 @@ func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogge
 	}
 	log := newLogger.Logger()
 	a.logger = log
+	a.sessionLogger = newLogger
 	if a.wailsLogger != nil {
 		a.wailsLogger.SetDelegate(log)
 	}
 	return log, newLogger
+}
+
+// safeGo runs fn in a goroutine that recovers from any panic, logging it
+// instead of letting it propagate and crash the app. It is used for
+// startup-phase goroutines (config, tools, database, terminal manager) so that
+// a failure in one phase degrades gracefully rather than terminating the
+// process. The caller owns WaitGroup accounting: defer wg.Done() inside fn so
+// the waitgroup is released even on panic — fn's defers unwind before the
+// recovered panic reaches this recover.
+func safeGo(log *slog.Logger, label string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic during startup", "phase", label, "panic", r)
+			}
+		}()
+		fn()
+	}()
 }
 
 // initConfigAndDeps loads the config file and ensures managed tools
@@ -95,24 +114,14 @@ func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogge
 func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved *config.ResolvedConfig, toolsBinPath string, toolsInstalled, toolsOK bool) {
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() {
+	safeGo(log, "config", func() {
 		defer wg.Done()
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("panic in config resolution", "panic", r)
-			}
-		}()
 		resolved = config.ResolveAndLoad(log)
-	}()
-	go func() {
+	})
+	safeGo(log, "tools", func() {
 		defer wg.Done()
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("panic in tool initialization", "panic", r)
-			}
-		}()
 		toolsBinPath, toolsInstalled = a.initTools(ctx, log)
-	}()
+	})
 	wg.Wait()
 
 	// A panic in config resolution leaves resolved nil; abort cleanly via the
@@ -817,6 +826,15 @@ func (a *App) startVectorIndexBackground(
 ) {
 	go func() {
 		defer vectorOnce.Do(func() { close(vectorReady) })
+		// Recover from a CGO/ONNX panic (version mismatch, malformed model
+		// file, …) so the app survives with vector search disabled rather than
+		// crashing after EventBackendReady has already been emitted.
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("vector index background init panicked", "panic", r)
+				a.emit("vector_index:status", map[string]any{"available": false, "reason": fmt.Sprint(r)})
+			}
+		}()
 
 		modelPath := resolveModelPath("jina-v2-small.onnx", agentDir)
 		tokenizerPath := resolveModelPath("jina-v2-small-tokenizer.json", agentDir)
