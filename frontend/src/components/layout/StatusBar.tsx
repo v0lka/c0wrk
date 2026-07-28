@@ -17,15 +17,13 @@ function Sep() {
 
 export function StatusBar() {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
-  const sessionTokens = useChatStore((s) => s.sessionTokens);
+  const tokens = useChatStore((s) => activeSessionId ? s.sessionTokens[activeSessionId] : undefined);
   const isNoProject = useProjectStore((s) => {
     const active = s.projects?.find((p) => p.id === s.activeProjectId);
     return active?.is_no_project === true;
   });
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed);
   const viewerCollapsed = useFileViewerStore((s) => s.collapsed);
-
-  const tokens = activeSessionId ? sessionTokens[activeSessionId] : undefined;
 
   return (
     <div

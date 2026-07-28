@@ -194,11 +194,15 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir stri
 // resolveSessionName returns a display name for the given session ID.
 func (m *Manager) resolveSessionName(id string) string {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if s, ok := m.sessions[id]; ok {
-		return s.Name
+	s, ok := m.sessions[id]
+	m.mu.RUnlock()
+	if !ok {
+		return safeSessionPrefix(id)
 	}
-	return safeSessionPrefix(id)
+	s.mu.Lock()
+	name := s.Name
+	s.mu.Unlock()
+	return name
 }
 
 // safeSessionPrefix returns the first 8 characters of id, or the full id if

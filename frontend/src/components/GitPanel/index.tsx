@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import { GitBranch, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { logger } from '@/lib/logger'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useGitStatusEvents } from '@/hooks/useGitStatusEvents'
@@ -47,7 +48,7 @@ export function GitPanel() {
       // The backend emits `git:status_changed` after StageFile/UnstageFile,
       // which is picked up by useGitStatusEvents — no manual refresh needed.
     } catch (err) {
-      console.error('Failed to toggle file stage:', err)
+      logger.error('Failed to toggle file stage:', err)
       useGitPanelStore.getState().setError(
         err instanceof Error ? err.message : 'Failed to toggle file stage',
       )
@@ -64,7 +65,7 @@ export function GitPanel() {
       const diff = await getFileDiff(path)
       viewerStore.setFileDiff(path, diff)
     } catch (err) {
-      console.error('Failed to load file diff:', err)
+      logger.error('Failed to load file diff:', err)
       viewerStore.setFileError(path,
         err instanceof Error ? err.message : 'Failed to load diff',
       )

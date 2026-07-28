@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/v0lka/c0wrk/internal/sysproc"
+	"github.com/v0lka/sp4rk/pathutil"
 )
 
 // InstallResult reports the outcome of a tool installation step.
@@ -260,6 +261,11 @@ func resolveBinaryInTree(tmpDir, binPathInArchive, binName, goos string) (string
 	return "", false
 }
 
+// maxExtractEntryBytes caps the decompressed size of a single archive entry as
+// defense-in-depth against zip bombs. Downloads are SHA256-verified, but a
+// checksum-valid-but-malicious archive could still exhaust disk on extraction.
+const maxExtractEntryBytes = 512 << 20 // 512 MiB
+
 // pathExists reports whether a file exists at path (file or otherwise).
 func pathExists(path string) bool {
 	_, err := os.Stat(path)
@@ -291,8 +297,9 @@ func extractTarGz(archivePath, destDir string) error {
 		}
 
 		target := filepath.Join(destDir, hdr.Name)
-		// Prevent path traversal.
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(destDir)+string(os.PathSeparator)) {
+		// Prevent path traversal (tar-slip) via the centralized containment API.
+		within, travErr := pathutil.IsWithinPath(destDir, target)
+		if travErr != nil || !within {
 			continue
 		}
 
@@ -309,12 +316,19 @@ func extractTarGz(archivePath, destDir string) error {
 			if err != nil {
 				return fmt.Errorf("creating file: %w", err)
 			}
-			if _, err := io.Copy(out, tr); err != nil {
+			n, copyErr := io.Copy(out, io.LimitReader(tr, maxExtractEntryBytes+1))
+			if copyErr != nil {
 				_ = out.Close()
-				return fmt.Errorf("writing file: %w", err)
+				_ = os.Remove(target)
+				return fmt.Errorf("writing file: %w", copyErr)
 			}
 			if err := out.Close(); err != nil {
+				_ = os.Remove(target)
 				return fmt.Errorf("closing file: %w", err)
+			}
+			if n > maxExtractEntryBytes {
+				_ = os.Remove(target)
+				return fmt.Errorf("archive entry exceeds max size %d bytes (possible zip bomb)", maxExtractEntryBytes)
 			}
 			if err := os.Chmod(target, os.FileMode(hdr.Mode)); err != nil {
 				return fmt.Errorf("chmod: %w", err)
@@ -334,7 +348,8 @@ func extractZip(archivePath, destDir string) error {
 
 	for _, f := range r.File {
 		target := filepath.Join(destDir, f.Name)
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(destDir)+string(os.PathSeparator)) {
+		within, travErr := pathutil.IsWithinPath(destDir, target)
+		if travErr != nil || !within {
 			continue
 		}
 		if f.FileInfo().IsDir() {
@@ -355,13 +370,18 @@ func extractZip(archivePath, destDir string) error {
 			_ = rc.Close()
 			return fmt.Errorf("creating file: %w", err)
 		}
-		_, err = io.Copy(out, rc)
+		n, err := io.Copy(out, io.LimitReader(rc, maxExtractEntryBytes+1))
 		_ = rc.Close()
 		if cerr := out.Close(); cerr != nil && err == nil {
 			err = cerr
 		}
 		if err != nil {
+			_ = os.Remove(target)
 			return fmt.Errorf("writing file: %w", err)
+		}
+		if n > maxExtractEntryBytes {
+			_ = os.Remove(target)
+			return fmt.Errorf("archive entry exceeds max size %d bytes (possible zip bomb)", maxExtractEntryBytes)
 		}
 	}
 	return nil

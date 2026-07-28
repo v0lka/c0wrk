@@ -115,6 +115,13 @@ func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved
 	}()
 	wg.Wait()
 
+	// A panic in config resolution leaves resolved nil; abort cleanly via the
+	// existing toolsOK=false path so the caller doesn't nil-deref on
+	// resolved.Config. The panic cause is already logged by the recover above.
+	if resolved == nil {
+		return nil, "", false, false
+	}
+
 	if toolsBinPath == "" {
 		return resolved, "", false, false
 	}
@@ -504,14 +511,14 @@ func (a *App) buildPlanApprovalCallback(uiEmit func(session.Event)) coretools.Ap
 func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmFunc {
 	return func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		if a.ctx == nil {
-			slog.Warn("confirmation callback denied: app context unavailable",
+			a.log().Warn("confirmation callback denied: app context unavailable",
 				"tool", req.ToolName, "reason", "ctx_nil")
 			return sdktools.ConfirmDenyAndStop, nil
 		}
 
 		sessionID := session.SessionIDFromContext(ctx)
 		if sessionID == "" {
-			slog.Warn("confirmation callback denied: no session ID in context",
+			a.log().Warn("confirmation callback denied: no session ID in context",
 				"tool", req.ToolName, "reason", "session_id_missing")
 			return sdktools.ConfirmDenyAndStop, nil
 		}
@@ -857,6 +864,13 @@ func (a *App) startVectorIndexBackground(
 			return
 		}
 
+		// Abort registration if Shutdown has already run Cleanup — registering a
+		// freshly-created manager after cleanup would leak it (never closed).
+		if a.ctx != nil && a.ctx.Err() != nil {
+			log.Info("vector search init aborted: app shutting down")
+			vectorMgr.Shutdown()
+			return
+		}
 		vectorMgrPtr.Store(vectorMgr)
 		// Store on FrontendAPI immediately so Cleanup can shut it down — doing
 		// this here instead of in a separate goroutine eliminates the race where

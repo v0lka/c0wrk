@@ -61,6 +61,24 @@ func parseConfirmDecision(payload map[string]any, log *slog.Logger) (sdktools.Co
 	}
 }
 
+// parseStepLimitResponse validates a frontend-supplied step-limit response
+// string against the known enum values. Returns ok=false on unrecognized
+// values, mirroring parseConfirmDecision's defense-in-depth discipline.
+func parseStepLimitResponse(v string) (agent.StepLimitResponse, bool) {
+	switch v {
+	case string(agent.StepLimitAllowOnce):
+		return agent.StepLimitAllowOnce, true
+	case string(agent.StepLimitAllowMore):
+		return agent.StepLimitAllowMore, true
+	case string(agent.StepLimitAllowAlways):
+		return agent.StepLimitAllowAlways, true
+	case string(agent.StepLimitDeny):
+		return agent.StepLimitDeny, true
+	default:
+		return "", false
+	}
+}
+
 // stringField extracts a string field from a payload, logging a warning if the
 // field is missing or has the wrong type.
 func stringField(payload map[string]any, key, eventName string, log *slog.Logger) (string, bool) {
@@ -334,7 +352,7 @@ func (a *App) resolveGoalProposal(requestID, decision, condition, verify, clarif
 		"condition": condition,
 		"verify":    verify,
 	}); err != nil {
-		slog.Warn("failed to resolve persisted goal_proposal message", "request_id", requestID, "error", err)
+		a.log().Warn("failed to resolve persisted goal_proposal message", "request_id", requestID, "error", err)
 	}
 	return true
 }
@@ -421,7 +439,11 @@ func (a *App) handleStepLimitResponse(payload map[string]any, log *slog.Logger) 
 		log.Warn("step_limit response has unsupported type", "type", fmt.Sprintf("%T", responseVal))
 		return
 	}
-	resp := agent.StepLimitResponse(respStr)
+	resp, ok := parseStepLimitResponse(respStr)
+	if !ok {
+		log.Warn("unknown step_limit response value", "response", respStr)
+		return
+	}
 
 	chVal, ok := a.pendingStepLimit.Load(requestID)
 	if !ok {

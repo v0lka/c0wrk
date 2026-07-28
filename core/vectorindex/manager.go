@@ -434,7 +434,7 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 		workspacePath,
 		func(newBranch string) {
 			go func() {
-				if bsErr := indexer.HandleBranchSwitch(context.Background(), workspacePath, newBranch); bsErr != nil {
+				if bsErr := indexer.HandleBranchSwitch(indexCtx, workspacePath, newBranch); bsErr != nil {
 					m.logger.Warn("branch switch indexing failed", "error", bsErr)
 				}
 			}()

@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import * as reviewApi from '@/api/review'
 import { subscribe } from '@/api/runtime'
 import { useReviewStore } from '@/stores/reviewStore'
+import { logger } from '@/lib/logger'
 import { ReviewHeader } from './ReviewHeader'
 import { FileReviewBlock } from './FileReviewBlock'
 
@@ -49,7 +50,7 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
       }
     } catch (err) {
       setError(commitSha ? 'Failed to load commit diff' : 'Failed to load review diff')
-      console.error('fetchDiff failed:', err)
+      logger.error('fetchDiff failed:', err)
     } finally {
       // Only the fetch that turned the loader on may turn it off — a silent
       // background re-fetch must never dismiss a concurrently-running initial

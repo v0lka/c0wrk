@@ -108,11 +108,24 @@ func (m *Manager) CreateProject(name, externalPath string) (*ProjectInfo, error)
 			return nil, fmt.Errorf("failed to create internal workspace directory: %w", err)
 		}
 	} else {
-		// External project: validate the external path exists
-		if _, err := os.Stat(externalPath); err != nil {
+		// External project: canonicalize the path (absolute, cleaned,
+		// symlink-resolved) before persisting. Stored paths participate in
+		// security containment (allowed roots), which compares them against
+		// resolved tool inputs, so a non-canonical root would silently fail
+		// the containment match — mirrors AddWorkDirectory.
+		abs, err := filepath.Abs(externalPath)
+		if err != nil {
+			return nil, fmt.Errorf("cannot resolve external workspace path: %w", err)
+		}
+		abs = filepath.Clean(abs)
+		if _, err := os.Stat(abs); err != nil {
 			return nil, fmt.Errorf("external path does not exist: %w", err)
 		}
-		info.WorkspacePath = externalPath
+		resolved, err := filepath.EvalSymlinks(abs)
+		if err != nil {
+			return nil, fmt.Errorf("cannot resolve external workspace symlinks: %w", err)
+		}
+		info.WorkspacePath = resolved
 		info.IsExternal = true
 	}
 

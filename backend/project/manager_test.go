@@ -103,8 +103,14 @@ func TestManager_CreateProject_External(t *testing.T) {
 	if !proj.IsExternal {
 		t.Error("external project should have IsExternal=true")
 	}
-	if proj.WorkspacePath != externalDir {
-		t.Errorf("WorkspacePath = %q, want %q", proj.WorkspacePath, externalDir)
+	// WorkspacePath is canonicalized (symlink-resolved), so compare against the
+	// resolved form of the temp dir (macOS resolves /var → /private/var).
+	expected, err := filepath.EvalSymlinks(externalDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks failed: %v", err)
+	}
+	if proj.WorkspacePath != expected {
+		t.Errorf("WorkspacePath = %q, want %q", proj.WorkspacePath, expected)
 	}
 
 	// Verify NO directory was created under agentDir for external projects
