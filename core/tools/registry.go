@@ -33,6 +33,7 @@ var internalTools = map[string]struct{}{
 	"execute_plan":          {},
 	"propose_goal":          {},
 	"declare_goal_status":   {},
+	"declare_verification":  {},
 	"reflect":               {},
 	sdktools.ToolBatch:      {},
 }
@@ -42,6 +43,55 @@ var internalTools = map[string]struct{}{
 func IsInternalTool(name string) bool {
 	_, ok := internalTools[name]
 	return ok
+}
+
+// goalModeTools is the set of internal tools that exist ONLY for goal mode:
+// they have no meaning (and must not be offered to the agent) outside an
+// active goal pursuit.
+//   - propose_goal          starts a goal (derivation phase)
+//   - declare_goal_status   reports the agent's self-evaluation verdict
+//   - declare_verification  reports the independent verifier's verdict
+//
+// All three are already internal (always allowed, policy/judge-exempt, hidden
+// from the security UI). This set is concerned purely with AVAILABILITY: it
+// tells the orchestrator which internal tools to strip from a non-goal
+// Conductor run's available-tool list, so the agent never sees goal-only
+// tools when goal mode is off. The goal loop and the independent verifier
+// deliberately receive the UNSTRIPPED list — verifierToolFilter/
+// verifierReDerivationToolFilter build their read-only toolset (which must
+// include declare_verification) from it.
+var goalModeTools = map[string]struct{}{
+	"propose_goal":         {},
+	"declare_goal_status":  {},
+	"declare_verification": {},
+}
+
+// IsGoalModeTool returns true if the given tool name exists ONLY for goal
+// mode. Such tools are internal (always allowed, policy-exempt) but are
+// additionally gated: they are offered to the agent only when the session is
+// running a goal loop (HandleMessage/ResumeTask strip them from the
+// available-tool list on the non-goal path).
+func IsGoalModeTool(name string) bool {
+	_, ok := goalModeTools[name]
+	return ok
+}
+
+// StripGoalModeTools removes goal-mode-only tools from a tool-descriptor list.
+// It is the single helper the orchestrator uses to build the available-tool
+// view for a NON-goal Conductor run (HandleMessage/ResumeTask normal path) so
+// goal-specific tools never reach an agent outside a goal pursuit.
+func StripGoalModeTools(in []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]sdktools.ToolDescriptor, 0, len(in))
+	for _, t := range in {
+		if IsGoalModeTool(t.Name) {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // ToolFilter decides whether a tool should be registered. Return false to reject.

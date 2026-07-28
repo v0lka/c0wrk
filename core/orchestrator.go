@@ -612,6 +612,11 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 		return o.resumeGoalLoop(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, routing, goalState, resumeSteps)
 	}
 
+	// Goal-mode-only tools exist solely for goal mode and must not reach a
+	// non-goal resumed Conductor run. The goal-loop resume path above receives
+	// the unstripped list; strip them here for the normal resume path.
+	availableTools = tools.StripGoalModeTools(availableTools)
+
 	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, nil, resumeSteps)
 	var incompleteErr error
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
@@ -1110,6 +1115,14 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	if opts.Goal {
 		return o.runGoalLoop(ctx, message, opts, bb, availableTools, opts.SessionPlansDir)
 	}
+
+	// Goal-mode-only tools (propose_goal, declare_goal_status, declare_verification)
+	// exist solely for goal mode and must not reach a non-goal Conductor run. Strip
+	// them here so neither the router nor the Conductor's available-tool view ever
+	// offers them when goal mode is off. The goal path above receives the unstripped
+	// list: the independent verifier's verifierToolFilter/verifierReDerivationToolFilter
+	// build their read-only toolset (which must include declare_verification) from it.
+	availableTools = tools.StripGoalModeTools(availableTools)
 
 	// 3. Route and activate skills.
 	// Continuation fast-path: routeOrContinue skips the router when a restored

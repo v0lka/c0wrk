@@ -1312,6 +1312,90 @@ func TestInternalTool_BypassesPolicyUserConfirm(t *testing.T) {
 	}
 }
 
+// --- Goal-mode tool gating tests ---
+
+// TestIsGoalModeTool_GoalSpecificTools verifies the three goal-mode-only tools
+// are recognized as goal-mode tools.
+func TestIsGoalModeTool_GoalSpecificTools(t *testing.T) {
+	for _, name := range []string{"propose_goal", "declare_goal_status", "declare_verification"} {
+		if !IsGoalModeTool(name) {
+			t.Errorf("IsGoalModeTool(%q) = false, want true", name)
+		}
+	}
+}
+
+// TestIsGoalModeTool_GeneralCoordinationToolsExcluded verifies the general
+// Conductor coordination tools (delegate, declare_plan, reflect, ...) are NOT
+// goal-mode tools — they are used in normal (non-goal) Conductor runs too, so
+// they must never be gated by goal mode.
+func TestIsGoalModeTool_GeneralCoordinationToolsExcluded(t *testing.T) {
+	for _, name := range []string{"delegate", "cancel_delegation", "declare_plan", "execute_plan", "reflect", "declare_step_complete", "finish", "ask_user", "read_file"} {
+		if IsGoalModeTool(name) {
+			t.Errorf("IsGoalModeTool(%q) = true, want false (general tool, not goal-specific)", name)
+		}
+	}
+}
+
+// TestGoalModeTools_AreAllInternal is a completeness guard: every goal-mode
+// tool MUST also be an internal tool. Internal classification is what hides
+// them from the security UI and exempts them from policy/confirmation. If a
+// goal-mode tool ever loses its internal status, the security tab would show
+// it and policies would apply, violating the goal-mode tool contract.
+func TestGoalModeTools_AreAllInternal(t *testing.T) {
+	for name := range goalModeTools {
+		if !IsInternalTool(name) {
+			t.Errorf("goal-mode tool %q is NOT classified as internal — it must be internal to be hidden from the security UI and exempt from policies", name)
+		}
+	}
+}
+
+// TestDeclareVerification_IsInternal guards the regression where declare_verification
+// was documented as internal but missing from the internalTools map. Its doc
+// comment and constructor (PolicyAlwaysAllow) promise internal-tool behavior;
+// IsInternalTool must honor that.
+func TestDeclareVerification_IsInternal(t *testing.T) {
+	if !IsInternalTool("declare_verification") {
+		t.Error("declare_verification must be classified as internal (hidden from security UI, policy/judge-exempt)")
+	}
+}
+
+// TestStripGoalModeTools_RemovesGoalSpecificTools verifies the helper strips
+// the three goal-only tools while leaving everything else (including general
+// Conductor coordination tools) untouched.
+func TestStripGoalModeTools_RemovesGoalSpecificTools(t *testing.T) {
+	in := []sdktools.ToolDescriptor{
+		{Name: "read_file"}, {Name: "bash_exec"}, {Name: "finish"},
+		{Name: "delegate"}, {Name: "declare_plan"}, {Name: "reflect"},
+		{Name: "propose_goal"}, {Name: "declare_goal_status"}, {Name: "declare_verification"},
+	}
+	got := StripGoalModeTools(in)
+	names := make(map[string]bool, len(got))
+	for _, t := range got {
+		names[t.Name] = true
+	}
+	for _, removed := range []string{"propose_goal", "declare_goal_status", "declare_verification"} {
+		if names[removed] {
+			t.Errorf("StripGoalModeTools: goal tool %q should be removed", removed)
+		}
+	}
+	for _, kept := range []string{"read_file", "bash_exec", "finish", "delegate", "declare_plan", "reflect"} {
+		if !names[kept] {
+			t.Errorf("StripGoalModeTools: non-goal tool %q should be kept", kept)
+		}
+	}
+}
+
+// TestStripGoalModeTools_EmptyAndNilInputs verifies the helper is safe for
+// edge-case inputs (the orchestrator may call it with an empty list).
+func TestStripGoalModeTools_EmptyAndNilInputs(t *testing.T) {
+	if got := StripGoalModeTools(nil); got != nil {
+		t.Errorf("StripGoalModeTools(nil) = %v, want nil", got)
+	}
+	if got := StripGoalModeTools([]sdktools.ToolDescriptor{}); len(got) != 0 {
+		t.Errorf("StripGoalModeTools(empty) returned %d items, want 0", len(got))
+	}
+}
+
 // --- PreExecuteHook tests ---
 
 // TestPreExecuteHook_BlocksUntilReleased verifies that the hook can block
