@@ -377,10 +377,11 @@ type planApprovalResponse struct {
 // goalProposalResponse carries the user's decision back to the blocked
 // propose_goal tool call.
 type goalProposalResponse struct {
-	Decision      string // "approve", "clarify", or "cancel"
-	Condition     string // approved condition (possibly user-edited)
-	Verify        string // approved verify clause (possibly user-edited)
-	Clarification string // clarifying answer (decision == "clarify")
+	Decision         string // "approve", "clarify", or "cancel"
+	Condition        string // approved condition (possibly user-edited)
+	Verify           string // approved verify clause (possibly user-edited)
+	VerificationMode string // approved verification mode (possibly user-edited); echoes proposal when unchanged
+	Clarification    string // clarifying answer (decision == "clarify")
 }
 
 // buildGoalProposalCallback returns the closure that turns propose_goal's
@@ -414,6 +415,7 @@ func (g *goalProposerAdapter) Propose(ctx context.Context, proposal coretools.Go
 		SessionID:          sessionID,
 		Condition:          proposal.Condition,
 		Verify:             proposal.Verify,
+		VerificationMode:   proposal.VerificationMode,
 		Clarification:      proposal.Clarification,
 		NeedsClarification: proposal.NeedsClarification,
 	}
@@ -435,10 +437,11 @@ func (g *goalProposerAdapter) Propose(ctx context.Context, proposal coretools.Go
 	select {
 	case resp := <-ch:
 		return coretools.GoalProposalResponse{
-			Decision:      resp.Decision,
-			Condition:     resp.Condition,
-			Verify:        resp.Verify,
-			Clarification: resp.Clarification,
+			Decision:         resp.Decision,
+			Condition:        resp.Condition,
+			Verify:           resp.Verify,
+			VerificationMode: resp.VerificationMode,
+			Clarification:    resp.Clarification,
 		}, nil
 	case <-ctx.Done():
 		g.app.pendingGoalProposals.Delete(requestID)

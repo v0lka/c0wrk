@@ -26,19 +26,19 @@ func goalTestApp(t *testing.T) *FrontendAPI {
 }
 
 // TestConfirmGoal_DelegatesToResolver verifies ConfirmGoal forwards the
-// approve decision with the condition/verify values.
+// approve decision with the condition/verify/verification_mode values.
 func TestConfirmGoal_DelegatesToResolver(t *testing.T) {
 	f := goalTestApp(t)
-	var gotDecision, gotCond, gotVerify string
-	f.app.manager.SetGoalProposalResolver(func(_, decision, cond, verify, _ string) bool {
-		gotDecision, gotCond, gotVerify = decision, cond, verify
+	var gotDecision, gotCond, gotVerify, gotMode string
+	f.app.manager.SetGoalProposalResolver(func(_, decision, cond, verify, mode, _ string) bool {
+		gotDecision, gotCond, gotVerify, gotMode = decision, cond, verify, mode
 		return true
 	})
-	if err := f.ConfirmGoal("s", "req-1", "cond", "ver"); err != nil {
+	if err := f.ConfirmGoal("s", "req-1", "cond", "ver", "executable"); err != nil {
 		t.Fatalf("ConfirmGoal error = %v", err)
 	}
-	if gotDecision != "approve" || gotCond != "cond" || gotVerify != "ver" {
-		t.Errorf("resolver got (%q,%q,%q), want (approve,cond,ver)", gotDecision, gotCond, gotVerify)
+	if gotDecision != "approve" || gotCond != "cond" || gotVerify != "ver" || gotMode != "executable" {
+		t.Errorf("resolver got (%q,%q,%q,%q), want (approve,cond,ver,executable)", gotDecision, gotCond, gotVerify, gotMode)
 	}
 }
 
@@ -48,7 +48,7 @@ func TestConfirmGoal_DelegatesToResolver(t *testing.T) {
 func TestClarifyGoal_DelegatesToResolver(t *testing.T) {
 	f := goalTestApp(t)
 	var gotDecision, gotClarif string
-	f.app.manager.SetGoalProposalResolver(func(_, decision, _, _, clarif string) bool {
+	f.app.manager.SetGoalProposalResolver(func(_, decision, _, _, _, clarif string) bool {
 		gotDecision, gotClarif = decision, clarif
 		return true
 	})
@@ -64,7 +64,7 @@ func TestClarifyGoal_DelegatesToResolver(t *testing.T) {
 func TestCancelGoal_DelegatesToResolver(t *testing.T) {
 	f := goalTestApp(t)
 	var gotDecision string
-	f.app.manager.SetGoalProposalResolver(func(_, decision, _, _, _ string) bool {
+	f.app.manager.SetGoalProposalResolver(func(_, decision, _, _, _, _ string) bool {
 		gotDecision = decision
 		return true
 	})
@@ -81,7 +81,7 @@ func TestCancelGoal_DelegatesToResolver(t *testing.T) {
 func TestGoalRPCs_NoResolverReturnsError(t *testing.T) {
 	f := goalTestApp(t)
 	// No resolver installed — ResolveGoalProposal returns false.
-	if err := f.ConfirmGoal("s", "req-x", "c", "v"); err == nil {
+	if err := f.ConfirmGoal("s", "req-x", "c", "v", "executable"); err == nil {
 		t.Error("ConfirmGoal expected error for unresolved proposal")
 	}
 	if err := f.CancelGoal("s", "req-x"); err == nil {
@@ -95,7 +95,7 @@ func TestGoalRPCs_NoResolverReturnsError(t *testing.T) {
 // TestGoalRPCs_EmptyRequestID verifies the validation guard.
 func TestGoalRPCs_EmptyRequestID(t *testing.T) {
 	f := goalTestApp(t)
-	if err := f.ConfirmGoal("s", "", "c", "v"); err == nil {
+	if err := f.ConfirmGoal("s", "", "c", "v", "executable"); err == nil {
 		t.Error("ConfirmGoal with empty requestID should error")
 	}
 	if err := f.CancelGoal("s", ""); err == nil {
@@ -111,7 +111,7 @@ func TestGoalRPCs_EmptyRequestID(t *testing.T) {
 func TestGoalRPCs_NoManagerReturnsError(t *testing.T) {
 	f := &FrontendAPI{} // no app
 	for _, err := range []error{
-		f.ConfirmGoal("s", "r", "c", "v"),
+		f.ConfirmGoal("s", "r", "c", "v", "executable"),
 		f.CancelGoal("s", "r"),
 		f.ClarifyGoal("s", "r", "q"),
 	} {

@@ -32,8 +32,8 @@ type tokenState struct {
 	lastUsedTokens      int
 	lastMaxTokens       int
 	lastFillStatus      string
-	lastModel           string                                                                  // last model used
-	lastFamily          string                                                                  // last model family used
+	lastModel           string // last model used
+	lastFamily          string // last model family used
 	// displayContextWindow is the model's advertised context-window size, injected
 	// by the orchestrator via SetDisplayContextWindow. When > 0, ContextFill
 	// recomputes fill relative to this real window instead of the executor's
@@ -43,7 +43,7 @@ type tokenState struct {
 	// ContextFill so ContextCompaction can scale its before/after percentages
 	// from the internal effective-max basis to the display (real window) basis.
 	lastEffectiveMax int
-	tokenPersist        func(inputTokens, outputTokens int, model, family string, fillPercent float64) // callback to persist tokens
+	tokenPersist     func(inputTokens, outputTokens int, model, family string, fillPercent float64) // callback to persist tokens
 }
 
 // toolCallIDGen holds a shared monotonic counter for generating unique tool_call_id values

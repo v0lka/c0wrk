@@ -14,7 +14,30 @@
 //   - A nil LastVerdict means no verification has been performed yet.
 package goal
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
+
+// VerificationMode selects how the goal loop will verify that the goal's
+// success condition has been met. It is chosen at derivation time (in the
+// propose_goal contract) and stored on GoalState so every turn, the verifier,
+// and the user-facing status share a single notion of what "verified" means.
+//
+// The recognized values are string constants so they round-trip cleanly through
+// JSON/YAML and stay human-readable in logs. NormalizeVerificationMode is the
+// single source of truth for valid values and for the empty -> default mapping.
+const (
+	// VerificationModeExecutable (default): the verify clause is expected to be
+	// an executable predicate — a test run, a command, or a check the agent (or
+	// verifier) runs and whose pass/fail decides the verdict.
+	VerificationModeExecutable = "executable"
+
+	// VerificationModeReDerivation: the goal is verified by re-deriving it from
+	// the conversation state and comparing the result against the committed
+	// condition, rather than by executing the verify clause as a command.
+	VerificationModeReDerivation = "re_derivation"
+)
 
 // GoalStatus is the lifecycle state of a goal. It is a string enum so it
 // round-trips cleanly through JSON/YAML and is human-readable in logs.
@@ -105,12 +128,18 @@ type Verdict struct {
 // useful for display and user edits, while the verify clause drives automated
 // checking.
 type GoalState struct {
-	Condition    string     `json:"condition"`     // natural-language success condition
-	VerifyClause string     `json:"verify_clause"` // checkable predicate for the condition
-	Budget       GoalBudget `json:"budget"`        // resource caps (zero = unlimited)
-	TurnCount    int        `json:"turn_count"`    // turns spent so far
-	Status       GoalStatus `json:"status"`        // current lifecycle state
-	LastVerdict  *Verdict   `json:"last_verdict"`  // most recent self-evaluation verdict (nil = none yet)
+	Condition    string `json:"condition"`     // natural-language success condition
+	VerifyClause string `json:"verify_clause"` // checkable predicate for the condition
+	// VerificationMode selects how the condition is verified. It is chosen at
+	// derivation time and threaded through propose_goal; the empty value means
+	// the default (VerificationModeExecutable). Use NormalizeVerificationMode
+	// when ingesting a mode from any untrusted source so this field never holds
+	// an invalid value.
+	VerificationMode string     `json:"verification_mode"`
+	Budget           GoalBudget `json:"budget"`       // resource caps (zero = unlimited)
+	TurnCount        int        `json:"turn_count"`   // turns spent so far
+	Status           GoalStatus `json:"status"`       // current lifecycle state
+	LastVerdict      *Verdict   `json:"last_verdict"` // most recent self-evaluation verdict (nil = none yet)
 	// LastVerification records the outcome of the independent verifier on the
 	// most recent "met" verdict attempt: "" (no verification ran / a fresh
 	// turn), "confirmed", "rejected", or "off" (verification disabled). It is
@@ -130,5 +159,29 @@ func (s GoalStatus) IsTerminal() bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// NormalizeVerificationMode maps a verification-mode string to its canonical
+// form. It is the single source of truth for what counts as a valid mode and
+// for the empty -> default mapping:
+//
+//   - "" (omitted) maps to VerificationModeExecutable (the default).
+//   - VerificationModeExecutable / VerificationModeReDerivation pass through
+//     unchanged.
+//   - any other value returns an error.
+//
+// Call this at every boundary where a verification mode enters the goal domain
+// (propose_goal tool input, the user-edited approval response, deserialized
+// state) so GoalState.VerificationMode never holds an invalid value.
+func NormalizeVerificationMode(mode string) (string, error) {
+	switch mode {
+	case "":
+		return VerificationModeExecutable, nil
+	case VerificationModeExecutable, VerificationModeReDerivation:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("unknown verification mode %q (want %q or %q)",
+			mode, VerificationModeExecutable, VerificationModeReDerivation)
 	}
 }

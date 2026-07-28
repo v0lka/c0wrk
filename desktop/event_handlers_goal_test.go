@@ -16,14 +16,14 @@ func TestResolveGoalProposal_HappyPath(t *testing.T) {
 	})
 	t.Cleanup(func() { a.pendingGoalProposals.Delete("req-1") })
 
-	ok := a.resolveGoalProposal("req-1", "approve", "cond", "ver", "")
+	ok := a.resolveGoalProposal("req-1", "approve", "cond", "ver", "executable", "")
 	if !ok {
 		t.Fatal("resolveGoalProposal returned false for a pending proposal")
 	}
 	select {
 	case resp := <-ch:
-		if resp.Decision != "approve" || resp.Condition != "cond" || resp.Verify != "ver" {
-			t.Errorf("channel received %+v, want {approve,cond,ver,}", resp)
+		if resp.Decision != "approve" || resp.Condition != "cond" || resp.Verify != "ver" || resp.VerificationMode != "executable" {
+			t.Errorf("channel received %+v, want {approve,cond,ver,executable,}", resp)
 		}
 	default:
 		t.Error("response was not delivered to the channel")
@@ -45,7 +45,7 @@ func TestResolveGoalProposal_ClarifyForwardsClarification(t *testing.T) {
 	})
 	t.Cleanup(func() { a.pendingGoalProposals.Delete("req-2") })
 
-	ok := a.resolveGoalProposal("req-2", "clarify", "", "", "which scope?")
+	ok := a.resolveGoalProposal("req-2", "clarify", "", "", "", "which scope?")
 	if !ok {
 		t.Fatal("resolveGoalProposal returned false for a pending proposal")
 	}
@@ -57,14 +57,14 @@ func TestResolveGoalProposal_ClarifyForwardsClarification(t *testing.T) {
 
 func TestResolveGoalProposal_EmptyRequestID(t *testing.T) {
 	a := &App{}
-	if a.resolveGoalProposal("", "approve", "c", "v", "") {
+	if a.resolveGoalProposal("", "approve", "c", "v", "executable", "") {
 		t.Error("expected false for empty requestID")
 	}
 }
 
 func TestResolveGoalProposal_UnknownRequestID(t *testing.T) {
 	a := &App{}
-	if a.resolveGoalProposal("nonexistent", "approve", "c", "v", "") {
+	if a.resolveGoalProposal("nonexistent", "approve", "c", "v", "executable", "") {
 		t.Error("expected false for unknown requestID")
 	}
 }
@@ -137,5 +137,37 @@ func TestHandleGoalProposalResponse_MissingDecision(t *testing.T) {
 		t.Error("expected no dispatch for payload missing decision")
 	default:
 		// pass: channel empty
+	}
+}
+
+// TestHandleGoalProposalResponse_ForwardsVerificationMode verifies the
+// event-based resolution path threads the user's verification_mode choice
+// from the payload back into the goalProposalResponse so it round-trips into
+// GoalState via the desktop adapter. This is the end-to-end acceptance check
+// for step_4: the mode chosen at derivation reaches the frontend payload and
+// the user's edit makes it back to the resolver.
+func TestHandleGoalProposalResponse_ForwardsVerificationMode(t *testing.T) {
+	a := &App{}
+	ch := make(chan goalProposalResponse, 1)
+	a.pendingGoalProposals.Store("req-vm", &pendingGoalProposalEntry{
+		ch:        ch,
+		sessionID: "sess-vm",
+	})
+	t.Cleanup(func() { a.pendingGoalProposals.Delete("req-vm") })
+
+	a.handleGoalProposalResponse(map[string]any{
+		"request_id":        "req-vm",
+		"decision":          "approve",
+		"condition":         "edited cond",
+		"verify":            "edited ver",
+		"verification_mode": "re_derivation",
+	}, slog.Default().WithGroup("test"))
+
+	resp := <-ch
+	if resp.Decision != "approve" {
+		t.Errorf("expected approve dispatched, got %q", resp.Decision)
+	}
+	if resp.VerificationMode != "re_derivation" {
+		t.Errorf("verification_mode = %q, want re_derivation", resp.VerificationMode)
 	}
 }

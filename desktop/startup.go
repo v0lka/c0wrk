@@ -318,8 +318,8 @@ func (a *App) Startup(ctx context.Context) {
 	// Register the goal-proposal resolver so the RPC-based path
 	// (FrontendAPI.ConfirmGoal/CancelGoal) and the event-based path both
 	// funnel through a single resolution on the desktop pending map.
-	application.Manager().SetGoalProposalResolver(func(requestID, decision, condition, verify, clarification string) bool {
-		return a.resolveGoalProposal(requestID, decision, condition, verify, clarification)
+	application.Manager().SetGoalProposalResolver(func(requestID, decision, condition, verify, verificationMode, clarification string) bool {
+		return a.resolveGoalProposal(requestID, decision, condition, verify, verificationMode, clarification)
 	})
 
 	a.buildFrontendAPI(application, backend.FrontendAPIConfig{

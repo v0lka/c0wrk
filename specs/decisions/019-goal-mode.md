@@ -48,43 +48,96 @@ the tool boundary so a bare "done" can never terminate the loop.
 On top of the primary verdict, an **independent verification backstop** now
 re-checks each claimed "met" before the goal terminates. When the agent declares
 `"met"` (with evidence) and verification is enabled (the default), the loop runs
-an **isolated control-plane Conductor pass** — bounded by `verificationMaxSteps`
-(a small fixed step cap, not derived from routing complexity), restricted to a
-read-only/test toolset, and reporting through `declare_verification` — that
-re-runs the verify clause against the claimed artifacts. The verifier is
-**control-plane, not a goal turn**: it does not increment `TurnCount` and is not
-counted against `MaxTurns`. A confirmed claim terminates exactly as a bare "met"
-did before; a **rejected** (or non-declaring) claim cannot terminate the goal —
-the loop continues and the rejection reason is fed back into the next agent
-turn's prompt. The backstop is configurable: `goal_loop.verification` =
-`independent` (default) | `off` (`off` reproduces the original
-evidence-mandate-only behavior). The full mechanics are in
+an **isolated control-plane Conductor pass** — running on a **fresh blackboard
+that is isolated from the still-active goal task** (it does not inherit the
+working task's partial plan or pending step state), **seeded with the met turn's
+work product** so the verifier can inspect what was actually produced, restricted
+to a read-only/test toolset, and reporting through `declare_verification`. The
+verifier is **as capable as the executor**: it runs on the **same
+complexity-derived step budget as a normal executor run** (`complexity ×
+stepsPerComplexity`), not a tight, cheap bounded pass. It is **control-plane,
+not a goal turn**: it does not increment `TurnCount` and is not counted against
+`MaxTurns` — the turn-budget distinction holds, but the verifier's own
+per-pass step budget is full.
+
+**Mode-driven verification.** *How* the verifier checks "done" is set per goal at
+derivation time and stored on `GoalState.VerificationMode` (editable by the user
+at the approval step):
+
+- **`executable` (default)** — the verify clause is a runnable predicate (a test
+  run, a command, a check). The verifier independently re-runs it over a
+  read-only/test toolset and lets the pass/fail decide the verdict.
+- **`re_derivation`** — "done" cannot be settled by a single command and must be
+  proven by re-running an open-ended process whose clean outcome is itself the
+  proof (review, audit, refactor-until-clean). The verifier **delegates a fresh,
+  read-only execution of the goal's process** via `delegate` and confirms *only*
+  if that run comes back clean, citing the delegated run's own findings.
+
+A confirmed claim terminates exactly as a bare "met" did before; a **rejected**
+(or non-declaring) claim cannot terminate the goal — the loop continues and the
+rejection reason is fed back into the next agent turn's prompt. The backstop has
+two knobs: the **global on/off gate** `goal_loop.verification` = `independent`
+(default) | `off` (`off` reproduces the original evidence-mandate-only behavior),
+and the **per-goal `VerificationMode`** (`executable`/`re_derivation`, which only
+matters while the gate is `independent`). The full mechanics are in
 [../domains/goal-mode.md](../domains/goal-mode.md) § Independent Verification.
 
 **Rationale revisited.** The original version of this decision rejected an
 external evaluator on three grounds. That rejection is **revisited** here: a
-backstop verifier is adopted, but in a constrained form — call it A2+C: a
-verifier (A2) that reuses the working agent's own skills, read-only/test
-toolset, and project context, plus a verify-by-executing directive (C) — that
-answers each of the three original objections:
+backstop verifier is adopted, in a constrained form whose constraints are no
+longer "cheap and shallow" but rather **capability parity under isolation**:
+
+- **Capability parity (same step budget as the executor).** The verifier is now
+  *as capable as the executor*: it runs on the same `complexity ×
+  stepsPerComplexity` step budget as a normal executor run, not a tight, cheap
+  bounded pass. A shallow probe cannot catch a fabricated-but-plausible "met";
+  only a genuinely capable re-check can. The cost this introduces is paid only
+  for claims of "met" (see (a)).
+- **Isolation from the active task (fresh blackboard).** The verifier runs on a
+  **fresh blackboard**, not the goal loop's blackboard, so it is a genuinely
+  separate execution context with no leak of the still-active task's incomplete
+  state (partial plan, pending step outputs). It is **seeded with the met turn's
+  work product** (the turn's `Output`), so the verifier can inspect what was
+  actually produced without depending on the working session's live trajectory.
+- **Read-only/test toolset, control-plane placement.** Every mutating tool and
+  every goal-control tool is hard-excluded; the verifier's only output channel
+  is `declare_verification`. It runs between two agent turns inside the held
+  single-flight, does **not** increment `TurnCount`, and is **not** counted
+  against `MaxTurns`.
+- **Mode-driven verification.** *How* "done" is checked is chosen per goal
+  (`GoalState.VerificationMode`): `executable` (default) re-runs a runnable
+  verify clause; `re_derivation` delegates a fresh read-only run of the goal's
+  process and confirms only on a clean outcome. Matching the verification to the
+  nature of "done" is what makes an `executable` goal cheap and decisive while
+  letting a re_derivation goal pay the heavier delegation cost only when the
+  predicate genuinely cannot be a single command.
+
+This constrained form answers each of the three original objections:
 
 - **(a) Cost.** The original objection was that an evaluator *doubles the LLM
-  cost per turn*. The backstop is a single bounded pass (`verificationMaxSteps`,
-  a fixed cap independent of routing complexity), not a second full agent per
-  turn — it runs **once per claimed "met"**, never on every turn — and it is
-  fully disable-able via `goal_loop.verification: off`.
+  cost per turn*. The verifier is no longer cheap — it is executor-scale by
+  design — so cost is controlled structurally instead: it runs **once per
+  claimed "met"**, never on every turn; it is control-plane (not counted against
+  `MaxTurns`, so it does not inflate the turn budget); the per-goal mode keeps
+  `executable` goals cheap while only `re_derivation` goals pay the full
+  delegation cost; and the whole backstop is disable-able via
+  `goal_loop.verification: off`.
 - **(b) Project-specific knowledge.** The original objection was that *a generic
   evaluator cannot know the project-specific verification predicate*. The
   verifier is not generic: it **inherits the active skills and project-context
-  prefix** via `buildSpecializedSystemPrompt` + `prompts.GoalVerification`, and is
-  pointed at the **verify clause** — which is exactly the project-specific
-  predicate the derivation agent grounded in the codebase (e.g. `go test ./core/...
-  passes`).
+  prefix** via `buildSpecializedSystemPrompt`, and is pointed at the **verify
+  clause** — which is exactly the project-specific predicate the derivation agent
+  grounded in the codebase (e.g. `go test ./core/... passes`). The mode-specific
+  directive (`prompts.GoalVerification` for `executable`, `prompts.GoalReDerivation`
+  for `re_derivation`, selected by `GoalVerificationDirectiveByMode`) is
+  substituted with that clause by `GoalVerificationSubstitute`.
 - **(c) Out-of-scope harness.** The original objection was that *wiring a real
   verifier (running tests, executing commands) is project-and-stack-specific and
-  out of scope for the core loop*. No new test-execution harness is built: the
-  verifier reuses the **existing** `bash_exec` (to re-run the verify clause) and
-  the existing read-only tools on the same tool surface the working agent uses.
+  out of scope for the core loop*. No new test-execution harness is built:
+  `executable` mode reuses the **existing** `bash_exec` (to re-run the verify
+  clause) and read-only tools on the same tool surface the working agent uses;
+  `re_derivation` mode reuses the **existing** `delegate` sub-agent mechanism —
+  no bespoke re-execution harness is introduced.
 
 The self-agent + evidence-mandate remains the primary verdict: the backstop runs
 only after a "met" with evidence, and a confirmed claim terminates unchanged. It
@@ -192,8 +245,12 @@ task has existing routing). See [../domains/goal-mode.md](../domains/goal-mode.m
   `met` with fabricated-but-plausible evidence. Mitigated on two layers — the
   evidence mandate (concrete, inspectable artifacts) and, by default, the
   independent verification backstop (Decision 1), which re-checks each claimed
-  "met" via a read-only/test pass and never lets a non-confirmed claim
-  terminate the goal; a "met" the verifier rejects loops back with its reason.
+  "met" via a read-only/test pass on an **isolated fresh blackboard** (seeded
+  with the met turn's work product), driven by the goal's `VerificationMode`
+  (`executable`/`re_derivation`), and never lets a non-confirmed claim terminate
+  the goal; a "met" the verifier rejects loops back with its reason. The
+  verifier is **executor-scale** (same step budget as a working turn), so each
+  claimed "met" costs one extra full pass — but only then, and never per turn.
   Set `goal_loop.verification: off` to rely solely on the evidence mandate +
   audit, in which case this risk reverts to the original mitigation.
 - A goal holds the single-flight lock for its entire multi-turn run, so a
@@ -210,9 +267,16 @@ task has existing routing). See [../domains/goal-mode.md](../domains/goal-mode.m
   form (a generic evaluator, every turn, with a bespoke test harness) is
   rejected (Decision 1) — it doubles cost without project-specific knowledge and
   is out of scope. Decision 1's *revisitation* adopts a **constrained** verifier
-  backstop (A2+C): a single bounded, read-only/test pass that inherits the
-  active skills + project context and re-runs the verify clause, gated behind
-  `goal_loop.verification` (`independent` default / `off`). It closes the
+  backstop: a capable (executor-scale, same step budget) but **isolated** (fresh
+  blackboard, read-only/test toolset) pass that inherits the active skills +
+  project context and re-checks the goal's outcome according to its
+  `VerificationMode` (`executable` re-runs the verify clause; `re_derivation`
+  delegates a fresh read-only run of the process), gated behind
+  `goal_loop.verification` (`independent` default / `off`). The *cheap-bounded-pass*
+  variant was considered and dropped: a shallow probe cannot catch a
+  fabricated-but-plausible "met", so the verifier was raised to executor
+  capability while the cost is instead controlled by running only per claimed
+  "met", staying off the turn budget, and being disable-able. It closes the
   fabricated-evidence gap without re-introducing the unbounded evaluator.
 - **Slash-command condition authoring.** `/goal <condition>` where the user
   writes the condition/verify directly. Rejected (Decision 2): high-friction,

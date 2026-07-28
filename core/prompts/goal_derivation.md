@@ -24,7 +24,13 @@ These two must correspond: the verify clause must actually test the condition.
    - **Runnable command** — a command whose output proves the condition (e.g. `grep -r "deprecated" core/` returns no matches).
    - **Qualitative criterion** — only when no machine check exists; state exactly what a human evaluator would look for.
 
-4. **Call `propose_goal`.** Submit the derived `{condition, verify}`. The call blocks until the user responds:
+4. **Choose the verification mode.** Every goal carries a `verification_mode` that tells the goal loop HOW a "met" verdict will be independently confirmed. Match it to the nature of the verify clause:
+   - **`executable`** (the default) — choose when the verify clause is a runnable predicate: a test run, a grep/build check, or any command whose exit code or output settles the condition. The verifier re-runs that command itself.
+   - **`re_derivation`** — choose ONLY when "done" cannot be settled by a single runnable command and must instead be proven by re-running an open-ended process whose clean outcome is itself the proof: a code review, a security audit, a "refactor until the code is clean" goal where cleanliness is judged rather than measured. The verifier delegates a fresh, read-only execution of the goal's process and confirms only if that fresh run comes back clean.
+
+   Prefer `executable` whenever a runnable predicate exists — it is cheaper and more decisive. Reserve `re_derivation` for genuinely qualitative, judgment-based finish lines that no single command can test.
+
+5. **Call `propose_goal`.** Submit the derived `{condition, verify}` together with the `verification_mode` you chose. The call blocks until the user responds:
    - **approve** (possibly with edits) — the goal is locked in; your work is done.
    - **clarify** — the user answered a question or asked one; revise the goal and propose again.
    - **cancel** — the user abandoned the goal; stop.

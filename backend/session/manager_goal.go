@@ -99,7 +99,7 @@ func (m *Manager) ClearGoal(sessionID string) error {
 // buildGoalProposalCallback registers its pending map. Without it,
 // ResolveGoalProposal is a no-op (and the event-based path is the only
 // resolution route).
-func (m *Manager) SetGoalProposalResolver(fn func(requestID, decision, condition, verify, clarification string) bool) {
+func (m *Manager) SetGoalProposalResolver(fn func(requestID, decision, condition, verify, verificationMode, clarification string) bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.goalProposalResolver = fn
@@ -107,15 +107,16 @@ func (m *Manager) SetGoalProposalResolver(fn func(requestID, decision, condition
 
 // ResolveGoalProposal delivers a user decision on a pending goal proposal.
 // decision is "approve", "clarify", or "cancel". condition/verify carry the
-// (possibly edited) approved values; clarification carries a clarifying answer.
-// Returns true when a pending proposal was found and resolved, false otherwise
-// (including when no resolver is wired).
-func (m *Manager) ResolveGoalProposal(requestID, decision, condition, verify, clarification string) bool {
+// (possibly edited) approved values; verificationMode carries the (possibly
+// edited) per-goal verification mode for the approve path; clarification
+// carries a clarifying answer. Returns true when a pending proposal was found
+// and resolved, false otherwise (including when no resolver is wired).
+func (m *Manager) ResolveGoalProposal(requestID, decision, condition, verify, verificationMode, clarification string) bool {
 	m.mu.RLock()
 	fn := m.goalProposalResolver
 	m.mu.RUnlock()
 	if fn == nil {
 		return false
 	}
-	return fn(requestID, decision, condition, verify, clarification)
+	return fn(requestID, decision, condition, verify, verificationMode, clarification)
 }

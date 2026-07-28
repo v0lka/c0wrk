@@ -730,6 +730,7 @@ export namespace desktop {
 	    request_id: string;
 	    condition: string;
 	    verify: string;
+	    verification_mode?: string;
 	    clarification?: string;
 	    needs_clarification: boolean;
 	
@@ -742,6 +743,7 @@ export namespace desktop {
 	        this.request_id = source["request_id"];
 	        this.condition = source["condition"];
 	        this.verify = source["verify"];
+	        this.verification_mode = source["verification_mode"];
 	        this.clarification = source["clarification"];
 	        this.needs_clarification = source["needs_clarification"];
 	    }

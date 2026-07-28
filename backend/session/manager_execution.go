@@ -194,9 +194,9 @@ func (m *Manager) startIgnoreBuild(root string) {
 // so a change to any one of them — anywhere under a root — makes that root's
 // cached resolver stale.
 var ignoreFileNames = map[string]struct{}{
-	".gitignore":  {},
-	".aiignore":   {},
-	".ignore":     {}, // .ignore is honoured by ripgrep and some tools
+	".gitignore": {},
+	".aiignore":  {},
+	".ignore":    {}, // .ignore is honoured by ripgrep and some tools
 }
 
 // InvalidateIgnoreCache evicts cached ignore resolvers whose root contains one
@@ -254,6 +254,7 @@ func (m *Manager) InvalidateIgnoreCache(changedPaths []string) {
 		return true
 	})
 }
+
 // Runs in a goroutine, results come via events.
 // reviewMode, when true, marks the message as carrying code review feedback
 // the agent must address (see core HandleOptions.ReviewMode).

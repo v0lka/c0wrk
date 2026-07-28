@@ -59,6 +59,10 @@ export type DisplayItem =
       verify: string
       clarification?: string
       needs_clarification: boolean
+      /** Per-goal verification mode ('executable' | 're_derivation'); empty
+       *  means the default ('executable'). Shown/editable in the approval
+       *  panel and round-tripped through confirmGoal. */
+      verification_mode: string
     }
   | { kind: 'checklist'; id: string; stepId: string | null; items: Array<{ text: string; checked: boolean }>; active: boolean }
 

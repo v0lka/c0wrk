@@ -190,7 +190,7 @@ func TestResolveGoalVerifier_Injectable(t *testing.T) {
 	o := &Orchestrator{}
 
 	called := false
-	injected := func(_ context.Context, _ *goal.GoalState, _ *goal.Verdict, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
+	injected := func(_ context.Context, _ *goal.GoalState, _ *goal.Verdict, _, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
 		called = true
 		return &tools.VerificationOutcome{Confirmed: true, Reason: "mock verifier"}, nil
 	}
@@ -198,7 +198,7 @@ func TestResolveGoalVerifier_Injectable(t *testing.T) {
 
 	got := o.resolveGoalVerifier()
 	// The injected verifier is returned verbatim and is callable end-to-end.
-	outcome, err := got(context.Background(), &goal.GoalState{}, &goal.Verdict{}, "msg", orchestration.NewMapBlackboard(), nil, conductorDeps{})
+	outcome, err := got(context.Background(), &goal.GoalState{}, &goal.Verdict{}, "msg", "", orchestration.NewMapBlackboard(), nil, conductorDeps{})
 	if err != nil {
 		t.Fatalf("injected verifier returned error: %v", err)
 	}
@@ -225,6 +225,135 @@ func TestVerifierExcludedToolNames_ContainsRequiredMutatingAndControlTools(t *te
 	for _, name := range required {
 		if _, ok := verifierExcludedToolNames[name]; !ok {
 			t.Errorf("verifierExcludedToolNames missing required entry %q", name)
+		}
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Re-derivation mode toolset tests (step_3)
+//
+// These verify the mode-branching contract: the re_derivation verifier toolset
+// is the executable toolset PLUS delegate + read_step_output, while every
+// mutating tool and every OTHER goal-control tool remains excluded.
+// ----------------------------------------------------------------------------
+
+// verifierFixtureDescriptors is the canonical tool list both modes filter over.
+func verifierFixtureDescriptors() []sdktools.ToolDescriptor {
+	return []sdktools.ToolDescriptor{
+		// Read-only / meta — included in both modes.
+		{Name: "read_file"}, {Name: "glob"}, {Name: "ripgrep"}, {Name: "finish"},
+		{Name: "store_fact"}, {Name: "search_facts"}, {Name: "ask_user"},
+		// Step-output / final-result readers — included in both modes.
+		{Name: "read_step_output"}, {Name: "read_final_result"},
+		// Shell tool — included in both modes (re-run the verify clause).
+		{Name: activeShellToolName()},
+		// MCP tool — included in both modes regardless of name.
+		{Name: "mcp_linter", SourceCategory: sdktools.SourceCategoryMCP},
+		// Verdict channel — included in both modes (the verifier's output).
+		{Name: "declare_verification"},
+		// delegate — included ONLY in re_derivation mode.
+		{Name: "delegate"},
+		// Mutating tools — excluded in both modes.
+		{Name: "write_file"}, {Name: "edit_file"},
+		{Name: "delete_file"}, {Name: "delete_directory"}, {Name: "create_directory"},
+		// Goal-control / coordination tools (other than delegate) — excluded in both.
+		{Name: "declare_goal_status"}, {Name: "declare_plan"}, {Name: "subagent"},
+		{Name: "propose_goal"}, {Name: "reflect"}, {Name: "cancel_delegation"},
+		{Name: "declare_step_complete"},
+	}
+}
+
+// TestVerifierReDerivationToolFilter_AddsDelegateAndStepOutput verifies the
+// headline re_derivation acceptance criterion: delegate + read_step_output are
+// INCLUDED (re_derivation needs delegate to spin up a fresh read-only run and
+// read_step_output to read it), while every mutating tool and every OTHER
+// goal-control tool remains excluded.
+func TestVerifierReDerivationToolFilter_AddsDelegateAndStepOutput(t *testing.T) {
+	got := verifierReDerivationToolFilter(verifierFixtureDescriptors(), nil)
+	set := descriptorSet(got)
+
+	for _, want := range []string{"delegate", "read_step_output", "read_final_result"} {
+		if !set[want] {
+			t.Errorf("re_derivation: expected %q INCLUDED, got %v", want, set)
+		}
+	}
+	// The re_derivation toolset still carries the shared read-only/test/verdict
+	// tools so the verifier can corroborate the delegated run's findings.
+	for _, want := range []string{"read_file", "glob", "finish", activeShellToolName(), "mcp_linter", "declare_verification"} {
+		if !set[want] {
+			t.Errorf("re_derivation: expected shared read-only/test tool %q INCLUDED, got %v", want, set)
+		}
+	}
+
+	// Every mutating tool excluded — the verifier NEVER edits state in either mode.
+	for _, unwanted := range []string{
+		"write_file", "edit_file", "delete_file", "delete_directory", "create_directory",
+	} {
+		if set[unwanted] {
+			t.Errorf("re_derivation: mutating tool %q must be EXCLUDED", unwanted)
+		}
+	}
+	// Every OTHER goal-control tool excluded — only delegate is granted.
+	for _, unwanted := range []string{
+		"declare_goal_status", "declare_plan", "subagent", "propose_goal",
+		"reflect", "cancel_delegation", "declare_step_complete",
+	} {
+		if set[unwanted] {
+			t.Errorf("re_derivation: goal-control tool %q must be EXCLUDED (only delegate is granted)", unwanted)
+		}
+	}
+}
+
+// TestVerifierToolFilter_ExecutableExcludesDelegate verifies the executable
+// (default) mode does NOT grant delegate — the mode-branching delta.
+func TestVerifierToolFilter_ExecutableExcludesDelegate(t *testing.T) {
+	got := verifierToolFilter(verifierFixtureDescriptors(), nil)
+	set := descriptorSet(got)
+	if set["delegate"] {
+		t.Error("executable mode: delegate must be EXCLUDED (it is granted only in re_derivation mode)")
+	}
+	// read_step_output is still present (it is a read-only tool, unrelated to
+	// the delegate grant).
+	if !set["read_step_output"] {
+		t.Error("executable mode: read_step_output should still be present (it is a read-only tool)")
+	}
+}
+
+// TestVerifierReDerivationToolFilter_DelegateDisabledByMode verifies that a
+// delegate tool disabled in the current mode (disabledTools) is dropped even in
+// re_derivation — the grant is subject to the same mode-disable gate as every
+// other tool.
+func TestVerifierReDerivationToolFilter_DelegateDisabledByMode(t *testing.T) {
+	got := verifierReDerivationToolFilter(verifierFixtureDescriptors(), map[string]bool{"delegate": true})
+	set := descriptorSet(got)
+	if set["delegate"] {
+		t.Error("re_derivation: a mode-disabled delegate must still be dropped")
+	}
+	// Other shared tools survive.
+	if !set["read_file"] {
+		t.Error("re_derivation: read_file should survive when only delegate is disabled")
+	}
+}
+
+// TestVerifierReDerivationExcludedToolNames_OmitsDelegateOnly is a
+// completeness guard on the re_derivation exclusion set: it is the executable
+// exclusion set MINUS delegate (the one coordination tool granted in that mode),
+// and every mutating tool + every other goal-control tool is still present.
+func TestVerifierReDerivationExcludedToolNames_OmitsDelegateOnly(t *testing.T) {
+	// delegate is NOT in the re_derivation exclusion set (it is granted).
+	if _, present := verifierReDerivationExcludedToolNames["delegate"]; present {
+		t.Error("re_derivation exclusion set must NOT contain delegate (it is granted in that mode)")
+	}
+	// Every mutating tool excluded.
+	for _, name := range []string{"write_file", "edit_file", "delete_file", "delete_directory", "create_directory"} {
+		if _, ok := verifierReDerivationExcludedToolNames[name]; !ok {
+			t.Errorf("re_derivation exclusion set missing mutating tool %q", name)
+		}
+	}
+	// Every OTHER goal-control tool excluded (the full executable set minus delegate).
+	for _, name := range []string{"declare_goal_status", "declare_plan", "subagent", "propose_goal", "reflect", "cancel_delegation", "declare_step_complete"} {
+		if _, ok := verifierReDerivationExcludedToolNames[name]; !ok {
+			t.Errorf("re_derivation exclusion set missing goal-control tool %q", name)
 		}
 	}
 }

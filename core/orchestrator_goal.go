@@ -168,12 +168,21 @@ func buildGoalState(proposal tools.GoalProposal, resp tools.GoalProposalResponse
 		if verify == "" {
 			verify = proposal.Verify
 		}
+		// Prefer the user's edited verification mode; fall back to the
+		// agent-proposed one; normalize (-> default executable) so the stored
+		// value is always canonical even when both are empty.
+		verificationMode := resp.VerificationMode
+		if verificationMode == "" {
+			verificationMode = proposal.VerificationMode
+		}
+		verificationMode, _ = goal.NormalizeVerificationMode(verificationMode)
 		return &goal.GoalState{
-			Condition:    condition,
-			VerifyClause: verify,
-			Budget:       goal.GoalBudget{}, // unlimited; caps applied at activation
-			Status:       goal.StatusActive,
-			CreatedAt:    now,
+			Condition:        condition,
+			VerifyClause:     verify,
+			VerificationMode: verificationMode,
+			Budget:           goal.GoalBudget{}, // unlimited; caps applied at activation
+			Status:           goal.StatusActive,
+			CreatedAt:        now,
 		}, nil
 	case "cancel":
 		return nil, errors.New("goal derivation cancelled by user")
@@ -547,7 +556,7 @@ func (o *Orchestrator) runGoalTurns(
 					o.emitGoalStatus(ctx, gs)
 					break
 				}
-				outcome, verr := verifier(ctx, gs, v, message, bb, availableTools, deps)
+				outcome, verr := verifier(ctx, gs, v, message, execResultOutput(execResult), bb, availableTools, deps)
 				if outcome != nil && outcome.Confirmed {
 					gs.LastVerification = "confirmed"
 					gs.Status = goal.StatusMet
@@ -632,6 +641,19 @@ func (o *Orchestrator) runGoalTurns(
 	return gs
 }
 
+// execResultOutput extracts the met turn's work product (Output) from the
+// turn-runner's ExecutionResult. It is threaded into the verifier so the fresh
+// verification blackboard can be seeded with the real work product (via
+// SetFinalResult) — eliminating the "no final result recorded" symptom the
+// verifier's read_final_result previously hit when run on a fresh blackboard.
+// A nil result yields the empty string (the verifier seeds nothing).
+func execResultOutput(r *orchestration.ExecutionResult) string {
+	if r == nil {
+		return ""
+	}
+	return r.Output
+}
+
 // defaultGoalTurnRunner runs ONE turn of the goal loop via the real Conductor.
 // Routing and active skills are established once by runGoalLoop (before the
 // turn loop begins) and inherited by every turn; the runner therefore just
@@ -714,11 +736,12 @@ func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard
 // verification result of the most recent met attempt.
 func (o *Orchestrator) emitGoalStatus(_ context.Context, gs *goal.GoalState) {
 	meta := map[string]any{
-		"phase":     "goal_status",
-		"status":    string(gs.Status),
-		"turn":      gs.TurnCount,
-		"condition": gs.Condition,
-		"max_turns": gs.Budget.MaxTurns,
+		"phase":             "goal_status",
+		"status":            string(gs.Status),
+		"turn":              gs.TurnCount,
+		"condition":         gs.Condition,
+		"max_turns":         gs.Budget.MaxTurns,
+		"verification_mode": gs.VerificationMode,
 	}
 	if gs.LastVerdict != nil {
 		meta["verdict"] = gs.LastVerdict.Status
@@ -865,8 +888,26 @@ var verifierExcludedToolNames = map[string]struct{}{
 	"propose_goal": {}, "reflect": {}, "cancel_delegation": {},
 }
 
-// verifierToolFilter builds the read-only/test toolset for the verification
-// pass from the full availableTools list. A tool is INCLUDED when it is:
+// verifierReDerivationExcludedToolNames is the exclusion set for re_derivation
+// mode: it is verifierExcludedToolNames MINUS "delegate". re_derivation needs
+// `delegate` to spin up a fresh read-only execution of the goal's process, so
+// it is the ONE coordination tool the verifier is granted in that mode. Every
+// mutating tool and every OTHER goal-control tool (declare_goal_status,
+// declare_plan, propose_goal, reflect, cancel_delegation, subagent,
+// declare_step_complete) remains excluded so the verifier never edits state or
+// tampers with the goal lifecycle.
+var verifierReDerivationExcludedToolNames = map[string]struct{}{
+	// Mutating file tools (unchanged).
+	ToolWriteFile: {}, ToolEditFile: {},
+	"delete_file": {}, "delete_directory": {}, "create_directory": {},
+	// Goal-control / coordination tools — MINUS delegate.
+	"declare_goal_status": {}, ToolDeclareStepComplete: {},
+	"declare_plan": {}, ToolSubAgent: {},
+	"propose_goal": {}, "reflect": {}, "cancel_delegation": {},
+}
+
+// buildVerifierToolset is the shared core of the two verification-mode tool
+// filters. A tool is INCLUDED when it is:
 //
 //   - a non-mutating read-only / meta tool (subagentReadOnlyToolNames), OR
 //   - the platform shell-execution tool (activeShellToolName — bash_exec on
@@ -875,15 +916,17 @@ var verifierExcludedToolNames = map[string]struct{}{
 //     capabilities and may include read-only checkers/tests), OR
 //   - declare_verification itself — the verifier's verdict channel (the only
 //     internal coordination tool the verifier is allowed; without it the pass
-//     could never report an outcome).
+//     could never report an outcome), OR
+//   - delegate — ONLY when allowDelegate is true (re_derivation mode), so the
+//     verifier can spin up a fresh read-only execution of the goal's process.
 //
-// Every tool in verifierExcludedToolNames is then HARD-EXCLUDED regardless of
-// the include criteria (so e.g. declare_step_complete — present in
-// subagentReadOnlyToolNames — is stripped), and finally any tool disabled in
-// the current mode (deps.disabledTools, e.g. glob/ripgrep in CHAT mode) is
-// dropped. This mirrors conductorLauncher.mandatorySubagentTools but with the
-// verification-specific exclusion set layered on top.
-func verifierToolFilter(all []sdktools.ToolDescriptor, disabled map[string]bool) []sdktools.ToolDescriptor {
+// Every tool in excluded is then HARD-EXCLUDED regardless of the include
+// criteria (so e.g. declare_step_complete — present in subagentReadOnlyToolNames
+// — is stripped), and finally any tool disabled in the current mode
+// (disabledTools, e.g. glob/ripgrep in CHAT mode) is dropped. This mirrors
+// conductorLauncher.mandatorySubagentTools but with the verification-specific
+// exclusion set layered on top.
+func buildVerifierToolset(all []sdktools.ToolDescriptor, disabled map[string]bool, excluded map[string]struct{}, allowDelegate bool) []sdktools.ToolDescriptor {
 	out := make([]sdktools.ToolDescriptor, 0, len(all))
 	seen := make(map[string]struct{}, len(all))
 	shell := activeShellToolName()
@@ -899,20 +942,41 @@ func verifierToolFilter(all []sdktools.ToolDescriptor, disabled map[string]bool)
 		// Hard exclusion: mutating + goal-control tools are stripped even when
 		// they match an include criterion (e.g. declare_step_complete is in
 		// subagentReadOnlyToolNames but must be excluded here).
-		if _, excluded := verifierExcludedToolNames[d.Name]; excluded {
+		if _, isExcluded := excluded[d.Name]; isExcluded {
 			continue
 		}
 		isMCP := d.SourceCategory == sdktools.SourceCategoryMCP
 		_, isReadOnly := subagentReadOnlyToolNames[d.Name]
 		isShell := d.Name == shell
 		isVerdict := d.Name == "declare_verification" // the verifier's verdict channel
-		if !isMCP && !isReadOnly && !isShell && !isVerdict {
+		isDelegate := allowDelegate && d.Name == "delegate"
+		if !isMCP && !isReadOnly && !isShell && !isVerdict && !isDelegate {
 			continue
 		}
 		seen[d.Name] = struct{}{}
 		out = append(out, d)
 	}
 	return out
+}
+
+// verifierToolFilter builds the read-only/test toolset for the EXECUTABLE
+// verification pass (the default mode): read-only + shell + MCP +
+// declare_verification, with every mutating tool and every goal-control tool
+// (including delegate) hard-excluded. Guarantees declare_verification is
+// present so the verifier can report its verdict.
+func verifierToolFilter(all []sdktools.ToolDescriptor, disabled map[string]bool) []sdktools.ToolDescriptor {
+	return buildVerifierToolset(all, disabled, verifierExcludedToolNames, false)
+}
+
+// verifierReDerivationToolFilter builds the toolset for the RE_DERIVATION
+// verification pass: the executable toolset PLUS delegate + read_step_output.
+// delegate lets the verifier spin up a fresh read-only sub-agent that re-runs
+// the goal's process; read_step_output (already in subagentReadOnlyToolNames)
+// reads that delegated run's result. Every mutating tool and every OTHER
+// goal-control tool remains excluded — only delegate is added to the
+// coordination set. Guarantees declare_verification is present.
+func verifierReDerivationToolFilter(all []sdktools.ToolDescriptor, disabled map[string]bool) []sdktools.ToolDescriptor {
+	return buildVerifierToolset(all, disabled, verifierReDerivationExcludedToolNames, true)
 }
 
 // renderReportedEvidence formats the agent's self-reported verdict into the
@@ -944,24 +1008,41 @@ func renderReportedEvidence(verdict *goal.Verdict) string {
 // ISOLATED Conductor pass that reuses all wiring (context injection,
 // trajectory, tool executor/registry) and inherits the active skills +
 // project-context prefix via the goal-verification system prompt override
-// (buildSpecializedSystemPrompt + prompts.GoalVerification). The pass is bounded
-// by verificationMaxSteps and restricted to a read-only/test toolset
-// (verifierToolFilter); the verifier reports its structured verdict through
-// declare_verification into a fresh memVerificationSink injected into the
-// per-pass context.
+// (buildSpecializedSystemPrompt). The pass is bounded by the same
+// complexity-derived budget as a normal executor run
+// (complexity × stepsPerComplexity); the verifier reports its structured
+// verdict through declare_verification into a fresh memVerificationSink injected
+// into the per-pass context.
 //
-// It mirrors deriveGoal: build fresh conductor deps, swap in the specialized
-// directive (placeholders resolved + shell-tool substituted), bound the loop,
-// filter the toolset, inject the sink, run RunConductor, and read the outcome.
-// A pass that ends WITHOUT declaring a verdict (nil sink) is treated as a
-// REJECT — the condition could not be independently confirmed (e.g. the pass
-// hit the step budget or errored before declaring).
+// ISOLATION + WORK-PRODUCT: it runs on a FRESH blackboard
+// (orchestration.NewMapBlackboard), NOT the goal loop's blackboard, so it is a
+// genuinely separate execution context with no leak of the still-active goal
+// task's incomplete state. It is seeded with lastTurnOutput (the met turn's
+// work product) via SetFinalResult, so the verifier's own read_final_result
+// returns the real work — eliminating the "no final result recorded" symptom
+// that arose when a fresh-context verifier could not reach the goal task's
+// output. The reported-evidence injection (renderReportedEvidence into the
+// directive) is kept as before; it is blackboard-independent.
+//
+// MODE BRANCHING: the directive + toolset are selected by gs.VerificationMode.
+//   - executable (default): prompts.GoalVerification directive + verifierToolFilter
+//     (read-only/test). The agent independently re-runs the verify clause.
+//   - re_derivation: prompts.GoalReDerivation directive + verifierReDerivationToolFilter
+//     (read-only/test PLUS delegate + read_step_output). The agent delegates a
+//     fresh read-only run of the goal's process and confirms only if it comes
+//     back clean.
+//
+// Both modes withhold every mutating tool and every goal-control tool (except
+// delegate in re_derivation). A pass that ends WITHOUT declaring a verdict
+// (nil sink) is treated as a REJECT — the condition could not be independently
+// confirmed (e.g. the pass hit the step budget or errored before declaring).
 func (o *Orchestrator) defaultGoalVerifier(
 	ctx context.Context,
 	gs *goal.GoalState,
 	verdict *goal.Verdict,
 	message string,
-	bb orchestration.Blackboard,
+	lastTurnOutput string,
+	_ orchestration.Blackboard,
 	availableTools []sdktools.ToolDescriptor,
 	deps conductorDeps,
 ) (*tools.VerificationOutcome, error) {
@@ -972,34 +1053,52 @@ func (o *Orchestrator) defaultGoalVerifier(
 	deps = o.buildConductorDeps(deps.conversationHistory, nil)
 	deps.resumeSteps = nil
 
-	// Substitute the goal-verification directive with the active goal's
-	// condition/verify clause and the agent's REPORTED evidence (treated as
-	// unverified claims the verifier must re-check). Shell-tool substitution is
-	// applied here (via GoalVerificationSubstitute), matching
-	// buildSpecializedSystemPrompt's contract that the caller supplies a
-	// shell-tool-substituted directive — so the directive names the
-	// platform-correct tool while active skills + the shared project-context
-	// prefix are kept by the specialized prompt builder.
+	// Run on a FRESH blackboard so the verifier is a genuinely separate
+	// execution context — it does not inherit the still-active goal task's
+	// incomplete state (partial plan, pending step outputs, etc.). Seed it with
+	// the met turn's work product (lastTurnOutput) via SetFinalResult so the
+	// verifier's own read_final_result returns the real work, not "no final
+	// result recorded" — the broken-dependency symptom that arose when a
+	// fresh-context verifier could not reach the goal task's output. The
+	// original request is seeded too so the fresh blackboard mirrors a normal
+	// task's initial state.
+	verifierBB := orchestration.NewMapBlackboard()
+	verifierBB.SetOriginalRequest(message)
+	if lastTurnOutput != "" {
+		verifierBB.SetFinalResult(lastTurnOutput)
+	}
+
+	// Branch on the goal's verification mode. Both modes inherit the active
+	// skills + project-context prefix via the system-prompt override (which is
+	// blackboard-independent); they differ in directive + toolset.
+	//
+	//  - executable (default): the agent independently re-runs the verify
+	//    clause over the read-only/test toolset (verifierToolFilter).
+	//  - re_derivation: the agent DELEGATES a fresh read-only run of the goal's
+	//    process via the `delegate` tool (verifierReDerivationToolFilter adds
+	//    delegate + read_step_output) and confirms only if it comes back clean.
+	//
+	// Both directives share the {goal_condition}/{goal_verify_clause}/
+	// {reported_evidence}/{shell_tool} placeholder set, resolved by
+	// GoalVerificationSubstitute.
+	directiveText := prompts.GoalVerification
+	verifierTools := verifierToolFilter(availableTools, deps.disabledTools)
+	if gs.VerificationMode == goal.VerificationModeReDerivation {
+		directiveText = prompts.GoalReDerivation
+		verifierTools = verifierReDerivationToolFilter(availableTools, deps.disabledTools)
+	}
 	directive := prompts.GoalVerificationSubstitute(
-		prompts.GoalVerification, gs.Condition, gs.VerifyClause, renderReportedEvidence(verdict),
+		directiveText, gs.Condition, gs.VerifyClause, renderReportedEvidence(verdict),
 	)
 	deps.systemPromptOverride = func(ctx context.Context, msg string, modelMeta llm.ModelMetadata) string {
 		return buildSpecializedSystemPrompt(ctx, msg, modelMeta, directive)
 	}
-	// Bound the verification pass independently of routing complexity so a
-	// focused re-check cannot run unbounded.
-	deps.maxStepsOverride = verificationMaxSteps
-
-	// Restrict the toolset to read-only/test tools (no mutating, no
-	// goal-control). verifierToolFilter guarantees declare_verification is
-	// present so the verifier can report its verdict.
-	verifierTools := verifierToolFilter(availableTools, deps.disabledTools)
 
 	// Inject a fresh sink so this pass's outcome is captured in isolation.
 	sink := &memVerificationSink{}
 	verifierCtx := tools.WithVerificationSink(ctx, sink)
 
-	if _, err := RunConductor(verifierCtx, message, bb, verifierTools, deps, ""); err != nil {
+	if _, err := RunConductor(verifierCtx, message, verifierBB, verifierTools, deps, ""); err != nil {
 		if o.logger != nil {
 			o.logger.Debug("goal verification conductor run returned error", "error", err)
 		}
@@ -1031,7 +1130,7 @@ func (o *Orchestrator) defaultGoalVerifier(
 // defaultGoalTurnRunner. Centralized as a method so the resolution is testable
 // in isolation: a nil field yields the production default, an injected verifier
 // is honored verbatim (the test seam the goal loop relies on).
-func (o *Orchestrator) resolveGoalVerifier() func(ctx context.Context, gs *goal.GoalState, verdict *goal.Verdict, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, deps conductorDeps) (*tools.VerificationOutcome, error) {
+func (o *Orchestrator) resolveGoalVerifier() func(ctx context.Context, gs *goal.GoalState, verdict *goal.Verdict, message string, lastTurnOutput string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, deps conductorDeps) (*tools.VerificationOutcome, error) {
 	if o.goalVerifier != nil {
 		return o.goalVerifier
 	}

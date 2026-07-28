@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
-	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/c0wrk/core/prompts"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/llm"
@@ -397,7 +397,7 @@ func TestTryContinueInterruptedTask_SkipsOrchestratorWhenIdle(t *testing.T) {
 // to the LLM via a type assertion) can be observed end-to-end.
 type recordingScriptedLLM struct {
 	*scriptedLLM
-	mu             sync.Mutex
+	mu              sync.Mutex
 	reasoningEffort string
 }
 
@@ -495,10 +495,10 @@ func TestSendMessage_ResumePath_AppliesOverridesAndFlushesAttachments(t *testing
 		// ProviderEntry.Models lists BARE model names; ActiveModel() reports the
 		// composite "provider/bare-model" ID, so override assertions compare
 		// against the composite IDs derived below.
-		bareDefault   = "resume-default"
-		bareOverride  = "resume-override"
-		providerName  = "test"
-		reasoning     = "high"
+		bareDefault  = "resume-default"
+		bareOverride = "resume-override"
+		providerName = "test"
+		reasoning    = "high"
 	)
 
 	// A single prior ReAct step persisted as the trajectory.
@@ -685,10 +685,10 @@ func waitForBufferedEvent(mu *sync.Mutex, events *[]Event, eventType string, tim
 // (LoadTrajectory NOT invoked).
 type cancelTrackingResumeStore struct {
 	*resumeTaskStore
-	mu               sync.Mutex
-	cancelCalls      int
-	cancelledTaskID  string
-	loadTrajCalls    int
+	mu              sync.Mutex
+	cancelCalls     int
+	cancelledTaskID string
+	loadTrajCalls   int
 }
 
 func (c *cancelTrackingResumeStore) CancelTask(_ context.Context, taskID string) error {
@@ -725,8 +725,8 @@ func proposeGoalResponse(condition, verify string) *llm.ChatResponse {
 		Message: llm.Message{
 			Role: "assistant",
 			ToolCalls: []llm.ToolCall{{
-				ID:   "pg1",
-				Name: "propose_goal",
+				ID:    "pg1",
+				Name:  "propose_goal",
 				Input: json.RawMessage(`{"condition":"` + condition + `","verify":"` + verify + `","needs_clarification":false}`),
 			}},
 		},
@@ -771,10 +771,10 @@ func TestSendMessage_GoalOnResume_AbandonsInterruptedTaskAndRunsGoal(t *testing.
 	}
 
 	caller := &scriptedLLM{scripted: []*llm.ChatResponse{
-		routingJSONResponse("general", 1),     // call 1: router classification
+		routingJSONResponse("general", 1),              // call 1: router classification
 		proposeGoalResponse(goalCondition, goalVerify), // call 2: derivation → propose_goal
-		finishResponse(finishAnswer),          // call 3+: goal turn → finish (declares met)
-		finishResponse(finishAnswer),          // extra safety: repeat
+		finishResponse(finishAnswer),                   // call 3+: goal turn → finish (declares met)
+		finishResponse(finishAnswer),                   // extra safety: repeat
 	}}
 
 	var (

@@ -286,6 +286,7 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
         verify: g.verify,
         clarification: g.clarification ?? '',
         needs_clarification: g.needs_clarification,
+        verification_mode: g.verification_mode ?? '',
         resolved: false,
       } as Record<string, unknown>,
       timestamp: Date.now(),
@@ -299,6 +300,7 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
       verify: g.verify,
       clarification: g.clarification,
       needs_clarification: g.needs_clarification,
+      verification_mode: g.verification_mode,
     })
   }
 

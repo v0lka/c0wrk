@@ -23,11 +23,11 @@ var lineAnchorSuffixRe = regexp.MustCompile(`#L?\d+(?:-L?\d+)?$`)
 var multiSpaceRe = regexp.MustCompile(`  +`)
 
 // PreprocessMessageText transforms a user message for the orchestrator:
-// 1. Strips /skill-name references for each skill in activeSkills.
-// 2. Converts @file-path references to fileref:// URIs, resolving each
-//    relative path against workspacePath so the LLM receives unambiguous
-//    absolute paths. Absolute and home-relative (~/...) paths, and refs
-//    when workspacePath is empty, are left unchanged.
+//  1. Strips /skill-name references for each skill in activeSkills.
+//  2. Converts @file-path references to fileref:// URIs, resolving each
+//     relative path against workspacePath so the LLM receives unambiguous
+//     absolute paths. Absolute and home-relative (~/...) paths, and refs
+//     when workspacePath is empty, are left unchanged.
 func PreprocessMessageText(text string, activeSkills []string, workspacePath string) string {
 	result := text
 

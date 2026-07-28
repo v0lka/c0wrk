@@ -126,6 +126,20 @@ var GoalDerivation string
 //go:embed goal_verification.md
 var GoalVerification string
 
+// Goal re-derivation verification — the directive for the isolated agent that
+// verifies a "met" claim in re_derivation mode. Instead of running a single
+// verify clause, this verifier DELEGATES a fresh, read-only execution of the
+// goal's process and confirms only if that fresh run comes back clean. The
+// {goal_condition}, {goal_verify_clause}, and {reported_evidence} placeholders
+// are substituted by GoalVerificationSubstitute (the same placeholder set as
+// the executable directive — re-derivation reuses it), and {shell_tool} is
+// resolved via SubstituteShellTool. Used by defaultGoalVerifier when the goal's
+// VerificationMode is re_derivation; selection of this directive vs the
+// executable one by mode is centralized in GoalVerificationDirectiveByMode.
+//
+//go:embed goal_rederivation.md
+var GoalReDerivation string
+
 // Orchestrator family-specific prompts
 
 //go:embed orchestrator_default.md

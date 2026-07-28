@@ -13,8 +13,8 @@ import (
 // memSink is a minimal GoalStatusSink for testing declare_goal_status.
 type memSink struct{ verdict *goal.Verdict }
 
-func (s *memSink) Declare(v goal.Verdict)      { s.verdict = &v }
-func (s *memSink) Last() *goal.Verdict         { return s.verdict }
+func (s *memSink) Declare(v goal.Verdict) { s.verdict = &v }
+func (s *memSink) Last() *goal.Verdict    { return s.verdict }
 
 // --- propose_goal tests ---
 
@@ -346,4 +346,73 @@ func TestGoalContextPlumbing(t *testing.T) {
 			t.Error("WithGoalStatusSink/GoalStatusSinkFrom round-trip failed")
 		}
 	})
+}
+
+// --- verification_mode boundary validation ---
+
+// capturingProposer records the GoalProposal it received so a test can assert
+// the normalized verification mode was forwarded to the proposer.
+type capturingProposer struct {
+	resp GoalProposalResponse
+	got  GoalProposal
+}
+
+func (c *capturingProposer) Propose(_ context.Context, p GoalProposal) (GoalProposalResponse, error) {
+	c.got = p
+	return c.resp, nil
+}
+
+func TestProposeGoal_Execute_VerificationModeDefaultsToExecutable(t *testing.T) {
+	proposer := &capturingProposer{resp: GoalProposalResponse{Decision: "approve"}}
+	ctx := WithGoalProposer(context.Background(), proposer)
+	// Omit verification_mode entirely; expect it to default to executable.
+	input, _ := json.Marshal(GoalProposal{Condition: "c", Verify: "v"})
+
+	if _, err := NewProposeGoalTool().Execute(ctx, input); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if proposer.got.VerificationMode != goal.VerificationModeExecutable {
+		t.Errorf("default mode forwarded to proposer = %q, want %q",
+			proposer.got.VerificationMode, goal.VerificationModeExecutable)
+	}
+}
+
+func TestProposeGoal_Execute_VerificationModePassesThroughKnownValue(t *testing.T) {
+	proposer := &capturingProposer{resp: GoalProposalResponse{Decision: "approve"}}
+	ctx := WithGoalProposer(context.Background(), proposer)
+	input, _ := json.Marshal(GoalProposal{
+		Condition:        "c",
+		Verify:           "v",
+		VerificationMode: goal.VerificationModeReDerivation,
+	})
+
+	if _, err := NewProposeGoalTool().Execute(ctx, input); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if proposer.got.VerificationMode != goal.VerificationModeReDerivation {
+		t.Errorf("re_derivation mode forwarded to proposer = %q, want %q",
+			proposer.got.VerificationMode, goal.VerificationModeReDerivation)
+	}
+}
+
+func TestProposeGoal_Execute_RejectsUnknownVerificationMode(t *testing.T) {
+	proposer := &capturingProposer{resp: GoalProposalResponse{Decision: "approve"}}
+	ctx := WithGoalProposer(context.Background(), proposer)
+	input, _ := json.Marshal(GoalProposal{
+		Condition:        "c",
+		Verify:           "v",
+		VerificationMode: "bogus",
+	})
+
+	res, err := NewProposeGoalTool().Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !res.IsError || !strings.Contains(res.Content, "validation error") {
+		t.Errorf("expected validation error for unknown mode, got %q (IsError=%v)", res.Content, res.IsError)
+	}
+	// The proposer must NOT have been called for an invalid mode.
+	if proposer.got.Condition != "" {
+		t.Errorf("proposer was called despite invalid mode; got proposal %+v", proposer.got)
+	}
 }

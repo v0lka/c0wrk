@@ -19,12 +19,12 @@ import (
 // The caller creates the embedder and passes EmbeddingFunc; ManagerConfig no longer
 // depends on model paths, making the package usable with any embedding backend.
 type ManagerConfig struct {
-	EmbeddingFunc    chromem.EmbeddingFunc // Required: embedding function for vector storage
-	CloseFn          func() error          // Optional: called in Shutdown (e.g., embedder.Close)
-	ChunkFn          ChunkFunc             // Optional: defaults to adapter over embedding.ChunkFile
-	HashFn           HashFunc              // Optional: defaults to embedding.ComputeFileHash
-	HybridConfig     HybridConfig          // RRF tuning + pre-fusion score thresholds (zero = defaults, thresholds off)
-	Logger           *slog.Logger
+	EmbeddingFunc chromem.EmbeddingFunc // Required: embedding function for vector storage
+	CloseFn       func() error          // Optional: called in Shutdown (e.g., embedder.Close)
+	ChunkFn       ChunkFunc             // Optional: defaults to adapter over embedding.ChunkFile
+	HashFn        HashFunc              // Optional: defaults to embedding.ComputeFileHash
+	HybridConfig  HybridConfig          // RRF tuning + pre-fusion score thresholds (zero = defaults, thresholds off)
+	Logger        *slog.Logger
 }
 
 // ProjectCallbacks holds callbacks for project-level indexing events.

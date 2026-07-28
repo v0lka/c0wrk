@@ -150,6 +150,11 @@ export interface GoalProposalData {
   readonly verify: string
   readonly clarification?: string
   readonly needs_clarification: boolean
+  /** Per-goal verification mode chosen by the derivation agent
+   *  ('executable' | 're_derivation'); absent/empty means the default
+   *  ('executable'). Surfaced so the panel can show/edit how the goal will be
+   *  verified and round-trip a user edit back through confirmGoal. */
+  readonly verification_mode?: string
 }
 
 /**
@@ -166,6 +171,10 @@ export interface GoalStatusData {
   readonly max_turns: number
   readonly verdict?: string
   readonly reason?: string
+  /** Per-goal verification mode echoed from GoalState ('executable' |
+   *  're_derivation'). Absent on older backend snapshots; consumers fall back
+   *  to a previously-seen value or the default ('executable'). */
+  readonly verification_mode?: string
 }
 
 /**

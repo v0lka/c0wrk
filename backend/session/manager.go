@@ -97,7 +97,7 @@ type toolCallIDEntry struct {
 
 // Manager manages multiple agent sessions.
 type Manager struct {
-	sessions            map[string]*Session
+	sessions map[string]*Session
 	// restoreInFlight deduplicates concurrent lazy restores of the same session
 	// ID (single-flight). Keyed by session ID; value is a channel closed when
 	// the in-progress restore finishes. Guarded by mu. Without this, many
@@ -153,7 +153,7 @@ type Manager struct {
 	// event-based path (handleGoalProposalResponse) and the RPC-based path
 	// (FrontendAPI.ConfirmGoal/CancelGoal) funnel through a single resolution.
 	// Nil (before desktop wiring) makes ResolveGoalProposal a no-op.
-	goalProposalResolver func(requestID, decision, condition, verify, clarification string) bool
+	goalProposalResolver func(requestID, decision, condition, verify, verificationMode, clarification string) bool
 
 	logger *slog.Logger
 }
@@ -1181,6 +1181,7 @@ func (m *Manager) PinSession(id string) error {
 
 	return nil
 }
+
 // emitResumableIfUnfinished, GetBlackboardState, and the BlackboardState
 // helper type live in manager_execution.go. They share the *Manager and
 // *Session types defined in this file (W-21 file split).

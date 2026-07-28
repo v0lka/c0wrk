@@ -230,7 +230,7 @@ type mockEmitter struct {
 		items  []agent.TodoItem
 	}
 	setCurrentStepIDs []string // records SetCurrentStepID calls for inline-scoping verification
-	eventOrder []string // records event type names ("plan_step_start", "step_todo_update", ...) in call order
+	eventOrder        []string // records event type names ("plan_step_start", "step_todo_update", ...) in call order
 }
 
 func (m *mockEmitter) Routing(_, _, _ string)                               {}

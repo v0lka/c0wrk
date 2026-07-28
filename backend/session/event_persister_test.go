@@ -66,7 +66,7 @@ func (s *captureStore) UpdateSessionWorkDirDescription(_ context.Context, _, _, 
 	return nil
 }
 func (s *captureStore) DeleteSessionWorkDir(_ context.Context, _, _ string) error { return nil }
-func (s *captureStore) Close() error { return nil }
+func (s *captureStore) Close() error                                              { return nil }
 
 func (s *captureStore) snapshot() []ChatMessage {
 	s.mu.Lock()

@@ -11,6 +11,7 @@ import (
 
 	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -33,7 +34,7 @@ type recordingVerifier struct {
 	err     error
 }
 
-func (r *recordingVerifier) fn(_ context.Context, _ *goal.GoalState, _ *goal.Verdict, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
+func (r *recordingVerifier) fn(_ context.Context, _ *goal.GoalState, _ *goal.Verdict, _, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
 	r.called = true
 	return r.outcome, r.err
 }
@@ -45,7 +46,7 @@ func (r *recordingVerifier) fn(_ context.Context, _ *goal.GoalState, _ *goal.Ver
 // so a confirming verifier lets the met verdict pass the
 // independent-verification gate and terminate the loop exactly as it did before
 // the gate existed. Mirrors the seam injected via o.goalVerifier.
-func confirmingVerifierFn(_ context.Context, _ *goal.GoalState, v *goal.Verdict, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
+func confirmingVerifierFn(_ context.Context, _ *goal.GoalState, v *goal.Verdict, _, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
 	return &tools.VerificationOutcome{Confirmed: true, Reason: "integration test confirming verifier", DeclaredAt: time.Now()}, nil
 }
 
@@ -119,7 +120,7 @@ func TestRunGoalTurns_MetConfirmed_Terminates(t *testing.T) {
 func TestRunGoalTurns_MetRejected_Continues(t *testing.T) {
 	o := newVerificationTestOrchestrator()
 	verifierCalls := 0
-	o.goalVerifier = func(_ context.Context, _ *goal.GoalState, _ *goal.Verdict, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
+	o.goalVerifier = func(_ context.Context, _ *goal.GoalState, _ *goal.Verdict, _, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
 		verifierCalls++
 		if verifierCalls == 1 {
 			// Reject turn 1's met claim.
@@ -295,7 +296,7 @@ func TestRunGoalTurns_RejectedMetEmitsGoalStatusOnce(t *testing.T) {
 
 	o := newVerificationTestOrchestrator()
 	o.emitter = emitter
-	o.goalVerifier = func(_ context.Context, _ *goal.GoalState, _ *goal.Verdict, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
+	o.goalVerifier = func(_ context.Context, _ *goal.GoalState, _ *goal.Verdict, _, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
 		return &tools.VerificationOutcome{Confirmed: false, Reason: "still failing", DeclaredAt: time.Now()}, nil
 	}
 
@@ -400,7 +401,7 @@ func TestRunGoalTurns_MetRejected_PromptNoticeOneShot(t *testing.T) {
 	o := newVerificationTestOrchestrator()
 	// Verifier rejects turn 1's met, then confirms turn 2's met.
 	rejectCalls := 0
-	o.goalVerifier = func(_ context.Context, _ *goal.GoalState, _ *goal.Verdict, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
+	o.goalVerifier = func(_ context.Context, _ *goal.GoalState, _ *goal.Verdict, _, _ string, _ orchestration.Blackboard, _ []sdktools.ToolDescriptor, _ conductorDeps) (*tools.VerificationOutcome, error) {
 		rejectCalls++
 		if rejectCalls == 1 {
 			return &tools.VerificationOutcome{Confirmed: false, Reason: "first rejection", DeclaredAt: time.Now()}, nil
@@ -431,24 +432,28 @@ func TestRunGoalTurns_MetRejected_PromptNoticeOneShot(t *testing.T) {
 	}
 }
 
-// TestRunConductor_MaxStepsOverrideBoundsVerifierPass locks the verifier's
-// step-bound acceptance criterion ("verifier step-bound respected via
-// maxStepsOverride"). The Conductor's ReAct loop must halt at exactly
-// conductorDeps.maxStepsOverride iterations, NOT the complexity-derived budget
-// (complexity × stepsPerComplexity). This is the mechanism defaultGoalVerifier
-// relies on when it pins `deps.maxStepsOverride = verificationMaxSteps` so a
-// focused re-check of an already-completed goal cannot run unbounded.
+// TestRunConductor_VerifierPassBoundedByComplexityBudget verifies the
+// independent goal-verification pass is NOT artificially capped: with the
+// hardcoded verificationMaxSteps constant removed, the verifier's Conductor run
+// is bounded EXACTLY by the complexity-derived budget (complexity ×
+// stepsPerComplexity) — the same bound a normal executor run receives — so the
+// verifier is never more limited than the executor it checks (only its
+// write/coord toolset is withheld).
 //
-// We invoke RunConductor directly with a small override (2) — deliberately
-// below every circuit-breaker threshold (RepeatAbortThreshold=4,
-// FruitlessNudgeThreshold=4) so the loop halts on maxSteps, not the breaker —
-// under a high-complexity context (budget = 10×20 = 200) and a looping mock
-// LLM, then assert exactly 2 tool executions. A count near 200 would mean the
-// override was ignored (the original complexity-derived bound took effect).
-func TestRunConductor_MaxStepsOverrideBoundsVerifierPass(t *testing.T) {
+// We invoke RunConductor the way defaultGoalVerifier does — via
+// buildConductorDeps, which now sets NO step override — under a fixed low
+// complexity, with a looping mock LLM that emits a DISTINCT bash_exec call per
+// iteration (so the repeat detector never trips) and a relaxed circuit breaker
+// (so no abort trips before the budget). The loop must run the FULL
+// complexity-derived budget, proving there is no residual fixed cap (e.g. the
+// former 12-step clamp) on the verifier.
+func TestRunConductor_VerifierPassBoundedByComplexityBudget(t *testing.T) {
+	const complexity = 1
+	wantSteps := complexity * stepsPerComplexity // 1 × 20 = 20 — ≠ the former 12-step cap
+
 	// The LLM always emits a bash_exec call with a DISTINCT input per iteration
-	// so the circuit-breaker's repeat detector never trips — guaranteeing the
-	// only thing halting the loop is maxStepsOverride.
+	// so the circuit-breaker's repeat detector never trips — the only thing
+	// halting the loop is the complexity-derived step budget.
 	iter := 0
 	mockLLM := &mockLLMCaller{
 		callFn: func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
@@ -468,12 +473,26 @@ func TestRunConductor_MaxStepsOverrideBoundsVerifierPass(t *testing.T) {
 	}
 	o := newResumeTestOrchestrator(t, mockLLM, &spyEmitter{}, nil)
 
-	// Build deps the way defaultGoalVerifier does (buildConductorDeps), then pin
-	// the step bound via maxStepsOverride — the same field the verifier sets.
+	// Build deps the way defaultGoalVerifier does (buildConductorDeps). With the
+	// verifier cap removed it sets NO step override; the complexity-derived
+	// budget applies unchanged — identical to a normal executor run.
 	counter := &turnUsageCounter{}
 	deps := o.buildConductorDeps(nil, nil)
-	deps.maxStepsOverride = 2 // verificationMaxSteps analogue
 	deps.toolExec = &countingToolExec{inner: deps.toolExec, counter: counter}
+	// Relax the circuit breaker so no abort (repeat/fruitless/same-tool) trips
+	// before the complexity budget — isolating the step bound under test from
+	// the breaker's independent halt conditions.
+	breakerCeiling := wantSteps + 10
+	deps.circuitBreaker = agent.CircuitBreakerConfig{
+		RepeatNudgeThreshold:         breakerCeiling,
+		RepeatAbortThreshold:         breakerCeiling,
+		TruncationAbortThreshold:     breakerCeiling,
+		ParseErrorAbortThreshold:     breakerCeiling,
+		FruitlessNudgeThreshold:      breakerCeiling,
+		FruitlessAbortThreshold:      breakerCeiling,
+		SameToolRepeatNudgeThreshold: breakerCeiling,
+		SameToolRepeatAbortThreshold: breakerCeiling,
+	}
 
 	availableTools := []sdktools.ToolDescriptor{
 		{Name: "bash_exec", Description: "run", InputSchema: json.RawMessage(`{"type":"object"}`), Source: "test"},
@@ -481,22 +500,16 @@ func TestRunConductor_MaxStepsOverrideBoundsVerifierPass(t *testing.T) {
 
 	bb := orchestration.NewMapBlackboard()
 	bb.SetOriginalRequest("verify the goal")
-	// High complexity → complexity-derived budget = 10 × stepsPerComplexity(20)
-	// = 200. If maxStepsOverride were ignored, the loop would run ~200 iterations.
-	ctx := WithComplexity(WithDomain(context.Background(), "general"), 10)
+	ctx := WithComplexity(WithDomain(context.Background(), "general"), complexity)
 
 	if _, err := RunConductor(ctx, "verify the goal", bb, availableTools, deps, ""); err != nil {
 		t.Fatalf("RunConductor returned error: %v", err)
 	}
 
-	// The loop halted at the override (2), NOT the 200-step complexity budget.
-	// maxStepsOverride takes precedence over the complexity-derived limit.
-	if counter.toolCalls != 2 {
-		t.Errorf("expected exactly 2 tool executions (maxStepsOverride=2 bounds the pass), got %d — the override must take precedence over the complexity-derived budget", counter.toolCalls)
-	}
-	// Sanity: the complexity-derived budget (200) would dwarf the override; a
-	// count anywhere near it proves the bound was NOT respected.
-	if counter.toolCalls > 20 {
-		t.Errorf("tool executions = %d, expected ≤ 20 — the verifier pass ran close to the complexity budget, meaning maxStepsOverride did not bind", counter.toolCalls)
+	// The loop ran the FULL complexity-derived budget. This proves (a) the
+	// verifier pass is bounded by the complexity budget, not a fixed cap, and
+	// (b) there is no residual ~12-step clamp — it ran well past 12.
+	if counter.toolCalls != wantSteps {
+		t.Errorf("expected exactly %d tool executions (the complexity-derived budget, NOT an artificial cap), got %d — the verifier pass must be bounded exactly like a normal executor run", wantSteps, counter.toolCalls)
 	}
 }

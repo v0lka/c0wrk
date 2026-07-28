@@ -427,9 +427,9 @@ func TestScopePlanStepEvents_NoopWhenNotScopable(t *testing.T) {
 // resolves every ready step's outcome from outcomes (absent = success). It
 // never touches the registry — Execute does all localReg bookkeeping.
 type waveRecorder struct {
-	waves    [][]string               // step IDs per dispatched wave, in call order
-	outcomes map[string]error         // stepID -> failure error (nil value = success)
-	calls    int                      // number of dispatch invocations
+	waves    [][]string                             // step IDs per dispatched wave, in call order
+	outcomes map[string]error                       // stepID -> failure error (nil value = success)
+	calls    int                                    // number of dispatch invocations
 	out      func(stepID, output string, err error) // optional per-step outcome hook
 }
 
@@ -487,8 +487,8 @@ func failedIDs(results []tools.PlanStepResult) []string {
 func TestExecute_LinearDAG_RunsInSequence(t *testing.T) {
 	rec := &waveRecorder{}
 	l := &conductorLauncher{
-		deps:           conductorDeps{emitter: &mockEmitter{}},
-		bb:             planWith(step("step_1", "A"), step("step_2", "B", "step_1"), step("step_3", "C", "step_2")),
+		deps:            conductorDeps{emitter: &mockEmitter{}},
+		bb:              planWith(step("step_1", "A"), step("step_2", "B", "step_1"), step("step_3", "C", "step_2")),
 		runPlanStepWave: rec.dispatch,
 	}
 
@@ -639,8 +639,8 @@ func TestExecute_DependencyCycle_FailsAllAsUnsatisfiable(t *testing.T) {
 	emitter := &mockEmitter{}
 	rec := &waveRecorder{}
 	l := &conductorLauncher{
-		deps: conductorDeps{emitter: emitter},
-		bb:   planWith(step("step_a", "A", "step_b"), step("step_b", "B", "step_a")),
+		deps:            conductorDeps{emitter: emitter},
+		bb:              planWith(step("step_a", "A", "step_b"), step("step_b", "B", "step_a")),
 		runPlanStepWave: rec.dispatch,
 	}
 
@@ -673,8 +673,8 @@ func TestExecute_DependencyCycle_FailsAllAsUnsatisfiable(t *testing.T) {
 func TestExecute_CancelledContext_MarksAllFailed(t *testing.T) {
 	rec := &waveRecorder{}
 	l := &conductorLauncher{
-		deps: conductorDeps{emitter: &mockEmitter{}},
-		bb:   planWith(step("step_1", "A"), step("step_2", "B")),
+		deps:            conductorDeps{emitter: &mockEmitter{}},
+		bb:              planWith(step("step_1", "A"), step("step_2", "B")),
 		runPlanStepWave: rec.dispatch,
 	}
 
@@ -704,8 +704,8 @@ func TestExecute_CancelledContext_MarksAllFailed(t *testing.T) {
 func TestExecute_Idempotent_SecondCallRejected(t *testing.T) {
 	rec := &waveRecorder{}
 	l := &conductorLauncher{
-		deps: conductorDeps{emitter: &mockEmitter{}},
-		bb:   planWith(step("step_1", "A")),
+		deps:            conductorDeps{emitter: &mockEmitter{}},
+		bb:              planWith(step("step_1", "A")),
 		runPlanStepWave: rec.dispatch,
 	}
 

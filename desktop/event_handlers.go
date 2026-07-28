@@ -317,7 +317,7 @@ func (a *App) handlePlanApprovalResponse(payload map[string]any, log *slog.Logge
 // when a pending proposal was found and resolved, false otherwise. Shared by
 // the event-based path (handleGoalProposalResponse) and the RPC-based path
 // (FrontendAPI.ConfirmGoal/CancelGoal, via the manager resolver).
-func (a *App) resolveGoalProposal(requestID, decision, condition, verify, clarification string) bool {
+func (a *App) resolveGoalProposal(requestID, decision, condition, verify, verificationMode, clarification string) bool {
 	if requestID == "" {
 		return false
 	}
@@ -332,10 +332,11 @@ func (a *App) resolveGoalProposal(requestID, decision, condition, verify, clarif
 	}
 
 	resp := goalProposalResponse{
-		Decision:      decision,
-		Condition:     condition,
-		Verify:        verify,
-		Clarification: clarification,
+		Decision:         decision,
+		Condition:        condition,
+		Verify:           verify,
+		VerificationMode: verificationMode,
+		Clarification:    clarification,
 	}
 	select {
 	case entry.ch <- resp:
@@ -347,10 +348,11 @@ func (a *App) resolveGoalProposal(requestID, decision, condition, verify, clarif
 	// Mark the persisted goal_proposal message as resolved so it doesn't
 	// reappear as pending on session reload.
 	if err := a.resolvePendingMessage(entry.sessionID, "goal_proposal", "request_id", requestID, map[string]any{
-		"resolved":  true,
-		"decision":  decision,
-		"condition": condition,
-		"verify":    verify,
+		"resolved":          true,
+		"decision":          decision,
+		"condition":         condition,
+		"verify":            verify,
+		"verification_mode": verificationMode,
 	}); err != nil {
 		a.log().Warn("failed to resolve persisted goal_proposal message", "request_id", requestID, "error", err)
 	}
@@ -372,9 +374,10 @@ func (a *App) handleGoalProposalResponse(payload map[string]any, log *slog.Logge
 	}
 	condition, _ := payload["condition"].(string)
 	verify, _ := payload["verify"].(string)
+	verificationMode, _ := payload["verification_mode"].(string)
 	clarification, _ := payload["clarification"].(string)
 
-	if !a.resolveGoalProposal(requestID, decision, condition, verify, clarification) {
+	if !a.resolveGoalProposal(requestID, decision, condition, verify, verificationMode, clarification) {
 		log.Warn("no pending goal proposal for request_id", "request_id", requestID)
 	}
 }

@@ -6,8 +6,8 @@ import (
 
 func TestParseReviewDiff(t *testing.T) {
 	tests := map[string]struct {
-		input    string
-		want     []ReviewFileDiff
+		input string
+		want  []ReviewFileDiff
 	}{
 		"empty diff returns empty slice": {
 			input: "",

@@ -21,11 +21,11 @@ func TestResolveBinaryInTree_WindowsExe(t *testing.T) {
 	tmp := t.TempDir()
 
 	cases := []struct {
-		name              string
-		binPathInArchive  string
-		binName           string
+		name               string
+		binPathInArchive   string
+		binName            string
 		relBinaryInArchive string // path of the file to create under tmp
-		wantSuffix        string
+		wantSuffix         string
 	}{
 		{
 			name:               "uv flat uv.exe",

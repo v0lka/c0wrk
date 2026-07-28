@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/v0lka/c0wrk/core/goal"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
@@ -14,9 +15,15 @@ const toolProposeGoalDescription = `Propose a goal — a {condition, verify} pai
 // GoalProposal is the {condition, verify} pair the agent submits for sign-off.
 // Clarification is an optional question the agent includes when it needs
 // disambiguation from the user; NeedsClarification flags that intent.
+//
+// VerificationMode selects how the condition is to be verified (see
+// goal.VerificationMode* constants). It is optional and defaults to
+// goal.VerificationModeExecutable when omitted. The value round-trips through
+// GoalProposalResponse so a user edit at sign-off is honored.
 type GoalProposal struct {
 	Condition          string `json:"condition"`
 	Verify             string `json:"verify"`
+	VerificationMode   string `json:"verification_mode,omitempty"` // default: goal.VerificationModeExecutable
 	Clarification      string `json:"clarification,omitempty"`
 	NeedsClarification bool   `json:"needs_clarification,omitempty"`
 }
@@ -30,10 +37,11 @@ type GoalProposal struct {
 //     (or asked their own). Clarification holds the answer.
 //   - "cancel":            the user rejected the goal outright.
 type GoalProposalResponse struct {
-	Decision      string `json:"decision"`                // "approve", "clarify", "cancel"
-	Condition     string `json:"condition,omitempty"`     // set when Decision == "approve" (edited values)
-	Verify        string `json:"verify,omitempty"`        // set when Decision == "approve" (edited values)
-	Clarification string `json:"clarification,omitempty"` // set when Decision == "clarify"
+	Decision         string `json:"decision"`                    // "approve", "clarify", "cancel"
+	Condition        string `json:"condition,omitempty"`         // set when Decision == "approve" (edited values)
+	Verify           string `json:"verify,omitempty"`            // set when Decision == "approve" (edited values)
+	VerificationMode string `json:"verification_mode,omitempty"` // set when Decision == "approve" (edited value); echoes proposal when unchanged
+	Clarification    string `json:"clarification,omitempty"`     // set when Decision == "clarify"
 }
 
 // GoalProposer is the backend hook that submits a goal proposal to the user and
@@ -68,6 +76,11 @@ func NewProposeGoalTool() *ProposeGoalTool {
 			"type": "string",
 			"description": "The verification clause — how the agent will prove the condition is met (e.g. 'all tests in package X pass', 'the endpoint returns 200 with body matching schema Y')."
 		},
+		"verification_mode": {
+			"type": "string",
+			"description": "Optional. How the goal will be verified: 'executable' (default — the verify clause is an executable check) or 're_derivation' (the goal is verified by re-deriving it and comparing). Omit to use the default.",
+			"enum": ["executable", "re_derivation"]
+		},
 		"clarification": {
 			"type": "string",
 			"description": "Optional. A question for the user when the goal cannot be fully determined from the request. Pair with needs_clarification=true."
@@ -87,6 +100,7 @@ func NewProposeGoalTool() *ProposeGoalTool {
 type proposeGoalInput struct {
 	Condition          string `json:"condition"`
 	Verify             string `json:"verify"`
+	VerificationMode   string `json:"verification_mode"`
 	Clarification      string `json:"clarification"`
 	NeedsClarification bool   `json:"needs_clarification"`
 }
@@ -103,6 +117,16 @@ func (t *ProposeGoalTool) Execute(ctx context.Context, input json.RawMessage) (s
 	if strings.TrimSpace(params.Verify) == "" {
 		return sdktools.ErrorResult("validation error: verify must not be empty"), nil
 	}
+
+	// Normalize the optional verification mode (default executable) and reject
+	// unknown values at the tool boundary so GoalState can never hold an
+	// invalid mode. The normalized value is carried through to the proposal so
+	// the (possibly edited) response round-trips the canonical form.
+	normalizedMode, verr := goal.NormalizeVerificationMode(params.VerificationMode)
+	if verr != nil {
+		return sdktools.ErrorResult("validation error: %v", verr), nil
+	}
+	params.VerificationMode = normalizedMode
 
 	proposer := GoalProposerFrom(ctx)
 	if proposer == nil {

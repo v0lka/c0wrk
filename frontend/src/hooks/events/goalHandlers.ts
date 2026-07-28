@@ -33,6 +33,9 @@ export function handleGoalProposalEvent(sessionId: string, data: GoalProposalDat
       verify: data.verify,
       clarification: data.clarification ?? '',
       needs_clarification: data.needs_clarification,
+      // Surface the derivation-chosen verification mode so the approval panel
+      // can show/edit it and round-trip a user edit back via confirmGoal.
+      verification_mode: data.verification_mode ?? '',
       resolved: false,
     } as Record<string, unknown>,
     timestamp: Date.now(),
@@ -51,12 +54,21 @@ export function handleGoalStatusEvent(sessionId: string, data: GoalStatusData): 
     reason: data.reason,
   }
   const store = useGoalStore.getState()
-  // Preserve a previously-confirmed verify instruction across status
-  // snapshots — the status event does not echo it back. verify is seeded into
-  // the store on approval (GoalProposalPanel.onApprove), so this branch keeps
-  // the user's approved verify clause available to any consumer of activeGoal.
   const prev = store.activeGoal[sessionId]
+  // Preserve a previously-confirmed verify instruction across status
+  // snapshots — the status event does not always echo it back. verify is seeded
+  // into the store on approval (GoalProposalPanel.onApprove), so this branch
+  // keeps the user's approved verify clause available to any consumer of
+  // activeGoal.
   if (prev?.verify !== undefined) goal.verify = prev.verify
+  // Thread the verification mode: prefer the snapshot's value, else preserve a
+  // previously-seen one (e.g. from the approval), else leave unset (the default
+  // 'executable' is implied by absence).
+  if (data.verification_mode) {
+    goal.verificationMode = data.verification_mode
+  } else if (prev?.verificationMode) {
+    goal.verificationMode = prev.verificationMode
+  }
   store.setActiveGoal(sessionId, goal)
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { Check, X, Target, AlertTriangle, HelpCircle } from 'lucide-react'
+import { Check, X, Target, AlertTriangle, HelpCircle, Terminal, RefreshCw } from 'lucide-react'
 import { goal } from '@/api'
 import type { DisplayItem } from '@/types/messages'
 import { isResolved } from '@/types/messages'
@@ -14,6 +14,28 @@ interface GoalProposalPanelProps {
 }
 
 type Decision = 'approve' | 'cancel' | 'clarify'
+
+// --- Per-goal verification mode ---
+//
+// Mirrors core/goal VerificationMode constants. The derivation agent chooses a
+// mode at propose_goal time and the user may override it at sign-off. The
+// canonical values round-trip through the backend (GoalProposalPayload /
+// ConfirmGoal) as plain strings.
+
+/** Verify by executing the verify clause as a test/command (the default). */
+const VERIFICATION_MODE_EXECUTABLE = 'executable'
+/** Verify by re-deriving the goal from conversation state and comparing. */
+const VERIFICATION_MODE_RE_DERIVATION = 're_derivation'
+type VerificationMode = typeof VERIFICATION_MODE_EXECUTABLE | typeof VERIFICATION_MODE_RE_DERIVATION
+
+/** Map a (possibly empty/absent) verification-mode string to a valid value,
+ *  defaulting unknown/empty to 'executable' — matching goal.NormalizeVerificationMode
+ *  so the panel never shows an invalid mode and never sends one. */
+function normalizeVerificationMode(mode: string | undefined): VerificationMode {
+  return mode === VERIFICATION_MODE_RE_DERIVATION
+    ? VERIFICATION_MODE_RE_DERIVATION
+    : VERIFICATION_MODE_EXECUTABLE
+}
 
 /**
  * Renders a pending goal proposal as an editable approval panel: two
@@ -40,6 +62,12 @@ export function GoalProposalPanel({ item }: GoalProposalPanelProps) {
   // with the proposed verify text (editable).
   const [condition, setCondition] = useState(item.condition)
   const [verify, setVerify] = useState(item.needs_clarification ? '' : item.verify)
+  // The verification mode is pre-filled from the derivation-chosen value and is
+  // user-editable at sign-off (only the approve path sends it). Normalized so an
+  // empty/unknown mode defaults to 'executable'.
+  const [verificationMode, setVerificationMode] = useState<VerificationMode>(
+    () => normalizeVerificationMode(item.verification_mode),
+  )
   const [submitting, setSubmitting] = useState(false)
   const verifyRef = useRef<HTMLTextAreaElement>(null)
 
@@ -113,18 +141,20 @@ export function GoalProposalPanel({ item }: GoalProposalPanelProps) {
   const onApprove = async (): Promise<void> => {
     setSubmitting(true)
     try {
-      await goal.confirmGoal(sessionId, requestId, condition, verify)
-      markResolved('approve', { condition, verify })
+      await goal.confirmGoal(sessionId, requestId, condition, verify, verificationMode)
+      markResolved('approve', { condition, verify, verification_mode: verificationMode })
       // Seed the approved goal into the goal store so the user's (possibly
-      // edited) condition/verify are retained before the first goal_status
-      // snapshot arrives. handleGoalStatusEvent preserves activeGoal.verify
-      // across status snapshots (the status event does not echo it back), but
-      // that preservation only works if verify is seeded here.
+      // edited) condition/verify/mode are retained before the first goal_status
+      // snapshot arrives. handleGoalStatusEvent preserves activeGoal.verify and
+      // activeGoal.verificationMode across status snapshots (the status event
+      // does not always echo them back), but that preservation only works if
+      // they are seeded here.
       useGoalStore.getState().setActiveGoal(sessionId, {
         condition,
         verify: verify || undefined,
         status: 'active',
         turn: 0,
+        verificationMode,
       })
     } catch (err) {
       logger.error('Failed to confirm goal proposal:', err)
@@ -222,6 +252,47 @@ export function GoalProposalPanel({ item }: GoalProposalPanelProps) {
           onChange={(e) => setVerify(e.target.value)}
           placeholder={item.needs_clarification ? 'How should this goal be verified?' : 'How to verify the goal is met...'}
         />
+
+        {/* Verification mode: shows HOW the goal will be verified. Editable via a
+            compact segmented toggle so the user can override the derivation-chosen
+            mode at sign-off; the chosen value is sent through goal.confirmGoal. */}
+        <span className="block text-xs text-muted-foreground/80">Verification mode</span>
+        <div
+          className="flex gap-1 rounded-md border border-border bg-background p-0.5"
+          role="radiogroup"
+          aria-label="Verification mode"
+        >
+          <button
+            type="button"
+            role="radio"
+            aria-checked={verificationMode === VERIFICATION_MODE_EXECUTABLE}
+            aria-label="Executable check"
+            title="Run the verify clause as a command/test (default)"
+            className={`flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
+              verificationMode === VERIFICATION_MODE_EXECUTABLE
+                ? 'bg-info/15 text-info'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+            onClick={() => setVerificationMode(VERIFICATION_MODE_EXECUTABLE)}
+          >
+            <Terminal className="h-3 w-3 shrink-0" /> Executable check
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={verificationMode === VERIFICATION_MODE_RE_DERIVATION}
+            aria-label="Re-run verification (re-derivation)"
+            title="Re-derive the goal from conversation state and compare"
+            className={`flex flex-1 items-center justify-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
+              verificationMode === VERIFICATION_MODE_RE_DERIVATION
+                ? 'bg-info/15 text-info'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+            onClick={() => setVerificationMode(VERIFICATION_MODE_RE_DERIVATION)}
+          >
+            <RefreshCw className="h-3 w-3 shrink-0" /> Re-run verification
+          </button>
+        </div>
 
         <div className="flex gap-2 pt-0.5">
           {item.needs_clarification ? (

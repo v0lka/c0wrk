@@ -44,7 +44,7 @@ import type { DisplayItem } from '@/types/messages'
 
 type GoalProposalItem = Extract<DisplayItem, { kind: 'goal_proposal' }>
 
-function makeItem(opts: { needsClarification?: boolean; condition?: string; verify?: string; clarification?: string; requestId?: string }): GoalProposalItem {
+function makeItem(opts: { needsClarification?: boolean; condition?: string; verify?: string; clarification?: string; requestId?: string; verificationMode?: string }): GoalProposalItem {
   return {
     kind: 'goal_proposal',
     message: {
@@ -59,6 +59,7 @@ function makeItem(opts: { needsClarification?: boolean; condition?: string; veri
     verify: opts.verify ?? 'go test ./...',
     clarification: opts.clarification,
     needs_clarification: opts.needsClarification ?? false,
+    verification_mode: opts.verificationMode ?? 'executable',
   }
 }
 
@@ -103,8 +104,57 @@ describe('GoalProposalPanel', () => {
         (b) => (b.textContent ?? '').includes('Approve'),
       )! as HTMLButtonElement
       await act(async () => { approveBtn.click() })
-      expect(confirmGoal).toHaveBeenCalledWith('sess-1', 'req-1', 'Make tests pass', 'go test ./...')
+      // confirmGoal now carries the (default) verification mode as the 5th arg.
+      expect(confirmGoal).toHaveBeenCalledWith('sess-1', 'req-1', 'Make tests pass', 'go test ./...', 'executable')
       expect(updateMessage).toHaveBeenCalled()
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('renders the chosen verification mode in the panel', () => {
+    // The default proposal mode ('executable') shows the "Executable check"
+    // option as the selected (aria-checked) radio.
+    try {
+      const radios = Array.from(container.querySelectorAll('button[role="radio"]'))
+      const selected = radios.find((b) => b.getAttribute('aria-checked') === 'true')
+      expect(selected).toBeTruthy()
+      expect(selected!.textContent).toContain('Executable check')
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('approve sends the user-edited verification mode', async () => {
+    // Switch the segmented toggle to "Re-run verification", then approve: the
+    // edited mode ('re_derivation') must reach the backend via confirmGoal.
+    try {
+      const reRunBtn = Array.from(container.querySelectorAll('button[role="radio"]')).find(
+        (b) => (b.textContent ?? '').includes('Re-run verification'),
+      )! as HTMLButtonElement
+      await act(async () => { reRunBtn.click() })
+
+      const approveBtn = Array.from(container.querySelectorAll('button')).find(
+        (b) => (b.textContent ?? '').includes('Approve'),
+      )! as HTMLButtonElement
+      await act(async () => { approveBtn.click() })
+      expect(confirmGoal).toHaveBeenCalledWith('sess-1', 'req-1', 'Make tests pass', 'go test ./...', 're_derivation')
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('falls back to executable for an empty/unknown proposed mode', () => {
+    act(() => { root.unmount() })
+    const r = render(<GoalProposalPanel item={makeItem({ verificationMode: '' })} />)
+    container = r.container
+    root = r.root
+    try {
+      const selected = Array.from(container.querySelectorAll('button[role="radio"]')).find(
+        (b) => b.getAttribute('aria-checked') === 'true',
+      )
+      expect(selected).toBeTruthy()
+      expect(selected!.textContent).toContain('Executable check')
     } finally {
       cleanup()
     }

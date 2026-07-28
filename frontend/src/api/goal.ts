@@ -4,17 +4,19 @@
 // confirm/cancel a pending proposal, pause/resume the running goal loop, and
 // clear a session's goal. Mirror the backend signatures in
 // backend/frontend_api_goal.go (ConfirmGoal(sessionID, requestID, condition,
-// verify), CancelGoal(sessionID, requestID), Pause/Resume/ClearGoal(sessionID)).
+// verify, verificationMode), CancelGoal(sessionID, requestID),
+// Pause/Resume/ClearGoal(sessionID)).
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 
 /** Approve a pending goal proposal, optionally with user edits to the
- *  condition/verify fields. Unblocks the derivation agent's propose_goal call. */
-export async function confirmGoal(sessionId: string, requestId: string, condition: string, verify: string): Promise<void> {
+ *  condition/verify fields and the per-goal verification mode. Unblocks the
+ *  derivation agent's propose_goal call. */
+export async function confirmGoal(sessionId: string, requestId: string, condition: string, verify: string, verificationMode: string): Promise<void> {
   try {
     const app = getApp()
-    await app.ConfirmGoal(sessionId, requestId, condition, verify)
+    await app.ConfirmGoal(sessionId, requestId, condition, verify, verificationMode)
   } catch (err) {
     logger.error('Failed to confirm goal:', err)
     throw err

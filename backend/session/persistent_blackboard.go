@@ -42,7 +42,7 @@ type PersistentBlackboard struct {
 	persistenceTimeout time.Duration           // timeout for persistence operations
 	onChanged          func(changeType string) // optional callback for BB change notifications, nil-safe
 	persistCh          chan persistOp          // buffered channel for serializing DB writes
-	persistMu          sync.Mutex             // guards persistCh lifecycle (send vs. shutdown close)
+	persistMu          sync.Mutex              // guards persistCh lifecycle (send vs. shutdown close)
 
 	// routing is cached when SetRouting is called, so that Routing() can return
 	// the value without a DB round-trip in active execution paths.

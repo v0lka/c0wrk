@@ -177,6 +177,66 @@ func TestBuildGoalState_UnknownDecisionReturnsError(t *testing.T) {
 	}
 }
 
+// --- verification_mode round-trip through buildGoalState ---
+
+func TestBuildGoalState_VerificationModeDefaultsToExecutable(t *testing.T) {
+	// Neither the proposal nor the response sets a mode; the GoalState must
+	// default to executable.
+	proposal := tools.GoalProposal{Condition: "c", Verify: "v"}
+	resp := tools.GoalProposalResponse{Decision: "approve"}
+
+	gs, err := buildGoalState(proposal, resp, time.Now())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gs.VerificationMode != goal.VerificationModeExecutable {
+		t.Errorf("VerificationMode = %q, want default %q",
+			gs.VerificationMode, goal.VerificationModeExecutable)
+	}
+}
+
+func TestBuildGoalState_VerificationModeUserEditPreferredOverProposal(t *testing.T) {
+	// The user edits the mode at sign-off: the response's value wins over the
+	// agent-proposed one.
+	proposal := tools.GoalProposal{
+		Condition:        "c",
+		Verify:           "v",
+		VerificationMode: goal.VerificationModeExecutable,
+	}
+	resp := tools.GoalProposalResponse{
+		Decision:         "approve",
+		VerificationMode: goal.VerificationModeReDerivation,
+	}
+
+	gs, err := buildGoalState(proposal, resp, time.Now())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gs.VerificationMode != goal.VerificationModeReDerivation {
+		t.Errorf("VerificationMode = %q, want user-edited %q",
+			gs.VerificationMode, goal.VerificationModeReDerivation)
+	}
+}
+
+func TestBuildGoalState_VerificationModeFallsBackToProposal(t *testing.T) {
+	// The user approves without editing the mode; the proposal's value is kept.
+	proposal := tools.GoalProposal{
+		Condition:        "c",
+		Verify:           "v",
+		VerificationMode: goal.VerificationModeReDerivation,
+	}
+	resp := tools.GoalProposalResponse{Decision: "approve"}
+
+	gs, err := buildGoalState(proposal, resp, time.Now())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gs.VerificationMode != goal.VerificationModeReDerivation {
+		t.Errorf("VerificationMode = %q, want proposal fallback %q",
+			gs.VerificationMode, goal.VerificationModeReDerivation)
+	}
+}
+
 // TestDeriveGoal_MockProposerCapturesAndReturnsEditedGoal exercises the full
 // capture + reconstruction path end-to-end (without the conductor): a mock
 // proposer stands in for the desktop approval flow, the capturingProposer

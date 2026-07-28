@@ -52,6 +52,7 @@ type PendingGoalProposal struct {
 	RequestID          string `json:"request_id"`
 	Condition          string `json:"condition"`
 	Verify             string `json:"verify"`
+	VerificationMode   string `json:"verification_mode,omitempty"`
 	Clarification      string `json:"clarification,omitempty"`
 	NeedsClarification bool   `json:"needs_clarification"`
 }
@@ -142,6 +143,7 @@ func (a *App) GetPendingActions(sessionID string) (*PendingActionsResponse, erro
 			RequestID:          e.payload.RequestID,
 			Condition:          e.payload.Condition,
 			Verify:             e.payload.Verify,
+			VerificationMode:   e.payload.VerificationMode,
 			Clarification:      e.payload.Clarification,
 			NeedsClarification: e.payload.NeedsClarification,
 		})

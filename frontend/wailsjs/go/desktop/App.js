@@ -62,8 +62,8 @@ export function Commit(arg1) {
   return window['go']['desktop']['App']['Commit'](arg1);
 }
 
-export function ConfirmGoal(arg1, arg2, arg3, arg4) {
-  return window['go']['desktop']['App']['ConfirmGoal'](arg1, arg2, arg3, arg4);
+export function ConfirmGoal(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['desktop']['App']['ConfirmGoal'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function CreateBranch(arg1, arg2) {

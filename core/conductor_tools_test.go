@@ -206,9 +206,9 @@ type mockSubagentTool struct {
 	name string
 }
 
-func (m *mockSubagentTool) Name() string                                          { return m.name }
-func (m *mockSubagentTool) Description() string                                   { return "mock" }
-func (m *mockSubagentTool) InputSchema() json.RawMessage                          { return json.RawMessage(`{}`) }
+func (m *mockSubagentTool) Name() string                 { return m.name }
+func (m *mockSubagentTool) Description() string          { return "mock" }
+func (m *mockSubagentTool) InputSchema() json.RawMessage { return json.RawMessage(`{}`) }
 func (m *mockSubagentTool) Execute(context.Context, json.RawMessage) (sdktools.ToolResult, error) {
 	return sdktools.ToolResult{}, nil
 }

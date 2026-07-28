@@ -63,10 +63,10 @@ type Service struct {
 	// migrationWG lets Close/SetProject wait for the migration goroutine.
 	migrationWG sync.WaitGroup
 	mu          sync.RWMutex
-	ready         atomic.Bool
-	readyCh       chan struct{} // closed when ready becomes true; recreated on false
-	readyMu       sync.Mutex    // protects readyCh swaps
-	logger        *slog.Logger
+	ready       atomic.Bool
+	readyCh     chan struct{} // closed when ready becomes true; recreated on false
+	readyMu     sync.Mutex    // protects readyCh swaps
+	logger      *slog.Logger
 
 	// hybridConfig holds resolved RRF tuning + pre-fusion score
 	// thresholds. Threshold fields of 0 mean "disabled".

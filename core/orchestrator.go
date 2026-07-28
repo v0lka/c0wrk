@@ -79,7 +79,6 @@ func reviewModeFromCtx(ctx context.Context) bool {
 	return ctx.Value(ReviewModeKey) != nil
 }
 
-
 // DefaultAgentsMDMaxBytes is the default cap on AGENTS.md content injected into
 // prompts. AGENTS.md is treated as untrusted, user-controlled input; an
 // unbounded read would let a workspace inject arbitrarily large content into
@@ -244,20 +243,28 @@ type Orchestrator struct {
 	// goalVerifier is the independent verifier that re-checks an agent's "met"
 	// goal verdict. When the goal loop reaches a "met" verdict and independent
 	// verification is configured (config.GoalLoop.Verification == "independent"),
-	// the verifier runs an ISOLATED Conductor pass — bounded by
-	// verificationMaxSteps, restricted to a read-only/test toolset — that
-	// inherits the active skills + project-context prefix via the
-	// goal-verification system prompt. It reports a structured outcome through
+	// the verifier runs an ISOLATED Conductor pass — bounded by the same
+	// complexity-derived budget as a normal executor run, restricted to a
+	// read-only/test toolset — that inherits the active skills +
+	// project-context prefix via the goal-verification system prompt. It
+	// reports a structured outcome through
 	// declare_verification.
+	//
+	// It runs on a FRESH blackboard (decoupled from the still-active goal
+	// task's blackboard), seeded with lastTurnOutput (the met turn's work
+	// product) so the verifier's own read_final_result returns the real work.
+	// It branches on gs.VerificationMode: executable re-runs the verify clause;
+	// re_derivation delegates a fresh read-only run of the goal's process.
 	//
 	// It is the single seam through which the loop drives verification, kept as
 	// a field so tests can inject a mock that returns a canned outcome without
 	// spinning up the full Conductor stack. The default (nil) resolves to
 	// defaultGoalVerifier, which reuses RunConductor under the hood (mirroring
-	// goalTurnRunner). It carries message + bb so it can drive RunConductor on
-	// the same blackboard the agent's work lives on (the verifier reads prior
-	// facts / step outputs to inspect the claimed artifacts).
-	goalVerifier func(ctx context.Context, gs *goal.GoalState, verdict *goal.Verdict, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, deps conductorDeps) (*tools.VerificationOutcome, error)
+	// goalTurnRunner). It carries message + lastTurnOutput + bb so it can drive
+	// RunConductor on an isolated blackboard seeded with the met turn's work
+	// product (the verifier reads it via read_final_result / step outputs to
+	// inspect the claimed artifacts).
+	goalVerifier func(ctx context.Context, gs *goal.GoalState, verdict *goal.Verdict, message string, lastTurnOutput string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, deps conductorDeps) (*tools.VerificationOutcome, error)
 
 	// activeGoalPause is the pause signal for the currently-running goal
 	// loop, if any. PauseGoal loads the pointer and sets the atomic; runGoalLoop
@@ -273,15 +280,6 @@ type Orchestrator struct {
 	// the atomic pointer. The *atomic.Bool it points to is, of course, atomic.
 	activeGoalPause atomic.Pointer[atomic.Bool]
 }
-
-// verificationMaxSteps bounds the independent goal-verification pass. It is a
-// small fixed constant — NOT derived from routing complexity — so a focused
-// re-check of an already-completed goal cannot run unbounded. The budget is
-// enough for the verifier to read a few files, re-run the verify clause via the
-// shell tool, inspect the live output, and declare its verdict; it deliberately
-// favors a tight, cheap pass over an exhaustive re-implementation. Wired into a
-// specialized Conductor run via conductorDeps.maxStepsOverride.
-const verificationMaxSteps = 12
 
 // ErrRequestInFlight is returned by HandleMessage when another HandleMessage
 // call on the same *Orchestrator is already running. The orchestrator is

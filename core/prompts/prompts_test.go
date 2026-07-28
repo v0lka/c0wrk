@@ -18,6 +18,7 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"GoalMode", GoalMode},
 		{"GoalDerivation", GoalDerivation},
 		{"GoalVerification", GoalVerification},
+		{"GoalReDerivation", GoalReDerivation},
 		{"ReflectorSystem", ReflectorSystem},
 		{"RouterSystem", RouterSystem},
 		{"VerificationMandate", VerificationMandate},
@@ -92,6 +93,9 @@ func TestEmbeddedPrompts_ContainExpectedKeywords(t *testing.T) {
 		{"RouterSystem", RouterSystem, []string{"classif"}},
 		{"PromptOptimizeExtract", PromptOptimizeExtract, []string{"translate", "keyword", "json"}},
 		{"PromptOptimizeRewrite", PromptOptimizeRewrite, []string{"optim", "prompt"}},
+		{"GoalDerivation", GoalDerivation, []string{"verification_mode", "executable", "re_derivation"}},
+		{"GoalVerification", GoalVerification, []string{"verify clause", "work product"}},
+		{"GoalReDerivation", GoalReDerivation, []string{"re-derivation", "delegate"}},
 	}
 
 	for _, tt := range tests {
@@ -168,5 +172,58 @@ func TestFamilyPrompt_AuxiliaryAgent_ReturnsEmpty(t *testing.T) {
 	}
 	if result := FamilyPrompt("unknown", "anthropic"); result != "" {
 		t.Error("expected empty for unknown agent")
+	}
+}
+
+// TestGoalVerificationDirectiveByMode covers the mode -> directive selection
+// and the shared placeholder resolution for BOTH directives.
+func TestGoalVerificationDirectiveByMode(t *testing.T) {
+	const (
+		cond     = "CONDITION-X7"
+		verify   = "VERIFY-Y7"
+		evidence = "EVIDENCE-Z7"
+	)
+
+	// Executable mode (and the empty default) -> executable directive.
+	for _, mode := range []string{"executable", ""} {
+		out := GoalVerificationDirectiveByMode(mode, cond, verify, evidence)
+		if !strings.Contains(out, "Re-run the verify clause") {
+			t.Errorf("mode %q: expected executable directive signature, got: %s", mode, out)
+		}
+		if strings.Contains(out, "Re-derivation Mode") {
+			t.Errorf("mode %q: executable directive must not carry re-derivation signature", mode)
+		}
+		if !strings.Contains(out, cond) || !strings.Contains(out, verify) || !strings.Contains(out, evidence) {
+			t.Errorf("mode %q: placeholders not resolved, got: %s", mode, out)
+		}
+		if strings.Contains(out, "{goal_condition}") || strings.Contains(out, "{shell_tool}") {
+			t.Errorf("mode %q: unresolved placeholder remains, got: %s", mode, out)
+		}
+	}
+
+	// re_derivation mode -> re-derivation directive.
+	out := GoalVerificationDirectiveByMode("re_derivation", cond, verify, evidence)
+	if !strings.Contains(out, "Re-derivation Mode") {
+		t.Errorf("re_derivation mode: expected re-derivation directive signature, got: %s", out)
+	}
+	if strings.Contains(out, "Re-run the verify clause") {
+		t.Errorf("re_derivation mode: must not carry executable directive signature")
+	}
+	if !strings.Contains(out, cond) || !strings.Contains(out, verify) || !strings.Contains(out, evidence) {
+		t.Errorf("re_derivation mode: placeholders not resolved, got: %s", out)
+	}
+	if strings.Contains(out, "{reported_evidence}") || strings.Contains(out, "{shell_tool}") {
+		t.Errorf("re_derivation mode: unresolved placeholder remains, got: %s", out)
+	}
+}
+
+// TestGoalVerificationSubstitute_LeavesUnknownTextIntact verifies the
+// substitution is a pure template fill — text outside the known placeholders
+// is preserved verbatim.
+func TestGoalVerificationSubstitute_LeavesUnknownTextIntact(t *testing.T) {
+	in := "preamble {goal_condition} middle {goal_verify_clause} tail {reported_evidence} done"
+	out := GoalVerificationSubstitute(in, "C", "V", "E")
+	if out != "preamble C middle V tail E done" {
+		t.Errorf("unexpected substitution result: %s", out)
 	}
 }

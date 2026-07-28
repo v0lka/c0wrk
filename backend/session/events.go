@@ -170,10 +170,15 @@ type PlanApprovalResponsePayload struct {
 // propose_goal to submit a candidate {condition, verify} goal for user sign-off.
 // It surfaces as a pending action that blocks the agent until the user responds.
 type GoalProposalPayload struct {
-	RequestID          string `json:"request_id"`
-	SessionID          string `json:"session_id"`
-	Condition          string `json:"condition"`
-	Verify             string `json:"verify"`
+	RequestID string `json:"request_id"`
+	SessionID string `json:"session_id"`
+	Condition string `json:"condition"`
+	Verify    string `json:"verify"`
+	// VerificationMode is the per-goal verification mode the derivation agent
+	// chose (see goal.VerificationMode* constants). Echoed from the proposal so
+	// the frontend can surface it and round-trip a user edit back into the
+	// resolver. Empty means the default (executable).
+	VerificationMode   string `json:"verification_mode,omitempty"`
 	Clarification      string `json:"clarification,omitempty"`
 	NeedsClarification bool   `json:"needs_clarification"`
 }

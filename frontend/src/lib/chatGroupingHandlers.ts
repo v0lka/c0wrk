@@ -246,6 +246,7 @@ export function handleActionMessage(
         verify: (meta?.verify as string) ?? '',
         clarification: typeof meta?.clarification === 'string' && meta.clarification ? meta.clarification : undefined,
         needs_clarification: meta?.needs_clarification === true,
+        verification_mode: (meta?.verification_mode as string) ?? '',
       }; break
     default: return
   }

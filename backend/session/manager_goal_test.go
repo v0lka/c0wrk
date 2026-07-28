@@ -13,16 +13,16 @@ import (
 // goalTaskStoreFake is a TaskStore mock that records goal-state writes and
 // controls GetUnfinishedTask, used to verify ClearGoal's persist ordering.
 type goalTaskStoreFake struct {
-	mu              sync.Mutex
-	savedGoalStates map[string]json.RawMessage // taskID -> last persisted goal state JSON
-	unfinished      *TaskRecord                // returned by GetUnfinishedTask
+	mu               sync.Mutex
+	savedGoalStates  map[string]json.RawMessage // taskID -> last persisted goal state JSON
+	unfinished       *TaskRecord                // returned by GetUnfinishedTask
 	unfinishedTaskID string
 }
 
 func newGoalTaskStoreFake(taskID string) *goalTaskStoreFake {
 	return &goalTaskStoreFake{
-		savedGoalStates: make(map[string]json.RawMessage),
-		unfinished:      &TaskRecord{ID: taskID, SessionID: "sess-goal", Status: "in_progress"},
+		savedGoalStates:  make(map[string]json.RawMessage),
+		unfinished:       &TaskRecord{ID: taskID, SessionID: "sess-goal", Status: "in_progress"},
 		unfinishedTaskID: taskID,
 	}
 }
@@ -41,9 +41,11 @@ func (f *goalTaskStoreFake) AddTaskReflection(_ context.Context, _ string, _ jso
 	return nil
 }
 func (f *goalTaskStoreFake) CompleteTask(_ context.Context, _, _ string, _ int) error { return nil }
-func (f *goalTaskStoreFake) FailTask(_ context.Context, _ string) error                { return nil }
-func (f *goalTaskStoreFake) CancelTask(_ context.Context, _ string) error              { return nil }
-func (f *goalTaskStoreFake) LoadTask(_ context.Context, _ string) (*TaskRecord, error) { return nil, nil }
+func (f *goalTaskStoreFake) FailTask(_ context.Context, _ string) error               { return nil }
+func (f *goalTaskStoreFake) CancelTask(_ context.Context, _ string) error             { return nil }
+func (f *goalTaskStoreFake) LoadTask(_ context.Context, _ string) (*TaskRecord, error) {
+	return nil, nil
+}
 func (f *goalTaskStoreFake) LoadTaskSteps(_ context.Context, _ string) ([]TaskStepRecord, error) {
 	return nil, nil
 }
@@ -197,7 +199,7 @@ func TestCancelTask_ErrNoActiveTaskIsSentinel(t *testing.T) {
 // installed, ResolveGoalProposal returns false (no resolution happened).
 func TestResolveGoalProposal_NoResolverWired(t *testing.T) {
 	manager, _, _ := testManager(t)
-	if manager.ResolveGoalProposal("req-1", "approve", "c", "v", "") {
+	if manager.ResolveGoalProposal("req-1", "approve", "c", "v", "executable", "") {
 		t.Error("ResolveGoalProposal returned true with no resolver wired")
 	}
 }
@@ -207,17 +209,37 @@ func TestResolveGoalProposal_NoResolverWired(t *testing.T) {
 func TestResolveGoalProposal_ForwardsDecision(t *testing.T) {
 	manager, _, _ := testManager(t)
 
-	var gotReq, gotDecision, gotCond, gotVerify, gotClarif string
-	manager.SetGoalProposalResolver(func(req, decision, cond, verify, clarif string) bool {
-		gotReq, gotDecision, gotCond, gotVerify, gotClarif = req, decision, cond, verify, clarif
+	var gotReq, gotDecision, gotCond, gotVerify, gotMode, gotClarif string
+	manager.SetGoalProposalResolver(func(req, decision, cond, verify, mode, clarif string) bool {
+		gotReq, gotDecision, gotCond, gotVerify, gotMode, gotClarif = req, decision, cond, verify, mode, clarif
 		return true
 	})
 
-	if !manager.ResolveGoalProposal("req-9", "clarify", "", "", "which scope?") {
+	if !manager.ResolveGoalProposal("req-9", "clarify", "", "", "", "which scope?") {
 		t.Fatal("expected resolver to return true")
 	}
 	if gotReq != "req-9" || gotDecision != "clarify" || gotClarif != "which scope?" {
-		t.Errorf("resolver received (%q,%q,%q,%q,%q), want (req-9,clarify,?,?,which scope?)", gotReq, gotDecision, gotCond, gotVerify, gotClarif)
+		t.Errorf("resolver received (%q,%q,%q,%q,%q,%q), want (req-9,clarify,?,?,?,which scope?)", gotReq, gotDecision, gotCond, gotVerify, gotMode, gotClarif)
+	}
+}
+
+// TestResolveGoalProposal_ForwardsVerificationMode verifies the approve path
+// forwards the user's chosen verification mode through the resolver so the
+// derivation agent's GoalState reflects the sign-off edit.
+func TestResolveGoalProposal_ForwardsVerificationMode(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	var gotDecision, gotMode string
+	manager.SetGoalProposalResolver(func(_, decision, _, _, mode, _ string) bool {
+		gotDecision, gotMode = decision, mode
+		return true
+	})
+
+	if !manager.ResolveGoalProposal("req-vm", "approve", "cond", "ver", "re_derivation", "") {
+		t.Fatal("expected resolver to return true")
+	}
+	if gotDecision != "approve" || gotMode != "re_derivation" {
+		t.Errorf("resolver got decision=%q mode=%q, want (approve,re_derivation)", gotDecision, gotMode)
 	}
 }
 

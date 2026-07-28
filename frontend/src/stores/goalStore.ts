@@ -24,6 +24,10 @@ export interface ActiveGoal {
   verdict?: string
   /** Agent's last verdict reason, if any. */
   reason?: string
+  /** Per-goal verification mode ('executable' | 're_derivation'); carried from
+   *  the goal_status snapshot and preserved across turns. Absent means the
+   *  default ('executable'). */
+  verificationMode?: string
 }
 
 /** Live mid-loop progress telemetry for a session's goal (goal_progress). */
