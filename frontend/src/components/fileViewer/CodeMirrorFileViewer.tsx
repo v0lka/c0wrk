@@ -1,6 +1,6 @@
-import { useEffect, useRef, useCallback, useMemo, useState } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import { Code, Eye } from 'lucide-react'
-import { EditorView } from '@codemirror/view'
+import { EditorView, drawSelection } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { lineNumbers } from '@codemirror/view'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
@@ -19,6 +19,7 @@ import {
 import { conflictMarkerPlugin } from '@/lib/cmConflictMarkers'
 import { loadLanguageByName } from '@/lib/cmLanguages'
 import { createOneDarkCMTheme } from '@/lib/cmTheme'
+import { useThemeStore } from '@/stores/themeStore'
 
 interface CodeMirrorViewerProps {
   content: string
@@ -89,12 +90,11 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const langCompartment = useRef(new Compartment())
+  const themeCompartment = useRef(new Compartment())
   const clearHighlightLine = useFileViewerStore((s) => s.clearHighlightLine)
   const activeFile = useFileViewerStore((s) => s.activeFile)
   const workspacePath = useWorkspacePath()
-
-  // Memoize the theme so it's only resolved once
-  const theme = useMemo(() => createOneDarkCMTheme(), [])
+  const theme = useThemeStore((s) => s.theme)
 
   // Create EditorView on mount, destroy on unmount
   useEffect(() => {
@@ -105,8 +105,12 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
       extensions: [
         EditorView.editable.of(false),
         EditorState.readOnly.of(true),
-        theme,
+        themeCompartment.current.of(createOneDarkCMTheme(theme === 'dark')),
         lineNumbers(),
+        // Use CodeMirror's DOM-based selection rendering (not native ::selection)
+        // so the selection color matches the chat input editor exactly — both
+        // are themed via `.cm-selectionBackground` → var(--color-muted).
+        drawSelection(),
         langCompartment.current.of([]),
         diffDecorationField,
         highlightLineField,
@@ -129,6 +133,18 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
     // are handled by separate effects that dispatch to the existing view.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Re-resolve the CodeMirror theme when the app theme changes. CM themes
+  // bake CSS-variable values at creation, so a compartment reconfigure is the
+  // only way to swap the palette (selection bg, gutter, syntax colors, and the
+  // { dark } flag that drives CM's built-in defaults) without recreating the view.
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: themeCompartment.current.reconfigure(createOneDarkCMTheme(theme === 'dark')),
+    })
+  }, [theme])
 
   // Update document content when it changes
   useEffect(() => {

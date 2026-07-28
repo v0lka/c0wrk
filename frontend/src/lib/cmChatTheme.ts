@@ -6,8 +6,13 @@ import { getCSSVar, createOneDarkHighlightStyle } from './cmTheme'
 /**
  * Editable One Dark theme for the chat input editor.
  * Visible cursor, no gutters, chat-appropriate font sizing.
+ *
+ * Colors are resolved from CSS custom properties at call time; callers must
+ * re-create (via a Compartment reconfigure) on theme change. `isDark` is
+ * forwarded to CodeMirror so the autocomplete tooltip and selection layer use
+ * palette-appropriate defaults.
  */
-export function createChatEditorTheme(): Extension {
+export function createChatEditorTheme(isDark: boolean = true): Extension {
   const fg = getCSSVar('--color-foreground')
   const caret = getCSSVar('--color-info')
   const selection = getCSSVar('--color-muted')
@@ -43,7 +48,7 @@ export function createChatEditorTheme(): Extension {
     '&.cm-focused': {
       outline: 'none',
     },
-  }, { dark: true })
+  }, { dark: isDark })
 
   return [theme, syntaxHighlighting(createOneDarkHighlightStyle())]
 }

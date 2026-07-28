@@ -45,8 +45,13 @@ export function createOneDarkHighlightStyle(): HighlightStyle {
  * Cursor and caret are hidden. The gutter uses an opaque background so that
  * horizontally scrolling code is hidden behind the sticky line-number column
  * rather than showing through it (colliding with the numbers).
+ *
+ * Colors are resolved from CSS custom properties at call time, so callers must
+ * re-create (via a Compartment reconfigure) whenever the active theme changes.
+ * The `isDark` flag is passed through to CodeMirror so its built-in defaults
+ * (selection layer, autocomplete text, color-scheme) match the active palette.
  */
-export function createOneDarkCMTheme(): Extension {
+export function createOneDarkCMTheme(isDark: boolean = true): Extension {
   const fg = getCSSVar('--color-foreground')
   const gutterFg = getCSSVar('--color-hljs-comment')
   // Match the file-viewer panel background so the sticky gutter masks code
@@ -88,7 +93,7 @@ export function createOneDarkCMTheme(): Extension {
     '.cm-scroller': {
       overflow: 'auto',
     },
-  }, { dark: true })
+  }, { dark: isDark })
 
   return [theme, syntaxHighlighting(createOneDarkHighlightStyle())]
 }

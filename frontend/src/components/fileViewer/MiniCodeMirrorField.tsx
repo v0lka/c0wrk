@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react'
 import { EditorView } from '@codemirror/view'
-import { EditorState } from '@codemirror/state'
+import { EditorState, Compartment } from '@codemirror/state'
 import { markdown } from '@codemirror/lang-markdown'
 import { createOneDarkCMTheme } from '@/lib/cmTheme'
+import { useThemeStore } from '@/stores/themeStore'
 
 interface MiniCodeMirrorFieldProps {
   value: string
@@ -15,7 +16,8 @@ interface MiniCodeMirrorFieldProps {
 export function MiniCodeMirrorField({ value, onChange }: MiniCodeMirrorFieldProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
-  const theme = useRef(createOneDarkCMTheme())
+  const themeCompartment = useRef(new Compartment())
+  const theme = useThemeStore((s) => s.theme)
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -25,7 +27,7 @@ export function MiniCodeMirrorField({ value, onChange }: MiniCodeMirrorFieldProp
       extensions: [
         EditorView.editable.of(true),
         markdown(),
-        theme.current,
+        themeCompartment.current.of(createOneDarkCMTheme(theme === 'dark')),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             onChange(update.state.doc.toString())
@@ -47,6 +49,15 @@ export function MiniCodeMirrorField({ value, onChange }: MiniCodeMirrorFieldProp
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Re-resolve the CodeMirror theme on app theme change (see CodeMirrorFileViewer).
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: themeCompartment.current.reconfigure(createOneDarkCMTheme(theme === 'dark')),
+    })
+  }, [theme])
 
   // Update document when value prop changes externally (e.g., file reload).
   // Preserve cursor position to avoid jarring jumps.

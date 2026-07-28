@@ -412,6 +412,35 @@ body {
     font-size: 0.75rem;
 }
 
+/* ==========================================================================
+   Tooltip Prose — readable markdown inside inverted (bg-foreground) tooltips.
+   StepTooltip (Blackboard / Execution Plan) shares the chat tooltip's
+   bg-foreground/text-background scheme. Prose normally uses --color-foreground
+   for body text, which would be invisible on a foreground-colored background,
+   so we re-point the prose tokens at the *background* palette. Semantic colors
+   (links, inline code, headings accent) remain visible on both palettes.
+   CSS custom properties inherit, so scoping this class on the tooltip content
+   propagates to the nested .prose wrapper.
+   ========================================================================== */
+/* Scoping to `.tooltip-prose .prose` (not just `.tooltip-prose`) is essential:
+   the @tailwindcss/typography plugin re-declares every `--tw-prose-*` variable
+   ON the `.prose` element itself, so an override on the parent `.tooltip-prose`
+   would be shadowed by `.prose`'s own declaration. `.tooltip-prose .prose`
+   (specificity 0-2-0) beats `.prose` (0-1-0) so the overrides take effect. */
+.tooltip-prose .prose {
+    --tw-prose-body: var(--color-background);
+    --tw-prose-headings: var(--color-background);
+    --tw-prose-lead: var(--color-background);
+    --tw-prose-bold: var(--color-highlight);
+    --tw-prose-quotes: color-mix(in srgb, var(--color-background) 80%, var(--color-foreground));
+    --tw-prose-quote-borders: color-mix(in srgb, var(--color-background) 60%, var(--color-foreground));
+    --tw-prose-captions: color-mix(in srgb, var(--color-background) 70%, var(--color-foreground));
+    --tw-prose-bullets: color-mix(in srgb, var(--color-background) 60%, var(--color-foreground));
+    --tw-prose-counters: color-mix(in srgb, var(--color-background) 70%, var(--color-foreground));
+    /* links / inline-code / code-block colors stay semantic — they read well
+       on both the dark (light-theme) and light-gray (dark-theme) tooltip bg */
+}
+
 /* Shared input field styling — text, placeholder, background */
 .c0-input {
     color: var(--color-foreground);
@@ -723,6 +752,10 @@ body {
 
 .cm-chat-container .cm-tooltip-autocomplete li {
     padding: calc(0.25rem + 2px) calc(0.5rem + 2px);
+    /* Explicit color so suggestion text never blends into the popover
+       background. Without this CodeMirror falls back to its dark/light base
+       theme text color, which can collide with --color-popover. */
+    color: var(--color-popover-foreground);
 }
 
 .cm-chat-container .cm-tooltip-autocomplete li[aria-selected] {

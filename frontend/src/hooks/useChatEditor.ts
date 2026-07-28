@@ -2,6 +2,8 @@ import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { EditorView, placeholder } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
 import { createChatExtensions } from '@/lib/cmChatExtensions'
+import { createChatEditorTheme } from '@/lib/cmChatTheme'
+import { useThemeStore } from '@/stores/themeStore'
 
 interface UseChatEditorOptions {
   disabled: boolean
@@ -31,6 +33,8 @@ export function useChatEditor(options: UseChatEditorOptions): ChatEditorAPI {
   const onContentChangeRef = useRef(options.onContentChange)
   const editableComp = useRef(new Compartment())
   const placeholderComp = useRef(new Compartment())
+  const themeCompartment = useRef(new Compartment())
+  const theme = useThemeStore((s) => s.theme)
 
   // Keep callback refs up to date without recreating extensions.
   onSendRef.current = options.onSend
@@ -41,7 +45,7 @@ export function useChatEditor(options: UseChatEditorOptions): ChatEditorAPI {
     const container = containerRef.current
     if (!container) return
 
-    const extensions = createChatExtensions(onSendRef)
+    const extensions = createChatExtensions(onSendRef, themeCompartment.current)
 
     const state = EditorState.create({
       doc: '',
@@ -86,6 +90,15 @@ export function useChatEditor(options: UseChatEditorOptions): ChatEditorAPI {
       effects: placeholderComp.current.reconfigure(placeholder(options.placeholder)),
     })
   }, [options.placeholder])
+
+  // Re-resolve the editor theme (palette + { dark } flag) on app theme change.
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: themeCompartment.current.reconfigure(createChatEditorTheme(theme === 'dark')),
+    })
+  }, [theme])
 
   const getText = useCallback((): string => {
     return viewRef.current?.state.doc.toString() ?? ''
