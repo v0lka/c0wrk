@@ -982,21 +982,16 @@ func (m *Manager) DeleteSession(id string) error {
 	// Purge file coherence state for this session.
 	m.fileTracker.PurgeSession(id)
 
-	// Clean up per-session workspace directory for No Project sessions.
-	// Regular projects share a project-scoped workspace; No Project creates
-	// a per-session isolated workspace that must be cleaned up on deletion.
-	if session.ProjectID == project.NoProjectID {
-		wsDir := config.SessionDir(m.agentDir, project.NoProjectID, id)
-		if err := os.RemoveAll(wsDir); err != nil {
-			m.log().Warn("failed to remove No Project session workspace", "session_id", id, "ws_dir", wsDir, "error", err)
-		}
-	}
-
-	// Clean up temp directory
-	if session.TempDir != "" {
-		if err := os.RemoveAll(session.TempDir); err != nil {
-			m.log().Warn("failed to remove session temp directory", "session_id", id, "temp_dir", session.TempDir, "error", err)
-		}
+	// Remove all internal files belonging to this session: logs, dumps, temp,
+	// and plans. For No Project sessions the session directory also contains the
+	// isolated per-session workspace, which is removed here too. Regular
+	// projects share a project-scoped workspace (<projectDir>/Workspace) that
+	// lives outside the session directory and is only removed when the project
+	// itself is deleted. ArchiveSession deliberately keeps these files so an
+	// archived session can be restored.
+	sessionDir := config.SessionDir(m.agentDir, session.ProjectID, id)
+	if err := os.RemoveAll(sessionDir); err != nil {
+		m.log().Warn("failed to remove session directory", "session_id", id, "dir", sessionDir, "error", err)
 	}
 
 	// Emit session deleted event

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
+	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core"
 )
@@ -81,16 +83,30 @@ func (f *FrontendAPI) ForkSession(sessionID string) (*session.SessionInfo, error
 	return info, nil
 }
 
-// DeleteSession removes a session.
+// DeleteSession removes a session. All internal files that belong to the
+// session (logs, dumps, temp, plans, and the No-Project workspace) are removed
+// from ~/.c0wrk. Archiving a session (ArchiveSession) does NOT remove files so
+// an archived session can be restored.
 func (f *FrontendAPI) DeleteSession(id string) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	manager := f.app.Manager()
+
+	// The manager lazily restores and deletes in-memory/restorable sessions,
+	// closing file handles and removing the entire per-session directory. When
+	// the session cannot be restored (e.g. its project can no longer be
+	// resolved), capture the project ID from the store so its on-disk files can
+	// still be cleaned up below.
+	var unrestorableProjectID string
 	// Only delete from manager if session exists in memory
 	if _, exists := manager.GetSession(id); exists {
 		if err := manager.DeleteSession(id); err != nil {
 			return fmt.Errorf("failed to delete session: %w", err)
+		}
+	} else if f.store != nil {
+		if info, err := f.store.LoadSession(context.Background(), id); err == nil && info != nil {
+			unrestorableProjectID = info.ProjectID
 		}
 	}
 	// Always delete from store (handles store-only sessions from previous runs)
@@ -104,6 +120,14 @@ func (f *FrontendAPI) DeleteSession(id string) error {
 	if f.terminalManager != nil && f.terminalManager.IsActive(id) {
 		if err := f.terminalManager.Stop(id); err != nil {
 			f.log().Warn("failed to stop terminal for deleted session", "session_id", id, "error", err)
+		}
+	}
+	// Fallback: remove internal files for sessions the manager could not
+	// restore. Restored/in-memory sessions are already cleaned up above.
+	if unrestorableProjectID != "" {
+		sessionDir := config.SessionDir(f.agentDir, unrestorableProjectID, id)
+		if err := os.RemoveAll(sessionDir); err != nil {
+			f.log().Warn("failed to remove session directory", "session_id", id, "dir", sessionDir, "error", err)
 		}
 	}
 	return nil

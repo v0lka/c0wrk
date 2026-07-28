@@ -39,6 +39,26 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 		return errors.New("project subsystem not initialized")
 	}
 
+	// Stop and clean up all in-memory sessions for the project BEFORE removing
+	// the project directory. This cancels any active tasks and closes log/dump
+	// file handles so no open handles remain when the project tree is deleted,
+	// and removes each session's internal files. Store-only sessions have no
+	// open handles; their files are removed together with the project directory
+	// by DeleteProject below.
+	if f.app != nil {
+		if manager := f.app.Manager(); manager != nil {
+			for _, s := range manager.ListSessions() {
+				if s.ProjectID != id {
+					continue
+				}
+				if err := manager.DeleteSession(s.ID); err != nil {
+					f.log().Warn("failed to clean up session while deleting project",
+						"session_id", s.ID, "project_id", id, "error", err)
+				}
+			}
+		}
+	}
+
 	if err := f.projectManager.DeleteProject(id); err != nil {
 		return err
 	}

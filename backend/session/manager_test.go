@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -268,6 +269,124 @@ func TestManager_DeleteSession(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Error("Timeout waiting for session_deleted event")
+	}
+}
+
+// TestManager_DeleteSession_RemovesSessionDirectory verifies that deleting a
+// session removes ALL its internal files (logs, dumps, temp, plans) from
+// ~/.c0wrk — not just the temp directory. The shared project workspace must
+// survive since it is owned by the project, not the session.
+func TestManager_DeleteSession_RemovesSessionDirectory(t *testing.T) {
+	manager, _, agentDir := testManager(t)
+
+	// Use a workspace OUTSIDE the agent dir to model a regular project's shared
+	// workspace — it must NOT be removed on session deletion.
+	projectWorkspace := testWorkspacePath(t)
+
+	info, err := manager.CreateSession(testProjectID, projectWorkspace)
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	// Seed internal files that previously leaked on deletion.
+	sessionDir := config.SessionDir(agentDir, testProjectID, info.ID)
+	dumpDir := config.SessionDumpPath(agentDir, testProjectID, info.ID)
+	plansDir := config.SessionPlansDir(agentDir, testProjectID, info.ID)
+	for _, p := range []string{
+		filepath.Join(sessionDir, "marker.txt"),
+		filepath.Join(filepath.Dir(dumpDir), "dump.jsonl"),
+		filepath.Join(plansDir, "plan_1.json"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", p, err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+
+	if err := manager.DeleteSession(info.ID); err != nil {
+		t.Fatalf("DeleteSession failed: %v", err)
+	}
+
+	// The entire session directory (logs, dumps, temp, plans) must be gone.
+	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
+		t.Errorf("session directory should be removed after deletion: %s (stat err=%v)", sessionDir, err)
+	}
+
+	// The project workspace must survive.
+	if _, err := os.Stat(projectWorkspace); err != nil {
+		t.Errorf("project workspace should survive session deletion: %v", err)
+	}
+}
+
+// TestManager_DeleteSession_NoProjectRemovesWorkspace verifies that deleting a
+// No Project session removes its isolated per-session workspace in addition to
+// logs/dumps/plans. The session is seeded directly (bypassing CreateSession)
+// because the nil test orchestrator cannot satisfy SetNoProjectMode.
+func TestManager_DeleteSession_NoProjectRemovesWorkspace(t *testing.T) {
+	manager, _, agentDir := testManager(t)
+
+	id := "no-project-session-1"
+	ws := config.NoProjectSessionWorkspace(agentDir, id)
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	// Seed a file inside the workspace to prove the whole tree is removed.
+	if err := os.WriteFile(filepath.Join(ws, "scratch.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write scratch file: %v", err)
+	}
+	// Create the session log dir/file like createSessionLogger would.
+	logDir := config.SessionLogsDir(agentDir, project.NoProjectID, id)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("mkdir log dir: %v", err)
+	}
+
+	// Insert the session directly into the manager map.
+	manager.mu.Lock()
+	manager.sessions[id] = &Session{
+		ID:        id,
+		ProjectID: project.NoProjectID,
+		TempDir:   config.SessionTempDir(agentDir, project.NoProjectID, id),
+	}
+	manager.mu.Unlock()
+
+	sessionDir := config.SessionDir(agentDir, project.NoProjectID, id)
+
+	if err := manager.DeleteSession(id); err != nil {
+		t.Fatalf("DeleteSession failed: %v", err)
+	}
+
+	if _, err := os.Stat(ws); !os.IsNotExist(err) {
+		t.Errorf("No Project workspace should be removed after deletion: %s (stat err=%v)", ws, err)
+	}
+	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
+		t.Errorf("No Project session directory should be removed after deletion: %s (stat err=%v)", sessionDir, err)
+	}
+}
+
+// TestManager_ArchiveSession_KeepsFiles verifies that archiving a session does
+// NOT remove its files — an archived session must remain restorable.
+func TestManager_ArchiveSession_KeepsFiles(t *testing.T) {
+	manager, _, agentDir := testManager(t)
+
+	info, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	logFile := config.SessionLogPath(agentDir, testProjectID, info.ID)
+	if _, err := os.Stat(logFile); err != nil {
+		t.Fatalf("log file should exist before archive: %v", err)
+	}
+
+	if err := manager.ArchiveSession(info.ID); err != nil {
+		t.Fatalf("ArchiveSession failed: %v", err)
+	}
+
+	// Archived session's files must survive.
+	if _, err := os.Stat(logFile); err != nil {
+		t.Errorf("log file should survive archiving: %v", err)
 	}
 }
 

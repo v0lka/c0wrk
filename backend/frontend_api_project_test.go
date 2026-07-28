@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core"
@@ -346,5 +349,84 @@ func TestApplySavedProjectSwitchState_CreatesSessionWhenProjectHasNone(t *testin
 	}
 	if persisted.ProjectID != h.projectID {
 		t.Fatalf("expected created session project_id %q, got %q", h.projectID, persisted.ProjectID)
+	}
+}
+
+// TestDeleteProject_RemovesInMemorySessionsAndFiles verifies that deleting a
+// project cleans up its in-memory sessions (closing file handles, cancelling
+// active tasks) and removes each session's internal files, then removes the
+// whole project directory tree from ~/.c0wrk.
+func TestDeleteProject_RemovesInMemorySessionsAndFiles(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+	// DeleteProject emits a frontend event; wire a no-op emitter.
+	h.api.emitEvent = func(string, ...any) {}
+
+	// Create a live (in-memory) session in the project.
+	info, err := h.api.app.Manager().CreateSession(h.projectID, h.workspace)
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	// The session dir (logs, etc.) must exist before deletion.
+	sessionDir := config.SessionDir(h.api.agentDir, h.projectID, info.ID)
+	logFile := config.SessionLogPath(h.api.agentDir, h.projectID, info.ID)
+	if _, err := os.Stat(logFile); err != nil {
+		t.Fatalf("session log file should exist before project deletion: %v", err)
+	}
+
+	projectDir := config.ProjectDir(h.api.agentDir, h.projectID)
+
+	if err := h.api.DeleteProject(h.projectID); err != nil {
+		t.Fatalf("DeleteProject failed: %v", err)
+	}
+
+	// The in-memory session must be gone.
+	if _, exists := h.api.app.Manager().GetSession(info.ID); exists {
+		t.Error("in-memory session should be removed on project deletion")
+	}
+
+	// The per-session directory (logs/dumps/plans/temp) must be removed.
+	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
+		t.Errorf("session directory should be removed: %s (stat err=%v)", sessionDir, err)
+	}
+
+	// The entire project directory tree must be removed.
+	if _, err := os.Stat(projectDir); !os.IsNotExist(err) {
+		t.Errorf("project directory should be removed: %s (stat err=%v)", projectDir, err)
+	}
+}
+
+// TestDeleteProject_RemovesStoreOnlySessionFiles verifies that deleting a
+// project removes internal files for sessions that exist only in the store
+// (never restored into memory). These files are removed as part of the project
+// directory tree removal.
+func TestDeleteProject_RemovesStoreOnlySessionFiles(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+	h.api.emitEvent = func(string, ...any) {}
+
+	storeSessionID := "store-only-session"
+	now := time.Now().UTC().Format(time.RFC3339)
+	h.seedSession(t, storeSessionID, now, now)
+
+	// Create the session's internal files on disk (as if a previous run had
+	// created them) but do NOT restore the session into memory.
+	sessionDir := config.SessionDir(h.api.agentDir, h.projectID, storeSessionID)
+	logFile := config.SessionLogPath(h.api.agentDir, h.projectID, storeSessionID)
+	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
+		t.Fatalf("mkdir log dir: %v", err)
+	}
+	if err := os.WriteFile(logFile, []byte("old log"), 0o644); err != nil {
+		t.Fatalf("write log file: %v", err)
+	}
+
+	if err := h.api.DeleteProject(h.projectID); err != nil {
+		t.Fatalf("DeleteProject failed: %v", err)
+	}
+
+	// The store-only session's files are removed with the project dir tree.
+	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
+		t.Errorf("store-only session directory should be removed: %s (stat err=%v)", sessionDir, err)
 	}
 }
