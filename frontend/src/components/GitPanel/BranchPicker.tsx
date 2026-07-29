@@ -33,6 +33,20 @@ export function BranchPicker() {
   const isOpen = useGitPanelStore((s) => s.isBranchPickerOpen)
   const closeBranchPicker = useGitPanelStore((s) => s.closeBranchPicker)
   const currentBranch = useGitPanelStore((s) => s.branch)
+  const pendingBranchBase = useGitPanelStore((s) => s.pendingBranchBase)
+  const clearPendingBranchBase = useGitPanelStore((s) => s.clearPendingBranchBase)
+
+  // Consume a pending branch base set externally (e.g. "Create › Branch" from
+  // the commit context menu). It is read once when the picker opens and then
+  // cleared so it doesn't persist into the next manual open. NewBranchSection
+  // captures the value into local state (and a ref) on mount, so clearing the
+  // shared store here synchronously is safe and avoids the timing-dependent
+  // requestAnimationFrame deferral.
+  useEffect(() => {
+    if (isOpen && pendingBranchBase) {
+      clearPendingBranchBase()
+    }
+  }, [isOpen, pendingBranchBase, clearPendingBranchBase])
 
   const [branches, setBranches] = useState<string[]>([])
   const [filter, setFilter] = useState('')
@@ -161,6 +175,7 @@ export function BranchPicker() {
           key={isOpen ? 'open' : 'closed'}
           disabled={checkingOut !== null}
           currentBranch={currentBranch.name}
+          pendingBase={pendingBranchBase}
           onClearError={handleClearError}
           onError={handleError}
           onCreated={closeBranchPicker}

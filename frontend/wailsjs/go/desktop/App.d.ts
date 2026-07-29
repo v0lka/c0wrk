@@ -47,11 +47,17 @@ export function CreateProject(arg1:string,arg2:string):Promise<project.ProjectIn
 
 export function CreateSession():Promise<session.SessionInfo>;
 
+export function CreateTag(arg1:string,arg2:string):Promise<void>;
+
 export function DeleteProject(arg1:string):Promise<void>;
+
+export function DeleteRemoteTag(arg1:string,arg2:string):Promise<string>;
 
 export function DeleteReviewComment(arg1:string):Promise<void>;
 
 export function DeleteSession(arg1:string):Promise<void>;
+
+export function DeleteTag(arg1:string):Promise<void>;
 
 export function DeleteWorkDirectory(arg1:string,arg2:string,arg3:string):Promise<void>;
 
@@ -169,6 +175,8 @@ export function Pull(arg1:string,arg2:Array<string>):Promise<string>;
 
 export function Push(arg1:string,arg2:Array<string>):Promise<string>;
 
+export function PushTag(arg1:string,arg2:string):Promise<string>;
+
 export function ReadFile(arg1:string):Promise<string>;
 
 export function ReadFileAsDataURL(arg1:string):Promise<string>;
@@ -180,6 +188,8 @@ export function RemoveAttachment(arg1:string,arg2:string):Promise<void>;
 export function RenameProject(arg1:string,arg2:string):Promise<void>;
 
 export function RenameSession(arg1:string,arg2:string):Promise<void>;
+
+export function ResetToCommit(arg1:string,arg2:string):Promise<void>;
 
 export function ResolvePendingMessage(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Record<string, any>):Promise<void>;
 

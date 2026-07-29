@@ -10,6 +10,7 @@ import { FilterBar } from '@/components/ui/FilterBar'
 import { ROW_SPACING, NODE_OFFSET, LANE_SPACING, xFor, expandedContentHeight } from './gitGraphRender'
 import { GitGraphGutter } from './GitGraphGutter'
 import { GitHistoryRow } from './GitHistoryRow'
+import { GitHistoryContextMenu } from './GitHistoryContextMenu'
 
 /**
  * Unified commit history + graph tab. Replaces the former separate History
@@ -28,7 +29,7 @@ import { GitHistoryRow } from './GitHistoryRow'
  * (pushed left), since a filtered subset no longer forms a connected graph.
  */
 export function GitHistoryTab() {
-  const { commits, isLoading, error } = useGitHistory()
+  const { commits, isLoading, error, reload } = useGitHistory()
   const {
     filterText,
     filterMode,
@@ -43,6 +44,34 @@ export function GitHistoryTab() {
     pendingShas,
   } = useGitHistoryFilter(commits)
   const [expandedSha, setExpandedSha] = useState<string | null>(null)
+
+  // Current branch name — used by the commit context menu to label the
+  // "Reset <branch> to This Commit" submenu.
+  const currentBranch = useGitPanelStore((s) => s.branch.name)
+
+  // Commit context menu (bespoke position-based, mirroring GitFileContextMenu).
+  // A single instance is rendered at the tab level; right-clicking a row
+  // records the commit + viewport coordinates and opens the menu.
+  const [contextMenu, setContextMenu] = useState<{
+    sha: string
+    refs: string[]
+    x: number
+    y: number
+  } | null>(null)
+  const handleRowContextMenu = useCallback(
+    (e: React.MouseEvent, sha: string, refs: string[]) => {
+      e.preventDefault()
+      // A right-click places a text-selection range as the browser's
+      // mousedown default (notably on macOS). Clear it so opening the
+      // context menu doesn't leave the row's commit message/SHA/author
+      // highlighted. Left-click selection (the deliberate `select-text`
+      // spans) remains unaffected.
+      window.getSelection()?.removeAllRanges()
+      setContextMenu({ sha, refs, x: e.clientX, y: e.clientY })
+    },
+    [],
+  )
+  const closeContextMenu = useCallback(() => setContextMenu(null), [])
 
   // Consume a pending history filter set externally (e.g. "View History" from
   // the file-tree context menu). The filter is applied once and then cleared
@@ -219,6 +248,9 @@ export function GitHistoryTab() {
                         right: 0,
                         height: vi.size,
                       }}
+                      onContextMenu={(e) =>
+                        handleRowContextMenu(e, node.sha, commit.refs)
+                      }
                     >
                       <GitHistoryRow
                         node={node}
@@ -266,6 +298,9 @@ export function GitHistoryTab() {
                     right: 0,
                     height: vi.size,
                   }}
+                  onContextMenu={(e) =>
+                    handleRowContextMenu(e, node.sha, commit?.refs ?? [])
+                  }
                 >
                   <GitHistoryRow
                     node={node}
@@ -284,6 +319,14 @@ export function GitHistoryTab() {
           </div>
         )}
       </div>
+      <GitHistoryContextMenu
+        sha={contextMenu?.sha ?? ''}
+        refs={contextMenu?.refs ?? []}
+        currentBranch={currentBranch}
+        position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        onClose={closeContextMenu}
+        onAfterMutation={reload}
+      />
     </div>
   )
 }

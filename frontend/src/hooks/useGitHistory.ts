@@ -32,5 +32,5 @@ export function useGitHistory() {
     void load()
   }, [load])
 
-  return { commits, isLoading, error }
+  return { commits, isLoading, error, reload: load }
 }

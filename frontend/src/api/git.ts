@@ -587,3 +587,82 @@ export async function getGitHistory(): Promise<GitHistoryCommit[]> {
     throw err
   }
 }
+
+// --- Tags & reset (commit context menu) ---
+
+/**
+ * Create a lightweight tag pointing at the given commit
+ * (`git tag <name> <sha>`). Lightweight tags are used (not annotated)
+ * because the global `tag.gpgsign=true` config would otherwise require an
+ * interactive editor for annotated tags.
+ */
+export async function createTag(name: string, sha: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.CreateTag(name, sha)
+  } catch (err) {
+    logger.error('createTag failed:', err)
+    throw err
+  }
+}
+
+/** Delete a local tag (`git tag -d <name>`). */
+export async function deleteTag(name: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.DeleteTag(name)
+  } catch (err) {
+    logger.error('deleteTag failed:', err)
+    throw err
+  }
+}
+
+/**
+ * Push a single tag to a remote (`git push <remote> refs/tags/<name>`).
+ * An empty `remote` lets the backend default to "origin". Returns git's
+ * combined stdout+stderr output (progress is written to stderr even on
+ * success).
+ */
+export async function pushTag(name: string, remote: string): Promise<string> {
+  try {
+    const app = getApp()
+    const result = await app.PushTag(name, remote)
+    if (typeof result !== 'string') {
+      throw new Error('pushTag: backend returned non-string output')
+    }
+    return result
+  } catch (err) {
+    logger.error('pushTag failed:', err)
+    throw err
+  }
+}
+
+/**
+ * Delete a tag on a remote (`git push <remote> :refs/tags/<name>`).
+ * An empty `remote` lets the backend default to "origin". Returns git's
+ * combined stdout+stderr output.
+ */
+export async function deleteRemoteTag(name: string, remote: string): Promise<string> {
+  try {
+    const app = getApp()
+    const result = await app.DeleteRemoteTag(name, remote)
+    if (typeof result !== 'string') {
+      throw new Error('deleteRemoteTag: backend returned non-string output')
+    }
+    return result
+  } catch (err) {
+    logger.error('deleteRemoteTag failed:', err)
+    throw err
+  }
+}
+
+/** Reset the current branch to the given commit with the named mode (soft/mixed/hard). */
+export async function resetToCommit(sha: string, mode: 'soft' | 'mixed' | 'hard'): Promise<void> {
+  try {
+    const app = getApp()
+    await app.ResetToCommit(sha, mode)
+  } catch (err) {
+    logger.error('resetToCommit failed:', err)
+    throw err
+  }
+}

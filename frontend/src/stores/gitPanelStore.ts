@@ -70,6 +70,14 @@ interface GitPanelState {
   groupBy: GroupBy
   /** Transient: set by "View History" file-tree action, consumed by GitHistoryTab, cleared after use. */
   pendingHistoryFilter: string | null
+  /**
+   * Transient: a ref (SHA/branch/tag) to pre-select as the base for the next
+   * branch created in the BranchPicker. Set by the commit context menu's
+   * "Create › Branch" action so the Switch Branch dialog opens with that
+   * commit already chosen as the start-point. Consumed and cleared by
+   * NewBranchSection on open.
+   */
+  pendingBranchBase: string | null
 }
 
 interface GitPanelActions {
@@ -98,6 +106,10 @@ interface GitPanelActions {
   setPendingHistoryFilter: (filter: string) => void
   /** Clear the pending history filter after it has been consumed. */
   clearPendingHistoryFilter: () => void
+  /** Queue a preselected base ref for the next BranchPicker open. */
+  setPendingBranchBase: (base: string) => void
+  /** Clear the pending branch base after it has been consumed. */
+  clearPendingBranchBase: () => void
   reset: () => void
 }
 
@@ -122,6 +134,7 @@ const initialState: GitPanelState = {
   sortBy: 'path',
   groupBy: 'none',
   pendingHistoryFilter: null,
+  pendingBranchBase: null,
 }
 
 // --- Persist helpers (exported for direct unit testing) ---
@@ -245,6 +258,10 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
       setPendingHistoryFilter: (filter) => set({ pendingHistoryFilter: filter }),
 
       clearPendingHistoryFilter: () => set({ pendingHistoryFilter: null }),
+
+      setPendingBranchBase: (base) => set({ pendingBranchBase: base }),
+
+      clearPendingBranchBase: () => set({ pendingBranchBase: null }),
 
       reset: () => set({ ...initialState, expandedDirs: new Set<string>() }),
     }),

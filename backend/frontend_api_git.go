@@ -739,6 +739,124 @@ func (f *FrontendAPI) isRemoteTrackingRef(repoPath, ref string) bool {
 }
 
 // ---------------------------------------------------------------------------
+// Tag management RPCs (Phase 4)
+// ---------------------------------------------------------------------------
+
+// CreateTag creates a lightweight tag pointing at the named commit
+// (git tag <name> <sha>). Lightweight tags (rather than annotated
+// `git tag -a -m` tags) are used deliberately: the global tag.gpgsign
+// config may require an interactive editor for annotated tags, whereas a
+// plain `git tag` with an explicit object is editor-free. The sha is
+// validated as a defense-in-depth measure against option injection (it is
+// passed as a trailing argument), matching GetCommitFiles/GetCommitDiff.
+// Emits git:status_changed on success. Returns an error when no project is
+// active, the project is No Project, the tag name is empty, the sha is
+// empty or not a valid SHA, or the git command fails (for example, when
+// the tag already exists or the sha does not resolve to a commit).
+func (f *FrontendAPI) CreateTag(name, sha string) error {
+	tagName := strings.TrimSpace(name)
+	if tagName == "" {
+		return errors.New("tag name must not be empty")
+	}
+	tagSha := strings.TrimSpace(sha)
+	if tagSha == "" {
+		return errors.New("sha must not be empty")
+	}
+	if err := validateCommitSha(tagSha); err != nil {
+		return err
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return err
+	}
+
+	if _, err := f.runGitCmd(repoPath, "tag", tagName, tagSha); err != nil {
+		return err
+	}
+	f.emitGitStatusChanged(repoPath)
+	return nil
+}
+
+// DeleteTag removes a local tag from the active project's repository
+// (git tag -d <name>). Emits git:status_changed on success. Returns an
+// error when no project is active, the project is No Project, the tag
+// name is empty, or the git command fails (for example, when the tag
+// does not exist).
+func (f *FrontendAPI) DeleteTag(name string) error {
+	tagName := strings.TrimSpace(name)
+	if tagName == "" {
+		return errors.New("tag name must not be empty")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return err
+	}
+
+	if _, err := f.runGitCmd(repoPath, "tag", "-d", tagName); err != nil {
+		return err
+	}
+	f.emitGitStatusChanged(repoPath)
+	return nil
+}
+
+// PushTag pushes a single tag to the named remote
+// (git push <remote> refs/tags/<name>). When remote is empty, "origin" is
+// used. The combined stdout+stderr output is returned for display in the
+// UI. Like Pull/Push/Fetch, this is a remote operation: it is serialized
+// via remoteOpMu (only one network operation runs at a time per app
+// instance) and bounded by remoteGitCmdTimeout, and it emits
+// git:status_changed on success so the frontend can refresh tag refs.
+// Returns an error when no project is active, the project is No Project,
+// the tag name is empty, or the git command fails.
+func (f *FrontendAPI) PushTag(name, remote string) (string, error) {
+	tagName := strings.TrimSpace(name)
+	if tagName == "" {
+		return "", errors.New("tag name must not be empty")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return "", err
+	}
+
+	remoteName := strings.TrimSpace(remote)
+	if remoteName == "" {
+		remoteName = "origin"
+	}
+
+	return f.runSerializedRemoteOp(repoPath, "push", remoteName, "refs/tags/"+tagName)
+}
+
+// DeleteRemoteTag deletes a tag on the named remote
+// (git push <remote> :refs/tags/<name>). When remote is empty, "origin"
+// is used. The combined stdout+stderr output is returned for display in
+// the UI. Like Pull/Push/Fetch, this is a remote operation: it is
+// serialized via remoteOpMu and bounded by remoteGitCmdTimeout, and it
+// emits git:status_changed on success. Returns an error when no project
+// is active, the project is No Project, the tag name is empty, or the git
+// command fails.
+func (f *FrontendAPI) DeleteRemoteTag(name, remote string) (string, error) {
+	tagName := strings.TrimSpace(name)
+	if tagName == "" {
+		return "", errors.New("tag name must not be empty")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return "", err
+	}
+
+	remoteName := strings.TrimSpace(remote)
+	if remoteName == "" {
+		remoteName = "origin"
+	}
+
+	return f.runSerializedRemoteOp(repoPath, "push", remoteName, ":refs/tags/"+tagName)
+}
+
+// ---------------------------------------------------------------------------
 // AI commit message RPC (Phase 4)
 // ---------------------------------------------------------------------------
 
@@ -884,11 +1002,36 @@ func (f *FrontendAPI) Fetch(remote string, flags []string) (string, error) {
 	return f.runRemoteOp("fetch", remote, flags)
 }
 
-// runRemoteOp executes a serialized remote git operation (pull/push/
-// fetch) and returns its combined output. It is the shared body of Pull,
-// Push and Fetch. flags are validated against allowedRemoteFlags and
-// appended to the git argv after the optional remote. It is intentionally
-// unexported so it is not exposed as a Wails RPC method.
+// runSerializedRemoteOp executes a git remote operation under the
+// remoteOpMu lock so that only one network operation runs at a time per
+// app instance — pull, push, fetch and tag push/delete all share this
+// gate. The combined stdout+stderr output is captured for UI display and
+// the operation is bounded by remoteGitCmdTimeout. On success it emits
+// git:status_changed so the frontend can refresh ahead/behind indicators
+// and tag refs. It neither validates flags nor assembles the remote
+// argument — callers build the full argv. This is the single chokepoint
+// shared by runRemoteOp (pull/push/fetch) and the tag push/delete RPCs.
+// It is intentionally unexported so it is not exposed as a Wails method.
+func (f *FrontendAPI) runSerializedRemoteOp(repoPath string, args ...string) (string, error) {
+	f.remoteOpMu.Lock()
+	defer f.remoteOpMu.Unlock()
+
+	f.log().Debug("git remote operation", "args", args)
+
+	out, err := f.runGitCmdCombined(repoPath, remoteGitCmdTimeout, args...)
+	if err != nil {
+		f.log().Warn("git remote operation failed", "args", args, "error", err)
+		return out, err
+	}
+	f.emitGitStatusChanged(repoPath)
+	return out, nil
+}
+
+// runRemoteOp is the shared body of Pull, Push and Fetch. It validates
+// flags against allowedRemoteFlags, assembles the git argv (op, optional
+// remote, flags) and delegates to runSerializedRemoteOp for the
+// serialized network call. It is intentionally unexported so it is not
+// exposed as a Wails RPC method.
 func (f *FrontendAPI) runRemoteOp(op, remote string, flags []string) (string, error) {
 	if err := validateRemoteFlags(op, flags); err != nil {
 		return "", err
@@ -905,19 +1048,7 @@ func (f *FrontendAPI) runRemoteOp(op, remote string, flags []string) (string, er
 	}
 	args = append(args, flags...)
 
-	f.log().Debug("git remote operation", "op", op, "remote", remote)
-
-	// Serialize remote ops so only one network operation runs at a time.
-	f.remoteOpMu.Lock()
-	defer f.remoteOpMu.Unlock()
-
-	out, err := f.runGitCmdCombined(repoPath, remoteGitCmdTimeout, args...)
-	if err != nil {
-		f.log().Warn("git remote operation failed", "op", op, "remote", remote, "error", err)
-		return out, err
-	}
-	f.emitGitStatusChanged(repoPath)
-	return out, nil
+	return f.runSerializedRemoteOp(repoPath, args...)
 }
 
 // ---------------------------------------------------------------------------
@@ -1447,6 +1578,44 @@ func (f *FrontendAPI) AbortRebase() error {
 	}
 
 	if _, err := f.runGitCmd(repoPath, "rebase", "--abort"); err != nil {
+		return err
+	}
+	f.emitGitStatusChanged(repoPath)
+	return nil
+}
+
+// ResetToCommit moves the current branch HEAD to the named commit
+// (git reset --<mode> <sha>). mode controls how the index and working
+// tree are updated: "soft" (keep index and working tree), "mixed" (reset
+// the index, keep the working tree — the default), or "hard" (discard
+// all working-tree changes for tracked files). The sha is validated as a
+// defense-in-depth measure against option injection (it is passed as a
+// trailing argument), matching GetCommitFiles/GetCommitDiff; this is
+// especially relevant here since --hard discards working-tree changes.
+// Emits git:status_changed on success. Returns an error when no project is
+// active, the project is No Project, the sha is empty or not a valid SHA,
+// the mode is not one of soft/mixed/hard, or the git command fails.
+func (f *FrontendAPI) ResetToCommit(sha, mode string) error {
+	resetSha := strings.TrimSpace(sha)
+	if resetSha == "" {
+		return errors.New("sha must not be empty")
+	}
+	if err := validateCommitSha(resetSha); err != nil {
+		return err
+	}
+
+	switch mode {
+	case "soft", "mixed", "hard":
+	default:
+		return errors.New("invalid reset mode: must be soft, mixed, or hard")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return err
+	}
+
+	if _, err := f.runGitCmd(repoPath, "reset", "--"+mode, resetSha); err != nil {
 		return err
 	}
 	f.emitGitStatusChanged(repoPath)

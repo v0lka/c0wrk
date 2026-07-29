@@ -78,8 +78,16 @@ export function CreateSession() {
   return window['go']['desktop']['App']['CreateSession']();
 }
 
+export function CreateTag(arg1, arg2) {
+  return window['go']['desktop']['App']['CreateTag'](arg1, arg2);
+}
+
 export function DeleteProject(arg1) {
   return window['go']['desktop']['App']['DeleteProject'](arg1);
+}
+
+export function DeleteRemoteTag(arg1, arg2) {
+  return window['go']['desktop']['App']['DeleteRemoteTag'](arg1, arg2);
 }
 
 export function DeleteReviewComment(arg1) {
@@ -88,6 +96,10 @@ export function DeleteReviewComment(arg1) {
 
 export function DeleteSession(arg1) {
   return window['go']['desktop']['App']['DeleteSession'](arg1);
+}
+
+export function DeleteTag(arg1) {
+  return window['go']['desktop']['App']['DeleteTag'](arg1);
 }
 
 export function DeleteWorkDirectory(arg1, arg2, arg3) {
@@ -322,6 +334,10 @@ export function Push(arg1, arg2) {
   return window['go']['desktop']['App']['Push'](arg1, arg2);
 }
 
+export function PushTag(arg1, arg2) {
+  return window['go']['desktop']['App']['PushTag'](arg1, arg2);
+}
+
 export function ReadFile(arg1) {
   return window['go']['desktop']['App']['ReadFile'](arg1);
 }
@@ -344,6 +360,10 @@ export function RenameProject(arg1, arg2) {
 
 export function RenameSession(arg1, arg2) {
   return window['go']['desktop']['App']['RenameSession'](arg1, arg2);
+}
+
+export function ResetToCommit(arg1, arg2) {
+  return window['go']['desktop']['App']['ResetToCommit'](arg1, arg2);
 }
 
 export function ResolvePendingMessage(arg1, arg2, arg3, arg4, arg5) {

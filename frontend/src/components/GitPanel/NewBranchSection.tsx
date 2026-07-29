@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Plus, Loader2, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -23,6 +23,12 @@ interface NewBranchSectionProps {
   onError: (message: string) => void
   /** Called after a branch is created — backend emits git:status_changed. */
   onCreated: () => void
+  /**
+   * Optional ref preselected as the start-point (e.g. a commit SHA set by the
+   * history context menu). When set, "Choose base" auto-expands, bases load
+   * immediately, and the matching base (or the raw SHA) is selected.
+   */
+  pendingBase?: string | null
 }
 
 /**
@@ -39,13 +45,23 @@ export function NewBranchSection({
   onClearError,
   onError,
   onCreated,
+  pendingBase,
 }: NewBranchSectionProps) {
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
-  const [chooseBase, setChooseBase] = useState(false)
+  // When a pending base is supplied (e.g. from the history context menu's
+  // "Create › Branch"), open the base selector automatically so the user
+  // sees the preselected start-point.
+  const [chooseBase, setChooseBase] = useState(Boolean(pendingBase))
   const [bases, setBases] = useState<BranchBase[]>([])
   const [basesLoaded, setBasesLoaded] = useState(false)
-  const [selectedBase, setSelectedBase] = useState('')
+  const [selectedBase, setSelectedBase] = useState(pendingBase ?? '')
+  // Capture the pending base once on mount. The lazy-load effect below must
+  // not depend on the `pendingBase` prop: BranchPicker clears the shared
+  // store value after the picker opens, which would otherwise flip the prop
+  // and re-trigger the bases fetch. Reading via a ref keeps the fetch to a
+  // single call regardless of when the store is cleared.
+  const initialBase = useRef(pendingBase ?? '')
 
   // Lazily load branch bases when the user first expands the selector.
   useEffect(() => {
@@ -53,6 +69,14 @@ export function NewBranchSection({
     getBranchBases()
       .then((result) => {
         setBases(result)
+        // If the pending base was supplied as a raw SHA, it may not appear
+        // in the fetched bases list (which only includes the 20 most recent
+        // commits). Keep the raw value as the selection in that case so the
+        // backend still receives it.
+        const base = initialBase.current
+        if (base && !result.some((b) => b.ref === base)) {
+          setSelectedBase(base)
+        }
       })
       .catch((err) => {
         onError(err instanceof Error ? err.message : 'Failed to load bases')

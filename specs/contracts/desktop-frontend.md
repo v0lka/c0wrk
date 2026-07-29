@@ -150,6 +150,10 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `GetCurrentBranch`     | —                       | (BranchInfo, error)           | Get current branch |
 | `CheckoutBranch`       | name                    | error                         | Checkout a branch |
 | `CreateBranch`         | name                    | error                         | Create a new branch |
+| `CreateTag`            | name, sha               | error                         | Create a lightweight tag at a commit |
+| `DeleteTag`            | name                    | error                         | Delete a local tag |
+| `PushTag`              | name, remote            | (string, error)               | Push a single tag to a remote (default origin) |
+| `DeleteRemoteTag`      | name, remote            | (string, error)               | Delete a tag on the remote (default origin) |
 | `GenerateCommitMessage`| diff                    | (string, error)               | AI-generate a commit message from diff |
 | `Pull`                 | remote, flags []string  | (string, error)               | Pull from remote (flags: --ff-only, --rebase, --rebase --autostash) |
 | `Push`                 | remote, flags []string  | (string, error)               | Push to remote (flags: --force, --force-with-lease, --no-verify) |
@@ -166,6 +170,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `Rebase`               | branch                  | error                         | Rebase onto a branch |
 | `AbortMerge`           | —                       | error                         | Abort an in-progress merge |
 | `AbortRebase`          | —                       | error                         | Abort an in-progress rebase |
+| `ResetToCommit`        | sha, mode               | error                         | Reset HEAD to a commit (mode: soft, mixed, hard) |
 | `GetRebaseMergeState`  | —                       | (MergeRebaseState, error)     | Get in-progress merge/rebase state |
 | `GetGitGraph`          | limit, skip             | ([]GraphCommit, error)        | Paginated git graph (DAG) |
 
