@@ -54,7 +54,9 @@ c0wrk's registered tools and their default policy / trust classification:
 | `declare_plan`        | Agent     | internal       | no        | Publish a plan for user sign-off (`core/tools/declare_plan.go`) |
 | `execute_plan`        | Agent     | internal       | no        | Execute a declared plan inline (`core/tools/execute_plan.go`) |
 
-The internal-tools set is defined in `core/tools/registry.go` (`internalTools`): `ask_user`, `delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `propose_goal`, `declare_goal_status`, `reflect`, `finish`, `list_step_outputs`, `read_step_output`, `read_final_result`, `read_skill_resource`, `read_attachment`, `search_facts`, `semantic_search`, `update_checklist`, `declare_step_complete`, `store_fact`, `tool_result_read`, and `batch` (`sdktools.ToolBatch`). All of them bypass policy/judge checks during execution. `batch` is additionally intercepted at the executor level before reaching the registry.
+The internal-tools set is defined in `core/tools/registry.go` (`internalTools`): `ask_user`, `delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `propose_goal`, `declare_goal_status`, `declare_verification`, `reflect`, `finish`, `list_step_outputs`, `read_step_output`, `read_final_result`, `read_skill_resource`, `read_attachment`, `search_facts`, `semantic_search`, `update_checklist`, `declare_step_complete`, `store_fact`, `tool_result_read`, and `batch` (`sdktools.ToolBatch`). All of them bypass policy/judge checks during execution. `batch` is additionally intercepted at the executor level before reaching the registry.
+
+Three internal tools are **goal-mode-only** (`goalModeTools`, gated by `IsGoalModeTool`/`StripGoalModeTools`): `propose_goal`, `declare_goal_status`, and `declare_verification`. They are offered to the agent **only** when the session is running a goal loop — a non-goal Conductor run strips them from the available-tool list so the agent never sees goal-specific tools when goal mode is off. The goal loop and the independent verifier receive the unstripped list. See [../goal-mode.md](../goal-mode.md).
 
 ### Shell-Execution Tool (`bash_exec` / `posh_exec`)
 

@@ -69,7 +69,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | `tool_confirm` | `{confirm_id, tool, args, reasoning, tool_call_id?}`            | useActionEvents | Confirmation required (`tool_call_id` anchors the card to the triggering `tool_call`; `reasoning` is a human-readable explanation of why approval is needed — symlink traversal, judge flag, auto-approve denial, or the tool's default mutating-action policy; rendered as "Why approval is needed") |
 | `ask_user`     | `{request_id, questions: AskUserQuestion[]}`     | useActionEvents | Agent asks user                                |
 | `step_limit`   | `{request_id, current_step, max_steps, reason?}` | useActionEvents | Step limit or circuit breaker reached          |
-| `goal_proposal` | `{request_id, session_id, condition, verify, clarification?, needs_clarification}` | useGoalEvents | Goal-mode derivation agent called `propose_goal`; surfaces as a pending action that **blocks the agent** until the user responds. Persisted (role `goal_proposal`) so it reappears on reload; renders as a `goal_proposal` DisplayItem (Approve-with-edits / Cancel). See [domains/goal-mode.md](../domains/goal-mode.md). |
+| `goal_proposal` | `{request_id, session_id, condition, verify, verification_mode?, clarification?, needs_clarification}` | useGoalEvents | Goal-mode derivation agent called `propose_goal`; surfaces as a pending action that **blocks the agent** until the user responds. `verification_mode` (`executable`/`re_derivation`) is the derivation-chosen mode the approval panel shows/edits (absent = default `executable`). Persisted (role `goal_proposal`) so it reappears on reload; renders as a `goal_proposal` DisplayItem (Approve-with-edits / Cancel). See [domains/goal-mode.md](../domains/goal-mode.md). |
 
 ### Context & Memory
 
@@ -87,7 +87,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | `task_cancelled`        | `{session_id}`                                                                | useLifecycleEvents | Task cancelled by user                                      |
 | `task_failed_resumable` | `{message, task_id?}`                                                         | useLifecycleEvents | Task failed/incomplete, can resume (`task_id` lets the persisted message be matched/resolved on resume or cancel) |
 | `error`                 | `{session_id, error}`                                                         | useChatEvents      | Execution error                                             |
-| `service`               | `{content, ...meta}` (meta fields flattened directly, e.g. `phase`)           | useChatEvents      | Service/status message (via `Service` or `ServiceWithMeta`). Goal mode reuses this channel with a `phase` discriminator: `phase: "goal_status"` (full goal snapshot — status, turn, condition, max_turns, verdict — emitted on every transition and after each turn) and `phase: "goal_progress"` (mid-loop turn/max_turns telemetry). See [../domains/goal-mode.md](../domains/goal-mode.md). |
+| `service`               | `{content, ...meta}` (meta fields flattened directly, e.g. `phase`)           | useChatEvents      | Service/status message (via `Service` or `ServiceWithMeta`). Goal mode reuses this channel with a `phase` discriminator: `phase: "goal_status"` (full goal snapshot — status, turn, condition, max_turns, verdict, reason, evidence, verification, verification_reason, verification_evidence, verification_mode — emitted on every transition and after each turn) and `phase: "goal_progress"` (mid-loop turn/max_turns telemetry). See [../domains/goal-mode.md](../domains/goal-mode.md). |
 
 ### Agent Internals
 
@@ -113,7 +113,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 
 | Event Type          | Payload                                                            | Handler Hook         | Description                 |
 | ------------------- | ------------------------------------------------------------------ | -------------------- | --------------------------- |
-| `attachments:changed` | `{attachments: AttachmentInfo[], failed?: {path, error}[]}`      | useAttachmentEvents  | Pending attachment list changed. `attachments` is the full current pending list — the UI replaces its store. `failed` carries per-file failures from the most recent attach operation (absent on remove/send-clear). On `SendMessage` the pending list is flushed into the blackboard and the event carries an empty `attachments` list, so chips clear automatically |
+| `attachments:changed` | `{attachments: AttachmentInfo[], failed?: {path, error}[]}`      | useAttachmentEvents  | Pending attachment list changed. `attachments` is the full current pending list (documents + images combined — image entries carry `is_image: true` and a `thumbnail` JPEG data URI); the UI replaces its store. `failed` carries per-file failures from the most recent attach operation (absent on remove/send-clear). On `SendMessage` the pending list is flushed (documents into the blackboard, images into image content blocks) and the event carries an empty `attachments` list, so chips clear automatically |
 
 ### Executor Internals
 
@@ -152,7 +152,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | `ask_user_response`     | frontend → backend | `{request_id, answers}`                                           | User's answers to agent questions |
 | `step_limit_response`   | frontend → backend | `{request_id, response}` (`allow_once` / `allow_more` / `allow_always` / `deny`) | User's step limit decision        |
 | `plan_approval_response` | frontend → backend | `{request_id, decision, feedback?}` (`approve` / `request_changes` / `abandon`; `feedback` non-empty when `request_changes`) (see `PlanApprovalResponsePayload`) | User's decision on a plan awaiting review (`declare_plan` mode=`await_approval`). Resolves the pending plan-review action surfaced by `plan_review_ready` |
-| `goal_proposal_response` | frontend → backend | `{request_id, decision, condition?, verify?, clarification?}` (`approve` / `clarify` / `cancel`) | User's sign-off on a proposed goal. Both the event path and the RPC path (`ConfirmGoal`/`CancelGoal`) funnel through a single resolver on the desktop pending map. See [../domains/goal-mode.md](../domains/goal-mode.md). |
+| `goal_proposal_response` | frontend → backend | `{request_id, decision, condition?, verify?, verification_mode?, clarification?}` (`approve` / `clarify` / `cancel`) | User's sign-off on a proposed goal. `verification_mode` overrides the derivation-chosen mode. Both the event path and the RPC path (`ConfirmGoal`/`CancelGoal`) funnel through a single resolver on the desktop pending map. See [../domains/goal-mode.md](../domains/goal-mode.md). |
 
 ## Event Handling Pattern (Frontend)
 

@@ -74,10 +74,12 @@ The final result is set via `SetFinalResult(output)` after the Conductor finishe
 
 ### Attachments
 
-Attachments are user-attached files converted to markdown and made available to the agent as read-only context. The lifecycle has two phases:
+**Document** attachments are user-attached files converted to markdown and made available to the agent as read-only context. The lifecycle has two phases:
 
 1. **Pending** (session-owned, not yet on the blackboard): staged by `Manager.AttachFiles` (see [../session-lifecycle.md](../session-lifecycle.md)) on `Session.pendingAttachments` as the user picks files. Pending attachments are metadata-only in the UI (the converted markdown never leaves the backend). Removing or sending the message clears the pending list.
 2. **Committed** (blackboard-owned): on `SendMessage` the session manager snapshots `pendingAttachments`, clears them, and passes them via `HandleOptions.PendingAttachments`. `Orchestrator.setupBlackboard` flushes them into the blackboard (`bb.AddAttachment`) in both the fresh and restored paths, so they are available to the task and persisted alongside the rest of the blackboard state.
+
+**Image** attachments (png/jpg/jpeg/gif/webp) are a separate kind: they are staged on `Session.pendingImageAttachments`, passed to the LLM as image content blocks via `HandleOptions.PendingImages`, and **do not flow through the blackboard** (the blackboard is markdown/text-only). See [../session-lifecycle.md](../session-lifecycle.md) for the image attach/restore lifecycle.
 
 The Conductor's task message is augmented with an "Attached files" section listing attachment IDs (`Orchestrator.augmentWithAttachments`) so the model knows which files are available and can request their content via the `read_attachment` tool. Only the Conductor sees this section — the router and conversation history keep the clean message, so prior turns don't accumulate repeated attachment listings. On continuation turns the restored blackboard already carries all session attachments, so every turn sees the full current set.
 

@@ -10,7 +10,7 @@ c0wrk provides tool infrastructure for the agent on top of sp4rk's `Tool`/`ToolR
 - `core/tools/registry_symlink.go` — symlink detection/traversal integration calling sp4rk `DetectSymlinksInToolInput`
 - `core/tools/builtin_registration.go` — `RegisterBuiltinTools` function + `BuiltinToolsConfig`
 - `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
-- `core/toolnames.go` — tool name constants, `NoProjectDisabledTools`, `NoProjectBashBlacklist`
+- `core/toolnames.go` — tool name constants, `NoProjectDisabledTools`, `NoProjectShellBlacklist`
 - `core/toolmanager/` — manages external binary dependencies (`rg`, `uv`, `markitdown`), auto-downloaded on first run (see ADR-010)
 
 Engine files (`github.com/v0lka/sp4rk/tools/tool.go`, `safety.go`, `registry.go`, `judge.go`, `github.com/v0lka/sp4rk/security/wrap.go`, `github.com/v0lka/sp4rk/tools/mcp/gateway.go`) are documented in [the sp4rk tool-system spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/README.md).

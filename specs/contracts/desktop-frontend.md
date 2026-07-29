@@ -26,7 +26,7 @@ Frontend communicates with Go exclusively through Wails IPC. No direct Go import
 | `TerminalCommand`          | backend  | backend → frontend | Terminal command history            |
 | `VectorStoreEntry`         | backend  | backend → frontend | Vector search result                |
 | `BlackboardStateResponse`  | backend  | backend → frontend | Task state for resume UI            |
-| `AttachmentInfo`           | backend  | backend → frontend | Pending file-attachment metadata (snake_case; markdown content excluded) |
+| `AttachmentInfo`           | backend  | backend → frontend | Pending attachment metadata (snake_case; content excluded). Document attachments carry markdown excluded; image attachments additionally carry `is_image: true` and a `thumbnail` JPEG data URI |
 
 ## RPC Surface
 
@@ -39,7 +39,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | Method                 | Parameters                   | Returns                   | Description                                           |
 | ---------------------- | ---------------------------- | ------------------------- | ----------------------------------------------------- |
 | `CreateSession`        | —                            | (\*SessionInfo, error)    | Create new session (active project)                   |
-| `DeleteSession`        | id                           | error                     | Delete session                                        |
+| `DeleteSession`        | id                           | error                     | Delete session and cascade-remove all its internal files (logs, dumps, temp, plans, No-Project workspace, and the per-session `images/` dir) from `~/.c0wrk`. Archiving does NOT remove files |
 | `RenameSession`        | id, name                     | error                     | Rename session                                        |
 | `ArchiveSession`       | id                           | error                     | Archive/unarchive session                             |
 | `PinSession`           | id                           | error                     | Toggle session pin (affects ordering/filtering)       |
@@ -58,9 +58,9 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 | Method              | Parameters               | Returns                       | Description |
 | ------------------- | ------------------------ | ----------------------------- | ----------- |
-| `AttachFiles`       | sessionID, paths         | ([]AttachmentInfo, error)     | Convert files to markdown via `core/markitdown` and stage them as pending attachments; emits `attachments:changed` (incremental per file + final with per-file failures). Returns the full pending list. System-level errors (session missing, converter init) return `error`; file-level failures (unsupported format, conversion error) are reported via the event payload's `Failed` field, not as `error`, so partial success is preserved |
-| `RemoveAttachment`  | sessionID, attachmentID   | error                         | Remove a staged (pending) attachment by ID; no-op if not found. Does not touch attachments already flushed into the blackboard |
-| `GetAttachments`    | sessionID                | ([]AttachmentInfo, error)     | Get the session's staged (pending) attachments as metadata-only values |
+| `AttachFiles`       | sessionID, paths         | ([]AttachmentInfo, error)     | Partition files by extension: images (png/jpg/jpeg/gif/webp) are decoded, optionally downscaled/re-encoded as JPEG, and staged as pending image attachments (separate from documents); all other files are converted to markdown via `core/markitdown` and staged as document attachments. Emits `attachments:changed` (incremental per file + final with per-file failures). Returns the full pending list (documents + images combined). System-level errors (session missing) return `error`; file-level failures (unsupported format, conversion/decode error) are reported via the event payload's `Failed` field, not as `error`, so partial success is preserved |
+| `RemoveAttachment`  | sessionID, attachmentID   | error                         | Remove a staged (pending) document or image attachment by ID; no-op if not found. Removing a pending image also deletes its on-disk copy under the session's `images/` dir. Does not touch attachments already flushed into the blackboard |
+| `GetAttachments`    | sessionID                | ([]AttachmentInfo, error)     | Get the session's staged (pending) attachments (documents + images) as metadata-only values |
 
 ### Project (`backend/frontend_api_project.go`)
 
@@ -186,7 +186,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | ---------------- | ---------- | ------------- | ----------- |
 | `GetPendingActions` | sessionID  | (*PendingActionsResponse, error) | Unresolved pending actions for a session (tool confirmations, ask-user forms, step-limit/resume prompts, goal proposals) |
 | `PickDirectory`  | —          | (string, error) | Native directory picker dialog |
-| `PickAttachmentFiles` | —     | ([]string, error) | Native multi-select file picker restricted to markitdown-supported document formats (filter built from `core/markitdown.SupportedExtensions()`). Returns `([]string{}, nil)` on cancel. Must remain on `App` — it requires the Wails context like `PickDirectory` |
+| `PickAttachmentFiles` | —     | ([]string, error) | Native multi-select file picker exposing two filters: "Supported documents" (built from `core/markitdown.SupportedExtensions()`) and "Images" (`*.png;*.jpg;*.jpeg;*.gif;*.webp`). No "All files" filter — a wildcard resolves to a dynamic UTType on macOS that corrupts the panel's content-type filter. Returns `([]string{}, nil)` on cancel. Must remain on `App` — it requires the Wails context like `PickDirectory` |
 | `SetWailsLogger` | wl         | —             | Binding artifact: stores Wails log adapter (called internally, not from frontend) |
 
 ### Prompt (`backend/frontend_api_prompt.go`)
@@ -205,7 +205,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 | Method          | Parameters                              | Returns | Description                                                                                          |
 | --------------- | --------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------- |
-| `ConfirmGoal`   | sessionID, requestID, condition, verify | error   | Approve a proposed goal (optionally with edits). Resolves the pending `goal_proposal` action          |
+| `ConfirmGoal`   | sessionID, requestID, condition, verify, verificationMode | error   | Approve a proposed goal (optionally with edits). `verificationMode` (`executable`/`re_derivation`) overrides the derivation-chosen mode. Resolves the pending `goal_proposal` action          |
 | `CancelGoal`    | sessionID, requestID                    | error   | Cancel a proposed goal                                                                               |
 | `ClarifyGoal`   | sessionID, requestID, clarification     | error   | Ask the derivation agent for clarification on a proposed goal                                        |
 | `PauseGoal`     | sessionID                               | error   | Pause an active goal loop                                                                            |

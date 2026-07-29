@@ -41,9 +41,9 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 | `uiStore`            | Sidebar collapsed state (log level is fetched via `GetLogLevel` RPC, not stored) | localStorage |
 | `vectorIndexStore`   | Vector index status, progress, and search mode                     | localStorage (mode only) |
 | `workDirsStore`      | Auxiliary work directories (project-scoped + session-scoped lists), modal open/close state | No           |
-| `goalStore`          | Goal-mode state per session (lifecycle status, turn/budget, active goal condition, pending proposal); reconciled from `goal_status`/`goal_progress` service-phase events. The status-bar indicator (`GoalStatusIndicator`) reads `useGoalStatus` (primitive string) + `useActiveGoal` (direct ref) and offers Pause/Resume/Clear controls. | No           |
+| `goalStore`          | Goal-mode state per session (lifecycle status, turn/budget, active goal condition+verify, pending proposal, verdict reason+evidence, independent verifier outcome `verification`/`verificationReason`/`verificationEvidence`, per-goal `verificationMode`); reconciled from `goal_status`/`goal_progress` service-phase events. The status-bar indicator (`GoalStatusIndicator`) reads `useGoalStatus` (primitive string) + `useActiveGoal` (direct ref) and offers Pause/Resume/Clear controls. | No           |
 | `reviewStore`        | Code-review buffer per session (general comment, hunk comments keyed by `filePath::hunkId`, review status `active`/`submitted`/`approved`), review-page open state, review-loop flags, and prompt-shown tracking; restored on session activation via `useReviewRestore`. | localStorage |
-| `attachmentsStore`   | Pending file attachments for the active session (chips above the chat input)        | No           |
+| `attachmentsStore`   | Pending file attachments for the active session (document + image chips above the chat input); carries a transient `imageError` message (set when the user attaches images to a non-vision model; cleared on dismiss/attach/session switch) | No           |
 | `themeStore`         | Active UI theme (`dark` / `light`); `setTheme` writes `<html data-theme>` instantly so the palette applies without a restart. Re-read pre-paint in `main.tsx` to avoid FOUC. | localStorage |
 
 ## Critical Anti-Patterns

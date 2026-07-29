@@ -19,7 +19,8 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/session/emitter.go` — WailsEmitter (bridges events to frontend)
 - `backend/session/event_persister.go` — EventPersister (persists events to SQLite)
 - `backend/session/task_adapter.go` — task step/fact/attachment adapter for persistence
-- `backend/session/manager_attachment.go` — file attachments: `AttachFiles`/`RemovePendingAttachment`/`GetSessionAttachments`, pending-attachment staging, `attachments:changed` emission
+- `backend/session/manager_attachment.go` — file attachments: `AttachFiles`/`RemovePendingAttachment`/`GetSessionAttachments`, pending-attachment staging (documents + images), `attachments:changed` emission, image metadata persistence/restore
+- `backend/session/image_processor.go` — image decode/resize/re-encode/thumbnail (png/jpeg/gif/webp via stdlib + `golang.org/x/image/webp`)
 - `backend/frontend_api_attachment.go` — FrontendAPI attachment RPC surface
 - `core/markitdown/converter.go` — markdown conversion of attached files (shells out to the managed `markitdown` CLI, ADR-010)
 - `backend/session/title.go` — auto title generation via LLM
@@ -29,7 +30,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `core/orchestrator_goal.go` — goal mode (runGoalLoop, resumeGoalLoop, PauseGoal); see [goal-mode.md](goal-mode.md)
 - `backend/session/manager_goal.go` — ResumeGoal, PauseGoal, ClearGoal, SetGoalProposalResolver, ResolveGoalProposal
 - `backend/frontend_api_goal.go` — FrontendAPI.ConfirmGoal/CancelGoal/PauseGoal/ResumeGoal/ClearGoal (goal RPC surface)
-- `core/toolnames.go` — NoProjectDisabledTools, NoProjectBashBlacklist constants
+- `core/toolnames.go` — NoProjectDisabledTools, NoProjectShellBlacklist constants
 - `backend/project/manager.go` — EnsureNoProject (pseudo-project lifecycle)
 
 ## Flow
@@ -122,35 +123,56 @@ User sends message
 
 ### File Attachments
 
-The user attaches files (PDFs, documents, spreadsheets, text) which are converted to markdown and made available to the agent. Attachments have a two-phase lifecycle (pending → committed); see [memory/blackboard.md](memory/blackboard.md) for the committed/blackboard side.
+The user attaches files which are made available to the agent. There are two attachment **kinds**, routed by file extension and kept on separate staging lists:
+
+- **Documents** (pdf, docx, pptx, xlsx, odt, html, htm, md, txt, …) — converted to markdown via `core/markitdown`, staged on `session.pendingAttachments`, and flushed into the blackboard as read-only context (the `read_attachment` tool reads their content).
+- **Images** (png, jpg, jpeg, gif, webp) — decoded (stdlib png/jpeg/gif + `golang.org/x/image/webp`), optionally downscaled to a 1568px long edge and re-encoded as JPEG (quality 90) when they exceed 5 MB or 8000×8000px, and staged on `session.pendingImageAttachments`. They are passed to the LLM as image content blocks, **not** through the blackboard (the blackboard is markdown/text-only). A 64px JPEG thumbnail (quality 70, data URI) is generated for UI chips.
+
+Both kinds have the same two-phase lifecycle (pending → committed); see [memory/blackboard.md](memory/blackboard.md) for the document/blackboard side.
 
 ```
 User clicks Attach (Paperclip) in the chat input toolbar
   → Frontend: pickAttachmentFiles() → native multi-select picker (App.PickAttachmentFiles,
-      Wails context, restricted to markitdown-supported formats)
+      Wails context, two filters: "Supported documents" + "Images" png/jpg/jpeg/gif/webp)
+  → Frontend vision gating (useAttachmentsInput): resolve the effective model's
+      capability (ModelInfo.vision). When the model lacks vision, image files are
+      filtered out before staging and an error banner is shown (attachmentsStore.imageError);
+      documents stage normally regardless of model capability.
   → Frontend: attachFiles(sessionId, paths) → RPC AttachFiles
   → Backend: Manager.AttachFiles(sessionID, paths) (manager_attachment.go)
       ├─ getOrRestoreSession (lazy restore)
-      ├─ converterOrInit() — lazily create core/markitdown.Converter (2min/file timeout)
-      ├─ per file:
-      │   ├─ markitdown.IsSupported? no → record AttachmentFailure, skip
-      │   ├─ os.Stat; converter.Convert(ctx, path) → markdown
-      │   └─ append orchestration.Attachment to session.pendingAttachments (guarded by mu)
-      │       emit attachments:changed (incremental — chips appear one-by-one)
+      ├─ per file (routed by extension):
+      │   ├─ IMAGE (png/jpg/jpeg/gif/webp):
+      │   │     ├─ processImage: decode → optional resize/re-encode → base64 + thumbnail data URI
+      │   │     ├─ write processed copy to config.SessionImagesDir(...)/<uuid>.<ext> (on-disk source of truth)
+      │   │     └─ append ImageAttachment to session.pendingImageAttachments (guarded by mu)
+      │   │         emit attachments:changed (incremental — chips appear one-by-one)
+      │   └─ DOCUMENT:
+      │       ├─ markitdown.IsSupported? no → record AttachmentFailure, skip
+      │       ├─ converterOrInit() — lazily create core/markitdown.Converter (2min/file timeout)
+      │       ├─ os.Stat; converter.Convert(ctx, path) → markdown
+      │       └─ append orchestration.Attachment to session.pendingAttachments (guarded by mu)
+      │           emit attachments:changed (incremental — chips appear one-by-one)
       └─ if any failures: emit attachments:changed {failed: [...]} (UI toasts names)
 
 User removes a chip:
   → Frontend: removeAttachment(sessionId, id) → RPC RemoveAttachment
-  → Backend: Manager.RemovePendingAttachment — removes from pending only (committed attachments untouched)
+  → Backend: Manager.RemovePendingAttachment — removes from pending (document or image) only
+      (committed attachments untouched). Removing a pending image also deletes its on-disk copy.
 
-SendMessage flushes pending attachments into the blackboard:
-  → Manager.SendMessage snapshots session.pendingAttachments, clears it (flushed exactly once)
+SendMessage flushes pending attachments:
+  → Manager.SendMessage snapshots session.pendingAttachments + session.pendingImageAttachments,
+      clears both (flushed exactly once)
   → emits attachments:changed {attachments: []} so chips clear
-  → passes PendingAttachments via HandleOptions → Orchestrator.setupBlackboard flushes them
+  → passes PendingAttachments via HandleOptions → Orchestrator.setupBlackboard flushes the documents
       into the blackboard (bb.AddAttachment) in both fresh and restored paths
+  → passes PendingImages via HandleOptions (as []llm.ContentBlock image blocks) → injected into the
+      context window as image content (NOT the blackboard)
 ```
 
-`AttachFiles` returns a non-nil `error` only for system-level failures (session not found, converter init). File-level failures (unsupported format, conversion error, inaccessible file) are reported via the `attachments:changed` event payload's `failed` field — not as an error — so a partial success never discards the successfully attached files or triggers a generic error toast. The converted markdown content never reaches the UI: `AttachmentInfo` is metadata-only; the agent reads the content via the `read_attachment` tool.
+`AttachFiles` returns a non-nil `error` only for system-level failures (session not found). File-level failures (unsupported format, conversion/decode error, inaccessible file) are reported via the `attachments:changed` event payload's `failed` field — not as an error — so a partial success never discards the successfully attached files or triggers a generic error toast. Converted markdown content never reaches the UI: `AttachmentInfo` is metadata-only (image entries additionally carry `is_image: true` and a `thumbnail` data URI); the agent reads document content via the `read_attachment` tool, and image content reaches the LLM only as a content block.
+
+Image attachments survive a backend restart. Before `SendMessage` snapshots and clears the pending image list, the frontend API persists a compact metadata blob (`StoredImagesMetadata`, thumbnail data URI + on-disk path — never the full base64) into `ChatMessage.Metadata`. On lazy session restore the image files are read from disk and re-encoded into `ContentBlock`s, matching what the live session saw.
 
 ### Plan Review
 
@@ -505,7 +527,8 @@ type HandleOptions struct {
     ModelOverride      string                     // non-empty → use this model for all LLM calls; empty → router default
     ReasoningEffort    string                     // non-empty → native reasoning value for all LLM calls; empty → use family default
     SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)
-    PendingAttachments []orchestration.Attachment // staged attachments flushed into the blackboard before execution
+    PendingAttachments []orchestration.Attachment // staged document attachments flushed into the blackboard before execution
+    PendingImages      []llm.ContentBlock         // staged image attachments (base64 image blocks) injected into the context window (not the blackboard)
     ReviewMode         bool                       // true = message carries code-review feedback the agent must act on (sets ReviewModeKey)
     Goal               bool                       // true = dispatch to runGoalLoop (goal mode)
     GoalBudgetOverride *goal.GoalBudget           // non-nil = tighten goal resource caps below config defaults (applied at activation)

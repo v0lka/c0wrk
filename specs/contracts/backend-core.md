@@ -116,7 +116,8 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Reasoning effort       | backend → core | `HandleOptions.ReasoningEffort`          |
 | Session plans dir      | backend → core | `HandleOptions.SessionPlansDir`          |
 | Task ID (continuation) | backend → core | `HandleOptions.TaskID`                   |
-| Pending attachments    | backend → core | `HandleOptions.PendingAttachments` (user-attached files converted to markdown via `core/markitdown`; flushed into the blackboard once before execution — see [../domains/session-lifecycle.md](../domains/session-lifecycle.md)) |
+| Pending attachments    | backend → core | `HandleOptions.PendingAttachments` (user-attached documents converted to markdown via `core/markitdown`; flushed into the blackboard once before execution — see [../domains/session-lifecycle.md](../domains/session-lifecycle.md)) |
+| Pending image attachments | backend → core | `HandleOptions.PendingImages` (user-attached images, png/jpg/jpeg/gif/webp, as `[]llm.ContentBlock` base64 image blocks; injected into the context window as image content — NOT routed through the blackboard, which is markdown/text-only — see [../domains/session-lifecycle.md](../domains/session-lifecycle.md)) |
 | Available tools config | backend → core | `BuiltinToolsConfig` (incl. ExtraBashBlacklist). Per-tool truncation via `BuilderConfig.ToolLimits.PerToolTruncation`. |
 | No Project mode        | backend → core | `Orchestrator.SetNoProjectMode()` (disables code tools, adds bash blacklist) |
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
@@ -144,6 +145,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 - `core/tools` AskUser* types are c0wrk-specific; import directly from `core/tools`
 - Adding `SessionPlansDir` to `HandleOptions` → update session manager `HandleOptions` construction in `backend/session/manager_execution.go`
 - Adding `PendingAttachments` to `HandleOptions` → update `backend/session/manager_execution.go` (snapshot + clear `session.pendingAttachments`, pass through both HandleMessage calls in `SendMessage`); attachments are flushed into the blackboard inside `core` (`Orchestrator.setupBlackboard`)
+- Adding `PendingImages` to `HandleOptions` → update `backend/session/manager_execution.go` (snapshot + clear `session.pendingImageAttachments`, convert to `[]llm.ContentBlock` via `imageAttachmentsToContentBlocks`, pass through both `HandleMessage` calls in `SendMessage`); image blocks are injected into the context window as image content, not into the blackboard
 - Adding `ReviewMode` to `HandleOptions` → thread a `reviewMode bool` through `backend/frontend_api_session.go` (`FrontendAPI.SendMessage`) + `backend/session/manager_execution.go` (`Manager.SendMessage`, both `HandleOptions` construction sites in the send goroutine); in core, `HandleMessage` sets `ReviewModeKey` so `buildSystemPrompt` renders the Code Review section (prompts `CodeReviewMode`). Also add a `, false` arg to all `Manager.SendMessage` test call sites, regenerate Wails bindings (`wails generate module`), and add the param to `frontend/src/api/chat.ts` (`sendMessage`) plus the review submit call site (`useReviewActions.handleSubmit`).
 - Removing `LogDir`/`ProjectsDir` from `ApplicationConfig` → update `desktop/startup.go` caller; use `backend/config/paths.go` functions instead
 - Changing directories under `~/.c0wrk/` → update `backend/config/paths.go` (single source of truth); verify all callers use path functions, not direct `filepath.Join`
