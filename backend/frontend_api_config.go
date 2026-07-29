@@ -114,15 +114,18 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 			seen[compositeID] = true
 
 			var family string
+			var vision bool
 			if reg != nil {
 				meta, _ := reg.Resolve(f.ctx(), modelName)
 				family = meta.Family
+				vision = meta.Capabilities.Attachment
 			}
 
 			info := ModelInfo{
 				Name:     modelName,
 				Provider: p.Name,
 				Family:   family,
+				Vision:   vision,
 			}
 
 			if family != "" {

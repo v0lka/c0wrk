@@ -194,6 +194,7 @@ export namespace backend {
 	    name: string;
 	    provider: string;
 	    family: string;
+	    vision: boolean;
 	    reasoning?: ReasoningInfo;
 	
 	    static createFrom(source: any = {}) {
@@ -205,6 +206,7 @@ export namespace backend {
 	        this.name = source["name"];
 	        this.provider = source["provider"];
 	        this.family = source["family"];
+	        this.vision = source["vision"];
 	        this.reasoning = this.convertValues(source["reasoning"], ReasoningInfo);
 	    }
 	
@@ -1060,6 +1062,8 @@ export namespace session {
 	    original_name: string;
 	    format: string;
 	    size_bytes: number;
+	    is_image: boolean;
+	    thumbnail?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AttachmentInfo(source);
@@ -1071,6 +1075,8 @@ export namespace session {
 	        this.original_name = source["original_name"];
 	        this.format = source["format"];
 	        this.size_bytes = source["size_bytes"];
+	        this.is_image = source["is_image"];
+	        this.thumbnail = source["thumbnail"];
 	    }
 	}
 	export class ChatMessage {

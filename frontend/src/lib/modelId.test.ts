@@ -5,11 +5,11 @@ import type { ModelInfo } from '@/types/models'
 const reasoning = { options: ['low', 'medium', 'high'], default: 'high' }
 
 const models: ModelInfo[] = [
-  { name: 'claude-sonnet-4', provider: 'anthropic', family: 'anthropic', reasoning },
-  { name: 'gpt-4o', provider: 'chatgpt', family: 'openai_flagship', reasoning: null },
+  { name: 'claude-sonnet-4', provider: 'anthropic', family: 'anthropic', vision: true, reasoning },
+  { name: 'gpt-4o', provider: 'chatgpt', family: 'openai_flagship', vision: true, reasoning: null },
   // Same bare name exposed by two providers — composite id disambiguates.
-  { name: 'gpt-4o', provider: 'lmstudio', family: 'openai_flagship', reasoning },
-  { name: 'qwen-max', provider: 'openrouter', family: 'qwen' },
+  { name: 'gpt-4o', provider: 'lmstudio', family: 'openai_flagship', vision: false, reasoning },
+  { name: 'qwen-max', provider: 'openrouter', family: 'qwen', vision: false },
 ]
 
 describe('compositeModelId', () => {

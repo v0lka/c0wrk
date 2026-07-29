@@ -301,6 +301,11 @@ func (o *Orchestrator) runGoalLoop(
 	// used for deriveGoal, runGoalTurns, and the derivation-failure fallback.
 	conductorMessage := o.augmentWithAttachments(message, bb)
 
+	// Build structured content blocks (text + images) for the goal loop's
+	// Conductor runs. Images travel as ContentBlocks through deriveGoal and
+	// every goal turn, not as text in the blackboard/augmentWithAttachments.
+	contentBlocks := buildContentBlocks(conductorMessage, opts.PendingImages)
+
 	// Persist the real routing decision so finalizeResult and resume see it.
 	if pbb, ok := bb.(PersistableBlackboard); ok {
 		pbb.SetRouting(routing)
@@ -308,7 +313,9 @@ func (o *Orchestrator) runGoalLoop(
 
 	// Derive the goal. On error/cancel, surface the conductor message as the
 	// output so the user sees their request acknowledged, not an empty result.
-	gs, derr := o.deriveGoal(ctx, conductorMessage, bb, availableTools, o.buildConductorDeps(nil, nil))
+	deriveDeps := o.buildConductorDeps(nil, nil)
+	deriveDeps.contentBlocks = contentBlocks
+	gs, derr := o.deriveGoal(ctx, conductorMessage, bb, availableTools, deriveDeps)
 	if derr != nil {
 		o.logInfo("goal_loop: derivation failed, exiting", "error", derr)
 		if errors.Is(derr, context.Canceled) || errors.Is(derr, context.DeadlineExceeded) {
@@ -342,6 +349,19 @@ func (o *Orchestrator) runGoalLoop(
 	turnRunner := o.goalTurnRunner
 	if turnRunner == nil {
 		turnRunner = o.defaultGoalTurnRunner
+	}
+
+	// Wrap the turn runner so every Conductor turn receives the image content
+	// blocks. Each turn is a fresh RunConductor call with a new
+	// ContextManager, so the blocks must be re-injected every turn (the
+	// ContextManager's SetTaskWithBlocks is called per-turn via
+	// ConductorConfig.ContentBlocks).
+	if len(contentBlocks) > 0 {
+		inner := turnRunner
+		turnRunner = func(ctx context.Context, turn int, msg string, b orchestration.Blackboard, tl []sdktools.ToolDescriptor, pd string, hist []llm.Message, deps conductorDeps) (int, *orchestration.ExecutionResult, error) {
+			deps.contentBlocks = contentBlocks
+			return inner(ctx, turn, msg, b, tl, pd, hist, deps)
+		}
 	}
 
 	gs = o.runGoalTurns(ctx, conductorMessage, bb, availableTools, plansDir, conversationHistory, gs, pause, turnRunner)
@@ -411,12 +431,25 @@ func (o *Orchestrator) resumeGoalLoop(
 	// reset to 1), so a once-flag seeds exactly the first invocation. Subsequent
 	// turns rely on the Conductor's own accumulated trajectory (the same
 	// convention runGoalLoop uses).
+	//
+	// Image content blocks are also re-injected every turn: the conversation
+	// history carries the original user message with ContentBlocks (in-memory
+	// or restored from the DB via convertChatMessagesToLLM), so we extract the
+	// image blocks and rebuild the text block from the blackboard. Without
+	// this, a resumed image-bearing goal task would lose its images.
+	resumeContentBlocks := buildContentBlocks(
+		o.augmentWithAttachments(message, bb),
+		imageBlocksForRequest(o.conversationHistory, message),
+	)
 	seed := resumeSteps
 	seeded := false
 	wrapped := func(ctx context.Context, turn int, msg string, b orchestration.Blackboard, tl []sdktools.ToolDescriptor, pd string, hist []llm.Message, deps conductorDeps) (int, *orchestration.ExecutionResult, error) {
 		if !seeded && len(seed) > 0 {
 			deps.resumeSteps = seed
 			seeded = true
+		}
+		if len(resumeContentBlocks) > 0 {
+			deps.contentBlocks = resumeContentBlocks
 		}
 		return turnRunner(ctx, turn, msg, b, tl, pd, hist, deps)
 	}

@@ -15,19 +15,36 @@ import type { AttachmentInfoUI } from '@/types/models'
 
 export type { AttachmentInfoRaw } from '@/types/events'
 
-/** Map a single snake_case backend record to camelCase UI record. */
+/** Map a single snake_case backend record to camelCase UI record.
+ *  Image-only fields (`is_image`/`thumbnail`) are forwarded when present so
+ *  the UI can render thumbnails and gate image-only affordances. */
 export function mapAttachment(raw: AttachmentInfoRaw): AttachmentInfoUI {
   return {
     id: raw.id,
     originalName: raw.original_name,
     format: raw.format,
     sizeBytes: raw.size_bytes,
+    isImage: raw.is_image,
+    thumbnail: raw.thumbnail,
   }
 }
 
 /** Map a list of snake_case backend records to camelCase UI records. */
 export function mapAttachments(raw: readonly AttachmentInfoRaw[]): AttachmentInfoUI[] {
   return raw.map(mapAttachment)
+}
+
+/** Image extensions recognised by the backend's isImageFormat (png/jpg/jpeg/gif/webp).
+ *  Used to pre-filter image files before attach when the selected model lacks
+ *  vision capability. Mirrors backend/session/manager_attachment.go. */
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp'])
+
+/** Report whether a file path has an image extension (png/jpg/jpeg/gif/webp).
+ *  Mirrors the backend `isImageFormat` so the frontend can gate image uploads
+ *  on model vision capability before staging. */
+export function isImagePath(path: string): boolean {
+  const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
+  return IMAGE_EXTENSIONS.has(ext)
 }
 
 /**

@@ -3,6 +3,7 @@ package session
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -46,24 +47,43 @@ func SessionIDFromContext(ctx context.Context) string {
 
 // Session represents a running agent session with its own orchestrator.
 type Session struct {
-	ID                  string
-	ProjectID           string // immutable after creation (no lock needed for reads)
-	Name                string
-	CreatedAt           time.Time
-	LastActiveAt        time.Time
-	Archived            bool
-	Pinned              bool
-	WorkspacePath       string // workspace directory (from project)
-	TempDir             string // session-specific temp directory
-	orchestrator        *core.Orchestrator
-	logFile             *os.File           // session log file handle, closed on deletion
-	dumpFile            *os.File           // LLM dump file handle (DEBUG mode only), closed on deletion
-	cancel              context.CancelFunc // cancel for current task
-	active              bool               // is currently processing
-	done                chan struct{}      // closed when task goroutine finishes
-	lastCompletedTaskID string             // tracks last completed task for continuations
-	mu                  sync.Mutex
-	pendingAttachments  []orchestration.Attachment // user-attached files staged via AttachFiles, flushed into the blackboard on the next SendMessage (guarded by mu)
+	ID                      string
+	ProjectID               string // immutable after creation (no lock needed for reads)
+	Name                    string
+	CreatedAt               time.Time
+	LastActiveAt            time.Time
+	Archived                bool
+	Pinned                  bool
+	WorkspacePath           string // workspace directory (from project)
+	TempDir                 string // session-specific temp directory
+	orchestrator            *core.Orchestrator
+	logFile                 *os.File           // session log file handle, closed on deletion
+	dumpFile                *os.File           // LLM dump file handle (DEBUG mode only), closed on deletion
+	cancel                  context.CancelFunc // cancel for current task
+	active                  bool               // is currently processing
+	done                    chan struct{}      // closed when task goroutine finishes
+	lastCompletedTaskID     string             // tracks last completed task for continuations
+	mu                      sync.Mutex
+	pendingAttachments      []orchestration.Attachment // user-attached files staged via AttachFiles, flushed into the blackboard on the next SendMessage (guarded by mu)
+	pendingImageAttachments []ImageAttachment          // user-attached images staged via AttachFiles, snapshotted into ContentBlocks on the next SendMessage (guarded by mu)
+}
+
+// ImageAttachment represents a user-attached image that has been processed
+// (decoded, optionally resized) and saved to the session's images directory.
+// Unlike document attachments (orchestration.Attachment, converted to markdown),
+// images are passed to the LLM as image content blocks rather than read-only
+// text context. The Base64Data is held in memory only until the next SendMessage
+// snapshots it into ContentBlocks; the persisted copy lives on disk at FilePath
+// and is reconstructed from there on restart (thumbnail + path are stored in
+// ChatMessage.Metadata, never the full base64).
+type ImageAttachment struct {
+	ID           string `json:"id"`
+	OriginalName string `json:"original_name"`
+	MediaType    string `json:"media_type"` // MIME type, e.g. "image/jpeg"
+	Base64Data   string `json:"-"`          // base64-encoded image data (in-memory only, not persisted to DB)
+	ThumbnailB64 string `json:"thumbnail"`  // JPEG data URI for UI display
+	FilePath     string `json:"path"`       // absolute path to the saved processed image (session/images/{uuid}.jpg)
+	SizeBytes    int64  `json:"size_bytes"`
 }
 
 // sessionTempDir returns the temp directory path for a session.
@@ -1325,7 +1345,15 @@ func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage, workspacePath str
 			// Skill names are unknown at restore time, so only the @file
 			// normalization is applied. Relative @file paths are resolved
 			// against the session workspace, mirroring the live preprocessing.
-			result = append(result, llm.Message{Role: "user", Content: core.PreprocessMessageText(msg.Content, nil, workspacePath)})
+			lm := llm.Message{Role: "user", Content: core.PreprocessMessageText(msg.Content, nil, workspacePath)}
+			// Reconstruct image content blocks from persisted metadata
+			// (thumbnail + on-disk path). The DB stores only the path, never
+			// the full base64, so the image data is reloaded from
+			// session/images/{uuid}.jpg here.
+			if blocks := reconstructImageBlocks(msg.Metadata, m.log()); len(blocks) > 0 {
+				lm.ContentBlocks = blocks
+			}
+			result = append(result, lm)
 		case "assistant":
 			lm := llm.Message{Role: "assistant", Content: msg.Content}
 			if msg.ReasoningContent != nil {
@@ -1347,6 +1375,45 @@ func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage, workspacePath str
 		}
 	}
 	return result
+}
+
+// reconstructImageBlocks reads image attachments persisted in a user message's
+// Metadata (thumbnail + on-disk path) and reconstructs them as LLM image
+// content blocks by reading and base64-encoding each saved file. This is the
+// restart-reconstruction half of the image attachment lifecycle: the DB stores
+// only the thumbnail + path (never the full base64), so the image data is
+// reloaded from session/images/{uuid}.jpg on history restore. Missing or
+// unreadable files are logged and skipped so a single vanished image does not
+// break the whole history restore.
+func reconstructImageBlocks(metadata json.RawMessage, log *slog.Logger) []llm.ContentBlock {
+	if len(metadata) == 0 {
+		return nil
+	}
+	var md StoredImagesMetadata
+	if err := json.Unmarshal(metadata, &md); err != nil {
+		log.Debug("reconstructImageBlocks: failed to parse metadata", "error", err)
+		return nil
+	}
+	if len(md.Images) == 0 {
+		return nil
+	}
+	blocks := make([]llm.ContentBlock, 0, len(md.Images))
+	for _, img := range md.Images {
+		raw, err := os.ReadFile(img.Path)
+		if err != nil {
+			log.Warn("reconstructImageBlocks: failed to read image file; skipping", "path", img.Path, "error", err)
+			continue
+		}
+		blocks = append(blocks, llm.ContentBlock{
+			Type:      "image",
+			ImageB64:  base64.StdEncoding.EncodeToString(raw),
+			MediaType: img.MediaType,
+		})
+	}
+	if len(blocks) == 0 {
+		return nil
+	}
+	return blocks
 }
 
 // extractPersistedError extracts the error text from a persisted "error" row.

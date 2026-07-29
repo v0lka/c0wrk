@@ -26,12 +26,21 @@ function AttachmentChip({
   attachment: AttachmentInfoUI
   onRemove: (id: string) => void
 }): React.JSX.Element {
+  const isImage = attachment.isImage === true && attachment.thumbnail
   return (
     <span
       className="inline-flex items-center gap-1 max-w-[220px] h-6 pl-2 pr-1 rounded-md border border-border bg-muted/40 text-xs text-foreground"
       title={attachment.originalName}
     >
-      <FileText className="size-3 shrink-0 text-muted-foreground" />
+      {isImage ? (
+        <img
+          src={attachment.thumbnail}
+          alt={attachment.originalName}
+          className="size-6 shrink-0 rounded-sm object-cover"
+        />
+      ) : (
+        <FileText className="size-3 shrink-0 text-muted-foreground" />
+      )}
       <span className="truncate">{attachment.originalName}</span>
       <span className="text-muted-foreground shrink-0">({attachment.format})</span>
       <span className="text-muted-foreground shrink-0">{formatBytes(attachment.sizeBytes)}</span>

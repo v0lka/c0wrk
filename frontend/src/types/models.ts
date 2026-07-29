@@ -62,12 +62,18 @@ export interface FileEntry {
 }
 
 /** UI-facing attachment record (camelCase). Mirrors the backend's
- *  snake_case AttachmentInfo, mapped at the @/api/attachments boundary. */
+ *  snake_case AttachmentInfo, mapped at the @/api/attachments boundary.
+ *  `isImage`/`thumbnail` are present for image attachments (png/jpg/gif/webp);
+ *  `thumbnail` is a JPEG data URI suitable for inline UI display. */
 export interface AttachmentInfoUI {
   readonly id: string
   readonly originalName: string
   readonly format: string
   readonly sizeBytes: number
+  /** True for image attachments (png/jpg/jpeg/gif/webp). Absent on older payloads. */
+  readonly isImage?: boolean
+  /** JPEG data URI (64px) for image attachments; absent for non-images. */
+  readonly thumbnail?: string
 }
 
 export interface GitStatusEntry {
@@ -258,6 +264,8 @@ export interface ModelInfo {
    */
   provider: string
   family: string
+  /** Whether the model accepts image attachments (vision capability). */
+  vision: boolean
   reasoning?: {
     options: string[]
     default: string

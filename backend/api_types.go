@@ -33,6 +33,7 @@ type ModelInfo struct {
 	Name      string         `json:"name"`
 	Provider  string         `json:"provider"`
 	Family    string         `json:"family"`
+	Vision    bool           `json:"vision"`              // true if model supports image/PDF attachments
 	Reasoning *ReasoningInfo `json:"reasoning,omitempty"` // nil = family doesn't support reasoning
 }
 

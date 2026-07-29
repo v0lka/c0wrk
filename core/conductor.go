@@ -239,6 +239,15 @@ type conductorDeps struct {
 	// continues the same task — the original request is the task message).
 	conversationHistory []llm.Message
 
+	// contentBlocks carries structured content blocks (text + images) for the
+	// task user message. When non-nil, RunConductor sets
+	// ConductorConfig.ContentBlocks so the sp4rk engine calls
+	// SetTaskWithBlocks (via the BlockTaskAware capability) instead of
+	// SetTask — the ContextManager emits a Message carrying ContentBlocks
+	// and providers give the blocks precedence over the plain Content
+	// string. nil preserves the legacy text-only path (backward compatible).
+	contentBlocks []llm.ContentBlock
+
 	// taskStore is the optional DB-backed persistence store. When non-nil and
 	// the blackboard carries a task ID, the Conductor's trajectory is persisted
 	// (best-effort, non-blocking) on every ReAct iteration so it survives app
@@ -1593,6 +1602,7 @@ func RunConductor(
 		NonCacheableTools:   coreNonCacheableToolNames,
 		ConversationHistory: deps.conversationHistory,
 		ResumeSteps:         deps.resumeSteps,
+		ContentBlocks:       deps.contentBlocks,
 	}
 
 	var events agent.Events = &agent.NoopEvents{}
@@ -1658,8 +1668,9 @@ func adaptContextFactory(cf ContextManagerFactory) orchestration.ContextManagerF
 // context. For HandleMessage, pass o.conversationHistory so the agent sees
 // previous exchanges. For Resume, pass nil — the Conductor continues the
 // same task and the original request is already the task message.
-func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, resumeSteps []agent.Step) (*orchestration.ExecutionResult, error) {
+func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, resumeSteps []agent.Step, contentBlocks []llm.ContentBlock) (*orchestration.ExecutionResult, error) {
 	deps := o.buildConductorDeps(conversationHistory, resumeSteps)
+	deps.contentBlocks = contentBlocks
 	return RunConductor(ctx, message, bb, availableTools, deps, plansDir)
 }
 

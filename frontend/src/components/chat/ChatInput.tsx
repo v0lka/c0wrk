@@ -6,6 +6,7 @@ import { useChatInputController } from '@/hooks/useChatInputController'
 import { ChatInputToolbar } from '@/components/chat/ChatInputToolbar'
 import { ChatEditorPane } from '@/components/chat/ChatEditorPane'
 import { AttachmentChips } from '@/components/chat/AttachmentChips'
+import { ImageErrorBanner } from '@/components/chat/ImageErrorBanner'
 import { cn } from '@/lib/utils'
 
 /**
@@ -76,6 +77,7 @@ export function ChatInput() {
         onKeyDown={handleResizeKeyDown}
       />
       <AttachmentChips />
+      <ImageErrorBanner />
       <ChatEditorPane controller={controller} />
       <ChatInputToolbar controller={controller} />
     </div>

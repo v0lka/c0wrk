@@ -101,12 +101,19 @@ export interface SkillsActivatedData { skills: string[] }
 export interface BlackboardUpdatedData { change_type: string }
 
 /** Backend AttachmentInfo record (snake_case), as emitted in the
- *  `attachments:changed` event payload and returned by the attachment RPCs. */
+ *  `attachments:changed` event payload and returned by the attachment RPCs.
+ *  `is_image`/`thumbnail` are present for image attachments (png/jpg/gif/webp);
+ *  `thumbnail` is a JPEG data URI. Both are optional for backward compatibility
+ *  with older payloads that predate image support. */
 export interface AttachmentInfoRaw {
   readonly id: string
   readonly original_name: string
   readonly format: string
   readonly size_bytes: number
+  /** True for image attachments (png/jpg/jpeg/gif/webp). */
+  readonly is_image?: boolean
+  /** JPEG data URI (64px) for image attachments; omitted for non-images. */
+  readonly thumbnail?: string
 }
 
 /** A single file that could not be converted/staged (snake_case backend record). */

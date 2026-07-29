@@ -617,7 +617,23 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// the unstripped list; strip them here for the normal resume path.
 	availableTools = tools.StripGoalModeTools(availableTools)
 
-	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, nil, resumeSteps)
+	// Reconstruct image content blocks from the conversation history so the
+	// resumed task sees the same images as the original run. The conversation
+	// history (in-memory or restored from the DB via convertChatMessagesToLLM)
+	// carries the user message with ContentBlocks; we find the message
+	// matching the original request and extract its image blocks. The text
+	// block is rebuilt from the blackboard via augmentWithAttachments so it
+	// reflects the current attachment state. Without this, a resumed
+	// image-bearing task would lose its images (SetTask is text-only).
+	var resumeContentBlocks []llm.ContentBlock
+	if origReq := bb.GetOriginalRequest(); origReq != "" {
+		if imageBlocks := imageBlocksForRequest(o.conversationHistory, origReq); len(imageBlocks) > 0 {
+			conductorMessage := o.augmentWithAttachments(origReq, bb)
+			resumeContentBlocks = buildContentBlocks(conductorMessage, imageBlocks)
+		}
+	}
+
+	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, nil, resumeSteps, resumeContentBlocks)
 	var incompleteErr error
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
 		if pbb, ok := bb.(PersistableBlackboard); ok {
@@ -941,13 +957,55 @@ func HistoryNoteFailed(errText string) string {
 	return historyNoteFailedPrefix + errText + "]"
 }
 
+// buildContentBlocks assembles structured content blocks (text + images) for
+// the Conductor's task user message. The first block is the text task;
+// subsequent blocks are the images. Returns nil when there are no images so
+// the legacy text-only SetTask path is preserved (backward compatible).
+func buildContentBlocks(text string, images []llm.ContentBlock) []llm.ContentBlock {
+	if len(images) == 0 {
+		return nil
+	}
+	blocks := make([]llm.ContentBlock, 0, 1+len(images))
+	blocks = append(blocks, llm.ContentBlock{Type: "text", Text: text})
+	blocks = append(blocks, images...)
+	return blocks
+}
+
+// imageBlocksForRequest searches the conversation history for a user message
+// matching the given request text and returns its image content blocks
+// (Type == "image"). This is used on resume to reconstruct the image content
+// blocks that were part of the original task's user message — the conversation
+// history (in-memory or restored from the DB via convertChatMessagesToLLM)
+// carries the blocks, so they can be re-injected into the resumed Conductor
+// run without persisting them separately. Returns nil when no matching message
+// is found or it carries no image blocks.
+func imageBlocksForRequest(history []llm.Message, request string) []llm.ContentBlock {
+	for _, msg := range history {
+		if msg.Role == "user" && msg.Content == request && len(msg.ContentBlocks) > 0 {
+			var images []llm.ContentBlock
+			for _, blk := range msg.ContentBlocks {
+				if blk.Type == "image" {
+					images = append(images, blk)
+				}
+			}
+			return images
+		}
+	}
+	return nil
+}
+
 // recordConversationOutcome appends the current exchange to the in-memory
 // conversation history. It is invoked (via defer) for EVERY terminal outcome
 // of HandleMessage — success, partial success, failure, cancellation —
 // failure, and cancellation — so the router and continuation planner always
 // see the full dialogue, not just successful exchanges.
-func (o *Orchestrator) recordConversationOutcome(ctx context.Context, message string, result *HandleResult, err error) {
-	userMsg := llm.Message{Role: "user", Content: message}
+//
+// contentBlocks, when non-nil, carries structured content (text + images) for
+// the user message. The history user message is emitted with ContentBlocks
+// set so providers that support multimodal input see the images on
+// continuation turns. nil preserves the legacy text-only history entry.
+func (o *Orchestrator) recordConversationOutcome(ctx context.Context, message string, contentBlocks []llm.ContentBlock, result *HandleResult, err error) {
+	userMsg := llm.Message{Role: "user", Content: message, ContentBlocks: contentBlocks}
 
 	// Continuation fallback: the session manager retries a failed
 	// continuation as a fresh workflow with the same message. If the last
@@ -1061,13 +1119,21 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// augmented message there would double-prefix the skill reference.
 	taskMessage := o.resolveTaskMessage(message, opts.UserSkills)
 
+	// contentBlocks carries structured content (text + images) for the task
+	// user message. Built after augmentWithAttachments when the request
+	// includes staged image attachments (opts.PendingImages). Declared here
+	// (before the defer) so the recordConversationOutcome closure captures it
+	// by reference and records the blocks in the conversation history. nil
+	// preserves the legacy text-only path.
+	var contentBlocks []llm.ContentBlock
+
 	// Record the exchange in the in-memory conversation history for EVERY
 	// terminal outcome (success, failure, cancellation) of HandleMessage
 	// cancellation) so future routing and continuation planning always see
 	// the full dialogue. Registered after the single-flight guard so a
 	// rejected concurrent request is not recorded.
 	defer func() {
-		o.recordConversationOutcome(ctx, taskMessage, result, err)
+		o.recordConversationOutcome(ctx, taskMessage, contentBlocks, result, err)
 	}()
 
 	// 0. Apply per-request overrides to all LLM-calling components.
@@ -1092,7 +1158,19 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// Augment the Conductor's task message with the session's attached files.
 	// The router and conversation history keep the clean `taskMessage`; only the
 	// Conductor receives this section so the LLM can call read_attachment.
+	// Images are NOT included here — they travel as structured ContentBlocks
+	// (below), not as text in the blackboard/augmentWithAttachments section.
 	conductorMessage := o.augmentWithAttachments(taskMessage, bb)
+
+	// Build structured content blocks when the request carries staged image
+	// attachments. The first block is the (attachment-augmented) text task;
+	// subsequent blocks are the images from opts.PendingImages. These flow
+	// through runConductor → ConductorConfig.ContentBlocks → SetTaskWithBlocks
+	// so the ContextManager emits a Message carrying ContentBlocks (providers
+	// give blocks precedence over the plain Content string). Images never
+	// enter the blackboard or augmentWithAttachments — they are pure content
+	// blocks, not read_attachment targets.
+	contentBlocks = buildContentBlocks(conductorMessage, opts.PendingImages)
 
 	// 2. Get available tools (exclude disabled tools in No Project mode).
 	availableTools := o.toolRegistry.ListFiltered(o.disabledToolNames())
@@ -1158,7 +1236,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	conductorHistory := truncateHistory(o.conversationHistory, o.config.ConductorHistoryWindow)
 
 	plansDir := opts.SessionPlansDir
-	execResult, err := o.runConductor(ctx, conductorMessage, bb, availableTools, plansDir, conductorHistory, nil)
+	execResult, err := o.runConductor(ctx, conductorMessage, bb, availableTools, plansDir, conductorHistory, nil, contentBlocks)
 	// C-5: propagate ErrExecutionIncomplete alongside best-effort result.
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
 		// Mark the task as failed so it is not left lingering in_progress

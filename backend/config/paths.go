@@ -131,6 +131,12 @@ func SessionPlansDir(agentDir, projectID, sessionID string) string {
 	return filepath.Join(SessionDir(agentDir, projectID, sessionID), "plans")
 }
 
+// SessionImagesDir returns the per-session images directory used to store
+// processed image attachments (resized base64-encoded copies and thumbnails).
+func SessionImagesDir(agentDir, projectID, sessionID string) string {
+	return filepath.Join(SessionDir(agentDir, projectID, sessionID), "images")
+}
+
 // ---------------------------------------------------------------------------
 // No-Project paths
 // ---------------------------------------------------------------------------

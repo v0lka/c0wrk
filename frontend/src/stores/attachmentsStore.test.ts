@@ -87,4 +87,27 @@ describe('attachmentsStore', () => {
       expect(useAttachmentsStore.getState().namesById).toEqual({})
     })
   })
+
+  describe('imageError', () => {
+    it('starts as null', () => {
+      expect(useAttachmentsStore.getState().imageError).toBeNull()
+    })
+
+    it('setImageError sets the message', () => {
+      useAttachmentsStore.getState().setImageError('Model does not support images')
+      expect(useAttachmentsStore.getState().imageError).toBe('Model does not support images')
+    })
+
+    it('setImageError(null) clears the message', () => {
+      useAttachmentsStore.getState().setImageError('Model does not support images')
+      useAttachmentsStore.getState().setImageError(null)
+      expect(useAttachmentsStore.getState().imageError).toBeNull()
+    })
+
+    it('clear resets imageError (e.g. on session switch)', () => {
+      useAttachmentsStore.getState().setImageError('Model does not support images')
+      useAttachmentsStore.getState().clear()
+      expect(useAttachmentsStore.getState().imageError).toBeNull()
+    })
+  })
 })

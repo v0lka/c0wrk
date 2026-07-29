@@ -45,8 +45,8 @@ const spies = vi.hoisted(() => ({
 vi.mock('@/hooks/useConfigData', () => ({
   useConfigData: () => ({
     allModels: [
-      { name: 'claude-sonnet', provider: 'anthropic', family: 'anthropic' },
-      { name: 'gpt-4o', provider: 'chatgpt', family: 'chatgpt' },
+      { name: 'claude-sonnet', provider: 'anthropic', family: 'anthropic', vision: true },
+      { name: 'gpt-4o', provider: 'chatgpt', family: 'chatgpt', vision: true },
     ],
     defaultModel: 'claude-sonnet',
     loaded: true,

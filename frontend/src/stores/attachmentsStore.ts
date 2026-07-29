@@ -23,11 +23,19 @@ interface AttachmentsState {
    * session switch together with the pending list.
    */
   namesById: Record<string, string>
+  /**
+   * Transient image-attachment error message. Set when the user tries to
+   * attach image files while a non-vision model is selected; cleared on
+   * dismiss, successful attach, or session switch. null = no banner.
+   */
+  imageError: string | null
 }
 
 interface AttachmentsActions {
   /** Replace the entire pending list (the backend always sends the full list). */
   setAttachments: (attachments: AttachmentInfoUI[]) => void
+  /** Set the transient image-attachment error message (null to clear). */
+  setImageError: (message: string | null) => void
   /** Clear the store (e.g. on session switch). */
   clear: () => void
 }
@@ -35,6 +43,7 @@ interface AttachmentsActions {
 export const useAttachmentsStore = create<AttachmentsState & AttachmentsActions>((set) => ({
   attachments: [],
   namesById: {},
+  imageError: null,
 
   setAttachments: (attachments) =>
     set((state) => {
@@ -51,7 +60,9 @@ export const useAttachmentsStore = create<AttachmentsState & AttachmentsActions>
       return { attachments, namesById }
     }),
 
-  clear: () => set({ attachments: [], namesById: {} }),
+  setImageError: (message) => set({ imageError: message }),
+
+  clear: () => set({ attachments: [], namesById: {}, imageError: null }),
 }))
 
 /**

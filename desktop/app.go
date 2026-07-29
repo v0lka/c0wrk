@@ -128,6 +128,19 @@ func (a *App) PickAttachmentFiles() ([]string, error) {
 		return nil, errors.New("PickAttachmentFiles: application context is not initialized")
 	}
 
+	// Deliberately no "All files (*.*)" filter here: on macOS, Wails maps
+	// each pattern to a UTType via UTType(filenameExtension:) and merges all
+	// resolved types into a single NSOpenPanel.allowedContentTypes array
+	// (Mac dialogs only support one combined pattern set — see Wails' dialog
+	// docs). The "*" extension from "*.*" resolves to an unusable *dynamic*
+	// UTType (e.g. "dyn.ah62d4rv4ge8wy") rather than a wildcard/"anything"
+	// type. A dynamic UTType in that array corrupts the panel's whole
+	// content-type filter, graying out every entry — including files that
+	// otherwise match a perfectly valid type like "public.png" (see e.g.
+	// https://github.com/r0x0r/pywebview/issues/1780 for the same root cause
+	// in another Cocoa-backed webview shell). This is why images could not
+	// be selected at all in the attach dialog. The "Supported documents" and
+	// "Images" filters already cover every extension the backend accepts.
 	return wailsRuntime.OpenMultipleFilesDialog(a.ctx, wailsRuntime.OpenDialogOptions{
 		Title: "Attach files",
 		Filters: []wailsRuntime.FileFilter{
@@ -136,8 +149,8 @@ func (a *App) PickAttachmentFiles() ([]string, error) {
 				Pattern:     attachmentFilterPattern(),
 			},
 			{
-				DisplayName: "All files",
-				Pattern:     "*.*",
+				DisplayName: "Images",
+				Pattern:     "*.png;*.jpg;*.jpeg;*.gif;*.webp",
 			},
 		},
 	})

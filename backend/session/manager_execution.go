@@ -374,14 +374,22 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 		session.mu.Lock()
 		pendingAttachments := session.pendingAttachments
 		session.pendingAttachments = nil
+		pendingImages := session.pendingImageAttachments
+		session.pendingImageAttachments = nil
 		session.mu.Unlock()
 
 		// Clear the pending-attachment chips now that the attachments have been
 		// flushed into the blackboard for this task. Only emit when there were
 		// pending attachments to avoid a spurious event on attachment-free sends.
-		if len(pendingAttachments) > 0 {
+		if len(pendingAttachments) > 0 || len(pendingImages) > 0 {
 			m.emitAttachmentsChanged(id, []AttachmentInfo{}, nil)
 		}
+
+		// Convert staged image attachments into LLM image content blocks for
+		// the context window. The blocks carry the base64 image data (held in
+		// memory only until this snapshot); the on-disk copy at FilePath
+		// persists for restart reconstruction via ChatMessage.Metadata.
+		imageBlocks := imageAttachmentsToContentBlocks(pendingImages)
 
 		// Detect goal mode (leading "/goal" command OR an explicit goal flag)
 		// BEFORE the resume check. A goal request starts a fresh goal pursuit
@@ -444,6 +452,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 			ReasoningEffort:    reasoningEffort,
 			SessionPlansDir:    config.SessionPlansDir(m.agentDir, session.ProjectID, id),
 			PendingAttachments: pendingAttachments,
+			PendingImages:      imageBlocks,
 			Goal:               goalEnabled,
 			GoalBudgetOverride: budgetOverride,
 			ReviewMode:         reviewMode,
@@ -473,6 +482,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 				ReasoningEffort:    reasoningEffort,
 				SessionPlansDir:    config.SessionPlansDir(m.agentDir, session.ProjectID, id),
 				PendingAttachments: pendingAttachments,
+				PendingImages:      imageBlocks,
 				Goal:               goalEnabled,
 				GoalBudgetOverride: budgetOverride,
 				ReviewMode:         reviewMode,

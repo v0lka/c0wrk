@@ -8,6 +8,7 @@ import (
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
+	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
@@ -188,6 +189,7 @@ type HandleOptions struct {
 	ReasoningEffort    string                     // non-empty → native reasoning value for all LLM calls; empty → use family default
 	SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)
 	PendingAttachments []orchestration.Attachment // attachments staged by AttachFiles, flushed into the blackboard before execution
+	PendingImages      []llm.ContentBlock         // image attachments staged by AttachFiles, passed to the context window as image content blocks
 
 	// ReviewMode marks a message as carrying code review feedback the agent
 	// must act on. Set by the backend when a review is submitted (review
