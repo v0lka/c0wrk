@@ -189,8 +189,15 @@ type BuilderSecurityConfig struct {
 
 	// AgentsMDMaxBytes caps the AGENTS.md content read from the workspace before
 	// it is injected into the system prompt. 0 means use the default (65536).
-	// A negative value disables the cap entirely.
+	// A negative value disables the cap entirely. The cap applies to the
+	// combined content of all AGENTS.md sources.
 	AgentsMDMaxBytes int
+
+	// AgentsMDSearchPaths holds extra absolute paths (outside the workspace)
+	// to search for AGENTS.md files, in priority order. Content from these
+	// paths is concatenated ahead of the workspace-root AGENTS.md. Each path
+	// points directly at an AGENTS.md file. Missing files are silently skipped.
+	AgentsMDSearchPaths []string
 }
 
 // BuilderToolPolicy holds per-tool policy and optional blacklist.

@@ -400,6 +400,7 @@ func (b *OrchestratorBuilder) Build(
 		PreWarningPercent:       cfg.Executor.Compaction.Thresholds.PreWarningPercent,
 		InjectionDefenseEnabled: cfg.Security.InjectionDefenseEnabled,
 		AgentsMDMaxBytes:        cfg.Security.AgentsMDMaxBytes,
+		AgentsMDSearchPaths:     cfg.Security.AgentsMDSearchPaths,
 		GoalLoop: GoalLoopSettings{
 			Verification: cfg.GoalLoop.Verification,
 		},

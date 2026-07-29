@@ -38,6 +38,7 @@
 | Canonical engine behavior (sp4rk)        | [sp4rk/specs/INDEX.md (GitHub)](https://github.com/v0lka/sp4rk/blob/main/specs/INDEX.md) |
 | macOS webview recovery / blank screen after sleep | [decisions/018-macos-webview-recovery.md](decisions/018-macos-webview-recovery.md) |
 | "Why was X designed this way?"           | [decisions/](decisions/)                                                 |
+| Multi-source AGENTS.md threat model     | [decisions/020-multi-source-agents-md-threat-model.md](decisions/020-multi-source-agents-md-threat-model.md) |
 
 ## Domain Dependency Graph
 
@@ -135,3 +136,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [017-macos-wake-reload.md](decisions/017-macos-wake-reload.md) - Reload frontend on macOS power-state wake → Superseded by ADR-018
 - [018-macos-webview-recovery.md](decisions/018-macos-webview-recovery.md) - macOS webview recovery: native process-death hook + deferred wake reload → Supersedes ADR-017 (017-macos-wake-reload)
 - [019-goal-mode.md](decisions/019-goal-mode.md) - Goal mode: self-agent + evidence-mandate, derive-then-confirm UX, persist + pause/resume, anti-spin auto-pause
+- [020-multi-source-agents-md-threat-model.md](decisions/020-multi-source-agents-md-threat-model.md) - Threat model for global/c0wrk/project AGENTS.md sources (all untrusted advisory; tool-policy pipeline is the hard boundary)

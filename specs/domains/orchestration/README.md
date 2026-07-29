@@ -71,6 +71,7 @@ type OrchestratorConfig struct {
     HITLHandler                 agent.HITLHandler
     InjectionDefenseEnabled     bool
     AgentsMDMaxBytes            int
+    AgentsMDSearchPaths         []string // extra AGENTS.md paths (global, c0wrk) read ahead of the workspace file
     ConductorHistoryWindow      int     // recent conversation messages injected into the Conductor context (default: 20)
 }
 
@@ -216,11 +217,12 @@ From `config.yaml` (via BuilderConfig → OrchestratorConfig):
 | `executor.compaction.sliding_window.keep_first` | 3 | Protected head messages during sliding-window compaction |
 | `executor.compaction.sliding_window.keep_last` | 10 | Protected tail messages during sliding-window compaction |
 | `executor.compaction.thresholds.pre_warning_percent` | 75 | Context-fill % that triggers the pre-compaction store_fact nudge |
-| `security.agents_md_max_bytes` | 65536 | Cap on AGENTS.md content injected into prompts (0 = default; -1 = unlimited) |
+| `security.agents_md_max_bytes` | 65536 | Cap on AGENTS.md content injected into prompts (0 = default; -1 = unlimited). Applies to the combined content of all AGENTS.md sources. |
 
 Not wired from `config.yaml` (hardcoded defaults in code):
 - `OrchestratorConfig.MaxRedelegationDepth` — default 2 (set in `NewOrchestrator`; not exposed as a config key).
 - `OrchestratorConfig.ConductorHistoryWindow` — default 20 (set in `NewOrchestrator`; not exposed as a config key).
+- `OrchestratorConfig.AgentsMDSearchPaths` — resolved by the backend (`backend/configadapter.go`) from the user home directory. AGENTS.md is read from multiple sources and concatenated in priority order: (1) `~/.agents/AGENTS.md` (global, shared across all agents), (2) `~/.c0wrk/.agents/AGENTS.md` (c0wrk-specific), (3) `<workspace>/AGENTS.md` (project-specific). Missing files are silently skipped. The combined content is capped by `security.agents_md_max_bytes`. This applies in both CHAT (No Project) and CODE modes — in CHAT mode only the global and c0wrk files are read (no workspace).
 
 Note: yaml key casing is mixed within and across config sections (see the struct tags in `backend/config/config.go`). `orchestration.*` uses `camelCase` (`maxDependencyContextChars`). `executor.compaction.sliding_window.*` uses `snake_case` (`keep_first`/`keep_last`), while sibling `executor.*` subsections use `camelCase` (`toolOutputPruning`, `historyMutation`, `circuitBreaker`). There is no top-level `conductor:` config section — `MaxRedelegationDepth` and `ConductorHistoryWindow` are not user-tunable via config.
 

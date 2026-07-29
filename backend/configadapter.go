@@ -1,6 +1,9 @@
 package backend
 
 import (
+	"os"
+	"path/filepath"
+
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/proxy"
@@ -138,6 +141,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			DefaultPolicy:              cfg.Security.DefaultPolicy,
 			AutoApproveWorkspaceWrites: cfg.Security.AutoApproveWorkspaceWrites,
 			AgentsMDMaxBytes:           cfg.Security.AgentsMDMaxBytes,
+			AgentsMDSearchPaths:        agentsMDSearchPaths(),
 		},
 		Skills: core.BuilderSkillsConfig{
 			Dirs: cfg.Skills.Dirs,
@@ -193,4 +197,26 @@ func convertTruncationMap(src map[string]config.ToolTruncationConfig) map[string
 		}
 	}
 	return dst
+}
+
+// agentsMDSearchPaths resolves the extra AGENTS.md search paths (outside the
+// workspace) in priority order. The paths are searched ahead of the
+// workspace-root AGENTS.md, so the first entry is the global file shared by
+// all agents and the second is the c0wrk-specific file:
+//
+//  1. ~/.agents/AGENTS.md            — global, shared across all agents
+//  2. ~/.c0wrk/.agents/AGENTS.md     — c0wrk-specific
+//
+// Each entry points directly at an AGENTS.md file. Missing files are silently
+// skipped at read time (the orchestrator tolerates non-existent paths), so we
+// always return both candidates unconditionally.
+func agentsMDSearchPaths() []string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		return nil
+	}
+	return []string{
+		filepath.Join(homeDir, ".agents", "AGENTS.md"),
+		filepath.Join(homeDir, config.DefaultAgentDir, ".agents", "AGENTS.md"),
+	}
 }

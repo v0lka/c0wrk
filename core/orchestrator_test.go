@@ -1086,6 +1086,127 @@ func TestOrchestrator_AgentsMD_NilVectorSearchFunc(t *testing.T) {
 	}
 }
 
+// TestOrchestrator_AgentsMD_MultiSourceConcatenation verifies that AGENTS.md
+// content from the configured search paths (global, c0wrk) is concatenated
+// ahead of the workspace-root file, in priority order, when all sources exist.
+func TestOrchestrator_AgentsMD_MultiSourceConcatenation(t *testing.T) {
+	globalDir := t.TempDir()
+	c0wrkDir := t.TempDir()
+	wsDir := t.TempDir()
+
+	globalContent := "# Global agent rules\nBe concise."
+	c0wrkContent := "# c0wrk rules\nUse Go 1.26."
+	projectContent := "# Project rules\nRun make test."
+
+	globalPath := filepath.Join(globalDir, "AGENTS.md")
+	c0wrkPath := filepath.Join(c0wrkDir, "AGENTS.md")
+	if err := os.WriteFile(globalPath, []byte(globalContent), 0o644); err != nil {
+		t.Fatalf("write global AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(c0wrkPath, []byte(c0wrkContent), 0o644); err != nil {
+		t.Fatalf("write c0wrk AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wsDir, "AGENTS.md"), []byte(projectContent), 0o644); err != nil {
+		t.Fatalf("write project AGENTS.md: %v", err)
+	}
+
+	o := &Orchestrator{
+		config: OrchestratorConfig{
+			AgentsMDSearchPaths: []string{globalPath, c0wrkPath},
+		},
+	}
+
+	ctx := tools.WithWorkspacePath(context.Background(), wsDir)
+	ctx = o.injectVectorSearchHints(ctx, "test query")
+
+	amd := AgentsMDFromContext(ctx)
+	if amd == nil {
+		t.Fatal("expected AgentsMD in context")
+	}
+
+	// Global content must appear before c0wrk content, which must appear
+	// before project content.
+	globalIdx := strings.Index(amd.Content, globalContent)
+	c0wrkIdx := strings.Index(amd.Content, c0wrkContent)
+	projectIdx := strings.Index(amd.Content, projectContent)
+	if globalIdx < 0 || c0wrkIdx < 0 || projectIdx < 0 {
+		t.Fatalf("missing content; got %q", amd.Content)
+	}
+	if globalIdx >= c0wrkIdx || c0wrkIdx >= projectIdx {
+		t.Errorf("expected global < c0wrk < project order; got global=%d c0wrk=%d project=%d in %q",
+			globalIdx, c0wrkIdx, projectIdx, amd.Content)
+	}
+}
+
+// TestOrchestrator_AgentsMD_SearchPathMissingFile verifies that a missing
+// search-path file is silently skipped while remaining sources are still
+// injected.
+func TestOrchestrator_AgentsMD_SearchPathMissingFile(t *testing.T) {
+	globalDir := t.TempDir()
+	wsDir := t.TempDir()
+
+	globalContent := "# Global agent rules\nBe concise."
+	projectContent := "# Project rules\nRun make test."
+
+	globalPath := filepath.Join(globalDir, "AGENTS.md")
+	if err := os.WriteFile(globalPath, []byte(globalContent), 0o644); err != nil {
+		t.Fatalf("write global AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wsDir, "AGENTS.md"), []byte(projectContent), 0o644); err != nil {
+		t.Fatalf("write project AGENTS.md: %v", err)
+	}
+
+	o := &Orchestrator{
+		config: OrchestratorConfig{
+			// Second path does not exist on disk.
+			AgentsMDSearchPaths: []string{globalPath, filepath.Join(t.TempDir(), "AGENTS.md")},
+		},
+	}
+
+	ctx := tools.WithWorkspacePath(context.Background(), wsDir)
+	ctx = o.injectVectorSearchHints(ctx, "test query")
+
+	amd := AgentsMDFromContext(ctx)
+	if amd == nil {
+		t.Fatal("expected AgentsMD in context")
+	}
+	if !strings.Contains(amd.Content, globalContent) {
+		t.Errorf("expected global content in %q", amd.Content)
+	}
+	if !strings.Contains(amd.Content, projectContent) {
+		t.Errorf("expected project content in %q", amd.Content)
+	}
+}
+
+// TestOrchestrator_AgentsMD_SearchPathsOnlyNoWorkspace verifies that search
+// paths are read even when there is no workspace (CHAT / No Project mode),
+// so global and c0wrk instructions still apply.
+func TestOrchestrator_AgentsMD_SearchPathsOnlyNoWorkspace(t *testing.T) {
+	globalDir := t.TempDir()
+	globalContent := "# Global agent rules\nBe concise."
+	globalPath := filepath.Join(globalDir, "AGENTS.md")
+	if err := os.WriteFile(globalPath, []byte(globalContent), 0o644); err != nil {
+		t.Fatalf("write global AGENTS.md: %v", err)
+	}
+
+	o := &Orchestrator{
+		config: OrchestratorConfig{
+			AgentsMDSearchPaths: []string{globalPath},
+		},
+	}
+
+	// No workspace path in context — simulates CHAT / No Project mode.
+	ctx := o.injectVectorSearchHints(context.Background(), "test query")
+
+	amd := AgentsMDFromContext(ctx)
+	if amd == nil {
+		t.Fatal("expected AgentsMD in context even without workspace")
+	}
+	if !strings.Contains(amd.Content, globalContent) {
+		t.Errorf("expected global content in %q", amd.Content)
+	}
+}
+
 // TestOrchestrator_AgentsMD_RouterPromptInjection verifies that when
 // AGENTS.md is present in the workspace, its content appears in the router's
 // system prompt during routeAndActivateSkills. The router needs project context

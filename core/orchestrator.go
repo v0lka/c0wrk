@@ -133,7 +133,16 @@ type OrchestratorConfig struct {
 	// AgentsMDMaxBytes caps the AGENTS.md content size injected into prompts.
 	// 0 means use the default (DefaultAgentsMDMaxBytes = 65536).
 	// A negative value disables the cap entirely.
+	// The cap applies to the combined content of all AGENTS.md sources.
 	AgentsMDMaxBytes int
+
+	// AgentsMDSearchPaths holds extra absolute paths (outside the workspace)
+	// to search for AGENTS.md files, in priority order. Content from these
+	// paths is concatenated ahead of the workspace-root AGENTS.md, so the
+	// effective order is: searchPaths[0], searchPaths[1], …, workspace root.
+	// Each path points directly at an AGENTS.md file. Missing files are
+	// silently skipped. The combined content is capped by AgentsMDMaxBytes.
+	AgentsMDSearchPaths []string
 
 	// ConductorHistoryWindow is the maximum number of recent conversation
 	// messages injected into the Conductor's context. 0 = use default (20).
@@ -731,28 +740,40 @@ func (o *Orchestrator) injectVectorSearchHints(ctx context.Context, query string
 		}
 	}
 
-	// Always try to read AGENTS.md from workspace root (cached per workspace with mtime check).
-	if wsPath := sdktools.WorkspacePathFrom(ctx); wsPath != "" {
-		agentsMDPath := filepath.Join(wsPath, "AGENTS.md")
-		contentStr, err := o.readAgentsMD(agentsMDPath)
+	// Read AGENTS.md from all configured sources and concatenate in priority
+	// order: search paths (global → c0wrk-specific) first, then the
+	// workspace-root file (project-specific). Each source is cached per path
+	// with an mtime check; missing files are silently skipped.
+	agentsMDPaths := o.collectAgentsMDPaths(ctx)
+	var agentsParts []string
+	for _, p := range agentsMDPaths {
+		contentStr, err := o.readAgentsMD(p)
 		if err != nil {
-			o.logDebug("AGENTS.md not found in workspace", "path", agentsMDPath)
-		} else {
-			ctx = WithAgentsMD(ctx, &AgentsMD{Content: contentStr})
-			o.logDebug("AGENTS.md found and injected", "path", agentsMDPath, "size", len(contentStr))
-
-			// Prepend AGENTS.md as the first hint so it always appears in
-			// the "Relevant Project Files" section for executors.
-			if hints == nil {
-				hints = &VectorSearchHints{}
-			}
-			summary := strutil.TruncateUTF8(contentStr, 100)
-			agentsHint := VectorSearchHint{
-				FilePath: "AGENTS.md",
-				Summary:  summary,
-			}
-			hints.Files = append([]VectorSearchHint{agentsHint}, hints.Files...)
+			o.logDebug("AGENTS.md not found", "path", p)
+			continue
 		}
+		o.logDebug("AGENTS.md found and injected", "path", p, "size", len(contentStr))
+		agentsParts = append(agentsParts, contentStr)
+	}
+
+	if len(agentsParts) > 0 {
+		combined := strings.Join(agentsParts, "\n\n")
+		// Re-apply the cap to the combined content: individual files were
+		// capped already, but concatenation may push the total over the limit.
+		combined = o.capAgentsMD(combined)
+		ctx = WithAgentsMD(ctx, &AgentsMD{Content: combined})
+
+		// Prepend AGENTS.md as the first hint so it always appears in
+		// the "Relevant Project Files" section for executors.
+		if hints == nil {
+			hints = &VectorSearchHints{}
+		}
+		summary := strutil.TruncateUTF8(combined, 100)
+		agentsHint := VectorSearchHint{
+			FilePath: "AGENTS.md",
+			Summary:  summary,
+		}
+		hints.Files = append([]VectorSearchHint{agentsHint}, hints.Files...)
 	}
 
 	if hints != nil && len(hints.Files) > 0 {
@@ -762,10 +783,27 @@ func (o *Orchestrator) injectVectorSearchHints(ctx context.Context, query string
 	return ctx
 }
 
-// readAgentsMD reads AGENTS.md from disk with a per-workspace-path cache that
+// collectAgentsMDPaths returns the ordered list of AGENTS.md file paths to
+// consult: the configured search paths (global → c0wrk-specific, already
+// absolute and pointing at an AGENTS.md file) followed by the workspace-root
+// AGENTS.md. The workspace-root entry is omitted when there is no workspace
+// path in the context (e.g., No Project / CHAT mode), so only the global and
+// c0wrk files are read in that case.
+func (o *Orchestrator) collectAgentsMDPaths(ctx context.Context) []string {
+	paths := make([]string, 0, len(o.config.AgentsMDSearchPaths)+1)
+	paths = append(paths, o.config.AgentsMDSearchPaths...)
+	if wsPath := sdktools.WorkspacePathFrom(ctx); wsPath != "" {
+		paths = append(paths, filepath.Join(wsPath, "AGENTS.md"))
+	}
+	return paths
+}
+
+// readAgentsMD reads AGENTS.md from disk with a per-path cache that
 // invalidates on mtime change. This avoids repeated disk reads on every
 // HandleMessage call while still picking up edits. Write-through: every cache
-// miss re-reads the file and updates modTime.
+// miss re-reads the file and updates modTime. The raw (uncapped) content is
+// returned; the size cap is applied to the combined content of all sources in
+// capAgentsMD.
 func (o *Orchestrator) readAgentsMD(path string) (string, error) {
 	if o.agentsMDCache == nil {
 		o.agentsMDCache = make(map[string]agentsMDCacheEntry)
@@ -791,25 +829,29 @@ func (o *Orchestrator) readAgentsMD(path string) (string, error) {
 		return "", readErr
 	}
 
-	// Apply truncation cap (same logic as before).
-	originalSize := len(content)
 	contentStr := string(content)
+	o.agentsMDCache[path] = agentsMDCacheEntry{content: contentStr, modTime: info.ModTime()}
+	return contentStr, nil
+}
+
+// capAgentsMD applies the AgentsMDMaxBytes cap to the combined AGENTS.md
+// content. A cap of 0 means use the default (DefaultAgentsMDMaxBytes); a
+// negative cap disables truncation entirely. Truncation snaps to a UTF-8 rune
+// boundary and then back to the last newline so multibyte content is not split
+// mid-rune.
+func (o *Orchestrator) capAgentsMD(content string) string {
 	maxBytes := o.config.AgentsMDMaxBytes
 	if maxBytes == 0 {
 		maxBytes = DefaultAgentsMDMaxBytes
 	}
-	if maxBytes > 0 && originalSize > maxBytes {
-		// Truncate at a UTF-8 rune boundary, then snap back to the last
-		// newline. The naive byte slice (contentStr[:maxBytes]) could split a
-		// multibyte rune (emoji, CJK, …) and inject invalid UTF-8 into the
-		// system prompt on every request.
-		trimmed := strutil.TruncateUTF8AtLineBoundary(contentStr, maxBytes)
-		contentStr = trimmed + fmt.Sprintf("\n\n[…AGENTS.md truncated at %d bytes; original was %d bytes]", maxBytes, originalSize)
-		o.logDebug("AGENTS.md truncated", "path", path, "originalSize", originalSize, "cap", maxBytes)
+	originalSize := len(content)
+	if maxBytes <= 0 || originalSize <= maxBytes {
+		return content
 	}
-
-	o.agentsMDCache[path] = agentsMDCacheEntry{content: contentStr, modTime: info.ModTime()}
-	return contentStr, nil
+	trimmed := strutil.TruncateUTF8AtLineBoundary(content, maxBytes)
+	trimmed += fmt.Sprintf("\n\n[…AGENTS.md truncated at %d bytes; original was %d bytes]", maxBytes, originalSize)
+	o.logDebug("AGENTS.md truncated", "originalSize", originalSize, "cap", maxBytes)
+	return trimmed
 }
 
 // emitInitialContextFill emits a 0% context_fill so the frontend has a baseline.
