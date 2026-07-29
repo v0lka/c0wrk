@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useMemo, useState } from 'react'
+import { useEffect, useCallback, useMemo, useState, useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
@@ -94,9 +94,24 @@ function TreeNode({ entry, depth, gitStatus, propagatedPaths, onContextMenu }: T
   const toggleDir = useFileTreeStore((s) => s.toggleDir)
   const setEntries = useFileTreeStore((s) => s.setEntries)
   const setLoading = useFileTreeStore((s) => s.setLoading)
+  const isSelected = useFileTreeStore((s) => s.selectedPath === entry.path)
+  const setSelectedPath = useFileTreeStore((s) => s.setSelectedPath)
   const openFile = useFileViewerStore((s) => s.openFile)
 
+  // When this node becomes the transient "selected" target (set by
+  // "Reveal in Workspace"), scroll it into view so the user actually sees it.
+  const rowRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (isSelected && rowRef.current) {
+      rowRef.current.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    }
+  }, [isSelected])
+
   const handleClick = useCallback(async () => {
+    // Clear the transient reveal selection once the user interacts with the tree.
+    if (useFileTreeStore.getState().selectedPath !== null) {
+      setSelectedPath(null)
+    }
     if (!entry.is_dir) return
     const willExpand = !expanded
     toggleDir(entry.path)
@@ -111,7 +126,7 @@ function TreeNode({ entry, depth, gitStatus, propagatedPaths, onContextMenu }: T
         setLoading(entry.path, false)
       }
     }
-  }, [entry.path, entry.is_dir, expanded, children, toggleDir, setEntries, setLoading])
+  }, [entry.path, entry.is_dir, expanded, children, toggleDir, setEntries, setLoading, setSelectedPath])
 
   const handleDoubleClick = useCallback(() => {
     if (entry.is_dir) return
@@ -136,13 +151,18 @@ function TreeNode({ entry, depth, gitStatus, propagatedPaths, onContextMenu }: T
   return (
     <>
       <div
-        className="flex cursor-pointer items-center gap-0.5 py-0.5 pr-4 text-sm hover:bg-muted/40"
+        ref={rowRef}
+        className={cn(
+          "flex cursor-pointer items-center gap-0.5 py-0.5 pr-4 text-sm hover:bg-muted/40",
+          isSelected && "bg-primary/10 hover:bg-primary/10",
+        )}
         style={{ paddingLeft: `${depth * 16 + 4}px` }}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
         role="treeitem"
         aria-expanded={entry.is_dir ? expanded : undefined}
+        aria-current={isSelected ? 'true' : undefined}
       >
         {entry.is_dir ? (
           loading ? (

@@ -42,6 +42,7 @@ interface FileViewerActions {
   openFileAtLine: (path: string, line: number) => void
   openVirtualFile: (path: string, language?: string) => void
   closeFile: (path: string) => void
+  closeOthersFiles: (keepPath: string) => void
   setActiveFile: (path: string) => void
   setFileContent: (path: string, content: string, language?: string) => void
   setFileDiff: (path: string, diff: string) => void
@@ -174,6 +175,17 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
           activeFile: newActive,
           files: restFiles,
           fileIcons: restIcons,
+        }
+      }),
+
+      closeOthersFiles: (keepPath) => set((s) => {
+        const keepFile = s.files[keepPath]
+        const keepIcon = s.fileIcons[keepPath]
+        return {
+          openTabs: [keepPath],
+          activeFile: keepPath,
+          files: keepFile ? { [keepPath]: keepFile } : {},
+          fileIcons: keepIcon ? { [keepPath]: keepIcon } : {},
         }
       }),
 

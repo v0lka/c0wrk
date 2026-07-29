@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { X, ChevronDown, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useFileViewerStore } from "@/stores/fileViewerStore";
 import { FileIcon } from "@/components/layout/FileIcon";
@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { fileNameFromPath } from "@/lib/fileViewerUtils";
+import { FileViewerTabContextMenu } from "./FileViewerTabContextMenu";
 
 interface FileViewerTabBarProps {
   onToggleCollapse: () => void;
@@ -30,6 +31,16 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
   const closeFile = useFileViewerStore((s) => s.closeFile);
 
   const tabsRef = useRef<HTMLDivElement>(null);
+
+  const [contextMenu, setContextMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+
+  const handleTabContextMenu = useCallback((e: React.MouseEvent, path: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ path, x: e.clientX, y: e.clientY });
+  }, []);
+
+  const handleCloseContextMenu = useCallback(() => setContextMenu(null), []);
 
   const handleClose = useCallback(
     (e: React.MouseEvent, path: string) => {
@@ -76,13 +87,14 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
               <button
                 data-file-path={path}
                 className={cn(
-                  "group flex items-center gap-1 px-2 py-1 h-full text-xs whitespace-nowrap",
+                  "group flex items-center gap-1 px-2 py-1 h-full text-xs whitespace-nowrap select-none",
                   "border-r border-border transition-colors shrink-0",
                   isActive
                     ? "bg-background text-foreground"
                     : "text-muted-foreground hover:bg-muted/30 hover:text-foreground",
                 )}
                 onClick={() => handleTabClick(path)}
+                onContextMenu={(e) => handleTabContextMenu(e, path)}
               >
                 <span className="shrink-0">
                   <TabFileIcon path={path} />
@@ -147,6 +159,11 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
           </Button>
         </div>
       </div>
+      <FileViewerTabContextMenu
+        path={contextMenu?.path ?? ""}
+        position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        onClose={handleCloseContextMenu}
+      />
     </div>
   );
 }

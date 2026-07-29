@@ -19,6 +19,10 @@ interface FileTreeState {
   // RPC each time. Invalidated on workspace:tree_changed and project switch.
   flatEntries: FileEntry[]
   flatEntriesRoot: string | null
+  /** Transient: the tree entry currently highlighted as "current" — set by
+   *  "Reveal in Workspace" so the target node is scrolled into view and
+   *  visually marked. Cleared on user interaction in the tree. */
+  selectedPath: string | null
 }
 
 interface FileTreeActions {
@@ -34,6 +38,13 @@ interface FileTreeActions {
   setFlatEntries: (rootPath: string, entries: FileEntry[]) => void
   clearFlatEntries: () => void
   clearTree: () => void
+  /** Mark the given file path as the "current" tree selection (highlight +
+   *  scroll target). Pass null to clear. */
+  setSelectedPath: (path: string | null) => void
+  /** Ensure every directory in `dirs` is expanded (idempotent — never
+   *  collapses an already-expanded dir, unlike toggleDir). Used by
+   *  "Reveal in Workspace" to open the ancestor chain. */
+  expandDirs: (dirs: string[]) => void
 }
 
 // --- Store ---
@@ -50,6 +61,7 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
   loadingDirs: {},
   flatEntries: [],
   flatEntriesRoot: null,
+  selectedPath: null,
 
   setRootPath: (path) => set({ rootPath: path }),
 
@@ -125,5 +137,20 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
     loadingDirs: {},
     flatEntries: [],
     flatEntriesRoot: null,
+    selectedPath: null,
+  }),
+
+  setSelectedPath: (path) => set({ selectedPath: path }),
+
+  expandDirs: (dirs) => set((s) => {
+    const next = { ...s.expandedDirs }
+    let changed = false
+    for (const dir of dirs) {
+      if (dir && !next[dir]) {
+        next[dir] = true
+        changed = true
+      }
+    }
+    return changed ? { expandedDirs: next } : s
   }),
 }))
