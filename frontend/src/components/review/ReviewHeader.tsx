@@ -53,7 +53,7 @@ export function ReviewHeader({
       <div className="shrink-0 border-b border-border bg-secondary/30 px-3 py-2">
         <div className="flex items-center gap-2">
           <GitCommit className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="text-sm font-medium">Commit Review</span>
+          <span className="text-sm font-medium">Commit View</span>
           {commitSha && (
             <code className="text-xs text-info font-mono">{commitSha.slice(0, 7)}</code>
           )}
