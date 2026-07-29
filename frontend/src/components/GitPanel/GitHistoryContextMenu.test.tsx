@@ -371,6 +371,19 @@ describe('GitHistoryContextMenu — Tag submenu', () => {
     expect(findItem('v1.0')).toBeTruthy()
     expect(findItem('v2.0')).toBeTruthy()
   })
+
+  it('reveals all per-tag actions when the level-3 submenu opens on hover', () => {
+    renderMenu({ refs: ['tag: v1.0'] })
+    // Level 1 → hover "Tag" (level-2 submenu trigger).
+    hoverSubTrigger('Tag')
+    // Level 2 → hover the per-tag trigger "v1.0" (level-3 submenu trigger).
+    hoverSubTrigger('v1.0')
+    // All five per-tag actions should now be mounted in the DOM.
+    const actions = ['Create Branch', 'Push Tag', 'Delete Tag local', 'Delete Tag remote', 'Copy']
+    for (const action of actions) {
+      expect(findItemDeep(action)).toBeTruthy()
+    }
+  })
 })
 
 describe('GitHistoryContextMenu — visibility', () => {

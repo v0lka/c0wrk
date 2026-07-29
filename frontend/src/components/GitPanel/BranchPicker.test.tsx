@@ -367,4 +367,29 @@ describe('BranchPicker', () => {
     // No branch names rendered yet.
     expect(body().textContent).not.toContain('main')
   })
+
+  it('captures a pending branch base when the picker transitions closed→open', async () => {
+    // Close the picker first (beforeEach opens it) and mount — mirroring the
+    // real initial state where BranchPicker is always mounted but closed.
+    useGitPanelStore.getState().closeBranchPicker()
+    renderPicker()
+    expect(body().textContent).not.toContain('Switch Branch')
+
+    // Simulate the commit context menu's "Create › Branch" handler: set the
+    // base ref and open the picker synchronously in the same tick.
+    gitMocks.getBranchBases.mockResolvedValue([
+      { ref: 'develop', label: 'develop', type: 'local', detail: '' },
+    ])
+    act(() => {
+      useGitPanelStore.getState().setPendingBranchBase('abc1234deadbeef')
+      useGitPanelStore.getState().openBranchPicker()
+    })
+    await flush()
+
+    // The "Choose base" collapsible should auto-expand and the preselected
+    // base should be visible — proving NewBranchSection captured it despite
+    // Radix Dialog's deferred Presence mount.
+    expect(body().textContent).toContain('Base:')
+    expect(body().textContent).toContain('abc1234deadbeef')
+  })
 })

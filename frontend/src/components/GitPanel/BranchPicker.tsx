@@ -37,16 +37,19 @@ export function BranchPicker() {
   const clearPendingBranchBase = useGitPanelStore((s) => s.clearPendingBranchBase)
 
   // Consume a pending branch base set externally (e.g. "Create › Branch" from
-  // the commit context menu). It is read once when the picker opens and then
-  // cleared so it doesn't persist into the next manual open. NewBranchSection
-  // captures the value into local state (and a ref) on mount, so clearing the
-  // shared store here synchronously is safe and avoids the timing-dependent
-  // requestAnimationFrame deferral.
+  // the commit context menu). The base must persist in the store while the
+  // picker is open so that NewBranchSection can capture it on mount — Radix
+  // Dialog's Presence state machine defers the actual DOM mount of
+  // DialogContent by a synchronous re-render cycle, so clearing the base
+  // eagerly on open (in a useEffect that runs before the content mounts)
+  // would race and leave NewBranchSection with a null base. Instead, the
+  // base is cleared only when the picker *closes*, ensuring it is available
+  // throughout the open lifecycle and reset before the next manual open.
   useEffect(() => {
-    if (isOpen && pendingBranchBase) {
+    if (!isOpen) {
       clearPendingBranchBase()
     }
-  }, [isOpen, pendingBranchBase, clearPendingBranchBase])
+  }, [isOpen, clearPendingBranchBase])
 
   const [branches, setBranches] = useState<string[]>([])
   const [filter, setFilter] = useState('')

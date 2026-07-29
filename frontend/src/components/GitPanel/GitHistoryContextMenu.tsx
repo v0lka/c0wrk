@@ -100,7 +100,7 @@ function Submenu({ label, icon, disabled, children }: SubmenuProps) {
         <div
           role="menu"
           className={cn(
-            'absolute left-full top-0 min-w-48 overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md',
+            'absolute left-full top-0 min-w-48 overflow-visible rounded-md border bg-popover p-1 text-popover-foreground shadow-md',
             'animate-in fade-in-0 zoom-in-95',
           )}
         >
