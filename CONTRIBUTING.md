@@ -42,11 +42,12 @@ Detailed system specs live in [`specs/`](specs/) — start with [`specs/INDEX.md
 ## Frontend stack
 
 - **React 19** + **TypeScript ~5.7** + **Vite 6**
-- **Tailwind CSS v4** (One Dark theme via `@theme` custom properties)
-- **Zustand 5** for state management (12 domain stores: chat, plan, session, projects, file tree, file viewer, input mode, blackboard, git panel, settings, UI, vector index)
+- **Tailwind CSS v4** (One Dark default + One Light override via `data-theme="light"`, both via `@theme` custom properties; toggled by `themeStore`)
+- **Zustand 5** for state management (17 domain stores: chat, plan, session, projects, file tree, file viewer, input mode, blackboard, git panel, settings, UI, vector index, theme, goal, review, attachments, work dirs)
 - **shadcn/ui** (new-york style) + **Radix UI** primitives
 - **lucide-react** icons, **react-markdown** 10, **highlight.js** 11, **Mermaid** 11 (lazy-loaded)
-- Communication with Go via Wails-generated RPC bindings + session-scoped events (37 event types)
+- In-app code/markdown editing via **CodeMirror 6**, embedded terminal via **xterm.js**, virtualized lists via **@tanstack/react-virtual**, character-level diffs via **diff** v9, file-tree icons via Nerd Fonts
+- Communication with Go via Wails-generated RPC bindings + session-scoped events (41 event types)
 
 See the "Frontend architecture" section of [`AGENTS.md`](AGENTS.md) for the full design-system, state-management, and event-handling conventions.
 
