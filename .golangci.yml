@@ -38,6 +38,15 @@ linters:
     - whitespace
     - depguard
 
+  # Formatters (stricter-than-gofmt checks). gofumpt is a strict superset of
+  # gofmt and catches misalignments that gofmt alone misses.
+  formatters:
+    enable:
+      - gofumpt
+    exclusions:
+      paths:
+        - "frontend/node_modules"
+
   settings:
     gocritic:
       enabled-tags:

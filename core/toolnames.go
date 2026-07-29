@@ -81,10 +81,11 @@ var NoProjectDisabledTools = map[string]bool{
 	ToolSemanticSearch: true,
 }
 
-// NoProjectBashBlacklist contains regex patterns for commands blocked in
+// NoProjectShellBlacklist contains regex patterns for commands blocked in
 // No Project mode. These are development/build tools that only make sense
-// inside a real project workspace.
-var NoProjectBashBlacklist = []string{
+// inside a real project workspace. The patterns are matched against the
+// command string of any shell-exec tool (bash_exec, posh_exec).
+var NoProjectShellBlacklist = []string{
 	`^(git|npm|npx|yarn|pnpm|go|rustc|cargo|make|cmake|gcc|g\+\+|cc|clang)\b`,
 	`^(gem|bundle|dotnet|msbuild|docker|kubectl)\b`,
 	`^(helm|terraform|vagrant|ansible|gradle|mvn|sbt|stack|cabal)\b`,

@@ -201,6 +201,28 @@ func ApplyDefaults(cfg *Config) {
 			},
 		}
 	}
+	// posh_exec (PowerShell) mirrors bash_exec's user_confirm policy but with a
+	// Windows/PowerShell-specific blacklist: destructive cmdlets that could wipe
+	// files/disks, power-state changes, execution-policy tampering, and git.
+	// PowerShell is case-insensitive for cmdlets and matches parameters by
+	// case-insensitive prefix (-r/-rec/-recurse, -f/-fo/-force), and Remove-Item
+	// has aliases (del, erase, ri, rm, rd, rmdir). RE2 has no lookaheads, so the
+	// two-order requirement for -Recurse + -Force is expressed as two patterns.
+	if _, ok := cfg.Security.ToolPolicies["posh_exec"]; !ok {
+		cfg.Security.ToolPolicies["posh_exec"] = ToolPolicyConfig{
+			Policy: "user_confirm",
+			Blacklist: []string{
+				`(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-r\w*.*-f\w*`,
+				`(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-f\w*.*-r\w*`,
+				`(?i)Format-Volume`,
+				`(?i)Clear-Disk`,
+				`(?i)Stop-Computer`,
+				`(?i)Restart-Computer`,
+				`(?i)Set-ExecutionPolicy`,
+				`\bgit\b`,
+			},
+		}
+	}
 	if _, ok := cfg.Security.ToolPolicies["write_file"]; !ok {
 		cfg.Security.ToolPolicies["write_file"] = ToolPolicyConfig{
 			Policy: "user_confirm",
@@ -253,6 +275,7 @@ func ApplyDefaults(cfg *Config) {
 			"list_directory": {MaxLines: 2000, MaxBytes: 0},
 			"web_fetch":      {MaxLines: 0, MaxBytes: 2097152},
 			"bash_exec":      {MaxLines: 5000, MaxBytes: 0},
+			"posh_exec":      {MaxLines: 5000, MaxBytes: 0},
 		}
 	}
 

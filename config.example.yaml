@@ -216,6 +216,21 @@ security:
         - 'dd\s+if='
         - '>\s*/dev/'
         - '\bgit\b'
+    posh_exec:
+      policy: "user_confirm"
+      # PowerShell is case-insensitive for cmdlets, matches parameters by
+      # case-insensitive prefix (-r/-rec/-recurse, -f/-fo/-force), and Remove-Item
+      # has aliases (del, erase, ri, rm, rd, rmdir). RE2 has no lookaheads, so the
+      # two-order requirement for -Recurse + -Force is expressed as two patterns.
+      blacklist:
+        - '(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-r\w*.*-f\w*'
+        - '(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-f\w*.*-r\w*'
+        - '(?i)Format-Volume'
+        - '(?i)Clear-Disk'
+        - '(?i)Stop-Computer'
+        - '(?i)Restart-Computer'
+        - '(?i)Set-ExecutionPolicy'
+        - '\bgit\b'
     write_file:
       policy: "user_confirm"
     edit_file:
@@ -285,6 +300,8 @@ toolLimits:
     web_fetch:
       maxBytes: 2097152  # 2 MiB
     bash_exec:
+      maxLines: 5000
+    posh_exec:
       maxLines: 5000
 
 # ---------------------------------------------------------------------------

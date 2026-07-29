@@ -819,7 +819,7 @@ func (o *Orchestrator) emitInitialContextFill(ctx context.Context) {
 }
 
 // SetNoProjectMode configures this orchestrator for No Project mode:
-// disables code-oriented tools, adds extended bash command blacklist,
+// disables code-oriented tools, adds extended shell command blacklist,
 // and marks the orchestrator to override code domain to general.
 func (o *Orchestrator) SetNoProjectMode() {
 	o.isNoProject = true
@@ -830,9 +830,9 @@ func (o *Orchestrator) SetNoProjectMode() {
 		return
 	}
 	o.coreToolRegistry.SetDisabledTools(NoProjectDisabledTools)
-	if err := o.coreToolRegistry.SetExtraBashBlacklist(NoProjectBashBlacklist); err != nil {
+	if err := o.coreToolRegistry.SetExtraShellBlacklist(NoProjectShellBlacklist); err != nil {
 		if o.logger != nil {
-			o.logger.Warn("failed to set extra bash blacklist for No Project", "error", err)
+			o.logger.Warn("failed to set extra shell blacklist for No Project", "error", err)
 		}
 	}
 }

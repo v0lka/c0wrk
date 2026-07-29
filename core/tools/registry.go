@@ -120,7 +120,7 @@ type ToolRegistry struct {
 	toolFilter                 ToolFilter
 	paramManager               sdktools.ParamManager
 	disabledTools              map[string]bool
-	extraBashBlacklist         []*regexp.Regexp
+	extraShellBlacklist        []*regexp.Regexp
 	logger                     *slog.Logger
 	autoApproveWorkspaceWrites bool
 }
@@ -167,7 +167,7 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		postExecuteHook:            r.postExecuteHook,
 		toolFilter:                 r.toolFilter,
 		paramManager:               r.paramManager,
-		extraBashBlacklist:         r.extraBashBlacklist, // shared (compiled regexps are read-only)
+		extraShellBlacklist:        r.extraShellBlacklist, // shared (compiled regexps are read-only)
 		logger:                     r.logger,
 		autoApproveWorkspaceWrites: r.autoApproveWorkspaceWrites,
 	}
@@ -224,23 +224,23 @@ func (r *ToolRegistry) DisabledTools() map[string]bool {
 	return out
 }
 
-// SetExtraBashBlacklist compiles and stores additional bash command blacklist
+// SetExtraShellBlacklist compiles and stores additional shell command blacklist
 // patterns checked at execution time. This allows per-session blacklist
 // augmentation (e.g., No Project mode blocks development tools) without
-// re-registering the shared bash_exec tool instance.
+// re-registering the shared shell-exec tool instance (bash_exec/posh_exec).
 // An empty or nil slice clears the extra blacklist.
-func (r *ToolRegistry) SetExtraBashBlacklist(patterns []string) error {
+func (r *ToolRegistry) SetExtraShellBlacklist(patterns []string) error {
 	compiled := make([]*regexp.Regexp, 0, len(patterns))
 	for _, p := range patterns {
 		re, err := regexp.Compile(p)
 		if err != nil {
-			return fmt.Errorf("invalid extra bash blacklist pattern %q: %w", p, err)
+			return fmt.Errorf("invalid extra shell blacklist pattern %q: %w", p, err)
 		}
 		compiled = append(compiled, re)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.extraBashBlacklist = compiled
+	r.extraShellBlacklist = compiled
 	return nil
 }
 
@@ -399,7 +399,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	// so that tools like semantic_search are blocked at execution time too.
 	r.mu.RLock()
 	disabled := r.disabledTools
-	extraBashBL := r.extraBashBlacklist
+	extraShellBL := r.extraShellBlacklist
 	r.mu.RUnlock()
 	if disabled != nil && disabled[name] {
 		return sdktools.ToolResult{
@@ -427,15 +427,15 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		}()
 	}
 
-	// Extra bash blacklist check (per-session, e.g. No Project mode).
-	// Parses the input to extract the command and checks it against
-	// compiled patterns.
-	if name == "bash_exec" && len(extraBashBL) > 0 {
+	// Extra shell blacklist check (per-session, e.g. No Project mode).
+	// Applies to all shell-exec tools (bash_exec, posh_exec). Parses the input
+	// to extract the command and checks it against compiled patterns.
+	if sdktools.IsShellExecTool(name) && len(extraShellBL) > 0 {
 		var params struct {
 			Command string `json:"command"`
 		}
 		if err := json.Unmarshal(input, &params); err == nil && params.Command != "" {
-			for _, re := range extraBashBL {
+			for _, re := range extraShellBL {
 				if re.MatchString(params.Command) {
 					return sdktools.ToolResult{
 						Content: fmt.Sprintf("command %q is not available in No Project mode", params.Command),

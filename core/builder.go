@@ -1459,7 +1459,7 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 			MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 			WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
 		},
-		BashBlacklist:  bashBlacklist,
+		ShellBlacklist: bashBlacklist,
 		SearchProvider: cfg.Search.Provider,
 		SearchAPIKey:   cfg.ExpandEnvVars(cfg.Search.APIKey),
 		SearchTimeout:  time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
