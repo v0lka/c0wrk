@@ -202,6 +202,12 @@ body {
     user-select: none;
 }
 
+/* Vertical (row) resize drag state — applied via class toggle from useVerticalSplit */
+.resize-dragging-row {
+    cursor: row-resize;
+    user-select: none;
+}
+
 /* ==========================================================================
    Sidebar Selection Handling
    The sidebar disables native text selection (user-select: none) across all
