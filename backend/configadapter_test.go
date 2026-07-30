@@ -9,10 +9,12 @@ import (
 // and c0wrk-specific AGENTS.md paths relative to the user home directory in the
 // documented priority order (global first, c0wrk second).
 func TestAgentsMDSearchPaths(t *testing.T) {
-	// os.UserHomeDir reads $HOME on Unix; override it to a temp dir for a
-	// deterministic result.
+	// os.UserHomeDir reads $HOME on Unix and %USERPROFILE% on Windows
+	// (not %HOME%); override both to a temp dir for a deterministic result
+	// on every platform Go supports.
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 
 	got := agentsMDSearchPaths()
 	want := []string{
