@@ -22,9 +22,11 @@ import (
 // disableGpgSign disables tag.gpgsign (and commit.gpgsign) locally in the
 // test repo. The development machine sets tag.gpgsign=true globally, which
 // forces `git tag <name> <sha>` into annotated+signed mode and demands an
-// editor. Setting the local config keeps the test hermetic (matching how
-// gitInit already pins user.email/user.name locally) without altering the
-// production command, which uses a plain `git tag <name> <sha>`.
+// editor. Production now neutralizes this inline with -c tag.gpgsign=false
+// (see CreateTag), so CreateTag tests no longer strictly require this
+// helper — but it remains harmless and is still used by other tag/commit
+// tests for hermeticity. See TestCreateTag_WithGpgSignEnabled for the
+// regression test that exercises the production override directly.
 func disableGpgSign(t *testing.T, dir string) {
 	t.Helper()
 	runGit(t, dir, "config", "tag.gpgsign", "false")
@@ -86,6 +88,39 @@ func TestCreateTag_Success(t *testing.T) {
 		}
 		if emitted != dir {
 			t.Errorf("event payload: got %q, want %q", emitted, dir)
+		}
+	})
+}
+
+// TestCreateTag_WithGpgSignEnabled is the regression test for the bug where
+// creating a tag failed on machines that set tag.gpgsign=true globally. With
+// tag.gpgsign=true, a plain `git tag <name> <sha>` is forced into
+// annotated+signed mode and demands an interactive editor for the tag
+// message — which is unavailable in the GUI app, causing CreateTag to fail.
+// Production neutralizes this with an inline -c tag.gpgsign=false override,
+// so CreateTag must succeed even when gpgsign is enabled, and the resulting
+// tag must be a lightweight tag (no annotated tag object).
+func TestCreateTag_WithGpgSignEnabled(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// Simulate the global tag.gpgsign=true found on this dev machine.
+		// Do NOT call disableGpgSign — the point is to exercise the override.
+		runGit(t, dir, "config", "tag.gpgsign", "true")
+		sha := gitOut(t, dir, "rev-parse", "HEAD")
+
+		if err := f.CreateTag("v0.4.0", sha); err != nil {
+			t.Fatalf("CreateTag with tag.gpgsign=true: %v", err)
+		}
+
+		// The tag must exist and point at the requested commit.
+		tagSha := strings.TrimSpace(gitOut(t, dir, "rev-parse", "refs/tags/v0.4.0"))
+		if tagSha != strings.TrimSpace(sha) {
+			t.Errorf("tag points at %q, want %q", tagSha, sha)
+		}
+		// It must be a lightweight tag (points at the commit object directly),
+		// not an annotated tag object — the inline override guarantees this.
+		objType := strings.TrimSpace(gitOut(t, dir, "cat-file", "-t", "v0.4.0"))
+		if objType != "commit" {
+			t.Errorf("expected lightweight tag (commit), got %q", objType)
 		}
 	})
 }

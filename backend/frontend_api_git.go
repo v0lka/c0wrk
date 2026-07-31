@@ -744,11 +744,17 @@ func (f *FrontendAPI) isRemoteTrackingRef(repoPath, ref string) bool {
 
 // CreateTag creates a lightweight tag pointing at the named commit
 // (git tag <name> <sha>). Lightweight tags (rather than annotated
-// `git tag -a -m` tags) are used deliberately: the global tag.gpgsign
-// config may require an interactive editor for annotated tags, whereas a
-// plain `git tag` with an explicit object is editor-free. The sha is
-// validated as a defense-in-depth measure against option injection (it is
-// passed as a trailing argument), matching GetCommitFiles/GetCommitDiff.
+// `git tag -a -m` tags) are used deliberately to avoid the interactive
+// editor that annotated tags require. The sha is validated as a
+// defense-in-depth measure against option injection (it is passed as a
+// trailing argument), matching GetCommitFiles/GetCommitDiff.
+//
+// The global tag.gpgsign=true config (set on this development machine)
+// forces even a plain `git tag <name> <sha>` into annotated+signed mode,
+// which demands an editor for the tag message and fails editor-free in the
+// GUI app. The inline `-c tag.gpgsign=false` override neutralizes that
+// config for this invocation only, guaranteeing a truly lightweight,
+// editor-free tag regardless of the user's global git config.
 // Emits git:status_changed on success. Returns an error when no project is
 // active, the project is No Project, the tag name is empty, the sha is
 // empty or not a valid SHA, or the git command fails (for example, when
@@ -771,7 +777,7 @@ func (f *FrontendAPI) CreateTag(name, sha string) error {
 		return err
 	}
 
-	if _, err := f.runGitCmd(repoPath, "tag", tagName, tagSha); err != nil {
+	if _, err := f.runGitCmd(repoPath, "-c", "tag.gpgsign=false", "tag", tagName, tagSha); err != nil {
 		return err
 	}
 	f.emitGitStatusChanged(repoPath)
