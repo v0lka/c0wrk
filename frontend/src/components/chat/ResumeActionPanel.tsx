@@ -1,6 +1,7 @@
 import { AlertTriangle, RefreshCw, X, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useChatStore } from '@/stores/chatStore'
+import { useInputModeStore } from '@/stores/inputModeStore'
 import { resumeTask, cancelUnfinishedTask } from '@/api/chat'
 import type { DisplayItem } from '@/types/messages'
 import { getResumeResolution, resumeResolved } from '@/types/messages'
@@ -41,7 +42,12 @@ export function ResumeActionPanel({ item }: { item: ResumeItem }) {
 
   const handleResume = () => {
     updateMessage(sessionId, item.message.id, { metadata: resumeResolved('resumed') })
-    resumeTask(sessionId).catch(() => { /* error event will handle */ })
+    // Read the user's current model/reasoning selection so a model switch made
+    // before resuming is honored (same semantics as a fresh SendMessage),
+    // instead of silently inheriting the interrupted task's settings.
+    const modelOverride = useInputModeStore.getState().selectedModel ?? ''
+    const reasoningOverride = useInputModeStore.getState().selectedReasoning ?? ''
+    resumeTask(sessionId, modelOverride, reasoningOverride).catch(() => { /* error event will handle */ })
   }
 
   const handleCancel = () => {

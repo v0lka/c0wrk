@@ -73,13 +73,14 @@ func (f *FrontendAPI) PauseGoal(sessionID string) error {
 
 // ResumeGoal re-enters the goal loop for a paused (or still-active) goal. It
 // delegates to the resume path, which loads the persisted GoalState and
-// dispatches to the orchestrator's resume goal loop. Returns nil if there is
-// nothing to resume.
-func (f *FrontendAPI) ResumeGoal(sessionID string) error {
+// dispatches to the orchestrator's resume goal loop. The optional
+// modelOverride/reasoningEffort apply the user's current selection to the
+// resumed goal. Returns nil if there is nothing to resume.
+func (f *FrontendAPI) ResumeGoal(sessionID, modelOverride, reasoningEffort string) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
-	return f.app.Manager().ResumeGoal(f.ctx(), sessionID)
+	return f.app.Manager().ResumeGoal(f.ctx(), sessionID, modelOverride, reasoningEffort)
 }
 
 // ClearGoal abandons the goal for a session: it cancels any in-flight task

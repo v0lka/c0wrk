@@ -78,6 +78,18 @@ func (s *spyEmitter) MemoryRead(stepNum int, content string) {
 	s.record("MemoryRead", stepNum, content)
 }
 
+// SetDisplayContextWindow records the call so tests can assert the orchestrator
+// injected the model's advertised context window.
+func (s *spyEmitter) SetDisplayContextWindow(window int) {
+	s.record("SetDisplayContextWindow", window)
+}
+
+// SetLastModel records the call so tests can assert the orchestrator
+// synchronized the emitter's cached model on a per-request override.
+func (s *spyEmitter) SetLastModel(model, family string) {
+	s.record("SetLastModel", model, family)
+}
+
 // scopableSpyEmitter extends spyEmitter with scoping support.
 type scopableSpyEmitter struct {
 	spyEmitter
@@ -95,6 +107,8 @@ var _ Emitter = (*spyEmitter)(nil)
 var _ Emitter = (*scopableSpyEmitter)(nil)
 var _ PlanStepScopable = (*scopableSpyEmitter)(nil)
 var _ CurrentStepScopable = (*scopableSpyEmitter)(nil)
+var _ DisplayContextWindowSetter = (*spyEmitter)(nil)
+var _ LastModelSetter = (*spyEmitter)(nil)
 
 func TestNewLoggingEmitter_NilLogger_ReturnsInner(t *testing.T) {
 	inner := &spyEmitter{}

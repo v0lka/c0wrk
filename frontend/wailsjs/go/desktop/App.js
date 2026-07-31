@@ -374,12 +374,12 @@ export function ResolvePendingMessage(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['desktop']['App']['ResolvePendingMessage'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function ResumeGoal(arg1) {
-  return window['go']['desktop']['App']['ResumeGoal'](arg1);
+export function ResumeGoal(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['ResumeGoal'](arg1, arg2, arg3);
 }
 
-export function ResumeTask(arg1) {
-  return window['go']['desktop']['App']['ResumeTask'](arg1);
+export function ResumeTask(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['ResumeTask'](arg1, arg2, arg3);
 }
 
 export function SaveProjectSwitchState(arg1) {

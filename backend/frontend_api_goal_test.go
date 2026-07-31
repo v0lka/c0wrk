@@ -135,7 +135,7 @@ func TestGoalRPCs_PauseResumeClearDelegateToManager(t *testing.T) {
 	}
 	// Resume delegates to manager.ResumeGoal → ResumeTask, which needs a
 	// resumable task; with no task store it returns nil (nothing to resume).
-	if err := f.ResumeGoal("nonexistent"); err != nil {
+	if err := f.ResumeGoal("nonexistent", "", ""); err != nil {
 		t.Errorf("ResumeGoal returned unexpected error (nil expected for no resumable task): %v", err)
 	}
 	// Clear delegates to manager.ClearGoal → CancelTask → getOrrestoreSession

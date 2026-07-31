@@ -655,6 +655,30 @@ func TestSendMessage_ResumePath_AppliesOverridesAndFlushesAttachments(t *testing
 		}
 	})
 
+	t.Run("initial context_fill carries the overridden model", func(t *testing.T) {
+		// The initial context_fill is emitted before the first LLM call reports
+		// usage, so without ApplyRequestOverrides synchronizing the emitter's
+		// cached model it would carry the previous task's (stale) model. After
+		// the fix, the first context_fill must report the bare override model.
+		var firstFill *ContextFillEventData
+		allEventsMu.Lock()
+		for i := range allEvents {
+			if allEvents[i].Type == "context_fill" {
+				if data, ok := allEvents[i].Data.(ContextFillEventData); ok {
+					firstFill = &data
+					break
+				}
+			}
+		}
+		allEventsMu.Unlock()
+		if firstFill == nil {
+			t.Fatal("expected at least one context_fill event in the buffered sequence")
+		}
+		if firstFill.Model != bareOverride {
+			t.Errorf("initial context_fill Model = %q, want %q (ApplyRequestOverrides must sync the emitter's cached model before the first context_fill)", firstFill.Model, bareOverride)
+		}
+	})
+
 	// NOTE: the recorder goroutine is intentionally left running (the channel is
 	// buffered and the emitter may fire events during t.Cleanup's
 	// mgr.Shutdown); closing it would risk a send-on-closed-channel panic.

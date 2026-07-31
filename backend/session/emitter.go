@@ -698,6 +698,22 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 	})
 }
 
+// SetLastModel updates the cached model/family so that subsequent context_fill
+// events report the newly-selected model immediately, before the first LLM call
+// reports actual usage via the UsageTracker observer. It is invoked by the
+// orchestrator's ApplyRequestOverrides when a per-request model override is
+// applied, so the status bar does not show the previous task's stale model
+// during a continuation or resume. A no-op when model is empty.
+func (e *EventEmitter) SetLastModel(model, family string) {
+	if model == "" {
+		return
+	}
+	e.tokens.mu.Lock()
+	e.tokens.lastModel = model
+	e.tokens.lastFamily = family
+	e.tokens.mu.Unlock()
+}
+
 // EmitSessionTokens emits a "session_tokens" event with the given totals.
 // This is called by the UsageTracker observer — accumulation is handled externally.
 // The context-window fill percent and used/max token counts are read from the shared

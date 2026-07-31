@@ -32,10 +32,11 @@ func (m *Manager) PauseGoal(sessionID string) error {
 // ResumeGoal re-enters the goal loop for a paused (or still-active, non-terminal)
 // goal. It delegates to ResumeTask, which loads the unfinished task + persisted
 // GoalState and dispatches to the orchestrator's resume path (resumeGoalLoop
-// for non-terminal goals, the plain Conductor path otherwise). Returns nil if
-// there is no resumable goal/task.
-func (m *Manager) ResumeGoal(ctx context.Context, sessionID string) error {
-	return m.ResumeTask(ctx, sessionID)
+// for non-terminal goals, the plain Conductor path otherwise). The optional
+// modelOverride/reasoningEffort are forwarded so a model/reasoning switch made
+// before resuming is honored. Returns nil if there is no resumable goal/task.
+func (m *Manager) ResumeGoal(ctx context.Context, sessionID, modelOverride, reasoningEffort string) error {
+	return m.ResumeTask(ctx, sessionID, modelOverride, reasoningEffort)
 }
 
 // ClearGoal abandons the goal for a session: it cancels any in-flight task

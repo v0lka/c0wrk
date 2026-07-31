@@ -697,8 +697,12 @@ func (m *Manager) tryContinueInterruptedTask(
 
 // ResumeTask checks for an unfinished task in the given session and resumes it.
 // Returns nil if no unfinished task exists or if the task store is not configured.
-// This is called on app restart to resume interrupted tasks.
-func (m *Manager) ResumeTask(ctx context.Context, id string) error {
+// Invoked both by the manual Resume button (with the user's current model/reasoning
+// selection) and on app restart to resume interrupted tasks. The optional
+// modelOverride/reasoningEffort are applied (same as a fresh SendMessage) so a
+// model/reasoning switch the user made before resuming is honored instead of
+// silently inheriting the interrupted task's settings.
+func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEffort string) error {
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
@@ -786,6 +790,15 @@ func (m *Manager) ResumeTask(ctx context.Context, id string) error {
 	}
 	session.cancel = cancel
 	session.mu.Unlock()
+
+	// Apply per-request model/reasoning overrides. This path bypasses
+	// HandleMessage, where step 0 would otherwise apply them, so the resumed
+	// task picks up the model/reasoning the user selected instead of silently
+	// inheriting the interrupted task's settings. No-op when both are empty.
+	// Run after the active-check (so overrides never leak into a concurrently
+	// running task) but before launching the Resume goroutine, so the emitter's
+	// cached model is synchronized before the initial context_fill is emitted.
+	session.orchestrator.ApplyRequestOverrides(ctx, modelOverride, reasoningEffort)
 
 	// Snapshot envInfo under read lock
 	m.mu.RLock()

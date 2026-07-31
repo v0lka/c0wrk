@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { goal as goalApi } from '@/api'
 import { logger } from '@/lib/logger'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useInputModeStore } from '@/stores/inputModeStore'
 import { useActiveGoal, useGoalStatus, useGoalStore } from '@/stores/goalStore'
 
 // The indicator is only relevant while a goal loop is running or suspended.
@@ -48,7 +49,12 @@ export function GoalStatusIndicator() {
   const handleResume = useCallback(() => {
     if (!activeSessionId) return
     setGoalStatus(activeSessionId, 'active')
-    goalApi.resumeGoal(activeSessionId).catch((err) => {
+    // Read the user's current model/reasoning selection so a model switch made
+    // before resuming the goal is honored (same semantics as a fresh send),
+    // instead of silently inheriting the interrupted task's settings.
+    const modelOverride = useInputModeStore.getState().selectedModel ?? ''
+    const reasoningOverride = useInputModeStore.getState().selectedReasoning ?? ''
+    goalApi.resumeGoal(activeSessionId, modelOverride, reasoningOverride).catch((err) => {
       logger.error('GoalStatusIndicator: resumeGoal failed, rolling back', err)
       setGoalStatus(activeSessionId, 'paused')
     })

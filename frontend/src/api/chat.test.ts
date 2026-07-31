@@ -19,7 +19,7 @@ vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn(), warn: vi.fn() },
 }))
 
-import { getPendingActions, sendMessage } from '@/api/chat'
+import { getPendingActions, sendMessage, resumeTask } from '@/api/chat'
 
 describe('getPendingActions null-array normalization', () => {
   beforeEach(() => {
@@ -108,5 +108,41 @@ describe('sendMessage forwards skill and agent refs', () => {
     const args = calls[0]!
     expect(args[2]).toEqual([])
     expect(args[3]).toEqual([])
+  })
+})
+
+describe('resumeTask forwards model/reasoning overrides', () => {
+  beforeEach(() => {
+    delete mockApp.ResumeTask
+  })
+
+  it('passes modelOverride and reasoningOverride to the binding', async () => {
+    const calls: unknown[][] = []
+    mockApp.ResumeTask = vi.fn((...args: unknown[]) => {
+      calls.push(args)
+      return Promise.resolve()
+    })
+
+    await resumeTask('sess-1', 'provider/gpt-4o', 'high')
+
+    expect(mockApp.ResumeTask).toHaveBeenCalledTimes(1)
+    const args = calls[0]!
+    expect(args[0]).toBe('sess-1')
+    expect(args[1]).toBe('provider/gpt-4o')
+    expect(args[2]).toBe('high')
+  })
+
+  it('defaults overrides to empty strings when omitted', async () => {
+    const calls: unknown[][] = []
+    mockApp.ResumeTask = vi.fn((...args: unknown[]) => {
+      calls.push(args)
+      return Promise.resolve()
+    })
+
+    await resumeTask('sess-1')
+
+    const args = calls[0]!
+    expect(args[1]).toBe('')
+    expect(args[2]).toBe('')
   })
 })

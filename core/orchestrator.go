@@ -964,6 +964,20 @@ func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride,
 			if o.localModelProbe != nil {
 				o.localModelProbe(llm.BareModel(modelOverride))
 			}
+			// Synchronize the emitter's cached model so the initial
+			// context_fill — emitted before the first LLM call reports usage —
+			// carries the newly-selected model instead of the previous task's
+			// model. Without this the status bar shows a stale model in a
+			// continuation until the first token-usage report arrives.
+			family := ""
+			if o.modelRegistry != nil {
+				if meta, _ := o.modelRegistry.Resolve(ctx, o.config.Model); meta.Family != "" {
+					family = meta.Family
+				}
+			}
+			if setter, ok := o.emitter.(LastModelSetter); ok {
+				setter.SetLastModel(o.config.Model, family)
+			}
 		}
 	}
 }

@@ -31,7 +31,7 @@ export interface ChatAPI {
   cancelUnfinishedTask(sessionId: string): Promise<void>
   getSessionHistory(sessionId: string): Promise<ChatMessage[]>
   getSessionTokens(sessionId: string): Promise<TokenInfo>
-  resumeTask(sessionId: string): Promise<void>
+  resumeTask(sessionId: string, modelOverride?: string, reasoningOverride?: string): Promise<void>
 }
 
 export interface WorkspaceAPI {

@@ -163,7 +163,7 @@ func TestResumeTask_LoadsTrajectoryAndResumesWithoutPlan(t *testing.T) {
 	store.mu.Unlock()
 
 	// ResumeTask must NOT error without routing/plan.
-	if err := mgr.ResumeTask(context.Background(), info.ID); err != nil {
+	if err := mgr.ResumeTask(context.Background(), info.ID, "", ""); err != nil {
 		t.Fatalf("ResumeTask failed: %v", err)
 	}
 
@@ -222,7 +222,7 @@ func TestResumeTask_ReusesRoutingDecision(t *testing.T) {
 	store.task.SessionID = info.ID
 	store.mu.Unlock()
 
-	if err := mgr.ResumeTask(context.Background(), info.ID); err != nil {
+	if err := mgr.ResumeTask(context.Background(), info.ID, "", ""); err != nil {
 		t.Fatalf("ResumeTask failed: %v", err)
 	}
 
@@ -265,11 +265,89 @@ func TestResumeTask_EmptyTrajectoryFallback(t *testing.T) {
 	store.task.SessionID = info.ID
 	store.mu.Unlock()
 
-	if err := mgr.ResumeTask(context.Background(), info.ID); err != nil {
+	if err := mgr.ResumeTask(context.Background(), info.ID, "", ""); err != nil {
 		t.Fatalf("ResumeTask failed: %v", err)
 	}
 
 	if _, ok := waitForEvent(eventChan, "task_complete", 3*time.Second); !ok {
 		t.Fatal("timeout waiting for task_complete event (empty trajectory fallback)")
+	}
+}
+
+// TestResumeTask_AppliesModelOverride verifies that a model/reasoning override
+// passed to ResumeTask (the Resume button path, which bypasses SendMessage) is
+// honored: the resumed orchestrator's active model switches to the override.
+// Without ApplyRequestOverrides on the ResumeTask path, the resumed task would
+// silently inherit the interrupted task's model.
+func TestResumeTask_AppliesModelOverride(t *testing.T) {
+	const (
+		bareDefault  = "resume-btn-default"
+		bareOverride = "resume-btn-override"
+		providerName = "test"
+		reasoning    = "high"
+		finishAnswer = "resumed-btn-done"
+	)
+
+	trajJSON, _ := json.Marshal([]agent.Step{
+		{Thought: "prior", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+	})
+	store := &resumeTaskStore{
+		task: &TaskRecord{
+			ID: "task-resume-override", SessionID: "ignored", OriginalRequest: "interrupted task",
+			Status: "in_progress",
+		},
+		trajectory: trajJSON,
+	}
+
+	switcher, err := llm.NewRouter(context.Background(), llm.RouterConfig{
+		Providers: []llm.ProviderEntry{
+			{Name: providerName, ProviderType: "openai", BaseURL: "http://localhost:9999", Models: []string{bareDefault, bareOverride}},
+		},
+		MaxRetries:     1,
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     100 * time.Millisecond,
+	}, nil)
+	if err != nil {
+		t.Fatalf("build llm router: %v", err)
+	}
+	defaultModel := llm.CompositeModelID(providerName, bareDefault)
+	overrideModel := llm.CompositeModelID(providerName, bareOverride)
+
+	caller := &recordingScriptedLLM{scriptedLLM: &scriptedLLM{scripted: []*llm.ChatResponse{
+		finishResponse(finishAnswer),
+	}}}
+	eventChan := make(chan Event, 100)
+	mgr := NewManager(overrideFunctionalFactory(caller, switcher), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr.Shutdown)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	// Sanity: switcher starts on the default model.
+	if got := switcher.ActiveModel(); got != defaultModel {
+		t.Fatalf("precondition: ActiveModel = %q, want %q", got, defaultModel)
+	}
+
+	// Resume with a model + reasoning override (mirrors the Resume button
+	// passing the user's current model/reasoning selection).
+	if err := mgr.ResumeTask(context.Background(), info.ID, overrideModel, reasoning); err != nil {
+		t.Fatalf("ResumeTask failed: %v", err)
+	}
+
+	if _, ok := waitForEvent(eventChan, "task_complete", 3*time.Second); !ok {
+		t.Fatal("timeout waiting for task_complete event")
+	}
+
+	if got := switcher.ActiveModel(); got != overrideModel {
+		t.Errorf("ActiveModel after ResumeTask = %q, want %q (ResumeTask must apply the model override via ApplyRequestOverrides)", got, overrideModel)
+	}
+	if got := caller.ReasoningEffort(); got != reasoning {
+		t.Errorf("LLM reasoning effort after ResumeTask = %q, want %q", got, reasoning)
 	}
 }

@@ -74,10 +74,10 @@ export async function getSessionTokens(sessionId: string): Promise<TokenInfo> {
   }
 }
 
-export async function resumeTask(sessionId: string): Promise<void> {
+export async function resumeTask(sessionId: string, modelOverride: string = '', reasoningOverride: string = ''): Promise<void> {
   try {
     const app = getApp()
-    await app.ResumeTask(sessionId)
+    await app.ResumeTask(sessionId, modelOverride, reasoningOverride)
   } catch (err) {
     logger.error('Failed to resume task:', err)
     throw err

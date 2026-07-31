@@ -296,11 +296,14 @@ func (f *FrontendAPI) CancelTask(id string) error {
 
 // ResumeTask resumes an interrupted task in the given session, if any.
 // Returns nil if no unfinished task exists. This is safe to call on session load.
-func (f *FrontendAPI) ResumeTask(id string) error {
+// The optional modelOverride/reasoningEffort apply the user's current selection
+// to the resumed task (same semantics as SendMessage) instead of inheriting the
+// interrupted task's settings.
+func (f *FrontendAPI) ResumeTask(id, modelOverride, reasoningEffort string) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
-	return f.app.Manager().ResumeTask(f.ctx(), id)
+	return f.app.Manager().ResumeTask(f.ctx(), id, modelOverride, reasoningEffort)
 }
 
 // GetSessionTokens returns persisted token counts for a session.

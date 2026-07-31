@@ -273,7 +273,7 @@ func TestPauseGoal_UnknownSessionReturnsError(t *testing.T) {
 // configured).
 func TestResumeGoal_NoTaskStoreReturnsNil(t *testing.T) {
 	manager, _, _ := testManager(t)
-	if err := manager.ResumeGoal(context.Background(), "sess-resume"); err != nil {
+	if err := manager.ResumeGoal(context.Background(), "sess-resume", "", ""); err != nil {
 		t.Errorf("ResumeGoal with no task store should return nil, got %v", err)
 	}
 }

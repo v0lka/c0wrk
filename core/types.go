@@ -143,6 +143,23 @@ type DisplayContextWindowSetter interface {
 	SetDisplayContextWindow(window int)
 }
 
+// LastModelSetter is an optional interface that Emitter implementations can
+// implement so the model surfaced in context_fill / session_tokens events is
+// synchronized the instant a per-request model override is applied — before
+// the first LLM call reports actual usage.
+//
+// The emitter caches the "last model" from the UsageTracker observer, which
+// only fires after a successful LLM response. The initial context_fill that
+// opens every task (including continuations and resumes) reads that cached
+// value, so without an explicit push the status bar would display the
+// *previous* task's model until the first token-usage report arrives. The
+// orchestrator resolves the selected model's family and injects both via
+// SetLastModel inside ApplyRequestOverrides, mirroring the
+// DisplayContextWindowSetter pattern.
+type LastModelSetter interface {
+	SetLastModel(model, family string)
+}
+
 // noopEmitter is a no-op implementation of Emitter.
 // Used as a default when nil emitter is provided.
 type noopEmitter struct {

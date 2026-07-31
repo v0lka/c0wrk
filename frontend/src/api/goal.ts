@@ -64,11 +64,13 @@ export async function pauseGoal(sessionId: string): Promise<void> {
   }
 }
 
-/** Re-enter the goal loop for a paused (or still-active) goal. */
-export async function resumeGoal(sessionId: string): Promise<void> {
+/** Re-enter the goal loop for a paused (or still-active) goal. The optional
+ *  modelOverride/reasoningOverride apply the user's current selection to the
+ *  resumed goal instead of inheriting the interrupted task's settings. */
+export async function resumeGoal(sessionId: string, modelOverride: string = '', reasoningOverride: string = ''): Promise<void> {
   try {
     const app = getApp()
-    await app.ResumeGoal(sessionId)
+    await app.ResumeGoal(sessionId, modelOverride, reasoningOverride)
   } catch (err) {
     logger.error('Failed to resume goal:', err)
     throw err

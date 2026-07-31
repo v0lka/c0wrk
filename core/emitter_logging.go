@@ -23,6 +23,7 @@ var (
 	_ RetryAttemptScopable       = (*loggingEmitter)(nil)
 	_ CurrentStepScopable        = (*loggingEmitter)(nil)
 	_ DisplayContextWindowSetter = (*loggingEmitter)(nil)
+	_ LastModelSetter            = (*loggingEmitter)(nil)
 )
 
 // NewLoggingEmitter wraps an Emitter to log all events via the given logger.
@@ -76,6 +77,15 @@ func (l *loggingEmitter) SetCurrentStepID(id string) {
 func (l *loggingEmitter) SetDisplayContextWindow(window int) {
 	if s, ok := l.inner.(DisplayContextWindowSetter); ok {
 		s.SetDisplayContextWindow(window)
+	}
+}
+
+// SetLastModel delegates to the inner emitter if it supports last-model
+// injection, so the orchestrator can route the selected model/family through
+// the logging wrapper for immediate context_fill synchronization.
+func (l *loggingEmitter) SetLastModel(model, family string) {
+	if s, ok := l.inner.(LastModelSetter); ok {
+		s.SetLastModel(model, family)
 	}
 }
 
