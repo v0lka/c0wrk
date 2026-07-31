@@ -13,14 +13,21 @@ import { CopyButton } from './CopyButton'
 describe('CopyButton', () => {
   let container: HTMLElement
   let root: Root
-  let writeText: ReturnType<typeof vi.fn>
+  let clipboardSetText: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     vi.useFakeTimers()
-    writeText = vi.fn().mockResolvedValue(undefined)
+    clipboardSetText = vi.fn().mockResolvedValue(true)
+    // Copy must go through the native Wails runtime, NOT navigator.clipboard
+    // (mirrors FileViewerTabContextMenu/FileTreeContextMenu). Set the Web
+    // Clipboard API to undefined to prove the native path is taken.
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
-      value: { writeText },
+      value: undefined,
+    })
+    Object.defineProperty(globalThis, 'runtime', {
+      configurable: true,
+      value: { ClipboardSetText: clipboardSetText },
     })
     container = document.createElement('div')
     document.body.replaceChildren(container)
@@ -39,7 +46,7 @@ describe('CopyButton', () => {
   it('renders the idle "Copy" label with the provided text', () => {
     render({ text: 'hello world' })
     expect(container.textContent).toContain('Copy')
-    expect(writeText).not.toHaveBeenCalled()
+    expect(clipboardSetText).not.toHaveBeenCalled()
   })
 
   it('copies the text to the clipboard and flips to "Copied" on click', async () => {
@@ -49,8 +56,8 @@ describe('CopyButton', () => {
       button.click()
       await vi.advanceTimersByTimeAsync(0)
     })
-    expect(writeText).toHaveBeenCalledTimes(1)
-    expect(writeText).toHaveBeenCalledWith('answer text')
+    expect(clipboardSetText).toHaveBeenCalledTimes(1)
+    expect(clipboardSetText).toHaveBeenCalledWith('answer text')
     expect(container.textContent).toContain('Copied')
   })
 

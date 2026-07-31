@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { Copy, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { clipboardSetText } from '@/api/runtime'
 
 interface CopyButtonProps {
   /** Text copied to the clipboard on click. */
@@ -29,8 +30,14 @@ export function CopyButton({ text, label = 'Copy', className }: CopyButtonProps)
   }, [])
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard
-      .writeText(text)
+    // Copy through the native Wails runtime, NOT `navigator.clipboard`. The
+    // Web Clipboard API is unreliable inside the Wails webview
+    // (`navigator.clipboard` is undefined in production because the webview
+    // origin is not a secure context, and even when present `writeText`
+    // rejects with NotAllowedError under WKWebView's transient-activation
+    // rules) — that was the root cause of the message copy buttons needing
+    // several clicks to register. See `clipboardSetText` in @/api/runtime.
+    clipboardSetText(text)
       .then(() => {
         setCopied(true)
         if (timerRef.current) clearTimeout(timerRef.current)
