@@ -190,7 +190,7 @@ func TestSendMessage_UnfinishedTask_ContinuesCycle(t *testing.T) {
 	store.mu.Unlock()
 
 	// The user message must appear in the UI (message_received) regardless of path.
-	if err := mgr.SendMessage(context.Background(), info.ID, nudge, nil, "", "", false, "", false); err != nil {
+	if err := mgr.SendMessage(context.Background(), info.ID, nudge, nil, nil, "", "", false, "", false); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 
@@ -309,7 +309,7 @@ func TestSendMessage_IdleSession_StartsNewTaskWithRouting(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 
-	if err := mgr.SendMessage(context.Background(), info.ID, userMsg, nil, "", "", false, "", false); err != nil {
+	if err := mgr.SendMessage(context.Background(), info.ID, userMsg, nil, nil, "", "", false, "", false); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 
@@ -589,7 +589,7 @@ func TestSendMessage_ResumePath_AppliesOverridesAndFlushesAttachments(t *testing
 
 	// Send a message that BOTH continues the interrupted task AND overrides the
 	// model + reasoning effort.
-	if err := mgr.SendMessage(context.Background(), info.ID, nudge, nil, overrideModel, reasoning, false, "", false); err != nil {
+	if err := mgr.SendMessage(context.Background(), info.ID, nudge, nil, nil, overrideModel, reasoning, false, "", false); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 
@@ -811,7 +811,7 @@ func TestSendMessage_GoalOnResume_AbandonsInterruptedTaskAndRunsGoal(t *testing.
 	sess.orchestrator.SetGoalProposer(autoApproveProposer{})
 
 	// Send a goal request that ALSO has an unfinished task to resume.
-	if err := mgr.SendMessage(context.Background(), info.ID, goalCondition, nil, "", "", true, "", false); err != nil {
+	if err := mgr.SendMessage(context.Background(), info.ID, goalCondition, nil, nil, "", "", true, "", false); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 

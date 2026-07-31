@@ -145,6 +145,8 @@ export function GetVectorIndexStatus():Promise<backend.VectorIndexStatus>;
 
 export function Lifecycle():Promise<backend.FrontendAPILifecycle>;
 
+export function ListAgents():Promise<Array<backend.AgentDescriptorDTO>>;
+
 export function ListDirectory(arg1:string,arg2:boolean):Promise<Array<workspace.FileNode>>;
 
 export function ListProjectWorkDirectories(arg1:string):Promise<Array<project.WorkDirectoryRecord>>;
@@ -211,7 +213,7 @@ export function SaveReviewPrompt(arg1:string):Promise<backend.ReviewPromptMessag
 
 export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<backend.VectorStoreEntry>>;
 
-export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:string,arg5:string,arg6:boolean,arg7:string,arg8:boolean):Promise<void>;
+export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:Array<string>,arg5:string,arg6:string,arg7:boolean,arg8:string,arg9:boolean):Promise<void>;
 
 export function SetLogLevel(arg1:string):Promise<void>;
 

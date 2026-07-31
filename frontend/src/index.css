@@ -727,6 +727,10 @@ body {
     color: var(--color-warning);
 }
 
+.cm-chat-container .cm-ref-agent {
+    color: var(--color-highlight);
+}
+
 .cm-chat-container .cm-ref-file {
     color: var(--color-info);
 }

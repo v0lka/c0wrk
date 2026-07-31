@@ -11,6 +11,7 @@ func TestPreprocessMessageText(t *testing.T) {
 		name         string
 		text         string
 		activeSkills []string
+		activeAgents []string
 		workspace    string
 		want         string
 	}{
@@ -77,6 +78,45 @@ func TestPreprocessMessageText(t *testing.T) {
 			want:         "do stuff",
 		},
 
+		// #agent-name stripping mirrors /skill: only known agent names are
+		// removed, preserving surrounding whitespace boundaries.
+		{
+			name:         "agent strip collapses surrounding spaces",
+			text:         "hello #code-reviewer world",
+			activeAgents: []string{"code-reviewer"},
+			want:         "hello world",
+		},
+		{
+			name:         "agent strip at start leaves no leading space",
+			text:         "#code-reviewer do stuff",
+			activeAgents: []string{"code-reviewer"},
+			want:         "do stuff",
+		},
+		{
+			name:         "multiple agent mentions stripped",
+			text:         "#code-reviewer and #test-writer please",
+			activeAgents: []string{"code-reviewer", "test-writer"},
+			want:         "and please",
+		},
+		// A GitHub-style @file#L20 line anchor is NOT matched as an agent ref:
+		// the "#" is glued to the file path (no preceding whitespace) and
+		// "L20" is not a known agent name regardless.
+		{
+			name:         "@file#L20 line anchor not stripped as agent",
+			text:         "see @x.go#L20 here",
+			activeAgents: []string{"L20"},
+			want:         "see fileref://x.go#L20 here",
+		},
+		// Collision guard: #review, /review, and @review are three distinct
+		// references handled by independent preprocessors.
+		{
+			name:         "collision review: only known agent stripped",
+			text:         "#review /review @review",
+			activeAgents: []string{"review"},
+			activeSkills: []string{"review"},
+			want:         "fileref://review",
+		},
+
 		// Multiple spaces collapse into one after all transforms.
 		{
 			name: "multi-space collapse",
@@ -132,10 +172,10 @@ func TestPreprocessMessageText(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := PreprocessMessageText(tt.text, tt.activeSkills, tt.workspace)
+			got := PreprocessMessageText(tt.text, tt.activeSkills, tt.activeAgents, tt.workspace)
 			if got != tt.want {
-				t.Errorf("PreprocessMessageText(%q, %v, %q) =\n  got:  %q\n  want: %q",
-					tt.text, tt.activeSkills, tt.workspace, got, tt.want)
+				t.Errorf("PreprocessMessageText(%q, %v, %v, %q) =\n  got:  %q\n  want: %q",
+					tt.text, tt.activeSkills, tt.activeAgents, tt.workspace, got, tt.want)
 			}
 		})
 	}

@@ -274,6 +274,10 @@ export function Lifecycle() {
   return window['go']['desktop']['App']['Lifecycle']();
 }
 
+export function ListAgents() {
+  return window['go']['desktop']['App']['ListAgents']();
+}
+
 export function ListDirectory(arg1, arg2) {
   return window['go']['desktop']['App']['ListDirectory'](arg1, arg2);
 }
@@ -406,8 +410,8 @@ export function SearchVectorStore(arg1) {
   return window['go']['desktop']['App']['SearchVectorStore'](arg1);
 }
 
-export function SendMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
-  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+export function SendMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {
+  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
 }
 
 export function SetLogLevel(arg1) {

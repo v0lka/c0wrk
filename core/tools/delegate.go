@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	sdktools "github.com/v0lka/sp4rk/tools"
+
+	"github.com/v0lka/sp4rk/agents"
 )
 
 const toolDelegateDescription = `Launch one or more subagents to execute units of work in isolated ReAct loops. Each task runs in its own context with its own tool set; only the summary output returns. Use this to break large tasks into parallel or sequential pieces, or to isolate context-heavy investigation. Tasks with depends_on wait for their dependencies to complete first; tasks without dependencies run in parallel. blocking mode returns the output in the tool result; async mode returns immediately with a delegation_id (read results later via read_step_output). depends_on can only reference blocking tasks — async tasks run in the background and cannot be depended upon. By default subagents cannot delegate further; set allow_redelegate=true to permit nesting (capped by config).`
@@ -22,6 +24,14 @@ type DelegationTask struct {
 	Mode               string   `json:"mode,omitempty"`
 	MaxSteps           int      `json:"max_steps,omitempty"`
 	AllowRedelegate    bool     `json:"allow_redelegate,omitempty"`
+	// Agent names a Subagent Profile (an .agents/agents/<name>/AGENT.md file).
+	// When set, the launcher resolves the profile and applies it: the agent's
+	// body replaces the orchestrator system prompt (the shared project-context
+	// prefix is preserved), and the profile's tool preference / max-steps /
+	// model / allow-redelegate override the task fields. Empty = no profile
+	// (the legacy behavior). An unknown name fails fast (delegate validation
+	// rejects it before any subagent launches).
+	Agent string `json:"agent,omitempty"`
 }
 
 // DelegationResult is the outcome of a single delegation as returned by the launcher.
@@ -38,6 +48,15 @@ type DelegationResult struct {
 type DelegationLauncher interface {
 	Launch(ctx context.Context, tasks []DelegationTask, registry *DelegationRegistry) []DelegationResult
 }
+
+// AgentResolver looks up a Subagent Profile by name. It is injected into the
+// Conductor context (and inherited by subagent contexts) so the launcher can
+// resolve the `agent` field of a DelegationTask to a full *agents.Agent profile.
+// Returns (nil, false) when the name is unknown — validateDelegationTasks turns
+// that into a fail-fast error before any subagent launches. Nil (no resolver in
+// context) means profiles are unavailable: a non-empty `agent` field is then
+// rejected, so a delegate call never silently ignores a requested profile.
+type AgentResolver func(name string) (*agents.Agent, bool)
 
 // DelegateTool launches subagents via a DelegationLauncher injected through context.
 type DelegateTool struct {
@@ -67,7 +86,8 @@ func NewDelegateTool() *DelegateTool {
 					"depends_on": {"type": "array", "items": {"type": "string"}, "description": "IDs of delegations that must complete before this one starts"},
 					"mode": {"type": "string", "enum": ["blocking", "async"], "description": "blocking (default) returns output in result; async returns delegation_id immediately"},
 					"max_steps": {"type": "integer", "description": "Per-subagent ReAct iteration cap; 0 = config default"},
-					"allow_redelegate": {"type": "boolean", "description": "Grant the subagent the delegate tool (capped by config maxRedelegationDepth); default false"}
+					"allow_redelegate": {"type": "boolean", "description": "Grant the subagent the delegate tool (capped by config maxRedelegationDepth); default false"},
+					"agent": {"type": "string", "description": "Name of a Subagent Profile (.agents/agents/<name>/AGENT.md) to apply. When set, the profile's system prompt, tool preference, max-steps, model, and allow-redelegate override the task fields. Unknown name fails fast."}
 				},
 				"required": ["id", "summary", "task"]
 			}
@@ -110,7 +130,12 @@ func (t *DelegateTool) Execute(ctx context.Context, input json.RawMessage) (sdkt
 		return sdktools.ErrorResult("delegate is disabled while a plan is declared — use execute_plan to execute plan steps. delegate is for plan-less task optimization only."), nil
 	}
 
-	if err := validateDelegationTasks(params.Tasks, registry); err != nil {
+	// Resolve the agent-profile resolver (if any) before validation so a
+	// non-empty `agent` field can be checked for existence up front. Absent
+	// resolver → any requested profile is rejected (fail fast rather than
+	// silently ignoring it).
+	agentResolver := AgentResolverFrom(ctx)
+	if err := validateDelegationTasks(params.Tasks, registry, agentResolver); err != nil {
 		return sdktools.ErrorResult("delegate validation failed: %v", err), nil
 	}
 
@@ -174,8 +199,11 @@ func buildDelegateToolResult(results []DelegationResult) sdktools.ToolResult {
 
 // validateDelegationTasks checks IDs are unique within the batch, depends_on
 // references exist (in the batch or the registry), the combined graph is
-// acyclic, and modes are valid.
-func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistry) error {
+// acyclic, modes are valid, and — when an AgentResolver is present — every
+// non-empty `agent` field names a known Subagent Profile. A non-empty agent
+// with no resolver in context is rejected so a requested profile is never
+// silently ignored.
+func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistry, agentResolver AgentResolver) error {
 	ids := make(map[string]int, len(tasks))
 	for i, task := range tasks {
 		if task.ID == "" {
@@ -200,6 +228,18 @@ func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistr
 		}
 		if mode != "blocking" && mode != "async" {
 			return fmt.Errorf("task %q: mode must be \"blocking\" or \"async\", got %q", task.ID, mode)
+		}
+		// Validate the agent profile name up front so an unknown name fails
+		// fast (no subagent launches) with a clear message. When no resolver
+		// is present (profiles unavailable), a requested profile is rejected
+		// rather than silently ignored.
+		if task.Agent != "" {
+			if agentResolver == nil {
+				return fmt.Errorf("task %q: agent %q requested but no agent resolver is configured (Subagent Profiles unavailable)", task.ID, task.Agent)
+			}
+			if _, ok := agentResolver(task.Agent); !ok {
+				return fmt.Errorf("task %q: unknown agent %q — no Subagent Profile with that name was found", task.ID, task.Agent)
+			}
 		}
 	}
 
@@ -346,6 +386,26 @@ func WithPlanChecker(ctx context.Context, pc PlanChecker) context.Context {
 // PlanCheckerFrom extracts the PlanChecker from the context, or returns nil.
 func PlanCheckerFrom(ctx context.Context) PlanChecker {
 	if v, ok := ctx.Value(planCheckerKey{}).(PlanChecker); ok {
+		return v
+	}
+	return nil
+}
+
+// --- Agent profile resolver plumbing ---
+
+type agentResolverKey struct{}
+
+// WithAgentResolver injects the resolver into the context so buildSubAgentTask
+// can resolve the `agent` field of a DelegationTask. The resolver is inherited
+// by subagent contexts (it is NOT stripped by subagentCtx), so a redelegating
+// subagent can itself delegate to a named agent profile.
+func WithAgentResolver(ctx context.Context, resolver AgentResolver) context.Context {
+	return context.WithValue(ctx, agentResolverKey{}, resolver)
+}
+
+// AgentResolverFrom extracts the AgentResolver from the context, or returns nil.
+func AgentResolverFrom(ctx context.Context) AgentResolver {
+	if v, ok := ctx.Value(agentResolverKey{}).(AgentResolver); ok {
 		return v
 	}
 	return nil

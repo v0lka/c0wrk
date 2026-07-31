@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractSkillRefs } from './parseReferences'
+import { extractSkillRefs, extractAgentRefs, filterKnownAgentRefs } from './parseReferences'
 import { fuzzyMatch, fuzzyFilter } from './fuzzyMatch'
 
 describe('extractSkillRefs', () => {
@@ -32,6 +32,79 @@ describe('extractSkillRefs', () => {
 
   it('returns empty array for no refs', () => {
     expect(extractSkillRefs('just plain text')).toEqual([])
+  })
+})
+
+describe('extractAgentRefs', () => {
+  it('extracts a single agent ref', () => {
+    expect(extractAgentRefs('Please use #code-reviewer')).toEqual(['code-reviewer'])
+  })
+
+  it('extracts multiple agent refs', () => {
+    expect(extractAgentRefs('#code-reviewer and #test-writer please')).toEqual([
+      'code-reviewer',
+      'test-writer',
+    ])
+  })
+
+  it('deduplicates agent refs', () => {
+    expect(extractAgentRefs('#reviewer and again #reviewer')).toEqual(['reviewer'])
+  })
+
+  it('does not match mid-word hashes (line anchors)', () => {
+    expect(extractAgentRefs('see @x.go#L20 here')).toEqual([])
+  })
+
+  it('matches at start of text', () => {
+    expect(extractAgentRefs('#my-agent is great')).toEqual(['my-agent'])
+  })
+
+  it('matches after newline', () => {
+    expect(extractAgentRefs('line one\n#agent-two')).toEqual(['agent-two'])
+  })
+
+  it('returns empty array for no refs', () => {
+    expect(extractAgentRefs('just plain text')).toEqual([])
+  })
+
+  it('collision: #review distinct from /review', () => {
+    expect(extractAgentRefs('#review /review')).toEqual(['review'])
+    expect(extractSkillRefs('#review /review')).toEqual(['review'])
+  })
+})
+
+describe('filterKnownAgentRefs', () => {
+  it('keeps refs matching known profile names', () => {
+    expect(filterKnownAgentRefs(['code-reviewer', 'test-writer'], ['code-reviewer'])).toEqual([
+      'code-reviewer',
+    ])
+  })
+
+  it('drops refs absent from the catalog', () => {
+    // "#42" (issue/PR number) and "#refactor" (hashtag) are not profiles.
+    expect(filterKnownAgentRefs(['42', 'refactor', 'code-reviewer'], ['code-reviewer'])).toEqual([
+      'code-reviewer',
+    ])
+  })
+
+  it('returns empty when no profiles are known (no false positives)', () => {
+    expect(filterKnownAgentRefs(['42', 'refactor'], [])).toEqual([])
+  })
+
+  it('preserves extraction order (dedup is upstream in extractAgentRefs)', () => {
+    expect(filterKnownAgentRefs(['a', 'b', 'c'], ['b', 'c', 'a'])).toEqual(['a', 'b', 'c'])
+  })
+
+  it('accepts a legitimately all-numeric profile name', () => {
+    // ADR-021 allows lowercase-alnum names; the catalog is the gate, not the
+    // regex, so a real "#42" profile must still resolve.
+    expect(filterKnownAgentRefs(['42'], ['42'])).toEqual(['42'])
+  })
+
+  it('end-to-end: extraction + filter rejects prose #N refs', () => {
+    const text = 'this relates to issue #42 and #123, please run #code-reviewer'
+    const known = ['code-reviewer', 'test-writer']
+    expect(filterKnownAgentRefs(extractAgentRefs(text), known)).toEqual(['code-reviewer'])
   })
 })
 

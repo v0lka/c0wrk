@@ -25,6 +25,7 @@ import (
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/reflector"
 	"github.com/v0lka/sp4rk/agent/router"
+	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
 	sdkmemory "github.com/v0lka/sp4rk/memory"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -50,6 +51,7 @@ type OrchestratorBuilder struct {
 	logger           *slog.Logger
 	vectorSearchFunc builtins.VectorSearchFunc
 	baseSkillDirs    []string     // resolved skill directories shared across sessions (highest priority first)
+	baseAgentDirs    []string     // resolved Subagent Profile directories shared across sessions (highest priority first)
 	proxyClient      *http.Client // proxy-configured HTTP client (nil = direct connection)
 	paramManager     sdktools.ParamManager
 
@@ -446,6 +448,12 @@ func (b *OrchestratorBuilder) Build(
 	// because the workspace path differs between concurrent sessions.
 	sessionSkillMgr := b.buildSessionSkillManager(workspacePath, logger)
 
+	// Per-session AgentManager: project-local `.agents/agents` is always prepended
+	// (highest priority) to the shared base dirs. Built per-session because the
+	// workspace path differs between concurrent sessions. Mirrors the skill
+	// manager; nil-safe when no agent dirs are configured.
+	sessionAgentMgr := b.buildSessionAgentManager(workspacePath, logger)
+
 	// Per-session ToolRegistry clone: skill-derived policy overrides set during
 	// HandleMessage must NOT leak to other concurrent sessions. The clone shares
 	// the underlying sp4rk ToolRegistry (tools themselves are stateless), but each
@@ -493,6 +501,7 @@ func (b *OrchestratorBuilder) Build(
 		TrackingCaller:    trackingCaller,
 		VectorSearchFunc:  b.vectorSearchFunc,
 		SkillManager:      sessionSkillMgr,
+		AgentManager:      sessionAgentMgr,
 		CoreToolRegistry:  sessionRegistry, // for skill policy overrides (per-session)
 		ToolCache:         toolCache,
 		PerToolTruncation: perToolTruncation,
@@ -935,6 +944,52 @@ func (b *OrchestratorBuilder) GetSkillDescriptors(projectSkillDir string) []skil
 	return sm.List()
 }
 
+// SetAgentDirs sets the base (shared) Subagent Profile discovery directories,
+// applied to every session. Paths must already be absolute and expanded; the
+// backend layer owns path resolution (home/~, env vars, relative-to-agent-dir).
+//
+// The project-local `<workspacePath>/.agents/agents` directory is always
+// prepended automatically in GetAgentDescriptors — do NOT include it here.
+func (b *OrchestratorBuilder) SetAgentDirs(dirs []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.baseAgentDirs = append([]string(nil), dirs...)
+}
+
+// GetBaseAgentDirs returns a copy of the base (shared) Subagent Profile
+// discovery directories.
+func (b *OrchestratorBuilder) GetBaseAgentDirs() []string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return append([]string(nil), b.baseAgentDirs...)
+}
+
+// GetAgentDescriptors returns lightweight Subagent Profile descriptors from
+// the shared base dirs and an optional project-local agent directory. This is
+// used by the frontend ListAgents API to avoid creating a full AgentManager
+// per call. Mirrors GetSkillDescriptors.
+func (b *OrchestratorBuilder) GetAgentDescriptors(projectAgentDir string) []agents.AgentDescriptor {
+	b.mu.RLock()
+	baseDirs := append([]string(nil), b.baseAgentDirs...)
+	b.mu.RUnlock()
+
+	dirs := make([]string, 0, len(baseDirs)+1)
+	if projectAgentDir != "" {
+		dirs = append(dirs, projectAgentDir)
+	}
+	dirs = append(dirs, baseDirs...)
+
+	if len(dirs) == 0 {
+		return nil
+	}
+
+	am := agents.NewAgentManager(dirs, b.log())
+	if err := am.Scan(); err != nil {
+		b.log().Warn("GetAgentDescriptors scan failed", "error", err, "dirs", dirs)
+	}
+	return am.List()
+}
+
 // buildSessionSkillManager constructs a per-session SkillManager that always
 // scans the current project's `.agents/skills` (when workspacePath is set) in
 // addition to the shared base dirs. Scan errors are logged and do not abort
@@ -963,6 +1018,36 @@ func (b *OrchestratorBuilder) buildSessionSkillManager(workspacePath string, log
 		}
 	}
 	return sm
+}
+
+// buildSessionAgentManager constructs a per-session AgentManager that always
+// scans the current project's `.agents/agents` (when workspacePath is set) in
+// addition to the shared base dirs. Scan errors are logged and do not abort
+// session start-up. Mirrors buildSessionSkillManager for Subagent Profiles.
+func (b *OrchestratorBuilder) buildSessionAgentManager(workspacePath string, logger *slog.Logger) *agents.AgentManager {
+	b.mu.RLock()
+	baseDirs := append([]string(nil), b.baseAgentDirs...)
+	b.mu.RUnlock()
+
+	dirs := make([]string, 0, len(baseDirs)+1)
+	if workspacePath != "" {
+		dirs = append(dirs, filepath.Join(workspacePath, AgentsRelativePath))
+	}
+	dirs = append(dirs, baseDirs...)
+
+	if len(dirs) == 0 {
+		return nil
+	}
+
+	am := agents.NewAgentManager(dirs, logger)
+	if err := am.Scan(); err != nil {
+		if logger != nil {
+			logger.Warn("session agent scan failed", "error", err, "dirs", dirs)
+		} else {
+			b.log().Warn("session agent scan failed", "error", err, "dirs", dirs)
+		}
+	}
+	return am
 }
 
 // activeSkillPathResolver resolves a skill name to its directory by consulting

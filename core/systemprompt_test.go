@@ -7,6 +7,7 @@ import (
 
 	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/c0wrk/core/prompts"
+	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/prompt"
 	"github.com/v0lka/sp4rk/skills"
@@ -475,6 +476,190 @@ func TestBuildSpecializedAndNormalShareProjectContext(t *testing.T) {
 		}
 		if !strings.Contains(p.prompt, "shared AGENTS.md content") {
 			t.Errorf("%s prompt missing the shared AGENTS.md content", p.name)
+		}
+	}
+}
+
+// TestBuildSystemPrompt_AvailableAgents verifies the Conductor system prompt
+// gains a "## Available Subagents" section when the discovered subagent catalog
+// is attached via WithAvailableAgents. Each non-hidden agent's name and
+// description must appear.
+func TestBuildSystemPrompt_AvailableAgents(t *testing.T) {
+	ctx := tools.WithWorkspacePath(context.Background(), "/test/workspace")
+	ctx = WithAvailableAgents(ctx, []agents.AgentDescriptor{
+		{Name: "code-reviewer", Description: "Reviews Go code for style and correctness."},
+		{Name: "test-writer", Description: "Generates table-driven tests."},
+	})
+
+	result := buildSystemPrompt(ctx, "refactor this", llmModelMetaForTests())
+
+	if !strings.Contains(result, "## Available Subagents") {
+		t.Error("prompt should contain Available Subagents section when agents are available")
+	}
+	if !strings.Contains(result, "code-reviewer") {
+		t.Error("prompt should list the code-reviewer agent name")
+	}
+	if !strings.Contains(result, "Reviews Go code for style and correctness.") {
+		t.Error("prompt should carry the code-reviewer description")
+	}
+	if !strings.Contains(result, "test-writer") {
+		t.Error("prompt should list the test-writer agent name")
+	}
+}
+
+// TestBuildSystemPrompt_AvailableAgents_HiddenExcluded verifies that hidden
+// agents are NOT advertised in the public "Available Subagents" roster.
+func TestBuildSystemPrompt_AvailableAgents_HiddenExcluded(t *testing.T) {
+	ctx := tools.WithWorkspacePath(context.Background(), "/test/workspace")
+	ctx = WithAvailableAgents(ctx, []agents.AgentDescriptor{
+		{Name: "public-agent", Description: "visible"},
+		{Name: "secret-agent", Description: "should not show", Hidden: true},
+	})
+
+	result := buildSystemPrompt(ctx, "do work", llmModelMetaForTests())
+
+	if !strings.Contains(result, "## Available Subagents") {
+		t.Fatal("expected Available Subagents section")
+	}
+	if strings.Contains(result, "secret-agent") {
+		t.Error("hidden agent must NOT appear in the public Available Subagents roster")
+	}
+	if !strings.Contains(result, "public-agent") {
+		t.Error("non-hidden agent should appear in the roster")
+	}
+}
+
+// TestBuildSystemPrompt_NoAvailableAgents verifies that when no agents are in
+// the context, the prompt does NOT contain the Available Subagents section
+// (no regression for projects without subagents).
+func TestBuildSystemPrompt_NoAvailableAgents(t *testing.T) {
+	ctx := tools.WithWorkspacePath(context.Background(), "/test/workspace")
+
+	result := buildSystemPrompt(ctx, "do work", llmModelMetaForTests())
+
+	if strings.Contains(result, "Available Subagents") {
+		t.Error("prompt should NOT contain Available Subagents section when no agents are available")
+	}
+}
+
+// TestBuildSystemPrompt_RequestedAgents verifies that explicit #mentions
+// (UserAgents) produce a "## Requested Subagents" directive section, and that
+// the directive resolves each named agent's description from the catalog.
+func TestBuildSystemPrompt_RequestedAgents(t *testing.T) {
+	ctx := tools.WithWorkspacePath(context.Background(), "/test/workspace")
+	ctx = WithAvailableAgents(ctx, []agents.AgentDescriptor{
+		{Name: "code-reviewer", Description: "Reviews Go code for style and correctness."},
+	})
+	ctx = WithUserAgents(ctx, []string{"code-reviewer"})
+
+	result := buildSystemPrompt(ctx, "review my code #code-reviewer", llmModelMetaForTests())
+
+	if !strings.Contains(result, "## Requested Subagents") {
+		t.Fatal("prompt should contain Requested Subagents section when agents are #mentioned")
+	}
+	if !strings.Contains(result, "code-reviewer") {
+		t.Error("prompt should name the requested agent")
+	}
+	if !strings.Contains(result, "Reviews Go code for style and correctness.") {
+		t.Error("prompt should resolve the requested agent's description from the catalog")
+	}
+	if !strings.Contains(result, "delegate(agent:") {
+		t.Error("requested section should direct the agent to use delegate(agent: \"name\")")
+	}
+}
+
+// TestBuildSystemPrompt_RequestedAgents_UnknownKeptWithoutDescription verifies
+// that a requested agent not present in the catalog is still listed (the user
+// explicitly asked for it) but without a description, surfacing the mismatch.
+func TestBuildSystemPrompt_RequestedAgents_UnknownKeptWithoutDescription(t *testing.T) {
+	ctx := tools.WithWorkspacePath(context.Background(), "/test/workspace")
+	ctx = WithUserAgents(ctx, []string{"does-not-exist"})
+
+	result := buildSystemPrompt(ctx, "delegate #does-not-exist", llmModelMetaForTests())
+
+	if !strings.Contains(result, "## Requested Subagents") {
+		t.Fatal("requested section should render even for unknown agents")
+	}
+	if !strings.Contains(result, "does-not-exist") {
+		t.Error("unknown requested agent name must still be listed")
+	}
+}
+
+// TestBuildSystemPrompt_NoRequestedAgents verifies that without #mentions there
+// is no Requested Subagents section (no regression).
+func TestBuildSystemPrompt_NoRequestedAgents(t *testing.T) {
+	ctx := tools.WithWorkspacePath(context.Background(), "/test/workspace")
+	// Available catalog present but no explicit mentions.
+	ctx = WithAvailableAgents(ctx, []agents.AgentDescriptor{
+		{Name: "code-reviewer", Description: "Reviews Go code."},
+	})
+
+	result := buildSystemPrompt(ctx, "do work", llmModelMetaForTests())
+
+	if strings.Contains(result, "Requested Subagents") {
+		t.Error("prompt should NOT contain Requested Subagents section when no agents are #mentioned")
+	}
+}
+
+// TestBuildSpecializedSystemPrompt_OmitsAgentSections verifies that the
+// specialized prompt (goal derivation) does NOT contain the Available or
+// Requested Subagents sections, even when the context carries agents. The
+// sections are Conductor-only — specialized runs define their own delegation
+// semantics.
+func TestBuildSpecializedSystemPrompt_OmitsAgentSections(t *testing.T) {
+	ctx := tools.WithWorkspacePath(context.Background(), "/test/workspace")
+	ctx = WithAvailableAgents(ctx, []agents.AgentDescriptor{
+		{Name: "code-reviewer", Description: "Reviews Go code."},
+	})
+	ctx = WithUserAgents(ctx, []string{"code-reviewer"})
+
+	specialized := buildSpecializedSystemPrompt(ctx, "derive a goal", llmModelMetaForTests(), prompts.GoalDerivation)
+
+	if strings.Contains(specialized, "Available Subagents") {
+		t.Error("specialized prompt must NOT contain the Available Subagents section")
+	}
+	if strings.Contains(specialized, "Requested Subagents") {
+		t.Error("specialized prompt must NOT contain the Requested Subagents section")
+	}
+}
+
+// TestWithAvailableAgents_RoundTrip and TestWithUserAgents_RoundTrip verify the
+// context helpers round-trip and default to nil/empty on a bare context.
+func TestWithAvailableAgents_RoundTrip(t *testing.T) {
+	if got := AvailableAgentsFromContext(context.Background()); got != nil {
+		t.Errorf("empty ctx: got %v, want nil", got)
+	}
+
+	want := []agents.AgentDescriptor{
+		{Name: "a", Description: "alpha"},
+		{Name: "b", Description: "beta", Hidden: true},
+	}
+	ctx := WithAvailableAgents(context.Background(), want)
+	got := AvailableAgentsFromContext(ctx)
+	if len(got) != len(want) {
+		t.Fatalf("got %d descriptors, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("got[%d] = %+v, want %+v", i, got[i], w)
+		}
+	}
+}
+
+func TestWithUserAgents_RoundTrip(t *testing.T) {
+	if got := UserAgentsFromContext(context.Background()); got != nil {
+		t.Errorf("empty ctx: got %v, want nil", got)
+	}
+
+	want := []string{"code-reviewer", "test-writer"}
+	ctx := WithUserAgents(context.Background(), want)
+	got := UserAgentsFromContext(ctx)
+	if len(got) != len(want) {
+		t.Fatalf("got %d agents, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("got[%d] = %q, want %q", i, got[i], w)
 		}
 	}
 }

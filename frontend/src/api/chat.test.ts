@@ -19,7 +19,7 @@ vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn(), warn: vi.fn() },
 }))
 
-import { getPendingActions } from '@/api/chat'
+import { getPendingActions, sendMessage } from '@/api/chat'
 
 describe('getPendingActions null-array normalization', () => {
   beforeEach(() => {
@@ -66,5 +66,47 @@ describe('getPendingActions null-array normalization', () => {
     const result = await getPendingActions('sess-1')
 
     expect(result).toBeNull()
+  })
+})
+
+// sendMessage must forward activeSkills + activeAgents to the backend binding
+// in the EXACT argument positions the Go SendMessage expects (arg index 3 and
+// 4). A positional drift here silently drops #mentions / /skills before they
+// reach HandleOptions.
+describe('sendMessage forwards skill and agent refs', () => {
+  beforeEach(() => {
+    delete mockApp.SendMessage
+  })
+
+  it('passes activeAgents through in position 4 (and activeSkills in position 3)', async () => {
+    const calls: unknown[][] = []
+    mockApp.SendMessage = vi.fn((...args: unknown[]) => {
+      calls.push(args)
+      return Promise.resolve()
+    })
+
+    await sendMessage('sess-1', 'review this #code-reviewer', ['explore'], ['code-reviewer'])
+
+    expect(mockApp.SendMessage).toHaveBeenCalledTimes(1)
+    const args = calls[0]!
+    expect(args[0]).toBe('sess-1')
+    expect(args[1]).toBe('review this #code-reviewer')
+    expect(args[2]).toEqual(['explore'])
+    // activeAgents must land in position 4 — this is the #mention wiring.
+    expect(args[3]).toEqual(['code-reviewer'])
+  })
+
+  it('defaults activeAgents and activeSkills to empty arrays when omitted', async () => {
+    const calls: unknown[][] = []
+    mockApp.SendMessage = vi.fn((...args: unknown[]) => {
+      calls.push(args)
+      return Promise.resolve()
+    })
+
+    await sendMessage('sess-1', 'plain message')
+
+    const args = calls[0]!
+    expect(args[2]).toEqual([])
+    expect(args[3]).toEqual([])
   })
 })

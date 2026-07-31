@@ -2,13 +2,15 @@
 // (text / skill / file refs). Extracted from UserMessageContent.tsx so the
 // component file only exports a React component (react-refresh requirement).
 
-// Combined pattern for splitting: matches /skill-name or @path refs.
+// Combined pattern for splitting: matches /skill-name, #agent-name, or @path refs.
 // Line anchors accept an optional `L` prefix (e.g. #L20-L36), consistent with
-// GitHub canonical form and the backend preprocessor.
-const REF_PATTERN = /(?:^|\s)(\/[\w-]+|@(?:[^\s\\]|\\.)+(?:#L?\d+(?:-L?\d+)?)?)/g
+// GitHub canonical form and the backend preprocessor. The #agent-name alt must
+// only match when followed by [\w-]+ with a word boundary so a trailing @file
+// line anchor (@x.go#L20) is never captured as an agent.
+const REF_PATTERN = /(?:^|\s)(\/[\w-]+|#([\w-]+)|@(?:[^\s\\]|\\.)+(?:#L?\d+(?:-L?\d+)?)?)/g
 
 export interface Segment {
-    type: 'text' | 'skill' | 'file'
+    type: 'text' | 'skill' | 'agent' | 'file'
     content: string
     // For file refs:
     path?: string
@@ -35,6 +37,8 @@ export function parseSegments(content: string): Segment[] {
 
         if (ref.startsWith('/')) {
             segments.push({ type: 'skill', content: ref.slice(1) })
+        } else if (ref.startsWith('#')) {
+            segments.push({ type: 'agent', content: match[2] ?? ref.slice(1) })
         } else if (ref.startsWith('@')) {
             const raw = ref.slice(1)
             // Parse line number suffix. Accept optional `L` prefix on either

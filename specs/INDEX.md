@@ -39,6 +39,7 @@
 | macOS webview recovery / blank screen after sleep | [decisions/018-macos-webview-recovery.md](decisions/018-macos-webview-recovery.md) |
 | "Why was X designed this way?"           | [decisions/](decisions/)                                                 |
 | Multi-source AGENTS.md threat model     | [decisions/020-multi-source-agents-md-threat-model.md](decisions/020-multi-source-agents-md-threat-model.md) |
+| Subagent Profiles (`.agents/agents`, `#agent-name` mentions) | [decisions/021-subagents.md](decisions/021-subagents.md) |
 
 ## Domain Dependency Graph
 
@@ -137,3 +138,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [018-macos-webview-recovery.md](decisions/018-macos-webview-recovery.md) - macOS webview recovery: native process-death hook + deferred wake reload → Supersedes ADR-017 (017-macos-wake-reload)
 - [019-goal-mode.md](decisions/019-goal-mode.md) - Goal mode: self-agent + evidence-mandate, derive-then-confirm UX, persist + pause/resume, anti-spin auto-pause
 - [020-multi-source-agents-md-threat-model.md](decisions/020-multi-source-agents-md-threat-model.md) - Threat model for global/c0wrk/project AGENTS.md sources (all untrusted advisory; tool-policy pipeline is the hard boundary)
+- [021-subagents.md](decisions/021-subagents.md) - Subagent Profiles: `.agents/agents` persona/budget profiles applied at delegation time, `#agent-name` mention routing (parallels skills)

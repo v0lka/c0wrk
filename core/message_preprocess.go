@@ -24,11 +24,17 @@ var multiSpaceRe = regexp.MustCompile(`  +`)
 
 // PreprocessMessageText transforms a user message for the orchestrator:
 //  1. Strips /skill-name references for each skill in activeSkills.
-//  2. Converts @file-path references to fileref:// URIs, resolving each
+//  2. Strips #agent-name references for each agent in activeAgents.
+//  3. Converts @file-path references to fileref:// URIs, resolving each
 //     relative path against workspacePath so the LLM receives unambiguous
 //     absolute paths. Absolute and home-relative (~/...) paths, and refs
 //     when workspacePath is empty, are left unchanged.
-func PreprocessMessageText(text string, activeSkills []string, workspacePath string) string {
+//
+// Only known agent names (from activeAgents) are stripped — exactly mirroring
+// /skill stripping — so a GitHub-style line anchor like @file#L20 is never
+// touched (the "#" there is glued to the path with no preceding whitespace,
+// and "L20" is not a known agent name regardless).
+func PreprocessMessageText(text string, activeSkills, activeAgents []string, workspacePath string) string {
 	result := text
 
 	// Strip skill references.
@@ -37,6 +43,21 @@ func PreprocessMessageText(text string, activeSkills []string, workspacePath str
 		result = pattern.ReplaceAllStringFunc(result, func(match string) string {
 			// Preserve surrounding whitespace boundaries: if the match had leading/trailing space,
 			// collapse to a single space; if it was at start/end, remove entirely.
+			leading := match != "" && match[0] == ' '
+			trailing := match != "" && match[len(match)-1] == ' '
+			if leading || trailing {
+				return " "
+			}
+			return ""
+		})
+	}
+
+	// Strip agent references (#agent-name). Mirrors /skill stripping: only
+	// explicitly mentioned agent names are removed, preserving surrounding
+	// whitespace boundaries.
+	for _, name := range activeAgents {
+		pattern := regexp.MustCompile(`(?:^|\s)#` + regexp.QuoteMeta(name) + `(?:\s|$)`)
+		result = pattern.ReplaceAllStringFunc(result, func(match string) string {
 			leading := match != "" && match[0] == ' '
 			trailing := match != "" && match[len(match)-1] == ' '
 			if leading || trailing {

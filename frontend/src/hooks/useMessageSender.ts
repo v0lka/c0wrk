@@ -12,7 +12,7 @@ import { logger } from '@/lib/logger'
 
 interface UseMessageSenderResult {
   /** Send a user message, auto-creating a session if needed. */
-  send: (messageText: string, activeSkills?: string[]) => Promise<void>
+  send: (messageText: string, activeSkills?: string[], activeAgents?: string[]) => Promise<void>
   /** Cancel the running task in the active session. */
   cancel: () => Promise<void>
   /** True while the send/create-session RPC is in flight. */
@@ -22,7 +22,7 @@ interface UseMessageSenderResult {
 export function useMessageSender(): UseMessageSenderResult {
   const [isProcessing, setIsProcessing] = useState(false)
 
-  const send = useCallback(async (messageText: string, activeSkills?: string[]) => {
+  const send = useCallback(async (messageText: string, activeSkills?: string[], activeAgents?: string[]) => {
     if (!messageText.trim()) return
     setIsProcessing(true)
 
@@ -57,7 +57,7 @@ export function useMessageSender(): UseMessageSenderResult {
       const reasoningOverride = useInputModeStore.getState().selectedReasoning ?? ''
       const goalEnabled = useInputModeStore.getState().goalEnabled
       const goalBudget = useInputModeStore.getState().goalBudget
-      await sendMessage(sessionId, messageText, activeSkills ?? [], modelOverride, reasoningOverride, goalEnabled, goalBudget)
+      await sendMessage(sessionId, messageText, activeSkills ?? [], activeAgents ?? [], modelOverride, reasoningOverride, goalEnabled, goalBudget)
       // Goal is per-task opt-in: after a goal-defining message is sent, reset
       // the toggle so the user explicitly re-enables it for the next goal
       // (rather than silently staying in goal mode across every subsequent

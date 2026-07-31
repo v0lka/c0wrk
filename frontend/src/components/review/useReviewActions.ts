@@ -95,7 +95,7 @@ export function useReviewActions(sessionId: string) {
       // fails, clear the flag so no spurious reopen happens.
       enterReviewLoop(sessionId)
       try {
-        await chatApi.sendMessage(sessionId, commentsText, [], '', '', false, '', true)
+        await chatApi.sendMessage(sessionId, commentsText, [], [], '', '', false, '', true)
       } catch (err) {
         exitReviewLoop(sessionId)
         throw err

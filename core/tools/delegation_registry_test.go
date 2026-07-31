@@ -3,10 +3,12 @@ package tools
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/agents"
 )
 
 func TestDelegationRegistry_RegisterAndStart(t *testing.T) {
@@ -160,7 +162,7 @@ func TestValidateDelegationTasks_AsyncDep(t *testing.T) {
 		{ID: "A", Summary: "async task", Task: "do stuff", Mode: "async"},
 		{ID: "B", Summary: "blocking dep", Task: "do more", Mode: "blocking", DependsOn: []string{"A"}},
 	}
-	err := validateDelegationTasks(tasks, r)
+	err := validateDelegationTasks(tasks, r, nil)
 	if err == nil {
 		t.Fatal("expected error for depending on async task")
 	}
@@ -172,7 +174,7 @@ func TestValidateDelegationTasks_Cycle(t *testing.T) {
 		{ID: "A", Summary: "task A", Task: "do stuff", DependsOn: []string{"B"}},
 		{ID: "B", Summary: "task B", Task: "do stuff", DependsOn: []string{"A"}},
 	}
-	err := validateDelegationTasks(tasks, r)
+	err := validateDelegationTasks(tasks, r, nil)
 	if err == nil {
 		t.Fatal("expected cycle error")
 	}
@@ -236,4 +238,69 @@ func TestDelegationRegistry_StartedAt(t *testing.T) {
 		t.Error("expected non-zero CompletedAt")
 	}
 	_ = time.Now // keep import
+}
+
+// --- validateDelegationTasks agent-profile checks ---
+
+// testAgentProfileForTools builds an *agents.Agent for validation tests.
+func testAgentProfileForTools(name string) *agents.Agent {
+	return &agents.Agent{Metadata: agents.AgentMetadata{Name: name}, Body: "b"}
+}
+
+func TestValidateDelegationTasks_UnknownAgentRejected(t *testing.T) {
+	r := NewDelegationRegistry()
+	resolver := AgentResolver(func(name string) (*agents.Agent, bool) {
+		if name == "real" {
+			return testAgentProfileForTools("real"), true
+		}
+		return nil, false
+	})
+	tasks := []DelegationTask{
+		{ID: "A", Summary: "s", Task: "do work", Agent: "ghost"},
+	}
+	err := validateDelegationTasks(tasks, r, resolver)
+	if err == nil {
+		t.Fatal("expected error for unknown agent")
+	}
+	if !strings.Contains(err.Error(), "unknown agent") {
+		t.Errorf("error should mention unknown agent, got: %v", err)
+	}
+}
+
+func TestValidateDelegationTasks_KnownAgentAccepted(t *testing.T) {
+	r := NewDelegationRegistry()
+	resolver := AgentResolver(func(name string) (*agents.Agent, bool) {
+		return testAgentProfileForTools("real"), true
+	})
+	tasks := []DelegationTask{
+		{ID: "A", Summary: "s", Task: "do work", Agent: "real"},
+	}
+	if err := validateDelegationTasks(tasks, r, resolver); err != nil {
+		t.Fatalf("known agent must be accepted, got: %v", err)
+	}
+}
+
+func TestValidateDelegationTasks_AgentWithoutResolverRejected(t *testing.T) {
+	r := NewDelegationRegistry()
+	tasks := []DelegationTask{
+		{ID: "A", Summary: "s", Task: "do work", Agent: "x"},
+	}
+	err := validateDelegationTasks(tasks, r, nil)
+	if err == nil {
+		t.Fatal("expected error when agent requested with no resolver")
+	}
+	if !strings.Contains(err.Error(), "no agent resolver") {
+		t.Errorf("error should mention missing resolver, got: %v", err)
+	}
+}
+
+func TestValidateDelegationTasks_NoAgentUnchangedWithoutResolver(t *testing.T) {
+	r := NewDelegationRegistry()
+	tasks := []DelegationTask{
+		{ID: "A", Summary: "s", Task: "do work"},
+	}
+	// No agent field → resolver never consulted, accepted without one.
+	if err := validateDelegationTasks(tasks, r, nil); err != nil {
+		t.Fatalf("no-agent task must pass without resolver, got: %v", err)
+	}
 }

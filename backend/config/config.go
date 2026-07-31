@@ -27,6 +27,7 @@ type Config struct {
 	Executor      ExecutorConfig      `yaml:"executor"`
 	Security      SecurityConfig      `yaml:"security"`
 	Skills        SkillsConfig        `yaml:"skills"`
+	Agents        AgentsConfig        `yaml:"agents"`
 	Search        SearchConfig        `yaml:"search"`
 	ToolLimits    ToolLimitsConfig    `yaml:"toolLimits"`
 	Timeouts      TimeoutsConfig      `yaml:"timeouts"`
@@ -347,6 +348,15 @@ type GoalLoopConfig struct {
 type SkillsConfig struct {
 	// Dirs lists skill discovery directories in priority order (highest first).
 	// Paths may be absolute or relative to the agent directory (~/.c0wrk).
+	Dirs []string `yaml:"dirs"`
+}
+
+// AgentsConfig holds Subagent Profile (AGENT.md) discovery configuration.
+// Mirrors SkillsConfig: the project-local `.agents/agents` directory is always
+// scanned automatically (see core/builder.go) and does NOT need to be listed.
+type AgentsConfig struct {
+	// Dirs lists subagent profile discovery directories in priority order
+	// (highest first). Paths may be absolute or relative to the agent dir.
 	Dirs []string `yaml:"dirs"`
 }
 

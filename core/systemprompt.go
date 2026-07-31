@@ -181,6 +181,79 @@ func formatActiveSkills(ctx context.Context, preamble string) string {
 	return sb.String()
 }
 
+// formatAvailableAgents returns the "## Available Subagents" prompt section
+// listing the discovered subagent catalog (name + description), or an empty
+// string when no agents are available in the context. Hidden agents are
+// excluded from this public section — they are still invocable by explicit
+// mention, but advertising them would pollute the catalog the Conductor
+// considers for autonomous delegation.
+//
+// This is the implicit/discoverable view: the Conductor sees the roster and
+// MAY delegate to any of them as the task warrants. It is emitted only for the
+// main Conductor (not specialized runs like goal derivation), and only when the
+// catalog is non-empty, so the absence of agents produces no regression.
+func formatAvailableAgents(ctx context.Context) string {
+	descriptors := AvailableAgentsFromContext(ctx)
+	if len(descriptors) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\n## Available Subagents\n")
+	sb.WriteString("The following subagents are available for delegation. Delegate coherent units of work to them when doing so keeps your context lean or enables parallelism. Each runs in its own isolated ReAct loop and reports back a summary. Specify an agent by name via delegate(agent: \"name\") when a subagent's specialty fits the unit of work.\n\n")
+	for _, d := range descriptors {
+		if d.Hidden {
+			continue
+		}
+		sb.WriteString("- " + d.Name)
+		if d.Description != "" {
+			sb.WriteString(": " + d.Description)
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// formatRequestedAgents returns the "## Requested Subagents" prompt section — a
+// directive to delegate the task to the specific agents the user named via
+// #agent-name mentions — or an empty string when no agents were requested.
+//
+// This is the explicit/directive view: the user's #mentions are an instruction
+// to delegate, not merely a hint. Each requested name is resolved to its
+// description from the discovered catalog (available in context) so the
+// directive can carry the agent's purpose. An unknown name is still listed (the
+// user asked for it) but without a description, so the Conductor can surface the
+// mismatch rather than silently dropping the request.
+//
+// Like formatAvailableAgents, this is emitted only for the main Conductor.
+func formatRequestedAgents(ctx context.Context) string {
+	requested := UserAgentsFromContext(ctx)
+	if len(requested) == 0 {
+		return ""
+	}
+
+	// Resolve descriptions from the discovered catalog for context. Unknown
+	// names are kept (the user explicitly asked for them) but have no
+	// description, surfacing a possible mismatch rather than hiding it.
+	descriptors := AvailableAgentsFromContext(ctx)
+	descBy := make(map[string]string, len(descriptors))
+	for _, d := range descriptors {
+		descBy[d.Name] = d.Description
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\n## Requested Subagents\n")
+	sb.WriteString("The user explicitly requested delegation to the following subagents. You MUST delegate the corresponding units of work to each named agent via delegate(agent: \"name\") rather than handling them inline, unless delegation is genuinely impossible (e.g. the named agent does not exist — in which case surface the problem to the user).\n\n")
+	for _, name := range requested {
+		sb.WriteString("- " + name)
+		if desc, ok := descBy[name]; ok && desc != "" {
+			sb.WriteString(": " + desc)
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
 // renderGoalModeSection builds the goal-mode prompt section from an active
 // GoalState. It substitutes the condition, verify clause, and a budget line
 // into the goal_mode.md template. Returns an empty string if the goal has no
@@ -432,6 +505,20 @@ func buildSystemPromptWith(ctx context.Context, userMessage string, modelMeta ll
 	b.Core(formatActiveSkills(ctx,
 		"The following skills have been activated for this task. Follow their instructions carefully.",
 	))
+
+	// Subagent roster sections — Conductor-only (omitted for specialized runs
+	// like goal derivation, which define their own delegation semantics). The
+	// discovered catalog ("Available Subagents") is session-invariant (changes
+	// only on project switch / rescan). The explicit #mentions ("Requested
+	// Subagents") are per-message, but stable across one task's ReAct
+	// iterations (the ctx is set once per HandleMessage), so both sit safely
+	// in the cacheable prefix. Empty in both cases (no agents discovered /
+	// none mentioned) produces no section, so a project with no subagents sees
+	// no regression.
+	if !spec.specialized {
+		b.Core(formatAvailableAgents(ctx))
+		b.Core(formatRequestedAgents(ctx))
+	}
 
 	// CacheBreak: the volatile per-turn goal budget line and vector hints
 	// (which may change between steps as the index warms up) remain in the

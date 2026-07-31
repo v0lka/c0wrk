@@ -593,7 +593,7 @@ func TestManager_SendMessage_SessionNotFound(t *testing.T) {
 	manager, _, _ := testManager(t)
 
 	ctx := context.Background()
-	err := manager.SendMessage(ctx, "non-existent", "hello", nil, "", "", false, "", false)
+	err := manager.SendMessage(ctx, "non-existent", "hello", nil, nil, "", "", false, "", false)
 	if err == nil {
 		t.Error("SendMessage should return error for non-existent session")
 	}
@@ -613,7 +613,7 @@ func TestManager_SendMessage_AlreadyActive(t *testing.T) {
 
 	// Try to send message while active
 	ctx := context.Background()
-	err := manager.SendMessage(ctx, info.ID, "hello", nil, "", "", false, "", false)
+	err := manager.SendMessage(ctx, info.ID, "hello", nil, nil, "", "", false, "", false)
 	if err == nil {
 		t.Error("SendMessage should return error when session is already active")
 	}
@@ -993,7 +993,7 @@ func TestManager_SendMessage_AllowsParallelActiveSessions(t *testing.T) {
 
 	// Sending message to session 1 again should fail (same session double-send)
 	ctx := context.Background()
-	err = manager.SendMessage(ctx, info1.ID, "hello", nil, "", "", false, "", false)
+	err = manager.SendMessage(ctx, info1.ID, "hello", nil, nil, "", "", false, "", false)
 	if err == nil {
 		t.Fatal("expected error when sending message to already-active session")
 	}

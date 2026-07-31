@@ -1342,10 +1342,11 @@ func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage, workspacePath str
 		case "user":
 			// The store keeps the raw text (with /skill and @file markers)
 			// for display; the live history stored the preprocessed form.
-			// Skill names are unknown at restore time, so only the @file
-			// normalization is applied. Relative @file paths are resolved
-			// against the session workspace, mirroring the live preprocessing.
-			lm := llm.Message{Role: "user", Content: core.PreprocessMessageText(msg.Content, nil, workspacePath)}
+			// Skill and agent names are unknown at restore time, so only the
+			// @file normalization is applied. Relative @file paths are
+			// resolved against the session workspace, mirroring the live
+			// preprocessing.
+			lm := llm.Message{Role: "user", Content: core.PreprocessMessageText(msg.Content, nil, nil, workspacePath)}
 			// Reconstruct image content blocks from persisted metadata
 			// (thumbnail + on-disk path). The DB stores only the path, never
 			// the full base64, so the image data is reloaded from

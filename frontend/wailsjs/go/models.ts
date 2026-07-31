@@ -1,5 +1,19 @@
 export namespace backend {
 	
+	export class AgentDescriptorDTO {
+	    name: string;
+	    description: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AgentDescriptorDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	    }
+	}
 	export class BlackboardAttachmentResponse {
 	    id: string;
 	    original_name: string;

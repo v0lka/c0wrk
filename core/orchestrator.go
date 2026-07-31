@@ -18,6 +18,7 @@ import (
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/reflector"
 	"github.com/v0lka/sp4rk/agent/router"
+	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
 	"github.com/v0lka/sp4rk/skills"
@@ -204,6 +205,7 @@ type Orchestrator struct {
 	tokenCounter        llm.TokenCounter      // for token counting in planner history compaction
 	vectorSearchFunc    builtins.VectorSearchFunc
 	skillManager        *skills.SkillManager // for skill discovery and activation
+	agentManager        *agents.AgentManager // for subagent discovery (drives "Available/Requested Subagents" prompt sections)
 
 	// Conductor dependencies (stored at construction time for runConductor).
 	reflector        *reflector.Reflector
@@ -331,6 +333,7 @@ type OrchestratorDeps struct {
 	TrackingCaller   *llm.TrackingCaller       // optional, for per-step context tracker wiring
 	VectorSearchFunc builtins.VectorSearchFunc // optional, for auto-RAG hint generation
 	SkillManager     *skills.SkillManager      // optional, for skill discovery and activation
+	AgentManager     *agents.AgentManager      // optional, for subagent discovery ("Available/Requested Subagents" prompt sections); nil-safe
 	CoreToolRegistry *tools.ToolRegistry       // core tool registry for skill policy overrides
 	ModelSwitcher    *llm.Router               // raw LLM router for per-message model override
 
@@ -394,6 +397,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		tokenCounter:     deps.TokenCounter,
 		vectorSearchFunc: deps.VectorSearchFunc,
 		skillManager:     deps.SkillManager,
+		agentManager:     deps.AgentManager,
 		coreToolRegistry: deps.CoreToolRegistry,
 		reflector:        deps.Reflector,
 		providerName:     deps.ProviderName,

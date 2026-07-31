@@ -244,6 +244,13 @@ func ProjectSkillsPath(workspacePath string) string {
 	return filepath.Join(workspacePath, ".agents", "skills")
 }
 
+// ProjectAgentsPath returns the project-local Subagent Profiles directory.
+// This is <workspacePath>/.agents/agents. Mirrors ProjectSkillsPath for the
+// agents package's AGENT.md discovery.
+func ProjectAgentsPath(workspacePath string) string {
+	return filepath.Join(workspacePath, ".agents", "agents")
+}
+
 // SessionStepDumpDir returns the per-step dump directory for a session,
 // derived from the session's LLM dump path.
 func SessionStepDumpDir(agentDir, projectID, sessionID string) string {

@@ -11,6 +11,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/skills"
 	_ "modernc.org/sqlite"
@@ -30,6 +31,7 @@ type mockBuilder struct {
 	optimizePromptCalls     int
 	getBaseSkillDirsCalls   int
 	generateCommitMsgCalls  int
+	getBaseAgentDirsCalls   int
 
 	// Configurable return values for methods that have them.
 	rebuildRouterErr      error
@@ -45,6 +47,9 @@ type mockBuilder struct {
 
 	getSkillDescriptorsCalls int
 	getSkillDescriptorsRes   []skills.SkillDescriptor
+
+	getAgentDescriptorsCalls int
+	getAgentDescriptorsRes   []agents.AgentDescriptor
 }
 
 func (m *mockBuilder) RebuildJudge(_ *core.BuilderConfig) {
@@ -115,6 +120,18 @@ func (m *mockBuilder) GetSkillDescriptors(string) []skills.SkillDescriptor {
 	defer m.mu.Unlock()
 	m.getSkillDescriptorsCalls++
 	return m.getSkillDescriptorsRes
+}
+func (m *mockBuilder) GetBaseAgentDirs() []string {
+	m.mu.Lock()
+	m.getBaseAgentDirsCalls++
+	m.mu.Unlock()
+	return nil
+}
+func (m *mockBuilder) GetAgentDescriptors(string) []agents.AgentDescriptor {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.getAgentDescriptorsCalls++
+	return m.getAgentDescriptorsRes
 }
 func (m *mockBuilder) ModelRegistry() *llm.ModelRegistry {
 	return nil

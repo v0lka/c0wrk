@@ -19,6 +19,7 @@ export async function sendMessage(
   sessionId: string,
   text: string,
   activeSkills: string[] = [],
+  activeAgents: string[] = [],
   modelOverride: string = '',
   reasoningOverride: string = '',
   goal: boolean = false,
@@ -27,7 +28,7 @@ export async function sendMessage(
 ): Promise<void> {
   try {
     const app = getApp()
-    await app.SendMessage(sessionId, text, activeSkills, modelOverride, reasoningOverride, goal, goalBudget, reviewMode)
+    await app.SendMessage(sessionId, text, activeSkills, activeAgents, modelOverride, reasoningOverride, goal, goalBudget, reviewMode)
   } catch (err) {
     logger.error('Failed to send message:', err)
     throw err

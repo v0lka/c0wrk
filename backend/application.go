@@ -126,6 +126,16 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 		builder.SetSkillDirs(skillDirs)
 	}
 
+	// 3c. Subagent Profile discovery directories. Mirrors the skill dirs
+	// wiring: the builder creates a per-session AgentManager on each Build()
+	// and always prepends the current project's `.agents/agents` directory
+	// (see core/builder.go). Here we resolve and register the shared base
+	// dirs from config (defaults applied in config.ApplyDefaults).
+	if len(cfg.Config.Agents.Dirs) > 0 {
+		agentDirs := resolveSkillDirs(cfg.Config.Agents.Dirs, cfg.AgentDir, config.ExpandEnvVars)
+		builder.SetAgentDirs(agentDirs)
+	}
+
 	// 4. Set confirmation function on the shared registry.
 	if cfg.ConfirmFunc != nil {
 		builder.ToolRegistry().SetConfirmFunc(cfg.ConfirmFunc)

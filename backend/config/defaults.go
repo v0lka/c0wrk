@@ -18,6 +18,15 @@ var defaultSkillDirs = []string{
 	"~/.c0wrk/.agents/skills",
 }
 
+// defaultAgentDirs is the default list of Subagent Profile discovery
+// directories used when the `agents.dirs` config key is omitted. Mirrors
+// defaultSkillDirs for AGENT.md files. The current project's `.agents/agents`
+// directory is always scanned automatically (see core/builder.go).
+var defaultAgentDirs = []string{
+	"~/.agents/agents",
+	"~/.c0wrk/.agents/agents",
+}
+
 // ApplyDefaults sets default values for zero-value fields in the configuration.
 func ApplyDefaults(cfg *Config) {
 	// Log level defaults to DEBUG for maximum diagnostic visibility.
@@ -29,6 +38,12 @@ func ApplyDefaults(cfg *Config) {
 	// explicitly opted out of base dirs, keep it empty).
 	if cfg.Skills.Dirs == nil {
 		cfg.Skills.Dirs = append([]string(nil), defaultSkillDirs...)
+	}
+
+	// Subagent Profile discovery defaults (nil => apply defaults; empty slice
+	// => user explicitly opted out of base dirs, keep it empty). Mirrors skills.
+	if cfg.Agents.Dirs == nil {
+		cfg.Agents.Dirs = append([]string(nil), defaultAgentDirs...)
 	}
 
 	// LLM retry defaults — keep this in sync with the sp4rk Router defaults

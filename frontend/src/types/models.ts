@@ -246,6 +246,11 @@ export interface SkillDescriptor {
   description: string
 }
 
+export interface AgentDescriptor {
+  name: string
+  description: string
+}
+
 // --- Config types ---
 
 export interface ConfigProviderFull {

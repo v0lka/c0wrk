@@ -6,12 +6,13 @@ import {
 } from '@codemirror/autocomplete'
 import type { Extension } from '@codemirror/state'
 import { listSkills } from '@/api/skills'
+import { listAgents } from '@/api/agents'
 import { listDirectory } from '@/api/workspace'
 import { subscribe } from '@/api/runtime'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { fuzzyFilter } from '@/lib/fuzzyMatch'
-import type { SkillDescriptor, FileEntry } from '@/types/models'
+import type { SkillDescriptor, AgentDescriptor, FileEntry } from '@/types/models'
 
 const DEFAULT_FILE_ICON = '\uf15b'
 const DEFAULT_FOLDER_ICON = '\uf07b'
@@ -23,6 +24,9 @@ interface FileCompletion extends Completion {
 
 let skillsCache: SkillDescriptor[] = []
 let skillsLoaded = false
+
+let agentsCache: AgentDescriptor[] = []
+let agentsLoaded = false
 
 let filesCache: FileEntry[] = []
 let filesLoaded = false
@@ -36,6 +40,10 @@ function invalidateSkillsCache() {
   skillsLoaded = false
 }
 
+function invalidateAgentsCache() {
+  agentsLoaded = false
+}
+
 // Subscribe once to rootPath changes and filesystem/skills events.
 let rootSubActive = false
 function ensureRootSubscription() {
@@ -47,19 +55,26 @@ function ensureRootSubscription() {
       prevRoot = s.rootPath
       invalidateFilesCache()
       invalidateSkillsCache()
+      invalidateAgentsCache()
     }
   })
   // Filesystem changes inside the workspace (including project-local skills
-  // under .agents/skills/) invalidate both caches so the next completion
+  // and agents under .agents/) invalidate all caches so the next completion
   // request refetches fresh data.
   subscribe('workspace:tree_changed', () => {
     invalidateFilesCache()
     invalidateSkillsCache()
+    invalidateAgentsCache()
   })
   // Global skill directory changes (outside the workspace) invalidate the
-  // skills cache only — files are unaffected.
+  // skills cache only — files and agents are unaffected.
   subscribe('skills:changed', () => {
     invalidateSkillsCache()
+  })
+  // Global Subagent Profile directory changes (outside the workspace)
+  // invalidate the agents cache only.
+  subscribe('agents:changed', () => {
+    invalidateAgentsCache()
   })
 }
 
@@ -72,6 +87,17 @@ async function getSkills(): Promise<SkillDescriptor[]> {
     skillsCache = []
   }
   return skillsCache
+}
+
+async function getAgents(): Promise<AgentDescriptor[]> {
+  if (agentsLoaded) return agentsCache
+  try {
+    agentsCache = await listAgents()
+    agentsLoaded = true
+  } catch {
+    agentsCache = []
+  }
+  return agentsCache
 }
 
 async function getFiles(): Promise<FileEntry[]> {
@@ -139,6 +165,44 @@ async function skillSource(ctx: CompletionContext): Promise<CompletionResult | n
       detail: s.description,
       type: 'keyword',
       apply: s.name + ' ',
+    })),
+  }
+}
+
+async function agentSource(ctx: CompletionContext): Promise<CompletionResult | null> {
+  // Scan backward for '#' trigger.
+  const line = ctx.state.doc.lineAt(ctx.pos)
+  const textBefore = line.text.slice(0, ctx.pos - line.from)
+
+  let triggerIdx = -1
+  for (let i = textBefore.length - 1; i >= 0; i--) {
+    const ch = textBefore[i]
+    if (ch === ' ' || ch === '\t') break
+    if (ch === '#') {
+      if (i === 0 || textBefore[i - 1] === ' ' || textBefore[i - 1] === '\t') {
+        triggerIdx = i
+      }
+      break
+    }
+  }
+
+  if (triggerIdx === -1) return null
+
+  const from = line.from + triggerIdx + 1
+  const query = textBefore.slice(triggerIdx + 1)
+
+  const agents = await getAgents()
+  const filtered = fuzzyFilter(query, agents, (a) => a.name)
+  if (filtered.length === 0) return null
+
+  return {
+    from,
+    filter: false,
+    options: filtered.map((a) => ({
+      label: a.name,
+      detail: a.description,
+      type: 'keyword',
+      apply: a.name + ' ',
     })),
   }
 }
@@ -232,11 +296,12 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
 export function createChatAutocomplete(): Extension {
   ensureRootSubscription()
   return autocompletion({
-    override: [skillSource, fileSource],
+    override: [skillSource, agentSource, fileSource],
     closeOnBlur: true,
     activateOnTyping: true,
     icons: false,
-    optionClass: (completion) => (completion.type === 'keyword' ? 'skill-item' : 'file-item'),
+    optionClass: (completion) =>
+      completion.type === 'keyword' ? 'skill-item' : 'file-item',
     addToOptions: [
       {
         render: (completion: Completion) => {

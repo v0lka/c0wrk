@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
 	sdkmemory "github.com/v0lka/sp4rk/memory"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -56,6 +57,51 @@ func WithUserSkills(ctx context.Context, skills []string) context.Context {
 // Returns nil if not found.
 func UserSkillsFromContext(ctx context.Context) []string {
 	if v, ok := ctx.Value(userSkillsKey{}).([]string); ok {
+		return v
+	}
+	return nil
+}
+
+// availableAgentsKey is the context key for the discovered subagent catalog.
+// It carries []agents.AgentDescriptor (the discovery-time name/description/
+// hidden representation) used by the "Available Subagents" system-prompt
+// section. Populated from AgentManager.List() after routing.
+type availableAgentsKey struct{}
+
+// WithAvailableAgents returns a new context with the discovered subagent
+// descriptors attached. The list is the full catalog (including hidden
+// agents); the prompt formatter filters hidden entries for the public
+// "Available Subagents" section but keeps them resolvable for explicit
+// #mentions (see formatRequestedAgents).
+func WithAvailableAgents(ctx context.Context, descriptors []agents.AgentDescriptor) context.Context {
+	return context.WithValue(ctx, availableAgentsKey{}, descriptors)
+}
+
+// AvailableAgentsFromContext extracts the discovered subagent descriptors from
+// the context. Returns nil if not present.
+func AvailableAgentsFromContext(ctx context.Context) []agents.AgentDescriptor {
+	if v, ok := ctx.Value(availableAgentsKey{}).([]agents.AgentDescriptor); ok {
+		return v
+	}
+	return nil
+}
+
+// userAgentsKey is the context key for subagent names the user explicitly
+// requested via #agent-name mentions. It carries []string and drives the
+// "Requested Subagents" directive section. Reused by the message-preprocessor
+// wiring (populated from opts.UserAgents).
+type userAgentsKey struct{}
+
+// WithUserAgents returns a new context with the explicitly-requested subagent
+// names attached.
+func WithUserAgents(ctx context.Context, names []string) context.Context {
+	return context.WithValue(ctx, userAgentsKey{}, names)
+}
+
+// UserAgentsFromContext extracts the explicitly-requested subagent names from
+// the context. Returns nil if not found.
+func UserAgentsFromContext(ctx context.Context) []string {
+	if v, ok := ctx.Value(userAgentsKey{}).([]string); ok {
 		return v
 	}
 	return nil

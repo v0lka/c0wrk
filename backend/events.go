@@ -60,6 +60,12 @@ const EventWorkspaceTreeChanged = "workspace:tree_changed"
 // local skill changes are surfaced via EventWorkspaceTreeChanged instead.
 const EventSkillsChanged = "skills:changed"
 
+// EventAgentsChanged is emitted when Subagent Profile directories outside the
+// workspace (e.g. ~/.agents/agents, ~/.c0wrk/.agents/agents) are modified.
+// Workspace-local agent changes are surfaced via EventWorkspaceTreeChanged
+// instead. Mirrors EventSkillsChanged for AGENT.md discovery.
+const EventAgentsChanged = "agents:changed"
+
 // EventGitStatusChanged is emitted when the git staging area changes
 // (stage, unstage, commit). The payload is the repository path so the
 // frontend knows which project was affected.

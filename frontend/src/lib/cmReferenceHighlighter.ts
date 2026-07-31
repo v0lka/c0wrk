@@ -3,10 +3,13 @@ import { StateField, RangeSetBuilder, type Text } from '@codemirror/state'
 
 // Matches /skill-name preceded by whitespace or at line start.
 const SKILL_RE = /(?:^|(?<=\s))\/([\w-]+)/g
+// Matches #agent-name preceded by whitespace or at line start.
+const AGENT_RE = /(?:^|(?<=\s))#([\w-]+)/g
 // Matches @file-path (with escaped spaces and optional #line) preceded by whitespace or at line start.
 const FILE_RE = /(?:^|(?<=\s))@(?:[^\s\\]|\\.)+(?:#\d+(?:-\d+)?)?/g
 
 const skillMark = Decoration.mark({ class: 'cm-ref-skill' })
+const agentMark = Decoration.mark({ class: 'cm-ref-agent' })
 const fileMark = Decoration.mark({ class: 'cm-ref-file' })
 
 function buildDecorations(doc: Text): DecorationSet {
@@ -19,6 +22,11 @@ function buildDecorations(doc: Text): DecorationSet {
   let m: RegExpExecArray | null
   while ((m = SKILL_RE.exec(text)) !== null) {
     matches.push({ start: m.index, end: m.index + m[0].length, deco: skillMark })
+  }
+
+  AGENT_RE.lastIndex = 0
+  while ((m = AGENT_RE.exec(text)) !== null) {
+    matches.push({ start: m.index, end: m.index + m[0].length, deco: agentMark })
   }
 
   FILE_RE.lastIndex = 0

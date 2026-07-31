@@ -28,6 +28,11 @@ type PlanTaskInput struct {
 	Summary     string   `json:"summary"`
 	Description string   `json:"description"`
 	DependsOn   []string `json:"depends_on,omitempty"`
+	// Agent optionally names a Subagent Profile to execute this step with.
+	// The publisher copies it onto the resulting PlanStep so the execution
+	// layer (Conductor) can resolve and apply the profile. See declare_plan's
+	// schema for the user-facing description.
+	Agent string `json:"agent,omitempty"`
 }
 
 // DeclarePlanTool publishes a roadmap and optionally blocks for user approval.
@@ -61,7 +66,8 @@ func NewDeclarePlanTool(approvalFunc ApprovalFunc) *DeclarePlanTool {
 					"id": {"type": "string", "description": "Unique task identifier (e.g. step_1)"},
 					"summary": {"type": "string", "description": "5-7 word label for UI display"},
 					"description": {"type": "string", "description": "Full task description with What/How/Where/Acceptance Criteria"},
-					"depends_on": {"type": "array", "items": {"type": "string"}, "description": "IDs of tasks that must complete before this one"}
+					"depends_on": {"type": "array", "items": {"type": "string"}, "description": "IDs of tasks that must complete before this one"},
+					"agent": {"type": "string", "description": "Optional Subagent Profile name to execute this step with (e.g. \"code-reviewer\"). When set, the step runs with that profile's system prompt, tools, max-steps, and model instead of the orchestrator defaults. Omit for a generic step."}
 				},
 				"required": ["id", "summary", "description"]
 			}

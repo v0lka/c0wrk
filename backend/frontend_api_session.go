@@ -232,7 +232,7 @@ func (f *FrontendAPI) PinSession(id string) error {
 // reviewMode, when true, marks the message as carrying code review feedback the
 // agent must address (review status == "submitted"); the system prompt gains a
 // Code Review section directing the agent to edit code.
-func (f *FrontendAPI) SendMessage(id, text string, activeSkills []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, reviewMode bool) error {
+func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, reviewMode bool) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
@@ -278,9 +278,9 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills []string, modelO
 	if wp, ok := f.app.Manager().GetSessionWorkspacePath(id); ok {
 		workspacePath = wp
 	}
-	processedText := core.PreprocessMessageText(text, activeSkills, workspacePath)
+	processedText := core.PreprocessMessageText(text, activeSkills, activeAgents, workspacePath)
 
-	if err := f.app.Manager().SendMessage(f.ctx(), id, processedText, activeSkills, modelOverride, reasoningEffort, goal, goalBudget, reviewMode); err != nil {
+	if err := f.app.Manager().SendMessage(f.ctx(), id, processedText, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 	return nil

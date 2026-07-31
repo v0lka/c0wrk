@@ -258,7 +258,7 @@ func (m *Manager) InvalidateIgnoreCache(changedPaths []string) {
 // Runs in a goroutine, results come via events.
 // reviewMode, when true, marks the message as carrying code review feedback
 // the agent must address (see core HandleOptions.ReviewMode).
-func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, reviewMode bool) error {
+func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills, activeAgents []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, reviewMode bool) error {
 	session, err := m.getOrRestoreSession(id)
 	if err != nil {
 		return fmt.Errorf("failed to restore session: %w", err)
@@ -355,7 +355,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 	}
 
 	// Launch goroutine to handle the message
-	go func(ctx context.Context, msg string, skills []string) {
+	go func(ctx context.Context, msg string, skills []string, agents []string) {
 		defer close(doneCh)
 		defer func() {
 			session.mu.Lock()
@@ -448,6 +448,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 		result, err := session.orchestrator.HandleMessage(ctx, hmMsg, id, core.HandleOptions{
 			TaskID:             lastTaskID,
 			UserSkills:         skills,
+			UserAgents:         agents,
 			ModelOverride:      modelOverride,
 			ReasoningEffort:    reasoningEffort,
 			SessionPlansDir:    config.SessionPlansDir(m.agentDir, session.ProjectID, id),
@@ -478,6 +479,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 			result, err = session.orchestrator.HandleMessage(ctx, hmMsg, id, core.HandleOptions{
 				TaskID:             "",
 				UserSkills:         skills,
+				UserAgents:         agents,
 				ModelOverride:      modelOverride,
 				ReasoningEffort:    reasoningEffort,
 				SessionPlansDir:    config.SessionPlansDir(m.agentDir, session.ProjectID, id),
@@ -537,7 +539,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 		// Emit done event with result (carries the typed success contract;
 		// degraded outcomes surface a resumable action or a fallback warning).
 		m.emitTaskComplete(id, result, nil)
-	}(taskCtx, text, activeSkills)
+	}(taskCtx, text, activeSkills, activeAgents)
 
 	return nil
 }

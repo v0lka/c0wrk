@@ -251,6 +251,8 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 
 	// Invalidate cached skill list since project-local skills may differ.
 	f.invalidateSkillCache()
+	// Invalidate cached agent list since project-local agents may differ.
+	f.invalidateAgentCache()
 
 	// Set MCP working directory to the new project workspace
 	if b := f.builder(); b != nil {
@@ -324,6 +326,9 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		// workspace change may have added/removed/modified them. Invalidate
 		// the skill cache so the next ListSkills call rescans.
 		f.invalidateSkillCache()
+		// Project-local agents live under <workspace>/.agents/agents — same
+		// reasoning. Invalidate the agent cache so ListAgents rescans.
+		f.invalidateAgentCache()
 
 		// Only trigger vector re-indexing when at least one changed path is
 		// indexable. Churn inside ignored locations (.git maintenance: gc,
@@ -374,6 +379,8 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 		f.emitEvent(EventWorkspaceTreeChanged, nil)
 		// Invalidate skill cache in case project-local skills changed.
 		f.invalidateSkillCache()
+		// Invalidate agent cache in case project-local agents changed.
+		f.invalidateAgentCache()
 		// Same ignore-cache invalidation as CODE mode (see switchProjectSetupWatcher).
 		if f.app != nil && f.app.Manager() != nil {
 			f.app.Manager().InvalidateIgnoreCache(changedPaths)

@@ -43,6 +43,17 @@ export function UserMessageContent({ content }: UserMessageContentProps) {
                         </span>
                     )
                 }
+                if (seg.type === 'agent') {
+                    return (
+                        <span
+                            key={segKey}
+                            className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono mx-0.5"
+                            style={{ color: 'var(--color-highlight)' }}
+                        >
+                            #{seg.content}
+                        </span>
+                    )
+                }
                 if (seg.type === 'file') {
                     const filePath = seg.path ?? ''
                     const display = filePath + (seg.startLine !== undefined ? `#L${seg.startLine}` : '')

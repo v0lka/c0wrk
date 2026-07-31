@@ -357,3 +357,10 @@ type SkillDescriptorDTO struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 }
+
+// AgentDescriptorDTO is a lightweight Subagent Profile descriptor exposed to
+// the frontend for #-autocomplete. Mirrors SkillDescriptorDTO.
+type AgentDescriptorDTO struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}

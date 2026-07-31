@@ -17,6 +17,7 @@ import (
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/reflector"
+	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -281,6 +282,14 @@ type conductorDeps struct {
 	// before injecting it into the Conductor context. Zero-value (nil) is the
 	// default: propose_goal returns "no goal proposer in context" if invoked.
 	goalProposer tools.GoalProposer
+
+	// agentResolver resolves a Subagent Profile name to a *agents.Agent. It is
+	// populated from the Orchestrator's agentManager in buildConductorDeps and
+	// injected into the Conductor context so buildSubAgentTask can apply a
+	// requested profile (system prompt, tools, max-steps, model, redelegate).
+	// Nil when no agentManager is configured (profiles unavailable) — a
+	// non-empty `agent` field is then rejected by delegate validation.
+	agentResolver tools.AgentResolver
 }
 
 // conductorLauncher implements tools.DelegationLauncher by building a fresh
@@ -494,6 +503,7 @@ func (l *conductorLauncher) defaultPlanStepWave(ctx context.Context, ready []orc
 			Task:      step.Description,
 			DependsOn: step.DependsOn,
 			Mode:      "blocking",
+			Agent:     step.Agent,
 		}
 		scopedEvents := l.scopePlanStepEvents(step.ID, step.Summary)
 		st, err := l.buildSubAgentTask(ctx, task, registry, scopedEvents)
@@ -642,6 +652,14 @@ func (l *conductorLauncher) runBlocking(ctx context.Context, tasks []tools.Deleg
 	var regularTasks []tools.DelegationTask
 	var redelegTasks []tools.DelegationTask
 	for _, t := range tasks {
+		// A profile's allow-redelegate (when set) overrides the task flag —
+		// it is the authoritative permission for a specialized subagent. The
+		// other profile fields (prompt/tools/max-steps/model) are applied in
+		// buildSubAgentTask; only allow-redelegate must be resolved here
+		// because it selects the dispatch path.
+		if t.Agent != "" {
+			t.AllowRedelegate = l.resolveAgentAllowRedelegate(ctx, t.Agent, t.AllowRedelegate)
+		}
 		if t.AllowRedelegate {
 			redelegTasks = append(redelegTasks, t)
 		} else {
@@ -664,15 +682,48 @@ func (l *conductorLauncher) runBlocking(ctx context.Context, tasks []tools.Deleg
 	return results
 }
 
-// subagentCtx strips the Conductor-only context values (DelegationRegistry,
-// DelegationLauncher, PlanPublisher, ReflectionRunner) from ctx. It must be
-// used for any subagent that is NOT explicitly granted allow_redelegate:
-// resolveTaskTools already filters delegate/cancel_delegation/declare_plan/
-// reflect out of the subagent's tool descriptor list, but that alone is not
-// sufficient defense-in-depth since a subagent's tool set can also be
-// influenced by explicit task.Tools lists — stripping the context values
-// ensures those tools are inert (return "not running inside a Conductor")
-// even if a descriptor for them ever reaches the subagent.
+// resolveAgentAllowRedelegate applies a profile's allow-redelegate override.
+// When the profile is found and sets AllowRedelegate=true, it wins over the
+// task flag. When the profile is not found (or no resolver), the task flag is
+// preserved unchanged — validateDelegationTasks already rejected unknown
+// agents, so a not-found here is a benign race (agent removed mid-run) that
+// keeps the safer (task) default.
+func (l *conductorLauncher) resolveAgentAllowRedelegate(ctx context.Context, agentName string, taskFlag bool) bool {
+	resolver := tools.AgentResolverFrom(ctx)
+	if resolver == nil {
+		return taskFlag
+	}
+	profile, ok := resolver(agentName)
+	if !ok {
+		return taskFlag
+	}
+	if profile.Metadata.AllowRedelegate {
+		return true
+	}
+	return taskFlag
+}
+
+// subagentCtx strips the Conductor-only context values from ctx. It must be
+// used for any subagent that is NOT explicitly granted allow_redelegate.
+//
+// Two classes of values are cleared:
+//
+//  1. Delegation-machinery handles (DelegationRegistry, DelegationLauncher,
+//     PlanPublisher, ReflectionRunner, PlanChecker). resolveTaskTools already
+//     filters delegate/cancel_delegation/declare_plan/reflect out of the
+//     subagent's tool descriptor list, but that alone is not sufficient
+//     defense-in-depth since a subagent's tool set can also be influenced by
+//     explicit task.Tools lists — stripping the context values ensures those
+//     tools are inert (return "not running inside a Conductor") even if a
+//     descriptor for them ever reaches the subagent.
+//  2. The subagent roster (availableAgentsKey/userAgentsKey). Both roster
+//     sections ("Available Subagents" / "Requested Subagents") are
+//     Conductor-only by design (ADR-021 §4) and are rendered into the system
+//     prompt only when present in context. Without clearing them, a generic
+//     no-profile subagent — whose prompt is built via the normal
+//     buildSystemPrompt path — would inherit the Conductor's "you MUST
+//     delegate via delegate(agent:)" directive while having no delegate tool
+//     available, producing a contradictory prompt.
 func subagentCtx(ctx context.Context) context.Context {
 	ctx = tools.WithDelegationRegistry(ctx, nil)
 	ctx = tools.WithDelegationLauncher(ctx, nil)
@@ -680,6 +731,10 @@ func subagentCtx(ctx context.Context) context.Context {
 	ctx = tools.WithReflectionRunner(ctx, nil)
 	ctx = tools.WithPlanChecker(ctx, nil)
 	ctx = orchestration.WithDelegationRegistry(ctx, nil)
+	// Clear the Conductor-only subagent roster so no subagent inherits the
+	// "Available Subagents"/"Requested Subagents" prompt sections (ADR-021 §4).
+	ctx = WithAvailableAgents(ctx, nil)
+	ctx = WithUserAgents(ctx, nil)
 	return ctx
 }
 
@@ -737,6 +792,13 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	// Also inject into the sp4rk-level context key so finishJoinExecutor
 	// (in github.com/v0lka/sp4rk/orchestration/conductor.go) can find the child registry.
 	taskCtx = orchestration.WithDelegationRegistry(taskCtx, childReg)
+	// Clear the Conductor-only subagent roster so the redelegating subagent
+	// does not inherit the parent's "Available Subagents"/"Requested Subagents"
+	// prompt sections (ADR-021 §4). This path bypasses subagentCtx (it must
+	// keep delegation machinery to re-inject the child registry), so the roster
+	// is cleared explicitly here.
+	taskCtx = WithAvailableAgents(taskCtx, nil)
+	taskCtx = WithUserAgents(taskCtx, nil)
 
 	// Build the subagent task. The finishJoinExecutor in the sp4rk Conductor
 	// will guard against finish with pending async sub-delegations
@@ -813,14 +875,46 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 }
 
 func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.DelegationTask, registry *tools.DelegationRegistry, scopedEvents agent.Events) (agent.SubAgentTask, error) {
+	// Resolve an agent profile if one is requested. A non-empty `agent` field
+	// was already validated for existence by validateDelegationTasks (when a
+	// resolver is present), but buildSubAgentTask resolves it again so a
+	// profile removed between validation and launch surfaces a clear error
+	// rather than launching a profile-less subagent.
+	var profile *agents.Agent
+	if t.Agent != "" {
+		resolver := tools.AgentResolverFrom(ctx)
+		if resolver == nil {
+			return agent.SubAgentTask{}, fmt.Errorf("delegation %q: agent %q requested but no agent resolver is configured", t.ID, t.Agent)
+		}
+		var ok bool
+		profile, ok = resolver(t.Agent)
+		if !ok {
+			return agent.SubAgentTask{}, fmt.Errorf("delegation %q: unknown agent %q — no Subagent Profile with that name was found", t.ID, t.Agent)
+		}
+	}
+
 	maxSteps := t.MaxSteps
+	// A profile's max-steps (when >0) overrides both the task field and the
+	// complexity-derived default. The profile is the authoritative budget for
+	// a specialized subagent.
+	if profile != nil && profile.Metadata.MaxSteps > 0 {
+		maxSteps = profile.Metadata.MaxSteps
+	}
 	if maxSteps <= 0 {
 		// Default budget derives from routing complexity (inherited via
-		// context), matching the Conductor's own limit. A per-task max_steps
-		// override takes precedence.
+		// context), matching the Conductor's own limit.
 		maxSteps = ComplexityFromContext(ctx) * stepsPerComplexity
 	}
 
+	// A profile's tool preference (when non-nil) overrides the task field. The
+	// profile is the authoritative tool grant for a specialized subagent. The
+	// []string form from ToolPreference is converted to []any so
+	// resolveTaskTools → parseToolNames can consume it.
+	if profile != nil {
+		if pref := profile.ToolPreference(); pref != nil {
+			t.Tools = normalizeToolPreference(pref)
+		}
+	}
 	taskTools := l.resolveTaskTools(t)
 	taskDesc := l.buildTaskDescription(t, registry, maxSteps)
 
@@ -832,7 +926,15 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	compactionStrategy := compactionStrategyForDomain(domain, complexity)
 
 	modelMeta := l.resolveModelMeta(ctx)
+
+	// System prompt: a profile's body REPLACES the OrchestratorSystem core
+	// directive while preserving the shared project-context prefix (workspace,
+	// AGENTS.md, env, active skills, ...) via buildSpecializedSystemPrompt.
+	// Without a profile, the standard orchestrator prompt is assembled.
 	systemPrompt := buildSystemPrompt(ctx, t.Task, modelMeta)
+	if profile != nil && profile.Body != "" {
+		systemPrompt = buildSpecializedSystemPrompt(ctx, t.Task, modelMeta, profile.Body)
+	}
 
 	var cm agent.ContextManager
 	if l.deps.contextFactory != nil {
@@ -845,6 +947,12 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}
 
 	caller := l.callerForStep(cm, t.ID)
+	// A profile's per-agent model override forces req.Model on every call.
+	// NewModelOverrideCaller is a no-op (returns inner unchanged) when the
+	// model string is empty, so this is safe unconditionally.
+	if profile != nil {
+		caller = agent.NewModelOverrideCaller(caller, profile.Metadata.Model)
+	}
 	executor := agent.NewExecutor(caller, l.deps.toolExec, maxSteps, agent.WithTokenCounter(l.deps.tokenCounter), agent.WithEvents(scopedEvents), agent.WithToolResultBudget(l.deps.toolResultBudget), agent.WithCircuitBreaker(l.deps.circuitBreaker), agent.WithHITL(l.deps.hitlHandler))
 	executor.SetPlanContext(t.ID, 0, 0)
 	l.configureExecutor(executor)
@@ -858,6 +966,28 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 		Emitter:        scopedEvents,
 		TodoUpdateFunc: subagentTodoCallback(l.deps.emitter),
 	}, nil
+}
+
+// normalizeToolPreference converts the value returned by agents.Agent.
+// ToolPreference() into the shape DelegationTask.Tools expects:
+//
+//   - a string ("read-only") passes through unchanged;
+//   - a []string (comma-list of mutating tool names) becomes []any so
+//     parseToolNames (which consumes []any) can read it;
+//   - any other type (including nil) passes through unchanged.
+//
+// Without this conversion a []string would fall through to resolveTaskTools'
+// "unexpected type" branch and grant only the safe minimum, defeating the
+// profile's explicit tool grant.
+func normalizeToolPreference(pref any) any {
+	if names, ok := pref.([]string); ok {
+		out := make([]any, 0, len(names))
+		for _, n := range names {
+			out = append(out, n)
+		}
+		return out
+	}
+	return pref
 }
 
 // conductorOnlyToolNames are tools that must never be handed to a regular
@@ -1032,7 +1162,13 @@ func (l *conductorLauncher) toolDescriptorByName(name string) (sdktools.ToolDesc
 
 func (l *conductorLauncher) buildTaskDescription(t tools.DelegationTask, registry *tools.DelegationRegistry, maxSteps int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[Delegation %s] %s\n\n", t.ID, t.Task)
+	// The agent name (when set) prefixes the delegation header so SubAgentLaunch
+	// UI events surface which specialized profile is running.
+	if t.Agent != "" {
+		fmt.Fprintf(&b, "[Delegation %s · agent: %s] %s\n\n", t.ID, t.Agent, t.Task)
+	} else {
+		fmt.Fprintf(&b, "[Delegation %s] %s\n\n", t.ID, t.Task)
+	}
 	fmt.Fprintf(&b, "Tool call budget: %d iterations. Plan your approach to finish within this budget.\n\n", maxSteps)
 	b.WriteString("IMPORTANT: You are executing ONE delegated task. Complete ONLY this task's objective. Do NOT perform work outside the task scope.\n\n")
 	b.WriteString("## Checklist\nBuild a checklist at the start (update_checklist — omit step_id, it is inferred from your execution context) listing the concrete sub-tasks for this work, and report progress on each item as you complete it.\n\n")
@@ -1282,6 +1418,7 @@ func (p *conductorPublisher) Publish(ctx context.Context, tasks []tools.PlanTask
 			Summary:     t.Summary,
 			Description: t.Description,
 			DependsOn:   append([]string(nil), t.DependsOn...),
+			Agent:       t.Agent,
 		})
 	}
 
@@ -1456,7 +1593,7 @@ func conductorGuidanceForComplexity(complexity int) string {
 			"You are the Conductor: you own this task end-to-end. You decide whether this task needs a plan.\n\n" +
 			"Planning is RECOMMENDED (not required) when complexity is high (>3) OR when the task can be solved more efficiently by decomposing it into a DAG of independent steps — call declare_plan, then execute_plan runs the steps in dependency-ordered parallel waves. Otherwise handle it plan-less: proceed inline, or delegate coherent units to subagents. The decision is yours — weigh whether user sign-off or parallelism genuinely helps before planning.\n\n" +
 			"If you go plan-less, you MUST build a checklist (update_checklist with an empty step_id) at the start and report progress on each item as you complete it.\n\n" +
-			"You MAY call delegate to break coherent units of work into isolated subagents — to keep your context lean or to parallelize work. Each delegate also builds its own checklist and reports progress. delegate does NOT require a plan.\n\n" +
+			"You MAY call delegate to break coherent units of work into isolated subagents — to keep your context lean or to parallelize work. Each delegate also builds its own checklist and reports progress. delegate does NOT require a plan. When a named subagent fits the work (see the \"Available Subagents\" section), target it via delegate(agent: \"name\") so the work runs with that agent's specialty and tool budget. If the user named specific subagents via #mentions (see \"Requested Subagents\"), you MUST delegate the corresponding work to those agents rather than handling it inline.\n\n" +
 			"When the trajectory looks wrong, call reflect.\n\n" +
 			"Call finish when the task is complete." + orthogonality
 	}
@@ -1534,6 +1671,11 @@ func RunConductor(
 	ctx = tools.WithPlanPublisher(ctx, publisher)
 	ctx = tools.WithReflectionRunner(ctx, runner)
 	ctx = tools.WithPlanChecker(ctx, launcher)
+	// The agent resolver is inherited by subagent contexts (subagentCtx does
+	// NOT strip it), so a redelegating subagent can itself delegate to a named
+	// agent profile. Nil resolver = profiles unavailable (delegate validation
+	// rejects a non-empty `agent` field).
+	ctx = tools.WithAgentResolver(ctx, deps.agentResolver)
 	ctx = agent.WithTrajectoryStore(ctx, trajStore)
 	ctx = orchestration.WithDelegationRegistry(ctx, registry)
 
@@ -1711,6 +1853,16 @@ func (o *Orchestrator) buildConductorDeps(conversationHistory []llm.Message, res
 		taskStore:           o.taskStore,
 		resumeSteps:         resumeSteps,
 		goalProposer:        o.goalProposer,
+		// agentResolver exposes the discovered Subagent Profiles to the
+		// Conductor context so buildSubAgentTask can apply a requested
+		// profile. Built from the agentManager; nil-safe when none configured
+		// (delegate validation then rejects a non-empty `agent` field).
+		agentResolver: func(name string) (*agents.Agent, bool) {
+			if o.agentManager == nil {
+				return nil, false
+			}
+			return o.agentManager.Get(name)
+		},
 	}
 }
 

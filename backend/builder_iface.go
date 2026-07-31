@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/skills"
 )
@@ -28,6 +29,8 @@ type appBuilder interface {
 	GenerateCommitMessage(context.Context, string) (string, error)
 	GetBaseSkillDirs() []string
 	GetSkillDescriptors(projectSkillDir string) []skills.SkillDescriptor
+	GetBaseAgentDirs() []string
+	GetAgentDescriptors(projectAgentDir string) []agents.AgentDescriptor
 	ModelRegistry() *llm.ModelRegistry
 }
 

@@ -5,9 +5,10 @@ import { useChatStore } from '@/stores/chatStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useMessageSender } from '@/hooks/useMessageSender'
 import { useChatEditor, type ChatEditorAPI } from '@/hooks/useChatEditor'
-import { extractSkillRefs } from '@/lib/parseReferences'
+import { extractSkillRefs, extractAgentRefs, filterKnownAgentRefs } from '@/lib/parseReferences'
 import { optimizePrompt } from '@/api/prompt'
 import { createSession } from '@/api/sessions'
+import { listAgents } from '@/api/agents'
 import { logger } from '@/lib/logger'
 
 // useChatInputController owns the editor lifecycle, send/optimize state and
@@ -131,10 +132,32 @@ export function useChatInputController(): ChatInputController {
     const messageText = editor.getText().trim()
     if (!messageText) return
     const skills = extractSkillRefs(messageText)
+    const rawAgentRefs = extractAgentRefs(messageText)
+    // Clear the editor SYNCHRONOUSLY before any async work. An #mention
+    // message awaits listAgents() below; clearing first means a second Enter
+    // press during that fetch reads an empty editor and returns early instead
+    // of duplicating the message/task (the catch restores text on failure).
     editor.clear()
     setSendError(null)
+    // Only #mentions of real Subagent Profiles are threaded/stripped, so
+    // extraction stays consistent with the (catalog-filtered) #-autocomplete.
+    // Without this, common coding-domain prose like "#42" (issue/PR numbers)
+    // would be stripped from the message text (data loss) and injected as a
+    // delegation directive for a nonexistent agent (prompt noise). The fetch
+    // is gated on a non-empty candidate list so the common no-mention send
+    // adds no round-trip; listAgents() is backed by a server-side cache.
+    let agents = rawAgentRefs
+    if (rawAgentRefs.length > 0) {
+      let knownNames: string[] = []
+      try {
+        knownNames = (await listAgents()).map((a) => a.name)
+      } catch (err) {
+        logger.warn('Could not load agent catalog for ref validation; no agents threaded:', err)
+      }
+      agents = filterKnownAgentRefs(rawAgentRefs, knownNames)
+    }
     try {
-      await send(messageText, skills)
+      await send(messageText, skills, agents)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setSendError(message)

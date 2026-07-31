@@ -68,6 +68,19 @@ type FrontendAPI struct {
 	skillWatchers   []*workspace.Watcher
 	skillWatchersMu sync.Mutex
 
+	// Agent cache (invalidated on project switch). Mirrors the skill cache for
+	// Subagent Profile (AGENT.md) discovery.
+	agentCache            []AgentDescriptorDTO
+	agentCacheGen         uint64 // atomic — bumped to invalidate
+	agentCacheGenSnapshot uint64
+	agentCacheProjectDir  string
+	agentCacheMu          sync.Mutex
+
+	// Agent directory watchers monitor global Subagent Profile dirs (outside
+	// any workspace) for changes. Mirrors skillWatchers.
+	agentWatchers   []*workspace.Watcher
+	agentWatchersMu sync.Mutex
+
 	// Vector search
 	vectorManager   *vectorindex.Manager
 	vectorManagerMu sync.RWMutex
@@ -142,6 +155,14 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 	if cfg.Config != nil && len(cfg.Config.Skills.Dirs) > 0 {
 		dirs := resolveSkillDirs(cfg.Config.Skills.Dirs, cfg.AgentDir, config.ExpandEnvVars)
 		f.startSkillsWatchers(dirs)
+	}
+
+	// Start watchers for global Subagent Profile directories. Mirrors the
+	// skill watchers: changes invalidate the agent cache and emit
+	// agents:changed so the frontend #-autocomplete refreshes.
+	if cfg.Config != nil && len(cfg.Config.Agents.Dirs) > 0 {
+		dirs := resolveSkillDirs(cfg.Config.Agents.Dirs, cfg.AgentDir, config.ExpandEnvVars)
+		f.startAgentsWatchers(dirs)
 	}
 
 	return f
@@ -272,6 +293,7 @@ func (l *FrontendAPILifecycle) Cleanup() {
 	}
 	f.watcherMu.Unlock()
 	f.closeSkillsWatchers()
+	f.closeAgentsWatchers()
 	if f.store != nil {
 		if err := f.store.Close(); err != nil {
 			f.log().Error("failed to close session store", "error", err)

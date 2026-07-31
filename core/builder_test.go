@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -337,5 +339,46 @@ func TestStripMarkdownCodeFence(t *testing.T) {
 				t.Errorf("stripMarkdownCodeFence(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestBuildSessionAgentManager_Discovery verifies that buildSessionAgentManager
+// (the per-session wiring called from Build()) discovers project-local
+// Subagent Profiles from `<workspace>/.agents/agents/<name>/AGENT.md`. This
+// locks in the runtime wiring: without it, Build() would leave
+// OrchestratorDeps.AgentManager nil and the feature dead at runtime even
+// though unit tests pass.
+func TestBuildSessionAgentManager_Discovery(t *testing.T) {
+	ws := t.TempDir()
+	agentDir := filepath.Join(ws, AgentsRelativePath, "builder-test-agent")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	agentMD := "---\nname: builder-test-agent\ndescription: A test agent for builder wiring.\n---\nTest body.\n"
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENT.md"), []byte(agentMD), 0o644); err != nil {
+		t.Fatalf("write AGENT.md: %v", err)
+	}
+
+	b := &OrchestratorBuilder{}
+	mgr := b.buildSessionAgentManager(ws, nil)
+	if mgr == nil {
+		t.Fatal("buildSessionAgentManager returned nil for a workspace with .agents/agents")
+	}
+	agent, ok := mgr.Get("builder-test-agent")
+	if !ok {
+		t.Fatal("project-local agent not discovered by buildSessionAgentManager")
+	}
+	if agent.Metadata.Description != "A test agent for builder wiring." {
+		t.Errorf("unexpected description: %q", agent.Metadata.Description)
+	}
+}
+
+// TestBuildSessionAgentManager_NoDirsReturnsNil verifies the nil-safe
+// contract: with no project workspace and no base dirs, the manager is nil
+// (no spurious empty AgentManager, no crash downstream).
+func TestBuildSessionAgentManager_NoDirsReturnsNil(t *testing.T) {
+	b := &OrchestratorBuilder{} // no baseAgentDirs, no workspace
+	if mgr := b.buildSessionAgentManager("", nil); mgr != nil {
+		t.Fatalf("expected nil manager with no dirs, got %v", mgr)
 	}
 }
