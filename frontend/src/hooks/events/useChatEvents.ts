@@ -8,6 +8,7 @@ import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import { useReviewStore } from '@/stores/reviewStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
 import * as reviewApi from '@/api/review'
 import { generateMessageId } from '@/lib/ids'
 import type { ChatMessageUI } from '@/types/messages'
@@ -31,6 +32,19 @@ export function shouldAddTaskCompleteOutput(messages: ChatMessageUI[], output: s
     if (m.type === 'assistant') { lastAssistant = m; break }
   }
   return !lastAssistant || lastAssistant.content !== output
+}
+
+/**
+ * Whether a post-task review action (auto-review loop or first-time prompt)
+ * should fire for this task_complete. Review is a CODE-mode-only feature: it
+ * must never trigger in CHAT (No Project) mode, even if the git panel store
+ * holds stale/leaked entries, and requires uncommitted working-tree changes.
+ *
+ * Pure + exported so it is unit-testable without the Wails runtime.
+ */
+export function shouldTriggerReview(isNoProject: boolean, hasChanges: boolean): boolean {
+  if (isNoProject) return false
+  return hasChanges
 }
 
 export function useChatEvents(sessionId: string | null): void {
@@ -176,15 +190,19 @@ export function useChatEvents(sessionId: string | null): void {
           const isLoopActive = !!reviewStore.reviewLoopActive[sessionId]
           const gitState = useGitPanelStore.getState()
           const hasChanges = gitState.isGitRepo && gitState.entries.length > 0
+          // Review is a CODE-mode-only feature: never show the review prompt or
+          // reopen the review page in CHAT (No Project) mode, even if the git
+          // store holds stale/leaked entries.
+          const isNoProject = selectIsNoProject(useProjectStore.getState())
 
-          if (isLoopActive && hasChanges) {
-            const fvStore = useFileViewerStore.getState()
-            fvStore.openFile('c0wrk:review')
-            fvStore.setCollapsed(false)
-            reviewStore.openReviewPage(sessionId)
-            void reviewStore.loadReview(sessionId)
-          } else if (!isLoopActive && hasChanges) {
-            if (!reviewStore.promptShownForTask[sessionId]) {
+          if (shouldTriggerReview(isNoProject, hasChanges)) {
+            if (isLoopActive) {
+              const fvStore = useFileViewerStore.getState()
+              fvStore.openFile('c0wrk:review')
+              fvStore.setCollapsed(false)
+              reviewStore.openReviewPage(sessionId)
+              void reviewStore.loadReview(sessionId)
+            } else if (!reviewStore.promptShownForTask[sessionId]) {
               // Persist the prompt as a real session message so it survives a
               // session switch / restart (the old frontend-only message was
               // dropped by mergeHistoryMessages on the next history reload).

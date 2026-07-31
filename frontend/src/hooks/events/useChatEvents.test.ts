@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldAddTaskCompleteOutput } from '@/hooks/events/useChatEvents'
+import { shouldAddTaskCompleteOutput, shouldTriggerReview } from '@/hooks/events/useChatEvents'
 import type { ChatMessageUI, MessageType } from '@/stores/chatStore'
 
 let counter = 0
@@ -69,5 +69,25 @@ describe('shouldAddTaskCompleteOutput', () => {
       makeUI({ type: 'tool_call', metadata: { tool: 'bash', step: 1 } }),
     ]
     expect(shouldAddTaskCompleteOutput(msgs, 'the answer')).toBe(true)
+  })
+})
+
+describe('shouldTriggerReview', () => {
+  it('returns false in CHAT (No Project) mode even when there are git changes', () => {
+    // Review is a CODE-mode-only feature: a leaked/stale isGitRepo must never
+    // fire a review prompt in CHAT (No Project) mode.
+    expect(shouldTriggerReview(true, true)).toBe(false)
+  })
+
+  it('returns false in CHAT mode when there are no git changes', () => {
+    expect(shouldTriggerReview(true, false)).toBe(false)
+  })
+
+  it('returns true in CODE mode when there are git changes', () => {
+    expect(shouldTriggerReview(false, true)).toBe(true)
+  })
+
+  it('returns false in CODE mode when there are no git changes', () => {
+    expect(shouldTriggerReview(false, false)).toBe(false)
   })
 })

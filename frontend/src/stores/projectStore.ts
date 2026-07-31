@@ -16,7 +16,7 @@ function sortByActivity(projects: ProjectInfo[]): ProjectInfo[] {
 
 // --- State types ---
 
-interface ProjectState {
+export interface ProjectState {
   projects: ProjectInfo[] | null // null = not yet loaded
   activeProjectId: string | null
   lastRealProjectId: string | null // last active non-No-Project project (for CODE toggle)
@@ -77,3 +77,19 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set) => ({
 
   setCreateProjectDialogOpen: (open) => set({ createDialogOpen: open }),
 }))
+
+// --- Selectors (pure functions; usable both in render via
+// useProjectStore(selector) and in event handlers via selector(getState())) ---
+
+/**
+ * Returns true when the active project is the No Project (CHAT mode) entry.
+ *
+ * When `projects` is still loading (null), returns false so UI gated on this
+ * (e.g. disabled workspace tabs) doesn't flash enabled→disabled once data
+ * arrives. This matches WorkspacePanel's established loading policy.
+ */
+export function selectIsNoProject(state: ProjectState): boolean {
+  if (state.projects === null) return false
+  const active = state.projects.find((p) => p.id === state.activeProjectId)
+  return active?.is_no_project === true
+}

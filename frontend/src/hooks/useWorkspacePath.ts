@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useProjectStore } from '@/stores/projectStore'
+import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { getSessionWorkspace } from '@/api/workspace'
 
@@ -18,10 +18,7 @@ export function useWorkspacePath(): string | null {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
 
-  const isNoProject = useMemo(
-    () => projects?.find((p) => p.id === activeProjectId)?.is_no_project === true,
-    [activeProjectId, projects],
-  )
+  const isNoProject = useProjectStore(selectIsNoProject)
 
   // Project-level workspace path (correct for regular projects; for No
   // Project this is the empty placeholder directory).

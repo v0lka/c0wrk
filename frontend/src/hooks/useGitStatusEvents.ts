@@ -60,12 +60,16 @@ export function useGitStatusEvents(): void {
       ? projects.find((p) => p.id === activeProjectId)?.workspace_path ?? null
       : null
 
+  // Note: this hook is only mounted inside GitPanel, which WorkspacePanel
+  // renders exclusively in CODE mode (the No-Project / CHAT path early-returns
+  // to FileTreePanel). So no separate No-Project guard is needed here.
+
   // Debounce timer ref — cleared on unmount to prevent memory leaks
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Stable callback: fetches status and updates the store.
-  // useCallback dependency on workspacePath ensures the event handler
-  // always uses the correct path without unnecessary re-subscriptions.
+  // useCallback dependency on workspacePath ensures the event handler always
+  // uses the correct path without unnecessary re-subscriptions.
   const refresh = useCallback(async () => {
     if (!workspacePath) return
 

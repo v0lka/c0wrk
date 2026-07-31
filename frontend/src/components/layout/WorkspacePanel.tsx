@@ -3,21 +3,12 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/comp
 import { FileTreePanel } from "./FileTreePanel";
 import { VectorStorePanel } from "./VectorStorePanel";
 import { GitPanel } from "@/components/GitPanel";
-import { useProjectStore } from "@/stores/projectStore";
+import { useProjectStore, selectIsNoProject } from "@/stores/projectStore";
 import { useUIStore } from "@/stores/uiStore";
 import { FolderTree, GitBranch, Search } from "lucide-react";
 
 export function WorkspacePanel() {
-  const isNoProject = useProjectStore((s) => {
-    // When projects is null (loading), treat as not No Project to avoid
-    // flashing disabled tabs that then change state once data arrives.
-    // The tabs will show as enabled during loading; if the active project
-    // turns out to be No Project, they'll disable on the next render —
-    // which is a less noticeable transition than enabled → disabled.
-    if (s.projects === null) return false;
-    const active = s.projects.find((p) => p.id === s.activeProjectId);
-    return active?.is_no_project === true;
-  });
+  const isNoProject = useProjectStore(selectIsNoProject);
   const workspaceTab = useUIStore((s) => s.workspaceTab);
   const setWorkspaceTab = useUIStore((s) => s.setWorkspaceTab);
 
