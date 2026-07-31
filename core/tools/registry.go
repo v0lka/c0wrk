@@ -118,7 +118,6 @@ type ToolRegistry struct {
 	preExecuteHook             PreExecuteHook
 	postExecuteHook            PostExecuteHook
 	toolFilter                 ToolFilter
-	paramManager               sdktools.ParamManager
 	disabledTools              map[string]bool
 	extraShellBlacklist        []*regexp.Regexp
 	logger                     *slog.Logger
@@ -166,7 +165,6 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		preExecuteHook:             r.preExecuteHook,
 		postExecuteHook:            r.postExecuteHook,
 		toolFilter:                 r.toolFilter,
-		paramManager:               r.paramManager,
 		extraShellBlacklist:        r.extraShellBlacklist, // shared (compiled regexps are read-only)
 		logger:                     r.logger,
 		autoApproveWorkspaceWrites: r.autoApproveWorkspaceWrites,
@@ -338,14 +336,6 @@ func (r *ToolRegistry) SetToolFilter(f ToolFilter) {
 	r.toolFilter = f
 }
 
-// SetParamManager sets a ParamManager that handles both schema sanitization
-// (for MCP gateway) and param injection (for tool execution).
-func (r *ToolRegistry) SetParamManager(pm sdktools.ParamManager) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.paramManager = pm
-}
-
 // RegisterWithSource registers a tool with the given source, subject to the tool filter.
 // If the filter rejects the tool, it is silently dropped.
 func (r *ToolRegistry) RegisterWithSource(tool sdktools.Tool, source string) {
@@ -457,14 +447,6 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		if err := hook(ctx, name, source); err != nil {
 			return sdktools.ToolResult{Content: fmt.Sprintf("pre-execute hook: %v", err), IsError: true}, nil
 		}
-	}
-
-	// Param injection (e.g., project scoping for MCP tools)
-	r.mu.RLock()
-	pm := r.paramManager
-	r.mu.RUnlock()
-	if pm != nil {
-		input = pm.InjectParams(ctx, name, source, input)
 	}
 
 	// Symlink detection gate: force-confirm when any tool input contains paths

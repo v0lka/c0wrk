@@ -53,7 +53,6 @@ type OrchestratorBuilder struct {
 	baseSkillDirs    []string     // resolved skill directories shared across sessions (highest priority first)
 	baseAgentDirs    []string     // resolved Subagent Profile directories shared across sessions (highest priority first)
 	proxyClient      *http.Client // proxy-configured HTTP client (nil = direct connection)
-	paramManager     sdktools.ParamManager
 
 	// Cached reasoning effort string. Always empty at builder level;
 	// per-request overrides flow through HandleOptions.ReasoningEffort
@@ -123,12 +122,6 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 	// 1. Tool registry + built-in tools (fast — synchronous)
 	b.registry = tools.NewToolRegistry()
 
-	// Wire unified ParamManager for both schema sanitization (MCP gateway)
-	// and param injection (tool execution). Both sides share the same instance
-	// so auto-injected parameters stay in sync.
-	b.paramManager = sdktools.DefaultParamManager()
-	b.registry.SetParamManager(b.paramManager)
-
 	toolsCfg := configToBuiltinToolsConfig(cfg)
 	toolsCfg.AskUserFunc = askUserFunc
 	toolsCfg.PlanApprovalFunc = planApprovalFunc
@@ -172,7 +165,6 @@ func (b *OrchestratorBuilder) runMCPInit(cfg *BuilderConfig) {
 	// MCP Gateway (optional — failures are non-fatal)
 	mcpCfg := configToGatewayConfig(cfg)
 	mcpCfg.HTTPClient = b.proxyClient
-	mcpCfg.SchemaSanitizer = b.paramManager.SanitizeSchema
 	gw, err := mcp.StartGateway(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars, b.logger)
 	if err != nil {
 		// MCP gateway failure is non-fatal: tools from MCP servers will be unavailable
@@ -183,9 +175,6 @@ func (b *OrchestratorBuilder) runMCPInit(cfg *BuilderConfig) {
 	b.gateway = gw
 	b.gatewayErr = err
 	b.mu.Unlock()
-
-	// Schema sanitizer is configured via GatewayConfig.SchemaSanitizer above;
-	// the unified ParamManager handles both sanitization and injection.
 }
 
 // runAsyncInit performs the slow network-dependent initialization gated by
