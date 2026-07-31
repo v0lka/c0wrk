@@ -766,25 +766,25 @@ func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard
 	return o.finalizeResult(bb, routing, execResult)
 }
 
-// emitGoalStatus emits a goal_status service event carrying the current goal
-// state snapshot. Uses ServiceWithMeta (the existing generic channel) rather
-// than adding new Emitter methods, so the frontend can subscribe to
-// {"phase":"goal_status", ...} without a core Emitter-interface change.
+// emitGoalStatus emits a dedicated goal_status session event carrying the
+// current goal state snapshot. It is its OWN event type (not the generic
+// phase-discriminated `service` channel) so the frontend's live subscription
+// reliably reaches the goal store — the goal status indicator (turn badge) and
+// the turn-transition chat notification both depend on this.
 //
 // When gs.LastVerification is set ("confirmed", "rejected", or "off"), a
-// "verification" meta key carries that outcome so the UI can surface the
+// "verification" key carries that outcome so the UI can surface the
 // independent verifier's verdict alongside the agent's self-evaluation. The
 // marker is the single channel through which the goal loop reports the
 // verification result of the most recent met attempt.
 //
-// When a verdict is present, an "evidence" meta key carries the agent's
-// supporting artifacts ([]goal.GoalEvidence) so a verdict is never a bare
-// assertion. When the verifier confirmed the goal, "verification_reason" and
+// When a verdict is present, an "evidence" key carries the agent's supporting
+// artifacts ([]goal.GoalEvidence) so a verdict is never a bare assertion. When
+// the verifier confirmed the goal, "verification_reason" and
 // "verification_evidence" carry the independent pass's structured outcome
 // (reason + evidence) backing the confirmation.
 func (o *Orchestrator) emitGoalStatus(_ context.Context, gs *goal.GoalState) {
-	meta := map[string]any{
-		"phase":             "goal_status",
+	data := map[string]any{
 		"status":            string(gs.Status),
 		"turn":              gs.TurnCount,
 		"condition":         gs.Condition,
@@ -792,38 +792,34 @@ func (o *Orchestrator) emitGoalStatus(_ context.Context, gs *goal.GoalState) {
 		"verification_mode": gs.VerificationMode,
 	}
 	if gs.LastVerdict != nil {
-		meta["verdict"] = gs.LastVerdict.Status
-		meta["reason"] = gs.LastVerdict.Reason
-		meta["evidence"] = gs.LastVerdict.Evidence
+		data["verdict"] = gs.LastVerdict.Status
+		data["reason"] = gs.LastVerdict.Reason
+		data["evidence"] = gs.LastVerdict.Evidence
 	}
 	if v := gs.LastVerification; v == "confirmed" || v == "rejected" || v == "off" {
-		meta["verification"] = v
+		data["verification"] = v
 	}
 	// When the independent verifier confirmed the goal, surface its structured
 	// outcome (reason + evidence) so the UI can show WHY the goal was verified
 	// met rather than a bare "confirmed" marker. These mirror the agent's own
-	// verdict evidence (meta["evidence"]) but come from the independent
+	// verdict evidence (data["evidence"]) but come from the independent
 	// verification pass stored on gs.LastVerificationReason/Evidence.
 	if gs.LastVerification == "confirmed" {
-		meta["verification_reason"] = gs.LastVerificationReason
-		meta["verification_evidence"] = gs.LastVerificationEvidence
+		data["verification_reason"] = gs.LastVerificationReason
+		data["verification_evidence"] = gs.LastVerificationEvidence
 	}
-	o.emitter.ServiceWithMeta("Goal status: "+string(gs.Status), meta)
+	o.emitter.GoalStatus(data)
 }
 
-// emitGoalProgress emits a goal_progress service event with turn/budget
-// telemetry, emitted mid-loop (after a non-terminal turn) so the frontend can
-// show live progress toward the budget.
+// emitGoalProgress emits a dedicated goal_progress session event with
+// turn/budget telemetry, emitted mid-loop (after a non-terminal turn) so the
+// frontend can show live progress toward the budget.
 func (o *Orchestrator) emitGoalProgress(_ context.Context, gs *goal.GoalState) {
-	o.emitter.ServiceWithMeta(
-		fmt.Sprintf("Goal turn %d complete", gs.TurnCount),
-		map[string]any{
-			"phase":     "goal_progress",
-			"turn":      gs.TurnCount,
-			"max_turns": gs.Budget.MaxTurns,
-			"condition": gs.Condition,
-		},
-	)
+	o.emitter.GoalProgress(map[string]any{
+		"turn":      gs.TurnCount,
+		"max_turns": gs.Budget.MaxTurns,
+		"condition": gs.Condition,
+	})
 }
 
 // PauseGoal signals the currently-running goal loop (if any) to pause at the

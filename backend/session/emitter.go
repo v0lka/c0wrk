@@ -830,6 +830,33 @@ func (e *EventEmitter) ServiceWithMeta(content string, meta map[string]any) {
 	})
 }
 
+// GoalStatus emits a dedicated goal_status session event carrying the full goal
+// state snapshot. Unlike the phase-discriminated `service` channel, it is its
+// own event type so the frontend's live subscription reliably reaches the goal
+// store (the goal status indicator + turn transitions).
+func (e *EventEmitter) GoalStatus(data map[string]any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "goal_status",
+		Data:      data,
+	})
+}
+
+// GoalProgress emits a dedicated goal_progress session event with turn/budget
+// telemetry, emitted mid-loop (after a non-terminal turn) so the frontend can
+// show live progress toward the budget.
+func (e *EventEmitter) GoalProgress(data map[string]any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "goal_progress",
+		Data:      data,
+	})
+}
+
 // ExecutorDiagnostic logs an internal executor diagnostic at DEBUG level.
 // These are internal diagnostics, not user-facing events.
 func (e *EventEmitter) ExecutorDiagnostic(stepNum int, event string, details map[string]any) {

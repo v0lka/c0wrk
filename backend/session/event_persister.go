@@ -187,7 +187,8 @@ func (p *EventPersister) Persist(evt Event) {
 		"assistant_chunk", "context_fill", "context_compaction", "finishing",
 		"memory_read", "message_received", "blackboard_updated",
 		"tool_judge_response", "session_created", "session_deleted",
-		"session_renamed":
+		"session_renamed",
+		"goal_status", "goal_progress":
 		return // transient — no persistence needed
 	case "plan_review_ready":
 		role = "plan_review"

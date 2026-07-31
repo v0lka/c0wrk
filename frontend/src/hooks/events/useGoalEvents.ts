@@ -1,24 +1,20 @@
-// Goal lifecycle events: goal_proposal (distinct event), and goal_status /
-// goal_progress (carried on the phase-discriminated `service` channel).
+// Goal lifecycle events: goal_proposal, goal_status, and goal_progress are each
+// their OWN dedicated session event.
 //
-// Backend wiring (see core/orchestrator_goal.go):
-//  - goal_proposal is emitted as its OWN session event by the desktop goal
-//    proposer when the derivation agent calls propose_goal.
-//  - goal_status / goal_progress are emitted via ServiceWithMeta — i.e. the
-//    generic `service` event — with a `phase` discriminator
-//    ('goal_status' / 'goal_progress'). There is no dedicated emitter method,
-//    so we subscribe to `service` and branch on the phase (mirroring the
-//    existing phase-discriminated handler in useLifecycleEvents).
+// Backend wiring (see core/orchestrator_goal.go + backend/session/emitter.go):
+//  - goal_proposal is emitted by the desktop goal proposer when the derivation
+//    agent calls propose_goal.
+//  - goal_status / goal_progress are emitted via the dedicated Emitter methods
+//    GoalStatus / GoalProgress (NOT the generic phase-discriminated `service`
+//    channel). This dedicated routing is what makes the live subscription
+//    reliably reach the goal store — the previous `service`-piggybacking lost
+//    turn telemetry in transit, leaving the turn badge stuck at the seeded
+//    value.
 //
 // Three subscriptions => three cleanups:
 //   1. goal_proposal  → handleGoalProposalEvent
-//   2. service[phase=goal_status]    → handleGoalStatusEvent
-//   3. service[phase=goal_progress]  → handleGoalProgressEvent
-//
-// The two `service` listeners are intentionally separate (rather than one
-// listener branching on phase) to give each goal stream a focused handler and
-// to map 1:1 onto the three goal event contracts. Ordinary (non-goal) service
-// events fall through both listeners as no-ops.
+//   2. goal_status    → handleGoalStatusEvent
+//   3. goal_progress  → handleGoalProgressEvent
 
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
@@ -39,18 +35,18 @@ export function useGoalEvents(sessionId: string | null): void {
       }),
     )
 
-    // --- goal_status (carried on `service` with phase === 'goal_status') ---
+    // --- goal_status (dedicated session event) ---
     cleanups.push(
-      onSessionEvent(sessionId, 'service', (data) => {
-        if (!isGoalStatusData(data)) return // not a goal_status payload — ignore silently
+      onSessionEvent(sessionId, 'goal_status', (data) => {
+        if (!isGoalStatusData(data)) { reportDroppedEvent('goal_status', data); return }
         handleGoalStatusEvent(sessionId, data)
       }),
     )
 
-    // --- goal_progress (carried on `service` with phase === 'goal_progress') ---
+    // --- goal_progress (dedicated session event) ---
     cleanups.push(
-      onSessionEvent(sessionId, 'service', (data) => {
-        if (!isGoalProgressData(data)) return // not a goal_progress payload — ignore silently
+      onSessionEvent(sessionId, 'goal_progress', (data) => {
+        if (!isGoalProgressData(data)) { reportDroppedEvent('goal_progress', data); return }
         handleGoalProgressEvent(sessionId, data)
       }),
     )

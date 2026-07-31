@@ -64,6 +64,8 @@ func (s *spyEmitter) Retry(a, m int)                             { s.record("Ret
 func (s *spyEmitter) StepRetry(id string, a, m int)              { s.record("StepRetry", id, a, m) }
 func (s *spyEmitter) Service(c string)                           { s.record("Service", c) }
 func (s *spyEmitter) ServiceWithMeta(c string, m map[string]any) { s.record("ServiceWithMeta", c, m) }
+func (s *spyEmitter) GoalStatus(m map[string]any)                { s.record("GoalStatus", m) }
+func (s *spyEmitter) GoalProgress(m map[string]any)              { s.record("GoalProgress", m) }
 func (s *spyEmitter) ReplanFailed(e error)                       { s.record("ReplanFailed", e) }
 func (s *spyEmitter) SkillsActivated(skills []string)            { s.record("SkillsActivated", skills) }
 func (s *spyEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {

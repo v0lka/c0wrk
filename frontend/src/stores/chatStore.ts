@@ -115,6 +115,12 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   addMessage: (sessionId, message) => set((s) => {
     const sessionIndex = s.messages[sessionId] ?? {}
     const sessionOrder = s.messageOrder[sessionId] ?? []
+    // Idempotent upsert: when `message.id` is already tracked, update its
+    // content in place WITHOUT appending a duplicate order entry. This makes a
+    // re-emission of the same deterministic id (e.g. a goal_status snapshot
+    // re-sent on pause/resume) update the row instead of rendering it twice —
+    // matching the no-duplicate semantics mergeHistoryMessages already enforces.
+    const order = sessionIndex[message.id] ? sessionOrder : [...sessionOrder, message.id]
     return {
       messages: {
         ...s.messages,
@@ -122,7 +128,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
       },
       messageOrder: {
         ...s.messageOrder,
-        [sessionId]: [...sessionOrder, message.id],
+        [sessionId]: order,
       },
     }
   }),

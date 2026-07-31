@@ -272,6 +272,8 @@ func (m *mockEmitter) ContextFill(_ float64, _, _ int, _, _ string) {}
 func (m *mockEmitter) ContextCompaction(_, _ float64, _ string)     {}
 func (m *mockEmitter) Service(_ string)                             {}
 func (m *mockEmitter) ServiceWithMeta(_ string, _ map[string]any)   {}
+func (m *mockEmitter) GoalStatus(_ map[string]any)                  {}
+func (m *mockEmitter) GoalProgress(_ map[string]any)                {}
 
 func (m *mockEmitter) ReplanFailed(_ error)                                 {}
 func (m *mockEmitter) SkillsActivated(_ []string)                           {}

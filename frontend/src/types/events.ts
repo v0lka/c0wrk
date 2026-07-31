@@ -183,13 +183,12 @@ export interface GoalEvidence {
 }
 
 /**
- * Goal status snapshot. The backend emits this via ServiceWithMeta (the generic
- * `service` channel) with `phase === 'goal_status'`, so the payload carries the
- * service `content` plus the flattened goal meta fields.
+ * Goal status snapshot. The backend emits this as its OWN dedicated
+ * `goal_status` session event (not the phase-discriminated `service` channel),
+ * carrying the full goal state. The payload is the goal meta fields directly —
+ * no `content`/`phase` wrapper.
  */
 export interface GoalStatusData {
-  readonly content: string
-  readonly phase: 'goal_status'
   readonly status: string
   readonly turn: number
   readonly condition: string
@@ -215,12 +214,10 @@ export interface GoalStatusData {
 }
 
 /**
- * Mid-loop goal progress telemetry. Emitted via ServiceWithMeta with
- * `phase === 'goal_progress'` after a non-terminal turn.
+ * Mid-loop goal progress telemetry. Emitted as its OWN dedicated
+ * `goal_progress` session event after a non-terminal turn.
  */
 export interface GoalProgressData {
-  readonly content: string
-  readonly phase: 'goal_progress'
   readonly turn: number
   readonly max_turns: number
   readonly condition: string
@@ -284,9 +281,10 @@ export interface SessionEventMap {
   readonly step_todo_update: StepTodoUpdateData
   readonly plan_review_ready: PlanReviewReadyData
   readonly memory_read: { readonly step_num: number; readonly content: string }
-  /** Goal lifecycle events: a pending proposal (distinct event) and the
-   *  status/progress snapshots carried on the phase-discriminated `service`
-   *  channel. */
+  /** Goal lifecycle events, each its OWN dedicated session event:
+   *  goal_proposal (a pending proposal awaiting approval), goal_status (the
+   *  full goal state snapshot, emitted on every turn transition), and
+   *  goal_progress (mid-loop turn/budget telemetry). */
   readonly goal_proposal: GoalProposalData
   readonly goal_status: GoalStatusData
   readonly goal_progress: GoalProgressData
@@ -428,13 +426,12 @@ export function isGoalProposalData(d: unknown): d is GoalProposalData {
 }
 
 /**
- * Guard for a goal_status payload. The backend emits goal_status via the
- * `service` channel with `phase === 'goal_status'`, so the discriminator plus
- * the required numeric/string goal fields must validate before consumption.
+ * Guard for a goal_status payload. The backend emits goal_status as a dedicated
+ * session event; the required numeric/string goal fields must validate before
+ * consumption.
  */
 export function isGoalStatusData(d: unknown): d is GoalStatusData {
   if (!isObj(d)) return false
-  if (d.phase !== 'goal_status') return false
   return typeof d.status === 'string'
     && typeof d.turn === 'number'
     && typeof d.condition === 'string'
@@ -442,12 +439,10 @@ export function isGoalStatusData(d: unknown): d is GoalStatusData {
 }
 
 /**
- * Guard for a goal_progress payload. Emitted via the `service` channel with
- * `phase === 'goal_progress'`.
+ * Guard for a goal_progress payload. Emitted as a dedicated session event.
  */
 export function isGoalProgressData(d: unknown): d is GoalProgressData {
   if (!isObj(d)) return false
-  if (d.phase !== 'goal_progress') return false
   return typeof d.turn === 'number'
     && typeof d.max_turns === 'number'
     && typeof d.condition === 'string'

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useGoalStore } from '@/stores/goalStore'
+import { useChatStore } from '@/stores/chatStore'
 import { handleGoalStatusEvent } from './goalHandlers'
 import type { GoalStatusData } from '@/types/events'
 
@@ -8,8 +9,6 @@ const SESSION = 'sess-evidence'
 
 function makeStatus(over: Partial<GoalStatusData> = {}): GoalStatusData {
   return {
-    content: 'Goal status: met',
-    phase: 'goal_status',
     status: 'met',
     turn: 3,
     condition: 'ship it',
@@ -72,5 +71,66 @@ describe('handleGoalStatusEvent — evidence + verification', () => {
     handleGoalStatusEvent(SESSION, makeStatus())
 
     expect(useGoalStore.getState().activeGoal[SESSION]!.verify).toBe('run go test')
+  })
+})
+
+describe('handleGoalStatusEvent — chat turn-transition notification', () => {
+  beforeEach(() => {
+    useGoalStore.getState().clearAll()
+    useChatStore.getState().setMessages(SESSION, [])
+  })
+
+  it('adds a visible chat message when the verifier rejects (retry transition)', () => {
+    handleGoalStatusEvent(SESSION, makeStatus({
+      status: 'active',
+      turn: 1,
+      max_turns: 5,
+      verdict: 'not_met',
+      reason: 'still two SHOULD-FIX findings',
+      verification: 'rejected',
+    }))
+
+    const messages = useChatStore.getState().messages[SESSION] ?? {}
+    const statusMsg = Object.values(messages).find(m => m.type === 'status')
+    expect(statusMsg).toBeDefined()
+    expect(statusMsg!.content).toContain('not met')
+    expect(statusMsg!.content).toContain('verifier rejected')
+    expect(statusMsg!.content).toContain('still two SHOULD-FIX findings')
+    expect(statusMsg!.content).toContain('turn 1/5')
+  })
+
+  it('adds a chat message when the goal is met (terminal)', () => {
+    handleGoalStatusEvent(SESSION, makeStatus({ status: 'met', turn: 2, max_turns: 5 }))
+
+    const messages = useChatStore.getState().messages[SESSION] ?? {}
+    const statusMsg = Object.values(messages).find(m => m.type === 'status')
+    expect(statusMsg).toBeDefined()
+    expect(statusMsg!.content).toContain('Goal met')
+  })
+
+  it('renders ∞ for an unlimited turn budget (max_turns = 0)', () => {
+    handleGoalStatusEvent(SESSION, makeStatus({ status: 'met', turn: 1, max_turns: 0 }))
+
+    const messages = useChatStore.getState().messages[SESSION] ?? {}
+    const statusMsg = Object.values(messages).find(m => m.type === 'status')
+    expect(statusMsg).toBeDefined()
+    expect(statusMsg!.content).toContain('Goal met')
+    expect(statusMsg!.content).toContain('turn 1/∞')
+    expect(statusMsg!.content).not.toContain('turn 1/0')
+  })
+
+  it('does not add a chat message for a bare active status without a verdict', () => {
+    handleGoalStatusEvent(SESSION, makeStatus({
+      status: 'active',
+      turn: 1,
+      verdict: undefined,
+      reason: undefined,
+      evidence: undefined,
+      verification: undefined,
+    }))
+
+    const messages = useChatStore.getState().messages[SESSION] ?? {}
+    const statusMsg = Object.values(messages).find(m => m.type === 'status')
+    expect(statusMsg).toBeUndefined()
   })
 })

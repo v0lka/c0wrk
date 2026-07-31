@@ -1188,12 +1188,12 @@ func TestEmitGoalStatus_AllFields(t *testing.T) {
 		t.Fatalf("expected 1 emission, got %d", len(emitter.calls))
 	}
 	c := emitter.calls[0]
-	if c.method != "ServiceWithMeta" {
-		t.Errorf("method = %q, want ServiceWithMeta", c.method)
+	if c.method != "GoalStatus" {
+		t.Errorf("method = %q, want GoalStatus", c.method)
 	}
-	meta, ok := c.args[1].(map[string]any)
+	meta, ok := c.args[0].(map[string]any)
 	if !ok {
-		t.Fatalf("args[1] is %T, want map[string]any", c.args[1])
+		t.Fatalf("args[0] is %T, want map[string]any", c.args[0])
 	}
 	if got := meta["verdict"]; got != "not_met" {
 		t.Errorf("meta[verdict] = %v, want not_met", got)
@@ -1233,9 +1233,9 @@ func TestEmitGoalStatus_VerificationConfirmed(t *testing.T) {
 	if len(emitter.calls) != 1 {
 		t.Fatalf("expected 1 emission, got %d", len(emitter.calls))
 	}
-	meta, ok := emitter.calls[0].args[1].(map[string]any)
+	meta, ok := emitter.calls[0].args[0].(map[string]any)
 	if !ok {
-		t.Fatalf("emission args[1] is %T, want map[string]any", emitter.calls[0].args[1])
+		t.Fatalf("emission args[0] is %T, want map[string]any", emitter.calls[0].args[0])
 	}
 	if got := meta["verification"]; got != "confirmed" {
 		t.Errorf("meta[verification] = %v, want confirmed", got)
@@ -1279,9 +1279,9 @@ func TestEmitGoalStatus_VerificationEvidenceJSONShape(t *testing.T) {
 	if len(emitter.calls) != 1 {
 		t.Fatalf("expected 1 emission, got %d", len(emitter.calls))
 	}
-	meta, ok := emitter.calls[0].args[1].(map[string]any)
+	meta, ok := emitter.calls[0].args[0].(map[string]any)
 	if !ok {
-		t.Fatalf("emission args[1] is %T, want map[string]any", emitter.calls[0].args[1])
+		t.Fatalf("emission args[0] is %T, want map[string]any", emitter.calls[0].args[0])
 	}
 
 	// Serialize the whole meta map the same way the Wails bridge would before

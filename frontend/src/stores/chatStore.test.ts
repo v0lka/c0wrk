@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { useChatStore, groupMessages, type ChatMessageUI, type MessageType, type DisplayItem } from '@/stores/chatStore'
 
 let msgCounter = 0
@@ -682,5 +682,29 @@ describe('mergeHistoryMessages', () => {
     useChatStore.getState().mergeHistoryMessages(SESSION, [liveMsg('h-1', 100)], 1000)
 
     expect(useChatStore.getState().messageOrder[SESSION]).not.toContain('ask-user-req-1')
+  })
+})
+
+describe('addMessage idempotency', () => {
+  const SESSION = 'sess-add'
+
+  beforeEach(() => {
+    useChatStore.setState({ messages: {}, messageOrder: {} })
+  })
+
+  it('re-adding the same id updates content without duplicating the order entry', () => {
+    const store = useChatStore.getState()
+    store.addMessage(SESSION, { id: 'goal-status-2-paused', sessionId: SESSION, type: 'status', content: 'v1', timestamp: 100 })
+    store.addMessage(SESSION, { id: 'other', sessionId: SESSION, type: 'status', content: 'x', timestamp: 200 })
+    // Re-emit the same deterministic id (e.g. a re-sent goal_status snapshot).
+    store.addMessage(SESSION, { id: 'goal-status-2-paused', sessionId: SESSION, type: 'status', content: 'v2', timestamp: 300 })
+
+    const order = useChatStore.getState().messageOrder[SESSION]!
+    // No duplicate id in the render order.
+    expect(order.filter(id => id === 'goal-status-2-paused')).toHaveLength(1)
+    // First-insertion position is preserved (not moved to the end).
+    expect(order).toEqual(['goal-status-2-paused', 'other'])
+    // Content is updated to the latest snapshot.
+    expect(useChatStore.getState().messages[SESSION]!['goal-status-2-paused']!.content).toBe('v2')
   })
 })

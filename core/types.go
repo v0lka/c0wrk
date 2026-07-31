@@ -53,6 +53,17 @@ type Emitter interface {
 	// ServiceWithMeta emits a service message with metadata for frontend filtering.
 	// The meta map can contain arbitrary key-value pairs, e.g., {"phase": "orchestration"}.
 	ServiceWithMeta(content string, meta map[string]any)
+	// GoalStatus emits a dedicated goal_status session event carrying the full
+	// goal state snapshot (status, turn, verdict, reason, evidence, verification
+	// outcome). It is its OWN session event type — not carried on the generic
+	// phase-discriminated `service` channel — so the frontend's live
+	// subscription reliably reaches the goal store (fixing lost turn telemetry)
+	// and renders a visible turn-transition notification.
+	GoalStatus(data map[string]any)
+	// GoalProgress emits a dedicated goal_progress session event with
+	// turn/budget telemetry, emitted mid-loop (after a non-terminal turn) so the
+	// frontend can show live progress toward the budget.
+	GoalProgress(data map[string]any)
 	// ReplanFailed reports a failed replan attempt.
 	ReplanFailed(err error)
 	// SkillsActivated reports the skills matched and activated for the current task.
@@ -150,6 +161,8 @@ func (n *noopEmitter) Retry(_, _ int)                                           
 func (n *noopEmitter) StepRetry(_ string, _, _ int)                                 {}
 func (n *noopEmitter) Service(_ string)                                             {}
 func (n *noopEmitter) ServiceWithMeta(_ string, _ map[string]any)                   {}
+func (n *noopEmitter) GoalStatus(_ map[string]any)                                  {}
+func (n *noopEmitter) GoalProgress(_ map[string]any)                                {}
 func (n *noopEmitter) ReplanFailed(_ error)                                         {}
 func (n *noopEmitter) SkillsActivated(_ []string)                                   {}
 func (n *noopEmitter) StepTodoUpdate(_ string, _ []agent.TodoItem)                  {}

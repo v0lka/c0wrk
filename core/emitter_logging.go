@@ -197,6 +197,16 @@ func (l *loggingEmitter) ServiceWithMeta(content string, meta map[string]any) {
 	l.inner.ServiceWithMeta(content, meta)
 }
 
+func (l *loggingEmitter) GoalStatus(data map[string]any) {
+	l.logger.Debug("goal_status", "data", data)
+	l.inner.GoalStatus(data)
+}
+
+func (l *loggingEmitter) GoalProgress(data map[string]any) {
+	l.logger.Debug("goal_progress", "data", data)
+	l.inner.GoalProgress(data)
+}
+
 func (l *loggingEmitter) ReplanFailed(err error) {
 	l.logger.Warn("replan failed", "error", err)
 	l.inner.ReplanFailed(err)

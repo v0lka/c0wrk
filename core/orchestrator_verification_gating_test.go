@@ -58,18 +58,16 @@ func newVerificationTestOrchestrator() *Orchestrator {
 	return o
 }
 
-// goalStatusCountingEmitter wraps mockEmitter and counts goal_status
-// ServiceWithMeta emissions (phase == "goal_status"). Used by the
-// double-emission regression test.
+// goalStatusCountingEmitter wraps mockEmitter and counts goal_status emissions
+// via the dedicated GoalStatus method. Used by the double-emission regression
+// test.
 type goalStatusCountingEmitter struct {
 	mockEmitter
 	statuses int
 }
 
-func (m *goalStatusCountingEmitter) ServiceWithMeta(_ string, meta map[string]any) {
-	if p, ok := meta["phase"].(string); ok && p == "goal_status" {
-		m.statuses++
-	}
+func (m *goalStatusCountingEmitter) GoalStatus(_ map[string]any) {
+	m.statuses++
 }
 
 // TestRunGoalTurns_MetConfirmed_Terminates verifies that a met verdict the
