@@ -1249,7 +1249,11 @@ func (l *conductorLauncher) callerForStep(cm agent.ContextManager, stepID string
 	}); ok {
 		caller = l.deps.trackingCaller.WithContextTracker(ctm.ContextTracker())
 	}
-	if l.deps.stepDumpTracker != nil && l.deps.providerName != "" {
+	// Logging is independent of step dumps: it must remain active whenever a
+	// provider name and logger are available (mirroring callerForConductor),
+	// so that step/subagent LLM calls are logged even when step dumps are
+	// disabled. Step dumps are still gated on stepDumpTracker below.
+	if l.deps.providerName != "" && l.deps.logger != nil {
 		caller = agent.NewLoggingLLMCaller(caller, l.deps.providerName, l.deps.logger)
 	}
 	if l.deps.stepDumpTracker != nil {
@@ -1775,15 +1779,31 @@ func RunConductor(
 	return result, err
 }
 
+// callerForConductor returns the LLMCaller used by the Conductor's main ReAct
+// loop — the loop that carries the task message (and any image/content blocks).
+//
+// It returns deps.llm directly rather than rebuilding the caller stack from
+// deps.trackingCaller. deps.llm (== o.llm) already carries the full stack
+// assembled in the orchestrator builder:
+//
+//	NewDumpCaller(NewLoggingLLMCaller(trackingCaller, provider, logger),
+//	              sessionDumpWriter, logger)
+//
+// The previous implementation rebuilt logging(trackingCaller) WITHOUT the
+// dump wrapper, so the session-level dump writer was silently dropped: a
+// failed LLM call in the main ReAct loop never produced a request+response
+// dump record (even though subagent steps, which use callerForStep with their
+// own per-step dump, were recorded fine). Returning deps.llm restores the
+// session dump for the main loop.
+//
+// Reasoning effort is unaffected: it is applied to the executor via
+// executor.SetReasoningEffort (see the Conductor in sp4rk), independent of the
+// caller. Likewise the Conductor's optional context-tracker injection relies
+// on a WithContextTracker capability that NEITHER loggingCaller nor dumpCaller
+// implements, so wrapping the outermost layer in dumpCaller changes nothing
+// there (the type assertion fails identically either way).
 func callerForConductor(deps conductorDeps) agent.LLMCaller {
-	if deps.trackingCaller == nil {
-		return deps.llm
-	}
-	var caller agent.LLMCaller = deps.trackingCaller
-	if deps.providerName != "" && deps.logger != nil {
-		caller = agent.NewLoggingLLMCaller(caller, deps.providerName, deps.logger)
-	}
-	return caller
+	return deps.llm
 }
 
 // adaptContextFactory converts a core ContextManagerFactory (which returns

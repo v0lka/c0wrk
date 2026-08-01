@@ -82,7 +82,13 @@ func NewDelegateTool() *DelegateTool {
 					"summary": {"type": "string", "description": "5-7 word label for UI display"},
 					"task": {"type": "string", "description": "Full task description with What/How/Where/Acceptance Criteria"},
 					"acceptance_criteria": {"type": "array", "items": {"type": "string"}, "description": "Optional explicit criteria the subagent verifies before finishing"},
-					"tools": {"description": "Tool subset: \"all\" (default), \"read-only\", or array of tool names"},
+					"tools": {
+						"description": "Tool subset: \"all\" (default), \"read-only\", or array of tool names. Omit for all tools.",
+						"anyOf": [
+							{"type": "string", "enum": ["all", "read-only"]},
+							{"type": "array", "items": {"type": "string"}}
+						]
+					},
 					"depends_on": {"type": "array", "items": {"type": "string"}, "description": "IDs of delegations that must complete before this one starts"},
 					"mode": {"type": "string", "enum": ["blocking", "async"], "description": "blocking (default) returns output in result; async returns delegation_id immediately"},
 					"max_steps": {"type": "integer", "description": "Per-subagent ReAct iteration cap; 0 = config default"},
