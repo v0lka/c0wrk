@@ -60,6 +60,14 @@ type OrchestratorBuilder struct {
 	// planner, reflector, and the sp4rk P&E engine.
 	reasoningEffort string
 
+	// goAsync dispatches a fire-and-forget unit of background work. In
+	// production it runs go fn(); tests override it (e.g. to run fn
+	// synchronously) so code paths that launch detached goroutines — such as
+	// buildLocalModelProbe — can be verified deterministically without timing
+	// or polling. A nil field (direct struct construction) safely falls back
+	// to real goroutines via asyncRunner.
+	goAsync func(fn func())
+
 	// Async initialization: LLM router and tool judge are initialized in the
 	// background (gated by initDone) so that NewOrchestratorBuilder returns
 	// immediately. MCP gateway startup is decoupled from initDone: it runs in
@@ -79,6 +87,16 @@ func (b *OrchestratorBuilder) log() *slog.Logger {
 		return b.logger
 	}
 	return slog.Default()
+}
+
+// asyncRunner returns the background-work dispatcher. When b.goAsync is set
+// (by tests) it is used directly; otherwise real goroutines are spawned. This
+// indirection lets tests run detached work synchronously and deterministically.
+func (b *OrchestratorBuilder) asyncRunner() func(func()) {
+	if b.goAsync != nil {
+		return b.goAsync
+	}
+	return func(fn func()) { go fn() }
 }
 
 // NewOrchestratorBuilder creates the shared infrastructure: tool registry,
@@ -1072,13 +1090,42 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	// discovery is performed lazily per-session — see Build + probeLocalModel —
 	// and written into the registry via SetCachedMetadata (tier 3) so config
 	// always wins and the network is never touched at startup.
+	//
+	// A partial override (one with a 0/empty/nil field) inherits the
+	// corresponding value from the built-in catalog via ResolveBuiltInModel, so
+	// e.g. overriding only the context window keeps the model's built-in output
+	// limit, tokenizer, family, capabilities, and protocol intact. For an
+	// unknown model the built-in resolver returns the fallback defaults, which
+	// is the prior behaviour.
+	//
+	// Capabilities is overridden atomically: a non-nil override replaces all
+	// four flags at once (there is no per-flag partial override), matching the
+	// dialog's "submit the full capability set" UX. TokenizerType/Family/
+	// Protocol are string sentinels — empty = inherit (DetectProtocol/
+	// resolveFamily derive the effective value at Resolve time), non-empty =
+	// authoritative override.
 	overrides := make(map[string]llm.ModelMetadata)
 	for name, override := range cfg.LLM.Models {
-		overrides[name] = llm.ModelMetadata{
-			ContextWindow: override.ContextWindow,
-			OutputLimit:   override.OutputLimit,
-			TokenizerType: "approximate",
+		base, _ := llm.ResolveBuiltInModel(name)
+		if override.ContextWindow > 0 {
+			base.ContextWindow = override.ContextWindow
 		}
+		if override.OutputLimit > 0 {
+			base.OutputLimit = override.OutputLimit
+		}
+		if override.TokenizerType != "" {
+			base.TokenizerType = override.TokenizerType
+		}
+		if override.Family != "" {
+			base.Family = override.Family
+		}
+		if override.Protocol != "" {
+			base.Protocol = llm.APIProtocol(override.Protocol)
+		}
+		if override.Capabilities != nil {
+			base.Capabilities = *override.Capabilities
+		}
+		overrides[name] = base
 	}
 	modelRegistry := llm.NewModelRegistry(overrides)
 	if proxyClient != nil {
@@ -1177,11 +1224,13 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 // provider config are silent no-ops: the closure returns immediately without
 // spawning a goroutine, so there is zero overhead for cloud-only setups.
 //
-// The network probe runs on a detached goroutine with a fresh
-// context.Background() (bounded to 3s inside probeLMStudioModels) so it is not
-// tied to the caller's request lifetime and never blocks HandleMessage /
-// session creation. Results land in the registry cache (Resolution tier 3), so
-// a config.yaml override (tier 1) or a built-in spec (tier 2) always wins.
+// The network probe runs on a detached goroutine (dispatched via b.asyncRunner)
+// with a fresh context.Background() (bounded to 3s inside probeLMStudioModels)
+// so it is not tied to the caller's request lifetime and never blocks
+// HandleMessage / session creation. Results land in the registry cache
+// (Resolution tier 3), so a config.yaml override (tier 1) or a built-in spec
+// (tier 2) always wins. Tests override asyncRunner to run the probe
+// synchronously, making assertions deterministic without polling.
 func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry *llm.ModelRegistry) LocalModelProbe {
 	// Snapshot proxyClient under read lock once at probe construction so the
 	// closure does not touch b.mu on every invocation.
@@ -1190,6 +1239,7 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 	b.mu.RUnlock()
 	log := b.log()
 	expand := cfg.ExpandEnvVars
+	goRun := b.asyncRunner()
 
 	return func(model string) {
 		if model == "" || registry == nil {
@@ -1199,7 +1249,7 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 		if !ok {
 			return
 		}
-		go func() {
+		goRun(func() {
 			probe, err := probeLMStudioModels(context.Background(), baseURL, apiKey, proxyClient)
 			if err != nil {
 				log.Warn("lazy local model probe failed", "model", model, "base_url", baseURL, "error", err)
@@ -1222,7 +1272,7 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 			})
 			log.Debug("lazy local model probe populated context window",
 				"model", model, "context_window", window)
-		}()
+		})
 	}
 }
 

@@ -38,6 +38,10 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 		models[name] = core.BuilderModelOverride{
 			ContextWindow: m.ContextWindow,
 			OutputLimit:   m.OutputLimit,
+			TokenizerType: m.TokenizerType,
+			Family:        m.Family,
+			Protocol:      m.Protocol,
+			Capabilities:  m.Capabilities,
 		}
 	}
 

@@ -1,6 +1,9 @@
 package backend
 
-import "github.com/v0lka/c0wrk/core/workspace"
+import (
+	"github.com/v0lka/c0wrk/core/workspace"
+	"github.com/v0lka/sp4rk/llm"
+)
 
 // ---------------------------------------------------------------------------
 // DTO types exposed to the frontend via Wails bindings.
@@ -81,6 +84,45 @@ type ProviderConfigRequest struct {
 	APIKey  string   `json:"api_key,omitempty"`
 	BaseURL string   `json:"base_url,omitempty"`
 	Models  []string `json:"models,omitempty"`
+}
+
+// ModelConfigResponse returns a single model's configurable parameters: the
+// currently-effective values (override value when set, otherwise the built-in
+// default) plus the built-in factory defaults so the UI can show what would
+// change. HasOverride is true when an entry exists in config.LLM.Models.
+type ModelConfigResponse struct {
+	Model                string                 `json:"model"`
+	ContextWindow        int                    `json:"context_window"`
+	OutputLimit          int                    `json:"output_limit"`
+	TokenizerType        string                 `json:"tokenizer_type"`
+	Family               string                 `json:"family"`
+	Protocol             string                 `json:"protocol"`
+	Capabilities         llm.ModelCapabilities  `json:"capabilities"`
+	DefaultContextWindow int                    `json:"default_context_window"`
+	DefaultOutputLimit   int                    `json:"default_output_limit"`
+	DefaultTokenizerType string                 `json:"default_tokenizer_type"`
+	DefaultFamily        string                 `json:"default_family"`
+	DefaultProtocol      string                 `json:"default_protocol"`
+	DefaultCapabilities  llm.ModelCapabilities  `json:"default_capabilities"`
+	HasOverride          bool                   `json:"has_override"`
+}
+
+// ModelConfigRequest holds the per-model parameter overrides submitted from the
+// Configure dialog. The backend stores only fields that differ from the
+// built-in default (and removes the entry entirely when everything matches).
+//
+// TokenizerType/Family/Protocol use "" as "inherit": SetModelConfig records the
+// built-in default (also "") for a matching value, so no override entry is
+// persisted. Capabilities uses a nil pointer as "inherit": nil records the
+// built-in capability set (no override persisted), while a non-nil value
+// overrides all four flags atomically.
+type ModelConfigRequest struct {
+	ContextWindow int                    `json:"context_window"`
+	OutputLimit   int                    `json:"output_limit"`
+	TokenizerType string                 `json:"tokenizer_type"`
+	Family        string                 `json:"family"`
+	Protocol      string                 `json:"protocol"`
+	Capabilities  *llm.ModelCapabilities `json:"capabilities,omitempty"`
 }
 
 // SearchSettingsRequest holds search settings from the frontend.

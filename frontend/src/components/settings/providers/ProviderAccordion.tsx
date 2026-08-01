@@ -1,8 +1,10 @@
 import { useState, useMemo } from 'react'
 import { ProviderConfigForm } from '../ProviderConfigForm'
 import { useModelFetch } from '../useModelFetch'
+import { ModelConfigDialog } from '../ModelConfigDialog'
+import { invalidateConfigCache } from '@/hooks/useConfigData'
 import { compositeModelId, bareModel } from '@/lib/modelId'
-import { ChevronDown, ChevronRight, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, X, SlidersHorizontal } from 'lucide-react'
 
 export interface ProviderConfig {
   api_key: string
@@ -64,6 +66,10 @@ export function ProviderAccordion({
   const ownsDefaultModel = config.models.some(
     (m) => compositeModelId(provider, m) === defaultModel,
   )
+
+  // Per-model Configure dialog: tracks which model's dialog is open (null when
+  // closed). Bare model name — ModelConfigDialog addresses the model directly.
+  const [configModel, setConfigModel] = useState<string | null>(null)
 
   const handleDeleteClick = () => {
     if (ownsDefaultModel && !confirmDelete) {
@@ -166,7 +172,7 @@ export function ProviderAccordion({
                 return (
                   <label
                     key={model}
-                    className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs hover:bg-muted"
+                    className="group flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs hover:bg-muted"
                   >
                     <input
                       type="checkbox"
@@ -180,6 +186,19 @@ export function ProviderAccordion({
                         default
                       </span>
                     )}
+                    <button
+                      type="button"
+                      className="flex h-5 w-5 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-primary/10 hover:text-primary group-hover:opacity-100 focus:opacity-100"
+                      title={`Configure ${model}`}
+                      aria-label={`Configure ${model}`}
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        setConfigModel(model)
+                      }}
+                    >
+                      <SlidersHorizontal className="h-3 w-3" />
+                    </button>
                   </label>
                 )
               })}
@@ -187,6 +206,13 @@ export function ProviderAccordion({
           </div>
         </div>
       )}
+
+      <ModelConfigDialog
+        model={configModel ?? ''}
+        open={configModel !== null}
+        onOpenChange={(o) => { if (!o) setConfigModel(null) }}
+        onSaved={invalidateConfigCache}
+      />
     </div>
   )
 }

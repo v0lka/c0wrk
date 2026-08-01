@@ -315,6 +315,47 @@ export interface LLMFullConfigRequest {
   chatgpt?: ProviderConfigRequest
 }
 
+/** A model's capability flags: which features it supports. */
+export interface ModelCapabilities {
+  attachment: boolean
+  reasoning: boolean
+  temperature: boolean
+  tool_call: boolean
+}
+
+/** A single model's configurable parameters returned by GetModelConfig.
+ *  Effective values reflect an override when set, otherwise the built-in
+ *  default; the Default* fields expose the factory defaults so the UI can show
+ *  what would change. */
+export interface ModelConfigResponse {
+  model: string
+  context_window: number
+  output_limit: number
+  tokenizer_type: string
+  family: string
+  protocol: string
+  capabilities: ModelCapabilities
+  default_context_window: number
+  default_output_limit: number
+  default_tokenizer_type: string
+  default_family: string
+  default_protocol: string
+  default_capabilities: ModelCapabilities
+  has_override: boolean
+}
+
+/** Per-model parameter overrides submitted from the Configure dialog.
+ *  TokenizerType/Family/Protocol use '' as "inherit"; capabilities uses
+ *  null/undefined as "inherit" (the backend stores the full set atomically). */
+export interface ModelConfigRequest {
+  context_window: number
+  output_limit: number
+  tokenizer_type: string
+  family: string
+  protocol: string
+  capabilities?: ModelCapabilities | null
+}
+
 export interface SearchSettingsRequest {
   provider: string
   api_key: string

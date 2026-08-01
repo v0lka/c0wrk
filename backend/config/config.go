@@ -127,9 +127,24 @@ type ChatGPTConfig struct {
 }
 
 // ModelOverride allows overriding built-in model metadata.
+// Fields use omitempty so a 0/empty/nil value (meaning "inherit the built-in
+// default") is not serialized — only fields that actually differ from the
+// built-in metadata are persisted to config.yaml.
+//
+// TokenizerType/Family/Protocol use the empty string as the "inherit" sentinel
+// (the built-in resolver derives them via DetectFamily/DetectProtocol when
+// unset). Capabilities uses a nil pointer: nil = inherit default, a non-nil
+// value overrides all four capability flags atomically. The string and pointer
+// sentinels ensure a deliberate override to "default"/""/all-false is still
+// distinguishable from "no override", so a user can force e.g. a false
+// Attachment capability that differs from the built-in true.
 type ModelOverride struct {
-	ContextWindow int `yaml:"context_window"`
-	OutputLimit   int `yaml:"output_limit"`
+	ContextWindow int                    `yaml:"context_window,omitempty"`
+	OutputLimit   int                    `yaml:"output_limit,omitempty"`
+	TokenizerType string                 `yaml:"tokenizer_type,omitempty"`
+	Family        string                 `yaml:"family,omitempty"`
+	Protocol      string                 `yaml:"protocol,omitempty"`
+	Capabilities  *llm.ModelCapabilities `yaml:"capabilities,omitempty"`
 }
 
 // LLMRetryConfig configures retry behavior for LLM API calls.

@@ -113,6 +113,8 @@ export function GetMCPServers():Promise<Record<string, config.MCPServerConfig>>;
 
 export function GetMCPStatus():Promise<Array<mcp.ServerStatus>>;
 
+export function GetModelConfig(arg1:string):Promise<backend.ModelConfigResponse>;
+
 export function GetPendingActions(arg1:string):Promise<desktop.PendingActionsResponse>;
 
 export function GetProjectSwitchState(arg1:string):Promise<backend.ProjectUIStateResponse>;
@@ -216,6 +218,8 @@ export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<back
 export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:Array<string>,arg5:string,arg6:string,arg7:boolean,arg8:string,arg9:boolean):Promise<void>;
 
 export function SetLogLevel(arg1:string):Promise<void>;
+
+export function SetModelConfig(arg1:string,arg2:backend.ModelConfigRequest):Promise<void>;
 
 export function SetReviewStatus(arg1:string,arg2:string):Promise<void>;
 

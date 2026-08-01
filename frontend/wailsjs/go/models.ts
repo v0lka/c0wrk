@@ -454,6 +454,102 @@ export namespace backend {
 		    return a;
 		}
 	}
+	export class ModelConfigRequest {
+	    context_window: number;
+	    output_limit: number;
+	    tokenizer_type: string;
+	    family: string;
+	    protocol: string;
+	    capabilities?: llm.ModelCapabilities;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelConfigRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.context_window = source["context_window"];
+	        this.output_limit = source["output_limit"];
+	        this.tokenizer_type = source["tokenizer_type"];
+	        this.family = source["family"];
+	        this.protocol = source["protocol"];
+	        this.capabilities = this.convertValues(source["capabilities"], llm.ModelCapabilities);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ModelConfigResponse {
+	    model: string;
+	    context_window: number;
+	    output_limit: number;
+	    tokenizer_type: string;
+	    family: string;
+	    protocol: string;
+	    capabilities: llm.ModelCapabilities;
+	    default_context_window: number;
+	    default_output_limit: number;
+	    default_tokenizer_type: string;
+	    default_family: string;
+	    default_protocol: string;
+	    default_capabilities: llm.ModelCapabilities;
+	    has_override: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelConfigResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.model = source["model"];
+	        this.context_window = source["context_window"];
+	        this.output_limit = source["output_limit"];
+	        this.tokenizer_type = source["tokenizer_type"];
+	        this.family = source["family"];
+	        this.protocol = source["protocol"];
+	        this.capabilities = this.convertValues(source["capabilities"], llm.ModelCapabilities);
+	        this.default_context_window = source["default_context_window"];
+	        this.default_output_limit = source["default_output_limit"];
+	        this.default_tokenizer_type = source["default_tokenizer_type"];
+	        this.default_family = source["default_family"];
+	        this.default_protocol = source["default_protocol"];
+	        this.default_capabilities = this.convertValues(source["default_capabilities"], llm.ModelCapabilities);
+	        this.has_override = source["has_override"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	export class OptimizePromptResponse {
 	    optimized_prompt: string;
@@ -903,6 +999,29 @@ export namespace desktop {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	
+	    }
+	}
+
+}
+
+export namespace llm {
+	
+	export class ModelCapabilities {
+	    attachment: boolean;
+	    reasoning: boolean;
+	    temperature: boolean;
+	    tool_call: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelCapabilities(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.attachment = source["attachment"];
+	        this.reasoning = source["reasoning"];
+	        this.temperature = source["temperature"];
+	        this.tool_call = source["tool_call"];
 	    }
 	}
 

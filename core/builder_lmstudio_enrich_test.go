@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/v0lka/sp4rk/llm"
 )
@@ -51,24 +50,16 @@ func localProbeCfg(t *testing.T, baseURL, model string) *BuilderConfig {
 }
 
 // newLocalProbeBuilder returns a builder with a debug-level logger that writes
-// to a discard sink, matching the old enrich test's logger setup.
+// to a discard sink, matching the old enrich test's logger setup. It injects a
+// synchronous dispatcher (goAsync) so the detached network probe runs inline —
+// the probe completes before the closure returns, so assertions are
+// deterministic without any polling or sleeps.
 func newLocalProbeBuilder(t *testing.T) *OrchestratorBuilder {
 	t.Helper()
-	return &OrchestratorBuilder{logger: slog.New(slog.NewTextHandler(&discardWriter{}, &slog.HandlerOptions{Level: slog.LevelDebug}))}
-}
-
-// waitForProbe polls the registry's Resolve up to `timeout` for `model` to be
-// populated with `wantWindow`. Returns whether the expected window was seen.
-func waitForProbe(t *testing.T, reg *llm.ModelRegistry, model string, wantWindow int, timeout time.Duration) bool {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if meta, _ := reg.Resolve(context.Background(), model); meta.ContextWindow == wantWindow {
-			return true
-		}
-		time.Sleep(5 * time.Millisecond)
+	return &OrchestratorBuilder{
+		logger:  slog.New(slog.NewTextHandler(&discardWriter{}, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		goAsync: func(fn func()) { fn() },
 	}
-	return false
 }
 
 // TestBuildLocalModelProbe_PopulatesRegistry verifies that a probe closure
@@ -86,11 +77,14 @@ func TestBuildLocalModelProbe_PopulatesRegistry(t *testing.T) {
 	registry := llm.NewModelRegistry(nil)
 
 	probe := b.buildLocalModelProbe(cfg, registry)
+	// The synchronous dispatcher (injected via newLocalProbeBuilder) runs the
+	// network probe inline, so by the time probe() returns the registry is
+	// already populated — no polling or sleep required.
 	probe("qwen2.5-coder-7b")
 
-	if !waitForProbe(t, registry, "qwen2.5-coder-7b", 262144, time.Second) {
-		meta, _ := registry.Resolve(context.Background(), "qwen2.5-coder-7b")
-		t.Fatalf("probe did not populate registry: context_window=%d", meta.ContextWindow)
+	meta, _ := registry.Resolve(context.Background(), "qwen2.5-coder-7b")
+	if meta.ContextWindow != 262144 {
+		t.Fatalf("probe did not populate registry: context_window=%d, want 262144", meta.ContextWindow)
 	}
 }
 
@@ -128,8 +122,8 @@ func TestBuildLocalModelProbe_SkipsRemoteProvider(t *testing.T) {
 	probe := b.buildLocalModelProbe(cfg, registry)
 	probe("gpt-4o")
 
-	// Give any stray goroutine a moment to run; it must not.
-	time.Sleep(50 * time.Millisecond)
+	// The synchronous dispatcher runs any spawned probe inline, so by the time
+	// probe() returns a hit (if the gate were broken) would already be visible.
 	if got := hits.Load(); got != 0 {
 		t.Errorf("remote provider was probed (%d hits); isLocalBaseURL gate is broken", got)
 	}
@@ -149,7 +143,7 @@ func TestBuildLocalModelProbe_SkipsNonOpenAIProvider(t *testing.T) {
 				"anthropic-local": {
 					ProviderType: "anthropic",
 					BaseURL:      srv.URL,
-					Models:       []string{"claude-3-5-sonnet"},
+					Models:       []string{"acme-test-anthropic-model"},
 				},
 			},
 		},
@@ -160,14 +154,16 @@ func TestBuildLocalModelProbe_SkipsNonOpenAIProvider(t *testing.T) {
 
 	probe := b.buildLocalModelProbe(cfg, registry)
 	// Should be a no-op: no matching local openai provider.
-	probe("claude-3-5-sonnet")
+	probe("acme-test-anthropic-model")
 
-	time.Sleep(50 * time.Millisecond)
-	meta, _ := registry.Resolve(context.Background(), "claude-3-5-sonnet")
-	// "claude-3-5-sonnet" is not a built-in SDK model (the canonical id uses
-	// dots), so Resolve returns the fallback default of 128000. A probe run
-	// would have overwritten that with the server's value — confirming 128000
-	// proves the anthropic provider was never probed.
+	// The synchronous dispatcher runs any spawned probe inline, so by the time
+	// probe() returns the registry already reflects any probe side effects.
+	meta, _ := registry.Resolve(context.Background(), "acme-test-anthropic-model")
+	// "acme-test-anthropic-model" is intentionally not a built-in SDK model —
+	// including after separator-insensitive fuzzy matching — so Resolve returns
+	// the fallback default of 128000. A probe run would have overwritten that
+	// with the server's value — confirming 128000 proves the anthropic provider
+	// was never probed.
 	if meta.ContextWindow != 128000 {
 		t.Errorf("non-openai provider probed: context_window=%d, want fallback 128000", meta.ContextWindow)
 	}
@@ -191,10 +187,9 @@ func TestBuildLocalModelProbe_ConfigOverrideWins(t *testing.T) {
 	b := newLocalProbeBuilder(t)
 
 	probe := b.buildLocalModelProbe(cfg, registry)
+	// The synchronous dispatcher runs the probe inline, so by the time probe()
+	// returns the override-vs-cache precedence is already settled.
 	probe("qwen2.5-coder-7b")
-
-	// Let the probe goroutine finish.
-	time.Sleep(100 * time.Millisecond)
 
 	meta, _ := registry.Resolve(context.Background(), "qwen2.5-coder-7b")
 	if meta.ContextWindow != 32768 {

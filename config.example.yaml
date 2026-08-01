@@ -54,11 +54,42 @@ llm:
     api_key: "${OPENAI_API_KEY}"
     models: []
 
-  # Override built-in model metadata (context window, output limit)
+  # Override built-in model metadata per model name. Every field is optional and
+  # uses a sentinel value meaning "inherit the built-in default": 0 for integers,
+  # "" for strings, nil (omitted map) for capabilities. Only fields that differ
+  # from the built-in metadata are persisted; when every field matches the
+  # default the entry is removed automatically.
   models: {}
   #   "custom-model-name":
+  #     # Maximum input+output tokens the model accepts / produces.
   #     context_window: 128000
+  #     # Maximum tokens the model may emit in a single response.
   #     output_limit: 8192
+  #     # Token counting strategy. One of:
+  #     #   "approximate"           — character-ratio heuristic (no network)
+  #     #   "tiktoken/o200k_base"   — GPT-4o / o1-family BPE encoding
+  #     #   "tiktoken/cl100k_base"  — GPT-4 / GPT-3.5-turbo BPE encoding
+  #     #   "anthropic-api"         — server-side counting via Anthropic API
+  #     tokenizer_type: "tiktoken/o200k_base"
+  #     # Model family — drives prompt formatting and feature detection. One of:
+  #     #   "anthropic" | "openai_flagship" | "openai_standard" | "default"
+  #     # (The registry recognizes additional families such as "google",
+  #     #  "mistral", "deepseek", "qwen", "glm", "kimi", "openai_codex"; the four
+  #     #  above are the curated set offered by the Configure dialog.)
+  #     family: "openai_standard"
+  #     # Wire protocol — request/response shape and endpoint path. One of:
+  #     #   "chat_completions"  — OpenAI /v1/chat/completions (most compat servers)
+  #     #   "responses"         — OpenAI /v1/responses (GPT-5 / o-series native)
+  #     #   "anthropic"         — Anthropic /v1/messages (Claude models)
+  #     protocol: "chat_completions"
+  #     # Capability flags. Omit the whole map to inherit all built-in flags.
+  #     # When present, all four flags are set atomically (a non-nil map fully
+  #     # replaces the default set — partial inheritance is not supported).
+  #     capabilities:
+  #       attachment: true   # accepts image/PDF inputs
+  #       reasoning: false   # supports reasoning/thinking mode
+  #       temperature: true  # accepts the temperature parameter
+  #       tool_call: true    # supports function/tool calling
 
   # Retry behavior for LLM API calls
   retry:

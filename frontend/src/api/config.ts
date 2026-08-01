@@ -3,7 +3,7 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isConfigResponse, isSecuritySettingsResponse, isProxySettingsResponse } from '@/types/guards'
-import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsResponse, ProxySettingsRequest } from '@/types/models'
+import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsResponse, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest } from '@/types/models'
 
 /** Sentinel value returned by backend when an API key is configured but should not be displayed */
 export const MASKED_API_KEY = '***configured***'
@@ -52,6 +52,36 @@ export async function updateLLMConfig(req: LLMFullConfigRequest): Promise<void> 
     await app.UpdateLLMConfig(req)
   } catch (err) {
     logger.error('Failed to update LLM config:', err)
+    throw err
+  }
+}
+
+/**
+ * Fetch a single model's configurable parameters (effective values + built-in
+ * defaults). Used by the per-model Configure dialog to pre-fill inputs and show
+ * what would change.
+ */
+export async function getModelConfig(model: string): Promise<ModelConfigResponse> {
+  try {
+    const app = getApp()
+    return await app.GetModelConfig(model)
+  } catch (err) {
+    logger.error('Failed to get model config:', err)
+    throw err
+  }
+}
+
+/**
+ * Persist per-model parameter overrides from the Configure dialog. The backend
+ * stores only fields that differ from the built-in default. Callers should
+ * invalidate the config cache afterwards.
+ */
+export async function setModelConfig(model: string, req: ModelConfigRequest): Promise<void> {
+  try {
+    const app = getApp()
+    await app.SetModelConfig(model, req)
+  } catch (err) {
+    logger.error('Failed to set model config:', err)
     throw err
   }
 }

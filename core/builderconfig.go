@@ -1,6 +1,9 @@
 package core
 
-import "github.com/v0lka/c0wrk/core/proxy"
+import (
+	"github.com/v0lka/c0wrk/core/proxy"
+	"github.com/v0lka/sp4rk/llm"
+)
 
 // BuilderConfig holds all configuration that the OrchestratorBuilder needs.
 // It is defined in core so that core never imports backend/config.
@@ -71,6 +74,10 @@ type BuilderRetryConfig struct {
 type BuilderModelOverride struct {
 	ContextWindow int
 	OutputLimit   int
+	TokenizerType string
+	Family        string
+	Protocol      string
+	Capabilities  *llm.ModelCapabilities
 }
 
 // ---------------------------------------------------------------------------

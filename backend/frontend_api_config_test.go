@@ -356,6 +356,473 @@ func TestUpdateLLMConfig_PreservesDefaultWhenStillResolvable(t *testing.T) {
 	}
 }
 
+// --- GetModelConfig ---
+
+func TestGetModelConfig_KnownModelNoOverride(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	// gpt-4o is a stable built-in entry: ContextWindow=128000, OutputLimit=16384.
+	resp, err := f.GetModelConfig("gpt-4o")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.HasOverride {
+		t.Error("expected HasOverride=false for a model with no config entry")
+	}
+	if resp.ContextWindow != 128000 {
+		t.Errorf("ContextWindow = %d, want 128000", resp.ContextWindow)
+	}
+	if resp.OutputLimit != 16384 {
+		t.Errorf("OutputLimit = %d, want 16384", resp.OutputLimit)
+	}
+	if resp.DefaultContextWindow != 128000 {
+		t.Errorf("DefaultContextWindow = %d, want 128000", resp.DefaultContextWindow)
+	}
+	if resp.DefaultOutputLimit != 16384 {
+		t.Errorf("DefaultOutputLimit = %d, want 16384", resp.DefaultOutputLimit)
+	}
+}
+
+func TestGetModelConfig_UnknownModel(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	resp, err := f.GetModelConfig("acme-unknown-model-xyz")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Unknown model → fallback defaults (128000/4096), both effective and default.
+	if resp.ContextWindow != 128000 {
+		t.Errorf("ContextWindow = %d, want fallback 128000", resp.ContextWindow)
+	}
+	if resp.OutputLimit != 4096 {
+		t.Errorf("OutputLimit = %d, want fallback 4096", resp.OutputLimit)
+	}
+}
+
+func TestGetModelConfig_WithOverride(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	// Seed a partial override: only context window set, output limit 0 = inherit.
+	f.config.LLM.Models = map[string]config.ModelOverride{
+		"gpt-4o": {ContextWindow: 200000, OutputLimit: 0},
+	}
+
+	resp, err := f.GetModelConfig("gpt-4o")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.HasOverride {
+		t.Error("expected HasOverride=true when a config entry exists")
+	}
+	// Effective context window is the override value.
+	if resp.ContextWindow != 200000 {
+		t.Errorf("ContextWindow = %d, want override 200000", resp.ContextWindow)
+	}
+	// Output limit 0 inherits the built-in default (16384).
+	if resp.OutputLimit != 16384 {
+		t.Errorf("OutputLimit = %d, want inherited default 16384", resp.OutputLimit)
+	}
+	// Defaults are still the built-in values.
+	if resp.DefaultContextWindow != 128000 || resp.DefaultOutputLimit != 16384 {
+		t.Errorf("defaults = %d/%d, want 128000/16384", resp.DefaultContextWindow, resp.DefaultOutputLimit)
+	}
+}
+
+func TestGetModelConfig_NilConfig(t *testing.T) {
+	f := &FrontendAPI{}
+	if _, err := f.GetModelConfig("gpt-4o"); err == nil {
+		t.Fatal("expected error when config is nil")
+	}
+}
+
+// --- SetModelConfig ---
+
+func TestSetModelConfig_BothFieldsNonDefault(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+
+	err := f.SetModelConfig("gpt-4o", ModelConfigRequest{
+		ContextWindow: 200000,
+		OutputLimit:   99999,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// In-memory override stores both values.
+	override, ok := f.config.LLM.Models["gpt-4o"]
+	if !ok {
+		t.Fatal("expected gpt-4o override entry after set")
+	}
+	if override.ContextWindow != 200000 {
+		t.Errorf("ContextWindow = %d, want 200000", override.ContextWindow)
+	}
+	if override.OutputLimit != 99999 {
+		t.Errorf("OutputLimit = %d, want 99999", override.OutputLimit)
+	}
+
+	// Router was rebuilt so the override takes effect.
+	if mock.rebuildRouterCalls != 1 {
+		t.Errorf("RebuildRouter called %d times, want 1", mock.rebuildRouterCalls)
+	}
+
+	// Persisted to disk: re-read and verify field-level values.
+	reloaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+	got, ok := reloaded.LLM.Models["gpt-4o"]
+	if !ok {
+		t.Fatal("expected gpt-4o override in persisted config")
+	}
+	if got.ContextWindow != 200000 || got.OutputLimit != 99999 {
+		t.Errorf("persisted override = %+v, want {200000 99999}", got)
+	}
+}
+
+func TestSetModelConfig_PartialOverrideOmitsDefaultField(t *testing.T) {
+	f, _, cfgPath := newTestAPI(t)
+
+	// Set only output limit to a non-default value; context window equals the
+	// built-in default (128000) so it must be stored as 0 / omitted.
+	err := f.SetModelConfig("gpt-4o", ModelConfigRequest{
+		ContextWindow: 128000, // == built-in default → stored as 0
+		OutputLimit:   50000,   // != default → stored
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	override := f.config.LLM.Models["gpt-4o"]
+	if override.ContextWindow != 0 {
+		t.Errorf("ContextWindow = %d, want 0 (default omitted)", override.ContextWindow)
+	}
+	if override.OutputLimit != 50000 {
+		t.Errorf("OutputLimit = %d, want 50000", override.OutputLimit)
+	}
+
+	// Persisted file reflects the omission: context_window absent, only
+	// output_limit present.
+	reloaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+	got := reloaded.LLM.Models["gpt-4o"]
+	if got.ContextWindow != 0 {
+		t.Errorf("persisted ContextWindow = %d, want 0 (omitempty)", got.ContextWindow)
+	}
+	if got.OutputLimit != 50000 {
+		t.Errorf("persisted OutputLimit = %d, want 50000", got.OutputLimit)
+	}
+}
+
+func TestSetModelConfig_AllDefaultsRemovesEntry(t *testing.T) {
+	f, _, cfgPath := newTestAPI(t)
+	// Seed an existing override that will be cleared.
+	f.config.LLM.Models = map[string]config.ModelOverride{
+		"gpt-4o": {ContextWindow: 200000, OutputLimit: 99999},
+	}
+
+	// Setting both fields to the built-in default must remove the entry.
+	err := f.SetModelConfig("gpt-4o", ModelConfigRequest{
+		ContextWindow: 128000,
+		OutputLimit:   16384,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := f.config.LLM.Models["gpt-4o"]; ok {
+		t.Error("expected gpt-4o override entry removed when all fields match defaults")
+	}
+
+	// Persisted file no longer contains the model key.
+	reloaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+	if _, ok := reloaded.LLM.Models["gpt-4o"]; ok {
+		t.Error("expected gpt-4o override absent from persisted config")
+	}
+}
+
+func TestSetModelConfig_NilConfig(t *testing.T) {
+	f := &FrontendAPI{}
+	err := f.SetModelConfig("gpt-4o", ModelConfigRequest{ContextWindow: 200000})
+	if err == nil {
+		t.Fatal("expected error when config is nil")
+	}
+}
+
+func TestSetModelConfig_RejectsNonPositiveValues(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	// Both fields are independently validated: a zero/negative on either is
+	// rejected before any mutation or persistence happens.
+	for _, tc := range []struct {
+		name string
+		req  ModelConfigRequest
+	}{
+		{"zero context window", ModelConfigRequest{ContextWindow: 0, OutputLimit: 4096}},
+		{"negative context window", ModelConfigRequest{ContextWindow: -1, OutputLimit: 4096}},
+		{"zero output limit", ModelConfigRequest{ContextWindow: 128000, OutputLimit: 0}},
+		{"negative output limit", ModelConfigRequest{ContextWindow: 128000, OutputLimit: -5}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := f.SetModelConfig("gpt-4o", tc.req)
+			if err == nil {
+				t.Fatal("expected error for non-positive model config value")
+			}
+		})
+	}
+
+	// Nothing was mutated, persisted, or rebuilt.
+	if _, ok := f.config.LLM.Models["gpt-4o"]; ok {
+		t.Error("expected no override entry written on validation failure")
+	}
+	if mock.rebuildRouterCalls != 0 {
+		t.Errorf("RebuildRouter called %d times, want 0", mock.rebuildRouterCalls)
+	}
+}
+
+// --- Metadata fields (TokenizerType / Family / Protocol / Capabilities) ---
+
+func TestGetModelConfig_KnownModelReturnsBuiltInMetadata(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	resp, err := f.GetModelConfig("gpt-4o")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// gpt-4o built-in: tok=tiktoken/o200k_base, family=openai_flagship,
+	// protocol=chat_completions (detected), caps={Attachment, Temperature, ToolCall}.
+	if resp.TokenizerType != "tiktoken/o200k_base" {
+		t.Errorf("TokenizerType = %q, want tiktoken/o200k_base", resp.TokenizerType)
+	}
+	if resp.Family != "openai_flagship" {
+		t.Errorf("Family = %q, want openai_flagship", resp.Family)
+	}
+	if resp.Protocol != "chat_completions" {
+		t.Errorf("Protocol = %q, want chat_completions", resp.Protocol)
+	}
+	if !resp.Capabilities.Attachment || resp.Capabilities.Reasoning ||
+		!resp.Capabilities.Temperature || !resp.Capabilities.ToolCall {
+		t.Errorf("Capabilities = %+v, want {Attachment Temperature ToolCall}", resp.Capabilities)
+	}
+	// Defaults mirror effective (no override).
+	if resp.DefaultTokenizerType != resp.TokenizerType {
+		t.Errorf("DefaultTokenizerType = %q, want %q", resp.DefaultTokenizerType, resp.TokenizerType)
+	}
+	if resp.DefaultFamily != resp.Family {
+		t.Errorf("DefaultFamily = %q, want %q", resp.DefaultFamily, resp.Family)
+	}
+}
+
+func TestGetModelConfig_UnknownModelSurfacesDetectedMetadata(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	resp, err := f.GetModelConfig("acme-unknown-model-xyz")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Unknown model → fallback defaults + detected family ("default") and
+	// protocol ("chat_completions").
+	if resp.TokenizerType != "approximate" {
+		t.Errorf("TokenizerType = %q, want approximate", resp.TokenizerType)
+	}
+	if resp.Family != "default" {
+		t.Errorf("Family = %q, want default (detected)", resp.Family)
+	}
+	if resp.Protocol != "chat_completions" {
+		t.Errorf("Protocol = %q, want chat_completions (detected)", resp.Protocol)
+	}
+}
+
+func TestGetModelConfig_WithMetadataOverride(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	// Override tokenizer, family, protocol, and capabilities.
+	f.config.LLM.Models = map[string]config.ModelOverride{
+		"gpt-4o": {
+			TokenizerType: "approximate",
+			Family:        "anthropic",
+			Protocol:      "anthropic",
+			Capabilities:  &llm.ModelCapabilities{Attachment: false, Reasoning: true, Temperature: false, ToolCall: false},
+		},
+	}
+
+	resp, err := f.GetModelConfig("gpt-4o")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.TokenizerType != "approximate" {
+		t.Errorf("TokenizerType = %q, want override approximate", resp.TokenizerType)
+	}
+	if resp.Family != "anthropic" {
+		t.Errorf("Family = %q, want override anthropic", resp.Family)
+	}
+	if resp.Protocol != "anthropic" {
+		t.Errorf("Protocol = %q, want override anthropic", resp.Protocol)
+	}
+	if resp.Capabilities.Reasoning != true || resp.Capabilities.Attachment != false {
+		t.Errorf("Capabilities = %+v, want {Reasoning}", resp.Capabilities)
+	}
+	// Defaults still the built-in values.
+	if resp.DefaultTokenizerType != "tiktoken/o200k_base" {
+		t.Errorf("DefaultTokenizerType = %q, want tiktoken/o200k_base", resp.DefaultTokenizerType)
+	}
+}
+
+func TestSetModelConfig_MetaDataFieldsNonDefault(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+
+	err := f.SetModelConfig("gpt-4o", ModelConfigRequest{
+		ContextWindow: 128000, // == default → omitted
+		OutputLimit:   16384,  // == default → omitted
+		TokenizerType: "approximate",
+		Family:        "mistral",
+		Protocol:      "responses",
+		Capabilities:  &llm.ModelCapabilities{Attachment: false, Reasoning: false, Temperature: false, ToolCall: true},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	override := f.config.LLM.Models["gpt-4o"]
+	if override.ContextWindow != 0 || override.OutputLimit != 0 {
+		t.Errorf("CW/OL = %d/%d, want 0/0 (defaults omitted)", override.ContextWindow, override.OutputLimit)
+	}
+	if override.TokenizerType != "approximate" {
+		t.Errorf("TokenizerType = %q, want approximate", override.TokenizerType)
+	}
+	if override.Family != "mistral" {
+		t.Errorf("Family = %q, want mistral", override.Family)
+	}
+	if override.Protocol != "responses" {
+		t.Errorf("Protocol = %q, want responses", override.Protocol)
+	}
+	if override.Capabilities == nil {
+		t.Fatal("expected non-nil Capabilities override")
+	}
+	if override.Capabilities.ToolCall != true || override.Capabilities.Attachment != false {
+		t.Errorf("Capabilities = %+v, want {ToolCall}", *override.Capabilities)
+	}
+
+	if mock.rebuildRouterCalls != 1 {
+		t.Errorf("RebuildRouter called %d times, want 1", mock.rebuildRouterCalls)
+	}
+
+	// Persisted round-trip.
+	reloaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+	got := reloaded.LLM.Models["gpt-4o"]
+	if got.TokenizerType != "approximate" {
+		t.Errorf("persisted TokenizerType = %q, want approximate", got.TokenizerType)
+	}
+	if got.Family != "mistral" {
+		t.Errorf("persisted Family = %q, want mistral", got.Family)
+	}
+	if got.Protocol != "responses" {
+		t.Errorf("persisted Protocol = %q, want responses", got.Protocol)
+	}
+	if got.Capabilities == nil {
+		t.Fatal("expected persisted non-nil Capabilities")
+	}
+}
+
+func TestSetModelConfig_MetaDataFieldsDefaultOmitted(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	// Send the built-in default values for the metadata fields → they must
+	// NOT be stored (sentinel "" / nil = inherit default).
+	err := f.SetModelConfig("gpt-4o", ModelConfigRequest{
+		ContextWindow: 200000, // != default → stored
+		OutputLimit:   16384,  // == default → omitted
+		TokenizerType: "tiktoken/o200k_base", // == default → omitted
+		Family:        "openai_flagship",     // == default → omitted
+		Protocol:      "chat_completions",    // == default → omitted
+		Capabilities:  &llm.ModelCapabilities{Attachment: true, Reasoning: false, Temperature: true, ToolCall: true}, // == default → omitted
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	override := f.config.LLM.Models["gpt-4o"]
+	if override.TokenizerType != "" {
+		t.Errorf("TokenizerType = %q, want \"\" (default omitted)", override.TokenizerType)
+	}
+	if override.Family != "" {
+		t.Errorf("Family = %q, want \"\" (default omitted)", override.Family)
+	}
+	if override.Protocol != "" {
+		t.Errorf("Protocol = %q, want \"\" (default omitted)", override.Protocol)
+	}
+	if override.Capabilities != nil {
+		t.Errorf("Capabilities = %+v, want nil (default omitted)", override.Capabilities)
+	}
+	// Only context window differs.
+	if override.ContextWindow != 200000 {
+		t.Errorf("ContextWindow = %d, want 200000", override.ContextWindow)
+	}
+}
+
+func TestSetModelConfig_RejectsInvalidEnumValues(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	for _, tc := range []struct {
+		name string
+		req  ModelConfigRequest
+	}{
+		{"invalid tokenizer", ModelConfigRequest{
+			ContextWindow: 128000, OutputLimit: 16384, TokenizerType: "bogus-tok",
+		}},
+		{"invalid family", ModelConfigRequest{
+			ContextWindow: 128000, OutputLimit: 16384, Family: "bogus-family",
+		}},
+		{"invalid protocol", ModelConfigRequest{
+			ContextWindow: 128000, OutputLimit: 16384, Protocol: "bogus-proto",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := f.SetModelConfig("gpt-4o", tc.req)
+			if err == nil {
+				t.Fatal("expected error for invalid enum value")
+			}
+		})
+	}
+
+	// Nothing was mutated or rebuilt.
+	if _, ok := f.config.LLM.Models["gpt-4o"]; ok {
+		t.Error("expected no override entry on validation failure")
+	}
+	if mock.rebuildRouterCalls != 0 {
+		t.Errorf("RebuildRouter called %d times, want 0", mock.rebuildRouterCalls)
+	}
+}
+
+func TestSetModelConfig_AllMetadataDefaultsRemovesEntry(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	// Seed an entry with metadata overrides.
+	f.config.LLM.Models = map[string]config.ModelOverride{
+		"gpt-4o": {TokenizerType: "approximate", Family: "mistral"},
+	}
+
+	// Setting every field to the built-in default removes the entry entirely.
+	err := f.SetModelConfig("gpt-4o", ModelConfigRequest{
+		ContextWindow: 128000,
+		OutputLimit:   16384,
+		TokenizerType: "tiktoken/o200k_base",
+		Family:        "openai_flagship",
+		Protocol:      "chat_completions",
+		Capabilities:  &llm.ModelCapabilities{Attachment: true, Reasoning: false, Temperature: true, ToolCall: true},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := f.config.LLM.Models["gpt-4o"]; ok {
+		t.Error("expected gpt-4o override removed when all fields match defaults")
+	}
+}
+
 // --- UpdateSearchSettings ---
 
 func TestUpdateSearchSettings_PersistsAndRebuilds(t *testing.T) {

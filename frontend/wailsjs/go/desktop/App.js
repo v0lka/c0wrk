@@ -210,6 +210,10 @@ export function GetMCPStatus() {
   return window['go']['desktop']['App']['GetMCPStatus']();
 }
 
+export function GetModelConfig(arg1) {
+  return window['go']['desktop']['App']['GetModelConfig'](arg1);
+}
+
 export function GetPendingActions(arg1) {
   return window['go']['desktop']['App']['GetPendingActions'](arg1);
 }
@@ -416,6 +420,10 @@ export function SendMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9
 
 export function SetLogLevel(arg1) {
   return window['go']['desktop']['App']['SetLogLevel'](arg1);
+}
+
+export function SetModelConfig(arg1, arg2) {
+  return window['go']['desktop']['App']['SetModelConfig'](arg1, arg2);
 }
 
 export function SetReviewStatus(arg1, arg2) {

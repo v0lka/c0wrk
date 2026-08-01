@@ -474,6 +474,225 @@ func (f *FrontendAPI) ListProviderModels(provider string) ([]string, error) {
 	return b.ListProviderModels(context.Background(), provider, cfg)
 }
 
+// validTokenizerTypes enumerates the TokenizerType values the Configure dialog
+// may select. It mirrors the switch in llm.NewTokenCounter (tokencount.go); the
+// tiktoken/<encoding> forms are enumerated explicitly rather than accepting any
+// "tiktoken/" prefix because the dialog offers a fixed, curated list (no free
+// text). Keep in sync with NewTokenCounter if a new encoding is added.
+var validTokenizerTypes = map[string]struct{}{
+	"approximate":          {},
+	"tiktoken/o200k_base":  {},
+	"tiktoken/cl100k_base": {},
+	"anthropic-api":        {},
+}
+
+// validFamilies enumerates the ModelFamily values the Configure dialog may
+// select. Built from the llm.Family* string constants so this stays in sync
+// with DetectFamily automatically.
+var validFamilies = map[string]struct{}{
+	string(llm.FamilyAnthropic):      {},
+	string(llm.FamilyOpenAIFlagship): {},
+	string(llm.FamilyOpenAIStandard): {},
+	string(llm.FamilyGoogle):         {},
+	string(llm.FamilyMistral):        {},
+	string(llm.FamilyDeepSeek):       {},
+	string(llm.FamilyOpenAICodex):    {},
+	string(llm.FamilyQwen):           {},
+	string(llm.FamilyGLM):            {},
+	string(llm.FamilyKimi):           {},
+	string(llm.FamilyDefault):        {},
+}
+
+// validProtocols enumerates the APIProtocol values the Configure dialog may
+// select. Built from the llm.Protocol* string constants so this stays in sync
+// with DetectProtocol automatically.
+var validProtocols = map[string]struct{}{
+	string(llm.ProtocolChatCompletions): {},
+	string(llm.ProtocolResponses):       {},
+	string(llm.ProtocolAnthropic):       {},
+	string(llm.ProtocolGoogle):          {},
+}
+
+// modelFamilyDefault and modelProtocolDefault were removed: ResolveBuiltInModel
+// always resolves Family/Protocol (via resolveFamily/resolveProtocol in the
+// SDK) for known, fuzzy-matched, and unknown models alike, so defMeta.Family
+// and defMeta.Protocol are always populated directly. Callers use those fields
+// inline.
+
+// GetModelConfig returns a single model's configurable parameters: the
+// currently-effective values (override value when set, otherwise the built-in
+// default) and the built-in factory defaults. Used by the per-model Configure
+// dialog to pre-fill inputs and show what would change.
+//
+// Effective-value rule: a config override field of 0/""/nil means "inherit
+// default", so the effective value is the override's set value or, when unset,
+// the built-in default resolved via llm.ResolveBuiltInModel (network-free:
+// built-in catalog or the 128000/4096 fallback for unknown models).
+// ResolveBuiltInModel always resolves Family/Protocol (including detected
+// values for unknown models), so those fields are never empty.
+func (f *FrontendAPI) GetModelConfig(model string) (ModelConfigResponse, error) {
+	f.configMu.RLock()
+	defer f.configMu.RUnlock()
+
+	if f.config == nil {
+		return ModelConfigResponse{}, errors.New("config not initialized")
+	}
+
+	defMeta, _ := llm.ResolveBuiltInModel(model)
+
+	resp := ModelConfigResponse{
+		Model:                model,
+		ContextWindow:        defMeta.ContextWindow,
+		OutputLimit:          defMeta.OutputLimit,
+		TokenizerType:        defMeta.TokenizerType,
+		Family:               defMeta.Family,
+		Protocol:             string(defMeta.Protocol),
+		Capabilities:         defMeta.Capabilities,
+		DefaultContextWindow: defMeta.ContextWindow,
+		DefaultOutputLimit:   defMeta.OutputLimit,
+		DefaultTokenizerType: defMeta.TokenizerType,
+		DefaultFamily:        defMeta.Family,
+		DefaultProtocol:      string(defMeta.Protocol),
+		DefaultCapabilities:  defMeta.Capabilities,
+	}
+
+	if override, ok := f.config.LLM.Models[model]; ok {
+		resp.HasOverride = true
+		if override.ContextWindow > 0 {
+			resp.ContextWindow = override.ContextWindow
+		}
+		if override.OutputLimit > 0 {
+			resp.OutputLimit = override.OutputLimit
+		}
+		if override.TokenizerType != "" {
+			resp.TokenizerType = override.TokenizerType
+		}
+		if override.Family != "" {
+			resp.Family = override.Family
+		}
+		if override.Protocol != "" {
+			resp.Protocol = override.Protocol
+		}
+		if override.Capabilities != nil {
+			resp.Capabilities = *override.Capabilities
+		}
+	}
+
+	return resp, nil
+}
+
+// SetModelConfig persists per-model parameter overrides from the Configure
+// dialog. Only fields that differ from the built-in default are stored (a field
+// equal to the default is recorded as its "inherit" sentinel — 0 for ints, ""
+// for strings, nil for the capabilities pointer); when every field matches the
+// default the model's entry is removed entirely so config.yaml stays minimal.
+// The change is persisted and the LLM router rebuilt so the new values take
+// effect immediately.
+//
+// TokenizerType/Family/Protocol are validated against curated enum sets — the
+// dialog offers a fixed dropdown list (no free text), and the backend is the
+// enforcement boundary so a stale or tampered client cannot persist an invalid
+// enum string.
+func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error {
+	f.configMu.Lock()
+	defer f.configMu.Unlock()
+
+	if f.config == nil {
+		return errors.New("config not initialized")
+	}
+
+	// ContextWindow/OutputLimit must be positive integers. The Input has
+	// min={1} but that is advisory only; a negative would otherwise be
+	// persisted verbatim to config.yaml as nonsensical state.
+	if req.ContextWindow < 1 || req.OutputLimit < 1 {
+		return fmt.Errorf("context window and output limit must be positive integers, got %d/%d",
+			req.ContextWindow, req.OutputLimit)
+	}
+
+	// TokenizerType/Family/Protocol are selected from fixed dropdown lists; the
+	// backend is the enforcement boundary. Empty is allowed (means "inherit").
+	if req.TokenizerType != "" {
+		if _, ok := validTokenizerTypes[req.TokenizerType]; !ok {
+			return fmt.Errorf("invalid tokenizer type %q", req.TokenizerType)
+		}
+	}
+	if req.Family != "" {
+		if _, ok := validFamilies[req.Family]; !ok {
+			return fmt.Errorf("invalid family %q", req.Family)
+		}
+	}
+	if req.Protocol != "" {
+		if _, ok := validProtocols[req.Protocol]; !ok {
+			return fmt.Errorf("invalid protocol %q", req.Protocol)
+		}
+	}
+
+	defMeta, _ := llm.ResolveBuiltInModel(model)
+
+	// Record the "inherit" sentinel for any field that matches the built-in
+	// default — the override-seeding merge in buildRouter treats the sentinel
+	// as "inherit default", so storing the default value verbatim would be
+	// redundant. Capabilities is compared by value (nil = inherit).
+	var newCW, newOL int
+	var newTok, newFam, newProto string
+	var newCaps *llm.ModelCapabilities
+
+	if req.ContextWindow != defMeta.ContextWindow {
+		newCW = req.ContextWindow
+	}
+	if req.OutputLimit != defMeta.OutputLimit {
+		newOL = req.OutputLimit
+	}
+	if req.TokenizerType != defMeta.TokenizerType {
+		newTok = req.TokenizerType
+	}
+	if req.Family != defMeta.Family {
+		newFam = req.Family
+	}
+	if req.Protocol != string(defMeta.Protocol) {
+		newProto = req.Protocol
+	}
+	if req.Capabilities != nil && *req.Capabilities != defMeta.Capabilities {
+		newCaps = req.Capabilities
+	}
+
+	if f.config.LLM.Models == nil {
+		f.config.LLM.Models = make(map[string]config.ModelOverride)
+	}
+
+	if newCW == 0 && newOL == 0 && newTok == "" && newFam == "" && newProto == "" && newCaps == nil {
+		// Everything matches the built-in default — drop the override so the
+		// model resolves purely from the built-in catalog.
+		delete(f.config.LLM.Models, model)
+	} else {
+		f.config.LLM.Models[model] = config.ModelOverride{
+			ContextWindow: newCW,
+			OutputLimit:   newOL,
+			TokenizerType: newTok,
+			Family:        newFam,
+			Protocol:      newProto,
+			Capabilities:  newCaps,
+		}
+	}
+
+	if err := f.persistConfig(); err != nil {
+		return fmt.Errorf("failed to persist model config: %w", err)
+	}
+
+	// Clear any config load errors since settings are now valid.
+	f.configLoadErrors = nil
+
+	// Rebuild the LLM router so the new override takes effect for new sessions.
+	if b := f.builder(); b != nil {
+		bcfg := ToBuilderConfig(f.config)
+		if err := b.RebuildRouter(bcfg); err != nil {
+			f.log().Warn("failed to rebuild LLM router after model config update", "error", err)
+		}
+	}
+
+	return nil
+}
+
 // persistConfig saves the current in-memory config to disk.
 func (f *FrontendAPI) persistConfig() error {
 	if f.configPath == "" || f.config == nil {
