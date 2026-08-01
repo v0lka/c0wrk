@@ -225,13 +225,6 @@ func ensureProposeGoalTool(list []sdktools.ToolDescriptor, registry *sdktools.To
 // Multi-turn goal loop (runGoalLoop)
 // ----------------------------------------------------------------------------
 
-// goalLoopMaxTurns is the hard ceiling on goal-loop iterations applied when no
-// budget override sets MaxTurns. It is a safety net against an accidental
-// infinite loop, not a user-facing default — a goal without an explicit turn
-// cap is "unlimited" per the goal.GoalBudget contract, but no loop is truly
-// infinite.
-const goalLoopMaxTurns = 50
-
 // runGoalLoop is the multi-turn goal-mode driver. It is entered from
 // HandleMessage when opts.Goal is set — on BOTH a fresh task (TaskID == "")
 // and on a continuation (TaskID != ""). The single-flight guard in
@@ -326,9 +319,10 @@ func (o *Orchestrator) runGoalLoop(
 	}
 
 	// Resolve the budget: the per-message override sets MaxTurns when present;
-	// otherwise the goal is unlimited (the only cap is the goalLoopMaxTurns
-	// hard ceiling). There are no config-level defaults now — the budget is
-	// turn-only.
+	// otherwise the goal is unlimited. An unlimited goal (MaxTurns == 0) has
+	// NO turn cap — the user controls it via pause/stop. The only non-numeric
+	// guard is the anti-spin blocked_idle halt (zero tool calls + no verdict).
+	// There are no config-level defaults now — the budget is turn-only.
 	gs.Budget = resolveGoalBudget(opts.GoalBudgetOverride)
 	if gs.CreatedAt.IsZero() {
 		gs.CreatedAt = time.Now()
@@ -501,7 +495,7 @@ const goalVerifierDefaultRejectReason = "the independent verifier could not conf
 //     learns the turn's tool-call count).
 //   - verdict sink "met" → Status=met, break.
 //   - anti-spin: zero tool calls AND no verdict → Status=blocked_idle, break.
-//   - budget (MaxTurns) or hard ceiling hit → Status=exhausted, break.
+//   - budget (MaxTurns) hit → Status=exhausted, break.
 //   - emit goal_progress + goal_status each iteration.
 func (o *Orchestrator) runGoalTurns(
 	ctx context.Context,
@@ -655,22 +649,13 @@ func (o *Orchestrator) runGoalTurns(
 			break
 		}
 
-		// Budget checks. A hit transitions to exhausted (terminal failure).
+		// Budget check. A hit transitions to exhausted (terminal failure).
+		// An unlimited budget (MaxTurns == 0) never hits this — the user
+		// controls it via pause/stop, and the anti-spin blocked_idle halt is
+		// the only non-numeric guard.
 		if gs.Budget.MaxTurns > 0 && gs.TurnCount >= gs.Budget.MaxTurns {
 			gs.Status = goal.StatusExhausted
 			o.logInfo("goal_loop: turn budget exhausted", "turn", gs.TurnCount, "max", gs.Budget.MaxTurns)
-			o.emitGoalStatus(ctx, gs)
-			break
-		}
-
-		// Hard safety ceiling for "unlimited" budgets (MaxTurns == 0). It does
-		// NOT override an explicitly-set MaxTurns — the override contract ("the
-		// override wins for any field it sets") means a caller that sets
-		// MaxTurns > goalLoopMaxTurns is entitled to that many turns. The
-		// ceiling only guards the no-cap case so no loop is truly infinite.
-		if gs.Budget.MaxTurns == 0 && gs.TurnCount >= goalLoopMaxTurns {
-			gs.Status = goal.StatusExhausted
-			o.logInfo("goal_loop: hard turn ceiling hit", "turn", gs.TurnCount, "ceiling", goalLoopMaxTurns)
 			o.emitGoalStatus(ctx, gs)
 			break
 		}
@@ -737,8 +722,8 @@ func (o *Orchestrator) defaultGoalTurnRunner(
 // resolveGoalBudget applies the optional per-message override. The budget is
 // turn-only: when the override sets MaxTurns to a non-zero value it is used; a
 // nil override (or MaxTurns == 0) means unlimited. There are no config-level
-// defaults — the only safety net for an unlimited goal is the goalLoopMaxTurns
-// hard ceiling.
+// defaults — an unlimited goal (MaxTurns == 0) runs with no turn cap, governed
+// only by pause/stop and the anti-spin blocked_idle halt.
 func resolveGoalBudget(override *goal.GoalBudget) goal.GoalBudget {
 	if override == nil {
 		return goal.GoalBudget{}

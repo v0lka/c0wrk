@@ -447,7 +447,7 @@ func TestRunGoalTurns_MetRejected_PromptNoticeOneShot(t *testing.T) {
 // former 12-step clamp) on the verifier.
 func TestRunConductor_VerifierPassBoundedByComplexityBudget(t *testing.T) {
 	const complexity = 1
-	wantSteps := complexity * stepsPerComplexity // 1 × 20 = 20 — ≠ the former 12-step cap
+	wantSteps := complexity * stepsPerComplexity // 1 × 30 = 30 — ≠ the former 12-step cap
 
 	// The LLM always emits a bash_exec call with a DISTINCT input per iteration
 	// so the circuit-breaker's repeat detector never trips — the only thing

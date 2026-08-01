@@ -1523,7 +1523,7 @@ func (r *conductorReflectionRunner) Reflect(ctx context.Context, scope, delegati
 // It applies uniformly to the Conductor's own loop and to every subagent
 // (delegates and plan-step executors) unless a delegation overrides it via
 // its per-task max_steps.
-const stepsPerComplexity = 20
+const stepsPerComplexity = 30
 
 // compactionStrategyForDomain maps a routing domain + complexity to the
 // compaction strategy per ADR-012 / specs/domains/orchestration/router.md:

@@ -171,8 +171,8 @@ cooperative pause (`PauseGoal` sets an atomic the loop polls at the top of each
 turn) transitions the goal to `paused`, releases the single-flight lock, and a
 later `Resume` re-enters (`resumeGoalLoop`) with the prior trajectory seeded.
 
-**Rationale.** A goal can run for many turns (the budget ceiling is 50 by
-default, and unlimited-turn goals are supported). Forcing the user to keep the
+**Rationale.** A goal can run for many turns (an explicit turn budget, or an
+unlimited ∞ goal the user controls via pause/stop). Forcing the user to keep the
 app open and the loop running for that duration is brittle — a restart, a
 pause-to-think, or a hand-off would discard progress. Persisting the state and
 supporting pause/resume makes a long goal durable and interruptible, matching

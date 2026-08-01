@@ -1067,19 +1067,24 @@ func TestPauseGoal_NoopWithoutSignal(t *testing.T) {
 	o.PauseGoal()
 }
 
-// TestRunGoalTurns_HardCeilingExhausted verifies the goalLoopMaxTurns hard
-// ceiling halts an otherwise-unlimited goal as exhausted.
-func TestRunGoalTurns_HardCeilingExhausted(t *testing.T) {
+// TestRunGoalTurns_UnlimitedBudgetNotCapped verifies that an unlimited goal
+// (Budget.MaxTurns == 0) is NOT subject to any internal turn ceiling: it
+// iterates past the former 50-turn hard ceiling and terminates only via a
+// verdict. The user controls an unlimited goal via pause/stop, not a hidden cap.
+func TestRunGoalTurns_UnlimitedBudgetNotCapped(t *testing.T) {
 	o := newGoalTestOrchestrator()
-	// Build enough turns to reach the hard ceiling without a budget cap.
-	ceiling := goalLoopMaxTurns
-	verds := make([]*goal.Verdict, ceiling)
-	calls := make([]int, ceiling)
-	for i := range ceiling {
-		// not_met verdicts with tool calls so the loop keeps iterating.
+	// More turns than the former goalLoopMaxTurns (50) hard ceiling.
+	const notMetTurns = 60
+	verds := make([]*goal.Verdict, notMetTurns+1)
+	calls := make([]int, notMetTurns+1)
+	for i := range notMetTurns {
 		verds[i] = &goal.Verdict{Status: "not_met", DeclaredAt: time.Now()}
 		calls[i] = 1
 	}
+	// Final turn declares "met" with evidence — the loop must reach it, not
+	// halt earlier at a hidden cap.
+	verds[notMetTurns] = metVerdict("done")
+	calls[notMetTurns] = 1
 	runner := &mockGoalTurnRunner{turnVerds: verds, turnCalls: calls}
 	gs := &goal.GoalState{Status: goal.StatusActive} // unlimited budget
 	bb := orchestration.NewMapBlackboard()
@@ -1088,39 +1093,11 @@ func TestRunGoalTurns_HardCeilingExhausted(t *testing.T) {
 	result := o.runGoalTurns(
 		context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run,
 	)
-	if result.Status != goal.StatusExhausted {
-		t.Fatalf("Status = %q, want %q (hard ceiling)", result.Status, goal.StatusExhausted)
+	if result.Status != goal.StatusMet {
+		t.Fatalf("Status = %q, want %q (unlimited budget must not be capped before a met verdict)", result.Status, goal.StatusMet)
 	}
-	if result.TurnCount != ceiling {
-		t.Errorf("TurnCount = %d, want %d (hard ceiling)", result.TurnCount, ceiling)
-	}
-}
-
-// TestRunGoalTurns_HardCeilingRespectsExplicitMaxTurns is the regression test
-// for Core#4: the hard turn ceiling must NOT truncate an explicit MaxTurns
-// override greater than the ceiling. The override contract says an explicitly
-// set MaxTurns wins, so the loop must run all of those turns.
-func TestRunGoalTurns_HardCeilingRespectsExplicitMaxTurns(t *testing.T) {
-	o := newGoalTestOrchestrator()
-	// Explicit MaxTurns exceeds the hard ceiling (goalLoopMaxTurns).
-	maxTurns := goalLoopMaxTurns + 10
-	verds := make([]*goal.Verdict, maxTurns)
-	calls := make([]int, maxTurns)
-	for i := range maxTurns {
-		verds[i] = &goal.Verdict{Status: "not_met", DeclaredAt: time.Now()}
-		calls[i] = 1
-	}
-	runner := &mockGoalTurnRunner{turnVerds: verds, turnCalls: calls}
-	gs := &goal.GoalState{Status: goal.StatusActive, Budget: goal.GoalBudget{MaxTurns: maxTurns}}
-	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
-
-	result := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run)
-	if result.Status != goal.StatusExhausted {
-		t.Fatalf("Status = %q, want %q (explicit MaxTurns reached)", result.Status, goal.StatusExhausted)
-	}
-	if result.TurnCount != maxTurns {
-		t.Errorf("TurnCount = %d, want %d (hard ceiling must not truncate explicit MaxTurns)", result.TurnCount, maxTurns)
+	if result.TurnCount != notMetTurns+1 {
+		t.Errorf("TurnCount = %d, want %d (ran past the former ceiling)", result.TurnCount, notMetTurns+1)
 	}
 }
 

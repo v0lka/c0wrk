@@ -122,9 +122,9 @@ for gs.Status == active:
   │
   ├─ anti-spin: toolCalls == 0 AND no verdict → Status=blocked_idle, break
   │
-  ├─ budget checks (any hit → Status=exhausted, break):
-  │     MaxTurns > 0 && TurnCount >= MaxTurns
-  │     MaxTurns == 0 && TurnCount >= goalLoopMaxTurns (hard ceiling = 50, only when no explicit turn cap is set)
+  ├─ budget check (only when an explicit cap is set):
+  │     MaxTurns > 0 && TurnCount >= MaxTurns → Status=exhausted, break
+  │     (MaxTurns == 0 = unlimited: NO turn cap; the user controls it via pause/stop)
   │
   └─ emit goal_progress (turn/budget telemetry) + goal_status (full snapshot)
 ```
@@ -229,7 +229,7 @@ Terminal states (`met`, `exhausted`, `cancelled`) are never re-entered — `Resu
 
 - **Resolution**: `resolveGoalBudget(opts.GoalBudgetOverride)` — the override sets MaxTurns when it is non-zero; a nil override (or `MaxTurns == 0`) means unlimited. There are no config-level defaults now; the budget is resolved entirely from the per-message override.
 - **Override path**: parsed from a JSON string in `SendMessage`'s goal-budget field (`backend/session/manager_execution.go` `parseGoalBudget`); an empty/invalid string falls back to unlimited so a malformed budget never blocks a send. The frontend `BudgetCombobox` offers ∞ / 3 / 5 / 10 turns plus a custom turn-count input, producing `{"max_turns":N}`.
-- **Hard ceiling**: `goalLoopMaxTurns = 50` is a safety net applied **only when no explicit turn cap is set** (`Budget.MaxTurns == 0`). It does **not** override an explicitly-set `MaxTurns`: the override contract ("the override wins for the field it sets") means a caller that sets `MaxTurns > goalLoopMaxTurns` is entitled to that many turns. The ceiling only guards the no-cap case so a truly-unlimited goal is never an actually-infinite loop.
+- **Unlimited means unlimited**: an unlimited goal (`MaxTurns == 0`) has **no internal turn cap**. The user controls it via pause/stop — selecting ∞ signals the intent to monitor and interrupt manually, not a hidden ceiling. The only non-numeric guard that can halt an unlimited goal is the anti-spin `blocked_idle` halt (zero tool calls + no verdict).
 
 Budgets are applied at **activation (turn 1)**, not at derivation — derivation only decides WHAT the goal is, not how much it may cost.
 
@@ -283,7 +283,7 @@ The goal loop runs under the `Orchestrator` single-flight guard (`requestInFligh
 
 ## Configuration
 
-The goal budget is **turn-only**. There are no config-level token or wall-clock caps; a per-goal turn limit is selected in the UI (`BudgetCombobox`: ∞ / 3 / 5 / 10 turns, or a custom number). An unlimited goal (∞) is bounded only by the internal `goalLoopMaxTurns = 50` safety ceiling. The independent verifier has two knobs: a global on/off gate (`goal_loop.verification`) and a per-goal `VerificationMode` (see [Independent Verification](#independent-verification)).
+The goal budget is **turn-only**. There are no config-level token or wall-clock caps; a per-goal turn limit is selected in the UI (`BudgetCombobox`: ∞ / 3 / 5 / 10 turns, or a custom number). An unlimited goal (∞) has **no internal turn cap** — the user controls it via pause/stop. The independent verifier has two knobs: a global on/off gate (`goal_loop.verification`) and a per-goal `VerificationMode` (see [Independent Verification](#independent-verification)).
 
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
