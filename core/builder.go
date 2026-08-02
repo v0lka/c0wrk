@@ -1149,6 +1149,18 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		}
 		overrides[name] = base
 	}
+
+	// Auto-remap the Google protocol for Gemma/Gemini checkpoints served by a
+	// local OpenAI-compatible server (LM Studio/vLLM/Ollama). These servers
+	// expose /v1/chat/completions (and the /v1/responses, /v1/messages
+	// delegates) but NOT Google's :generateContent endpoint — which they
+	// answer with a misleading 200 OK + empty body (see the bug log). Remapping
+	// only the Google protocol → chat_completions keeps the request on an
+	// endpoint the server actually serves, while GPT-5 (Responses) and Claude
+	// (Anthropic) keep working unchanged. An explicit protocol override seeded
+	// above from cfg.LLM.Models always wins and is never clobbered here.
+	remapLocalGoogleProtocols(overrides, cfg.LLM.ProviderConfigs, cfg.ExpandEnvVars)
+
 	modelRegistry := llm.NewModelRegistry(overrides)
 	if proxyClient != nil {
 		modelRegistry.SetHTTPClient(proxyClient)
@@ -1232,6 +1244,68 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	}
 
 	return llmRouter, modelRegistry, nil
+}
+
+// remapLocalGoogleProtocols rewrites the built-in Google protocol to
+// ProtocolChatCompletions for Google-named checkpoints (Gemma / Gemini) that
+// are served by a local OpenAI-compatible server (LM Studio, vLLM, Ollama).
+//
+// Per the LM Studio endpoint matrix, local OpenAI-compatible servers expose
+// /v1/chat/completions, /v1/responses and /v1/messages — but NOT Google's
+// /models/{model}:generateContent endpoint, which they answer with a 200 OK +
+// empty body. So a Google-named model must be steered onto chat_completions
+// instead. Only the Google protocol is remapped: Responses (GPT-5/Codex) and
+// Anthropic (Claude) are served fine by these servers, so they are left
+// untouched. The override is keyed by the bare model name — the same value
+// that becomes req.Model on the wire.
+//
+// The injected override is PROTOCOL-ONLY: it pins Protocol=ChatCompletions and
+// carries the built-in Capabilities (so multimodal flag is preserved), but
+// leaves ContextWindow / OutputLimit / TokenizerType at their zero values. The
+// ModelRegistry then inherits those unset scalars from its lower non-network
+// tiers at Resolve time (built-in catalog → cache → fallback). This is
+// essential because the lazy local-model probe (buildLocalModelProbe) writes
+// the model's REAL context window to the cache tier via SetCachedMetadata; a
+// wholesale override that also carried the catalog/fallback window (128000 for
+// a catalog miss) would permanently shadow that probe result, leaving the
+// context-fill accounting and compaction thresholds pinned to an inflated
+// window.
+//
+// An explicit protocol override seeded from cfg.LLM.Models (already present in
+// overrides with a non-empty protocol) is respected: the user's choice always
+// wins and is never clobbered. The remap is idempotent, so map-iteration order
+// across providers does not affect the result.
+func remapLocalGoogleProtocols(
+	overrides map[string]llm.ModelMetadata,
+	providerConfigs map[string]BuilderProviderConfig,
+	expandEnv func(string) string,
+) {
+	for _, pc := range providerConfigs {
+		if pc.ProviderType != "openai" {
+			continue
+		}
+		if !isLocalBaseURL(expandEnv(pc.BaseURL)) {
+			continue
+		}
+		for _, model := range pc.Models {
+			// Respect an explicit user override (cfg.LLM.Models) that already
+			// set a protocol — never clobber the user's choice.
+			if existing, ok := overrides[model]; ok && existing.Protocol != "" {
+				continue
+			}
+			base, _ := llm.ResolveBuiltInModel(model)
+			if base.Protocol == llm.ProtocolGoogle {
+				// Protocol-only override: the registry inherits the unset
+				// scalar fields (context window, output limit, tokenizer) from
+				// its lower tiers so the lazy probe result takes effect. See
+				// the function doc comment for the shadowing rationale.
+				overrides[model] = llm.ModelMetadata{
+					Protocol:      llm.ProtocolChatCompletions,
+					Capabilities:  base.Capabilities,
+				}
+			}
+		}
+	}
 }
 
 // buildLocalModelProbe returns a LocalModelProbe that, for the given model,
