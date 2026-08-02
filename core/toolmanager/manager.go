@@ -103,7 +103,9 @@ func (m *Manager) EnsureCriticalTools(ctx context.Context) error {
 		return fmt.Errorf("resolving tool registry: %w", err)
 	}
 	for _, tool := range tools {
-		if versions[tool.Name] == tool.Version {
+		installed := versions[tool.Name]
+		versionMismatch := installed != tool.Version
+		if !versionMismatch {
 			// Verify the binary still exists on disk — the version file
 			// could be stale if the user manually deleted the binary.
 			binPath := m.binaryPath(tool.Name, tool.Type)
@@ -112,6 +114,17 @@ func (m *Manager) EnsureCriticalTools(ctx context.Context) error {
 				continue
 			}
 			m.Logger.Warn("version file present but binary missing, re-installing", "tool", tool.Name)
+		}
+
+		// A version bump for a Python-package tool requires rebuilding its
+		// environment: InstallPythonPackage short-circuits when the wrapper
+		// script already exists, which would leave the old (potentially
+		// vulnerable) package version in place while the .versions file
+		// already records the new version.
+		if versionMismatch && tool.Type == PythonPackage {
+			m.Logger.Info("rebuilding python environment for version bump",
+				"tool", tool.Name, "from", installed, "to", tool.Version)
+			m.removeStalePythonEnv(tool)
 		}
 
 		m.Logger.Info("installing tool", "tool", tool.Name, "version", tool.Version)
@@ -272,4 +285,24 @@ func (m *Manager) installPython(ctx context.Context, tool ToolSpec) error {
 	}
 	m.Logger.Debug("python package installed", "tool", tool.Name)
 	return nil
+}
+
+// removeStalePythonEnv deletes the wrapper script and the virtual environment
+// for a Python-package tool so that a version bump triggers a full rebootstrap.
+// The uv-managed Python interpreter (python/install/) is intentionally left
+// intact: it is shared and reinstalled idempotently by `uv python install`.
+//
+// Without this, InstallPythonPackage's wrapper-existence short-circuit would
+// skip the upgrade, leaving the previously installed (possibly vulnerable)
+// package version in the venv while the .versions file already records the new
+// version — a silent security gap.
+func (m *Manager) removeStalePythonEnv(tool ToolSpec) {
+	wrapperPath := m.binaryPath(tool.Name, tool.Type)
+	if err := os.Remove(wrapperPath); err != nil && !os.IsNotExist(err) {
+		m.Logger.Warn("failed to remove stale wrapper", "tool", tool.Name, "path", wrapperPath, "error", err)
+	}
+	venvDir := filepath.Join(m.PythonDir, "venv")
+	if err := os.RemoveAll(venvDir); err != nil {
+		m.Logger.Warn("failed to remove stale venv", "path", venvDir, "error", err)
+	}
 }

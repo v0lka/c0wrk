@@ -19,6 +19,8 @@
 | Adding/modifying built-in tools          | [domains/tool-system/builtins.md](domains/tool-system/builtins.md)       |
 | MCP servers, dynamic tools               | [domains/tool-system/mcp-gateway.md](domains/tool-system/mcp-gateway.md) |
 | Tool registry, execution pipeline        | [domains/tool-system/README.md](domains/tool-system/README.md)           |
+| External binary deps (rg, uv, markitdown), tool-manager | [domains/tool-manager.md](domains/tool-manager.md)       |
+| Supply-chain integrity, pinned tool versions, CVE review before bumping | [domains/tool-manager.md](domains/tool-manager.md) |
 | Context window, compaction               | [domains/memory/compaction.md](domains/memory/compaction.md)             |
 | Blackboard, facts, persistence           | [domains/memory/blackboard.md](domains/memory/blackboard.md)             |
 | LLM providers, model registry, tokens    | [domains/llm-providers.md](domains/llm-providers.md)                     |
@@ -101,6 +103,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [session-lifecycle.md](domains/session-lifecycle.md) - Session and task lifecycle
 - [goal-mode.md](domains/goal-mode.md) - Goal mode: multi-turn agent-driven loop over a user-approved success condition (derivation → approval → self-eval loop, budgets, anti-spin, pause/resume)
 - [small-llm.md](domains/small-llm.md) - Small-LLM profile: master-toggle + four variants (essential-tools narrowing, system-prompt Lite swap, sampling override, loop hardening) for tuning c0wrk to small/local models
+- [tool-manager.md](domains/tool-manager.md) - External binary dependency manager (rg/uv/markitdown): pinned-version reconciliation, SHA256 verification, no-auto-update supply-chain guarantee
 - [workspace.md](domains/workspace.md) - File tree, vector index, workspace watcher
 
 ### domains/frontend/

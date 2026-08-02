@@ -79,8 +79,8 @@ func TestManagedTools_MarkitdownIsPythonPackage(t *testing.T) {
 			if tool.Type != PythonPackage {
 				t.Errorf("markitdown has type %s, want python_package", tool.Type)
 			}
-			if tool.PipSpec != "markitdown[all]" {
-				t.Errorf("markitdown PipSpec = %q, want markitdown[all]", tool.PipSpec)
+			if tool.PipSpec != "markitdown[all]==0.1.4" {
+				t.Errorf("markitdown PipSpec = %q, want markitdown[all]==0.1.4", tool.PipSpec)
 			}
 			if tool.PythonVersion == "" {
 				t.Error("markitdown has empty PythonVersion")

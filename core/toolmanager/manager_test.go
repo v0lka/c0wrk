@@ -247,6 +247,65 @@ func TestManager_NeedsInstall_VersionMismatch(t *testing.T) {
 	}
 }
 
+// TestManager_EnsureCriticalTools_PythonVersionBumpRebuildsEnv verifies that a
+// pinned-version bump for a Python-package tool tears down the stale wrapper
+// and virtual environment before reinstalling. Without this, the wrapper-
+// existence short-circuit in InstallPythonPackage would skip the upgrade,
+// leaving the old (potentially vulnerable) package in place while the
+// .versions file already records the new version.
+func TestManager_EnsureCriticalTools_PythonVersionBumpRebuildsEnv(t *testing.T) {
+	toolsDir, binDir, pythonDir := makeTestDirs(t)
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(pythonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := &Manager{
+		ToolsDir:   toolsDir,
+		BinDir:     binDir,
+		PythonDir:  pythonDir,
+		Downloader: DownloadFunc(stubDownload),
+		Installer:  &stubInstaller{},
+		Logger:     slog.New(slog.DiscardHandler),
+	}
+
+	// Simulate a stale markitdown install from the previous version: a
+	// wrapper script and a virtual environment that must be rebuilt.
+	wrapperPath := mgr.binaryPath("markitdown", PythonPackage)
+	if err := os.WriteFile(wrapperPath, []byte("stale wrapper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	venvDir := filepath.Join(pythonDir, "venv")
+	marker := filepath.Join(venvDir, "marker")
+	if err := os.MkdirAll(venvDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("old venv"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Record a stale markitdown version. uv/rg have no entry and install via
+	// stubs (the stubs succeed without touching disk for static binaries).
+	if err := WriteVersions(toolsDir, ToolVersions{"markitdown": "0.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mgr.EnsureCriticalTools(context.Background()); err != nil {
+		t.Fatalf("EnsureCriticalTools failed: %v", err)
+	}
+
+	// The stale wrapper must be gone so the reinstall is not short-circuited.
+	if _, err := os.Stat(wrapperPath); err == nil {
+		t.Error("stale markitdown wrapper still present after version bump; env was not rebuilt")
+	}
+	// The stale venv must be gone for a clean reinstall.
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("stale venv marker still present after version bump; env was not rebuilt")
+	}
+}
+
 // ── Stubs for testing ──────────────────────────────────────────────────────
 
 func stubDownload(ctx context.Context, tool ToolSpec, cacheDir string, progress func(int64, int64)) (*DownloadResult, error) {
