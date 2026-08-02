@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { DownloadCloud, UploadCloud, RefreshCw, Loader2, AlertCircle, ChevronDown } from 'lucide-react'
+import { DownloadCloud, UploadCloud, RefreshCw, Loader2, AlertCircle, ChevronDown, Terminal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -159,11 +159,13 @@ export function GitPanelFooter() {
           <Button
             variant="ghost"
             size="xs"
-            className="ml-auto text-[10px] text-muted-foreground gap-0.5 px-1"
+            className="ml-auto text-muted-foreground gap-0.5 px-1"
             onClick={() => setShowOutput((v) => !v)}
             aria-expanded={showOutput}
+            aria-label={showOutput ? 'Hide output' : 'Show output'}
+            title={showOutput ? 'Hide output' : 'Show output'}
           >
-            Output
+            <Terminal className="size-3" />
             <ChevronDown className={cn('size-3 transition-transform', showOutput && 'rotate-180')} />
           </Button>
         )}
