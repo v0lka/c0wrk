@@ -96,6 +96,7 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | `subagent_launch`   | `{step_id, description}`                                            | useSubagentEvents | Subagent started        |
 | `subagent_complete` | `{step_id, success, duration (ms)}`                                 | useSubagentEvents | Subagent finished       |
 | `skills_activated`  | `{skills: string[]}`                                                | useChatEvents     | Skills matched for task |
+| `tools_assigned`    | `{tools: string[]}`                                                 | useLifecycleEvents | Tools curated for the task by Small-LLM essential-tools narrowing (mirrors `skills_activated` as a `status` card). Persisted (role `status`). See [../domains/small-llm.md](../domains/small-llm.md). |
 | `step_todo_update`  | `{step_id?, items: {text, checked}[], completed_count, total_count}` | usePlanEvents     | Checklist update (step_id optional — empty for standalone Conductor checklist without a declared plan) |
 | `memory_read`       | `{step_num, content}`                                               | useChatEvents     | Agent read from persistent memory |
 

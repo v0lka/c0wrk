@@ -304,6 +304,13 @@ func (o *Orchestrator) runGoalLoop(
 		pbb.SetRouting(routing)
 	}
 
+	// NOTE: the small-LLM essential-tools filter is NOT applied in goal mode.
+	// The only call site is HandleMessage's non-goal path, which runs AFTER the
+	// goal-mode early return above. Goal mode deliberately keeps the full tool
+	// set (the goal-loop tools, including the verifier-required
+	// declare_verification, would otherwise be dropped by SelectTools). The
+	// lite prompt profile IS still honored here via prepareRequestContext.
+
 	// Derive the goal. On error/cancel, surface the conductor message as the
 	// output so the user sees their request acknowledged, not an empty result.
 	deriveDeps := o.buildConductorDeps(nil, nil)

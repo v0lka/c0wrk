@@ -7,9 +7,10 @@ The orchestration domain coordinates the full lifecycle of a user request: class
 ## Key Files
 
 - `core/orchestrator.go` — top-level Orchestrator (HandleMessage, Resume)
-- `core/orchestrator_handle.go` — HandleMessage body: router → Conductor launch
+- `core/orchestrator_handle.go` — HandleMessage body: router → Conductor launch, `prepareRequestContext`
 - `core/orchestrator_goal.go` — goal mode: deriveGoal, runGoalLoop, resumeGoalLoop, runGoalTurns, budgets, anti-spin, pause signal (see [../goal-mode.md](../goal-mode.md))
 - `core/conductor.go` — Conductor entry point: builds system prompt, tool set, launches `Executor.Run`
+- `core/smallllm/tools_filter.go` — pure tool-set narrowing for the Small-LLM essential-tools variant (see [../small-llm.md](../small-llm.md))
 - `core/tools/delegate.go` — `delegate` tool (subagent launch with DAG + async)
 - `core/tools/declare_plan.go` — `declare_plan` tool (roadmap publish + approval gate)
 - `core/tools/reflect.go` — `reflect` tool (invokes Reflector on trajectory)
@@ -73,6 +74,7 @@ type OrchestratorConfig struct {
     AgentsMDMaxBytes            int
     AgentsMDSearchPaths         []string // extra AGENTS.md paths (global, c0wrk) read ahead of the workspace file
     ConductorHistoryWindow      int     // recent conversation messages injected into the Conductor context (default: 20)
+    SmallLLM                    SmallLLMSettings // small-LLM profile (master toggle + essential-tools / system-prompt variants); see [../small-llm.md](../small-llm.md)
 }
 
 // Routing result — domain, complexity, skills, and a clarification flag.
@@ -152,6 +154,13 @@ HandleMessage(ctx, message, sessionID, opts)
 │     → Apply skill policy overrides to tool registry
 │     → Emit SkillsActivated event
 │
+├─ 4a. Small-LLM essential-tools filter (non-goal path only):
+│     → When small_llm.enabled AND essential_tools.enabled, narrow the
+│       available tool set via smallllm.SelectTools (router-matched +
+│       always-present + protected base + every MCP tool, capped by
+│       max_tools). Emit tools_assigned. No-op when the profile is off.
+│     → Goal mode returns before this point and is never narrowed.
+│
 ├─ 5. Build Conductor:
 │     ├─ System prompt = orchestrator core + family overlay + verification
 │     │   mandate + workspace + env + active skills (verbatim) +
@@ -206,6 +215,7 @@ There is no `executionMode` toggle. The Conductor chooses its own granularity ba
 - When the assistant output contains tool-call syntax printed as text (failure-mode detected by `agent.DetectToolCallSyntaxInContent`), the history records a `HistoryNoteFailed(...)` note instead of the hallucinated text.
 - isNoProject: routing domain "code" is overridden to "general" after classification.
 - SetNoProjectMode(): disables code tools and adds extended bash command blacklist on the core tool registry.
+- Small-LLM essential-tools filter: when active it runs exactly once per task on the non-goal path (before the ReAct loop) and never in goal mode; `finish` and the fact-memory / human-interaction tools always survive. The profile is strictly additive — every variant is inert when its master/sub-toggle is off. See [../small-llm.md](../small-llm.md).
 
 ## Configuration
 
@@ -218,6 +228,8 @@ From `config.yaml` (via BuilderConfig → OrchestratorConfig):
 | `executor.compaction.sliding_window.keep_last` | 10 | Protected tail messages during sliding-window compaction |
 | `executor.compaction.thresholds.pre_warning_percent` | 75 | Context-fill % that triggers the pre-compaction store_fact nudge |
 | `security.agents_md_max_bytes` | 65536 | Cap on AGENTS.md content injected into prompts (0 = default; -1 = unlimited). Applies to the combined content of all AGENTS.md sources. |
+
+The small-LLM profile (`small_llm.*`) tunes the Conductor for small/local models (tool-set narrowing, system-prompt Lite swap, sampling override, loop hardening). It is strictly additive and defaults to off. See [../small-llm.md](../small-llm.md).
 
 Not wired from `config.yaml` (hardcoded defaults in code):
 - `OrchestratorConfig.MaxRedelegationDepth` — default 2 (set in `NewOrchestrator`; not exposed as a config key).

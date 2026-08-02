@@ -21,6 +21,7 @@ Frontend communicates with Go exclusively through Wails IPC. No direct Go import
 | `ConfigResponse`           | backend  | backend → frontend | Sanitized config view               |
 | `LLMFullConfigRequest`    | frontend | frontend → backend | LLM multi-provider config update |
 | `SecuritySettingsResponse` | backend  | backend ↔ frontend | Security policy CRUD                |
+| `SmallLLMConfigResponse`   | backend  | backend ↔ frontend | Small-LLM profile CRUD (see [../domains/small-llm.md](../domains/small-llm.md)) |
 | `OptimizePromptResponse`   | backend  | backend → frontend | Prompt optimization result          |
 | `SkillDescriptorDTO`       | backend  | backend → frontend | Skill listing                       |
 | `TerminalCommand`          | backend  | backend → frontend | Terminal command history            |
@@ -90,6 +91,8 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `ListProviderModels`     | provider                 | ([]string, error)                 | List models for a provider     |
 | `GetProxySettings`       | —                        | ProxySettingsResponse             | Get proxy configuration        |
 | `UpdateProxySettings`    | ProxySettingsRequest     | error                             | Update proxy configuration     |
+| `GetSmallLLMConfig`      | —                        | SmallLLMConfigResponse            | Get the small-LLM profile (always_present normalized to non-nil; protected orchestration tools unioned in) |
+| `UpdateSmallLLMConfig`   | SmallLLMConfigResponse   | error                             | Validate + persist the small-LLM profile, then rebuild the LLM router. Validation runs before mutation; an invalid payload produces no partial write. |
 
 ### Workspace (`backend/frontend_api_workspace.go`)
 

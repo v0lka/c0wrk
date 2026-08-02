@@ -23,7 +23,7 @@ require (
 	github.com/epilande/go-devicons v0.0.0-20250505162540-0661cab71a28
 	github.com/google/go-cmp v0.7.0
 	github.com/philippgille/chromem-go v0.7.0
-	github.com/v0lka/sp4rk v0.0.0-20260801232533-c2fb5780cc27
+	github.com/v0lka/sp4rk v0.0.0-20260802152924-2be01302b733
 	golang.org/x/image v0.44.0
 )
 

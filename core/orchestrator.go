@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core/goal"
+	"github.com/v0lka/c0wrk/core/smallllm"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/reflector"
@@ -106,6 +107,68 @@ type injectionDefenseKeyType struct{}
 // whether to include the injection defense prompt text.
 var InjectionDefenseKey = injectionDefenseKeyType{}
 
+// smallLLMPromptProfile carries the small-LLM SystemPrompt sub-toggle flags
+// from prepareRequestContext to buildSystemPromptWith. It is stored under
+// SmallLLMLiteKey (a presence flag, like PlanModeKey): when present AND Lite
+// is set, buildSystemPromptWith swaps the verbose OrchestratorSystem core
+// directive for the compact OrchestratorSystemLite directive, and
+// conditionally appends the reasoning scaffold (ReasoningScaffold) and the
+// worked-example few-shot block (FewShot). FewShot and ReasoningScaffold are
+// only honored when Lite is active, since both are tailored to the lite
+// directive's style. The injection-defense and verification sections are
+// appended UNCHANGED in both modes (strict constraint).
+type smallLLMPromptProfile struct {
+	Lite              bool
+	FewShot           bool
+	ReasoningScaffold bool
+}
+
+// smallLLMLiteKeyType is the context key for the small-LLM SystemPrompt
+// profile. Its presence signals the variant is active; the carried value is a
+// smallLLMPromptProfile with the sub-toggle flags.
+type smallLLMLiteKeyType struct{}
+
+// SmallLLMLiteKey is the context key signaling the small-LLM lite prompt profile.
+var SmallLLMLiteKey = smallLLMLiteKeyType{}
+
+// WithSmallLLMLite returns a context carrying SmallLLMLiteKey with the full
+// profile (lite directive + few-shot examples + reasoning scaffold). It is a
+// test/fixture convenience; production wiring uses withSmallLLMPromptProfile
+// to carry the actual config-derived flags.
+func WithSmallLLMLite(ctx context.Context) context.Context {
+	return withSmallLLMPromptProfile(ctx, smallLLMPromptProfile{
+		Lite:              true,
+		FewShot:           true,
+		ReasoningScaffold: true,
+	})
+}
+
+// withSmallLLMPromptProfile returns a context carrying the small-LLM prompt
+// profile under SmallLLMLiteKey. This is the production entry point used by
+// prepareRequestContext; it carries the config-derived sub-toggle flags so
+// buildSystemPromptWith can gate the lite directive, few-shot examples, and
+// reasoning scaffold independently.
+func withSmallLLMPromptProfile(ctx context.Context, p smallLLMPromptProfile) context.Context {
+	return context.WithValue(ctx, SmallLLMLiteKey, p)
+}
+
+// smallLLMLiteFromCtx reports whether the small-LLM lite prompt profile is
+// active for this run (the variant is enabled and Lite is on). Used by
+// buildSystemPromptWith to decide whether to swap in the compact
+// OrchestratorSystemLite directive.
+func smallLLMLiteFromCtx(ctx context.Context) bool {
+	p, ok := ctx.Value(SmallLLMLiteKey).(smallLLMPromptProfile)
+	return ok && p.Lite
+}
+
+// smallLLMPromptProfileFromCtx returns the carried small-LLM prompt profile
+// and whether one is present. Used by buildSystemPromptWith to read the
+// FewShot and ReasoningScaffold sub-toggle flags.
+func smallLLMPromptProfileFromCtx(ctx context.Context) (smallLLMPromptProfile, bool) {
+	p, ok := ctx.Value(SmallLLMLiteKey).(smallLLMPromptProfile)
+	return p, ok
+}
+
 // OrchestratorConfig holds configuration for the Orchestrator.
 type OrchestratorConfig struct {
 	MaxRedelegationDepth      int    // cap on recursive delegation when allow_redelegate is true (default: 2)
@@ -155,6 +218,13 @@ type OrchestratorConfig struct {
 	// GoalLoop.Verification gates the independent verifier turn; "off"
 	// disables it so the loop relies solely on the agent's own verdict.
 	GoalLoop GoalLoopSettings
+
+	// SmallLLM holds the small-LLM optimization settings. When Enabled, the
+	// profile activates variant behaviors (essential-tools narrowing, prompt
+	// lite swap, loop hardening, sampling) — each variant independently gated
+	// by BOTH the master Enabled toggle and its own sub-toggle
+	// (defense-in-depth). Inert when the master toggle is disabled.
+	SmallLLM SmallLLMSettings
 }
 
 // GoalLoopSettings mirrors the config-layer GoalLoopConfig for the
@@ -162,6 +232,41 @@ type OrchestratorConfig struct {
 // (default) or "off".
 type GoalLoopSettings struct {
 	Verification string
+}
+
+// SmallLLMSettings is the runtime mirror of BuilderSmallLLMConfig, carrying
+// the small-LLM variant configuration to the orchestrator. The master Enabled
+// toggle gates every variant (defense-in-depth): when false, no variant
+// activates regardless of its sub-toggle.
+type SmallLLMSettings struct {
+	Enabled        bool
+	EssentialTools SmallLLMEssentialSettings
+	SystemPrompt   SmallLLMSystemPromptSettings
+}
+
+// SmallLLMEssentialSettings holds the always-present tool-set narrowing settings.
+type SmallLLMEssentialSettings struct {
+	Enabled bool
+	// AlwaysPresent is the user-pinned list of tool names always exposed when
+	// this variant is active, regardless of routing. Protected orchestration
+	// tools (finish, fact memory, ask_user) and all MCP tools are kept
+	// additionally by SelectTools.
+	AlwaysPresent []string
+	// MaxTools caps the total number of tools exposed after selection.
+	MaxTools int
+}
+
+// SmallLLMSystemPromptSettings holds the prompt-simplification variant
+// settings. Lite is the variant master toggle (there is no separate Enabled —
+// it mirrors config.SystemPromptConfig, where Lite itself gates the variant).
+// FewShot and ReasoningScaffold are independent sub-toggles only honored when
+// Lite is active.
+type SmallLLMSystemPromptSettings struct {
+	Lite bool
+	// FewShot appends the worked-example ReAct block (requires Lite).
+	FewShot bool
+	// ReasoningScaffold appends the three-step thought template (requires Lite).
+	ReasoningScaffold bool
 }
 
 // ContextManagerFactory creates a ContextManager for a new task.
@@ -1289,6 +1394,16 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		pbb.SetRouting(routing)
 	}
 
+	// Small-LLM essential-tools filter: when enabled, narrow the conductor's
+	// tool set ONCE here (before the ReAct loop starts) to reduce per-prompt
+	// schema overhead. This is the NON-GOAL path only: goal mode returns
+	// early above (runGoalLoop), before this point, so the goal-mode tool set
+	// — including the verifier-required goal-mode-only tools
+	// (declare_verification etc.) that SelectTools would otherwise drop — is
+	// never narrowed. Runs exactly once per task, never inside the step loop.
+	// When the profile is OFF (default) this is a no-op passthrough.
+	availableTools = o.applySmallLLMToolFilter(availableTools, routing)
+
 	// Truncate conversation history to the configured window so long
 	// sessions don't overflow the Conductor's context. The most recent
 	// messages are kept — they carry the dialogue context the agent needs
@@ -1333,4 +1448,45 @@ func (o *Orchestrator) disabledToolNames() map[string]bool {
 		return nil
 	}
 	return o.coreToolRegistry.DisabledTools()
+}
+
+// applySmallLLMToolFilter narrows the conductor's available-tool set when the
+// small-LLM profile is active. It delegates to smallllm.SelectTools, which
+// unions the router-matched tool names (routing.MatchedTools), the user's
+// always-present list, the protected orchestration tools (finish + memory +
+// ask_user), and every MCP-sourced tool, then (optionally) enforces the
+// MaxTools budget. It runs exactly once per task, before the non-goal ReAct
+// loop starts (HandleMessage applies it after the goal-mode early return, so
+// goal mode is intentionally never narrowed).
+//
+// When the profile is OFF (the default), it returns the tools untouched — zero
+// behavior change. When filtering is active (master ON + essential ON + a
+// routing decision is present), it emits a ToolsAssigned event so the UI can
+// surface the curated tool set as a card.
+func (o *Orchestrator) applySmallLLMToolFilter(in []sdktools.ToolDescriptor, routing *router.RoutingDecision) []sdktools.ToolDescriptor {
+	sc := o.config.SmallLLM
+	// Master toggle AND the essential-tools variant must both be enabled.
+	// When either is off, return the input untouched (zero behavior change).
+	if !sc.Enabled || !sc.EssentialTools.Enabled {
+		return in
+	}
+
+	var matched []string
+	if routing != nil {
+		matched = routing.MatchedTools
+	}
+	filtered := smallllm.SelectTools(in, matched, sc.EssentialTools.AlwaysPresent, sc.EssentialTools.MaxTools)
+
+	// Surface the curated tool set as a UI card when filtering is active
+	// (master + essential on AND a routing decision is present). Mirrors
+	// SkillsActivated.
+	if routing != nil && o.emitter != nil {
+		names := make([]string, len(filtered))
+		for i, d := range filtered {
+			names[i] = d.Name
+		}
+		o.emitter.ToolsAssigned(names)
+		o.logInfo("tools_assigned", "count", len(names))
+	}
+	return filtered
 }

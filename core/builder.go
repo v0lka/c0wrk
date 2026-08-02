@@ -54,10 +54,10 @@ type OrchestratorBuilder struct {
 	baseAgentDirs    []string     // resolved Subagent Profile directories shared across sessions (highest priority first)
 	proxyClient      *http.Client // proxy-configured HTTP client (nil = direct connection)
 
-	// Cached reasoning effort string. Always empty at builder level;
-	// per-request overrides flow through HandleOptions.ReasoningEffort
-	// → Orchestrator.SetReasoningEffort, which propagates to router,
-	// planner, reflector, and the sp4rk P&E engine.
+	// Cached reasoning effort string. Empty unless seeded by the SmallLLM
+	// sampling profile (applySmallLLMPresets); per-request overrides flow
+	// through HandleOptions.ReasoningEffort → Orchestrator.SetReasoningEffort,
+	// which propagates to router, planner, reflector, and the sp4rk P&E engine.
 	reasoningEffort string
 
 	// goAsync dispatches a fire-and-forget unit of background work. In
@@ -158,6 +158,11 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 
 	// 2. Security policies (fast — synchronous)
 	b.applySecurityPolicies(cfg)
+
+	// 2a. SmallLLM profile (fast — synchronous): caches the profile and seeds
+	// the builder-level reasoning-effort default when the sampling variant is
+	// active. Per-request overrides still win via ApplyRequestOverrides.
+	b.applySmallLLMPresets(cfg)
 
 	// 3. Start slow initialization asynchronously.
 	// MCP gateway runs in its own goroutine (mcpDone), decoupled from initDone,
@@ -413,6 +418,19 @@ func (b *OrchestratorBuilder) Build(
 		GoalLoop: GoalLoopSettings{
 			Verification: cfg.GoalLoop.Verification,
 		},
+		SmallLLM: SmallLLMSettings{
+			Enabled: cfg.SmallLLM.Enabled,
+			EssentialTools: SmallLLMEssentialSettings{
+				Enabled:       cfg.SmallLLM.EssentialTools.Enabled,
+				AlwaysPresent: cfg.SmallLLM.EssentialTools.AlwaysPresent,
+				MaxTools:      cfg.SmallLLM.EssentialTools.MaxTools,
+			},
+			SystemPrompt: SmallLLMSystemPromptSettings{
+				Lite:              cfg.SmallLLM.SystemPrompt.Lite,
+				FewShot:           cfg.SmallLLM.SystemPrompt.FewShot,
+				ReasoningScaffold: cfg.SmallLLM.SystemPrompt.ReasoningScaffold,
+			},
+		},
 	}
 
 	// Create tool result cache (per-session lifetime).
@@ -445,6 +463,10 @@ func (b *OrchestratorBuilder) Build(
 		SameToolRepeatAbortThreshold: cfg.Executor.CircuitBreaker.SameToolRepeatAbortThreshold,
 		SameToolResultSizeDelta:      cfg.Executor.CircuitBreaker.SameToolResultSizeDelta,
 	}
+	// SmallLLM loop hardening: when enabled, override the breaker thresholds
+	// with the tighter SmallLLM values so a looping small model is caught
+	// earlier. Thresholds absent from the profile keep their baseline.
+	circuitBreaker = applyLoopHardening(circuitBreaker, cfg.SmallLLM)
 
 	// Logged LLM caller for step execution (wraps trackingCaller)
 	loggedLLM := agent.NewLoggingLLMCaller(trackingCaller, cfg.LLM.DefaultProviderName(), logger)
@@ -1195,9 +1217,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		OutputTokenReserve:  cfg.Executor.OutputTokenReserve,
 		HTTPClient:          llmClient,
 		Logger:              b.logger,
-		SamplingFunc: func(family string) *float64 {
-			return prompt.DefaultSampling(family).Temperature
-		},
+		SamplingFunc:        resolveSamplingFunc(cfg.SmallLLM),
 	}
 	llmRouter, err := llm.NewRouter(ctx, routerCfg, modelRegistry)
 	if err != nil {
@@ -1345,6 +1365,13 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 
 	coreRouter.SetReasoningEffort(b.reasoningEffort)
 	coreReflector.SetReasoningEffort(b.reasoningEffort)
+
+	// Enable semantic tool selection in the router when the SmallLLM master
+	// toggle and the EssentialTools variant are both active. When enabled, the
+	// router prompt includes a tool-selection instruction and the matched_tools
+	// field in its JSON output schema; the conductor then narrows its advertised
+	// tool set accordingly.
+	coreRouter.SetToolMatching(cfg.SmallLLM.Enabled && cfg.SmallLLM.EssentialTools.Enabled)
 
 	return coreRouter, coreReflector, nil
 }
@@ -1549,6 +1576,61 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	}
 
 	b.registry.SetAutoApproveWorkspaceWrites(cfg.Security.AutoApproveWorkspaceWrites)
+}
+
+// applySmallLLMPresets seeds the builder-level reasoning-effort default when
+// the SmallLLM sampling variant is active. The remaining per-variant effects
+// (loop hardening, sampling temperature) are applied lazily in Build() and
+// buildRouter() via the pure helpers applyLoopHardening and
+// resolveSamplingFunc, which read the profile straight from the passed-in
+// *BuilderConfig. When the master toggle is off this is a no-op, so behavior
+// is identical to the un-profiled baseline.
+func (b *OrchestratorBuilder) applySmallLLMPresets(cfg *BuilderConfig) {
+	// When the sampling variant is active and supplies a reasoning effort, use
+	// it as the builder-level default. Per-request overrides
+	// (HandleOptions.ReasoningEffort → ApplyRequestOverrides →
+	// SetReasoningEffort) still take precedence at request time.
+	if cfg.SmallLLM.Enabled && cfg.SmallLLM.Sampling.Enabled && cfg.SmallLLM.Sampling.ReasoningEffort != "" {
+		b.reasoningEffort = cfg.SmallLLM.Sampling.ReasoningEffort
+	}
+}
+
+// applyLoopHardening overrides circuit-breaker thresholds with the tighter
+// SmallLLM loop-hardening values when the variant is enabled (and the master
+// toggle is on). Only the thresholds present in the profile are overridden;
+// all others (RepeatAbortThreshold, TruncationAbortThreshold, etc.) keep their
+// baseline. When the variant is disabled the breaker is returned unchanged.
+func applyLoopHardening(cb agent.CircuitBreakerConfig, s BuilderSmallLLMConfig) agent.CircuitBreakerConfig {
+	if !s.Enabled || !s.LoopHardening.Enabled {
+		return cb
+	}
+	lh := s.LoopHardening
+	cb.RepeatNudgeThreshold = lh.RepeatNudgeThreshold
+	cb.ParseErrorAbortThreshold = lh.ParseErrorAbortThreshold
+	cb.FruitlessNudgeThreshold = lh.FruitlessNudgeThreshold
+	cb.FruitlessAbortThreshold = lh.FruitlessAbortThreshold
+	cb.SameToolRepeatNudgeThreshold = lh.SameToolRepeatNudgeThreshold
+	return cb
+}
+
+// resolveSamplingFunc returns the SamplingFunc for the LLM router. When the
+// SmallLLM sampling variant is enabled (and the master toggle is on) it
+// returns a constant SmallLLM temperature, replacing the per-family
+// DefaultSampling default. Otherwise it falls back to the per-family default —
+// identical to the pre-SmallLLM behavior.
+//
+// TopP: the sp4rk llm.ChatRequest has no TopP field and the router only
+// consumes temperature from the SamplingFunc, so SmallLLM TopP is intentionally
+// not applied here (it cannot reach the API without a sp4rk change). The value
+// is carried in the profile for forward compatibility.
+func resolveSamplingFunc(s BuilderSmallLLMConfig) func(family string) *float64 {
+	if s.Enabled && s.Sampling.Enabled {
+		t := s.Sampling.Temperature
+		return func(string) *float64 { return &t }
+	}
+	return func(family string) *float64 {
+		return prompt.DefaultSampling(family).Temperature
+	}
 }
 
 // ---------------------------------------------------------------------------

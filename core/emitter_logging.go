@@ -227,6 +227,11 @@ func (l *loggingEmitter) SkillsActivated(skillNames []string) {
 	l.inner.SkillsActivated(skillNames)
 }
 
+func (l *loggingEmitter) ToolsAssigned(toolNames []string) {
+	l.logger.Info("tools assigned", "tools", toolNames)
+	l.inner.ToolsAssigned(toolNames)
+}
+
 func (l *loggingEmitter) StepTodoUpdate(stepID string, items []agent.TodoItem) {
 	l.logger.Debug("step todo update", "stepID", stepID, "itemCount", len(items))
 	l.inner.StepTodoUpdate(stepID, items)

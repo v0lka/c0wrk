@@ -28,6 +28,11 @@ Conductor.Run(ctx, message, routing, activeSkills, opts)
 │     ├─ Core: orchestrator system + family overlay + verification mandate
 │     │    (orchestrator system + plan context have their `{shell_tool}` placeholders
 │     │     resolved to the active platform's shell tool via prompts.SubstituteShellTool)
+│     ├─ [Small-LLM Lite] when small_llm.system_prompt.lite is on, the verbose
+│     │    orchestrator core directive swaps to the compact OrchestratorSystemLite,
+│     │    optionally appending the reasoning scaffold and few-shot blocks. The
+│     │    shared sections (family, verification, injection defense, workspace,
+│     │    env, AGENTS.md, skills) are appended UNCHANGED. See [../small-llm.md](../small-llm.md).
 │     ├─ Workspace + temp dir
 │     ├─ Environment block
 │     ├─ Vector search hints
@@ -173,6 +178,7 @@ The guard is consulted in `UpdateChecklistTool.Execute` after parsing succeeds a
 - The Conductor installs a `ChecklistGuardFunc` that rejects standalone (empty `step_id`) `update_checklist` calls once a plan is declared **in the current run**; a standalone checklist is only valid for plan-less tasks. A restored plan from a previous (completed) task does NOT count as declared — the guard consults a per-run `planRunState`, not the raw blackboard plan.
 - When a plan is declared **in the current run**, `delegate` is disabled (PlanChecker guard via `launcher.HasDeclaredPlan()`); `execute_plan` is the only execution path for plan steps. A restored plan does not disable `delegate`.
 - Active skill bodies are rendered verbatim in the Conductor system prompt (no truncation).
+- The Small-LLM Lite swap only replaces the core directive; the injection-defense section is injected separately and UNCHANGED in both modes (strict constraint). The swap is gated on `small_llm.enabled && small_llm.system_prompt.lite` and never applies to specialized runs (e.g. goal derivation). See [../small-llm.md](../small-llm.md).
 - The Conductor context is isolated from subagent contexts: subagents carry their own `ContextManager`, and only their summaries return to the Conductor as tool results.
 - The Delegation Registry is scoped to a single Conductor run; it is injected into the context at launch and does not outlive the run.
 - `finish` with pending async delegations requires either a prior `cancel_delegation` for each pending ID, or an implicit join (the Conductor waits for all pending delegations before finishing).

@@ -277,6 +277,7 @@ func (m *mockEmitter) GoalProgress(_ map[string]any)                {}
 
 func (m *mockEmitter) ReplanFailed(_ error)                                 {}
 func (m *mockEmitter) SkillsActivated(_ []string)                           {}
+func (m *mockEmitter) ToolsAssigned(_ []string)                             {}
 func (m *mockEmitter) ExecutorDiagnostic(_ int, _ string, _ map[string]any) {}
 func (m *mockEmitter) Finishing(_ int, _ string)                            {}
 func (m *mockEmitter) StepTodoUpdate(stepID string, items []agent.TodoItem) {

@@ -164,6 +164,33 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 		GoalLoop: core.BuilderGoalLoopConfig{
 			Verification: cfg.GoalLoop.Verification,
 		},
+		SmallLLM: core.BuilderSmallLLMConfig{
+			Enabled: cfg.SmallLLM.Enabled,
+			EssentialTools: core.BuilderSmallLLMEssentialConfig{
+				Enabled:       cfg.SmallLLM.EssentialTools.Enabled,
+				AlwaysPresent: cfg.SmallLLM.EssentialTools.AlwaysPresent,
+				MaxTools:      cfg.SmallLLM.EssentialTools.MaxTools,
+			},
+			Sampling: core.BuilderSmallLLMSampling{
+				Enabled:         cfg.SmallLLM.Sampling.Enabled,
+				Temperature:     cfg.SmallLLM.Sampling.Temperature,
+				TopP:            cfg.SmallLLM.Sampling.TopP,
+				ReasoningEffort: cfg.SmallLLM.Sampling.ReasoningEffort,
+			},
+			LoopHardening: core.BuilderLoopHardening{
+				Enabled:                      cfg.SmallLLM.LoopHardening.Enabled,
+				RepeatNudgeThreshold:         cfg.SmallLLM.LoopHardening.RepeatNudgeThreshold,
+				ParseErrorAbortThreshold:     cfg.SmallLLM.LoopHardening.ParseErrorAbortThreshold,
+				FruitlessNudgeThreshold:      cfg.SmallLLM.LoopHardening.FruitlessNudgeThreshold,
+				FruitlessAbortThreshold:      cfg.SmallLLM.LoopHardening.FruitlessAbortThreshold,
+				SameToolRepeatNudgeThreshold: cfg.SmallLLM.LoopHardening.SameToolRepeatNudgeThreshold,
+			},
+			SystemPrompt: core.BuilderSmallLLMSystemPromptConfig{
+				Lite:              cfg.SmallLLM.SystemPrompt.Lite,
+				FewShot:           cfg.SmallLLM.SystemPrompt.FewShot,
+				ReasoningScaffold: cfg.SmallLLM.SystemPrompt.ReasoningScaffold,
+			},
+		},
 		ToolLimits: core.BuilderToolLimitsConfig{
 			ReadDefaultLines:    cfg.ToolLimits.ReadDefaultLines,
 			WebSearchMaxResults: cfg.ToolLimits.WebSearchMaxResults,

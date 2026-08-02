@@ -5,7 +5,7 @@ import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import {
   isRoutingData, isStepData, isRetryData, isStepRetryData,
-  isServiceData, isSkillsActivatedData,
+  isServiceData, isSkillsActivatedData, isToolsAssignedData,
 } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
 import { usePlanStore } from '@/stores/planStore'
@@ -149,6 +149,25 @@ export function useLifecycleEvents(sessionId: string | null): void {
           type: 'status',
           content: `Skills activated: ${skillList}`,
           metadata: { skills: data.skills },
+          timestamp: Date.now(),
+        })
+      }),
+    )
+
+    // --- tools_assigned ---
+    // Emitted when the Small-LLM domain narrowing curates the session's tool
+    // set. Mirrors the skills_activated card so the user sees which tools were
+    // assigned for the current task.
+    cleanups.push(
+      onSessionEvent(sessionId, 'tools_assigned', (data) => {
+        if (!isToolsAssignedData(data)) { reportDroppedEvent('tools_assigned', data); return }
+        const toolList = data.tools.join(', ')
+        useChatStore.getState().addMessage(sessionId, {
+          id: generateMessageId(),
+          sessionId,
+          type: 'status',
+          content: `Tools assigned: ${toolList}`,
+          metadata: { tools: data.tools },
           timestamp: Date.now(),
         })
       }),

@@ -98,6 +98,7 @@ export interface ReflectionData {
 export interface ToolJudgeResponseData { confirm_id: string; reasoning?: string; error?: string }
 export interface TerminalOutputData { data: string }
 export interface SkillsActivatedData { skills: string[] }
+export interface ToolsAssignedData { tools: string[] }
 export interface BlackboardUpdatedData { change_type: string }
 
 /** Backend AttachmentInfo record (snake_case), as emitted in the
@@ -277,6 +278,7 @@ export interface SessionEventMap {
   readonly session_renamed: SessionRenamedData
   readonly terminal_output: TerminalOutputData
   readonly skills_activated: SkillsActivatedData
+  readonly tools_assigned: ToolsAssignedData
   readonly blackboard_updated: BlackboardUpdatedData
   readonly step_todo_update: StepTodoUpdateData
   readonly plan_review_ready: PlanReviewReadyData
@@ -383,6 +385,7 @@ export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableD
 }
 export function isTerminalOutputData(d: unknown): d is TerminalOutputData { return isObj(d) && typeof d.data === 'string' }
 export function isSkillsActivatedData(d: unknown): d is SkillsActivatedData { return isObj(d) && Array.isArray(d.skills) }
+export function isToolsAssignedData(d: unknown): d is ToolsAssignedData { return isObj(d) && Array.isArray(d.tools) }
 export function isReflectionData(d: unknown): d is ReflectionData { return isObj(d) && has(d, 'summary', 'attempt') }
 export function isToolJudgeResponseData(d: unknown): d is ToolJudgeResponseData { return isObj(d) && has(d, 'confirm_id') }
 export function isBlackboardUpdatedData(d: unknown): d is BlackboardUpdatedData { return isObj(d) && has(d, 'change_type') }

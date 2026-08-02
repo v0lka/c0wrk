@@ -18,6 +18,7 @@ type BuilderConfig struct {
 	MCP           BuilderMCPConfig
 	Orchestration BuilderOrchestrationConfig
 	GoalLoop      BuilderGoalLoopConfig
+	SmallLLM      BuilderSmallLLMConfig
 	ToolLimits    BuilderToolLimitsConfig
 	Timeouts      BuilderTimeoutsConfig
 	Proxy         proxy.Config
@@ -25,6 +26,114 @@ type BuilderConfig struct {
 	// ExpandEnvVars resolves ${ENV_VAR} patterns in a string.
 	// Injected by the backend so core does not import os/config.
 	ExpandEnvVars func(string) string
+}
+
+// ---------------------------------------------------------------------------
+// Small LLM profile
+// ---------------------------------------------------------------------------
+
+// BuilderSmallLLMConfig mirrors config.SmallLLMConfig for the subset of the
+// profile that core consumes. core never imports backend/config, so values are
+// copied via ToBuilderConfig. Only the master toggle and the variants wired in
+// this step (Sampling, LoopHardening) are represented.
+type BuilderSmallLLMConfig struct {
+	// Enabled is the master toggle. When false every variant sub-toggle is
+	// ignored and behavior is identical to the un-profiled baseline.
+	Enabled bool
+
+	// EssentialTools narrows the conductor's advertised tool set to an
+	// always-present subset to reduce per-prompt schema overhead for small
+	// models.
+	EssentialTools BuilderSmallLLMEssentialConfig
+
+	// Sampling overrides LLM sampling parameters (temperature, top_p,
+	// reasoning effort) for more deterministic, lower-effort generation.
+	Sampling BuilderSmallLLMSampling
+
+	// LoopHardening tightens the executor circuit-breaker thresholds so a
+	// small model that repeats itself or makes no progress is caught sooner.
+	LoopHardening BuilderLoopHardening
+
+	// SystemPrompt applies prompt-simplification variants (currently the Lite
+	// core-directive swap) to shrink the system prompt injected for a small
+	// model. When Lite is active, buildSystemPromptWith trades the verbose
+	// OrchestratorSystem directive for the compact OrchestratorSystemLite.
+	SystemPrompt BuilderSmallLLMSystemPromptConfig
+}
+
+// BuilderSmallLLMSystemPromptConfig holds the prompt-simplification variant
+// overrides for the small-LLM profile. Lite is the variant master toggle (it
+// mirrors config.SystemPromptConfig, which has no separate Enabled field, so
+// Enabled is not duplicated here). Lite swaps the core directive, FewShot
+// appends worked ReAct examples, ReasoningScaffold appends the
+// structured-thought template. Each is only honored when the variant is active
+// (master SmallLLM.Enabled on AND Lite on); FewShot and ReasoningScaffold
+// additionally require Lite, since the examples and scaffold are tailored to
+// the lite directive.
+type BuilderSmallLLMSystemPromptConfig struct {
+	// Lite swaps the verbose OrchestratorSystem core directive for the compact
+	// OrchestratorSystemLite directive. The shared sections (family overlay,
+	// verification mandate, injection defense, workspace, env, AGENTS.md,
+	// skills) are appended UNCHANGED.
+	Lite bool
+
+	// FewShot appends the OrchestratorLiteFewShot worked-example block. Only
+	// applied when Lite is active.
+	FewShot bool
+
+	// ReasoningScaffold appends the OrchestratorLiteScaffold three-step
+	// thought template. Only applied when Lite is active.
+	ReasoningScaffold bool
+}
+
+// BuilderSmallLLMSampling holds the sampling-variant overrides.
+type BuilderSmallLLMSampling struct {
+	// Enabled gates this variant (in addition to the master SmallLLM.Enabled).
+	Enabled bool
+
+	// Temperature sets generation temperature (lower = more deterministic).
+	// Applied via the LLM router's SamplingFunc when enabled.
+	Temperature float64
+
+	// TopP sets nucleus-sampling probability mass. NOTE: the sp4rk
+	// llm.ChatRequest does not expose a TopP field and the router never
+	// consumes TopP from the SamplingFunc, so this value is currently carried
+	// for forward compatibility and logged but not applied to the request
+	// without a sp4rk change. Temperature is the active lever.
+	TopP float64
+
+	// ReasoningEffort controls reasoning depth: "" (inherit) | "off" | "low" |
+	// "medium". When non-empty it seeds the builder-level default; per-request
+	// overrides (HandleOptions.ReasoningEffort) still take precedence.
+	ReasoningEffort string
+}
+
+// BuilderLoopHardening holds the circuit-breaker tightening overrides. Only
+// the thresholds present here are overridden; all others keep their baseline.
+type BuilderLoopHardening struct {
+	// Enabled gates this variant (in addition to the master SmallLLM.Enabled).
+	Enabled bool
+
+	RepeatNudgeThreshold         int
+	ParseErrorAbortThreshold     int
+	FruitlessNudgeThreshold      int
+	FruitlessAbortThreshold      int
+	SameToolRepeatNudgeThreshold int
+}
+
+// BuilderSmallLLMEssentialConfig holds the always-present-tool-set narrowing
+// settings for the essential-tools variant.
+type BuilderSmallLLMEssentialConfig struct {
+	// Enabled gates this variant (in addition to the master SmallLLM.Enabled).
+	Enabled bool
+
+	// AlwaysPresent is the allow-list of tool names always exposed when this
+	// variant is active. finish and all MCP tools are always preserved
+	// regardless.
+	AlwaysPresent []string
+
+	// MaxTools caps the total number of tools exposed after narrowing.
+	MaxTools int
 }
 
 // ---------------------------------------------------------------------------

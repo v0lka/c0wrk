@@ -386,6 +386,47 @@ export interface SecuritySettingsResponse {
   auto_approve_workspace_writes: boolean
 }
 
+// --- Small LLM profile config ---
+// Mirrors the Wails-generated backend.SmallLLMConfigResponse classes
+// (frontend/wailsjs/go/models.ts). Used by the "Small LLM" settings tab for
+// both reading (GetSmallLLMConfig) and writing (UpdateSmallLLMConfig).
+
+export interface SmallLLMEssentialTools {
+  enabled: boolean
+  always_present: string[]
+  max_tools: number
+}
+
+export interface SmallLLMSystemPrompt {
+  lite: boolean
+  few_shot: boolean
+  reasoning_scaffold: boolean
+}
+
+export interface SmallLLMSampling {
+  enabled: boolean
+  temperature: number
+  top_p: number
+  reasoning_effort: string
+}
+
+export interface SmallLLMLoopHardening {
+  enabled: boolean
+  repeat_nudge_threshold: number
+  parse_error_abort_threshold: number
+  fruitless_nudge_threshold: number
+  fruitless_abort_threshold: number
+  same_tool_repeat_nudge_threshold: number
+}
+
+export interface SmallLLMConfigResponse {
+  enabled: boolean
+  essential_tools: SmallLLMEssentialTools
+  system_prompt: SmallLLMSystemPrompt
+  sampling: SmallLLMSampling
+  loop_hardening: SmallLLMLoopHardening
+}
+
 export interface ToolInfo {
   name: string
   description: string

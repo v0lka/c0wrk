@@ -3,6 +3,8 @@ package backend
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/v0lka/c0wrk/backend/config"
 )
 
 // TestAgentsMDSearchPaths verifies that agentsMDSearchPaths resolves the global
@@ -41,5 +43,48 @@ func TestAgentsMDSearchPaths_NoHomeDir(t *testing.T) {
 	got := agentsMDSearchPaths()
 	if got != nil {
 		t.Errorf("expected nil when home dir is unavailable, got %v", got)
+	}
+}
+
+// TestToBuilderConfig_SmallLLMSystemPrompt verifies the config→builder mapping
+// for the prompt-simplification variant: cfg.SmallLLM.SystemPrompt.{Lite,
+// FewShot, ReasoningScaffold} all flow into BuilderSmallLLMSystemPromptConfig
+// so a config change takes effect on rebuild.
+func TestToBuilderConfig_SmallLLMSystemPrompt(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.SmallLLM.Enabled = true
+	cfg.SmallLLM.SystemPrompt.Lite = true
+	cfg.SmallLLM.SystemPrompt.FewShot = true
+	cfg.SmallLLM.SystemPrompt.ReasoningScaffold = true
+
+	bc := ToBuilderConfig(cfg)
+
+	if !bc.SmallLLM.Enabled {
+		t.Error("SmallLLM.Enabled not mapped")
+	}
+	// Lite is the SystemPrompt variant master toggle (there is no separate
+	// Enabled field in config/builder — see SystemPromptConfig). It must map
+	// straight through so a config change takes effect on rebuild.
+	if !bc.SmallLLM.SystemPrompt.Lite {
+		t.Error("SystemPrompt.Lite not mapped")
+	}
+	if !bc.SmallLLM.SystemPrompt.FewShot {
+		t.Error("SystemPrompt.FewShot not mapped")
+	}
+	if !bc.SmallLLM.SystemPrompt.ReasoningScaffold {
+		t.Error("SystemPrompt.ReasoningScaffold not mapped")
+	}
+
+	// Master off — even with Lite true, Enabled carries the master gate only.
+	cfg.SmallLLM.Enabled = false
+	cfg.SmallLLM.SystemPrompt.Lite = true
+	bc = ToBuilderConfig(cfg)
+	if bc.SmallLLM.Enabled {
+		t.Error("master Enabled should be false")
+	}
+	// The variant sub-toggle still reflects the config value (master gating is
+	// applied at runtime, not stripped at the mapping layer).
+	if !bc.SmallLLM.SystemPrompt.Lite {
+		t.Error("SystemPrompt.Lite should still map the config value")
 	}
 }

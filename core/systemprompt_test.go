@@ -663,3 +663,225 @@ func TestWithUserAgents_RoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Small-LLM lite system-prompt profile
+// ---------------------------------------------------------------------------
+
+// TestSmallLLMLiteFromCtx_DefaultOff verifies the lite profile is OFF by
+// default — a plain context (no SmallLLMLiteKey) must read as inactive. This is
+// the foundation of the no-regression guarantee: without an explicit
+// WithSmallLLMLite, behavior is identical to the pre-profile baseline.
+func TestSmallLLMLiteFromCtx_DefaultOff(t *testing.T) {
+	if smallLLMLiteFromCtx(context.Background()) {
+		t.Error("smallLLMLiteFromCtx returned true for a plain context; lite must be OFF by default")
+	}
+	ctx := WithSmallLLMLite(context.Background())
+	if !smallLLMLiteFromCtx(ctx) {
+		t.Error("smallLLMLiteFromCtx returned false after WithSmallLLMLite")
+	}
+}
+
+// TestBuildSystemPrompt_SmallLLMLite_SwapsDirectiveAndAppendsFewShot verifies
+// that when the lite profile is ON, the assembled prompt uses the compact
+// OrchestratorSystemLite core directive (not the verbose OrchestratorSystem)
+// and appends the few-shot ReAct examples block.
+func TestBuildSystemPrompt_SmallLLMLite_SwapsDirectiveAndAppendsFewShot(t *testing.T) {
+	ctx := tools.WithWorkspacePath(WithSmallLLMLite(context.Background()), "/ws")
+	got := buildSystemPrompt(ctx, "do the thing", llmModelMetaForTests())
+
+	// Lite directive content present (Core Directives is always in the lite
+	// directive; the scaffold is now a separate, conditionally-appended block).
+	if !strings.Contains(got, "Core Directives") {
+		t.Error("lite prompt missing OrchestratorSystemLite content (Core Directives)")
+	}
+	// Reasoning scaffold present (WithSmallLLMLite enables the full bundle).
+	if !strings.Contains(got, "Thought Scaffold") {
+		t.Error("lite prompt missing the OrchestratorLiteScaffold block")
+	}
+	// Few-shot block present.
+	if !strings.Contains(got, "Worked Examples — Correct ReAct Cycles") {
+		t.Error("lite prompt missing the OrchestratorLiteFewShot block")
+	}
+	// Verbose orchestrator docs that the lite directive DROPS must be absent.
+	if strings.Contains(got, "Progress Tracking — Three Levels") {
+		t.Error("lite prompt leaked verbose OrchestratorSystem content (Progress Tracking section)")
+	}
+}
+
+// TestBuildSystemPrompt_SmallLLM_SubTogglesIndependent proves the FewShot and
+// ReasoningScaffold sub-toggles are independently honored (the SF-2 wiring
+// fix): with Lite on but each sub-toggle off, the corresponding block must be
+// ABSENT from the assembled prompt while the lite directive itself is present.
+// This guards against a regression where the toggles become no-ops again.
+func TestBuildSystemPrompt_SmallLLM_SubTogglesIndependent(t *testing.T) {
+	// Lite on, both sub-toggles off → lite directive only, no scaffold/few-shot.
+	ctx := tools.WithWorkspacePath(
+		withSmallLLMPromptProfile(context.Background(), smallLLMPromptProfile{
+			Lite: true, FewShot: false, ReasoningScaffold: false,
+		}),
+		"/ws",
+	)
+	got := buildSystemPrompt(ctx, "do the thing", llmModelMetaForTests())
+
+	// Lite directive present.
+	if !strings.Contains(got, "Core Directives") {
+		t.Error("lite directive (Core Directives) missing")
+	}
+	// Scaffold and few-shot MUST be absent when their toggles are off.
+	if strings.Contains(got, "Thought Scaffold") {
+		t.Error("ReasoningScaffold block present despite toggle off")
+	}
+	if strings.Contains(got, "Worked Examples — Correct ReAct Cycles") {
+		t.Error("FewShot block present despite toggle off")
+	}
+
+	// Lite on, only scaffold on → scaffold present, few-shot absent.
+	ctxScaffold := tools.WithWorkspacePath(
+		withSmallLLMPromptProfile(context.Background(), smallLLMPromptProfile{
+			Lite: true, FewShot: false, ReasoningScaffold: true,
+		}),
+		"/ws",
+	)
+	gotScaffold := buildSystemPrompt(ctxScaffold, "do the thing", llmModelMetaForTests())
+	if !strings.Contains(gotScaffold, "Thought Scaffold") {
+		t.Error("ReasoningScaffold on: scaffold block missing")
+	}
+	if strings.Contains(gotScaffold, "Worked Examples — Correct ReAct Cycles") {
+		t.Error("FewShot off: few-shot block leaked")
+	}
+
+	// Lite on, only few-shot on → few-shot present, scaffold absent.
+	ctxFew := tools.WithWorkspacePath(
+		withSmallLLMPromptProfile(context.Background(), smallLLMPromptProfile{
+			Lite: true, FewShot: true, ReasoningScaffold: false,
+		}),
+		"/ws",
+	)
+	gotFew := buildSystemPrompt(ctxFew, "do the thing", llmModelMetaForTests())
+	if !strings.Contains(gotFew, "Worked Examples — Correct ReAct Cycles") {
+		t.Error("FewShot on: few-shot block missing")
+	}
+	if strings.Contains(gotFew, "Thought Scaffold") {
+		t.Error("ReasoningScaffold off: scaffold block leaked")
+	}
+}
+
+// TestBuildSystemPrompt_SmallLLM_SubTogglesRequireLite proves FewShot and
+// ReasoningScaffold are NOT applied when Lite is off, even if their toggles
+// are on — both are tailored to the compact lite directive.
+func TestBuildSystemPrompt_SmallLLM_SubTogglesRequireLite(t *testing.T) {
+	ctx := tools.WithWorkspacePath(
+		withSmallLLMPromptProfile(context.Background(), smallLLMPromptProfile{
+			Lite: false, FewShot: true, ReasoningScaffold: true,
+		}),
+		"/ws",
+	)
+	got := buildSystemPrompt(ctx, "do the thing", llmModelMetaForTests())
+	// Verbose directive used (lite not swapped).
+	if !strings.Contains(got, "Progress Tracking — Three Levels") {
+		t.Error("Lite off: verbose directive should be used")
+	}
+	// Neither sub-toggle block applied.
+	if strings.Contains(got, "Thought Scaffold") {
+		t.Error("Lite off: scaffold must not be applied")
+	}
+	if strings.Contains(got, "Worked Examples — Correct ReAct Cycles") {
+		t.Error("Lite off: few-shot must not be applied")
+	}
+}
+
+// TestBuildSystemPrompt_SmallLLMLite_PreservesInjectionDefenseAndVerification
+// is the STRICT-CONSTRAINT test: even with the lite profile ON, the full
+// injection_defense.md content (verbatim) and the VerificationMandate MUST
+// still appear in the assembled prompt. The lite directive never carries or
+// replaces injection-defense content.
+func TestBuildSystemPrompt_SmallLLMLite_PreservesInjectionDefenseAndVerification(t *testing.T) {
+	ctx := tools.WithWorkspacePath(WithSmallLLMLite(context.Background()), "/ws")
+	ctx = context.WithValue(ctx, InjectionDefenseKey, true) // defense enabled
+	got := buildSystemPrompt(ctx, "do the thing", llmModelMetaForTests())
+
+	// Verification mandate (Epistemic Discipline) must be present.
+	if !strings.Contains(got, "Epistemic Discipline") {
+		t.Error("lite prompt missing VerificationMandate (Epistemic Discipline)")
+	}
+	// Full injection-defense content must be present verbatim. Use distinctive
+	// substrings unique to injection_defense.md.
+	for _, marker := range []string{
+		"Untrusted Content Policy",
+		"Data Exfiltration Prevention",
+		"indirect prompt injection",
+	} {
+		if !strings.Contains(got, marker) {
+			t.Errorf("lite prompt missing injection-defense marker %q — strict constraint violated", marker)
+		}
+	}
+}
+
+// TestBuildSystemPrompt_SmallLLMLite_OffNoRegression verifies the OFF path
+// produces the pre-profile baseline. Two independent guarantees:
+//  1. An extra .Core("") (the empty few-shot in the OFF path) is a no-op —
+//     joinSections skips empty sections, confirmed here by asserting the
+//     baseline built via buildSystemPrompt equals one built via
+//     buildSystemPromptWith with the identical non-lite spec. Equality proves
+//     the OFF path adds zero bytes versus the convenience wrapper.
+//  2. The OFF baseline contains the verbose OrchestratorSystem and NOT the
+//     lite directive — i.e. the lite swap does not leak when the flag is absent.
+func TestBuildSystemPrompt_SmallLLMLite_OffNoRegression(t *testing.T) {
+	ctx := tools.WithWorkspacePath(context.Background(), "/ws")
+	meta := llmModelMetaForTests()
+
+	// Convenience wrapper (default, no lite flag) vs the spec path it delegates
+	// to. These must be byte-identical.
+	viaWrapper := buildSystemPrompt(ctx, "msg", meta)
+	viaSpec := buildSystemPromptWith(ctx, "msg", meta, systemPromptSpec{
+		coreDirective: prompts.SubstituteShellTool(prompts.OrchestratorSystem),
+	})
+	if viaWrapper != viaSpec {
+		t.Fatal("buildSystemPrompt and its spec-path delegate diverge — OFF baseline is not self-consistent")
+	}
+
+	// OFF must contain the verbose OrchestratorSystem and NOT the lite directive.
+	if !strings.Contains(viaWrapper, "Progress Tracking — Three Levels") {
+		t.Error("OFF prompt missing verbose OrchestratorSystem content — lite directive leaked into baseline")
+	}
+	if strings.Contains(viaWrapper, "Thought Scaffold") {
+		t.Error("OFF prompt contains lite directive content (Thought Scaffold) — baseline altered")
+	}
+	if strings.Contains(viaWrapper, "Worked Examples — Correct ReAct Cycles") {
+		t.Error("OFF prompt contains lite few-shot block — baseline altered")
+	}
+}
+
+// TestOrchestratorSystemLite_TokenFootprint verifies the lite directive is
+// less than half the token footprint of the verbose OrchestratorSystem.
+// Byte length is a stable proxy for token count. This guards against the lite
+// directive silently growing back toward the verbose baseline.
+func TestOrchestratorSystemLite_TokenFootprint(t *testing.T) {
+	verbose := len(prompts.OrchestratorSystem)
+	lite := len(prompts.OrchestratorSystemLite)
+	if lite >= verbose/2 {
+		t.Errorf("lite directive too large: %d bytes >= 50%% of verbose (%d bytes)", lite, verbose)
+	}
+	if lite == 0 || verbose == 0 {
+		t.Errorf("non-zero content expected: verbose=%d lite=%d", verbose, lite)
+	}
+}
+
+// TestBuildSpecializedSystemPrompt_SmallLLMLite_NotSwapped verifies that a
+// specialized run (e.g. goal derivation) is NEVER swapped to the lite
+// orchestrator directive, even when SmallLLMLiteKey is set. The specialized
+// directive owns its own completion semantics and must not be replaced.
+func TestBuildSpecializedSystemPrompt_SmallLLMLite_NotSwapped(t *testing.T) {
+	ctx := tools.WithWorkspacePath(WithSmallLLMLite(context.Background()), "/ws")
+	got := buildSpecializedSystemPrompt(ctx, "derive a goal", llmModelMetaForTests(), prompts.GoalDerivation)
+
+	// The specialized directive content must be present.
+	if !strings.Contains(got, "verification_mode") {
+		t.Error("specialized prompt missing GoalDerivation content")
+	}
+	// The lite orchestrator directive must NOT replace the specialized one.
+	if strings.Contains(got, "Thought Scaffold") {
+		t.Error("specialized prompt was swapped to lite orchestrator directive — must be preserved")
+	}
+}

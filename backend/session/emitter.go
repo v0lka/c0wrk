@@ -927,6 +927,20 @@ func (e *EventEmitter) SkillsActivated(skillNames []string) {
 	})
 }
 
+// ToolsAssigned emits a tools_assigned event listing the tools curated for the
+// session by Small-LLM domain narrowing (mirrors SkillsActivated's card).
+func (e *EventEmitter) ToolsAssigned(toolNames []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "tools_assigned",
+		Data: ToolsAssignedData{
+			Tools: toolNames,
+		},
+	})
+}
+
 // StepTodoUpdate emits a step_todo_update event with the current checklist.
 // stepID may be empty for a standalone checklist (Conductor without a plan).
 func (e *EventEmitter) StepTodoUpdate(stepID string, items []agent.TodoItem) {

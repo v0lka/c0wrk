@@ -45,6 +45,10 @@ These c0wrk tools are always available regardless of a step's `AllowedTools` fil
 
 The set is enforced in `core/conductor.go` (`mandatorySubagentTools`, applied in `resolveTaskTools`) and unioned into a subagent's toolset whenever the Conductor supplies an explicit tool list.
 
+### Small-LLM Loop Hardening (c0wrk threshold override)
+
+When the Small-LLM profile's `loop_hardening` variant is active (`small_llm.enabled && small_llm.loop_hardening.enabled` — see [../small-llm.md](../small-llm.md)), `core/builder.go` `applyLoopHardening` overrides the executor's circuit-breaker `CircuitBreakerConfig` with tighter thresholds (`repeat_nudge_threshold`, `parse_error_abort_threshold`, `fruitless_nudge_threshold`, `fruitless_abort_threshold`, `same_tool_repeat_nudge_threshold`) so a small model that repeats itself or stalls is nudged/aborted sooner. Only the thresholds present in the profile are overridden; all others keep their baseline. The override is applied once at builder construction and is inert when the profile is off.
+
 ## Engine Behavior (canonical in sp4rk)
 
 The following are sp4rk engine primitives, documented in [the sp4rk executor spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/executor.md) — do not duplicate here:

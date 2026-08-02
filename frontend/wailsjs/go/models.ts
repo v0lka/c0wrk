@@ -756,6 +756,120 @@ export namespace backend {
 	        this.description = source["description"];
 	    }
 	}
+	export class SmallLLMLoopHardeningResp {
+	    enabled: boolean;
+	    repeat_nudge_threshold: number;
+	    parse_error_abort_threshold: number;
+	    fruitless_nudge_threshold: number;
+	    fruitless_abort_threshold: number;
+	    same_tool_repeat_nudge_threshold: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SmallLLMLoopHardeningResp(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.repeat_nudge_threshold = source["repeat_nudge_threshold"];
+	        this.parse_error_abort_threshold = source["parse_error_abort_threshold"];
+	        this.fruitless_nudge_threshold = source["fruitless_nudge_threshold"];
+	        this.fruitless_abort_threshold = source["fruitless_abort_threshold"];
+	        this.same_tool_repeat_nudge_threshold = source["same_tool_repeat_nudge_threshold"];
+	    }
+	}
+	export class SmallLLMSamplingResp {
+	    enabled: boolean;
+	    temperature: number;
+	    top_p: number;
+	    reasoning_effort: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SmallLLMSamplingResp(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.temperature = source["temperature"];
+	        this.top_p = source["top_p"];
+	        this.reasoning_effort = source["reasoning_effort"];
+	    }
+	}
+	export class SmallLLMSystemPromptResp {
+	    lite: boolean;
+	    few_shot: boolean;
+	    reasoning_scaffold: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SmallLLMSystemPromptResp(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.lite = source["lite"];
+	        this.few_shot = source["few_shot"];
+	        this.reasoning_scaffold = source["reasoning_scaffold"];
+	    }
+	}
+	export class SmallLLMEssentialToolsResp {
+	    enabled: boolean;
+	    always_present: string[];
+	    max_tools: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SmallLLMEssentialToolsResp(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.always_present = source["always_present"];
+	        this.max_tools = source["max_tools"];
+	    }
+	}
+	export class SmallLLMConfigResponse {
+	    enabled: boolean;
+	    essential_tools: SmallLLMEssentialToolsResp;
+	    system_prompt: SmallLLMSystemPromptResp;
+	    sampling: SmallLLMSamplingResp;
+	    loop_hardening: SmallLLMLoopHardeningResp;
+	
+	    static createFrom(source: any = {}) {
+	        return new SmallLLMConfigResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.essential_tools = this.convertValues(source["essential_tools"], SmallLLMEssentialToolsResp);
+	        this.system_prompt = this.convertValues(source["system_prompt"], SmallLLMSystemPromptResp);
+	        this.sampling = this.convertValues(source["sampling"], SmallLLMSamplingResp);
+	        this.loop_hardening = this.convertValues(source["loop_hardening"], SmallLLMLoopHardeningResp);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	
+	
 	export class ToolInfo {
 	    name: string;
 	    description: string;

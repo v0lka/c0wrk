@@ -91,20 +91,20 @@ type ProviderConfigRequest struct {
 // default) plus the built-in factory defaults so the UI can show what would
 // change. HasOverride is true when an entry exists in config.LLM.Models.
 type ModelConfigResponse struct {
-	Model                string                 `json:"model"`
-	ContextWindow        int                    `json:"context_window"`
-	OutputLimit          int                    `json:"output_limit"`
-	TokenizerType        string                 `json:"tokenizer_type"`
-	Family               string                 `json:"family"`
-	Protocol             string                 `json:"protocol"`
-	Capabilities         llm.ModelCapabilities  `json:"capabilities"`
-	DefaultContextWindow int                    `json:"default_context_window"`
-	DefaultOutputLimit   int                    `json:"default_output_limit"`
-	DefaultTokenizerType string                 `json:"default_tokenizer_type"`
-	DefaultFamily        string                 `json:"default_family"`
-	DefaultProtocol      string                 `json:"default_protocol"`
-	DefaultCapabilities  llm.ModelCapabilities  `json:"default_capabilities"`
-	HasOverride          bool                   `json:"has_override"`
+	Model                string                `json:"model"`
+	ContextWindow        int                   `json:"context_window"`
+	OutputLimit          int                   `json:"output_limit"`
+	TokenizerType        string                `json:"tokenizer_type"`
+	Family               string                `json:"family"`
+	Protocol             string                `json:"protocol"`
+	Capabilities         llm.ModelCapabilities `json:"capabilities"`
+	DefaultContextWindow int                   `json:"default_context_window"`
+	DefaultOutputLimit   int                   `json:"default_output_limit"`
+	DefaultTokenizerType string                `json:"default_tokenizer_type"`
+	DefaultFamily        string                `json:"default_family"`
+	DefaultProtocol      string                `json:"default_protocol"`
+	DefaultCapabilities  llm.ModelCapabilities `json:"default_capabilities"`
+	HasOverride          bool                  `json:"has_override"`
 }
 
 // ModelConfigRequest holds the per-model parameter overrides submitted from the
@@ -158,6 +158,50 @@ type SecuritySettingsResponse struct {
 type ToolPolicyResponse struct {
 	Policy    string   `json:"policy"`
 	Blacklist []string `json:"blacklist,omitempty"`
+}
+
+// SmallLLMConfigResponse is the small-LLM profile configuration exposed to the
+// UI. It mirrors config.SmallLLMConfig with JSON (snake_case) tags and is used
+// for both GetSmallLLMConfig (read) and UpdateSmallLLMConfig (write). There
+// are no secrets to mask, so a single type serves both directions.
+type SmallLLMConfigResponse struct {
+	Enabled        bool                       `json:"enabled"`
+	EssentialTools SmallLLMEssentialToolsResp `json:"essential_tools"`
+	SystemPrompt   SmallLLMSystemPromptResp   `json:"system_prompt"`
+	Sampling       SmallLLMSamplingResp       `json:"sampling"`
+	LoopHardening  SmallLLMLoopHardeningResp  `json:"loop_hardening"`
+}
+
+// SmallLLMEssentialToolsResp is the always-present tool-subset variant.
+type SmallLLMEssentialToolsResp struct {
+	Enabled       bool     `json:"enabled"`
+	AlwaysPresent []string `json:"always_present"`
+	MaxTools      int      `json:"max_tools"`
+}
+
+// SmallLLMSystemPromptResp is the prompt-simplification variant.
+type SmallLLMSystemPromptResp struct {
+	Lite              bool `json:"lite"`
+	FewShot           bool `json:"few_shot"`
+	ReasoningScaffold bool `json:"reasoning_scaffold"`
+}
+
+// SmallLLMSamplingResp is the sampling-override variant.
+type SmallLLMSamplingResp struct {
+	Enabled         bool    `json:"enabled"`
+	Temperature     float64 `json:"temperature"`
+	TopP            float64 `json:"top_p"`
+	ReasoningEffort string  `json:"reasoning_effort"`
+}
+
+// SmallLLMLoopHardeningResp is the tightened circuit-breaker variant.
+type SmallLLMLoopHardeningResp struct {
+	Enabled                      bool `json:"enabled"`
+	RepeatNudgeThreshold         int  `json:"repeat_nudge_threshold"`
+	ParseErrorAbortThreshold     int  `json:"parse_error_abort_threshold"`
+	FruitlessNudgeThreshold      int  `json:"fruitless_nudge_threshold"`
+	FruitlessAbortThreshold      int  `json:"fruitless_abort_threshold"`
+	SameToolRepeatNudgeThreshold int  `json:"same_tool_repeat_nudge_threshold"`
 }
 
 // FileNode represents a file or directory entry in the workspace tree.

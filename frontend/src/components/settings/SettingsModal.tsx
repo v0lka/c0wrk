@@ -11,10 +11,11 @@ import { LogLevelSelector } from './LogLevelSelector'
 import { ThemeSelector } from './ThemeSelector'
 import { ProxySettings } from './ProxySettings'
 import { LLMSettings } from './LLMSettings'
+import { SmallLLMSettings } from './SmallLLMSettings'
 import { SearchSettings } from './SearchSettings'
 import { MCPSettings } from './MCPSettings'
 import { SecuritySettings } from './SecuritySettings'
-import { Settings, Brain, Search, Shield, Info, Server, AlertTriangle, X } from 'lucide-react'
+import { Settings, Brain, Search, Shield, Info, Server, AlertTriangle, X, Gauge } from 'lucide-react'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { getConfig } from '@/api/config'
 
@@ -127,7 +128,7 @@ export function SettingsModal() {
           className="mt-4 flex-1 flex flex-col overflow-hidden min-h-0"
         >
           <ConfigWarningBanner className="mb-2" refreshKey={bannerRefreshKey} />
-          <TabsList className="grid w-full grid-cols-6">
+          <TabsList className="grid w-full grid-cols-7">
             <TabsTrigger value="general" className="gap-1">
               <Settings className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">General</span>
@@ -135,6 +136,10 @@ export function SettingsModal() {
             <TabsTrigger value="llm" className="gap-1">
               <Brain className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">LLM</span>
+            </TabsTrigger>
+            <TabsTrigger value="small-llm" className="gap-1">
+              <Gauge className="h-4 w-4" />
+              <span className="hidden sm:inline text-xs">Small LLM</span>
             </TabsTrigger>
             <TabsTrigger value="search" className="gap-1">
               <Search className="h-4 w-4" />
@@ -167,6 +172,10 @@ export function SettingsModal() {
 
           <TabsContent value="llm" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
             <LLMSettings onSettingsSaved={handleSettingsSaved} onDefaultModelChange={handleDefaultModelChange} />
+          </TabsContent>
+
+          <TabsContent value="small-llm" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
+            <SmallLLMSettings />
           </TabsContent>
 
           <TabsContent value="search" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">

@@ -480,6 +480,102 @@ orchestration:
 #                         # env vars at init time.
 
 # ---------------------------------------------------------------------------
+# Small-LLM Profile
+# ---------------------------------------------------------------------------
+# Optimizations applied when running on a "small" (low-capacity / cheaper) LLM.
+# The master toggle is MANUAL ONLY — there is no auto-detection; you decide
+# when to enable the profile. Each variant carries its own sub-toggle so a
+# single optimization can be turned off without disabling the whole profile,
+# and every threshold/value is exposed so behaviour can be tuned without a
+# rebuild.
+#
+# small_llm:
+#   # Master toggle. When false every variant is ignored. Default: false.
+#   enabled: false
+#
+#   # --- Essential Tools -----------------------------------------------------
+#   # Narrows the visible tool set for the model via semantic tool selection.
+#   # The router selects the tools relevant to the current task; this variant
+#   # exposes only that matched set (plus the user's always-present picks, the
+#   # protected base, and every MCP tool), reducing the JSON-schema/token
+#   # overhead injected into every prompt. There is no fixed allow-list and no
+#   # domain-specific narrowing — the router and the user decide relevance.
+#   essential_tools:
+#     # Gates this variant in addition to the master `enabled` toggle above
+#     # (selection is applied only when both are on).
+#     enabled: false
+#     # Tools always kept regardless of router selection. Protected tools
+#     # (finish, memory, ask_user, MCP) are always included and cannot be
+#     # removed.
+#     always_present:
+#       - read_file
+#       - write_file
+#       - edit_file
+#       - list_directory
+#       - glob
+#       - ripgrep
+#       - bash_exec
+#       - semantic_search
+#     # Caps the total number of tools exposed after the router match, the
+#     # always-present list, and the protected base are unioned. Protected
+#     # tools and MCP tools always survive the cap. 0 = unlimited. Default: 12.
+#     max_tools: 12
+#
+#   # --- System Prompt Simplification ---------------------------------------
+#   # Applies prompt-simplification variants to shrink the system prompt. Each
+#   # flag is independent; few_shot and reasoning_scaffold only take effect
+#   # when lite is on (both are tailored to the compact lite directive).
+#   system_prompt:
+#     # Trims verbose guidance from the base system prompt, swapping the verbose
+#     # OrchestratorSystem directive for the compact OrchestratorSystemLite.
+#     lite: false
+#     # Appends curated worked-example ReAct cycles (correct tool-call format,
+#     # tool choice, error recovery, finish). Only applied when lite is on.
+#     few_shot: false
+#     # Appends a lightweight three-step reasoning scaffold (goal → tool+why
+#     # → args). Only applied when lite is on.
+#     reasoning_scaffold: false
+#
+#   # --- Sampling Overrides --------------------------------------------------
+#   # Overrides LLM sampling parameters for more deterministic, lower-effort
+#   # generation suitable for smaller models.
+#   sampling:
+#     # Gates this variant.
+#     enabled: false
+#     # Generation temperature (lower = more deterministic). Default: 0.1.
+#     temperature: 0.1
+#     # Nucleus-sampling probability mass. Default: 0.9.
+#     top_p: 0.9
+#     # Reasoning depth: "" (inherit the model default) | "off" | "low" |
+#     # "medium". Smaller models generally benefit from reduced effort.
+#     # Default: "" (inherit).
+#     reasoning_effort: ""
+#
+#   # --- Loop Hardening ------------------------------------------------------
+#   # Tightens the executor circuit-breaker thresholds so a small model that
+#   # repeats itself or makes no progress is nudged/aborted sooner, conserving
+#   # the token budget. These are tighter than the baseline
+#   # executor.circuitBreaker values.
+#   loop_hardening:
+#     # Gates this variant.
+#     enabled: false
+#     # Consecutive identical tool calls before a corrective nudge.
+#     # Default: 2.
+#     repeat_nudge_threshold: 2
+#     # Consecutive response parse errors before the executor aborts.
+#     # Default: 3.
+#     parse_error_abort_threshold: 3
+#     # Consecutive minimal-result tool calls before a corrective nudge.
+#     # Default: 3.
+#     fruitless_nudge_threshold: 3
+#     # Consecutive minimal-result tool calls before the executor aborts.
+#     # Default: 5.
+#     fruitless_abort_threshold: 5
+#     # Same-tool (varied args, similar results) calls before a corrective
+#     # nudge. Default: 4.
+#     same_tool_repeat_nudge_threshold: 4
+
+# ---------------------------------------------------------------------------
 # Goal — budget model.
 # ---------------------------------------------------------------------------
 # A goal captures the user's success condition and bounds how much work the

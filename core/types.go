@@ -68,6 +68,10 @@ type Emitter interface {
 	ReplanFailed(err error)
 	// SkillsActivated reports the skills matched and activated for the current task.
 	SkillsActivated(skillNames []string)
+	// ToolsAssigned reports the tools assigned to the session after Small-LLM
+	// domain narrowing narrowed the conductor's tool set (mirrors
+	// SkillsActivated's card, but for the curated/narrowed tool roster).
+	ToolsAssigned(toolNames []string)
 	// StepTodoUpdate emits a checklist update. stepID may be empty for a
 	// standalone checklist (Conductor without a declared plan).
 	StepTodoUpdate(stepID string, items []agent.TodoItem)
@@ -182,6 +186,7 @@ func (n *noopEmitter) GoalStatus(_ map[string]any)                              
 func (n *noopEmitter) GoalProgress(_ map[string]any)                                {}
 func (n *noopEmitter) ReplanFailed(_ error)                                         {}
 func (n *noopEmitter) SkillsActivated(_ []string)                                   {}
+func (n *noopEmitter) ToolsAssigned(_ []string)                                     {}
 func (n *noopEmitter) StepTodoUpdate(_ string, _ []agent.TodoItem)                  {}
 func (n *noopEmitter) MemoryRead(_ int, _ string)                                   {}
 

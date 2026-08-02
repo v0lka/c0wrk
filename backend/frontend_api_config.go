@@ -8,6 +8,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core/proxy"
+	"github.com/v0lka/c0wrk/core/smallllm"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/llm"
 )
@@ -422,6 +423,202 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 	return nil
 }
 
+// GetSmallLLMConfig returns the current effective small-LLM profile
+// configuration. Returns a zero value when config is not yet initialized.
+func (f *FrontendAPI) GetSmallLLMConfig() SmallLLMConfigResponse {
+	f.configMu.RLock()
+	defer f.configMu.RUnlock()
+
+	if f.config == nil {
+		return SmallLLMConfigResponse{
+			EssentialTools: SmallLLMEssentialToolsResp{AlwaysPresent: []string{}},
+		}
+	}
+	return smallLLMToResponse(f.config.SmallLLM)
+}
+
+// UpdateSmallLLMConfig validates, persists, and applies a new small-LLM
+// profile. Validation runs before any mutation so an invalid payload produces
+// no partial write (the in-memory config and config.yaml are untouched). After
+// a successful persist the LLM router is rebuilt so the new profile takes
+// effect for new sessions without an app restart.
+func (f *FrontendAPI) UpdateSmallLLMConfig(cfg SmallLLMConfigResponse) error {
+	f.configMu.Lock()
+	defer f.configMu.Unlock()
+
+	if f.config == nil {
+		return errors.New("config not initialized")
+	}
+
+	// Validate before mutation — a bad payload must not partially overwrite
+	// the persisted config.
+	if err := validateSmallLLMConfig(cfg); err != nil {
+		return err
+	}
+
+	// Snapshot the previous profile so it can be restored if the persist
+	// fails — otherwise the in-memory config would hold the unpersisted value
+	// and the UI's revert-on-failure (GetSmallLLMConfig) would read it back,
+	// silently keeping the rejected change.
+	prev := f.config.SmallLLM
+	f.config.SmallLLM = responseToSmallLLM(cfg)
+
+	if err := f.persistConfig(); err != nil {
+		f.config.SmallLLM = prev
+		return fmt.Errorf("failed to persist small-LLM config: %w", err)
+	}
+
+	// Clear any config load errors since settings are now valid.
+	f.configLoadErrors = nil
+
+	// Rebuild the LLM router so the updated profile applies without restart.
+	if b := f.builder(); b != nil {
+		if err := b.RebuildRouter(ToBuilderConfig(f.config)); err != nil {
+			f.log().Warn("failed to rebuild LLM router after small-LLM config update", "error", err)
+		}
+	}
+
+	return nil
+}
+
+// validSmallLLMReasoningEfforts enumerates the accepted reasoning_effort
+// values for the small-LLM sampling variant. Empty means "inherit the model's
+// default" and is always allowed.
+var validSmallLLMReasoningEfforts = map[string]struct{}{
+	"":       {},
+	"off":    {},
+	"low":    {},
+	"medium": {},
+}
+
+// validateSmallLLMConfig validates a small-LLM profile before it is persisted.
+// Returns an error for any constraint violation; the caller must reject the
+// update without mutating config when this returns non-nil.
+func validateSmallLLMConfig(cfg SmallLLMConfigResponse) error {
+	// Essential tools: a non-empty curated set and sane tool cap are required
+	// when the variant is active.
+	if cfg.EssentialTools.Enabled {
+		// always_present may be empty: protected orchestration tools
+		// (finish, fact memory, ask_user) and every MCP tool are always kept
+		// implicitly by SelectTools, so an empty list is valid. max_tools is a
+		// size budget (0 = unlimited) and must simply be non-negative.
+		if cfg.EssentialTools.MaxTools < 0 {
+			return fmt.Errorf("small_llm.essential_tools.max_tools must be non-negative, got %d", cfg.EssentialTools.MaxTools)
+		}
+	}
+
+	// Sampling: temperature > 0 and 0 < top_p <= 1 when the variant is on.
+	if cfg.Sampling.Enabled {
+		// Temperature 0 is the YAML zero-value and doubles as the "unset"
+		// sentinel in ApplyDefaults (which substitutes 0.1). Treat it the
+		// same way here so an explicit 0 is not silently clobbered on
+		// reload: require a strictly positive value when the variant is on.
+		if cfg.Sampling.Temperature <= 0 {
+			return fmt.Errorf("small_llm.sampling.temperature must be positive when sampling is enabled, got %v", cfg.Sampling.Temperature)
+		}
+		if cfg.Sampling.TopP <= 0 || cfg.Sampling.TopP > 1 {
+			return fmt.Errorf("small_llm.sampling.top_p must be in the range (0, 1], got %v", cfg.Sampling.TopP)
+		}
+	}
+	if _, ok := validSmallLLMReasoningEfforts[cfg.Sampling.ReasoningEffort]; !ok {
+		return fmt.Errorf("small_llm.sampling.reasoning_effort %q is invalid (allowed: off, low, medium)", cfg.Sampling.ReasoningEffort)
+	}
+
+	// Loop hardening: every threshold must be non-negative.
+	lh := cfg.LoopHardening
+	thresholds := []int{
+		lh.RepeatNudgeThreshold,
+		lh.ParseErrorAbortThreshold,
+		lh.FruitlessNudgeThreshold,
+		lh.FruitlessAbortThreshold,
+		lh.SameToolRepeatNudgeThreshold,
+	}
+	for _, t := range thresholds {
+		if t < 0 {
+			return errors.New("small_llm.loop_hardening thresholds must be non-negative")
+		}
+	}
+	// When the variant is active, thresholds must be positive (>= 1).
+	if lh.Enabled {
+		for _, t := range thresholds {
+			if t < 1 {
+				return errors.New("small_llm.loop_hardening thresholds must be positive when loop_hardening is enabled")
+			}
+		}
+	}
+
+	return nil
+}
+
+// smallLLMToResponse converts the config-level SmallLLMConfig into the
+// JSON-tagged DTO returned to the UI. AlwaysPresent is normalized to a non-nil
+// slice so JSON serialization yields [] instead of null. The protected
+// orchestration tools (finish, fact memory, ask_user) are unioned into the
+// response's always_present so the UI can render them as permanently present
+// ("locked") — they are always kept by SelectTools regardless of the user's
+// list.
+func smallLLMToResponse(c config.SmallLLMConfig) SmallLLMConfigResponse {
+	return SmallLLMConfigResponse{
+		Enabled: c.Enabled,
+		EssentialTools: SmallLLMEssentialToolsResp{
+			Enabled:       c.EssentialTools.Enabled,
+			AlwaysPresent: nonNilStringSlice(unionAlwaysPresent(c.EssentialTools.AlwaysPresent, smallllm.ProtectedToolNames())),
+			MaxTools:      c.EssentialTools.MaxTools,
+		},
+		SystemPrompt: SmallLLMSystemPromptResp{
+			Lite:              c.SystemPrompt.Lite,
+			FewShot:           c.SystemPrompt.FewShot,
+			ReasoningScaffold: c.SystemPrompt.ReasoningScaffold,
+		},
+		Sampling: SmallLLMSamplingResp{
+			Enabled:         c.Sampling.Enabled,
+			Temperature:     c.Sampling.Temperature,
+			TopP:            c.Sampling.TopP,
+			ReasoningEffort: c.Sampling.ReasoningEffort,
+		},
+		LoopHardening: SmallLLMLoopHardeningResp{
+			Enabled:                      c.LoopHardening.Enabled,
+			RepeatNudgeThreshold:         c.LoopHardening.RepeatNudgeThreshold,
+			ParseErrorAbortThreshold:     c.LoopHardening.ParseErrorAbortThreshold,
+			FruitlessNudgeThreshold:      c.LoopHardening.FruitlessNudgeThreshold,
+			FruitlessAbortThreshold:      c.LoopHardening.FruitlessAbortThreshold,
+			SameToolRepeatNudgeThreshold: c.LoopHardening.SameToolRepeatNudgeThreshold,
+		},
+	}
+}
+
+// responseToSmallLLM converts the UI DTO back into the config-level struct so
+// it can be persisted to config.yaml.
+func responseToSmallLLM(r SmallLLMConfigResponse) config.SmallLLMConfig {
+	return config.SmallLLMConfig{
+		Enabled: r.Enabled,
+		EssentialTools: config.EssentialToolsConfig{
+			Enabled:       r.EssentialTools.Enabled,
+			AlwaysPresent: r.EssentialTools.AlwaysPresent,
+			MaxTools:      r.EssentialTools.MaxTools,
+		},
+		SystemPrompt: config.SystemPromptConfig{
+			Lite:              r.SystemPrompt.Lite,
+			FewShot:           r.SystemPrompt.FewShot,
+			ReasoningScaffold: r.SystemPrompt.ReasoningScaffold,
+		},
+		Sampling: config.SmallLLMSamplingConfig{
+			Enabled:         r.Sampling.Enabled,
+			Temperature:     r.Sampling.Temperature,
+			TopP:            r.Sampling.TopP,
+			ReasoningEffort: r.Sampling.ReasoningEffort,
+		},
+		LoopHardening: config.LoopHardeningConfig{
+			Enabled:                      r.LoopHardening.Enabled,
+			RepeatNudgeThreshold:         r.LoopHardening.RepeatNudgeThreshold,
+			ParseErrorAbortThreshold:     r.LoopHardening.ParseErrorAbortThreshold,
+			FruitlessNudgeThreshold:      r.LoopHardening.FruitlessNudgeThreshold,
+			FruitlessAbortThreshold:      r.LoopHardening.FruitlessAbortThreshold,
+			SameToolRepeatNudgeThreshold: r.LoopHardening.SameToolRepeatNudgeThreshold,
+		},
+	}
+}
+
 // GetLogLevel returns the current log level.
 func (f *FrontendAPI) GetLogLevel() string {
 	f.configMu.RLock()
@@ -719,4 +916,30 @@ func nonNilStringSlice(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// unionAlwaysPresent merges two tool-name lists, deduplicating by name. The
+// primary list's order is preserved and protected names that are not already
+// present are appended (so the UI can render them as locked, in a stable
+// position). Used to surface the protected orchestration tools alongside the
+// user's always-present list without storing them in config.
+func unionAlwaysPresent(primary, extra []string) []string {
+	if len(primary) == 0 && len(extra) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(primary)+len(extra))
+	out := make([]string, 0, len(primary)+len(extra))
+	for _, n := range primary {
+		if _, ok := seen[n]; !ok {
+			seen[n] = struct{}{}
+			out = append(out, n)
+		}
+	}
+	for _, n := range extra {
+		if _, ok := seen[n]; !ok {
+			seen[n] = struct{}{}
+			out = append(out, n)
+		}
+	}
+	return out
 }

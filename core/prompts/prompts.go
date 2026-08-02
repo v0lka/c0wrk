@@ -95,6 +95,41 @@ var PlannerContinuationSingleStep string
 //go:embed orchestrator_system.md
 var OrchestratorSystem string
 
+// OrchestratorSystemLite is the compact core directive used when the small-LLM
+// SystemPrompt.Lite profile is active. It keeps only the ~6-8 most critical
+// directives (ReAct loop shape, tool priority, finish-is-mandatory,
+// brief-reasoning-before-action) and DROPS the verbose operational docs
+// (truncation internals, fact-memory mechanics, checklist/table mechanics,
+// progress-tracking internals) that an SLM cannot hold. It intentionally does
+// NOT carry injection-defense content — that is still injected separately via
+// InjectionDefense (strict constraint), so the lite directive is purely the
+// behavioral core. The {shell_tool} placeholder is resolved via
+// SubstituteShellTool at the call site.
+//
+//go:embed orchestrator_lite.md
+var OrchestratorSystemLite string
+
+// OrchestratorLiteScaffold is the reasoning-scaffold block appended after
+// OrchestratorSystemLite when the small-LLM SystemPrompt.ReasoningScaffold
+// sub-toggle is active. It directs a small model to structure its pre-action
+// reasoning into three short steps (goal, tool choice + rationale, exact
+// args) instead of emitting free-form, drifting thoughts. Extracted from the
+// lite directive so it can be turned on/off independently of the few-shot
+// examples.
+//
+//go:embed orchestrator_lite_scaffold.md
+var OrchestratorLiteScaffold string
+
+// OrchestratorLiteFewShot is the curated few-shot ReAct cycle block appended
+// after OrchestratorSystemLite when the small-LLM SystemPrompt.FewShot
+// sub-toggle is active. It demonstrates the behaviors an SLM most often
+// violates: correct tool-call format (real tool_use, not printing syntax as
+// text), choosing between similar tools, recovering from a tool error by
+// retrying with corrected args, and calling finish when done.
+//
+//go:embed orchestrator_lite_fewshot.md
+var OrchestratorLiteFewShot string
+
 //go:embed orchestrator_plan_context.md
 var OrchestratorPlanContext string
 

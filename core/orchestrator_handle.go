@@ -22,6 +22,22 @@ func (o *Orchestrator) prepareRequestContext(ctx context.Context, message string
 		ctx = context.WithValue(ctx, InjectionDefenseKey, true)
 	}
 
+	// Small-LLM prompt profile: carry the SystemPrompt sub-toggle flags so
+	// buildSystemPromptWith can gate the lite directive, reasoning scaffold,
+	// and few-shot examples independently. Gated on BOTH the master
+	// SmallLLM.Enabled toggle and the SystemPrompt variant being active (Lite
+	// on) (defense-in-depth) — when either is off the ctx value is absent and
+	// buildSystemPromptWith uses the default verbose directive with no
+	// scaffold/few-shot additions.
+	sc := o.config.SmallLLM
+	if sc.Enabled && sc.SystemPrompt.Lite {
+		ctx = withSmallLLMPromptProfile(ctx, smallLLMPromptProfile{
+			Lite:              sc.SystemPrompt.Lite,
+			FewShot:           sc.SystemPrompt.FewShot,
+			ReasoningScaffold: sc.SystemPrompt.ReasoningScaffold,
+		})
+	}
+
 	// Generate RAG hints from vector index (non-blocking, 2s timeout).
 	ctx = o.injectVectorSearchHints(ctx, message)
 

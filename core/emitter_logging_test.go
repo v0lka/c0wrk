@@ -68,6 +68,7 @@ func (s *spyEmitter) GoalStatus(m map[string]any)                { s.record("Goa
 func (s *spyEmitter) GoalProgress(m map[string]any)              { s.record("GoalProgress", m) }
 func (s *spyEmitter) ReplanFailed(e error)                       { s.record("ReplanFailed", e) }
 func (s *spyEmitter) SkillsActivated(skills []string)            { s.record("SkillsActivated", skills) }
+func (s *spyEmitter) ToolsAssigned(tools []string)               { s.record("ToolsAssigned", tools) }
 func (s *spyEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
 	s.record("EmitSessionTokens", totalIn, totalOut, model, family)
 }
@@ -153,6 +154,7 @@ func TestLoggingEmitter_DelegatesToInner(t *testing.T) {
 		{"ServiceWithMeta", func(e Emitter) { e.ServiceWithMeta("msg", meta) }, "ServiceWithMeta"},
 		{"ReplanFailed", func(e Emitter) { e.ReplanFailed(nil) }, "ReplanFailed"},
 		{"SkillsActivated", func(e Emitter) { e.SkillsActivated([]string{"pdf"}) }, "SkillsActivated"},
+		{"ToolsAssigned", func(e Emitter) { e.ToolsAssigned([]string{"read_file"}) }, "ToolsAssigned"},
 	}
 
 	for _, tt := range tests {

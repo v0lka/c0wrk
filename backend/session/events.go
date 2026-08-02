@@ -242,6 +242,12 @@ type SkillsActivatedData struct {
 	Skills []string `json:"skills"`
 }
 
+// ToolsAssignedData is the typed Data payload for "tools_assigned" events,
+// emitted when the Small-LLM domain narrowing curates the session's tool set.
+type ToolsAssignedData struct {
+	Tools []string `json:"tools"`
+}
+
 // --- ChatMessage metadata helpers ---
 
 // MetadataFrom marshals any value into a json.RawMessage suitable for ChatMessage.Metadata.

@@ -41,6 +41,8 @@ Set needs_clarification to true ONLY when the request is genuinely ambiguous and
 Available tools:
 AVAILABLE-TOOLS
 
+TOOL-MATCHING
+
 ## Skill Matching
 
 Available skills:
@@ -69,8 +71,7 @@ Request: "Fix the login bug in auth.go"
 Request: "Make it better"
 {"domain":"general","complexity":1,"needs_clarification":true,"matched_skills":[]}
 
-Respond ONLY with a JSON object:
-{"domain": "code|research|general|mixed", "complexity": 1-5, "needs_clarification": false, "matched_skills": ["skill-name"]}
+JSON-OUTPUT-SCHEMA
 
 ## Git Policy
 

@@ -2,8 +2,8 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
-import { isConfigResponse, isSecuritySettingsResponse, isProxySettingsResponse } from '@/types/guards'
-import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsResponse, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest } from '@/types/models'
+import { isConfigResponse, isSecuritySettingsResponse, isProxySettingsResponse, isSmallLLMConfigResponse } from '@/types/guards'
+import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsResponse, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest, SmallLLMConfigResponse } from '@/types/models'
 
 /** Sentinel value returned by backend when an API key is configured but should not be displayed */
 export const MASKED_API_KEY = '***configured***'
@@ -151,6 +151,30 @@ export async function updateProxySettings(settings: ProxySettingsRequest): Promi
     await app.UpdateProxySettings(settings)
   } catch (err) {
     logger.error('Failed to update proxy settings:', err)
+    throw err
+  }
+}
+
+export async function getSmallLLMConfig(): Promise<SmallLLMConfigResponse> {
+  try {
+    const app = getApp()
+    const result = await app.GetSmallLLMConfig()
+    if (!isSmallLLMConfigResponse(result)) {
+      throw new Error('getSmallLLMConfig: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to get Small LLM config:', err)
+    throw err
+  }
+}
+
+export async function updateSmallLLMConfig(config: SmallLLMConfigResponse): Promise<void> {
+  try {
+    const app = getApp()
+    await app.UpdateSmallLLMConfig(config)
+  } catch (err) {
+    logger.error('Failed to update Small LLM config:', err)
     throw err
   }
 }

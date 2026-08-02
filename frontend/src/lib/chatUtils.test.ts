@@ -210,6 +210,36 @@ describe('reconstructContent (via chatMessageToUI)', () => {
     expect(result.content).toBe('Skills activated: ')
   })
 
+  it('status tools_assigned reconstructs human-readable text from raw JSON content', () => {
+    // Mirrors what backend/session/event_persister.go persists for a
+    // "tools_assigned" event: role "status", raw JSON payload as content.
+    const result = chatMessageToUI(makeMsg({
+      role: 'status',
+      content: '{"tools":["read_file"]}',
+      metadata: JSON.stringify({ tools: ['read_file'] }),
+    }))
+    // Must match the live useLifecycleEvents handler output exactly.
+    expect(result.content).toBe('Tools assigned: read_file')
+  })
+
+  it('status tools_assigned joins multiple tools with commas', () => {
+    const result = chatMessageToUI(makeMsg({
+      role: 'status',
+      content: '{"tools":["read_file","write_file","bash_exec"]}',
+      metadata: JSON.stringify({ tools: ['read_file', 'write_file', 'bash_exec'] }),
+    }))
+    expect(result.content).toBe('Tools assigned: read_file, write_file, bash_exec')
+  })
+
+  it('status tools_assigned with empty tools list', () => {
+    const result = chatMessageToUI(makeMsg({
+      role: 'status',
+      content: '{"tools":[]}',
+      metadata: JSON.stringify({ tools: [] }),
+    }))
+    expect(result.content).toBe('Tools assigned: ')
+  })
+
   it('task_resumed passes rawContent through', () => {
     const result = chatMessageToUI(makeMsg({
       role: 'task_resumed',

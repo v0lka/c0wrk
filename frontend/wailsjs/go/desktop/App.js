@@ -262,6 +262,10 @@ export function GetSessionWorkspace(arg1) {
   return window['go']['desktop']['App']['GetSessionWorkspace'](arg1);
 }
 
+export function GetSmallLLMConfig() {
+  return window['go']['desktop']['App']['GetSmallLLMConfig']();
+}
+
 export function GetTerminalHistory(arg1) {
   return window['go']['desktop']['App']['GetTerminalHistory'](arg1);
 }
@@ -520,6 +524,10 @@ export function UpdateSearchSettings(arg1) {
 
 export function UpdateSecuritySettings(arg1) {
   return window['go']['desktop']['App']['UpdateSecuritySettings'](arg1);
+}
+
+export function UpdateSmallLLMConfig(arg1) {
+  return window['go']['desktop']['App']['UpdateSmallLLMConfig'](arg1);
 }
 
 export function UpdateWorkDirectoryDescription(arg1, arg2, arg3, arg4) {

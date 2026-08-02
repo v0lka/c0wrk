@@ -139,6 +139,8 @@ export function GetSessionTokens(arg1:string):Promise<backend.SessionTokensRespo
 
 export function GetSessionWorkspace(arg1:string):Promise<string>;
 
+export function GetSmallLLMConfig():Promise<backend.SmallLLMConfigResponse>;
+
 export function GetTerminalHistory(arg1:string):Promise<Array<session.TerminalCommand>>;
 
 export function GetToolList():Promise<Array<backend.ToolInfo>>;
@@ -268,6 +270,8 @@ export function UpdateProxySettings(arg1:backend.ProxySettingsRequest):Promise<v
 export function UpdateSearchSettings(arg1:backend.SearchSettingsRequest):Promise<void>;
 
 export function UpdateSecuritySettings(arg1:backend.SecuritySettingsResponse):Promise<void>;
+
+export function UpdateSmallLLMConfig(arg1:backend.SmallLLMConfigResponse):Promise<void>;
 
 export function UpdateWorkDirectoryDescription(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 

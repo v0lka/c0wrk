@@ -24,6 +24,7 @@
 | LLM providers, model registry, tokens    | [domains/llm-providers.md](domains/llm-providers.md)                     |
 | Session create/resume/persist/fork       | [domains/session-lifecycle.md](domains/session-lifecycle.md)             |
 | Goal mode (multi-turn objective loop)    | [domains/goal-mode.md](domains/goal-mode.md), [decisions/019-goal-mode.md](decisions/019-goal-mode.md) |
+| Small-LLM profile (tuning for small/local models) | [domains/small-llm.md](domains/small-llm.md), [decisions/022-small-llm-profile.md](decisions/022-small-llm-profile.md) |
 | File & image attachments (pending → blackboard / content blocks)  | [domains/session-lifecycle.md](domains/session-lifecycle.md), [domains/memory/blackboard.md](domains/memory/blackboard.md) |
 | File tree, vector index, workspace       | [domains/workspace.md](domains/workspace.md)                             |
 | Auxiliary work directories               | [architecture/security-model.md](architecture/security-model.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Work Directories section), [domains/frontend/stores.md](domains/frontend/stores.md) (`workDirsStore`) |
@@ -99,6 +100,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [llm-providers.md](domains/llm-providers.md) - Thin c0wrk wiring note (provider config → core/builder → sp4rk Router)
 - [session-lifecycle.md](domains/session-lifecycle.md) - Session and task lifecycle
 - [goal-mode.md](domains/goal-mode.md) - Goal mode: multi-turn agent-driven loop over a user-approved success condition (derivation → approval → self-eval loop, budgets, anti-spin, pause/resume)
+- [small-llm.md](domains/small-llm.md) - Small-LLM profile: master-toggle + four variants (essential-tools narrowing, system-prompt Lite swap, sampling override, loop hardening) for tuning c0wrk to small/local models
 - [workspace.md](domains/workspace.md) - File tree, vector index, workspace watcher
 
 ### domains/frontend/
@@ -139,3 +141,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [019-goal-mode.md](decisions/019-goal-mode.md) - Goal mode: self-agent + evidence-mandate, derive-then-confirm UX, persist + pause/resume, anti-spin auto-pause
 - [020-multi-source-agents-md-threat-model.md](decisions/020-multi-source-agents-md-threat-model.md) - Threat model for global/c0wrk/project AGENTS.md sources (all untrusted advisory; tool-policy pipeline is the hard boundary)
 - [021-subagents.md](decisions/021-subagents.md) - Subagent Profiles: `.agents/agents` persona/budget profiles applied at delegation time, `#agent-name` mention routing (parallels skills)
+- [022-small-llm-profile.md](decisions/022-small-llm-profile.md) - Small-LLM profile: manual master toggle + four independently sub-toggled variants (essential tools, system-prompt Lite, sampling, loop hardening) for tuning c0wrk to small/local models

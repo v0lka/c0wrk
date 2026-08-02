@@ -11,6 +11,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/smallllm"
 	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/skills"
@@ -485,7 +486,7 @@ func TestSetModelConfig_PartialOverrideOmitsDefaultField(t *testing.T) {
 	// built-in default (128000) so it must be stored as 0 / omitted.
 	err := f.SetModelConfig("gpt-4o", ModelConfigRequest{
 		ContextWindow: 128000, // == built-in default → stored as 0
-		OutputLimit:   50000,   // != default → stored
+		OutputLimit:   50000,  // != default → stored
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -735,11 +736,11 @@ func TestSetModelConfig_MetaDataFieldsDefaultOmitted(t *testing.T) {
 	// Send the built-in default values for the metadata fields → they must
 	// NOT be stored (sentinel "" / nil = inherit default).
 	err := f.SetModelConfig("gpt-4o", ModelConfigRequest{
-		ContextWindow: 200000, // != default → stored
-		OutputLimit:   16384,  // == default → omitted
-		TokenizerType: "tiktoken/o200k_base", // == default → omitted
-		Family:        "openai_flagship",     // == default → omitted
-		Protocol:      "chat_completions",    // == default → omitted
+		ContextWindow: 200000,                                                                                        // != default → stored
+		OutputLimit:   16384,                                                                                         // == default → omitted
+		TokenizerType: "tiktoken/o200k_base",                                                                         // == default → omitted
+		Family:        "openai_flagship",                                                                             // == default → omitted
+		Protocol:      "chat_completions",                                                                            // == default → omitted
 		Capabilities:  &llm.ModelCapabilities{Attachment: true, Reasoning: false, Temperature: true, ToolCall: true}, // == default → omitted
 	})
 	if err != nil {
@@ -904,6 +905,385 @@ func TestUpdateSecuritySettings_FiltersInternal(t *testing.T) {
 	}
 	if _, ok := f.config.Security.ToolPolicies["bash_exec"]; !ok {
 		t.Error("bash_exec should be preserved")
+	}
+}
+
+// --- SmallLLMConfig ---
+
+// validSmallLLMConfig is a profile that passes all validation rules. It is the
+// baseline used by the happy-path tests; individual cases mutate copies.
+func validSmallLLMConfig() SmallLLMConfigResponse {
+	return SmallLLMConfigResponse{
+		Enabled: true,
+		EssentialTools: SmallLLMEssentialToolsResp{
+			Enabled:       true,
+			AlwaysPresent: []string{"read_file", "edit_file"},
+			MaxTools:      8,
+		},
+		SystemPrompt: SmallLLMSystemPromptResp{Lite: true},
+		Sampling: SmallLLMSamplingResp{
+			Enabled:     true,
+			Temperature: 0.1,
+			TopP:        0.9,
+		},
+		LoopHardening: SmallLLMLoopHardeningResp{
+			Enabled:                      true,
+			RepeatNudgeThreshold:         2,
+			ParseErrorAbortThreshold:     3,
+			FruitlessNudgeThreshold:      3,
+			FruitlessAbortThreshold:      5,
+			SameToolRepeatNudgeThreshold: 4,
+		},
+	}
+}
+
+func TestGetSmallLLMConfig_ReturnsCurrentConfig(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	// ApplyDefaults seeds the SmallLLM section; mutate a couple of fields and
+	// confirm they round-trip through the DTO.
+	f.config.SmallLLM.Enabled = true
+	f.config.SmallLLM.EssentialTools.Enabled = true
+	f.config.SmallLLM.EssentialTools.MaxTools = 7
+
+	got := f.GetSmallLLMConfig()
+
+	if !got.Enabled {
+		t.Error("Enabled = false, want true")
+	}
+	if !got.EssentialTools.Enabled {
+		t.Error("EssentialTools.Enabled = false, want true")
+	}
+	if got.EssentialTools.MaxTools != 7 {
+		t.Errorf("MaxTools = %d, want 7", got.EssentialTools.MaxTools)
+	}
+	// AlwaysPresent should be a non-nil slice (JSON [] not null).
+	if got.EssentialTools.AlwaysPresent == nil {
+		t.Error("AlwaysPresent is nil, want non-nil")
+	}
+}
+
+func TestGetSmallLLMConfig_NilConfigReturnsZero(t *testing.T) {
+	f := &FrontendAPI{}
+	got := f.GetSmallLLMConfig()
+	if got.Enabled {
+		t.Error("Enabled = true, want false for nil config")
+	}
+}
+
+func TestUpdateSmallLLMConfig_PersistsAndRebuilds(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+
+	err := f.UpdateSmallLLMConfig(validSmallLLMConfig())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Router rebuilt so changes apply without restart.
+	if mock.rebuildRouterCalls != 1 {
+		t.Errorf("RebuildRouter called %d times, want 1", mock.rebuildRouterCalls)
+	}
+
+	// Config file persisted.
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		t.Fatal("config file not persisted")
+	}
+
+	// In-memory config reflects the update.
+	if !f.config.SmallLLM.Enabled {
+		t.Error("SmallLLM.Enabled not applied")
+	}
+	if f.config.SmallLLM.EssentialTools.MaxTools != 8 {
+		t.Errorf("MaxTools = %d, want 8", f.config.SmallLLM.EssentialTools.MaxTools)
+	}
+}
+
+func TestUpdateSmallLLMConfig_NilConfig(t *testing.T) {
+	f := &FrontendAPI{}
+	err := f.UpdateSmallLLMConfig(validSmallLLMConfig())
+	if err == nil {
+		t.Fatal("expected error when config is nil")
+	}
+}
+
+// TestUpdateSmallLLMConfig_PersistFailureRestoresInMemory verifies that when
+// persistConfig fails, the in-memory config is restored to its previous value.
+// Without this, the UI's revert-on-failure path (GetSmallLLMConfig) would read
+// back the rejected value, silently keeping the failed change.
+func TestUpdateSmallLLMConfig_PersistFailureRestoresInMemory(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	// Establish a known baseline.
+	baseline := validSmallLLMConfig()
+	baseline.EssentialTools.MaxTools = 9
+	if err := f.UpdateSmallLLMConfig(baseline); err != nil {
+		t.Fatalf("baseline setup failed: %v", err)
+	}
+	baselineCalls := mock.rebuildRouterCalls
+
+	// Force persistConfig to fail by clearing the path.
+	f.configPath = ""
+
+	change := validSmallLLMConfig()
+	change.EssentialTools.MaxTools = 3
+	err := f.UpdateSmallLLMConfig(change)
+	if err == nil {
+		t.Fatal("expected error when persist fails")
+	}
+
+	// In-memory config must be restored to the baseline, not the rejected change.
+	if f.config.SmallLLM.EssentialTools.MaxTools != 9 {
+		t.Errorf("in-memory MaxTools = %d, want 9 (baseline restored on persist failure)",
+			f.config.SmallLLM.EssentialTools.MaxTools)
+	}
+	// RebuildRouter must not have been called for the failed update.
+	if mock.rebuildRouterCalls != baselineCalls {
+		t.Errorf("RebuildRouter called after persist failure: %d, want %d",
+			mock.rebuildRouterCalls, baselineCalls)
+	}
+}
+
+func TestUpdateSmallLLMConfig_EmptyAlwaysPresentAllowed(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+
+	// An empty always_present list is valid: protected orchestration tools
+	// (finish, fact memory, ask_user) and every MCP tool are always kept
+	// implicitly by SelectTools, so the user need not pin anything.
+	cfg := validSmallLLMConfig()
+	cfg.EssentialTools.AlwaysPresent = nil
+
+	err := f.UpdateSmallLLMConfig(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error for empty always_present when essential enabled: %v", err)
+	}
+
+	// Successful update: config mutated, router rebuilt, file persisted.
+	if !f.config.SmallLLM.Enabled {
+		t.Error("config was not applied despite a valid (empty always_present) payload")
+	}
+	if mock.rebuildRouterCalls != 1 {
+		t.Errorf("RebuildRouter called %d times, want 1", mock.rebuildRouterCalls)
+	}
+	if _, statErr := os.Stat(cfgPath); statErr != nil {
+		t.Error("config file should have been written on success")
+	}
+}
+
+func TestUpdateSmallLLMConfig_NegativeMaxTools(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	cfg := validSmallLLMConfig()
+	cfg.EssentialTools.MaxTools = -1
+
+	err := f.UpdateSmallLLMConfig(cfg)
+	if err == nil {
+		t.Fatal("expected error for negative max_tools")
+	}
+	if f.config.SmallLLM.Enabled {
+		t.Error("config was mutated despite validation error")
+	}
+	if mock.rebuildRouterCalls != 0 {
+		t.Errorf("RebuildRouter called %d times, want 0", mock.rebuildRouterCalls)
+	}
+}
+
+func TestUpdateSmallLLMConfig_NegativeThresholds(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	cfg := validSmallLLMConfig()
+	cfg.LoopHardening.FruitlessAbortThreshold = -5
+
+	err := f.UpdateSmallLLMConfig(cfg)
+	if err == nil {
+		t.Fatal("expected error for negative loop-hardening threshold")
+	}
+	if f.config.SmallLLM.Enabled {
+		t.Error("config was mutated despite validation error")
+	}
+	if mock.rebuildRouterCalls != 0 {
+		t.Errorf("RebuildRouter called %d times, want 0", mock.rebuildRouterCalls)
+	}
+}
+
+func TestUpdateSmallLLMConfig_InvalidSampling(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	t.Run("non-positive temperature rejected", func(t *testing.T) {
+		// Temperature 0 is the YAML zero-value / ApplyDefaults sentinel; it
+		// must be rejected so it is not silently clobbered to 0.1 on reload.
+		cfg := validSmallLLMConfig()
+		cfg.Sampling.Temperature = 0
+		if err := f.UpdateSmallLLMConfig(cfg); err == nil {
+			t.Fatal("expected error for zero temperature")
+		}
+		cfg = validSmallLLMConfig()
+		cfg.Sampling.Temperature = -0.5
+		if err := f.UpdateSmallLLMConfig(cfg); err == nil {
+			t.Fatal("expected error for negative temperature")
+		}
+	})
+	t.Run("top_p out of range", func(t *testing.T) {
+		cfg := validSmallLLMConfig()
+		cfg.Sampling.TopP = 1.5
+		if err := f.UpdateSmallLLMConfig(cfg); err == nil {
+			t.Fatal("expected error for top_p > 1")
+		}
+	})
+	t.Run("invalid reasoning effort", func(t *testing.T) {
+		cfg := validSmallLLMConfig()
+		cfg.Sampling.ReasoningEffort = "ultra"
+		if err := f.UpdateSmallLLMConfig(cfg); err == nil {
+			t.Fatal("expected error for invalid reasoning_effort")
+		}
+	})
+}
+
+func TestUpdateSmallLLMConfig_DisabledVariantsAllowZeroValues(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	// When all variants are off (only master enabled), empty/zero values are
+	// acceptable because the variant logic is inert. Master toggle itself
+	// imposes no constraints on sub-fields.
+	cfg := SmallLLMConfigResponse{Enabled: true}
+
+	err := f.UpdateSmallLLMConfig(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mock.rebuildRouterCalls != 1 {
+		t.Errorf("RebuildRouter called %d times, want 1", mock.rebuildRouterCalls)
+	}
+}
+
+// TestSmallLLMConfig_RoundTrip_FullProfileLossless is the config round-trip
+// integration test: a fully-populated profile written via UpdateSmallLLMConfig
+// and read back via GetSmallLLMConfig must survive losslessly. This exercises
+// the converter pair (smallLLMToResponse / responseToSmallLLM) end-to-end
+// through the public API surface and the config.yaml persist path, covering
+// EVERY field — including the ones the happy-path test omits (FewShot,
+// ReasoningScaffold, ReasoningEffort, and all five loop-hardening thresholds) —
+// so a future converter change that drops a field is caught.
+func TestSmallLLMConfig_RoundTrip_FullProfileLossless(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	want := SmallLLMConfigResponse{
+		Enabled: true,
+		EssentialTools: SmallLLMEssentialToolsResp{
+			Enabled:       true,
+			AlwaysPresent: []string{"read_file", "edit_file", "bash_exec", "semantic_search"},
+			MaxTools:      11,
+		},
+		SystemPrompt: SmallLLMSystemPromptResp{
+			Lite:              true,
+			FewShot:           true,
+			ReasoningScaffold: true,
+		},
+		Sampling: SmallLLMSamplingResp{
+			Enabled:         true,
+			Temperature:     0.15,
+			TopP:            0.85,
+			ReasoningEffort: "low",
+		},
+		LoopHardening: SmallLLMLoopHardeningResp{
+			Enabled:                      true,
+			RepeatNudgeThreshold:         2,
+			ParseErrorAbortThreshold:     3,
+			FruitlessNudgeThreshold:      4,
+			FruitlessAbortThreshold:      6,
+			SameToolRepeatNudgeThreshold: 5,
+		},
+	}
+
+	if err := f.UpdateSmallLLMConfig(want); err != nil {
+		t.Fatalf("UpdateSmallLLMConfig failed: %v", err)
+	}
+	if mock.rebuildRouterCalls != 1 {
+		t.Errorf("RebuildRouter called %d times, want 1 (change must apply without restart)", mock.rebuildRouterCalls)
+	}
+
+	// Read back through the public getter and assert every field survived.
+	got := f.GetSmallLLMConfig()
+
+	if got.Enabled != want.Enabled {
+		t.Errorf("Enabled = %v, want %v", got.Enabled, want.Enabled)
+	}
+
+	// Essential tools.
+	if got.EssentialTools.Enabled != want.EssentialTools.Enabled {
+		t.Errorf("EssentialTools.Enabled = %v, want %v", got.EssentialTools.Enabled, want.EssentialTools.Enabled)
+	}
+	if got.EssentialTools.MaxTools != want.EssentialTools.MaxTools {
+		t.Errorf("EssentialTools.MaxTools = %d, want %d", got.EssentialTools.MaxTools, want.EssentialTools.MaxTools)
+	}
+	// always_present round-trips the user-chosen tools losslessly AND carries
+	// the protected orchestration tools unioned in by smallLLMToResponse (so
+	// the UI can render them as locked). The want list contains no protected
+	// tools, so the read-back is exactly the user list ∪ the protected set.
+	gotSet := make(map[string]struct{}, len(got.EssentialTools.AlwaysPresent))
+	for _, n := range got.EssentialTools.AlwaysPresent {
+		gotSet[n] = struct{}{}
+	}
+	for _, n := range want.EssentialTools.AlwaysPresent {
+		if _, ok := gotSet[n]; !ok {
+			t.Errorf("EssentialTools.AlwaysPresent lost user tool %q; got %v", n, got.EssentialTools.AlwaysPresent)
+		}
+	}
+	for _, n := range smallllm.ProtectedToolNames() {
+		if _, ok := gotSet[n]; !ok {
+			t.Errorf("EssentialTools.AlwaysPresent missing protected tool %q; got %v", n, got.EssentialTools.AlwaysPresent)
+		}
+	}
+	wantLen := len(want.EssentialTools.AlwaysPresent) + len(smallllm.ProtectedToolNames())
+	if len(got.EssentialTools.AlwaysPresent) != wantLen {
+		t.Errorf("EssentialTools.AlwaysPresent len = %d, want %d (user ∪ protected); got %v",
+			len(got.EssentialTools.AlwaysPresent), wantLen, got.EssentialTools.AlwaysPresent)
+	}
+	if got.EssentialTools.AlwaysPresent == nil {
+		t.Error("EssentialTools.AlwaysPresent is nil, want non-nil (normalized to [])")
+	}
+
+	// System prompt.
+	if got.SystemPrompt.Lite != want.SystemPrompt.Lite {
+		t.Errorf("SystemPrompt.Lite = %v, want %v", got.SystemPrompt.Lite, want.SystemPrompt.Lite)
+	}
+	if got.SystemPrompt.FewShot != want.SystemPrompt.FewShot {
+		t.Errorf("SystemPrompt.FewShot = %v, want %v", got.SystemPrompt.FewShot, want.SystemPrompt.FewShot)
+	}
+	if got.SystemPrompt.ReasoningScaffold != want.SystemPrompt.ReasoningScaffold {
+		t.Errorf("SystemPrompt.ReasoningScaffold = %v, want %v", got.SystemPrompt.ReasoningScaffold, want.SystemPrompt.ReasoningScaffold)
+	}
+
+	// Sampling.
+	if got.Sampling.Enabled != want.Sampling.Enabled {
+		t.Errorf("Sampling.Enabled = %v, want %v", got.Sampling.Enabled, want.Sampling.Enabled)
+	}
+	if got.Sampling.Temperature != want.Sampling.Temperature {
+		t.Errorf("Sampling.Temperature = %v, want %v", got.Sampling.Temperature, want.Sampling.Temperature)
+	}
+	if got.Sampling.TopP != want.Sampling.TopP {
+		t.Errorf("Sampling.TopP = %v, want %v", got.Sampling.TopP, want.Sampling.TopP)
+	}
+	if got.Sampling.ReasoningEffort != want.Sampling.ReasoningEffort {
+		t.Errorf("Sampling.ReasoningEffort = %q, want %q", got.Sampling.ReasoningEffort, want.Sampling.ReasoningEffort)
+	}
+
+	// Loop hardening.
+	if got.LoopHardening.Enabled != want.LoopHardening.Enabled {
+		t.Errorf("LoopHardening.Enabled = %v, want %v", got.LoopHardening.Enabled, want.LoopHardening.Enabled)
+	}
+	if got.LoopHardening.RepeatNudgeThreshold != want.LoopHardening.RepeatNudgeThreshold {
+		t.Errorf("LoopHardening.RepeatNudgeThreshold = %d, want %d", got.LoopHardening.RepeatNudgeThreshold, want.LoopHardening.RepeatNudgeThreshold)
+	}
+	if got.LoopHardening.ParseErrorAbortThreshold != want.LoopHardening.ParseErrorAbortThreshold {
+		t.Errorf("LoopHardening.ParseErrorAbortThreshold = %d, want %d", got.LoopHardening.ParseErrorAbortThreshold, want.LoopHardening.ParseErrorAbortThreshold)
+	}
+	if got.LoopHardening.FruitlessNudgeThreshold != want.LoopHardening.FruitlessNudgeThreshold {
+		t.Errorf("LoopHardening.FruitlessNudgeThreshold = %d, want %d", got.LoopHardening.FruitlessNudgeThreshold, want.LoopHardening.FruitlessNudgeThreshold)
+	}
+	if got.LoopHardening.FruitlessAbortThreshold != want.LoopHardening.FruitlessAbortThreshold {
+		t.Errorf("LoopHardening.FruitlessAbortThreshold = %d, want %d", got.LoopHardening.FruitlessAbortThreshold, want.LoopHardening.FruitlessAbortThreshold)
+	}
+	if got.LoopHardening.SameToolRepeatNudgeThreshold != want.LoopHardening.SameToolRepeatNudgeThreshold {
+		t.Errorf("LoopHardening.SameToolRepeatNudgeThreshold = %d, want %d", got.LoopHardening.SameToolRepeatNudgeThreshold, want.LoopHardening.SameToolRepeatNudgeThreshold)
 	}
 }
 

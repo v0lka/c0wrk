@@ -11,6 +11,13 @@ import (
 // newCoreRouter creates a github.com/v0lka/sp4rk/agent/router.Router wired with the c0wrk
 // routing system prompt. historyWindow controls how many recent messages
 // are included in the routing context (default 10 when <= 0).
+//
+// The router system prompt uses conditional placeholders (TOOL-MATCHING and
+// JSON-OUTPUT-SCHEMA) that the SDK resolves based on the router's tool-matching
+// flag. Semantic tool selection is enabled externally via SetToolMatching from
+// buildCoreAgents, gated on the SmallLLM master toggle and EssentialTools
+// variant; when disabled both placeholders resolve to empty/default content and
+// behavior is unchanged.
 func newCoreRouter(caller agent.LLMCaller, historyWindow int) *router.Router {
 	return router.New(caller, router.Config{
 		SystemPrompt:          prompts.RouterSystem,

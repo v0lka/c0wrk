@@ -27,6 +27,26 @@ var defaultAgentDirs = []string{
 	"~/.c0wrk/.agents/agents",
 }
 
+// defaultSmallLLMAlwaysPresent is the default always-present tool allow-list
+// exposed when the small-LLM essential-tools variant is active. It balances a
+// minimal schema footprint against enough capability to navigate, edit,
+// search, and finalize tasks. MCP-backed tools are layered on separately at
+// runtime.
+var defaultSmallLLMAlwaysPresent = []string{
+	"read_file",
+	"write_file",
+	"edit_file",
+	"list_directory",
+	"glob",
+	"ripgrep",
+	"bash_exec",
+	"semantic_search",
+	"store_fact",
+	"search_facts",
+	"ask_user",
+	"finish",
+}
+
 // ApplyDefaults sets default values for zero-value fields in the configuration.
 func ApplyDefaults(cfg *Config) {
 	// Log level defaults to DEBUG for maximum diagnostic visibility.
@@ -369,5 +389,44 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Proxy.Enabled && cfg.Proxy.SetGlobalEnv == nil {
 		trueVal := true
 		cfg.Proxy.SetGlobalEnv = &trueVal
+	}
+
+	// Small-LLM profile defaults. The master toggle defaults to false (manual
+	// only — no auto-detection); the operator opts in explicitly. The
+	// per-variant sub-toggles default to false too, so each optimization only
+	// activates when both the master toggle and its own toggle are on. Every
+	// value/threshold is populated with a sensible default so nothing requires
+	// a rebuild once enabled.
+	if cfg.SmallLLM.EssentialTools.AlwaysPresent == nil {
+		cfg.SmallLLM.EssentialTools.AlwaysPresent = defaultSmallLLMAlwaysPresent
+	}
+	if cfg.SmallLLM.EssentialTools.MaxTools == 0 {
+		cfg.SmallLLM.EssentialTools.MaxTools = 12
+	}
+	if cfg.SmallLLM.Sampling.Temperature == 0 {
+		cfg.SmallLLM.Sampling.Temperature = 0.1
+	}
+	if cfg.SmallLLM.Sampling.TopP == 0 {
+		cfg.SmallLLM.Sampling.TopP = 0.9
+	}
+	// ReasoningEffort defaults to "" (inherit the model's default). It is left
+	// unset rather than forced so an explicit "" in YAML is preserved.
+
+	// Loop-hardening thresholds — tighter than the baseline CircuitBreaker so a
+	// small model that repeats itself or makes no progress is caught sooner.
+	if cfg.SmallLLM.LoopHardening.RepeatNudgeThreshold == 0 {
+		cfg.SmallLLM.LoopHardening.RepeatNudgeThreshold = 2
+	}
+	if cfg.SmallLLM.LoopHardening.ParseErrorAbortThreshold == 0 {
+		cfg.SmallLLM.LoopHardening.ParseErrorAbortThreshold = 3
+	}
+	if cfg.SmallLLM.LoopHardening.FruitlessNudgeThreshold == 0 {
+		cfg.SmallLLM.LoopHardening.FruitlessNudgeThreshold = 3
+	}
+	if cfg.SmallLLM.LoopHardening.FruitlessAbortThreshold == 0 {
+		cfg.SmallLLM.LoopHardening.FruitlessAbortThreshold = 5
+	}
+	if cfg.SmallLLM.LoopHardening.SameToolRepeatNudgeThreshold == 0 {
+		cfg.SmallLLM.LoopHardening.SameToolRepeatNudgeThreshold = 4
 	}
 }

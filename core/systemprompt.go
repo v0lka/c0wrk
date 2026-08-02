@@ -424,6 +424,34 @@ func buildSystemPromptWith(ctx context.Context, userMessage string, modelMeta ll
 		family = "default"
 	}
 
+	// Small-LLM prompt profile: when Lite is active, swap the verbose
+	// OrchestratorSystem core directive (already substituted into
+	// spec.coreDirective by the caller) for the compact OrchestratorSystemLite
+	// directive, and conditionally append the reasoning scaffold
+	// (ReasoningScaffold) and the worked-example few-shot block (FewShot). The
+	// two sub-toggles are independent but only honored when Lite is on, since
+	// both are tailored to the lite directive's style. This trims the
+	// behavioral core for a small model while leaving every shared section
+	// (family overlay, verification mandate, injection defense, workspace,
+	// env, AGENTS.md, skills) appended UNCHANGED below — the injection-defense
+	// content is never removed or altered (strict constraint). Specialized
+	// runs (e.g. goal derivation) carry their own core directive and are never
+	// swapped to the lite orchestrator directive.
+	coreDirective := spec.coreDirective
+	fewShot := ""
+	scaffold := ""
+	if smallLLMLiteFromCtx(ctx) && !spec.specialized {
+		coreDirective = prompts.SubstituteShellTool(prompts.OrchestratorSystemLite)
+		if profile, ok := smallLLMPromptProfileFromCtx(ctx); ok {
+			if profile.ReasoningScaffold {
+				scaffold = prompts.OrchestratorLiteScaffold
+			}
+			if profile.FewShot {
+				fewShot = prompts.OrchestratorLiteFewShot
+			}
+		}
+	}
+
 	// Build stable prefix: core directive + family overlay + verification +
 	// injection defense + workspace + (mode + goal) + env + AGENTS.md + skills.
 	// All of this is session-invariant and benefits from prompt caching. The
@@ -431,7 +459,9 @@ func buildSystemPromptWith(ctx context.Context, userMessage string, modelMeta ll
 	// a specialized directive for derivation), so the shared project context
 	// is identical across run types.
 	b := prompt.NewBuilder().
-		Core(spec.coreDirective).
+		Core(coreDirective).
+		Core(scaffold).
+		Core(fewShot).
 		Core(prompts.FamilyPrompt("orchestrator", family)).
 		Core(prompts.VerificationMandate)
 	if ctx.Value(InjectionDefenseKey) != nil {

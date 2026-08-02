@@ -150,6 +150,12 @@ export function reconstructContent(role: string, rawContent: string, meta: Recor
       if (isArrayOf(meta.skills, (s): s is string => typeof s === 'string')) {
         return `Skills activated: ${meta.skills.join(', ')}`
       }
+      // tools_assigned events follow the same persistence path: the persister
+      // writes the raw JSON payload ({"tools":[...]}) as content. Reconstruct
+      // the live handler's "Tools assigned: …" text on reload.
+      if (isArrayOf(meta.tools, (s): s is string => typeof s === 'string')) {
+        return `Tools assigned: ${meta.tools.join(', ')}`
+      }
       return (meta.content as string) || rawContent
     }
     case 'task_resumed': return rawContent

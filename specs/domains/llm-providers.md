@@ -40,6 +40,7 @@ per-session Orchestrator
 
 - **Per-task**: `HandleOptions.ModelOverride` (from the frontend model selector) switches the Conductor's model via `Router.SetModel`.
 - **Per-delegation**: the `delegate` tool's `tasks[].model` field overrides the model for a subagent (empty = Conductor's model).
+- **Small-LLM sampling override**: when `small_llm.enabled && small_llm.sampling.enabled` (see [../small-llm.md](../small-llm.md)), `core/builder.go` `resolveSamplingFunc` replaces the per-family `prompt.DefaultSampling` temperature with a constant SmallLLM temperature for the router's `SamplingFunc`. The builder-level reasoning-effort default is also seeded from the profile (`applySmallLLMPresets`); per-request overrides (`HandleOptions.ReasoningEffort`) still take precedence. When the variant is off, the router uses the per-family default — identical to the pre-profile behavior.
 - Composite model IDs are `"provider/model"` (e.g. `openai/gpt-4o`, `anthropic/claude-3-7-sonnet`).
 
 ## Context Window Resolution

@@ -12,7 +12,7 @@ Manages real-time event subscription, validation, and store updates. Events flow
 - `frontend/src/hooks/events/useToolEvents.ts` — tool call/result correlation
 - `frontend/src/hooks/events/useActionEvents.ts` — confirmations, ask_user, step limits, and plan review (`plan_review_ready`) via shared handlers
 - `frontend/src/hooks/events/useContextEvents.ts` — context fill, compaction
-- `frontend/src/hooks/events/useLifecycleEvents.ts` — routing, step_start, step_complete, retry, step_retry
+- `frontend/src/hooks/events/useLifecycleEvents.ts` — routing, step_start, step_complete, retry, step_retry, tools_assigned (Small-LLM curated tool set card)
 - `frontend/src/hooks/events/useSubagentEvents.ts` — subagent lifecycle
 - `frontend/src/hooks/events/useBlackboardEvents.ts` — blackboard state updates
 - `frontend/src/hooks/events/useAttachmentEvents.ts` — attachment list updates
@@ -40,7 +40,7 @@ useSessionEvents(sessionId)
   │   ├─ useToolEvents → chatStore (tool messages)
   │   ├─ useActionEvents → chatStore (pending actions)
   │   ├─ useContextEvents → chatStore (context fill)
-  │   ├─ useLifecycleEvents → chatStore (routing, step_start/complete, retry)
+  │   ├─ useLifecycleEvents → chatStore (routing, step_start/complete, retry, tools_assigned status card)
   │   ├─ useSubagentEvents → planStore
   │   ├─ useBlackboardEvents → blackboardStore
   │   ├─ useAttachmentEvents → attachmentsStore

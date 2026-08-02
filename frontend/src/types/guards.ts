@@ -13,6 +13,7 @@ import type {
     SecuritySettingsResponse,
     BlackboardState,
     ProxySettingsResponse,
+    SmallLLMConfigResponse,
 } from './models'
 
 export function isObj(v: unknown): v is Record<string, unknown> {
@@ -89,4 +90,9 @@ export function isSessionRenamed(v: unknown): v is { id: string; name: string } 
 
 export function isProxySettingsResponse(v: unknown): v is ProxySettingsResponse {
     return isObj(v) && has(v, 'enabled', 'bypass_list')
+}
+
+export function isSmallLLMConfigResponse(v: unknown): v is SmallLLMConfigResponse {
+    return isObj(v)
+        && has(v, 'enabled', 'essential_tools', 'system_prompt', 'sampling', 'loop_hardening')
 }

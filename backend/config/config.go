@@ -35,6 +35,14 @@ type Config struct {
 	GoalLoop      GoalLoopConfig      `yaml:"goal_loop"`
 	VectorIndex   VectorIndexConfig   `yaml:"vector_index"`
 	Proxy         ProxyConfig         `yaml:"proxy"`
+
+	// SmallLLM configures optimizations applied when running on a "small"
+	// (low-capacity / cheaper) LLM. The master toggle is manual only — there
+	// is no auto-detection; the operator decides when to enable it. Each
+	// variant carries its own sub-toggle so individual optimizations can be
+	// turned off without disabling the whole profile, and every threshold/value
+	// is exposed so behaviour can be tuned without a rebuild.
+	SmallLLM SmallLLMConfig `yaml:"small_llm"`
 }
 
 // ProxyConfig holds HTTP/HTTPS proxy settings for all outbound connections.
@@ -377,6 +385,113 @@ type AgentsConfig struct {
 
 // envVarPattern matches ${ENV_VAR} patterns for substitution.
 var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+// SmallLLMConfig configures optimizations applied when running on a "small"
+// (low-capacity / cheaper) LLM. The master toggle is manual only — there is no
+// auto-detection; the operator decides when to enable the profile. Each variant
+// carries its own sub-toggle so individual optimizations can be turned off
+// independently, and every threshold/value is exposed so behaviour can be tuned
+// without a rebuild.
+type SmallLLMConfig struct {
+	// Enabled is the master toggle for the small-LLM profile. When false, every
+	// variant sub-toggle is ignored. There is no auto-detection — this must be
+	// set explicitly. Default: false.
+	Enabled bool `yaml:"enabled"`
+
+	// EssentialTools narrows the visible tool set to a curated subset to reduce
+	// the schema/token overhead injected into every prompt.
+	EssentialTools EssentialToolsConfig `yaml:"essential_tools"`
+
+	// SystemPrompt applies prompt-simplification variants (lite, few-shot,
+	// reasoning scaffold) to shrink the system prompt size.
+	SystemPrompt SystemPromptConfig `yaml:"system_prompt"`
+
+	// Sampling overrides LLM sampling parameters for more deterministic,
+	// lower-effort generation suitable for smaller models.
+	Sampling SmallLLMSamplingConfig `yaml:"sampling"`
+
+	// LoopHardening tightens the executor circuit-breaker thresholds so a small
+	// model that repeats itself or fails to make progress is nudged/aborted
+	// sooner, conserving the token budget.
+	LoopHardening LoopHardeningConfig `yaml:"loop_hardening"`
+}
+
+// EssentialToolsConfig narrows the tool set visible to a small LLM to reduce
+// per-prompt schema overhead.
+type EssentialToolsConfig struct {
+	// Enabled gates this variant. When false the full tool set is exposed
+	// regardless of the master SmallLLM.Enabled toggle.
+	Enabled bool `yaml:"enabled"`
+
+	// AlwaysPresent is the allow-list of tool names always exposed when this
+	// variant is active. Tools not in this list are hidden from the model.
+	AlwaysPresent []string `yaml:"always_present"`
+
+	// MaxTools caps the total number of tools exposed to the model after the
+	// always-present set is applied.
+	MaxTools int `yaml:"max_tools"`
+}
+
+// SystemPromptConfig applies prompt-simplification variants to shrink the
+// system prompt injected for a small LLM. Each flag is independent; FewShot
+// and ReasoningScaffold are only honored when Lite is active (both are
+// tailored to the compact lite directive).
+type SystemPromptConfig struct {
+	// Lite trims verbose guidance from the base system prompt, swapping the
+	// verbose OrchestratorSystem directive for the compact OrchestratorSystemLite.
+	Lite bool `yaml:"lite"`
+	// FewShot appends curated worked-example ReAct cycles demonstrating correct
+	// tool-call format, tool choice, error recovery, and finish. Only applied
+	// when Lite is active.
+	FewShot bool `yaml:"few_shot"`
+	// ReasoningScaffold appends a lightweight three-step reasoning scaffold
+	// (goal → tool+why → args) tailored to small-model instruction following.
+	// Only applied when Lite is active.
+	ReasoningScaffold bool `yaml:"reasoning_scaffold"`
+}
+
+// SmallLLMSamplingConfig overrides LLM sampling parameters for a small model.
+type SmallLLMSamplingConfig struct {
+	// Enabled gates this variant.
+	Enabled bool `yaml:"enabled"`
+
+	// Temperature sets generation temperature (lower = more deterministic).
+	Temperature float64 `yaml:"temperature"`
+
+	// TopP sets nucleus-sampling probability mass.
+	TopP float64 `yaml:"top_p"`
+
+	// ReasoningEffort controls reasoning depth: "" (inherit) | "off" | "low" |
+	// "medium". Smaller models generally benefit from reduced reasoning effort.
+	ReasoningEffort string `yaml:"reasoning_effort"`
+}
+
+// LoopHardeningConfig tightens executor circuit-breaker thresholds for a small
+// LLM so loops are caught earlier, conserving the token budget.
+type LoopHardeningConfig struct {
+	// Enabled gates this variant.
+	Enabled bool `yaml:"enabled"`
+
+	// RepeatNudgeThreshold is the number of consecutive identical tool calls
+	// before a corrective nudge is issued.
+	RepeatNudgeThreshold int `yaml:"repeat_nudge_threshold"`
+
+	// ParseErrorAbortThreshold is the number of consecutive response parse
+	// errors before the executor aborts.
+	ParseErrorAbortThreshold int `yaml:"parse_error_abort_threshold"`
+
+	// FruitlessNudgeThreshold is the number of consecutive minimal-result tool
+	// calls before a corrective nudge is issued.
+	FruitlessNudgeThreshold int `yaml:"fruitless_nudge_threshold"`
+
+	// FruitlessAbortThreshold is the number of consecutive minimal-result tool
+	// calls before the executor aborts.
+	FruitlessAbortThreshold int `yaml:"fruitless_abort_threshold"`
+
+	// SameToolRepeatNudgeThreshold is the number of same-tool (varied args, similar
+	// results) calls before a corrective nudge is issued.
+	SameToolRepeatNudgeThreshold int `yaml:"same_tool_repeat_nudge_threshold"`
+}
 
 // ExpandEnvVars expands ${ENV_VAR} patterns in a string with their environment variable values.
 // This is a public function that can be used at runtime for values that bypass config file loading.
