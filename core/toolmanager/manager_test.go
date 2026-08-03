@@ -35,7 +35,7 @@ func TestManager_EnsureCriticalTools_AllUpToDate(t *testing.T) {
 		t.Fatal(err)
 	}
 	versions := ToolVersions{}
-	tools, err := ManagedTools()
+	tools, err := ManagedTools(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestManager_NeedsInstall_AllUpToDate(t *testing.T) {
 		t.Fatal(err)
 	}
 	versions := ToolVersions{}
-	tools, err := ManagedTools()
+	tools, err := ManagedTools(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestManager_NeedsInstall_AllMissing(t *testing.T) {
 		Logger:     slog.New(slog.DiscardHandler),
 	}
 
-	tools, err := ManagedTools()
+	tools, err := ManagedTools(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

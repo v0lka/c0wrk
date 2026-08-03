@@ -15,6 +15,10 @@ import { useAttachmentsStore } from '@/stores/attachmentsStore'
 
 export function useAttachmentEvents(sessionId: string | null): void {
   useEffect(() => {
+    // Guard against out-of-order resolution: the initial getAttachments fetch
+    // for an old session can settle after the session has already changed,
+    // which would overwrite the new session's pending list with stale data.
+    let cancelled = false
     const store = useAttachmentsStore.getState()
 
     if (!sessionId) {
@@ -27,7 +31,7 @@ export function useAttachmentEvents(sessionId: string | null): void {
     // empty and live events will populate it.
     store.clear()
     getAttachments(sessionId)
-      .then((list) => useAttachmentsStore.getState().setAttachments(list))
+      .then((list) => { if (!cancelled) useAttachmentsStore.getState().setAttachments(list) })
       .catch(() => { /* ignore — will stay empty */ })
 
     const cleanup = onSessionEvent(sessionId, 'attachments:changed', (data) => {
@@ -48,6 +52,6 @@ export function useAttachmentEvents(sessionId: string | null): void {
       }
     })
 
-    return cleanup
+    return () => { cancelled = true; cleanup() }
   }, [sessionId])
 }

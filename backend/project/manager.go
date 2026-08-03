@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,6 +19,7 @@ import (
 type Manager struct {
 	store    ProjectStore
 	agentDir string // ~/.c0wrk
+	logger   *slog.Logger
 	mu       sync.RWMutex
 }
 
@@ -70,16 +72,24 @@ func (m *Manager) EnsureNoProject() (created bool, err error) {
 
 // NewManager creates a new project Manager and ensures the projects base
 // directory (~/.c0wrk/projects/) exists.
-func NewManager(store ProjectStore, agentDir string) *Manager {
+//
+// logger is used to emit warnings on non-critical directory-creation failures.
+// If nil, warnings are suppressed.
+func NewManager(store ProjectStore, agentDir string, logger *slog.Logger) *Manager {
 	// Ensure the projects base directory exists so downstream project
 	// creation (internal workspaces, session directories) can proceed
 	// without the caller needing to manage directory layout.
 	projectsDir := config.ProjectsDir(agentDir)
-	_ = os.MkdirAll(projectsDir, 0o755)
+	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
+		if logger != nil {
+			logger.Warn("failed to create projects directory", "path", projectsDir, "error", err)
+		}
+	}
 
 	return &Manager{
 		store:    store,
 		agentDir: agentDir,
+		logger:   logger,
 	}
 }
 

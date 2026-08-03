@@ -87,7 +87,7 @@ func (m *Manager) EnsureCriticalTools(ctx context.Context) error {
 	}
 
 	// Check available disk space (now that the tools directory exists).
-	if err := checkDiskSpace(m.ToolsDir, 200*1024*1024); err != nil {
+	if err := checkDiskSpace(m.ToolsDir, 200*1024*1024, m.Logger); err != nil {
 		return fmt.Errorf("insufficient disk space: %w", err)
 	}
 
@@ -98,7 +98,7 @@ func (m *Manager) EnsureCriticalTools(ctx context.Context) error {
 		versions = ToolVersions{}
 	}
 
-	tools, err := ManagedTools()
+	tools, err := ManagedTools(m.Logger)
 	if err != nil {
 		return fmt.Errorf("resolving tool registry: %w", err)
 	}
@@ -151,7 +151,7 @@ func (m *Manager) NeedsInstall() ([]ToolSpec, error) {
 	if err != nil {
 		versions = ToolVersions{}
 	}
-	tools, err := ManagedTools()
+	tools, err := ManagedTools(m.Logger)
 	if err != nil {
 		return nil, err
 	}

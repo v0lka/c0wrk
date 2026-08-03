@@ -107,6 +107,9 @@ type ToolFilter func(toolName, source string) bool
 // accidental exposure of sp4rk-internal methods to callers. The refactor requires
 // auditing all callers that access sp4rk methods through the embedded type.
 type ToolRegistry struct {
+	// Deprecated: embedded for backward compatibility. TODO(S-14): Replace with
+	// composition — store *sdktools.ToolRegistry as a private field and
+	// explicitly delegate only the methods the core layer intends to expose.
 	*sdktools.ToolRegistry
 	mu                         sync.RWMutex
 	confirmFunc                sdktools.ConfirmFunc
@@ -346,7 +349,9 @@ func (r *ToolRegistry) RegisterWithSource(tool sdktools.Tool, source string) {
 		r.log().Debug("tool filtered out during registration", "tool", tool.Name(), "source", source)
 		return
 	}
-	r.ToolRegistry.RegisterWithSource(tool, source)
+	if err := r.ToolRegistry.RegisterWithSource(tool, source); err != nil {
+		r.log().Warn("tool registration skipped", "tool", tool.Name(), "source", source, "error", err)
+	}
 }
 
 // resolvePolicy returns the effective policy for a tool.

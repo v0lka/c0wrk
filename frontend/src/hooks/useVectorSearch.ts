@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react'
+import { useLatestAsync } from './useLatestAsync'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { searchVectorStore } from '@/api/vector'
@@ -38,6 +39,8 @@ export function useVectorSearch(): UseVectorSearchResult {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const prevProjectRef = useRef(activeProjectId)
 
+  const { wrap } = useLatestAsync()
+
   // Fetch entries for an active search. Empty query is intentionally not
   // fetched — the panel shows an empty-state placeholder when the user has
   // not entered a search (see VectorSearchResults). Stable reference because
@@ -56,20 +59,24 @@ export function useVectorSearch(): UseVectorSearchResult {
     }
     setLoading(true)
     try {
-      const results = await searchVectorStore({
+      // useLatestAsync guards against out-of-order resolution: if a newer
+      // search supersedes this one, wrap resolves to undefined and we bail
+      // out without overwriting the newer results or clearing the spinner.
+      const results = await wrap(searchVectorStore({
         query: q,
         top_k: k,
         file_pattern: pattern,
         must_match: tokens,
         mode: m,
-      })
+      }))
+      if (!results) return
       setEntries(results)
+      setLoading(false)
     } catch {
       setEntries([])
-    } finally {
       setLoading(false)
     }
-  }, [setEntries, setLoading])
+  }, [setEntries, setLoading, wrap])
 
   // Auto-search on mount and when inputs change — but only with an active
   // query. Empty query leaves the panel in the placeholder state.

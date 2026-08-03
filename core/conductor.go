@@ -120,12 +120,14 @@ func newCompositeTrajectoryStore(memory *trajectoryHolder, taskID string, store 
 // stalls the ReAct loop.
 //
 // Immutability invariant: the executor appends new steps to its trajectory but
-// never mutates an already-appended step in place. The defensive snapshot below
-// is therefore a shallow copy: it captures each Step value (slice headers
-// included), and the shared backing arrays for ReasoningItems / Arguments are
-// safe for the async writer to read concurrently because they are never written
-// after the step is published. If that invariant ever changes, the snapshot
-// must deep-copy the slice/byte backing arrays (see Issue #2 in the review).
+// never mutates an already-appended step in place — this is enforced by the
+// executor's trajectory lock (see Orchestrator.mu). The defensive snapshot
+// below is therefore a shallow copy: it captures each Step value (slice
+// headers included), and the shared backing arrays for ReasoningItems and
+// Arguments are safe for the async writer to read concurrently because they
+// are never written after the step is published. If that invariant ever
+// changes, the snapshot must deep-copy the slice/byte backing arrays; the
+// mutex guard comment above documents the required lock discipline.
 func (c *compositeTrajectoryStore) Sync(steps []agent.Step) {
 	c.memory.Sync(steps)
 

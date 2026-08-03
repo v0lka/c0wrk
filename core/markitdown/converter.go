@@ -9,7 +9,6 @@ package markitdown
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -106,7 +105,7 @@ func (c *Converter) Convert(ctx context.Context, path string) (string, error) {
 	start := time.Now()
 
 	if !IsSupported(path) {
-		return "", errors.New("markitdown: unsupported file format: " + filepath.Ext(path))
+		return "", fmt.Errorf("markitdown: unsupported file format: %s", filepath.Ext(path))
 	}
 	if _, err := os.Stat(path); err != nil {
 		return "", fmt.Errorf("markitdown: cannot access file %q: %w", path, err)

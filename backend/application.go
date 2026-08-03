@@ -122,7 +122,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// `.agents/skills` directory (see core/builder.go). Here we only resolve
 	// and register the shared base dirs from config.
 	if len(cfg.Config.Skills.Dirs) > 0 {
-		skillDirs := resolveSkillDirs(cfg.Config.Skills.Dirs, cfg.AgentDir, config.ExpandEnvVars)
+		skillDirs := resolveSkillDirs(cfg.Config.Skills.Dirs, cfg.AgentDir, config.ExpandEnvVars, cfg.Logger)
 		builder.SetSkillDirs(skillDirs)
 	}
 
@@ -132,7 +132,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// (see core/builder.go). Here we resolve and register the shared base
 	// dirs from config (defaults applied in config.ApplyDefaults).
 	if len(cfg.Config.Agents.Dirs) > 0 {
-		agentDirs := resolveSkillDirs(cfg.Config.Agents.Dirs, cfg.AgentDir, config.ExpandEnvVars)
+		agentDirs := resolveSkillDirs(cfg.Config.Agents.Dirs, cfg.AgentDir, config.ExpandEnvVars, cfg.Logger)
 		builder.SetAgentDirs(agentDirs)
 	}
 
@@ -303,14 +303,19 @@ type errJudgeNotAvailable string
 
 func (e errJudgeNotAvailable) Error() string { return string(e) }
 
-// resolveSkillDirs converts a list of configured skill directories into absolute
-// paths. Leading `~` and `${ENV_VAR}` are expanded; remaining relative paths
-// are resolved against agentDir. Entries that expand to an empty string after
-// substitution are dropped.
-func resolveSkillDirs(dirs []string, agentDir string, expandEnv func(string) string) []string {
+// resolveSkillDirs converts a list of configured skill or agent directories
+// into absolute paths. Leading `~` and `${ENV_VAR}` are expanded; remaining
+// relative paths are resolved against agentDir. Entries that expand to an empty
+// string after substitution are dropped.
+//
+// log is used to emit warnings on non-critical resolution failures (e.g.,
+// missing home directory for tilde expansion). If nil, warnings are suppressed.
+func resolveSkillDirs(dirs []string, agentDir string, expandEnv func(string) string, log *slog.Logger) []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		slog.Default().Warn("failed to resolve user home directory; tilde-prefixed skill dirs will remain unresolved", "error", err)
+		if log != nil {
+			log.Warn("failed to resolve user home directory; tilde-prefixed dirs will remain unresolved", "error", err)
+		}
 	}
 	resolved := make([]string, 0, len(dirs))
 	for _, d := range dirs {

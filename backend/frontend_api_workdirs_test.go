@@ -53,7 +53,7 @@ func newWorkDirsHarness(t *testing.T) *workDirsHarness {
 	}
 
 	agentDir := t.TempDir()
-	projectManager := project.NewManager(projStore, agentDir)
+	projectManager := project.NewManager(projStore, agentDir, nil)
 	created, err := projectManager.CreateProject("Work Dirs Project", "")
 	if err != nil {
 		_ = db.Close()

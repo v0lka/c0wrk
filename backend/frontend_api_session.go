@@ -232,7 +232,7 @@ func (f *FrontendAPI) PinSession(id string) error {
 // reviewMode, when true, marks the message as carrying code review feedback the
 // agent must address (review status == "submitted"); the system prompt gains a
 // Code Review section directing the agent to edit code.
-func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, reviewMode bool) error {
+func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []string, modelOverride, reasoningEffort string, goal /* goal */ bool, goalBudget string, reviewMode /* reviewMode */ bool) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}

@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"log/slog"
 	"os"
@@ -37,14 +38,20 @@ func LoadShellEnvironment(logger *slog.Logger) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, shell, "-l", "-c", "printenv")
-	cmd.Stderr = nil // Discard stderr to avoid noise
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf // Capture stderr for diagnostics
 
 	output, err := cmd.Output()
 	if err != nil {
+		stderrStr := strings.TrimSpace(stderrBuf.String())
 		if ctx.Err() == context.DeadlineExceeded {
 			logger.Warn("timeout loading shell environment", "shell", shell)
 		} else {
-			logger.Warn("failed to load shell environment", "shell", shell, "error", err)
+			logAttrs := []any{"shell", shell, "error", err}
+			if stderrStr != "" {
+				logAttrs = append(logAttrs, "stderr", stderrStr)
+			}
+			logger.Warn("failed to load shell environment", logAttrs...)
 		}
 		return
 	}
@@ -86,6 +93,10 @@ func LoadShellEnvironment(logger *slog.Logger) {
 			continue
 		}
 		loaded++
+	}
+
+	if scanErr := scanner.Err(); scanErr != nil {
+		logger.Warn("scanner error parsing shell environment output", "error", scanErr)
 	}
 
 	if setErrors > 0 {

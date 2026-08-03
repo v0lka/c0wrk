@@ -11,48 +11,11 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 
 	"github.com/creack/pty"
 	"github.com/v0lka/c0wrk/internal/shellresolver"
 )
-
-// buildTermEnv returns the current process environment with terminal-specific
-// variables injected. xterm.js is an xterm-compatible terminal with 256-color
-// (and true-color) support, so we set TERM=xterm-256color and COLORTERM=truecolor.
-func buildTermEnv() []string {
-	// Force a copy to avoid sharing the backing array with os.Environ().
-	raw := os.Environ()
-	env := make([]string, 0, len(raw)+2)
-	env = append(env, raw...)
-	hasTerm := false
-	hasColorterm := false
-	for _, e := range env {
-		if strings.HasPrefix(e, "TERM=") {
-			hasTerm = true
-		}
-		if strings.HasPrefix(e, "COLORTERM=") {
-			hasColorterm = true
-		}
-	}
-	if !hasTerm {
-		env = append(env, "TERM=xterm-256color")
-	}
-	if !hasColorterm {
-		env = append(env, "COLORTERM=truecolor")
-	}
-	return env
-}
-
-// Manager owns PTY instances keyed by session ID.
-type Manager struct {
-	mu       sync.Mutex
-	rootCtx  context.Context // app lifecycle context; cancelled on shutdown
-	sessions map[string]*Session
-	logger   *slog.Logger
-	emit     func(sessionID string, data []byte)
-}
 
 // Session represents a single PTY-backed shell session.
 type Session struct {

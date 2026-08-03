@@ -20,36 +20,6 @@ import (
 	"github.com/UserExistsError/conpty"
 )
 
-// buildTermEnv returns the current process environment with terminal-specific
-// variables injected. xterm.js is an xterm-compatible terminal with 256-color
-// (and true-color) support, so we set TERM=xterm-256color and COLORTERM=truecolor.
-//
-// This is the Windows twin of the helper in manager.go (the two live behind
-// mutually exclusive build tags so they never coexist in one build).
-func buildTermEnv() []string {
-	// Force a copy to avoid sharing the backing array with os.Environ().
-	raw := os.Environ()
-	env := make([]string, 0, len(raw)+2)
-	env = append(env, raw...)
-	hasTerm := false
-	hasColorterm := false
-	for _, e := range env {
-		if strings.HasPrefix(e, "TERM=") {
-			hasTerm = true
-		}
-		if strings.HasPrefix(e, "COLORTERM=") {
-			hasColorterm = true
-		}
-	}
-	if !hasTerm {
-		env = append(env, "TERM=xterm-256color")
-	}
-	if !hasColorterm {
-		env = append(env, "COLORTERM=truecolor")
-	}
-	return env
-}
-
 // resolveWindowsShell picks the shell binary to spawn under the pseudo console.
 // It prefers Windows PowerShell (powershell.exe, ships with every Windows
 // install) and falls back to cmd.exe. The returned args string may be empty.
@@ -74,13 +44,9 @@ func quoteWindowsCommandLine(path string) string {
 }
 
 // Manager owns ConPTY-backed shell instances keyed by session ID.
-type Manager struct {
-	mu       sync.Mutex
-	rootCtx  context.Context // app lifecycle context; cancelled on shutdown
-	sessions map[string]*Session
-	logger   *slog.Logger
-	emit     func(sessionID string, data []byte)
-}
+//
+// The Manager struct itself is declared in manager_common.go; this file
+// extends the platform-specific Session and provides the ConPTY wrappers.
 
 // Session represents a single ConPTY-backed shell session.
 type Session struct {
@@ -264,7 +230,7 @@ func (m *Manager) readLoop(ctx context.Context, sessionID string, cpty *conpty.C
 			m.emit(sessionID, data)
 		}
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
 				m.logger.Debug("conpty read error", "session_id", sessionID, "error", err)
 			}
 			break

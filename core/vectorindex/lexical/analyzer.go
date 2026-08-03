@@ -6,6 +6,7 @@
 package lexical
 
 import (
+	"fmt"
 	"unicode"
 
 	"github.com/blevesearch/bleve/v2/analysis"
@@ -21,9 +22,9 @@ const CamelCaseFilterName = "c0wrk_camel_case"
 const AnalyzerName = "c0wrk_code"
 
 func init() {
-	// Registration errors only occur on duplicate registration, which is
-	// impossible from an init() that runs exactly once per process.
-	_ = registry.RegisterTokenFilter(CamelCaseFilterName, camelCaseFilterConstructor)
+	if err := registry.RegisterTokenFilter(CamelCaseFilterName, camelCaseFilterConstructor); err != nil {
+		panic(fmt.Sprintf("register token filter %s: %v", CamelCaseFilterName, err))
+	}
 }
 
 // camelCaseFilter splits tokens on case/letter-digit boundaries so that

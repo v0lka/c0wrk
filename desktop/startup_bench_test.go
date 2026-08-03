@@ -75,7 +75,7 @@ func TestCriticalPathBudget(t *testing.T) {
 		t.Fatalf("MkdirAll projects: %v", mkErr)
 	}
 
-	projectMgr := project.NewManager(projStore, dir)
+	projectMgr := project.NewManager(projStore, dir, nil)
 
 	projects, err := projectMgr.ListProjects()
 	if err != nil {
@@ -126,7 +126,7 @@ func TestCriticalPathBudget_WithData(t *testing.T) {
 		t.Fatalf("NewSQLiteSessionStore: %v", err)
 	}
 
-	projectMgr := project.NewManager(projStore, dir)
+	projectMgr := project.NewManager(projStore, dir, nil)
 
 	// Seed data: create a project and a handful of sessions.
 	proj, err := projectMgr.CreateProject("bench-project", "")

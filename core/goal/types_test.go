@@ -2,6 +2,7 @@ package goal
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -104,4 +105,24 @@ func TestGoalState_VerificationModeRoundTripsJSON(t *testing.T) {
 		t.Errorf("VerificationMode did not round-trip: got %q, want %q",
 			restored.VerificationMode, VerificationModeReDerivation)
 	}
+}
+
+func ExampleGoalBudget_IsUnlimited() {
+	fmt.Println(GoalBudget{}.IsUnlimited())
+	fmt.Println(GoalBudget{MaxTurns: 5}.IsUnlimited())
+	// Output:
+	// true
+	// false
+}
+
+func ExampleNormalizeVerificationMode() {
+	for _, mode := range []string{"", "executable", "re_derivation", "bogus"} {
+		got, err := NormalizeVerificationMode(mode)
+		fmt.Printf("%q -> %q, err=%v\n", mode, got, err != nil)
+	}
+	// Output:
+	// "" -> "executable", err=false
+	// "executable" -> "executable", err=false
+	// "re_derivation" -> "re_derivation", err=false
+	// "bogus" -> "", err=true
 }

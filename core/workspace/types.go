@@ -1,3 +1,5 @@
+// Package workspace manages the workspace directory tree, file system
+// watching, and workspace-level state for the desktop UI.
 package workspace
 
 // FileNode represents a file or directory entry in the workspace tree.

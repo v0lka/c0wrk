@@ -175,7 +175,14 @@ func buildGoalState(proposal tools.GoalProposal, resp tools.GoalProposalResponse
 		if verificationMode == "" {
 			verificationMode = proposal.VerificationMode
 		}
-		verificationMode, _ = goal.NormalizeVerificationMode(verificationMode)
+		verificationMode, err := goal.NormalizeVerificationMode(verificationMode)
+		if err != nil {
+			// Unknown verification mode — fall back to the default (executable).
+			// The propose_goal tool validates modes at proposal time, so this
+			// path is only reachable with future/unrecognized modes, which should
+			// default gracefully rather than error.
+			verificationMode = goal.VerificationModeExecutable
+		}
 		return &goal.GoalState{
 			Condition:        condition,
 			VerifyClause:     verify,
@@ -721,7 +728,7 @@ func (o *Orchestrator) defaultGoalTurnRunner(
 	// installs it); the guard keeps the runner correct if called standalone.
 	toolCalls := 0
 	if ce, ok := deps.toolExec.(*countingToolExec); ok {
-		toolCalls = ce.counter.toolCalls
+		toolCalls = int(ce.counter.toolCalls.Load())
 	}
 	return toolCalls, result, err
 }
@@ -832,7 +839,7 @@ func (o *Orchestrator) PauseGoal() {
 // shared with the countingToolExec wrapper installed for that turn, then read
 // by the loop after the turn completes for the anti-spin (idle-turn) check.
 type turnUsageCounter struct {
-	toolCalls int
+	toolCalls atomic.Int64
 }
 
 // countingToolExec wraps an agent.ToolExecutor, incrementing a counter on each
@@ -844,7 +851,7 @@ type countingToolExec struct {
 }
 
 func (c *countingToolExec) Execute(ctx context.Context, name string, input json.RawMessage) (sdktools.ToolResult, error) {
-	c.counter.toolCalls++
+	c.counter.toolCalls.Add(1)
 	return c.inner.Execute(ctx, name, input)
 }
 func (c *countingToolExec) GetToolSource(name string) string { return c.inner.GetToolSource(name) }

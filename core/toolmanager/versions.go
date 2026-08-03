@@ -24,7 +24,7 @@ func ReadVersions(toolsDir string) (ToolVersions, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return ToolVersions{}, nil
 		}
-		return nil, fmt.Errorf("reading versions file: %w", err)
+		return ToolVersions{}, fmt.Errorf("reading versions file: %w", err)
 	}
 	var tv ToolVersions
 	if err := json.Unmarshal(data, &tv); err != nil {

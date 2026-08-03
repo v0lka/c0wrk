@@ -35,6 +35,8 @@ var multiSpaceRe = regexp.MustCompile(`  +`)
 // touched (the "#" there is glued to the path with no preceding whitespace,
 // and "L20" is not a known agent name regardless).
 func PreprocessMessageText(text string, activeSkills, activeAgents []string, workspacePath string) string {
+	// regexp.MustCompile per name is acceptable here: activeSkills/Agents are
+	// typically 0-3 items, and word-boundary matching requires per-name patterns.
 	result := text
 
 	// Strip skill references.

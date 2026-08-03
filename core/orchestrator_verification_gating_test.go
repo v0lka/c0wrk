@@ -507,7 +507,7 @@ func TestRunConductor_VerifierPassBoundedByComplexityBudget(t *testing.T) {
 	// The loop ran the FULL complexity-derived budget. This proves (a) the
 	// verifier pass is bounded by the complexity budget, not a fixed cap, and
 	// (b) there is no residual ~12-step clamp — it ran well past 12.
-	if counter.toolCalls != wantSteps {
-		t.Errorf("expected exactly %d tool executions (the complexity-derived budget, NOT an artificial cap), got %d — the verifier pass must be bounded exactly like a normal executor run", wantSteps, counter.toolCalls)
+	if int(counter.toolCalls.Load()) != wantSteps {
+		t.Errorf("expected exactly %d tool executions (the complexity-derived budget, NOT an artificial cap), got %d — the verifier pass must be bounded exactly like a normal executor run", wantSteps, counter.toolCalls.Load())
 	}
 }

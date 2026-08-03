@@ -7,17 +7,17 @@ import (
 )
 
 func TestManagedTools_Count(t *testing.T) {
-	tools, err := ManagedTools()
+	tools, err := ManagedTools(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(tools) != 3 {
-		t.Errorf("ManagedTools() returned %d tools, want 3", len(tools))
+		t.Errorf("ManagedTools(nil) returned %d tools, want 3", len(tools))
 	}
 }
 
 func TestManagedTools_Order(t *testing.T) {
-	tools, err := ManagedTools()
+	tools, err := ManagedTools(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestManagedTools_Order(t *testing.T) {
 
 func TestManagedTools_HasURLs(t *testing.T) {
 	platform := Platform()
-	tools, err := ManagedTools()
+	tools, err := ManagedTools(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestManagedTools_HasURLs(t *testing.T) {
 }
 
 func TestManagedTools_StaticBinariesHaveArchiveInfo(t *testing.T) {
-	tools, err := ManagedTools()
+	tools, err := ManagedTools(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestManagedTools_StaticBinariesHaveArchiveInfo(t *testing.T) {
 }
 
 func TestManagedTools_MarkitdownIsPythonPackage(t *testing.T) {
-	tools, err := ManagedTools()
+	tools, err := ManagedTools(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestManagedTools_MarkitdownIsPythonPackage(t *testing.T) {
 			return
 		}
 	}
-	t.Error("markitdown not found in ManagedTools()")
+	t.Error("markitdown not found in ManagedTools(nil)")
 }
 
 // TestManagedTools_ArchiveNameMatchesURL is the regression test for a
@@ -100,7 +100,7 @@ func TestManagedTools_MarkitdownIsPythonPackage(t *testing.T) {
 // advertised by the download URL for the current platform.
 func TestManagedTools_ArchiveNameMatchesURL(t *testing.T) {
 	platform := Platform()
-	tools, err := ManagedTools()
+	tools, err := ManagedTools(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestManagedTools_ArchiveNameMatchesURL(t *testing.T) {
 // Windows URLs serve ".zip" archives, so the resolved cache filename must end
 // in ".zip" — never the ".tar.gz" that triggered "gzip: invalid header".
 func TestArchiveNameForPlatform_WindowsZip(t *testing.T) {
-	tools, err := ManagedTools()
+	tools, err := ManagedTools(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestArchiveNameForPlatform_WindowsZip(t *testing.T) {
 // is unchanged: those URLs serve ".tar.gz", so the derived name keeps that
 // extension.
 func TestArchiveNameForPlatform_NonWindowsTarGz(t *testing.T) {
-	tools, err := ManagedTools()
+	tools, err := ManagedTools(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

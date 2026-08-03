@@ -18,8 +18,15 @@ export function useBlackboardEvents(sessionId: string | null): void {
       return
     }
 
+    // Guard against out-of-order resolution: a fetch for an old session can
+    // settle after the session has already changed, which would overwrite the
+    // new session's blackboard state. The cancelled flag lets the effect
+    // teardown discard any in-flight response.
+    let cancelled = false
+    const isCancelled = (): boolean => cancelled
+
     // Fetch initial state on session change.
-    fetchBlackboard(sessionId)
+    fetchBlackboard(sessionId, isCancelled)
 
     const cleanup = onSessionEvent(sessionId, 'blackboard_updated', (data) => {
       if (!isBlackboardUpdatedData(data)) { reportDroppedEvent('blackboard_updated', data); return }
@@ -30,11 +37,12 @@ export function useBlackboardEvents(sessionId: string | null): void {
       }
       timerRef.current = setTimeout(() => {
         timerRef.current = null
-        fetchBlackboard(sessionId)
+        fetchBlackboard(sessionId, isCancelled)
       }, DEBOUNCE_MS)
     })
 
     return () => {
+      cancelled = true
       cleanup()
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current)
@@ -44,14 +52,16 @@ export function useBlackboardEvents(sessionId: string | null): void {
   }, [sessionId])
 }
 
-function fetchBlackboard(sessionId: string): void {
+function fetchBlackboard(sessionId: string, isCancelled?: () => boolean): void {
   useBlackboardStore.getState().setLoading(true)
   getBlackboardState(sessionId)
     .then((state) => {
+      if (isCancelled?.()) return
       useBlackboardStore.getState().setState(state)
       useBlackboardStore.getState().setLoading(false)
     })
     .catch((err) => {
+      if (isCancelled?.()) return
       logger.error('Failed to fetch blackboard state:', err)
       useBlackboardStore.getState().setError('Failed to load blackboard state')
     })

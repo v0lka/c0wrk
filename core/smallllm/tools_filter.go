@@ -127,7 +127,7 @@ func trimToBudget(result []sdktools.ToolDescriptor, maxTools int) []sdktools.Too
 		}
 		return out
 	}
-	out := make([]sdktools.ToolDescriptor, 0, max(len(result), maxTools))
+	out := make([]sdktools.ToolDescriptor, 0, maxTools)
 	kept := 0
 	for _, d := range result {
 		if isProtected(d) {

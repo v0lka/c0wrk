@@ -160,40 +160,39 @@ func SessionWorkspaceRoot(agentDir, projectID, sessionID string) string {
 // the session's workspace directory. For No Project sessions this enforces
 // the <sessionID>/workspace/ isolation boundary.
 //
-// Existing paths are resolved via EvalSymlinks before comparison to prevent
-// symlink-based escapes. Paths that don't exist on disk (e.g. when validating
-// a file write destination) use the raw path — there are no symlinks to
-// resolve, and the Rel-based containment check provides the baseline guard.
+// Containment is delegated to pathutil.IsWithinPath, which resolves
+// symlinks via ResolveExistingPrefix on the longest existing path prefix
+// and uses a separator-terminated prefix comparison.
 func ValidateWithinSessionWorkspace(agentDir, projectID, sessionID, absPath string) error {
 	wsRoot := SessionWorkspaceRoot(agentDir, projectID, sessionID)
-	rel, err := filepath.Rel(resolveSymlinksIfExists(wsRoot), resolveSymlinksIfExists(absPath))
+	ok, err := pathutil.IsWithinPath(wsRoot, absPath)
 	if err != nil {
 		return fmt.Errorf("cannot resolve path relative to workspace: %w", err)
 	}
-	if strings.HasPrefix(rel, "..") {
+	if !ok {
 		return fmt.Errorf("path %q is outside session workspace %q", absPath, wsRoot)
 	}
 	return nil
-}
-
-// resolveSymlinksIfExists resolves symlinks in path when the path exists
-// on disk, falling back to the raw cleaned path otherwise (no symlinks to
-// resolve). Errors from EvalSymlinks on missing paths are silently ignored;
-// the caller's Rel-based containment check is the primary defense.
-func resolveSymlinksIfExists(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return resolved
-	}
-	return filepath.Clean(path)
 }
 
 // ValidateNoProjectSessionPath checks that absDir is either the No Project
 // project directory itself or a <sessionID>/workspace/... subdirectory.
 // Returns an error if absDir falls outside the allowed No Project tree.
 func ValidateNoProjectSessionPath(projectDir, absDir string) error {
-	rel, err := filepath.Rel(projectDir, absDir)
+	// Containment check via the centralized API (see AGENTS.md path rules).
+	ok, err := pathutil.IsWithinPath(projectDir, absDir)
 	if err != nil {
 		return fmt.Errorf("cannot resolve path relative to No Project dir: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("path %q is outside No Project directory %q", absDir, projectDir)
+	}
+	// filepath.Rel is used here for path-component analysis (splitting into
+	// <sessionID>/workspace/... segments), not for containment — containment
+	// is already verified above via pathutil.IsWithinPath.
+	rel, err := filepath.Rel(projectDir, absDir)
+	if err != nil {
+		return fmt.Errorf("cannot compute relative path: %w", err)
 	}
 	parts := strings.Split(filepath.ToSlash(rel), "/")
 	// Paths directly under the project dir (UUID session directories)
@@ -229,6 +228,10 @@ func IsSessionInfraPath(projectDir, absPath string) bool {
 	if err != nil || !ok {
 		return false
 	}
+	// Containment is verified above via pathutil.IsWithinPath.
+	// filepath.Rel is used here for path-component analysis (splitting into
+	// <sessionID>/plans/... or <sessionID>/temp/... segments), not for
+	// containment.
 	rel, err := filepath.Rel(projectDir, absPath)
 	if err != nil {
 		return false

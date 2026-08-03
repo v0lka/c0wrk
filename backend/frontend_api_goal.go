@@ -12,6 +12,9 @@ import (
 // derivation agent chose and the user may override at sign-off. The decision
 // is delivered through the manager's goal-proposal resolver, which unblocks
 // the derivation agent's propose_goal tool call so the goal loop can proceed.
+//
+// sessionID is required by the Wails RPC binding signature for session-scoped
+// event routing; the requestID alone identifies the pending proposal.
 func (f *FrontendAPI) ConfirmGoal(sessionID, requestID, condition, verify, verificationMode string) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
@@ -28,6 +31,9 @@ func (f *FrontendAPI) ConfirmGoal(sessionID, requestID, condition, verify, verif
 // CancelGoal resolves a pending goal proposal with a cancellation. The
 // derivation agent's propose_goal call receives a cancel decision and exits
 // the goal loop cleanly without committing to a goal.
+//
+// sessionID is required by the Wails RPC binding signature for session-scoped
+// event routing; the requestID alone identifies the pending proposal.
 func (f *FrontendAPI) CancelGoal(sessionID, requestID string) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
@@ -48,6 +54,9 @@ func (f *FrontendAPI) CancelGoal(sessionID, requestID string) error {
 // which instructs the agent to call propose_goal again with updated values.
 // This completes the clarification round-trip that needs_clarification mode
 // requires; without it, the approve path is the only resolvable action.
+//
+// sessionID is required by the Wails RPC binding signature for session-scoped
+// event routing; the requestID alone identifies the pending proposal.
 func (f *FrontendAPI) ClarifyGoal(sessionID, requestID, clarification string) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")

@@ -1,11 +1,13 @@
 package desktop
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	wailsLogger "github.com/wailsapp/wails/v2/pkg/logger"
 )
@@ -16,9 +18,12 @@ import (
 // exits. A nil delegate (before session logger init) is tolerated — messages
 // are written to the fallback file only.
 type wailsLogAdapter struct {
-	logger   *slog.Logger
-	file     *os.File
-	delegate *slog.Logger
+	logger *slog.Logger
+	file   *os.File
+	// delegate is read by write (invoked from Wails logger callbacks on any
+	// goroutine) and written by SetDelegate during Startup, so it must be
+	// accessed atomically. This mirrors recoveryLogger in powerstate_darwin.go.
+	delegate atomic.Pointer[slog.Logger]
 }
 
 // NewWailsLogger creates a Wails Logger that writes to <logDir>/wails.log.
@@ -42,13 +47,14 @@ func NewWailsLogger(logDir string) (*wailsLogAdapter, error) {
 // When set, Wails internal log messages (including fatal errors) are
 // duplicated to both the persistent wails.log file and the delegate.
 func (w *wailsLogAdapter) SetDelegate(l *slog.Logger) {
-	w.delegate = l
+	w.delegate.Store(l)
 }
 
 func (w *wailsLogAdapter) write(level slog.Level, msg string) {
-	w.logger.Log(nil, level, msg) //nolint:staticcheck // nil ctx acceptable for this adapter
-	if w.delegate != nil {
-		w.delegate.Log(nil, level, msg) //nolint:staticcheck // nil ctx acceptable for this adapter
+	ctx := context.Background()
+	w.logger.Log(ctx, level, msg)
+	if d := w.delegate.Load(); d != nil {
+		d.Log(ctx, level, msg)
 	}
 }
 

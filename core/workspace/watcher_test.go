@@ -82,10 +82,11 @@ func TestWatcher_Debounce(t *testing.T) {
 	dir := t.TempDir()
 
 	var called atomic.Int32
+	var gotEmpty atomic.Bool
 	w, err := NewWatcher(dir, func(paths []string) {
 		called.Add(1)
 		if len(paths) == 0 {
-			t.Error("expected changed paths to be passed to onChange")
+			gotEmpty.Store(true)
 		}
 	})
 	if err != nil {
@@ -107,6 +108,9 @@ func TestWatcher_Debounce(t *testing.T) {
 	c := called.Load()
 	if c == 0 {
 		t.Error("expected at least one onChange call")
+	}
+	if gotEmpty.Load() {
+		t.Error("expected changed paths to be passed to onChange (got empty)")
 	}
 	// With debounce, we should get far fewer calls than events.
 	if c > 5 {

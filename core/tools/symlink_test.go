@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,7 +107,7 @@ func TestCheckSymlinksAndConfirm_Intercepts(t *testing.T) {
 		if req.JudgeReasoning == "" {
 			t.Fatal("expected non-empty JudgeReasoning for symlink intercept")
 		}
-		if !stringsContains(req.JudgeReasoning, "link") {
+		if !strings.Contains(req.JudgeReasoning, "link") {
 			t.Fatalf("expected reasoning to mention symlink, got: %s", req.JudgeReasoning)
 		}
 	default:
@@ -141,7 +142,7 @@ func TestCheckSymlinksAndConfirm_RespectsAlwaysDeny(t *testing.T) {
 	if !result.IsError {
 		t.Fatal("expected error result for AlwaysDeny blocked tool")
 	}
-	if !stringsContains(result.Content, "blocked by security policy") {
+	if !strings.Contains(result.Content, "blocked by security policy") {
 		t.Fatalf("expected blocked by security policy message, got: %s", result.Content)
 	}
 }
@@ -169,7 +170,7 @@ func TestCheckSymlinksAndConfirm_DenyResponse(t *testing.T) {
 	if !result.IsError {
 		t.Fatal("expected error result for denied symlink tool call")
 	}
-	if !stringsContains(result.Content, "denied by user") {
+	if !strings.Contains(result.Content, "denied by user") {
 		t.Fatalf("expected 'denied by user' message, got: %s", result.Content)
 	}
 }
@@ -251,7 +252,7 @@ func TestCheckSymlinksAndConfirm_EmptyInput(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// read_file requires "path" — tool-level validation error expected, not symlink block
-	if result.IsError && stringsContains(result.Content, "security policy") {
+	if result.IsError && strings.Contains(result.Content, "security policy") {
 		t.Fatal("symlink gate should not have intercepted empty input")
 	}
 }
@@ -284,7 +285,7 @@ func TestCheckSymlinksAndConfirm_TempDirOSLevelSymlink(t *testing.T) {
 
 	r := newRegistryForSymlinkTest(t)
 	r.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
-		if stringsContains(req.JudgeReasoning, "symlink") {
+		if strings.Contains(req.JudgeReasoning, "symlink") {
 			t.Fatalf("symlink gate should NOT have intercepted OS-level temp dir symlink; JudgeReasoning=%q", req.JudgeReasoning)
 		}
 		return sdktools.ConfirmAllowOnce, nil
@@ -305,19 +306,4 @@ func TestCheckSymlinksAndConfirm_TempDirOSLevelSymlink(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("expected success (OS-level temp symlink skipped), got error: %s", result.Content)
 	}
-}
-
-// ── helpers ───────────────────────────────────────────────────────────────
-
-func stringsContains(s, sub string) bool {
-	return sub == "" || len(s) >= len(sub) && containsSub(s, sub)
-}
-
-func containsSub(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

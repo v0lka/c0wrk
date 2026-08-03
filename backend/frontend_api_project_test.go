@@ -64,7 +64,7 @@ func newProjectSwitchHarness(t *testing.T) *projectSwitchTestHarness {
 	}
 
 	agentDir := t.TempDir()
-	projectManager := project.NewManager(projectStore, agentDir)
+	projectManager := project.NewManager(projectStore, agentDir, nil)
 	createdProject, err := projectManager.CreateProject("Switch Target", "")
 	if err != nil {
 		_ = db.Close()

@@ -65,6 +65,17 @@ const (
 	StatusCancelled   GoalStatus = "cancelled"
 )
 
+// IsTerminal reports whether the status is a terminal (non-resumable) state.
+// Met, exhausted, and cancelled are terminal; paused and blocked_idle are not.
+func (s GoalStatus) IsTerminal() bool {
+	switch s {
+	case StatusMet, StatusExhausted, StatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
 // GoalBudget caps the resources the agent may spend pursuing a goal.
 //
 // This is a turn-only cap: MaxTurns == 0 imposes no turn limit. The agent stops
@@ -159,17 +170,6 @@ type GoalState struct {
 	LastVerificationReason   string         `json:"last_verification_reason"`
 	LastVerificationEvidence []GoalEvidence `json:"last_verification_evidence"`
 	CreatedAt                time.Time      `json:"created_at"` // when the goal was created
-}
-
-// IsTerminal reports whether the status is a terminal (non-resumable) state.
-// Met, exhausted, and cancelled are terminal; paused and blocked_idle are not.
-func (s GoalStatus) IsTerminal() bool {
-	switch s {
-	case StatusMet, StatusExhausted, StatusCancelled:
-		return true
-	default:
-		return false
-	}
 }
 
 // NormalizeVerificationMode maps a verification-mode string to its canonical

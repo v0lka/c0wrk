@@ -2,7 +2,6 @@
 package session
 
 import (
-	"encoding/json"
 	"time"
 
 	coretools "github.com/v0lka/c0wrk/core/tools"
@@ -246,18 +245,4 @@ type SkillsActivatedData struct {
 // emitted when the Small-LLM domain narrowing curates the session's tool set.
 type ToolsAssignedData struct {
 	Tools []string `json:"tools"`
-}
-
-// --- ChatMessage metadata helpers ---
-
-// MetadataFrom marshals any value into a json.RawMessage suitable for ChatMessage.Metadata.
-func MetadataFrom(v any) json.RawMessage {
-	if v == nil {
-		return json.RawMessage("{}")
-	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return json.RawMessage("{}")
-	}
-	return b
 }

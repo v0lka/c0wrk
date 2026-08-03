@@ -183,7 +183,11 @@ func (l *loggingEmitter) PlanStepComplete(stepID string, success bool, duration 
 }
 
 func (l *loggingEmitter) Reflection(reflection *orchestration.Reflection, attempt, maxAttempts int) {
-	l.logger.Info("reflection", "attempt", attempt, "maxAttempts", maxAttempts, "summary", reflection.Summary, "suggestedAction", reflection.SuggestedAction, "rootCause", reflection.RootCause)
+	summary, action, cause := "", "", ""
+	if reflection != nil {
+		summary, action, cause = reflection.Summary, reflection.SuggestedAction, reflection.RootCause
+	}
+	l.logger.Info("reflection", "attempt", attempt, "maxAttempts", maxAttempts, "summary", summary, "suggestedAction", action, "rootCause", cause)
 	l.inner.Reflection(reflection, attempt, maxAttempts)
 }
 

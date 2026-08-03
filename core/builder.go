@@ -181,6 +181,14 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 // including when startup fails or panics, so waiters never block forever.
 func (b *OrchestratorBuilder) runMCPInit(cfg *BuilderConfig) {
 	defer close(b.mcpDone)
+	defer func() {
+		if r := recover(); r != nil {
+			b.log().Error("MCP gateway panicked", "panic", r)
+			b.mu.Lock()
+			b.gatewayErr = fmt.Errorf("mcp gateway panic: %v", r)
+			b.mu.Unlock()
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -389,7 +397,7 @@ func (b *OrchestratorBuilder) Build(
 
 	// Build core agents (router, planner, reflector) with tracking caller
 	tokenCounter := llm.NewSimpleTokenCounter()
-	coreRouter, coreReflector, err := b.buildCoreAgents(trackingCaller, cfg, emitter, logger, modelReg, dumpWriter)
+	coreRouter, coreReflector, err := b.buildCoreAgents(trackingCaller, cfg, emitter, logger, dumpWriter)
 	if err != nil {
 		return nil, fmt.Errorf("building core agents: %w", err)
 	}
@@ -1300,8 +1308,8 @@ func remapLocalGoogleProtocols(
 				// its lower tiers so the lazy probe result takes effect. See
 				// the function doc comment for the shadowing rationale.
 				overrides[model] = llm.ModelMetadata{
-					Protocol:      llm.ProtocolChatCompletions,
-					Capabilities:  base.Capabilities,
+					Protocol:     llm.ProtocolChatCompletions,
+					Capabilities: base.Capabilities,
 				}
 			}
 		}
@@ -1421,7 +1429,6 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	cfg *BuilderConfig,
 	emitter Emitter,
 	logger *slog.Logger,
-	modelRegistry *llm.ModelRegistry,
 	dumpWriter io.Writer,
 ) (*router.Router, *reflector.Reflector, error) {
 	if caller == nil {
@@ -1432,10 +1439,6 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 	loggedCaller = agent.NewDumpCaller(loggedCaller, dumpWriter, logger)
 	coreRouter := newCoreRouter(loggedCaller, cfg.Router.HistoryWindow)
 	coreReflector := newCoreReflector(loggedCaller)
-
-	if modelRegistry != nil {
-		coreRouter.SetModelRegistry(modelRegistry)
-	}
 
 	coreRouter.SetReasoningEffort(b.reasoningEffort)
 	coreReflector.SetReasoningEffort(b.reasoningEffort)

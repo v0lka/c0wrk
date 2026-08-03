@@ -656,8 +656,8 @@ func TestCountingToolExec_Counts(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	}
-	if counter.toolCalls != 3 {
-		t.Errorf("toolCalls = %d, want 3", counter.toolCalls)
+	if counter.toolCalls.Load() != 3 {
+		t.Errorf("toolCalls = %d, want 3", counter.toolCalls.Load())
 	}
 }
 
@@ -955,8 +955,8 @@ func TestDefaultGoalTurnRunner_ReadsCountAfterRun(t *testing.T) {
 		t.Errorf("toolCalls = %d, want 1 (count must be read AFTER the run; pre-run read bug would yield 0)", toolCalls)
 	}
 	// Sanity: the counter was actually incremented during the run.
-	if counter.toolCalls != 1 {
-		t.Errorf("counter.toolCalls = %d, want 1 (the conductor should have made one tool call)", counter.toolCalls)
+	if counter.toolCalls.Load() != 1 {
+		t.Errorf("counter.toolCalls = %d, want 1 (the conductor should have made one tool call)", counter.toolCalls.Load())
 	}
 }
 
@@ -985,7 +985,7 @@ func TestRunGoalTurns_LoopReadsPostRunCount(t *testing.T) {
 		// Simulate two tool calls happening DURING the turn (what the real
 		// Conductor does via countingToolExec.Execute).
 		if ce, ok := deps.toolExec.(*countingToolExec); ok {
-			ce.counter.toolCalls += 2
+			ce.counter.toolCalls.Add(2)
 		}
 		// Declare a "met" verdict so the loop exits after this turn.
 		if sink := tools.GoalStatusSinkFrom(ctx); sink != nil {
@@ -994,7 +994,7 @@ func TestRunGoalTurns_LoopReadsPostRunCount(t *testing.T) {
 		// Read AFTER the simulated run — mirroring the fixed defaultGoalTurnRunner.
 		toolCalls := 0
 		if ce, ok := deps.toolExec.(*countingToolExec); ok {
-			toolCalls = ce.counter.toolCalls
+			toolCalls = int(ce.counter.toolCalls.Load())
 		}
 		return toolCalls, &orchestration.ExecutionResult{}, nil
 	}

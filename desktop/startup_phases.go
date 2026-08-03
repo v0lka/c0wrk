@@ -879,11 +879,6 @@ func (a *App) startVectorIndexBackground(
 			a.emit("vector_index:status", map[string]any{"available": false, "reason": err.Error()})
 			return
 		}
-		if vectorMgr == nil {
-			log.Info("vector search disabled (model files not found)")
-			a.emit("vector_index:status", map[string]any{"available": false, "reason": "model files not found"})
-			return
-		}
 
 		// Abort registration if Shutdown has already run Cleanup — registering a
 		// freshly-created manager after cleanup would leak it (never closed).

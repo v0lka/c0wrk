@@ -19,11 +19,8 @@ func TestPlatform_NotEmpty(t *testing.T) {
 	}
 }
 
-func TestPlatformTriple_ReturnsNoError(t *testing.T) {
-	triple, err := PlatformTriple()
-	if err != nil {
-		t.Fatalf("PlatformTriple() returned error: %v", err)
-	}
+func TestPlatformTriple_ReturnsValue(t *testing.T) {
+	triple := PlatformTriple(nil)
 	if triple == "" {
 		t.Error("PlatformTriple() returned empty string")
 	}

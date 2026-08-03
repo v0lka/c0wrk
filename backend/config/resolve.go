@@ -83,7 +83,11 @@ func ResolveAndLoad(log *slog.Logger) *ResolvedConfig {
 	}
 
 	if err != nil || result == nil {
-		log.Error("failed to load config", "error", err)
+		if err != nil {
+			log.Error("failed to load config", "error", err)
+		} else {
+			log.Error("failed to load config: result is nil")
+		}
 		cfg := &Config{}
 		ApplyDefaults(cfg)
 		log.Warn("config load failed, check your config.yaml syntax")

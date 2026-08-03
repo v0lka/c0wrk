@@ -17,7 +17,7 @@ import (
 // Pre-existing non-existence (ENOENT/ENOTDIR) is treated as non-critical
 // (best-effort check). Real filesystem errors are logged but not surfaced
 // as fatal — the download will fail with a clearer error if space runs out.
-func checkDiskSpace(path string, minFree int64) error {
+func checkDiskSpace(path string, minFree int64, logger *slog.Logger) error {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
 		if os.IsNotExist(err) {
@@ -28,7 +28,9 @@ func checkDiskSpace(path string, minFree int64) error {
 		}
 		// Real filesystem error (permission denied, I/O error, etc.).
 		// Logged at warn level for diagnostics; the check is best-effort.
-		slog.Warn("disk space check unavailable", "path", path, "error", err)
+		if logger != nil {
+			logger.Warn("disk space check unavailable", "path", path, "error", err)
+		}
 		return nil //nolint:nilerr // best-effort check, non-fatal
 	}
 	free := int64(stat.Bavail) * int64(stat.Bsize) //nolint:unconvert // Bsize is int64 on Linux, uint32 on Darwin

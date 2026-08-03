@@ -343,7 +343,7 @@ func GitIgnoredPaths(ctx context.Context, dir string) (map[string]bool, error) {
 
 	if err := cmd.Run(); err != nil {
 		if errNotGitRepo(err, stderr.String()) {
-			return nil, nil //nolint:nilnil // non-git workspace: no filtering
+			return map[string]bool{}, nil // non-git workspace: no filtering
 		}
 		return nil, fmt.Errorf("git ls-files failed: %w", err)
 	}

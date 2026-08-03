@@ -15,6 +15,10 @@ import (
 	"github.com/v0lka/sp4rk/embedding"
 )
 
+// ErrEmbeddingDisabled is returned by NewManager when no EmbeddingFunc is
+// provided, indicating vector search is intentionally not configured.
+var ErrEmbeddingDisabled = errors.New("vector search disabled: no embedding function provided")
+
 // ManagerConfig holds configuration for creating a Manager.
 // The caller creates the embedder and passes EmbeddingFunc; ManagerConfig no longer
 // depends on model paths, making the package usable with any embedding backend.
@@ -108,10 +112,10 @@ type Manager struct {
 }
 
 // NewManager creates a Manager from the provided EmbeddingFunc and config.
-// Returns nil, nil when EmbeddingFunc is nil (vector search disabled).
+// Returns nil, ErrEmbeddingDisabled when EmbeddingFunc is nil (vector search disabled).
 func NewManager(cfg ManagerConfig) (*Manager, error) {
 	if cfg.EmbeddingFunc == nil {
-		return nil, nil //nolint:nilnil // intentional: vector search is optional
+		return nil, ErrEmbeddingDisabled //nolint:nilnil // intentional: vector search is optional
 	}
 
 	logger := cfg.Logger

@@ -226,7 +226,10 @@ func (a *App) Startup(ctx context.Context) {
 	// calls (rg, markitdown) resolve to the managed binaries.
 	a.toolsBinPath = toolsBinPath
 	if toolsBinPath != "" {
-		os.Setenv("PATH", toolsBinPath+string(os.PathListSeparator)+os.Getenv("PATH")) //nolint:errcheck // Setenv error is non-actionable at startup
+		newPath := toolsBinPath + string(os.PathListSeparator) + os.Getenv("PATH")
+		if err := os.Setenv("PATH", newPath); err != nil {
+			log.Warn("failed to prepend tools/bin to PATH", "error", err)
+		}
 		log.Info("tools/bin prepended to PATH", "path", toolsBinPath)
 	}
 
@@ -262,7 +265,7 @@ func (a *App) Startup(ctx context.Context) {
 
 	var projectMgr *project.Manager
 	if projStore != nil {
-		projectMgr = project.NewManager(projStore, agentDir)
+		projectMgr = project.NewManager(projStore, agentDir, log)
 		// No Project is deferred until after LLM config validation (Phase 5).
 		// On a clean first run, we must not create infrastructure before
 		// verifying that the app is usable.

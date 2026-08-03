@@ -27,7 +27,7 @@ func (b *OrchestratorBuilder) ReconfigureMCP(ctx context.Context, cfg *BuilderCo
 	defer b.mu.Unlock()
 
 	if b.gateway != nil {
-		return b.gateway.Reconfigure(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars, b.logger)
+		return b.gateway.Reconfigure(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars)
 	}
 
 	gw, err := mcp.StartGateway(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars, b.logger)

@@ -19,14 +19,7 @@ type SessionLogger struct {
 // Init creates a new SessionLogger with the specified log level and log directory.
 // It creates the log directory if it doesn't exist and opens a new session file.
 func Init(level, logDir string) (*SessionLogger, error) {
-	parsedLevel, err := parseLevel(level)
-	if err != nil {
-		// Log warning about invalid level and use INFO as default
-		parsedLevel = slog.LevelInfo
-	}
-
-	// Store parse error for later logging (err will be shadowed by file operations)
-	parseErr := err
+	parsedLevel, levelErr := parseLevel(level)
 
 	// Create log directory
 	if err := os.MkdirAll(logDir, 0o750); err != nil {
@@ -51,7 +44,7 @@ func Init(level, logDir string) (*SessionLogger, error) {
 	logger := slog.New(handler)
 
 	// Log warning if level was invalid
-	if parseErr != nil {
+	if levelErr != nil {
 		logger.Warn("invalid log level specified, defaulting to INFO", "level", level)
 	}
 
@@ -83,7 +76,7 @@ func (s *SessionLogger) Close() error {
 func parseLevel(level string) (slog.Level, error) {
 	var l slog.Level
 	if err := l.UnmarshalText([]byte(level)); err != nil {
-		return slog.LevelInfo, fmt.Errorf("unrecognized log level: %s", level)
+		return 0, fmt.Errorf("unrecognized log level: %s", level)
 	}
 	return l, nil
 }

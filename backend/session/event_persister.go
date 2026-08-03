@@ -200,10 +200,11 @@ func (p *EventPersister) Persist(evt Event) {
 		// the user confirms/cancels via the goal_proposal_response flow).
 		role = "goal_proposal"
 	default:
-		// Unknown event types are dropped from history. Log so schema drift
-		// between emitters and the persister is visible instead of silent.
-		p.log().Warn("skipping unknown event type in persister", "type", evt.Type, "session", evt.SessionID)
-		return
+		// Unknown event types are persisted with a generic role so they survive
+		// session reloads. The frontend can still show them (or ignore them).
+		// Log so schema drift between emitters and the persister is visible.
+		p.log().Warn("persisting unknown event type with generic role", "type", evt.Type, "session", evt.SessionID)
+		role = "event_unknown"
 	}
 
 	if role == "" {

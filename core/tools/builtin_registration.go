@@ -88,7 +88,7 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 
 	// Web search (optional)
 	if provider := CreateSearchProviderWithClient(cfg.SearchProvider, cfg.SearchAPIKey, cfg.SearchTimeout, cfg.HTTPClient); provider != nil {
-		registry.Register(websearch.NewTool(provider, cfg.WebSearchLimits))
+		registry.Register(websearch.NewTool(provider, websearch.Limits(cfg.WebSearchLimits)))
 	}
 
 	// Glob and ripgrep
@@ -213,7 +213,7 @@ func UpdateSearchTool(registry *ToolRegistry, providerName, apiKey string, limit
 // with an optional HTTP client for proxy support.
 func UpdateSearchToolWithClient(registry *ToolRegistry, providerName, apiKey string, limits builtins.WebSearchLimits, client *http.Client) {
 	if provider := CreateSearchProviderWithClient(providerName, apiKey, limits.Timeout, client); provider != nil {
-		registry.Register(websearch.NewTool(provider, limits))
+		registry.Register(websearch.NewTool(provider, websearch.Limits(limits)))
 	} else {
 		registry.Unregister("web_search")
 	}

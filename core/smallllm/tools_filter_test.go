@@ -18,6 +18,7 @@ func descriptorNames(descs []sdktools.ToolDescriptor) []string {
 	return names
 }
 
+// contains reports whether the sorted slice names contains want.
 func contains(names []string, want string) bool {
 	return slices.Contains(names, want)
 }

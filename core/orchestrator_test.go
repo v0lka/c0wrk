@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/sp4rk/agent"
@@ -913,7 +914,7 @@ func TestOrchestrator_VectorSearchHints_ContentTruncation(t *testing.T) {
 	if hints == nil {
 		t.Fatal("expected hints")
 	}
-	if len(hints.Files[0].Summary) != 100 {
+	if utf8.RuneCountInString(hints.Files[0].Summary) != 100 {
 		t.Errorf("expected summary length 100, got %d", len(hints.Files[0].Summary))
 	}
 }

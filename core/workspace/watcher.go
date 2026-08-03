@@ -6,11 +6,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/v0lka/sp4rk/pathutil"
 )
 
 // defaultDebounce is the debounce interval for file system events.
@@ -90,7 +90,7 @@ func NewWatcher(root string, onChange ChangeHandler, loggers ...*slog.Logger) (*
 	gitDir := filepath.Join(absRoot, ".git")
 	if stat, err := os.Stat(gitDir); err == nil && stat.IsDir() {
 		if err := fsw.Add(gitDir); err != nil {
-			w.log().Debug("failed to watch .git directory", "error", err)
+			w.log().Warn("failed to watch .git directory", "error", err)
 		}
 	}
 
@@ -218,6 +218,13 @@ func (w *Watcher) Close() error {
 }
 
 // isUnderRoot checks whether absPath is under (or equal to) the root directory.
+// Uses the centralized containment primitive so symlink-escaped paths (e.g.
+// macOS /var → /private/var) are resolved consistently with the rest of the
+// codebase, per the path-centralization convention.
 func (w *Watcher) isUnderRoot(absPath string) bool {
-	return absPath == w.root || strings.HasPrefix(absPath, w.root+string(filepath.Separator))
+	within, err := pathutil.IsWithinPath(w.root, absPath)
+	if err != nil {
+		return false
+	}
+	return within
 }

@@ -78,7 +78,7 @@ func TestResolveSkillDirs(t *testing.T) {
 			// "/users/test" as a literal in the want slice. The actual home
 			// dir on the test runner may differ; we therefore prepend it
 			// from the runtime when comparing.
-			got := resolveSkillDirs(tt.in, agentDir, expandEnv)
+			got := resolveSkillDirs(tt.in, agentDir, expandEnv, nil)
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %d entries, want %d (%v)", len(got), len(tt.want), got)
 			}

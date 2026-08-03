@@ -1,3 +1,6 @@
+// Package vectorindex provides vector-based code search for the desktop UI.
+// It combines an ONNX-powered embedding index (chromem-go) with a lexical
+// (bleve-based) text search index that share a unified indexing pipeline.
 package vectorindex
 
 import (

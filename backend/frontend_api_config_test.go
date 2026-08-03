@@ -1423,7 +1423,7 @@ func newUpdateLLMConfigProjectHarness(t *testing.T) (*FrontendAPI, *project.Proj
 		t.Fatalf("failed to create project store: %v", err)
 	}
 	agentDir := t.TempDir()
-	projectManager := project.NewManager(projStore, agentDir)
+	projectManager := project.NewManager(projStore, agentDir, nil)
 	createdProject, err := projectManager.CreateProject("Active Project", "")
 	if err != nil {
 		_ = db.Close()

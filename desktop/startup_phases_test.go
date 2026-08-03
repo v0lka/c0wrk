@@ -147,7 +147,7 @@ func TestPreloadProjectsAndSessions_Empty(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	projStore, sessStore, _ := a.initStores(db, testLoggerForPhases())
-	projectMgr := project.NewManager(projStore, dir)
+	projectMgr := project.NewManager(projStore, dir, nil)
 
 	got := a.preloadProjectsAndSessions(projectMgr, sessStore, testLoggerForPhases())
 	if len(got) != 0 {
@@ -171,7 +171,7 @@ func TestPreloadProjectsAndSessions_WithSeededData(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	projStore, sessStore, _ := a.initStores(db, testLoggerForPhases())
-	projectMgr := project.NewManager(projStore, dir)
+	projectMgr := project.NewManager(projStore, dir, nil)
 
 	// Seed: create a project with a session.
 	p, err := projectMgr.CreateProject("test-proj", "")
@@ -456,7 +456,7 @@ func TestEmitBackendReady_FreshQueryWithProjects(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	projStore, _, _ := a.initStores(db, testLoggerForPhases())
-	projectMgr := project.NewManager(projStore, dir)
+	projectMgr := project.NewManager(projStore, dir, nil)
 	if _, err := projectMgr.CreateProject("Bar", ""); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}

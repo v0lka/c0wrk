@@ -219,6 +219,9 @@ func (b *bleveIndex) Count() (uint64, error) {
 	return n, nil
 }
 
+// Close releases the underlying bleve index. The caller must serialize access
+// to this method — it is not safe for concurrent use. After Close returns
+// successfully, the index is nil and further operations must not be called.
 func (b *bleveIndex) Close() error {
 	if b.idx == nil {
 		return nil

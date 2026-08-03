@@ -38,7 +38,7 @@ func newForkTestAPI(t *testing.T) (api *FrontendAPI, sessionStore *session.SQLit
 	}
 
 	agentDir := t.TempDir()
-	projectManager := project.NewManager(projectStore, agentDir)
+	projectManager := project.NewManager(projectStore, agentDir, nil)
 	createdProject, err := projectManager.CreateProject("Fork Project", "")
 	if err != nil {
 		_ = dbConn.Close()

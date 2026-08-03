@@ -388,12 +388,18 @@ func extractZip(archivePath, destDir string) error {
 }
 
 // copyFile copies src to dst with the given mode.
-func copyFile(src, dst string, mode os.FileMode) error {
+func copyFile(src, dst string, mode os.FileMode) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = in.Close() }()
+	defer func() {
+		if cerr := in.Close(); cerr != nil {
+			// On a read-only file, Close errors indicate filesystem
+			// anomalies; capture and return when no prior error exists.
+			err = errors.Join(err, cerr)
+		}
+	}()
 
 	out, err := os.Create(dst)
 	if err != nil {

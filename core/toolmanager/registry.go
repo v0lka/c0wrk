@@ -1,6 +1,7 @@
 package toolmanager
 
 import (
+	"log/slog"
 	"path"
 )
 
@@ -65,11 +66,8 @@ type ToolSpec struct {
 // tool-manager downloads and installs it, but no built-in tool wrapper
 // consumes it yet. Wrappers will be added in github.com/v0lka/sp4rk/tools/builtins/ when the
 // agent is ready to invoke it.
-func ManagedTools() ([]ToolSpec, error) {
-	triple, err := PlatformTriple()
-	if err != nil {
-		return nil, err
-	}
+func ManagedTools(logger *slog.Logger) ([]ToolSpec, error) {
+	triple := PlatformTriple(logger)
 	tools := []ToolSpec{
 		{
 			Name:             "uv",

@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -281,14 +280,9 @@ func TestParseProxyURL_AcceptsAuthInURL(t *testing.T) {
 	}
 }
 
-// Ensure parseProxyURL rejects plain bare strings that look nothing like URLs.
-func TestParseProxyURL_BareString(t *testing.T) {
-	_, err := url.Parse("//bad")
-	if err != nil {
-		// stdlib parses "//bad" without error, so we instead probe an obviously
-		// invalid scheme.
-		t.Logf("url.Parse('//bad') err = %v", err)
-	}
+// Ensure parseProxyURL rejects unsupported URL schemes and bare strings
+// that are not valid proxy URLs.
+func TestParseProxyURL_UnsupportedScheme(t *testing.T) {
 	if _, err := parseProxyURL("ftp://example.com"); err == nil {
 		t.Error("expected error for ftp scheme")
 	}

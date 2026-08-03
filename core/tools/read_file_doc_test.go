@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -160,7 +161,7 @@ func TestFormatMarkdownWindow_DefaultRange(t *testing.T) {
 	var sb strings.Builder
 	for i := 1; i <= 100; i++ {
 		sb.WriteString("line ")
-		sb.WriteString(itoa(i))
+		sb.WriteString(strconv.Itoa(i))
 		sb.WriteString("\n")
 	}
 	// Remove trailing newline to match markitdown output.
@@ -179,7 +180,7 @@ func TestFormatMarkdownWindow_ExplicitRange(t *testing.T) {
 	var sb strings.Builder
 	for i := 1; i <= 50; i++ {
 		sb.WriteString("line ")
-		sb.WriteString(itoa(i))
+		sb.WriteString(strconv.Itoa(i))
 		sb.WriteString("\n")
 	}
 	markdown := strings.TrimSuffix(sb.String(), "\n")
@@ -225,7 +226,7 @@ func TestFormatMarkdownWindow_PastEOF(t *testing.T) {
 func TestFormatMarkdownWindow_MaxWindowLinesCap(t *testing.T) {
 	var sb strings.Builder
 	for i := 1; i <= 1000; i++ {
-		sb.WriteString(itoa(i))
+		sb.WriteString(strconv.Itoa(i))
 		sb.WriteString("\n")
 	}
 	markdown := strings.TrimSuffix(sb.String(), "\n")
@@ -382,33 +383,10 @@ func TestAtomicWriteFile_WritesAndRenames(t *testing.T) {
 	}
 }
 
-// --- Helpers (avoid strconv to keep imports minimal) ---
+// --- Helpers ---
 
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	pos := len(buf)
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	for n > 0 {
-		pos--
-		buf[pos] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		pos--
-		buf[pos] = '-'
-	}
-	return string(buf[pos:])
-}
-
+// min2 is kept for backward-compatible use across the test file.
+// It delegates to the stdlib min builtin (Go 1.21+).
 func min2(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	return min(a, b)
 }

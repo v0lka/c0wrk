@@ -160,7 +160,7 @@ func (m *Manager) injectIgnoreChecker(ctx context.Context, session *Session, dir
 	if len(resolvers) == 0 {
 		return ctx
 	}
-	checker := ignore.NewMultiFromResolvers(resolvers...)
+	checker := ignore.NewMultiFromResolvers(m.log(), resolvers...)
 	return sdktools.WithIgnoreChecker(ctx, checker)
 }
 

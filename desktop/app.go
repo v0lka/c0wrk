@@ -173,16 +173,14 @@ func (a *App) emit(eventName string, optionalData ...any) {
 		return
 	}
 	if a.ctx == nil {
-		slog.Warn("emit called with nil ctx, event dropped", "event", eventName)
+		a.log().Warn("emit called with nil ctx, event dropped", "event", eventName)
 		return
 	}
 	wailsRuntime.EventsEmit(a.ctx, eventName, optionalData...)
 }
 
 // resolvePendingMessage delegates to FrontendAPI.ResolvePendingMessage to mark
-// a persisted HITL message as resolved in the DB. Safe to call when
-// FrontendAPI is not yet wired (returns nil — the message will be reconciled
-// by GetPendingActions on the next session switch instead).
+// a persisted HITL message as resolved in the DB.
 func (a *App) resolvePendingMessage(sessionID, role, matchField, matchValue string, extra map[string]any) error {
 	if a.FrontendAPI == nil {
 		return nil

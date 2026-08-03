@@ -72,30 +72,28 @@ func TestManager_Write(t *testing.T) {
 	}
 	defer func() { _ = mgr.Stop("sess-1") }()
 
-	// Wait for shell prompt
-	time.Sleep(100 * time.Millisecond)
-
 	// Write a command
 	if err := mgr.Write("sess-1", []byte("echo hello_test\n")); err != nil {
 		t.Fatalf("Write failed: %v", err)
 	}
 
-	// Wait for output
+	// Poll for output with a retry loop instead of a fixed sleep.
 	var output bytes.Buffer
-	done := time.After(2 * time.Second)
-waitLoop:
-	for {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
 		select {
 		case data := <-outputChan:
 			output.Write(data)
 			if bytes.Contains(output.Bytes(), []byte("hello_test")) {
-				break waitLoop
+				goto checkOutput
 			}
-		case <-done:
-			break waitLoop
+		case <-time.After(100 * time.Millisecond):
+			if bytes.Contains(output.Bytes(), []byte("hello_test")) {
+				goto checkOutput
+			}
 		}
 	}
-
+checkOutput:
 	if !bytes.Contains(output.Bytes(), []byte("hello_test")) {
 		t.Errorf("expected output to contain 'hello_test', got: %s", output.String())
 	}
@@ -155,6 +153,7 @@ func TestManager_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			_ = mgr.IsActive("sess-1")
 			_ = mgr.Resize("sess-1", 80, 24)
+			_ = mgr.Write("sess-1", []byte("echo test\n"))
 		}()
 	}
 	wg.Wait()

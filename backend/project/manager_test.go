@@ -35,7 +35,7 @@ func setupTestManager(t *testing.T) (mgr *Manager, agentDir string) {
 	}
 
 	agentDir = t.TempDir()
-	mgr = NewManager(store, agentDir)
+	mgr = NewManager(store, agentDir, nil)
 	return mgr, agentDir
 }
 

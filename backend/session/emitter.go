@@ -196,16 +196,13 @@ func (e *EventEmitter) SetAttachmentNameResolver(resolve func(attachmentID strin
 func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
 	e.log().Debug("emitter: creating plan-step-scoped emitter", "sessionID", e.sessionID, "planStepID", id)
 	return &EventEmitter{
-		sessionID:     e.sessionID,
-		emit:          e.emit,
-		planStepID:    id,
-		retryAttempt:  e.retryAttempt, // preserve retry attempt across copies
-		tokens:        e.tokens,       // share token accumulation state across copies
-		toolCallIDs:   e.toolCallIDs,  // share tool call ID counter across copies
-		logger:        e.logger,       // propagate logger to copies
-		isSessionRoot: false,          // scoped copies are never the session root
-		// Inherit the task's attachment-name resolver so subagent/retry
-		// read_attachment calls resolve names against the shared blackboard.
+		sessionID:              e.sessionID,
+		emit:                   e.emit,
+		planStepID:             id,
+		retryAttempt:           e.retryAttempt,
+		tokens:                 e.tokens,
+		toolCallIDs:            e.toolCallIDs,
+		logger:                 e.logger,
 		attachmentNameResolver: e.attachmentNameResolver,
 	}
 }
@@ -215,15 +212,13 @@ func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
 func (e *EventEmitter) WithRetryAttempt(attempt int) core.Emitter {
 	e.log().Debug("emitter: creating retry-scoped emitter", "sessionID", e.sessionID, "retryAttempt", attempt)
 	return &EventEmitter{
-		sessionID:     e.sessionID,
-		emit:          e.emit,
-		planStepID:    e.planStepID,
-		retryAttempt:  attempt,
-		tokens:        e.tokens,      // share token accumulation state across copies
-		toolCallIDs:   e.toolCallIDs, // share tool call ID counter across copies
-		logger:        e.logger,      // propagate logger to copies
-		isSessionRoot: false,         // scoped copies are never the session root
-		// Inherit the task's attachment-name resolver (see WithPlanStepID).
+		sessionID:              e.sessionID,
+		emit:                   e.emit,
+		planStepID:             e.planStepID,
+		retryAttempt:           attempt,
+		tokens:                 e.tokens,
+		toolCallIDs:            e.toolCallIDs,
+		logger:                 e.logger,
 		attachmentNameResolver: e.attachmentNameResolver,
 	}
 }

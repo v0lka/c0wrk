@@ -31,6 +31,7 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		// Prompt optimizer prompts
 		{"PromptOptimizeExtract", PromptOptimizeExtract},
 		{"PromptOptimizeRewrite", PromptOptimizeRewrite},
+		{"CommitMessage", CommitMessage},
 		// Family-specific orchestrator prompts
 		{"OrchestratorDefault", OrchestratorDefault},
 		{"OrchestratorAnthropic", OrchestratorAnthropic},
@@ -118,11 +119,36 @@ func TestEmbeddedPrompts_ContainExpectedKeywords(t *testing.T) {
 
 func TestEmbeddedPrompts_AreDistinct(t *testing.T) {
 	prompts := map[string]string{
+		// Core prompts
 		"PlannerBase":        PlannerBase,
 		"PlannerReplan":      PlannerReplan,
 		"OrchestratorSystem": OrchestratorSystem,
 		"ReflectorSystem":    ReflectorSystem,
 		"RouterSystem":       RouterSystem,
+		// Family-specific orchestrator prompts (all must be distinct)
+		"OrchestratorDefault":        OrchestratorDefault,
+		"OrchestratorAnthropic":      OrchestratorAnthropic,
+		"OrchestratorOpenAIFlagship": OrchestratorOpenAIFlagship,
+		"OrchestratorOpenAIStandard": OrchestratorOpenAIStandard,
+		"OrchestratorGoogle":         OrchestratorGoogle,
+		"OrchestratorDeepSeek":       OrchestratorDeepSeek,
+		"OrchestratorMistral":        OrchestratorMistral,
+		"OrchestratorKimi":           OrchestratorKimi,
+		"OrchestratorQwen":           OrchestratorQwen,
+		"OrchestratorGLM":            OrchestratorGLM,
+		"OrchestratorOpenAICodex":    OrchestratorOpenAICodex,
+		// Family-specific planner prompts (all must be distinct)
+		"PlannerDefault":        PlannerDefault,
+		"PlannerAnthropic":      PlannerAnthropic,
+		"PlannerOpenAIFlagship": PlannerOpenAIFlagship,
+		"PlannerOpenAIStandard": PlannerOpenAIStandard,
+		"PlannerGoogle":         PlannerGoogle,
+		"PlannerDeepSeek":       PlannerDeepSeek,
+		"PlannerMistral":        PlannerMistral,
+		"PlannerKimi":           PlannerKimi,
+		"PlannerQwen":           PlannerQwen,
+		"PlannerGLM":            PlannerGLM,
+		"PlannerOpenAICodex":    PlannerOpenAICodex,
 	}
 
 	seen := make(map[string]string) // content -> name
