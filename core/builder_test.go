@@ -2,14 +2,19 @@ package core
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
@@ -380,5 +385,257 @@ func TestBuildSessionAgentManager_NoDirsReturnsNil(t *testing.T) {
 	b := &OrchestratorBuilder{} // no baseAgentDirs, no workspace
 	if mgr := b.buildSessionAgentManager("", nil); mgr != nil {
 		t.Fatalf("expected nil manager with no dirs, got %v", mgr)
+	}
+}
+
+// --- extractCommitMessage tests ---
+
+func TestExtractCommitMessage_FromContent(t *testing.T) {
+	resp := &llm.ChatResponse{
+		Message: llm.Message{Content: "feat(api): add rate limiting"},
+	}
+	got := extractCommitMessage(resp)
+	if got != "feat(api): add rate limiting" {
+		t.Errorf("extractCommitMessage() = %q, want %q", got, "feat(api): add rate limiting")
+	}
+}
+
+func TestExtractCommitMessage_FallbackToReasoningContent(t *testing.T) {
+	resp := &llm.ChatResponse{
+		Message: llm.Message{
+			Content:          "",
+			ReasoningContent: "fix(db): resolve connection leak",
+		},
+	}
+	got := extractCommitMessage(resp)
+	if got != "fix(db): resolve connection leak" {
+		t.Errorf("extractCommitMessage() = %q, want %q", got, "fix(db): resolve connection leak")
+	}
+}
+
+func TestExtractCommitMessage_FallbackToReasoning(t *testing.T) {
+	resp := &llm.ChatResponse{
+		Message:   llm.Message{Content: ""},
+		Reasoning: "docs(readme): update install instructions",
+	}
+	got := extractCommitMessage(resp)
+	if got != "docs(readme): update install instructions" {
+		t.Errorf("extractCommitMessage() = %q, want %q", got, "docs(readme): update install instructions")
+	}
+}
+
+func TestExtractCommitMessage_StripsReasoningPrefix(t *testing.T) {
+	resp := &llm.ChatResponse{
+		Message: llm.Message{
+			Content: "Based on my analysis: feat(auth): add token refresh",
+		},
+	}
+	got := extractCommitMessage(resp)
+	if got != "feat(auth): add token refresh" {
+		t.Errorf("extractCommitMessage() = %q, want %q", got, "feat(auth): add token refresh")
+	}
+}
+
+func TestExtractCommitMessage_StripsMarkdownFence(t *testing.T) {
+	resp := &llm.ChatResponse{
+		Message: llm.Message{
+			Content: "```\nfeat(api): add rate limiting\n```",
+		},
+	}
+	got := extractCommitMessage(resp)
+	if got != "feat(api): add rate limiting" {
+		t.Errorf("extractCommitMessage() = %q, want %q", got, "feat(api): add rate limiting")
+	}
+}
+
+func TestExtractCommitMessage_AllEmpty(t *testing.T) {
+	resp := &llm.ChatResponse{
+		Message: llm.Message{Content: ""},
+	}
+	got := extractCommitMessage(resp)
+	if got != "" {
+		t.Errorf("extractCommitMessage() = %q, want empty", got)
+	}
+}
+
+func TestExtractCommitMessage_NilResponse(t *testing.T) {
+	got := extractCommitMessage(nil)
+	if got != "" {
+		t.Errorf("extractCommitMessage(nil) = %q, want empty", got)
+	}
+}
+
+func TestExtractCommitMessage_PrefersContentOverReasoning(t *testing.T) {
+	resp := &llm.ChatResponse{
+		Message: llm.Message{
+			Content:          "feat(ui): update button",
+			ReasoningContent: "fix(db): resolve leak",
+		},
+	}
+	got := extractCommitMessage(resp)
+	if got != "feat(ui): update button" {
+		t.Errorf("extractCommitMessage() = %q, want %q", got, "feat(ui): update button")
+	}
+}
+
+// --- isValidConventionalCommit tests ---
+
+func TestIsValidConventionalCommit(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		{"feat without scope", "feat: add new feature", true},
+		{"fix with scope", "fix(auth): resolve token leak", true},
+		{"docs", "docs(readme): update installation", true},
+		{"refactor", "refactor: extract validation logic", true},
+		{"perf", "perf(db): optimize query", true},
+		{"test", "test: add unit tests for auth", true},
+		{"build", "build: update dependencies", true},
+		{"ci", "ci: add GitHub Actions workflow", true},
+		{"chore", "chore: clean up unused imports", true},
+		{"revert", "revert: undo previous commit", true},
+		{"style", "style: fix formatting", true},
+		{"missing colon", "feat add feature", false},
+		{"missing description", "feat:", false},
+		{"invalid type", "invalid: something", false},
+		{"empty string", "", false},
+		{"just type prefix", "feat", false},
+		{"with body", "feat: add feature\n\nThis is the body.", true},
+		{"uppercase type", "Feat: add feature", false},
+		{"uppercase description", "feat: Add New Feature", false},
+		{"reasoning prefix", "Based on my analysis: feat: add feature", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isValidConventionalCommit(tt.msg); got != tt.want {
+				t.Errorf("isValidConventionalCommit(%q) = %v, want %v", tt.msg, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- stripMarkdownCodeFence multi-line tests ---
+
+func TestStripMarkdownCodeFence_MultiLine(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "multi-line with body",
+			in: "```\nfeat(database): resolve connection pool exhaustion under load\n\nThe pool size was hardcoded to 10 instead of using the\nconfigured MaxConnections value.\n```",
+			want: "feat(database): resolve connection pool exhaustion under load\n\nThe pool size was hardcoded to 10 instead of using the\nconfigured MaxConnections value.",
+		},
+		{
+			name: "with language tag",
+			in: "```text\nfeat(api): add rate limiting\n```",
+			want: "feat(api): add rate limiting",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripMarkdownCodeFence(tt.in); got != tt.want {
+				t.Errorf("stripMarkdownCodeFence(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- GenerateCommitMessage retry loop test ---
+
+// TestGenerateCommitMessage_RetryLoop verifies the retry loop in
+// GenerateCommitMessage: when the first response is not a valid Conventional
+// Commits message, the caller retries up to 2 times with feedback.
+func TestGenerateCommitMessage_RetryLoop(t *testing.T) {
+	tests := []struct {
+		name           string
+		responses      []*llm.ChatResponse
+		wantErr        bool
+		wantErrContain string
+	}{
+		{
+			name: "valid message on first attempt",
+			responses: []*llm.ChatResponse{
+				{Message: llm.Message{Content: "feat(api): add rate limiting"}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid then valid on retry",
+			responses: []*llm.ChatResponse{
+				{Message: llm.Message{Content: "Here is the commit message:\nfeat(api): add rate limiting"}},
+				{Message: llm.Message{Content: "feat(api): add rate limiting"}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid then valid on second retry",
+			responses: []*llm.ChatResponse{
+				{Message: llm.Message{Content: "feat: Add New Feature"}}, // uppercase desc
+				{Message: llm.Message{Content: "fix(auth): Resolve token leak"}}, // uppercase desc
+				{Message: llm.Message{Content: "fix(auth): resolve token leak"}},
+			},
+			wantErr: false,
+		},
+		{
+			name:           "all attempts invalid",
+			responses: []*llm.ChatResponse{
+				{Message: llm.Message{Content: "feat: Add New Feature"}},
+				{Message: llm.Message{Content: "feat: Another Uppercase Message"}},
+				{Message: llm.Message{Content: "feat: Yet Another One"}},
+			},
+			wantErr:        true,
+			wantErrContain: "invalid commit message after multiple attempts",
+		},
+		{
+			name: "empty content returns no usable output",
+			responses: []*llm.ChatResponse{
+				{Message: llm.Message{Content: ""}},
+			},
+			wantErr:        true,
+			wantErrContain: "empty commit message",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockLLMCaller{responses: tt.responses}
+
+			b := &OrchestratorBuilder{
+				logger: slog.Default(),
+				mu:     sync.RWMutex{},
+			}
+
+			buildRequest := func(extraUserText string) llm.ChatRequest {
+				return llm.ChatRequest{
+					Messages: []llm.Message{
+						{Role: "user", Content: "## Staged Diff\n\n" + extraUserText},
+					},
+				}
+			}
+
+			msg, err := b.generateCommitMessageWithCaller(context.Background(), agent.LLMCaller(mock), "test-provider", "", buildRequest)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErrContain)
+				}
+				if tt.wantErrContain != "" && !strings.Contains(err.Error(), tt.wantErrContain) {
+					t.Errorf("error = %q, want to contain %q", err.Error(), tt.wantErrContain)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErrContain != "" && !strings.Contains(msg, tt.wantErrContain) {
+				t.Errorf("message = %q, want to contain %q", msg, tt.wantErrContain)
+			}
+		})
 	}
 }

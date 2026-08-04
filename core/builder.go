@@ -736,7 +736,68 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 // The opening fence must be at the very start and the closing fence at the
 // very end (after TrimSpace), so legitimate backticks inside a body are left
 // untouched. The captured group holds the inner content.
-var commitMarkdownFenceRe = regexp.MustCompile("(?s)^```[a-zA-Z0-9+-]*[ \t]*\n(.*)\n```[ \t]*$")
+//
+// The (.+?) pattern (non-greedy) is used instead of (.*) so that multi-line
+// messages with a body (blank line + paragraphs) are captured correctly even
+// when the closing fence appears at the very end.
+var commitMarkdownFenceRe = regexp.MustCompile("(?s)^```[a-zA-Z0-9+-]*[ \t]*\n(.+?)\n```[ \t]*$")
+
+// commitMessageReasoningPrefixRe matches common reasoning/thinking prefixes
+// that some LLMs (especially small models like Qwen) may accidentally include
+// at the start of the content field.  The regex is case-insensitive and
+// captures everything after the prefix so we can strip it.
+var commitMessageReasoningPrefixRe = regexp.MustCompile(
+	`(?i)^` +
+		`(?:` +
+		`based on my analysis(?:,| of|:) ` +
+		`|here(?:['′]s|s) (?:the )?commit message(?:,|:) ` +
+		`|the commit message(?:,| is|:) ` +
+		`|sure,? ` +
+		`|ok,? ` +
+		`|ok sure,? ` +
+		`|here(?:['′]s|s) an? ` +
+		`|below(?:,| is|:) ` +
+		`|according to my analysis ` +
+		`|from the diff ` +
+		`|from the provided diff ` +
+		`|from the staged diff ` +
+		`|this commit ` +
+		`)`,
+)
+
+// conventionalCommitRe validates that a string follows the Conventional Commits
+// format: <type>[optional scope]: <description>.
+// Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert.
+// The (?s) flag makes . match newlines so multi-line messages (with body) are
+// accepted — we only care that the first line starts with a valid type prefix.
+var conventionalCommitRe = regexp.MustCompile(
+	`(?s)^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]*\))?: .+$`,
+)
+
+// isValidConventionalCommit checks whether msg starts with a valid Conventional
+// Commits type prefix followed by a colon and a non-empty description in
+// lowercase. The lowercase requirement applies only to the first character of
+// the description line (proper nouns like "GitHub" in the middle are allowed).
+func isValidConventionalCommit(msg string) bool {
+	if !conventionalCommitRe.MatchString(msg) {
+		return false
+	}
+	// Extract the description portion (everything after "<type>(scope): ").
+	// Only the first character of the description must be lowercase.
+	idx := strings.IndexByte(msg, ':')
+	if idx < 0 {
+		return false
+	}
+	descLine := msg[idx+1:]
+	if nl := strings.IndexByte(descLine, '\n'); nl >= 0 {
+		descLine = descLine[:nl]
+	}
+	descLine = strings.TrimSpace(descLine)
+	if descLine == "" {
+		return false
+	}
+	return descLine[0] >= 'a' && descLine[0] <= 'z'
+}
 
 // stripMarkdownCodeFence removes a single surrounding markdown code block from
 // s if the entire (trimmed) string is wrapped in one. It is a defensive
@@ -749,6 +810,48 @@ func stripMarkdownCodeFence(s string) string {
 		return strings.TrimSpace(m[1])
 	}
 	return trimmed
+}
+
+// extractCommitMessage extracts the best available commit message text from an
+// LLM response. It tries fields in order of preference:
+//
+//	1. resp.Message.Content (after stripping markdown fences and reasoning prefixes)
+//	2. resp.Message.ReasoningContent (for DeepSeek-style providers)
+//	3. resp.Reasoning (for OpenAI Responses API)
+//
+// This handles the failure mode where small models (especially Qwen) put the
+// actual commit message into a reasoning field instead of Content.
+func extractCommitMessage(resp *llm.ChatResponse) string {
+	if resp == nil {
+		return ""
+	}
+
+	// Collect candidates in priority order.
+	candidates := []string{
+		resp.Message.Content,
+		resp.Message.ReasoningContent,
+		resp.Reasoning,
+	}
+
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		// Strip markdown fencing first.
+		candidate = stripMarkdownCodeFence(candidate)
+		if candidate == "" {
+			continue
+		}
+		// Strip common reasoning/thinking prefixes that some models
+		// (especially small ones) may accidentally include.
+		candidate = commitMessageReasoningPrefixRe.ReplaceAllString(candidate, "")
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" {
+			return candidate
+		}
+	}
+
+	return ""
 }
 
 // GenerateCommitMessage produces a Conventional Commits-formatted commit
@@ -783,15 +886,7 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 	// runaway output. Non-reasoning models stop naturally well before this.
 	const commitMsgMaxTokens = 2048
 	temp := 0.4
-	req := llm.ChatRequest{
-		Messages: []llm.Message{
-			{Role: "system", Content: coreprompts.CommitMessage},
-			{Role: "user", Content: "## Staged Diff\n\n" + diff},
-		},
-		MaxTokens:       commitMsgMaxTokens,
-		Temperature:     &temp,
-		ReasoningEffort: reasoningEffort,
-	}
+
 	caller := agent.LLMCaller(llmRouter)
 	if dw := agent.DumpWriterFromContext(ctx); dw != nil {
 		caller = agent.NewLoggingLLMCaller(caller, llmRouter.ActiveProviderName(), b.logger)
@@ -800,55 +895,127 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 	providerName := llmRouter.ActiveProviderName()
 	b.log().Debug("generating commit message",
 		"provider", providerName, "diff_bytes", len(diff))
-	resp, err := caller.Call(ctx, req)
-	if err != nil {
-		// Classify the failure so operators can distinguish a too-large
-		// staged diff (context window) from a slow or unresponsive
-		// provider (deadline) or a provider-side error. This is the
-		// single place the LLM-side cause is logged; the backend RPC
-		// layer only logs its own preconditions and passes this through.
-		switch {
-		case errors.Is(err, llm.ErrContextWindowExceeded):
-			b.log().Error("commit message generation failed: staged diff exceeds model context window",
-				"err", err, "diff_bytes", len(diff), "provider", providerName)
-		case errors.Is(err, context.DeadlineExceeded):
-			b.log().Error("commit message generation failed: LLM call timed out",
-				"err", err, "diff_bytes", len(diff), "provider", providerName)
-		default:
-			b.log().Error("commit message generation failed: LLM call error",
-				"err", err, "diff_bytes", len(diff), "provider", providerName)
+
+	// Build the base request.
+	buildRequest := func(extraUserText string) llm.ChatRequest {
+		userContent := "## Staged Diff\n\n" + diff
+		if extraUserText != "" {
+			userContent += "\n\n" + extraUserText
 		}
-		return "", err
+		return llm.ChatRequest{
+			Messages: []llm.Message{
+				{Role: "system", Content: coreprompts.CommitMessage},
+				{Role: "user", Content: userContent},
+			},
+			MaxTokens:       commitMsgMaxTokens,
+			Temperature:     &temp,
+			ReasoningEffort: reasoningEffort,
+		}
 	}
-	if resp == nil {
-		b.log().Warn("commit message generation returned empty response",
-			"diff_bytes", len(diff), "provider", providerName)
-		return "", nil
-	}
-	// Strip any stray markdown code fencing the model may have added
-	// despite the prompt instructing it not to.
-	message := stripMarkdownCodeFence(resp.Message.Content)
-	if message == "" {
-		// The LLM call succeeded (no error) but produced no usable text.
-		// This is the failure mode that previously surfaced as a silent
-		// no-op in the UI: with a reasoning model, a too-small output
-		// budget is consumed by reasoning tokens and the model emits no
-		// text content (status=incomplete, reason=max_output_tokens).
-		// Surface it explicitly instead of returning an empty string so
-		// the UI reports an error and operators see a log entry.
-		hasReasoning := resp.Message.ReasoningContent != "" || resp.Reasoning != ""
-		b.log().Warn("commit message generation produced empty content",
+
+	return b.generateCommitMessageWithCaller(ctx, caller, providerName, diff, buildRequest)
+}
+
+// generateCommitMessageWithCaller runs the retry loop for commit message
+// generation. It is a separate method so that tests can inject a mock
+// LLMCaller and verify retry behavior deterministically.
+func (b *OrchestratorBuilder) generateCommitMessageWithCaller(
+	ctx context.Context,
+	caller agent.LLMCaller,
+	providerName string,
+	diff string,
+	buildRequest func(extraUserText string) llm.ChatRequest,
+) (string, error) {
+	// Attempt generation with up to 2 retries if the first result is not a
+	// valid Conventional Commits message.
+	const maxRetries = 2
+	var lastInvalidMsg string
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		var extraUserText string
+		if attempt > 0 && lastInvalidMsg != "" {
+			extraUserText = "PREVIOUS ATTEMPT FAILED VALIDATION\n\n" +
+				"The previous output did not follow the Conventional Commits format.\n" +
+				"Here is what was produced (DO NOT repeat this format):\n" +
+				"```\n" + lastInvalidMsg + "\n```\n\n" +
+				"Your output MUST start with a valid type prefix: feat, fix, docs, " +
+				"style, refactor, perf, test, build, ci, chore, or revert.\n" +
+				"Example: feat(auth): add token validation\n\n" +
+				"DO NOT prefix with phrases like 'this commit', 'Here is the commit message:', " +
+				"'Based on my analysis:', or similar."
+		}
+
+		req := buildRequest(extraUserText)
+		resp, err := caller.Call(ctx, req)
+		if err != nil {
+			// Classify the failure so operators can distinguish a too-large
+			// staged diff (context window) from a slow or unresponsive
+			// provider (deadline) or a provider-side error. This is the
+			// single place the LLM-side cause is logged; the backend RPC
+			// layer only logs its own preconditions and passes this through.
+			switch {
+			case errors.Is(err, llm.ErrContextWindowExceeded):
+				b.log().Error("commit message generation failed: staged diff exceeds model context window",
+					"err", err, "diff_bytes", len(diff), "provider", providerName)
+			case errors.Is(err, context.DeadlineExceeded):
+				b.log().Error("commit message generation failed: LLM call timed out",
+					"err", err, "diff_bytes", len(diff), "provider", providerName)
+			default:
+				b.log().Error("commit message generation failed: LLM call error",
+					"err", err, "diff_bytes", len(diff), "provider", providerName)
+			}
+			return "", err
+		}
+		if resp == nil {
+			b.log().Warn("commit message generation returned empty response",
+				"diff_bytes", len(diff), "provider", providerName)
+			return "", nil
+		}
+
+		// Extract the best available commit message from the response.
+		// This handles the failure mode where small models (especially Qwen)
+		// put the actual commit message into a reasoning field instead of
+		// Content, and also strips common reasoning prefixes.
+		message := extractCommitMessage(resp)
+		if message == "" {
+			// The LLM call succeeded (no error) but produced no usable text.
+			// This is the failure mode that previously surfaced as a silent
+			// no-op in the UI: with a reasoning model, a too-small output
+			// budget is consumed by reasoning tokens and the model emits no
+			// text content (status=incomplete, reason=max_output_tokens).
+			// Surface it explicitly instead of returning an empty string so
+			// the UI reports an error and operators see a log entry.
+			hasReasoning := resp.Message.ReasoningContent != "" || resp.Reasoning != ""
+			b.log().Warn("commit message generation produced no usable output",
+				"diff_bytes", len(diff), "provider", providerName,
+				"stop_reason", resp.StopReason, "has_reasoning", hasReasoning)
+			if hasReasoning {
+				return "", errors.New("the model produced no commit message text " +
+					"(its output budget was likely consumed by reasoning); " +
+					"try a non-reasoning model, a smaller staged diff, or a larger model")
+			}
+			return "", errors.New("the model produced an empty commit message; " +
+				"try again or use a different model")
+		}
+
+		// Validate Conventional Commits format.
+		if isValidConventionalCommit(message) {
+			// Success — valid format.
+			return message, nil
+		}
+
+		// Invalid format — store for retry feedback.
+		lastInvalidMsg = message
+		b.log().Debug("commit message validation failed, will retry",
 			"diff_bytes", len(diff), "provider", providerName,
-			"stop_reason", resp.StopReason, "has_reasoning", hasReasoning)
-		if hasReasoning {
-			return "", errors.New("the model produced no commit message text " +
-				"(its output budget was likely consumed by reasoning); " +
-				"try a non-reasoning model, a smaller staged diff, or a larger model")
-		}
-		return "", errors.New("the model produced an empty commit message; " +
-			"try again or use a different model")
+			"attempt", attempt+1, "raw", message)
 	}
-	return message, nil
+
+	// All attempts exhausted — return an error with the last invalid output.
+	b.log().Warn("commit message generation failed validation after all retries",
+		"diff_bytes", len(diff), "provider", providerName,
+		"last_output", lastInvalidMsg)
+	return "", errors.New("the model produced an invalid commit message after " +
+		"multiple attempts; try a different model or reduce the staged diff size")
 }
 
 // ListProviderModels returns available model names for a given provider.
