@@ -269,7 +269,7 @@ export function GoalProposalPanel({ item }: GoalProposalPanelProps) {
         <textarea
           id={`goal-cond-${item.message.id}`}
           className="w-full rounded-md border border-border bg-background p-2 text-xs resize-none custom-scrollbar"
-          rows={3}
+          rows={5}
           value={condition}
           onChange={(e) => setCondition(e.target.value)}
           placeholder="Describe what success looks like..."
@@ -281,7 +281,7 @@ export function GoalProposalPanel({ item }: GoalProposalPanelProps) {
         <textarea
           id={`goal-verify-${item.message.id}`}
           className="w-full rounded-md border border-border bg-background p-2 text-xs resize-none custom-scrollbar"
-          rows={2}
+          rows={3}
           value={verify}
           onChange={(e) => setVerify(e.target.value)}
           placeholder="How to verify the goal is met..."
