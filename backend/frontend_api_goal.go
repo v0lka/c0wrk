@@ -22,7 +22,7 @@ func (f *FrontendAPI) ConfirmGoal(sessionID, requestID, condition, verify, verif
 	if requestID == "" {
 		return errors.New("request_id is required")
 	}
-	if !f.app.Manager().ResolveGoalProposal(requestID, "approve", condition, verify, verificationMode, "") {
+	if !f.app.Manager().ResolveGoalProposal(requestID, "approve", condition, verify, verificationMode) {
 		return fmt.Errorf("no pending goal proposal for request_id %q", requestID)
 	}
 	return nil
@@ -41,30 +41,7 @@ func (f *FrontendAPI) CancelGoal(sessionID, requestID string) error {
 	if requestID == "" {
 		return errors.New("request_id is required")
 	}
-	if !f.app.Manager().ResolveGoalProposal(requestID, "cancel", "", "", "", "") {
-		return fmt.Errorf("no pending goal proposal for request_id %q", requestID)
-	}
-	return nil
-}
-
-// ClarifyGoal resolves a pending goal proposal with a clarification. The user
-// has provided an answer (either to the agent's clarification question or
-// their own refinement request) and wants the agent to revise the goal and
-// re-propose. The clarification string is forwarded to the propose_goal tool,
-// which instructs the agent to call propose_goal again with updated values.
-// This completes the clarification round-trip that needs_clarification mode
-// requires; without it, the approve path is the only resolvable action.
-//
-// sessionID is required by the Wails RPC binding signature for session-scoped
-// event routing; the requestID alone identifies the pending proposal.
-func (f *FrontendAPI) ClarifyGoal(sessionID, requestID, clarification string) error {
-	if f.app == nil || f.app.Manager() == nil {
-		return errors.New("session manager not initialized")
-	}
-	if requestID == "" {
-		return errors.New("request_id is required")
-	}
-	if !f.app.Manager().ResolveGoalProposal(requestID, "clarify", "", "", "", clarification) {
+	if !f.app.Manager().ResolveGoalProposal(requestID, "cancel", "", "", "") {
 		return fmt.Errorf("no pending goal proposal for request_id %q", requestID)
 	}
 	return nil

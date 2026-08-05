@@ -16,7 +16,7 @@ func TestResolveGoalProposal_HappyPath(t *testing.T) {
 	})
 	t.Cleanup(func() { a.pendingGoalProposals.Delete("req-1") })
 
-	ok := a.resolveGoalProposal("req-1", "approve", "cond", "ver", "executable", "")
+	ok := a.resolveGoalProposal("req-1", "approve", "cond", "ver", "executable")
 	if !ok {
 		t.Fatal("resolveGoalProposal returned false for a pending proposal")
 	}
@@ -34,37 +34,16 @@ func TestResolveGoalProposal_HappyPath(t *testing.T) {
 	}
 }
 
-// TestResolveGoalProposal_ClarifyForwardsClarification verifies the clarify
-// decision carries the clarification string to the channel.
-func TestResolveGoalProposal_ClarifyForwardsClarification(t *testing.T) {
-	a := &App{}
-	ch := make(chan goalProposalResponse, 1)
-	a.pendingGoalProposals.Store("req-2", &pendingGoalProposalEntry{
-		ch:        ch,
-		sessionID: "sess-2",
-	})
-	t.Cleanup(func() { a.pendingGoalProposals.Delete("req-2") })
-
-	ok := a.resolveGoalProposal("req-2", "clarify", "", "", "", "which scope?")
-	if !ok {
-		t.Fatal("resolveGoalProposal returned false for a pending proposal")
-	}
-	resp := <-ch
-	if resp.Decision != "clarify" || resp.Clarification != "which scope?" {
-		t.Errorf("channel received %+v, want clarify decision with clarification", resp)
-	}
-}
-
 func TestResolveGoalProposal_EmptyRequestID(t *testing.T) {
 	a := &App{}
-	if a.resolveGoalProposal("", "approve", "c", "v", "executable", "") {
+	if a.resolveGoalProposal("", "approve", "c", "v", "executable") {
 		t.Error("expected false for empty requestID")
 	}
 }
 
 func TestResolveGoalProposal_UnknownRequestID(t *testing.T) {
 	a := &App{}
-	if a.resolveGoalProposal("nonexistent", "approve", "c", "v", "executable", "") {
+	if a.resolveGoalProposal("nonexistent", "approve", "c", "v", "executable") {
 		t.Error("expected false for unknown requestID")
 	}
 }

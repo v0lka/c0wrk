@@ -24,15 +24,11 @@ export function handleGoalProposalEvent(sessionId: string, data: GoalProposalDat
     id: `goal-proposal-${data.request_id}`,
     sessionId,
     type: 'goal_proposal',
-    content: data.needs_clarification && data.clarification
-      ? data.clarification
-      : data.condition,
+    content: data.condition,
     metadata: {
       request_id: data.request_id,
       condition: data.condition,
       verify: data.verify,
-      clarification: data.clarification ?? '',
-      needs_clarification: data.needs_clarification,
       // Surface the derivation-chosen verification mode so the approval panel
       // can show/edit it and round-trip a user edit back via confirmGoal.
       verification_mode: data.verification_mode ?? '',

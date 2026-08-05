@@ -193,11 +193,6 @@ func buildGoalState(proposal tools.GoalProposal, resp tools.GoalProposalResponse
 		}, nil
 	case "cancel":
 		return nil, errors.New("goal derivation cancelled by user")
-	case "clarify":
-		// Reaching here means the Conductor run ended on a clarification
-		// without ever resolving to an approval — the goal could not be
-		// finalized from the available back-and-forth.
-		return nil, fmt.Errorf("goal derivation ended on a clarification without approval: %s", resp.Clarification)
 	default:
 		return nil, fmt.Errorf("goal derivation: unknown proposer decision %q", resp.Decision)
 	}

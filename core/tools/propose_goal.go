@@ -10,22 +10,18 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolProposeGoalDescription = `Propose a goal — a {condition, verify} pair — for user sign-off before committing to it. Use this when the derivation agent has crystallized a goal from the user's request. The call blocks until the user approves (optionally with edits), provides a clarification, or cancels. Returns the user's decision: the approved condition/verify (which may differ from the proposal if the user edited them), a clarification string if the user asked for more detail, or an error message if the user cancelled.`
+const toolProposeGoalDescription = `Propose a goal — a {condition, verify} pair — for user sign-off before committing to it. Use this when the derivation agent has crystallized a goal from the user's request. The call blocks until the user approves (optionally with edits) or cancels. Returns the user's decision: the approved condition/verify (which may differ from the proposal if the user edited them), or an error message if the user cancelled.`
 
 // GoalProposal is the {condition, verify} pair the agent submits for sign-off.
-// Clarification is an optional question the agent includes when it needs
-// disambiguation from the user; NeedsClarification flags that intent.
 //
 // VerificationMode selects how the condition is to be verified (see
 // goal.VerificationMode* constants). It is optional and defaults to
 // goal.VerificationModeExecutable when omitted. The value round-trips through
 // GoalProposalResponse so a user edit at sign-off is honored.
 type GoalProposal struct {
-	Condition          string `json:"condition"`
-	Verify             string `json:"verify"`
-	VerificationMode   string `json:"verification_mode,omitempty"` // default: goal.VerificationModeExecutable
-	Clarification      string `json:"clarification,omitempty"`
-	NeedsClarification bool   `json:"needs_clarification,omitempty"`
+	Condition        string `json:"condition"`
+	Verify           string `json:"verify"`
+	VerificationMode string `json:"verification_mode,omitempty"` // default: goal.VerificationModeExecutable
 }
 
 // GoalProposalResponse is the user's decision on a proposed goal.
@@ -33,15 +29,12 @@ type GoalProposal struct {
 // Decision is one of:
 //   - "approve":           the user accepted the goal. Condition/Verify carry
 //     the (possibly edited) approved values.
-//   - "clarify":           the user answered the agent's clarification request
-//     (or asked their own). Clarification holds the answer.
 //   - "cancel":            the user rejected the goal outright.
 type GoalProposalResponse struct {
-	Decision         string `json:"decision"`                    // "approve", "clarify", "cancel"
+	Decision         string `json:"decision"`                    // "approve", "cancel"
 	Condition        string `json:"condition,omitempty"`         // set when Decision == "approve" (edited values)
 	Verify           string `json:"verify,omitempty"`            // set when Decision == "approve" (edited values)
 	VerificationMode string `json:"verification_mode,omitempty"` // set when Decision == "approve" (edited value); echoes proposal when unchanged
-	Clarification    string `json:"clarification,omitempty"`     // set when Decision == "clarify"
 }
 
 // GoalProposer is the backend hook that submits a goal proposal to the user and
@@ -80,14 +73,6 @@ func NewProposeGoalTool() *ProposeGoalTool {
 			"type": "string",
 			"description": "Optional. How the goal will be verified: 'executable' (default — the verify clause is an executable check) or 're_derivation' (the goal is verified by re-deriving it and comparing). Omit to use the default.",
 			"enum": ["executable", "re_derivation"]
-		},
-		"clarification": {
-			"type": "string",
-			"description": "Optional. A question for the user when the goal cannot be fully determined from the request. Pair with needs_clarification=true."
-		},
-		"needs_clarification": {
-			"type": "boolean",
-			"description": "If true, the call signals that the agent needs user input to finalize the goal. The user's reply is returned in the response. Default false (goal is ready for approve/cancel)."
 		}
 	},
 	"required": ["condition", "verify"]
@@ -98,11 +83,9 @@ func NewProposeGoalTool() *ProposeGoalTool {
 }
 
 type proposeGoalInput struct {
-	Condition          string `json:"condition"`
-	Verify             string `json:"verify"`
-	VerificationMode   string `json:"verification_mode"`
-	Clarification      string `json:"clarification"`
-	NeedsClarification bool   `json:"needs_clarification"`
+	Condition        string `json:"condition"`
+	Verify           string `json:"verify"`
+	VerificationMode string `json:"verification_mode"`
 }
 
 func (t *ProposeGoalTool) Execute(ctx context.Context, input json.RawMessage) (sdktools.ToolResult, error) {
@@ -150,13 +133,6 @@ func (t *ProposeGoalTool) Execute(ctx context.Context, input json.RawMessage) (s
 		return sdktools.ToolResult{
 			Content: fmt.Sprintf("Goal approved by user. Condition: %s | Verify: %s", params.Condition, params.Verify),
 		}, nil
-	case "clarify":
-		msg := "User provided a clarification."
-		if resp.Clarification != "" {
-			msg += " " + resp.Clarification
-		}
-		msg += "\n\nRevise the goal and call propose_goal again with the updated condition/verify."
-		return sdktools.ToolResult{Content: msg}, nil
 	case "cancel":
 		return sdktools.ToolResult{
 			Content: "User cancelled the goal proposal. Do not proceed with this goal unless the user gives new instructions.",

@@ -152,9 +152,11 @@ Goal mode is entered by a leading `/goal` command on the first message, but
 the user does **not** write the condition/verify clauses. The derivation agent
 (`deriveGoal`, a full-context Conductor pass with the `GoalDerivation` prompt)
 grounds a {condition, verify} pair in the actual codebase and submits it for
-sign-off via `propose_goal`. The user **approves, edits, asks for
-clarification, or cancels** — the approved `GoalState` prefers the user's
-edited wording over the agent's.
+sign-off via `propose_goal`. The user **approves (optionally with edits) or cancels** — the approved
+`GoalState` prefers the user's edited wording over the agent's. Ambiguous
+requests are disambiguated earlier, at derivation time, via `ask_user` (the
+derivation agent asks follow-up questions before proposing), not via a clarify
+mode on the proposal itself.
 
 **Rationale.** Asking the user to hand-write a machine-checkable verify clause
 is a high-friction entry that most users would skip or get wrong. The agent

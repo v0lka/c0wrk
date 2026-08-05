@@ -10,12 +10,11 @@ vi.hoisted(() => {
 })
 
 // Mock the stores with minimal state the component selects.
-const { updateMessage, clearPendingProposal, confirmGoal, cancelGoal, clarifyGoal, useActiveGoal } = vi.hoisted(() => ({
+const { updateMessage, clearPendingProposal, confirmGoal, cancelGoal, useActiveGoal } = vi.hoisted(() => ({
   updateMessage: vi.fn(),
   clearPendingProposal: vi.fn(),
   confirmGoal: vi.fn(async () => {}),
   cancelGoal: vi.fn(async () => {}),
-  clarifyGoal: vi.fn(async () => {}),
   // Typed so mockReturnValue accepts an ActiveGoal | undefined (the real hook's
   // return type); an untyped vi.fn() would infer a () => undefined signature and
   // reject a goal snapshot argument.
@@ -40,7 +39,7 @@ vi.mock('@/stores/goalStore', () => ({
 // Mock the api so no real Wails binding is touched. The component imports
 // { goal } from '@/api' (the index re-export), so mock that module.
 vi.mock('@/api', () => ({
-  goal: { confirmGoal, cancelGoal, clarifyGoal },
+  goal: { confirmGoal, cancelGoal },
 }))
 vi.mock('@/api/runtime', () => ({ getApp: () => ({}) }))
 vi.mock('@/lib/logger', () => ({ logger: { error: vi.fn() } }))
@@ -50,7 +49,7 @@ import type { DisplayItem } from '@/types/messages'
 
 type GoalProposalItem = Extract<DisplayItem, { kind: 'goal_proposal' }>
 
-function makeItem(opts: { needsClarification?: boolean; condition?: string; verify?: string; clarification?: string; requestId?: string; verificationMode?: string }): GoalProposalItem {
+function makeItem(opts: { condition?: string; verify?: string; requestId?: string; verificationMode?: string }): GoalProposalItem {
   return {
     kind: 'goal_proposal',
     message: {
@@ -63,8 +62,6 @@ function makeItem(opts: { needsClarification?: boolean; condition?: string; veri
     },
     condition: opts.condition ?? 'Make tests pass',
     verify: opts.verify ?? 'go test ./...',
-    clarification: opts.clarification,
-    needs_clarification: opts.needsClarification ?? false,
     verification_mode: opts.verificationMode ?? 'executable',
   }
 }
@@ -178,60 +175,18 @@ describe('GoalProposalPanel', () => {
     }
   })
 
-  it('needs_clarification mode renders Send (clarify) instead of Approve', () => {
-    // Re-render with a needs_clarification item.
-    act(() => { root.unmount() })
-    const r = render(<GoalProposalPanel item={makeItem({ needsClarification: true, clarification: 'which scope?' })} />)
-    container = r.container
-    root = r.root
-    try {
-      const labels = Array.from(container.querySelectorAll('button')).map((b) => b.textContent ?? '')
-      expect(labels.some((l) => l.includes('Send'))).toBe(true)
-      expect(labels.some((l) => l.includes('Approve'))).toBe(false)
-    } finally {
-      cleanup()
-    }
-  })
-
-  it('Send button calls clarifyGoal with the refined verify text', async () => {
-    act(() => { root.unmount() })
-    const r = render(<GoalProposalPanel item={makeItem({ needsClarification: true, clarification: 'which scope?' })} />)
-    container = r.container
-    root = r.root
-    try {
-      // The Send button is disabled while verify is empty (its initial state in
-      // needs_clarification mode). Simulate the user typing a refinement into
-      // the verify textarea using React 19's native setter so the controlled
-      // input updates state and enables the button.
-      const verifyTextarea = container.querySelector('textarea#goal-verify-msg-1') as HTMLTextAreaElement
-      expect(verifyTextarea).toBeTruthy()
-      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!
-      await act(async () => {
-        nativeSetter.call(verifyTextarea, 'verify via tests')
-        verifyTextarea.dispatchEvent(new Event('input', { bubbles: true }))
-      })
-
-      const sendBtn = Array.from(container.querySelectorAll('button')).find(
-        (b) => (b.textContent ?? '').includes('Send'),
-      )! as HTMLButtonElement
-      expect(sendBtn.disabled).toBe(false)
-      await act(async () => { sendBtn.click() })
-      // clarifyGoal(sessionId, requestId, clarification) — the clarification
-      // carries the user's refinement typed into the verify field.
-      expect(clarifyGoal).toHaveBeenCalled()
-      expect(clarifyGoal).toHaveBeenCalledWith('sess-1', 'req-1', 'verify via tests')
-    } finally {
-      cleanup()
-    }
-  })
-
-  it('renders settled "Clarification sent" card for decision=clarify', () => {
+  it('renders graceful "Dismissed" card for a legacy decision=clarify', () => {
+    // A persisted proposal from the removed needs_clarification mode carries
+    // decision='clarify', which no longer matches the 'approve'/'cancel'
+    // settled branches. With resolved=true it must fall through to the generic
+    // isResolved → 'Dismissed' card (graceful render of old data).
     act(() => { root.unmount() })
     const item = makeItem({})
     item.message.metadata = { request_id: 'req-1', resolved: true, decision: 'clarify' }
     const r = render(<GoalProposalPanel item={item} />)
     try {
-      expect(r.container.textContent).toContain('Clarification sent')
+      expect(r.container.textContent).toContain('Dismissed')
+      expect(r.container.textContent).not.toContain('Clarification sent')
     } finally {
       act(() => { r.root.unmount() })
     }

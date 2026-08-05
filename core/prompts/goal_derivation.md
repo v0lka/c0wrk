@@ -32,17 +32,17 @@ These two must correspond: the verify clause must actually test the condition.
 
 5. **Call `propose_goal`.** Submit the derived `{condition, verify}` together with the `verification_mode` you chose. The call blocks until the user responds:
    - **approve** (possibly with edits) — the goal is locked in; your work is done.
-   - **clarify** — the user answered a question or asked one; revise the goal and propose again.
    - **cancel** — the user abandoned the goal; stop.
 
 ## When You Cannot Derive a Goal
 
-If, after genuine investigation, the request is too ambiguous to derive a verifiable condition (e.g. multiple valid interpretations, missing critical context, or the request is exploratory with no concrete finish line), do NOT guess. Instead call `propose_goal` with:
-- `needs_clarification: true`
-- `clarification`: a focused question whose answer would let you derive the goal.
-- `condition` and `verify`: your best current understanding (they are still required fields).
+If, after genuine investigation, the request is too ambiguous to derive a verifiable condition, do NOT guess. Call the `ask_user` tool with a focused question (or several) offering options and/or free text; it blocks until the user responds. `propose_goal` is ONLY for a goal that is ready for sign-off — never use it to ask a question. Once you have the `ask_user` answer, incorporate it and derive the goal.
 
-The user's answer comes back as a `clarify` decision; incorporate it and propose again.
+Ambiguity worth a clarifying question looks like:
+
+- **Multiple valid interpretations** — the request could mean materially different things (e.g. "fix the tests" when several test suites are failing for unrelated reasons).
+- **Missing critical context** — a key constraint, scope, or target is absent and the goal would change depending on it.
+- **Exploratory with no concrete finish line** — the request is open-ended ("improve performance") and no single verifiable outcome is implied; ask what "done" looks like.
 
 ## Rules
 

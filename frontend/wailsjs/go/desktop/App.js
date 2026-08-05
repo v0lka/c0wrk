@@ -42,10 +42,6 @@ export function CheckoutBranch(arg1) {
   return window['go']['desktop']['App']['CheckoutBranch'](arg1);
 }
 
-export function ClarifyGoal(arg1, arg2, arg3) {
-  return window['go']['desktop']['App']['ClarifyGoal'](arg1, arg2, arg3);
-}
-
 export function ClearGoal(arg1) {
   return window['go']['desktop']['App']['ClearGoal'](arg1);
 }

@@ -29,8 +29,6 @@ export function CancelUnfinishedTask(arg1:string):Promise<void>;
 
 export function CheckoutBranch(arg1:string):Promise<void>;
 
-export function ClarifyGoal(arg1:string,arg2:string,arg3:string):Promise<void>;
-
 export function ClearGoal(arg1:string):Promise<void>;
 
 export function ClearReview(arg1:string):Promise<void>;

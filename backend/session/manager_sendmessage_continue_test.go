@@ -751,7 +751,7 @@ func proposeGoalResponse(condition, verify string) *llm.ChatResponse {
 			ToolCalls: []llm.ToolCall{{
 				ID:    "pg1",
 				Name:  "propose_goal",
-				Input: json.RawMessage(`{"condition":"` + condition + `","verify":"` + verify + `","needs_clarification":false}`),
+				Input: json.RawMessage(`{"condition":"` + condition + `","verify":"` + verify + `"}`),
 			}},
 		},
 		StopReason: "tool_use",

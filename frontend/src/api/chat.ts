@@ -159,8 +159,6 @@ export interface PendingGoalProposal {
   request_id: string
   condition: string
   verify: string
-  clarification?: string
-  needs_clarification: boolean
   /** Per-goal verification mode ('executable' | 're_derivation'); absent means
    *  the default ('executable'). */
   verification_mode?: string

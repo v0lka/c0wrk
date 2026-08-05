@@ -156,8 +156,6 @@ export interface GoalProposalData {
   readonly session_id: string
   readonly condition: string
   readonly verify: string
-  readonly clarification?: string
-  readonly needs_clarification: boolean
   /** Per-goal verification mode chosen by the derivation agent
    *  ('executable' | 're_derivation'); absent/empty means the default
    *  ('executable'). Surfaced so the panel can show/edit how the goal will be
@@ -425,7 +423,6 @@ export function isGoalProposalData(d: unknown): d is GoalProposalData {
     && typeof d.session_id === 'string'
     && typeof d.condition === 'string'
     && typeof d.verify === 'string'
-    && typeof d.needs_clarification === 'boolean'
 }
 
 /**

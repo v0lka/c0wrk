@@ -30,7 +30,7 @@ func goalTestApp(t *testing.T) *FrontendAPI {
 func TestConfirmGoal_DelegatesToResolver(t *testing.T) {
 	f := goalTestApp(t)
 	var gotDecision, gotCond, gotVerify, gotMode string
-	f.app.manager.SetGoalProposalResolver(func(_, decision, cond, verify, mode, _ string) bool {
+	f.app.manager.SetGoalProposalResolver(func(_, decision, cond, verify, mode string) bool {
 		gotDecision, gotCond, gotVerify, gotMode = decision, cond, verify, mode
 		return true
 	})
@@ -42,29 +42,11 @@ func TestConfirmGoal_DelegatesToResolver(t *testing.T) {
 	}
 }
 
-// TestClarifyGoal_DelegatesToResolver verifies the ClarifyGoal RPC forwards
-// decision="clarify" with the clarification string. This is the backend half
-// of Fix #5 — completing the clarification round-trip the UI needs.
-func TestClarifyGoal_DelegatesToResolver(t *testing.T) {
-	f := goalTestApp(t)
-	var gotDecision, gotClarif string
-	f.app.manager.SetGoalProposalResolver(func(_, decision, _, _, _, clarif string) bool {
-		gotDecision, gotClarif = decision, clarif
-		return true
-	})
-	if err := f.ClarifyGoal("s", "req-2", "which scope?"); err != nil {
-		t.Fatalf("ClarifyGoal error = %v", err)
-	}
-	if gotDecision != "clarify" || gotClarif != "which scope?" {
-		t.Errorf("resolver got (%q,%q), want (clarify,which scope?)", gotDecision, gotClarif)
-	}
-}
-
 // TestCancelGoal_DelegatesToResolver verifies CancelGoal forwards decision=cancel.
 func TestCancelGoal_DelegatesToResolver(t *testing.T) {
 	f := goalTestApp(t)
 	var gotDecision string
-	f.app.manager.SetGoalProposalResolver(func(_, decision, _, _, _, _ string) bool {
+	f.app.manager.SetGoalProposalResolver(func(_, decision, _, _, _ string) bool {
 		gotDecision = decision
 		return true
 	})
@@ -87,9 +69,6 @@ func TestGoalRPCs_NoResolverReturnsError(t *testing.T) {
 	if err := f.CancelGoal("s", "req-x"); err == nil {
 		t.Error("CancelGoal expected error for unresolved proposal")
 	}
-	if err := f.ClarifyGoal("s", "req-x", "q"); err == nil {
-		t.Error("ClarifyGoal expected error for unresolved proposal")
-	}
 }
 
 // TestGoalRPCs_EmptyRequestID verifies the validation guard.
@@ -101,9 +80,6 @@ func TestGoalRPCs_EmptyRequestID(t *testing.T) {
 	if err := f.CancelGoal("s", ""); err == nil {
 		t.Error("CancelGoal with empty requestID should error")
 	}
-	if err := f.ClarifyGoal("s", "", "q"); err == nil {
-		t.Error("ClarifyGoal with empty requestID should error")
-	}
 }
 
 // TestGoalRPCs_NoManagerReturnsError verifies the guard when the app/manager
@@ -113,7 +89,6 @@ func TestGoalRPCs_NoManagerReturnsError(t *testing.T) {
 	for _, err := range []error{
 		f.ConfirmGoal("s", "r", "c", "v", "executable"),
 		f.CancelGoal("s", "r"),
-		f.ClarifyGoal("s", "r", "q"),
 	} {
 		if err == nil {
 			t.Error("expected error when manager is not initialized")

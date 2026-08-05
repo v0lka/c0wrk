@@ -329,7 +329,7 @@ func (a *App) handlePlanApprovalResponse(payload map[string]any, log *slog.Logge
 // when a pending proposal was found and resolved, false otherwise. Shared by
 // the event-based path (handleGoalProposalResponse) and the RPC-based path
 // (FrontendAPI.ConfirmGoal/CancelGoal, via the manager resolver).
-func (a *App) resolveGoalProposal(requestID, decision, condition, verify, verificationMode, clarification string) bool {
+func (a *App) resolveGoalProposal(requestID, decision, condition, verify, verificationMode string) bool {
 	if requestID == "" {
 		return false
 	}
@@ -348,7 +348,6 @@ func (a *App) resolveGoalProposal(requestID, decision, condition, verify, verifi
 		Condition:        condition,
 		Verify:           verify,
 		VerificationMode: verificationMode,
-		Clarification:    clarification,
 	}
 	select {
 	case entry.ch <- resp:
@@ -387,9 +386,8 @@ func (a *App) handleGoalProposalResponse(payload map[string]any, log *slog.Logge
 	condition, _ := payload["condition"].(string)
 	verify, _ := payload["verify"].(string)
 	verificationMode, _ := payload["verification_mode"].(string)
-	clarification, _ := payload["clarification"].(string)
 
-	if !a.resolveGoalProposal(requestID, decision, condition, verify, verificationMode, clarification) {
+	if !a.resolveGoalProposal(requestID, decision, condition, verify, verificationMode) {
 		log.Warn("no pending goal proposal for request_id", "request_id", requestID)
 	}
 }

@@ -210,7 +210,6 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | --------------- | --------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------- |
 | `ConfirmGoal`   | sessionID, requestID, condition, verify, verificationMode | error   | Approve a proposed goal (optionally with edits). `verificationMode` (`executable`/`re_derivation`) overrides the derivation-chosen mode. Resolves the pending `goal_proposal` action          |
 | `CancelGoal`    | sessionID, requestID                    | error   | Cancel a proposed goal                                                                               |
-| `ClarifyGoal`   | sessionID, requestID, clarification     | error   | Ask the derivation agent for clarification on a proposed goal                                        |
 | `PauseGoal`     | sessionID                               | error   | Pause an active goal loop                                                                            |
 | `ResumeGoal`    | sessionID                               | error   | Resume a paused goal loop                                                                            |
 | `ClearGoal`     | sessionID                               | error   | Clear the active goal for a session                                                                  |

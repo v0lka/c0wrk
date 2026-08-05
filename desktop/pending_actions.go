@@ -49,12 +49,10 @@ type PendingAskUser struct {
 
 // PendingGoalProposal describes a pending goal-proposal sign-off prompt.
 type PendingGoalProposal struct {
-	RequestID          string `json:"request_id"`
-	Condition          string `json:"condition"`
-	Verify             string `json:"verify"`
-	VerificationMode   string `json:"verification_mode,omitempty"`
-	Clarification      string `json:"clarification,omitempty"`
-	NeedsClarification bool   `json:"needs_clarification"`
+	RequestID        string `json:"request_id"`
+	Condition        string `json:"condition"`
+	Verify           string `json:"verify"`
+	VerificationMode string `json:"verification_mode,omitempty"`
 }
 
 // GetPendingActions returns all pending HITL prompts for a session — tool
@@ -140,12 +138,10 @@ func (a *App) GetPendingActions(sessionID string) (*PendingActionsResponse, erro
 			return true
 		}
 		resp.GoalProposals = append(resp.GoalProposals, PendingGoalProposal{
-			RequestID:          e.payload.RequestID,
-			Condition:          e.payload.Condition,
-			Verify:             e.payload.Verify,
-			VerificationMode:   e.payload.VerificationMode,
-			Clarification:      e.payload.Clarification,
-			NeedsClarification: e.payload.NeedsClarification,
+			RequestID:        e.payload.RequestID,
+			Condition:        e.payload.Condition,
+			Verify:           e.payload.Verify,
+			VerificationMode: e.payload.VerificationMode,
 		})
 		return true
 	})

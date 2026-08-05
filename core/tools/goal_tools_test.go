@@ -63,26 +63,6 @@ func TestProposeGoal_Execute_ApproveWithEdits(t *testing.T) {
 	}
 }
 
-func TestProposeGoal_Execute_Clarify(t *testing.T) {
-	tool := NewProposeGoalTool()
-	ctx := proposeCtx(GoalProposalResponse{Decision: "clarify", Clarification: "which scope?"})
-	input, _ := json.Marshal(GoalProposal{Condition: "c", Verify: "v"})
-
-	res, err := tool.Execute(ctx, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if res.IsError {
-		t.Errorf("clarify should not be IsError, got %q", res.Content)
-	}
-	if !strings.Contains(res.Content, "which scope?") {
-		t.Errorf("expected clarification echoed, got %q", res.Content)
-	}
-	if !strings.Contains(res.Content, "propose_goal again") {
-		t.Errorf("expected re-propose instruction, got %q", res.Content)
-	}
-}
-
 func TestProposeGoal_Execute_CancelIsError(t *testing.T) {
 	tool := NewProposeGoalTool()
 	ctx := proposeCtx(GoalProposalResponse{Decision: "cancel"})

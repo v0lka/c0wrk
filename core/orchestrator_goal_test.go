@@ -152,21 +152,6 @@ func TestBuildGoalState_CancelReturnsError(t *testing.T) {
 	}
 }
 
-func TestBuildGoalState_ClarifyWithoutApprovalReturnsError(t *testing.T) {
-	proposal := tools.GoalProposal{
-		Condition:          "c",
-		Verify:             "v",
-		NeedsClarification: true,
-		Clarification:      "which scope?",
-	}
-	resp := tools.GoalProposalResponse{Decision: "clarify", Clarification: "the core package"}
-
-	_, err := buildGoalState(proposal, resp, time.Now())
-	if err == nil {
-		t.Fatal("expected error for clarify-without-approval")
-	}
-}
-
 func TestBuildGoalState_UnknownDecisionReturnsError(t *testing.T) {
 	proposal := tools.GoalProposal{Condition: "c", Verify: "v"}
 	resp := tools.GoalProposalResponse{Decision: "bogus"}

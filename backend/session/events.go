@@ -177,9 +177,7 @@ type GoalProposalPayload struct {
 	// chose (see goal.VerificationMode* constants). Echoed from the proposal so
 	// the frontend can surface it and round-trip a user edit back into the
 	// resolver. Empty means the default (executable).
-	VerificationMode   string `json:"verification_mode,omitempty"`
-	Clarification      string `json:"clarification,omitempty"`
-	NeedsClarification bool   `json:"needs_clarification"`
+	VerificationMode string `json:"verification_mode,omitempty"`
 }
 
 // --- Emitter event data types (typed Data field payloads) ---

@@ -199,27 +199,27 @@ func TestCancelTask_ErrNoActiveTaskIsSentinel(t *testing.T) {
 // installed, ResolveGoalProposal returns false (no resolution happened).
 func TestResolveGoalProposal_NoResolverWired(t *testing.T) {
 	manager, _, _ := testManager(t)
-	if manager.ResolveGoalProposal("req-1", "approve", "c", "v", "executable", "") {
+	if manager.ResolveGoalProposal("req-1", "approve", "c", "v", "executable") {
 		t.Error("ResolveGoalProposal returned true with no resolver wired")
 	}
 }
 
 // TestResolveGoalProposal_ForwardsDecision verifies the resolver callback is
-// invoked with the exact arguments, including the clarify decision + clarification.
+// invoked with the exact arguments for an approve decision.
 func TestResolveGoalProposal_ForwardsDecision(t *testing.T) {
 	manager, _, _ := testManager(t)
 
-	var gotReq, gotDecision, gotCond, gotVerify, gotMode, gotClarif string
-	manager.SetGoalProposalResolver(func(req, decision, cond, verify, mode, clarif string) bool {
-		gotReq, gotDecision, gotCond, gotVerify, gotMode, gotClarif = req, decision, cond, verify, mode, clarif
+	var gotReq, gotDecision, gotCond, gotVerify, gotMode string
+	manager.SetGoalProposalResolver(func(req, decision, cond, verify, mode string) bool {
+		gotReq, gotDecision, gotCond, gotVerify, gotMode = req, decision, cond, verify, mode
 		return true
 	})
 
-	if !manager.ResolveGoalProposal("req-9", "clarify", "", "", "", "which scope?") {
+	if !manager.ResolveGoalProposal("req-9", "approve", "cond", "ver", "executable") {
 		t.Fatal("expected resolver to return true")
 	}
-	if gotReq != "req-9" || gotDecision != "clarify" || gotClarif != "which scope?" {
-		t.Errorf("resolver received (%q,%q,%q,%q,%q,%q), want (req-9,clarify,?,?,?,which scope?)", gotReq, gotDecision, gotCond, gotVerify, gotMode, gotClarif)
+	if gotReq != "req-9" || gotDecision != "approve" || gotCond != "cond" || gotVerify != "ver" || gotMode != "executable" {
+		t.Errorf("resolver received (%q,%q,%q,%q,%q), want (req-9,approve,cond,ver,executable)", gotReq, gotDecision, gotCond, gotVerify, gotMode)
 	}
 }
 
@@ -230,12 +230,12 @@ func TestResolveGoalProposal_ForwardsVerificationMode(t *testing.T) {
 	manager, _, _ := testManager(t)
 
 	var gotDecision, gotMode string
-	manager.SetGoalProposalResolver(func(_, decision, _, _, mode, _ string) bool {
+	manager.SetGoalProposalResolver(func(_, decision, _, _, mode string) bool {
 		gotDecision, gotMode = decision, mode
 		return true
 	})
 
-	if !manager.ResolveGoalProposal("req-vm", "approve", "cond", "ver", "re_derivation", "") {
+	if !manager.ResolveGoalProposal("req-vm", "approve", "cond", "ver", "re_derivation") {
 		t.Fatal("expected resolver to return true")
 	}
 	if gotDecision != "approve" || gotMode != "re_derivation" {

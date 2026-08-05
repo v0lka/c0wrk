@@ -279,13 +279,11 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
       id,
       sessionId,
       type: 'goal_proposal',
-      content: g.needs_clarification && g.clarification ? g.clarification : g.condition,
+      content: g.condition,
       metadata: {
         request_id: g.request_id,
         condition: g.condition,
         verify: g.verify,
-        clarification: g.clarification ?? '',
-        needs_clarification: g.needs_clarification,
         verification_mode: g.verification_mode ?? '',
         resolved: false,
       } as Record<string, unknown>,
@@ -298,8 +296,6 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
       session_id: sessionId,
       condition: g.condition,
       verify: g.verify,
-      clarification: g.clarification,
-      needs_clarification: g.needs_clarification,
       verification_mode: g.verification_mode,
     })
   }

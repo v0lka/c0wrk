@@ -957,8 +957,6 @@ export namespace desktop {
 	    condition: string;
 	    verify: string;
 	    verification_mode?: string;
-	    clarification?: string;
-	    needs_clarification: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new PendingGoalProposal(source);
@@ -970,8 +968,6 @@ export namespace desktop {
 	        this.condition = source["condition"];
 	        this.verify = source["verify"];
 	        this.verification_mode = source["verification_mode"];
-	        this.clarification = source["clarification"];
-	        this.needs_clarification = source["needs_clarification"];
 	    }
 	}
 	export class PendingAskUser {

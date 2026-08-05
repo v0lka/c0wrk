@@ -173,7 +173,7 @@ type Manager struct {
 	// event-based path (handleGoalProposalResponse) and the RPC-based path
 	// (FrontendAPI.ConfirmGoal/CancelGoal) funnel through a single resolution.
 	// Nil (before desktop wiring) makes ResolveGoalProposal a no-op.
-	goalProposalResolver func(requestID, decision, condition, verify, verificationMode, clarification string) bool
+	goalProposalResolver func(requestID, decision, condition, verify, verificationMode string) bool
 
 	logger *slog.Logger
 }
