@@ -334,7 +334,7 @@ func formatMarkdownWindow(markdown, sourcePath string, startLine, endLine int, l
 	if limits.MaxLineBytes > 0 {
 		for i, ln := range selected {
 			if len(ln) > limits.MaxLineBytes {
-				selected[i] = truncateConvertedLine(ln, limits.MaxLineBytes)
+				selected[i] = truncateConvertedLine(ln, startLine+i, limits.MaxLineBytes)
 			}
 		}
 	}
@@ -353,13 +353,19 @@ func formatMarkdownWindow(markdown, sourcePath string, startLine, endLine int, l
 }
 
 // truncateConvertedLine truncates a converted markdown line to at most
-// maxBytes and appends the same truncation marker used by the inner read_file.
+// maxBytes and appends the same recovery-hinting marker used by the inner
+// read_file (builtins.writeLine). The marker points at tool_result_read's line
+// escape-hatch so an agent can request the full line explicitly. Note: for
+// content-backed (converted-document) results the cached representation may
+// already reflect this truncation, so recovery returns what the cache holds.
 // Unlike builtins.writeLine, the input here carries no trailing newline (lines
 // come from strings.Split, which strips the delimiter), so there is nothing to
 // preserve after the marker.
-func truncateConvertedLine(line string, maxBytes int) string {
+func truncateConvertedLine(line string, lineNum, maxBytes int) string {
 	if len(line) <= maxBytes {
 		return line
 	}
-	return line[:maxBytes] + fmt.Sprintf("[...line truncated at %d bytes...]", maxBytes)
+	return line[:maxBytes] + fmt.Sprintf(
+		"[...line %d truncated at %d bytes. Use tool_result_read(hash, line=%d) to request the full line (full for file-backed reads; cached for converted documents)...]",
+		lineNum, maxBytes, lineNum)
 }

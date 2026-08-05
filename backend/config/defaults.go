@@ -304,13 +304,14 @@ func ApplyDefaults(cfg *Config) {
 	// large-output scenarios (e.g. reading files >2000 lines).
 	if cfg.ToolLimits.PerToolTruncation == nil {
 		cfg.ToolLimits.PerToolTruncation = map[string]ToolTruncationConfig{
-			"read_file":      {MaxLines: 2000, MaxBytes: 0},
-			"ripgrep":        {MaxLines: 2000, MaxBytes: 0},
-			"glob":           {MaxLines: 2000, MaxBytes: 0},
-			"list_directory": {MaxLines: 2000, MaxBytes: 0},
-			"web_fetch":      {MaxLines: 0, MaxBytes: 2097152},
-			"bash_exec":      {MaxLines: 5000, MaxBytes: 0},
-			"posh_exec":      {MaxLines: 5000, MaxBytes: 0},
+			"read_file":       {MaxLines: 2000, MaxBytes: 0},
+			"read_attachment": {MaxLines: 2000, MaxBytes: 0},
+			"ripgrep":         {MaxLines: 2000, MaxBytes: 0},
+			"glob":            {MaxLines: 2000, MaxBytes: 0},
+			"list_directory":  {MaxLines: 2000, MaxBytes: 0},
+			"web_fetch":       {MaxLines: 0, MaxBytes: 2097152},
+			"bash_exec":       {MaxLines: 5000, MaxBytes: 0},
+			"posh_exec":       {MaxLines: 5000, MaxBytes: 0},
 		}
 	}
 

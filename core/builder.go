@@ -1603,12 +1603,19 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 			// SetCachedMetadata writes to Resolution tier 3, which is shadowed
 			// by config overrides (tier 1) and built-in specs (tier 2), so a
 			// well-known or user-overridden model is never clobbered.
+			//
+			// OutputLimit mirrors the model registry's built-in fallback
+			// (tier 5: 32768) so local LM Studio models are not regressed —
+			// LM Studio does not expose a per-model output cap in
+			// /api/v0/models — but is clamped to at most a quarter of the
+			// discovered window. An OutputLimit larger than the context
+			// window drives EffectiveMax negative and silently disables
+			// compaction (CheckFill returns "ok"), so without the clamp a
+			// small-context local model (7B/13B commonly run at 8K/16K/32K)
+			// would grow unbounded until the API rejects it.
 			registry.SetCachedMetadata(model, llm.ModelMetadata{
 				ContextWindow: window,
-				// OutputLimit mirrors the SDK's built-in fallback so local LM
-				// Studio models are not regressed; LM Studio does not expose a
-				// per-model output cap in /api/v0/models.
-				OutputLimit:   4096,
+				OutputLimit:   min(32768, window/4),
 				TokenizerType: "approximate",
 			})
 			log.Debug("lazy local model probe populated context window",

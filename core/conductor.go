@@ -1222,7 +1222,7 @@ func (l *conductorLauncher) buildTaskDescription(t tools.DelegationTask, registr
 func (l *conductorLauncher) resolveModelMeta(ctx context.Context) llm.ModelMetadata {
 	// Resolve always returns usable metadata — the ok flag indicates whether
 	// the model was found in a known source, but the fallback
-	// (ContextWindow=128000, OutputLimit=4096) is always usable. A zero
+	// (ContextWindow=128000, OutputLimit=32768) is always usable. A zero
 	// ContextWindow disables compaction, causing unbounded conversation growth.
 	if l.deps.modelRegistry != nil && l.deps.model != "" {
 		if meta, _ := l.deps.modelRegistry.Resolve(ctx, l.deps.model); meta.ContextWindow > 0 {
@@ -1236,7 +1236,7 @@ func (l *conductorLauncher) resolveModelMeta(ctx context.Context) llm.ModelMetad
 	}
 	return llm.ModelMetadata{
 		ContextWindow: 128000,
-		OutputLimit:   4096,
+		OutputLimit:   32768,
 		TokenizerType: "approximate",
 	}
 }

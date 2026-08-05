@@ -724,7 +724,7 @@ var validProtocols = map[string]struct{}{
 // Effective-value rule: a config override field of 0/""/nil means "inherit
 // default", so the effective value is the override's set value or, when unset,
 // the built-in default resolved via llm.ResolveBuiltInModel (network-free:
-// built-in catalog or the 128000/4096 fallback for unknown models).
+// built-in catalog or the 128000/32768 fallback for unknown models).
 // ResolveBuiltInModel always resolves Family/Protocol (including detected
 // values for unknown models), so those fields are never empty.
 func (f *FrontendAPI) GetModelConfig(model string) (ModelConfigResponse, error) {

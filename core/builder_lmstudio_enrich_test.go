@@ -88,6 +88,41 @@ func TestBuildLocalModelProbe_PopulatesRegistry(t *testing.T) {
 	}
 }
 
+// TestBuildLocalModelProbe_ClampsOutputLimitToWindow verifies that a
+// small-context local model gets an OutputLimit clamped relative to its window
+// rather than the 32768 cap. Without the clamp, OutputLimit would exceed the
+// context window, drive EffectiveMax negative, and silently disable compaction
+// (CheckFill returns "ok" while FillPercent returns 100) — the exact regression
+// flagged in the review. 8192/4 = 2048.
+func TestBuildLocalModelProbe_ClampsOutputLimitToWindow(t *testing.T) {
+	body := lmStudioModelsPayload(t, lmStudioModel{
+		ID:               "acme-local-7b",
+		MaxContextLength: 8192,
+	})
+	srv, _, _ := newLMStudioServer(t, http.StatusOK, body)
+
+	cfg := localProbeCfg(t, srv.URL, "acme-local-7b")
+	b := newLocalProbeBuilder(t)
+	registry := llm.NewModelRegistry(nil)
+
+	probe := b.buildLocalModelProbe(cfg, registry)
+	probe("acme-local-7b")
+
+	meta, _ := registry.Resolve(context.Background(), "acme-local-7b")
+	if meta.ContextWindow != 8192 {
+		t.Fatalf("context_window=%d, want 8192", meta.ContextWindow)
+	}
+	if meta.OutputLimit != 2048 {
+		t.Errorf("OutputLimit not clamped to window/4: got %d, want 2048 (8192/4); "+
+			"an unclamped 32768 would exceed the 8192 window and disable compaction", meta.OutputLimit)
+	}
+	// Sanity: EffectiveMax stays positive so compaction can trigger.
+	if eff := meta.ContextWindow - meta.OutputLimit; eff <= 0 {
+		t.Errorf("OutputLimit %d >= ContextWindow %d: EffectiveMax non-positive, compaction disabled",
+			meta.OutputLimit, meta.ContextWindow)
+	}
+}
+
 // TestBuildLocalModelProbe_SkipsRemoteProvider verifies that a provider whose
 // base_url is a public host is never probed — the closure returns without
 // spawning a goroutine, so the registry stays empty.

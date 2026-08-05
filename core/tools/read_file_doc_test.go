@@ -246,7 +246,7 @@ func TestFormatMarkdownWindow_LineTruncation(t *testing.T) {
 	huge := strings.Repeat("x", 5000)
 	markdown := huge + "\nsecond"
 	result := formatMarkdownWindow(markdown, "doc.pdf", 1, 0, builtins.FileLimits{ReadDefaultLines: 2000, MaxLineBytes: 100})
-	if !strings.Contains(result, "[...line truncated at 100 bytes...]") {
+	if !strings.Contains(result, "[...line 1 truncated at 100 bytes. Use tool_result_read(hash, line=1) to request the full line (full for file-backed reads; cached for converted documents)...]") {
 		t.Errorf("expected truncation marker, got: %s", result[:min2(120, len(result))])
 	}
 }

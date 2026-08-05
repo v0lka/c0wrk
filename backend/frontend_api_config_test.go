@@ -391,12 +391,12 @@ func TestGetModelConfig_UnknownModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Unknown model → fallback defaults (128000/4096), both effective and default.
+	// Unknown model → fallback defaults (128000/32768), both effective and default.
 	if resp.ContextWindow != 128000 {
 		t.Errorf("ContextWindow = %d, want fallback 128000", resp.ContextWindow)
 	}
-	if resp.OutputLimit != 4096 {
-		t.Errorf("OutputLimit = %d, want fallback 4096", resp.OutputLimit)
+	if resp.OutputLimit != 32768 {
+		t.Errorf("OutputLimit = %d, want fallback 32768", resp.OutputLimit)
 	}
 }
 

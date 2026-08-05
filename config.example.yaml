@@ -322,6 +322,8 @@ toolLimits:
   perToolTruncation:
     read_file:
       maxLines: 2000 # secondary; primary cap is the streaming reader window
+    read_attachment:
+      maxLines: 2000 # in-memory markdown attachments; Stage 1 fragmentation parity with read_file
     ripgrep:
       maxLines: 2000
     glob:
