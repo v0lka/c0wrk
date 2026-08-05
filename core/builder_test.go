@@ -369,12 +369,12 @@ func TestBuildSessionAgentManager_Discovery(t *testing.T) {
 	if mgr == nil {
 		t.Fatal("buildSessionAgentManager returned nil for a workspace with .agents/agents")
 	}
-	agent, ok := mgr.Get("builder-test-agent")
+	discovered, ok := mgr.Get("builder-test-agent")
 	if !ok {
 		t.Fatal("project-local agent not discovered by buildSessionAgentManager")
 	}
-	if agent.Metadata.Description != "A test agent for builder wiring." {
-		t.Errorf("unexpected description: %q", agent.Metadata.Description)
+	if discovered.Metadata.Description != "A test agent for builder wiring." {
+		t.Errorf("unexpected description: %q", discovered.Metadata.Description)
 	}
 }
 

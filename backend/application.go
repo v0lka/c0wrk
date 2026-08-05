@@ -258,10 +258,23 @@ func (app *Application) EvaluateJudge(ctx context.Context, toolName string, inpu
 	return verdict, reasoning, nil
 }
 
-// GetMCPStatus returns the status of all MCP servers.
-// If the gateway failed to start, returns a placeholder entry surfacing the error.
+// GetMCPStatus returns the status of all MCP servers. It is non-blocking so the
+// settings dialog does not stall during the first seconds of startup while the
+// MCP gateway is still discovering remote servers.
+//
+// While MCP startup is in flight (!MCPStartupDone()), it returns a single
+// placeholder entry (Name "_gateway", Starting true) that the frontend renders
+// as a neutral "Starting…" state rather than an error. Once startup finishes,
+// if the gateway failed to start the same placeholder surfaces the error;
+// otherwise it returns the live per-server status from the gateway.
 func (app *Application) GetMCPStatus() []mcp.ServerStatus {
-	gw := app.builder.MCPGateway()
+	if !app.builder.MCPStartupDone() {
+		return []mcp.ServerStatus{{
+			Name:     "_gateway",
+			Starting: true,
+		}}
+	}
+	gw := app.builder.MCPGatewayNoWait()
 	if gw == nil {
 		if errMsg := app.builder.MCPGatewayError(); errMsg != "" {
 			return []mcp.ServerStatus{{

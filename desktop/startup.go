@@ -436,6 +436,11 @@ func (a *App) Startup(ctx context.Context) {
 	// Store vector manager pointer for Shutdown fallback check (W3).
 	a.vectorMgrPtr = &vectorMgrPtr
 
+	// ── Background: MCP Ready notifier ───────────────────────────────
+	// Emits EventMCPReady once the MCP gateway startup goroutine finishes so
+	// the settings dialog can refresh its transient "Starting…" placeholder.
+	a.startMCPReadyNotifier(a.ctx, log)
+
 	// ── Background: Vector Index ─────────────────────────────────────
 	a.startVectorIndexBackground(agentDir, cfg, &vectorMgrPtr, vectorReady, &vectorOnce, startTime, log)
 }

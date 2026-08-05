@@ -118,6 +118,17 @@ func TestGetMCPServers_DeepCopy(t *testing.T) {
 
 // --- GetMCPStatus ---
 
+// TestGetMCPStatus_NoApp verifies the nil-app early return.
+//
+// The remaining branches of GetMCPStatus (the non-blocking Starting-placeholder
+// while MCPStartupDone()==false, the startup-error placeholder, and the live
+// gateway status) are exercised indirectly through the core builder
+// tests in core/builder_mcp_test.go (TestMCPStartupDone, TestMCPGatewayNoWait),
+// which verify the exact builder methods Application.GetMCPStatus delegates to.
+// Constructing an Application with MCPStartupDone()==false from this package is
+// not feasible without a racy NewOrchestratorBuilder call: the mcpDone channel
+// and gateway field are private to core, so the placeholder state cannot be set
+// deterministically from the backend package.
 func TestGetMCPStatus_NoApp(t *testing.T) {
 	f := &FrontendAPI{} // f.app == nil
 	got := f.GetMCPStatus()

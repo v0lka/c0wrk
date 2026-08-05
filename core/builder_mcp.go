@@ -59,18 +59,23 @@ func (b *OrchestratorBuilder) StopGateway() error {
 // SetMCPWorkDir updates the default working directory for MCP stdio server processes.
 // New or restarted MCP servers will use this directory as their cwd.
 //
-// Waits on mcpDone (not initDone) because MCP startup is decoupled: without
-// this wait, an early call could observe b.gateway == nil while runMCPInit is
-// still in flight and silently no-op.
+// This uses a record-and-apply pattern: it records the directory in b.mcpWorkDir
+// (so it survives and is applied by runMCPInit if the gateway has not yet been
+// assigned) and, if the gateway is already assigned, applies it immediately.
+// It intentionally does NOT wait on mcpDone: SetDefaultWorkDir is a pure field
+// write on the gateway and needs no network, so blocking here would serialise
+// this cheap call behind the (potentially multi-second) MCP server discovery
+// that runMCPInit performs. Both this method and runMCPInit take b.mu, so they
+// are serialised and the last writer of mcpWorkDir wins — for BOTH the recorded
+// field and the live gateway value, because the apply (gw.SetDefaultWorkDir) is
+// performed under b.mu too. gw.SetDefaultWorkDir takes the gateway's own mutex,
+// not b.mu, so there is no nested-lock/deadlock risk.
 func (b *OrchestratorBuilder) SetMCPWorkDir(path string) {
-	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	_ = b.waitMCPReady(waitCtx)
-	b.mu.RLock()
-	gw := b.gateway
-	b.mu.RUnlock()
-	if gw != nil {
-		gw.SetDefaultWorkDir(path)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.mcpWorkDir = path
+	if b.gateway != nil {
+		b.gateway.SetDefaultWorkDir(path)
 	}
 }
 

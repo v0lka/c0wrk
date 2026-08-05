@@ -595,3 +595,16 @@ func writeTempFile(t *testing.T, dir, name, content string) string {
 }
 
 var _ = writeTempFile // keep helper available for future tests
+
+// --- startMCPReadyNotifier ---
+
+func TestStartMCPReadyNotifier_NilAppNoOp(t *testing.T) {
+	// a.app == nil → must return immediately without panicking or emitting.
+	a := &App{}
+	rec := &emitRecorder{}
+	a.wailsEmit = rec.emit
+	a.startMCPReadyNotifier(context.Background(), testLoggerForPhases())
+	if events := rec.snapshot(); len(events) != 0 {
+		t.Errorf("expected 0 events with nil app, got %d: %+v", len(events), events)
+	}
+}

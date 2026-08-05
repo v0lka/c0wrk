@@ -811,6 +811,41 @@ func (a *App) emitBackendReady(cachedProjects []project.ProjectInfo, projectMgr 
 	}
 }
 
+// startMCPReadyNotifier waits for the MCP gateway startup goroutine to finish
+// and then emits EventMCPReady so the MCP settings dialog can refresh its
+// transient "Starting…" placeholder into the real per-server status without
+// manual polling. It runs in a goroutine spawned after EventBackendReady,
+// mirroring startVectorIndexBackground: MCP startup (runMCPInit) is decoupled
+// from initDone and may still be in flight (discovering remote servers) when
+// the app is otherwise ready.
+//
+// If the app/builder is not wired (e.g. LLM unconfigured path), or if the
+// startup finishes before this goroutine starts, MCPStartupDone short-circuits
+// and the event is emitted immediately. On shutdown the ctx is cancelled,
+// unblocking the wait.
+func (a *App) startMCPReadyNotifier(ctx context.Context, log *slog.Logger) {
+	if a.app == nil || a.app.Builder() == nil {
+		return
+	}
+	b := a.app.Builder()
+
+	// Fast path: startup already finished before this notifier ran.
+	if b.MCPStartupDone() {
+		a.emit(backend.EventMCPReady)
+		return
+	}
+
+	go func() {
+		waitCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+		defer cancel()
+		if err := b.WaitMCPStartup(waitCtx); err != nil {
+			log.Debug("mcp:ready notifier stopped", "reason", err)
+			return
+		}
+		a.emit(backend.EventMCPReady)
+	}()
+}
+
 // startVectorIndexBackground launches the ONNX-backed vector index in a
 // goroutine after EventBackendReady so it never blocks the critical path.
 // The vectorReady channel is closed exactly once on completion (success or

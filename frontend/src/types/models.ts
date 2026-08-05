@@ -449,6 +449,7 @@ export interface MCPServerStatus {
   name: string
   transport: string
   connected: boolean
+  starting: boolean
   tool_count: number
   tools: string[]
   error?: string

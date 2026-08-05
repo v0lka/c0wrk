@@ -3,6 +3,7 @@ import { Plus, RefreshCw, Server, AlertCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog'
 import { getMCPStatus, getMCPServers, getToolList, updateMCPServers } from '@/api/mcp'
+import { subscribe } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 import { MCPServerCard } from './MCPServerCard'
 import { MCPServerForm } from './MCPServerForm'
@@ -38,6 +39,11 @@ export function MCPSettings() {
   }, [])
 
   useEffect(() => { loadData() }, [loadData])
+
+  // Refresh when the MCP gateway finishes its (async) startup so the transient
+  // "Starting…" placeholder resolves into the real per-server status without
+  // manual polling. mcp:ready is emitted once by the desktop layer.
+  useEffect(() => subscribe('mcp:ready', () => { loadData() }), [loadData])
 
   const handleSave = async (newServers: Record<string, MCPServerConfig>): Promise<string | null> => {
     setIsSaving(true)

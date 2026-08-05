@@ -86,6 +86,13 @@ const EventSessionEvent = "session:event"
 // EventVectorIndexStatus is emitted when the vector index state or progress changes.
 const EventVectorIndexStatus = "vector_index:status"
 
+// EventMCPReady is emitted (once) when the MCP gateway startup goroutine
+// finishes — whether servers connected successfully or failed. It lets the MCP
+// settings dialog refresh its transient "Starting…" placeholder into the real
+// per-server status without manual polling. Emitted from the desktop layer
+// (startMCPReadyNotifier), which waits on the builder's WaitMCPStartup.
+const EventMCPReady = "mcp:ready"
+
 // ---------------------------------------------------------------------------
 // Wails event names received FROM the frontend
 // ---------------------------------------------------------------------------

@@ -46,6 +46,12 @@ type OrchestratorBuilder struct {
 	mu               sync.RWMutex
 	registry         *tools.ToolRegistry
 	gateway          *mcp.Gateway
+	// mcpWorkDir is the default working directory requested for MCP stdio
+	// server processes. It is applied to the gateway by runMCPInit (when the
+	// gateway is first assigned) or by SetMCPWorkDir (when the gateway is
+	// already assigned), using a record-and-apply pattern so SetMCPWorkDir
+	// never blocks on network-bound MCP startup. Guarded by b.mu.
+	mcpWorkDir string
 	llmRouter        *llm.Router
 	modelRegistry    *llm.ModelRegistry
 	logger           *slog.Logger
@@ -179,6 +185,10 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 // orchestrators built before completion simply won't advertise MCP tools until
 // the next message (graceful degradation). mcpDone is closed on exit,
 // including when startup fails or panics, so waiters never block forever.
+//
+// Once the gateway is assigned, it applies any work directory recorded by
+// SetMCPWorkDir during the startup window (record-and-apply), so a
+// SetMCPWorkDir call that arrived before the gateway existed is not lost.
 func (b *OrchestratorBuilder) runMCPInit(cfg *BuilderConfig) {
 	defer close(b.mcpDone)
 	defer func() {
@@ -205,6 +215,12 @@ func (b *OrchestratorBuilder) runMCPInit(cfg *BuilderConfig) {
 	b.mu.Lock()
 	b.gateway = gw
 	b.gatewayErr = err
+	// Apply a work dir recorded by SetMCPWorkDir before the gateway was
+	// assigned (the startup window). This closes the race where SetMCPWorkDir
+	// was called first: the field is now persisted and applied here.
+	if gw != nil && b.mcpWorkDir != "" {
+		gw.SetDefaultWorkDir(b.mcpWorkDir)
+	}
 	b.mu.Unlock()
 }
 
@@ -252,8 +268,10 @@ func (b *OrchestratorBuilder) waitReady(ctx context.Context) error {
 // startup is intentionally decoupled from Build()/restore: the gateway can take
 // seconds to discover remote servers, and we don't want to block session
 // restore on it. Methods that must observe the gateway's final state
-// (MCPGateway, StopGateway, ReconfigureMCP, SetMCPWorkDir) call this so the
+// (MCPGateway, StopGateway, ReconfigureMCP) call this so the
 // "MCP is still starting" race window is closed before they read/act on b.gateway.
+// SetMCPWorkDir does NOT call this: it uses record-and-apply instead so it never
+// blocks on MCP startup (see SetMCPWorkDir/runMCPInit docs).
 func (b *OrchestratorBuilder) waitMCPReady(ctx context.Context) error {
 	select {
 	case <-b.mcpDone:
@@ -291,10 +309,64 @@ func (b *OrchestratorBuilder) ToolRegistry() *tools.ToolRegistry {
 // startup is decoupled from initDone/WaitReady, so it may still be in flight
 // when initDone is closed). Returns nil if the gateway failed to start or was
 // not configured.
+//
+// This is the BLOCKING variant, intended for non-UI consumers that must observe
+// the gateway's final state (e.g. Shutdown, ReconfigureMCP, StopGateway). It
+// MUST NOT be used on the UI path: a UI call during the first seconds of startup
+// would stall behind MCP server discovery. UI callers — notably GetMCPStatus —
+// use the non-blocking MCPStartupDone() + MCPGatewayNoWait() pair instead.
 func (b *OrchestratorBuilder) MCPGateway() *mcp.Gateway {
 	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_ = b.waitMCPReady(waitCtx)
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.gateway
+}
+
+// MCPStartupDone reports whether the MCP gateway startup goroutine has finished
+// (runMCPInit closed mcpDone). It is non-blocking — a select with a default
+// fallback — and is intended for the UI status path (GetMCPStatus) so the
+// settings dialog does not hang on the (potentially multi-second) MCP server
+// discovery that happens during the first seconds of startup. Use it together
+// with MCPGatewayNoWait to distinguish "still starting" from "started".
+func (b *OrchestratorBuilder) MCPStartupDone() bool {
+	select {
+	case <-b.mcpDone:
+		return true
+	default:
+		return false
+	}
+}
+
+// WaitMCPStartup blocks until the MCP gateway startup goroutine finishes
+// (runMCPInit closed mcpDone) or the context is cancelled. It is the BLOCKING
+// counterpart to the non-blocking MCPStartupDone, intended for a one-shot
+// notifier (e.g. the desktop layer emits EventMCPReady once startup completes
+// so the settings dialog can refresh its transient "Starting…" placeholder).
+// It returns nil as soon as startup is over — success or failure — so callers
+// must then use MCPGatewayError()/MCPGatewayNoWait() to observe the outcome.
+func (b *OrchestratorBuilder) WaitMCPStartup(ctx context.Context) error {
+	select {
+	case <-b.mcpDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// MCPGatewayNoWait returns the MCP gateway WITHOUT blocking on mcpDone. It
+// returns nil when startup is still in flight (mcpDone not yet closed) or when
+// the gateway failed to start / was not configured. This is the non-blocking
+// counterpart to MCPGateway, intended for callers on the UI path that must not
+// stall (e.g. GetMCPStatus). Pair it with MCPStartupDone to distinguish the
+// "still starting" state from "started and nil".
+func (b *OrchestratorBuilder) MCPGatewayNoWait() *mcp.Gateway {
+	select {
+	case <-b.mcpDone:
+	default:
+		return nil
+	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.gateway

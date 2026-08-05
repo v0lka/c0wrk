@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, CheckCircle2, AlertCircle, Pencil, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, CheckCircle2, AlertCircle, Loader2, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -14,6 +14,41 @@ interface MCPServerCardProps {
 }
 
 export function MCPServerCard({ server, tools, expanded, onToggleExpand, onEdit, onDelete }: MCPServerCardProps) {
+  // The "_gateway" sentinel is a synthetic gateway-wide entry produced by
+  // GetMCPStatus — NOT a real, user-configured server. It surfaces two
+  // transient states and must never reach the editable/deletable Collapsible:
+  //   • starting=true  → gateway startup still in flight (neutral spinner)
+  //   • error non-empty → gateway failed to start (friendly red error)
+  // It is not editable/deletable and carries no transport badge or tools.
+  if (server.name === '_gateway') {
+    if (server.starting) {
+      return (
+        <div className="border rounded-lg">
+          <div className="flex items-center gap-3 p-3">
+            <Loader2 className="h-4 w-4 text-warning animate-spin" />
+            <span className="font-medium text-sm flex-1">MCP Gateway</span>
+            <span className="text-xs text-muted-foreground">Starting…</span>
+          </div>
+        </div>
+      )
+    }
+    // Gateway startup failed. Show a friendly header instead of the raw
+    // sentinel name and the (empty) transport badge the generic path renders.
+    return (
+      <div className="border rounded-lg">
+        <div className="flex items-start gap-3 p-3">
+          <AlertCircle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <span className="font-medium text-sm">MCP Gateway</span>
+            {server.error && (
+              <p className="mt-1 text-xs text-destructive break-all">{server.error}</p>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <Collapsible open={expanded} onOpenChange={onToggleExpand}>
       <div className="border rounded-lg overflow-hidden">
