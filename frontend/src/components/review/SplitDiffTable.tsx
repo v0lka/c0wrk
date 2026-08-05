@@ -31,7 +31,7 @@ export function SplitDiffTable({ diffLines, highlightedLines }: SplitDiffTablePr
   const rows = useMemo(() => buildSideBySidePairs(diffLines), [diffLines])
 
   return (
-    <div className="overflow-x-auto font-mono text-xs leading-relaxed">
+    <div className="overflow-x-auto custom-scrollbar font-mono text-xs leading-relaxed">
       {/* table-fixed + colgroup guarantee the two content columns split the
        * remaining width 50/50, so left and right sides are always equally
        * wide regardless of line length. */}

@@ -77,7 +77,7 @@ export function FileReviewBlock({ sessionId, file, readOnly }: FileReviewBlockPr
         <div className="px-1">
           <div className="flex items-start gap-2 rounded-md border border-border bg-secondary/20 p-3">
             <textarea
-              className="flex-1 rounded-md border border-border bg-background p-2 text-xs resize-none"
+              className="flex-1 rounded-md border border-border bg-background p-2 text-xs resize-none custom-scrollbar"
               rows={2}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}

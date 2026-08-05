@@ -368,6 +368,25 @@ body {
     display: block;
 }
 
+/* Themed scrollbar for markdown code blocks (inherits overflow from
+   @tailwindcss/typography defaults) */
+.prose pre::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+    background: transparent;
+}
+
+.prose pre::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.prose pre::-webkit-scrollbar-thumb {
+    background-clip: padding-box;
+    background-color: color-mix(in srgb, var(--color-border) 50%, transparent);
+    border-radius: 9999px;
+    border: 1px solid transparent;
+}
+
 .prose strong {
     color: var(--tw-prose-bold);
 }

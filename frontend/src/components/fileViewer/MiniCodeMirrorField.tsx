@@ -77,7 +77,7 @@ export function MiniCodeMirrorField({ value, onChange }: MiniCodeMirrorFieldProp
   return (
     <div
       ref={containerRef}
-      className="min-h-[60px] max-h-[200px] border border-border rounded overflow-auto cm-viewer-container"
+      className="min-h-[60px] max-h-[200px] border border-border rounded overflow-auto custom-scrollbar cm-viewer-container"
     />
   )
 }

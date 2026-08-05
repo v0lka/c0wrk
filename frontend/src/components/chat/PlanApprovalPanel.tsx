@@ -103,7 +103,7 @@ export function PlanApprovalPanel({ item }: PlanApprovalPanelProps) {
         <div className="mt-1.5 space-y-1.5">
           <p className="text-xs text-muted-foreground/60">Describe what needs to change:</p>
           <textarea
-            className="w-full rounded-md border border-border bg-background p-2 text-xs resize-none"
+            className="w-full rounded-md border border-border bg-background p-2 text-xs resize-none custom-scrollbar"
             rows={3}
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}

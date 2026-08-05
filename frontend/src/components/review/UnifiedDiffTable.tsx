@@ -20,7 +20,7 @@ interface UnifiedDiffTableProps {
  */
 export function UnifiedDiffTable({ diffLines, highlightedLines }: UnifiedDiffTableProps) {
   return (
-    <div className="overflow-x-auto font-mono text-xs leading-relaxed">
+    <div className="overflow-x-auto custom-scrollbar font-mono text-xs leading-relaxed">
       <table className="w-full border-collapse">
         <tbody>
           {diffLines.map((line, i) => (

@@ -121,7 +121,7 @@ export function BranchPicker() {
       <DialogContent
         showCloseButton
         aria-describedby={undefined}
-        className="max-w-sm p-0 flex flex-col max-h-[calc(100vh-2rem)] overflow-y-auto"
+        className="max-w-sm p-0 flex flex-col max-h-[calc(100vh-2rem)] overflow-y-auto custom-scrollbar"
       >
         <DialogHeader className="px-4 pt-4 pb-2 shrink-0">
           <DialogTitle className="flex items-center gap-2 text-sm">
@@ -145,7 +145,7 @@ export function BranchPicker() {
         </div>
 
         {/* Branch list — flex-1 so it shrinks when the base selector expands */}
-        <div className="flex-1 min-h-[80px] overflow-y-auto px-2 pb-2">
+        <div className="flex-1 min-h-[80px] overflow-y-auto custom-scrollbar px-2 pb-2">
           {loadingBranches ? (
             <div className="flex items-center justify-center py-6 text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />

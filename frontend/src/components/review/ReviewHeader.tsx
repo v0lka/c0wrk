@@ -161,7 +161,7 @@ export function ReviewHeader({
       {showGeneral && (
         <div className="flex items-start gap-2">
           <textarea
-            className="flex-1 rounded-md border border-border bg-background p-2 text-xs resize-none"
+            className="flex-1 rounded-md border border-border bg-background p-2 text-xs resize-none custom-scrollbar"
             rows={2}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}

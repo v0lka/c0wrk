@@ -119,7 +119,7 @@ export function CommitSection() {
           // the file panel (FileTreePanel) and the search panel
           // (VectorSearchFilters) so the commit message window, its
           // placeholder and its content share the same look.
-          "c0-input w-full resize-none rounded-md border border-input px-3 py-2 text-sm shadow-xs",
+          "c0-input w-full resize-none rounded-md border border-input px-3 py-2 text-sm shadow-xs custom-scrollbar",
           "transition-[color,box-shadow] outline-none",
           "aria-invalid:border-destructive",
         )}

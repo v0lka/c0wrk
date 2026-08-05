@@ -172,7 +172,7 @@ export function GitPanelFooter() {
       </div>
 
       {showOutput && output && (
-        <pre className="mx-2 mb-1.5 max-h-32 overflow-auto rounded bg-muted/60 p-1.5 text-[10px] leading-tight font-mono text-muted-foreground whitespace-pre-wrap">
+        <pre className="mx-2 mb-1.5 max-h-32 overflow-auto custom-scrollbar rounded bg-muted/60 p-1.5 text-[10px] leading-tight font-mono text-muted-foreground whitespace-pre-wrap">
           {output}
         </pre>
       )}
