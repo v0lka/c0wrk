@@ -164,6 +164,80 @@ func (m *Manager) injectIgnoreChecker(ctx context.Context, session *Session, dir
 	return sdktools.WithIgnoreChecker(ctx, checker)
 }
 
+// caseInsensitiveProbe carries the single result of a case-sensitivity probe.
+// The first call to miss the cache stores a fresh probe via LoadOrStore and
+// performs the actual filesystem probe, then publishes the result by closing
+// done. Any concurrent call that loses the LoadOrStore race observes the
+// in-flight probe and blocks on its done channel, reusing the same result
+// rather than re-probing. This guarantees the CaseSense-*.probe file is
+// created exactly once per resolved root even under concurrent messages.
+type caseInsensitiveProbe struct {
+	done chan struct{}
+	ci   bool
+}
+
+// defaultDetectCaseInsensitive is the production case-sensitivity probe wired
+// into Manager.detectCaseInsensitiveFn at construction. Tests override the
+// per-instance field (not this value) to assert call counts.
+var defaultDetectCaseInsensitive = pathutil.DetectCaseInsensitive
+
+// caseInsensitiveCachedValue reads the resolved bool from a cache entry. It
+// blocks until the entry's probe has completed (the winning goroutine closes
+// done), then returns (value, true). ok is false only if the entry is not a
+// *caseInsensitiveProbe, which cannot happen by construction; it exists to
+// satisfy errcheck on the type assertion.
+func caseInsensitiveCachedValue(v any) (ci, ok bool) {
+	p, okp := v.(*caseInsensitiveProbe)
+	if !okp {
+		return false, false
+	}
+	<-p.done
+	return p.ci, true
+}
+
+// detectCaseInsensitive returns the cached case-sensitivity of the filesystem
+// at path, probing exactly once per resolved root and reusing the result on
+// every subsequent call. Case-sensitivity is a mount-level property that does
+// not change during a session, so the probe — which creates and deletes a
+// temporary CaseSense-*.probe file — must run at most once per root rather
+// than on every SendMessage/ResumeSession. LoadOrStore plus the probe's done
+// channel guarantee a single probe per root even under concurrent calls: the
+// goroutine that wins the race performs it, every loser waits for its result.
+//
+// When path is empty (e.g. a No-Project session) it returns false, the
+// fail-safe case-sensitive default, without touching the cache.
+func (m *Manager) detectCaseInsensitive(path string) bool {
+	if path == "" {
+		return false
+	}
+	// Resolve symlinks so the cache key matches the physical root even when
+	// the workspace is reached through a symlink (consistent with ignoreCache).
+	// A resolution failure (e.g. a not-yet-created workspace) falls back to
+	// the raw path; DetectCaseInsensitive itself climbs to the nearest existing
+	// ancestor, so the probe still yields the correct filesystem answer.
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		resolved = path
+	}
+	probe := &caseInsensitiveProbe{done: make(chan struct{})}
+	if actual, loaded := m.caseInsensitiveCache.LoadOrStore(resolved, probe); loaded {
+		// Another call already won the race for this root. Reuse its in-flight
+		// (or already-completed) probe result instead of re-probing.
+		existing, ok := actual.(*caseInsensitiveProbe)
+		if !ok {
+			// Unreachable by construction; the cache only stores
+			// *caseInsensitiveProbe. Defensive to satisfy errcheck.
+			return false
+		}
+		<-existing.done
+		return existing.ci
+	}
+	// We won the race: perform the single probe for this root and publish it.
+	probe.ci = m.detectCaseInsensitiveFn(resolved)
+	close(probe.done)
+	return probe.ci
+}
+
 // startIgnoreBuild launches a background goroutine to walk root and cache its
 // ignore.Resolver. It is deduplicated: if another goroutine has already started
 // (or completed) a build for the same root, this is a no-op.
@@ -279,8 +353,11 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 	doneCh := make(chan struct{})
 	session.done = doneCh
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
-	// Enrich context with session workspace path for tool security heuristics
-	taskCtx = sdktools.WithWorkspacePath(taskCtx, session.WorkspacePath)
+	// Enrich context with session workspace path for tool security heuristics.
+	// The case-folding flag is probed once per root (cached by the Manager)
+	// rather than on every message, so no .probe file is created/deleted here.
+	taskCtx = sdktools.WithWorkspacePathNoProbe(taskCtx, session.WorkspacePath)
+	taskCtx = sdktools.WithCaseInsensitivePaths(taskCtx, m.detectCaseInsensitive(session.WorkspacePath))
 	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
 	taskCtx = sdktools.WithCoherence(taskCtx, m.fileTracker)
 	if session.ProjectID == project.NoProjectID {
@@ -783,7 +860,8 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	resumeDoneCh := make(chan struct{})
 	session.done = resumeDoneCh
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
-	taskCtx = sdktools.WithWorkspacePath(taskCtx, session.WorkspacePath)
+	taskCtx = sdktools.WithWorkspacePathNoProbe(taskCtx, session.WorkspacePath)
+	taskCtx = sdktools.WithCaseInsensitivePaths(taskCtx, m.detectCaseInsensitive(session.WorkspacePath))
 	taskCtx = sdktools.WithTempDir(taskCtx, session.TempDir)
 	taskCtx = sdktools.WithCoherence(taskCtx, m.fileTracker)
 	if session.ProjectID == project.NoProjectID {

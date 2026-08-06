@@ -153,6 +153,25 @@ type Manager struct {
 	// after construction so they are safe for concurrent use once cached.
 	ignoreCache sync.Map // string (resolved root) → *ignore.Resolver
 
+	// caseInsensitiveCache caches the filesystem case-sensitivity probe
+	// result per resolved workspace root. Case-sensitivity is a property of
+	// the filesystem mount and cannot change mid-session, so the probe (which
+	// creates and deletes a temporary .probe file) must run at most once per
+	// root rather than on every SendMessage/ResumeSession. The key is the
+	// symlink-resolved absolute path; each value is a *caseInsensitiveProbe.
+	// LoadOrStore guarantees exactly one probe per root: the goroutine that
+	// wins the race performs the probe and closes the probe's done channel,
+	// while every concurrent caller waits on that channel and reuses the
+	// result instead of re-probing.
+	caseInsensitiveCache sync.Map // string (resolved path) → *caseInsensitiveProbe
+
+	// detectCaseInsensitiveFn is the filesystem case-sensitivity probe invoked
+	// by detectCaseInsensitive. It defaults to pathutil.DetectCaseInsensitive
+	// and is overridable in tests to assert call counts (the probe has no
+	// other controllable side effect). Callers must go through
+	// detectCaseInsensitive rather than touching this field directly.
+	detectCaseInsensitiveFn func(path string) bool
+
 	// shuttingDown is set to true at the very start of Shutdown() so that the
 	// SendMessage/Resume goroutines, when they observe their context cancelled,
 	// can distinguish an app shutdown from a user-initiated cancellation. During
@@ -210,6 +229,7 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir stri
 		envInfoDone:         make(chan struct{}),
 	}
 	m.fileTracker = NewFileCoherenceTracker(m.resolveSessionName)
+	m.detectCaseInsensitiveFn = defaultDetectCaseInsensitive
 	return m
 }
 
