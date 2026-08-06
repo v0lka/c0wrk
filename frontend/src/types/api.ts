@@ -5,7 +5,7 @@ import type {
   FileEntry, GitStatusEntry, ConfigResponse, SecuritySettingsResponse,
   LLMFullConfigRequest, SearchSettingsRequest,
   MCPServerStatus, MCPServerConfig, ToolInfo,
-  AttachmentInfoUI,
+  AttachmentInfoUI, PasteResultUI,
 } from './models'
 
 export interface ProjectAPI {
@@ -68,4 +68,9 @@ export interface AttachmentAPI {
   attachFiles(sessionId: string, paths: string[]): Promise<AttachmentInfoUI[]>
   removeAttachment(sessionId: string, attachmentId: string): Promise<void>
   getAttachments(sessionId: string): Promise<AttachmentInfoUI[]>
+  /** Probe the system clipboard (image → files → text) and stage the
+   *  highest-priority content as a pending attachment. The discriminant `kind`
+   *  determines what happened (image staged/rejected, files staged, or text
+   *  returned for the chat input). supportsVision gates image staging. */
+  pasteFromClipboard(sessionId: string, supportsVision: boolean): Promise<PasteResultUI>
 }

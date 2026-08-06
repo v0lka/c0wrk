@@ -9,11 +9,12 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isArrayOf } from '@/types/guards'
-import { isAttachmentInfoRaw } from '@/types/events'
-import type { AttachmentInfoRaw } from '@/types/events'
-import type { AttachmentInfoUI } from '@/types/models'
+import { isAttachmentInfoRaw, isPasteResultRaw } from '@/types/events'
+import type { AttachmentInfoRaw, PasteResultRaw } from '@/types/events'
+import type { AttachmentInfoUI, PasteResultUI } from '@/types/models'
 
-export type { AttachmentInfoRaw } from '@/types/events'
+/** Re-export the raw event type for backward compatibility */
+export type { AttachmentInfoRaw, PasteResultRaw } from '@/types/events'
 
 /** Map a single snake_case backend record to camelCase UI record.
  *  Image-only fields (`is_image`/`thumbnail`) are forwarded when present so
@@ -128,5 +129,48 @@ export async function getBlackboardAttachmentMarkdown(sessionId: string, attachm
   } catch (err) {
     logger.error('Failed to get blackboard attachment markdown:', err)
     throw err
+  }
+}
+
+/**
+ * Probe the system clipboard and stage the highest-priority content found
+ * (image → files → text) as a pending attachment on the session. Wraps the
+ * backend PasteFromClipboard RPC.
+ *
+ * `supportsVision` reflects the active model's image-input capability and
+ * gates image staging on the backend side. The discriminant `kind` in the
+ * result tells the caller how to react: render an image/file chip (kind=image
+ * with accepted files, or kind=files), surface a rejection (kind=image with
+ * `rejected`), or insert text into the chat input (kind=text).
+ *
+ * On an unexpected response shape we return an `empty` result (logging the
+ * anomaly) rather than throwing, so a malformed backend reply never crashes
+ * a paste — the user simply sees nothing happen.
+ */
+export async function pasteFromClipboard(sessionId: string, supportsVision: boolean): Promise<PasteResultUI> {
+  try {
+    const app = getApp()
+    const result = await app.PasteFromClipboard(sessionId, supportsVision)
+    if (!isPasteResultRaw(result)) {
+      logger.error('pasteFromClipboard: unexpected response shape, returning empty', result)
+      return { kind: 'empty', files: [] }
+    }
+    return mapPasteResult(result)
+  } catch (err) {
+    logger.error('Failed to paste from clipboard:', err)
+    throw err
+  }
+}
+
+/** Map a snake_case backend PasteResult to the camelCase UI shape.
+ *  `files` defaults to an empty array so the UI can branch on `kind` without
+ *  a null check. */
+export function mapPasteResult(raw: PasteResultRaw): PasteResultUI {
+  return {
+    kind: raw.kind,
+    text: raw.text,
+    files: raw.files ? mapAttachments(raw.files) : [],
+    rejected: raw.rejected,
+    skippedImages: raw.skipped_images,
   }
 }

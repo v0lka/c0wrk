@@ -318,6 +318,10 @@ export function OptimizePrompt(arg1) {
   return window['go']['desktop']['App']['OptimizePrompt'](arg1);
 }
 
+export function PasteFromClipboard(arg1, arg2) {
+  return window['go']['desktop']['App']['PasteFromClipboard'](arg1, arg2);
+}
+
 export function PauseGoal(arg1) {
   return window['go']['desktop']['App']['PauseGoal'](arg1);
 }

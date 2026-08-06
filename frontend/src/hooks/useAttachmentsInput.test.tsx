@@ -1,0 +1,234 @@
+// Regression tests for useAttachmentsInput — the 📎 button entry point.
+//
+// These verify the behavior contract is preserved after the refactor that
+// extracted the staging pipeline (vision gating, session-on-demand, attach +
+// store sync) into useStageAttachments.handleAttach must remain a thin
+// wrapper: pickAttachmentFiles() → stageAttachmentPaths(). The staging logic
+// is exercised transitively, so these tests also lock down the delegation.
+//
+// No @testing-library/react in this repo; we follow the established
+// createRoot + jsdom pattern (see ModelCombobox.test.tsx).
+
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+
+// jsdom in this environment does not expose window.localStorage, which
+// zustand's persist middleware captures at store-creation time. Polyfill it
+// before any store module is imported so the real inputModeStore works.
+vi.hoisted(() => {
+  const g = globalThis as Record<string, unknown>
+  const win = (g.window as Record<string, unknown> | undefined) ?? g
+  g.IS_REACT_ACT_ENVIRONMENT = true
+  win.IS_REACT_ACT_ENVIRONMENT = true
+  const map = new Map<string, string>()
+  win.localStorage = {
+    getItem: (k: string) => map.get(k) ?? null,
+    setItem: (k: string, v: string) => { map.set(k, v) },
+    removeItem: (k: string) => { map.delete(k) },
+    clear: () => map.clear(),
+    key: (i: number) => Array.from(map.keys())[i] ?? null,
+    get length() { return map.size },
+  }
+})
+
+import { useAttachmentsInput } from '@/hooks/useAttachmentsInput'
+import { useInputModeStore } from '@/stores/inputModeStore'
+import { useAttachmentsStore } from '@/stores/attachmentsStore'
+import { useSessionStore } from '@/stores/sessionStore'
+import type { SessionInfo, AttachmentInfoUI, ModelInfo } from '@/types/models'
+
+// Spies exist before vi.mock factories run so they can be referenced there
+// and re-asserted/reset in test bodies.
+const spies = vi.hoisted(() => ({
+  pickAttachmentFiles: vi.fn<() => Promise<string[]>>(),
+  attachFiles: vi.fn<(sessionId: string, paths: string[]) => Promise<AttachmentInfoUI[]>>(),
+  createSession: vi.fn<() => Promise<SessionInfo>>(),
+  emit: vi.fn<(event: string, data: unknown) => void>(),
+}))
+
+// Mock the attachment API: keep isImagePath real (pure), spy on the RPCs.
+vi.mock('@/api/attachments', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/attachments')>()
+  return {
+    ...actual,
+    pickAttachmentFiles: spies.pickAttachmentFiles,
+    attachFiles: spies.attachFiles,
+  }
+})
+
+vi.mock('@/api/sessions', () => ({
+  createSession: spies.createSession,
+}))
+
+vi.mock('@/api/runtime', () => ({
+  emit: spies.emit,
+}))
+
+// Mock useConfigData with one vision + one non-vision model; the effective
+// model is chosen per-test via useInputModeStore.setState({ selectedModel }).
+const models: ModelInfo[] = [
+  { name: 'vision-m', provider: 'p', family: 'f', vision: true },
+  { name: 'novision-m', provider: 'p', family: 'f', vision: false },
+]
+vi.mock('@/hooks/useConfigData', () => ({
+  useConfigData: () => ({ allModels: models, defaultModel: 'vision-m', loaded: true }),
+}))
+
+const makeSession = (id: string): SessionInfo => ({
+  id,
+  project_id: 'proj',
+  name: 's',
+  created_at: '',
+  last_active_at: '',
+  archived: false,
+  pinned: false,
+  active: true,
+  total_input_tokens: 0,
+  total_output_tokens: 0,
+  model: '',
+  family: '',
+  has_unfinished_task: false,
+})
+
+const makeAttachment = (id: string): AttachmentInfoUI => ({
+  id,
+  originalName: id + '.txt',
+  format: 'txt',
+  sizeBytes: 1,
+})
+
+// Harness: capture the latest handleAttach so the test can invoke it.
+let captured: (() => Promise<void>) | null = null
+function Harness({ activeSessionId }: { activeSessionId: string | null }) {
+  const { handleAttach } = useAttachmentsInput(activeSessionId)
+  captured = handleAttach
+  return null
+}
+
+/** Invoke the captured handleAttach, failing loudly if the harness never ran. */
+async function runAttach(): Promise<void> {
+  if (!captured) throw new Error('harness did not capture handleAttach')
+  await captured()
+}
+
+let container: HTMLDivElement
+let root: Root
+
+beforeEach(() => {
+  // Reset stores to a clean baseline.
+  useInputModeStore.setState({ selectedModel: null })
+  useAttachmentsStore.getState().clear()
+  useSessionStore.setState({ sessions: [], activeSessionId: null })
+
+  spies.pickAttachmentFiles.mockReset()
+  spies.attachFiles.mockReset()
+  spies.createSession.mockReset()
+  spies.emit.mockReset()
+
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  act(() => {
+    root.render(<Harness activeSessionId={'sess-1'} />)
+  })
+})
+
+function setActiveSession(id: string | null) {
+  act(() => {
+    root.render(<Harness activeSessionId={id} />)
+  })
+}
+
+describe('useAttachmentsInput.handleAttach (📎 button)', () => {
+  it('is a no-op when the user cancels the picker (empty selection)', async () => {
+    spies.pickAttachmentFiles.mockResolvedValue([])
+    await act(async () => { await runAttach() })
+    expect(spies.attachFiles).not.toHaveBeenCalled()
+    expect(spies.createSession).not.toHaveBeenCalled()
+  })
+
+  it('stages files into an existing session without creating one', async () => {
+    const list = [makeAttachment('a1')]
+    spies.pickAttachmentFiles.mockResolvedValue(['/x/doc.md'])
+    spies.attachFiles.mockResolvedValue(list)
+
+    await act(async () => { await runAttach() })
+
+    expect(spies.createSession).not.toHaveBeenCalled()
+    expect(spies.attachFiles).toHaveBeenCalledWith('sess-1', ['/x/doc.md'])
+    expect(useAttachmentsStore.getState().attachments).toEqual(list)
+    // Successful attach clears any stale image error.
+    expect(useAttachmentsStore.getState().imageError).toBeNull()
+  })
+
+  it('creates a session on demand when none is active', async () => {
+    const newSession = makeSession('new-sess')
+    spies.pickAttachmentFiles.mockResolvedValue(['/x/doc.md'])
+    spies.createSession.mockResolvedValue(newSession)
+    spies.attachFiles.mockResolvedValue([makeAttachment('a1')])
+
+    setActiveSession(null)
+    await act(async () => { await runAttach() })
+
+    expect(spies.createSession).toHaveBeenCalledOnce()
+    // attachFiles received the freshly-created session id.
+    expect(spies.attachFiles).toHaveBeenCalledWith('new-sess', ['/x/doc.md'])
+    // The new session was registered + activated.
+    expect(useSessionStore.getState().sessions?.map((s) => s.id)).toContain('new-sess')
+    expect(useSessionStore.getState().activeSessionId).toBe('new-sess')
+  })
+
+  it('rejects images on a non-vision model, staging documents only', async () => {
+    // Select a non-vision model as the effective model.
+    useInputModeStore.setState({ selectedModel: 'novision-m' })
+    // Re-render so the hook re-binds to the new selectedModel.
+    setActiveSession('sess-1')
+
+    spies.pickAttachmentFiles.mockResolvedValue(['/p/img.png', '/p/doc.md'])
+    spies.attachFiles.mockResolvedValue([makeAttachment('d1')])
+
+    await act(async () => { await runAttach() })
+
+    // Image rejected, document staged.
+    expect(spies.attachFiles).toHaveBeenCalledWith('sess-1', ['/p/doc.md'])
+    // Error banner surfaced naming the (bare) model.
+    expect(useAttachmentsStore.getState().imageError).toContain('novision-m')
+  })
+
+  it('rejects an image-only selection on a non-vision model and stages nothing', async () => {
+    useInputModeStore.setState({ selectedModel: 'novision-m' })
+    setActiveSession('sess-1')
+
+    spies.pickAttachmentFiles.mockResolvedValue(['/p/img.png'])
+
+    await act(async () => { await runAttach() })
+
+    // Nothing to stage → attachFiles never called.
+    expect(spies.attachFiles).not.toHaveBeenCalled()
+    expect(useAttachmentsStore.getState().imageError).toContain('novision-m')
+  })
+
+  it('stages images normally when the model supports vision', async () => {
+    spies.pickAttachmentFiles.mockResolvedValue(['/p/img.png', '/p/doc.md'])
+    spies.attachFiles.mockResolvedValue([makeAttachment('a1'), makeAttachment('a2')])
+
+    await act(async () => { await runAttach() })
+
+    // Both image and document passed through unchanged.
+    expect(spies.attachFiles).toHaveBeenCalledWith('sess-1', ['/p/img.png', '/p/doc.md'])
+    expect(useAttachmentsStore.getState().imageError).toBeNull()
+  })
+
+  it('surfaces a runtime_error toast when attachFiles fails', async () => {
+    spies.pickAttachmentFiles.mockResolvedValue(['/x/doc.md'])
+    spies.attachFiles.mockRejectedValue(new Error('boom'))
+
+    await act(async () => { await runAttach() })
+
+    expect(spies.emit).toHaveBeenCalledWith('runtime_error', expect.objectContaining({
+      message: 'Failed to attach files',
+    }))
+  })
+})

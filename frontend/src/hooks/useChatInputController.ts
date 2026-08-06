@@ -5,6 +5,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useMessageSender } from '@/hooks/useMessageSender'
 import { useChatEditor, type ChatEditorAPI } from '@/hooks/useChatEditor'
+import { usePasteHandler } from '@/hooks/usePasteHandler'
 import { extractSkillRefs, extractAgentRefs, filterKnownAgentRefs } from '@/lib/parseReferences'
 import { optimizePrompt } from '@/api/prompt'
 import { createSession } from '@/api/sessions'
@@ -114,12 +115,26 @@ export function useChatInputController(): ChatInputController {
   // immediately after handleSend is defined below.
   const handleSendHolder: { current: () => void } = { current: () => {} }
 
+  // Same forward-reference trick for onPaste: usePasteHandler needs the editor,
+  // and useChatEditor accepts onPaste. We hand the editor a holder that is
+  // populated right after both are created, so the (mount-once) CM paste
+  // extension always invokes the latest handler via its internal ref.
+  const onPasteHolder: { current: (data: DataTransfer) => Promise<void> } = {
+    current: async () => {},
+  }
+
   const editor = useChatEditor({
     disabled: isInputDisabled,
     placeholder: placeholderText,
     onSend: () => handleSendHolder.current(),
     onContentChange: setHasContent,
+    onPaste: (data: DataTransfer) => onPasteHolder.current(data),
   })
+
+  // Non-fast-path paste routing (images / copied files). The editor takes the
+  // fast path for pure text; everything else flows through here.
+  const { onPaste } = usePasteHandler(editor)
+  onPasteHolder.current = onPaste
 
   // Programmatic text insertion: each pendingInsertion is consumed once.
   useEffect(() => {

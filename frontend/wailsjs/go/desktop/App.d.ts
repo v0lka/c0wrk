@@ -167,6 +167,8 @@ export function Merge(arg1:string):Promise<void>;
 
 export function OptimizePrompt(arg1:string):Promise<backend.OptimizePromptResponse>;
 
+export function PasteFromClipboard(arg1:string,arg2:boolean):Promise<session.PasteResult>;
+
 export function PauseGoal(arg1:string):Promise<void>;
 
 export function PickAttachmentFiles():Promise<Array<string>>;

@@ -76,6 +76,28 @@ export interface AttachmentInfoUI {
   readonly thumbnail?: string
 }
 
+/** Discriminator for the kind of content found on the clipboard by the
+ *  backend PasteFromClipboard, in priority order image → files → text → empty.
+ *  Shared by the raw (events.ts PasteResultRaw) and UI (PasteResultUI) shapes. */
+export type PasteKind = 'image' | 'files' | 'text' | 'empty'
+
+/** CamelCase paste result — the api/attachments.ts `pasteFromClipboard` wrapper
+ *  maps the backend's snake_case PasteResult to this at the boundary. `kind`
+ *  determines which fields are populated:
+ *  - image: `files` holds the staged image attachment when accepted; `rejected`
+ *    holds the reason when the image was not staged (vision sentinel or error).
+ *  - files: `files` holds the staged attachments from AttachFiles;
+ *    `skippedImages` counts image-ext files dropped because the model lacks vision.
+ *  - text:  `text` holds the clipboard string.
+ *  - empty: nothing is populated. */
+export interface PasteResultUI {
+  readonly kind: PasteKind
+  readonly text?: string
+  readonly files: AttachmentInfoUI[]
+  readonly rejected?: string
+  readonly skippedImages?: number
+}
+
 export interface GitStatusEntry {
   status: string
   staged: boolean

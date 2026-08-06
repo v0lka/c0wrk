@@ -1366,6 +1366,42 @@ export namespace session {
 	        this.data = source["data"];
 	    }
 	}
+	export class PasteResult {
+	    kind: string;
+	    text?: string;
+	    files?: AttachmentInfo[];
+	    rejected?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PasteResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.text = source["text"];
+	        this.files = this.convertValues(source["files"], AttachmentInfo);
+	        this.rejected = source["rejected"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class SessionInfo {
 	    id: string;
 	    project_id: string;

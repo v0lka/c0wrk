@@ -5,8 +5,8 @@
 // RPCs. No React, no Wails runtime — just the mappers and the event guard.
 
 import { describe, it, expect } from 'vitest'
-import { mapAttachment, mapAttachments, isImagePath } from '@/api/attachments'
-import { isAttachmentsChangedData, isAttachmentInfoRaw } from '@/types/events'
+import { mapAttachment, mapAttachments, isImagePath, mapPasteResult } from '@/api/attachments'
+import { isAttachmentsChangedData, isAttachmentInfoRaw, isPasteResultRaw } from '@/types/events'
 
 describe('mapAttachment', () => {
   it('maps snake_case backend fields to camelCase UI fields', () => {
@@ -161,5 +161,53 @@ describe('isImagePath', () => {
 
   it('returns false for files without an extension', () => {
     expect(isImagePath('/tmp/README')).toBe(false)
+  })
+})
+
+describe('mapPasteResult', () => {
+  it('maps snake_case skipped_images → skippedImages and defaults files to []', () => {
+    expect(mapPasteResult({ kind: 'files', skipped_images: 3 })).toEqual({
+      kind: 'files',
+      text: undefined,
+      files: [],
+      rejected: undefined,
+      skippedImages: 3,
+    })
+  })
+
+  it('forwards text and rejected, omitting skippedImages when absent', () => {
+    expect(
+      mapPasteResult({ kind: 'image', rejected: 'vision_unsupported', files: [] }),
+    ).toEqual({
+      kind: 'image',
+      text: undefined,
+      files: [],
+      rejected: 'vision_unsupported',
+      skippedImages: undefined,
+    })
+  })
+})
+
+describe('isPasteResultRaw', () => {
+  it('accepts a well-formed files result with skipped_images', () => {
+    expect(
+      isPasteResultRaw({
+        kind: 'files',
+        files: [],
+        skipped_images: 2,
+      }),
+    ).toBe(true)
+  })
+
+  it('accepts a result without skipped_images (optional)', () => {
+    expect(isPasteResultRaw({ kind: 'text', text: 'hi' })).toBe(true)
+  })
+
+  it('rejects a non-number skipped_images', () => {
+    expect(isPasteResultRaw({ kind: 'files', skipped_images: 'two' })).toBe(false)
+  })
+
+  it('rejects an unknown kind', () => {
+    expect(isPasteResultRaw({ kind: 'binary', files: [] })).toBe(false)
   })
 })

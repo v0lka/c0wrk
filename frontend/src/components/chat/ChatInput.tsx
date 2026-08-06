@@ -3,10 +3,12 @@ import { ResizeHandle } from '@/components/ResizeHandle'
 import { useUIStore } from '@/stores/uiStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useChatInputController } from '@/hooks/useChatInputController'
+import { useFileDrop } from '@/hooks/useFileDrop'
 import { ChatInputToolbar } from '@/components/chat/ChatInputToolbar'
 import { ChatEditorPane } from '@/components/chat/ChatEditorPane'
 import { AttachmentChips } from '@/components/chat/AttachmentChips'
 import { ImageErrorBanner } from '@/components/chat/ImageErrorBanner'
+import { DropzoneOverlay } from '@/components/chat/DropzoneOverlay'
 import { cn } from '@/lib/utils'
 
 /**
@@ -22,7 +24,11 @@ export function ChatInput() {
   const controller = useChatInputController()
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
   const viewerCollapsed = useFileViewerStore((s) => s.collapsed)
-  const { height, setHeight } = controller
+  const { height, setHeight, activeSessionId } = controller
+
+  // Native OS drag-and-drop → attachment staging. Active only in chat mode;
+  // dragActive drives the full-window drop-zone highlight overlay.
+  const { dragActive } = useFileDrop(activeSessionId)
 
   const cleanupRef = useRef<(() => void) | null>(null)
 
@@ -63,23 +69,26 @@ export function ChatInput() {
   }, [height, setHeight])
 
   return (
-    <div
-      className={cn(
-        'flex flex-col flex-shrink-0 border-t border-x border-border bg-card overflow-hidden',
-        sidebarCollapsed && 'ml-1',
-        viewerCollapsed && 'mr-1',
-      )}
-      style={{ height }}
-    >
-      <ResizeHandle
-        orientation="horizontal"
-        onMouseDown={handleResizeStart}
-        onKeyDown={handleResizeKeyDown}
-      />
-      <AttachmentChips />
-      <ImageErrorBanner />
-      <ChatEditorPane controller={controller} />
-      <ChatInputToolbar controller={controller} />
-    </div>
+    <>
+      <DropzoneOverlay active={dragActive} />
+      <div
+        className={cn(
+          'flex flex-col flex-shrink-0 border-t border-x border-border bg-card overflow-hidden',
+          sidebarCollapsed && 'ml-1',
+          viewerCollapsed && 'mr-1',
+        )}
+        style={{ height }}
+      >
+        <ResizeHandle
+          orientation="horizontal"
+          onMouseDown={handleResizeStart}
+          onKeyDown={handleResizeKeyDown}
+        />
+        <AttachmentChips />
+        <ImageErrorBanner />
+        <ChatEditorPane controller={controller} />
+        <ChatInputToolbar controller={controller} />
+      </div>
+    </>
   )
 }

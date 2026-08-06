@@ -44,9 +44,9 @@ describe('ImageErrorBanner', () => {
   })
 
   it('renders the error message when imageError is set', () => {
-    useAttachmentsStore.getState().setImageError('Модель gpt-4 не поддерживает изображения.')
+    useAttachmentsStore.getState().setImageError('Model gpt-4 does not support images.')
     const container = render(<ImageErrorBanner />)
-    expect(container.textContent).toContain('Модель gpt-4 не поддерживает изображения.')
+    expect(container.textContent).toContain('Model gpt-4 does not support images.')
     expect(container.querySelector('button[aria-label="Dismiss image error"]')).toBeTruthy()
   })
 

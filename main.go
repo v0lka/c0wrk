@@ -63,6 +63,15 @@ func mainImpl() int {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
+		// Enable native file-drop so dragging files onto the window emits their
+		// absolute paths to the frontend (files:dropped, wired in Startup via
+		// wailsRuntime.OnFileDrop). DisableWebViewDrop prevents the webview
+		// from navigating to/opening the dropped file — paths are delivered
+		// only through the Go event, never interpreted as navigation targets.
+		DragAndDrop: &options.DragAndDrop{
+			EnableFileDrop:     true,
+			DisableWebViewDrop: true,
+		},
 		OnStartup:  app.Startup,
 		OnShutdown: app.Shutdown,
 		Bind: []any{

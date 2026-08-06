@@ -196,6 +196,25 @@ func (a *App) Startup(ctx context.Context) {
 	startTime := time.Now()
 	a.ctx = ctx
 
+	// Register the native file-drop listener. The DragAndDrop option in main.go
+	// enables Wails' drag-and-drop plumbing; OnFileDrop subscribes to it and
+	// forwards the dropped absolute paths to the frontend as a files:dropped
+	// event. DisableWebViewDrop (also set in main.go) ensures the webview never
+	// navigates to/open the file — this callback is the sole delivery channel.
+	// The nil guards mirror the other wailsRuntime registrations: ctx is always
+	// non-nil here (Wails passes a live context), but a.emit additionally guards
+	// a.ctx so a late drop during teardown is dropped harmlessly instead of panic.
+	wailsRuntime.OnFileDrop(ctx, func(x, y int, paths []string) {
+		if len(paths) == 0 {
+			return
+		}
+		a.emit(backend.EventFilesDropped, map[string]any{
+			"paths": paths,
+			"x":     x,
+			"y":     y,
+		})
+	})
+
 	// ── Phase 0: Resolve agent directory (needed for logger paths) ──
 	// Compute early so logger.Init can write to the correct directory.
 	homeDir, err := os.UserHomeDir()

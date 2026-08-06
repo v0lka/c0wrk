@@ -233,7 +233,7 @@ func (m *Manager) AttachFiles(ctx context.Context, sessionID string, paths []str
 		// ImageAttachment (kept separate from document attachments — images
 		// are passed to the LLM as image content blocks, not markdown context).
 		if isImageFormat(ext) {
-			if err := m.attachImage(session, sessionID, path, imagesDir); err != nil {
+			if err := m.attachImage(session, sessionID, path, imagesDir, ""); err != nil {
 				failures = append(failures, AttachmentFailure{
 					Path:  filepath.Base(path),
 					Error: err.Error(),
@@ -320,7 +320,12 @@ func (m *Manager) AttachFiles(ctx context.Context, sessionID string, paths []str
 // error describes why the image could not be attached and is surfaced by the
 // caller as a per-file failure (not a method-level error) so partial success
 // is preserved.
-func (m *Manager) attachImage(session *Session, sessionID, path, imagesDir string) error {
+//
+// displayName overrides OriginalName when non-empty (used by the clipboard
+// paste path, whose temp file has an ugly "c0wrk-clip-*" name). When empty,
+// OriginalName falls back to filepath.Base(path) — the real filename for the
+// picker and drag-and-drop paths.
+func (m *Manager) attachImage(session *Session, sessionID, path, imagesDir, displayName string) error {
 	base64Data, mediaType, thumbURI, sizeBytes, err := processImage(path)
 	if err != nil {
 		return err
@@ -344,9 +349,14 @@ func (m *Manager) attachImage(session *Session, sessionID, path, imagesDir strin
 		return fmt.Errorf("write image: %w", err)
 	}
 
+	name := displayName
+	if name == "" {
+		name = filepath.Base(path)
+	}
+
 	imgAtt := ImageAttachment{
 		ID:           imgID,
-		OriginalName: filepath.Base(path),
+		OriginalName: name,
 		MediaType:    mediaType,
 		Base64Data:   base64Data,
 		ThumbnailB64: thumbURI,

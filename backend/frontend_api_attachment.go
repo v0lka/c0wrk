@@ -22,6 +22,22 @@ func (f *FrontendAPI) AttachFiles(sessionID string, paths []string) ([]session.A
 	return infos, nil
 }
 
+// PasteFromClipboard reads the system clipboard and stages the highest-priority
+// content (image → files → text) as a pending attachment on the session,
+// respecting the active model's vision capability. supportsVision should reflect
+// whether the active model can consume image input. See session.Manager.
+// PasteFromClipboard for the full precedence and per-kind semantics.
+func (f *FrontendAPI) PasteFromClipboard(sessionID string, supportsVision bool) (session.PasteResult, error) {
+	if f.app == nil || f.app.Manager() == nil {
+		return session.PasteResult{}, errors.New("session manager not initialized")
+	}
+	res, err := f.app.Manager().PasteFromClipboard(context.Background(), sessionID, supportsVision)
+	if err != nil {
+		return res, fmt.Errorf("paste from clipboard: %w", err)
+	}
+	return res, nil
+}
+
 // RemoveAttachment removes a staged (pending) attachment from the session by ID.
 func (f *FrontendAPI) RemoveAttachment(sessionID, attachmentID string) error {
 	if f.app == nil || f.app.Manager() == nil {

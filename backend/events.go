@@ -55,6 +55,14 @@ const EventProjectSwitched = "project:switched"
 // in the active workspace.
 const EventWorkspaceTreeChanged = "workspace:tree_changed"
 
+// EventFilesDropped is emitted when one or more files are dragged and dropped
+// onto the application window. The payload is a map carrying the absolute
+// paths of the dropped files under the "paths" key. The webview's own
+// drag-and-drop handling is disabled (options.DragAndDrop.DisableWebViewDrop)
+// so dropped files never navigate or open inside the webview; this event is
+// the sole delivery channel for the dropped paths.
+const EventFilesDropped = "files:dropped"
+
 // EventSkillsChanged is emitted when skill directories outside the workspace
 // (e.g. ~/.agents/skills, ~/.c0wrk/.agents/skills) are modified. Workspace-
 // local skill changes are surfaced via EventWorkspaceTreeChanged instead.

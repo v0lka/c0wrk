@@ -1,5 +1,5 @@
-import type { ProjectInfo, VectorIndexStatus } from '@/types/models'
-import { isObj, has } from '@/types/guards'
+import type { ProjectInfo, VectorIndexStatus, PasteKind } from '@/types/models'
+import { isObj, has, isArrayOf } from '@/types/guards'
 
 // Re-export isObj/has from guards for backward compatibility
 export { isObj, has }
@@ -115,6 +115,20 @@ export interface AttachmentInfoRaw {
   readonly is_image?: boolean
   /** JPEG data URI (64px) for image attachments; omitted for non-images. */
   readonly thumbnail?: string
+}
+
+/** Backend PasteResult record (snake_case), as returned by the
+ *  PasteFromClipboard RPC. `kind` discriminates which fields are populated:
+ *  image/files → `files`; text → `text`; image-rejected → `rejected`.
+ *  `skipped_images` counts image-ext files dropped because the model lacks
+ *  vision (kind=files). `files` uses the same snake_case AttachmentInfoRaw
+ *  shape as the attachment RPCs. */
+export interface PasteResultRaw {
+  readonly kind: PasteKind
+  readonly text?: string
+  readonly files?: readonly AttachmentInfoRaw[]
+  readonly rejected?: string
+  readonly skipped_images?: number
 }
 
 /** A single file that could not be converted/staged (snake_case backend record). */
@@ -296,6 +310,15 @@ export type SessionEventKey = keyof SessionEventMap
 
 // --- Global event map ---
 
+/** Payload of the global `files:dropped` event (native OS drag-and-drop, fired
+ *  by the Wails `OnFileDrop` callback). `paths` are absolute file paths; `x`
+ *  and `y` are the drop coordinates in webview pixels. */
+export interface FilesDroppedData {
+  readonly paths: readonly string[]
+  readonly x: number
+  readonly y: number
+}
+
 export interface GlobalEventMap {
   readonly 'startup_error': { readonly message: string; readonly error: string; readonly error_code?: string }
   readonly 'runtime_error': { readonly id: string; readonly message: string; readonly error_code?: string }
@@ -315,6 +338,7 @@ export interface GlobalEventMap {
   readonly 'tool_manager:progress': ToolManagerProgressData
   readonly 'tool_manager:done': ToolManagerDoneData
   readonly 'workdirs:changed': void
+  readonly 'files:dropped': FilesDroppedData
 }
 
 export type GlobalEventKey = keyof GlobalEventMap
@@ -400,6 +424,24 @@ export function isAttachmentInfoRaw(v: unknown): v is AttachmentInfoRaw {
   )
 }
 
+/** Known PasteKind discriminators (mirrors the backend PasteKind enum). */
+const PASTE_KINDS: ReadonlySet<string> = new Set(['image', 'files', 'text', 'empty'])
+
+/** Guard for a backend PasteResult (snake_case). `kind` is required and must be
+ *  a known PasteKind; `files`, when present, must be an array of valid
+ *  AttachmentInfoRaw records. Used by the pasteFromClipboard wrapper to reject
+ *  malformed/unexpected backend responses without throwing. */
+export function isPasteResultRaw(v: unknown): v is PasteResultRaw {
+  if (!isObj(v)) return false
+  const raw = v as unknown as PasteResultRaw
+  const kind = raw.kind
+  if (typeof kind !== 'string' || !PASTE_KINDS.has(kind)) return false
+  const files = raw.files
+  if (files !== undefined && !isArrayOf(files, isAttachmentInfoRaw)) return false
+  if (raw.skipped_images !== undefined && typeof raw.skipped_images !== 'number') return false
+  return true
+}
+
 /** The `attachments:changed` payload is an object with an `attachments` array. */
 export function isAttachmentsChangedData(d: unknown): d is AttachmentsChangedData {
   if (!isObj(d)) return false
@@ -460,6 +502,14 @@ export type RuntimeError = GlobalEventMap['runtime_error']
 
 export function isRuntimeError(d: unknown): d is RuntimeError {
   return isObj(d) && typeof d.id === 'string' && typeof d.message === 'string'
+}
+
+/** Guard for a `files:dropped` payload (native OS drag-and-drop). */
+export function isFilesDroppedData(d: unknown): d is FilesDroppedData {
+  if (!isObj(d)) return false
+  if (!Array.isArray(d.paths)) return false
+  if (!d.paths.every((p) => typeof p === 'string')) return false
+  return typeof d.x === 'number' && typeof d.y === 'number'
 }
 
 const VALID_VECTOR_STATES: ReadonlySet<string> = new Set(['idle', 'indexing', 'ready', 'reindexing', 'unavailable'])
