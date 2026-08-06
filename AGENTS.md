@@ -2,6 +2,20 @@
 
 Guidance for coding agents working on **c0wrk** — a desktop AI coding-agent built with Wails v2 (Go backend + React 19 / Vite 6 / TS frontend).
 
+## Security Policy
+
+This project maintains a security policy in [SECURITY.md](./SECURITY.md).
+All AI coding agents MUST read and follow SECURITY.md before making changes.
+It contains:
+
+- Threat model and trust boundaries
+- Secure coding guidelines specific to this project's stack
+- Hard constraints and forbidden patterns for AI agents
+- Vulnerability reporting procedures
+- Agentic security controls (OWASP Top 10 for Agentic Applications ASI01–ASI10)
+
+Any code contribution that violates the rules in SECURITY.md will be rejected.
+
 ## Specifications
 
 Detailed system specs live in `specs/`. Before making structural changes, read the relevant spec:
