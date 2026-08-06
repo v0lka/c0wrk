@@ -128,21 +128,42 @@ type StoredImageMetadata struct {
 }
 
 // StoredImagesMetadata is the top-level metadata blob persisted in
-// ChatMessage.Metadata for user messages carrying image attachments.
+// ChatMessage.Metadata for user messages carrying image attachments. It is the
+// legacy image-only shape; richer messages use UserMessageMetadata.
 type StoredImagesMetadata struct {
 	Images []StoredImageMetadata `json:"images"`
 }
 
-// imageAttachmentsToMetadata builds the persistable metadata blob (JSON) for a
-// set of staged image attachments. Returns nil when there are no images so the
-// ChatMessage.Metadata field stays empty for image-free messages.
-func imageAttachmentsToMetadata(images []ImageAttachment) json.RawMessage {
-	if len(images) == 0 {
-		return nil
-	}
-	md := StoredImagesMetadata{Images: make([]StoredImageMetadata, 0, len(images))}
+// StoredAttachmentMeta is the per-document record persisted in
+// ChatMessage.Metadata: just enough (name/format/size) to render a chip for an
+// already-sent document attachment on reload. The converted markdown content is
+// never persisted here — it lives only in the blackboard for the active task.
+type StoredAttachmentMeta struct {
+	OriginalName string `json:"original_name"`
+	Format       string `json:"format"`
+	SizeBytes    int64  `json:"size_bytes"`
+}
+
+// UserMessageMetadata is the unified metadata blob persisted in
+// ChatMessage.Metadata for a user message. It combines the goal flag, image
+// attachments (thumbnail + on-disk path), and document attachment summaries.
+// Every field is omitempty so a message carrying a single signal serializes to
+// just that field — e.g. an image-only message stays {"images":[...]} (matching
+// StoredImagesMetadata) for backward compatibility.
+type UserMessageMetadata struct {
+	Goal        bool                   `json:"goal,omitempty"`
+	Images      []StoredImageMetadata  `json:"images,omitempty"`
+	Attachments []StoredAttachmentMeta `json:"attachments,omitempty"`
+}
+
+// imageAttachmentsToStoredImages maps staged image attachments to their
+// persisted StoredImageMetadata form (thumbnail + on-disk path, never the full
+// base64 data). Shared by the standalone image-only blob and the merged
+// user-message metadata so the per-image mapping lives in one place.
+func imageAttachmentsToStoredImages(images []ImageAttachment) []StoredImageMetadata {
+	out := make([]StoredImageMetadata, 0, len(images))
 	for _, img := range images {
-		md.Images = append(md.Images, StoredImageMetadata{
+		out = append(out, StoredImageMetadata{
 			ID:        img.ID,
 			Name:      img.OriginalName,
 			Thumbnail: img.ThumbnailB64,
@@ -150,23 +171,81 @@ func imageAttachmentsToMetadata(images []ImageAttachment) json.RawMessage {
 			MediaType: img.MediaType,
 		})
 	}
-	data, err := json.Marshal(md)
+	return out
+}
+
+// imageAttachmentsToMetadata builds the persistable metadata blob (JSON) for a
+// set of staged image attachments. Returns nil when there are no images so the
+// ChatMessage.Metadata field stays empty for image-free messages. Produces the
+// legacy {"images":[...]} shape used when a message carries images only.
+func imageAttachmentsToMetadata(images []ImageAttachment) json.RawMessage {
+	if len(images) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(StoredImagesMetadata{Images: imageAttachmentsToStoredImages(images)})
 	if err != nil {
 		return nil
 	}
 	return data
 }
 
-// PendingImageMetadata returns the persistable metadata blob (JSON) for the
-// session's staged image attachments, suitable for storing in
-// ChatMessage.Metadata. Returns nil when there are no pending images. Used by
-// the frontend API before SendMessage snapshots and clears the pending list.
-func (m *Manager) PendingImageMetadata(sessionID string) (json.RawMessage, error) {
-	images, err := m.PendingImageAttachments(sessionID)
+// PendingMessageMetadata returns the unified persistable metadata blob (JSON)
+// for a user message about to be sent: the goal flag OR-ed with the session's
+// staged image and document attachments. Returns nil when none of the three
+// signals are present (no goal, no images, no docs) so ChatMessage.Metadata
+// stays empty. Read before SendMessage snapshots and clears the pending lists.
+//
+// Backward compatibility: a message carrying images only (no goal, no docs)
+// delegates to imageAttachmentsToMetadata so the blob is exactly {"images":[...]}.
+func (m *Manager) PendingMessageMetadata(sessionID string, goal bool) (json.RawMessage, error) {
+	session, err := m.getOrRestoreSession(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("get message metadata: %w", err)
+	}
+	if session == nil {
+		return nil, fmt.Errorf("get message metadata: session %q not found", sessionID)
+	}
+
+	// Snapshot both pending lists under a single lock so the blob reflects one
+	// consistent point in time (the lists are cleared by SendMessage right after).
+	session.mu.Lock()
+	images := make([]ImageAttachment, len(session.pendingImageAttachments))
+	copy(images, session.pendingImageAttachments)
+	docs := make([]orchestration.Attachment, len(session.pendingAttachments))
+	copy(docs, session.pendingAttachments)
+	session.mu.Unlock()
+
+	// No signal at all — nothing to persist.
+	if !goal && len(images) == 0 && len(docs) == 0 {
+		return nil, nil
+	}
+
+	// Image-only fast path: keep the legacy {"images":[...]} shape byte-for-byte
+	// and reuse imageAttachmentsToMetadata.
+	if !goal && len(docs) == 0 {
+		return imageAttachmentsToMetadata(images), nil
+	}
+
+	md := UserMessageMetadata{Goal: goal}
+	if len(images) > 0 {
+		md.Images = imageAttachmentsToStoredImages(images)
+	}
+	if len(docs) > 0 {
+		md.Attachments = make([]StoredAttachmentMeta, 0, len(docs))
+		for _, d := range docs {
+			md.Attachments = append(md.Attachments, StoredAttachmentMeta{
+				OriginalName: d.OriginalName,
+				Format:       d.Format,
+				SizeBytes:    d.SizeBytes,
+			})
+		}
+	}
+
+	data, err := json.Marshal(md)
 	if err != nil {
 		return nil, err
 	}
-	return imageAttachmentsToMetadata(images), nil
+	return data, nil
 }
 
 // emitAttachmentsChanged emits an "attachments:changed" event for the given

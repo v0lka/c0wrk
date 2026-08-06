@@ -246,23 +246,24 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []
 	// Save user message to store (original text with /skill and @file markers for display on reload).
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
-		// Persist image-attachment metadata (thumbnail + on-disk path, never the
-		// full base64) so image attachments survive a backend restart and can be
-		// reconstructed into ContentBlocks from the saved files. Read before
-		// SendMessage snapshots and clears the pending image list.
-		var imageMetadata json.RawMessage
+		// Persist the user-message metadata blob so attachments survive a
+		// backend restart and can be reconstructed. The blob carries the goal
+		// flag, image attachments (thumbnail + on-disk path, never the full
+		// base64), and document attachment summaries (name/format/size). Read
+		// before SendMessage snapshots and clears the pending lists.
+		var messageMetadata json.RawMessage
 		if mgr := f.app.Manager(); mgr != nil {
-			if md, mdErr := mgr.PendingImageMetadata(id); mdErr == nil {
-				imageMetadata = md
+			if md, mdErr := mgr.PendingMessageMetadata(id, goal); mdErr == nil {
+				messageMetadata = md
 			} else {
-				f.log().Warn("failed to read pending image metadata", "session_id", id, "error", mdErr)
+				f.log().Warn("failed to read pending message metadata", "session_id", id, "error", mdErr)
 			}
 		}
 		if err := f.store.SaveMessage(context.Background(), session.ChatMessage{
 			SessionID: id,
 			Role:      "user",
 			Content:   text,
-			Metadata:  imageMetadata,
+			Metadata:  messageMetadata,
 			CreatedAt: time.Now().Format(time.RFC3339),
 		}); err != nil {
 			f.log().Error("failed to save user message to store", "error", err)

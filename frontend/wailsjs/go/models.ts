@@ -1371,6 +1371,7 @@ export namespace session {
 	    text?: string;
 	    files?: AttachmentInfo[];
 	    rejected?: string;
+	    skipped_images?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new PasteResult(source);
@@ -1382,6 +1383,7 @@ export namespace session {
 	        this.text = source["text"];
 	        this.files = this.convertValues(source["files"], AttachmentInfo);
 	        this.rejected = source["rejected"];
+	        this.skipped_images = source["skipped_images"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

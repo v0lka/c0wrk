@@ -2,6 +2,8 @@ import { useRef, useState, useLayoutEffect, useCallback } from 'react'
 import type { DisplayItem } from '@/types/messages'
 import { UserMessageContent } from '@/components/chat/UserMessageContent'
 import { MessageFooter } from '@/components/chat/MessageFooter'
+import { UserMessageMetaBadges } from '@/components/chat/UserMessageMetaBadges'
+import { parseUserMessageMeta } from '@/lib/userMessageMeta'
 
 interface UserMessageProps {
   item: Extract<DisplayItem, { kind: 'user' }>
@@ -10,7 +12,8 @@ interface UserMessageProps {
 }
 
 export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
-  const { content, timestamp } = item.message
+  const { content, timestamp, metadata } = item.message
+  const meta = parseUserMessageMeta(metadata)
   const formattedTime = new Date(timestamp).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
@@ -49,6 +52,7 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
       <div className="group flex justify-end" data-message-id={item.message.id}>
         <div className="flex flex-col gap-1 max-w-[80%] min-w-0">
           <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 w-full overflow-hidden min-w-0 break-words">
+            <UserMessageMetaBadges meta={meta} isPinned={isPinned} />
             <UserMessageContent content={content} />
           </div>
           <MessageFooter copyText={content} time={formattedTime} />
@@ -70,6 +74,7 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
     >
       <div ref={contentRef} className="flex flex-col gap-1 max-w-[80%] min-w-0">
         <div className="bg-secondary text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 w-full overflow-hidden min-w-0 break-words">
+          <UserMessageMetaBadges meta={meta} isPinned={isPinned} />
           <UserMessageContent content={content} />
         </div>
         <MessageFooter copyText={content} time={formattedTime} />
