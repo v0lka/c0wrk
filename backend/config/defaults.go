@@ -337,6 +337,9 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Timeouts.LLMRequestTimeout == 0 {
 		cfg.Timeouts.LLMRequestTimeout = 600
 	}
+	if cfg.Timeouts.ServiceLLMRequestTimeout == 0 {
+		cfg.Timeouts.ServiceLLMRequestTimeout = 120
+	}
 
 	// Orchestration defaults
 	if cfg.Orchestration.MaxDependencyContextChars == 0 {

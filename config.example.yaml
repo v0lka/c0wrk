@@ -347,7 +347,8 @@ timeouts:
   webFetchTimeout: 30 # Timeout for web page fetching
   webSearchTimeout: 30 # Timeout for web search queries
   persistenceTimeout: 5 # Timeout for persistence (DB) operations
-  llmRequestTimeout: 600 # Timeout for a single LLM API call (10 min). 0 = use default 600s
+  llmRequestTimeout: 600 # Timeout for a single LLM API call in the main chat loop (10 min). 0 = use default 600s
+  serviceLLMRequestTimeout: 120 # Timeout for one-shot "service" LLM requests (session title, commit message, prompt optimization) (2 min). 0 = use default 120s
 
 # ---------------------------------------------------------------------------
 # Orchestration Limits

@@ -141,6 +141,7 @@ type Manager struct {
 	envInfoOnce         sync.Once            // guards StartEnvInfoCollection against double-launch
 	stopTimeout         time.Duration        // how long to wait for goroutine on cancel/delete
 	maxSummaryLen       int                  // character limit for auto-generated step summaries
+	serviceLLMTimeout   time.Duration        // timeout for one-shot service LLM requests (session title); default 2m
 	projectResolver     ProjectResolverFunc  // resolves projectID -> workspacePath for lazy session restoration
 	fileTracker         *FileCoherenceTracker
 	converter           *markitdown.Converter // lazy-init markitdown converter for AttachFiles
@@ -205,6 +206,7 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir stri
 		agentDir:            agentDir,
 		logLevel:            "DEBUG",
 		stopTimeout:         10 * time.Second,
+		serviceLLMTimeout:   2 * time.Minute,
 		envInfoDone:         make(chan struct{}),
 	}
 	m.fileTracker = NewFileCoherenceTracker(m.resolveSessionName)
@@ -302,6 +304,18 @@ func (m *Manager) SetMaxSummaryLen(n int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.maxSummaryLen = n
+}
+
+// SetServiceLLMTimeout sets the timeout for one-shot "service" LLM requests
+// performed by the manager itself (currently session title generation). A
+// value <= 0 leaves the default (2 min) in place.
+func (m *Manager) SetServiceLLMTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.serviceLLMTimeout = d
 }
 
 // SetTitleGenerator sets the title generator for auto-naming sessions.

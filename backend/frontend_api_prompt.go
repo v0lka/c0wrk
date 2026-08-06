@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 )
 
 // OptimizePrompt rewrites the user's prompt to be more specific and actionable
@@ -21,7 +20,7 @@ func (f *FrontendAPI) OptimizePrompt(prompt string) (*OptimizePromptResponse, er
 		return nil, errors.New("prompt is empty")
 	}
 
-	ctx, cancel := context.WithTimeout(f.ctx(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(f.ctx(), f.serviceLLMTimeout())
 	defer cancel()
 
 	result, err := b.OptimizePrompt(ctx, trimmed)

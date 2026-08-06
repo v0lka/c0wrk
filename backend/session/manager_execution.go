@@ -324,6 +324,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 	m.mu.RLock()
 	titleGen := m.titleGen
 	store := m.sessionStore
+	serviceLLMTimeout := m.serviceLLMTimeout
 	m.mu.RUnlock()
 	if sessionName == "Session "+safeSessionPrefix(id) && titleGen != nil {
 		dumpFile := session.DumpFile()
@@ -331,7 +332,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 			if dumpFile != nil {
 				defer func() { _ = dumpFile.Close() }()
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), serviceLLMTimeout)
 			defer cancel()
 			if dumpFile != nil {
 				ctx = agent.WithDumpWriter(ctx, dumpFile)

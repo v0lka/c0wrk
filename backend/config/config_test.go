@@ -283,6 +283,14 @@ llm:
 		t.Errorf("Expected default llm.retry.max_backoff '30s', got %q", cfg.LLM.Retry.MaxBackoff)
 	}
 
+	// Check Timeouts defaults
+	if cfg.Timeouts.LLMRequestTimeout != 600 {
+		t.Errorf("Expected default llmRequestTimeout 600, got %d", cfg.Timeouts.LLMRequestTimeout)
+	}
+	if cfg.Timeouts.ServiceLLMRequestTimeout != 120 {
+		t.Errorf("Expected default serviceLLMRequestTimeout 120, got %d", cfg.Timeouts.ServiceLLMRequestTimeout)
+	}
+
 	// Check Models map is initialized
 	if cfg.LLM.Models == nil {
 		t.Error("Expected Models map to be initialized")

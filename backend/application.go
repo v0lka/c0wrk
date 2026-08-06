@@ -198,6 +198,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// cold startup on ~7 subprocess probes (~0.75s).
 	manager.StartEnvInfoCollection()
 	manager.SetMaxSummaryLen(cfg.Config.Orchestration.MaxSummaryLength)
+	manager.SetServiceLLMTimeout(time.Duration(cfg.Config.Timeouts.ServiceLLMRequestTimeout) * time.Second)
 	if cfg.SessionStore != nil {
 		manager.SetSessionStore(cfg.SessionStore)
 	}

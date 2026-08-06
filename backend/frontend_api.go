@@ -199,6 +199,22 @@ func (f *FrontendAPI) ctx() context.Context {
 	return context.Background()
 }
 
+// serviceLLMTimeout returns the configured timeout for one-shot "service"
+// LLM requests (session title, commit message, prompt optimization) —
+// i.e. requests that are not part of the main chat loop. It reads the
+// ServiceLLMRequestTimeout config value (seconds) and falls back to the
+// default of 120s (2 min) when config is unset or the value is zero, so the
+// frontend never hangs on an unresponsive provider even before config load.
+func (f *FrontendAPI) serviceLLMTimeout() time.Duration {
+	f.configMu.RLock()
+	cfg := f.config
+	f.configMu.RUnlock()
+	if cfg != nil && cfg.Timeouts.ServiceLLMRequestTimeout > 0 {
+		return time.Duration(cfg.Timeouts.ServiceLLMRequestTimeout) * time.Second
+	}
+	return 120 * time.Second
+}
+
 // EmitSessionEvent emits a session-scoped event through the combined UI +
 // persistence path (delegates to Application). Used by desktop-layer
 // callbacks (e.g. plan approval) so events survive app restarts.
