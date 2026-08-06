@@ -11,6 +11,14 @@ linters:
       - linters: [revive]
         text: "empty-block"
         path: _test\.go
+      # Windows clipboard syscalls necessarily convert the uintptr returned by
+      # LazyProc.Call() back to unsafe.Pointer (the Win32 pointer convention).
+      # govet's unsafeptr analyzer can't prove the uintptr originated from a
+      # valid pointer, so it false-positives on idiomatic syscall glue. Scoped
+      # to this single file/analyzer; all other govet checks stay active.
+      - linters: [govet]
+        text: "unsafeptr"
+        path: backend/session/clipboard_windows\.go
   enable:
     # Core: bug detection
     - errcheck

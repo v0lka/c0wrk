@@ -56,7 +56,9 @@ func withClipboard(fn func() error) error {
 	if r == 0 {
 		return fmt.Errorf("OpenClipboard: %w", e)
 	}
-	defer procCloseClipboard.Call()
+	// CloseClipboard failure is non-actionable: clipboard ownership ends with the
+	// function scope and the OS force-closes an abandoned handle.
+	defer func() { _, _, _ = procCloseClipboard.Call() }()
 	return fn()
 }
 
@@ -72,7 +74,9 @@ func globalBytes(h uintptr) ([]byte, error) {
 	if ptr == 0 {
 		return nil, errors.New("GlobalLock failed")
 	}
-	defer procGlobalUnlock.Call(h)
+	// Bytes are already sliced/copied below; GlobalUnlock failure is
+	// non-actionable and the lock is released by the OS on clipboard close.
+	defer func() { _, _, _ = procGlobalUnlock.Call(h) }()
 	return unsafe.Slice((*byte)(unsafe.Pointer(ptr)), size), nil
 }
 
@@ -172,7 +176,9 @@ func clipboardFiles(ctx context.Context) (paths []string, ok bool, err error) {
 		for i := uintptr(0); i < count; i++ {
 			length, _, _ := procDragQueryFileW.Call(h, i, 0, 0) // length excludes the NUL
 			buf := make([]uint16, length+1)
-			procDragQueryFileW.Call(h, i, uintptr(unsafe.Pointer(&buf[0])), length+1)
+			// length was pre-queried; a short read still yields a NUL-terminated
+			// buffer that UTF16ToString handles. Best-effort per file.
+			_, _, _ = procDragQueryFileW.Call(h, i, uintptr(unsafe.Pointer(&buf[0])), length+1)
 			paths = append(paths, windows.UTF16ToString(buf))
 		}
 		return nil
@@ -198,7 +204,9 @@ func clipboardText(ctx context.Context) (text string, ok bool, err error) {
 		if ptr == 0 {
 			return errors.New("GlobalLock failed for text")
 		}
-		defer procGlobalUnlock.Call(h)
+		// Text is fully read via UTF16PtrToString below; unlock failure is
+		// non-actionable and the OS releases the lock on clipboard close.
+		defer func() { _, _, _ = procGlobalUnlock.Call(h) }()
 		text = windows.UTF16PtrToString((*uint16)(unsafe.Pointer(ptr)))
 		return nil
 	}); cerr != nil {

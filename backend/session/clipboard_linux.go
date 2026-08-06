@@ -52,7 +52,7 @@ func clipboardImage(ctx context.Context) (data []byte, mediaType string, ok bool
 		out, rerr = runHelper(ctx, tool, "-selection", "clipboard", "-t", "image/png", "-o")
 	}
 	if rerr != nil {
-		return nil, "", false, nil // type unavailable → no image
+		return nil, "", false, nil //nolint:nilerr // type unavailable: "not present", not a hard failure
 	}
 	if len(out) == 0 {
 		return nil, "", false, nil
@@ -107,7 +107,7 @@ func clipboardText(ctx context.Context) (text string, ok bool, err error) {
 		out, rerr = runHelper(ctx, tool, "-selection", "clipboard", "-o")
 	}
 	if rerr != nil {
-		return "", false, nil
+		return "", false, nil //nolint:nilerr // type unavailable: "not present", not a hard failure
 	}
 	text = string(out)
 	if strings.TrimSpace(text) == "" {
