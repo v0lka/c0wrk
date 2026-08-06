@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 
 	"github.com/v0lka/sp4rk/llm"
@@ -123,29 +122,49 @@ func TestBuildLocalModelProbe_ClampsOutputLimitToWindow(t *testing.T) {
 	}
 }
 
-// TestBuildLocalModelProbe_SkipsRemoteProvider verifies that a provider whose
-// base_url is a public host is never probed — the closure returns without
-// spawning a goroutine, so the registry stays empty.
-func TestBuildLocalModelProbe_SkipsRemoteProvider(t *testing.T) {
-	// A public-looking host. The server would fail the test if hit, so any
-	// accidental probe surfaces immediately.
-	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
-		w.WriteHeader(http.StatusOK)
+// TestBuildLocalModelProbe_OpenAIFallbackPopulatesRegistry verifies the OpenAI
+// fallback path end-to-end through buildLocalModelProbe: when the LM Studio
+// native endpoint is absent (404 on /api/v0/models) but the server exposes
+// max_model_len on /v1/models, the discovered window is written to the
+// registry (SetCachedMetadata) and surfaced by Resolve.
+//
+// Note: httptest binds 127.0.0.1, so this test does NOT by itself prove that a
+// public-host provider is probed — the request is served by a loopback address
+// regardless of the BaseURL string. The locality-not-gated property is
+// asserted at the correct layer by TestLookupOpenAIProviderBaseURL, which
+// matches a public-host openai provider without filtering by host locality.
+func TestBuildLocalModelProbe_OpenAIFallbackPopulatesRegistry(t *testing.T) {
+	// A discriminating server: 404 on the LM Studio native path, serves
+	// max_model_len on /v1/models.
+	body, err := json.Marshal(struct {
+		Data []openAIModelEntry `json:"data"`
+	}{
+		Data: []openAIModelEntry{{ID: "Qwen/Qwen2.5-Coder-32B-Instruct", MaxModelLen: 131072}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v0/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
 
+	model := "Qwen/Qwen2.5-Coder-32B-Instruct"
 	cfg := &BuilderConfig{
 		LLM: BuilderLLMConfig{
-			DefaultModel: "gpt-4o",
+			DefaultModel: model,
+			// The server binds 127.0.0.1; what this exercises is the OpenAI
+			// fallback path, not host-locality gating.
 			ProviderConfigs: map[string]BuilderProviderConfig{
-				"openai-remote": {
+				"vllm-public": {
 					ProviderType: "openai",
-					// httptest uses 127.0.0.1, which is local. Force a public
-					// host by overriding to a real remote DNS name.
-					BaseURL: "https://api.openai.com/v1",
-					Models:  []string{"gpt-4o"},
+					BaseURL:      srv.URL + "/v1",
+					Models:       []string{model},
 				},
 			},
 		},
@@ -155,12 +174,11 @@ func TestBuildLocalModelProbe_SkipsRemoteProvider(t *testing.T) {
 	registry := llm.NewModelRegistry(nil)
 
 	probe := b.buildLocalModelProbe(cfg, registry)
-	probe("gpt-4o")
+	probe(model)
 
-	// The synchronous dispatcher runs any spawned probe inline, so by the time
-	// probe() returns a hit (if the gate were broken) would already be visible.
-	if got := hits.Load(); got != 0 {
-		t.Errorf("remote provider was probed (%d hits); isLocalBaseURL gate is broken", got)
+	meta, _ := registry.Resolve(context.Background(), model)
+	if meta.ContextWindow != 131072 {
+		t.Fatalf("OpenAI fallback did not populate registry: context_window=%d, want 131072", meta.ContextWindow)
 	}
 }
 
@@ -235,9 +253,10 @@ func TestBuildLocalModelProbe_ConfigOverrideWins(t *testing.T) {
 	}
 }
 
-// TestLookupLocalProviderBaseURL covers the provider-lookup helper directly:
-// local openai providers match, remote/non-openai/unknown models return ok=false.
-func TestLookupLocalProviderBaseURL(t *testing.T) {
+// TestLookupOpenAIProviderBaseURL covers the provider-lookup helper directly:
+// any OpenAI provider (local or public host) matches; non-OpenAI and unknown
+// models return ok=false. Host locality is deliberately NOT filtered (Variant B).
+func TestLookupOpenAIProviderBaseURL(t *testing.T) {
 	expand := func(s string) string { return s }
 	cfg := &BuilderConfig{
 		LLM: BuilderLLMConfig{
@@ -263,19 +282,21 @@ func TestLookupLocalProviderBaseURL(t *testing.T) {
 		ExpandEnvVars: expand,
 	}
 
-	if base, key, ok := lookupLocalProviderBaseURL(cfg, "qwen2.5-coder-7b", expand); !ok {
+	if base, key, ok := lookupOpenAIProviderBaseURL(cfg, "qwen2.5-coder-7b", expand); !ok {
 		t.Error("expected match for local openai model")
 	} else if base != "http://127.0.0.1:1234/v1" || key != "lm-key" {
 		t.Errorf("wrong provider resolved: base=%q key=%q", base, key)
 	}
 
-	if _, _, ok := lookupLocalProviderBaseURL(cfg, "gpt-4o", expand); ok {
-		t.Error("remote openai provider should not match")
+	// Variant B: a public-host OpenAI provider now MATCHES (it is probed; the
+	// probe is a harmless no-op if the listing omits the window field).
+	if _, _, ok := lookupOpenAIProviderBaseURL(cfg, "gpt-4o", expand); !ok {
+		t.Error("public-host openai provider should match under Variant B (locality is not gated)")
 	}
-	if _, _, ok := lookupLocalProviderBaseURL(cfg, "claude-3-5-sonnet", expand); ok {
+	if _, _, ok := lookupOpenAIProviderBaseURL(cfg, "claude-3-5-sonnet", expand); ok {
 		t.Error("anthropic provider should not match (non-openai)")
 	}
-	if _, _, ok := lookupLocalProviderBaseURL(cfg, "unknown-model", expand); ok {
+	if _, _, ok := lookupOpenAIProviderBaseURL(cfg, "unknown-model", expand); ok {
 		t.Error("unknown model should not match")
 	}
 }

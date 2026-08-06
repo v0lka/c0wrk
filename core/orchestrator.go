@@ -301,7 +301,7 @@ type Orchestrator struct {
 	logger              *slog.Logger
 	emitter             Emitter
 	modelRegistry       *llm.ModelRegistry
-	localModelProbe     LocalModelProbe // lazily probes local LM Studio endpoints for the runtime context window
+	localModelProbe     LocalModelProbe // lazily probes OpenAI-compatible endpoints (LM Studio/vLLM/…) for the runtime context window
 	bbFactory           BlackboardFactory
 	conversationHistory []llm.Message
 	taskStore           TaskPersistence       // optional, for ContinueTask blackboard restoration
@@ -404,14 +404,17 @@ type Orchestrator struct {
 var ErrRequestInFlight = errors.New("orchestrator: request already in flight")
 
 // LocalModelProbe is a best-effort, non-blocking hook that discovers the real
-// context window for a model served from a local OpenAI-compatible endpoint
-// (e.g. LM Studio) and writes the result into the session's ModelRegistry.
+// context window for a model served from an OpenAI-compatible endpoint (LM
+// Studio, vLLM, TGI, Ollama — local/LAN or self-hosted on a public host) and
+// writes the result into the session's ModelRegistry.
 //
-// It is a no-op for remote/non-local models and for models whose provider is
-// not OpenAI-compatible. The orchestrator invokes it when a model is selected
-// — once for the session's default model at construction, and again on every
-// mid-chat model switch — so token budgets reflect the runtime context window
-// without paying the probe cost at app startup or blocking the request path.
+// It is a no-op for models whose provider is not OpenAI-compatible, and a
+// harmless no-op for a genuine cloud provider (whose /v1/models listing omits
+// the context-window field, so nothing is discovered). The orchestrator
+// invokes it when a model is selected — once for the session's default model
+// at construction, and again on every mid-chat model switch — so token
+// budgets reflect the runtime context window without paying the probe cost at
+// app startup or blocking the request path.
 //
 // Implementations must be safe for concurrent use and must return quickly
 // (the network probe, if any, runs on an internal goroutine with a detached
@@ -454,9 +457,10 @@ type OrchestratorDeps struct {
 	// in per-step callers (LoggingLLMCaller wrapping).
 	ProviderName string
 
-	// LocalModelProbe lazily discovers the runtime context window for a local
-	// (loopback/LAN) OpenAI-compatible model and feeds it to ModelRegistry.
-	// Nil when no local providers are configured — in that case mid-chat model
+	// LocalModelProbe lazily discovers the runtime context window for an
+	// OpenAI-compatible model (LM Studio/vLLM/TGI/Ollama — local/LAN or
+	// self-hosted on a public host) and feeds it to ModelRegistry. Nil when no
+	// OpenAI-compatible providers are configured — in that case mid-chat model
 	// switches and the default model are not probed (they fall back to the
 	// registry's built-in/override metadata). Optional, nil-safe.
 	LocalModelProbe LocalModelProbe
@@ -1063,9 +1067,10 @@ func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride,
 		} else {
 			o.config.Model = llm.BareModel(modelOverride)
 			// Lazily probe the newly-selected model's real context window when
-			// it is served from a local endpoint. The probe is fire-and-forget
-			// (returns immediately); the discovered window lands in the model
-			// registry and is picked up by subsequent context-budget math.
+			// it is served from an OpenAI-compatible endpoint. The probe is
+			// fire-and-forget (returns immediately); the discovered window
+			// lands in the model registry and is picked up by subsequent
+			// context-budget math.
 			if o.localModelProbe != nil {
 				o.localModelProbe(llm.BareModel(modelOverride))
 			}

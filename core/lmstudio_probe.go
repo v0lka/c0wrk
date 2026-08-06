@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -37,6 +35,12 @@ import (
 //     …) return an empty map together with a non-nil error so the caller can
 //     log a distinct, debuggable message instead of silently dropping the
 //     model to the static default.
+//
+// Note that when this function is called as the first leg of
+// probeSelfHostedContextWindow, the 5xx error surfaced here is intentionally
+// swallowed if the OpenAI /v1/models fallback succeeds — a useful result was
+// still obtained, so a warn-log is only emitted when BOTH legs fail. Callers
+// that invoke probeLMStudioModels directly will see the 5xx error as returned.
 //
 // Network, timeout, and parse failures return an empty map together with the
 // error (non-fatal; callers log it). httpClient defaults to http.DefaultClient
@@ -131,49 +135,139 @@ func probeLMStudioModels(ctx context.Context, baseURL, apiKey string, httpClient
 	return result, nil
 }
 
-// isLocalBaseURL reports whether the host part of baseURL refers to the local
-// machine or a node on an attached local network. It is the gate for lazy LM
-// Studio context-window probing: only models served from a local/LAN endpoint
-// are probed at session start, so remote providers are never hit with the extra
-// HTTP request that used to run eagerly for every OpenAI-compatible provider.
+// probeOpenAIModels queries the standard OpenAI-compatible model listing
+// (GET {base}/v1/models) and returns a map of model ID → context window.
 //
-// Recognized as local:
-//   - The "localhost" name or any "*.localhost" suffix.
-//   - A ".local" mDNS suffix (e.g. "macbook.local").
-//   - An IPv4/IPv6 host that is a loopback, private (RFC 1918/4193), or
-//     link-local address. The Go stdlib's net.IP.IsPrivate covers 10/8,
-//     172.16/12, 192.168/16, and fc00::/7; IsLoopback and IsLinkLocalUnicast
-//     add 127.0.0.0/8, ::1, 169.254/16, and fe80::/10.
+// While the OpenAI API itself does not expose a context window in this
+// listing, self-hosted OpenAI-compatible servers extend the per-model entry
+// with one. This honors the field names seen across the ecosystem, taking the
+// first non-zero value in priority order:
+//   - "max_model_len"      — vLLM (the authoritative runtime limit).
+//   - "max_context_length" — an alternate spelling used by some forks.
+//   - "context_length"     — TGI / Ollama-style fallback.
 //
-// Anything else (a public DNS name or global IP) is treated as remote and
-// returns false. Parse/lookup failures are conservative: a URL whose host
-// cannot be resolved to an IP is considered remote unless it matches the name
-// heuristics above.
-func isLocalBaseURL(baseURL string) bool {
-	if baseURL == "" {
-		return false
+// Models that report none of these (notably the real OpenAI API, which only
+// returns id/object/created/owned_by) simply map to 0 and are skipped, so
+// probing a genuine cloud provider is a harmless no-op.
+//
+// baseURL is normalized: trailing slashes are trimmed and a missing "/v1"
+// prefix is added before appending "/models" (so both "http://h:8000" and
+// "http://h:8000/v1" resolve to the same endpoint). An empty apiKey omits the
+// Authorization header.
+//
+// Non-200 responses use the same two-class split as probeLMStudioModels:
+// client errors < 500 (e.g. 401/404 for a cloud server that does not expose a
+// per-model window) are a silent no-op; server errors >= 500 return an empty
+// map with a non-nil error for distinct logging. Network, timeout, and parse
+// failures likewise return an empty map together with the error. httpClient
+// defaults to http.DefaultClient when nil.
+func probeOpenAIModels(ctx context.Context, baseURL, apiKey string, httpClient *http.Client) (map[string]int, error) {
+	// Normalize: drop trailing slashes, ensure a "/v1" prefix, then append the
+	// standard OpenAI models path. Unlike probeLMStudioModels we keep "/v1"
+	// (it IS the path the standard listing lives under).
+	endpoint := strings.TrimRight(baseURL, "/")
+	if !strings.HasSuffix(endpoint, "/v1") {
+		endpoint += "/v1"
 	}
-	parsed, err := url.Parse(baseURL)
+	endpoint += "/models"
+
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
-		return false
+		return make(map[string]int), fmt.Errorf("failed to build OpenAI models request: %w", err)
 	}
-	host := parsed.Hostname()
-	if host == "" {
-		return false
+	req.Header.Set("Accept", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	lower := strings.ToLower(host)
-	if lower == "localhost" || strings.HasSuffix(lower, ".localhost") {
-		return true
+
+	client := httpClient
+	if client == nil {
+		client = http.DefaultClient
 	}
-	if strings.HasSuffix(lower, ".local") {
-		return true
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return make(map[string]int), fmt.Errorf("failed to query OpenAI models: %w", err)
 	}
-	// Try to interpret the host as a literal IP first (covers 127.0.0.1,
-	// ::1, 10.0.0.5, 169.254.x.x, fc00::, fe80::, …) without a DNS lookup.
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+	defer func() { _ = resp.Body.Close() }()
+
+	// < 500 client errors (401/403/404) mean the server either does not expose
+	// this endpoint or a per-model window — a silent no-op.
+	if resp.StatusCode < 500 && resp.StatusCode != http.StatusOK {
+		return make(map[string]int), nil
 	}
-	// A non-IP hostname that is not localhost/.local is assumed to be a
-	// public DNS name — do not probe it.
-	return false
+	if resp.StatusCode >= 500 {
+		return make(map[string]int), fmt.Errorf("openai models endpoint returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return make(map[string]int), fmt.Errorf("failed to read OpenAI models response: %w", err)
+	}
+
+	var payload struct {
+		Data []struct {
+			ID            string `json:"id"`
+			MaxModelLen   int    `json:"max_model_len"`
+			MaxContextLen int    `json:"max_context_length"`
+			ContextLen    int    `json:"context_length"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return make(map[string]int), fmt.Errorf("failed to parse OpenAI models response: %w", err)
+	}
+
+	result := make(map[string]int, len(payload.Data))
+	for _, m := range payload.Data {
+		if m.ID == "" {
+			continue
+		}
+		// First non-zero field wins, in ecosystem priority order.
+		window := m.MaxModelLen
+		if window == 0 {
+			window = m.MaxContextLen
+		}
+		if window == 0 {
+			window = m.ContextLen
+		}
+		if window > 0 {
+			result[m.ID] = window
+		}
+	}
+	return result, nil
+}
+
+// probeSelfHostedContextWindow discovers the runtime context window for a
+// single model id served from an OpenAI-compatible base URL. It tries the LM
+// Studio native endpoint first (which reports the runtime/loaded window when a
+// model is hot) and falls back to the standard OpenAI /v1/models listing
+// (which vLLM/TGI/Ollama extend with max_model_len). Returns 0 when no source
+// reports a window — e.g. a genuine cloud provider whose listing omits the
+// field, in which case the caller keeps the registry's existing metadata.
+//
+// A non-nil error is returned only when the LAST attempted probe failed with a
+// server-side/network error; an earlier LM Studio failure is swallowed if the
+// OpenAI fallback succeeds, since a useful result was still obtained.
+func probeSelfHostedContextWindow(ctx context.Context, baseURL, apiKey, model string, httpClient *http.Client) (int, error) {
+	if lm, err := probeLMStudioModels(ctx, baseURL, apiKey, httpClient); err == nil {
+		if w := lm[model]; w > 0 {
+			return w, nil
+		}
+	}
+	return probeOpenAIModelWindow(ctx, baseURL, apiKey, model, httpClient)
+}
+
+// probeOpenAIModelWindow is the /v1/models fallback for a single model id,
+// factored out of probeSelfHostedContextWindow so the fallback path is
+// independently testable. It reports the discovered window (0 when absent) and
+// the OpenAI probe's error (nil for a clean "not reported" result).
+func probeOpenAIModelWindow(ctx context.Context, baseURL, apiKey, model string, httpClient *http.Client) (int, error) {
+	oai, err := probeOpenAIModels(ctx, baseURL, apiKey, httpClient)
+	if err != nil {
+		return 0, err
+	}
+	return oai[model], nil
 }

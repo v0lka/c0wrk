@@ -74,29 +74,31 @@ func TestRemapLocalGoogleProtocols(t *testing.T) {
 		}
 	})
 
-	// (b) Remote Google-named model keeps ProtocolGoogle (the Zen case: a
-	// remote OpenAI-compatible gateway such as Zen genuinely serves
-	// :generateContent, so the built-in protocol must NOT be remapped).
-	t.Run("remote gemma model keeps google protocol", func(t *testing.T) {
+	// (b) Variant B: a Google-named model served by a public-host
+	// OpenAI-compatible provider (a self-hosted vLLM behind a domain/Tailscale)
+	// IS now remapped — the previous isLocalBaseURL gate dropped it, leaving
+	// the model silently broken (200 OK + empty body from :generateContent).
+	// The remap is safe for a genuine cloud gateway too: such gateways serve
+	// /v1/chat/completions, so steering onto it still works.
+	t.Run("public-host vllm gemma model remapped to chat_completions", func(t *testing.T) {
 		cfg := map[string]BuilderProviderConfig{
-			"zen": {
+			"vllm-public": {
 				ProviderType: "openai",
-				BaseURL:      "https://api.opencode.ai/v1",
-				Models:       []string{"gemini-2.5-pro"},
+				BaseURL:      "https://infer.mycompany.io/v1",
+				Models:       []string{"gemma-2-27b"},
 			},
 		}
 		overrides := map[string]llm.ModelMetadata{}
 
 		remapLocalGoogleProtocols(overrides, cfg, noopExpand)
 
-		if _, ok := overrides["gemini-2.5-pro"]; ok {
-			t.Fatalf("remote gemini model must NOT be remapped; found override")
+		got, ok := overrides["gemma-2-27b"]
+		if !ok {
+			t.Fatalf("expected override for public-host gemma model, got none")
 		}
-		// Confirm the built-in protocol for the model is still Google.
-		base, _ := llm.ResolveBuiltInModel("gemini-2.5-pro")
-		if base.Protocol != llm.ProtocolGoogle {
-			t.Fatalf("built-in gemini protocol = %q, want %q (google)",
-				base.Protocol, llm.ProtocolGoogle)
+		if got.Protocol != llm.ProtocolChatCompletions {
+			t.Fatalf("public-host gemma protocol = %q, want %q (chat_completions)",
+				got.Protocol, llm.ProtocolChatCompletions)
 		}
 	})
 

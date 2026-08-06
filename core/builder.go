@@ -583,11 +583,12 @@ func (b *OrchestratorBuilder) Build(
 
 	// Construct the lazy local-model probe for this session. It closes over the
 	// per-session model registry so the discovered context window lands exactly
-	// where Resolve will read it. The probe is a no-op for remote/non-local
-	// models, so wiring it unconditionally is free for cloud-only setups.
+	// where Resolve will read it. The probe is a harmless no-op for cloud-only
+	// setups (their /v1/models listing omits the context-window field).
 	localProbe := b.buildLocalModelProbe(cfg, modelReg)
 	// Probe the session's default model once at construction so the first
-	// request benefits from the real context window if it is served locally.
+	// request benefits from the real context window if it is served by an
+	// OpenAI-compatible endpoint.
 	if defaultModel := llm.BareModel(llmRouter.ActiveModel()); defaultModel != "" {
 		localProbe(defaultModel)
 	}
@@ -1495,24 +1496,25 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 
 // remapLocalGoogleProtocols rewrites the built-in Google protocol to
 // ProtocolChatCompletions for Google-named checkpoints (Gemma / Gemini) that
-// are served by a local OpenAI-compatible server (LM Studio, vLLM, Ollama).
+// are served by an OpenAI-compatible server (LM Studio, vLLM, Ollama, a
+// self-hosted gateway on a public host).
 //
-// Per the LM Studio endpoint matrix, local OpenAI-compatible servers expose
-// /v1/chat/completions, /v1/responses and /v1/messages — but NOT Google's
-// /models/{model}:generateContent endpoint, which they answer with a 200 OK +
-// empty body. So a Google-named model must be steered onto chat_completions
-// instead. Only the Google protocol is remapped: Responses (GPT-5/Codex) and
-// Anthropic (Claude) are served fine by these servers, so they are left
-// untouched. The override is keyed by the bare model name — the same value
-// that becomes req.Model on the wire.
+// Per the LM Studio endpoint matrix, OpenAI-compatible self-hosted servers
+// expose /v1/chat/completions, /v1/responses and /v1/messages — but NOT
+// Google's /models/{model}:generateContent endpoint, which they answer with a
+// 200 OK + empty body. So a Google-named model must be steered onto
+// chat_completions instead. Only the Google protocol is remapped: Responses
+// (GPT-5/Codex) and Anthropic (Claude) are served fine by these servers, so
+// they are left untouched. The override is keyed by the bare model name — the
+// same value that becomes req.Model on the wire.
 //
 // The injected override is PROTOCOL-ONLY: it pins Protocol=ChatCompletions and
 // carries the built-in Capabilities (so multimodal flag is preserved), but
 // leaves ContextWindow / OutputLimit / TokenizerType at their zero values. The
 // ModelRegistry then inherits those unset scalars from its lower non-network
 // tiers at Resolve time (built-in catalog → cache → fallback). This is
-// essential because the lazy local-model probe (buildLocalModelProbe) writes
-// the model's REAL context window to the cache tier via SetCachedMetadata; a
+// essential because the lazy model probe (buildLocalModelProbe) writes the
+// model's REAL context window to the cache tier via SetCachedMetadata; a
 // wholesale override that also carried the catalog/fallback window (128000 for
 // a catalog miss) would permanently shadow that probe result, leaving the
 // context-fill accounting and compaction thresholds pinned to an inflated
@@ -1529,9 +1531,6 @@ func remapLocalGoogleProtocols(
 ) {
 	for _, pc := range providerConfigs {
 		if pc.ProviderType != "openai" {
-			continue
-		}
-		if !isLocalBaseURL(expandEnv(pc.BaseURL)) {
 			continue
 		}
 		for _, model := range pc.Models {
@@ -1556,22 +1555,30 @@ func remapLocalGoogleProtocols(
 }
 
 // buildLocalModelProbe returns a LocalModelProbe that, for the given model,
-// locates its OpenAI-compatible provider, checks whether the provider's
-// base_url refers to a local/LAN host, and — only then — fires an asynchronous
+// locates its OpenAI-compatible provider and fires an asynchronous
 // context-window probe whose result is written into the per-session model
 // registry via SetCachedMetadata.
 //
-// Non-local providers, non-OpenAI providers, and models not found in any
-// provider config are silent no-ops: the closure returns immediately without
-// spawning a goroutine, so there is zero overhead for cloud-only setups.
+// Any OpenAI-compatible provider is probed — local/LAN (LM Studio), a
+// self-hosted server on a public host (vLLM/TGI/Ollama behind a domain or
+// Tailscale), and even a genuine cloud provider. The probe is harmless for the
+// cloud case: the standard /v1/models listing of a real cloud API omits the
+// per-model context-window field, so no window is discovered and the registry
+// keeps its built-in spec. Non-OpenAI providers and models not found in any
+// provider config are silent no-ops (the closure returns without spawning a
+// goroutine).
+//
+// The probe tries the LM Studio native endpoint first (runtime/loaded window)
+// and falls back to the standard OpenAI /v1/models listing (max_model_len) —
+// see probeSelfHostedContextWindow.
 //
 // The network probe runs on a detached goroutine (dispatched via b.asyncRunner)
-// with a fresh context.Background() (bounded to 3s inside probeLMStudioModels)
-// so it is not tied to the caller's request lifetime and never blocks
-// HandleMessage / session creation. Results land in the registry cache
-// (Resolution tier 3), so a config.yaml override (tier 1) or a built-in spec
-// (tier 2) always wins. Tests override asyncRunner to run the probe
-// synchronously, making assertions deterministic without polling.
+// with a fresh context.Background() (bounded to 3s inside each probe) so it is
+// not tied to the caller's request lifetime and never blocks HandleMessage /
+// session creation. Results land in the registry cache (Resolution tier 3), so
+// a config.yaml override (tier 1) or a built-in spec (tier 2) always wins.
+// Tests override asyncRunner to run the probe synchronously, making assertions
+// deterministic without polling.
 func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry *llm.ModelRegistry) LocalModelProbe {
 	// Snapshot proxyClient under read lock once at probe construction so the
 	// closure does not touch b.mu on every invocation.
@@ -1586,18 +1593,16 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 		if model == "" || registry == nil {
 			return
 		}
-		baseURL, apiKey, ok := lookupLocalProviderBaseURL(cfg, model, expand)
+		baseURL, apiKey, ok := lookupOpenAIProviderBaseURL(cfg, model, expand)
 		if !ok {
 			return
 		}
 		goRun(func() {
-			probe, err := probeLMStudioModels(context.Background(), baseURL, apiKey, proxyClient)
+			window, err := probeSelfHostedContextWindow(context.Background(), baseURL, apiKey, model, proxyClient)
 			if err != nil {
-				log.Warn("lazy local model probe failed", "model", model, "base_url", baseURL, "error", err)
-				return
+				log.Warn("lazy model probe failed", "model", model, "base_url", baseURL, "error", err)
 			}
-			window, reported := probe[model]
-			if !reported || window <= 0 {
+			if window <= 0 {
 				return
 			}
 			// SetCachedMetadata writes to Resolution tier 3, which is shadowed
@@ -1605,31 +1610,34 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 			// well-known or user-overridden model is never clobbered.
 			//
 			// OutputLimit mirrors the model registry's built-in fallback
-			// (tier 5: 32768) so local LM Studio models are not regressed —
-			// LM Studio does not expose a per-model output cap in
-			// /api/v0/models — but is clamped to at most a quarter of the
-			// discovered window. An OutputLimit larger than the context
-			// window drives EffectiveMax negative and silently disables
-			// compaction (CheckFill returns "ok"), so without the clamp a
-			// small-context local model (7B/13B commonly run at 8K/16K/32K)
-			// would grow unbounded until the API rejects it.
+			// (tier 5: 32768) so self-hosted models are not regressed — neither
+			// LM Studio nor vLLM expose a per-model output cap in their model
+			// listings — but is clamped to at most a quarter of the discovered
+			// window. An OutputLimit larger than the context window drives
+			// EffectiveMax negative and silently disables compaction (CheckFill
+			// returns "ok"), so without the clamp a small-context model
+			// (7B/13B commonly run at 8K/16K/32K) would grow unbounded until
+			// the API rejects it.
 			registry.SetCachedMetadata(model, llm.ModelMetadata{
 				ContextWindow: window,
 				OutputLimit:   min(32768, window/4),
 				TokenizerType: "approximate",
 			})
-			log.Debug("lazy local model probe populated context window",
+			log.Debug("lazy model probe populated context window",
 				"model", model, "context_window", window)
 		})
 	}
 }
 
-// lookupLocalProviderBaseURL searches the provider configs for the one that
-// serves `model`, returns its expanded base_url + api key, and reports whether
-// that base_url points at a local/LAN host. The second return is false when no
-// OpenAI-compatible provider serves the model or when the matching provider is
-// not local (remote providers must not be probed).
-func lookupLocalProviderBaseURL(cfg *BuilderConfig, model string, expand func(string) string) (baseURL, apiKey string, ok bool) {
+// lookupOpenAIProviderBaseURL searches the provider configs for the
+// OpenAI-compatible one that serves `model` and returns its expanded base_url +
+// api key. The second return is false only when no OpenAI-compatible provider
+// serves the model. Host locality is deliberately NOT filtered: a self-hosted
+// server on a public host (vLLM/TGI/Ollama behind a domain or Tailscale) is
+// probed exactly like a local one — the probe is a harmless no-op for a
+// genuine cloud provider whose /v1/models listing omits the context-window
+// field.
+func lookupOpenAIProviderBaseURL(cfg *BuilderConfig, model string, expand func(string) string) (baseURL, apiKey string, ok bool) {
 	for _, pc := range cfg.LLM.ProviderConfigs {
 		if pc.ProviderType != "openai" {
 			continue
@@ -1645,7 +1653,7 @@ func lookupLocalProviderBaseURL(cfg *BuilderConfig, model string, expand func(st
 			continue
 		}
 		raw := expand(pc.BaseURL)
-		if raw == "" || !isLocalBaseURL(raw) {
+		if raw == "" {
 			continue
 		}
 		return raw, expand(pc.APIKey), true

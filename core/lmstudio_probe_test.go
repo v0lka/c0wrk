@@ -239,47 +239,229 @@ func TestProbeLMStudioModels_NilHTTPClientDefaults(t *testing.T) {
 	}
 }
 
-func TestIsLocalBaseURL(t *testing.T) {
-	cases := []struct {
-		name string
-		url  string
-		want bool
+// openAIModelEntry mirrors the subset of the /v1/models payload the OpenAI
+// probe reads, so tests can build responses programmatically across the
+// ecosystem field spellings (max_model_len / max_context_length /
+// context_length).
+type openAIModelEntry struct {
+	ID              string `json:"id"`
+	MaxModelLen     int    `json:"max_model_len"`
+	MaxContextLen   int    `json:"max_context_length"`
+	ContextLen      int    `json:"context_length"`
+}
+
+func TestProbeOpenAIModels_MaxModelLen(t *testing.T) {
+	// vLLM-style payload: the authoritative runtime limit lives in
+	// "max_model_len".
+	body, err := json.Marshal(struct {
+		Data []openAIModelEntry `json:"data"`
 	}{
-		// Names recognized as local.
-		{"localhost", "http://localhost:1234/v1", true},
-		{"localhost no port", "http://localhost", true},
-		{"localhost subdomain", "http://api.localhost:1234", true},
-		{"mdns local", "http://macbook.local:1234", true},
-
-		// Loopback IPs.
-		{"ipv4 loopback", "http://127.0.0.1:1234", true},
-		{"ipv4 loopback no port", "http://127.0.0.1", true},
-		{"ipv6 loopback", "http://[::1]:1234", true},
-
-		// RFC 1918 private ranges.
-		{"private 10/8", "http://10.0.0.5:1234", true},
-		{"private 172.16/12", "http://172.16.4.20:1234", true},
-		{"private 192.168/16", "http://192.168.1.50:1234", true},
-
-		// Link-local.
-		{"link-local ipv4", "http://169.254.10.1:1234", true},
-		{"link-local ipv6", "http://[fe80::1]:1234", true},
-
-		// Remote / public — must NOT be probed.
-		{"public dns", "https://api.openai.com/v1", false},
-		{"public ipv4", "http://8.8.8.8:1234", false},
-		{"example.com", "https://models.example.com/v1", false},
-		{"vllm public host", "https://infer.mycompany.io/v1", false},
-
-		// Edge cases.
-		{"empty", "", false},
-		{"scheme-less unparsable", "://not a url", false},
+		Data: []openAIModelEntry{
+			{ID: "Qwen/Qwen2.5-Coder-32B-Instruct", MaxModelLen: 131072},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isLocalBaseURL(tc.url); got != tc.want {
-				t.Errorf("isLocalBaseURL(%q) = %v, want %v", tc.url, got, tc.want)
-			}
-		})
+	srv, _, _ := newLMStudioServer(t, http.StatusOK, body)
+
+	got, err := probeOpenAIModels(context.Background(), srv.URL, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w := got["Qwen/Qwen2.5-Coder-32B-Instruct"]; w != 131072 {
+		t.Errorf("max_model_len: got %d, want 131072", w)
+	}
+}
+
+func TestProbeOpenAIModels_FieldPriorityAndFallbacks(t *testing.T) {
+	// First non-zero field wins in priority order: max_model_len beats
+	// max_context_length beats context_length. And entries reporting none of
+	// them (the real OpenAI API shape) map to nothing.
+	body, err := json.Marshal(struct {
+		Data []openAIModelEntry `json:"data"`
+	}{
+		Data: []openAIModelEntry{
+			{ID: "alt-spelling", MaxContextLen: 32768}, // max_context_length only
+			{ID: "tgi-style", ContextLen: 8192},        // context_length only
+			{ID: "gpt-4o"},                             // none → skipped
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	srv, _, _ := newLMStudioServer(t, http.StatusOK, body)
+
+	got, err := probeOpenAIModels(context.Background(), srv.URL, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w := got["alt-spelling"]; w != 32768 {
+		t.Errorf("max_context_length fallback: got %d, want 32768", w)
+	}
+	if w := got["tgi-style"]; w != 8192 {
+		t.Errorf("context_length fallback: got %d, want 8192", w)
+	}
+	if _, ok := got["gpt-4o"]; ok {
+		t.Errorf("model with no window field must be skipped, found gpt-4o")
+	}
+}
+
+func TestProbeOpenAIModels_ClientErrorIsSilent(t *testing.T) {
+	// A genuine cloud server returning 401/404 for the listing (or one that
+	// simply omits the per-model window) is a silent no-op.
+	for _, code := range []int{http.StatusUnauthorized, http.StatusNotFound} {
+		srv, _, _ := newLMStudioServer(t, code, []byte(`{"error":"unauthorized"}`))
+		got, err := probeOpenAIModels(context.Background(), srv.URL, "", nil)
+		if err != nil {
+			t.Errorf("status %d: expected nil error, got %v", code, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("status %d: expected empty map, got %d entries", code, len(got))
+		}
+	}
+}
+
+func TestProbeOpenAIModels_ServerErrorIsNonNil(t *testing.T) {
+	srv, _, _ := newLMStudioServer(t, http.StatusBadGateway, []byte(`{"error":"boom"}`))
+	got, err := probeOpenAIModels(context.Background(), srv.URL, "", nil)
+	if err == nil {
+		t.Errorf("expected non-nil error on 5xx, got nil")
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty map on 5xx, got %d entries", len(got))
+	}
+}
+
+func TestProbeOpenAIModels_URLNormalization(t *testing.T) {
+	// Both bare host and /v1-suffixed bases must resolve to "/v1/models".
+	body, err := json.Marshal(struct {
+		Data []openAIModelEntry `json:"data"`
+	}{
+		Data: []openAIModelEntry{{ID: "m", MaxModelLen: 4096}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	srv, lastPath, lastMethod := newLMStudioServer(t, http.StatusOK, body)
+
+	for _, base := range []string{
+		srv.URL,         // http://127.0.0.1:PORT   → /v1/models appended
+		srv.URL + "/v1", // http://127.0.0.1:PORT/v1 → /models appended
+	} {
+		*lastPath, *lastMethod = "", ""
+		got, err := probeOpenAIModels(context.Background(), base, "", nil)
+		if err != nil {
+			t.Errorf("base %q: unexpected error: %v", base, err)
+			continue
+		}
+		if *lastPath != "/v1/models" {
+			t.Errorf("base %q: request path = %q, want /v1/models", base, *lastPath)
+		}
+		if *lastMethod != http.MethodGet {
+			t.Errorf("base %q: method = %q, want GET", base, *lastMethod)
+		}
+		if w := got["m"]; w != 4096 {
+			t.Errorf("base %q: window = %d, want 4096", base, w)
+		}
+	}
+}
+
+func TestProbeOpenAIModels_APIKeyHeader(t *testing.T) {
+	// A non-empty apiKey must be sent as a Bearer header.
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	if _, err := probeOpenAIModels(context.Background(), srv.URL, "tok-123", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotAuth != "Bearer tok-123" {
+		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer tok-123")
+	}
+}
+
+func TestProbeSelfHostedContextWindow_LMStudioWins(t *testing.T) {
+	// The LM Studio endpoint reports the (runtime) window → it is returned
+	// without touching /v1/models. Build an LM Studio server returning the
+	// window, and an OpenAI server that would report a *different* window; the
+	// LM Studio value must win.
+	lmBody, _ := json.Marshal(struct {
+		Data []lmStudioModel `json:"data"`
+	}{
+		Data: []lmStudioModel{{ID: "m", MaxContextLength: 16384}},
+	})
+	lmSrv, _, _ := newLMStudioServer(t, http.StatusOK, lmBody)
+
+	// OpenAI server that would override to 99999 if consulted — proving it
+	// was never reached.
+	oaiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"m","max_model_len":99999}]}`))
+	}))
+	t.Cleanup(oaiSrv.Close)
+
+	// Use the LM Studio server URL for the base so the probe hits it first.
+	w, err := probeSelfHostedContextWindow(context.Background(), lmSrv.URL, "", "m", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w != 16384 {
+		t.Errorf("expected LM Studio window 16384 to win, got %d", w)
+	}
+}
+
+func TestProbeSelfHostedContextWindow_FallsBackToOpenAI(t *testing.T) {
+	// LM Studio returns 404 (it is a vLLM server, not LM Studio) → the probe
+	// falls back to /v1/models and discovers max_model_len.
+	oaiBody, _ := json.Marshal(struct {
+		Data []openAIModelEntry `json:"data"`
+	}{
+		Data: []openAIModelEntry{{ID: "m", MaxModelLen: 262144}},
+	})
+	// A single server that 404s on /api/v0/models (LM Studio path) but serves
+	// /v1/models. Build a discriminating handler.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v0/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(oaiBody)
+	}))
+	t.Cleanup(srv.Close)
+
+	w, err := probeSelfHostedContextWindow(context.Background(), srv.URL, "", "m", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w != 262144 {
+		t.Errorf("expected OpenAI fallback window 262144, got %d", w)
+	}
+}
+
+func TestProbeSelfHostedContextWindow_BothMissReturnsZero(t *testing.T) {
+	// A genuine cloud provider: LM Studio path 404s, /v1/models serves a
+	// listing WITHOUT a window field → 0, nil (no useful result).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v0/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o","object":"model"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	w, err := probeSelfHostedContextWindow(context.Background(), srv.URL, "", "gpt-4o", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w != 0 {
+		t.Errorf("expected 0 when no source reports a window, got %d", w)
 	}
 }
