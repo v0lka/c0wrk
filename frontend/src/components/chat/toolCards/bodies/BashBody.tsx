@@ -35,7 +35,7 @@ export const BashBody = React.memo(function BashBody({ result, status }: ToolBod
          */}
         <pre
           className="font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all"
-          dangerouslySetInnerHTML={{ __html: html }}
+          dangerouslySetInnerHTML={{ __html: html }} // eslint-disable-line react/no-danger -- ansi_up allowlist output (ANSI to CSS span only)
         />
       </div>
     )

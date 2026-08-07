@@ -125,6 +125,7 @@ These are inherent architectural trade-offs the design knowingly accepts — not
 | `~/.agents/AGENTS.md` is machine-wide writable and feeds every prompt | Medium   | Accepted trade-off (ADR-020) for global-instructions utility; mitigated by untrusted framing + tool-policy gating; not eliminated. |
 | LLM-based safety judge is advisory/on-demand, not an automatic gate   | Medium   | Accepted to keep latency predictable and avoid token waste; the policy/judge-blacklist/confirmation pipeline is the hard gate. |
 | No LLM-based output-content judging for injection detection           | Medium   | Accepted; injection defense is prompt-level spotlighting + tag-escape, judged externally/by firewall.                         |
+| No session-level wall-clock time-box (ASI10)                          | Low      | Accepted trade-off: agent autonomy is bounded by step/loop caps, the 50-turn goal ceiling, and circuit breakers, but there is no hard wall-clock deadline. A long-running session can in principle run indefinitely until those caps hit. |
 | Pre-1.0 breaking-change surface                                       | Low      | Tracked via CHANGELOG semver discipline until 1.0.                                                                            |
 
 ---
@@ -194,7 +195,7 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 
 **Rules:**
 - **Per-tool least privilege.** Each tool declares an explicit policy; default to `user_confirm`. Dangerous operations (delete, shell exec, web write) are programmatically restricted regardless of agent request.
-- **Parameter schemas validated before execution** (type, range, allowlists) via the registry's param manager.
+- **Parameter schemas validated before execution** (type, range, allowlists) via the registry's param manager. A centralized required-field check (`validateRequiredFields`) runs in the registry for every tool as defense-in-depth, so a tool whose author forgot per-tool validation still rejects inputs missing a JSON Schema `required` parameter.
 - **Shell-exec blacklist is mandatory** for `bash_exec`/`posh_exec`. The blacklist runs via `ToolJudger.Judge()` BEFORE workspace auto-approval so a blacklisted command with in-workspace paths (e.g. `rm -rf /workspace/.git`) still escalates to confirmation. Patterns MUST cover recursive deletion, privilege escalation (`sudo`), destructive disk ops (`mkfs`, `dd`), device writes, and pipe-to-shell (`curl | sh`).
 - **Tool-call allowlist, not denylist.** The registry exposes only registered tools; never expose arbitrary shell access beyond `bash_exec`/`posh_exec`.
 - **Budget / loop-depth caps** must remain enforced (executor loop caps, tool limits in `config.yaml`).
@@ -218,8 +219,8 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 
 **Rules:**
 - **All MCP tools are untrusted by default** (`IsUntrusted()` true for every MCP tool) — their output is spotlighted, and their calls pass the full policy pipeline.
-- **MCP server configs are executable.** Stdio MCP servers run an arbitrary `command`/`args`/`env` as a child process; HTTP MCP servers send `headers`/URL. Treat new MCP integrations as executing untrusted code — review the command, scope the `WorkDir`, and never forward secrets into MCP server `Env` unless required.
-- **Downloaded binaries MUST be SHA256-verified** (`toolmanager` `verifyChecksum`); checksum mismatches trigger re-download, never silent acceptance.
+- **MCP server configs are executable.** Stdio MCP servers run an arbitrary `command`/`args`/`env` as a child process; HTTP MCP servers send `headers`/URL. Treat new MCP integrations as executing untrusted code — review the command, scope the `WorkDir`, and never forward secrets into MCP server `Env` unless required. Stdio child processes inherit only an allowlisted subset of the host environment (`PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LC_*`); anything else the server needs must be declared explicitly in its config `env`.
+- **Downloaded binaries MUST be SHA256-verified** (`toolmanager` `verifyChecksum`); verification is **fail-closed** — a missing per-platform checksum refuses the binary rather than skipping verification, and checksum mismatches trigger re-download, never silent acceptance.
 - **Pin and vet dependencies.** Lockfiles are the source of truth; review new direct dependencies for maintenance, license, and transitive risk before adding.
 - **Review tool/MCP descriptions for deceptive language** before exposing them to the agent; a malicious description can steer tool selection.
 
@@ -241,7 +242,7 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 **Rules:**
 - **Validate before write/read.** Memory stores are populated from tool output that is already spotlighted as untrusted; never treat persisted memory as trusted instructions.
 - **Session isolation.** Temp directories and per-session workspaces are isolated; vector indexes are project-scoped.
-- **Retention / TTL awareness.** Conversation history and facts persist indefinitely by default — contributors must not store secrets or injection payloads in facts (`store_fact`) or messages.
+- **Retention / TTL awareness.** Conversation history and facts persist indefinitely by default — contributors must not store secrets or injection payloads in facts (`store_fact`) or messages. `store_fact` enforces this at runtime: a heuristic secret-pattern scanner refuses to persist content matching common credential shapes (API keys, tokens, bearer strings), preventing durable secret disclosure via long-term memory.
 - **Poisoning-pattern awareness.** Treat agent-authored `store_fact` content and vectorized documents as potentially adversarial when read back into context.
 - **Never persist secrets** into the database, vector index, or blackboard.
 
@@ -353,6 +354,7 @@ Any AI coding agent (c0wrk itself, Copilot, Cursor, etc.) working on this reposi
 
 ## Revision History
 
-| Date       | Version | Notes                                              |
-| ---------- | ------- | -------------------------------------------------- |
-| 2026-08-07 | 1.0     | Initial SECURITY.md: threat model + ASI01–ASI10.   |
+| Date       | Version | Notes                                                                                                  |
+| ---------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| 2026-08-07 | 1.0     | Initial SECURITY.md: threat model + ASI01–ASI10.                                                       |
+| 2026-08-07 | 1.1     | Security hardening: untrusted-flagging for 5 external-output tools (ASI01/ASI07); stdio MCP env allowlist isolation (ASI04); pipe-to-shell blacklist pattern; `max_redelegationDepth` exposed in config (ASI07); security-event logging at policy denials/blocks (ASI03/ASI09); fail-closed checksum for missing per-platform hashes (ASI04); `store_fact` secret-pattern scanner (ASI06); centralized required-field validation (ASI02); eslint `react/no-danger` (FE-R1); npm audit fix. Rules updated to reflect now-enforced controls; wall-clock time-box documented as accepted trade-off. |

@@ -233,6 +233,10 @@ func ApplyDefaults(cfg *Config) {
 				`dd\s+if=`,
 				`>\s*/dev/`,
 				`\bgit\b`,
+				// Remote-script execution via pipe (curl|sh etc.) — a classic
+				// supply-chain / RCE vector. Blocks piped execution of fetched
+				// content regardless of policy, even under always_allow.
+				`\b(curl|wget)\b.*\|\s*(?:\S*/)?(?:env\s+)?\b(sh|bash|zsh|dash|ksh|fish|perl\d*|node|ruby|python[\d.]*)\b`,
 			},
 		}
 	}
@@ -350,6 +354,9 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.Orchestration.MaxJudgeCacheSize == 0 {
 		cfg.Orchestration.MaxJudgeCacheSize = 1000
+	}
+	if cfg.Orchestration.MaxRedelegationDepth == 0 {
+		cfg.Orchestration.MaxRedelegationDepth = 2
 	}
 
 	// Goal loop defaults. Verification defaults to "independent" so the

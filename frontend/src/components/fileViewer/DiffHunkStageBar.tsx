@@ -169,7 +169,7 @@ function HunkRow({ hunk, isPending, onStage, onUnstage, onDiscard, onJump }: Hun
         <TooltipContent side="bottom" className="max-w-[600px] p-0 overflow-hidden">
           <pre
             className="text-[10px] font-mono leading-tight max-h-[300px] overflow-auto custom-scrollbar p-2 hljs"
-            dangerouslySetInnerHTML={{ __html: highlightedDiff }}
+            dangerouslySetInnerHTML={{ __html: highlightedDiff }} // eslint-disable-line react/no-danger -- highlight.js pre-highlighted diff preview
           />
         </TooltipContent>
       </Tooltip>

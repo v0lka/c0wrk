@@ -355,6 +355,9 @@ type OrchestrationConfig struct {
 	MaxDependencyContextChars int `yaml:"maxDependencyContextChars"` // default: 8000
 	MaxSummaryLength          int `yaml:"maxSummaryLength"`          // default: 500
 	MaxJudgeCacheSize         int `yaml:"maxJudgeCacheSize"`         // default: 1000
+	// MaxRedelegationDepth caps recursive delegation when allow_redelegate is
+	// true (ASI07-R6). 0 means "use the orchestrator default" (currently 2).
+	MaxRedelegationDepth int `yaml:"maxRedelegationDepth"` // default: 2
 }
 
 // GoalLoopConfig holds settings for the goal-derivation / verification loop.

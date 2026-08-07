@@ -1763,3 +1763,41 @@ func TestAutoApproval_AlwaysDenyRespected(t *testing.T) {
 		t.Error("expected confirmFunc NOT to be called for PolicyAlwaysDeny")
 	}
 }
+
+// TestValidateRequiredFields verifies the centralized schema required-field
+// validator (ASI02-R2 defense-in-depth).
+func TestValidateRequiredFields(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","required":["path","content"],"properties":{}}`)
+
+	tests := []struct {
+		name  string
+		input string
+		want  int // number of missing fields
+	}{
+		{"both present", `{"path":"/x","content":"y"}`, 0},
+		{"path missing", `{"content":"y"}`, 1},
+		{"content missing", `{"path":"/x"}`, 1},
+		{"both missing", `{}`, 2},
+		{"non-object input", `"rawstring"`, 0}, // fail-safe: skip
+		{"empty input", ``, 0},                 // fail-safe: skip
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			missing := validateRequiredFields(schema, json.RawMessage(tt.input))
+			if len(missing) != tt.want {
+				t.Errorf("got %d missing (%v), want %d", len(missing), missing, tt.want)
+			}
+		})
+	}
+
+	// Schema with no "required" → always empty (fail-safe).
+	noReq := json.RawMessage(`{"type":"object","properties":{}}`)
+	if m := validateRequiredFields(noReq, json.RawMessage(`{}`)); len(m) != 0 {
+		t.Errorf("expected no missing for schema without required, got %v", m)
+	}
+
+	// Unparseable schema → fail-safe empty.
+	if m := validateRequiredFields(json.RawMessage(`{bad`), json.RawMessage(`{}`)); len(m) != 0 {
+		t.Errorf("expected no missing for unparseable schema, got %v", m)
+	}
+}

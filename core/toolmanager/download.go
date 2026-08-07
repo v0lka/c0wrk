@@ -149,12 +149,16 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 }
 
 // verifyChecksum reads the file at path and compares its SHA256 against the
-// expected checksum in the tool spec. If no checksum is registered for the
-// platform, verification is skipped (returns true).
+// expected checksum in the tool spec. Fail-closed: if no checksum is
+// registered for the platform, verification FAILS (returns false) rather than
+// silently accepting an unverified binary (ASI04-R2 — supply-chain integrity).
+// Every StaticBinary tool MUST declare a checksum for every supported platform.
 func (d *HTTPDownloader) verifyChecksum(path string, tool ToolSpec, platform string) bool {
 	expected := tool.Checksums[platform]
 	if expected == "" {
-		return true // no checksum registered — skip verification
+		// No checksum registered for this platform — refuse to install an
+		// unverified binary rather than silently skipping verification.
+		return false
 	}
 
 	f, err := os.Open(path)

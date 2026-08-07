@@ -70,7 +70,9 @@ export function SplitDiffTable({ diffLines, highlightedLines }: SplitDiffTablePr
               return (
                 <tr key={i} className={LINE_BG[leftLine.type]}>
                   <td colSpan={4} className="pr-3 whitespace-pre-wrap break-all">
-                    <span dangerouslySetInnerHTML={{ __html: leftHtml || ' ' }} />
+                    <span
+                      dangerouslySetInnerHTML={{ __html: leftHtml || ' ' }} // eslint-disable-line react/no-danger -- pre-highlighted diff markup
+                    />
                   </td>
                 </tr>
               )
@@ -120,7 +122,7 @@ function contentCell(html: string | null, bg: string) {
   return (
     <td
       className={`pr-3 whitespace-pre-wrap break-all ${bg}`}
-      dangerouslySetInnerHTML={{ __html: html || ' ' }}
+      dangerouslySetInnerHTML={{ __html: html || ' ' }} // eslint-disable-line react/no-danger -- pre-highlighted diff markup
     />
   )
 }

@@ -485,6 +485,7 @@ func (b *OrchestratorBuilder) Build(
 		KeepFirst:                 cfg.Executor.Compaction.SlidingWindow.KeepFirst,
 		KeepLast:                  cfg.Executor.Compaction.SlidingWindow.KeepLast,
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
+		MaxRedelegationDepth:      cfg.Orchestration.MaxRedelegationDepth,
 		// OrchestratorConfig.Model is used for model METADATA resolution
 		// (ModelRegistry.Resolve keys on the bare model name), not for routing —
 		// so strip any provider prefix from the router's composite active model.

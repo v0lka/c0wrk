@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 	"sync"
 
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -390,6 +391,18 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		return sdktools.ToolResult{Content: "tool not found: " + name, IsError: true}, nil
 	}
 
+	// Centralized required-field validation (ASI02-R2, defense-in-depth).
+	// Ensures every tool — including new ones whose author forgot per-tool
+	// validation — rejects inputs missing a JSON Schema "required" top-level
+	// key. Fail-safe: schema parse errors or missing "required" are skipped,
+	// so this never blocks a call that existing per-tool validation accepts.
+	if missing := validateRequiredFields(tool.InputSchema(), input); len(missing) > 0 {
+		return sdktools.ToolResult{
+			Content: "validation error: missing required parameter(s): " + strings.Join(missing, ", "),
+			IsError: true,
+		}, nil
+	}
+
 	// Check disabled tools (No Project mode) — MUST precede internal bypass
 	// so that tools like semantic_search are blocked at execution time too.
 	r.mu.RLock()
@@ -397,6 +410,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	extraShellBL := r.extraShellBlacklist
 	r.mu.RUnlock()
 	if disabled != nil && disabled[name] {
+		r.log().Warn("security: tool blocked in No Project mode", "tool", name, "reason", "disabled_in_no_project")
 		return sdktools.ToolResult{
 			Content: fmt.Sprintf("tool %q is not available in No Project mode", name),
 			IsError: true,
@@ -432,6 +446,8 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		if err := json.Unmarshal(input, &params); err == nil && params.Command != "" {
 			for _, re := range extraShellBL {
 				if re.MatchString(params.Command) {
+					r.log().Warn("security: shell command blocked by No Project extra blacklist",
+						"tool", name, "command", params.Command, "pattern", re.String())
 					return sdktools.ToolResult{
 						Content: fmt.Sprintf("command %q is not available in No Project mode", params.Command),
 						IsError: true,
@@ -475,7 +491,8 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		if judger, ok := tool.(sdktools.ToolJudger); ok {
 			allow, reasoning := judger.Judge(ctx, input)
 			if !allow && reasoning != "" {
-				r.log().Debug("sdktools.PolicyAlwaysAllow: tool-specific judge flagged call", "tool", name, "reasoning", reasoning)
+				r.log().Warn("security: always_allow tool escalated to confirmation by safety judge",
+					"tool", name, "reasoning", reasoning)
 				return r.confirmAndExecute(ctx, tool, name, input, reasoning)
 			}
 		}
@@ -508,6 +525,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		return tool.Execute(ctx, input)
 
 	case sdktools.PolicyAlwaysDeny:
+		r.log().Warn("security: tool blocked by policy (always_deny)", "tool", name)
 		return sdktools.ToolResult{
 			Content: fmt.Sprintf("tool %q blocked by security policy", name),
 			IsError: true,
@@ -606,4 +624,34 @@ func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool sdktools.Tool
 	default:
 		return sdktools.ToolResult{}, fmt.Errorf("unknown confirmation response: %d", resp)
 	}
+}
+
+// validateRequiredFields extracts the top-level "required" property names from
+// a tool's JSON Schema and reports which are absent from the input object.
+// It is fail-safe: any schema/input parse error, a non-object input, or a
+// schema without a "required" array yields an empty result (no missing fields),
+// so it never blocks a call that existing per-tool validation accepts. This is
+// defense-in-depth (ASI02-R2) so a newly added tool that forgets per-tool
+// validation still rejects inputs missing a declared required parameter.
+func validateRequiredFields(schema, input json.RawMessage) []string {
+	if len(schema) == 0 || len(input) == 0 {
+		return nil
+	}
+	var s struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(schema, &s); err != nil || len(s.Required) == 0 {
+		return nil // no schema, unparseable, or nothing required → skip
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(input, &obj); err != nil {
+		return nil // input is not a JSON object (e.g. a raw value) → skip
+	}
+	var missing []string
+	for _, field := range s.Required {
+		if _, present := obj[field]; !present {
+			missing = append(missing, field)
+		}
+	}
+	return missing
 }

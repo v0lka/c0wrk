@@ -366,6 +366,9 @@ type BuilderMCPServer struct {
 type BuilderOrchestrationConfig struct {
 	MaxDependencyContextChars int
 	MaxJudgeCacheSize         int
+	// MaxRedelegationDepth caps recursive delegation when allow_redelegate is
+	// true (ASI07-R6). Default 2.
+	MaxRedelegationDepth int
 }
 
 // BuilderGoalLoopConfig holds goal-loop settings.

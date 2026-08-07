@@ -53,8 +53,9 @@ type ToolSpec struct {
 	// URLs maps platform keys to download URLs.
 	URLs map[string]string
 
-	// Checksums maps platform keys to SHA256 hex strings. An empty string
-	// disables checksum verification for that platform.
+	// Checksums maps platform keys to SHA256 hex strings. A missing/empty
+	// checksum fails verification (fail-closed, ASI04-R2); every supported
+	// platform MUST declare one.
 	Checksums map[string]string
 }
 

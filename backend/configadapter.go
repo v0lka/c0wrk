@@ -160,6 +160,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 		Orchestration: core.BuilderOrchestrationConfig{
 			MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 			MaxJudgeCacheSize:         cfg.Orchestration.MaxJudgeCacheSize,
+			MaxRedelegationDepth:      cfg.Orchestration.MaxRedelegationDepth,
 		},
 		GoalLoop: core.BuilderGoalLoopConfig{
 			Verification: cfg.GoalLoop.Verification,

@@ -33,7 +33,7 @@ export function UnifiedDiffTable({ diffLines, highlightedLines }: UnifiedDiffTab
               </td>
               <td
                 className="pr-3 whitespace-pre-wrap break-all"
-                dangerouslySetInnerHTML={{ __html: highlightedLines[i] || ' ' }}
+                dangerouslySetInnerHTML={{ __html: highlightedLines[i] || ' ' }} // eslint-disable-line react/no-danger -- pre-highlighted diff markup
               />
             </tr>
           ))}
