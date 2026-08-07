@@ -227,37 +227,82 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Security.ToolPolicies["bash_exec"] = ToolPolicyConfig{
 			Policy: "user_confirm",
 			Blacklist: []string{
+				// The blacklist is organized into four destructive categories
+				// that are mirrored (conceptually) by the posh_exec blacklist
+				// below. Keep the categories in sync when editing either list.
+				// (See TestApplyDefaults_BlacklistCategorySymmetry.)
+
+				// --- Destructive file/disk operations ---
 				`rm\s+-rf\s+/`,
-				`sudo\s+`,
 				`mkfs`,
 				`dd\s+if=`,
 				`>\s*/dev/`,
-				`\bgit\b`,
-				// Remote-script execution via pipe (curl|sh etc.) — a classic
-				// supply-chain / RCE vector. Blocks piped execution of fetched
-				// content regardless of policy, even under always_allow.
+
+				// --- Power-state (mirrors posh Stop/Restart-Computer) ---
+				`\b(shutdown|reboot|halt|poweroff|init\s+[06])\b`,
+
+				// --- Remote-exec / download-cradle (mirrors posh IWR|iex) ---
+				// Piped execution of fetched content (curl|sh etc.) — a classic
+				// supply-chain / RCE vector. Blocks regardless of policy, even
+				// under always_allow.
 				`\b(curl|wget)\b.*\|\s*(?:\S*/)?(?:env\s+)?\b(sh|bash|zsh|dash|ksh|fish|perl\d*|node|ruby|python[\d.]*)\b`,
+
+				// --- Irreversible system writes (mirrors posh Set-Content on System32) ---
+				`>\s*/etc/(passwd|shadow|sudoers|group|fstab)\b`,
+				`(tee|dd)\b[^|]*/etc/(passwd|shadow|sudoers)\b`,
+				`\bchmod\b[^|]*\b777\b[^|]*/(etc|usr|boot|bin|sbin)\b`,
+				`>\s*/boot/`,
+
+				// --- Misc hardening (mirrors posh registry/scheduled-task tampering) ---
+				`:\(\)\s*\{`,                                           // fork bomb
+				`\bcrontab\s+-r\b`,                                     // wipe crontab
+				`\b(iptables|ufw|nft)\b[^|]*(-F\b|--flush\b|-X\b|-P\s+\w+)`, // firewall flush
+
+				// --- Privilege escalation & SCM ---
+				`sudo\s+`,
+				`\bgit\b`,
 			},
 		}
 	}
 	// posh_exec (PowerShell) mirrors bash_exec's user_confirm policy but with a
-	// Windows/PowerShell-specific blacklist: destructive cmdlets that could wipe
-	// files/disks, power-state changes, execution-policy tampering, and git.
-	// PowerShell is case-insensitive for cmdlets and matches parameters by
-	// case-insensitive prefix (-r/-rec/-recurse, -f/-fo/-force), and Remove-Item
-	// has aliases (del, erase, ri, rm, rd, rmdir). RE2 has no lookaheads, so the
-	// two-order requirement for -Recurse + -Force is expressed as two patterns.
+	// Windows/PowerShell-specific blacklist organized into the same destructive
+	// categories as bash_exec (destructive file/disk, power-state,
+	// remote-exec/download-cradle, irreversible system writes, misc hardening)
+	// so the two shells stay conceptually aligned. PowerShell is
+	// case-insensitive for cmdlets and matches parameters by case-insensitive
+	// prefix (-r/-rec/-recurse, -f/-fo/-force), and Remove-Item has aliases
+	// (del, erase, ri, rm, rd, rmdir). RE2 has no lookaheads, so the two-order
+	// requirement for -Recurse + -Force is expressed as two patterns.
 	if _, ok := cfg.Security.ToolPolicies["posh_exec"]; !ok {
 		cfg.Security.ToolPolicies["posh_exec"] = ToolPolicyConfig{
 			Policy: "user_confirm",
 			Blacklist: []string{
+				// --- Destructive file/disk operations ---
 				`(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-r\w*.*-f\w*`,
 				`(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-f\w*.*-r\w*`,
 				`(?i)Format-Volume`,
 				`(?i)Clear-Disk`,
+
+				// --- Power-state (mirrors bash shutdown/halt/poweroff) ---
 				`(?i)Stop-Computer`,
 				`(?i)Restart-Computer`,
-				`(?i)Set-ExecutionPolicy`,
+
+				// --- Remote-exec / download-cradle (mirrors bash curl|sh) ---
+				// Piped or chained execution of fetched content
+				// (Invoke-WebRequest | Invoke-Expression) — the #1 PowerShell
+				// RCE / supply-chain vector.
+				`(?i)\b(Invoke-WebRequest|iwr|irm|Invoke-RestMethod|curl|wget)\b[^|]*\|\s*(Invoke-Expression|iex)\b`,
+				`(?i)\b(Invoke-WebRequest|iwr|irm|Invoke-RestMethod|curl|wget)\b[^;]*;[^;]*\b(Invoke-Expression|iex)\b`,
+
+				// --- Irreversible system writes (mirrors bash >/etc/passwd) ---
+				`(?i)\b(Set-Content|Clear-Content|Out-File|Add-Content)\b[^|]*\b(Windows\\System32|\\Windows\\|\\etc\\|\\boot)`,
+
+				// --- Misc hardening ---
+				`(?i)\bSet-ItemProperty\b[^|]*HKLM`,                    // registry tampering
+				`(?i)\b(Register-ScheduledTask|schtasks\s+/create)\b`,  // scheduled tasks
+				`(?i)Set-ExecutionPolicy`,                              // execution-policy tampering
+
+				// --- SCM ---
 				`\bgit\b`,
 			},
 		}

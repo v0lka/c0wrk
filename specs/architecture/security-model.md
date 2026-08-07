@@ -74,10 +74,12 @@ The system temp directory (`os.TempDir()`) is NOT a session root. It is allowed 
 File operations (both read and write) targeting paths **outside** the session roots are allowed, but **only after explicit user confirmation** — regardless of the tool's resolved policy:
 
 - `always_allow` tools (e.g., `read_file`, `list_directory`): the tool's `ToolJudger.Judge()` returns `allow=false` with a reason, which the registry routes to `confirmAndExecute`.
-- `user_confirm` tools (e.g., `write_file`, `edit_file`): confirmation is already required by policy; the confirmation carries a human-readable reason explaining the mutating action (from `defaultConfirmReason`), supplemented by the Judge reason when one is available.
+- `user_confirm` tools (e.g., `write_file`, `edit_file`, `bash_exec`, `posh_exec`): confirmation is already required by policy; the confirmation carries a human-readable reason explaining the mutating action (from `defaultConfirmReason`), supplemented by the Judge reason when one is available.
 - `always_deny` tools: blocked immediately, never reach confirmation.
 
 This means reading or writing arbitrary files on the filesystem (e.g., `/etc/hosts`, `~/Documents/notes.txt`) is possible, but the user always sees a confirmation prompt first. The only exception is relative paths that escape the workspace via `..` components — these are rejected by `resolvePath` as invalid input (relative paths cannot escape the workspace).
+
+**Shell commands referencing out-of-root paths.** `bash_exec` and `posh_exec` now implement the same path-containment analysis in their `ToolJudger.Judge()` as the file tools: the command string is scanned for path-like tokens (absolute paths, `~`/`~user` tilde expansion, `$VAR`/`${VAR}`/`$env:VAR` environment expansion, and `..`-relative references resolved against the working directory) via `tools.PathsOutsideRoots` (`github.com/v0lka/sp4rk/tools/shellpaths.go`). Any resolved path outside the session roots produces a non-empty reason, so the call escalates to confirmation under any policy except `always_deny` — including `always_allow`. This closes the previously-documented gap where a shell command under `always_allow` could execute `cat /etc/passwd` without confirmation. Credential-file reads (e.g., `cat ~/.ssh/id_rsa`) are caught here by path-locality rather than a literal-filename blacklist; the blacklist focuses on path-agnostic destructive mutations.
 
 ## PolicyAlwaysAllow Judge Gate
 
@@ -107,6 +109,7 @@ The `ToolJudge` (`github.com/v0lka/sp4rk/tools/judge.go`) provides LLM-based saf
 - NOT automatic gating — it is invoked on-demand via the frontend "Ask agent" button
 - When a tool has `PolicyAlwaysAllow` but implements the `ToolJudger` interface, the tool-specific judge may flag suspicious calls and escalate to user confirmation
 - File tools use `judgeReadInSessionRoots` / `judgeWriteInSessionRoots` (in `github.com/v0lka/sp4rk/tools/builtins/file_judge.go`) to check whether the target path is inside the session workspace or temp directory. Operations outside both roots return `allow=false` with a reason, escalating to user confirmation.
+- Shell tools (`bash_exec`, `posh_exec`) check the compiled blacklist patterns first (the more specific reason), then run path-containment analysis via `tools.PathsOutsideRoots` (`github.com/v0lka/sp4rk/tools/shellpaths.go`), which resolves shell idioms (tilde, env vars, `..`) to absolute paths and reports those outside the session roots. Both shells share the same extraction/containainment logic, differing only in `ShellKind` (`ShellBash` vs `ShellPosh`) so dialect-specific env syntax (`$VAR` vs `$env:VAR`) is recognized. The containment reason is `command references path(s) outside session roots: <paths>`.
 - The judge provides reasoning that is displayed to the user in the confirmation dialog
 
 ## Confirmation Flow
@@ -201,7 +204,16 @@ If the input contains suspicious (unexpandable) shell expressions, a warning is 
 
 ## Bash Blacklist
 
-The shell-execution tool (`bash_exec` on Unix, `posh_exec` on Windows) has a regex-based blacklist (the `blacklist` list on the shell tool's `Security.ToolPolicies` entry) that blocks dangerous command patterns (e.g., `rm -rf /`, `chmod 777`, `curl | sh`). The blacklist is read from the policy entry keyed by the platform's active shell tool name — `cfg.Security.ToolPolicies[activeShellToolName()].Blacklist` — so on Windows the entry is configured under `posh_exec`, on Unix under `bash_exec` (see [builtins.md § Shell-Execution Tool](../domains/tool-system/builtins.md#shell-execution-tool-bash_exec--posh_exec)). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's policy resolves to `AlwaysAllow`, the tool's `Judge()` evaluates the command against compiled blacklist regexes. A match returns `allow=false` with a non-empty reasoning identifying the matched pattern, which escalates to user confirmation via the PolicyAlwaysAllow Judge Gate (above). The gate runs **before** workspace/temp auto-approval, so a blacklisted command with paths inside the workspace (e.g., `rm -rf /workspace/.git`) is still routed to confirmation.
+The shell-execution tool (`bash_exec` on Unix, `posh_exec` on Windows) has a regex-based blacklist (the `blacklist` list on the shell tool's `Security.ToolPolicies` entry) that blocks dangerous command patterns. The blacklist is read from the policy entry keyed by the platform's active shell tool name — `cfg.Security.ToolPolicies[activeShellToolName()].Blacklist` — so on Windows the entry is configured under `posh_exec`, on Unix under `bash_exec` (see [builtins.md § Shell-Execution Tool](../domains/tool-system/builtins.md#shell-execution-tool-bash_exec--posh_exec)). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's policy resolves to `AlwaysAllow`, the tool's `Judge()` evaluates the command against compiled blacklist regexes. A match returns `allow=false` with a non-empty reasoning identifying the matched pattern, which escalates to user confirmation via the PolicyAlwaysAllow Judge Gate (above). The gate runs **before** workspace/temp auto-approval, so a blacklisted command with paths inside the workspace (e.g., `rm -rf /workspace/.git`) is still routed to confirmation.
+
+The default bash_exec and posh_exec blacklists (`backend/config/defaults.go`, mirrored in `config.example.yaml`) are organized into four symmetric conceptual categories, kept in lock-step by `TestApplyDefaults_BlacklistCategorySymmetry`:
+
+1. **Destructive file/disk operations** — `rm -rf /`, `mkfs`, `dd if=` (bash); `Remove-Item -Recurse -Force` (+ aliases), `Format-Volume`, `Clear-Disk` (posh).
+2. **Power-state** — `shutdown`/`reboot`/`halt`/`poweroff`/`init 0|6` (bash); `Stop-Computer`/`Restart-Computer` (posh).
+3. **Remote-exec / download-cradle** — `curl|sh`-style piped execution (bash); `Invoke-WebRequest | Invoke-Expression` / `iwr | iex` chained execution — the #1 PowerShell RCE vector (posh).
+4. **Irreversible system writes** — `>/etc/passwd|shadow|sudoers`, `chmod 777 /etc|/usr|/boot` (bash); `Set-Content`/`Out-File` on `Windows\System32|\etc|\boot` (posh).
+
+Plus a shared **misc-hardening** set (fork bombs, crontab/firewall flush, registry/scheduled-task tampering) and **privilege-escalation/SCM** (`sudo`, `git`). Credential-file *reads* (e.g., `~/.ssh/id_rsa`) are intentionally left to the path-containment check rather than a literal-filename blacklist, since the same files live at unpredictable paths across systems.
 
 ## Indirect Prompt Injection Defense
 
