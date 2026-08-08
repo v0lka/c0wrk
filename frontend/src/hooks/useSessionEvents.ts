@@ -15,6 +15,7 @@ import { useBlackboardEvents } from './events/useBlackboardEvents'
 import { useAttachmentEvents } from './events/useAttachmentEvents'
 import { useReviewRestore } from './events/useReviewRestore'
 import { useGoalEvents } from './events/useGoalEvents'
+import { useSoundEvents } from './events/useSoundEvents'
 
 export function useSessionEvents(sessionId: string | null): void {
   // Reset session state on session change
@@ -56,4 +57,5 @@ export function useSessionEvents(sessionId: string | null): void {
   useAttachmentEvents(sessionId)
   useReviewRestore(sessionId)
   useGoalEvents(sessionId)
+  useSoundEvents(sessionId)
 }
