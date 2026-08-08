@@ -2,7 +2,7 @@ import { Loader2 } from 'lucide-react'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useFileViewerData } from '@/hooks/useFileViewerData'
 import { CodeMirrorFileViewer } from '@/components/fileViewer/CodeMirrorFileViewer'
-import { DiffHunkStageBar } from '@/components/fileViewer/DiffHunkStageBar'
+import { DiffHunkNavBar } from '@/components/fileViewer/DiffHunkNavBar'
 import { PlanEditor } from '@/components/fileViewer/PlanEditor'
 import { ReviewPage } from '@/components/review/ReviewPage'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -80,7 +80,7 @@ export function FileViewerContent() {
   return (
     <div className="flex flex-1 flex-col min-h-0">
       {hunks.length > 0 && (
-        <DiffHunkStageBar filePath={activeFile} hunks={hunks} />
+        <DiffHunkNavBar key={activeFile} hunks={hunks} />
       )}
       <CodeMirrorFileViewer
         content={fileData.content}

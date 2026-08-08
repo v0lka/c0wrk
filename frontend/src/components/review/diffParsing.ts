@@ -37,6 +37,62 @@ export function parseHunkRaw(raw: string, oldStart: number, newStart: number): D
 }
 
 /**
+ * Summary of the actual changes inside a hunk's raw body, derived by parsing.
+ *
+ * - `added` / `removed`: counts of `+` / `-` lines.
+ * - `firstNewLine` / `lastNewLine`: the first and last *changed* line numbers
+ *   in the NEW file (the green `+` lines). Both are `null` for a pure-deletion
+ *   hunk (no additions), in which case the caller falls back to the hunk's
+ *   `new_start` anchor for a coordinate reference.
+ *
+ * React/DOM-free so it is unit-testable alongside {@link parseHunkRaw}.
+ */
+export interface HunkSummary {
+  added: number
+  removed: number
+  firstNewLine: number | null
+  lastNewLine: number | null
+}
+
+export function summarizeHunk(
+  raw: string,
+  oldStart: number,
+  newStart: number,
+): HunkSummary {
+  const lines = parseHunkRaw(raw, oldStart, newStart)
+  let added = 0
+  let removed = 0
+  let firstNewLine: number | null = null
+  let lastNewLine: number | null = null
+  for (const line of lines) {
+    if (line.type === 'add') {
+      added++
+      if (firstNewLine === null) firstNewLine = line.newNum
+      // `add` lines always carry a new-file number, so this is non-null here.
+      lastNewLine = line.newNum
+    } else if (line.type === 'del') {
+      removed++
+    }
+  }
+  return { added, removed, firstNewLine, lastNewLine }
+}
+
+/**
+ * Format a hunk's changed-line range as an `LX` / `LX-Y` label (new-file
+ * coordinates). For a pure-deletion hunk (no additions) the range is undefined
+ * in the new file, so `fallbackLine` (typically the hunk's `new_start`) is
+ * shown as a single-line anchor.
+ */
+export function hunkLineRangeLabel(summary: HunkSummary, fallbackLine: number): string {
+  if (summary.firstNewLine !== null && summary.lastNewLine !== null) {
+    return summary.firstNewLine === summary.lastNewLine
+      ? `L${summary.firstNewLine}`
+      : `L${summary.firstNewLine}-${summary.lastNewLine}`
+  }
+  return `L${fallbackLine}`
+}
+
+/**
  * Background classes per diff line type.
  *
  * Add/del lines keep only a background tint — the text color comes from

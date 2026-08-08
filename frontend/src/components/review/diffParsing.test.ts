@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseHunkRaw, buildSideBySidePairs, type DiffLine } from './diffParsing'
+import { parseHunkRaw, buildSideBySidePairs, summarizeHunk, hunkLineRangeLabel, type DiffLine } from './diffParsing'
 
 // Minimal DiffLine builders. Only `type` matters to buildSideBySidePairs;
 // the text/oldNum/newNum values are arbitrary but kept valid for realism.
@@ -136,5 +136,68 @@ describe('buildSideBySidePairs', () => {
       { leftIdx: 2, rightIdx: 2 }, // context both columns
       { leftIdx: 3, rightIdx: 4 }, // second block zipped
     ])
+  })
+})
+
+describe('summarizeHunk', () => {
+  it('counts added/removed lines and tracks the first/last new-file line of additions', () => {
+    // @@ -10,4 +10,5 @@: context @10, del @11, add @11, add @12, context @13
+    const raw = [' keep', '-old', '+new1', '+new2', ' tail'].join('\n')
+
+    const summary = summarizeHunk(raw, 10, 10)
+
+    expect(summary.added).toBe(2)
+    expect(summary.removed).toBe(1)
+    // additions land at new-file lines 11 and 12 (context took 10)
+    expect(summary.firstNewLine).toBe(11)
+    expect(summary.lastNewLine).toBe(12)
+  })
+
+  it('returns null line range for a pure-deletion hunk (no additions)', () => {
+    const raw = ['-gone1', '-gone2'].join('\n')
+
+    const summary = summarizeHunk(raw, 5, 5)
+
+    expect(summary.added).toBe(0)
+    expect(summary.removed).toBe(2)
+    expect(summary.firstNewLine).toBeNull()
+    expect(summary.lastNewLine).toBeNull()
+  })
+
+  it('counts a single addition with first === last', () => {
+    const raw = [' ctx', '+solo'].join('\n')
+
+    const summary = summarizeHunk(raw, 1, 1)
+
+    expect(summary.added).toBe(1)
+    expect(summary.removed).toBe(0)
+    expect(summary.firstNewLine).toBe(2)
+    expect(summary.lastNewLine).toBe(2)
+  })
+
+  it('ignores context and header lines in the counts', () => {
+    const raw = ['@@ -1,2 +1,2 @@', ' keep', '+added'].join('\n')
+
+    const summary = summarizeHunk(raw, 1, 1)
+
+    expect(summary.added).toBe(1)
+    expect(summary.removed).toBe(0)
+  })
+})
+
+describe('hunkLineRangeLabel', () => {
+  it('renders LX-Y when first and last addition lines differ', () => {
+    const summary = { added: 2, removed: 1, firstNewLine: 11, lastNewLine: 15 }
+    expect(hunkLineRangeLabel(summary, 10)).toBe('L11-15')
+  })
+
+  it('renders a single LX when first === last', () => {
+    const summary = { added: 1, removed: 0, firstNewLine: 42, lastNewLine: 42 }
+    expect(hunkLineRangeLabel(summary, 40)).toBe('L42')
+  })
+
+  it('falls back to the provided anchor for a pure-deletion hunk', () => {
+    const summary = { added: 0, removed: 3, firstNewLine: null, lastNewLine: null }
+    expect(hunkLineRangeLabel(summary, 7)).toBe('L7')
   })
 })

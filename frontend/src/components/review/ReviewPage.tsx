@@ -113,6 +113,16 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
     [diff],
   )
 
+  // Flat list of {filePath, hunk} in document (navigation) order. Mirrors the
+  // `[data-review-hunk]` query order used by the prev/next scroll navigation,
+  // so a combobox selection by globalIndex lands on the same hunk DOM node.
+  const hunkEntries = useMemo(() => {
+    let globalIndex = 0
+    return diff.flatMap((file) =>
+      file.hunks.map((hunk) => ({ globalIndex: globalIndex++, filePath: file.path, hunk })),
+    )
+  }, [diff])
+
   // Note: the hunk cursor is reset to 0 inside fetchDiff on non-silent loads
   // (initial load / explicit retry). A silent background re-fetch preserves
   // the user's current position instead of snapping back to the top.
@@ -237,6 +247,8 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
         totalHunks={totalHunks}
         onPrevHunk={goToPrevHunk}
         onNextHunk={goToNextHunk}
+        hunkEntries={hunkEntries}
+        onSelectHunk={goToHunk}
       />
       <div ref={scrollRef} className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-4">
         {diff.map((file) => (

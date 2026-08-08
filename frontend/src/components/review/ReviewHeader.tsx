@@ -7,6 +7,7 @@ import { useReviewStore, totalCommentCount } from '@/stores/reviewStore'
 import * as reviewApi from '@/api/review'
 import { emit } from '@/api/runtime'
 import { useReviewActions } from './useReviewActions'
+import { HunkComboBox, type HunkEntry } from './HunkComboBox'
 
 interface ReviewHeaderProps {
   sessionId: string
@@ -22,6 +23,10 @@ interface ReviewHeaderProps {
   onPrevHunk?: () => void
   /** Scroll the review pane so the next hunk sits at the top. */
   onNextHunk?: () => void
+  /** All hunks (file + hunk) in document order, for the jump-to combobox. */
+  hunkEntries?: HunkEntry[]
+  /** Jump the review pane to the hunk at the given flat index. */
+  onSelectHunk?: (index: number) => void
 }
 
 export function ReviewHeader({
@@ -32,6 +37,8 @@ export function ReviewHeader({
   totalHunks = 0,
   onPrevHunk,
   onNextHunk,
+  hunkEntries,
+  onSelectHunk,
 }: ReviewHeaderProps) {
   const [showGeneral, setShowGeneral] = useState(false)
   const [draft, setDraft] = useState('')
@@ -61,6 +68,12 @@ export function ReviewHeader({
             diffViewMode={diffViewMode}
             setDiffViewMode={setDiffViewMode}
             className="ml-auto"
+          />
+          <HunkComboBox
+            className="ml-1"
+            entries={hunkEntries ?? []}
+            currentIndex={currentHunk}
+            onSelect={(i) => onSelectHunk?.(i)}
           />
           <HunkNavControls
             className="ml-1"
@@ -112,6 +125,11 @@ export function ReviewHeader({
             totalHunks={totalHunks}
             onPrevHunk={onPrevHunk}
             onNextHunk={onNextHunk}
+          />
+          <HunkComboBox
+            entries={hunkEntries ?? []}
+            currentIndex={currentHunk}
+            onSelect={(i) => onSelectHunk?.(i)}
           />
           <DiffViewModeToggle
             diffViewMode={diffViewMode}

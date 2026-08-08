@@ -38,7 +38,6 @@ import {
   stashList,
   discardChanges,
   appendToGitignore,
-  stageHunks,
   merge,
   rebase,
   abortMerge,
@@ -809,38 +808,6 @@ describe('appendToGitignore', () => {
   it('propagates errors', async () => {
     mockApp.AppendToGitignore = vi.fn().mockRejectedValue(new Error('write failed'))
     await expect(appendToGitignore('build/')).rejects.toThrow('write failed')
-  })
-})
-
-describe('stageHunks', () => {
-  beforeEach(() => {
-    Object.keys(mockApp).forEach(k => delete mockApp[k])
-  })
-
-  it('calls app.StageHunks with path and validated hunks', async () => {
-    mockApp.StageHunks = vi.fn().mockResolvedValue(undefined)
-    const hunks = [{ start_line: 1, end_line: 3 }]
-    await stageHunks('/repo/file.txt', hunks)
-    expect(mockApp.StageHunks).toHaveBeenCalledWith('/repo/file.txt', hunks)
-  })
-
-  it('throws without calling backend when hunk ranges are invalid', async () => {
-    mockApp.StageHunks = vi.fn().mockResolvedValue(undefined)
-    const invalid = [{ start_line: 1, end_line: 'bad' as unknown as number }]
-    await expect(stageHunks('/repo/file.txt', invalid)).rejects.toThrow('stageHunks: invalid hunk ranges')
-    expect(mockApp.StageHunks).not.toHaveBeenCalled()
-  })
-
-  it('throws when an element is missing a field', async () => {
-    mockApp.StageHunks = vi.fn().mockResolvedValue(undefined)
-    const invalid = [{ start_line: 1 } as unknown as { start_line: number; end_line: number }]
-    await expect(stageHunks('/repo/file.txt', invalid)).rejects.toThrow('stageHunks: invalid hunk ranges')
-    expect(mockApp.StageHunks).not.toHaveBeenCalled()
-  })
-
-  it('propagates backend errors', async () => {
-    mockApp.StageHunks = vi.fn().mockRejectedValue(new Error('no unstaged changes'))
-    await expect(stageHunks('/repo/file.txt', [{ start_line: 1, end_line: 1 }])).rejects.toThrow('no unstaged changes')
   })
 })
 
