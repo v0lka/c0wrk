@@ -21,6 +21,7 @@
 | Tool registry, execution pipeline        | [domains/tool-system/README.md](domains/tool-system/README.md)           |
 | External binary deps (rg, uv, markitdown), tool-manager | [domains/tool-manager.md](domains/tool-manager.md)       |
 | Supply-chain integrity, pinned tool versions, CVE review before bumping | [domains/tool-manager.md](domains/tool-manager.md) |
+| In-app self-update (auto-update), release integrity, rollback | [decisions/023-auto-update.md](decisions/023-auto-update.md) |
 | Context window, compaction               | [domains/memory/compaction.md](domains/memory/compaction.md)             |
 | Blackboard, facts, persistence           | [domains/memory/blackboard.md](domains/memory/blackboard.md)             |
 | LLM providers, model registry, tokens    | [domains/llm-providers.md](domains/llm-providers.md)                     |
@@ -145,3 +146,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [020-multi-source-agents-md-threat-model.md](decisions/020-multi-source-agents-md-threat-model.md) - Threat model for global/c0wrk/project AGENTS.md sources (all untrusted advisory; tool-policy pipeline is the hard boundary)
 - [021-subagents.md](decisions/021-subagents.md) - Subagent Profiles: `.agents/agents` persona/budget profiles applied at delegation time, `#agent-name` mention routing (parallels skills)
 - [022-small-llm-profile.md](decisions/022-small-llm-profile.md) - Small-LLM profile: manual master toggle + four independently sub-toggled variants (essential tools, system-prompt Lite, sampling, loop hardening) for tuning c0wrk to small/local models
+- [023-auto-update.md](decisions/023-auto-update.md) - Self-update: single-binary re-exec, SHA256-only fail-closed verification, unsigned GitHub-Releases trust anchor, `.old` rollback; threat model for the supply-chain delivery vector (ASI04)

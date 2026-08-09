@@ -18,6 +18,10 @@ export function AppendToGitignore(arg1) {
   return window['go']['desktop']['App']['AppendToGitignore'](arg1);
 }
 
+export function ApplyUpdate() {
+  return window['go']['desktop']['App']['ApplyUpdate']();
+}
+
 export function ArchiveSession(arg1) {
   return window['go']['desktop']['App']['ArchiveSession'](arg1);
 }
@@ -36,6 +40,10 @@ export function CancelTask(arg1) {
 
 export function CancelUnfinishedTask(arg1) {
   return window['go']['desktop']['App']['CancelUnfinishedTask'](arg1);
+}
+
+export function CheckForUpdates() {
+  return window['go']['desktop']['App']['CheckForUpdates']();
 }
 
 export function CheckoutBranch(arg1) {
@@ -110,6 +118,10 @@ export function DiscardHunks(arg1, arg2) {
   return window['go']['desktop']['App']['DiscardHunks'](arg1, arg2);
 }
 
+export function DownloadUpdate() {
+  return window['go']['desktop']['App']['DownloadUpdate']();
+}
+
 export function EmitSessionEvent(arg1) {
   return window['go']['desktop']['App']['EmitSessionEvent'](arg1);
 }
@@ -124,6 +136,10 @@ export function ForkSession(arg1) {
 
 export function GenerateCommitMessage() {
   return window['go']['desktop']['App']['GenerateCommitMessage']();
+}
+
+export function GetAppVersion() {
+  return window['go']['desktop']['App']['GetAppVersion']();
 }
 
 export function GetAttachments(arg1) {
@@ -268,6 +284,10 @@ export function GetTerminalHistory(arg1) {
 
 export function GetToolList() {
   return window['go']['desktop']['App']['GetToolList']();
+}
+
+export function GetUpdateSettings() {
+  return window['go']['desktop']['App']['GetUpdateSettings']();
 }
 
 export function GetVectorIndexStatus() {
@@ -434,8 +454,16 @@ export function SetReviewStatus(arg1, arg2) {
   return window['go']['desktop']['App']['SetReviewStatus'](arg1, arg2);
 }
 
+export function SetUpdateSettings(arg1, arg2) {
+  return window['go']['desktop']['App']['SetUpdateSettings'](arg1, arg2);
+}
+
 export function SetWailsLogger(arg1) {
   return window['go']['desktop']['App']['SetWailsLogger'](arg1);
+}
+
+export function SkipVersion(arg1) {
+  return window['go']['desktop']['App']['SkipVersion'](arg1);
 }
 
 export function StageAll() {

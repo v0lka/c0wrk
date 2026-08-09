@@ -319,6 +319,36 @@ export interface FilesDroppedData {
   readonly y: number
 }
 
+// --- Self-update event payloads ---
+//
+// Mirror the backend DTOs in backend/frontend_api_updater.go (snake_case JSON
+// keys). Emitted by the FrontendAPI updater methods as global events so the UI
+// can react to check/download/apply progress without polling.
+
+/** Outcome of an update check. `available` is false for "up to date" or when
+ *  the latest release was skipped by the user. Mirrors backend UpdateInfo. */
+export interface UpdateInfoData {
+  readonly available: boolean
+  readonly current_version: string
+  readonly latest_version: string
+  readonly release_notes: string
+  readonly published_at: string
+  readonly html_url: string
+  readonly asset_name: string
+}
+
+/** Progress telemetry for the in-flight update download (bytes done / total). */
+export interface UpdateProgressData {
+  readonly done: number
+  readonly total: number
+}
+
+/** Structured error emitted when any update step fails. Carries a single
+ *  human-readable `message`. */
+export interface UpdateErrorData {
+  readonly message: string
+}
+
 export interface GlobalEventMap {
   readonly 'startup_error': { readonly message: string; readonly error: string; readonly error_code?: string }
   readonly 'runtime_error': { readonly id: string; readonly message: string; readonly error_code?: string }
@@ -339,6 +369,18 @@ export interface GlobalEventMap {
   readonly 'tool_manager:done': ToolManagerDoneData
   readonly 'workdirs:changed': void
   readonly 'files:dropped': FilesDroppedData
+  /** Self-update lifecycle: a newer release is available. Payload is the
+   *  check result (UpdateInfo). Emitted by CheckForUpdates. */
+  readonly 'update:available': UpdateInfoData
+  /** Self-update download progress (bytes done / total). Emitted by
+   *  DownloadUpdate at ~100ms intervals. */
+  readonly 'update:progress': UpdateProgressData
+  /** Self-update archive downloaded and integrity-verified, ready to apply. */
+  readonly 'update:downloaded': { readonly archive: string }
+  /** Self-update step failed. Payload carries a human-readable message. */
+  readonly 'update:error': UpdateErrorData
+  /** Self-update check found no newer release (up to date or skipped). */
+  readonly 'update:none': UpdateInfoData
 }
 
 export type GlobalEventKey = keyof GlobalEventMap

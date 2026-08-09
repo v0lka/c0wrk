@@ -364,6 +364,9 @@ func (a *App) Startup(ctx context.Context) {
 		AppCtx: func() context.Context {
 			return a.ctx
 		},
+		QuitApp: func() {
+			wailsRuntime.Quit(a.ctx)
+		},
 	}, configLoadErrors, projStore, log, startTime)
 
 	a.wireWailsEventListeners(log, uiEmitFunc)
@@ -462,6 +465,14 @@ func (a *App) Startup(ctx context.Context) {
 
 	// ── Background: Vector Index ─────────────────────────────────────
 	a.startVectorIndexBackground(agentDir, cfg, &vectorMgrPtr, vectorReady, &vectorOnce, startTime, log)
+
+	// ── Background: Update check ────────────────────────────────────
+	// Runs a single best-effort "check for updates" after the backend is
+	// ready. Reaps stale temp updater artifacts, then delegates to
+	// FrontendAPI.RunBackgroundUpdateCheck (the sole auto-check path: honours
+	// operator + user gates, respects the interval, caches the result so a
+	// discovered update is downloadable). Never blocks or breaks startup.
+	a.startUpdateCheckerBackground(log)
 }
 
 // Shutdown is called when the Wails app is shutting down.

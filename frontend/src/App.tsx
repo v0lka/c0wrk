@@ -8,6 +8,8 @@ import { SettingsModal } from '@/components/settings/SettingsModal'
 import { WorkDirsModal } from '@/components/chat/WorkDirsModal'
 import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
 import { ToolInstallSplash } from '@/components/ToolInstallSplash'
+import { UpdateToast } from '@/components/UpdateToast'
+import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useProjectLoader } from '@/hooks/useProjectLoader'
 import { useSessionLoader } from '@/hooks/useSessionLoader'
@@ -57,6 +59,7 @@ function App() {
   useSessionLoader()
   useSessionEvents(activeSessionId)
   useBackgroundSessionWatcher()
+  useUpdateChecker()
 
   // ── Tool manager lifecycle ────────────────────────────────────────────
 
@@ -252,6 +255,7 @@ function App() {
       <SettingsModal />
       <WorkDirsModal />
       <CreateProjectDialogAlwaysMounted />
+      <UpdateToast />
     </TooltipProvider>
   )
 }

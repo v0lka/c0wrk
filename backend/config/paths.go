@@ -76,6 +76,25 @@ func ToolsPythonDir(agentDir string) string {
 	return filepath.Join(ToolsDir(agentDir), "python")
 }
 
+// UpdateStagingDir returns the staging directory used by the self-updater to
+// download and verify release archives before they are swapped into place
+// (~/.c0wrk/update-staging/). Archives land here atomically (tmp+rename) and
+// are integrity-checked (SHA256SUMS) before the update is applied.
+func UpdateStagingDir(agentDir string) string {
+	return filepath.Join(agentDir, "update-staging")
+}
+
+// UpdateStatePath returns the path to update_state.json inside the agent
+// directory. This file holds the ephemeral self-update runtime state (the
+// timestamp of the last automatic check and the currently-skipped version) and
+// is deliberately NOT part of config.yaml: it is written by the background
+// auto-checker at runtime and read back on the next startup to decide whether
+// another check is due. It is distinct from update-settings.json, which holds
+// the user-facing preferences (enabled / auto-check toggles).
+func UpdateStatePath(agentDir string) string {
+	return filepath.Join(agentDir, "update_state.json")
+}
+
 // ---------------------------------------------------------------------------
 // Per-project paths (agentDir + projectID)
 // ---------------------------------------------------------------------------

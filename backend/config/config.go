@@ -43,6 +43,30 @@ type Config struct {
 	// turned off without disabling the whole profile, and every threshold/value
 	// is exposed so behaviour can be tuned without a rebuild.
 	SmallLLM SmallLLMConfig `yaml:"small_llm"`
+
+	// Updates configures the automatic "check for updates" subsystem that runs
+	// in the background after the backend is ready. The state it produces (the
+	// timestamp of the last check) is persisted to update_state.json, not to
+	// this file; see core/updater/state.go and config.UpdateStatePath.
+	Updates UpdatesConfig `yaml:"updates"`
+}
+
+// UpdatesConfig controls the background automatic update checker. It is an
+// operator-level toggle (config.yaml), complementing the user-level toggle in
+// update-settings.json (enabled / auto-check): both must permit a check for the
+// background check to run.
+type UpdatesConfig struct {
+	// Enabled gates the background automatic update check. It is a pointer-bool
+	// so callers can distinguish "unset" (defaults to true) from "explicitly
+	// disabled" (false), matching the ProxyConfig.SetGlobalEnv convention.
+	// When false, the background check never runs, though a user can still
+	// trigger a manual check from the UI.
+	Enabled *bool `yaml:"enabled"`
+
+	// CheckInterval is the minimum time between automatic checks, expressed as
+	// a duration string (e.g. "6h"). Defaults to "6h". It is parsed with
+	// time.ParseDuration; an unparseable value is treated as the default.
+	CheckInterval string `yaml:"check_interval"`
 }
 
 // ProxyConfig holds HTTP/HTTPS proxy settings for all outbound connections.

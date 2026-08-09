@@ -37,6 +37,10 @@ env:
   GO_VERSION: "1.26.3"
   NODE_VERSION: "22"
   WAILS_VERSION: "v2.12.0"
+  # Application version injected into the binary via ldflags on every
+  # platform. Resolves to the pushed tag (v*) on tag pushes, or the
+  # user-supplied tag_name on workflow_dispatch runs.
+  VERSION: ${{ github.event.inputs.tag_name || github.ref_name }}
 
 jobs:
   build-macos:
@@ -176,8 +180,15 @@ jobs:
 
       # On Windows we call wails build directly (no Makefile), then fetch the
       # ONNX Runtime + embedding model via the dedicated PowerShell scripts.
+      # ldflags inject the build-time version (VERSION env, resolved at the
+      # workflow level to the pushed tag) so all three platforms agree.
       - name: Build (Wails)
-        run: wails build
+        shell: bash
+        run: >-
+          wails build -ldflags
+          "-X github.com/v0lka/c0wrk/core/version.Version=${VERSION}
+          -X github.com/v0lka/c0wrk/core/version.GitCommit=$(git rev-parse --short HEAD)
+          -X github.com/v0lka/c0wrk/core/version.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
       - name: Fetch ONNX Runtime (Windows)
         run: powershell -ExecutionPolicy Bypass -File scripts/fetch-onnx.ps1
@@ -216,6 +227,19 @@ jobs:
           find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp {} release-assets/ \;
           echo "=== release-assets ==="
           ls -la release-assets
+
+      - name: Generate SHA256 checksums
+        # Produce a standard SHA256SUMS file (one "<hex>  <basename>" line per
+        # archive) so downstream verifiers can confirm release integrity. Run
+        # from inside release-assets so the listed filenames are bare basenames
+        # (matching the checksum parser's expectation), not prefixed paths. The
+        # redirect creates SHA256SUMS AFTER the `*` glob expands, so the file
+        # never checksums itself.
+        working-directory: release-assets
+        run: |
+          sha256sum * > SHA256SUMS
+          echo "=== SHA256SUMS ==="
+          cat SHA256SUMS
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

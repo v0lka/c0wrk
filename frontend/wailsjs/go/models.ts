@@ -14,6 +14,22 @@ export namespace backend {
 	        this.description = source["description"];
 	    }
 	}
+	export class AppVersionResponse {
+	    version: string;
+	    gitCommit: string;
+	    buildDate: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AppVersionResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.gitCommit = source["gitCommit"];
+	        this.buildDate = source["buildDate"];
+	    }
+	}
 	export class BlackboardAttachmentResponse {
 	    id: string;
 	    original_name: string;
@@ -889,6 +905,50 @@ export namespace backend {
 	    }
 	}
 	
+	export class UpdateInfo {
+	    available: boolean;
+	    current_version: string;
+	    latest_version: string;
+	    release_notes: string;
+	    published_at: string;
+	    html_url: string;
+	    asset_name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.current_version = source["current_version"];
+	        this.latest_version = source["latest_version"];
+	        this.release_notes = source["release_notes"];
+	        this.published_at = source["published_at"];
+	        this.html_url = source["html_url"];
+	        this.asset_name = source["asset_name"];
+	    }
+	}
+	export class UpdateSettings {
+	    enabled: boolean;
+	    auto_check: boolean;
+	    skipped_version: string;
+	    current_version: string;
+	    operator_enabled: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateSettings(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.auto_check = source["auto_check"];
+	        this.skipped_version = source["skipped_version"];
+	        this.current_version = source["current_version"];
+	        this.operator_enabled = source["operator_enabled"];
+	    }
+	}
 	export class VectorIndexStatus {
 	    state: string;
 	    progress: number;

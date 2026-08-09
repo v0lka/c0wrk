@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/core/updater"
 	"github.com/v0lka/c0wrk/desktop"
 )
 
@@ -23,6 +25,25 @@ func main() {
 }
 
 func mainImpl() int {
+	// Self-update re-exec path: when launched with --self-update, this process
+	// is the staging updater. It must NOT start the Wails lifecycle. Instead it
+	// waits for the parent PID to exit, swaps the install tree, relaunches the
+	// new app, and exits.
+	if opts, isSelfUpdate, err := updater.ParseSelfUpdateFlags(os.Args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "c0wrk self-update: %v\n", err)
+		return 2
+	} else if isSelfUpdate {
+		if applyErr := updater.ApplySelfUpdate(opts, slog.Default()); applyErr != nil {
+			fmt.Fprintf(os.Stderr, "c0wrk self-update failed: %v\n", applyErr)
+			return 1
+		}
+		return 0
+	}
+
+	// Normal startup: reap any orphaned updater artifacts left by a previous
+	// update (notably Windows, where a running updater .exe cannot self-delete).
+	updater.CleanupStaleUpdaters(slog.Default())
+
 	// Top-level panic recovery captures any unrecovered panic in the
 	// main goroutine (e.g. a nil dereference in a goroutine without its
 	// own recover). Logs the stack trace to the default logger and the

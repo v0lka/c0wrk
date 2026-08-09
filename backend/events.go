@@ -102,6 +102,30 @@ const EventVectorIndexStatus = "vector_index:status"
 const EventMCPReady = "mcp:ready"
 
 // ---------------------------------------------------------------------------
+// Self-update events (emitted by FrontendAPI updater methods)
+// ---------------------------------------------------------------------------
+
+// EventUpdateAvailable is emitted when CheckForUpdates finds a newer release.
+// The payload is the UpdateInfo DTO.
+const EventUpdateAvailable = "update:available"
+
+// EventUpdateProgress is emitted periodically during DownloadUpdate, carrying
+// the bytes downloaded so far and the total size as an UpdateProgress DTO.
+const EventUpdateProgress = "update:progress"
+
+// EventUpdateDownloaded is emitted when an update archive has been downloaded
+// and integrity-verified, ready to be applied.
+const EventUpdateDownloaded = "update:downloaded"
+
+// EventUpdateError is emitted when any update step fails. The payload is a
+// map[string]string carrying a human-readable "message".
+const EventUpdateError = "update:error"
+
+// EventUpdateNone is emitted when CheckForUpdates finds no newer release (the
+// running version is current or the latest was skipped).
+const EventUpdateNone = "update:none"
+
+// ---------------------------------------------------------------------------
 // Wails event names received FROM the frontend
 // ---------------------------------------------------------------------------
 

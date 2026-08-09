@@ -518,6 +518,29 @@ orchestration:
 #                         # env vars at init time.
 
 # ---------------------------------------------------------------------------
+# Updates — automatic "check for updates"
+# ---------------------------------------------------------------------------
+# Controls the background update check that runs once after the backend is
+# ready. This is the OPERATOR-LEVEL gate (config.yaml); the USER-LEVEL toggle
+# (enabled / auto-check) lives in update-settings.json and is set from the UI.
+# Both must permit a check for the background auto-check to run. A user can
+# always trigger a manual check from the UI regardless of these settings.
+#
+# The check is best-effort and never blocks or breaks startup: network errors
+# are swallowed silently. The timestamp of the last check (and the currently-
+# skipped version) are persisted to ~/.c0wrk/update_state.json, NOT here — this
+# file only configures the cadence and the master switch.
+#
+# updates:
+#   # Master switch for the automatic background check. Default: true. When
+#   # false the app never auto-checks on startup (manual checks still work).
+#   enabled: true
+#   # Minimum time between automatic checks, as a duration string parsed by
+#   # time.ParseDuration (e.g. "6h", "30m", "24h"). Default: "6h". An
+#   # unparseable value falls back to 6h.
+#   check_interval: "6h"
+
+# ---------------------------------------------------------------------------
 # Small-LLM Profile
 # ---------------------------------------------------------------------------
 # Optimizations applied when running on a "small" (low-capacity / cheaper) LLM.

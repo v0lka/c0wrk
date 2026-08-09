@@ -26,6 +26,7 @@ import (
 	"github.com/v0lka/c0wrk/core/terminal"
 	"github.com/v0lka/c0wrk/core/toolmanager"
 	coretools "github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/updater"
 	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/embedding"
@@ -935,4 +936,26 @@ func derefFloat(p *float64) float64 {
 		return 0
 	}
 	return *p
+}
+
+// startUpdateCheckerBackground reaps stale updater artifacts from a prior
+// interrupted self-update, then runs a single best-effort automatic update
+// check in a goroutine. The check itself (operator + user gates, interval,
+// result caching, event emission) lives in FrontendAPI.RunBackgroundUpdateCheck
+// — the sole automatic-check path — so a discovered update is always
+// downloadable. It never blocks or breaks startup; network failures are
+// swallowed inside RunBackgroundUpdateCheck.
+func (a *App) startUpdateCheckerBackground(log *slog.Logger) {
+	// Reap orphaned updater artifacts (e.g. Windows c0wrk-updater-*.exe copies
+	// that cannot self-delete while running). Best-effort, runs unconditionally.
+	updater.CleanupStaleUpdaters(log)
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("automatic update check panicked", "panic", r)
+			}
+		}()
+		a.RunBackgroundUpdateCheck()
+	}()
 }

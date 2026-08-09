@@ -63,12 +63,21 @@ EMBEDDING_TOKENIZER_URL := https://huggingface.co/jinaai/jina-embeddings-v2-smal
 EMBEDDING_MODEL_NAME := jina-v2-small.onnx
 EMBEDDING_TOKENIZER_NAME := jina-v2-small-tokenizer.json
 
+# --- Build-time version metadata -------------------------------------------------
+# Injected into the binary via linker flags (-X). Each variable honours an
+# explicit env/override (e.g. `VERSION=v1.0.0 make build`); otherwise it falls
+# back to a git-derived value, then to a safe default when git is unavailable.
+VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GITCOMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+BUILDDATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+VERSION_LDFLAGS := -X github.com/v0lka/c0wrk/core/version.Version=$(VERSION) -X github.com/v0lka/c0wrk/core/version.GitCommit=$(GITCOMMIT) -X github.com/v0lka/c0wrk/core/version.BuildDate=$(BUILDDATE)
+
 # Install frontend dependencies
 frontend-deps:
 	cd frontend && npm install
 
 build: frontend-deps
-	wails build $(WAILS_TAGS)
+	wails build $(WAILS_TAGS) -ldflags "$(VERSION_LDFLAGS)"
 	$(MAKE) fetch-onnx
 	$(MAKE) fetch-embedding-model
 

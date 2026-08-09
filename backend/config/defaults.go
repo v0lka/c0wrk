@@ -485,4 +485,17 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.SmallLLM.LoopHardening.SameToolRepeatNudgeThreshold == 0 {
 		cfg.SmallLLM.LoopHardening.SameToolRepeatNudgeThreshold = 4
 	}
+
+	// Self-update defaults. Enabled defaults to true (a pointer-bool so an
+	// explicit `enabled: false` in YAML is respected rather than overwritten by
+	// the default). CheckInterval defaults to 6h, a conservative cadence that
+	// avoids hammering the GitHub unauthenticated rate limit while still
+	// surfacing new releases promptly.
+	if cfg.Updates.Enabled == nil {
+		enabled := true
+		cfg.Updates.Enabled = &enabled
+	}
+	if cfg.Updates.CheckInterval == "" {
+		cfg.Updates.CheckInterval = "6h"
+	}
 }

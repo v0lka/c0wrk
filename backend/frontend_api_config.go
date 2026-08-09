@@ -10,6 +10,7 @@ import (
 	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/core/smallllm"
 	"github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/c0wrk/core/version"
 	"github.com/v0lka/sp4rk/llm"
 )
 
@@ -942,4 +943,21 @@ func unionAlwaysPresent(primary, extra []string) []string {
 		}
 	}
 	return out
+}
+
+// AppVersionResponse carries build-time version metadata to the frontend.
+type AppVersionResponse struct {
+	Version   string `json:"version"`
+	GitCommit string `json:"gitCommit"`
+	BuildDate string `json:"buildDate"`
+}
+
+// GetAppVersion returns the application version metadata injected at build
+// time via linker flags (or the compile-time defaults for local builds).
+func (f *FrontendAPI) GetAppVersion() AppVersionResponse {
+	return AppVersionResponse{
+		Version:   version.Version,
+		GitCommit: version.GitCommit,
+		BuildDate: version.BuildDate,
+	}
 }

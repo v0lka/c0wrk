@@ -72,6 +72,7 @@ Entry points where untrusted input or adversarial content reaches the system:
 - **Agent-generated shell / code execution (ASI05)** — `bash_exec` (Unix) / `posh_exec` (Windows) running model-generated commands; agent-authored file edits executed by the user's shell.
 - **External MCP registries (ASI04)** — dynamically integrated stdio/HTTP MCP servers whose tool descriptions, schemas, and permissions may be forged; configured commands executed as child processes.
 - **Downloaded tool binaries (ASI04)** — `rg`, `uv`, `markitdown` fetched from public URLs by the tool-manager.
+- **In-app self-update / auto-update (ASI04)** — the self-update pipeline (`core/updater/`) downloads a release archive from GitHub Releases, SHA256-verifies it against `SHA256SUMS`, and atomically swaps the install tree via a two-process re-exec (`--self-update`). This is a **supply-chain delivery vector**: a compromised release (archive *and* checksum) or a MITM that breaks TLS could replace the running binary the user executes. Integrity is SHA256-only, fail-closed; artifacts are **unsigned** (no app-pinned signature key). See [ADR-023](./specs/decisions/023-auto-update.md) for the full threat model and accepted trade-offs.
 - **Agent memory stores (ASI06)** — SQLite `session_messages`, the `chromem-go` vector index, and persistent blackboard facts.
 - **Inter-agent channels (ASI07)** — the subagent delegation protocol (`delegate`, `execute_plan`) and the shared blackboard.
 - **Human-approval / HITL gates (ASI09)** — `tool_confirm`, `ask_user`, plan/goal review prompts.
@@ -127,6 +128,7 @@ These are inherent architectural trade-offs the design knowingly accepts — not
 | No LLM-based output-content judging for injection detection           | Medium   | Accepted; injection defense is prompt-level spotlighting + tag-escape, judged externally/by firewall.                         |
 | No session-level wall-clock time-box (ASI10)                          | Low      | Accepted trade-off: agent autonomy is bounded by step/loop caps, the 50-turn goal ceiling, and circuit breakers, but there is no hard wall-clock deadline. A long-running session can in principle run indefinitely until those caps hit. |
 | Pre-1.0 breaking-change surface                                       | Low      | Tracked via CHANGELOG semver discipline until 1.0.                                                                            |
+| Self-update ships **unsigned** artifacts verified by SHA256 only (ASI04) | High     | Accepted trade-off (ADR-023): integrity is SHA256-only, fail-closed, with no app-pinned signature key. SHA256 pins the archive to the released bytes but does **not** prove release authorship — a compromised GitHub release (archive *and* matching checksum) would be accepted. Bounded by release-publishing perms + GitHub account security (2FA); mitigated by HTTPS-only/proxy-aware transport, fail-closed verification, `.old` rollback, and `ErrNonStandardLocation` location safety. A signature verifier can be added later via the `Verifier` interface. |
 
 ---
 
@@ -325,7 +327,7 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 
 Any AI coding agent (c0wrk itself, Copilot, Cursor, etc.) working on this repository MUST:
 
-1. **Read and follow this SECURITY.md** before making changes, plus [`specs/architecture/security-model.md`](./specs/architecture/security-model.md) and [`specs/decisions/020-multi-source-agents-md-threat-model.md`](./specs/decisions/020-multi-source-agents-md-threat-model.md).
+1. **Read and follow this SECURITY.md** before making changes, plus [`specs/architecture/security-model.md`](./specs/architecture/security-model.md), [`specs/decisions/020-multi-source-agents-md-threat-model.md`](./specs/decisions/020-multi-source-agents-md-threat-model.md), and (for any self-update work) [`specs/decisions/023-auto-update.md`](./specs/decisions/023-auto-update.md).
 2. **Never weaken the tool-policy pipeline.** Do not change `default_policy` away from `user_confirm`, remove blacklist entries, or bypass symlink/SSRF/path-containment checks.
 3. **Never mark untrusted output as trusted.** External/MCP tool output stays wrapped in `<untrusted-content>`; new external tools stay `Untrusted: true`.
 4. **Never hard-code or log secrets.** Use `${ENV_VAR}`; never write API keys, tokens, or passwords into source, logs, tool results, facts, or messages.
@@ -334,7 +336,8 @@ Any AI coding agent (c0wrk itself, Copilot, Cursor, etc.) working on this reposi
 7. **Never `go install` the ONNX runtime differently** — always via `make fetch-onnx`.
 8. **Never commit** secrets, `.cache/`, `build/bin/`, `config.local.yaml`, coverage outputs, or anything in `.gitignore`.
 9. **Run `make build` → `make lint` → `make test`** before declaring done; all three must be clean.
-10. **Surface contradictions** between instructions and security policy via `ask_user` rather than resolving them silently.
+10. **Never weaken the self-update integrity gate.** The `core/updater/` pipeline is a supply-chain delivery vector (ADR-023): do not make SHA256 verification optional, skip the fail-closed archive removal on mismatch, downgrade HTTPS-only asset/checksum URLs, bypass `ErrNonStandardLocation` validation, or remove the zip-slip/tar-slip traversal guards in extraction.
+11. **Surface contradictions** between instructions and security policy via `ask_user` rather than resolving them silently.
 
 ---
 
@@ -349,6 +352,7 @@ Any AI coding agent (c0wrk itself, Copilot, Cursor, etc.) working on this reposi
 | [.github/workflows/release.yml](./.github/workflows/release.yml) | Release pipeline. |
 | [specs/architecture/security-model.md](./specs/architecture/security-model.md) | Canonical c0wrk security model (tool policies, session roots, injection defense, symlink/bash-blacklist). |
 | [specs/decisions/020-multi-source-agents-md-threat-model.md](./specs/decisions/020-multi-source-agents-md-threat-model.md) | Threat model for multi-source `AGENTS.md` prompt injection. |
+| [specs/decisions/023-auto-update.md](./specs/decisions/023-auto-update.md) | Threat model for the self-update supply-chain delivery vector (single-binary re-exec, SHA256-only, unsigned). |
 
 ---
 
@@ -358,3 +362,4 @@ Any AI coding agent (c0wrk itself, Copilot, Cursor, etc.) working on this reposi
 | ---------- | ------- | ------------------------------------------------------------------------------------------------------ |
 | 2026-08-07 | 1.0     | Initial SECURITY.md: threat model + ASI01–ASI10.                                                       |
 | 2026-08-07 | 1.1     | Security hardening: untrusted-flagging for 5 external-output tools (ASI01/ASI07); stdio MCP env allowlist isolation (ASI04); pipe-to-shell blacklist pattern; `max_redelegationDepth` exposed in config (ASI07); security-event logging at policy denials/blocks (ASI03/ASI09); fail-closed checksum for missing per-platform hashes (ASI04); `store_fact` secret-pattern scanner (ASI06); centralized required-field validation (ASI02); eslint `react/no-danger` (FE-R1); npm audit fix. Rules updated to reflect now-enforced controls; wall-clock time-box documented as accepted trade-off. |
+| 2026-08-09 | 1.2     | Self-update attack surface: documented the in-app auto-update pipeline (`core/updater/`) as an ASI04 supply-chain delivery vector; added the unsigned/SHA256-only trade-off to Known Risks (ADR-023); added rule 10 forbidding weakening the self-update integrity gate (fail-closed SHA256, HTTPS-only, location validation, traversal guards). |

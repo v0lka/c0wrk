@@ -16,6 +16,7 @@ import { SmallLLMSettings } from './SmallLLMSettings'
 import { SearchSettings } from './SearchSettings'
 import { MCPSettings } from './MCPSettings'
 import { SecuritySettings } from './SecuritySettings'
+import { UpdateSettings } from './UpdateSettings'
 import { Settings, Brain, Search, Shield, Info, Server, AlertTriangle, X, Gauge } from 'lucide-react'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { getConfig } from '@/api/config'
@@ -209,6 +210,7 @@ export function SettingsModal() {
                 <p>An AI-powered coding assistant with multi-agent orchestration.</p>
                 <p>Built with warmth, love, and AI.</p>
               </div>
+              <UpdateSettings />
             </div>
           </TabsContent>
         </Tabs>

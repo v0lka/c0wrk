@@ -12,6 +12,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/review"
 	"github.com/v0lka/c0wrk/backend/session"
+	"github.com/v0lka/c0wrk/core/updater"
 	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/c0wrk/core/workspace"
 )
@@ -85,12 +86,22 @@ type FrontendAPI struct {
 	vectorManager   *vectorindex.Manager
 	vectorManagerMu sync.RWMutex
 
+	// Self-update state. updateMu guards lastCheckResult and
+	// downloadedArchivePath, which carry data across the stateful
+	// CheckForUpdates → DownloadUpdate → ApplyUpdate RPC sequence.
+	updateMu              sync.Mutex
+	lastCheckResult       *updater.Result
+	downloadedArchivePath string
+
 	// Terminal
 	terminalManager TerminalManager
 
 	// Injected Wails callbacks (set by desktop during construction).
 	emitEvent func(string, ...any)
 	appCtx    func() context.Context
+	// quitApp triggers a graceful Wails quit (wailsRuntime.Quit). Used by
+	// ApplyUpdate after launching the self-update re-exec. Nil in tests.
+	quitApp func()
 
 	// builderOverride, when non-nil, replaces f.app.Builder() in the builder()
 	// accessor. Used by tests to substitute a fake appBuilder so config/MCP
@@ -126,6 +137,11 @@ type FrontendAPIConfig struct {
 	TerminalManager TerminalManager
 	EmitEvent       func(string, ...any)
 	AppCtx          func() context.Context
+	// QuitApp triggers a graceful application quit (wired to wailsRuntime.Quit
+	// in desktop). Used by ApplyUpdate after launching the self-update re-exec
+	// so the updater process — which waits for the parent PID to die — can
+	// proceed while Wails Shutdown hooks still run. Nil in tests (no-op).
+	QuitApp func()
 }
 
 // NewFrontendAPI creates a new FrontendAPI with the given configuration.
@@ -147,6 +163,7 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 		terminalManager: cfg.TerminalManager,
 		emitEvent:       cfg.EmitEvent,
 		appCtx:          cfg.AppCtx,
+		quitApp:         cfg.QuitApp,
 	}
 
 	// Start watchers for global skill directories (those outside any

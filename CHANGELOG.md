@@ -2,6 +2,15 @@
 
 All notable changes to **c0wrk**. Dates follow the tag date.
 
+## Unreleased
+
+### Added
+- **In-app self-update** — check for newer GitHub releases, download, SHA256-verify, and apply updates without leaving the app. The pipeline (`core/updater/`) uses a two-process re-exec (`--self-update`) so the running binary is never overwritten while executing: a staged updater waits for the parent to exit, atomically swaps the install tree (keeping a `.old` backup for manual rollback), and relaunches. Verification is fail-closed SHA256 against the release `SHA256SUMS`; unsafe install locations (temp/Downloads/read-only) are rejected. See [ADR-023](./specs/decisions/023-auto-update.md).
+- Frontend-facing update API (`CheckForUpdates`/`DownloadUpdate`/`ApplyUpdate`/`SkipVersion`/`GetUpdateSettings`) with typed `update:*` events; proxy-aware, HTTPS-only transport.
+
+### Security
+- Documented auto-update as a supply-chain attack surface in [SECURITY.md](./SECURITY.md) (ASI04): unsigned/SHA256-only trade-off recorded as an accepted risk; added a rule forbidding weakening the self-update integrity gate.
+
 ## v0.5.2 — 2026-08-06
 
 ### Added
