@@ -32,8 +32,48 @@ const onSessionEventMock = vi.fn((sessionId: string, event: string, callback: (.
   return () => { subscriptions.delete(key) }
 })
 
+const reportDroppedEventMock = vi.fn()
+
 vi.mock('@/api/runtime', () => ({
   onSessionEvent: onSessionEventMock,
+  reportDroppedEvent: (...args: unknown[]) => reportDroppedEventMock(...args),
+}))
+
+// --- Mock sound wiring ---
+// The background watcher routes events through the SAME event→sound mapping
+// the active-session hook uses (classifySessionEvent → playSound). We spy on
+// both so a test can assert the wiring independently of the mapping logic
+// (which is unit-tested in useSoundEvents.test.ts).
+
+const playSoundMock = vi.fn()
+vi.mock('@/lib/sound', () => ({
+  playSound: (...args: unknown[]) => playSoundMock(...args),
+}))
+
+const classifySessionEventMock = vi.fn((..._args: unknown[]): string | null => 'attention')
+vi.mock('@/hooks/events/useSoundEvents', () => ({
+  classifySessionEvent: (...args: unknown[]) => classifySessionEventMock(...args),
+}))
+
+// --- Mock HITL / goal handlers (no-ops) ---
+// The watcher delegates pending-action message creation to these; for the
+// sound-wiring tests we only care that the watcher reached the handler, so we
+// stub them and assert on the spied handler mocks below.
+
+const handleToolConfirmEventMock = vi.fn()
+const handleAskUserEventMock = vi.fn()
+const handleStepLimitEventMock = vi.fn()
+const handlePlanReviewEventMock = vi.fn()
+vi.mock('@/hooks/events/hitlHandlers', () => ({
+  handleToolConfirmEvent: (...args: unknown[]) => handleToolConfirmEventMock(...args),
+  handleAskUserEvent: (...args: unknown[]) => handleAskUserEventMock(...args),
+  handleStepLimitEvent: (...args: unknown[]) => handleStepLimitEventMock(...args),
+  handlePlanReviewEvent: (...args: unknown[]) => handlePlanReviewEventMock(...args),
+}))
+
+const handleGoalProposalEventMock = vi.fn()
+vi.mock('@/hooks/events/goalHandlers', () => ({
+  handleGoalProposalEvent: (...args: unknown[]) => handleGoalProposalEventMock(...args),
 }))
 
 // --- Mock chat store ---
@@ -91,6 +131,14 @@ const { useBackgroundSessionWatcher } = await import('@/hooks/useBackgroundSessi
 function resetMockState(): void {
   subscriptions.clear()
   onSessionEventMock.mockClear()
+  reportDroppedEventMock.mockClear()
+  playSoundMock.mockClear()
+  classifySessionEventMock.mockClear()
+  handleToolConfirmEventMock.mockClear()
+  handleAskUserEventMock.mockClear()
+  handleStepLimitEventMock.mockClear()
+  handlePlanReviewEventMock.mockClear()
+  handleGoalProposalEventMock.mockClear()
   effectCleanup = undefined
   lastDeps = undefined
 }
@@ -288,5 +336,60 @@ describe('useBackgroundSessionWatcher', () => {
 
     expect(subscriptions.has('sess-a:task_complete')).toBe(true)
     expect(subscriptions.has('sess-b:task_complete')).toBe(false)
+  })
+
+  // --- Sound parity: a background session gets the same audible cues the
+  // active session would, routed through the shared classifySessionEvent map.
+
+  it('plays the cue when a background task completes (consults classifySessionEvent → playSound)', () => {
+    chatStoreState.setTaskActive('bg-1', true)
+    sessionStoreState.activeSessionId = 'active-1'
+    useRenderWatcher()
+
+    fireSessionEvent('bg-1', 'task_complete', { output: 'done', success: true })
+
+    expect(classifySessionEventMock).toHaveBeenCalledWith('task_complete', { output: 'done', success: true })
+    expect(playSoundMock).toHaveBeenCalledWith('attention')
+  })
+
+  it('plays the cue on task_cancelled and error', () => {
+    chatStoreState.setTaskActive('bg-1', true)
+    sessionStoreState.activeSessionId = 'active-1'
+    useRenderWatcher()
+
+    fireSessionEvent('bg-1', 'task_cancelled')
+    expect(playSoundMock).toHaveBeenCalledTimes(1)
+
+    fireSessionEvent('bg-1', 'error', { error: 'boom' })
+    expect(playSoundMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not play a cue when classifySessionEvent maps the event to silence', () => {
+    chatStoreState.setTaskActive('bg-1', true)
+    sessionStoreState.activeSessionId = 'active-1'
+    classifySessionEventMock.mockReturnValueOnce(null)
+    useRenderWatcher()
+
+    fireSessionEvent('bg-1', 'task_complete', { success: true })
+
+    expect(classifySessionEventMock).toHaveBeenCalled()
+    expect(playSoundMock).not.toHaveBeenCalled()
+  })
+
+  it('plays the cue for a HITL event only when the payload is valid (dropped events stay silent)', () => {
+    chatStoreState.setTaskActive('bg-1', true)
+    sessionStoreState.activeSessionId = 'active-1'
+    useRenderWatcher()
+
+    // Invalid payload → dropped, no handler, NO cue.
+    fireSessionEvent('bg-1', 'tool_confirm', { not: 'valid' })
+    expect(reportDroppedEventMock).toHaveBeenCalledWith('tool_confirm', { not: 'valid' })
+    expect(playSoundMock).not.toHaveBeenCalled()
+    expect(handleToolConfirmEventMock).not.toHaveBeenCalled()
+
+    // Valid payload → handler invoked AND cue played.
+    fireSessionEvent('bg-1', 'tool_confirm', { confirm_id: 'c1', tool: 'bash' })
+    expect(handleToolConfirmEventMock).toHaveBeenCalledWith('bg-1', { confirm_id: 'c1', tool: 'bash' })
+    expect(playSoundMock).toHaveBeenCalledWith('attention')
   })
 })
