@@ -527,12 +527,12 @@ func TestStripMarkdownCodeFence_MultiLine(t *testing.T) {
 	}{
 		{
 			name: "multi-line with body",
-			in: "```\nfeat(database): resolve connection pool exhaustion under load\n\nThe pool size was hardcoded to 10 instead of using the\nconfigured MaxConnections value.\n```",
+			in:   "```\nfeat(database): resolve connection pool exhaustion under load\n\nThe pool size was hardcoded to 10 instead of using the\nconfigured MaxConnections value.\n```",
 			want: "feat(database): resolve connection pool exhaustion under load\n\nThe pool size was hardcoded to 10 instead of using the\nconfigured MaxConnections value.",
 		},
 		{
 			name: "with language tag",
-			in: "```text\nfeat(api): add rate limiting\n```",
+			in:   "```text\nfeat(api): add rate limiting\n```",
 			want: "feat(api): add rate limiting",
 		},
 	}
@@ -576,14 +576,14 @@ func TestGenerateCommitMessage_RetryLoop(t *testing.T) {
 		{
 			name: "invalid then valid on second retry",
 			responses: []*llm.ChatResponse{
-				{Message: llm.Message{Content: "feat: Add New Feature"}}, // uppercase desc
+				{Message: llm.Message{Content: "feat: Add New Feature"}},         // uppercase desc
 				{Message: llm.Message{Content: "fix(auth): Resolve token leak"}}, // uppercase desc
 				{Message: llm.Message{Content: "fix(auth): resolve token leak"}},
 			},
 			wantErr: false,
 		},
 		{
-			name:           "all attempts invalid",
+			name: "all attempts invalid",
 			responses: []*llm.ChatResponse{
 				{Message: llm.Message{Content: "feat: Add New Feature"}},
 				{Message: llm.Message{Content: "feat: Another Uppercase Message"}},

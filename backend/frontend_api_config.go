@@ -334,7 +334,14 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 	}
 
 	f.config.Proxy.Enabled = settings.Enabled
-	if settings.URL != "" {
+	// Preserve the existing URL when the incoming value is the masked form
+	// returned by GetProxySettings (proxy.MaskURL replaces the password with
+	// "***"). The frontend round-trips the displayed (masked) URL verbatim when
+	// only another field (enabled/bypass/cert-dir) is edited, so without this
+	// guard the real password would be silently overwritten with "***" and the
+	// next proxy connection would fail to authenticate. Mirrors the
+	// maskedAPIKey preserve guard used for API keys above.
+	if settings.URL != "" && settings.URL != proxy.MaskURL(f.config.Proxy.URL) {
 		f.config.Proxy.URL = settings.URL
 	}
 	if settings.BypassList != nil {

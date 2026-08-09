@@ -254,8 +254,8 @@ func ApplyDefaults(cfg *Config) {
 				`>\s*/boot/`,
 
 				// --- Misc hardening (mirrors posh registry/scheduled-task tampering) ---
-				`:\(\)\s*\{`,                                           // fork bomb
-				`\bcrontab\s+-r\b`,                                     // wipe crontab
+				`:\(\)\s*\{`,       // fork bomb
+				`\bcrontab\s+-r\b`, // wipe crontab
 				`\b(iptables|ufw|nft)\b[^|]*(-F\b|--flush\b|-X\b|-P\s+\w+)`, // firewall flush
 
 				// --- Privilege escalation & SCM ---
@@ -298,9 +298,9 @@ func ApplyDefaults(cfg *Config) {
 				`(?i)\b(Set-Content|Clear-Content|Out-File|Add-Content)\b[^|]*\b(Windows\\System32|\\Windows\\|\\etc\\|\\boot)`,
 
 				// --- Misc hardening ---
-				`(?i)\bSet-ItemProperty\b[^|]*HKLM`,                    // registry tampering
-				`(?i)\b(Register-ScheduledTask|schtasks\s+/create)\b`,  // scheduled tasks
-				`(?i)Set-ExecutionPolicy`,                              // execution-policy tampering
+				`(?i)\bSet-ItemProperty\b[^|]*HKLM`,                   // registry tampering
+				`(?i)\b(Register-ScheduledTask|schtasks\s+/create)\b`, // scheduled tasks
+				`(?i)Set-ExecutionPolicy`,                             // execution-policy tampering
 
 				// --- SCM ---
 				`\bgit\b`,

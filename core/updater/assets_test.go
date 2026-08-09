@@ -8,11 +8,11 @@ import (
 func TestAssetNameForPlatform(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name       string
-		goos       string
-		goarch     string
-		want       string
-		wantErr    error
+		name    string
+		goos    string
+		goarch  string
+		want    string
+		wantErr error
 	}{
 		{name: "darwin/arm64", goos: "darwin", goarch: "arm64", want: "c0wrk-desktop-macos-arm64.zip"},
 		{name: "linux/amd64", goos: "linux", goarch: "amd64", want: "c0wrk-desktop-linux-amd64.tar.gz"},

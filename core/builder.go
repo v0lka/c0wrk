@@ -43,15 +43,15 @@ import (
 // OrchestratorBuilder lives in core so that all sp4rk imports are confined to
 // the core layer. The backend.Application wraps it without importing sp4rk.
 type OrchestratorBuilder struct {
-	mu               sync.RWMutex
-	registry         *tools.ToolRegistry
-	gateway          *mcp.Gateway
+	mu       sync.RWMutex
+	registry *tools.ToolRegistry
+	gateway  *mcp.Gateway
 	// mcpWorkDir is the default working directory requested for MCP stdio
 	// server processes. It is applied to the gateway by runMCPInit (when the
 	// gateway is first assigned) or by SetMCPWorkDir (when the gateway is
 	// already assigned), using a record-and-apply pattern so SetMCPWorkDir
 	// never blocks on network-bound MCP startup. Guarded by b.mu.
-	mcpWorkDir string
+	mcpWorkDir       string
 	llmRouter        *llm.Router
 	modelRegistry    *llm.ModelRegistry
 	logger           *slog.Logger
@@ -889,9 +889,9 @@ func stripMarkdownCodeFence(s string) string {
 // extractCommitMessage extracts the best available commit message text from an
 // LLM response. It tries fields in order of preference:
 //
-//	1. resp.Message.Content (after stripping markdown fences and reasoning prefixes)
-//	2. resp.Message.ReasoningContent (for DeepSeek-style providers)
-//	3. resp.Reasoning (for OpenAI Responses API)
+//  1. resp.Message.Content (after stripping markdown fences and reasoning prefixes)
+//  2. resp.Message.ReasoningContent (for DeepSeek-style providers)
+//  3. resp.Reasoning (for OpenAI Responses API)
 //
 // This handles the failure mode where small models (especially Qwen) put the
 // actual commit message into a reasoning field instead of Content.

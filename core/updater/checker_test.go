@@ -374,9 +374,9 @@ func TestCheck_RespectsContextCancellation(t *testing.T) {
 func TestIsUpdateAvailable(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name           string
+		name            string
 		current, latest string
-		want           bool
+		want            bool
 	}{
 		{"patch newer", "v1.2.3", "v1.2.4", true},
 		{"minor newer", "v1.2.3", "v1.3.0", true},

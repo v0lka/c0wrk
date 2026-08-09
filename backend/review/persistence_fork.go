@@ -93,12 +93,21 @@ func (s *SQLiteReviewStore) CloneReviewTx(ctx context.Context, tx *sql.Tx, srcSe
 		if err := rows.Scan(&kind, &filePath, &hunkID, &body, &createdAt); err != nil {
 			return fmt.Errorf("failed to scan source review comment: %w", err)
 		}
-		// General comments use the deterministic id so a later upsert updates in
-		// place; hunk comments get a fresh random UUID.
+		// Deterministic ids let a later upsert update the cloned row in place.
+		// General and file comments both have stable ids (mirroring
+		// UpsertGeneralComment / UpsertFileComment); only hunk comments (whose
+		// upsert keys on the (session_id, file_path, hunk_id) index, not the
+		// row id) get a fresh random UUID. Using a random id for file comments
+		// would break in-place updates: a subsequent UpsertFileComment on the
+		// fork would not conflict on the deterministic id and would insert a
+		// duplicate row.
 		var id string
-		if CommentKind(kind) == KindGeneral {
+		switch CommentKind(kind) {
+		case KindGeneral:
 			id = generalCommentID(dstSessionID)
-		} else {
+		case KindFile:
+			id = fileCommentID(dstSessionID, filePath.String)
+		default: // KindHunk
 			id = uuid.NewString()
 		}
 		if _, err := tx.ExecContext(ctx, `

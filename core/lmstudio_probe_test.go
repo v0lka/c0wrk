@@ -244,10 +244,10 @@ func TestProbeLMStudioModels_NilHTTPClientDefaults(t *testing.T) {
 // ecosystem field spellings (max_model_len / max_context_length /
 // context_length).
 type openAIModelEntry struct {
-	ID              string `json:"id"`
-	MaxModelLen     int    `json:"max_model_len"`
-	MaxContextLen   int    `json:"max_context_length"`
-	ContextLen      int    `json:"context_length"`
+	ID            string `json:"id"`
+	MaxModelLen   int    `json:"max_model_len"`
+	MaxContextLen int    `json:"max_context_length"`
+	ContextLen    int    `json:"context_length"`
 }
 
 func TestProbeOpenAIModels_MaxModelLen(t *testing.T) {

@@ -58,6 +58,18 @@ var shutdownTimeout = 60 * time.Second
 // pollInterval is how often the PID-death waiter re-checks the parent.
 var pollInterval = 500 * time.Millisecond
 
+// maxDownloadBytes caps the size of a downloaded update archive or checksum
+// file as defense-in-depth against disk exhaustion if a TLS path (e.g. an
+// opted-in corporate proxy) is compromised. Downloads are SHA256-verified
+// after the copy, so this cap only bounds the bytes written to disk before
+// verification rejects a substituted-but-unforged response. Generous enough to
+// accept the largest legitimate release asset.
+const maxDownloadBytes int64 = 1 << 30 // 1 GiB
+
+// maxExtractEntryBytes caps the decompressed size of a single archive entry as
+// defense-in-depth against zip/tar bombs, mirroring core/toolmanager.
+const maxExtractEntryBytes int64 = 512 << 20 // 512 MiB
+
 // relaunchFn launches the freshly installed app. It is a package-level
 // indirection so tests can substitute a no-op recorder instead of actually
 // starting a GUI process.
@@ -113,8 +125,13 @@ func validateStandardLocation(root string) error {
 }
 
 // hasDownloadsComponent reports whether any path element equals "downloads".
+// It accepts both '/' and '\' as path separators so the check is portable
+// across platforms and robust to paths that have not been normalized to the
+// OS-native separator (e.g. forward-slash paths on Windows).
 func hasDownloadsComponent(lowerPath string) bool {
-	for _, part := range strings.Split(lowerPath, string(filepath.Separator)) {
+	for _, part := range strings.FieldsFunc(lowerPath, func(r rune) bool {
+		return r == '/' || r == '\\'
+	}) {
 		if part == "downloads" {
 			return true
 		}
@@ -470,8 +487,14 @@ func copyZipFile(target string, f *zip.File) error {
 		return err
 	}
 	defer func() { _ = rc.Close() }()
-	_, err = io.Copy(out, rc)
-	return err
+	n, err := io.Copy(out, io.LimitReader(rc, maxExtractEntryBytes+1))
+	if err != nil {
+		return err
+	}
+	if n > maxExtractEntryBytes {
+		return fmt.Errorf("zip entry %q exceeds max size %d bytes (possible zip bomb)", f.Name, maxExtractEntryBytes)
+	}
+	return nil
 }
 
 // extractTarGz extracts a gzip-compressed tar archive, defending against
@@ -513,9 +536,14 @@ func extractTarGz(src, dest string) error {
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(out, tr); err != nil {
+			n, err := io.Copy(out, io.LimitReader(tr, maxExtractEntryBytes+1))
+			if err != nil {
 				_ = out.Close()
 				return err
+			}
+			if n > maxExtractEntryBytes {
+				_ = out.Close()
+				return fmt.Errorf("archive entry %q exceeds max size %d bytes (possible zip bomb)", hdr.Name, maxExtractEntryBytes)
 			}
 			_ = out.Close()
 		case tar.TypeSymlink:

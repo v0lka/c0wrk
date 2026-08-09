@@ -124,7 +124,7 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 		writer = pw
 		progress(0, resp.ContentLength)
 	}
-	n, err := io.Copy(writer, resp.Body)
+	n, err := io.Copy(writer, io.LimitReader(resp.Body, maxDownloadBytes+1))
 	// Final progress callback to guarantee 100% is reported.
 	if resp.ContentLength > 0 && progress != nil {
 		progress(n, resp.ContentLength)
@@ -132,6 +132,10 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 	if err != nil {
 		_ = os.Remove(archivePath)
 		return nil, fmt.Errorf("tool %q: writing archive: %w", tool.Name, err)
+	}
+	if n > maxDownloadBytes {
+		_ = os.Remove(archivePath)
+		return nil, fmt.Errorf("tool %q: download exceeds max size %d bytes", tool.Name, maxDownloadBytes)
 	}
 
 	// Verify checksum after download.

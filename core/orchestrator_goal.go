@@ -324,7 +324,10 @@ func (o *Orchestrator) runGoalLoop(
 			return nil, derr
 		}
 		// A user cancel of the proposal is a clean exit, not an error to bubble.
-		return o.goalLoopResult(conductorMessage, bb, nil, goal.StatusActive, ""), nil
+		// Pass the computed routing (not nil) so finalizeResult does not clobber
+		// the routing decision persisted above — the other two goalLoopResult
+		// call sites (end of runGoalLoop / resumeGoalLoop) pass the real value.
+		return o.goalLoopResult(conductorMessage, bb, routing, goal.StatusActive, ""), nil
 	}
 
 	// Resolve the budget: the per-message override sets MaxTurns when present;

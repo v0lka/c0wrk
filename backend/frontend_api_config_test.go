@@ -11,6 +11,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/core/smallllm"
 	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
@@ -864,6 +865,42 @@ func TestUpdateProxySettings_NilConfig(t *testing.T) {
 	err := f.UpdateProxySettings(ProxySettingsRequest{Enabled: true})
 	if err == nil {
 		t.Fatal("expected error when config is nil")
+	}
+}
+
+// TestUpdateProxySettings_MaskedURLPreserved verifies that round-tripping the
+// masked proxy URL (proxy.MaskURL replaces the password with "***") does NOT
+// overwrite the real, password-bearing URL. The frontend stores the displayed
+// (masked) URL and sends it back when only another field is edited; without
+// the preserve guard the real password would be silently replaced with "***".
+func TestUpdateProxySettings_MaskedURLPreserved(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	const realURL = "http://user:secret@proxy.example.com:8080"
+	f.config.Proxy.URL = realURL
+
+	if err := f.UpdateProxySettings(ProxySettingsRequest{
+		Enabled: true,
+		URL:     proxy.MaskURL(realURL),
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.config.Proxy.URL != realURL {
+		t.Errorf("proxy URL overwritten with masked value: got %q want %q", f.config.Proxy.URL, realURL)
+	}
+}
+
+// TestUpdateProxySettings_NewURLApplied verifies a genuinely different URL is
+// still applied (the preserve guard only skips the masked form).
+func TestUpdateProxySettings_NewURLApplied(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	f.config.Proxy.URL = "http://user:secret@old.example.com:8080"
+	const newURL = "http://user:newpass@proxy.example.com:3128"
+
+	if err := f.UpdateProxySettings(ProxySettingsRequest{Enabled: true, URL: newURL}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.config.Proxy.URL != newURL {
+		t.Errorf("proxy URL not updated: got %q want %q", f.config.Proxy.URL, newURL)
 	}
 }
 

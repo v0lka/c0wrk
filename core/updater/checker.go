@@ -18,11 +18,11 @@ import (
 // GitHub API endpoints are HTTPS-only; the scheme is hard-coded so a
 // misconfigured proxy can never downgrade the update check to plain HTTP.
 const (
-	defaultOwner      = "v0lka"
-	defaultRepo       = "c0wrk"
+	defaultOwner       = "v0lka"
+	defaultRepo        = "c0wrk"
 	defaultHTTPTimeout = 15 * time.Second
-	githubAccept      = "application/vnd.github+json"
-	userAgent         = "c0wrk-desktop-updater"
+	githubAccept       = "application/vnd.github+json"
+	userAgent          = "c0wrk-desktop-updater"
 )
 
 // Sentinel errors for well-known check outcomes.
@@ -73,18 +73,18 @@ type Result struct {
 // Config parameterises a Checker. All fields have sensible defaults applied
 // by NewChecker / NewCheckerWithProxy.
 type Config struct {
-	Owner     string // GitHub repo owner, defaults to "v0lka"
-	Repo      string // GitHub repo name, defaults to "c0wrk"
-	CurrentVersion string // version of the running binary (e.g. "v1.2.3" or "dev")
-	SkippedVersion string // tag the user dismissed; suppresses that exact release
-	HTTPTimeout time.Duration // per-request timeout; defaults to 15s
+	Owner          string        // GitHub repo owner, defaults to "v0lka"
+	Repo           string        // GitHub repo name, defaults to "c0wrk"
+	CurrentVersion string        // version of the running binary (e.g. "v1.2.3" or "dev")
+	SkippedVersion string        // tag the user dismissed; suppresses that exact release
+	HTTPTimeout    time.Duration // per-request timeout; defaults to 15s
 }
 
 // Checker queries GitHub for the latest release and decides whether an update
 // is available for a given platform. It is safe for concurrent use after
 // construction.
 type Checker struct {
-	cfg    Config
+	cfg     Config
 	client  *http.Client
 	logger  *slog.Logger
 	goos    string
@@ -233,12 +233,12 @@ func (c *Checker) evaluate(rel githubRelease) (Result, error) {
 
 // githubRelease is the subset of the GitHub releases/latest payload we use.
 type githubRelease struct {
-	TagName     string          `json:"tag_name"`
-	Name        string          `json:"name"`
-	Body        string          `json:"body"`
-	HTMLURL     string          `json:"html_url"`
-	PublishedAt string          `json:"published_at"`
-	Assets      []ReleaseAsset  `json:"assets"`
+	TagName     string         `json:"tag_name"`
+	Name        string         `json:"name"`
+	Body        string         `json:"body"`
+	HTMLURL     string         `json:"html_url"`
+	PublishedAt string         `json:"published_at"`
+	Assets      []ReleaseAsset `json:"assets"`
 }
 
 // isUpdateAvailable reports whether latest is strictly newer than current.

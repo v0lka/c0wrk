@@ -83,6 +83,9 @@ func seedSessionForFork(t *testing.T, store *SQLiteSessionStore, name string) (s
 	if err := store.SaveTrajectory(ctx, taskID, json.RawMessage(`[{"action":"run"}]`)); err != nil {
 		t.Fatalf("SaveTrajectory: %v", err)
 	}
+	if err := store.SaveGoalState(ctx, taskID, json.RawMessage(`{"condition":"make tests green"}`)); err != nil {
+		t.Fatalf("SaveGoalState: %v", err)
+	}
 
 	return sessionID, taskID
 }
@@ -224,6 +227,11 @@ func TestForkSession_FullCopyAndRemapping(t *testing.T) {
 	traj, err := store.LoadTrajectory(ctx, newTaskID)
 	if err != nil || traj == nil || string(traj) != `[{"action":"run"}]` {
 		t.Errorf("forked trajectory not remapped: %s (err %v)", string(traj), err)
+	}
+	// Goal state remapped onto the new task id.
+	goal, err := store.LoadGoalState(ctx, newTaskID)
+	if err != nil || goal == nil || string(goal) != `{"condition":"make tests green"}` {
+		t.Errorf("forked goal state not remapped: %s (err %v)", string(goal), err)
 	}
 }
 

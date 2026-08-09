@@ -166,8 +166,8 @@ func (s *SQLiteSessionStore) forkSessionWorkDirs(ctx context.Context, tx *sql.Tx
 
 // forkTasks copies every task of the source session into the fork, generating a
 // fresh task id for each and remapping the dependent rows (steps, facts,
-// attachments, trajectory) onto it. completed_at NULL is preserved naturally
-// via INSERT ... SELECT.
+// attachments, trajectory, goal state) onto it. completed_at NULL is preserved
+// naturally via INSERT ... SELECT.
 func (s *SQLiteSessionStore) forkTasks(ctx context.Context, tx *sql.Tx, srcID, newSessionID string) error {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id FROM tasks WHERE session_id = ? ORDER BY created_at`,
@@ -234,6 +234,17 @@ func (s *SQLiteSessionStore) forkTasks(ctx context.Context, tx *sql.Tx, srcID, n
 			newTaskID, oldTaskID,
 		); err != nil {
 			return fmt.Errorf("failed to copy task trajectory for %q: %w", oldTaskID, err)
+		}
+
+		// task_goal_state — goal-loop state (PK = task_id). Preserved so the
+		// fork keeps the goal history/context of its task, matching the
+		// "deep, independent copy" contract.
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO task_goal_state (task_id, goal_state, updated_at)
+			SELECT ?, goal_state, updated_at FROM task_goal_state WHERE task_id = ?`,
+			newTaskID, oldTaskID,
+		); err != nil {
+			return fmt.Errorf("failed to copy task goal state for %q: %w", oldTaskID, err)
 		}
 	}
 	if err := rows.Err(); err != nil {

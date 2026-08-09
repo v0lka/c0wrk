@@ -101,7 +101,7 @@ func NewDelegateTool() *DelegateTool {
 	},
 	"required": ["tasks"]
 }`),
-			Policy:    sdktools.PolicyAlwaysAllow,
+			Policy: sdktools.PolicyAlwaysAllow,
 			// ASI07: subagent output may carry content a subagent read from
 			// external sources (indirect-injection vector). Treat as untrusted.
 			Untrusted: true,

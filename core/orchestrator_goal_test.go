@@ -1541,6 +1541,94 @@ func TestRunGoalLoop_RoutingBeforeDerivation(t *testing.T) {
 	})
 }
 
+// TestRunGoalLoop_DerivationFailurePreservesRouting is the regression for the
+// nil-routing-clobber bug: when derivation fails (the agent finishes without
+// calling propose_goal), the derivation-failure path of runGoalLoop must pass
+// the REAL routing decision to goalLoopResult so finalizeResult does not
+// overwrite the routing persisted at the top of runGoalLoop with nil. On the
+// buggy code HandleResult.RoutingDecision was nil (clobbering the persisted
+// routing and forcing a full re-route on continuation); on the fixed code it
+// carries the router's real decision (domain=code, complexity=4).
+func TestRunGoalLoop_DerivationFailurePreservesRouting(t *testing.T) {
+	wsDir := t.TempDir()
+
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			switch callIdx {
+			case 1: // router classification → real routing (code/4)
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "code", "complexity": 4, "needs_clarification": false}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			default: // derivation conductor → finish WITHOUT propose_goal
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role: "assistant",
+						ToolCalls: []llm.ToolCall{{
+							ID:    "fn1",
+							Name:  "finish",
+							Input: json.RawMessage(`{"answer":"done without proposing a goal"}`),
+						}},
+					},
+					StopReason: "tool_use",
+				}, nil
+			}
+		},
+	}
+
+	registry := createTestRegistry()
+	registry.Register(tools.NewProposeGoalTool())
+
+	emitter := &spyEmitter{}
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
+		Router:         newCoreRouter(mockLLM, 5),
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   llm.NewSimpleTokenCounter(),
+		ContextFactory: testContextFactory,
+		Emitter:        emitter,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+	// Proposer must be non-nil so deriveGoal starts; it is never consulted
+	// because the agent finishes without proposing.
+	orchestrator.SetGoalProposer(&mockProposer{})
+
+	ctx := sdktools.WithWorkspacePath(context.Background(), wsDir)
+	result, err := orchestrator.HandleMessage(ctx, "achieve something", "session-derive-fail", HandleOptions{Goal: true})
+	if err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	// Routing ran before derivation (proves routeOrContinue executed).
+	if _, domain, complexity, ok := routingCall(emitter); !ok {
+		t.Fatal("no Routing event emitted — routing did not run before the failed derivation")
+	} else if domain != "code" || complexity != "4" {
+		t.Errorf("routing = %s/%s, want code/4", domain, complexity)
+	}
+
+	// Headline regression: the derivation-failure path must preserve the real
+	// routing decision, not clobber it with nil.
+	if result == nil {
+		t.Fatal("HandleMessage returned nil result")
+	}
+	if result.RoutingDecision == nil {
+		t.Fatal("RoutingDecision is nil — the derivation-failure path clobbered the persisted routing (regression)")
+	}
+	if result.RoutingDecision.Domain != "code" {
+		t.Errorf("RoutingDecision.Domain = %q, want code", result.RoutingDecision.Domain)
+	}
+	if result.RoutingDecision.Complexity != 4 {
+		t.Errorf("RoutingDecision.Complexity = %d, want 4", result.RoutingDecision.Complexity)
+	}
+}
+
 // ----------------------------------------------------------------------------
 // runGoalLoop continuation regression (step_5): goal mode activates on a
 // CONTINUATION (Goal=true + TaskID != "") and the restored blackboard (with

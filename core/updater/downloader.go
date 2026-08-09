@@ -62,10 +62,10 @@ const progressInterval = 100 * time.Millisecond
 
 // DownloadResult reports the outcome of a staged download.
 type DownloadResult struct {
-	AssetName  string // name of the downloaded asset (basename of assetURL)
+	AssetName   string // name of the downloaded asset (basename of assetURL)
 	ArchivePath string // absolute path to the verified archive in staging
-	SumsPath   string // absolute path to the SHA256SUMS file in staging
-	Bytes      int64  // size of the downloaded archive in bytes
+	SumsPath    string // absolute path to the SHA256SUMS file in staging
+	Bytes       int64  // size of the downloaded archive in bytes
 }
 
 // Downloader fetches a release asset and its SHA256SUMS file into a staging
@@ -185,7 +185,7 @@ func (d *Downloader) fetchFile(ctx context.Context, rawURL, destPath string, pro
 		progress(0, resp.ContentLength)
 	}
 
-	n, copyErr := io.Copy(writer, resp.Body)
+	n, copyErr := io.Copy(writer, io.LimitReader(resp.Body, maxDownloadBytes+1))
 	if closeErr := f.Close(); closeErr != nil {
 		_ = os.Remove(tmpPath)
 		return 0, fmt.Errorf("closing tmp file %q: %w", tmpPath, closeErr)
@@ -193,6 +193,10 @@ func (d *Downloader) fetchFile(ctx context.Context, rawURL, destPath string, pro
 	if copyErr != nil {
 		_ = os.Remove(tmpPath)
 		return 0, fmt.Errorf("writing %s: %w", rawURL, copyErr)
+	}
+	if n > maxDownloadBytes {
+		_ = os.Remove(tmpPath)
+		return 0, fmt.Errorf("downloading %s: exceeds max size %d bytes", rawURL, maxDownloadBytes)
 	}
 	if resp.ContentLength > 0 && progress != nil {
 		progress(n, resp.ContentLength)

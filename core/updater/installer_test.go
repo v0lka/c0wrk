@@ -126,6 +126,9 @@ func TestValidateStandardLocation_ReadOnlyRejected(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses permission checks; cannot test read-only rejection")
 	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows ignores the read-only attribute on directories, so os.Chmod cannot make a dir non-writable")
+	}
 	dir := newNonTempDir(t)
 	// Remove owner write bit so the writability probe fails.
 	if err := os.Chmod(dir, 0o500); err != nil {
@@ -149,6 +152,9 @@ func TestValidateStandardLocation_ReadOnlyParentRejected(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses permission checks; cannot test read-only rejection")
 	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows ignores the read-only attribute on directories, so os.Chmod cannot make a dir non-writable")
+	}
 	base := newNonTempDir(t)
 	install := filepath.Join(base, "app")
 	if err := os.MkdirAll(install, 0o755); err != nil {
@@ -171,12 +177,12 @@ func TestValidateStandardLocation_ReadOnlyParentRejected(t *testing.T) {
 
 func TestHasDownloadsComponent(t *testing.T) {
 	cases := map[string]bool{
-		"/home/user/downloads":          true,
-		"/home/user/Downloads/app":      true,
-		"/Applications/c0wrk.app":       false,
-		"/opt/c0wrk":                    false,
-		"/Users/x/Library/downloads/x":  true,
-		"/usr/local/bin":                false,
+		"/home/user/downloads":         true,
+		"/home/user/Downloads/app":     true,
+		"/Applications/c0wrk.app":      false,
+		"/opt/c0wrk":                   false,
+		"/Users/x/Library/downloads/x": true,
+		"/usr/local/bin":               false,
 	}
 	for path, want := range cases {
 		if got := hasDownloadsComponent(strings.ToLower(path)); got != want {
@@ -343,9 +349,9 @@ func TestExtractZip(t *testing.T) {
 	dest := t.TempDir()
 	archive := filepath.Join(t.TempDir(), "test.zip")
 	makeZip(t, archive, map[string]string{
-		"a.txt":              "alpha",
-		"sub/b.txt":          "beta",
-		"sub/":               "",
+		"a.txt":     "alpha",
+		"sub/b.txt": "beta",
+		"sub/":      "",
 	})
 	if err := extractArchive(archive, dest); err != nil {
 		t.Fatalf("extract: %v", err)
@@ -378,9 +384,9 @@ func TestExtractTarGz(t *testing.T) {
 	dest := t.TempDir()
 	archive := filepath.Join(t.TempDir(), "test.tar.gz")
 	makeTarGz(t, archive, map[string]string{
-		"x.txt": "xyz",
+		"x.txt":   "xyz",
 		"d/y.txt": "yy",
-		"d/":    "",
+		"d/":      "",
 	})
 	if err := extractArchive(archive, dest); err != nil {
 		t.Fatalf("extract: %v", err)
@@ -494,10 +500,10 @@ func buildPlatformArchive(t *testing.T, archivePath string) string {
 	case "darwin":
 		// macOS: archive a top-level .app bundle containing a marker.
 		makeZip(t, archivePath, map[string]string{
-			"TestApp.app/Contents/Info.plist": "plist",
-			"TestApp.app/Contents/MacOS/":     "",
+			"TestApp.app/Contents/Info.plist":    "plist",
+			"TestApp.app/Contents/MacOS/":        "",
 			"TestApp.app/Contents/MacOS/TestApp": "binary",
-			"TestApp.app/marker.txt":          "installed-via-swap",
+			"TestApp.app/marker.txt":             "installed-via-swap",
 		})
 		return "marker.txt"
 	default:

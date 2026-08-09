@@ -266,6 +266,13 @@ func resolveBinaryInTree(tmpDir, binPathInArchive, binName, goos string) (string
 // checksum-valid-but-malicious archive could still exhaust disk on extraction.
 const maxExtractEntryBytes = 512 << 20 // 512 MiB
 
+// maxDownloadBytes caps the size of a downloaded tool archive as
+// defense-in-depth against disk exhaustion if a TLS path (e.g. an opted-in
+// corporate proxy) is compromised. The archive is SHA256-verified after the
+// copy, so this cap only bounds the bytes written before verification rejects
+// a substituted-but-unforged response.
+const maxDownloadBytes int64 = 1 << 30 // 1 GiB
+
 // pathExists reports whether a file exists at path (file or otherwise).
 func pathExists(path string) bool {
 	_, err := os.Stat(path)

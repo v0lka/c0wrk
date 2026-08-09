@@ -96,6 +96,51 @@ func TestCloneReview_GeneralIdDeterministic(t *testing.T) {
 	}
 }
 
+// TestCloneReview_FileIdDeterministic verifies that cloned file comments keep
+// the deterministic id, so a subsequent UpsertFileComment on the fork updates
+// the row in place instead of inserting a duplicate (the row id must match
+// fileCommentID(dstSessionID, filePath)).
+func TestCloneReview_FileIdDeterministic(t *testing.T) {
+	store, db, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	insertSession(t, db, "src")
+	insertSession(t, db, "dst")
+
+	if _, err := store.UpsertFileComment(ctx, "src", "main.go", "original"); err != nil {
+		t.Fatalf("UpsertFileComment src: %v", err)
+	}
+	if err := store.CloneReview(ctx, "src", "dst"); err != nil {
+		t.Fatalf("CloneReview: %v", err)
+	}
+
+	// After clone, upserting the same file comment on the fork must update in
+	// place, not create a duplicate row.
+	if _, err := store.UpsertFileComment(ctx, "dst", "main.go", "edited"); err != nil {
+		t.Fatalf("UpsertFileComment dst: %v", err)
+	}
+	got, err := store.GetReview(ctx, "dst")
+	if err != nil {
+		t.Fatalf("GetReview dst: %v", err)
+	}
+	if len(got.FileComments) != 1 || got.FileComments[0].Body != "edited" {
+		t.Errorf("file comments=%+v want exactly one with body %q", got.FileComments, "edited")
+	}
+
+	// Exactly one file row for dst/main.go.
+	var count int
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM review_comments WHERE session_id = ? AND kind = 'file' AND file_path = ?`,
+		"dst", "main.go",
+	).Scan(&count); err != nil {
+		t.Fatalf("count file: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 file comment row, got %d (duplicate created)", count)
+	}
+}
+
 func TestCloneReview_NoSourceData_NoOp(t *testing.T) {
 	store, db, cleanup := setupTestStore(t)
 	defer cleanup()
