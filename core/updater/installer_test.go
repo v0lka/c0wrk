@@ -29,8 +29,60 @@ func writeMarker(t *testing.T, dir, name, content string) {
 	}
 }
 
+// newNonTempDir creates a fresh directory that is deliberately OUTSIDE the OS
+// temporary directory and outside any Downloads folder, so it can exercise the
+// non-temp / non-Downloads branches of validateStandardLocation.
+//
+// This matters on Linux, where t.TempDir() lives under /tmp and is (correctly)
+// rejected by the validator before the writability probe runs, which would mask
+// the behavior these tests intend to assert. On macOS the temp-rejection is
+// incidentally inert (the resolved /private/var temp root never matches the
+// non-resolved candidate path), so using a non-temp base makes the tests
+// behave identically on every platform.
+//
+// The directory is registered for automatic cleanup.
+func newNonTempDir(t *testing.T) string {
+	t.Helper()
+	tempRoot, terr := normalizedTempRoot()
+	if terr != nil {
+		tempRoot = os.TempDir()
+	}
+	// Candidate base directories that are normally outside the OS temp tree and
+	// writable in both dev and CI.
+	var bases []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		bases = append(bases, home)
+	}
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		bases = append(bases, wd)
+	}
+	for _, base := range bases {
+		dir, err := os.MkdirTemp(base, "c0wrk-val-*")
+		if err != nil {
+			continue
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		// Guard: confirm the created dir genuinely escapes the temp/Downloads
+		// trees using the same checks validateStandardLocation applies, so a
+		// hostile environment skips rather than produces a false failure.
+		abs, aerr := filepath.Abs(dir)
+		if aerr != nil {
+			abs = dir
+		}
+		if resolved, rerr := filepath.EvalSymlinks(abs); rerr == nil {
+			abs = resolved
+		}
+		if pathContains(abs, tempRoot) || hasDownloadsComponent(strings.ToLower(abs)) {
+			t.Skipf("test dir %s falls inside the temp/Downloads tree; cannot exercise non-temp branch", abs)
+		}
+		return dir
+	}
+	t.Skip("no writable directory outside the temp/Downloads tree is available")
+	return ""
+}
+
 func TestValidateStandardLocation_OK(t *testing.T) {
-	dir := t.TempDir()
+	dir := newNonTempDir(t)
 	if err := validateStandardLocation(dir); err != nil {
 		t.Fatalf("expected no error for writable dir, got: %v", err)
 	}
@@ -56,7 +108,7 @@ func TestValidateStandardLocation_TempDirRejected(t *testing.T) {
 }
 
 func TestValidateStandardLocation_DownloadsRejected(t *testing.T) {
-	base := t.TempDir()
+	base := newNonTempDir(t)
 	dir := filepath.Join(base, "Downloads", "app")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -74,7 +126,7 @@ func TestValidateStandardLocation_ReadOnlyRejected(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses permission checks; cannot test read-only rejection")
 	}
-	dir := t.TempDir()
+	dir := newNonTempDir(t)
 	// Remove owner write bit so the writability probe fails.
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatalf("chmod: %v", err)
@@ -97,7 +149,7 @@ func TestValidateStandardLocation_ReadOnlyParentRejected(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses permission checks; cannot test read-only rejection")
 	}
-	base := t.TempDir()
+	base := newNonTempDir(t)
 	install := filepath.Join(base, "app")
 	if err := os.MkdirAll(install, 0o755); err != nil {
 		t.Fatalf("mkdir install: %v", err)

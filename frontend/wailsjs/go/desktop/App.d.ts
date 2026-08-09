@@ -213,6 +213,8 @@ export function ResumeGoal(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function ResumeTask(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function RunBackgroundUpdateCheck():Promise<void>;
+
 export function SaveProjectSwitchState(arg1:backend.ProjectUIStateRequest):Promise<void>;
 
 export function SaveProjectUIState(arg1:backend.ProjectUIStateRequest):Promise<void>;

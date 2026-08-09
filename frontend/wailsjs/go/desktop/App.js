@@ -410,6 +410,10 @@ export function ResumeTask(arg1, arg2, arg3) {
   return window['go']['desktop']['App']['ResumeTask'](arg1, arg2, arg3);
 }
 
+export function RunBackgroundUpdateCheck() {
+  return window['go']['desktop']['App']['RunBackgroundUpdateCheck']();
+}
+
 export function SaveProjectSwitchState(arg1) {
   return window['go']['desktop']['App']['SaveProjectSwitchState'](arg1);
 }

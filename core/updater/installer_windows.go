@@ -3,6 +3,7 @@
 package updater
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -46,7 +47,7 @@ func relaunchApp(targetDir string, log *slog.Logger) error {
 	// DETACHED_PROCESS (0x00000008): the child has no console and is not tied
 	// to this process, so it keeps running after the updater exits.
 	const detachedProcess = 0x00000008
-	cmd := exec.Command(exePath)
+	cmd := exec.CommandContext(context.Background(), exePath)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -126,36 +127,9 @@ func processAlive(pid int) bool {
 // %TEMP%. Because a running Windows updater .exe cannot self-delete, this runs
 // at the *next* normal startup to reap orphans from prior updates.
 func cleanupStaleUpdatersPlatform(log *slog.Logger) {
-	tempDir := os.TempDir()
-	entries, err := os.ReadDir(tempDir)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		name := e.Name()
-		// Match stale temp updaters and old staging/extract dirs.
-		if !staleUpdaterName(name) {
-			continue
-		}
-		full := filepath.Join(tempDir, name)
-		if err := os.RemoveAll(full); err != nil {
-			log.Debug("could not remove stale updater artifact (best-effort)", "path", full, "error", err)
-		} else {
-			log.Debug("removed stale updater artifact", "path", full)
-		}
-	}
-}
-
-// staleUpdaterName reports whether a temp-dir entry name looks like a leftover
-// c0wrk updater artifact.
-func staleUpdaterName(name string) bool {
-	switch {
-	case name == "c0wrk-updater.exe":
-		return true
-	case len(name) > len("c0wrk-update-") && name[:len("c0wrk-update-")] == "c0wrk-update-":
-		return true
-	case len(name) > len("c0wrk-updater-") && name[:len("c0wrk-updater-")] == "c0wrk-updater-":
-		return true
-	}
-	return false
+	cleanupTempGlobs(log,
+		"c0wrk-updater.exe", // staging updater copy that cannot self-delete on Windows
+		"c0wrk-update-*",    // staging dirs
+		"c0wrk-updater-*",   // leftover updater-related dirs
+	)
 }
