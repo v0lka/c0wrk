@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -170,6 +171,13 @@ func TestSaveState_FileMode(t *testing.T) {
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat: %v", err)
+	}
+	// Windows has no Unix permission bits — files always report 0666 regardless
+	// of the mode requested at creation. The 0600 restriction is enforced by
+	// ACL inheritance on Windows, not POSIX bits, so only verify them on
+	// Unix-like systems.
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix permission bits; file mode is always reported as 0666")
 	}
 	// Compare only the permission bits (mask off type).
 	if got := info.Mode().Perm(); got != 0o600 {
