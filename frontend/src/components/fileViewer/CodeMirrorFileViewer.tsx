@@ -228,6 +228,7 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
 
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null)
   const contextMenuRef = useRef('')
+  const contextMenuTextRef = useRef('')
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent) => {
@@ -249,6 +250,7 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
         endLine > startLine
           ? `@${fileRef}#${startLine}-${endLine}`
           : `@${fileRef}#${startLine}`
+      contextMenuTextRef.current = doc.sliceString(selection.from, selection.to)
 
       setContextMenuPos({ x: e.clientX, y: e.clientY })
     },
@@ -266,6 +268,7 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
       />
       <FileViewerContextMenu
         reference={contextMenuRef.current}
+        selectedText={contextMenuTextRef.current}
         position={contextMenuPos}
         onClose={closeContextMenu}
       />

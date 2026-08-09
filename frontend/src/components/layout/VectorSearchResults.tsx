@@ -23,7 +23,23 @@ export function VectorSearchResults({ isSearchMode }: VectorSearchResultsProps) 
   const isLoading = useVectorIndexStore((s) => s.isLoading);
 
   if (status.state !== "ready" && status.state !== "idle") {
-    return <div className="flex-1" />;
+    // Index building or unavailable. The auto-search effect in useVectorSearch
+    // re-runs the active query once the index reports ready (incl. the
+    // vector_index:status → ready subscription), so a seeded query is not lost
+    // — surface that here instead of a blank area. Without an active query we
+    // stay terse: the IndexingStatus pill above already conveys "building".
+    const unavailable = status.state === "unavailable";
+    const message =
+      unavailable
+        ? "Vector index unavailable"
+        : isSearchMode
+          ? "Indexing in progress — results will appear automatically when ready"
+          : "Indexing in progress";
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <p className="text-xs text-muted-foreground text-center px-4">{message}</p>
+      </div>
+    );
   }
   if (status.state === "idle") {
     return (
