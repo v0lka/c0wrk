@@ -378,6 +378,25 @@ describe('buildHistoryId (via chatMessageToUI)', () => {
     expect(result.id).toMatch(/^history-/)
   })
 
+  it('goal_proposal with request_id → "goal-proposal-{id}" (stable across reload)', () => {
+    // The live handler (handleGoalProposalEvent) adds a card with id
+    // `goal-proposal-${request_id}`. The reloaded history record must produce
+    // the SAME id or mergeHistoryMessages cannot dedupe → duplicate cards.
+    const result = chatMessageToUI(makeMsg({
+      role: 'goal_proposal',
+      metadata: JSON.stringify({ request_id: 'gp_42', condition: 'c', verify: 'v' }),
+    }))
+    expect(result.id).toBe('goal-proposal-gp_42')
+  })
+
+  it('goal_proposal without request_id → "history-{dbId}"', () => {
+    const result = chatMessageToUI(makeMsg({
+      role: 'goal_proposal',
+      metadata: JSON.stringify({ condition: 'c', verify: 'v' }),
+    }))
+    expect(result.id).toMatch(/^history-/)
+  })
+
   it('no metadata → id starts with "history-"', () => {
     const result = chatMessageToUI(makeMsg({
       role: 'tool_call',

@@ -264,6 +264,16 @@ export function buildHistoryId(
       const promptId = meta.prompt_id as string | undefined
       return promptId ? `review-prompt-${promptId}` : `history-${dbId}`
     }
+    case 'goal_proposal': {
+      // The live card (handleGoalProposalEvent) and the pending-actions
+      // reconciliation (reconcileRuntimeStatus) both use
+      // `goal-proposal-${request_id}`. Without this case the reloaded history
+      // record falls through to `history-${dbId}`, producing a second card with
+      // a non-matching id that mergeHistoryMessages cannot dedupe — the stuck
+      // "Proposed Goal" duplicate on background sessions.
+      const requestId = meta.request_id as string | undefined
+      return requestId ? `goal-proposal-${requestId}` : `history-${dbId}`
+    }
     default:
       return `history-${dbId}`
   }
