@@ -339,6 +339,13 @@ func TestApplyDefaults_BlacklistCategorySymmetry(t *testing.T) {
 		cmds map[string]string // tool -> representative command that MUST be blocked
 	}{
 		{
+			name: "destructive file/disk",
+			cmds: map[string]string{
+				"bash_exec": "echo x > /dev/sda", // narrowed /dev/ redirect pattern
+				"posh_exec": "Format-Volume",
+			},
+		},
+		{
 			name: "power-state",
 			cmds: map[string]string{
 				"bash_exec": "shutdown -h now",
@@ -388,6 +395,95 @@ func TestApplyDefaults_BlacklistCategorySymmetry(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestApplyDefaults_DestructiveDevPaths locks in the behavior of the
+// destructive /dev/ redirect and `dd of=` patterns in the bash_exec default
+// blacklist: genuine block-device / kernel-memory writes MUST be blocked, while
+// the ubiquitous benign /dev family (/dev/null, /dev/zero, /dev/full,
+// /dev/random, /dev/std*, /dev/fd, /dev/tty) — the most common redirect targets
+// in robust shell commands like `cmd 2>/dev/null` — MUST stay unblocked. This
+// guards against regressions when the /dev/ patterns are edited (e.g.
+// accidentally re-broadening to a blanket `>\s*/dev/`, which forces spurious
+// confirmations under always_allow).
+func TestApplyDefaults_DestructiveDevPaths(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	pol, ok := cfg.Security.ToolPolicies["bash_exec"]
+	if !ok {
+		t.Fatalf("expected default bash_exec policy")
+	}
+	compiled := make([]*regexp.Regexp, 0, len(pol.Blacklist))
+	for i, pat := range pol.Blacklist {
+		re, err := regexp.Compile(pat)
+		if err != nil {
+			t.Errorf("bash_exec blacklist[%d] %q does not compile: %v", i, pat, err)
+			continue
+		}
+		compiled = append(compiled, re)
+	}
+	matches := func(cmd string) (bool, string) {
+		for _, re := range compiled {
+			if re.MatchString(cmd) {
+				return true, re.String()
+			}
+		}
+		return false, ""
+	}
+
+	mustBlock := []string{
+		// narrowed /dev/ redirect — block device families
+		"echo x > /dev/sda",
+		"cat img > /dev/sda1",
+		"> /dev/nvme0n1",
+		"dd if=img > /dev/vda",
+		"> /dev/xvda",
+		"> /dev/mmcblk0",
+		"> /dev/mapper/vg-lv",
+		"> /dev/disk/by-id/wwn-0x1",
+		"> /dev/dm-0",
+		"> /dev/md0",
+		// kernel memory / port (privilege escalation)
+		"> /dev/mem",
+		"> /dev/kmem",
+		"> /dev/port",
+		// dd of= writing to a block / kernel device (closes the if=-only gap)
+		"dd of=/dev/sda bs=1M",
+		"dd if=/dev/zero of=/dev/nvme0n1",
+	}
+
+	mustNotBlock := []string{
+		// benign /dev family — must NOT trigger a confirmation
+		"cmd 2>/dev/null",
+		"cmd >/dev/null 2>&1",
+		">/dev/null",
+		">/dev/zero",
+		">/dev/full",
+		">/dev/random",
+		">/dev/urandom",
+		">/dev/stdout",
+		">/dev/stderr",
+		">/dev/fd/3",
+		">/dev/tty",
+		"dd of=/dev/null",  // benign dd target
+		"cat /dev/sda > x", // reading a device is not destructive
+	}
+
+	t.Run("blocked", func(t *testing.T) {
+		for _, cmd := range mustBlock {
+			if ok, _ := matches(cmd); !ok {
+				t.Errorf("bash_exec default blacklist should block destructive /dev/ command %q", cmd)
+			}
+		}
+	})
+	t.Run("allowed", func(t *testing.T) {
+		for _, cmd := range mustNotBlock {
+			if ok, pat := matches(cmd); ok {
+				t.Errorf("bash_exec default blacklist must NOT block benign /dev/ command %q (matched %q)", cmd, pat)
+			}
+		}
+	})
 }
 
 // TestApplyDefaults_GitMutatingBlacklist locks in the behavior of the SCM

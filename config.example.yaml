@@ -247,7 +247,22 @@ security:
         - 'rm\s+-rf\s+/'
         - "mkfs"
         - 'dd\s+if='
-        - '>\s*/dev/'
+        # `dd of=` writing to a block or kernel-memory device destroys the disk
+        # or escalates privileges (e.g. `dd of=/dev/sda bs=1M` with no if=, which
+        # the `dd\s+if=` pattern misses). Shares the same device-prefix list as
+        # the narrowed /dev/ redirect above so benign targets like
+        # `dd of=/dev/null` stay unblocked. `[^|]*` prevents the match from
+        # jumping across a pipe.
+        - 'dd\b[^|]*\bof=/dev/(sd|hd|vd|xvd|nvme|mmcblk|loop|ram|zram|dm-|md|disk|mapper|mem|kmem|port)'
+        # Write/redirect to a block or kernel-memory device destroys the disk or
+        # escalates privileges. Narrowed from a blanket '>\s*/dev/' so the benign
+        # /dev family (/dev/null, /dev/zero, /dev/full, /dev/random, /dev/std*,
+        # /dev/fd, /dev/tty) — the most common redirect targets in commands like
+        # `cmd 2>/dev/null` — no longer trigger a forced confirmation under
+        # always_allow. Matches every real block device family (sd, hd, vd, xvd,
+        # nvme, mmcblk, loop, ram, zram, dm-, md, disk, mapper) plus kernel
+        # mem/port, sharing none of its prefixes with any benign /dev entry.
+        - '>\s*/dev/(sd|hd|vd|xvd|nvme|mmcblk|loop|ram|zram|dm-|md|disk|mapper|mem|kmem|port)'
         # --- Power-state (mirrors posh Stop/Restart-Computer) ---
         - '\b(shutdown|reboot|halt|poweroff|init\s+[06])\b'
         # --- Remote-exec / download-cradle (mirrors posh IWR|iex) ---

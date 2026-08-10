@@ -236,7 +236,27 @@ func ApplyDefaults(cfg *Config) {
 				`rm\s+-rf\s+/`,
 				`mkfs`,
 				`dd\s+if=`,
-				`>\s*/dev/`,
+				// `dd of=` writing to a block or kernel-memory device destroys the
+				// disk or escalates privileges (e.g. `dd of=/dev/sda bs=1M` with
+				// no if=, which the `dd\s+if=` pattern above misses). Shares the
+				// same device-prefix list as the narrowed /dev/ redirect above so
+				// benign targets like `dd of=/dev/null` stay unblocked. `[^|]*`
+				// prevents the match from jumping across a pipe (mirrors the
+				// existing `(tee|dd)\b[^|]*/etc/(passwd|shadow|sudoers)` pattern).
+				`dd\b[^|]*\bof=/dev/(sd|hd|vd|xvd|nvme|mmcblk|loop|ram|zram|dm-|md|disk|mapper|mem|kmem|port)`,
+				// Write/redirect to a block or kernel-memory device destroys the
+				// disk or escalates privileges. Narrowed from a blanket `>\s*/dev/`
+				// so the ubiquitous benign /dev family (/dev/null, /dev/zero,
+				// /dev/full, /dev/random, /dev/std*, /dev/fd, /dev/tty) — the most
+				// common redirect targets in robust shell commands like
+				// `cmd 2>/dev/null` — no longer trigger a forced confirmation under
+				// always_allow. The prefix alternation matches every real block
+				// device family (SATA/SCSI sd, legacy IDE hd, virtio vd, Xen xvd,
+				// NVMe nvme, SD/eMMC mmcblk, loop, RAM disks ram/zram,
+				// device-mapper dm-, RAID md, stable symlinks disk/ & mapper/,
+				// kernel mem/port) while sharing none of its prefixes with any
+				// benign /dev entry.
+				`>\s*/dev/(sd|hd|vd|xvd|nvme|mmcblk|loop|ram|zram|dm-|md|disk|mapper|mem|kmem|port)`,
 
 				// --- Power-state (mirrors posh Stop/Restart-Computer) ---
 				`\b(shutdown|reboot|halt|poweroff|init\s+[06])\b`,
