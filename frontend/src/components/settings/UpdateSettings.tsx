@@ -1,7 +1,7 @@
 // Updates section for the Settings "about" tab.
 //
 // Shows the running build version, the user-level update preferences (enabled,
-// auto-check) with toggles, and a "Проверить обновления" button that triggers
+// auto-check) with toggles, and a "Check for updates" button that triggers
 // an explicit check. The check result flows back through the global
 // update:available / update:none / update:error events, which updateStore
 // (and thus the UpdateToast) already consume — so this component only needs to
@@ -99,31 +99,31 @@ export function UpdateSettings() {
 
   return (
     <div className="border-t border-border pt-4">
-      <h3 className="mb-3 text-sm font-medium text-foreground">Обновления</h3>
+      <h3 className="mb-3 text-sm font-medium text-foreground">Updates</h3>
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm text-foreground">Текущая версия</p>
+            <p className="text-sm text-foreground">Current version</p>
             <p className="text-xs text-muted-foreground">
               {currentVersion ? `v${currentVersion}` : '—'}
             </p>
           </div>
           <Button size="sm" variant="outline" onClick={handleCheck} disabled={isChecking}>
             <RefreshCw className={`size-4 ${isChecking ? 'animate-spin' : ''}`} />
-            Проверить обновления
+            Check for updates
           </Button>
         </div>
 
         {operatorDisabled && (
           <p className="flex items-center gap-1.5 text-xs text-warning">
             <ShieldAlert className="size-3.5" />
-            Проверка обновлений отключена администратором (config.yaml)
+            Update checking is disabled by the administrator (config.yaml)
           </p>
         )}
 
         {/* Enable updates toggle */}
         <ToggleRow
-          label="Включить обновления"
+          label="Enable updates"
           checked={settings ? settings.enabled : true}
           disabled={!settings || operatorDisabled}
           onChange={(v) => handleToggle('enabled', v)}
@@ -131,7 +131,7 @@ export function UpdateSettings() {
 
         {/* Auto-check toggle */}
         <ToggleRow
-          label="Проверять автоматически"
+          label="Check automatically"
           checked={settings ? settings.auto_check : true}
           disabled={autoCheckDisabled}
           onChange={(v) => handleToggle('auto_check', v)}
@@ -140,13 +140,13 @@ export function UpdateSettings() {
         {outcome === 'up-to-date' && (
           <p className="flex items-center gap-1.5 text-xs text-success">
             <Check className="size-3.5" />
-            Установлена последняя версия
+            You're running the latest version
           </p>
         )}
         {outcome === 'error' && (
           <p className="flex items-center gap-1.5 text-xs text-destructive">
             <AlertCircle className="size-3.5" />
-            Не удалось проверить обновления
+            Failed to check for updates
           </p>
         )}
       </div>

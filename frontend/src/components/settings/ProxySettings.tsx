@@ -112,47 +112,48 @@ export function ProxySettings() {
         <span className="text-sm font-medium">Use proxy</span>
       </div>
 
-      <div className="flex flex-col gap-2">
-        <label className="text-xs text-muted-foreground">Proxy URL</label>
-        <Input
-          placeholder="http://user:password@proxy.example.com:8080"
-          value={config.url}
-          onChange={(e) => handleUrlChange(e.target.value)}
-          disabled={!config.enabled}
-          className="h-9 text-sm"
-        />
-        <p className="text-xs text-muted-foreground">
-          Format: scheme://[user:password@]host:port (http, https, or socks5)
-        </p>
-      </div>
+      {config.enabled && (
+        <>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs text-muted-foreground">Proxy URL</label>
+            <Input
+              placeholder="http://user:password@proxy.example.com:8080"
+              value={config.url}
+              onChange={(e) => handleUrlChange(e.target.value)}
+              className="h-9 text-sm"
+            />
+            <p className="text-xs text-muted-foreground">
+              Format: scheme://[user:password@]host:port (http, https, or socks5)
+            </p>
+          </div>
 
-      <div className="flex flex-col gap-2">
-        <label className="text-xs text-muted-foreground">Bypass List</label>
-        <Input
-          placeholder="localhost, 127.0.0.1, *.internal.corp"
-          value={bypassText}
-          onChange={(e) => handleBypassChange(e.target.value)}
-          disabled={!config.enabled}
-          className="h-9 text-sm"
-        />
-        <p className="text-xs text-muted-foreground">
-          Comma-separated hosts that bypass the proxy. Supports wildcards (*.domain.com).
-        </p>
-      </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs text-muted-foreground">Bypass List</label>
+            <Input
+              placeholder="localhost, 127.0.0.1, *.internal.corp"
+              value={bypassText}
+              onChange={(e) => handleBypassChange(e.target.value)}
+              className="h-9 text-sm"
+            />
+            <p className="text-xs text-muted-foreground">
+              Comma-separated hosts that bypass the proxy. Supports wildcards (*.domain.com).
+            </p>
+          </div>
 
-      <div className="flex flex-col gap-2">
-        <label className="text-xs text-muted-foreground">TLS Certificate Directory</label>
-        <Input
-          placeholder="/path/to/certs"
-          value={config.tls_cert_dir}
-          onChange={(e) => handleCertDirChange(e.target.value)}
-          disabled={!config.enabled}
-          className="h-9 text-sm"
-        />
-        <p className="text-xs text-muted-foreground">
-          Directory containing .pem/.crt files to trust (added to system CA pool).
-        </p>
-      </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs text-muted-foreground">TLS Certificate Directory</label>
+            <Input
+              placeholder="/path/to/certs"
+              value={config.tls_cert_dir}
+              onChange={(e) => handleCertDirChange(e.target.value)}
+              className="h-9 text-sm"
+            />
+            <p className="text-xs text-muted-foreground">
+              Directory containing .pem/.crt files to trust (added to system CA pool).
+            </p>
+          </div>
+        </>
+      )}
 
       {saveError && <p className="text-sm text-destructive mt-2">{saveError}</p>}
     </div>
