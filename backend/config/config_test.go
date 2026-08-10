@@ -390,6 +390,147 @@ func TestApplyDefaults_BlacklistCategorySymmetry(t *testing.T) {
 	}
 }
 
+// TestApplyDefaults_GitMutatingBlacklist locks in the behavior of the SCM
+// (git) blacklist in both bash_exec and posh_exec: it must block git
+// subcommands that mutate the repository, its history, or the working
+// tree/index, while leaving read-only git commands (including git fetch, which
+// is additive / non-destructive) unblocked. This guards against regressions
+// when the git patterns are edited (e.g. accidentally re-broadening to a
+// blanket \bgit\b, or dropping a mutating subcommand).
+func TestApplyDefaults_GitMutatingBlacklist(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	mustBlock := []string{
+		// working tree / index / staging
+		"git add -A",
+		"git rm foo.txt",
+		"git mv a b",
+		"git clean -fd",
+		"git checkout .",
+		"git switch feature",
+		"git restore --staged foo",
+		"git stash",
+		"git stash pop",
+		"git apply patch.diff",
+		// history / commits / refs (incl. history rewrites)
+		"git commit -m msg",
+		"git am mbox",
+		"git merge feature",
+		"git rebase main",
+		"git revert HEAD",
+		"git cherry-pick abc123",
+		"git reset --hard origin/main",
+		"git notes add -m x",
+		"git replace abc123",
+		"git update-ref refs/heads/x SHA",
+		"git symbolic-ref HEAD refs/heads/main",
+		"git reflog expire --all",
+		"git bisect start",
+		"git filter-branch -- --all",
+		"git fast-import < repo.fi",
+		// branch / tag / remote / submodule / network
+		"git branch newbranch",
+		"git branch -D topic",
+		"git tag v1.0",
+		"git remote add origin url",
+		"git submodule update --init",
+		"git clone url",
+		"git push origin main",
+		"git pull origin main",
+		// network / exfil (transmit patch data or spawn a network server)
+		"git send-email *.patch",
+		"git imap-send",
+		"git daemon --base-path=.",
+		"git instaweb",
+		// lifecycle / config / maintenance
+		"git init",
+		"git config user.name x",
+		"git gc --prune=now",
+		"git prune",
+		"git worktree add ../wt",
+		"git maintenance run",
+	}
+
+	mustNotBlock := []string{
+		// read-only commands intentionally left unblocked
+		"git status",
+		"git log --oneline",
+		"git diff",
+		"git show HEAD",
+		"git blame foo.go",
+		"git ls-files",
+		"git ls-remote origin",
+		"git rev-parse HEAD",
+		"git describe --tags",
+		"git for-each-ref",
+		"git cat-file -p HEAD",
+		// fetch is excluded by design (additive / non-destructive)
+		"git fetch origin",
+		"git fetch --all --prune",
+	}
+
+	// posh-only casing variants: PowerShell resolves the git executable
+	// case-insensitively, so the posh git patterns carry (?i) and must match
+	// non-canonical casing. bash_exec patterns are deliberately case-sensitive
+	// (Unix executables are case-sensitive), so these only apply to posh_exec.
+	poshMustBlock := []string{
+		"Git commit -m msg",
+		"GIT PUSH origin main",
+		"gIt reset --hard",
+		"git CHECKOUT feature",
+	}
+
+	tools := []string{"bash_exec", "posh_exec"}
+	for _, tool := range tools {
+		pol, ok := cfg.Security.ToolPolicies[tool]
+		if !ok {
+			t.Fatalf("expected default %s policy", tool)
+		}
+		compiled := make([]*regexp.Regexp, 0, len(pol.Blacklist))
+		for i, pat := range pol.Blacklist {
+			re, err := regexp.Compile(pat)
+			if err != nil {
+				t.Errorf("%s blacklist[%d] %q does not compile: %v", tool, i, pat, err)
+				continue
+			}
+			compiled = append(compiled, re)
+		}
+		matches := func(cmd string) (bool, string) {
+			for _, re := range compiled {
+				if re.MatchString(cmd) {
+					return true, re.String()
+				}
+			}
+			return false, ""
+		}
+
+		t.Run(tool+"/blocked", func(t *testing.T) {
+			for _, cmd := range mustBlock {
+				if ok, _ := matches(cmd); !ok {
+					t.Errorf("%s default blacklist should block mutating git command %q", tool, cmd)
+				}
+			}
+		})
+		t.Run(tool+"/allowed", func(t *testing.T) {
+			for _, cmd := range mustNotBlock {
+				if ok, pat := matches(cmd); ok {
+					t.Errorf("%s default blacklist must NOT block read-only git command %q (matched %q)", tool, cmd, pat)
+				}
+			}
+		})
+		if tool == "posh_exec" {
+			t.Run(tool+"/casing", func(t *testing.T) {
+				for _, cmd := range poshMustBlock {
+					if ok, _ := matches(cmd); !ok {
+						t.Errorf("posh_exec default blacklist should block case-variant git command %q ((?i) prefix missing?)", cmd)
+					}
+				}
+			})
+		}
+	}
+}
+
 // TestOpenAICompatibleRequiresBaseURL tests that openai_compatible provider requires base_url.
 // Note: base_url requirement is now validated at the LLM router level, not at config validation.
 // The config simply loads the base_url and it's validated when creating the provider.

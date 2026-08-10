@@ -258,9 +258,30 @@ func ApplyDefaults(cfg *Config) {
 				`\bcrontab\s+-r\b`, // wipe crontab
 				`\b(iptables|ufw|nft)\b[^|]*(-F\b|--flush\b|-X\b|-P\s+\w+)`, // firewall flush
 
-				// --- Privilege escalation & SCM ---
+				// --- Privilege escalation ---
 				`sudo\s+`,
-				`\bgit\b`,
+
+				// --- SCM (git) — mutating subcommands only ---
+				// Blocks git operations that change the repository, its history, or
+				// the working tree/index. Read-only commands (status, log, diff,
+				// show, blame, ls-files, rev-parse, describe, fetch, ...) are
+				// intentionally NOT blocked so they flow through normally. Dual-mode
+				// subcommands (branch, tag, config, stash, remote) are blocked
+				// wholesale: RE2 has no lookahead, so flagless mutating forms (e.g.
+				// `git branch x`, `git stash`, `git config k v`, `git tag v1`)
+				// cannot be reliably separated from read-only forms. `git fetch` is
+				// excluded — it only adds objects and updates remote-tracking refs,
+				// never the working tree, local branches, or history (additive /
+				// non-destructive). See TestApplyDefaults_GitMutatingBlacklist.
+				// working tree / index / staging:
+				`\bgit\s+(add|rm|mv|clean|checkout|switch|restore|stash|apply)\b`,
+				// history / commits / refs (incl. history rewrites):
+				`\bgit\s+(commit|am|merge|rebase|revert|cherry-pick|reset|notes|replace|update-ref|symbolic-ref|reflog|bisect|filter-branch|filter-repo|fast-import)\b`,
+				// branch / tag / remote / submodule / network / exfil (transmit patch
+				// data or spawn a network server bound to the repo):
+				`\bgit\s+(branch|tag|remote|submodule|clone|push|pull|send-email|imap-send|daemon|instaweb)\b`,
+				// repo lifecycle / config / maintenance:
+				`\bgit\s+(init|config|gc|prune|worktree|maintenance)\b`,
 			},
 		}
 	}
@@ -302,8 +323,22 @@ func ApplyDefaults(cfg *Config) {
 				`(?i)\b(Register-ScheduledTask|schtasks\s+/create)\b`, // scheduled tasks
 				`(?i)Set-ExecutionPolicy`,                             // execution-policy tampering
 
-				// --- SCM ---
-				`\bgit\b`,
+				// --- SCM (git) — mutating subcommands only ---
+				// Mirrors bash_exec. See that block for the full rationale: only
+				// mutating git subcommands are blocked; read-only commands (status,
+				// log, diff, show, fetch, ...) are NOT blocked; dual-mode subcommands
+				// (branch, tag, config, stash, remote) are blocked wholesale because
+				// RE2 has no lookahead. Patterns are case-insensitive ((?i) prefix)
+				// because PowerShell resolves the git executable case-insensitively,
+				// so `Git commit` / `GIT PUSH` must still match.
+				// working tree / index / staging:
+				`(?i)\bgit\s+(add|rm|mv|clean|checkout|switch|restore|stash|apply)\b`,
+				// history / commits / refs (incl. history rewrites):
+				`(?i)\bgit\s+(commit|am|merge|rebase|revert|cherry-pick|reset|notes|replace|update-ref|symbolic-ref|reflog|bisect|filter-branch|filter-repo|fast-import)\b`,
+				// branch / tag / remote / submodule / network / exfil:
+				`(?i)\bgit\s+(branch|tag|remote|submodule|clone|push|pull|send-email|imap-send|daemon|instaweb)\b`,
+				// repo lifecycle / config / maintenance:
+				`(?i)\bgit\s+(init|config|gc|prune|worktree|maintenance)\b`,
 			},
 		}
 	}
