@@ -546,6 +546,38 @@ func TestStripMarkdownCodeFence_MultiLine(t *testing.T) {
 	}
 }
 
+// --- GenerateCommitMessage request tests ---
+
+func TestBuildCommitMessageRequest_OmitsTemperature(t *testing.T) {
+	const (
+		diff            = "diff --git a/file.go b/file.go"
+		feedback        = "PREVIOUS ATTEMPT FAILED VALIDATION"
+		reasoningEffort = "high"
+	)
+
+	req := buildCommitMessageRequest(diff, feedback, reasoningEffort)
+
+	if req.Temperature != nil {
+		t.Fatalf("Temperature = %v, want nil so the router can apply model capabilities", *req.Temperature)
+	}
+	if req.MaxTokens != 2048 {
+		t.Errorf("MaxTokens = %d, want 2048", req.MaxTokens)
+	}
+	if req.ReasoningEffort != reasoningEffort {
+		t.Errorf("ReasoningEffort = %q, want %q", req.ReasoningEffort, reasoningEffort)
+	}
+	if len(req.Messages) != 2 {
+		t.Fatalf("len(Messages) = %d, want 2", len(req.Messages))
+	}
+	if req.Messages[0].Role != "system" || req.Messages[0].Content == "" {
+		t.Errorf("system message = %+v, want non-empty system prompt", req.Messages[0])
+	}
+	wantUser := "## Staged Diff\n\n" + diff + "\n\n" + feedback
+	if req.Messages[1].Role != "user" || req.Messages[1].Content != wantUser {
+		t.Errorf("user message = %+v, want role=user content=%q", req.Messages[1], wantUser)
+	}
+}
+
 // --- GenerateCommitMessage retry loop test ---
 
 // TestGenerateCommitMessage_RetryLoop verifies the retry loop in

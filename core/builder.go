@@ -928,6 +928,33 @@ func extractCommitMessage(resp *llm.ChatResponse) string {
 	return ""
 }
 
+// buildCommitMessageRequest constructs a commit-message request without forcing
+// sampling parameters. The router applies its family-aware default only when
+// the active model advertises temperature support; reasoning models such as
+// GPT-5/o-series and kimi-k2-thinking therefore receive no unsupported
+// temperature field.
+func buildCommitMessageRequest(diff, extraUserText, reasoningEffort string) llm.ChatRequest {
+	// Reasoning models count reasoning tokens against the output-token budget.
+	// 2048 comfortably covers reasoning plus a short Conventional Commits
+	// message while still capping runaway output. Non-reasoning models stop
+	// naturally well before this.
+	const commitMsgMaxTokens = 2048
+
+	userContent := "## Staged Diff\n\n" + diff
+	if extraUserText != "" {
+		userContent += "\n\n" + extraUserText
+	}
+
+	return llm.ChatRequest{
+		Messages: []llm.Message{
+			{Role: "system", Content: coreprompts.CommitMessage},
+			{Role: "user", Content: userContent},
+		},
+		MaxTokens:       commitMsgMaxTokens,
+		ReasoningEffort: reasoningEffort,
+	}
+}
+
 // GenerateCommitMessage produces a Conventional Commits-formatted commit
 // message from the given staged diff using the cached LLM router. The diff
 // is typically the output of `git diff --staged`. The caller is responsible
@@ -950,17 +977,6 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 		return "", errors.New("llm router not available")
 	}
 
-	// Reasoning models (OpenAI o-series / Codex via the Responses API, or
-	// DeepSeek-reasoner) count reasoning tokens against the output-token
-	// budget (max_output_tokens). A small budget would be exhausted entirely
-	// by the model's internal reasoning, leaving no tokens for the actual
-	// commit-message text — the response then comes back with empty content
-	// (status=incomplete, reason=max_output_tokens). 2048 comfortably covers
-	// reasoning plus a short Conventional Commits message while still capping
-	// runaway output. Non-reasoning models stop naturally well before this.
-	const commitMsgMaxTokens = 2048
-	temp := 0.4
-
 	caller := agent.LLMCaller(llmRouter)
 	if dw := agent.DumpWriterFromContext(ctx); dw != nil {
 		caller = agent.NewLoggingLLMCaller(caller, llmRouter.ActiveProviderName(), b.logger)
@@ -970,21 +986,8 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 	b.log().Debug("generating commit message",
 		"provider", providerName, "diff_bytes", len(diff))
 
-	// Build the base request.
 	buildRequest := func(extraUserText string) llm.ChatRequest {
-		userContent := "## Staged Diff\n\n" + diff
-		if extraUserText != "" {
-			userContent += "\n\n" + extraUserText
-		}
-		return llm.ChatRequest{
-			Messages: []llm.Message{
-				{Role: "system", Content: coreprompts.CommitMessage},
-				{Role: "user", Content: userContent},
-			},
-			MaxTokens:       commitMsgMaxTokens,
-			Temperature:     &temp,
-			ReasoningEffort: reasoningEffort,
-		}
+		return buildCommitMessageRequest(diff, extraUserText, reasoningEffort)
 	}
 
 	return b.generateCommitMessageWithCaller(ctx, caller, providerName, diff, buildRequest)
