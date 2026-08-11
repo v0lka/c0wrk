@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ChevronDown, Check, FolderPlus, Pencil, Plus, Trash2 } from "lucide-react";
+import { ItemAction, ItemActions } from "./ItemAction";
 
 export function ProjectSelector() {
   const projects = useProjectStore((s) => s.projects);
@@ -134,33 +135,26 @@ export function ProjectSelector() {
                   <span className="ml-auto text-[10px] text-muted-foreground">
                     {formatRelativeTime(project.last_active_at)}
                   </span>
-                  <span
-                    className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover/item:opacity-100 group-focus-within/item:opacity-100"
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onPointerUp={(e) => e.stopPropagation()}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <button
-                      type="button"
-                      className="rounded p-0.5 hover:bg-info/15"
+                  <ItemActions>
+                    <ItemAction
+                      label="Rename"
                       onClick={() => {
                         startRename(project.id, project.name);
                         setDropdownOpen(false);
                       }}
                     >
                       <Pencil className="size-3 text-info" />
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded p-0.5 hover:bg-destructive/20"
+                    </ItemAction>
+                    <ItemAction
+                      label="Delete"
                       onClick={() => {
                         handleDelete(project.id);
                         setDropdownOpen(false);
                       }}
                     >
                       <Trash2 className="size-3 text-destructive" />
-                    </button>
-                  </span>
+                    </ItemAction>
+                  </ItemActions>
                 </DropdownMenuItem>
               ))}
               {realProjects.length > 0 && <DropdownMenuSeparator />}

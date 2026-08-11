@@ -7,13 +7,12 @@
 // name, relative time, hover action overlay). The `variant` prop selects the
 // outer element; the inner content is identical so visuals stay consistent.
 
-import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { formatRelativeTime } from '@/lib/formatters'
 import { useSessionStatusIndicator } from '@/hooks/useSessionStatusIndicator'
 import type { SessionIndicatorStatus } from '@/hooks/useSessionStatusIndicator'
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
-import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
+import { ItemAction, ItemActions } from './ItemAction'
 import {
   Check,
   Pencil,
@@ -44,36 +43,6 @@ export interface SessionItemCallbacks {
   onDelete: () => void
 }
 
-// --- Action button ---
-
-interface SessionActionProps {
-  label: string
-  onClick: () => void
-  disabled?: boolean
-  children: ReactNode
-}
-
-export function SessionAction({ label, onClick, disabled, children }: SessionActionProps) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          onClick={onClick}
-          disabled={disabled}
-          className={cn(
-            'rounded p-0.5',
-            disabled && 'cursor-not-allowed opacity-30 hover:bg-transparent',
-          )}
-        >
-          {children}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="left">{label}</TooltipContent>
-    </Tooltip>
-  )
-}
-
 // --- Row content (shared between variants) ---
 
 interface SessionRowContentProps extends SessionItemCallbacks {
@@ -83,10 +52,13 @@ interface SessionRowContentProps extends SessionItemCallbacks {
 }
 
 function SessionRowContent({ session, isActive, status, onPin, onFork, onRename, onArchive, onDelete }: SessionRowContentProps) {
-  const forkDisabled = status === 'active' || session.has_unfinished_task
-  const forkDisabledReason = status === 'active'
-    ? 'Cannot fork while a task is running'
-    : 'Cannot fork a session with an unfinished task'
+  // A running task or unfinished work blocks session-state mutations (fork,
+  // archive, delete) until the session settles. The guard mirrors fork so the
+  // three actions are consistent for active/unfinished sessions.
+  const busy = status === 'active' || session.has_unfinished_task
+  const forkReason = status === 'active' ? 'Cannot fork while a task is running' : 'Cannot fork a session with an unfinished task'
+  const archiveReason = status === 'active' ? 'Cannot archive while a task is running' : 'Cannot archive a session with an unfinished task'
+  const deleteReason = status === 'active' ? 'Cannot delete while a task is running' : 'Cannot delete a session with an unfinished task'
 
   return (
     <>
@@ -104,32 +76,27 @@ function SessionRowContent({ session, isActive, status, onPin, onFork, onRename,
       {/* Action overlay — absolutely positioned over the right portion of the
           item. Appears on hover/focus, with a gradient background so the
           underlying time text stays readable underneath the buttons. */}
-      <span
-        className="absolute inset-y-0 right-0 flex items-center gap-0.5 pl-7 pr-1 opacity-0 transition-opacity bg-gradient-to-l from-popover via-popover to-popover/0 group-hover/item:opacity-100 group-focus-within/item:opacity-100"
-        onPointerDown={(e) => e.stopPropagation()}
-        onPointerUp={(e) => e.stopPropagation()}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <SessionAction label={session.pinned ? 'Unpin' : 'Pin'} onClick={onPin}>
+      <ItemActions>
+        <ItemAction label={session.pinned ? 'Unpin' : 'Pin'} onClick={onPin}>
           {session.pinned ? <PinOff className="size-3 text-primary" /> : <Pin className="size-3 text-primary" />}
-        </SessionAction>
-        <SessionAction label={forkDisabled ? forkDisabledReason : 'Fork session'} onClick={onFork} disabled={forkDisabled}>
+        </ItemAction>
+        <ItemAction label="Fork session" onClick={onFork} disabled={busy} disabledReason={busy ? forkReason : undefined}>
           <GitFork className="size-3 text-primary" />
-        </SessionAction>
-        <SessionAction label="Rename" onClick={onRename}>
+        </ItemAction>
+        <ItemAction label="Rename" onClick={onRename}>
           <Pencil className="size-3 text-info" />
-        </SessionAction>
-        <SessionAction label={session.archived ? 'Unarchive' : 'Archive'} onClick={onArchive}>
+        </ItemAction>
+        <ItemAction label={session.archived ? 'Unarchive' : 'Archive'} onClick={onArchive} disabled={busy} disabledReason={busy ? archiveReason : undefined}>
           {session.archived ? (
             <ArchiveRestore className="size-3 text-warning" />
           ) : (
             <Archive className="size-3 text-warning" />
           )}
-        </SessionAction>
-        <SessionAction label="Delete" onClick={onDelete}>
+        </ItemAction>
+        <ItemAction label="Delete" onClick={onDelete} disabled={busy} disabledReason={busy ? deleteReason : undefined}>
           <Trash2 className="size-3 text-destructive" />
-        </SessionAction>
-      </span>
+        </ItemAction>
+      </ItemActions>
     </>
   )
 }

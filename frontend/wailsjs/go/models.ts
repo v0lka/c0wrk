@@ -709,6 +709,7 @@ export namespace backend {
 	    tool_policies: Record<string, ToolPolicyResponse>;
 	    auto_approve_workspace_writes: boolean;
 	    smart_approve: boolean;
+	    judge_available: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SecuritySettingsResponse(source);
@@ -720,6 +721,7 @@ export namespace backend {
 	        this.tool_policies = this.convertValues(source["tool_policies"], ToolPolicyResponse, true);
 	        this.auto_approve_workspace_writes = source["auto_approve_workspace_writes"];
 	        this.smart_approve = source["smart_approve"];
+	        this.judge_available = source["judge_available"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
