@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { X, ChevronDown, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { X, ChevronDown, PanelRightClose, PanelRightOpen, Pin, PinOff } from "lucide-react";
 import { useFileViewerStore } from "@/stores/fileViewerStore";
 import { FileIcon } from "@/components/layout/FileIcon";
 import { useFileIcon } from "@/hooks/useFileIcon";
@@ -29,6 +29,8 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
   const activeFile = useFileViewerStore((s) => s.activeFile);
   const setActiveFile = useFileViewerStore((s) => s.setActiveFile);
   const closeFile = useFileViewerStore((s) => s.closeFile);
+  const pinned = useFileViewerStore((s) => s.pinned);
+  const setPinned = useFileViewerStore((s) => s.setPinned);
 
   const tabsRef = useRef<HTMLDivElement>(null);
 
@@ -147,6 +149,16 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
               </DropdownMenuContent>
             </DropdownMenu>
           )}
+
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="shrink-0"
+            onClick={() => setPinned(!pinned)}
+            title={pinned ? "Unpin file viewer (float over chat)" : "Pin file viewer (dock in place)"}
+          >
+            {pinned ? <Pin className="size-4" /> : <PinOff className="size-4 text-primary" />}
+          </Button>
 
           <Button
             variant="ghost"

@@ -33,6 +33,16 @@ interface FileViewerState {
   activeFile: string | null
   width: number
   collapsed: boolean
+  /**
+   * When `true` (default) the viewer is docked in-flow as a fixed,
+   * horizontally-resizable, collapsible panel — the classic layout.
+   *
+   * When `false` the viewer "floats": it becomes an absolute overlay above the
+   * chat area, defaulting to 3/5 of its width, still resizable and collapsible,
+   * and auto-collapses when focus moves outside it. Designed for narrow
+   * displays where a permanent docked panel steals too much horizontal space.
+   */
+  pinned: boolean
   highlightLine: number | null // transient: line to scroll to and highlight
   fileIcons: Record<string, FileIconData>
 }
@@ -52,6 +62,7 @@ interface FileViewerActions {
   setFileLoading: (path: string, loading: boolean) => void
   setWidth: (width: number) => void
   setCollapsed: (collapsed: boolean) => void
+  setPinned: (pinned: boolean) => void
   setFileIcon: (path: string, icon: string, iconColor: string) => void
   setHighlightLine: (line: number) => void
   clearHighlightLine: () => void
@@ -79,6 +90,7 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
       activeFile: null,
       width: getDefaultViewerWidth(),
       collapsed: false,
+      pinned: true,
       highlightLine: null,
       fileIcons: {},
 
@@ -255,6 +267,8 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
 
       setCollapsed: (collapsed) => set({ collapsed }),
 
+      setPinned: (pinned) => set({ pinned }),
+
       setFileIcon: (path, icon, iconColor) => set((s) => ({
         fileIcons: { ...s.fileIcons, [path]: { icon, iconColor } },
       })),
@@ -304,11 +318,16 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
     }),
     {
       name: 'c0wrk-file-viewer',
-      version: 2,
+      version: 3,
       migrate: (persistedState, _version) => {
         const state = persistedState as Partial<FileViewerState & FileViewerActions>
         if (_version < 2) {
           state.width = getDefaultViewerWidth()
+        }
+        if (_version < 3) {
+          // Pre-pin viewers default to docked (pinned) — preserves the
+          // classic layout for existing users on upgrade.
+          state.pinned = true
         }
         return state as FileViewerState & FileViewerActions
       },
@@ -321,6 +340,7 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
         activeFile: state.activeFile && state.files[state.activeFile]?.virtual ? null : state.activeFile,
         width: state.width,
         collapsed: state.collapsed,
+        pinned: state.pinned,
         fileIcons: state.fileIcons,
       }),
     }

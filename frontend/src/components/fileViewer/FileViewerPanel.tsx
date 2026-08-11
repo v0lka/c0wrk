@@ -1,4 +1,4 @@
-import { Folder, PanelRightClose, PanelRightOpen } from 'lucide-react'
+import { Folder, PanelRightClose, PanelRightOpen, Pin, PinOff } from 'lucide-react'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { Button } from '@/components/ui/button'
 import { FileViewerTabBar } from './FileViewerTabBar'
@@ -8,6 +8,8 @@ export function FileViewerPanel() {
   const openTabs = useFileViewerStore((s) => s.openTabs)
   const collapsed = useFileViewerStore((s) => s.collapsed)
   const setCollapsed = useFileViewerStore((s) => s.setCollapsed)
+  const pinned = useFileViewerStore((s) => s.pinned)
+  const setPinned = useFileViewerStore((s) => s.setPinned)
 
   // Collapsed: narrow strip with expand button, vertically centered (mirrors Sidebar pattern)
   if (collapsed) {
@@ -30,7 +32,16 @@ export function FileViewerPanel() {
     return (
       <div className="flex flex-col h-full">
         {/* Top bar matching tab bar height — collapse button in the same pixel position as when tabs are open */}
-        <div className="flex items-center justify-end border-b border-border bg-secondary/50 flex-shrink-0 h-10 pr-2">
+        <div className="flex items-center justify-end gap-0.5 border-b border-border bg-secondary/50 flex-shrink-0 h-10 pr-2">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="flex-shrink-0"
+            onClick={() => setPinned(!pinned)}
+            title={pinned ? "Unpin file viewer (float over chat)" : "Pin file viewer (dock in place)"}
+          >
+            {pinned ? <Pin className="size-4" /> : <PinOff className="size-4 text-primary" />}
+          </Button>
           <Button
             variant="ghost"
             size="icon-xs"
