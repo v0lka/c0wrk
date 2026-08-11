@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -18,19 +19,30 @@ import (
 
 // criticalPathBudget returns the per-platform budget for the startup
 // critical-path tests. The default 500ms guards against regressions on the
-// fast dev path (Linux/macOS). Windows needs more headroom because CI
+// fast dev path (Linux/macOS). Windows needs far more headroom because CI
 // runners there are notably slower for SQLite cold starts (NTFS file
 // creation, Defender scanning, and modernc.org/sqlite CGO-free overhead),
 // which otherwise makes the test flap.
+//
+// The budget may be overridden with the C0WRK_STARTUP_BUDGET_MS environment
+// variable (a positive integer of milliseconds). This lets CI operators
+// tune per-runner hardware without code changes, and lets a developer
+// verify the guard locally at any threshold.
 func criticalPathBudget() time.Duration {
+	if raw := os.Getenv("C0WRK_STARTUP_BUDGET_MS"); raw != "" {
+		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
 	if runtime.GOOS == "windows" {
-		return 2 * time.Second
+		return 5 * time.Second
 	}
 	return 500 * time.Millisecond
 }
 
 // TestCriticalPathBudget verifies that the synchronous startup phases
-// (database, stores, project/session preload) complete within 500ms.
+// (database, stores, project/session preload) complete within the
+// platform budget (see criticalPathBudget).
 //
 // This acts as a regression guardrail: if a new blocking operation is
 // accidentally added to the critical path, this test will catch the
