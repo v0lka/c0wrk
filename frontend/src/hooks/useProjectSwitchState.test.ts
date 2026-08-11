@@ -83,6 +83,7 @@ describe('useProjectSwitchState', () => {
     useProjectStore.getState().setActiveProjectId('source-project')
     useSessionStore.getState().setActiveSessionId('source-session')
     useFileViewerStore.getState().restoreProjectFiles(['src/a.ts', 'src/b.ts'], 'src/b.ts')
+    useFileViewerStore.getState().setCollapsed(true)
 
     mocks.getProjectSwitchStateMock.mockResolvedValue({
       project_id: 'target-project',
@@ -115,6 +116,7 @@ describe('useProjectSwitchState', () => {
     const fileState = useFileViewerStore.getState()
     expect(fileState.openTabs).toEqual(['dest/readme.md', 'dest/main.go'])
     expect(fileState.activeFile).toBe('dest/main.go')
+    expect(fileState.collapsed).toBe(true)
 
     const sessionState = useSessionStore.getState()
     expect(sessionState.activeSessionId).toBe('target-saved-session')

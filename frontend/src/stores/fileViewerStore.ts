@@ -299,7 +299,6 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
           activeFile: normalizedActive,
           files: nextFiles,
           fileIcons: nextIcons,
-          collapsed: uniqueTabs.length === 0 ? s.collapsed : false,
         }
       }),
     }),
