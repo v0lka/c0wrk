@@ -34,7 +34,8 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
     return () => ro.disconnect()
   }, [isPinned])
 
-  const isOverflowing = isPinned && maxHeight !== undefined && maxHeight > 0 && naturalHeight > maxHeight
+  const hasPinnedLimit = isPinned && maxHeight !== undefined && maxHeight > 0
+  const isOverflowing = hasPinnedLimit && naturalHeight > maxHeight
   const effectiveExpanded = isOverflowing ? expanded : false
   const handleClick = useCallback(() => {
     if (isOverflowing) setExpanded(prev => !prev)
@@ -61,7 +62,12 @@ export function UserMessage({ item, isPinned, maxHeight }: UserMessageProps) {
     )
   }
 
-  const shouldClip = isOverflowing && !effectiveExpanded
+  // Apply the limit before the first ResizeObserver measurement as a
+  // fail-safe. Once measured, short content can render at its natural height;
+  // overflowing content remains clipped until explicitly expanded.
+  const shouldClip = hasPinnedLimit && naturalHeight === 0
+    ? true
+    : isOverflowing && !effectiveExpanded
   return (
     <div
       className={`group relative flex justify-end transition-all duration-200 ${isOverflowing ? 'cursor-pointer' : ''}`}

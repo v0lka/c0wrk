@@ -234,10 +234,11 @@ export function ChatArea() {
 
   return (
     <ScrollProvider>
-      <div className="flex flex-1 flex-col min-h-0 bg-background" ref={containerRef}>
-        {/* Pinned last user message — only when scrolled out of viewport */}
+      <div className="relative flex flex-1 flex-col min-h-0 bg-background" ref={containerRef}>
+        {/* Pinned last user message — overlay the viewport so showing it cannot
+            change the IntersectionObserver root height and toggle itself. */}
         {lastUserItem && !isLastUserVisible && (
-          <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border/50 px-4 py-3">
+          <div className="absolute inset-x-0 top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border/50 px-4 py-3">
             <UserMessage item={lastUserItem} isPinned maxHeight={maxPinnedHeight} />
           </div>
         )}
