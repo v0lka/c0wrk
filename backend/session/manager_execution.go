@@ -29,6 +29,14 @@ import (
 // persist a terminal goal state) can treat this as non-fatal via errors.Is.
 var ErrNoActiveTask = errors.New("no active task to cancel")
 
+// ErrSessionArchived is returned by SendMessage/ResumeTask when the target
+// session is archived. An archived session is read-only: no new task may be
+// launched or resumed on it. The UI hides the input shell for archived
+// sessions, but this guard is the single server-side choke point that also
+// defends inline action panels (e.g. the failed-task Resume button) and any
+// other caller of the manager. Restore the session to clear the flag.
+var ErrSessionArchived = errors.New("session is archived: restore it before sending messages or resuming tasks")
+
 // loadWorkDirectories fetches project-scoped and session-scoped auxiliary work
 // directories for the given session. It is best-effort: nil stores or listing
 // errors are logged and skipped. Project-scoped entries come first, then
@@ -342,6 +350,13 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 	}
 
 	session.mu.Lock()
+	// Archived sessions are read-only: reject before activating. This is the
+	// server-side choke point that prevents any caller (not just the UI) from
+	// launching a task on an archived session.
+	if session.Archived {
+		session.mu.Unlock()
+		return ErrSessionArchived
+	}
 	// Check if already active (prevent double-send on the same session)
 	if session.active {
 		session.mu.Unlock()
@@ -795,6 +810,15 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	}
 	if session == nil {
 		return fmt.Errorf("session not found: %s", id)
+	}
+
+	// Archived sessions are read-only: fail fast before touching the task store
+	// or restoring a blackboard. Mirrors the SendMessage guard.
+	session.mu.Lock()
+	archived := session.Archived
+	session.mu.Unlock()
+	if archived {
+		return ErrSessionArchived
 	}
 
 	adapter := NewTaskStoreAdapter(ts)

@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { useChatStore } from '@/stores/chatStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { resumeTask, cancelUnfinishedTask } from '@/api/chat'
+import { generateMessageId } from '@/lib/ids'
 import type { DisplayItem } from '@/types/messages'
 import { getResumeResolution, resumeResolved } from '@/types/messages'
 
@@ -40,14 +41,33 @@ export function ResumeActionPanel({ item }: { item: ResumeItem }) {
   // reload) — render nothing at the stream position.
   if (metadata?.resolved === true) return null
 
-  const handleResume = () => {
+  const handleResume = async () => {
+    // Snapshot the original metadata so the optimistic 'resumed' marking can be
+    // reverted if the backend rejects the resume (e.g. the session is archived —
+    // the manager guard returns ErrSessionArchived). updateMessage shallow-merges
+    // at the message level, so restoring the metadata reference replaces it wholesale.
+    const originalMetadata = item.message.metadata
     updateMessage(sessionId, item.message.id, { metadata: resumeResolved('resumed') })
     // Read the user's current model/reasoning selection so a model switch made
     // before resuming is honored (same semantics as a fresh SendMessage),
     // instead of silently inheriting the interrupted task's settings.
     const modelOverride = useInputModeStore.getState().selectedModel ?? ''
     const reasoningOverride = useInputModeStore.getState().selectedReasoning ?? ''
-    resumeTask(sessionId, modelOverride, reasoningOverride).catch(() => { /* error event will handle */ })
+    try {
+      await resumeTask(sessionId, modelOverride, reasoningOverride)
+    } catch (err) {
+      // Revert the optimistic 'resumed' state so the panel stays actionable,
+      // then surface the failure in the chat (mirrors useMessageSender).
+      updateMessage(sessionId, item.message.id, { metadata: originalMetadata })
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      useChatStore.getState().addMessage(sessionId, {
+        id: generateMessageId(),
+        sessionId,
+        type: 'error',
+        content: `Failed to resume task: ${errorMessage}`,
+        timestamp: Date.now(),
+      })
+    }
   }
 
   const handleCancel = () => {

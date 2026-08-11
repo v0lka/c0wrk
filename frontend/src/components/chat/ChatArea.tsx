@@ -14,6 +14,7 @@ import { ChatMessageRenderer, CompactErrorFallback } from './ChatMessageRenderer
 import { ExecutionPanels } from './ExecutionPanels'
 import { BlackboardPanel } from './BlackboardPanel'
 import { ChatInput } from './ChatInput'
+import { ArchivedBanner } from './ArchivedBanner'
 import { ScrollProvider } from './ScrollContext'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { MessageCircle } from 'lucide-react'
@@ -21,6 +22,12 @@ import { logger } from '@/lib/logger'
 
 export function ChatArea() {
   const activeSessionId = useSessionStore(s => s.activeSessionId)
+  // Whether the active session is archived. An archived session is read-only,
+  // so the message input shell is replaced by an "Archived" banner. Returns a
+  // primitive boolean for referential stability (no object allocation).
+  const isArchived = useSessionStore(s =>
+    s.sessions?.find(sess => sess.id === s.activeSessionId)?.archived ?? false
+  )
   const messages = useSessionMessages(activeSessionId)
   const streamingText = useChatStore(s => activeSessionId ? s.streamingText[activeSessionId] : undefined)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -154,6 +161,12 @@ export function ChatArea() {
 
   const hasContent = messages.length > 0 || !!streamingText
 
+  // Archived sessions are read-only: swap the input shell for an "Archived"
+  // banner. Hoisted into a single const so the archived gate lives in one
+  // place (used by both render branches below). activeSessionId is guaranteed
+  // non-null past the early return above, so no extra null check is needed.
+  const inputShell = isArchived ? <ArchivedBanner sessionId={activeSessionId} /> : <ChatInput />
+
   if (!hasContent) {
     return (
       <div className="flex flex-1 flex-col">
@@ -167,7 +180,7 @@ export function ChatArea() {
           <BlackboardPanel />
         </ErrorBoundary>
         <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Input error</div>}>
-          <ChatInput />
+          {inputShell}
         </ErrorBoundary>
       </div>
     )
@@ -199,7 +212,7 @@ export function ChatArea() {
           <BlackboardPanel />
         </ErrorBoundary>
         <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Input error</div>}>
-          <ChatInput />
+          {inputShell}
         </ErrorBoundary>
       </div>
     </ScrollProvider>

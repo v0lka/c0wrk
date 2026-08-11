@@ -619,6 +619,33 @@ func TestManager_SendMessage_AlreadyActive(t *testing.T) {
 	}
 }
 
+// TestManager_SendMessage_ArchivedRejected verifies the read-only invariant:
+// the manager must refuse to launch a task on an archived session. This is the
+// server-side choke point that backs the ArchivedBanner UI (and defends any
+// other caller of SendMessage).
+func TestManager_SendMessage_ArchivedRejected(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+
+	info, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	drainEvents(eventChan) // session_created
+
+	// Archive the session (toggles Archived=true in-memory and emits an event).
+	if err := manager.ArchiveSession(info.ID); err != nil {
+		t.Fatalf("ArchiveSession failed: %v", err)
+	}
+	drainEvents(eventChan) // session_archived
+
+	// SendMessage must be rejected with the sentinel error before the agent
+	// goroutine is launched.
+	err = manager.SendMessage(context.Background(), info.ID, "hello", nil, nil, "", "", false, "", false)
+	if !errors.Is(err, ErrSessionArchived) {
+		t.Errorf("SendMessage on archived session should return ErrSessionArchived, got %v", err)
+	}
+}
+
 func TestManager_ConcurrentCreateDelete(t *testing.T) {
 	manager, _, _ := testManager(t)
 

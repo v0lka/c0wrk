@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -349,5 +350,44 @@ func TestResumeTask_AppliesModelOverride(t *testing.T) {
 	}
 	if got := caller.ReasoningEffort(); got != reasoning {
 		t.Errorf("LLM reasoning effort after ResumeTask = %q, want %q", got, reasoning)
+	}
+}
+
+// TestManager_ResumeTask_ArchivedRejected verifies that an archived session
+// cannot resume an interrupted task. The guard must fire before the task store
+// is consulted, so no trajectory/blackboard work occurs.
+func TestManager_ResumeTask_ArchivedRejected(t *testing.T) {
+	store := &resumeTaskStore{
+		task: &TaskRecord{ID: "task-archived", SessionID: "ignored", Status: "in_progress"},
+	}
+	eventChan := make(chan Event, 100)
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "should-not-run"}), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	// Archive the session (toggles Archived=true in-memory).
+	if err := mgr.ArchiveSession(info.ID); err != nil {
+		t.Fatalf("ArchiveSession failed: %v", err)
+	}
+	drainEvents(eventChan) // session_created + session_archived
+
+	// ResumeTask must be rejected with the sentinel error.
+	err = mgr.ResumeTask(context.Background(), info.ID, "", "")
+	if !errors.Is(err, ErrSessionArchived) {
+		t.Errorf("ResumeTask on archived session should return ErrSessionArchived, got %v", err)
+	}
+
+	// The guard fires before the task store is touched, so no trajectory load
+	// should have occurred.
+	store.mu.Lock()
+	loads := store.loadTrajCalls
+	store.mu.Unlock()
+	if loads != 0 {
+		t.Errorf("ResumeTask should not consult the task store for an archived session, loadTrajCalls=%d", loads)
 	}
 }
