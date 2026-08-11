@@ -135,6 +135,7 @@ export interface PendingToolConfirm {
   args: string
   reasoning?: string
   tool_call_id?: string
+  disable_judge?: boolean
 }
 
 export interface PendingStepLimit {

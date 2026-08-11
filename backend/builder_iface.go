@@ -32,6 +32,7 @@ type appBuilder interface {
 	GetBaseAgentDirs() []string
 	GetAgentDescriptors(projectAgentDir string) []agents.AgentDescriptor
 	ModelRegistry() *llm.ModelRegistry
+	JudgeAvailable() bool
 }
 
 // builder returns the appBuilder used by FrontendAPI. Tests inject a fake by

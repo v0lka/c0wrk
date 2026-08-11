@@ -32,6 +32,10 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
   // default mutating-action policy). Distinct from `judgeReasoning`, which is
   // the on-demand "Ask Agent" verdict the user requests from the card.
   const reason = typeof metadata?.reasoning === 'string' ? metadata.reasoning.trim() : ''
+  // True when the strict automatic judge (Smart Approve) already evaluated this
+  // call; the advisory "Ask Agent" button is hidden so the call is not judged
+  // a second time.
+  const disableJudge = metadata?.disable_judge === true
   const judgeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useToolJudgeEvents(sessionId, confirmId, {
@@ -157,9 +161,11 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
       </div>
       <div className="mt-2 flex flex-wrap gap-2">
         <Button size="sm" onClick={handleResponseAllowOnce} className="text-xs">Allow Once</Button>
-        <Button size="sm" variant="secondary" onClick={handleAskAgent} disabled={judgeLoading || judgeReasoning !== null} className="text-xs">
-          {judgeLoading ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Evaluating...</> : judgeReasoning !== null ? 'Evaluated' : 'Ask Agent'}
-        </Button>
+        {!disableJudge && (
+          <Button size="sm" variant="secondary" onClick={handleAskAgent} disabled={judgeLoading || judgeReasoning !== null} className="text-xs">
+            {judgeLoading ? <><Loader2 className="h-3 w-3 animate-spin mr-1" />Evaluating...</> : judgeReasoning !== null ? 'Evaluated' : 'Ask Agent'}
+          </Button>
+        )}
         <Button size="sm" variant="outline" onClick={handleResponseDeny} className="text-xs">Deny</Button>
       </div>
     </div>

@@ -144,6 +144,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			ToolPolicies:               toolPolicies,
 			DefaultPolicy:              cfg.Security.DefaultPolicy,
 			AutoApproveWorkspaceWrites: cfg.Security.AutoApproveWorkspaceWrites,
+			SmartApprove:               cfg.Security.SmartApprove,
 			AgentsMDMaxBytes:           cfg.Security.AgentsMDMaxBytes,
 			AgentsMDSearchPaths:        agentsMDSearchPaths(),
 		},

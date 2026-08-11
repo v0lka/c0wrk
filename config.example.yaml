@@ -236,6 +236,17 @@ security:
   # write operations within your own projects.
   auto_approve_workspace_writes: false
 
+  # Smart Approve: when true, a strict OWASP ASI (ASI01–ASI10) LLM judge
+  # automatically evaluates calls whose effective policy is user_confirm
+  # after all deterministic gates and workspace auto-approval above.
+  #   - A strict ALLOW executes without UI.
+  #   - CONFIRM, judge errors, timeouts, and unparseable responses always
+  #     fall back to manual confirmation (the "Ask Agent" button is hidden
+  #     because the strict judge already evaluated the call).
+  # Only effective user_confirm calls are judged; always_allow/always_deny
+  # and symlink-forced confirmations are unchanged. Default: false.
+  smart_approve: false
+
   # Per-tool security policies
   tool_policies:
     bash_exec:

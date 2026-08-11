@@ -317,6 +317,11 @@ type SecurityConfig struct {
 	// regardless of this setting. Default: false (always confirm writes).
 	AutoApproveWorkspaceWrites bool `yaml:"auto_approve_workspace_writes"`
 
+	// SmartApprove, when true, asks the strict judge to resolve effective
+	// user_confirm calls after deterministic and workspace gates. Only strict
+	// ALLOW skips UI; every other outcome still requires the user. Default false.
+	SmartApprove bool `yaml:"smart_approve"`
+
 	// AgentsMDMaxBytes caps the AGENTS.md content size injected into prompts.
 	// AGENTS.md is workspace-controlled untrusted input; without a cap a large or
 	// malicious file could flood the context window.

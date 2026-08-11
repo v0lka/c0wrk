@@ -123,7 +123,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Available tools config | backend → core | `BuiltinToolsConfig` (incl. ExtraShellBlacklist). Per-tool truncation via `BuilderConfig.ToolLimits.PerToolTruncation`. |
 | No Project mode        | backend → core | `Orchestrator.SetNoProjectMode()` (disables code tools, adds bash blacklist) |
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
-| Security policies      | backend → core | `BuilderConfig.Security`                 |
+| Security policies (incl. Smart Approve) | backend → core | `BuilderConfig.Security` (carries `SmartApprove`, `AutoApproveWorkspaceWrites`, `DefaultPolicy`, `ToolPolicies`) |
 | Execution result       | core → backend | `*HandleResult`                          |
 | Lifecycle events       | core → backend | `Emitter` method calls                   |
 | Blackboard state       | core → backend | `Blackboard` interface (for persistence) |

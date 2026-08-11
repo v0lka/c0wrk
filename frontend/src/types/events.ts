@@ -48,6 +48,9 @@ export interface ToolConfirmData {
   reasoning?: string
   /** tool_call_id of the triggering tool_call, for precise correlation. */
   tool_call_id?: string
+  /** True when the strict automatic judge (Smart Approve) already evaluated
+   *  this call; the advisory "Ask Agent" button should be hidden. */
+  disable_judge?: boolean
 }
 
 export interface AskUserQuestion {

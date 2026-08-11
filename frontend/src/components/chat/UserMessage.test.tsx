@@ -5,21 +5,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DisplayItem } from '@/types/messages'
 import { UserMessage } from './UserMessage'
 
+// The expanded bubble renders a CopyButton which calls `clipboardSetText` →
+// the Wails runtime. Mock it so no real window.runtime binding is touched
+// (mirrors CopyButton.test / MessageFooter.test).
+vi.mock('@/api/runtime', () => ({
+  clipboardSetText: vi.fn().mockResolvedValue(true),
+}))
+
 ;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
 
-let measuredHeight = 0
-let resizeCallback: ResizeObserverCallback | null = null
 let root: Root | null = null
-
-class ResizeObserverMock {
-  constructor(callback: ResizeObserverCallback) {
-    resizeCallback = callback
-  }
-
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
 
 const item: Extract<DisplayItem, { kind: 'user' }> = {
   kind: 'user',
@@ -33,68 +28,204 @@ const item: Extract<DisplayItem, { kind: 'user' }> = {
   },
 }
 
-function renderPinned(): HTMLElement {
+function renderUser(sticky = false): HTMLElement {
   const container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
   act(() => {
-    root!.render(<UserMessage item={item} isPinned maxHeight={100} />)
+    root!.render(<UserMessage item={item} sticky={sticky} />)
   })
-  return container.firstElementChild as HTMLElement
+  return container
 }
 
-function notifyResize(): void {
-  act(() => {
-    resizeCallback?.([], {} as ResizeObserver)
-  })
+function findStickyRow(container: HTMLElement): Element | null {
+  return container.querySelector('[data-message-id="user-1"]')
 }
 
-describe('UserMessage pinned height', () => {
+describe('UserMessage non-sticky mode', () => {
   beforeEach(() => {
-    measuredHeight = 0
-    resizeCallback = null
     document.body.replaceChildren()
-    vi.stubGlobal('ResizeObserver', ResizeObserverMock)
-    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => measuredHeight)
   })
 
   afterEach(() => {
     act(() => root?.unmount())
     root = null
-    vi.restoreAllMocks()
-    vi.unstubAllGlobals()
   })
 
-  it('applies the height limit before the first successful measurement', () => {
-    const pinned = renderPinned()
+  it('renders the full bubble without collapse/expand controls', () => {
+    const container = renderUser()
+    const message = findStickyRow(container)
 
-    expect(pinned.style.maxHeight).toBe('100px')
-    expect(pinned.style.overflow).toBe('hidden')
+    expect(message).not.toBeNull()
+    expect(message?.classList.contains('sticky')).toBe(false)
+    // No interactive role in the non-sticky path.
+    expect(message?.querySelector('[role="button"]')).toBeNull()
+    expect(message?.querySelector('[aria-expanded]')).toBeNull()
+    // Footer is present in full mode.
+    expect(message?.textContent).toContain('A long user message')
+  })
+})
+
+describe('UserMessage sticky mode', () => {
+  beforeEach(() => {
+    document.body.replaceChildren()
   })
 
-  it('keeps overflowing content clipped until the user expands it', () => {
-    const pinned = renderPinned()
-    measuredHeight = 240
-    notifyResize()
-
-    expect(pinned.style.maxHeight).toBe('100px')
-    expect(pinned.getAttribute('role')).toBe('button')
-    expect(pinned.getAttribute('aria-expanded')).toBe('false')
-
-    act(() => pinned.click())
-
-    expect(pinned.style.maxHeight).toBe('')
-    expect(pinned.style.overflow).toBe('')
-    expect(pinned.getAttribute('aria-expanded')).toBe('true')
+  afterEach(() => {
+    act(() => root?.unmount())
+    root = null
   })
 
-  it('removes the fail-safe limit after measuring short content', () => {
-    const pinned = renderPinned()
-    measuredHeight = 60
-    notifyResize()
+  it('collapses to a single truncated line by default', () => {
+    const container = renderUser(true)
+    const message = findStickyRow(container)
 
-    expect(pinned.style.maxHeight).toBe('')
-    expect(pinned.style.overflow).toBe('')
-    expect(pinned.getAttribute('role')).toBeNull()
+    expect(message?.classList.contains('sticky')).toBe(true)
+    expect(message?.classList.contains('top-0')).toBe(true)
+    expect(message?.classList.contains('z-10')).toBe(true)
+
+    const trigger = message?.querySelector('[role="button"]')
+    expect(trigger).not.toBeNull()
+    // Collapsed initially.
+    expect(trigger?.getAttribute('aria-expanded')).toBe('false')
+    // The collapsed bubble is a single truncated line.
+    const bubble = trigger?.querySelector('.truncate')
+    expect(bubble).not.toBeNull()
+    expect(bubble?.textContent).toBe('A long user message')
+    // No footer rendered while collapsed.
+    expect(message?.textContent).not.toMatch(/\d{2}:\d{2}/)
+  })
+
+  it('expands to the full message on click, then collapses again on click', () => {
+    const container = renderUser(true)
+    const message = findStickyRow(container)
+    const trigger = message?.querySelector('[role="button"]') as Element
+
+    // Expand.
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    // Full content rendered (no truncation), footer visible.
+    expect(message?.querySelector('.truncate')).toBeNull()
+    expect(message?.textContent).toContain('A long user message')
+    expect(message?.textContent).toMatch(/\d{2}:\d{2}/)
+
+    // Collapse again.
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    expect(message?.querySelector('.truncate')).not.toBeNull()
+  })
+
+  it('renders a gradient erasure strip below the floating bubble', () => {
+    const container = renderUser(true)
+    const message = findStickyRow(container)
+
+    // The gradient fade element is the last child of the sticky wrapper.
+    const children = Array.from(message?.children ?? [])
+    const fade = children[children.length - 1]
+    expect(fade).toBeTruthy()
+    expect(fade?.className).toContain('bg-gradient-to-b')
+    expect(fade?.className).toContain('from-background')
+    expect(fade?.className).toContain('to-transparent')
+    expect(fade?.className).toContain('pointer-events-none')
+  })
+
+  it('keeps exactly one DOM instance across collapse/expand toggles', () => {
+    const container = renderUser(true)
+    const before = container.querySelectorAll('[data-message-id="user-1"]')
+    expect(before).toHaveLength(1)
+
+    const trigger = container.querySelector('[role="button"]') as Element
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const after = container.querySelectorAll('[data-message-id="user-1"]')
+    expect(after).toHaveLength(1)
+  })
+
+  it('does not collapse when clicking an interactive descendant while expanded', async () => {
+    const container = renderUser(true)
+    const message = findStickyRow(container)
+    const trigger = message?.querySelector('[role="button"]') as Element
+
+    // Expand first.
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+
+    // Simulate a click on the copy button (a <button> descendant). The handler
+    // inspects the event target's closest interactive ancestor and bails out.
+    // Use the async act() so the CopyButton's clipboard promise (which calls
+    // setCopied in a .then()) flushes its state update inside the act scope.
+    const button = message?.querySelector('button') ?? null
+    if (button) {
+      await act(async () => {
+        button.dispatchEvent(
+          new MouseEvent('click', { bubbles: true }),
+        )
+      })
+      expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    }
+  })
+
+  it('shows goal + attachment icons in collapsed sticky mode when metadata carries them', () => {
+    const metaItem: Extract<DisplayItem, { kind: 'user' }> = {
+      kind: 'user',
+      message: {
+        ...item.message,
+        content: 'Implement the OWASP hardening',
+        metadata: {
+          goal: true,
+          attachments: [
+            { original_name: 'OWASP.pdf', format: 'pdf', size_bytes: 1000 },
+            { original_name: 'notes.md', format: 'md', size_bytes: 500 },
+          ],
+          images: [
+            { id: 'i1', name: 'shot.png', thumbnail: 'data:', path: '/x.png', media_type: 'image/png' },
+          ],
+        },
+      },
+    }
+
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    act(() => {
+      root!.render(<UserMessage item={metaItem} sticky />)
+    })
+
+    const trigger = container.querySelector('[role="button"]') as Element
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+
+    // Goal icon (Target) present.
+    const goalIcon = trigger.querySelector('[aria-label="Goal"]')
+    expect(goalIcon).not.toBeNull()
+
+    // Document count badge "2".
+    expect(trigger.textContent).toContain('2')
+
+    // Image count badge "1".
+    const imgs = trigger.querySelectorAll('svg')
+    // At least 3 icons: Target, FileText, ImageIcon.
+    expect(imgs.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('renders no indicators in collapsed mode for a plain-text message', () => {
+    const container = renderUser(true)
+    const trigger = container.querySelector('[role="button"]') as Element
+
+    // No goal icon, no count badges.
+    expect(trigger.querySelector('[aria-label="Goal"]')).toBeNull()
+    expect(trigger.textContent).toBe('A long user message')
   })
 })

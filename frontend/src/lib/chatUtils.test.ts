@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { roleToType, chatMessageToUI, rebuildPlanFromHistory, groupMessages } from './chatUtils'
+import { roleToType, chatMessageToUI, rebuildPlanFromHistory, groupMessages, isPersistableHistoryMessage } from './chatUtils'
 import type { ChatMessage } from '@/types/models'
 import type { ChatMessageUI } from '@/types/messages'
 
@@ -50,6 +50,25 @@ describe('roleToType', () => {
   it('unknown role falls back to assistant via chatMessageToUI', () => {
     const result = chatMessageToUI(makeMsg({ role: 'unknown_role_xyz' }))
     expect(result.type).toBe('assistant')
+  })
+})
+
+describe('isPersistableHistoryMessage', () => {
+  it('keeps normal conversational roles', () => {
+    expect(isPersistableHistoryMessage(makeMsg({ role: 'user', content: 'hi' }))).toBe(true)
+    expect(isPersistableHistoryMessage(makeMsg({ role: 'assistant', content: 'hello' }))).toBe(true)
+    expect(isPersistableHistoryMessage(makeMsg({ role: 'tool_call' }))).toBe(true)
+  })
+
+  it('drops "event_unknown" rows (leaked transient UI events)', () => {
+    // Mirrors a persisted attachments:changed / session_pinned row: role
+    // "event_unknown", content = raw JSON metadata payload.
+    const leaked = makeMsg({
+      role: 'event_unknown',
+      content: '{"attachments":[{"id":"x","original_name":"a.pdf","format":"pdf","size_bytes":1,"is_image":false}]}',
+      metadata: JSON.stringify({ attachments: [{ id: 'x' }] }),
+    })
+    expect(isPersistableHistoryMessage(leaked)).toBe(false)
   })
 })
 

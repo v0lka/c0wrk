@@ -204,3 +204,34 @@ func TestEventPersister_EmptyOutputTaskCompletePersistsPlaceholder(t *testing.T)
 		t.Errorf("expected placeholder, got %q", rows[0].Content)
 	}
 }
+
+// TestEventPersister_UIStateEventsAreTransient verifies that UI-only state
+// events emitted with a SessionID (attachments:changed, session pin/archive
+// toggles) are NOT persisted. These carry no conversational content; their
+// raw JSON metadata payload would otherwise leak into session_messages as an
+// event_unknown row whose content is the JSON blob (rendering as garbage text
+// on reload).
+func TestEventPersister_UIStateEventsAreTransient(t *testing.T) {
+	store := &captureStore{}
+	p := NewEventPersister(store)
+
+	events := []Event{
+		{SessionID: "s1", Type: "attachments:changed", Data: AttachmentsChangedData{
+			Attachments: []AttachmentInfo{
+				{ID: "att-1", OriginalName: "report.pdf", Format: "pdf", SizeBytes: 1000},
+			},
+		}},
+		{SessionID: "s1", Type: "attachments:changed", Data: AttachmentsChangedData{Attachments: []AttachmentInfo{}}},
+		{SessionID: "s1", Type: "session_pinned", Data: SessionPinnedData{ID: "s1", Pinned: true}},
+		{SessionID: "s1", Type: "session_unpinned", Data: SessionPinnedData{ID: "s1", Pinned: false}},
+		{SessionID: "s1", Type: "session_archived", Data: SessionArchivedData{ID: "s1", Archived: true}},
+		{SessionID: "s1", Type: "session_unarchived", Data: SessionArchivedData{ID: "s1", Archived: false}},
+	}
+	for _, evt := range events {
+		p.Persist(evt)
+	}
+
+	if rows := store.snapshot(); len(rows) != 0 {
+		t.Fatalf("expected 0 persisted rows for transient UI state events, got %d: %+v", len(rows), rows)
+	}
+}

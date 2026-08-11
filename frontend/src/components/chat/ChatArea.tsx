@@ -1,13 +1,12 @@
-import { useEffect, useLayoutEffect, useRef, useMemo, useState } from 'react'
+import { useEffect, useRef, useMemo } from 'react'
 import { useChatStore, useSessionMessages } from '@/stores/chatStore'
-import { groupMessages, chatMessageToUI, rebuildPlanFromHistory } from '@/lib/chatUtils'
+import { groupMessages, chatMessageToUI, rebuildPlanFromHistory, isPersistableHistoryMessage } from '@/lib/chatUtils'
 import { useSessionStore } from '@/stores/sessionStore'
 import { usePlanStore } from '@/stores/planStore'
 import { getSessionHistory, getSessionRuntimeStatus, getPendingActions, resolveStalePrompt } from '@/api/chat'
 import { reconcileRuntimeStatus, reconcilePendingActions, stalePromptMatchField } from '@/lib/sessionRuntime'
 import { generateMessageId } from '@/lib/ids'
 import type { ChatMessageUI } from '@/types/messages'
-import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
 import { ActivityIndicator } from './ActivityIndicator'
 import { ChatScrollManager } from './ChatScrollManager'
@@ -25,26 +24,6 @@ export function ChatArea() {
   const messages = useSessionMessages(activeSessionId)
   const streamingText = useChatStore(s => activeSessionId ? s.streamingText[activeSessionId] : undefined)
   const scrollRef = useRef<HTMLDivElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [containerHeight, setContainerHeight] = useState(600)
-
-  // Track container height via ResizeObserver (no rAF fallback)
-  useLayoutEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const h = el.getBoundingClientRect().height
-    if (h > 0) setContainerHeight(h)
-
-    const ro = new ResizeObserver(entries => {
-      for (const entry of entries) {
-        if (entry.contentRect.height > 0) setContainerHeight(entry.contentRect.height)
-      }
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [activeSessionId])
-
-  const maxPinnedHeight = containerHeight / 7
 
   // Load persisted history on session change, then reconcile the chat store
   // against the backend runtime status and pending-action set AFTER the merge.
@@ -89,7 +68,16 @@ export function ChatArea() {
       if (cancelled) return
 
       if (history.length > 0) {
-        const uiMessages = history.map((msg) => chatMessageToUI(msg))
+        // Filter out "event_unknown" rows — transient UI events
+        // (attachments:changed, session_pinned, etc.) that leaked into the DB
+        // before they were marked transient in the persister. Their content is
+        // the raw JSON metadata payload, which would render as garbage text.
+        const filteredHistory = history.filter(isPersistableHistoryMessage)
+        const droppedCount = history.length - filteredHistory.length
+        if (droppedCount > 0) {
+          logger.debug(`Filtered ${droppedCount} transient event_unknown row(s) from session history`)
+        }
+        const uiMessages = filteredHistory.map((msg) => chatMessageToUI(msg))
         // Merge (not replace) so live events delivered while the RPC was in
         // flight — e.g. a terminal `error` — are not clobbered.
         useChatStore.getState().mergeHistoryMessages(activeSessionId, uiMessages, loadStartedAt)
@@ -151,53 +139,6 @@ export function ChatArea() {
 
   const { items: displayItems } = useMemo(() => groupMessages(messages), [messages])
 
-  // Find last user message for conditional pinning (message stays in chat history)
-  const lastUserItem = useMemo(() => {
-    for (let i = displayItems.length - 1; i >= 0; i--) {
-      if (displayItems[i]!.kind === 'user') {
-        return displayItems[i] as Extract<typeof displayItems[number], { kind: 'user' }>
-      }
-    }
-    return null
-  }, [displayItems])
-
-  // IntersectionObserver ref for stable cleanup across effect re-runs
-  const observerRef = useRef<IntersectionObserver | null>(null)
-
-  // Track whether the last user message is visible in the scroll viewport
-  const [isLastUserVisible, setIsLastUserVisible] = useState(false)
-  const lastUserMessageId = lastUserItem?.message.id
-
-  useEffect(() => {
-    if (!lastUserMessageId || !scrollRef.current) {
-      setIsLastUserVisible(true)
-      return
-    }
-
-    const viewport = scrollRef.current
-    const raf = requestAnimationFrame(() => {
-      const element = viewport.querySelector(`[data-message-id="${lastUserMessageId}"]`)
-      if (!element) {
-        setIsLastUserVisible(true)
-        return
-      }
-
-      const observer = new IntersectionObserver(
-        ([entry]) => {
-          setIsLastUserVisible(entry?.isIntersecting ?? true)
-        },
-        { root: viewport, threshold: 0 },
-      )
-      observer.observe(element)
-      observerRef.current = observer
-    })
-
-    return () => {
-      cancelAnimationFrame(raf)
-      observerRef.current?.disconnect()
-    }
-  }, [lastUserMessageId])
-
   if (!activeSessionId) {
     return (
       <div className="flex flex-1 flex-col">
@@ -234,23 +175,23 @@ export function ChatArea() {
 
   return (
     <ScrollProvider>
-      <div className="relative flex flex-1 flex-col min-h-0 bg-background" ref={containerRef}>
-        {/* Pinned last user message — overlay the viewport so showing it cannot
-            change the IntersectionObserver root height and toggle itself. */}
-        {lastUserItem && !isLastUserVisible && (
-          <div className="absolute inset-x-0 top-0 z-10 bg-background/95 backdrop-blur-sm border-b border-border/50 px-4 py-3">
-            <UserMessage item={lastUserItem} isPinned maxHeight={maxPinnedHeight} />
-          </div>
-        )}
+      <div className="relative flex flex-1 flex-col min-h-0 bg-background">
         <ChatScrollManager key={activeSessionId} messages={messages} streamingText={streamingText} scrollRef={scrollRef}>
           <div className="p-4 space-y-4 min-w-0">
-            <ChatMessageRenderer items={displayItems} />
-            {streamingText && (
-              <ErrorBoundary fallback={<CompactErrorFallback />}>
-                <AssistantMessage content={streamingText} isStreaming />
-              </ErrorBoundary>
-            )}
-            <ActivityIndicator />
+            <ChatMessageRenderer
+              items={displayItems}
+              stickyUserMessages
+              trailingContent={(
+                <>
+                  {streamingText && (
+                    <ErrorBoundary fallback={<CompactErrorFallback />}>
+                      <AssistantMessage content={streamingText} isStreaming />
+                    </ErrorBoundary>
+                  )}
+                  <ActivityIndicator />
+                </>
+              )}
+            />
           </div>
         </ChatScrollManager>
         <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Panel error</div>}>

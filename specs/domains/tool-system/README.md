@@ -83,6 +83,7 @@ From `config.yaml`:
 ```yaml
 security:
   default_policy: "user_confirm"
+  smart_approve: false  # strict OWASP ASI judge for effective user_confirm (opt-in)
   tool_policies:
     bash_exec: { policy: "user_confirm" }  # key matches the active shell tool: bash_exec (Unix) / posh_exec (Windows)
     write_file: { policy: "user_confirm" }

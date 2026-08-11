@@ -548,21 +548,23 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmF
 		}
 
 		a.pendingConfirmations.Store(requestID, &pendingConfirmData{
-			ch:          ch,
-			taskContext: sdktools.TaskContextFrom(ctx),
-			toolName:    req.ToolName,
-			input:       req.Input,
-			sessionID:   sessionID,
-			reasoning:   req.JudgeReasoning,
-			toolCallID:  toolCallID,
+			ch:           ch,
+			taskContext:  sdktools.TaskContextFrom(ctx),
+			toolName:     req.ToolName,
+			input:        req.Input,
+			sessionID:    sessionID,
+			reasoning:    req.JudgeReasoning,
+			toolCallID:   toolCallID,
+			disableJudge: req.DisableJudge,
 		})
 
 		payload := session.ToolConfirmPayload{
-			ConfirmID:  requestID,
-			Tool:       req.ToolName,
-			Args:       string(req.Input),
-			Reasoning:  req.JudgeReasoning,
-			ToolCallID: toolCallID,
+			ConfirmID:    requestID,
+			Tool:         req.ToolName,
+			Args:         string(req.Input),
+			Reasoning:    req.JudgeReasoning,
+			ToolCallID:   toolCallID,
+			DisableJudge: req.DisableJudge,
 		}
 		uiEmit(session.Event{SessionID: sessionID, Type: "tool_confirm", Data: payload})
 

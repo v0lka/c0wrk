@@ -139,6 +139,10 @@ func (m *mockBuilder) ModelRegistry() *llm.ModelRegistry {
 	return nil
 }
 
+func (m *mockBuilder) JudgeAvailable() bool {
+	return false
+}
+
 // newTestAPI creates a FrontendAPI backed by a mock builder and a temp config.
 func newTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder, string) {
 	t.Helper()
@@ -942,6 +946,35 @@ func TestUpdateSecuritySettings_FiltersInternal(t *testing.T) {
 	}
 	if _, ok := f.config.Security.ToolPolicies["bash_exec"]; !ok {
 		t.Error("bash_exec should be preserved")
+	}
+}
+
+// TestGetUpdateSecuritySettings_SmartApproveRoundTrip verifies that the
+// SmartApprove flag survives a get → set → get cycle and propagates to the
+// shared tool registry via UpdateSecurityPolicies.
+func TestGetUpdateSecuritySettings_SmartApproveRoundTrip(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+	f.config.Security.SmartApprove = false
+
+	// Default-off getter exposes the stored value.
+	if got := f.GetSecuritySettings().SmartApprove; got {
+		t.Fatalf("SmartApprove = true, want false by default")
+	}
+
+	if err := f.UpdateSecuritySettings(SecuritySettingsResponse{
+		DefaultPolicy: "user_confirm",
+		SmartApprove:  true,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.config.Security.SmartApprove {
+		t.Error("SmartApprove not persisted to config")
+	}
+	if mock.updateSecPolicyCalls != 1 {
+		t.Errorf("UpdateSecurityPolicies called %d times, want 1", mock.updateSecPolicyCalls)
+	}
+	if got := f.GetSecuritySettings().SmartApprove; !got {
+		t.Error("SmartApprove not reflected in GetSecuritySettings")
 	}
 }
 

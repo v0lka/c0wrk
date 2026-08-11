@@ -203,6 +203,7 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
         args: c.args,
         reasoning: c.reasoning ?? '',
         tool_call_id: c.tool_call_id,
+        disable_judge: c.disable_judge,
         tool_msg_id: toolMsgId,
         plan_step_id: toolPlanStepId,
       } as Record<string, unknown>,

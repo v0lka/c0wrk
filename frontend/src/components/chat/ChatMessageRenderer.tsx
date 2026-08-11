@@ -89,18 +89,72 @@ function getItemKey(item: DisplayItem): string {
   return item.id
 }
 
-export function ChatMessageRenderer({ items }: { items: DisplayItem[] }) {
+function renderItem(item: DisplayItem, stickyUserMessage: boolean): React.ReactNode {
+  if (item.kind === 'user') {
+    return (
+      <ErrorBoundary key={getItemKey(item)} fallback={compactErrorFallback}>
+        <UserMessage item={item} sticky={stickyUserMessage} />
+      </ErrorBoundary>
+    )
+  }
+
+  const Component = renderers[item.kind]
+  if (!Component) return null
+  return (
+    <ErrorBoundary key={getItemKey(item)} fallback={compactErrorFallback}>
+      <Component item={item} />
+    </ErrorBoundary>
+  )
+}
+
+function groupIntoStickyTurns(items: DisplayItem[]): DisplayItem[][] {
+  const groups: DisplayItem[][] = []
+
+  for (const item of items) {
+    if (item.kind === 'user' || groups.length === 0) {
+      groups.push([item])
+    } else {
+      groups[groups.length - 1]!.push(item)
+    }
+  }
+
+  return groups
+}
+
+interface ChatMessageRendererProps {
+  items: DisplayItem[]
+  stickyUserMessages?: boolean
+  trailingContent?: React.ReactNode
+}
+
+export function ChatMessageRenderer({
+  items,
+  stickyUserMessages = false,
+  trailingContent,
+}: ChatMessageRendererProps) {
+  if (!stickyUserMessages) {
+    return (
+      <>
+        {items.map((item) => renderItem(item, false))}
+        {trailingContent}
+      </>
+    )
+  }
+
+  const turns = groupIntoStickyTurns(items)
   return (
     <>
-      {items.map((item) => {
-        const Component = renderers[item.kind]
-        if (!Component) return null
+      {turns.map((turn, index) => {
+        const startsWithUser = turn[0]?.kind === 'user'
+        const isLastTurn = index === turns.length - 1
         return (
-          <ErrorBoundary key={getItemKey(item)} fallback={compactErrorFallback}>
-            <Component item={item} />
-          </ErrorBoundary>
+          <div key={getItemKey(turn[0]!)} className="space-y-4 min-w-0">
+            {turn.map((item) => renderItem(item, startsWithUser && item.kind === 'user'))}
+            {isLastTurn && trailingContent}
+          </div>
         )
       })}
+      {turns.length === 0 && trailingContent}
     </>
   )
 }

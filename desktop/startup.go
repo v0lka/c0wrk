@@ -30,13 +30,14 @@ import (
 // pendingConfirmData holds the state for a pending tool confirmation,
 // including metadata needed for on-demand judge evaluation.
 type pendingConfirmData struct {
-	ch          chan sdktools.ConfirmationResponse
-	taskContext string
-	toolName    string
-	input       json.RawMessage
-	sessionID   string
-	reasoning   string
-	toolCallID  string // tool_call_id of the triggering tool_call (for precise frontend correlation)
+	ch           chan sdktools.ConfirmationResponse
+	taskContext  string
+	toolName     string
+	input        json.RawMessage
+	sessionID    string
+	reasoning    string
+	toolCallID   string // tool_call_id of the triggering tool_call (for precise frontend correlation)
+	disableJudge bool   // true when strict judge already ran (Smart Approve) — hide advisory Ask Agent
 }
 
 // pendingStepLimitEntry wraps the step-limit response channel with the

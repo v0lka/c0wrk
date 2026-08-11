@@ -126,6 +126,7 @@ type ToolRegistry struct {
 	extraShellBlacklist        []*regexp.Regexp
 	logger                     *slog.Logger
 	autoApproveWorkspaceWrites bool
+	smartApprove               bool
 }
 
 // PreExecuteHook is called before tool execution. It may block to wait for
@@ -172,6 +173,7 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		extraShellBlacklist:        r.extraShellBlacklist, // shared (compiled regexps are read-only)
 		logger:                     r.logger,
 		autoApproveWorkspaceWrites: r.autoApproveWorkspaceWrites,
+		smartApprove:               r.smartApprove,
 	}
 	if r.disabledTools != nil {
 		cloned.disabledTools = make(map[string]bool, len(r.disabledTools))
@@ -254,14 +256,17 @@ func (r *ToolRegistry) SetLogger(l *slog.Logger) {
 }
 
 func (r *ToolRegistry) log() *slog.Logger {
-	if r.logger != nil {
-		return r.logger
+	r.mu.RLock()
+	logger := r.logger
+	r.mu.RUnlock()
+	if logger != nil {
+		return logger
 	}
 	return slog.Default()
 }
 
 // SetConfirmFunc sets the confirmation callback for mutating tools.
-// If nil, all tools execute without confirmation (CLI mode).
+// If nil, tools requiring confirmation are denied (fail-closed).
 func (r *ToolRegistry) SetConfirmFunc(fn sdktools.ConfirmFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -308,6 +313,15 @@ func (r *ToolRegistry) SetAutoApproveWorkspaceWrites(enabled bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.autoApproveWorkspaceWrites = enabled
+}
+
+// SetSmartApprove enables or disables strict automatic evaluation of calls
+// whose effective policy is PolicyUserConfirm. Only a strict ALLOW executes
+// without UI; every other outcome remains a user confirmation.
+func (r *ToolRegistry) SetSmartApprove(enabled bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.smartApprove = enabled
 }
 
 // SetPreExecuteHook sets a hook that is called before every non-internal tool execution.
@@ -537,6 +551,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		// is within the session workspace or temp directory (equal peers).
 		// Symlinks are already intercepted by checkSymlinksAndConfirm above,
 		// so any path that reached this point is a real (non-symlink) path.
+		confirmReason := defaultConfirmReason(name)
 		r.mu.RLock()
 		autoApprove := r.autoApproveWorkspaceWrites
 		r.mu.RUnlock()
@@ -547,13 +562,56 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 					r.log().Debug("workspace auto-approve: Judge allows", "tool", name, "reason", reason)
 					return tool.Execute(ctx, input)
 				}
-				return r.confirmAndExecute(ctx, tool, name, input, reason)
+				if reason != "" {
+					confirmReason = reason
+				}
 			}
 		}
-		// No judge reasoning available (auto-approve disabled, or the tool
-		// has no ToolJudger): explain WHY confirmation is required so the user
-		// can make an informed decision rather than staring at a blank prompt.
-		return r.confirmAndExecute(ctx, tool, name, input, defaultConfirmReason(name))
+
+		// Smart Approve is deliberately last among automatic gates and applies
+		// only to the effective user_confirm policy. Workspace auto-approval
+		// above therefore retains priority, while symlink and always_deny paths
+		// have already returned before reaching this point.
+		r.mu.RLock()
+		smartApprove := r.smartApprove
+		strictJudge := r.judge
+		r.mu.RUnlock()
+		if smartApprove {
+			reasoning := "Strict judge is unavailable; requiring manual confirmation for safety"
+			verdict := sdktools.VerdictConfirm
+			if strictJudge != nil {
+				var judgeErr error
+				verdict, reasoning, judgeErr = strictJudge.JudgeStrict(ctx, sdktools.StrictJudgeRequest{
+					ToolName:    name,
+					Input:       input,
+					TaskContext: sdktools.TaskContextFrom(ctx),
+					ToolSource:  source,
+				})
+				if judgeErr != nil {
+					verdict = sdktools.VerdictConfirm
+					reasoning = "Strict judge evaluation failed; requiring manual confirmation for safety"
+				}
+			}
+
+			verdictText := "CONFIRM"
+			if verdict == sdktools.VerdictAllow {
+				verdictText = "ALLOW"
+			}
+			r.log().Info("security: smart approve verdict",
+				"tool", name,
+				"source", source,
+				"verdict", verdictText,
+				"asi_scope", "ASI01,ASI02,ASI03,ASI05,ASI09")
+
+			if verdict == sdktools.VerdictAllow {
+				return tool.Execute(ctx, input)
+			}
+			return r.confirmAndExecuteWithOptions(ctx, tool, name, input, reasoning, true)
+		}
+
+		// Smart Approve is off (or not applicable): retain the richest reason
+		// produced by the existing workspace auto-approval check.
+		return r.confirmAndExecute(ctx, tool, name, input, confirmReason)
 
 	default:
 		return tool.Execute(ctx, input)
@@ -591,20 +649,34 @@ func defaultConfirmReason(name string) string {
 }
 
 // confirmAndExecute requests user confirmation before executing a tool.
-// If confirmFunc is nil (CLI mode), executes without confirmation.
 func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool sdktools.Tool, name string, input json.RawMessage, reasoning string) (sdktools.ToolResult, error) {
+	return r.confirmAndExecuteWithOptions(ctx, tool, name, input, reasoning, false)
+}
+
+// confirmAndExecuteWithOptions requests user confirmation and optionally
+// disables the advisory Ask Agent action when strict judging already ran.
+// Missing confirmation infrastructure is a denial, never implicit approval.
+func (r *ToolRegistry) confirmAndExecuteWithOptions(ctx context.Context, tool sdktools.Tool, name string, input json.RawMessage, reasoning string, disableJudge bool) (sdktools.ToolResult, error) {
 	r.mu.RLock()
 	confirmFunc := r.confirmFunc
 	r.mu.RUnlock()
 
 	if confirmFunc == nil {
-		return tool.Execute(ctx, input)
+		r.log().Warn("security: tool confirmation unavailable; execution denied",
+			"tool", name,
+			"reason", "confirm_func_nil",
+			"asi_scope", "ASI02,ASI09")
+		return sdktools.ToolResult{
+			Content: fmt.Sprintf("tool %q requires user confirmation, but confirmation is unavailable", name),
+			IsError: true,
+		}, nil
 	}
 
 	resp, err := confirmFunc(ctx, sdktools.ConfirmationRequest{
 		ToolName:       name,
 		Input:          input,
 		JudgeReasoning: reasoning,
+		DisableJudge:   disableJudge,
 	})
 	if err != nil {
 		return sdktools.ToolResult{}, err

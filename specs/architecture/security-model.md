@@ -105,13 +105,32 @@ Important: `always_deny` is NEVER bypassed by auto-approval. Judge-flagged `alwa
 
 ## Judge System
 
-The `ToolJudge` (`github.com/v0lka/sp4rk/tools/judge.go`) provides LLM-based safety evaluation:
+The `ToolJudge` (`github.com/v0lka/sp4rk/tools/judge.go`) provides LLM-based safety evaluation in two modes:
 
-- NOT automatic gating — it is invoked on-demand via the frontend "Ask agent" button
+### Advisory Judge (on-demand)
+
+- Invoked on-demand via the frontend "Ask Agent" button on a pending confirmation card
+- Uses path-locality fast-paths (session-root auto-allow for non-shell tools) and an LRU cache keyed by `tool + input`
+- Provides reasoning displayed to the user in the confirmation dialog; the verdict does NOT auto-resolve the confirmation
 - When a tool has `PolicyAlwaysAllow` but implements the `ToolJudger` interface, the tool-specific judge may flag suspicious calls and escalate to user confirmation
 - File tools use `judgeReadInSessionRoots` / `judgeWriteInSessionRoots` (in `github.com/v0lka/sp4rk/tools/builtins/file_judge.go`) to check whether the target path is inside the session workspace or temp directory. Operations outside both roots return `allow=false` with a reason, escalating to user confirmation.
-- Shell tools (`bash_exec`, `posh_exec`) check the compiled blacklist patterns first (the more specific reason), then run path-containment analysis via `tools.PathsOutsideRoots` (`github.com/v0lka/sp4rk/tools/shellpaths.go`), which resolves shell idioms (tilde, env vars, `..`) to absolute paths and reports those outside the session roots. Both shells share the same extraction/containainment logic, differing only in `ShellKind` (`ShellBash` vs `ShellPosh`) so dialect-specific env syntax (`$VAR` vs `$env:VAR`) is recognized. The containment reason is `command references path(s) outside session roots: <paths>`.
-- The judge provides reasoning that is displayed to the user in the confirmation dialog
+- Shell tools (`bash_exec`, `posh_exec`) check the compiled blacklist patterns first (the more specific reason), then run path-containment analysis via `tools.PathsOutsideRoots` (`github.com/v0lka/sp4rk/tools/shellpaths.go`), which resolves shell idioms (tilde, env vars, `..`) to absolute paths and reports those outside the session roots. Both shells share the same extraction/containment logic, differing only in `ShellKind` (`ShellBash` vs `ShellPosh`) so dialect-specific env syntax (`$VAR` vs `$env:VAR`) is recognized. The containment reason is `command references path(s) outside session roots: <paths>`.
+
+### Strict Judge (Smart Approve)
+
+When `security.smart_approve` is enabled (default: false), a **strict OWASP ASI judge** (`ToolJudge.JudgeStrict`) automatically evaluates calls whose effective policy is `PolicyUserConfirm` — after all deterministic gates and workspace auto-approval have run. The strict judge:
+
+- Always calls the LLM (no path-locality fast-path, no session-root auto-allow)
+- Uses a conservative OWASP Agentic Top 10 (ASI01–ASI10) system prompt: mandatory ASI01/02/03/05/09 checks, plus contextual ASI04/06/07/08/10 when applicable
+- Returns only `ALLOW` or `CONFIRM`; a strict `ALLOW` requires the call to be clearly task-relevant, narrowly scoped, reversible or read-only, from a trusted source, with no material ASI risk
+- Does NOT use the advisory cache (verdicts are context-dependent and must not be reused across different tasks/sources)
+- Fails safe to `CONFIRM` on timeout, provider error, nil response, or unparseable output
+- Passes task context, tool source (`core` or MCP server name), and compact environment info to the LLM
+- Does not log raw tool arguments in the structured verdict log
+
+A strict `ALLOW` executes the tool without UI. A `CONFIRM` (or any failure outcome) falls back to manual confirmation with the strict judge's reasoning shown and the advisory "Ask Agent" button hidden (the `ConfirmationRequest.DisableJudge` flag signals this to the frontend).
+
+Smart Approve applies ONLY to effective `PolicyUserConfirm`. `PolicyAlwaysAllow`, `PolicyAlwaysDeny`, and symlink-forced confirmations are unchanged. Workspace auto-approval retains priority (a workspace-auto-approved call never reaches the strict judge).
 
 ## Confirmation Flow
 
@@ -121,6 +140,7 @@ Every confirmation request carries a **human-readable reason** in `ConfirmationR
 - **`always_allow` + Judge flagged** → the tool-specific Judge reasoning (e.g. blacklist match, path outside session roots).
 - **`user_confirm` + auto-approve denied** → the Judge reasoning that denied auto-approval.
 - **`user_confirm` (plain)** → a mutating-action explanation from `defaultConfirmReason(name)` (e.g. "This tool runs a shell command on your system."), so the dialog is never blank.
+- **Smart Approve CONFIRM/failure** → the strict judge's reasoning (e.g. "ASI05: command downloads and executes unverified code"). The `ConfirmationRequest.DisableJudge` flag is set to `true`, signaling the frontend to hide the advisory "Ask Agent" button (the call was already strictly evaluated).
 
 ```
 ToolRegistry.Execute()
@@ -341,6 +361,11 @@ security:
     web_fetch:
       policy: "always_allow"
 
+  # Smart Approve: strict OWASP ASI judge auto-resolves effective user_confirm
+  # calls. Only a strict ALLOW skips UI; all other outcomes fall back to manual
+  # confirmation. Default: false.
+  smart_approve: false
+
   # Indirect prompt injection defense
   injection_defense:
     enabled: true  # Wraps untrusted tool output in <untrusted-content> tags
@@ -350,7 +375,7 @@ security:
 
 - Setting `default_policy: "always_allow"` in production — removes all safety gates
 - Adding tools to the `internalTools` set without careful consideration — they bypass everything
-- Relying on the judge as a primary safety mechanism — it is advisory, not a gate
+- Relying on the **advisory** judge as a primary safety mechanism — it is on-demand only; Smart Approve's strict judge is a gate, but only when explicitly enabled and only for effective `user_confirm`
 - Implementing confirmation timeout — blocking indefinitely is intentional (user may be away)
 
 ## Related Specs

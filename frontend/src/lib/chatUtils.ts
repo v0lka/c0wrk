@@ -71,6 +71,20 @@ export function chatMessageToUI(msg: ChatMessage): ChatMessageUI {
   return { id, sessionId: msg.session_id, type: msgType, content, metadata, timestamp }
 }
 
+/**
+ * Predicate for filtering persisted history rows before conversion to UI.
+ *
+ * "event_unknown" rows are transient UI events (attachments:changed,
+ * session_pinned/unpinned/archived) that leaked into the DB before they were
+ * added to the persister's transient list (backend/session/event_persister.go).
+ * Their content is the raw JSON metadata payload, which would render as garbage
+ * text. Drop them at history-load time so existing DBs are cleaned up
+ * transparently without a migration.
+ */
+export function isPersistableHistoryMessage(msg: ChatMessage): boolean {
+  return msg.role !== 'event_unknown'
+}
+
 /** Transform a flat list of ChatMessageUI into a display-ready tree. */
 export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
   const items: DisplayItem[] = []

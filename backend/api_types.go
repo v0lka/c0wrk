@@ -152,6 +152,15 @@ type SecuritySettingsResponse struct {
 	DefaultPolicy              string                        `json:"default_policy"`
 	ToolPolicies               map[string]ToolPolicyResponse `json:"tool_policies"`
 	AutoApproveWorkspaceWrites bool                          `json:"auto_approve_workspace_writes"`
+	// SmartApprove enables the strict OWASP ASI judge for effective
+	// user_confirm calls. Only a strict ALLOW skips UI; every other outcome
+	// still requires the user. Default: false.
+	SmartApprove bool `json:"smart_approve"`
+	// JudgeAvailable reports whether the strict judge is configured and ready.
+	// Read-only: the frontend uses it to disable the Smart Approve toggle when
+	// no judge is operational (e.g. no LLM model configured). Always sent; the
+	// backend ignores any incoming value during updates.
+	JudgeAvailable bool `json:"judge_available"`
 }
 
 // ToolPolicyResponse holds per-tool policy for the frontend.

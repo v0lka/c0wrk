@@ -52,6 +52,7 @@ export function handleToolConfirmEvent(sessionId: string, data: ToolConfirmData)
       args: data.args,
       reasoning: data.reasoning,
       tool_call_id: data.tool_call_id,
+      disable_judge: data.disable_judge,
       tool_msg_id: toolMsgId,
       plan_step_id: toolPlanStepId,
     } as Record<string, unknown>,

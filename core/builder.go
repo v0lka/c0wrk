@@ -304,6 +304,17 @@ func (b *OrchestratorBuilder) ToolRegistry() *tools.ToolRegistry {
 	return b.registry
 }
 
+// JudgeAvailable reports whether a strict OWASP ASI tool judge is configured on
+// the shared registry. Returns false when the registry or judge is nil (e.g. no
+// LLM model is available to power the judge). Used by the frontend to disable
+// the Smart Approve toggle when the judge is not operational.
+func (b *OrchestratorBuilder) JudgeAvailable() bool {
+	if b.registry == nil {
+		return false
+	}
+	return b.registry.GetJudge() != nil
+}
+
 // MCPGateway returns the MCP gateway, or nil if not started.
 // Waits up to 30 seconds for the MCP startup goroutine to complete (note: MCP
 // startup is decoupled from initDone/WaitReady, so it may still be in flight
@@ -1911,6 +1922,7 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	}
 
 	b.registry.SetAutoApproveWorkspaceWrites(cfg.Security.AutoApproveWorkspaceWrites)
+	b.registry.SetSmartApprove(cfg.Security.SmartApprove)
 }
 
 // applySmallLLMPresets seeds the builder-level reasoning-effort default when

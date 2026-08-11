@@ -8,13 +8,13 @@ Transforms flat message arrays into a structured display tree, rendering each it
 
 - `frontend/src/lib/chatUtils.ts` — groupMessages() transform
 - `frontend/src/lib/chatGroupingHandlers.ts` — tool call, plan step, and reflection grouping handlers
-- `frontend/src/components/chat/ChatArea.tsx` — chat container (hosts pinned last user message + message list + new-activity banner)
-- `frontend/src/components/chat/ChatMessageRenderer.tsx` — item type dispatch
+- `frontend/src/components/chat/ChatArea.tsx` — chat container (hosts the root message list + new-activity banner and enables sticky user turns)
+- `frontend/src/components/chat/ChatMessageRenderer.tsx` — item type dispatch; at the root chat level, groups history into user-turn containers so each user message can stick within its own turn
 - `frontend/src/components/chat/toolCards/` — specialized tool card system (registry-driven per-tool rendering)
 - `frontend/src/components/chat/toolCards/toolCardRegistry.ts` — per-tool card config lookup, `(cached)` / `(batched)` suffix stripping
 - `frontend/src/components/chat/toolCards/ToolCard.tsx` — tool card component (renders cached/batched badges, suffix-aware title extraction)
 - `frontend/src/components/chat/ChecklistCard.tsx` — checklist card (the visual reference style for pending-action cards)
-- `frontend/src/components/chat/UserMessage.tsx` — user message component (supports `isPinned` mode for sticky rendering inside ChatArea)
+- `frontend/src/components/chat/UserMessage.tsx` — user message component with an optional sticky ("floating") mode: the message collapses to a single truncated line by default and expands to the full bubble on click (collapse again with another click); the collapsed line shows compact goal/attachment/image icons so the metadata is visible at a glance without expanding; an opaque background row plus a gradient fade strip below it erase chat content that scrolls underneath
 - `frontend/src/components/chat/UserMessageContent.tsx` — renders user message content with skill chips and clickable file links (falls back to Markdown for messages without references)
 - `frontend/src/components/chat/userMessageSegments.ts` — pure parser for `@file`/`/skill`/free-text segments in user input; accepts GitHub-canonical line anchors (`@file#L20-L36`) and legacy bare-number forms (`@file#20-36`)
 - `frontend/src/lib/markdownConfig.tsx` — `Markdown` wrapper component with remark/rehype plugins and custom element handlers: local file links open the File Viewer; external URLs (http/https/mailto/ftp/data) are dispatched to the system browser via `openExternalURL` (`runtime.BrowserOpenURL`) since the webview ignores `<a target="_blank">`; local image `src` values are resolved to base64 `data:` URLs (see `markdownImageResolve.ts`). Accepts optional `baseFilePath` + `workspaceRoot` props for relative-image resolution (file viewer passes both; chat rendering omits them, so local-image embedding is a file-viewer feature)
@@ -86,16 +86,18 @@ Key transformations in `groupMessages()`:
 - ScrollContext (React context) coordinates between components
 - Auto-scroll temporarily suspended during user scroll-up
 
-### Pinned Last User Message
+### Sticky User Turns
 
-All user messages always render in the chat history. The most recent user message is additionally rendered as a sticky element at the top of the chat area, but **only when it is not visible** in the scroll viewport:
+Every user message renders exactly once in the normal root chat stream. `ChatMessageRenderer` groups root items into user turns: a turn starts at a user message and includes all following items up to (but not including) the next user message.
 
-- `ChatArea.tsx` finds the last user item and renders `UserMessage` with `isPinned` inside a sticky wrapper (`sticky top-0 z-10`)
-- Visibility is tracked via an `IntersectionObserver` (root: scroll container, threshold: 0) watching the original message element in the chat history (located by `data-message-id`)
-- The pin appears only when the original message is fully scrolled out of view; disappears when any part becomes visible again
-- Collapsible when content exceeds `containerHeight / 7` (maxPinnedHeight) — click to expand full text
-- Provides context for what the agent is working on when the original message is off-screen
-- Does not scroll with message list (sticky positioning)
+- The user message at the start of each turn renders with `sticky top-0`; the enclosing turn is its natural sticky boundary, so the next user turn displaces it without a duplicate overlay.
+- `ChatArea.tsx` enables sticky turns only for the root history. Nested renderers inside plan-step and subagent blocks retain ordinary, non-sticky user-message rendering.
+- Streaming assistant output and the activity indicator are trailing content inside the final turn, so the latest user message remains sticky while generation is active.
+- Sticky messages use one DOM branch and one `data-message-id` instance. There is no separately rendered last-user copy and no visibility state synchronized between copies.
+- A sticky message **collapses to a single truncated line** by default and **expands to the full bubble on click** (collapse again with another click). The collapsed state shows a plain-text preview (whitespace collapsed, `truncate`) instead of the rich rendering; the expanded state restores metadata badges, file/skill chips, Markdown, and the footer. Clicks on interactive descendants while expanded (file refs, Markdown links, the copy button) do not collapse the message — the toggle handler inspects the event target's closest interactive ancestor and bails out.
+  - In the collapsed state, **compact metadata indicators** precede the text: a Target icon (goal), a FileText icon with count (document attachments), and an ImageIcon icon with count (images). These come from `parseUserMessageMeta`; plain-text messages render no indicators.
+- A sticky message draws a **full-width opaque background row** behind the bubble and a **gradient fade strip** below it (`bg-gradient-to-b from-background to-transparent`, `pointer-events-none`, fixed `h-6`). Content scrolling up toward the floating message dissolves smoothly instead of being hard-clipped — the same solid-to-transparent gradient technique used for the action buttons in the session list.
+- Positioning is CSS-only. The sticky contract does not depend on `IntersectionObserver`, `ResizeObserver`, container-height measurement, or right-panel width. The collapse/expand state is local React state on the single sticky instance (no measurement-derived toggling).
 
 ## Markdown Element Handling
 

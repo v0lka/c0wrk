@@ -99,12 +99,16 @@ type ErrorData struct {
 // ToolCallID carries the tool_call_id of the triggering tool_call event so the
 // frontend can anchor the confirmation card precisely (instead of matching by
 // tool name, which is ambiguous when two calls share a name).
+// DisableJudge is true when the strict automatic judge already evaluated the
+// call (Smart Approve); the frontend hides the advisory "Ask Agent" button so
+// the call is not judged a second time.
 type ToolConfirmPayload struct {
-	ConfirmID  string `json:"confirm_id"`
-	Tool       string `json:"tool"`
-	Args       string `json:"args"`
-	Reasoning  string `json:"reasoning"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
+	ConfirmID    string `json:"confirm_id"`
+	Tool         string `json:"tool"`
+	Args         string `json:"args"`
+	Reasoning    string `json:"reasoning"`
+	ToolCallID   string `json:"tool_call_id,omitempty"`
+	DisableJudge bool   `json:"disable_judge,omitempty"`
 }
 
 // JudgeRequestPayload is received from the frontend when the user requests an on-demand judge verdict.

@@ -406,6 +406,9 @@ export interface SecuritySettingsResponse {
   default_policy: string
   tool_policies: Record<string, ToolPolicyResponse>
   auto_approve_workspace_writes: boolean
+  smart_approve: boolean
+  /** Read-only: whether the strict judge is operational. Sent by the backend. */
+  judge_available?: boolean
 }
 
 // --- Small LLM profile config ---

@@ -190,7 +190,15 @@ func (p *EventPersister) Persist(evt Event) {
 		"memory_read", "message_received", "blackboard_updated",
 		"tool_judge_response", "session_created", "session_deleted",
 		"session_renamed",
-		"goal_status", "goal_progress":
+		"goal_status", "goal_progress",
+		// UI-only state events emitted with a SessionID. These drive live UI
+		// updates (attachment chips, sidebar pin/archive toggles) but carry no
+		// conversational content — persisting them would store the raw JSON
+		// payload as an event_unknown message row (content = metadata) that
+		// renders as garbage JSON text on session reload.
+		"attachments:changed",
+		"session_pinned", "session_unpinned",
+		"session_archived", "session_unarchived":
 		return // transient — no persistence needed
 	case "plan_review_ready":
 		role = "plan_review"

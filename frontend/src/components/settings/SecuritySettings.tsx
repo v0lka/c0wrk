@@ -1,5 +1,5 @@
 import { useState, useEffect, type KeyboardEvent } from "react";
-import { Info, Plus, X, Loader2 } from "lucide-react";
+import { Info, Plus, X, Loader2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getSecuritySettings, updateSecuritySettings } from "@/api/config";
@@ -13,6 +13,7 @@ interface LocalSettings {
   default_policy: ToolPolicy;
   tool_policies: Record<string, { policy: ToolPolicy; blacklist?: string[] }>;
   auto_approve_workspace_writes: boolean;
+  smart_approve: boolean;
 }
 
 const policyOptions: { value: ToolPolicy; label: string }[] = [
@@ -29,10 +30,12 @@ export function SecuritySettings() {
     default_policy: "user_confirm",
     tool_policies: {},
     auto_approve_workspace_writes: false,
+    smart_approve: false,
   });
   const [tools, setTools] = useState<ToolInfo[]>([]);
   const [newPattern, setNewPattern] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [judgeAvailable, setJudgeAvailable] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -45,7 +48,9 @@ export function SecuritySettings() {
           default_policy: (r.default_policy as ToolPolicy) || "user_confirm",
           tool_policies: tp,
           auto_approve_workspace_writes: r.auto_approve_workspace_writes || false,
+          smart_approve: r.smart_approve || false,
         });
+        setJudgeAvailable(r.judge_available ?? false);
       }),
       getToolList().then((r) => setTools((r || []).filter((t) => !INTERNAL_TOOLS.has(t.name)))),
     ])
@@ -64,6 +69,7 @@ export function SecuritySettings() {
         default_policy: next.default_policy,
         tool_policies: tp,
         auto_approve_workspace_writes: next.auto_approve_workspace_writes,
+        smart_approve: next.smart_approve,
       } as SecuritySettingsResponse);
     } catch (err) {
       logger.error("Failed to update security settings:", err);
@@ -124,6 +130,10 @@ export function SecuritySettings() {
     save({ ...settings, auto_approve_workspace_writes: checked });
   };
 
+  const handleSmartApprove = (checked: boolean) => {
+    save({ ...settings, smart_approve: checked });
+  };
+
   // Group tools by source, core first
   const grouped = tools.reduce<Record<string, ToolInfo[]>>((acc, t) => {
     const src = t.source || "core";
@@ -169,6 +179,38 @@ export function SecuritySettings() {
           When enabled, file write tools (write_file, edit_file, delete_file, delete_directory, create_directory)
           execute without confirmation when all paths are within the session workspace and temp. Symlink traversals are
           still forced to confirmation.
+        </p>
+      </div>
+
+      {/* Smart Approve toggle */}
+      <div className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-card/50">
+        <div className="flex items-center gap-3">
+          <label className={`relative inline-flex items-center ${judgeAvailable ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}>
+            <input
+              type="checkbox"
+              checked={settings.smart_approve}
+              onChange={(e) => handleSmartApprove(e.target.checked)}
+              disabled={!judgeAvailable}
+              className="sr-only peer"
+            />
+            <div className="w-9 h-5 bg-muted rounded-full peer peer-checked:bg-primary transition-colors after:content-[''] after:absolute after:top-0.5 after:inset-s-0.5 after:bg-background after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full" />
+          </label>
+          <span className="text-sm font-medium">Smart Approve</span>
+        </div>
+        {!judgeAvailable && (
+          <div className="flex items-start gap-2 text-xs text-warning pl-12">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+            <span>
+              No LLM model configured for the strict judge. Enable at least one LLM provider
+              in settings to use Smart Approve.
+            </span>
+          </div>
+        )}
+        <p className="text-xs text-muted-foreground pl-12">
+          When enabled, a strict OWASP ASI (ASI01–ASI10) judge automatically evaluates calls that require
+          confirmation. A safe verdict executes without UI; any risk, error, or ambiguity falls back to manual
+          confirmation. Only affects the effective user_confirm policy — always_allow, always_deny, and symlink-forced
+          confirmations are unchanged.
         </p>
       </div>
 

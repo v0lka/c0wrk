@@ -1,14 +1,17 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/v0lka/sp4rk/llm"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
@@ -64,6 +67,36 @@ func (m *mockTool) Execute(ctx context.Context, input json.RawMessage) (sdktools
 	}, nil
 }
 
+type scriptedJudgeProvider struct {
+	mu       sync.Mutex
+	response *llm.ChatResponse
+	err      error
+	calls    int
+}
+
+func (p *scriptedJudgeProvider) ChatCompletion(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	return p.response, p.err
+}
+
+func (p *scriptedJudgeProvider) Name() string { return "scripted-judge" }
+
+func (p *scriptedJudgeProvider) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+func newStrictJudge(response string, err error) (*sdktools.ToolJudge, *scriptedJudgeProvider) {
+	provider := &scriptedJudgeProvider{err: err}
+	if response != "" {
+		provider.response = &llm.ChatResponse{Message: llm.Message{Content: response}}
+	}
+	return sdktools.NewToolJudge(provider, "test-model", 1, nil), provider
+}
+
 func TestToolRegistry_RegisterAndGet(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockTool("echo", "An echo tool")
@@ -91,6 +124,11 @@ func TestToolRegistry_Execute(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockTool("echo", "An echo tool")
 	registry.Register(tool)
+	// newMockTool defaults to PolicyUserConfirm; since nil ConfirmFunc is now
+	// fail-closed, install an auto-allow callback for this happy-path test.
+	registry.SetConfirmFunc(func(_ context.Context, _ sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		return sdktools.ConfirmAllowOnce, nil
+	})
 
 	ctx := context.Background()
 	input := json.RawMessage(`{"message":"hello"}`)
@@ -1538,6 +1576,169 @@ func TestPreExecuteHook_ReceivesCorrectSource(t *testing.T) {
 	}
 	if capturedSource != "mcp:test-server" {
 		t.Errorf("expected hook source %q, got %q", "mcp:test-server", capturedSource)
+	}
+}
+
+func TestSmartApprove_UserConfirmFlow(t *testing.T) {
+	tests := []struct {
+		name             string
+		enabled          bool
+		judgeResponse    string
+		judgeErr         error
+		setJudge         bool
+		wantConfirm      bool
+		wantDisableJudge bool
+		wantJudgeCalls   int
+		wantResultError  bool
+	}{
+		{name: "off preserves legacy confirmation", judgeResponse: "VERDICT: ALLOW\nREASON: safe", setJudge: true, wantConfirm: true},
+		{name: "strict allow executes without UI", enabled: true, judgeResponse: "VERDICT: ALLOW\nREASON: safe and relevant", setJudge: true, wantJudgeCalls: 1},
+		{name: "strict confirm uses manual UI", enabled: true, judgeResponse: "VERDICT: CONFIRM\nREASON: destructive operation", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
+		{name: "unparseable uses manual UI", enabled: true, judgeResponse: "probably fine", setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
+		{name: "provider error uses manual UI", enabled: true, judgeErr: errors.New("provider failed"), setJudge: true, wantConfirm: true, wantDisableJudge: true, wantJudgeCalls: 1},
+		{name: "unavailable judge uses manual UI", enabled: true, wantConfirm: true, wantDisableJudge: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry := NewToolRegistry()
+			registry.SetSmartApprove(tt.enabled)
+			registry.RegisterWithSource(newMockTool("mutating", "mutates"), "mcp:test-server")
+
+			judge, provider := newStrictJudge(tt.judgeResponse, tt.judgeErr)
+			if tt.setJudge {
+				registry.SetJudge(judge)
+			}
+
+			var gotRequest sdktools.ConfirmationRequest
+			confirmCalled := false
+			registry.SetConfirmFunc(func(_ context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+				confirmCalled = true
+				gotRequest = req
+				return sdktools.ConfirmAllowOnce, nil
+			})
+
+			ctx := sdktools.WithTaskContext(context.Background(), "update the project")
+			result, err := registry.Execute(ctx, "mutating", json.RawMessage(`{"secret":"do-not-log"}`))
+			if err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if result.IsError != tt.wantResultError {
+				t.Errorf("result.IsError = %v, want %v", result.IsError, tt.wantResultError)
+			}
+			if confirmCalled != tt.wantConfirm {
+				t.Errorf("confirm called = %v, want %v", confirmCalled, tt.wantConfirm)
+			}
+			if confirmCalled && gotRequest.DisableJudge != tt.wantDisableJudge {
+				t.Errorf("DisableJudge = %v, want %v", gotRequest.DisableJudge, tt.wantDisableJudge)
+			}
+			if got := provider.callCount(); got != tt.wantJudgeCalls {
+				t.Errorf("strict judge calls = %d, want %d", got, tt.wantJudgeCalls)
+			}
+		})
+	}
+}
+
+func TestSmartApprove_WorkspaceAutoApproveHasPriority(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.SetAutoApproveWorkspaceWrites(true)
+	registry.SetSmartApprove(true)
+	registry.Register(newMockConfirmJudgerTool("write_file", sdktools.PolicyUserConfirm, true, "within roots"))
+	judge, provider := newStrictJudge("VERDICT: CONFIRM\nREASON: should not run", nil)
+	registry.SetJudge(judge)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmAllowOnce, nil
+	})
+
+	ctx := sdktools.WithWorkspacePath(context.Background(), "/workspace")
+	result, err := registry.Execute(ctx, "write_file", json.RawMessage(`{"path":"/workspace/file.txt"}`))
+	if err != nil || result.IsError {
+		t.Fatalf("Execute() = (%+v, %v), want success", result, err)
+	}
+	if confirmCalled {
+		t.Error("workspace auto-approval must bypass manual confirmation")
+	}
+	if got := provider.callCount(); got != 0 {
+		t.Errorf("strict judge calls = %d, want 0", got)
+	}
+}
+
+func TestSmartApprove_OnlyEffectiveUserConfirm(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		policy sdktools.ToolPolicy
+	}{
+		{name: "always_allow", policy: sdktools.PolicyAlwaysAllow},
+		{name: "always_deny", policy: sdktools.PolicyAlwaysDeny},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := tt.policy
+			registry := NewToolRegistry()
+			registry.SetSmartApprove(true)
+			tool := newMockTool("policy_tool", "policy test")
+			tool.defaultPolicy = policy
+			registry.Register(tool)
+			judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: safe", nil)
+			registry.SetJudge(judge)
+
+			result, err := registry.Execute(context.Background(), "policy_tool", json.RawMessage(`{"data":"test"}`))
+			if err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if policy == sdktools.PolicyAlwaysDeny && !result.IsError {
+				t.Error("always_deny must remain blocked")
+			}
+			if policy == sdktools.PolicyAlwaysAllow && result.IsError {
+				t.Error("always_allow must retain legacy execution")
+			}
+			if got := provider.callCount(); got != 0 {
+				t.Errorf("strict judge calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestSmartApprove_LogsStructuredVerdictWithoutRawArgs(t *testing.T) {
+	var logs bytes.Buffer
+	registry := NewToolRegistry()
+	registry.SetLogger(slog.New(slog.NewJSONHandler(&logs, nil)))
+	registry.SetSmartApprove(true)
+	registry.Register(newMockTool("mutating", "mutates"))
+	judge, _ := newStrictJudge("VERDICT: ALLOW\nREASON: safe", nil)
+	registry.SetJudge(judge)
+
+	const secret = "sensitive-tool-argument"
+	result, err := registry.Execute(context.Background(), "mutating", json.RawMessage(`{"secret":"`+secret+`"}`))
+	if err != nil || result.IsError {
+		t.Fatalf("Execute() = (%+v, %v), want success", result, err)
+	}
+	logText := logs.String()
+	if strings.Contains(logText, secret) {
+		t.Fatalf("structured security log leaked raw tool arguments: %s", logText)
+	}
+	for _, field := range []string{`"msg":"security: smart approve verdict"`, `"tool":"mutating"`, `"verdict":"ALLOW"`} {
+		if !strings.Contains(logText, field) {
+			t.Errorf("structured security log missing %s: %s", field, logText)
+		}
+	}
+}
+
+func TestConfirmFunc_NilUserConfirmFailsClosed(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(newMockTool("mutating", "mutates"))
+
+	result, err := registry.Execute(context.Background(), "mutating", json.RawMessage(`{"data":"test"}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("nil ConfirmFunc must deny PolicyUserConfirm execution")
+	}
+	if !strings.Contains(result.Content, "confirmation is unavailable") {
+		t.Errorf("unexpected denial content: %q", result.Content)
 	}
 }
 

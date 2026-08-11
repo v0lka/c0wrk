@@ -708,6 +708,7 @@ export namespace backend {
 	    default_policy: string;
 	    tool_policies: Record<string, ToolPolicyResponse>;
 	    auto_approve_workspace_writes: boolean;
+	    smart_approve: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SecuritySettingsResponse(source);
@@ -718,6 +719,7 @@ export namespace backend {
 	        this.default_policy = source["default_policy"];
 	        this.tool_policies = this.convertValues(source["tool_policies"], ToolPolicyResponse, true);
 	        this.auto_approve_workspace_writes = source["auto_approve_workspace_writes"];
+	        this.smart_approve = source["smart_approve"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1102,6 +1104,7 @@ export namespace desktop {
 	    args: string;
 	    reasoning?: string;
 	    tool_call_id?: string;
+	    disable_judge?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new PendingToolConfirm(source);
@@ -1114,6 +1117,7 @@ export namespace desktop {
 	        this.args = source["args"];
 	        this.reasoning = source["reasoning"];
 	        this.tool_call_id = source["tool_call_id"];
+	        this.disable_judge = source["disable_judge"];
 	    }
 	}
 	export class PendingActionsResponse {
