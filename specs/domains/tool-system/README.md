@@ -32,11 +32,11 @@ Engine files (`github.com/v0lka/sp4rk/tools/tool.go`, `safety.go`, `registry.go`
 │  + SetJudge()             LLM safety evaluation        │
 │  + SetPreExecuteHook()    pre-execution gate          │
 │  + SetToolFilter()         registration filter         │
-│  + SetParamManager()      input transformation        │
+│  + SetSkillPolicyOverrides()  skill-derived policy layer │
 │  + RegisterWithSource()   filtered registration       │
 │  + SetDisabledTools()     block tools by name (e.g., No Project) │
 │  + DisabledTools()        read disabled-tool set       │
-│  + SetExtraBashBlacklist()  runtime bash command blacklist       │
+│  + SetExtraShellBlacklist() runtime shell command blacklist      │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -48,12 +48,12 @@ The embedded sp4rk `ToolRegistry` satisfies `github.com/v0lka/sp4rk/agent.ToolEx
 core ToolRegistry.Execute(ctx, name, input)
 │
 ├─ 1. Lookup tool by name → not found? return error result
-├─ 2. Disabled tool (No Project mode)? → return error result (applies to ALL tools including internal)
-├─ 3. Internal tool? → execute immediately (bypass remaining policy/judge/hook checks)
-├─ 4. PostExecuteHook deferred (runs on every later return path)
-├─ 5. Extra bash blacklist match? → return error result (per-session, e.g., No Project blocks dev commands)
-├─ 6. PreExecuteHook (blocking gate, e.g., index ready)
-├─ 7. ParamManager (transform input, e.g., scope paths)
+├─ 2. Required-field validation (JSON-Schema "required" params; fail-closed) → missing? return error result
+├─ 3. Disabled tool (No Project mode)? → return error result (applies to ALL tools including internal)
+├─ 4. Internal tool? → execute immediately (bypass remaining policy/judge/hook checks)
+├─ 5. PostExecuteHook deferred (runs on every later return path)
+├─ 6. Extra bash blacklist match? → return error result (per-session, e.g., No Project blocks dev commands)
+├─ 7. PreExecuteHook (blocking gate, e.g., index ready)
 ├─ 8. Symlink Gate: detect symlinks in input paths
 │      ├─ Symlinks found → force confirmation (unless always_deny)
 │      └─ No symlinks → continue
@@ -69,9 +69,9 @@ The policy resolution, auto-approval (session roots), and symlink gate are c0wrk
 ## Invariants
 
 - Tool names are unique within the registry
-- Internal tools bypass policy and judge checks. The set (in `core/tools/registry.go` `internalTools`) is: `ask_user`, `delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `propose_goal`, `declare_goal_status`, `reflect`, `finish`, `list_step_outputs`, `read_step_output`, `read_final_result`, `read_skill_resource`, `read_attachment`, `search_facts`, `semantic_search`, `update_checklist`, `declare_step_complete`, `store_fact`, `tool_result_read`, and `batch` (`sdktools.ToolBatch`). The disabled-tool check (No Project mode) applies to all tools including internal ones, but the extra-bash-blacklist check runs AFTER the internal-tool bypass. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
+- Internal tools bypass policy and judge checks. The set (in `core/tools/registry.go` `internalTools`) is: `ask_user`, `delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `propose_goal`, `declare_goal_status`, `declare_verification`, `reflect`, `finish`, `list_step_outputs`, `read_step_output`, `read_final_result`, `read_skill_resource`, `read_attachment`, `search_facts`, `semantic_search`, `update_checklist`, `declare_step_complete`, `store_fact`, `tool_result_read`, and `batch` (`sdktools.ToolBatch`). The disabled-tool check (No Project mode) applies to all tools including internal ones, but the extra-bash-blacklist check runs AFTER the internal-tool bypass. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
 - The symlink gate runs before policy resolution for every non-internal tool call
-- MCP tools are tagged with source `mcp`; core built-in tools with source `core`
+- MCP tools carry source category `mcp` (source tag = the MCP server's name); core built-in tools carry source category `core`
 - Disabled tools are blocked at execution time; `SetDisabledTools`/`DisabledTools` deep-copy the map to prevent concurrent mutation
 - The registry is thread-safe (sync.RWMutex)
 - Untrusted tool output (`IsUntrusted() == true`) is wrapped in `&lt;untrusted-content>` tags before entering the LLM context (engine wrapping; see [../../architecture/security-model.md](../../architecture/security-model.md))
@@ -84,21 +84,25 @@ From `config.yaml`:
 security:
   default_policy: "user_confirm"
   tool_policies:
-  tool_policies:
     bash_exec: { policy: "user_confirm" }  # key matches the active shell tool: bash_exec (Unix) / posh_exec (Windows)
     write_file: { policy: "user_confirm" }
 
 toolLimits:
+  readDefaultLines: 2000
+  webSearchMaxResults: 5
   perToolTruncation:
-    read_file: { maxLines: 50000 }
-    ripgrep: { maxLines: 5000 }
-    glob: { maxLines: 5000 }
-    list_directory: { maxLines: 5000 }
+    read_file: { maxLines: 2000 }
+    read_attachment: { maxLines: 2000 }
+    ripgrep: { maxLines: 2000 }
+    glob: { maxLines: 2000 }
+    list_directory: { maxLines: 2000 }
     web_fetch: { maxBytes: 2097152 }
-    bash_exec: { maxLines: 10000 }  # same key as policy: bash_exec (Unix) / posh_exec (Windows)
+    bash_exec: { maxLines: 5000 }  # same key as policy: bash_exec (Unix) / posh_exec (Windows)
+    posh_exec: { maxLines: 5000 }
 
-toolResultBudget:
-  cacheTTLSeconds: 300 # seconds before cache entries expire
+executor:
+  tool_result_budget:
+    cacheTTLSeconds: 300 # MCP tool result cache TTL (seconds)
 
 timeouts:
   bashMaxTimeout: 120 # seconds
@@ -115,11 +119,10 @@ Note: `security.*` keys use `snake_case`; `toolLimits.*` and `timeouts.*` keys u
 
 - `PreExecuteHook` — block until preconditions met (e.g., vector index ready)
 - `ToolFilter` — reject tools during registration (e.g., filter MCP tools by server)
-- `ParamManager` — transform tool input (e.g., inject workspace path for MCP tools)
 - `ToolJudger` interface — per-tool safety evaluation (implement on tool struct)
 - New built-in tools: implement the sp4rk `Tool` interface, set `Untrusted: true` on `BaseTool` if output comes from external sources, register in `RegisterBuiltinTools` (c0wrk-specific tools like `ask_user` go in `core/tools/`) — see [builtins.md](builtins.md)
 - To disable tools at runtime (e.g., for No Project mode): call `SetDisabledTools(names)` on the core registry; all tools including internal ones are blocked at execution time
-- To add runtime bash command restrictions: call `SetExtraBashBlacklist(patterns)` on the core registry; patterns are compiled regexps checked before the shell-exec tool (`bash_exec` on Unix, `posh_exec` on Windows) executes
+- To add runtime shell command restrictions: call `SetExtraShellBlacklist(patterns)` on the core registry; patterns are compiled regexps checked before the shell-exec tool (`bash_exec` on Unix, `posh_exec` on Windows) executes
 
 ## Related Specs
 

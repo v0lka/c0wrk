@@ -28,26 +28,20 @@ The Executor is the same primitive in both cases. The difference is the tool set
 
 ### Non-Cacheable Meta-Tools (`AddNonCacheableTools`)
 
-c0wrk registers consumer-specific meta-tools (`delegate`, `declare_plan`, `reflect`, `cancel_delegation`, `declare_step_complete`, `ask_user`) as non-cacheable via `Executor.AddNonCacheableTools`. These tools bypass `ToolResultCache` and Stage-1 truncation (their results are not large outputs worth fragmenting). The names are also passed to the sp4rk Conductor's `ConductorConfig.NonCacheableTools`. The default non-cacheable set (`tool_result_read`, `finish`, `batch`, etc.) is an engine concern — see the sp4rk executor spec.
+c0wrk registers consumer-specific meta-tools (`delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `reflect`, `declare_step_complete`, `ask_user`) as non-cacheable via `Executor.AddNonCacheableTools`. These tools bypass `ToolResultCache` and Stage-1 truncation (their results are not large outputs worth fragmenting). The names are also passed to the sp4rk Conductor's `ConductorConfig.NonCacheableTools`. The default non-cacheable set (`tool_result_read`, `finish`, `batch`, etc.) is an engine concern — see the sp4rk executor spec.
 
 ### Critical Always-Allowed Tools
 
-These c0wrk tools are always available regardless of a step's `AllowedTools` filter:
+`mandatorySubagentTools` in `core/conductor.go` (applied in `resolveTaskTools`) unions a mandatory base into every subagent's toolset whenever the Conductor grants an explicit tool list (the delegation `tools` array) or selects `"read-only"` mode, so exploration and MCP capability are never dropped. The base is every MCP-sourced tool plus `subagentReadOnlyToolNames`:
 
-- `finish` — end execution
-- `store_fact` — save findings to blackboard
-- `search_facts` — retrieve stored facts
-- `ask_user` — prompt user for information
-- `update_checklist` — update checklist for current step or standalone
-- `declare_step_complete` — signal inline plan step completion
-- `read_step_output` — read a specific step's output
-- `tool_result_read` — read cached tool result fragments by hash
+- **Read-only exploration**: `read_file`, `list_directory`, `glob`, `ripgrep`, `semantic_search`, `web_search`, `web_fetch`, `read_skill_resource`
+- **Internal/meta**: `finish`, `store_fact`, `search_facts`, `read_step_output`, `list_step_outputs`, `read_final_result`, `tool_result_read`, `update_checklist`, `declare_step_complete`, `ask_user`
 
-The set is enforced in `core/conductor.go` (`mandatorySubagentTools`, applied in `resolveTaskTools`) and unioned into a subagent's toolset whenever the Conductor supplies an explicit tool list.
+Mode-disabled tools (e.g. `glob`/`ripgrep`/`semantic_search` in No-Project/CHAT mode) are filtered out at selection time. The Conductor-only tools (`delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `reflect`) are stripped from subagents via `stripConductorOnlyTools`; `delegate`/`cancel_delegation` are re-added only when `allow_redelegate` is true (depth-capped).
 
 ### Small-LLM Loop Hardening (c0wrk threshold override)
 
-When the Small-LLM profile's `loop_hardening` variant is active (`small_llm.enabled && small_llm.loop_hardening.enabled` — see [../small-llm.md](../small-llm.md)), `core/builder.go` `applyLoopHardening` overrides the executor's circuit-breaker `CircuitBreakerConfig` with tighter thresholds (`repeat_nudge_threshold`, `parse_error_abort_threshold`, `fruitless_nudge_threshold`, `fruitless_abort_threshold`, `same_tool_repeat_nudge_threshold`) so a small model that repeats itself or stalls is nudged/aborted sooner. Only the thresholds present in the profile are overridden; all others keep their baseline. The override is applied once at builder construction and is inert when the profile is off.
+When the Small-LLM profile's `loop_hardening` variant is active (`small_llm.enabled && small_llm.loop_hardening.enabled` — see [../small-llm.md](../small-llm.md)), `core/builder.go` `applyLoopHardening` overrides the executor's circuit-breaker `CircuitBreakerConfig` with tighter-or-equal thresholds (`repeat_nudge_threshold`, `parse_error_abort_threshold`, `fruitless_nudge_threshold`, `fruitless_abort_threshold`, `same_tool_repeat_nudge_threshold` — four strictly tighter, `parse_error_abort_threshold` equal to the baseline) so a small model that repeats itself or stalls is nudged/aborted sooner. Only the thresholds present in the profile are overridden; all others keep their baseline. The override is applied once at builder construction and is inert when the profile is off.
 
 ## Engine Behavior (canonical in sp4rk)
 

@@ -28,17 +28,20 @@ Any unrecognized domain (including `code` and `mixed`) falls back to `sliding_wi
 
 ## Flow
 
-The fill-check ladder is engine behavior (see the sp4rk memory spec); c0wrk only configures the thresholds:
+The fill-check ladder is engine behavior (see the sp4rk memory spec); c0wrk only configures the thresholds. `CheckFill` maps the fill % to a status, and every non-`ok` status runs the same `cw.Compact` (strategy compaction):
 
 ```
-Executor calls LLM → response tokens counted → ContextWindow checks fill %:
-  ├─ < predictive threshold (85%): continue normally
-  ├─ >= predictive threshold (85%): trigger tool output pruning
-  ├─ >= warning threshold (92%): trigger compaction strategy
-  └─ >= emergency threshold (98%): aggressive compaction
+Executor calls LLM → response tokens counted → ContextWindow CheckFill():
+  ├─ "ok"        (fill < predictive 85%): continue normally
+  ├─ "compact"   (fill >= predictive 85%): run strategy compaction (cw.Compact)
+  ├─ "warning"   (fill >= warning 92%): run strategy compaction (cw.Compact)
+  ├─ "emergency" (fill >= emergency 98%): run strategy compaction (cw.Compact)
+  └─ "reject"    (fill >= 100%): context too full even after compaction
 ```
 
-Untrusted tool output is wrapped in `&lt;untrusted-content>` tags by the sp4rk context builder — see [../../architecture/security-model.md](../../architecture/security-model.md) for c0wrk's session-root/auto-approval layer on top of that wrapping.
+Tool-output pruning is a SEPARATE mechanism, independent of `CheckFill`: on every `BuildPrompt`, once fill reaches `toolOutputPruning.thresholdPercent` (default 50), tool outputs beyond `keepLastN` are replaced with a placeholder (protected tools are never pruned). History mutation runs unconditionally on every `BuildPrompt`. Both are engine behavior — see the sp4rk memory spec.
+
+Untrusted tool output is wrapped in `&lt;untrusted-content>` tags by the sp4rk context builder (after pruning/mutation, before the LLM call) — see [../../architecture/security-model.md](../../architecture/security-model.md) for c0wrk's session-root/auto-approval layer on top of that wrapping.
 
 ## Invariants
 
@@ -51,16 +54,20 @@ Untrusted tool output is wrapped in `&lt;untrusted-content>` tags by the sp4rk c
 
 From `config.yaml` (values are percentages, not fractions):
 
-| Parameter                                           | Default | Description                        |
-| --------------------------------------------------- | ------- | ---------------------------------- |
-| `executor.compaction.thresholds.predictive_percent` | 85      | Tool output pruning trigger (%)    |
-| `executor.compaction.thresholds.warning_percent`    | 92      | Strategy compaction trigger (%)    |
-| `executor.compaction.thresholds.emergency_percent`  | 98      | Aggressive compaction trigger (%)  |
-| `executor.compaction.sliding_window.keep_first`     | 3       | Messages to always retain at start |
-| `executor.compaction.sliding_window.keep_last`      | 10      | Messages to always retain at end   |
-| `executor.historyMutation.toolResultEvictionStep`   | 10      | Evict tool results to cache refs after N steps (0 = disabled) |
-| `executor.historyMutation.evictStepStatus`          | false   | Evict update_checklist results immediately |
-| `executor.historyMutation.dedupRepeatedReads`       | false   | Replace duplicate file reads with cache reference |
+| Parameter                                              | Default | Description                                          |
+| ------------------------------------------------------ | ------- | ---------------------------------------------------- |
+| `executor.compaction.thresholds.predictive_percent`    | 85      | Strategy compaction trigger — "compact" status (%)   |
+| `executor.compaction.thresholds.pre_warning_percent`   | 75      | `store_fact` nudge trigger (must be < predictive)    |
+| `executor.compaction.thresholds.warning_percent`       | 92      | "warning" status — runs the same `cw.Compact` (%)    |
+| `executor.compaction.thresholds.emergency_percent`     | 98      | "emergency" status — runs the same `cw.Compact` (%)  |
+| `executor.compaction.sliding_window.keep_first`        | 3       | Messages to always retain at start                   |
+| `executor.compaction.sliding_window.keep_last`         | 10      | Messages to always retain at end                     |
+| `executor.toolOutputPruning.keepLastN`                 | 3       | Recent tool outputs kept inline (older → placeholder)|
+| `executor.toolOutputPruning.protectedTools`            | `["store_fact","search_facts"]` | Tools whose outputs are never pruned       |
+| `executor.toolOutputPruning.thresholdPercent`          | 50      | Fill % below which pruning is skipped entirely (0 = always prune) |
+| `executor.historyMutation.toolResultEvictionStep`      | 10      | Evict tool results to cache refs after N steps (0 = disabled) |
+| `executor.historyMutation.evictStepStatus`             | false   | Evict update_checklist results immediately           |
+| `executor.historyMutation.dedupRepeatedReads`          | false   | Replace duplicate file reads with cache reference    |
 
 ## Extension Points
 

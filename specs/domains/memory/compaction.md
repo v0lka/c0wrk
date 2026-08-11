@@ -19,27 +19,34 @@ Engine files (`github.com/v0lka/sp4rk/memory/compaction_sliding.go`, `compaction
 | summarization | research tasks (preserves synthesized findings) | summary may lose details; requires LLM call |
 | hierarchical | long-running complex tasks (balanced retention) | more complex logic, harder to predict retained content |
 
-Tool-output pruning (predictive threshold) and regular history mutation (per-`BuildPrompt`, replaces old tool results with `ToolResultCache` references) are engine mechanisms — see the sp4rk compaction spec.
+Tool-output pruning (governed by `toolOutputPruning.thresholdPercent`) and regular history mutation (per-`BuildPrompt`, replaces old tool results with `ToolResultCache` references) are engine mechanisms — see the sp4rk compaction spec.
 
 ## Tool-Output Pruning Config (c0wrk consumption)
 
 c0wrk configures tool-output pruning centrally in `core/builder.go` (`buildContextFactory`) from `cfg.Executor.ToolOutputPruning`:
 
-- `keepLastN` — how many recent tool results to keep inline before evicting older ones to `ToolResultCache` references
-- `protectedTools` — tool names whose outputs are never pruned regardless of `keepLastN`
-- `thresholdPercent` — fill percentage that triggers a pruning pass
+- `keepLastN` — how many recent tool results to keep inline before replacing older ones with a placeholder
+- `protectedTools` — tool names whose outputs are never pruned regardless of `keepLastN` (default `["store_fact","search_facts"]`)
+- `thresholdPercent` — fill % **below which pruning is skipped entirely** (default 50; 0 = always prune). Pruning runs on every `BuildPrompt` once fill reaches this floor — it is independent of the `CheckFill` compaction statuses
 
 Per-step pruning overrides are supported via the `PruningOverride` variadic argument on `ContextManagerFactory`; when a step's `StepConfig` carries a positive `KeepLastN`, it replaces the global value for that step's executor.
 
 ## Trigger Thresholds (c0wrk config)
+
+The three compaction thresholds all run the same `cw.Compact` (strategy compaction); only the `CheckFill` status differs:
 
 ```
 Context fill %:
   0%──────────85%────────92%──────98%────100%
               │           │        │
               ▼           ▼        ▼
-         Tool output   Strategy  Emergency
-          pruning     compaction  compaction
+            "compact"   "warning" "emergency"  → each runs cw.Compact (strategy)
+                                                      │
+              >= 100% ─────────────────────────────► "reject"
+
+Tool-output pruning is governed separately by toolOutputPruning.thresholdPercent
+(default 50): it runs on every BuildPrompt once fill >= that floor, independent
+of the CheckFill statuses above.
 ```
 
 See [README.md](README.md) Configuration for the `config.yaml` keys.

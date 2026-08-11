@@ -49,11 +49,13 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `GetSessionHistory`    | id                           | ([]ChatMessage, error)    | Get message history                                   |
 | `GetSessionRuntimeStatus` | id                        | (SessionRuntimeStatus, error) | Live/persisted execution state: `{active, has_unfinished_task, unfinished_task_id?}`. Called after history load to reconcile the UI (running flag, resume banner, stale prompts) instead of defaulting to idle |
 | `GetBlackboardState`   | sessionID                    | (\*BlackboardStateResponse, error) | Get blackboard task state                    |
-| `SendMessage`          | id, text, mode, activeSkills, modelOverride, reasoningEffort, planReview | error                     | Send user message (async execution)                   |
+| `SendMessage`          | id, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode | error                     | Send user message (async execution). Execution mode is derived from the active project (No-Project = CHAT); `activeAgents` carries `#agent` refs; `goal`/`goalBudget` start a goal loop; `reviewMode` renders the Code Review prompt section |
 | `CancelTask`           | id                           | error                     | Cancel running task                                   |
-| `ResumeTask`           | id                           | error                     | Resume failed task                                    |
+| `ResumeTask`           | id, modelOverride, reasoningEffort | error                     | Resume failed task (honors model/reasoning override chosen before resuming)          |
 | `CancelUnfinishedTask` | id                           | error                     | Discard a resumable task (no resume prompt next time) |
 | `GetSessionTokens`    | sessionID                    | SessionTokensResponse     | Get token usage for session (getter, no error return) |
+| `GetBlackboardAttachmentMarkdown` | sessionID, attachmentID | (string, error) | Fetch a blackboard attachment's stored markdown (excluded from `GetAttachments` metadata) |
+| `ResolvePendingMessage` | sessionID, role, matchField, matchValue, extra | error | Mark a pending tool_confirm / ask_user / step_limit / plan_review message as resolved in the DB (merging `extra` fields) so it does not reappear as pending on session reload |
 
 ### Attachments (`backend/frontend_api_attachment.go`)
 
@@ -62,6 +64,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `AttachFiles`       | sessionID, paths         | ([]AttachmentInfo, error)     | Partition files by extension: images (png/jpg/jpeg/gif/webp) are decoded, optionally downscaled/re-encoded as JPEG, and staged as pending image attachments (separate from documents); all other files are converted to markdown via `core/markitdown` and staged as document attachments. Emits `attachments:changed` (incremental per file + final with per-file failures). Returns the full pending list (documents + images combined). System-level errors (session missing) return `error`; file-level failures (unsupported format, conversion/decode error) are reported via the event payload's `Failed` field, not as `error`, so partial success is preserved |
 | `RemoveAttachment`  | sessionID, attachmentID   | error                         | Remove a staged (pending) document or image attachment by ID; no-op if not found. Removing a pending image also deletes its on-disk copy under the session's `images/` dir. Does not touch attachments already flushed into the blackboard |
 | `GetAttachments`    | sessionID                | ([]AttachmentInfo, error)     | Get the session's staged (pending) attachments (documents + images) as metadata-only values |
+| `PasteFromClipboard`| sessionID, supportsVision | (PasteResult, error)        | Paste from system clipboard; stages image/files/text attachments and returns the full pending list + paste kind (`image`/`files`/`text`/`empty`) |
 
 ### Project (`backend/frontend_api_project.go`)
 
@@ -93,6 +96,8 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `UpdateProxySettings`    | ProxySettingsRequest     | error                             | Update proxy configuration     |
 | `GetSmallLLMConfig`      | —                        | SmallLLMConfigResponse            | Get the small-LLM profile (always_present normalized to non-nil; protected orchestration tools unioned in) |
 | `UpdateSmallLLMConfig`   | SmallLLMConfigResponse   | error                             | Validate + persist the small-LLM profile, then rebuild the LLM router. Validation runs before mutation; an invalid payload produces no partial write. |
+| `GetModelConfig`         | model                    | (ModelConfigResponse, error)      | Get per-model overrides (sampling/params) |
+| `SetModelConfig`         | model, ModelConfigRequest | error                            | Set per-model overrides |
 
 ### Workspace (`backend/frontend_api_workspace.go`)
 
@@ -125,6 +130,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | Method               | Parameters            | Returns                      | Description         |
 | -------------------- | --------------------- | ---------------------------- | ------------------- |
 | `StartTerminal`      | sessionID             | error                        | Start PTY terminal  |
+| `StartTerminalInDir` | sessionID, workDir    | error                        | Start a PTY terminal in a specific working directory |
 | `TerminalInput`      | sessionID, data       | error                        | Write to terminal   |
 | `TerminalResize`     | sessionID, cols, rows | error                        | Resize terminal     |
 | `StopTerminal`       | sessionID             | error                        | Stop terminal       |
@@ -146,23 +152,29 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `StageAll`             | —                       | error                         | Stage all changes |
 | `UnstageAll`           | —                       | error                         | Unstage all changes |
 | `StageHunks`           | path, hunks []HunkRange | error                         | Stage selected hunks |
+| `UnstageHunks`         | path, hunks []HunkRange | error                         | Unstage selected hunks |
+| `DiscardHunks`         | path, hunks []HunkRange | error                         | Discard selected hunks |
+| `GetFileDiffHunks`     | filePath                | ([]HunkDiffInfo, error)       | Per-hunk diff info for a file (staged/unstaged ranges) |
 | `GetDiffStat`          | path                    | (*DiffStat, error)            | Diff stat for a file |
 | `GetDiffStats`         | —                       | (map[string]DiffStat, error)  | Diff stats for all changed files |
 | `Commit`               | message                 | (string, error)               | Create a commit |
 | `GetBranches`          | —                       | ([]Branch, error)             | List branches |
 | `GetCurrentBranch`     | —                       | (BranchInfo, error)           | Get current branch |
+| `GetBranchBases`       | —                       | ([]BranchBase, error)         | Branch base refs (for merge/rebase target UI) |
 | `CheckoutBranch`       | name                    | error                         | Checkout a branch |
-| `CreateBranch`         | name                    | error                         | Create a new branch |
+| `CreateBranch`         | name, base              | error                         | Create a new branch at a base ref |
 | `CreateTag`            | name, sha               | error                         | Create a lightweight tag at a commit |
 | `DeleteTag`            | name                    | error                         | Delete a local tag |
 | `PushTag`              | name, remote            | (string, error)               | Push a single tag to a remote (default origin) |
 | `DeleteRemoteTag`      | name, remote            | (string, error)               | Delete a tag on the remote (default origin) |
-| `GenerateCommitMessage`| diff                    | (string, error)               | AI-generate a commit message from diff |
+| `GenerateCommitMessage`| —                       | (string, error)               | AI-generate a commit message from the staged/working diff |
 | `Pull`                 | remote, flags []string  | (string, error)               | Pull from remote (flags: --ff-only, --rebase, --rebase --autostash) |
 | `Push`                 | remote, flags []string  | (string, error)               | Push to remote (flags: --force, --force-with-lease, --no-verify) |
 | `Fetch`                | remote, flags []string  | (string, error)               | Fetch from remote (flags: --tags, --prune) |
-| `GetCommitLog`         | limit, skip             | ([]CommitInfo, error)         | Paginated commit log |
+| `GetGitHistory`        | —                       | ([]GitHistoryCommit, error)   | Unified commit log + DAG graph topology (each `GitHistoryCommit` carries both log fields and parents/refs; replaces the former separate `GetCommitLog`/`GetGitGraph` pair) |
 | `GetCommitFiles`       | sha                     | ([]CommitFile, error)         | Files changed in a commit |
+| `GetCommitFilesBatch`  | shas []string           | (map[string][]CommitFile, error) | Files changed across many commits (batched) |
+| `GetCommitDiff`        | sha                     | ([]ReviewFileDiff, error)     | Per-file diff for a single commit (review diff format) |
 | `StashCreate`          | message                 | error                         | Create a stash entry |
 | `StashPop`             | index                   | error                         | Pop a stash entry |
 | `StashDrop`            | index                   | error                         | Drop a stash entry |
@@ -175,7 +187,6 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `AbortRebase`          | —                       | error                         | Abort an in-progress rebase |
 | `ResetToCommit`        | sha, mode               | error                         | Reset HEAD to a commit (mode: soft, mixed, hard) |
 | `GetRebaseMergeState`  | —                       | (MergeRebaseState, error)     | Get in-progress merge/rebase state |
-| `GetGitGraph`          | limit, skip             | ([]GraphCommit, error)        | Paginated git graph (DAG) |
 
 ### Lifecycle (`backend/frontend_api.go`)
 
@@ -211,7 +222,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `ConfirmGoal`   | sessionID, requestID, condition, verify, verificationMode | error   | Approve a proposed goal (optionally with edits). `verificationMode` (`executable`/`re_derivation`) overrides the derivation-chosen mode. Resolves the pending `goal_proposal` action          |
 | `CancelGoal`    | sessionID, requestID                    | error   | Cancel a proposed goal                                                                               |
 | `PauseGoal`     | sessionID                               | error   | Pause an active goal loop                                                                            |
-| `ResumeGoal`    | sessionID                               | error   | Resume a paused goal loop                                                                            |
+| `ResumeGoal`    | sessionID, modelOverride, reasoningEffort | error   | Resume a paused goal loop (optional model/reasoning-effort override)                                                                            |
 | `ClearGoal`     | sessionID                               | error   | Clear the active goal for a session                                                                  |
 
 ### Work Directories (`backend/frontend_api_workdirs.go`)
@@ -221,10 +232,48 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `ListProjectWorkDirectories`    | projectID                                   | ([]WorkDirectoryRecord, error)    | Project-scoped auxiliary directories |
 | `ListSessionWorkDirectories`    | sessionID                                   | ([]WorkDirectoryRecord, error)    | Session-scoped auxiliary directories |
 | `AddWorkDirectory`              | scope, ownerID, path, description           | error                             | Add directory (validates existence + non-empty description; rejects project scope for No Project); emits `workdirs:changed` |
-| `UpdateWorkDirectoryDescription`| scope, id, description                      | error                             | Update a directory's description; emits `workdirs:changed` |
-| `DeleteWorkDirectory`           | scope, id                                   | error                             | Delete a directory; emits `workdirs:changed` |
+| `UpdateWorkDirectoryDescription`| scope, ownerID, id, description              | error                             | Update a directory's description; emits `workdirs:changed` |
+| `DeleteWorkDirectory`           | scope, ownerID, id                          | error                             | Delete a directory; emits `workdirs:changed` |
 
 `scope` is `"project"` or `"session"`; `ownerID` is the corresponding project/session ID. `WorkDirectoryRecord` is `project.WorkDirectoryRecord{ID, Path, Description, CreatedAt}`. The `workdirs:changed` event triggers a UI reload; directories are loaded into the execution context on the next message (via `tools.WithAllowedRoots`), and — together with the workspace path — feed a multi-root ignore checker (`tools.WithIgnoreChecker`) so `glob`/`ripgrep` honour each root's own `.gitignore` + `.aiignore` ([ADR-016](../decisions/016-aiignore.md)).
+
+### Review (`backend/frontend_api_review.go`)
+
+Code-review authoring surface (human-in-the-loop review of agent changes). Review state is persisted per session.
+
+| Method | Parameters | Returns | Description |
+| ------ | ---------- | ------- | ----------- |
+| `GetReview` | sessionID | (*review.Review, error) | Load the session's review (status, comments, prompt) |
+| `GetReviewDiff` | — | ([]ReviewFileDiff, error) | Working-tree diff grouped by file (review format) |
+| `SaveReviewGeneralComment` | sessionID, body | error | Add/replace the general review comment |
+| `SaveReviewFileComment` | sessionID, filePath, body | (string, error) | Add a file-level comment (returns comment ID) |
+| `SaveReviewHunkComment` | sessionID, filePath, hunkID, body | (string, error) | Add a hunk-level comment (returns comment ID) |
+| `DeleteReviewComment` | id | error | Delete a review comment by ID |
+| `SetReviewStatus` | sessionID, status | error | Set review status (e.g. pending/approved/changes_requested) |
+| `ClearReviewComments` | sessionID | error | Remove all comments from the review |
+| `ClearReview` | sessionID | error | Clear the entire review |
+| `SaveReviewPrompt` | sessionID | (*ReviewPromptMessage, error) | Persist/refresh the review prompt surfaced to the agent |
+
+### Agents (`backend/frontend_api_agents.go`)
+
+| Method | Parameters | Returns | Description |
+| ------ | ---------- | ------- | ----------- |
+| `ListAgents` | — | []AgentDescriptorDTO | List available Subagent Profiles (name+description+meta) |
+
+### Updater (`backend/frontend_api_updater.go`)
+
+Self-update lifecycle. Emits `update:*` global events (see [event-catalog.md](event-catalog.md)).
+
+| Method | Parameters | Returns | Description |
+| ------ | ---------- | ------- | ----------- |
+| `GetAppVersion` | — | AppVersionResponse | Running app version (getter, no error) |
+| `CheckForUpdates` | — | (*UpdateInfo, error) | Query GitHub for the latest release; emits `update:available`/`update:none`/`update:error` |
+| `RunBackgroundUpdateCheck` | — | — | Schedule a background update check (fire-and-forget, no return) |
+| `DownloadUpdate` | — | error | Download + integrity-verify the archive; emits `update:progress`/`update:downloaded`/`update:error` |
+| `ApplyUpdate` | — | error | Stage the updater re-exec and trigger a graceful quit |
+| `SkipVersion` | ver | error | Mark a version as skipped |
+| `GetUpdateSettings` | — | UpdateSettings | Update preferences (getter, no error) |
+| `SetUpdateSettings` | enabled, autoCheck | (UpdateSettings, error) | Update preferences; returns normalized settings |
 
 ## Event Protocol
 
@@ -272,9 +321,9 @@ See [event-catalog.md](event-catalog.md) for complete event reference.
 ## Error Propagation
 
 - **RPC errors**: Go methods return `error`; Wails serializes as `Error` thrown in the TypeScript `Promise` rejection
-- **Event errors**: sent as `frontend:event:error` type with `{message, code}` payload; frontend `useWailsEvent` hook catches and displays toast
+- **Event errors**: there is no dedicated "event error" channel; failed event emissions are logged and dropped. User-visible execution errors flow through the global `runtime_error` event and the session-scoped `error` event (see [event-catalog.md](event-catalog.md))
 - **Startup failures**: if backend `Startup()` panics, Wails shows a native error dialog; if startup completes but services fail, `GetConfig()` returns an error which frontend uses to display a "Backend unavailable" banner
-- **Streaming failures**: SSE/event stream disconnects bubble to `frontend:event:error`; `chatStore.flushStreamingToMessage()` preserves partial content
+- **Streaming failures**: streaming uses Wails `EventsEmit` (not SSE); if a task errors mid-stream, `assistant_done` may not fire and the partial streaming text is flushed by `chatStore.flushStreamingToMessage()` on completion/error
 - **Panic recovery**: Wails runtime catches Go panics and returns them as RPC errors; backend uses `recover()` middleware in handler chain
 - **Fallback**: methods invoked before backend ready return "backend not initialized" error
 - **Vector not ready**: vector search methods invoked before embedder initialization completes return empty results with no error (graceful degradation)

@@ -112,7 +112,7 @@ The `Markdown` component (`markdownConfig.tsx`) supplies custom `react-markdown`
 - Streaming text renders in real-time without layout shift
 - Tool call and result are always rendered together (never orphaned)
 - Pending actions are always visible: unresolved action cards sink to the bottom of the chat stream (never scrolled out of reach while the user is at the bottom); resolved action cards settle at their stream position
-- No component file exceeds 300 lines (extract into sub-components — see `ChatInput.tsx` for a component using sub-hooks to manage complexity)
+- Component files are kept small as a target (~300 lines); complexity is managed by extracting sub-hooks/sub-components (see `ChatInput.tsx`). There is no enforced size cap — larger components (e.g. context menus, settings dialogs, modals) are accepted where splitting would reduce cohesion
 
 ## Error Handling
 

@@ -91,7 +91,7 @@ Tightens the executor circuit-breaker thresholds so a small model that repeats i
 - `fruitless_abort_threshold`
 - `same_tool_repeat_nudge_threshold`
 
-These are tighter than the baseline `executor.circuitBreaker` values.
+These are tighter than, or equal to, the baseline `executor.circuitBreaker` values. Four are strictly tighter; `parse_error_abort_threshold` matches the baseline (`3`), since small models do not parse-fail more often than the baseline abort point intends.
 
 ## Flow
 

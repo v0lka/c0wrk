@@ -41,8 +41,12 @@ specs/
 │   │   ├── README.md
 │   │   ├── compaction.md
 │   │   └── blackboard.md
+│   ├── goal-mode.md
 │   ├── llm-providers.md
+│   ├── review.md
 │   ├── session-lifecycle.md
+│   ├── small-llm.md
+│   ├── tool-manager.md
 │   ├── workspace.md
 │   └── frontend/
 │       ├── README.md
@@ -57,12 +61,12 @@ specs/
 │   ├── event-catalog.md
 │   └── conductor-tools.md
 │
-└── decisions/                      Architecture Decision Records
+└── decisions/                      Architecture Decision Records (NNN-slug.md; full list in INDEX.md)
     ├── _template.md
     ├── 001-single-module.md
     ├── 002-sp4rk-isolation.md
-    ├── 003-cgo-free-sqlite.md
-    └── 004-external-binary-dependencies.md
+    ├── ...
+    └── 023-auto-update.md
 ```
 
 ## Naming Conventions
@@ -212,7 +216,7 @@ What NOT to do, with brief explanation of why.
 
 ## Status
 
-Accepted | Superseded by [NNN](./NNN-slug.md)
+Accepted | Superseded by [NNN](./NNN-slug.md) | Superseded (no successor ADR — the decision was reversed by code drift and recorded in place)
 
 ## Context
 

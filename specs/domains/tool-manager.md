@@ -25,14 +25,24 @@ const (
 )
 
 type ToolSpec struct {
-	Name        string          // "rg", "uv", "markitdown"
-	Version     string          // pinned upstream version (source of truth for reconciliation)
+	Name        string  // "rg", "uv", "markitdown"
+	Version     string  // pinned upstream version (source of truth for reconciliation)
 	Type        ToolType
-	BinName     string
-	URLs        map[string]string  // platform key -> download URL
-	Checksums   map[string]string  // platform key -> SHA256 hex (empty disables verification)
-	PipSpec     string          // pip install spec, pinned with == for determinism
-	PythonVersion string
+	Description string
+	BinName     string  // executable name after install
+	// ArchiveName: on-disk cache filename, resolved from the download-URL
+	// basename (so the extension matches the real bytes) unless ArchiveNameOverride wins.
+	ArchiveName             string
+	ArchiveNameOverride     string // replaces triple-derived name when upstream naming differs per-platform
+	BinPathInArchive        string // relative path to the binary inside the archive
+	BinPathInArchiveOverride string
+	PipSpec                 string // pip install spec, pinned with == for determinism (PythonPackage only)
+	PythonVersion           string // Python version required (PythonPackage only)
+	URLs                    map[string]string // platform key -> download URL
+	// Checksums: platform key -> SHA256 hex. Fail-closed (ASI04-R2): a missing/empty
+	// checksum FAILS verification rather than accepting an unverified binary.
+	// Every supported platform MUST declare one.
+	Checksums               map[string]string
 }
 
 type ToolVersions map[string]string  // tool name -> installed version, persisted to .versions
@@ -73,7 +83,7 @@ startup Phase 2: initTools()
 
 - Managed tool versions are compile-time pins in `ManagedTools()`; the reconciliation source of truth is source code, not the network.
 - Installed tool versions advance only when a developer raises a pin in the registry and ships a new build. The tool-manager performs no upstream version queries and no automatic updates.
-- A static-binary download is SHA256-verified against the registry checksum before extraction. An empty checksum disables verification and is reserved for staged rollouts.
+- A static-binary download is SHA256-verified against the registry checksum before extraction. Verification is **fail-closed** (ASI04-R2): a missing/empty checksum fails verification rather than accepting an unverified binary, so every supported platform MUST declare one.
 - The Python package spec (`PipSpec`) carries an explicit `==<version>` pin so every install resolves to a deterministic, reviewable version rather than the PyPI "latest".
 
 **Reconciliation correctness:**
@@ -94,6 +104,7 @@ The tool registry is an embedded Go struct (`core/toolmanager/registry.go`), not
 | --- | --- | --- |
 | Minimum free disk space before download | 200 MiB | `manager.go` `checkDiskSpace` (best-effort; no-op on Windows) |
 | Max decompressed size per archive entry (zip-bomb guard) | 512 MiB | `install.go` `maxExtractEntryBytes` |
+| Max download size per archive (pre-verification disk-exhaustion guard) | 1 GiB | `install.go` `maxDownloadBytes` |
 | Download retry on transient failure | 1 retry | `manager.go` `installStatic` |
 
 To remove all managed tools, delete `~/.c0wrk/tools/`.

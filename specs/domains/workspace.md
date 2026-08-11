@@ -94,7 +94,7 @@ session exists). Git operations and vector indexing remain skipped.
 
 ### Git Integration
 
-- `GetGitStatus()` returns per-file status (modified, added, deleted, untracked)
+- `GetGitStatus(dirPath)` returns per-file status (modified, added, deleted, untracked) for the given directory (containment-checked against the project root)
 - `GetFileDiff(path)` returns unified diff for modified files; for paths outside the active project root (or a non-git path) it returns `("", nil)` — no baseline to diff against, so the frontend does not render a diff panel
 - Status integrated into file tree nodes (icon indicators in UI)
 - `.gitignore` filtering in directory listings uses `git ls-files --others --ignored --exclude-standard --directory -z`. In a git repo `.aiignore` is layered on top of that git-derived set via an `ignore.Resolver` (only `IgnoredByAIIgnore` is OR-merged, so the resolver's negation-less matching cannot override a git `!pattern` un-ignore). In a non-git workspace (including No Project) the resolver is the sole authority for both files. A resolver-construction failure is non-fatal; the listing returns with whatever flags were already computed.
@@ -146,7 +146,7 @@ Project switched (after vector index ready)
 | `ReadFile(path)`                    | Read file content (no backend-side binary detection; frontend `isBinaryContent` checks null bytes in first 8KB). Not workspace-contained — accepts any absolute path so the viewer can display out-of-workspace files the agent cites (e.g. SDK sources); a trailing `#L<n>`/`#L<n>-L<m>` line anchor is stripped before resolution |
 | `ReadFileAsDataURL(path)`           | Read a file and return it as a base64 `data:` URL (RFC 2397), for embedding local images in the file-viewer markdown renderer (the webview cannot load `file://` or project-root-relative URLs). **Workspace-contained** — the only read-path RPC that retains containment, because image embedding runs during markdown auto-render without an explicit user action. MIME type from `mime.TypeByExtension`; 8 MiB size guard |
 | `GetFileDiff(path)`                 | Unified git diff for file. Not workspace-contained, but returns `("", nil)` for files outside the active project root or a non-git path (no baseline to diff against) |
-| `GetGitStatus()`                    | Workspace-level git status summary                  |
+| `GetGitStatus(dirPath)`             | Per-file git status summary for the given directory (containment-checked against the project root) |
 
 Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4rk/tools/builtins/glob.go`), not as a direct Workspace API method.
 
@@ -162,9 +162,9 @@ Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4
 - The indexer rejects binary files via a bounded 512-byte header pre-read (null-byte presence, `binaryHeaderSize`) before loading the file into memory; the frontend file viewer detects binary content via null bytes in the first 8KB
 - Write-path and structural RPCs (`WriteFile`, `ListDirectory`) reject paths outside the workspace (directory-traversal containment); read-path RPCs (`ReadFile`, `GetFileIcon`, `GetFileDiff`) accept any absolute path so the viewer can display any file the agent cites — this is a display affordance that does not relax the agent's `read_file` tool containment. `ReadFileAsDataURL` is the exception among read RPCs: it retains workspace containment because image embedding runs during markdown auto-render (no explicit user action) and must not let a document read arbitrary files into the webview DOM
 - Every git invocation flows through `exec.CommandContext`; git errors propagate to the caller (no silent fallback)
-- Missing `git` binary is a fatal startup condition, never a runtime surprise
+- Missing `git` binary blocks the CODE-mode project switch: detected lazily via `exec.LookPath` in `SwitchProject`, it emits a dismissable `runtime_error` toast (`error_code: git_not_found`) and rejects the switch; CHAT / No-Project mode never invokes git and never requires it
 - ONNX embedder loading runs asynchronously after EventBackendReady; it never blocks the critical startup path
-- Vector search RPC returns an error if invoked before the embedder is ready (graceful "vector search not available" error, not empty results)
+- Vector search RPCs block via `Service.WaitReady` until the index is ready: a search issued while indexing is in progress waits, surfacing a "waiting for index readiness" error only if the request context is cancelled first. When no vector manager is wired (`getVectorManager() == nil`) the RPC returns a "vector search not available" error
 - No Project: git operations and vector indexing are skipped (deactivated at the FrontendAPI layer). File watching is scoped to the active session's workspace directory (`__no_project__/<sessionID>/workspace/`), falling back to the project base directory when no session exists.
 - No Project: git status and diff always return empty (no git process spawned)
 - No Project: vector search never returns results (indexer is never started, semantic_search tool is disabled anyway)

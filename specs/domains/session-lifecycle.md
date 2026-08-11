@@ -82,7 +82,7 @@ Backend SwitchProject path
 
 ```
 User sends message
-  → Frontend: SendMessage(sessionId, text, activeSkills, modelOverride, reasoningEffort, goal, goalBudget, reviewMode)
+  → Frontend: SendMessage(sessionId, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode)
   → Backend: FrontendAPI.SendMessage()
       ├─ Persist original text to DB (preserves /skill and @file refs)
       ├─ Preprocess text for orchestrator:
@@ -94,7 +94,7 @@ User sends message
       │   ├─ WithWorkspacePath (project workspace)
       │   ├─ WithTempDir (session-specific temp directory)
       │   └─ WithCoherence (FileCoherenceTracker for cross-session conflict detection)
-      ├─ Determine opts: {TaskID, UserSkills, ModelOverride, ReasoningEffort, Goal, GoalBudgetOverride, ReviewMode}
+      ├─ Determine opts: {TaskID, UserSkills, UserAgents, ModelOverride, ReasoningEffort, Goal, GoalBudgetOverride, ReviewMode}
       │   ├─ First message: TaskID=""
       │   └─ Continuation: TaskID=lastCompletedTaskID
       ├─ Call orchestrator.HandleMessage(ctx, preprocessedText, sessionId, opts)
@@ -213,8 +213,8 @@ standalone checklist.
 
 ```
 User clicks "Resume" (after task_failed_resumable)
-  → Frontend: ResumeTask(sessionId)
-  → Backend: FrontendAPI.ResumeTask()
+  → Frontend: ResumeTask(sessionId, modelOverride, reasoningEffort)
+  → Backend: FrontendAPI.ResumeTask(id, modelOverride, reasoningEffort)
       ├─ Resolve unfinished task via TaskStoreAdapter.GetUnfinishedTaskID
       ├─ Restore Blackboard from SQLite (RestoreBlackboard: facts + step results)
       ├─ Load persisted trajectory via LoadTrajectory(taskID) → resumeSteps
@@ -375,7 +375,7 @@ Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/sess
 - `projects` — project roster (in `backend/project/persistence.go`)
 - `project_ui_state` — project_id, saved_session_id, open_tabs (JSON), active_file, updated_at; stores per-project switch UI restoration state
 - `sessions` — id, project_id, name, created_at, last_active_at, archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent
-- `session_messages` — id, session_id, role, content, metadata (JSON), created_at
+- `session_messages` — id, session_id, role, content, reasoning_content, tool_calls, metadata (JSON), created_at
 - `tasks` — id, session_id, original_request, routing_decision (JSON), plan (JSON), reflections (JSON), final_output, attempt_count, status, created_at, completed_at
 - `task_steps` — step_id, task_id, summary, full_output, error_text, steps (JSON), created_at (PRIMARY KEY (task_id, step_id))
 - `task_facts` — task_id, facts (JSON), updated_at
@@ -510,12 +510,12 @@ type SessionInfo struct {
     CreatedAt        string // RFC 3339
     LastActiveAt     string // RFC 3339
     Archived         bool
+    Pinned           bool
     Active           bool
     TotalInputTokens  int
     TotalOutputTokens int
     Model            string
     Family           string
-    Pinned           bool
     FillPercent      float64 // context-fill percentage (stored in sessions.fill_percent)
     HasUnfinishedTask bool  // derived (not stored): EXISTS unfinished in_progress/failed task; gates the fork button
 }
@@ -524,6 +524,7 @@ type SessionInfo struct {
 type HandleOptions struct {
     TaskID             string                     // non-empty = continuation of existing task
     UserSkills         []string                   // explicitly requested by user via /skill refs (bypass router)
+    UserAgents         []string                   // explicitly requested by user via #agent-name mentions (drives the "Requested Subagents" prompt directive)
     ModelOverride      string                     // non-empty → use this model for all LLM calls; empty → router default
     ReasoningEffort    string                     // non-empty → native reasoning value for all LLM calls; empty → use family default
     SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)
@@ -531,7 +532,7 @@ type HandleOptions struct {
     PendingImages      []llm.ContentBlock         // staged image attachments (base64 image blocks) injected into the context window (not the blackboard)
     ReviewMode         bool                       // true = message carries code-review feedback the agent must act on (sets ReviewModeKey)
     Goal               bool                       // true = dispatch to runGoalLoop (goal mode)
-    GoalBudgetOverride *goal.GoalBudget           // non-nil = tighten goal resource caps below config defaults (applied at activation)
+    GoalBudgetOverride *goal.GoalBudget           // optional per-message turn cap; MaxTurns>0 caps turns, nil/0 = unlimited (no config-level defaults)
 }
 
 // HandleResult — orchestration output
@@ -617,7 +618,7 @@ type HandleResult struct {
 
 | Parameter                          | Default                | Description                 |
 | ---------------------------------- | ---------------------- | --------------------------- |
-| `orchestration.maxHistoryMessages` | 20                     | Conversation history window (Conductor context injection) |
+| `ConductorHistoryWindow` (internal default) | 20                     | Conversation history window injected into the Conductor context (`OrchestratorConfig`, applied when 0) |
 | Database path                      | `~/.c0wrk/database.db` | SQLite file location        |
 
 ## Related Specs

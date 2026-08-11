@@ -15,7 +15,7 @@
 | Subagent delegation, async, DAG          | [domains/orchestration/delegation.md](domains/orchestration/delegation.md) |
 | Routing, complexity classification       | [domains/orchestration/router.md](domains/orchestration/router.md)       |
 | ReAct loop, circuit breakers, step limits | [domains/orchestration/executor.md](domains/orchestration/executor.md)  |
-| Conductor tool surface (delegate/declare_plan/reflect) | [contracts/conductor-tools.md](contracts/conductor-tools.md) |
+| Conductor tool surface (delegate/declare_plan/execute_plan/reflect, goal-mode tools) | [contracts/conductor-tools.md](contracts/conductor-tools.md) |
 | Adding/modifying built-in tools          | [domains/tool-system/builtins.md](domains/tool-system/builtins.md)       |
 | MCP servers, dynamic tools               | [domains/tool-system/mcp-gateway.md](domains/tool-system/mcp-gateway.md) |
 | Tool registry, execution pipeline        | [domains/tool-system/README.md](domains/tool-system/README.md)           |
@@ -106,6 +106,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [small-llm.md](domains/small-llm.md) - Small-LLM profile: master-toggle + four variants (essential-tools narrowing, system-prompt Lite swap, sampling override, loop hardening) for tuning c0wrk to small/local models
 - [tool-manager.md](domains/tool-manager.md) - External binary dependency manager (rg/uv/markitdown): pinned-version reconciliation, SHA256 verification, no-auto-update supply-chain guarantee
 - [workspace.md](domains/workspace.md) - File tree, vector index, workspace watcher
+- [review.md](domains/review.md) - Code review feature (review sessions, diff parsing, hunk/file/general comments, clone-on-fork)
 
 ### domains/frontend/
 
@@ -120,23 +121,23 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [backend-core.md](contracts/backend-core.md) - Backend wrapping of Core
 - [desktop-frontend.md](contracts/desktop-frontend.md) - Wails bindings and RPC surface
 - [event-catalog.md](contracts/event-catalog.md) - Complete event type reference
-- [conductor-tools.md](contracts/conductor-tools.md) - Conductor tool surface (delegate, declare_plan, reflect, cancel_delegation)
+- [conductor-tools.md](contracts/conductor-tools.md) - Conductor tool surface (delegate, declare_plan, execute_plan, reflect, cancel_delegation, goal-mode tools)
 
 ### decisions/
 
 - [001-single-module.md](decisions/001-single-module.md) - Single Go module design
 - [002-sp4rk-isolation.md](decisions/002-sp4rk-isolation.md) - sp4rk imports confined to core → Superseded by ADR-008
 - [003-cgo-free-sqlite.md](decisions/003-cgo-free-sqlite.md) - CGO-free SQLite choice
-- [004-external-binary-dependencies.md](decisions/004-external-binary-dependencies.md) - git and rg as hard runtime dependencies
+- [004-external-binary-dependencies.md](decisions/004-external-binary-dependencies.md) - git (conditional) and rg as external binary deps → Superseded by ADR-010 (ripgrep; git now conditional)
 - [005-bleve-rrf-hybrid-search.md](decisions/005-bleve-rrf-hybrid-search.md) - Bleve BM25 + Reciprocal Rank Fusion hybrid search → Superseded by ADR-013
-- [006-skills-mcp-layer.md](decisions/006-skills-mcp-layer.md) - Skills integration with MCP tool layer
+- [006-skills-mcp-layer.md](decisions/006-skills-mcp-layer.md) - Skills integration with MCP tool layer → Superseded (no successor ADR; reversed by code drift — skills/MCP moved to sp4rk)
 - [007-shell-parser-dependency.md](decisions/007-shell-parser-dependency.md) - mvdan.cc/sh shell parser for symlink detection
-- [008-backend-sp4rk-direct-import.md](decisions/008-backend-sp4rk-direct-import.md) - Backend allowed to import sp4rk directly
-- [009-backend-domain-logic-extraction.md](decisions/009-backend-domain-logic-extraction.md) - Extraction of domain logic from App/UI layer
-- [010-tool-manager.md](decisions/010-tool-manager.md) - Tool manager for external binary dependencies (rg, uv, markitdown)
-- [011-sp4rk-to-core-extraction.md](decisions/011-sp4rk-to-core-extraction.md) - Move vector index and proxy from sp4rk to Core
+- [008-backend-sp4rk-direct-import.md](decisions/008-backend-sp4rk-direct-import.md) - Backend allowed to import sp4rk directly → Supersedes ADR-002
+- [009-backend-domain-logic-extraction.md](decisions/009-backend-domain-logic-extraction.md) - Extraction of domain logic from App/UI layer → Superseded by ADR-011
+- [010-tool-manager.md](decisions/010-tool-manager.md) - Tool manager for external binary dependencies (rg, uv, markitdown) → Supersedes ADR-004 (ripgrep; git now conditional)
+- [011-sp4rk-to-core-extraction.md](decisions/011-sp4rk-to-core-extraction.md) - Move vector index and proxy from sp4rk to Core → Supersedes ADR-009
 - [012-conductor-orchestration-pipeline.md](decisions/012-conductor-orchestration-pipeline.md) - Conductor-driven ReAct pipeline replacing system-driven plan-execute-reflect
-- [013-rrf-pre-fusion-score-thresholds.md](decisions/013-rrf-pre-fusion-score-thresholds.md) - Pre-fusion score thresholds and configurable RRF parameters for hybrid search
+- [013-rrf-pre-fusion-score-thresholds.md](decisions/013-rrf-pre-fusion-score-thresholds.md) - Pre-fusion score thresholds and configurable RRF parameters for hybrid search → Supersedes ADR-005
 - [014-sp4rk-separate-module.md](decisions/014-sp4rk-separate-module.md) - sp4rk as a separate Go module → Superseded by ADR-015
 - [015-sp4rk-external-module-dependency.md](decisions/015-sp4rk-external-module-dependency.md) - sp4rk as an external module dependency → Supersedes ADR-014
 - [016-aiignore.md](decisions/016-aiignore.md) - .gitignore + .aiignore as the ignore source of truth (removes workspace.* config ignores and hardcoded defaults)

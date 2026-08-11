@@ -34,10 +34,9 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
       "tools": ["read_file", "edit_file", "bash_exec"] | "all" | "read-only",
       "depends_on": ["del_0"],
       "mode": "blocking" | "async",
-      "model": "openai/gpt-4" | null,
       "max_steps": 50 | null,
       "allow_redelegate": false,
-      "role": "coder" | "researcher" | "tester" | "executor"
+      "agent": "code-reviewer"
     }
   ]
 }
@@ -50,13 +49,12 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
 | `tasks[].summary` | yes | Short label emitted to the UI plan panel. |
 | `tasks[].task` | yes | Full task description. Convention: What/How/Where/Acceptance Criteria (same format as the prior plan-step description, so existing UI rendering works unchanged). |
 | `tasks[].acceptance_criteria` | no | Optional explicit list; if present, the subagent verifies before calling `finish`. |
-| `tasks[].tools` | no | Tool subset for the subagent. `"all"` (default) = full tool set; `"read-only"` = search/read tools only; array = explicit list. Internal tools (`finish`, `store_fact`, `search_facts`, `read_step_output`, `update_checklist`, `semantic_search`) are always included. |
-| `tasks[].depends_on` | no | IDs of delegations that must complete before this one starts. Used to express a DAG across multiple `delegate` calls within one Conductor run. |
+| `tasks[].tools` | no | Tool subset for the subagent. `"all"` (default) = full tool set; `"read-only"` = search/read tools only; array = explicit list. The mandatory base (`mandatorySubagentTools` in `core/conductor.go`: every MCP tool plus `subagentReadOnlyToolNames` — `read_file`, `list_directory`, `glob`, `ripgrep`, `semantic_search`, `web_search`, `web_fetch`, `read_skill_resource`, `search_facts`, `read_step_output`, `list_step_outputs`, `read_final_result`, `tool_result_read`, `finish`, `store_fact`, `update_checklist`, `declare_step_complete`, `ask_user`) is ALWAYS unioned in regardless of this field, so exploration/MCP capability is never dropped. |
+| `tasks[].depends_on` | no | IDs of blocking delegations that must complete before this one starts. Used to express a DAG across multiple `delegate` calls within one Conductor run. `depends_on` can only reference **blocking** tasks — async tasks run in the background and cannot be depended upon. |
 | `tasks[].mode` | no | `"blocking"` (default): the tool result contains the subagent output. `"async"`: the tool result returns immediately with `delegation_id`; the Conductor reads results later via `read_step_output(id)`. |
-| `tasks[].model` | no | Composite model ID override for this subagent. Empty = Conductor's model. |
-| `tasks[].max_steps` | no | Per-subagent ReAct iteration cap. Empty = derived from routing complexity (`complexity × 20`, same formula as the Conductor). |
-| `tasks[].allow_redelegate` | no | `true` grants the subagent the `delegate` tool with a reduced budget and depth cap. Default `false` (flat). |
-| `tasks[].role` | no | Agent profile (coder/researcher/tester/executor) selecting system-prompt variant and pruning defaults. Empty = `executor`. |
+| `tasks[].max_steps` | no | Per-subagent ReAct iteration cap. Empty = derived from routing complexity (`complexity × 30`, same formula as the Conductor via `stepsPerComplexity`). A Subagent Profile's `max_steps` (when > 0) overrides this field and the default. |
+| `tasks[].allow_redelegate` | no | `true` grants the subagent the `delegate` and `cancel_delegation` tools (depth-capped by `OrchestratorConfig.MaxRedelegationDepth`, default 2). A Subagent Profile with `allow-redelegate: true` overrides this field to `true`. Default `false` (flat). |
+| `tasks[].agent` | no | Name of a Subagent Profile (`<workspace>/.agents/agents/<name>/AGENT.md`). When set, the launcher resolves the profile and applies it: the profile body replaces the orchestrator core directive (the shared project-context prefix is preserved via `buildSpecializedSystemPrompt`), and the profile's tool preference / `max_steps` / `model` / `allow-redelegate` override the task fields. Unknown name fails fast (delegate validation rejects it before any subagent launches). Empty = no profile (the legacy behavior). |
 
 #### Execution Flow
 
@@ -69,7 +67,7 @@ delegate.Execute(ctx, input)
 │     ├─ IDs unique within the Conductor run
 │     ├─ depends_on references exist (in the Registry or in this batch)
 │     ├─ no cycles in the combined DAG (existing + new tasks)
-│     └─ allow_redelegate depth does not exceed config.Conductor.MaxRedelegationDepth
+│     └─ allow_redelegate depth does not exceed OrchestratorConfig.MaxRedelegationDepth
 │
 ├─ 3. Register all tasks in the Delegation Registry as "pending".
 │
@@ -78,15 +76,18 @@ delegate.Execute(ctx, input)
 │
 ├─ 5. For each ready task, build a SubAgentTask:
 │     ├─ Task description = task + injected context from depends_on outputs
-│     │   (truncated to config.Conductor.MaxDependencyContextChars, shared
+│     │   (truncated to OrchestratorConfig.MaxDependencyContextChars, shared
 │     │   across dependencies — same logic as the prior step dependency injection)
-│     ├─ Tool set = tools field + internal tools
-│     ├─ System prompt = buildSystemPrompt with role + skill narrowing
+│     ├─ Tool set = tools field + mandatory base (mandatorySubagentTools:
+│     │   read-only exploration, MCP, and internal/meta tools — always unioned in)
+│     ├─ System prompt = buildSystemPrompt; when an agent profile is set,
+│     │   buildSpecializedSystemPrompt applies it (profile body replaces the
+│     │   core directive, shared project-context prefix preserved)
 │     ├─ ContextManager via contextFactory (isolated per subagent)
 │     ├─ Executor = agent.NewExecutor with max_steps, circuit breakers, HITL
 │     ├─ Scoped emitter (subagent events flow to UI under the delegation ID)
 │     └─ If allow_redelegate: inject a child Delegation Registry and add
-│         delegate/cancel_delegation to the subagent tool set with reduced budget
+│         delegate/cancel_delegation to the subagent tool set (depth-capped)
 │
 ├─ 6. Dispatch:
 │     ├─ RunSubAgentsParallel for all ready tasks in this call
@@ -163,7 +164,7 @@ Operations:
 | `All()` | Snapshot of all delegations in insertion order |
 | `Depth()` | Return the registry's delegation depth (0 for the Conductor's root registry) |
 
-Child registries (for `allow_redelegate`) are created at an incremented depth via `NewDelegationRegistryWithDepth(depth)`; the launcher checks `registry.Depth() >= config.Conductor.MaxRedelegationDepth` before building a redelegating subagent.
+Child registries (for `allow_redelegate`) are created at an incremented depth via `NewDelegationRegistryWithDepth(depth)`; the launcher checks `registry.Depth() >= OrchestratorConfig.MaxRedelegationDepth` before building a redelegating subagent.
 
 ### Finish Join Semantics
 
@@ -183,7 +184,7 @@ When `allow_redelegate: true`:
 
 - The subagent receives `delegate` and `cancel_delegation` in its tool set.
 - A child Delegation Registry is injected into the subagent context with `depth = parent_depth + 1`.
-- The launcher checks `registry.Depth() >= config.Conductor.MaxRedelegationDepth` (default 2) before building the subagent. At the cap, the delegation fails with a descriptive error.
+- The launcher checks `registry.Depth() >= OrchestratorConfig.MaxRedelegationDepth` (default 2) before building the subagent. At the cap, the delegation fails with a descriptive error.
 - Redelegating subagents are launched individually (not through `RunSubAgentsParallel`) because each needs its own per-task context with the child registry.
 - The subagent's `delegate` calls use the same `max_steps` budget as regular delegations (configurable per-task via `max_steps`).
 
@@ -197,7 +198,7 @@ subagent task = task field + "\n## Context from previous delegations\n"
       "\n### [{dep.ID}]: {dep.Summary}\n{dep.Output}\n"
 ```
 
-The **combined** context is tail-truncated to `config.Conductor.MaxDependencyContextChars` (default 8000), shared across all dependencies (not divided per-dependency), and aligned forward to a UTF-8 rune boundary so the tail does not begin inside a multi-byte sequence.
+The **combined** context is tail-truncated to `OrchestratorConfig.MaxDependencyContextChars` (default 8000), shared across all dependencies (not divided per-dependency), and aligned forward to a UTF-8 rune boundary so the tail does not begin inside a multi-byte sequence.
 
 ## Error Handling
 
@@ -213,9 +214,9 @@ The **combined** context is tail-truncated to `config.Conductor.MaxDependencyCon
 - The combined graph of delegations across all `delegate` calls in a Conductor run is always a valid DAG (no cycles).
 - A subagent's context is always a child of the Conductor's context, so cancelling the Conductor cancels all subagents.
 - A subagent never shares its `ContextManager` with the Conductor or with other subagents.
-- Internal tools (`finish`, `store_fact`, `search_facts`, `read_step_output`, `update_checklist`, `semantic_search`, `ask_user`) are always available to subagents regardless of the `tools` field.
+- The mandatory base (`mandatorySubagentTools` in `core/conductor.go` — every MCP tool plus `subagentReadOnlyToolNames`: `read_file`, `list_directory`, `glob`, `ripgrep`, `semantic_search`, `web_search`, `web_fetch`, `read_skill_resource`, `search_facts`, `read_step_output`, `list_step_outputs`, `read_final_result`, `tool_result_read`, `finish`, `store_fact`, `update_checklist`, `declare_step_complete`, `ask_user`) is always available to subagents regardless of the `tools` field.
 - `delegate`, `cancel_delegation` are available to a subagent only when `allow_redelegate` is true; `declare_plan` and `reflect` remain Conductor-only.
-- Recursive delegation depth never exceeds `config.Conductor.MaxRedelegationDepth`.
+- Recursive delegation depth never exceeds `OrchestratorConfig.MaxRedelegationDepth`.
 - The Delegation Registry is scoped to a single Conductor run (or a single subagent run for child registries); it does not persist across sessions.
 - `finish` with pending async delegations returns a tool error (via `finishJoinExecutor` wrapping the tool executor) unless each pending delegation has been cancelled or completed.
 - Subagent success requires `result.Finished && !DetectToolCallSyntaxInContent(result.Output)` (defense-in-depth, unchanged from the prior subagent logic).

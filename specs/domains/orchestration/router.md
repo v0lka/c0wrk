@@ -62,7 +62,7 @@ Selected (router-matched) skills are merged with user-specified skills (from `/s
 
 ### Continuation Fast-Path
 
-When `opts.TaskID` is non-empty (a continuation) AND the restored blackboard has an existing routing decision, the orchestrator **skips the router LLM call entirely**, reuses the prior `RoutingDecision`, and reactivates skills. Every FIRST user message passes through `Route`; only continuations with restored routing take the fast-path.
+When `opts.TaskID` is non-empty (a continuation) AND the restored blackboard has BOTH an existing plan AND a routing decision, the orchestrator **skips the router LLM call entirely**, reuses the prior `RoutingDecision`, and reactivates skills. The plan gate prevents a plan-less continuation from mis-routing (e.g. "continue step 10" without a plan would be misclassified). Every FIRST user message passes through `Route`; only continuations with a restored plan AND routing take the fast-path.
 
 ### No Project Override
 
@@ -79,7 +79,7 @@ In No Project (CHAT) mode, `routing.Domain` is overridden from `"code"` to `"gen
 ## Invariants
 
 - Route always returns a valid `RoutingDecision` (no nil on success)
-- The orchestrator's continuation fast-path skips the router entirely when `opts.TaskID` is non-empty AND the restored blackboard has an existing routing decision
+- The orchestrator's continuation fast-path skips the router entirely when `opts.TaskID` is non-empty AND the restored blackboard has BOTH an existing plan AND a routing decision
 - The router never modifies the tool registry or any state (pure classification)
 - c0wrk never branches on `RoutingDecision.NeedsClarification` (explicitly ignored in `orchestrator_handle.go`); clarification is a Conductor responsibility via `ask_user`. The field may still be set by the engine, but it drives no c0wrk pipeline branch.
 - User-specified skills are merged with router-matched skills in the orchestrator, not in the router

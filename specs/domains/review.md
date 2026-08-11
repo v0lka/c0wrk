@@ -10,10 +10,10 @@ The review feature lets the user inspect uncommitted changes (staged + unstaged 
 
 ### Backend (Go)
 
-- **`backend/review/persistence.go`** — `SQLiteReviewStore` persists the review buffer per session. Tables: `review_comments` (general + hunk-scoped, FK→sessions ON DELETE CASCADE) and `review_state` (status: active/submitted/approved).
+- **`backend/review/persistence.go`** — `SQLiteReviewStore` persists the review buffer per session. Tables: `review_comments` (general, hunk-scoped, and file-scoped comments; FK→sessions ON DELETE CASCADE) and `review_state` (status: active/submitted/approved).
 - **`backend/review/persistence_fork.go`** — `CloneReview`/`CloneReviewTx` copy the review buffer (status + comments) to another session for [session forking](session-lifecycle.md#session-forking). `CloneReviewTx` runs on a caller-supplied transaction so the clone commits or rolls back atomically with the rest of the fork
-- **`backend/frontend_api_review.go`** — RPCs: `GetReview`, `SaveReviewGeneralComment`, `SaveReviewHunkComment`, `DeleteReviewComment`, `SetReviewStatus`, `ClearReviewComments`, `ClearReview`, `GetReviewDiff`.
-- **`core/workspace/git.go`** — `ParseReviewDiff` parses `git diff -U5 HEAD` into per-file hunk snapshots (`ReviewFileDiff{Path, OldPath?, Hunks[]}`).
+- **`backend/frontend_api_review.go`** — RPCs: `GetReview`, `SaveReviewGeneralComment`, `SaveReviewHunkComment`, `SaveReviewFileComment`, `DeleteReviewComment`, `SetReviewStatus`, `ClearReviewComments`, `ClearReview`, `GetReviewDiff`, `GetCommitDiff`, `SaveReviewPrompt`.
+- **`core/workspace/git.go`** — `BuildReviewDiff` combines `git diff -U5 HEAD` (staged + unstaged tracked changes) with a per-file `git diff --no-index` for every untracked file; `ParseReviewDiff` parses the combined output into per-file hunk snapshots (`ReviewFileDiff{Path, OldPath?, Hunks[]}`).
 
 ### Frontend (React/Zustand)
 
@@ -62,13 +62,16 @@ keeping the displayed user message as the verbatim review comments.
 | RPC                              | Arguments                          | Returns                  |
 | -------------------------------- | ---------------------------------- | ------------------------ |
 | `GetReviewDiff`                  | —                                  | `[]ReviewFileDiff`       |
+| `GetCommitDiff`                  | `sha`                              | `[]ReviewFileDiff`       |
 | `GetReview`                      | `sessionId`                        | `*Review`                |
 | `SaveReviewGeneralComment`       | `sessionId, body`                  | `void`                   |
 | `SaveReviewHunkComment`          | `sessionId, filePath, hunkId, body`| `string` (comment id)    |
+| `SaveReviewFileComment`          | `sessionId, filePath, body`        | `string` (comment id)    |
 | `DeleteReviewComment`            | `id`                               | `void`                   |
 | `SetReviewStatus`                | `sessionId, status`                | `void`                   |
 | `ClearReviewComments`            | `sessionId`                        | `void`                   |
 | `ClearReview`                    | `sessionId`                        | `void`                   |
+| `SaveReviewPrompt`               | `sessionId`                        | `*ReviewPromptMessage` (prompt_id + content) |
 
 ## Invariants
 
@@ -76,4 +79,4 @@ keeping the displayed user message as the verbatim review comments.
 - The review pseudo-path `c0wrk:review` is intercepted in `FileViewerContent` before file loading.
 - Button label is derived from comment count: "Approve" when 0, "Submit" when ≥1.
 - `reviewLoopActive` survives app restart; stale loop state (task failed mid-loop) is reconciled on session restore.
-- Session forking clones the review buffer onto the fork via `CloneReviewTx`, running inside the fork's transaction so the review copy commits or rolls back with the rest of the fork. A source with no review data is a no-op. The general comment keeps its deterministic id (`generalCommentID`); hunk comments get fresh UUIDs, so the fork owns independent comment rows.
+- Session forking clones the review buffer onto the fork via `CloneReviewTx`, running inside the fork's transaction so the review copy commits or rolls back with the rest of the fork. A source with no review data is a no-op. General and file comments keep their deterministic ids (`generalCommentID` / `fileCommentID`); hunk comments get fresh UUIDs, so the fork owns independent comment rows.

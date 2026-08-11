@@ -2,7 +2,9 @@
 
 ## Status
 
-Superseded by [ADR-011](011-sp4rk-to-core-extraction.md) — vectorindex and proxy moved from sp4rk to `core/`.
+Superseded by [ADR-011](./011-sp4rk-to-core-extraction.md)
+
+> vectorindex and proxy were subsequently moved from sp4rk to `core/`.
 
 ## Context
 

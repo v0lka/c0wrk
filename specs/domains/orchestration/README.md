@@ -74,6 +74,7 @@ type OrchestratorConfig struct {
     AgentsMDMaxBytes            int
     AgentsMDSearchPaths         []string // extra AGENTS.md paths (global, c0wrk) read ahead of the workspace file
     ConductorHistoryWindow      int     // recent conversation messages injected into the Conductor context (default: 20)
+    GoalLoop                    GoalLoopSettings // goal-loop settings: Verification gates the independent verifier turn ("independent" | "off"); see [../goal-mode.md](../goal-mode.md)
     SmallLLM                    SmallLLMSettings // small-LLM profile (master toggle + essential-tools / system-prompt variants); see [../small-llm.md](../small-llm.md)
 }
 
@@ -92,13 +93,17 @@ type RoutingDecision struct {
 
 // Handle options
 type HandleOptions struct {
-    TaskID          string   // non-empty = continuation of existing task
-    UserSkills      []string // explicitly requested by user via /skill refs
-    ModelOverride   string   // non-empty = use this model for the Conductor
-    ReasoningEffort string   // native reasoning effort for the model family
-    SessionPlansDir string   // directory for session-scoped plan files (used by declare_plan)
-    Goal                bool             // first-message-only: enter the multi-turn goal loop (see ../goal-mode.md)
-    GoalBudgetOverride  *goal.GoalBudget // optional per-request budget tightening; any non-zero field overrides the config default
+    TaskID             string                     // non-empty = continuation of existing task
+    UserSkills         []string                   // explicitly requested by user via /skill refs (bypass router)
+    UserAgents         []string                   // explicitly requested by user via #agent-name mentions (drives the "Requested Subagents" prompt directive)
+    ModelOverride      string                     // non-empty → use this model for all LLM calls; empty → router default
+    ReasoningEffort    string                     // non-empty → native reasoning value for all LLM calls; empty → use family default
+    SessionPlansDir    string                     // directory for session-scoped plan files (used by declare_plan tool)
+    PendingAttachments []orchestration.Attachment // attachments staged by AttachFiles, flushed into the blackboard before execution
+    PendingImages      []llm.ContentBlock         // image attachments staged by AttachFiles, passed to the context window as image content blocks
+    ReviewMode         bool                       // renders the Code Review prompt section (agent treats review comments as actionable code edits)
+    Goal               bool                       // enter the multi-turn goal loop (see ../goal-mode.md)
+    GoalBudgetOverride *goal.GoalBudget           // optional per-request budget tightening; any non-zero field overrides the config default
 }
 
 // Handle result
@@ -137,9 +142,10 @@ HandleMessage(ctx, message, sessionID, opts)
 │     [../goal-mode.md](../goal-mode.md).
 │
 ├─ 3. ROUTE (or continuation fast-path):
-│     ├─ Continuation fast-path: if opts.TaskID != "" AND restored BB
-│     │   has an existing routing decision → reuse it, reactivate skills,
-│     │   skip the router LLM call.
+│     ├─ Continuation fast-path: if opts.TaskID != "" AND the restored BB
+│     │   has BOTH an existing plan AND a routing decision → reuse the
+│     │   routing decision, reactivate skills, skip the router LLM call.
+│     │   The plan gate prevents a plan-less continuation from mis-routing.
 │     └─ Default: router.Route(ctx, routingMessage, tools, history, skills)
 │         → When opts.UserSkills is non-empty, routingMessage is augmented
 │           with skill descriptions via buildSkillAugmentedRoutingMessage.
@@ -164,11 +170,12 @@ HandleMessage(ctx, message, sessionID, opts)
 ├─ 5. Build Conductor:
 │     ├─ System prompt = orchestrator core + family overlay + verification
 │     │   mandate + workspace + env + active skills (verbatim) +
-│     │   Conductor tool guidance (delegate, declare_plan, reflect, ask_user)
+│     │   Conductor tool guidance (delegate, declare_plan, execute_plan,
+│     │   reflect, ask_user)
 │     ├─ Tool set = file ops + search + internal tools (ask_user, finish,
 │     │   store_fact, search_facts, update_checklist, declare_step_complete,
 │     │   read_step_output, semantic_search) + Conductor tools (delegate,
-│     │   declare_plan, reflect, cancel_delegation)
+│     │   declare_plan, execute_plan, reflect, cancel_delegation)
 │     ├─ ContextManager via contextFactory
 │     └─ Delegation Registry injected into context
 │
@@ -178,7 +185,7 @@ HandleMessage(ctx, message, sessionID, opts)
 │        as tool calls inside this loop.
 │
 ├─ 7. Persist task outcome on BB per typed status (persistTaskOutcome):
-│     success → completed; partial → left in_progress (resumable);
+│     success → completed; partial/cancelled → left in_progress (resumable);
 │     failed/aborted → failed (resumable)
 │
 └─ 8. Return HandleResult (carries Status + Reflections).
@@ -199,12 +206,12 @@ There is no `executionMode` toggle. The Conductor chooses its own granularity ba
 
 ## Invariants
 
-- Every FIRST user message passes through Route; continuation messages (opts.TaskID != "") with a restored routing decision take the continuation fast-path and skip the router.
+- Every FIRST user message passes through Route; continuation messages (opts.TaskID != "") with a restored plan AND routing decision take the continuation fast-path and skip the router.
 - Routing always produces a valid domain from {"code", "research", "general", "mixed"}.
 - Complexity is always in range [1, 5].
 - Exactly one Conductor `Executor.Run` instance owns a given task from start to finish.
 - **Goal mode is a turn-of-Conductors, not one long-lived executor.** When `opts.Goal && opts.TaskID == ""`, `runGoalLoop` iterates: each turn launches a fresh `Executor.Run` via `RunConductor`, reusing the normal continuation-trajectory mechanism so dialogue context persists across the turn boundary. Routing is decided once at the top of `runGoalLoop` (before derivation) and inherited unchanged by every turn; no turn re-routes. The loop holds the single-flight guard for its whole run; `PauseGoal` releases it by transitioning to `paused` and breaking out. See [../goal-mode.md](../goal-mode.md).
-- The Conductor always has `ask_user`, `declare_plan`, `reflect`, `delegate`, `cancel_delegation`, `finish` available regardless of skill or tool-policy overrides (they are internal tools, bypass policy).
+- The Conductor always has `ask_user`, `declare_plan`, `execute_plan`, `reflect`, `delegate`, `cancel_delegation`, `finish` available regardless of skill or tool-policy overrides (they are internal tools, bypass policy).
 - `finish` with pending async delegations requires either a prior `cancel_delegation` for each, or an implicit join (the Conductor waits for all pending delegations before finishing).
 - `ExecutionResult.Status` is the typed success contract: success | partial | failed | aborted | cancelled. Callers consult it instead of parsing Output.
 - Blackboard is created once per first message and restored for continuations.
@@ -224,6 +231,7 @@ From `config.yaml` (via BuilderConfig → OrchestratorConfig):
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
 | `orchestration.maxDependencyContextChars` | 8000 | Max chars from dependency outputs injected into a delegation task |
+| `orchestration.maxRedelegationDepth` | 2 | Maximum recursive delegation depth when `allow_redelegate` is true (ASI07-R6). 0 = use default (2) |
 | `executor.compaction.sliding_window.keep_first` | 3 | Protected head messages during sliding-window compaction |
 | `executor.compaction.sliding_window.keep_last` | 10 | Protected tail messages during sliding-window compaction |
 | `executor.compaction.thresholds.pre_warning_percent` | 75 | Context-fill % that triggers the pre-compaction store_fact nudge |
@@ -232,11 +240,10 @@ From `config.yaml` (via BuilderConfig → OrchestratorConfig):
 The small-LLM profile (`small_llm.*`) tunes the Conductor for small/local models (tool-set narrowing, system-prompt Lite swap, sampling override, loop hardening). It is strictly additive and defaults to off. See [../small-llm.md](../small-llm.md).
 
 Not wired from `config.yaml` (hardcoded defaults in code):
-- `OrchestratorConfig.MaxRedelegationDepth` — default 2 (set in `NewOrchestrator`; not exposed as a config key).
 - `OrchestratorConfig.ConductorHistoryWindow` — default 20 (set in `NewOrchestrator`; not exposed as a config key).
 - `OrchestratorConfig.AgentsMDSearchPaths` — resolved by the backend (`backend/configadapter.go`) from the user home directory. AGENTS.md is read from multiple sources and concatenated in priority order: (1) `~/.agents/AGENTS.md` (global, shared across all agents), (2) `~/.c0wrk/.agents/AGENTS.md` (c0wrk-specific), (3) `<workspace>/AGENTS.md` (project-specific). Missing files are silently skipped. The combined content is capped by `security.agents_md_max_bytes`. This applies in both CHAT (No Project) and CODE modes — in CHAT mode only the global and c0wrk files are read (no workspace).
 
-Note: yaml key casing is mixed within and across config sections (see the struct tags in `backend/config/config.go`). `orchestration.*` uses `camelCase` (`maxDependencyContextChars`). `executor.compaction.sliding_window.*` uses `snake_case` (`keep_first`/`keep_last`), while sibling `executor.*` subsections use `camelCase` (`toolOutputPruning`, `historyMutation`, `circuitBreaker`). There is no top-level `conductor:` config section — `MaxRedelegationDepth` and `ConductorHistoryWindow` are not user-tunable via config.
+Note: yaml key casing is mixed within and across config sections (see the struct tags in `backend/config/config.go`). `orchestration.*` uses `camelCase` (`maxDependencyContextChars`). `executor.compaction.sliding_window.*` uses `snake_case` (`keep_first`/`keep_last`), while sibling `executor.*` subsections use `camelCase` (`toolOutputPruning`, `historyMutation`, `circuitBreaker`). There is no top-level `conductor:` config section — `ConductorHistoryWindow` is not user-tunable via config (`MaxRedelegationDepth` is exposed as `orchestration.maxRedelegationDepth`).
 
 ## Extension Points
 

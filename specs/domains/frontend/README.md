@@ -7,7 +7,7 @@ React 19 application providing the user interface for c0wrk: chat interaction, p
 ## Key Files
 
 - `frontend/src/App.tsx` — root component
-- `frontend/src/stores/` — Zustand state management (16 stores)
+- `frontend/src/stores/` — Zustand state management (19 stores)
 - `frontend/src/hooks/` — custom React hooks (event handlers, data loading)
 - `frontend/src/api/` — backend RPC wrapper layer
 - `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config + local image resolution, local file link detection, CodeMirror extensions)
@@ -123,7 +123,7 @@ One Dark theme. All colors as Tailwind v4 `@theme` custom properties:
 | --------------------- | ------- | -------------- |
 | `--color-background`  | #282c34 | App background |
 | `--color-foreground`  | #abb2bf | Default text   |
-| `--color-primary`     | #528bff | Actions, links |
+| `--color-primary`     | #abb2bf | Actions, links (dark theme; `--color-primary-rgb: 82,139,255` / `#528bff` is a separate rgba-helper token) |
 | `--color-destructive` | #e06c75 | Errors, delete |
 | `--color-success`     | #98c379 | Success states |
 | `--color-warning`     | #d19a66 | Warnings       |

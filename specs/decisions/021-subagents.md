@@ -69,7 +69,7 @@ name.
   `~/.c0wrk/.agents/agents` (`backend/application.go` default dirs); the
   project-local `<workspace>/.agents/agents` is always highest priority
   (`core/builder.go` `GetAgentDescriptors`).
-- Discovery is performed by `core/agents.AgentManager` (a self-contained package
+- Discovery is performed by `github.com/v0lka/sp4rk/agents.AgentManager` (a self-contained package
   importing only the stdlib + `gopkg.in/yaml.v3`), which mirrors
   `skills.SkillManager`: directories scanned in priority order, first/highest
   occurrence wins, invalid `AGENT.md` files logged at Debug and skipped.
@@ -200,7 +200,7 @@ task continuation.
 - **Make agent specialization an sp4rk engine feature.** Rejected: sp4rk stays a
   reusable engine with no knowledge of c0wrk's filesystem conventions or persona
   format (consistent with ADR-006 / ADR-015). The profile parser
-  (`core/agents`) is c0wrk-local; sp4rk only owns the generic
+  (`github.com/v0lka/sp4rk/agents`) is c0wrk-local; sp4rk only owns the generic
   `PlanStep.Agent` field and the delegation primitives.
 - **Drive specialization purely through the tool budget (no persona body).**
   Rejected: the system-prompt directive is the primary value (a "code reviewer"

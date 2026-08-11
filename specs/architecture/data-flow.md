@@ -15,7 +15,7 @@ User types message in frontend
 Frontend: chatStore.sendMessage(text)
          │
          ▼
-RPC: window.go.desktop.App.SendMessage(id, text, activeSkills, modelOverride, reasoningEffort, goal, goalBudget, reviewMode)
+RPC: window.go.desktop.App.SendMessage(id, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode)
          │
          ▼
 backend/frontend_api_session.go: FrontendAPI.SendMessage()
@@ -114,11 +114,13 @@ backend/configadapter.go: ToBuilderConfig(cfg)
          ▼
 core/builder.go: NewOrchestratorBuilder(builderCfg)
   ├─ Synchronous: proxy client, tool registry, built-in tools, security policies
-  └─ Async (goroutine): MCP gateway, LLM router, model registry, tool judge
+  ├─ Async initDone goroutine: LLM router, model registry, tool judge
+  └─ Async mcpDone goroutine: MCP gateway (separately gated, intentionally decoupled from initDone — graceful degradation)
          │
          ▼
 core/builder.go: Build() → per-session Orchestrator
-  → Blocks until async init complete (initDone channel)
+  → Blocks until initDone completes (LLM router, model registry, tool judge ready)
+  → Does NOT block on MCP gateway (mcpDone): MCP servers are discovered in the background; a server still connecting is simply not yet registered rather than blocking session creation
   → Creates ToolResultCache with cacheTTLSeconds (per-session lifetime)
   → Converts perToolTruncation map to per-tool truncation config
 ```
@@ -137,35 +139,35 @@ desktop/startup.go (background goroutine, after EventBackendReady):
 
 ## Startup Sequence
 
-Application startup follows a phased approach with conditional window visibility:
+Application startup follows a phased approach. The window starts hidden (gated by the `C0WRK_START_HIDDEN` env var) and is revealed unconditionally during Phase 2 so the frontend mounts and subscribes to events before `backend:ready`:
 
 ```
 main.go: wails.Run(options.App{StartHidden: os.Getenv("C0WRK_START_HIDDEN") != "false"})
   ↓
 Phase 0: resolve agent directory
 Phase 1: shell env + logger (<50ms)
-Phase 2: config + deps + tools (parallel, up to 3-10 min on first run)
+Phase 2: config + tools (parallel, up to 3-10 min on first run)
   │
-  ├─ Config resolution
-  ├─ Git dependency verification
+  ├─ config.ResolveAndLoad() — YAML parse + env expansion + defaults
   └─ initTools()
+      ├─ wailsRuntime.WindowShow(ctx) — window shown unconditionally so the
+      │   frontend mounts and subscribes to events before backend:ready
       ├─ Manager.NeedsInstall() — quick check (.versions + binary existence)
-      ├─ YES (tools needed):
-      │   ├─ emit tool_manager:start(tools)  → frontend shows splash
-      │   ├─ wailsRuntime.WindowShow(ctx)    → window becomes visible
-      │   ├─ EnsureCriticalTools()
-      │   │   ├─ download → emit tool_manager:progress(bytes_done, bytes_total)
-      │   │   └─ extract / python_bootstrap
-      │   └─ emit tool_manager:done()
-      └─ NO (all up-to-date):
-          └─ window stays hidden, no splash
+      ├─ if tools needed: emit tool_manager:start(tools)  → frontend shows splash
+      ├─ EnsureCriticalTools()  (always runs)
+      │   ├─ download → emit tool_manager:progress(bytes_done, bytes_total)
+      │   └─ extract / python_bootstrap
+      └─ emit tool_manager:done()  (always; installed_count reflects whether
+          tools were installed — emitted in both the needed and up-to-date paths
+          so the frontend can transition splash → waiting_ready)
   ↓
 Phase 3: database + terminal (parallel, ~100ms)
 Phase 4: stores + preload (~100ms)
 Phase 5: application + frontend API (~150ms)
   ↓
 emitBackendReady():
-  ├─ if window still hidden → WindowShow(ctx)  ("no tools needed" path)
+  ├─ WindowShow(ctx)  (idempotent no-op if already visible — window is shown
+  │   unconditionally in initTools, so this is always a no-op in practice)
   └─ emit backend:ready
 ```
 
@@ -189,12 +191,13 @@ github.com/v0lka/sp4rk/agent/executor.go: calls ToolExecutor.Execute(ctx, name, 
 core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
   │
   ├─ 1. Lookup tool by name
-  ├─ 2. Disabled-tools check (No Project mode) — applies to ALL tools, including internal
-  ├─ 3. Internal tool? → execute immediately, bypass policy/judge (disabled check above still applies)
-  ├─ 4. Register PostExecuteHook (deferred, runs on every non-early return path)
-  ├─ 5. Extra bash blacklist check (per-session, e.g. No Project mode) — bash_exec only
-  ├─ 6. PreExecuteHook? → call (may block for indexing gate)
-  ├─ 7. ParamManager? → transform input (InjectParams)
+  ├─ 2. Required-field validation (defense-in-depth) — reject inputs missing
+  │      a JSON Schema "required" top-level key
+  ├─ 3. Disabled-tools check (No Project mode) — applies to ALL tools, including internal
+  ├─ 4. Internal tool? → execute immediately, bypass policy/judge (disabled check above still applies)
+  ├─ 5. Register PostExecuteHook (deferred, runs on every non-early return path)
+  ├─ 6. Extra shell blacklist check (per-session, e.g. No Project mode) — bash_exec/posh_exec only
+  ├─ 7. PreExecuteHook? → call (may block for indexing gate)
   ├─ 8. Symlink gate: detect symlinks in input paths → force confirmation
   ├─ 9. Resolve policy: per-tool > skill > default > tool's own
   ├─ 10. PolicyAlwaysAllow Judge gate: ToolJudger flags call (reason != "")? → confirmation
@@ -215,7 +218,8 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
 github.com/v0lka/sp4rk/agent/executor.go: cache + two-stage truncation
   │
   ├─ Skip if tool is non-cacheable (sp4rk defaults: tool_result_read, finish, batch, etc.; extended via AddNonCacheableTools)
-  ├─ Store full result in ToolResultCache; key is a short hash — the shortest unique prefix (from 4 chars) of SHA256(toolName + content)
+  ├─ Store full result in ToolResultCache; key is a short hash — the shortest unique prefix (from 4 chars) of SHA256(toolName + "\x00" + content)
+  │    ├─ File-backed entries (file tools): hash is SHA256(toolName + "\x00" + filePath + "\x00" + mtime + "\x00" + size) — derived from file metadata, not content
   │    └─ Metadata: file path+mtime+size (file tools) or TTL (MCP tools)
   ├─ Stage 1: Apply per-tool line/byte truncation (configurable per tool)
   │    └─ Append fragmentation nudge with hash: "[truncated... tool_result_read(hash=...)]"
@@ -241,8 +245,8 @@ Orchestrator.HandleMessage()
   │
   ├─ reflect tool reads: bb.GetAllStepResults(), bb.GetReflections()
   │
-  └─ Final: bb.SetFinalResult(output)
-       → PersistentBlackboard.Save() persists to SQLite
+  └─ Final: bb.SetFinalResult(output)  (in-memory only — does not persist)
+       → bb.CompleteTask(attemptCount) persists final output + task completion to SQLite (PersistCompletion)
 ```
 
 ## Invariants
@@ -251,7 +255,7 @@ Orchestrator.HandleMessage()
 - Events are always both persisted AND emitted to frontend (dual write)
 - Config changes require explicit reload (no hot-watching of config file)
 - Blackboard is created per-task, never shared across tasks
-- Async init in builder MUST complete before any Build() call returns
+- Async init in builder (LLM router, model registry, tool judge — gated by `initDone`) MUST complete before any Build() call returns; MCP gateway init (`mcpDone`) is intentionally decoupled and does NOT block Build() or session restore
 
 ## Anti-Patterns
 

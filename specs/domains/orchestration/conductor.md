@@ -133,16 +133,16 @@ checklist.
 
 ### Step Limit and Circuit Breakers
 
-The Conductor's ReAct iteration limit is derived from routing complexity, not configured: `complexity × stepsPerComplexity` (constant 20 in `core/conductor.go`), giving a budget of 20 (complexity 1) to 100 (complexity 5). The complexity is read from the routing context (`ComplexityFromContext`). The Conductor is subject to the same circuit breakers as any `Executor.Run` instance (repeat, truncation, parse error, fruitless, same tool). On step-limit or circuit-breaker abort, `HITLHandler.OnStepLimit` is called with the same three options (AllowOnce, AllowAlways, Deny) as the prior executor. See [executor.md](executor.md) for circuit breaker details.
+The Conductor's ReAct iteration limit is derived from routing complexity, not configured: `complexity × stepsPerComplexity` (constant 30 in `core/conductor.go`), giving a budget of 30 (complexity 1) to 150 (complexity 5). The complexity is read from the routing context (`ComplexityFromContext`). The Conductor is subject to the same circuit breakers as any `Executor.Run` instance (repeat, truncation, parse error, fruitless, same tool). On step-limit or circuit-breaker abort, `HITLHandler.OnStepLimit` is called with the same three options (AllowOnce, AllowAlways, Deny) as the prior executor. See [executor.md](executor.md) for circuit breaker details.
 
 ### Wrap-Up Nudge
 
-A generalization of the existing `handleWrapUpNudge` heuristic nudges the Conductor when it has performed many tool calls without finishing:
+The Conductor inherits the engine's `handleWrapUpNudge` heuristic (`github.com/v0lka/sp4rk/agent`): as the ReAct loop approaches the step budget, a soft nudge is injected once to steer the agent toward wrapping up. It fires when `stepNum >= effectiveMaxSteps - 3` (and only when the budget is large enough: `effectiveMaxSteps > 3`), at most once per run:
 
-- After N tool calls without `delegate` or `finish`: "This task looks large. Consider calling `delegate` to break it into subtasks, or `finish` if you are done."
-- After a `delegate` returns: "Review the subagent's output. If the task is complete, call `finish`. If more work is needed, delegate the next unit or continue inline."
+- **Default** (no recent productive mutations): a wrap-up message recommending the agent summarize and call `finish`, while leaving the door open to continue — if it does, `OnStepLimit` asks the user to extend the budget at the limit.
+- **Active progress** (a successful mutating tool call within a recent lookback window): a continuation-oriented variant that encourages completing the work in progress rather than abandoning it, again keeping the `OnStepLimit` path open.
 
-These are soft nudges, not enforcement.
+These are soft nudges, not enforcement — the hard step-budget limit is enforced by `OnStepLimit`.
 
 ### Inline Step Lifecycle
 

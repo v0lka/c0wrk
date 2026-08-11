@@ -40,6 +40,7 @@ Accepted
 
 - `Accepted` — active decision, must be followed
 - `Superseded by [NNN](./NNN-slug.md)` — replaced by newer decision
+- `Superseded` (no successor ADR — the decision was reversed by code drift and recorded in place)
 
 ## Lifecycle
 

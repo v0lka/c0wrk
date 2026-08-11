@@ -28,7 +28,7 @@ ADR-004 established git and rg as hard PATH dependencies checked at startup with
 
 5. **Tool registry** is an embedded Go struct in `core/toolmanager/registry.go` — no external YAML/JSON config. Each tool has per-platform download URLs, SHA256 checksums, and archive layout metadata.
 
-6. **Download verification**: archives are SHA256-verified after download. Empty checksum skips verification (for staged rollout). Cache-hit based on matching checksum.
+6. **Download verification**: archives are SHA256-verified after download. Verification is fail-closed (ASI04-R2): a tool with no checksum registered for the current platform is refused rather than silently accepted — every supported platform MUST declare a checksum. Cache-hit based on matching checksum.
 
 7. **Disk space guard**: before downloading, the tool-manager checks that at least 200MB of free space is available on the volume.
 
@@ -60,3 +60,7 @@ ADR-004 established git and rg as hard PATH dependencies checked at startup with
 **Use a shell script installer (`curl | sh`).** Rejected: platform-specific shell scripts are fragile and hard to test. A Go-based downloader gives cross-platform consistency, proper HTTP error handling, checksum verification, and integration with the app's logging system.
 
 **Use Docker as the universal tool runtime.** Rejected: Docker requires ~500MB install on macOS/Windows, adds VM overhead on those platforms, introduces filesystem path translation complexity, and degrades ripgrep's performance (which relies on mmap and direct FS access). For a desktop app targeting developers who may or may not use Docker, this creates more cognitive load than it removes.
+
+## Related
+
+- Supersedes [ADR-004](004-external-binary-dependencies.md) (ripgrep/tool-manager portion — git is retained as a conditional dependency checked lazily)

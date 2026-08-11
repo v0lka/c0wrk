@@ -11,10 +11,10 @@ ADR-014 split sp4rk into a separate Go module held in the in-repo `sdk/` directo
 sp4rk has since been extracted to its own repository (`github.com/v0lka/sp4rk`) and published. The `sdk/` directory and the `replace` directive no longer exist in the c0wrk repository. The root module now depends on sp4rk through a normal `require` of the published version:
 
 ```
-require github.com/v0lka/sp4rk v0.0.0-20260710205611-b7dbcbbad959
+require github.com/v0lka/sp4rk <pseudo-version>
 ```
 
-There is no `sdk/` directory, no `replace` directive, and no `go.work` file. `go.mod` lives only at the repository root.
+The exact pseudo-version is whatever `go.mod` currently pins; it advances on each sp4rk re-publish (consult `go.mod` for the live value). There is no `sdk/` directory, no `replace` directive, and no `go.work` file. `go.mod` lives only at the repository root.
 
 ## Decision
 

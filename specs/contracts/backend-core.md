@@ -12,13 +12,13 @@
 | `Orchestrator`        | core           | core → backend | Per-session orchestration engine      |
 | `BuilderConfig`       | core           | backend → core | Configuration transfer object         |
 | `HandleResult`        | core           | core → backend | Orchestration output                  |
-| `HandleOptions`       | core           | backend → core | Execution mode, plan review, model override, reasoning effort, user skill overrides, session plans dir, pending attachments |
+| `HandleOptions`       | core           | backend → core | Model override, reasoning effort, user skill overrides, user agent refs (`#agent`), session plans dir, pending attachments (docs), pending images, review-mode flag, goal flag + budget override, task ID (continuation) |
 | `Emitter`             | core           | backend → core | Event emission interface              |
 | `Blackboard`          | github.com/v0lka/sp4rk/orchestration (direct) | core → backend | Task state (for persistence)          |
 | `RoutingDecision`     | github.com/v0lka/sp4rk/agent/router | core → backend | Routing classification                |
 | `Plan`, `PlanStep`    | github.com/v0lka/sp4rk/orchestration (direct) | core → backend | Plan structure                        |
 | `ToolPolicy`          | github.com/v0lka/sp4rk/tools      | backend → core | Security policy values                |
-| `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. ExtraBashBlacklist). Per-tool truncation lives in `BuilderConfig.ToolLimits.PerToolTruncation`, not `BuiltinToolsConfig`. |
+| `BuiltinToolsConfig`  | core/tools     | backend → core | Tool limits/config (incl. ExtraShellBlacklist). Per-tool truncation lives in `BuilderConfig.ToolLimits.PerToolTruncation`, not `BuiltinToolsConfig`. |
 | `StepDumpTracker`     | github.com/v0lka/sp4rk/orchestration (direct) | backend → core | Per-step LLM dump file manager        |
 | `Manager`             | core/vectorindex | core → backend | Vector index management (embedding, search, git monitoring) |
 | `terminal.Manager`    | core/terminal  | core → backend | PTY/ConPTY lifecycle, shell env, I/O (Unix PTY or Windows ConPTY, selected by build tag)         |
@@ -54,7 +54,7 @@ config.Config (backend/config package)
 ToBuilderConfig(cfg) → core.BuilderConfig
          │
          ▼
-core.NewOrchestratorBuilder(builderCfg, askUserFunc, logger)
+core.NewOrchestratorBuilder(builderCfg, askUserFunc, planApprovalFunc, logger)
 ```
 
 All config field mapping happens in this one function. When adding config fields:
@@ -109,16 +109,18 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Data                   | Direction      | Form                                     |
 | ---------------------- | -------------- | ---------------------------------------- |
 | User message           | backend → core | `string` via `HandleMessage()`           |
-| Execution mode         | backend → core | `HandleOptions.ExecutionMode`            |
-| Plan review flag       | backend → core | `HandleOptions.PlanReview`               |
 | User-specified skills  | backend → core | `HandleOptions.UserSkills`               |
+| User-specified agents  | backend → core | `HandleOptions.UserAgents` (`#agent` refs) |
 | Model override         | backend → core | `HandleOptions.ModelOverride`            |
 | Reasoning effort       | backend → core | `HandleOptions.ReasoningEffort`          |
 | Session plans dir      | backend → core | `HandleOptions.SessionPlansDir`          |
+| Review mode            | backend → core | `HandleOptions.ReviewMode` (renders Code Review prompt section) |
+| Goal mode              | backend → core | `HandleOptions.Goal` (dispatches to the goal loop) |
+| Goal budget override   | backend → core | `HandleOptions.GoalBudgetOverride`       |
 | Task ID (continuation) | backend → core | `HandleOptions.TaskID`                   |
 | Pending attachments    | backend → core | `HandleOptions.PendingAttachments` (user-attached documents converted to markdown via `core/markitdown`; flushed into the blackboard once before execution — see [../domains/session-lifecycle.md](../domains/session-lifecycle.md)) |
 | Pending image attachments | backend → core | `HandleOptions.PendingImages` (user-attached images, png/jpg/jpeg/gif/webp, as `[]llm.ContentBlock` base64 image blocks; injected into the context window as image content — NOT routed through the blackboard, which is markdown/text-only — see [../domains/session-lifecycle.md](../domains/session-lifecycle.md)) |
-| Available tools config | backend → core | `BuiltinToolsConfig` (incl. ExtraBashBlacklist). Per-tool truncation via `BuilderConfig.ToolLimits.PerToolTruncation`. |
+| Available tools config | backend → core | `BuiltinToolsConfig` (incl. ExtraShellBlacklist). Per-tool truncation via `BuilderConfig.ToolLimits.PerToolTruncation`. |
 | No Project mode        | backend → core | `Orchestrator.SetNoProjectMode()` (disables code tools, adds bash blacklist) |
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
 | Security policies      | backend → core | `BuilderConfig.Security`                 |

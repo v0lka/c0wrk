@@ -37,6 +37,7 @@ c0wrk's registered tools and their default policy / trust classification:
 | `ask_user`            | Agent     | internal       | no        | Prompt user for information (c0wrk-specific, `core/tools/askuser.go`) |
 | `propose_goal`        | Agent     | internal       | no        | Goal-mode derivation: submit a {condition, verify} goal proposal for user sign-off. Blocks until the user approves (optionally with edits) or cancels. A no-op outside a derivation Conductor run (no `GoalProposer` in context). See [../goal-mode.md](../goal-mode.md). |
 | `declare_goal_status` | Agent     | internal       | no        | Goal-mode self-evaluation: write a structured {status, evidence, reason} verdict into the context-injected `GoalStatusSink`. Status `"met"` **requires non-empty evidence** (each entry must have non-empty `type`/`ref`/`summary`). A no-op outside a goal-loop turn (no sink in context). See [../goal-mode.md](../goal-mode.md). |
+| `declare_verification` | Agent   | internal       | no        | Goal-mode verification: write the independent verifier's structured {confirmed, reason, evidence} verdict into the context-injected `VerificationSink`. `confirmed: true` **requires non-empty evidence**. A no-op outside a verification turn (no sink in context). See [../goal-mode.md](../goal-mode.md). |
 | `list_step_outputs`   | Agent     | internal       | no        | List completed step results                        |
 | `read_step_output`    | Agent     | internal       | no        | Read specific step output                          |
 | `read_final_result`   | Agent     | internal       | no        | Read the prior task's final result from the blackboard |
@@ -93,9 +94,11 @@ RegisterBuiltinTools(registry, cfg):
   13. semantic_search (optional: needs vector search func)
   14. ask_user (optional: needs ask_user func)
   15. delegate, cancel_delegation, reflect — delegation/reflection coordination primitives (always registered; no-ops without a `DelegationRegistry`/`ReflectionRunner`)
-  16. declare_plan, execute_plan — plan declaration/execution coordination primitives (always registered; `declare_plan`'s `await_approval` mode needs a `PlanApprovalFunc`)
+  16. declare_plan — plan declaration coordination primitive (always registered; `declare_plan`'s `await_approval` mode needs a `PlanApprovalFunc`)
   17. propose_goal — goal-mode derivation coordination primitive (always registered; a no-op outside a derivation Conductor run)
   18. declare_goal_status — goal-mode self-evaluation verdict writer (always registered; a no-op outside a goal-loop turn; `met` requires non-empty evidence)
+  19. declare_verification — goal-mode independent-verifier verdict writer (always registered; a no-op outside a verification turn; `confirmed` requires non-empty evidence)
+  20. execute_plan — plan execution coordination primitive (always registered; reads the declared plan from the blackboard via a context-injected `PlanStepExecutor`; no-op outside a Conductor run)
 ```
 
 Note: `read_skill_resource` is registered separately in `NewOrchestratorBuilder` (not in `RegisterBuiltinTools`).
@@ -104,14 +107,15 @@ Note: `read_skill_resource` is registered separately in `NewOrchestratorBuilder`
 
 The `ask_user` tool and its UI types (`AskUserFunc`, `AskUserRequest`, `AskUserResponse`, `AskUserQuestion`, `AskUserAnswer`, `AskUserOption`) live in `core/tools/` — they were moved out of sp4rk per ADR-011 because they are host-application UI concerns. The tool is registered only when an `ask_user` func is provided.
 
-## Goal-Mode Tools (`propose_goal`, `declare_goal_status`)
+## Goal-Mode Tools (`propose_goal`, `declare_goal_status`, `declare_verification`)
 
-Goal mode adds two internal coordination tools (both `PolicyAlwaysAllow` — they bypass the tool judge because they are coordination primitives, not user-facing capabilities). They are safe to register unconditionally and are no-ops outside a goal-mode run (the context value they read is nil).
+Goal mode adds three internal coordination tools (all `PolicyAlwaysAllow` — they bypass the tool judge because they are coordination primitives, not user-facing capabilities). They are safe to register unconditionally and are no-ops outside a goal-mode run (the context value they read is nil).
 
 - **`propose_goal`** (`core/tools/propose_goal.go`) — used by the derivation agent to submit a {condition, verify, verification_mode} goal for user sign-off. It reads a `GoalProposer` from the context (`GoalProposerFrom`), which the orchestrator injects during `deriveGoal` (desktop supplies the implementation that emits a `goal_proposal` event and blocks for the user response). The approved (possibly user-edited) values are echoed back so the agent commits to the user's wording. A no-op (clear error) when no proposer is in context.
 - **`declare_goal_status`** (`core/tools/declare_goal_status.go`) — the single channel through which the goal loop learns a structured verdict. It writes a typed `goal.Verdict` into the per-turn `GoalStatusSink` (`GoalStatusSinkFrom`), which `runGoalTurns` injects. **Declaring status `"met"` requires non-empty evidence** — enforced at the tool boundary so a bare "done" can never terminate the loop without a concrete, inspectable artifact. The tool executor does not validate inputs against the JSON schema, so the check rejects both an absent array and a present-but-empty entry (`evidence:[{}]`, `evidence:[{"ref":""}]`): each entry must have non-empty `type`, `ref`, and `summary`. A no-op (clear error) when no sink is in context.
+- **`declare_verification`** (`core/tools/declare_verification.go`) — the single channel through which the independent verifier reports its structured outcome. It writes a `VerificationOutcome` (`Confirmed`, `Reason`, `Evidence`) into the per-turn `VerificationSink`, which the verification pass injects. **Declaring `confirmed: true` requires non-empty evidence**, mirroring `declare_goal_status`'s guard. A no-op (clear error) when no sink is in context. Offered only to the independent verifier, not the main agent (`verifierToolFilter`/`verifierReDerivationToolFilter` build the verifier's read-only toolset from the unstripped list).
 
-Both follow the same context-injection pattern as `declare_plan`/`ask_user`: the orchestrator injects the dependency via a context value before the relevant Conductor run; the tool reads it back at execution time. See [../goal-mode.md](../goal-mode.md) for the full goal-mode lifecycle.
+All three follow the same context-injection pattern as `declare_plan`/`ask_user`: the orchestrator injects the dependency via a context value before the relevant Conductor run; the tool reads it back at execution time. See [../goal-mode.md](../goal-mode.md) for the full goal-mode lifecycle.
 
 ## Tool-Manager Wiring (`rg`)
 
@@ -148,9 +152,9 @@ Per-tool output truncation is centralized in the executor's two-stage pipeline (
 | ----------------------------------- | -------------------------- | ------------------ |
 | `toolLimits.readDefaultLines`       | `read_file` window size    | 2000               |
 | `toolLimits.perToolTruncation`      | All cacheable tools (map)  | per-tool           |
-| `toolResultBudget.cacheTTLSeconds`  | ToolResultCache eviction   | 300                |
+| `executor.tool_result_budget.cacheTTLSeconds` | ToolResultCache eviction   | 300                |
 
-Default per-tool Stage 1 truncation: `read_file` 2000 lines, `ripgrep` 5000, `glob` 2000, `list_directory` 2000, the shell-exec tool (`bash_exec`) 10000, `web_fetch` 2097152 bytes (2 MiB).
+Default per-tool Stage 1 truncation: `read_file` 2000 lines, `read_attachment` 2000 lines, `ripgrep` 2000, `glob` 2000, `list_directory` 2000, the shell-exec tool (`bash_exec`/`posh_exec`) 5000, `web_fetch` 2097152 bytes (2 MiB).
 
 `read_file` internal safety caps (hardcoded in `DefaultFileLimits()`, not configurable): `MaxLineBytes` 1 MiB (per-line), `MaxWindowLines` 50000 (hard cap per call).
 

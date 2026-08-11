@@ -2,7 +2,9 @@
 
 ## Status
 
-Superseded by [ADR-010](./010-tool-manager.md) for ripgrep. git is now a conditional dependency — checked on first CODE-mode project switch instead of at startup. CHAT mode (No Project) does not require git.
+Superseded by [ADR-010](./010-tool-manager.md)
+
+> Partial supersession — ripgrep (rg) is now managed by the tool-manager per ADR-010. git is retained as a conditional dependency, checked lazily via `exec.LookPath` on first CODE-mode project switch instead of at startup; CHAT mode (No Project) never requires git.
 
 ## Context
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (amended)
+Accepted
 
 ## Context
 

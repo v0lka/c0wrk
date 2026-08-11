@@ -51,7 +51,7 @@ Refactor `FormatFullEnvBlock`/`FormatCompactEnvBlock` to accept explicit `EnvFor
 
 ## Related
 
-- Refines [ADR-009](009-backend-domain-logic-extraction.md) — vectorindex moved from sp4rk to its final `core/` home
+- Supersedes [ADR-009](009-backend-domain-logic-extraction.md) — vectorindex moved from sp4rk to its final `core/` home (ADR-009 placed it in sp4rk; this ADR reverses that placement)
 - Follows [ADR-008](008-backend-sp4rk-direct-import.md) — all layers import source packages directly
 - Canonical sp4rk decision: [sp4rk: specs/decisions/004-application-concept-extraction.md](https://github.com/v0lka/sp4rk/blob/main/specs/decisions/004-application-concept-extraction.md)
 - Aligned with [specs/contracts/core-sp4rk.md](../contracts/core-sp4rk.md) — updated interface tables

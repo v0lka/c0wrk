@@ -6,8 +6,8 @@ c0wrk wires sp4rk's MCP (Model Context Protocol) gateway into the orchestration 
 
 ## Key Files
 
-- `core/builder.go` — `NewOrchestratorBuilder` starts the gateway in `runAsyncInit()` (goroutine) and registers discovered tools into the core registry
-- `backend/frontend_api_mcp.go` (or matching `frontend_api_*.go`) — `GetMCPStatus` / `ReconfigureMCP` surface for the frontend MCP management UI
+- `core/builder.go` — `NewOrchestratorBuilder` starts the gateway in `runMCPInit()` (a dedicated goroutine, gated by `mcpDone`, decoupled from `runAsyncInit`) and registers discovered tools into the core registry
+- `backend/frontend_api_mcp.go` — `GetMCPStatus` (live per-server status) / `UpdateMCPServers` (persist config + hot-reload, which calls `OrchestratorBuilder.ReconfigureMCP`) surface for the frontend MCP management UI
 - `core/tools/registry.go` — exposes the wrapped sp4rk `ToolRegistry` (via `r.ToolRegistry`) on which the sp4rk gateway registers MCP tools (see below)
 
 Engine files (`github.com/v0lka/sp4rk/tools/mcp/gateway.go` `Gateway`, `server.go` `Server`, `mcptool.go` `mcp.Tool`) are documented in [the sp4rk mcp-gateway spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/mcp-gateway.md).
@@ -19,18 +19,18 @@ Engine files (`github.com/v0lka/sp4rk/tools/mcp/gateway.go` `Gateway`, `server.g
 ```
 NewOrchestratorBuilder()
 │
-├─ runAsyncInit() (goroutine):
+├─ runMCPInit() (dedicated goroutine, gated by mcpDone; decoupled from initDone):
 │   └─ mcp.StartGateway(ctx, cfg, b.registry.ToolRegistry, …)  // Connect + DiscoverTools + RegisterTools (RegisterWithSourceCategory with SourceCategoryMCP; partial failure = non-fatal)
 │
 ├─ Application running...
 │   ├─ Tool execution: mcp.Tool.Execute() → server.CallTool(name, input)
-│   └─ ReconfigureMCP() → gateway.Reconfigure (atomic: unregister old, stop, start new)
+│   └─ UpdateMCPServers() → persist + ReconfigureMCP → gateway.Reconfigure (atomic: unregister old, stop, start new)
 │
 └─ Shutdown:
-    └─ gateway.Stop() → close all server connections
+    └─ StopGateway() → gateway.Stop() → close all server connections
 ```
 
-`EventBackendReady` fires without waiting for the MCP gateway's async init; MCP tools become available asynchronously.
+`EventBackendReady` fires without waiting for the MCP gateway's async init; MCP tools become available asynchronously. The dedicated `EventMCPReady` (`mcp:ready`) event fires once the startup goroutine completes (success or failure).
 
 ### Registration into the Core Registry
 
@@ -42,7 +42,7 @@ MCP tools are wrapped in sp4rk `mcp.Tool` (implements the `Tool` interface) and 
 
 ### Status Reporting (frontend UI)
 
-`gateway.Status()` returns per-server `ServerStatus` (`Name`, `Transport`, `Connected`, `ToolCount`, `Tools`, `Error`), exposed to the frontend MCP management UI via `GetMCPStatus`.
+`gateway.Status()` returns per-server `ServerStatus` (`Name`, `Transport`, `Connected`, `Starting`, `ToolCount`, `Tools`, `Error`), exposed to the frontend MCP management UI via `GetMCPStatus`.
 
 ## Configuration
 

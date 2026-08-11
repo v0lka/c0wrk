@@ -2,7 +2,7 @@
 
 ## Status
 
-Superseded by [ADR-008](008-backend-sp4rk-direct-import.md)
+Superseded by [ADR-008](./008-backend-sp4rk-direct-import.md)
 
 ## Context
 

@@ -50,6 +50,7 @@ These tools bypass ALL policy checks, judge evaluation, and confirmation flow:
 - `execute_plan` — begins executing a declared plan
 - `propose_goal` — proposes a goal for user sign-off
 - `declare_goal_status` — declares self-evaluation verdict on the active goal
+- `declare_verification` — declares the independent verifier's verdict on the active goal
 - `reflect` — triggers reflection on the current trajectory
 - `batch` — executes multiple tool calls sequentially
 
@@ -128,7 +129,7 @@ ToolRegistry.Execute()
   ├─ confirmFunc(ctx, ConfirmationRequest{ToolName, Input, JudgeReasoning=<human-readable reason>})
   │   │
   │   ▼
-  │ backend: stores in pendingConfirmations sync.Map (incl. reason)
+  │ desktop: stores in pendingConfirmations sync.Map (incl. reason)
   │   │
   │   ▼
   │ frontend: receives tool_confirm event, renders reason + decision UI
@@ -166,9 +167,12 @@ Each detected traversal is recorded as a `SymlinkTraversal`:
 
 ```go
 type SymlinkTraversal struct {
-    OriginalPath string // the path as it appears in the input
-    SymlinkAt    string // the symlink component
-    FullResolved string // the fully resolved target
+    OriginalPath     string // user-visible path from tool input
+    SymlinkAt        string // component where the symlink was detected
+    ResolvesTo       string // what the symlink points to (readlink result)
+    FullResolved     string // fully resolved absolute path after symlink chain
+    OutsideWorkspace bool   // does the fully resolved path fall outside the workspace?
+    Unresolvable     bool   // component could not be inspected (Lstat/Readlink failure) — escalate
 }
 ```
 
@@ -176,7 +180,7 @@ Traversals inside the workspace directory return a different confirmation dialog
 
 ### OS-Level Symlink Filtering
 
-Some operating systems use symlinks as filesystem layout conventions (e.g., macOS `/tmp` → `/private/tmp`, `/var` → `/private/var`). These are not user-created security-relevant symlinks. The gate skips interception when all detected symlinks are OS-level infrastructure — defined as a symlink whose path is a prefix of the workspace directory or the session temp directory.
+Some operating systems use symlinks as filesystem layout conventions (e.g., macOS `/tmp` → `/private/tmp`, `/var` → `/private/var`). These are not user-created security-relevant symlinks. The gate skips interception when all detected symlinks are OS-level infrastructure — defined as (a) a well-known operating-system symlink from the shared canonical list in sp4rk (`IsWellKnownOSSymlink`, e.g. macOS `/tmp` → `/private/tmp`, the Linux `/usr` merge, Windows compatibility junctions), or (b) a symlink that is an ancestor of any session root (workspace, temp directory, or an auxiliary work directory), so the root itself is reached through the symlink.
 
 ### Forced Confirmation
 
@@ -200,7 +204,7 @@ If the input contains suspicious (unexpandable) shell expressions, a warning is 
 
 ### Source
 
-`core/tools/registry_symlink.go` — integration method `checkSymlinksAndConfirm()` (calls `sdktools.DetectSymlinksInToolInput`). Injected in `core/tools/registry.go` `Execute()` between ParamManager and policy resolution. Detection, traversal, and formatting (`SymlinkTraversal` type, `DetectSymlinksInToolInput`, `FormatSymlinkReasoning`) live in `github.com/v0lka/sp4rk/tools/symlink.go`.
+`core/tools/registry_symlink.go` — integration method `checkSymlinksAndConfirm()` (calls `sdktools.DetectSymlinksInToolInput`). Injected in `core/tools/registry.go` `Execute()` between the pre-execute hook and policy resolution. Detection, traversal, and formatting (`SymlinkTraversal` type, `DetectSymlinksInToolInput`, `FormatSymlinkReasoning`) live in `github.com/v0lka/sp4rk/tools/symlink.go`.
 
 ## Bash Blacklist
 
@@ -297,10 +301,10 @@ Source: `github.com/v0lka/sp4rk/security/wrap.go` (wrapping), `core/prompts/inje
 - When symlinks are detected, the call ALWAYS forces user confirmation (unless policy is `always_deny`)
 - `always_deny` is NEVER bypassed (not by auto-approval, not by judge, not by symlink check, not by any mechanism)
 - For `PolicyAlwaysAllow` tools implementing `ToolJudger`, the Judge runs BEFORE workspace/temp auto-approval — safety checks (blacklist, SSRF, path containment) NEVER bypassed by path-locality
-- The session workspace and session temp directory are equal peers — any operation permitted in one is permitted in the other
-- Operations outside session roots (workspace + temp) ALWAYS require user confirmation, regardless of the tool's resolved policy (except `always_deny`)
+- The session workspace, temp directory, and auxiliary work directories are equal peers — any operation permitted in one is permitted in the others
+- Operations outside session roots (workspace, temp directory, or an auxiliary work directory) ALWAYS require user confirmation, regardless of the tool's resolved policy (except `always_deny`)
 - Relative paths that escape the workspace via `..` components are rejected by `resolvePath` — they cannot target paths outside the workspace
-- Auto-approval only applies when ALL paths in the input are within session roots (workspace or temp) AND the PolicyAlwaysAllow Judge gate (if any) did not flag the call
+- Auto-approval only applies when ALL paths in the input are within session roots (workspace, temp directory, or an auxiliary work directory) AND the PolicyAlwaysAllow Judge gate (if any) did not flag the call
 - Confirmation blocks the executor goroutine until the user responds (no timeout)
 - A denied tool returns an error ToolResult to the LLM (agent can adapt its strategy)
 - `ConfirmDenyAndStop` cancels the entire context (unrecoverable for the current task)

@@ -17,7 +17,7 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | `LLMCaller`            | github.com/v0lka/sp4rk/agent     | core/orchestrator, github.com/v0lka/sp4rk/planner | LLM call interface                    |
 | `ToolExecutor`         | github.com/v0lka/sp4rk/agent     | core (via github.com/v0lka/sp4rk/orchestration) | Tool execution interface              |
 | `CompactionStrategy`   | github.com/v0lka/sp4rk/agent     | core/stepconfig                              | Memory compaction                     |
-| `AgentEvents`          | github.com/v0lka/sp4rk/agent     | core/types (embedded in Emitter)             | Lifecycle event hooks                 |
+| `Events`               | github.com/v0lka/sp4rk/agent     | core/types (embedded in Emitter)             | Lifecycle event hooks                 |
 | `ContextManager`       | github.com/v0lka/sp4rk/agent     | core/types (extended)                        | Context window management             |
 | `HITLHandler`          | github.com/v0lka/sp4rk/agent     | core/orchestrator config                     | Human-in-the-loop handler (OnStepLimit + OnToolCall) |
 | `Step`                 | github.com/v0lka/sp4rk/agent     | core/types (direct)                          | Single ReAct iteration (incl. IsUntrusted flag) |
@@ -79,8 +79,7 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | `ConfirmationRequest`  | github.com/v0lka/sp4rk/tools   | core/tools, backend, desktop   | Confirmation request payload                  |
 | `ConfirmationResponse` | github.com/v0lka/sp4rk/tools   | core/tools, backend, desktop   | Confirmation response enum (`ConfirmAllowOnce`, `ConfirmDeny`, `ConfirmDenyAndStop`) |
 | `ToolJudger`           | github.com/v0lka/sp4rk/tools   | core/tools, github.com/v0lka/sp4rk/tools/mcp | Tool self-judging interface                   |
-| `AutoInjectedParamProject` | github.com/v0lka/sp4rk/tools | github.com/v0lka/sp4rk/tools/mcp (schema sanitizer) | Constant for auto-injected parameter name   |
-| `ParamManager`          | github.com/v0lka/sp4rk/tools  | core/tools, core/builder       | Auto-injected param management (SanitizeSchema + InjectParams) |
+| `StripParamsFromSchema` | github.com/v0lka/sp4rk/tools  | github.com/v0lka/sp4rk/tools/mcp | Strips auto-injected params (e.g. `project`) from MCP tool input schemas |
 | `FileCoherenceChecker` | github.com/v0lka/sp4rk/tools   | core/tools (re-exported)       | Cross-session file conflict detection          |
 | `FileSig`              | github.com/v0lka/sp4rk/tools   | core/tools (re-exported)       | File signature (mtime + size) for coherence    |
 | `CoherenceConflict`    | github.com/v0lka/sp4rk/tools   | core/tools (re-exported)       | Conflict record with session and timing detail |
@@ -132,7 +131,7 @@ import "github.com/v0lka/c0wrk/core/tools"       // → coretools.AskUserFunc
 
 `core/builder.go` → `NewOrchestratorBuilder`:
 
-1. Creates a `github.com/v0lka/sp4rk/tools.ToolRegistry` and sets `ParamManager` on it (handles schema sanitization for MCP + param injection at execution time)
+1. Creates a `github.com/v0lka/sp4rk/tools.ToolRegistry` (`tools.NewToolRegistry()`); MCP tool schemas are sanitized later by the gateway via `sdktools.StripParamsFromSchema` (strips auto-injected params such as `project`), and OpenAI-compatible schemas by the provider via `llm.SanitizeSchemaForOpenAI`
 2. Registers built-in tools from `github.com/v0lka/sp4rk/tools/builtins`
 3. Starts MCP gateway (async)
 4. Creates `ToolResultCache` with TTL and passes per-tool truncation to orchestrator config
@@ -180,7 +179,7 @@ Core bridges c0wrk-specific configuration into sp4rk engine components via small
 - If you modify a `github.com/v0lka/sp4rk/orchestration` interface → update adapter in `core/orchestrator.go`
 - If you add a field to `github.com/v0lka/sp4rk/orchestration.ConductorConfig` → update `RunConductor` in `core/conductor.go`
 - If you change `CallerForStep` signature (github.com/v0lka/sp4rk/planner) → update all closures in `core/builder.go`, plus all call sites in `github.com/v0lka/sp4rk/planner/planner.go` (note: core no longer uses the planner pipeline after ADR-012; `CallerForStep` is not referenced from `core/`)
-- If you modify `github.com/v0lka/sp4rk/agent.AgentEvents` → update `core.Emitter` interface AND `noopEmitter`
+- If you modify `github.com/v0lka/sp4rk/agent.Events` → update `core.Emitter` interface AND `noopEmitter`
 - If you change the `github.com/v0lka/sp4rk/tools.Tool` interface → update `github.com/v0lka/sp4rk/tools/mcp/mcptool.go`, ALL builtins, AND all test mocks implementing `Tool`
 - If you add a new sp4rk type that backend or desktop needs → import directly from the source package
 - If you modify `github.com/v0lka/sp4rk/tools.FileCoherenceChecker` → update `backend/session/file_coherence.go` implementation

@@ -32,12 +32,22 @@ Conductor tools are registered at startup in `core/tools/builtin_registration.go
 
 ```go
 var internalTools = map[string]struct{}{
-    // ... other internal tools (ask_user, finish, read_step_output, store_fact, update_checklist, ...) ...
+    // ... read/write + lifecycle helpers (ask_user, finish, list_step_outputs,
+    //     read_final_result, read_skill_resource, read_step_output, read_attachment,
+    //     search_facts, tool_result_read, semantic_search, update_checklist,
+    //     declare_step_complete, store_fact) ...
     "delegate":           {},
     "cancel_delegation":  {},
     "declare_plan":       {},
     "execute_plan":       {},
     "reflect":            {},
+    // goal-mode-only (also in goalModeTools; offered to the agent only during a
+    // goal loop — stripped on the non-goal path):
+    "propose_goal":         {},
+    "declare_goal_status":  {},
+    "declare_verification": {},
+    // batch composite tool (sdktools.ToolBatch):
+    sdktools.ToolBatch:     {},
 }
 ```
 
@@ -93,32 +103,36 @@ Direction: Conductor → `delegate` tool → `RunSubAgent` → subagent `Executo
 Conductor
   │
   ├─ tool_call: declare_plan({
-  │    "plan": { tasks: [...] },
-  │    "mode": "present" | "await_approval"
+  │    "tasks": [{ id, summary, description, depends_on?, agent? }, ...],
+  │    "mode": "present" | "await_approval"   // default present
   │  })
   │
   ▼
 declare_plan.Execute(ctx, input)
   │
-  ├─ Build a Plan from the input tasks (reuse PlanStep struct)
-  ├─ SerializePlan(plan) → markdown
-  ├─ Write to SessionPlansDir (from ctx) as <session_prefix>_<random6>.md
-  ├─ Emit PlanGenerated event (same event type as the prior pipeline)
-  ├─ Set plan on the blackboard
+  ├─ Resolve PlanPublisher from ctx (core's conductorPublisher)
+  ├─ publisher.Publish(ctx, tasks):
+  │    ├─ Build a Plan from the input tasks (PlanStep incl. optional Agent field)
+  │    ├─ SerializePlan(plan) → markdown
+  │    ├─ Write to SessionPlansDir as plan_<RandomSuffix>.md
+  │    ├─ Emit PlanGenerated event (only after the file is persisted)
+  │    ├─ Set plan on the blackboard (bb.SetPlan)
+  │    └─ Mark plan declared in planRunState (activates the delegate orthogonality guard)
   │
   ├─ If mode == "await_approval":
-  │    ├─ Call AskUserFunc with an approval prompt
-  │    │   (options: Approve, Request changes, Abandon)
-  │    ├─ Block until the user responds
-  │    ├─ On "Approve": return tool result { approved: true }
-  │    ├─ On "Request changes": return tool result { approved: false, feedback: "..." }
+  │    ├─ Call ApprovalFunc (wired from BuiltinToolsConfig.PlanApprovalFunc;
+  │    │   NOT AskUserFunc) with (planPath, planMarkdown)
+  │    ├─ Block until the user responds via the plan_approval_response
+  │    │   frontend→backend event (desktop approval resolver)
+  │    ├─ On "approve":          return ToolResult{ success content }
+  │    ├─ On "request_changes":  return ToolResult{ content incl. feedback }
   │    │   (the Conductor revises and calls declare_plan again)
-  │    └─ On "Abandon": return tool result { approved: false, abandoned: true }
+  │    └─ On "abandon":          return ToolResult{ IsError: true }
   │
-  └─ If mode == "present": return tool result { approved: null } (informational)
+  └─ If mode == "present": return ToolResult{ informational content }
 ```
 
-Direction: Conductor → `declare_plan` tool → blackboard + emitter + (optionally) `AskUserFunc`. The plan flows to the UI via the existing `PlanGenerated` event; the approval response flows back through the `AskUserFunc` callback (same mechanism as `ask_user`).
+Direction: Conductor → `declare_plan` tool → `PlanPublisher` (blackboard + emitter + plan file) + (optionally) `ApprovalFunc`. The plan flows to the UI via the `PlanGenerated` event; when `await_approval`, a `plan_review_ready` pending action is surfaced and the user's decision flows back through the `plan_approval_response` frontend→backend event, resolved by the desktop approval resolver into the `ApprovalFunc` callback.
 
 ### `execute_plan`
 
@@ -188,6 +202,18 @@ reflect.Execute(ctx, input)
 ```
 
 Direction: Conductor → `reflect` tool → `Reflector.Reflect` → tool result → Conductor. The Reflector is a library, not a pipeline phase; the Conductor invokes it at a point of its own choosing.
+
+### Goal-Mode Tools
+
+Three additional internal tools exist ONLY for goal mode (registered in `core/tools/builtin_registration.go`, listed in `goalModeTools` in `core/tools/registry.go`). They are offered to the agent only during an active goal loop — `HandleMessage`/`ResumeTask` strip them from the available-tool list on the non-goal path. The goal loop and the independent verifier deliberately receive the unstripped list.
+
+| Tool | Input | Purpose |
+| ---- | ----- | ------- |
+| `propose_goal` | `{condition, verify, verification_mode}` | Submit a candidate `{condition, verify}` goal for user sign-off (derivation phase). Blocks until the user approves (optionally with edits to `condition`/`verify`/`verification_mode`) or cancels. Resolves via the `goal_proposal` event + `goal_proposal_response` frontend→backend event (or the `ConfirmGoal`/`CancelGoal` RPC), funnelled through a single desktop resolver. `verification_mode` is `executable` (default) or `re_derivation` |
+| `declare_goal_status` | `{status, evidence[], reason}` | The agent's self-evaluation verdict. `status` is `met` (requires concrete `evidence`), `not_met` (keep working), or `blocked` (needs external input). Single channel through which the goal loop learns the agent's structured verdict |
+| `declare_verification` | `{confirmed, reason, evidence[]}` | The independent verifier's verdict (`re_derivation` mode). Single channel through which the verification pass reports `{confirmed, reason, evidence}`. `confirmed: true` requires concrete evidence |
+
+All three bypass policy and judge (they are internal). They are NOT in `conductorOnlyToolNames` — their availability is gated by goal mode, not by the conductor/subagent split. See [../domains/goal-mode.md](../domains/goal-mode.md).
 
 ## Error Propagation
 
