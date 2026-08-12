@@ -15,7 +15,7 @@ import type { ChatMessageUI } from '@/types/messages'
 import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
 
 /** Sidebar indicator state for a session. */
-export type SessionIndicatorStatus = 'pending' | 'active' | 'idle'
+export type SessionIndicatorStatus = 'pending' | 'active' | 'paused' | 'idle'
 
 /**
  * Pure check: does the ordered message list contain an unresolved HITL prompt
@@ -32,15 +32,20 @@ export function hasUnresolvedHITL(messages: ChatMessageUI[]): boolean {
 }
 
 /**
- * Pure derivation of the sidebar indicator from a session's running flag and
- * ordered messages. Exported for unit testing without React rendering.
+ * Pure derivation of the sidebar indicator from a session's running flag,
+ * paused flag, and ordered messages. Exported for unit testing without React
+ * rendering.
  *
- * Pending takes precedence over active because a task blocked on a HITL
- * prompt is not "actively processing" — the user's response is the next
- * step, so the awaiting-reaction state is the more informative signal.
+ * Pending takes precedence because a task blocked on a HITL prompt is not
+ * "actively processing" — the user's response is the next step, so the
+ * awaiting-reaction state is the more informative signal. Paused takes
+ * precedence over active because a cooperatively suspended task has
+ * taskActive=false; the gray dot distinguishes it from a genuinely idle
+ * session.
  */
-export function deriveSessionIndicatorStatus(isRunning: boolean, messages: ChatMessageUI[]): SessionIndicatorStatus {
+export function deriveSessionIndicatorStatus(isRunning: boolean, isPaused: boolean, messages: ChatMessageUI[]): SessionIndicatorStatus {
   if (hasUnresolvedHITL(messages)) return 'pending'
+  if (isPaused) return 'paused'
   return isRunning ? 'active' : 'idle'
 }
 
@@ -48,11 +53,13 @@ export function deriveSessionIndicatorStatus(isRunning: boolean, messages: ChatM
  * Derive the sidebar status indicator for a session from the chat store:
  *
  * - `'pending'` (yellow) — an unresolved HITL prompt is awaiting the user.
+ * - `'paused'`  (gray)   — a cooperatively paused task (suspended at a checkpoint).
  * - `'active'`  (green)  — a task is currently running.
  * - `'idle'`             — neither.
  */
 export function useSessionStatusIndicator(sessionId: string | null): SessionIndicatorStatus {
   const isRunning = useChatStore(s => (sessionId ? s.taskActive[sessionId] ?? false : false))
+  const isPaused = useChatStore(s => (sessionId ? s.paused[sessionId] ?? false : false))
   const messageOrder = useChatStore(s => (sessionId ? s.messageOrder[sessionId] : undefined))
   const messageIndex = useChatStore(s => (sessionId ? s.messages[sessionId] : undefined))
 
@@ -64,6 +71,6 @@ export function useSessionStatusIndicator(sessionId: string | null): SessionIndi
         if (m) messages.push(m)
       }
     }
-    return deriveSessionIndicatorStatus(isRunning, messages)
-  }, [messageOrder, messageIndex, isRunning])
+    return deriveSessionIndicatorStatus(isRunning, isPaused, messages)
+  }, [messageOrder, messageIndex, isRunning, isPaused])
 }

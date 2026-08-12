@@ -67,6 +67,9 @@ function SessionRowContent({ session, isActive, status, onPin, onFork, onRename,
           <span className="size-1.5 shrink-0 rounded-full bg-warning" title="Awaiting your response" />
         )}
         {status === 'active' && <span className="size-1.5 shrink-0 rounded-full bg-success" title="Task running" />}
+        {status === 'paused' && (
+          <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground" title="Task paused" />
+        )}
         {isActive && <Check className="size-3.5 shrink-0" />}
         {session.pinned && <Pin className="size-3 shrink-0 text-primary" />}
         <span className={cn('min-w-0 flex-1 truncate', isActive && 'font-medium')}>{session.name}</span>

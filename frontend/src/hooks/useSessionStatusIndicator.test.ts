@@ -74,12 +74,12 @@ describe('hasUnresolvedHITL', () => {
 })
 
 describe('deriveSessionIndicatorStatus', () => {
-  it('returns idle when not running and no messages', () => {
-    expect(deriveSessionIndicatorStatus(false, [])).toBe('idle')
+  it('returns idle when not running, not paused, and no messages', () => {
+    expect(deriveSessionIndicatorStatus(false, false, [])).toBe('idle')
   })
 
   it('returns active when a task is running and no HITL prompt is pending', () => {
-    expect(deriveSessionIndicatorStatus(true, [
+    expect(deriveSessionIndicatorStatus(true, false, [
       makeMsg({ type: 'user' }),
       makeMsg({ type: 'assistant' }),
     ])).toBe('active')
@@ -88,20 +88,20 @@ describe('deriveSessionIndicatorStatus', () => {
   it('returns pending when an unresolved HITL prompt exists, even if task is active', () => {
     // A task blocked on a HITL prompt is not "actively processing" — the
     // awaiting-reaction state takes precedence over the running flag.
-    expect(deriveSessionIndicatorStatus(true, [
+    expect(deriveSessionIndicatorStatus(true, false, [
       makeMsg({ type: 'user' }),
       makeMsg({ type: 'tool_confirm', metadata: { confirm_id: 'c1' } }),
     ])).toBe('pending')
   })
 
   it('returns active again once the HITL prompt is resolved', () => {
-    expect(deriveSessionIndicatorStatus(true, [
+    expect(deriveSessionIndicatorStatus(true, false, [
       makeMsg({ type: 'tool_confirm', metadata: { resolved: true, decision: 'confirmed' } }),
     ])).toBe('active')
   })
 
   it('returns idle when the task finished and no HITL prompt remains', () => {
-    expect(deriveSessionIndicatorStatus(false, [
+    expect(deriveSessionIndicatorStatus(false, false, [
       makeMsg({ type: 'user' }),
       makeMsg({ type: 'assistant' }),
     ])).toBe('idle')
@@ -111,7 +111,7 @@ describe('deriveSessionIndicatorStatus', () => {
     // Simulates the background-session watcher path: a HITL event for a
     // session the user is not viewing still produces a pending message the
     // indicator must reflect — even though taskActive may have been reset.
-    expect(deriveSessionIndicatorStatus(false, [
+    expect(deriveSessionIndicatorStatus(false, false, [
       makeMsg({ type: 'ask_user', metadata: { request_id: 'r1' } }),
     ])).toBe('pending')
   })
@@ -119,7 +119,27 @@ describe('deriveSessionIndicatorStatus', () => {
   it('returns pending for each of the four tracked HITL event types', () => {
     const types: MessageType[] = ['tool_confirm', 'ask_user', 'step_limit', 'plan_review']
     for (const type of types) {
-      expect(deriveSessionIndicatorStatus(false, [makeMsg({ type })])).toBe('pending')
+      expect(deriveSessionIndicatorStatus(false, false, [makeMsg({ type })])).toBe('pending')
     }
+  })
+
+  it('returns paused when the task is cooperatively suspended', () => {
+    // A paused task has taskActive=false; the gray dot distinguishes it from
+    // a genuinely idle session.
+    expect(deriveSessionIndicatorStatus(false, true, [])).toBe('paused')
+  })
+
+  it('returns paused even when the task was running (paused flag wins over running)', () => {
+    // Defensive: even if both flags were momentarily true, the suspended
+    // state is the more informative signal.
+    expect(deriveSessionIndicatorStatus(true, true, [])).toBe('paused')
+  })
+
+  it('returns pending over paused when an unresolved HITL prompt exists', () => {
+    // A suspended task with a lingering prompt awaiting the user: the
+    // awaiting-reaction state is the most urgent signal.
+    expect(deriveSessionIndicatorStatus(false, true, [
+      makeMsg({ type: 'ask_user', metadata: { request_id: 'r1' } }),
+    ])).toBe('pending')
   })
 })
