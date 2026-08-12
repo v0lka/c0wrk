@@ -6,6 +6,10 @@ export interface ProjectInfo {
   readonly workspace_path: string
   readonly is_external: boolean
   readonly is_no_project: boolean
+  /** Persisted research workspace root (<workspace>/.research) when RESEARCH mode is enabled; empty otherwise. */
+  readonly research_root: string
+  /** Derived: true for a real (non-No-Project) project with a non-empty research_root. */
+  readonly is_research: boolean
   readonly created_at: string
   readonly last_active_at: string
 }
@@ -536,4 +540,98 @@ export interface BlackboardFact {
   keywords: string[]
   content: string
   author: string
+}
+
+// ---------------------------------------------------------------------------
+// RESEARCH mode (mirrors core/research model + backend DTOs)
+// ---------------------------------------------------------------------------
+
+/** Lifecycle status of a hypothesis (see core/research HypothesisStatus). */
+export type HypothesisStatus =
+  | 'open'
+  | 'in-progress'
+  | 'confirmed'
+  | 'refuted'
+  | 'cancelled'
+
+export interface HypothesisNode {
+  id: string
+  title: string
+  status: HypothesisStatus | string
+  parents?: string[]
+  timebox?: string
+  result?: string
+}
+
+export interface HypothesisEdge {
+  from: string
+  to: string
+}
+
+export interface HypothesisGraph {
+  nodes: HypothesisNode[]
+  edges: HypothesisEdge[]
+}
+
+export interface ResearchBrief {
+  id: string
+  title: string
+  status?: string
+  problem_domain?: string
+  quarter?: string
+  researchers?: string
+  related_researches?: string
+  research_question?: string
+  success_criteria?: string
+}
+
+export interface ResearchIndexEntry {
+  id: string
+  title?: string
+  path?: string
+}
+
+export interface ResearchMetrics {
+  total: number
+  by_status: Record<string, number>
+  confirmation_rate: number
+  depth: number
+  breadth: number
+  active_front?: string[]
+}
+
+export interface ResearchProject {
+  id: string
+  brief: ResearchBrief
+  graph: HypothesisGraph
+  metrics: ResearchMetrics
+  prior_art_count: number
+  has_report: boolean
+}
+
+export interface ResearchRoot {
+  path: string
+  index: ResearchIndexEntry[]
+  projects: ResearchProject[]
+  /** The active R-NNN (latest index entry, else highest-numbered project).
+   *  Single source of truth shared with the orchestrator's research context.
+   *  Empty when no project exists yet. */
+  active_project_id?: string
+}
+
+/** Per-skill outcome of seeding the research skill-pack (mirrors backend DTO). */
+export interface ResearchSeedResult {
+  seeded: string[]
+  updated: string[]
+  current: string[]
+  preserved: string[]
+}
+
+/** View model for GetResearchStatus: toggle state + parsed research root. */
+export interface ResearchStatus {
+  enabled: boolean
+  project_id: string
+  research_root: string
+  root?: ResearchRoot
+  seed_result?: ResearchSeedResult
 }

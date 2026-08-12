@@ -61,6 +61,8 @@ export function DeleteTag(arg1:string):Promise<void>;
 
 export function DeleteWorkDirectory(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function DisableResearch(arg1:string):Promise<void>;
+
 export function DiscardChanges(arg1:string):Promise<void>;
 
 export function DiscardHunks(arg1:string,arg2:Array<workspace.HunkRange>):Promise<void>;
@@ -68,6 +70,8 @@ export function DiscardHunks(arg1:string,arg2:Array<workspace.HunkRange>):Promis
 export function DownloadUpdate():Promise<void>;
 
 export function EmitSessionEvent(arg1:session.Event):Promise<void>;
+
+export function EnableResearch(arg1:string,arg2:string):Promise<backend.ResearchStatusDTO>;
 
 export function Fetch(arg1:string,arg2:Array<string>):Promise<string>;
 
@@ -128,6 +132,8 @@ export function GetProjectUIState(arg1:string):Promise<backend.ProjectUIStateRes
 export function GetProxySettings():Promise<backend.ProxySettingsResponse>;
 
 export function GetRebaseMergeState():Promise<workspace.MergeRebaseState>;
+
+export function GetResearchStatus(arg1:string):Promise<backend.ResearchStatusDTO>;
 
 export function GetReview(arg1:string):Promise<review.Review>;
 

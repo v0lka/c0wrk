@@ -349,6 +349,219 @@ func TestSaveProjectLastActiveAtFallback(t *testing.T) {
 	}
 }
 
+func TestSaveProjectResearchRoot_RoundTrip(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	proj := ProjectInfo{
+		ID:            "proj-research",
+		Name:          "Research Project",
+		WorkspacePath: "/tmp/research",
+		ResearchRoot:  "/tmp/research/.research",
+		CreatedAt:     "2024-01-15T10:00:00Z",
+	}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load project: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loaded project should not be nil")
+	}
+	if loaded.ResearchRoot != proj.ResearchRoot {
+		t.Errorf("ResearchRoot mismatch: got %q, want %q", loaded.ResearchRoot, proj.ResearchRoot)
+	}
+	if !loaded.IsResearch {
+		t.Error("IsResearch should be true for a real project with non-empty ResearchRoot")
+	}
+}
+
+func TestSaveProjectResearchRoot_EmptyDefaultsToFalse(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	proj := ProjectInfo{
+		ID:            "proj-no-research",
+		Name:          "Plain Project",
+		WorkspacePath: "/tmp/plain",
+		ResearchRoot:  "", // RESEARCH disabled
+		CreatedAt:     "2024-01-15T10:00:00Z",
+	}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load project: %v", err)
+	}
+	if loaded.ResearchRoot != "" {
+		t.Errorf("ResearchRoot should be empty, got %q", loaded.ResearchRoot)
+	}
+	if loaded.IsResearch {
+		t.Error("IsResearch should be false when ResearchRoot is empty")
+	}
+}
+
+func TestSaveProjectResearchRoot_NoProjectNeverResearch(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Even if a No Project row somehow carries a ResearchRoot, IsResearch
+	// must remain false because the derivation excludes No Project.
+	proj := ProjectInfo{
+		ID:            NoProjectID,
+		Name:          "No Project",
+		WorkspacePath: "/tmp/no-project",
+		ResearchRoot:  "/tmp/no-project/.research",
+		IsNoProject:   true,
+		CreatedAt:     "2024-01-15T10:00:00Z",
+	}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load project: %v", err)
+	}
+	if !loaded.IsNoProject {
+		t.Error("IsNoProject should be true")
+	}
+	if loaded.IsResearch {
+		t.Error("IsResearch should be false for the No Project pseudo-project")
+	}
+}
+
+func TestListProjectsIncludesResearchRoot(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	projects := []ProjectInfo{
+		{ID: "p-with", Name: "With", WorkspacePath: "/with", ResearchRoot: "/with/.research", CreatedAt: "2024-01-01T10:00:00Z", LastActiveAt: "2024-06-15T20:00:00Z"},
+		{ID: "p-without", Name: "Without", WorkspacePath: "/without", CreatedAt: "2024-01-01T09:00:00Z", LastActiveAt: "2024-03-01T10:00:00Z"},
+	}
+	for _, p := range projects {
+		if err := store.SaveProject(context.Background(), p); err != nil {
+			t.Fatalf("failed to save project: %v", err)
+		}
+	}
+
+	listed, err := store.ListProjects(context.Background())
+	if err != nil {
+		t.Fatalf("failed to list projects: %v", err)
+	}
+	byID := map[string]ProjectInfo{}
+	for _, p := range listed {
+		byID[p.ID] = p
+	}
+	if byID["p-with"].ResearchRoot != "/with/.research" {
+		t.Errorf("p-with ResearchRoot: got %q", byID["p-with"].ResearchRoot)
+	}
+	if !byID["p-with"].IsResearch {
+		t.Error("p-with should have IsResearch=true")
+	}
+	if byID["p-without"].ResearchRoot != "" {
+		t.Errorf("p-without ResearchRoot should be empty, got %q", byID["p-without"].ResearchRoot)
+	}
+	if byID["p-without"].IsResearch {
+		t.Error("p-without should have IsResearch=false")
+	}
+}
+
+func TestCreateTablesMigrationResearchRootIdempotent(t *testing.T) {
+	db := openTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	// First call creates tables + migrates the column in.
+	store1, err := NewSQLiteProjectStore(db)
+	if err != nil {
+		t.Fatalf("first NewSQLiteProjectStore: %v", err)
+	}
+	if !store1.columnExists("projects", "research_root") {
+		t.Fatal("research_root column should exist after migration")
+	}
+
+	// Second construction must be a no-op (idempotent) — not error.
+	store2, err := NewSQLiteProjectStore(db)
+	if err != nil {
+		t.Fatalf("second NewSQLiteProjectStore should be idempotent, got: %v", err)
+	}
+	if !store2.columnExists("projects", "research_root") {
+		t.Fatal("research_root column should still exist after re-migration")
+	}
+
+	// The migrated column must round-trip correctly after re-migration.
+	proj := ProjectInfo{
+		ID:            "idempotent-proj",
+		Name:          "Idempotent",
+		WorkspacePath: "/tmp/idem",
+		ResearchRoot:  "/tmp/idem/.research",
+		CreatedAt:     "2024-01-15T10:00:00Z",
+	}
+	if err := store2.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+	loaded, err := store2.LoadProject(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load project: %v", err)
+	}
+	if loaded.ResearchRoot != proj.ResearchRoot {
+		t.Errorf("ResearchRoot round-trip after re-migration: got %q, want %q", loaded.ResearchRoot, proj.ResearchRoot)
+	}
+}
+
+func TestSaveProjectResearchRoot_Upsert(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Create without research root.
+	proj := ProjectInfo{
+		ID:            "upsert-research",
+		Name:          "Original",
+		WorkspacePath: "/tmp/orig",
+		CreatedAt:     "2024-01-15T10:00:00Z",
+	}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+
+	// Upsert: enable RESEARCH by setting the root.
+	proj.ResearchRoot = "/tmp/orig/.research"
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to upsert project: %v", err)
+	}
+	loaded, err := store.LoadProject(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load project: %v", err)
+	}
+	if loaded.ResearchRoot != "/tmp/orig/.research" {
+		t.Errorf("ResearchRoot after enable: got %q", loaded.ResearchRoot)
+	}
+	if !loaded.IsResearch {
+		t.Error("IsResearch should be true after upsert with ResearchRoot")
+	}
+
+	// Upsert again: disable RESEARCH by clearing the root.
+	proj.ResearchRoot = ""
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to upsert project to disable: %v", err)
+	}
+	loaded, err = store.LoadProject(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load project after disable: %v", err)
+	}
+	if loaded.ResearchRoot != "" {
+		t.Errorf("ResearchRoot should be empty after disable, got %q", loaded.ResearchRoot)
+	}
+	if loaded.IsResearch {
+		t.Error("IsResearch should be false after clearing ResearchRoot")
+	}
+}
+
 func TestSaveAndLoadProjectUIState(t *testing.T) {
 	store, _, cleanup := setupTestStore(t)
 	defer cleanup()

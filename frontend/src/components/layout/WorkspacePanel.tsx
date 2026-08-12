@@ -3,9 +3,10 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/comp
 import { FileTreePanel } from "./FileTreePanel";
 import { VectorStorePanel } from "./VectorStorePanel";
 import { GitPanel } from "@/components/GitPanel";
+import { ResearchPanel } from "@/components/research";
 import { useProjectStore, selectIsNoProject } from "@/stores/projectStore";
 import { useUIStore } from "@/stores/uiStore";
-import { FolderTree, GitBranch, Search } from "lucide-react";
+import { FolderTree, GitBranch, Search, FlaskConical } from "lucide-react";
 
 export function WorkspacePanel() {
   const isNoProject = useProjectStore(selectIsNoProject);
@@ -52,6 +53,14 @@ export function WorkspacePanel() {
             </TooltipTrigger>
             <TooltipContent side="bottom">Search</TooltipContent>
           </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <TabsTrigger value="research" className="px-2">
+                <FlaskConical className="size-4" />
+              </TabsTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Research</TooltipContent>
+          </Tooltip>
         </TabsList>
 
         <TabsContent value="explorer" className="flex flex-col overflow-hidden">
@@ -64,6 +73,10 @@ export function WorkspacePanel() {
 
         <TabsContent value="semantics" className="flex flex-col overflow-hidden">
           <VectorStorePanel />
+        </TabsContent>
+
+        <TabsContent value="research" className="flex-1 overflow-hidden">
+          <ResearchPanel />
         </TabsContent>
       </Tabs>
     </TooltipProvider>

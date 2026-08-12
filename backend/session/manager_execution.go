@@ -92,6 +92,36 @@ func (m *Manager) injectWorkDirectories(ctx context.Context, dirs []core.WorkDir
 	return core.WithWorkDirectories(ctx, dirs)
 }
 
+// researchProjectInfo reports whether the session's project has RESEARCH mode
+// active and, when it does, returns the research-root path. RESEARCH is
+// active: a real project (not No Project) with a non-empty research root. It
+// loads the project from the store, so callers MUST NOT hold the session lock.
+// Returns ("", false) for No Project sessions, when no project store is
+// configured, when the project is missing, or on load errors (logged
+// best-effort).
+func (m *Manager) researchProjectInfo(projectID string) (string, bool) {
+	if projectID == project.NoProjectID {
+		return "", false
+	}
+	m.mu.RLock()
+	store := m.projectStore
+	m.mu.RUnlock()
+	if store == nil {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	proj, err := store.LoadProject(ctx, projectID)
+	if err != nil {
+		m.log().Warn("failed to load project for research check", "project", projectID, "error", err)
+		return "", false
+	}
+	if proj == nil {
+		return "", false
+	}
+	return proj.ResearchRoot, proj.ResearchRoot != ""
+}
+
 // injectIgnoreChecker builds a multi-root ignore resolver from the session's
 // workspace path plus its auxiliary work directories and attaches it to the
 // context via sdktools.WithIgnoreChecker. Read-style search/listing tools
@@ -384,6 +414,10 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 		return m.ResumeSession(ctx, id, modelOverride, reasoningEffort, text)
 	}
 
+	// Determine RESEARCH mode from the project's research root (loaded before
+	// the session lock to avoid a DB query while holding it).
+	researchRoot, isResearch := m.researchProjectInfo(session.ProjectID)
+
 	session.mu.Lock()
 
 	// Set active and create cancellable context with session ID
@@ -400,6 +434,10 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 	taskCtx = sdktools.WithCoherence(taskCtx, m.fileTracker)
 	if session.ProjectID == project.NoProjectID {
 		taskCtx = coretools.WithNoProject(taskCtx)
+	}
+	if isResearch {
+		taskCtx = coretools.WithResearch(taskCtx)
+		taskCtx = coretools.WithResearchRoot(taskCtx, researchRoot)
 	}
 	session.cancel = cancel
 	session.mu.Unlock()
@@ -913,6 +951,10 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		return fmt.Errorf("failed to load goal state: %w", err)
 	}
 
+	// Determine RESEARCH mode from the project's research root (loaded before
+	// the session lock to avoid a DB query while holding it).
+	researchRoot, isResearch := m.researchProjectInfo(session.ProjectID)
+
 	session.mu.Lock()
 	if session.active {
 		session.mu.Unlock()
@@ -928,6 +970,10 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	taskCtx = sdktools.WithCoherence(taskCtx, m.fileTracker)
 	if session.ProjectID == project.NoProjectID {
 		taskCtx = coretools.WithNoProject(taskCtx)
+	}
+	if isResearch {
+		taskCtx = coretools.WithResearch(taskCtx)
+		taskCtx = coretools.WithResearchRoot(taskCtx, researchRoot)
 	}
 	session.cancel = cancel
 	session.mu.Unlock()

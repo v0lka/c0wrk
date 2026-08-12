@@ -367,6 +367,8 @@ export interface GlobalEventMap {
   readonly 'projects:loaded': void
   readonly 'sessions:loaded': void
   readonly 'workspace:tree_changed': void
+  /** RESEARCH toggle or artifact change (enable/disable, hypothesis/brief/prior-art write). */
+  readonly 'research:changed': void
   readonly 'skills:changed': void
   readonly 'git:status_changed': string
   readonly 'vector_index:status': VectorIndexStatus

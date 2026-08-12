@@ -19,6 +19,17 @@ import (
 // provided, indicating vector search is intentionally not configured.
 var ErrEmbeddingDisabled = errors.New("vector search disabled: no embedding function provided")
 
+// shutdownIndexGracePeriod is the maximum time Shutdown waits for background
+// indexing goroutines to exit after cancelling their contexts. Context
+// cancellation normally unblocks them within milliseconds (the embedder is
+// ctx-aware), but a goroutine stuck in non-interruptible work — most notably
+// a synchronous ONNX inference call that ignores ctx.Done() — cannot be
+// interrupted. Rather than block the entire app shutdown forever (which would
+// leave the user with no option but to force-kill the process), Shutdown
+// waits for this period, then skips the blocking service.Close()/closeFn()
+// and lets the OS reclaim resources on process exit.
+const shutdownIndexGracePeriod = 10 * time.Second
+
 // ManagerConfig holds configuration for creating a Manager.
 // The caller creates the embedder and passes EmbeddingFunc; ManagerConfig no longer
 // depends on model paths, making the package usable with any embedding backend.
@@ -92,8 +103,12 @@ type Manager struct {
 	chunkFn ChunkFunc
 	hashFn  HashFunc
 
-	// WaitGroup for tracking in-flight reindex goroutines (vs Shutdown).
-	reindexWG sync.WaitGroup
+	// indexingWG tracks ALL background indexing goroutines launched by the
+	// Manager (the initProject-launched full/incremental pass and any
+	// Reindex goroutine). These goroutines hold the service write lock during
+	// AddDocuments, so Shutdown must wait for them before calling
+	// service.Close() (which needs the same lock). See Shutdown.
+	indexingWG sync.WaitGroup
 
 	// initCancel cancels the in-flight async project initialization
 	// (initProject), which runs SetProject + SwitchBranch + indexer setup +
@@ -109,6 +124,11 @@ type Manager struct {
 
 	// closeFn is called during Shutdown to release the embedder (if provided).
 	closeFn func() error
+
+	// shutdownGrace overrides shutdownIndexGracePeriod when non-zero, so
+	// tests can verify the bounded-wait Shutdown logic without waiting the
+	// full 10 s production default.
+	shutdownGrace time.Duration
 }
 
 // NewManager creates a Manager from the provided EmbeddingFunc and config.
@@ -395,7 +415,12 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	m.indexCtx = indexCtx
 	m.mu.Unlock()
 
+	// Start background indexing. Tracked by indexingWG so Shutdown can wait
+	// for it (bounded) before calling service.Close() — the goroutine holds
+	// the service write lock during AddDocuments, which Close() also needs.
+	m.indexingWG.Add(1)
 	go func() {
+		defer m.indexingWG.Done()
 		col := m.service.GetCollection()
 		var idxErr error
 		if col == nil || col.Count() == 0 {
@@ -677,9 +702,9 @@ func (m *Manager) Reindex(ctx context.Context, workspacePath string) error {
 	m.indexCtx = indexCtx
 	m.mu.Unlock()
 
-	m.reindexWG.Add(1)
+	m.indexingWG.Add(1)
 	go func() {
-		defer m.reindexWG.Done()
+		defer m.indexingWG.Done()
 		col := m.service.GetCollection()
 		var idxErr error
 		if col == nil || col.Count() == 0 {
@@ -703,6 +728,13 @@ func (m *Manager) Reindex(ctx context.Context, workspacePath string) error {
 
 // Shutdown performs orderly cleanup: cancel indexing and async init, stop
 // monitor, close service, and close the embedder via CloseFn (if provided).
+//
+// If a background indexing goroutine does not exit within
+// shutdownIndexGracePeriod after its context is cancelled (e.g. it is stuck
+// inside a non-interruptible ONNX inference call), the blocking
+// service.Close()/closeFn() are skipped — the goroutine holds the service
+// write lock, which Close() needs, so waiting would hang shutdown forever.
+// The OS reclaims the leaked resources when the process exits.
 func (m *Manager) Shutdown() {
 	// Cancel the async init goroutine first and wait for it to exit before
 	// closing the service, so it can't touch a closed service. initProject
@@ -728,19 +760,44 @@ func (m *Manager) Shutdown() {
 	m.initWG.Wait()
 	m.stopDebounce()
 
-	if m.service != nil {
-		if err := m.service.Close(); err != nil {
-			m.logger.Error("failed to close vector service", "error", err)
-		}
+	// Wait for background indexing goroutines (init's full/incremental pass
+	// and any Reindex) before calling service.Close(). These goroutines hold
+	// the service write lock during AddDocuments; Close() needs the same lock
+	// and would deadlock if the goroutine is still in flight.
+	//
+	// Context cancellation (above) normally makes them exit within
+	// milliseconds — the embedder checks ctx before and after acquiring its
+	// mutex. But a goroutine already inside the synchronous ONNX inference
+	// call cannot be interrupted (the C runtime ignores ctx.Done()), so an
+	// unbounded Wait would hang the whole app shutdown. Bound it instead: if
+	// the goroutine doesn't exit within the grace period, skip the blocking
+	// Close()/closeFn() and let the OS reclaim resources on process exit.
+	waitCh := make(chan struct{})
+	go func() {
+		m.indexingWG.Wait()
+		close(waitCh)
+	}()
+	grace := m.shutdownGrace
+	if grace == 0 {
+		grace = shutdownIndexGracePeriod
 	}
-	if m.closeFn != nil {
-		if err := m.closeFn(); err != nil {
-			m.logger.Error("failed to close embedder", "error", err)
+	select {
+	case <-waitCh:
+		// All indexing goroutines exited cleanly; safe to close resources.
+		if m.service != nil {
+			if err := m.service.Close(); err != nil {
+				m.logger.Error("failed to close vector service", "error", err)
+			}
 		}
+		if m.closeFn != nil {
+			if err := m.closeFn(); err != nil {
+				m.logger.Error("failed to close embedder", "error", err)
+			}
+		}
+	case <-time.After(grace):
+		m.logger.Warn("background indexing did not exit within grace period; skipping clean close of vector resources",
+			"grace", grace)
 	}
-
-	// Wait for in-flight reindex goroutine to finish before closing resources.
-	m.reindexWG.Wait()
 }
 
 // defaultChunkFn adapts embedding.ChunkFile to the ChunkFunc signature.

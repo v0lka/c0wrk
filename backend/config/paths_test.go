@@ -152,6 +152,15 @@ func TestSessionWorkspaceRoot(t *testing.T) {
 	})
 }
 
+func TestProjectResearchPath(t *testing.T) {
+	ws := filepath.Join(testAgentDir, "projects", "proj-123", WorkspaceSegment)
+	got := ProjectResearchPath(ws)
+	want := filepath.Join(ws, ".research")
+	if got != want {
+		t.Errorf("ProjectResearchPath: got %q, want %q", got, want)
+	}
+}
+
 func TestValidateWithinSessionWorkspace(t *testing.T) {
 	t.Run("path within session workspace", func(t *testing.T) {
 		wsRoot := SessionWorkspaceRoot(testAgentDir, noProjectID, "sess-1")

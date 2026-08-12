@@ -144,8 +144,23 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 // IndexFull performs a full workspace indexing: walks all files, chunks them,
 // and adds the resulting documents to both the vector collection and the
 // lexical index.
-func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) error {
-	idx.service.SetReady(false)
+func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err error) {
+	// MarkNotReady atomically captures a readiness generation; RestoreReady
+	// uses it to avoid racing with a concurrent project switch. Together
+	// they guarantee readiness is ALWAYS restored on exit — including
+	// cancellation and batch-add error paths that previously returned
+	// without SetReady(true), leaving WaitReady callers blocked forever.
+	readyGen := idx.service.MarkNotReady()
+	defer idx.service.RestoreReady(readyGen)
+	// Emit a terminal "ready" progress event on any non-nil return so the UI
+	// does not keep showing stale "indexing N/M" progress after the pass is
+	// cancelled or fails — the previous data is still queryable. On success
+	// the explicit onProgress below handles it and err stays nil.
+	defer func() {
+		if err != nil {
+			idx.onProgress(PhaseBoth, IndexStateReady, 0, 0, "")
+		}
+	}()
 
 	files, err := walkProjectFiles(workspacePath, idx.resolverFor(workspacePath))
 	if err != nil {
@@ -199,7 +214,6 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) error {
 		idx.logger.Debug("final batch embedded successfully")
 	}
 
-	idx.service.SetReady(true)
 	idx.onProgress(PhaseBoth, IndexStateReady, totalFiles, totalFiles, "")
 	idx.logger.Info("full index complete", "files", indexed)
 	return nil
@@ -208,27 +222,39 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) error {
 // IndexIncremental performs an incremental re-index: validates the current
 // collection against disk, then updates only changed/new/deleted files
 // across both the vector collection and the lexical index.
-func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) error {
-	idx.service.SetReady(false)
+func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) (err error) {
+	// MarkNotReady atomically captures a readiness generation; RestoreReady
+	// uses it to avoid racing with a concurrent project switch. Together
+	// they guarantee readiness is ALWAYS restored on exit — including
+	// cancellation and batch-add error paths that previously returned
+	// without SetReady(true), leaving WaitReady callers blocked forever.
+	readyGen := idx.service.MarkNotReady()
+	defer idx.service.RestoreReady(readyGen)
+	// Emit a terminal "ready" progress event on any non-nil return so the UI
+	// does not keep showing stale "reindexing N/M" progress after the pass is
+	// cancelled or fails — the previous data is still queryable. On success
+	// the explicit onProgress below handles it and err stays nil.
+	defer func() {
+		if err != nil {
+			idx.onProgress(PhaseBoth, IndexStateReady, 0, 0, "")
+		}
+	}()
 
 	// Wait for any background file-hash migration (first run after the sidecar
 	// upgrade, or a branch whose collection was built elsewhere) so
 	// ValidateCollection sees the full hash map instead of re-embedding every
 	// file. IndexFull is unaffected: an empty collection has nothing to migrate.
 	if err := idx.service.WaitFileHashMigration(ctx); err != nil {
-		idx.service.SetReady(true)
 		return fmt.Errorf("waiting for file-hash migration: %w", err)
 	}
 
 	stale, newFiles, deleted, err := idx.service.ValidateCollection(ctx, workspacePath, idx.resolverFor(workspacePath))
 	if err != nil {
-		idx.service.SetReady(true)
 		return fmt.Errorf("validating collection: %w", err)
 	}
 
 	totalChanges := len(stale) + len(newFiles) + len(deleted)
 	if totalChanges == 0 {
-		idx.service.SetReady(true)
 		idx.logger.Info("incremental index: no changes detected")
 		idx.onProgress(PhaseBoth, IndexStateReady, 0, 0, "")
 		return nil
@@ -326,7 +352,6 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 		idx.logger.Debug("final batch embedded successfully")
 	}
 
-	idx.service.SetReady(true)
 	totalInIndex := idx.service.collectionUniqueFileCount()
 	idx.onProgress(PhaseBoth, IndexStateReady, totalChanges, totalInIndex, "")
 	idx.logger.Info("incremental index complete", "changes", totalChanges, "totalFiles", totalInIndex)
@@ -336,7 +361,12 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 // HandleBranchSwitch handles a git branch change by switching the collection
 // and re-indexing as needed.
 func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBranch string) error {
-	idx.service.SetReady(false)
+	// MarkNotReady captures the gen so RestoreReady (called by the delegated
+	// IndexFull/IndexIncremental's own defer) only restores readiness if no
+	// SetReady(false) has intervened. SwitchBranch failure returns before the
+	// delegation, so we also need to restore here.
+	readyGen := idx.service.MarkNotReady()
+	defer idx.service.RestoreReady(readyGen)
 
 	if err := idx.service.SwitchBranch(ctx, newBranch); err != nil {
 		return fmt.Errorf("switching branch to %q: %w", newBranch, err)

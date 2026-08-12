@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/v0lka/c0wrk/core/goal"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/llm"
@@ -1342,6 +1343,83 @@ func TestOrchestrator_AgentsMD_RouterPromptAbsentWhenNoWorkspace(t *testing.T) {
 
 	if strings.Contains(routerPromptSystem, "<untrusted-content source=\"AGENTS.md\">") {
 		t.Error("router system prompt should NOT contain AGENTS.md untrusted-content tag when no workspace")
+	}
+}
+
+// TestOrchestrator_Research_RouterPromptInjection verifies that in RESEARCH
+// mode the router's system prompt contains the research-awareness block and
+// the keyword-matching hints, so natural-language messages ("start an
+// experiment", "add a hypothesis") can surface research-* skills without an
+// explicit "/" prefix. It proves IsResearch flows from HandleMessage through
+// to the router context.
+func TestOrchestrator_Research_RouterPromptInjection(t *testing.T) {
+	var routerPromptSystem string
+	callIdx := 0
+	mockLLM := &mockLLMCaller{
+		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			callIdx++
+			if callIdx == 1 && len(req.Messages) > 0 && req.Messages[0].Role == "system" {
+				routerPromptSystem = req.Messages[0].Content
+			}
+			if callIdx == 1 {
+				return &llm.ChatResponse{
+					Message: llm.Message{
+						Role:    "assistant",
+						Content: `{"domain": "code", "complexity": 3, "needs_clarification": false, "matched_skills": []}`,
+					},
+					StopReason: "end_turn",
+				}, nil
+			}
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role: "assistant",
+					ToolCalls: []llm.ToolCall{{
+						ID:    "call_1",
+						Name:  "finish",
+						Input: json.RawMessage(`{"answer":"done"}`),
+					}},
+				},
+				StopReason: "tool_use",
+			}, nil
+		},
+	}
+
+	registry := createTestRegistry()
+	counter := llm.NewSimpleTokenCounter()
+	r := newCoreRouter(mockLLM, 5)
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
+		Router:         r,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   counter,
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+
+	// RESEARCH mode: set the flag + research-root path pointing at the shared
+	// research testdata fixture so a real snapshot is built.
+	ctx := tools.WithWorkspacePath(context.Background(), "research/testdata")
+	ctx = coretools.WithResearch(ctx)
+	ctx = coretools.WithResearchRoot(ctx, "research/testdata")
+
+	if _, err := orchestrator.HandleMessage(ctx, "start an experiment", "", HandleOptions{}); err != nil {
+		t.Fatalf("HandleMessage failed: %v", err)
+	}
+
+	if routerPromptSystem == "" {
+		t.Fatal("router system prompt was not captured")
+	}
+	// Research-awareness block (root path + active R-NNN + phase hint).
+	if !strings.Contains(routerPromptSystem, "Research Context") {
+		t.Error("router prompt should contain the Research Context section in RESEARCH mode")
+	}
+	// Keyword-matching hints that let natural-language intents map to research-*.
+	if !strings.Contains(routerPromptSystem, "Research Skill Matching") {
+		t.Error("router prompt should contain the Research Skill Matching hints")
+	}
+	if !strings.Contains(routerPromptSystem, "research-experiment") {
+		t.Error("router prompt should reference research-experiment for natural-language experiment intents")
 	}
 }
 

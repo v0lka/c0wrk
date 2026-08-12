@@ -1242,6 +1242,44 @@ func (s *Session) GetOrchestrator() *core.Orchestrator {
 	return s.orchestrator
 }
 
+// RescanSkills re-scans the skill catalog for this session's orchestrator,
+// picking up skills seeded into .agents/skills after the session was created
+// (e.g. the research-* pack from enabling RESEARCH mode). Best-effort: errors
+// are logged and do not propagate, since a failed re-scan leaves the prior
+// catalog intact and never blocks the caller. A nil orchestrator is a no-op.
+func (s *Session) RescanSkills(logger *slog.Logger) {
+	s.mu.Lock()
+	orch := s.orchestrator
+	s.mu.Unlock()
+	if orch == nil {
+		return
+	}
+	if err := orch.RescanSkills(); err != nil && logger != nil {
+		logger.Warn("RescanSkills: failed to refresh session skill catalog",
+			"session_id", s.ID, "error", err)
+	}
+}
+
+// RescanSkillsForProject re-scans the skill catalog for every live
+// (in-memory) session belonging to projectID. Used by EnableResearch so the
+// research-* skills become discoverable to sessions that are already running
+// without requiring a restart. Lazy-restored or store-only sessions are
+// skipped — they build a fresh skill catalog when next activated.
+func (m *Manager) RescanSkillsForProject(projectID string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	logger := m.log()
+	for _, session := range m.sessions {
+		if session.ProjectID != projectID {
+			continue
+		}
+		session.RescanSkills(logger)
+	}
+	if logger != nil {
+		logger.Debug("RescanSkillsForProject completed", "project_id", projectID)
+	}
+}
+
 // IsActive returns whether the session is currently processing a task.
 func (s *Session) IsActive() bool {
 	s.mu.Lock()

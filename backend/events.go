@@ -101,6 +101,12 @@ const EventVectorIndexStatus = "vector_index:status"
 // (startMCPReadyNotifier), which waits on the builder's WaitMCPStartup.
 const EventMCPReady = "mcp:ready"
 
+// EventResearchChanged is emitted when RESEARCH mode is enabled or disabled
+// for a project (EnableResearch / DisableResearch). The payload is a
+// map[string]string carrying the "project_id" and the "action" ("enabled" /
+// "disabled") so the frontend can refresh the Research panel and project list.
+const EventResearchChanged = "research:changed"
+
 // ---------------------------------------------------------------------------
 // Self-update events (emitted by FrontendAPI updater methods)
 // ---------------------------------------------------------------------------

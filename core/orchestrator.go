@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core/goal"
+	"github.com/v0lka/c0wrk/core/research"
 	"github.com/v0lka/c0wrk/core/smallllm"
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
@@ -983,7 +984,104 @@ func (o *Orchestrator) injectVectorSearchHints(ctx context.Context, query string
 		ctx = WithVectorSearchHints(ctx, hints)
 	}
 
+	// Build the research-awareness snapshot (RESEARCH mode only) alongside the
+	// AGENTS.md injection above. Best-effort: a parse failure is logged and
+	// leaves the context without a research block — it never breaks the task.
+	ctx = o.injectResearchContext(ctx)
+
 	return ctx
+}
+
+// injectResearchContext builds the research-awareness snapshot for RESEARCH
+// mode and attaches it to the context, so buildSystemPrompt and the router can
+// render a concise context block. It is a no-op outside RESEARCH mode.
+//
+// The snapshot is derived from the parsed research catalog (research-root path,
+// the current active R-NNN from the index, and a phase hint from the
+// hypothesis-graph metrics). All methodology rules stay in the research-*
+// skill bodies — this is pure awareness, never policy. Best-effort: a missing
+// or unreadable root, or a parse error, is logged and leaves the context
+// unchanged (no research block) so the task is never broken.
+func (o *Orchestrator) injectResearchContext(ctx context.Context) context.Context {
+	if !tools.IsResearch(ctx) {
+		return ctx
+	}
+	rootPath := tools.ResearchRootPathFrom(ctx)
+	if rootPath == "" {
+		o.logDebug("research context skipped: no research-root path in context")
+		return ctx
+	}
+
+	root, err := research.ParseResearchRoot(rootPath)
+	if err != nil {
+		o.logDebug("research context skipped: root not readable", "path", rootPath, "error", err)
+		return ctx
+	}
+
+	rc := buildResearchContextSnapshot(rootPath, root)
+	ctx = WithResearchContext(ctx, rc)
+	o.logDebug("research context injected", "root", rootPath, "active", rc.ActiveID, "phase", rc.PhaseHint)
+	return ctx
+}
+
+// buildResearchContextSnapshot derives the concise ResearchContext snapshot
+// from a parsed research root. It is a pure function (no I/O) so it can be
+// unit-tested in isolation. The active R-NNN is the latest index entry
+// (chronological append order), falling back to the highest-numbered project
+// directory when there is no index yet. The phase hint comes from the active
+// project's hypothesis-graph metrics.
+func buildResearchContextSnapshot(rootPath string, root *research.ResearchRoot) *ResearchContext {
+	rc := &ResearchContext{
+		RootPath:     rootPath,
+		ProjectCount: len(root.Index),
+	}
+	if rc.ProjectCount == 0 {
+		// No index yet — count discovered project dirs instead.
+		rc.ProjectCount = len(root.Projects)
+	}
+
+	active := research.PickActiveProject(root)
+	if active == nil {
+		rc.PhaseHint = "ready to initialize the first research project (research-init)"
+		return rc
+	}
+
+	rc.ActiveID = active.ID
+	rc.ActiveTitle = active.Brief.Title
+	rc.TotalHypotheses = active.Metrics.Total
+	rc.ActiveFront = len(active.Metrics.ActiveFront)
+	rc.PhaseHint = researchPhaseHint(active)
+	return rc
+}
+
+// researchPhaseHint derives a short, human-readable phase label from a
+// research project's hypothesis-graph metrics. It is a pure mapping over the
+// metrics struct — no I/O — mirroring the lifecycle vocabulary in the
+// research-* skills.
+func researchPhaseHint(p *research.ResearchProject) string {
+	if p == nil {
+		return "unknown"
+	}
+	m := p.Metrics
+	if m.Total == 0 {
+		return "setup: brief defined, no hypotheses formulated yet (research-hypothesis)"
+	}
+	if len(m.ActiveFront) > 0 {
+		noun := "hypothesis"
+		if len(m.ActiveFront) > 1 {
+			noun = "hypotheses"
+		}
+		return "experimenting: " + strconv.Itoa(len(m.ActiveFront)) + " active " + noun +
+			" on the front (open/in-progress)"
+	}
+	// All hypotheses are terminal.
+	confirmed := m.ByStatus[research.StatusConfirmed]
+	refuted := m.ByStatus[research.StatusRefuted]
+	if confirmed > 0 {
+		return "concluding: all hypotheses decided (" + strconv.Itoa(confirmed) +
+			" confirmed, " + strconv.Itoa(refuted) + " refuted) — ready for synthesis"
+	}
+	return "falsified: all " + strconv.Itoa(m.Total) + " hypotheses refuted"
 }
 
 // collectAgentsMDPaths returns the ordered list of AGENTS.md file paths to
@@ -1123,6 +1221,30 @@ func (o *Orchestrator) LookupSkillDescriptors(names []string) []skills.SkillDesc
 		}
 	}
 	return result
+}
+
+// RescanSkills re-scans the skill discovery directories and refreshes the
+// per-session skill catalog in place. It is used when skills are seeded into
+// the project's .agents/skills directory mid-session (e.g. enabling RESEARCH
+// mode, which seeds the research-* methodology skills) so the running session
+// can discover them without a restart. Safe to call concurrently with skill
+// lookups — the SkillManager holds its own lock and Scan replaces the catalog
+// atomically. A nil skill manager is a no-op (returns nil).
+func (o *Orchestrator) RescanSkills() error {
+	if o.skillManager == nil {
+		return nil
+	}
+	if err := o.skillManager.Scan(); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("RescanSkills: skill re-scan failed", "error", err)
+		}
+		return err
+	}
+	if o.logger != nil {
+		o.logger.Debug("RescanSkills: skill catalog refreshed",
+			"count", len(o.skillManager.List()))
+	}
+	return nil
 }
 
 // SetReasoningEffort propagates the per-request reasoning effort to all components

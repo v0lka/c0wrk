@@ -273,6 +273,15 @@ func ProjectAgentsPath(workspacePath string) string {
 	return filepath.Join(workspacePath, ".agents", "agents")
 }
 
+// ProjectResearchPath returns the project-local research workspace directory.
+// This is <workspacePath>/.research. When a project has RESEARCH mode enabled,
+// its persisted ResearchRoot points here (see ProjectInfo.ResearchRoot). The
+// directory is created lazily by the layer that activates RESEARCH mode, not
+// by this path helper.
+func ProjectResearchPath(workspacePath string) string {
+	return filepath.Join(workspacePath, ".research")
+}
+
 // SessionStepDumpDir returns the per-step dump directory for a session,
 // derived from the session's LLM dump path.
 func SessionStepDumpDir(agentDir, projectID, sessionID string) string {

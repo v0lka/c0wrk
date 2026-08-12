@@ -22,8 +22,17 @@ type ProjectInfo struct {
 	WorkspacePath string `json:"workspace_path"`
 	IsExternal    bool   `json:"is_external"`
 	IsNoProject   bool   `json:"is_no_project"`
-	CreatedAt     string `json:"created_at"`
-	LastActiveAt  string `json:"last_active_at"`
+	// ResearchRoot is the persisted per-project research workspace directory
+	// (config.ProjectResearchPath). When non-empty the project has RESEARCH
+	// mode enabled. It is nil/empty when RESEARCH is disabled so the column
+	// stores NULL and the toggle survives restarts.
+	ResearchRoot string `json:"research_root"`
+	// IsResearch is a derived flag: true when this is a real project (not the
+	// No Project pseudo-project) with a non-empty ResearchRoot. It is computed
+	// on read (LoadProject/ListProjects), not persisted.
+	IsResearch   bool   `json:"is_research"`
+	CreatedAt    string `json:"created_at"`
+	LastActiveAt string `json:"last_active_at"`
 }
 
 // ProjectUIState stores per-project UI state used during project switches.

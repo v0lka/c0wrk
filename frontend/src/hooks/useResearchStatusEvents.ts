@@ -1,0 +1,71 @@
+// Side-effect-only hook that keeps researchStore in sync with the backend.
+//
+// Modeled on useGitStatusEvents: fetches GetResearchStatus once on mount, then
+// subscribes to `research:changed` (emitted by EnableResearch/DisableResearch
+// and external artifact writes) and `workspace:tree_changed` (the workspace
+// watcher, which sees hypothesis/brief/prior-art file edits) with a shared
+// 50ms debounce. Purely a side-effect hook — returns void.
+
+import { useEffect, useCallback, useRef } from 'react'
+import { getResearchStatus } from '@/api/research'
+import { subscribe } from '@/api/runtime'
+import { useProjectStore } from '@/stores/projectStore'
+import { useResearchStore } from '@/stores/researchStore'
+
+export function useResearchStatusEvents(): void {
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Stable refresh: fetch status for the active project and load it, but only
+  // if the project hasn't switched while the fetch was in flight.
+  const refresh = useCallback(async () => {
+    const projectId = activeProjectId
+    if (!projectId) {
+      useResearchStore.getState().reset()
+      return
+    }
+    useResearchStore.getState().setLoading(true)
+    try {
+      const status = await getResearchStatus(projectId)
+      // Guard against stale fetches after a project switch.
+      if (useProjectStore.getState().activeProjectId === projectId) {
+        useResearchStore.getState().loadStatus(status, projectId)
+      }
+    } catch (err) {
+      useResearchStore.getState().setError(
+        err instanceof Error ? err.message : 'Failed to load research status',
+      )
+    }
+  }, [activeProjectId])
+
+  // --- Initial load + reload on project switch ---
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  // --- Subscribe to research:changed + workspace:tree_changed (50ms debounce) ---
+  useEffect(() => {
+    const debouncedRefresh = () => {
+      if (debounceRef.current !== null) {
+        clearTimeout(debounceRef.current)
+      }
+      debounceRef.current = setTimeout(() => {
+        debounceRef.current = null
+        refresh()
+      }, 50)
+    }
+
+    const unsubResearch = subscribe('research:changed', debouncedRefresh)
+    const unsubWorkspace = subscribe('workspace:tree_changed', debouncedRefresh)
+
+    return () => {
+      unsubResearch()
+      unsubWorkspace()
+      if (debounceRef.current !== null) {
+        clearTimeout(debounceRef.current)
+        debounceRef.current = null
+      }
+    }
+  }, [refresh])
+}

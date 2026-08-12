@@ -2,6 +2,7 @@ package vectorindex
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -263,4 +264,143 @@ func TestManagerSwitchProject_RapidDoubleSwitchCancelsInFlight(t *testing.T) {
 	if mgr.indexing.Load() {
 		t.Error("expected indexing flag to settle to false after double-switch")
 	}
+}
+
+// TestIndexIncrementalRestoresReadyOnCancellation verifies the core fix for
+// "search blocked forever after indexing is cancelled": IndexIncremental
+// (and IndexFull) must restore SetReady(true) on EVERY exit path, including
+// ctx cancellation and batch-add errors. Before the fix, these paths
+// returned without flipping readiness back, leaving WaitReady callers (all
+// searches) blocked on the readyCh channel forever.
+func TestIndexIncrementalRestoresReadyOnCancellation(t *testing.T) {
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+
+	if err := svc.SetProject("ready-test", t.TempDir()); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
+		t.Fatalf("SwitchBranch: %v", err)
+	}
+
+	idx := NewIndexer(IndexerConfig{
+		Service: svc,
+		ChunkFn: fakeChunkFunc,
+		HashFn:  fakeHashFunc,
+	})
+
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+
+	// Populate the collection so the incremental pass has a baseline.
+	if err := idx.IndexFull(context.Background(), ws); err != nil {
+		t.Fatalf("IndexFull: %v", err)
+	}
+	if !svc.IsReady() {
+		t.Fatal("expected ready after IndexFull")
+	}
+
+	// Add a new file so the incremental pass has real work (otherwise it
+	// short-circuits on "no changes" before reaching any cancellation path).
+	if err := os.WriteFile(filepath.Join(ws, "b.go"), []byte("package main\nfunc b() {}\n"), 0o644); err != nil {
+		t.Fatalf("write b.go: %v", err)
+	}
+
+	// Pre-cancel the context. IndexIncremental should return a
+	// context-related error AND restore readiness via the defer.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_ = idx.IndexIncremental(ctx, ws) //nolint:errcheck // error is expected
+
+	if !svc.IsReady() {
+		t.Fatal("expected service to be ready after cancelled IndexIncremental; " +
+			"without the defer SetReady(true) fix, all subsequent searches would block forever on WaitReady")
+	}
+}
+
+// TestShutdownReturnsWhenIndexingGoroutineIsStuck verifies the bounded-wait
+// Shutdown fix: when a background indexing goroutine is stuck in
+// non-interruptible work (simulating a hung ONNX inference that ignores
+// ctx.Done()), Shutdown must return within the grace period instead of
+// hanging forever on service.Close()'s write-lock acquisition.
+//
+// Before the fix, the initProject-launched indexing goroutine was untracked
+// (initWG only tracks initProject itself, not the goroutine it launches) and
+// held the service write lock during the entire indexing pass. Shutdown's
+// service.Close() needs that lock → permanent deadlock when the goroutine
+// can't exit.
+func TestShutdownReturnsWhenIndexingGoroutineIsStuck(t *testing.T) {
+	persistDir := t.TempDir()
+
+	// releaseEmbed unblocks the stuck goroutine after the test so it doesn't
+	// leak for the remainder of the test binary.
+	releaseEmbed := make(chan struct{})
+	t.Cleanup(func() { close(releaseEmbed) })
+
+	var embedCalls atomic.Int32
+
+	// Non-ctx-aware embedder: blocks on releaseEmbed, simulating a hung ONNX
+	// inference. The key property is that it does NOT select on ctx.Done(),
+	// so Shutdown's indexCancel cannot unblock it.
+	embed := func(_ context.Context, _ string) ([]float32, error) {
+		embedCalls.Add(1)
+		<-releaseEmbed
+		return nil, errors.New("embedder released after shutdown skip")
+	}
+
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: embed})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	mgr := &Manager{
+		service:       svc,
+		logger:        slog.New(slog.DiscardHandler),
+		chunkFn:       defaultChunkFn,
+		hashFn:        embedding.ComputeFileHash,
+		shutdownGrace: 250 * time.Millisecond, // short for the test; prod default is 10 s
+	}
+
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+	viPath := filepath.Join(persistDir, "stuck-project")
+
+	// SwitchProject launches initProject, which launches the background
+	// indexing goroutine, which reaches the embedder and gets stuck.
+	if err := mgr.SwitchProject("stuck-project", ws, viPath, ProjectCallbacks{}); err != nil {
+		t.Fatalf("SwitchProject: %v", err)
+	}
+
+	// Wait for the indexing goroutine to reach the embedder (and thus hold
+	// the service write lock), so Shutdown faces a genuinely stuck goroutine.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if embedCalls.Load() > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if embedCalls.Load() == 0 {
+		t.Fatal("indexing goroutine never reached the embedder before Shutdown")
+	}
+
+	// Shutdown must return within a bounded time despite the stuck goroutine.
+	start := time.Now()
+	mgr.Shutdown()
+	elapsed := time.Since(start)
+
+	// The grace period is 250 ms; allow a generous margin for scheduling
+	// overhead and the non-stuck init goroutine wind-down.
+	if elapsed > 5*time.Second {
+		t.Fatalf("Shutdown took %v; expected it to return within the grace period when the indexing goroutine is stuck", elapsed)
+	}
+	t.Logf("Shutdown returned in %v with stuck indexing goroutine (grace=%v)", elapsed, mgr.shutdownGrace)
 }

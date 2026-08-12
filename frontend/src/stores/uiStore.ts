@@ -3,7 +3,7 @@ import { persist } from 'zustand/middleware'
 
 // --- State types ---
 
-type WorkspaceTab = 'explorer' | 'git' | 'semantics'
+type WorkspaceTab = 'explorer' | 'git' | 'semantics' | 'research'
 
 interface UIState {
   sidebarCollapsed: boolean

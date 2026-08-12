@@ -65,8 +65,16 @@ type Service struct {
 	mu          sync.RWMutex
 	ready       atomic.Bool
 	readyCh     chan struct{} // closed when ready becomes true; recreated on false
-	readyMu     sync.Mutex    // protects readyCh swaps
-	logger      *slog.Logger
+	readyMu     sync.Mutex    // protects readyCh swaps + readyGen
+	// readyGen is bumped every time SetReady(false) / MarkNotReady is called.
+	// An indexing pass captures the gen at start (via MarkNotReady) and
+	// passes it to RestoreReady on exit; if a project switch (or any other
+	// SetReady(false)) has intervened, the gen no longer matches and
+	// RestoreReady is a no-op. This prevents a stale indexer from an
+	// outgoing project — whose defer runs late after cancellation — from
+	// prematurely marking a freshly-switched project's service as ready.
+	readyGen int64
+	logger   *slog.Logger
 
 	// hybridConfig holds resolved RRF tuning + pre-fusion score
 	// thresholds. Threshold fields of 0 mean "disabled".
@@ -273,6 +281,46 @@ func (s *Service) SetReady(ready bool) {
 		// Transition true→false: create a new channel for next wait cycle.
 		s.readyCh = make(chan struct{})
 		s.logger.Info("vector index set to not ready")
+	}
+	if !ready {
+		// Always bump the generation on SetReady(false), even when the
+		// state didn't transition, so a concurrent indexing pass that
+		// captured an older gen won't falsely "restore" readiness via
+		// RestoreReady after a project switch intervenes.
+		s.readyGen++
+	}
+}
+
+// MarkNotReady atomically sets ready=false and returns the current readiness
+// generation. Indexing passes capture the returned gen and pass it to
+// RestoreReady on exit; this pairs SetReady(false) with a gen capture in a
+// single lock acquisition, avoiding the race where another goroutine calls
+// SetReady(false) between the two operations.
+func (s *Service) MarkNotReady() int64 {
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	if s.ready.Swap(false) {
+		s.readyCh = make(chan struct{})
+		s.logger.Info("vector index set to not ready")
+	}
+	s.readyGen++
+	return s.readyGen
+}
+
+// RestoreReady conditionally marks the service ready ONLY if gen still
+// matches the value returned by MarkNotReady at the start of the indexing
+// pass. A project switch (or any other SetReady(false)) bumps the gen, so a
+// stale indexer whose defer runs after the switch won't prematurely mark a
+// freshly-switched (or freshly-closed) project as ready.
+func (s *Service) RestoreReady(gen int64) {
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	if s.readyGen != gen {
+		return
+	}
+	if !s.ready.Swap(true) {
+		close(s.readyCh)
+		s.logger.Info("vector index is ready")
 	}
 }
 

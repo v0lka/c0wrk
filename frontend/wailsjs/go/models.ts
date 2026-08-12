@@ -642,6 +642,62 @@ export namespace backend {
 	}
 	
 	
+	export class ResearchSeedResultDTO {
+	    seeded: string[];
+	    updated: string[];
+	    current: string[];
+	    preserved: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ResearchSeedResultDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.seeded = source["seeded"];
+	        this.updated = source["updated"];
+	        this.current = source["current"];
+	        this.preserved = source["preserved"];
+	    }
+	}
+	export class ResearchStatusDTO {
+	    enabled: boolean;
+	    project_id: string;
+	    research_root: string;
+	    root?: research.ResearchRoot;
+	    seed_result?: ResearchSeedResultDTO;
+	
+	    static createFrom(source: any = {}) {
+	        return new ResearchStatusDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.project_id = source["project_id"];
+	        this.research_root = source["research_root"];
+	        this.root = this.convertValues(source["root"], research.ResearchRoot);
+	        this.seed_result = this.convertValues(source["seed_result"], ResearchSeedResultDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ReviewPromptMessage {
 	    prompt_id: string;
 	    content: string;
@@ -1240,6 +1296,8 @@ export namespace project {
 	    workspace_path: string;
 	    is_external: boolean;
 	    is_no_project: boolean;
+	    research_root: string;
+	    is_research: boolean;
 	    created_at: string;
 	    last_active_at: string;
 	
@@ -1254,6 +1312,8 @@ export namespace project {
 	        this.workspace_path = source["workspace_path"];
 	        this.is_external = source["is_external"];
 	        this.is_no_project = source["is_no_project"];
+	        this.research_root = source["research_root"];
+	        this.is_research = source["is_research"];
 	        this.created_at = source["created_at"];
 	        this.last_active_at = source["last_active_at"];
 	    }
@@ -1275,6 +1335,222 @@ export namespace project {
 	        this.description = source["description"];
 	        this.created_at = source["created_at"];
 	    }
+	}
+
+}
+
+export namespace research {
+	
+	export class Brief {
+	    id: string;
+	    title: string;
+	    status?: string;
+	    problem_domain?: string;
+	    quarter?: string;
+	    researchers?: string;
+	    related_researches?: string;
+	    research_question?: string;
+	    success_criteria?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Brief(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.status = source["status"];
+	        this.problem_domain = source["problem_domain"];
+	        this.quarter = source["quarter"];
+	        this.researchers = source["researchers"];
+	        this.related_researches = source["related_researches"];
+	        this.research_question = source["research_question"];
+	        this.success_criteria = source["success_criteria"];
+	    }
+	}
+	export class HypothesisEdge {
+	    from: string;
+	    to: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HypothesisEdge(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.from = source["from"];
+	        this.to = source["to"];
+	    }
+	}
+	export class HypothesisNode {
+	    id: string;
+	    title: string;
+	    status: string;
+	    parents?: string[];
+	    timebox?: string;
+	    result?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HypothesisNode(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.status = source["status"];
+	        this.parents = source["parents"];
+	        this.timebox = source["timebox"];
+	        this.result = source["result"];
+	    }
+	}
+	export class HypothesisGraph {
+	    nodes: HypothesisNode[];
+	    edges: HypothesisEdge[];
+	
+	    static createFrom(source: any = {}) {
+	        return new HypothesisGraph(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.nodes = this.convertValues(source["nodes"], HypothesisNode);
+	        this.edges = this.convertValues(source["edges"], HypothesisEdge);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class IndexEntry {
+	    id: string;
+	    title?: string;
+	    path?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new IndexEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.path = source["path"];
+	    }
+	}
+	export class Metrics {
+	    total: number;
+	    by_status: Record<string, number>;
+	    confirmation_rate: number;
+	    depth: number;
+	    breadth: number;
+	    active_front?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Metrics(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.total = source["total"];
+	        this.by_status = source["by_status"];
+	        this.confirmation_rate = source["confirmation_rate"];
+	        this.depth = source["depth"];
+	        this.breadth = source["breadth"];
+	        this.active_front = source["active_front"];
+	    }
+	}
+	export class ResearchProject {
+	    id: string;
+	    brief: Brief;
+	    graph: HypothesisGraph;
+	    metrics: Metrics;
+	    prior_art_count: number;
+	    has_report: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ResearchProject(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.brief = this.convertValues(source["brief"], Brief);
+	        this.graph = this.convertValues(source["graph"], HypothesisGraph);
+	        this.metrics = this.convertValues(source["metrics"], Metrics);
+	        this.prior_art_count = source["prior_art_count"];
+	        this.has_report = source["has_report"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ResearchRoot {
+	    path: string;
+	    index: IndexEntry[];
+	    projects: ResearchProject[];
+	    active_project_id?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ResearchRoot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.index = this.convertValues(source["index"], IndexEntry);
+	        this.projects = this.convertValues(source["projects"], ResearchProject);
+	        this.active_project_id = source["active_project_id"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

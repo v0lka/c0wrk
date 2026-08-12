@@ -7,6 +7,7 @@ import (
 
 	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/c0wrk/core/prompts"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/prompt"
@@ -121,6 +122,156 @@ func TestFormatAgentsMD_Untrusted(t *testing.T) {
 	// Regression guard: must NOT use the old "MUST strictly follow" wording.
 	if strings.Contains(got, "MUST strictly follow") {
 		t.Error("AGENTS.md prompt section reverted to authoritative wording")
+	}
+}
+
+// --- Research context section tests ---
+
+// TestFormatResearchContext_NotResearch verifies the section is empty outside
+// RESEARCH mode even when a snapshot is present.
+func TestFormatResearchContext_NotResearch(t *testing.T) {
+	ctx := WithResearchContext(context.Background(), &ResearchContext{
+		RootPath:  "/ws/.research",
+		ActiveID:  "R-001",
+		PhaseHint: "experimenting",
+	})
+	if got := formatResearchContext(ctx); got != "" {
+		t.Errorf("expected empty outside RESEARCH mode, got %q", got)
+	}
+}
+
+// TestFormatResearchContext_ResearchButNoSnapshot verifies the section is empty
+// in RESEARCH mode when no snapshot was built (e.g. unreadable root).
+func TestFormatResearchContext_ResearchButNoSnapshot(t *testing.T) {
+	ctx := coretools.WithResearch(context.Background())
+	if got := formatResearchContext(ctx); got != "" {
+		t.Errorf("expected empty with no snapshot, got %q", got)
+	}
+}
+
+// TestFormatResearchContext_RendersSnapshot verifies the section renders the
+// root path, active R-NNN, and phase hint in RESEARCH mode.
+func TestFormatResearchContext_RendersSnapshot(t *testing.T) {
+	ctx := coretools.WithResearch(context.Background())
+	ctx = WithResearchContext(ctx, &ResearchContext{
+		RootPath:         "/ws/.research",
+		ProjectCount:     2,
+		ActiveID:         "R-002",
+		ActiveTitle:      "Empty Scaffold",
+		PhaseHint:        "setup: brief defined, no hypotheses formulated yet (research-hypothesis)",
+		TotalHypotheses:  0,
+		ActiveFront:      0,
+	})
+	got := formatResearchContext(ctx)
+	for _, want := range []string{
+		"RESEARCH mode",
+		"/ws/.research",
+		"R-002",
+		"Empty Scaffold",
+		"setup: brief defined",
+		"Projects tracked",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected research context to contain %q, got %q", want, got)
+		}
+	}
+}
+
+// TestFormatResearchContext_RendersNoneYet verifies the section reports "none
+// yet" when there is no active project.
+func TestFormatResearchContext_RendersNoneYet(t *testing.T) {
+	ctx := coretools.WithResearch(context.Background())
+	ctx = WithResearchContext(ctx, &ResearchContext{
+		RootPath:  "/ws/.research",
+		ActiveID:  "",
+		PhaseHint: "ready to initialize",
+	})
+	got := formatResearchContext(ctx)
+	if !strings.Contains(got, "none yet") {
+		t.Errorf("expected 'none yet' for no active project, got %q", got)
+	}
+}
+
+// TestFormatResearchRouterHints verifies the router keyword-hint block is
+// emitted in RESEARCH mode and absent otherwise.
+func TestFormatResearchRouterHints(t *testing.T) {
+	// Absent outside RESEARCH mode.
+	if got := formatResearchRouterHints(context.Background()); got != "" {
+		t.Errorf("expected empty outside RESEARCH mode, got %q", got)
+	}
+
+	ctx := coretools.WithResearch(context.Background())
+	got := formatResearchRouterHints(ctx)
+	if got == "" {
+		t.Fatal("expected non-empty router hints in RESEARCH mode")
+	}
+	// The block maps natural-language phrases to research-* skills.
+	for _, want := range []string{
+		"research-init",
+		"research-hypothesis",
+		"research-experiment",
+		"research-synthesis",
+		"start an experiment",
+		"add/update a hypothesis",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected router hints to contain %q, got %q", want, got)
+		}
+	}
+}
+
+// TestFormatRouterContextSections_IncludesResearch verifies the combined router
+// context surfaces the research block and keyword hints when in RESEARCH mode.
+func TestFormatRouterContextSections_IncludesResearch(t *testing.T) {
+	ctx := coretools.WithResearch(context.Background())
+	ctx = WithResearchContext(ctx, &ResearchContext{
+		RootPath:  "/ws/.research",
+		ActiveID:  "R-001",
+		PhaseHint: "experimenting",
+	})
+	got := formatRouterContextSections(ctx)
+	if !strings.Contains(got, "Research Context") {
+		t.Error("router context should include the research context block")
+	}
+	if !strings.Contains(got, "Research Skill Matching") {
+		t.Error("router context should include the research skill-matching hints")
+	}
+}
+
+// TestBuildSystemPrompt_ResearchContextInjected verifies the assembled system
+// prompt includes the research-awareness block when IsResearch is set and a
+// snapshot is present.
+func TestBuildSystemPrompt_ResearchContextInjected(t *testing.T) {
+	ctx := tools.WithWorkspacePath(context.Background(), "/ws")
+	ctx = coretools.WithResearch(ctx)
+	ctx = WithResearchContext(ctx, &ResearchContext{
+		RootPath:  "/ws/.research",
+		ActiveID:  "R-001",
+		PhaseHint: "experimenting: 2 active hypotheses on the front (open/in-progress)",
+	})
+
+	got := buildSystemPrompt(ctx, "start an experiment", llmModelMetaForTests())
+	if !strings.Contains(got, "Research Context") {
+		t.Error("system prompt should contain the Research Context section")
+	}
+	if !strings.Contains(got, "/ws/.research") {
+		t.Error("system prompt should contain the research root path")
+	}
+	if !strings.Contains(got, "R-001") {
+		t.Error("system prompt should contain the active R-NNN")
+	}
+	if !strings.Contains(got, "experimenting") {
+		t.Error("system prompt should contain the phase hint")
+	}
+}
+
+// TestBuildSystemPrompt_ResearchContextAbsentWhenNotResearch verifies the
+// research block is NOT present in a normal (non-research) prompt.
+func TestBuildSystemPrompt_ResearchContextAbsentWhenNotResearch(t *testing.T) {
+	ctx := tools.WithWorkspacePath(context.Background(), "/ws")
+	got := buildSystemPrompt(ctx, "build the feature", llmModelMetaForTests())
+	if strings.Contains(got, "Research Context") {
+		t.Error("system prompt must NOT contain a Research Context section outside RESEARCH mode")
 	}
 }
 
