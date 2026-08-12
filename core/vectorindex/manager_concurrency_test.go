@@ -277,9 +277,15 @@ func TestIndexIncrementalRestoresReadyOnCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// Register the temp dir BEFORE the svc.Close cleanup: t.Cleanup is LIFO,
+	// so svc.Close (registered later) runs first and releases the lexical
+	// store (.zap/.bolt) handles before TempDir's RemoveAll. Windows refuses
+	// to delete files that still have open handles (EBUSY); on Unix the same
+	// ordering avoids the service holding stale, deleted inodes.
+	projectDir := t.TempDir()
 	t.Cleanup(func() { _ = svc.Close() })
 
-	if err := svc.SetProject("ready-test", t.TempDir()); err != nil {
+	if err := svc.SetProject("ready-test", projectDir); err != nil {
 		t.Fatalf("SetProject: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
@@ -339,9 +345,10 @@ func TestShutdownReturnsWhenIndexingGoroutineIsStuck(t *testing.T) {
 	persistDir := t.TempDir()
 
 	// releaseEmbed unblocks the stuck goroutine after the test so it doesn't
-	// leak for the remainder of the test binary.
+	// leak for the remainder of the test binary. The cleanup that closes it is
+	// registered after `mgr` is built (below) so it can also wait for the
+	// goroutine to exit and close the service — see the comment there.
 	releaseEmbed := make(chan struct{})
-	t.Cleanup(func() { close(releaseEmbed) })
 
 	var embedCalls atomic.Int32
 
@@ -366,6 +373,19 @@ func TestShutdownReturnsWhenIndexingGoroutineIsStuck(t *testing.T) {
 		hashFn:        embedding.ComputeFileHash,
 		shutdownGrace: 250 * time.Millisecond, // short for the test; prod default is 10 s
 	}
+	// Shutdown intentionally skips service.Close() when the indexing goroutine
+	// is stuck (it can't acquire the write lock the goroutine holds), leaving
+	// the on-disk lexical store (.zap/.bolt) and chromem DB handles open. On
+	// Windows those open handles make TempDir's RemoveAll fail with EBUSY, so
+	// we close them here: unblock the goroutine, wait for it to exit (which
+	// releases the service write lock via the indexer's deferred
+	// ReleaseWriteLock), then close the service. Registered after persistDir's
+	// TempDir so LIFO runs this before the directory is removed.
+	t.Cleanup(func() {
+		close(releaseEmbed)
+		mgr.indexingWG.Wait()
+		_ = svc.Close()
+	})
 
 	ws := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package main\n"), 0o644); err != nil {
