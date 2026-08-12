@@ -82,14 +82,26 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
           // from attacker-controllable (assistant) input — never use 'loose'.
           securityLevel: 'strict',
           theme: theme === 'light' ? 'default' : 'dark',
+          // Render labels as SVG <text> instead of HTML inside <foreignObject>.
+          // The DOMPurify sink below uses the svg-only profile, which strips
+          // <foreignObject> and all of its HTML children. Mermaid defaults to
+          // htmlLabels:true, so without this every node/edge label would be
+          // emitted as HTML inside <foreignObject> and then deleted by the
+          // sanitizer — the diagram shapes stay visible but the text vanishes.
+          // SVG <text> survives the sanitizer and is colored via the embedded
+          // <style> (.nodeLabel fill), and it keeps a tighter injection surface
+          // (no HTML ever reaches the SVG).
+          flowchart: { htmlLabels: false },
         })
         renderId = `mermaid-${crypto.randomUUID()}`
         const { svg } = await mermaid.render(renderId, code.trim())
         if (cancelled) return
         // Defense-in-depth: mermaid's strict mode already sanitizes, but
         // DOMPurify guards against upstream regressions and is already bundled
-        // (mermaid depends on it). Strips <script>, on* handlers, foreignObject
-        // payloads before the SVG reaches the dangerouslySetInnerHTML sink.
+        // (mermaid depends on it). The svg-only profile strips <script>,
+        // on* handlers, and any stray <foreignObject>/HTML payload before the
+        // SVG reaches the dangerouslySetInnerHTML sink — which is exactly why
+        // htmlLabels must be false above, so labels are plain SVG <text>.
         setSvgHtml(
           DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }),
         )

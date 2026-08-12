@@ -104,6 +104,17 @@ describe('MermaidBlock', () => {
     expect(config.securityLevel).toBe('strict')
   })
 
+  it('disables flowchart htmlLabels so labels survive DOMPurify', async () => {
+    renderMock.mockResolvedValue({ svg: SVG })
+    await render('graph TD\nA-->B')
+    const call = initializeMock.mock.calls[0]
+    const config = (call?.[0] ?? {}) as { flowchart?: { htmlLabels?: boolean } }
+    // Labels must render as SVG <text>, not HTML inside <foreignObject>: the
+    // DOMPurify svg-only sink strips <foreignObject> + its HTML children, so
+    // the default htmlLabels:true would delete every label (text invisible).
+    expect(config.flowchart?.htmlLabels).toBe(false)
+  })
+
   it('sanitizes the mermaid SVG output before injecting it', async () => {
     // A payload that would be dangerous if injected unsanitized. mermaid's
     // strict mode would strip it, but we assert the DOMPurify defense layer
