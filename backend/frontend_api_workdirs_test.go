@@ -415,3 +415,128 @@ func TestDeleteWorkDirectory_ScopeGuardIgnoresWrongOwner(t *testing.T) {
 		t.Fatalf("description should be updated, got %q", after[0].Description)
 	}
 }
+
+// TestExtractPromptPathCandidates verifies absolute and home-relative path
+// tokens are extracted from prompt prose, with embedded relative separators
+// (the "/src" in "frontend/src") NOT mistaken for absolute paths.
+func TestExtractPromptPathCandidates(t *testing.T) {
+	absDir := t.TempDir()
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	text := "check " + absDir + " and ~/projects/x also look at frontend/src/main.tsx"
+	got := extractPromptPathCandidates(text)
+
+	if !containsPath(got, absDir) {
+		t.Errorf("expected absolute dir %q in candidates, got %v", absDir, got)
+	}
+	wantHome := filepath.Clean(filepath.Join(fakeHome, "projects", "x"))
+	if !containsPath(got, wantHome) {
+		t.Errorf("expected home-relative %q in candidates, got %v", wantHome, got)
+	}
+	for _, p := range got {
+		if strings.HasSuffix(filepath.ToSlash(p), "frontend/src/main.tsx") {
+			t.Errorf("embedded relative separator must not be extracted as absolute, got %v", got)
+		}
+	}
+}
+
+func containsPath(paths []string, want string) bool {
+	want = filepath.Clean(want)
+	for _, p := range paths {
+		if filepath.Clean(p) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAutoAddPromptWorkDirs_AddsExistingDirectories verifies that existing
+// directories mentioned in the prompt are added as session-scoped work
+// directories with the auto-detected description, and a single change event
+// is emitted.
+func TestAutoAddPromptWorkDirs_AddsExistingDirectories(t *testing.T) {
+	h := newWorkDirsHarness(t)
+	dir1 := h.existingDir(t)
+	dir2 := h.existingDir(t)
+	// A regular file and a non-existent path: both must be skipped.
+	filePath := filepath.Join(t.TempDir(), "file.txt")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup file: %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "does", "not", "exist")
+
+	text := "look at " + dir1 + " and " + dir2 + " plus " + filePath + " and " + missing
+	h.api.autoAddPromptWorkDirs(h.sessionID, text)
+
+	recs, err := h.api.ListSessionWorkDirectories(h.sessionID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 auto-added directories, got %d: %#v", len(recs), recs)
+	}
+	resolved1, _ := filepath.EvalSymlinks(dir1)
+	resolved2, _ := filepath.EvalSymlinks(dir2)
+	paths := map[string]string{recs[0].Path: recs[0].Description, recs[1].Path: recs[1].Description}
+	if _, ok := paths[resolved1]; !ok {
+		t.Errorf("expected %q added, got %v", resolved1, paths)
+	}
+	if _, ok := paths[resolved2]; !ok {
+		t.Errorf("expected %q added, got %v", resolved2, paths)
+	}
+	for _, desc := range paths {
+		if desc != promptAutoWorkDirDescription {
+			t.Errorf("expected auto-detected description, got %q", desc)
+		}
+	}
+	if h.emitCount(EventWorkDirsChanged) != 1 {
+		t.Fatalf("expected exactly 1 emission, got %d", h.emitCount(EventWorkDirsChanged))
+	}
+}
+
+// TestAutoAddPromptWorkDirs_SkipsAlreadyRecorded verifies that a directory
+// already recorded for the session is not re-added (no duplicate row, no
+// spurious emission).
+func TestAutoAddPromptWorkDirs_SkipsAlreadyRecorded(t *testing.T) {
+	h := newWorkDirsHarness(t)
+	dir := h.existingDir(t)
+	if err := h.api.AddWorkDirectory("session", h.sessionID, dir, "manual"); err != nil {
+		t.Fatalf("manual add: %v", err)
+	}
+	beforeEmit := h.emitCount(EventWorkDirsChanged)
+
+	h.api.autoAddPromptWorkDirs(h.sessionID, "see "+dir)
+
+	recs, err := h.api.ListSessionWorkDirectories(h.sessionID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record (no duplicate), got %d", len(recs))
+	}
+	if recs[0].Description != "manual" {
+		t.Errorf("existing manual description must be preserved, got %q", recs[0].Description)
+	}
+	if h.emitCount(EventWorkDirsChanged) != beforeEmit {
+		t.Errorf("expected no new emission for already-recorded dir, got %d", h.emitCount(EventWorkDirsChanged)-beforeEmit)
+	}
+}
+
+// TestAutoAddPromptWorkDirs_NoPathsNoop verifies the helper is a no-op when
+// the prompt contains no local paths (no records, no emission).
+func TestAutoAddPromptWorkDirs_NoPathsNoop(t *testing.T) {
+	h := newWorkDirsHarness(t)
+	h.api.autoAddPromptWorkDirs(h.sessionID, "just a regular message with no paths")
+
+	recs, err := h.api.ListSessionWorkDirectories(h.sessionID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("expected no records, got %d", len(recs))
+	}
+	if h.emitCount(EventWorkDirsChanged) != 0 {
+		t.Fatalf("expected no emission, got %d", h.emitCount(EventWorkDirsChanged))
+	}
+}

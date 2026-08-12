@@ -297,6 +297,10 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []
 	}
 	processedText := core.PreprocessMessageText(text, activeSkills, activeAgents, workspacePath)
 
+	// Auto-discover local directories mentioned in the prompt and add them as
+	// session-scoped auxiliary working directories (best-effort: never blocks).
+	f.autoAddPromptWorkDirs(id, text)
+
 	if err := f.app.Manager().SendMessage(f.ctx(), id, processedText, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}

@@ -18,6 +18,37 @@ const (
 	workDirScopeSession = "session"
 )
 
+// resolveWorkDirPath normalizes a work-directory path to a canonical form:
+// absolute, cleaned, and symlink-resolved. Stored paths participate in
+// security containment (allowed roots), which compares them against resolved
+// tool inputs, so a non-canonical root (relative path, trailing slash,
+// symlinked prefix) would silently fail the containment match. The path must
+// exist on disk and be a directory; EvalSymlinks requires existence, so it
+// runs after the existence check.
+//
+// Shared by the explicit AddWorkDirectory RPC and the prompt-driven auto-add
+// so both produce the same canonical form.
+func resolveWorkDirPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve work directory path: %w", err)
+	}
+	abs = filepath.Clean(abs)
+
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("work directory does not exist: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("path is not a directory: %s", abs)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve work directory symlinks: %w", err)
+	}
+	return resolved, nil
+}
+
 // ListProjectWorkDirectories returns all project-scoped auxiliary directories.
 func (f *FrontendAPI) ListProjectWorkDirectories(projectID string) ([]project.WorkDirectoryRecord, error) {
 	if f.projStore == nil {
@@ -55,28 +86,9 @@ func (f *FrontendAPI) AddWorkDirectory(scope, ownerID, path, description string)
 	if description == "" {
 		return errors.New("description is required")
 	}
-	// Normalize to a canonical form before persisting: absolute, cleaned, and
-	// symlink-resolved. Stored paths participate in security containment
-	// (allowed roots), which compares them against resolved tool inputs, so a
-	// non-canonical root (relative path, trailing slash, symlinked prefix)
-	// would silently fail the containment match. EvalSymlinks requires the
-	// path to exist, so we resolve after the existence check below.
-	abs, err := filepath.Abs(path)
+	resolved, err := resolveWorkDirPath(path)
 	if err != nil {
-		return fmt.Errorf("cannot resolve work directory path: %w", err)
-	}
-	abs = filepath.Clean(abs)
-
-	info, err := os.Stat(abs)
-	if err != nil {
-		return fmt.Errorf("work directory does not exist: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("path is not a directory: %s", abs)
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return fmt.Errorf("cannot resolve work directory symlinks: %w", err)
+		return err
 	}
 	path = resolved
 
