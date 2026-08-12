@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { isValidElement, useEffect, useMemo, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkEmoji from 'remark-emoji'
@@ -15,6 +15,7 @@ import { openExternalURL } from '@/api/runtime'
 import { EXTERNAL_SRC_RE, candidateImagePaths } from '@/lib/markdownImageResolve'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
+import { MermaidBlock } from '@/components/chat/MermaidBlock'
 import type { PluggableList } from 'unified'
 
 // Custom sanitize schema — extends default to allow highlight.js classes,
@@ -186,12 +187,44 @@ function useMarkdownImageSrc(
   return resolved
 }
 
+/**
+ * Flatten a react-markdown `<code>` element's children into a plain string.
+ * Mermaid source is normally a single text node, but rehype-highlight may
+ * leave token spans behind — recurse through them to recover the raw text.
+ */
+function codeToString(children: ReactNode): string {
+  if (children == null) return ''
+  if (typeof children === 'string' || typeof children === 'number') return String(children)
+  if (Array.isArray(children)) return children.map(codeToString).join('')
+  if (isValidElement(children)) {
+    return codeToString((children.props as { children?: ReactNode }).children)
+  }
+  return ''
+}
+
+/**
+ * Intercepts fenced code blocks. A ```mermaid block is handed off to
+ * {@link MermaidBlock} for interactive rendering; everything else renders as a
+ * normal highlighted `<pre>` (the default react-markdown `<pre>` wrapper).
+ */
+const MarkdownPre: Components['pre'] = ({ children }) => {
+  const child = Array.isArray(children) ? children[0] : children
+  if (isValidElement(child)) {
+    const props = child.props as { className?: string; children?: ReactNode }
+    if (props.className && /language-mermaid/.test(props.className)) {
+      return <MermaidBlock code={codeToString(props.children).replace(/\n$/, '')} />
+    }
+  }
+  return <pre>{children}</pre>
+}
+
 function createMarkdownComponents(
   baseFilePath?: string | null,
   workspaceRoot?: string | null,
 ): Components {
   return {
     a: MarkdownLink,
+    pre: MarkdownPre,
     img: ({ src, alt, title, node: _node }) => (
       <MarkdownImage
         src={src}

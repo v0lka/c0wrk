@@ -452,11 +452,14 @@ body {
 }
 
 /* ==========================================================================
-   Mermaid Diagrams
+   Mermaid Diagrams — interactive pan/zoom canvas
+   The SVG must render at its natural size (not squished to the container
+   width) so the fit/pan/zoom math in MermaidBlock is correct; scaling is
+   applied via a CSS transform on the wrapper instead.
    ========================================================================== */
-
-.mermaid-container svg {
-    max-width: 100%;
+.mermaid-canvas svg {
+    display: block;
+    max-width: none;
     height: auto;
 }
 
