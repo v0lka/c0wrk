@@ -572,6 +572,7 @@ orchestration:
 #   embedding_threads: 0
 #   max_file_size: 4194304
 #   max_chunk_size: 1500
+#   max_chunks_per_file: 4000
 
 # ---------------------------------------------------------------------------
 # Proxy — HTTP/HTTPS proxy for all outbound connections.

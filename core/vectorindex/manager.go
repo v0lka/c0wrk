@@ -36,14 +36,15 @@ const shutdownIndexGracePeriod = 10 * time.Second
 // The caller creates the embedder and passes EmbeddingFunc; ManagerConfig no longer
 // depends on model paths, making the package usable with any embedding backend.
 type ManagerConfig struct {
-	EmbeddingFunc chromem.EmbeddingFunc // Required: embedding function for vector storage
-	CloseFn       func() error          // Optional: called in Shutdown (e.g., embedder.Close)
-	ChunkFn       ChunkFunc             // Optional: defaults to adapter over embedding.ChunkFile
-	HashFn        HashFunc              // Optional: defaults to embedding.ComputeFileHash
-	HybridConfig  HybridConfig          // RRF tuning + pre-fusion score thresholds (zero = defaults, thresholds off)
-	MaxFileSize   int64                 // Optional: defaults to DefaultMaxIndexableFileSize (4 MiB)
-	MaxChunkSize  int                   // Optional: defaults to DefaultMaxChunkSize (1500 chars)
-	Logger        *slog.Logger
+	EmbeddingFunc    chromem.EmbeddingFunc // Required: embedding function for vector storage
+	CloseFn          func() error          // Optional: called in Shutdown (e.g., embedder.Close)
+	ChunkFn          ChunkFunc             // Optional: defaults to adapter over embedding.ChunkFile
+	HashFn           HashFunc              // Optional: defaults to embedding.ComputeFileHash
+	HybridConfig     HybridConfig          // RRF tuning + pre-fusion score thresholds (zero = defaults, thresholds off)
+	MaxFileSize      int64                 // Optional: defaults to DefaultMaxIndexableFileSize (4 MiB)
+	MaxChunkSize     int                   // Optional: defaults to DefaultMaxChunkSize (1500 chars)
+	MaxChunksPerFile int                   // Optional: defaults to DefaultMaxChunksPerFile (4000)
+	Logger           *slog.Logger
 }
 
 // ProjectCallbacks holds callbacks for project-level indexing events.
@@ -104,10 +105,11 @@ type Manager struct {
 	workspacePath string
 
 	// Chunk and hash functions for indexing.
-	chunkFn      ChunkFunc
-	hashFn       HashFunc
-	maxFileSize  int64
-	maxChunkSize int
+	chunkFn          ChunkFunc
+	hashFn           HashFunc
+	maxFileSize      int64
+	maxChunkSize     int
+	maxChunksPerFile int
 
 	// indexingWG tracks ALL background indexing goroutines launched by the
 	// Manager (the initProject-launched full/incremental pass and any
@@ -177,15 +179,20 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	if maxChunkSize <= 0 {
 		maxChunkSize = DefaultMaxChunkSize
 	}
+	maxChunksPerFile := cfg.MaxChunksPerFile
+	if maxChunksPerFile <= 0 {
+		maxChunksPerFile = DefaultMaxChunksPerFile
+	}
 
 	return &Manager{
-		service:      svc,
-		logger:       logger,
-		chunkFn:      chunkFn,
-		hashFn:       hashFn,
-		maxFileSize:  maxFileSize,
-		maxChunkSize: maxChunkSize,
-		closeFn:      cfg.CloseFn,
+		service:          svc,
+		logger:           logger,
+		chunkFn:          chunkFn,
+		hashFn:           hashFn,
+		maxFileSize:      maxFileSize,
+		maxChunkSize:     maxChunkSize,
+		maxChunksPerFile: maxChunksPerFile,
+		closeFn:          cfg.CloseFn,
 	}, nil
 }
 
@@ -408,13 +415,14 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	// callback below capture this local via closure, so they are unaffected.
 	m.setStatus(map[string]any{"branch": branch})
 	indexer := NewIndexer(IndexerConfig{
-		Service:      m.service,
-		ChunkFn:      m.chunkFn,
-		HashFn:       m.hashFn,
-		MaxFileSize:  m.maxFileSize,
-		MaxChunkSize: m.maxChunkSize,
-		OnProgress:   m.wrapProgress(cbs.OnProgress),
-		Logger:       m.logger,
+		Service:          m.service,
+		ChunkFn:          m.chunkFn,
+		HashFn:           m.hashFn,
+		MaxFileSize:      m.maxFileSize,
+		MaxChunkSize:     m.maxChunkSize,
+		MaxChunksPerFile: m.maxChunksPerFile,
+		OnProgress:       m.wrapProgress(cbs.OnProgress),
+		Logger:           m.logger,
 	})
 
 	// Switch to branch collection (opens the per-branch bleve index).

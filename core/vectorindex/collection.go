@@ -22,6 +22,18 @@ import (
 // sanitizeRe matches characters that are not alphanumeric, hyphens, or underscores.
 var sanitizeRe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
+// embeddingSubBatchSize bounds the number of documents handed to chromem's
+// AddDocuments in a single call. A batch is embedded end-to-end with ONNX
+// inference and held in memory as a unit, so an unbounded call (e.g. a
+// pathological file that chunked into tens of thousands of pieces) hangs
+// the embedder and risks OOM. 200 keeps each invocation short enough to
+// stay responsive to context cancellation and bounded in memory. Because
+// the indexer flushes at addDocumentBatchSize (50) docs, sub-batching
+// activates whenever a single AddDocuments call receives more than 200
+// docs — i.e. routinely for any file producing more than ~150 chunks
+// appended to a near-full batch, not only the pathological extremes.
+const embeddingSubBatchSize = 200
+
 // collectionName returns a deterministic, sanitized collection name for a branch.
 func collectionName(branch string) string {
 	sanitized := strings.ReplaceAll(branch, "/", "_")
@@ -507,6 +519,13 @@ func (s *Service) RebuildCollection(ctx context.Context) error {
 // to the per-branch lexical index. Chromem commits first; lexical errors
 // are logged but not returned, since the reconciliation loop in the
 // manager will repair drift via RebuildLexical on the next project open.
+//
+// Oversized vecDocs are embedded in fixed-size sub-batches (at most
+// embeddingSubBatchSize each): a single chromem AddDocuments call
+// processes its entire slice with onnx inference, so a runaway batch
+// (tens of thousands of chunks from a pathological data file) would
+// otherwise hang the embedder and exhaust memory. Sub-batching bounds
+// the per-call work and lets ctx cancellation interrupt mid-batch.
 // Caller must hold s.mu (write lock).
 func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, lexDocs []lexical.Doc) error {
 	if s.collection == nil {
@@ -516,14 +535,30 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 		return nil
 	}
 
-	if len(vecDocs) > 0 {
-		if err := s.collection.AddDocuments(ctx, vecDocs, 1); err != nil {
-			return fmt.Errorf("adding %d documents: %w", len(vecDocs), err)
+	for start := 0; start < len(vecDocs); start += embeddingSubBatchSize {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("adding documents (cancelled mid-batch): %w", err)
 		}
-		// Keep the file-hash sidecar in sync so ValidateCollection never needs
-		// to embed. All chunks of a file share one hash; upsert is idempotent.
-		s.upsertFileHashes(vecDocs)
+		end := start + embeddingSubBatchSize
+		if end > len(vecDocs) {
+			end = len(vecDocs)
+		}
+		sub := vecDocs[start:end]
+		if err := s.collection.AddDocuments(ctx, sub, 1); err != nil {
+			return fmt.Errorf("adding %d documents (offset %d of %d): %w", len(sub), start, len(vecDocs), err)
+		}
 	}
+	// Record the file-hash sidecar only after the full batch commits, not per
+	// sub-batch: ValidateCollection reconciles a file solely by comparing its
+	// on-disk hash to the sidecar hash (it never counts a file's chunks), so
+	// recording the hash after a partial commit — some sub-batches succeeded
+	// before a later one failed — would mark a half-indexed file as
+	// up-to-date. Its still-missing chunks would never be re-embedded and the
+	// file would be permanently under-indexed. Recording once, after every
+	// sub-batch has committed, restores the original all-or-nothing semantics
+	// while keeping embedding sub-batched. All chunks of a file share one
+	// hash; upsert is idempotent.
+	s.upsertFileHashes(vecDocs)
 
 	if s.lexical != nil && len(lexDocs) > 0 {
 		if err := s.lexical.Upsert(ctx, lexDocs); err != nil {

@@ -906,9 +906,10 @@ func (a *App) startVectorIndexBackground(
 				VectorScoreRatio:  derefFloat(cfg.VectorIndex.HybridVectorScoreRatio),
 				LexicalScoreRatio: derefFloat(cfg.VectorIndex.HybridLexicalScoreRatio),
 			},
-			MaxFileSize:  cfg.VectorIndex.MaxFileSize,
-			MaxChunkSize: cfg.VectorIndex.MaxChunkSize,
-			Logger:       log,
+			MaxFileSize:      cfg.VectorIndex.MaxFileSize,
+			MaxChunkSize:     cfg.VectorIndex.MaxChunkSize,
+			MaxChunksPerFile: cfg.VectorIndex.MaxChunksPerFile,
+			Logger:           log,
 		})
 		if err != nil {
 			log.Warn("vector search unavailable", "error", err)

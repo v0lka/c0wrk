@@ -501,6 +501,9 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.VectorIndex.MaxChunkSize == 0 {
 		cfg.VectorIndex.MaxChunkSize = vectorindex.DefaultMaxChunkSize
 	}
+	if cfg.VectorIndex.MaxChunksPerFile == 0 {
+		cfg.VectorIndex.MaxChunksPerFile = vectorindex.DefaultMaxChunksPerFile
+	}
 
 	// Proxy defaults
 	if cfg.Proxy.BypassList == nil {

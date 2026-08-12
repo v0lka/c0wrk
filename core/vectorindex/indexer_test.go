@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/v0lka/sp4rk/ignore"
@@ -720,5 +721,127 @@ func TestWalkProjectFiles_SkipsOversized(t *testing.T) {
 	}
 	if len(files) != 1 || files[0] != small {
 		t.Errorf("expected only small.go walked, got %v", files)
+	}
+}
+
+// pathologicalChunkFunc is a test ChunkFunc that simulates the Flawgate
+// tokenizer.json failure mode: a small (under size-limit) data-format file
+// that the structure-aware splitter fragments into a huge number of tiny
+// chunks. The real tokenizer.json (695 KiB HuggingFace BPE vocab/merges)
+// produced 30,635 chunks, each requiring a separate ONNX inference pass,
+// hanging the embedder. Here an arbitrary chunkCount (well above
+// DefaultMaxChunksPerFile) reproduces the condition.
+func pathologicalChunkFunc(chunkCount int) ChunkFunc {
+	return func(_ string, content []byte, _, _ int) ([]ChunkResult, error) {
+		if len(content) == 0 {
+			return nil, nil
+		}
+		chunks := make([]ChunkResult, chunkCount)
+		for i := range chunks {
+			chunks[i] = ChunkResult{Content: "token", StartLine: 1, EndLine: 1, Language: "text"}
+		}
+		return chunks, nil
+	}
+}
+
+// TestProcessFile_SkipsExcessChunks is the regression test for the second
+// Flawgate hang: after the oversized model.onnx was skipped, indexing moved
+// on to tokenizer.json (695 KiB) and hung because the chunker produced 30,635
+// fragments that reached the embedder in a single batch. The per-file
+// chunk-count cap must skip such a file before it produces any documents,
+// regardless of file size.
+func TestProcessFile_SkipsExcessChunks(t *testing.T) {
+	svc := setupTestService(t)
+	indexer := NewIndexer(IndexerConfig{
+		Service: svc,
+		ChunkFn: pathologicalChunkFunc(DefaultMaxChunksPerFile + 5000),
+		HashFn:  fakeHashFunc,
+	})
+
+	root := t.TempDir()
+	// Small file — under the size guard, so only the chunk-count guard can
+	// skip it. This mirrors tokenizer.json (695 KiB, well under 4 MiB).
+	path := filepath.Join(root, "tokenizer.json")
+	if err := os.WriteFile(path, []byte(`{"model":{"vocab":[]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	vecDocs, lexDocs, err := indexer.processFile(path)
+	if err != nil {
+		t.Fatalf("processFile excess-chunks: unexpected error: %v", err)
+	}
+	if len(vecDocs) != 0 || len(lexDocs) != 0 {
+		t.Errorf("expected excess-chunk file to be skipped, got %d vec / %d lex docs",
+			len(vecDocs), len(lexDocs))
+	}
+}
+
+// TestIndexFull_ExcessChunksNeverEmbedded proves end-to-end that a
+// pathological file's chunks never reach the embedder: a counting embedding
+// func wrapped around the real fakeEmbeddingFunc tracks every call. With the
+// per-file cap in place, the excess-chunk file contributes nothing and the
+// embedder only sees the legitimate small file's chunk(s).
+func TestIndexFull_ExcessChunksNeverEmbedded(t *testing.T) {
+	var embedCalls int64
+	emb := fakeEmbeddingFunc()
+	countingEmb := func(ctx context.Context, text string) ([]float32, error) {
+		atomic.AddInt64(&embedCalls, 1)
+		return emb(ctx, text)
+	}
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: countingEmb})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if err := svc.SetProject("excess-chunks-test", t.TempDir()); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
+		t.Fatalf("SwitchBranch: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := svc.Close(); err != nil {
+			t.Logf("Service.Close in cleanup: %v", err)
+		}
+	})
+
+	root := t.TempDir()
+	// Legitimate file: one chunk, under the cap.
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Pathological file: chunker will burst far past the cap.
+	if err := os.WriteFile(filepath.Join(root, "tokenizer.json"), []byte(`{"vocab":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Hybrid chunker: one chunk for normal files (under the cap), a burst far
+	// past the cap for the pathological tokenizer.json — selected by name so
+	// the test isolates the per-file cap's effect.
+	chunker := func(fp string, content []byte, _, _ int) ([]ChunkResult, error) {
+		if filepath.Base(fp) == "tokenizer.json" {
+			return pathologicalChunkFunc(DefaultMaxChunksPerFile+5000)(fp, content, 0, 0)
+		}
+		return fakeChunkFunc(fp, content, 0, 0)
+	}
+
+	indexer := NewIndexer(IndexerConfig{
+		Service: svc,
+		ChunkFn: chunker,
+		HashFn:  fakeHashFunc,
+	})
+	svc.SetReady(true)
+
+	if err := indexer.IndexFull(context.Background(), root); err != nil {
+		t.Fatalf("IndexFull: %v", err)
+	}
+
+	// The embedder must only have been called for the legitimate file's chunk.
+	// fakeChunkFunc yields exactly one chunk per non-empty file, so the
+	// pathological tokenizer.json (skipped by the cap) must contribute zero
+	// embed calls. Assert the exact count so any leak — not just a gross one
+	// — fails loudly.
+	if calls := atomic.LoadInt64(&embedCalls); calls != 1 {
+		t.Errorf("embedder called %d times; want exactly 1 (legitimate file only). "+
+			"pathological file's chunks leaked through the cap", calls)
 	}
 }

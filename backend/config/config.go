@@ -131,6 +131,19 @@ type VectorIndexConfig struct {
 	// model's context window; raising it significantly above 1500 risks
 	// producing chunks the model cannot embed in a single pass.
 	MaxChunkSize int `yaml:"max_chunk_size"`
+
+	// MaxChunksPerFile is the upper bound on the number of chunks a single
+	// file may contribute to one index pass. A file that exceeds it is
+	// skipped wholesale (logged at WARN) rather than handed to the embedder
+	// in a runaway batch. This guards against data-format files — BPE
+	// vocab/merges tokenizer.json, minified assets, lockfiles — that the
+	// structure-aware splitter fragments into tens of thousands of tiny
+	// chunks, each requiring a separate ONNX inference pass that would
+	// otherwise hang/OOM the embedder. Embedding is sub-batched, so this cap
+	// is a backstop against pathological inputs, not a tight per-call limit.
+	// 0 (or unset) defaults to 4000, which sits above any legitimate source
+	// file (a 4 MiB file yields ~3230 chunks).
+	MaxChunksPerFile int `yaml:"max_chunks_per_file"`
 }
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.

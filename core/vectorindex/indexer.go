@@ -79,26 +79,28 @@ type HashFunc func(content []byte) string
 
 // IndexerConfig holds configuration for creating an Indexer.
 type IndexerConfig struct {
-	Service      *Service
-	ChunkFn      ChunkFunc
-	HashFn       HashFunc
-	MaxChunkSize int
-	MaxFileSize  int64
-	Overlap      int
-	OnProgress   ProgressCallback
-	Logger       *slog.Logger
+	Service          *Service
+	ChunkFn          ChunkFunc
+	HashFn           HashFunc
+	MaxChunkSize     int
+	MaxFileSize      int64
+	MaxChunksPerFile int
+	Overlap          int
+	OnProgress       ProgressCallback
+	Logger           *slog.Logger
 }
 
 // Indexer orchestrates initial and incremental indexing of project files.
 type Indexer struct {
-	service      *Service
-	chunkFn      ChunkFunc
-	hashFn       HashFunc
-	maxChunkSize int
-	maxFileSize  int64
-	overlap      int
-	onProgress   ProgressCallback
-	logger       *slog.Logger
+	service          *Service
+	chunkFn          ChunkFunc
+	hashFn           HashFunc
+	maxChunkSize     int
+	maxFileSize      int64
+	maxChunksPerFile int
+	overlap          int
+	onProgress       ProgressCallback
+	logger           *slog.Logger
 
 	// ignoreMu guards ignoreRoot / ignoreChecker, a cache of the workspace's
 	// ignore.Resolver (.gitignore + .aiignore, root and nested) built once
@@ -124,6 +126,10 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 	if maxFileSize <= 0 {
 		maxFileSize = DefaultMaxIndexableFileSize
 	}
+	maxChunksPerFile := cfg.MaxChunksPerFile
+	if maxChunksPerFile <= 0 {
+		maxChunksPerFile = DefaultMaxChunksPerFile
+	}
 	overlap := cfg.Overlap
 	if overlap <= 0 {
 		overlap = 200
@@ -137,14 +143,15 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 		onProgress = func(IndexPhase, IndexState, int, int, string) {}
 	}
 	return &Indexer{
-		service:      cfg.Service,
-		chunkFn:      cfg.ChunkFn,
-		hashFn:       hashFn,
-		maxChunkSize: maxChunkSize,
-		maxFileSize:  maxFileSize,
-		overlap:      overlap,
-		onProgress:   onProgress,
-		logger:       logger,
+		service:          cfg.Service,
+		chunkFn:          cfg.ChunkFn,
+		hashFn:           hashFn,
+		maxChunkSize:     maxChunkSize,
+		maxFileSize:      maxFileSize,
+		maxChunksPerFile: maxChunksPerFile,
+		overlap:          overlap,
+		onProgress:       onProgress,
+		logger:           logger,
 	}
 }
 
@@ -444,6 +451,22 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 	chunks, err := idx.chunkFn(filePath, content, idx.maxChunkSize, idx.overlap)
 	if err != nil {
 		return nil, nil, fmt.Errorf("chunking file %s: %w", filePath, err)
+	}
+
+	// Chunk-count guard: a pathological chunker result — most often a
+	// data-format file (BPE vocab/merges JSON, lockfiles, minified assets)
+	// that the structure-aware splitter fragments into tens of thousands of
+	// tiny chunks — would otherwise be handed to AddDocuments and hang/OOM
+	// the embedder (30k ONNX passes). The cap turns such a file into a clean
+	// skip logged at WARN, leaving the rest of the index pass intact. It is
+	// also a second line of defense against future chunker regressions.
+	// Embedding itself is sub-batched (embeddingSubBatchSize), so the cap's
+	// job is to catch the pathological case, not to bound every per-call
+	// batch; the default (4000) sits above any legitimate source file.
+	if len(chunks) > idx.maxChunksPerFile {
+		idx.logger.Warn("skipping file: chunk count exceeds per-file cap",
+			"path", filePath, "chunks", len(chunks), "cap", idx.maxChunksPerFile)
+		return nil, nil, nil
 	}
 
 	fileName := filepath.Base(filePath)
@@ -759,6 +782,20 @@ const DefaultMaxIndexableFileSize int64 = 4 * 1024 * 1024 // 4 MiB
 // window (MaxSeqLength 512 tokens ≈ ~2000 chars) with room for overlap.
 // Overridable via vector_index.max_chunk_size.
 const DefaultMaxChunkSize = 1500
+
+// DefaultMaxChunksPerFile is the default upper bound on the number of chunks a
+// single file may contribute to one index pass. A file that exceeds this is
+// skipped wholesale, because its chunks are accumulated into AddDocuments and
+// a runaway count (tens of thousands from a data-format file that the
+// structure-aware splitter fragments per-entry — e.g. a HuggingFace BPE
+// vocab/merges tokenizer.json) hangs/OOMs the embedder. Embedding is itself
+// sub-batched (embeddingSubBatchSize), so the per-call work is already
+// bounded; this cap is a backstop that turns a pathological file into a clean
+// skip rather than a tight per-call limit. The default (4000) sits above the
+// worst legitimate source file — a 4 MiB file chunked at 1500 chars yields
+// ~3230 chunks — so no real source file is dropped, while the 30k-chunk data
+// files that actually cause the hang are still caught.
+const DefaultMaxChunksPerFile = 4000
 
 // tooLargeForIndex reports whether a file of the given byte size exceeds the
 // indexable limit and must be skipped before any full read.
