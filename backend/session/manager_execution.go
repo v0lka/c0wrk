@@ -1289,6 +1289,46 @@ func (m *Manager) persistCancellationIfUnfinished(sessionID string) {
 	}
 }
 
+// persistPauseIfUnfinished marks the session's unfinished task as paused in
+// the task store. It is the graceful-shutdown counterpart of
+// persistCancellationIfUnfinished: instead of cancelling an active task (or
+// leaving it as a stale in_progress), the task is checkpointed as paused so it
+// survives app restart in a clearly resumable state and SessionRuntimeStatus
+// reports Paused=true. Only an in_progress task is paused — a task that
+// already completed/failed/was cancelled (or was paused cooperatively) keeps
+// its existing status. Best-effort: errors are logged only.
+func (m *Manager) persistPauseIfUnfinished(sessionID string) {
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts == nil {
+		return
+	}
+	adapter := NewTaskStoreAdapter(ts)
+	tid, err := adapter.GetUnfinishedTaskID(sessionID)
+	if err != nil {
+		m.log().Warn("failed to look up unfinished task on shutdown pause", "session", sessionID, "error", err)
+		return
+	}
+	if tid == "" {
+		return
+	}
+	// Only an in_progress task should be paused on shutdown. A task that
+	// already failed, was cancelled, or was paused cooperatively must keep its
+	// real status — pausing it would mask the actual outcome.
+	state, err := adapter.LoadTaskState(tid)
+	if err != nil {
+		m.log().Warn("failed to load task state on shutdown pause", "task", tid, "error", err)
+		return
+	}
+	if state == nil || state.Status != "in_progress" {
+		return
+	}
+	if err := adapter.PersistPause(tid); err != nil {
+		m.log().Warn("failed to persist pause on shutdown", "task", tid, "error", err)
+	}
+}
+
 // abandonGoalIfUnfinished terminalizes the unfinished task's goal state as
 // cancelled (terminal) on a user-initiated cancel so a later resume does not
 // re-enter the goal loop. On shutdown the goal is left active (non-terminal)

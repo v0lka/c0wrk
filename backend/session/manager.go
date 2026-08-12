@@ -175,8 +175,9 @@ type Manager struct {
 	// shuttingDown is set to true at the very start of Shutdown() so that the
 	// SendMessage/Resume goroutines, when they observe their context cancelled,
 	// can distinguish an app shutdown from a user-initiated cancellation. During
-	// shutdown the in-progress task is left untouched (stays resumable after
-	// restart) instead of being marked cancelled.
+	// shutdown the in-progress task is left untouched by the goroutine (it is
+	// NOT marked cancelled) so it stays resumable; Shutdown itself then
+	// checkpoints it as paused via persistPauseIfUnfinished.
 	shuttingDown atomic.Bool
 
 	// lastToolCallIDs maps sessionID → the most recently emitted tool_call_id
@@ -1317,6 +1318,10 @@ func (m *Manager) EmitSessionEvent(sessionID, eventType string, data any) {
 
 // Shutdown closes all sessions and releases resources.
 // This should be called when the application is shutting down.
+//
+// On graceful shutdown, every task that was still running is checkpointed as
+// paused (not cancelled) so it can be resumed after restart — the
+// persistPauseIfUnfinished call runs after the task goroutines have stopped.
 func (m *Manager) Shutdown() {
 	// Signal that we are shutting down BEFORE cancelling any task. The
 	// SendMessage/Resume goroutines check this flag when they observe their
@@ -1338,6 +1343,11 @@ func (m *Manager) Shutdown() {
 	}
 	m.mu.Lock()
 	pendingList := make([]pending, 0, len(m.sessions))
+	// activeIDs collects the IDs of sessions that had a running task at
+	// shutdown time. After the task goroutines have stopped, each of these is
+	// checkpointed as paused (instead of being left as a stale in_progress or
+	// cancelled) so it survives restart as a clearly resumable task.
+	activeIDs := make([]string, 0, len(m.sessions))
 	for id, session := range m.sessions {
 		session.mu.Lock()
 		// Close per-step dump files via orchestrator cleanup (idempotent).
@@ -1347,6 +1357,7 @@ func (m *Manager) Shutdown() {
 		// Cancel any active task
 		if session.active && session.cancel != nil {
 			session.cancel()
+			activeIDs = append(activeIDs, id)
 		}
 		doneCh := session.done
 		session.mu.Unlock()
@@ -1380,6 +1391,15 @@ func (m *Manager) Shutdown() {
 			_ = p.session.dumpFile.Close()
 		}
 		p.session.mu.Unlock()
+	}
+
+	// Graceful shutdown: checkpoint each task that was still running as paused
+	// (instead of cancelled) so it can be resumed after restart. Done after the
+	// goroutines have stopped and emitted any final state so we do not race a
+	// pending persist. persistPauseIfUnfinished is a no-op for tasks that are
+	// no longer in_progress (e.g. they completed/failed just before shutdown).
+	for _, id := range activeIDs {
+		m.persistPauseIfUnfinished(id)
 	}
 }
 

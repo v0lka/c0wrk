@@ -1438,8 +1438,8 @@ func TestGetSessionRuntimeStatus(t *testing.T) {
 }
 
 // recordingCancelTaskStore extends mockTaskStoreForResumable by capturing
-// CompleteTask and CancelTask invocations so CancelUnfinishedTask tests can
-// assert on them.
+// CompleteTask, CancelTask, and PauseTask invocations so shutdown/cancel tests
+// can assert on them.
 type recordingCancelTaskStore struct {
 	mockTaskStoreForResumable
 	mu              sync.Mutex
@@ -1449,6 +1449,8 @@ type recordingCancelTaskStore struct {
 	completedCalls  int
 	cancelledID     string
 	cancelledCalls  int
+	pausedID        string
+	pausedCalls     int
 }
 
 func (m *recordingCancelTaskStore) CompleteTask(_ context.Context, taskID, finalOutput string, attemptCount int) error {
@@ -1466,6 +1468,16 @@ func (m *recordingCancelTaskStore) CancelTask(_ context.Context, taskID string) 
 	defer m.mu.Unlock()
 	m.cancelledID = taskID
 	m.cancelledCalls++
+	return nil
+}
+
+// PauseTask records the call instead of delegating to the embedded mock's
+// no-op, so shutdown-pause tests can assert PauseTask was invoked.
+func (m *recordingCancelTaskStore) PauseTask(_ context.Context, taskID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pausedID = taskID
+	m.pausedCalls++
 	return nil
 }
 

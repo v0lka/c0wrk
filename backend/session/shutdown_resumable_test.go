@@ -64,16 +64,18 @@ func launchFakeTaskGoroutine(t *testing.T, manager *Manager, session *Session) <
 	return started
 }
 
-// TestShutdown_LeavesTaskInProgress verifies the core acceptance criterion:
+// TestShutdown_PausesTaskInProgress verifies the core acceptance criterion:
 // when the app shuts down while a task is running, the in-progress task is
-// NOT marked cancelled — it stays resumable so GetUnfinishedTask finds it
-// after restart.
-func TestShutdown_LeavesTaskInProgress(t *testing.T) {
+// marked paused (not cancelled) so GetUnfinishedTask finds it after restart
+// as a clearly resumable paused checkpoint.
+func TestShutdown_PausesTaskInProgress(t *testing.T) {
 	manager, eventChan, _ := testManager(t)
 
+	taskRec := &TaskRecord{ID: "task-1", SessionID: "s1", Status: "in_progress"}
 	store := &recordingCancelTaskStore{
 		mockTaskStoreForResumable: mockTaskStoreForResumable{
-			unfinished: &TaskRecord{ID: "task-1", SessionID: "s1", Status: "in_progress"},
+			unfinished:     taskRec,
+			loadTaskResult: taskRec,
 		},
 	}
 
@@ -83,7 +85,7 @@ func TestShutdown_LeavesTaskInProgress(t *testing.T) {
 	}
 	// Set the task store AFTER CreateSession: the nil orchestrator from the
 	// test factory would panic if a store were present at creation time.
-	// persistCancellationIfUnfinished reads the store fresh at cancel time.
+	// persistPauseIfUnfinished reads the store fresh at shutdown time.
 	manager.SetTaskStore(store)
 	session, _ := manager.GetSession(info.ID)
 
@@ -95,7 +97,13 @@ func TestShutdown_LeavesTaskInProgress(t *testing.T) {
 
 	store.mu.Lock()
 	if store.cancelledCalls != 0 {
-		t.Errorf("shutdown should leave the task in_progress, but CancelTask was called %d time(s)", store.cancelledCalls)
+		t.Errorf("shutdown should not cancel the task, but CancelTask was called %d time(s)", store.cancelledCalls)
+	}
+	if store.pausedCalls != 1 {
+		t.Errorf("shutdown should pause the in-progress task once, got %d PauseTask call(s)", store.pausedCalls)
+	}
+	if store.pausedID != "task-1" {
+		t.Errorf("expected task-1 to be paused, got %q", store.pausedID)
 	}
 	if store.completedCalls != 0 {
 		t.Errorf("expected no CompleteTask calls on shutdown, got %d", store.completedCalls)
@@ -123,6 +131,41 @@ func TestShutdown_LeavesTaskInProgress(t *testing.T) {
 	}
 }
 
+// TestShutdown_KeepsFailedTaskUnchanged verifies that a task whose status is
+// already terminal (e.g. failed) is NOT repaused on shutdown — only an
+// in_progress task is checkpointed as paused.
+func TestShutdown_KeepsFailedTaskUnchanged(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	taskRec := &TaskRecord{ID: "task-failed", SessionID: "s1", Status: "failed"}
+	store := &recordingCancelTaskStore{
+		mockTaskStoreForResumable: mockTaskStoreForResumable{
+			unfinished:     taskRec,
+			loadTaskResult: taskRec,
+		},
+	}
+
+	info, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	manager.SetTaskStore(store)
+	session, _ := manager.GetSession(info.ID)
+
+	<-launchFakeTaskGoroutine(t, manager, session)
+
+	manager.Shutdown()
+
+	store.mu.Lock()
+	if store.pausedCalls != 0 {
+		t.Errorf("shutdown must not repause a non-in_progress task, got %d PauseTask call(s)", store.pausedCalls)
+	}
+	if store.cancelledCalls != 0 {
+		t.Errorf("shutdown must not cancel a non-in_progress task, got %d CancelTask call(s)", store.cancelledCalls)
+	}
+	store.mu.Unlock()
+}
+
 // TestUserCancel_PersistsCancelled verifies the inverse: a user-initiated
 // CancelTask does NOT set the shutting-down flag, so the task goroutine marks
 // the task as cancelled (not resumable).
@@ -140,7 +183,7 @@ func TestUserCancel_PersistsCancelled(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 	// Set the task store AFTER CreateSession (nil orchestrator would panic
-	// otherwise). See TestShutdown_LeavesTaskInProgress for the rationale.
+	// otherwise). See TestShutdown_PausesTaskInProgress for the rationale.
 	manager.SetTaskStore(store)
 	session, _ := manager.GetSession(info.ID)
 
