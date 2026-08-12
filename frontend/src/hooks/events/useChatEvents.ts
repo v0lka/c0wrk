@@ -234,6 +234,7 @@ export function useChatEvents(sessionId: string | null): void {
         store.clearStreamingText(sessionId)
         store.setActivityStatus(sessionId, null)
         store.setTaskActive(sessionId, false)
+        store.setPaused(sessionId, false)
         store.addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,
@@ -241,6 +242,31 @@ export function useChatEvents(sessionId: string | null): void {
           content: 'Task was cancelled',
           timestamp: Date.now(),
         })
+      }),
+    )
+
+    // --- session_paused ---
+    // A cooperative pause is a clean checkpoint: enter the paused UI state
+    // (input unlocked, Resume/Stop). taskActive clears because the task is
+    // no longer running — it is suspended, resumable via Resume or a nudge.
+    cleanups.push(
+      onSessionEvent(sessionId, 'session_paused', () => {
+        const store = useChatStore.getState()
+        store.setPaused(sessionId, true)
+        store.setTaskActive(sessionId, false)
+        store.setActivityStatus(sessionId, 'Paused')
+      }),
+    )
+
+    // --- session_resumed ---
+    // Resume clears the paused state: input re-locks, Pause/Stop return.
+    // Complementary to session_paused and task_resumed (which also fires).
+    cleanups.push(
+      onSessionEvent(sessionId, 'session_resumed', () => {
+        const store = useChatStore.getState()
+        store.setPaused(sessionId, false)
+        store.setTaskActive(sessionId, true)
+        store.setActivityStatus(sessionId, 'Resuming...')
       }),
     )
 

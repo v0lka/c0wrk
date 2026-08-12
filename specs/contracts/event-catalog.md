@@ -93,7 +93,9 @@ All session-scoped events may additionally include `plan_step_id` and `retry_att
 | ----------------------- | ----------------------------------------------------------------------------- | ------------------ | ----------------------------------------------------------- |
 | `task_complete`         | `{session_id, output, routing_decision, plan?, reflections?, success, completion?}` | useLifecycleEvents | Task finished. `success: false` + `completion: "partial"/"failed"/"aborted"` for degraded executions delivered with best-effort output; the UI renders an explicit warning. A degraded completion is always followed by `task_failed_resumable` or a `service` warning (never a silent visual success) |
 | `task_cancelled`        | `{session_id}`                                                                | useLifecycleEvents | Task cancelled by user                                      |
-| `task_failed_resumable` | `{message, task_id?, reason?}`                                                 | useLifecycleEvents | Task failed/incomplete, can resume (`task_id` lets the persisted message be matched/resolved on resume or cancel; `reason` carries a concise contextual cause) |
+| `session_paused`        | no payload (session-scoped only)                                              | useChatEvents      | Cooperative pause checkpoint: a `PauseSession` flipped the universal pause signal; the in-flight conductor run stopped at the next step boundary (`ErrPaused` → `ExecutionStatusPaused`), the task was persisted as `"paused"`, and the request exited. The UI unlocks input (shows Resume + Stop). Emitted for **all** tasks — goal and non-goal alike (a goal task's goal stays `active`; see [../domains/goal-mode.md § Pause is Session-Level](../domains/goal-mode.md#pause-is-session-level)) |
+| `session_resumed`       | no payload (session-scoped only)                                              | useActionEvents    | A paused task was resumed (`ResumeSession`/nudge-resume). Complementary to `session_paused`: clears the UI's paused state so the input re-locks and Pause/Stop controls reappear. Emitted alongside `task_resumed` |
+| `task_failed_resumable` | `{message, task_id?, reason?}`                                                 | useLifecycleEvents | Task failed/incomplete, can resume (`task_id` lets the persisted message be matched/resolved on resume or cancel; `reason` carries a concise contextual cause). A **paused** task does NOT emit this — it surfaces via `session_paused` and resumes via the Resume button / nudge, not a "did not finish" banner |
 | `error`                 | `{session_id, error}`                                                         | useChatEvents      | Execution error                                             |
 | `service`               | `{content, ...meta}` (meta fields flattened directly, e.g. `phase`)           | useChatEvents      | Service/status message (via `Service` or `ServiceWithMeta`); meta fields are flattened directly into the payload alongside `content`. Goal mode emits dedicated `goal_status` / `goal_progress` events (see Goal Mode below), not this channel. |
 
@@ -148,7 +150,7 @@ See [../domains/goal-mode.md](../domains/goal-mode.md).
 
 | Event Type        | Payload                           | Handler Hook    | Description                  |
 | ----------------- | --------------------------------- | --------------- | ---------------------------- |
-| `task_resumed`    | no payload (session-scoped only)  | useActionEvents | Failed task resumed          |
+| `task_resumed`    | no payload (session-scoped only)  | useActionEvents | A paused or failed task resumed (`ResumeSession`/`ResumeTask`). Emitted alongside `session_resumed` when resuming a paused task |
 | `terminal_output` | `{data: string}` (base64-encoded) | Terminal.tsx    | PTY output for terminal mode |
 
 ### Plan Review

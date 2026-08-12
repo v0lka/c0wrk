@@ -360,7 +360,11 @@ func newGoalTestOrchestrator() *Orchestrator {
 type mockGoalTurnRunner struct {
 	turnVerds []*goal.Verdict // verdict to declare on turn N (1-based)
 	turnCalls []int           // tool-call count to report on turn N (1-based)
-	calls     int
+	// pauseAtTurn, when > 0, makes that turn (1-based) return a paused
+	// ExecutionResult — simulating the universal pause signal tripping the
+	// conductor's executor mid-turn (ExecutionStatusPaused).
+	pauseAtTurn int
+	calls       int
 }
 
 func (m *mockGoalTurnRunner) run(
@@ -384,6 +388,10 @@ func (m *mockGoalTurnRunner) run(
 		if sink := tools.GoalStatusSinkFrom(ctx); sink != nil {
 			sink.Declare(*m.turnVerds[turn-1])
 		}
+	}
+	// Simulate the conductor pausing mid-turn at the configured turn.
+	if m.pauseAtTurn > 0 && turn == m.pauseAtTurn {
+		return toolCalls, &orchestration.ExecutionResult{Status: orchestration.ExecutionStatusPaused}, nil
 	}
 	return toolCalls, &orchestration.ExecutionResult{}, nil
 }
@@ -409,10 +417,9 @@ func TestRunGoalTurns_MetVerdictExitsAfterTurn1(t *testing.T) {
 	}
 	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "ship it"}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(
-		context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run,
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run,
 	)
 
 	if result.Status != goal.StatusMet {
@@ -439,10 +446,9 @@ func TestRunGoalTurns_ZeroToolTurnBlockedIdle(t *testing.T) {
 	}
 	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "stuck"}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(
-		context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run,
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run,
 	)
 
 	if result.Status != goal.StatusBlockedIdle {
@@ -467,10 +473,9 @@ func TestRunGoalTurns_NotMetThenMet(t *testing.T) {
 	}
 	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "iterate"}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(
-		context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run,
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run,
 	)
 
 	if result.Status != goal.StatusMet {
@@ -500,10 +505,9 @@ func TestRunGoalTurns_TurnBudgetExhausted(t *testing.T) {
 		Budget: goal.GoalBudget{MaxTurns: 2},
 	}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(
-		context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run,
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run,
 	)
 
 	if result.Status != goal.StatusExhausted {
@@ -514,37 +518,37 @@ func TestRunGoalTurns_TurnBudgetExhausted(t *testing.T) {
 	}
 }
 
-// TestRunGoalTurns_PauseSignalBreaks verifies the pause criterion: when the
-// pause signal is set, the loop transitions to paused at the top of the next
-// turn.
-func TestRunGoalTurns_PauseSignalBreaks(t *testing.T) {
+// TestRunGoalTurns_PausedMidTurnBreaks verifies the pause criterion under the
+// universal (conductor-level) pause mechanism: when a turn's conductor run is
+// paused mid-turn, it returns ExecutionStatusPaused, and the loop breaks
+// WITHOUT changing the goal status — the goal stays ACTIVE so resume
+// re-enters and continues the interrupted turn. (The former top-of-turn
+// signal poll was removed; pausing now trips at a step boundary inside the
+// conductor.)
+func TestRunGoalTurns_PausedMidTurnBreaks(t *testing.T) {
 	o := newGoalTestOrchestrator()
 	runner := &mockGoalTurnRunner{
-		turnCalls: []int{1}, // turn 1 makes progress (so it doesn't halt idle)
+		turnCalls:    []int{1}, // turn 1 makes progress before pausing
+		pauseAtTurn:  1,        // turn 1's conductor returns ExecutionStatusPaused
 	}
 	gs := &goal.GoalState{Status: goal.StatusActive}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	// Run one iteration manually by setting pause BEFORE the loop's second
-	// top-of-turn check. Turn 1 runs (makes 1 tool call, no verdict → would
-	// continue). Set pause so turn 2's top-of-turn check halts.
-	// We pre-set the pause signal so the FIRST top-of-turn check halts before
-	// any turn runs — this isolates the pause path from the turn logic.
-	pause.Store(true)
-
-	result := o.runGoalTurns(
-		context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run,
+	result, paused := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run,
 	)
 
-	if result.Status != goal.StatusPaused {
-		t.Fatalf("Status = %q, want %q", result.Status, goal.StatusPaused)
+	if result.Status != goal.StatusActive {
+		t.Fatalf("Status = %q, want %q (goal stays active on pause)", result.Status, goal.StatusActive)
 	}
-	if runner.calls != 0 {
-		t.Errorf("expected 0 turns (paused before turn 1), got %d", runner.calls)
+	if !paused {
+		t.Errorf("paused = false, want true (mid-turn pause must surface to goalLoopResult)")
 	}
-	if result.TurnCount != 0 {
-		t.Errorf("TurnCount = %d, want 0", result.TurnCount)
+	if runner.calls != 1 {
+		t.Errorf("expected 1 turn (paused mid-turn 1), got %d", runner.calls)
+	}
+	if result.TurnCount != 1 {
+		t.Errorf("TurnCount = %d, want 1", result.TurnCount)
 	}
 }
 
@@ -559,10 +563,9 @@ func TestRunGoalTurns_AgentBlockedVerdict(t *testing.T) {
 	}
 	gs := &goal.GoalState{Status: goal.StatusActive}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(
-		context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run,
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run,
 	)
 
 	if result.Status != goal.StatusBlockedIdle {
@@ -731,14 +734,14 @@ func TestResumeGoalLoop_PausedResumesAndSeedsSteps(t *testing.T) {
 		VerifyClause: "go test ./...",
 		Budget:       goal.GoalBudget{MaxTurns: 10},
 		TurnCount:    2,
-		Status:       goal.StatusPaused,
+		Status:       goal.StatusActive, // paused goals stay active
 		CreatedAt:    time.Now(),
 	}
 	bb := orchestration.NewMapBlackboard()
 	routing := &router.RoutingDecision{Domain: "general", Complexity: 3}
 
 	result, err := o.resumeGoalLoop(
-		context.Background(), "resume the goal", bb, nil, "", routing, pausedGS, seedSteps,
+		context.Background(), "resume the goal", bb, nil, "", routing, pausedGS, seedSteps, "",
 	)
 	if err != nil {
 		t.Fatalf("resumeGoalLoop failed: %v", err)
@@ -782,7 +785,7 @@ func TestResumeGoalLoop_ActiveGoalResumes(t *testing.T) {
 	routing := &router.RoutingDecision{Domain: "general", Complexity: 3}
 
 	result, err := o.resumeGoalLoop(
-		context.Background(), "continue", bb, nil, "", routing, activeGS, nil,
+		context.Background(), "continue", bb, nil, "", routing, activeGS, nil, "",
 	)
 	if err != nil {
 		t.Fatalf("resumeGoalLoop failed: %v", err)
@@ -810,14 +813,14 @@ func TestResume_DelegatesToGoalLoopForPausedGoal(t *testing.T) {
 	seedSteps := []agent.Step{{Thought: "checkpoint", Observation: "prior"}}
 	pausedGS := &goal.GoalState{
 		Condition: "goal via resume",
-		Status:    goal.StatusPaused,
+		Status:    goal.StatusActive, // paused goals stay active
 		CreatedAt: time.Now(),
 	}
 	bb := orchestration.NewMapBlackboard()
 	bb.SetOriginalRequest("resume the paused goal")
 
 	result, err := o.Resume(
-		context.Background(), bb, nil, "", seedSteps, pausedGS,
+		context.Background(), bb, nil, "", seedSteps, pausedGS, "",
 	)
 	if err != nil {
 		t.Fatalf("Resume failed: %v", err)
@@ -856,7 +859,7 @@ func TestResume_FallsThroughForTerminalGoal(t *testing.T) {
 
 	// A terminal goal must NOT enter the goal loop; Resume falls through to the
 	// plain Conductor path (which finishes via the mock LLM).
-	if _, err := o.Resume(context.Background(), bb, nil, "", nil, metGS); err != nil {
+	if _, err := o.Resume(context.Background(), bb, nil, "", nil, metGS, ""); err != nil {
 		t.Fatalf("Resume failed: %v", err)
 	}
 
@@ -986,10 +989,9 @@ func TestRunGoalTurns_LoopReadsPostRunCount(t *testing.T) {
 
 	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "ship it"}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(
-		context.Background(), "msg", bb, nil, "", nil, gs, pause, countingRunner,
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, countingRunner,
 	)
 
 	// The productive turn must be classified as MET (via the verdict), NOT
@@ -1027,29 +1029,58 @@ func TestCountingToolExec_Delegates(t *testing.T) {
 	}
 }
 
-// TestPauseGoal_SignalFlipsWhenSet verifies PauseGoal flips the active pause
-// signal so the running loop will suspend at the top of its next turn.
-func TestPauseGoal_SignalFlipsWhenSet(t *testing.T) {
+// TestPauseSession_SignalFlipsWhenSet verifies PauseSession flips the active
+// pause signal so a running conductor (any mode) suspends at the next step
+// boundary.
+func TestPauseSession_SignalFlipsWhenSet(t *testing.T) {
 	o := newGoalTestOrchestrator()
 	pause := &atomic.Bool{}
-	o.activeGoalPause.Store(pause)
-	t.Cleanup(func() { o.activeGoalPause.Store(nil) })
+	o.activePause.Store(pause)
+	t.Cleanup(func() { o.activePause.Store(nil) })
 
 	if pause.Load() {
 		t.Fatal("pause signal should start false")
 	}
-	o.PauseGoal()
+	o.PauseSession()
 	if !pause.Load() {
-		t.Error("PauseGoal did not set the pause signal to true")
+		t.Error("PauseSession did not set the pause signal to true")
 	}
 }
 
-// TestPauseGoal_NoopWithoutSignal verifies PauseGoal is a safe no-op when no
-// goal loop is active (activeGoalPause is nil).
-func TestPauseGoal_NoopWithoutSignal(t *testing.T) {
+// TestPauseSession_NoopWithoutSignal verifies PauseSession is a safe no-op when
+// no request is in flight (activePause is nil).
+func TestPauseSession_NoopWithoutSignal(t *testing.T) {
 	o := newGoalTestOrchestrator()
-	// activeGoalPause is nil — must not panic.
-	o.PauseGoal()
+	// activePause is nil — must not panic.
+	o.PauseSession()
+}
+
+// TestNewPauseChecker_ReflectsActiveSignal verifies the universal pause-checker
+// closure (wired into every conductor run via buildConductorDeps) reads the
+// active request's pause signal live: false until PauseSession flips it, then
+// true. With no signal installed it stays false (default non-pausing).
+func TestNewPauseChecker_ReflectsActiveSignal(t *testing.T) {
+	o := newGoalTestOrchestrator()
+	checker := o.newPauseChecker()
+
+	// No signal installed → never pauses.
+	if checker(context.Background()) {
+		t.Fatal("checker should be false with no signal installed")
+	}
+
+	// Install the request signal and re-bind the checker (the closure reads
+	// o.activePause live, so a fresh closure sees the installed signal).
+	release := o.installPauseSignal()
+	defer release()
+	checker = o.newPauseChecker()
+	if checker(context.Background()) {
+		t.Fatal("checker should be false before PauseSession")
+	}
+
+	o.PauseSession()
+	if !checker(context.Background()) {
+		t.Fatal("checker should be true after PauseSession flips the signal")
+	}
 }
 
 // TestRunGoalTurns_UnlimitedBudgetNotCapped verifies that an unlimited goal
@@ -1073,10 +1104,9 @@ func TestRunGoalTurns_UnlimitedBudgetNotCapped(t *testing.T) {
 	runner := &mockGoalTurnRunner{turnVerds: verds, turnCalls: calls}
 	gs := &goal.GoalState{Status: goal.StatusActive} // unlimited budget
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(
-		context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run,
+	result, _ := o.runGoalTurns(
+		context.Background(), "msg", bb, nil, "", nil, gs, runner.run,
 	)
 	if result.Status != goal.StatusMet {
 		t.Fatalf("Status = %q, want %q (unlimited budget must not be capped before a met verdict)", result.Status, goal.StatusMet)
@@ -1086,21 +1116,23 @@ func TestRunGoalTurns_UnlimitedBudgetNotCapped(t *testing.T) {
 	}
 }
 
-// TestRunGoalTurns_ContextCancelledPauses verifies that a cancelled context
-// transitions the goal to paused (not an error — the loop can resume later).
-func TestRunGoalTurns_ContextCancelledPauses(t *testing.T) {
+// TestRunGoalTurns_ContextCancelledLeavesGoalActive verifies that a cancelled
+// context (user cancel via CancelTask, or app shutdown) does NOT terminalize
+// the goal — it stays active so the manager layer decides: a user cancel
+// abandons the goal, a shutdown leaves it resumable. The orchestrator cannot
+// distinguish the two (no access to the manager's shuttingDown flag).
+func TestRunGoalTurns_ContextCancelledLeavesGoalActive(t *testing.T) {
 	o := newGoalTestOrchestrator()
 	runner := &mockGoalTurnRunner{turnCalls: []int{1}}
 	gs := &goal.GoalState{Status: goal.StatusActive}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancelled
 
-	result := o.runGoalTurns(ctx, "msg", bb, nil, "", nil, gs, pause, runner.run)
-	if result.Status != goal.StatusPaused {
-		t.Fatalf("Status = %q, want %q (cancelled context pauses)", result.Status, goal.StatusPaused)
+	result, _ := o.runGoalTurns(ctx, "msg", bb, nil, "", nil, gs, runner.run)
+	if result.Status != goal.StatusActive {
+		t.Fatalf("Status = %q, want %q (cancelled context leaves goal active for the manager to decide)", result.Status, goal.StatusActive)
 	}
 	if runner.calls != 0 {
 		t.Errorf("expected 0 turns (context cancelled before turn 1), got %d", runner.calls)
@@ -1118,14 +1150,23 @@ func TestGoalLoopResult_MapsStatus(t *testing.T) {
 	}{
 		{goal.StatusMet, orchestration.ExecutionStatusSuccess},
 		{goal.StatusExhausted, orchestration.ExecutionStatusFailed},
-		{goal.StatusPaused, orchestration.ExecutionStatusPartial},
+		{goal.StatusCancelled, orchestration.ExecutionStatusCancelled},
+		{goal.StatusActive, orchestration.ExecutionStatusPartial},
 		{goal.StatusBlockedIdle, orchestration.ExecutionStatusPartial},
 	}
 	for _, tc := range cases {
-		result := o.goalLoopResult("out", bb, nil, tc.status, "cond")
+		result := o.goalLoopResult("out", bb, nil, tc.status, "cond", false)
 		if result.Status != tc.want {
 			t.Errorf("goalLoopResult(%q).Status = %q, want %q", tc.status, result.Status, tc.want)
 		}
+	}
+
+	// A cooperative mid-turn pause (paused=true) overrides the active→partial
+	// default so the task is persisted as paused (resumable) and the manager
+	// emits session_paused instead of a degraded task_complete/resumable banner.
+	pausedResult := o.goalLoopResult("out", bb, nil, goal.StatusActive, "cond", true)
+	if pausedResult.Status != orchestration.ExecutionStatusPaused {
+		t.Errorf("goalLoopResult(active, paused=true).Status = %q, want %q", pausedResult.Status, orchestration.ExecutionStatusPaused)
 	}
 }
 

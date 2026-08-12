@@ -84,6 +84,38 @@ export async function resumeTask(sessionId: string, modelOverride: string = '', 
   }
 }
 
+/**
+ * Cooperatively pause the running task in a session. The executor checks the
+ * pause signal at every step boundary, stops at a checkpoint, and the task is
+ * persisted as paused so a later resume (or nudge-resume) can re-enter.
+ * No-op when no request is in flight.
+ */
+export async function pauseSession(sessionId: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.PauseSession(sessionId)
+  } catch (err) {
+    logger.error('Failed to pause session:', err)
+    throw err
+  }
+}
+
+/**
+ * Resume a paused task. The optional modelOverride/reasoningOverride apply the
+ * user's current selection to the resumed task. The optional nudge seeds the
+ * resumed turn with a trailing user message (used by the UI's nudge input on a
+ * paused session). Returns nil if there is nothing to resume.
+ */
+export async function resumeSession(sessionId: string, modelOverride: string = '', reasoningOverride: string = '', nudge: string = ''): Promise<void> {
+  try {
+    const app = getApp()
+    await app.ResumeSession(sessionId, modelOverride, reasoningOverride, nudge)
+  } catch (err) {
+    logger.error('Failed to resume session:', err)
+    throw err
+  }
+}
+
 export async function cancelUnfinishedTask(sessionId: string): Promise<void> {
   try {
     const app = getApp()
@@ -99,6 +131,8 @@ export interface SessionRuntimeStatus {
   active: boolean
   has_unfinished_task: boolean
   unfinished_task_id?: string
+  /** True when the resumable unfinished task is cooperatively paused. */
+  paused: boolean
 }
 
 function isSessionRuntimeStatus(d: unknown): d is SessionRuntimeStatus {

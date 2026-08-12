@@ -21,6 +21,12 @@ interface ChatState {
   activityStatus: Record<string, string>
   // Task active per session
   taskActive: Record<string, boolean>
+  // Cooperatively paused per session: sessionId -> true when the running task
+  // is suspended at a checkpoint (input unlocked, Resume/Stop controls). The
+  // backend's session_paused/session_resumed events and GetSessionRuntimeStatus
+  // .paused field are the authoritative sources; the UI sets this optimistically
+  // on Pause/Resume button clicks and reconciles on session switch/restart.
+  paused: Record<string, boolean>
   // Context fill per step: stepId -> fill percent
   stepContextFill: Record<string, number>
   // Session tokens: sessionId -> token info
@@ -38,6 +44,7 @@ interface ChatActions {
   clearStreamingText: (sessionId: string) => void
   setActivityStatus: (sessionId: string, status: string | null) => void
   setTaskActive: (sessionId: string, active: boolean) => void
+  setPaused: (sessionId: string, paused: boolean) => void
   setStepContextFill: (stepId: string, fill: number) => void
   clearStepContextFill: () => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
@@ -109,6 +116,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   streamingText: {},
   activityStatus: {},
   taskActive: {},
+  paused: {},
   stepContextFill: {},
   sessionTokens: {},
 
@@ -250,6 +258,17 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   setTaskActive: (sessionId, active) => set((s) => ({
     taskActive: { ...s.taskActive, [sessionId]: active },
   })),
+
+  setPaused: (sessionId, paused) => set((s) => {
+    // Clear the entry when un-pausing so the key's absence encodes "not paused"
+    // (consistent with the absent-key semantics used elsewhere in this store).
+    if (!paused) {
+      if (!(sessionId in s.paused)) return s
+      const { [sessionId]: _paused, ...rest } = s.paused
+      return { paused: rest }
+    }
+    return { paused: { ...s.paused, [sessionId]: true } }
+  }),
 
   setStepContextFill: (stepId, fill) => set((s) => ({
     stepContextFill: { ...s.stepContextFill, [stepId]: fill },

@@ -308,6 +308,7 @@ type testPersistableBlackboard struct {
 	reactivated bool
 	completed   bool
 	failed      bool
+	paused      bool
 }
 
 var _ PersistableBlackboard = (*testPersistableBlackboard)(nil)
@@ -335,6 +336,12 @@ func (t *testPersistableBlackboard) CancelTask() {
 	t.failed = true
 	if t.store != nil {
 		_ = t.store.PersistCancellation(t.taskID)
+	}
+}
+func (t *testPersistableBlackboard) PauseTask() {
+	t.paused = true
+	if t.store != nil {
+		_ = t.store.PersistPause(t.taskID)
 	}
 }
 func (t *testPersistableBlackboard) ReactivateTask() {

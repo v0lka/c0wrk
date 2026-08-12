@@ -1032,7 +1032,8 @@ func TestManager_SendMessage_AllowsParallelActiveSessions(t *testing.T) {
 // mockTaskStoreForResumable is a minimal TaskStore mock that controls
 // what GetUnfinishedTask returns, used for emitResumableIfUnfinished tests.
 type mockTaskStoreForResumable struct {
-	unfinished *TaskRecord // returned by GetUnfinishedTask
+	unfinished     *TaskRecord // returned by GetUnfinishedTask
+	loadTaskResult *TaskRecord // returned by LoadTask (nil → default nil,nil)
 }
 
 func (m *mockTaskStoreForResumable) SaveTask(_ context.Context, _ TaskRecord) error { return nil }
@@ -1053,8 +1054,9 @@ func (m *mockTaskStoreForResumable) CompleteTask(_ context.Context, _, _ string,
 }
 func (m *mockTaskStoreForResumable) FailTask(_ context.Context, _ string) error   { return nil }
 func (m *mockTaskStoreForResumable) CancelTask(_ context.Context, _ string) error { return nil }
+func (m *mockTaskStoreForResumable) PauseTask(_ context.Context, _ string) error  { return nil }
 func (m *mockTaskStoreForResumable) LoadTask(_ context.Context, _ string) (*TaskRecord, error) {
-	return nil, nil
+	return m.loadTaskResult, nil
 }
 func (m *mockTaskStoreForResumable) LoadTaskSteps(_ context.Context, _ string) ([]TaskStepRecord, error) {
 	return nil, nil
@@ -1383,6 +1385,54 @@ func TestGetSessionRuntimeStatus(t *testing.T) {
 		}
 		if status.Active || status.HasUnfinishedTask {
 			t.Errorf("expected idle status, got %+v", status)
+		}
+	})
+
+	t.Run("paused task reports Paused=true", func(t *testing.T) {
+		manager, _, _ := testManager(t)
+		pausedTask := &TaskRecord{
+			ID: "task-paused", SessionID: "sess-paused", Status: "paused",
+			RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+			Reflections: json.RawMessage(`[]`),
+		}
+		manager.SetTaskStore(&mockTaskStoreForResumable{
+			unfinished:     pausedTask,
+			loadTaskResult: pausedTask,
+		})
+
+		status, err := manager.GetSessionRuntimeStatus("sess-paused")
+		if err != nil {
+			t.Fatalf("GetSessionRuntimeStatus returned error: %v", err)
+		}
+		if !status.HasUnfinishedTask || status.UnfinishedTaskID != "task-paused" {
+			t.Errorf("expected unfinished task task-paused, got %+v", status)
+		}
+		if !status.Paused {
+			t.Errorf("expected Paused=true for paused task, got %+v", status)
+		}
+	})
+
+	t.Run("in_progress task reports Paused=false", func(t *testing.T) {
+		manager, _, _ := testManager(t)
+		activeTask := &TaskRecord{
+			ID: "task-active", SessionID: "sess-active", Status: "in_progress",
+			RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+			Reflections: json.RawMessage(`[]`),
+		}
+		manager.SetTaskStore(&mockTaskStoreForResumable{
+			unfinished:     activeTask,
+			loadTaskResult: activeTask,
+		})
+
+		status, err := manager.GetSessionRuntimeStatus("sess-active")
+		if err != nil {
+			t.Fatalf("GetSessionRuntimeStatus returned error: %v", err)
+		}
+		if !status.HasUnfinishedTask {
+			t.Errorf("expected unfinished task, got %+v", status)
+		}
+		if status.Paused {
+			t.Errorf("expected Paused=false for in_progress task, got %+v", status)
 		}
 	})
 }

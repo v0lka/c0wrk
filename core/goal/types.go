@@ -46,8 +46,9 @@ const (
 // enforced inside this package; the values are documented here to make the
 // intended state machine explicit:
 //
-//	active        — goal is in force; the agent is working toward it.
-//	paused        — goal temporarily suspended (e.g. user pause, hand-off).
+//	active        — goal is in force; the agent is working toward it. A
+//	                 cooperative pause (universal pause signal) leaves the goal
+//	                 active — resume re-enters the loop and continues.
 //	met           — the condition has been satisfied (terminal success).
 //	exhausted     — the budget was consumed without meeting the condition
 //	                 (terminal failure: turns/tokens/deadline hit).
@@ -58,7 +59,6 @@ type GoalStatus string
 
 const (
 	StatusActive      GoalStatus = "active"
-	StatusPaused      GoalStatus = "paused"
 	StatusMet         GoalStatus = "met"
 	StatusExhausted   GoalStatus = "exhausted"
 	StatusBlockedIdle GoalStatus = "blocked_idle"
@@ -66,7 +66,7 @@ const (
 )
 
 // IsTerminal reports whether the status is a terminal (non-resumable) state.
-// Met, exhausted, and cancelled are terminal; paused and blocked_idle are not.
+// Met, exhausted, and cancelled are terminal; active and blocked_idle are not.
 func (s GoalStatus) IsTerminal() bool {
 	switch s {
 	case StatusMet, StatusExhausted, StatusCancelled:

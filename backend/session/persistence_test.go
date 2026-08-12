@@ -1532,6 +1532,46 @@ func TestGetUnfinishedTask_None(t *testing.T) {
 	}
 }
 
+// TestPauseTask_GetUnfinishedMatches verifies that a paused task is found by
+// GetUnfinishedTask (survives restart as resumable) and carries the paused
+// status. This is the persistence-layer guarantee for the nudge-resume path:
+// a paused checkpoint must remain resumable across an app restart.
+func TestPauseTask_GetUnfinishedMatches(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	// Create an in_progress task, then pause it.
+	if err := store.SaveTask(context.Background(), TaskRecord{
+		ID: "task-paused", SessionID: sessionID, OriginalRequest: "paused work",
+		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+	if err := store.PauseTask(context.Background(), "task-paused"); err != nil {
+		t.Fatalf("PauseTask failed: %v", err)
+	}
+
+	// GetUnfinishedTask must find the paused task (resumable across restart).
+	unfinished, err := store.GetUnfinishedTask(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("GetUnfinishedTask failed: %v", err)
+	}
+	if unfinished == nil {
+		t.Fatal("expected the paused task to be found by GetUnfinishedTask")
+	}
+	if unfinished.ID != "task-paused" {
+		t.Errorf("expected task-paused, got %q", unfinished.ID)
+	}
+	if unfinished.Status != "paused" {
+		t.Errorf("expected status paused, got %q", unfinished.Status)
+	}
+	// A paused task is not completed — completed_at must be NULL.
+	if unfinished.CompletedAt != nil {
+		t.Errorf("expected nil CompletedAt for paused task, got %v", unfinished.CompletedAt)
+	}
+}
+
 func TestTaskCascadeDelete(t *testing.T) {
 	store, sessionID, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()
@@ -1694,7 +1734,7 @@ func TestSaveAndLoadGoalState(t *testing.T) {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
 
-	payload := json.RawMessage(`{"condition":"all tests pass","verify_clause":"go test ./...","budget":{"max_turns":5},"turn_count":2,"status":"paused","created_at":"2026-07-18T12:00:00Z"}`)
+	payload := json.RawMessage(`{"condition":"all tests pass","verify_clause":"go test ./...","budget":{"max_turns":5},"turn_count":2,"status":"active","created_at":"2026-07-18T12:00:00Z"}`)
 
 	// Save
 	if err := store.SaveGoalState(context.Background(), "task-goal", payload); err != nil {
@@ -1752,7 +1792,7 @@ func TestTaskGoalState_CascadeDelete(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
-	if err := store.SaveGoalState(context.Background(), "task-goal-cascade", json.RawMessage(`{"status":"paused"}`)); err != nil {
+	if err := store.SaveGoalState(context.Background(), "task-goal-cascade", json.RawMessage(`{"status":"active"}`)); err != nil {
 		t.Fatalf("SaveGoalState failed: %v", err)
 	}
 

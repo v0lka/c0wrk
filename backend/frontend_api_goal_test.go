@@ -95,27 +95,3 @@ func TestGoalRPCs_NoManagerReturnsError(t *testing.T) {
 		}
 	}
 }
-
-// TestGoalRPCs_PauseResumeClearDelegateToManager verifies the lifecycle-control
-// RPCs (Pause/Resume/Clear) delegate to the session manager without panicking.
-// A non-existent session yields an error from Pause (session not found), while
-// Resume/Clear tolerate it (Resume with no task returns nil; Clear is a no-op).
-func TestGoalRPCs_PauseResumeClearDelegateToManager(t *testing.T) {
-	f := goalTestApp(t)
-
-	// Pause delegates to manager.PauseGoal → getOrRestoreSession finds no
-	// session (no session store configured) → "session not found".
-	if err := f.PauseGoal("nonexistent"); err == nil {
-		t.Error("PauseGoal expected error for non-existent session")
-	}
-	// Resume delegates to manager.ResumeGoal → ResumeTask, which needs a
-	// resumable task; with no task store it returns nil (nothing to resume).
-	if err := f.ResumeGoal("nonexistent", "", ""); err != nil {
-		t.Errorf("ResumeGoal returned unexpected error (nil expected for no resumable task): %v", err)
-	}
-	// Clear delegates to manager.ClearGoal → CancelTask → getOrrestoreSession
-	// finds no session → "session not found". This proves delegation works.
-	if err := f.ClearGoal("nonexistent"); err == nil {
-		t.Error("ClearGoal expected error for non-existent session")
-	}
-}

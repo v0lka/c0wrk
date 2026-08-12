@@ -14,7 +14,10 @@ export interface ActiveGoal {
   condition: string
   /** How the goal is verified as met. */
   verify?: string
-  /** Current lifecycle status (e.g. active, paused, met, exhausted, blocked_idle). */
+  /** Current lifecycle status (e.g. active, met, exhausted, blocked_idle).
+   *  Note: a cooperative pause leaves the goal `active` (resume re-enters the
+   *  loop); there is no separate `paused` goal status. The task-level pause is
+   *  tracked in chatStore.paused, not here. */
   status: string
   /** Completed goal-loop turns so far. */
   turn: number

@@ -243,6 +243,17 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []
 			f.log().Error("failed to update session activity", "error", err)
 		}
 	}
+	// A message sent into a paused session becomes a nudge-resume (the manager's
+	// SendMessage detects the paused task and routes to ResumeSession). When that
+	// is the case, flag the persisted user message with is_nudge so the UI can
+	// render it as a nudge rather than a fresh request. Goal requests supersede a
+	// paused task, so they are never nudges.
+	isNudgeResume := false
+	if !goal {
+		if status, statusErr := f.app.Manager().GetSessionRuntimeStatus(id); statusErr == nil {
+			isNudgeResume = status.Paused
+		}
+	}
 	// Save user message to store (original text with /skill and @file markers for display on reload).
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
@@ -258,6 +269,11 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []
 			} else {
 				f.log().Warn("failed to read pending message metadata", "session_id", id, "error", mdErr)
 			}
+		}
+		// When this is a nudge-resume, merge is_nudge: true into the metadata
+		// so the message is distinguishable from a fresh user request on reload.
+		if isNudgeResume {
+			messageMetadata = mergeIsNudgeMetadata(messageMetadata)
 		}
 		if err := f.store.SaveMessage(context.Background(), session.ChatMessage{
 			SessionID: id,
@@ -304,7 +320,33 @@ func (f *FrontendAPI) ResumeTask(id, modelOverride, reasoningEffort string) erro
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
-	return f.app.Manager().ResumeTask(f.ctx(), id, modelOverride, reasoningEffort)
+	return f.app.Manager().ResumeTask(f.ctx(), id, modelOverride, reasoningEffort, "")
+}
+
+// PauseSession signals the currently-running task (any mode) for the session to
+// pause at the next step boundary. The pause is cooperative: the conductor's
+// executor checks the pause signal at every step boundary, stops with a paused
+// checkpoint, and the task is persisted as paused so a later ResumeSession can
+// re-enter. It is a no-op when no request is in flight.
+func (f *FrontendAPI) PauseSession(sessionID string) error {
+	if f.app == nil || f.app.Manager() == nil {
+		return errors.New("session manager not initialized")
+	}
+	return f.app.Manager().PauseSession(sessionID)
+}
+
+// ResumeSession re-enters the execution loop for a paused (or still-active)
+// task. It delegates to the resume path, which loads the persisted task state
+// (trajectory, goal state) and dispatches to the orchestrator's resume path.
+// The optional nudge is injected as a trailing user message into the first
+// resumed turn (one-shot) — used by the UI's nudge input on a paused session.
+// The optional modelOverride/reasoningEffort apply the user's current selection
+// to the resumed task. Returns nil if there is nothing to resume.
+func (f *FrontendAPI) ResumeSession(sessionID, modelOverride, reasoningEffort, nudge string) error {
+	if f.app == nil || f.app.Manager() == nil {
+		return errors.New("session manager not initialized")
+	}
+	return f.app.Manager().ResumeSession(f.ctx(), sessionID, modelOverride, reasoningEffort, nudge)
 }
 
 // GetSessionTokens returns persisted token counts for a session.
@@ -463,4 +505,24 @@ func (f *FrontendAPI) ResolvePendingMessage(sessionID, role, matchField, matchVa
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return f.store.ResolvePendingMessage(ctx, sessionID, role, matchField, matchValue, extra)
+}
+
+// mergeIsNudgeMetadata merges is_nudge: true into a user-message metadata blob.
+// A nil/empty input yields a fresh {"is_nudge":true} blob. Existing keys are
+// preserved; is_nudge is added/overwritten. The result marks the persisted
+// user message as a nudge sent into a paused session (nudge-resume path).
+func mergeIsNudgeMetadata(raw json.RawMessage) json.RawMessage {
+	merged := make(map[string]any)
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &merged); err != nil {
+			// Malformed metadata: start fresh rather than dropping the message.
+			merged = make(map[string]any)
+		}
+	}
+	merged["is_nudge"] = true
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return json.RawMessage(`{"is_nudge":true}`)
+	}
+	return out
 }

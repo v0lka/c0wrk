@@ -843,7 +843,7 @@ type TaskRecord struct {
 	Reflections     json.RawMessage `json:"reflections"`
 	FinalOutput     string          `json:"final_output"`
 	AttemptCount    int             `json:"attempt_count"`
-	Status          string          `json:"status"` // "in_progress", "completed", "failed", "cancelled"
+	Status          string          `json:"status"` // "in_progress", "completed", "failed", "cancelled", "paused"
 	CreatedAt       time.Time       `json:"created_at"`
 	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
 }
@@ -873,6 +873,9 @@ type TaskStore interface {
 	CompleteTask(ctx context.Context, taskID, finalOutput string, attemptCount int) error
 	FailTask(ctx context.Context, taskID string) error
 	CancelTask(ctx context.Context, taskID string) error
+	// PauseTask marks an in-progress task as paused so it survives app restart
+	// as a resumable checkpoint (GetUnfinishedTask matches the paused status).
+	PauseTask(ctx context.Context, taskID string) error
 	LoadTask(ctx context.Context, taskID string) (*TaskRecord, error)
 	LoadTaskSteps(ctx context.Context, taskID string) ([]TaskStepRecord, error)
 	SaveFacts(ctx context.Context, taskID string, factsJSON json.RawMessage) error
@@ -1048,6 +1051,21 @@ func (s *SQLiteSessionStore) CancelTask(ctx context.Context, taskID string) erro
 	return nil
 }
 
+// PauseTask marks an in-progress task as paused. Unlike the terminal statuses
+// (completed/failed/cancelled), a paused task clears completed_at (it is not
+// finished) and is matched by GetUnfinishedTask so it survives app restart as
+// a resumable checkpoint.
+func (s *SQLiteSessionStore) PauseTask(ctx context.Context, taskID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE tasks SET status = 'paused', completed_at = NULL WHERE id = ?`,
+		taskID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to pause task: %w", err)
+	}
+	return nil
+}
+
 // ReactivateTask reactivates a completed task back to in_progress.
 func (s *SQLiteSessionStore) ReactivateTask(ctx context.Context, taskID string) error {
 	_, err := s.db.ExecContext(ctx,
@@ -1137,7 +1155,9 @@ func (s *SQLiteSessionStore) LoadTaskSteps(ctx context.Context, taskID string) (
 	return steps, nil
 }
 
-// GetUnfinishedTask returns the most recent unfinished (in-progress or failed) task for a session, or nil if none.
+// GetUnfinishedTask returns the most recent unfinished (in-progress, paused, or
+// failed) task for a session, or nil if none. A paused task is resumable: it
+// represents a cooperative pause checkpoint that survives app restart.
 func (s *SQLiteSessionStore) GetUnfinishedTask(ctx context.Context, sessionID string) (*TaskRecord, error) {
 	var task TaskRecord
 	var routingDec, plan, reflections string
@@ -1146,7 +1166,7 @@ func (s *SQLiteSessionStore) GetUnfinishedTask(ctx context.Context, sessionID st
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, session_id, original_request, routing_decision, plan, reflections, final_output, attempt_count, status, created_at, completed_at
 		FROM tasks
-		WHERE session_id = ? AND status IN ('in_progress', 'failed')
+		WHERE session_id = ? AND status IN ('in_progress', 'paused', 'failed')
 		ORDER BY created_at DESC LIMIT 1`,
 		sessionID,
 	).Scan(&task.ID, &task.SessionID, &task.OriginalRequest,

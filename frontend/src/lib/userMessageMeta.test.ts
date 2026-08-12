@@ -38,6 +38,18 @@ describe('parseUserMessageMeta', () => {
       expect(parseUserMessageMeta({ goal: 'yes' })).toEqual({})
       expect(parseUserMessageMeta({ goal: 1 })).toEqual({})
     })
+
+    it('omits is_nudge when false (mirrors backend omitempty)', () => {
+      expect(parseUserMessageMeta({ is_nudge: false })).toEqual({})
+    })
+
+    it('omits is_nudge when a non-boolean truthy value', () => {
+      expect(parseUserMessageMeta({ is_nudge: 'yes' })).toEqual({})
+    })
+
+    it('includes is_nudge when strictly true', () => {
+      expect(parseUserMessageMeta({ is_nudge: true })).toEqual({ is_nudge: true })
+    })
   })
 
   describe('full parse', () => {

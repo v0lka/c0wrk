@@ -25,8 +25,7 @@ import (
 
 // ErrNoActiveTask is returned by CancelTask when the session has no task
 // currently running. Callers that don't care whether a task was actually
-// cancelled (e.g. ClearGoal, which only needs the task stopped so it can
-// persist a terminal goal state) can treat this as non-fatal via errors.Is.
+// cancelled can treat this as non-fatal via errors.Is.
 var ErrNoActiveTask = errors.New("no active task to cancel")
 
 // ErrSessionArchived is returned by SendMessage/ResumeTask when the target
@@ -362,6 +361,30 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 		session.mu.Unlock()
 		return errors.New("session is already processing a task")
 	}
+	session.mu.Unlock()
+
+	// Nudge-resume: if the session has a paused task, sending a message does
+	// NOT start a new task — the message becomes a nudge that resumes the
+	// paused task via ResumeSession (which re-activates the session and injects
+	// the text as a trailing user turn). Goal requests are excluded: a /goal
+	// message supersedes any paused task (abandonUnfinishedTaskForGoal handles
+	// cleanup). Detected here before activation so ResumeTask's own activation
+	// path is not tripped by a spurious "already processing" check.
+	if !goal && m.hasPausedUnfinishedTask(id) {
+		// Emit message_received so the UI shows the user message (mirrors the
+		// normal SendMessage path's emission that the goroutine skips).
+		m.emitFunc(Event{
+			SessionID: id,
+			Type:      "message_received",
+			Data: MessageReceivedData{
+				SessionID: id,
+				Text:      text,
+			},
+		})
+		return m.ResumeSession(ctx, id, modelOverride, reasoningEffort, text)
+	}
+
+	session.mu.Lock()
 
 	// Set active and create cancellable context with session ID
 	session.active = true
@@ -593,8 +616,10 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 			if ctx.Err() == context.Canceled {
 				// On shutdown, leave the task in_progress so it can be
 				// resumed after restart; only user-initiated cancels are
-				// persisted as cancelled.
+				// persisted as cancelled. The goal is abandoned (cancelled)
+				// only on a user cancel, not on shutdown.
 				if m.emitTaskCancelledUnlessShuttingDown(id) {
+					m.abandonGoalIfUnfinished(id)
 					m.persistCancellationIfUnfinished(id)
 				}
 				return
@@ -624,8 +649,18 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 		// still treat as cancellation — do not emit partial results as final.
 		if ctx.Err() == context.Canceled {
 			if m.emitTaskCancelledUnlessShuttingDown(id) {
+				m.abandonGoalIfUnfinished(id)
 				m.persistCancellationIfUnfinished(id)
 			}
+			return
+		}
+
+		// A cooperative pause is a clean checkpoint, not a degraded completion.
+		// Emit session_paused so the UI shows a paused state (unlocked input,
+		// Resume/Stop controls) instead of a misleading failed/resumable banner.
+		// The task is persisted as paused (resumable); a later Resume re-enters.
+		if result != nil && result.Status == orchestration.ExecutionStatusPaused {
+			m.emitFunc(Event{SessionID: id, Type: "session_paused"})
 			return
 		}
 
@@ -750,7 +785,7 @@ func (m *Manager) tryContinueInterruptedTask(
 	// after the resumed execution finishes.
 	m.resolveResumableTaskMessage(id, taskID, "resumed")
 
-	result, err := session.orchestrator.Resume(ctx, bb, routing, config.SessionPlansDir(m.agentDir, session.ProjectID, id), resumeSteps, nil)
+	result, err := session.orchestrator.Resume(ctx, bb, routing, config.SessionPlansDir(m.agentDir, session.ProjectID, id), resumeSteps, nil, "")
 
 	// Shared completion handling (mirrors ResumeTask's goroutine tail).
 	if err != nil && errors.Is(err, orchestration.ErrExecutionIncomplete) && result != nil {
@@ -761,6 +796,7 @@ func (m *Manager) tryContinueInterruptedTask(
 	if err != nil {
 		if ctx.Err() == context.Canceled {
 			if m.emitTaskCancelledUnlessShuttingDown(id) {
+				m.abandonGoalIfUnfinished(id)
 				bb.CancelTask()
 			}
 			return true
@@ -794,8 +830,10 @@ func (m *Manager) tryContinueInterruptedTask(
 // selection) and on app restart to resume interrupted tasks. The optional
 // modelOverride/reasoningEffort are applied (same as a fresh SendMessage) so a
 // model/reasoning switch the user made before resuming is honored instead of
-// silently inheriting the interrupted task's settings.
-func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEffort string) error {
+// silently inheriting the interrupted task's settings. The optional nudge is
+// injected as a trailing user message into the first resumed turn (one-shot) —
+// used by the nudge-resume path when a user sends a message into a paused session.
+func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEffort, nudge string) error {
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
@@ -929,6 +967,9 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 			Text:      originalRequest,
 		},
 	})
+	// session_resumed clears the UI's paused state (complementary to
+	// session_paused) so the input re-locks and Pause/Stop controls show again.
+	m.emitFunc(Event{SessionID: id, Type: "session_resumed"})
 
 	// Mark the prior task_failed_resumable banner as resolved so it does not
 	// reappear as pending after the resume goroutine finishes. Done here (at
@@ -947,7 +988,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 			session.mu.Unlock()
 		}()
 
-		result, err := session.orchestrator.Resume(taskCtx, bb, routing, config.SessionPlansDir(m.agentDir, session.ProjectID, id), resumeSteps, goalState)
+		result, err := session.orchestrator.Resume(taskCtx, bb, routing, config.SessionPlansDir(m.agentDir, session.ProjectID, id), resumeSteps, goalState, nudge)
 
 		// Treat partial execution like the SendMessage path — deliver best-effort
 		// output and rely on emitResumableIfUnfinished to expose resumability.
@@ -960,8 +1001,10 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 			if taskCtx.Err() == context.Canceled {
 				// On shutdown, leave the restored task in_progress so it can
 				// be resumed after restart; only user-initiated cancels mark
-				// the task as cancelled.
+				// the task as cancelled. The goal is abandoned (cancelled)
+				// only on a user cancel, not on shutdown.
 				if m.emitTaskCancelledUnlessShuttingDown(id) {
+					m.abandonGoalIfUnfinished(id)
 					bb.CancelTask()
 				}
 				return
@@ -976,6 +1019,29 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 				},
 			})
 			m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
+			return
+		}
+
+		// Safety net: if the context was cancelled but Resume returned no
+		// error (the goal-loop path returns nil error on cancel because
+		// resumeGoalLoop always returns nil), still treat it as a
+		// cancellation — mark the task cancelled and return. This mirrors
+		// the HandleMessage goroutine's safety net.
+		if taskCtx.Err() == context.Canceled {
+			if m.emitTaskCancelledUnlessShuttingDown(id) {
+				m.abandonGoalIfUnfinished(id)
+				bb.CancelTask()
+			}
+			return
+		}
+
+		// A cooperative pause during resume is a clean checkpoint (see the
+		// HandleMessage goroutine): emit session_paused instead of a degraded
+		// task_complete. The task stays resumable; a later Resume re-enters.
+		// Checked before the task-ID store below so a paused result does not
+		// update lastCompletedTaskID (the task is not completed).
+		if result != nil && result.Status == orchestration.ExecutionStatusPaused {
+			m.emitFunc(Event{SessionID: id, Type: "session_paused"})
 			return
 		}
 
@@ -1022,18 +1088,83 @@ func (m *Manager) CancelUnfinishedTask(sessionID string) error {
 	return nil
 }
 
+// PauseSession signals the currently-running task (any mode) for the session to
+// pause at the next step boundary. It delegates to the orchestrator's universal
+// PauseSession: the conductor's executor checks the pause signal at every step
+// boundary (normal path and every goal-loop turn alike), stops with a paused
+// checkpoint, and the request persists the task as paused + exits so a later
+// ResumeSession/ResumeTask can re-enter. It is a no-op when no request is in
+// flight or the orchestrator is not yet built.
+func (m *Manager) PauseSession(sessionID string) error {
+	session, err := m.getOrRestoreSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to restore session: %w", err)
+	}
+	if session == nil {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+	orch := session.GetOrchestrator()
+	if orch == nil {
+		return errors.New("orchestrator not initialized")
+	}
+	orch.PauseSession()
+	return nil
+}
+
+// ResumeSession re-enters the execution loop for a paused (or still-active,
+// non-terminal) task. It delegates to ResumeTask, which loads the unfinished
+// task + persisted state (trajectory, goal state) and dispatches to the
+// orchestrator's resume path. The optional nudge is injected as a trailing
+// user message into the first resumed turn (one-shot) — the nudge-resume path
+// when a user sends a message into a paused session. The optional
+// modelOverride/reasoningEffort are forwarded so a model/reasoning switch made
+// before resuming is honored. Returns nil if there is no resumable task.
+func (m *Manager) ResumeSession(ctx context.Context, sessionID, modelOverride, reasoningEffort, nudge string) error {
+	return m.ResumeTask(ctx, sessionID, modelOverride, reasoningEffort, nudge)
+}
+
+// hasPausedUnfinishedTask reports whether the session's resumable unfinished
+// task is specifically in the paused status. Used by the SendMessage
+// nudge-resume router to decide whether a new message resumes the paused task
+// instead of starting a fresh one. Returns false when no task store is
+// configured or on lookup error (best-effort: a failure falls through to the
+// normal SendMessage path).
+func (m *Manager) hasPausedUnfinishedTask(sessionID string) bool {
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts == nil {
+		return false
+	}
+	adapter := NewTaskStoreAdapter(ts)
+	taskID, err := adapter.GetUnfinishedTaskID(sessionID)
+	if err != nil || taskID == "" {
+		return false
+	}
+	state, err := adapter.LoadTaskState(taskID)
+	if err != nil || state == nil {
+		return false
+	}
+	return state.Status == "paused"
+}
+
 // SessionRuntimeStatus describes the live and persisted execution state of a
-// session, so the frontend can reconstruct "is something running / resumable"
-// after app restart or session switch instead of assuming idle.
+// session, so the frontend can reconstruct "is something running / resumable /
+// paused" after app restart or session switch instead of assuming idle.
 type SessionRuntimeStatus struct {
 	Active            bool   `json:"active"`
 	HasUnfinishedTask bool   `json:"has_unfinished_task"`
 	UnfinishedTaskID  string `json:"unfinished_task_id,omitempty"`
+	// Paused is true when the resumable unfinished task is in the "paused"
+	// status — a cooperative pause checkpoint that the user can resume (with
+	// an optional nudge) or send a new message into (treated as a nudge-resume).
+	Paused bool `json:"paused"`
 }
 
 // GetSessionRuntimeStatus returns whether a task is currently running in the
 // session (in-memory) and whether an unfinished (resumable) task is persisted
-// in the task store. It never restores a session as a side effect.
+// in the task store. When a resumable task exists, Paused reports whether it is
+// in the paused status. It never restores a session as a side effect.
 func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatus, error) {
 	var status SessionRuntimeStatus
 
@@ -1058,6 +1189,14 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 		if taskID != "" {
 			status.HasUnfinishedTask = true
 			status.UnfinishedTaskID = taskID
+			// Load the task record to distinguish a paused checkpoint from a
+			// plain in-progress/failed task. LoadTaskState returns the status
+			// field; a missing state is treated as non-paused.
+			if state, stateErr := adapter.LoadTaskState(taskID); stateErr == nil && state != nil {
+				status.Paused = state.Status == "paused"
+			} else if stateErr != nil {
+				m.log().Warn("get session runtime status: failed to load task state", "session", sessionID, "error", stateErr)
+			}
 		}
 	}
 
@@ -1101,6 +1240,45 @@ func (m *Manager) persistCancellationIfUnfinished(sessionID string) {
 	}
 	if err := adapter.PersistCancellation(tid); err != nil {
 		m.log().Warn("failed to persist cancellation", "task", tid, "error", err)
+	}
+}
+
+// abandonGoalIfUnfinished terminalizes the unfinished task's goal state as
+// cancelled (terminal) on a user-initiated cancel so a later resume does not
+// re-enter the goal loop. On shutdown the goal is left active (non-terminal)
+// so it survives restart — this method is only called inside the
+// emitTaskCancelledUnlessShuttingDown(id) == true branch (i.e. NOT shutting
+// down). Must be called BEFORE persistCancellationIfUnfinished/bb.CancelTask
+// because a cancelled task is no longer "unfinished" and GetUnfinishedTaskID
+// would not find it. Best-effort: errors are logged only. No-op when there is
+// no task store, no unfinished task, or no non-terminal goal state.
+func (m *Manager) abandonGoalIfUnfinished(sessionID string) {
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts == nil {
+		return
+	}
+	adapter := NewTaskStoreAdapter(ts)
+	tid, err := adapter.GetUnfinishedTaskID(sessionID)
+	if err != nil {
+		m.log().Warn("failed to look up unfinished task on cancel (goal abandon)", "session", sessionID, "error", err)
+		return
+	}
+	if tid == "" {
+		return
+	}
+	gs, err := adapter.LoadGoalState(tid)
+	if err != nil {
+		m.log().Warn("failed to load goal state on cancel", "task", tid, "error", err)
+		return
+	}
+	if gs == nil || gs.Status.IsTerminal() {
+		return
+	}
+	gs.Status = goalpkg.StatusCancelled
+	if err := adapter.PersistGoalState(tid, gs); err != nil {
+		m.log().Warn("failed to persist goal cancellation", "task", tid, "error", err)
 	}
 }
 
@@ -1263,7 +1441,7 @@ func taskCompletionInfo(result *core.HandleResult) (success bool, completion str
 		return true, "full"
 	}
 	switch result.Status {
-	case orchestration.ExecutionStatusPartial, orchestration.ExecutionStatusCancelled:
+	case orchestration.ExecutionStatusPartial, orchestration.ExecutionStatusCancelled, orchestration.ExecutionStatusPaused:
 		return false, "partial"
 	case orchestration.ExecutionStatusFailed:
 		return false, "failed"

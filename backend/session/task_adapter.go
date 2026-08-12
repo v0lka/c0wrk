@@ -106,6 +106,12 @@ func (a *TaskStoreAdapter) PersistCancellation(taskID string) error {
 	return a.store.CancelTask(context.Background(), taskID)
 }
 
+// PersistPause marks the task as paused so it survives app restart as a
+// resumable checkpoint (GetUnfinishedTask matches the paused status).
+func (a *TaskStoreAdapter) PersistPause(taskID string) error {
+	return a.store.PauseTask(context.Background(), taskID)
+}
+
 // ReactivateTask reactivates a completed task back to in_progress.
 func (a *TaskStoreAdapter) ReactivateTask(taskID string) error {
 	return a.store.ReactivateTask(context.Background(), taskID)
@@ -312,8 +318,8 @@ func (a *TaskStoreAdapter) GetUnfinishedTaskID(sessionID string) (string, error)
 // GetLatestTaskID returns the ID of the most recent task for the session,
 // regardless of status, or "" if none exists. Unlike GetUnfinishedTaskID it is
 // status-agnostic, so it still locates a task whose row was flipped to a
-// terminal status (e.g. cancelled/completed) by CancelTask — used by ClearGoal
-// to overwrite the goal state after the loop's exit persist has settled.
+// terminal status (e.g. cancelled/completed) by CancelTask. Used when a caller
+// needs the latest task row regardless of its lifecycle state.
 func (a *TaskStoreAdapter) GetLatestTaskID(sessionID string) (string, error) {
 	return a.store.GetLatestTaskID(context.Background(), sessionID)
 }

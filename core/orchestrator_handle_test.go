@@ -54,3 +54,28 @@ func TestPersistTaskOutcome_FailureDoesNotRecordFinalResult(t *testing.T) {
 		t.Fatal("expected task to be marked failed")
 	}
 }
+
+// TestPersistTaskOutcome_PausedStaysResumable verifies that a cooperative
+// pause (ExecutionStatusPaused) marks the task paused — neither completed nor
+// failed — so the resume safety net (GetUnfinishedTask matches the paused
+// status) can offer a Resume action and SessionRuntimeStatus.Paused reports
+// true. This is the core acceptance criterion: "на паузе задача персистится
+// как paused".
+func TestPersistTaskOutcome_PausedStaysResumable(t *testing.T) {
+	pbb := newTestPersistableBlackboard()
+
+	persistTaskOutcome(pbb, &orchestration.ExecutionResult{
+		Status: orchestration.ExecutionStatusPaused,
+		Output: "partial work before pause",
+	})
+
+	if pbb.completed {
+		t.Fatal("a paused task must NOT be marked completed")
+	}
+	if pbb.failed {
+		t.Fatal("a paused task must NOT be marked failed")
+	}
+	if !pbb.paused {
+		t.Fatal("a paused task must be marked paused (PauseTask called)")
+	}
+}

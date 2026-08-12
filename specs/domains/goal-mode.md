@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Goal mode is a multi-turn, agent-driven execution loop that pursues a single user-approved success condition to completion. Instead of a single route→Conductor pass that finishes when the agent calls `finish`, a goal request derives a crisp {condition, verify} pair (with user sign-off), then iterates the Conductor turn-by-turn until the agent **declares the goal met**, the **budget is exhausted**, the agent goes **idle (anti-spin)**, or the goal is **paused**. Goal mode is selected by a leading `/goal` command or an explicit goal flag (e.g. a UI toggle) on any message — including a continuation message, in which case the goal loop runs on the restored blackboard of the prior task (see [Mechanism](#mechanism)).
+Goal mode is a multi-turn, agent-driven execution loop that pursues a single user-approved success condition to completion. Instead of a single route→Conductor pass that finishes when the agent calls `finish`, a goal request derives a crisp {condition, verify} pair (with user sign-off), then iterates the Conductor turn-by-turn until the agent **declares the goal met**, the **budget is exhausted**, the agent goes **idle (anti-spin)**, or the task is **paused** (a session-level control; see [Pause is Session-Level](#pause-is-session-level)). Goal mode is selected by a leading `/goal` command or an explicit goal flag (e.g. a UI toggle) on any message — including a continuation message, in which case the goal loop runs on the restored blackboard of the prior task (see [Mechanism](#mechanism)).
 
 ## Key Files
 
 - `core/goal/types.go` — the `goal` domain package: `GoalStatus`, `GoalBudget`, `GoalEvidence`, `Verdict`, `GoalState` (the runtime state machine; `VerificationMode` the per-goal `executable`/`re_derivation` mode + `NormalizeVerificationMode` the single source of truth for valid values / the empty→default mapping; `LastVerification` carries the independent-verifier outcome marker `""`/`confirmed`/`rejected`/`off`)
-- `core/orchestrator_goal.go` — the goal loop: `deriveGoal`, `runGoalLoop`, `resumeGoalLoop`, `runGoalTurns`, budget/pause/anti-spin logic, the `countingToolExec` wrapper (anti-spin tool-call counter), `emitGoalStatus`/`emitGoalProgress`, `PauseGoal`; the **independent-verification gate** in `runGoalTurns` (the "met" branch); `defaultGoalVerifier` (the production verifier pass — runs on a **fresh isolated blackboard** seeded with the met turn's work product via `execResultOutput`/`SetFinalResult`, on the same complexity-derived step budget as a working turn, branching on `gs.VerificationMode`), `resolveGoalVerifier` (verifier nil→default resolution + test seam), `verifierToolFilter`/`verifierExcludedToolNames` (the read-only/test toolset for `executable` mode), `verifierReDerivationToolFilter` (adds `delegate`+`read_step_output` for `re_derivation` mode), `goalVerifierDefaultRejectReason` (synthesized rejection reason), `renderReportedEvidence`
-- `core/orchestrator.go` — `HandleMessage` dispatch (`opts.Goal`), `Resume` goal-loop branch, `WithGoalState`, `activeGoalPause atomic.Pointer[atomic.Bool]` field (cross-goroutine pause signal), `ApplyRequestOverrides` (shared step 0 for HandleMessage and the resume path), the `goalVerifier` field (the verifier injection seam), `GoalLoopSettings.Verification` (runtime config field mirroring the config layer)
+- `core/orchestrator_goal.go` — the goal loop: `deriveGoal`, `runGoalLoop`, `resumeGoalLoop`, `runGoalTurns`, budget/anti-spin logic, the `countingToolExec` wrapper (anti-spin tool-call counter), `emitGoalStatus`/`emitGoalProgress`; the **independent-verification gate** in `runGoalTurns` (the "met" branch); `goalLoopResult` (maps a mid-turn **session-pause** to `ExecutionStatusPaused`); `defaultGoalVerifier` (the production verifier pass — runs on a **fresh isolated blackboard** seeded with the met turn's work product via `execResultOutput`/`SetFinalResult`, on the same complexity-derived step budget as a working turn, branching on `gs.VerificationMode`), `resolveGoalVerifier` (verifier nil→default resolution + test seam), `verifierToolFilter`/`verifierExcludedToolNames` (the read-only/test toolset for `executable` mode), `verifierReDerivationToolFilter` (adds `delegate`+`read_step_output` for `re_derivation` mode), `goalVerifierDefaultRejectReason` (synthesized rejection reason), `renderReportedEvidence`
+- `core/orchestrator.go` — `HandleMessage` dispatch (`opts.Goal`), `Resume` goal-loop branch, `WithGoalState`, `activePause atomic.Pointer[atomic.Bool]` field (the **universal cross-goroutine pause signal** — read by every conductor run's pause-checker at each step boundary; `PauseSession` flips it), `installPauseSignal`/`PauseSession`/`newPauseChecker`, `ApplyRequestOverrides` (shared step 0 for HandleMessage and the resume path), the `goalVerifier` field (the verifier injection seam), `GoalLoopSettings.Verification` (runtime config field mirroring the config layer)
 - `core/message_preprocess.go` — `DetectAndStripGoalMode` (`/goal` prefix detection)
 - `core/types.go` — `HandleOptions.Goal`, `HandleOptions.GoalBudgetOverride`
 - `core/systemprompt.go` — goal-mode system-prompt section rendering (`prompts.GoalModeSubstitute`) and the derivation prompt selection (`prompts.GoalDerivation`); `renderGoalModeVolatile` (the per-turn volatile section, including the one-shot rejection notice when the prior "met" was rejected by the verifier)
@@ -19,8 +19,10 @@ Goal mode is a multi-turn, agent-driven execution loop that pursues a single use
 - `backend/config/config.go` / `backend/config/defaults.go` — `GoalLoopConfig.Verification` (`independent` default | `off`), validated in `Validate`
 - `desktop/startup_phases.go` — `goalProposerAdapter` (the desktop `GoalProposer` that emits `goal_proposal` and blocks for the user response)
 - `desktop/startup.go` — goal-proposal pending map, `goal_proposal_response` event handler, goal-proposal resolver wiring
-- `backend/frontend_api_goal.go` — RPC surface: `ConfirmGoal`/`CancelGoal`/`PauseGoal`/`ResumeGoal`/`ClearGoal`; `ConfirmGoal` forwards the user-approved `verificationMode` through the proposal resolver
-- `backend/session/manager_goal.go` — `ResumeGoal`, `SetGoalProposalResolver`, `ResolveGoalProposal`, `PauseGoal`, `ClearGoal`
+- `backend/frontend_api_session.go` — session-level RPC surface: `PauseSession(sessionID)` / `ResumeSession(sessionID, nudge, modelOverride, reasoningEffort)` (the universal pause/resume controls — apply to **all** tasks, goal and non-goal alike)
+- `backend/frontend_api_goal.go` — RPC surface: `ConfirmGoal`/`CancelGoal`; `ConfirmGoal` forwards the user-approved `verificationMode` through the proposal resolver
+- `backend/session/manager_execution.go` — `PauseSession` (delegates to `Orchestrator.PauseSession`), `ResumeSession` (delegates to `ResumeTask`), `hasPausedUnfinishedTask` (the SendMessage nudge-resume router), `SessionRuntimeStatus.Paused`, the `session_paused`/`session_resumed` emissions
+- `backend/session/manager_goal.go` — `SetGoalProposalResolver`, `ResolveGoalProposal`
 - `backend/session/events.go` — `GoalProposalPayload` (echoes `VerificationMode` from the derivation proposal)
 
 ## Core Types
@@ -90,14 +92,13 @@ If the agent never calls `propose_goal`, the run cancelled, or the user cancelle
 
 ### Phase 2 — Activation
 
-`runGoalLoop` resolves the budget (`resolveGoalBudget`: applies `opts.GoalBudgetOverride` — `MaxTurns` when set, otherwise unlimited), stamps `Status = active`, persists the `GoalState`, and installs the pause signal. Conversation history is truncated once to the configured window; the trajectory accumulates across turns via the blackboard.
+`runGoalLoop` resolves the budget (`resolveGoalBudget`: applies `opts.GoalBudgetOverride` — `MaxTurns` when set, otherwise unlimited), stamps `Status = active`, persists the `GoalState`, and relies on the **universal session pause signal** (installed by `installPauseSignal` in `HandleMessage`/`Resume`, not a goal-specific signal). Conversation history is truncated once to the configured window; the trajectory accumulates across turns via the blackboard.
 
 ### Phase 3 — Turn iteration (runGoalTurns)
 
 ```
 for gs.Status == active:
-  ┌─ top of turn: pause signal set? → Status=paused, emit goal_status, break (release single-flight)
-  │  ctx cancelled? → Status=paused, break
+  ┌─ top of turn: ctx cancelled? → break (the request persists as paused)
   │
   ├─ run ONE turn via the turn runner (fresh Executor.Run via RunConductor)
   │   — every turn: ReAct+Conductor consuming the pre-established routing
@@ -106,6 +107,15 @@ for gs.Status == active:
   │   — tool executor wrapped in countingToolExec (per-turn tool-call count for anti-spin)
   │   — context carries a fresh GoalStatusSink (declare_goal_status writes into it)
   │   — context carries the GoalState (WithGoalState) so the system prompt renders the goal
+  │   — the universal pause-checker reads activePause at each step boundary:
+  │     PauseSession flips it → the conductor stops mid-turn with ErrPaused →
+  │     ExecutionStatusPaused; runGoalTurns sees the paused turn result and
+  │     breaks out (goal Status stays active — the pause is task-level)
+  │
+  ├─ was the turn paused (ExecutionStatusPaused)? → break out of the loop
+  │   (the request returns ExecutionStatusPaused; the session manager persists
+  │   the task as paused + emits session_paused; the goal stays "active" so a
+  │   later ResumeSession re-enters the goal loop via resumeGoalLoop)
   │
   ├─ read the verdict sink:
   │     "met"     → INDEPENDENT VERIFICATION GATE (see § Independent Verification):
@@ -210,20 +220,23 @@ Both directives share the `{goal_condition}`/`{goal_verify_clause}`/`{reported_e
                           (propose_goal)
                                 │
                           ┌─────▼─────┐
-              approve ──▶ │  active    │ ◀── resume (paused/active re-enter)
+              approve ──▶ │  active    │ ◀── resume (active re-enter via ResumeSession)
                           └─────┬──────┘
                                 │ turn loop
             ┌───────────┬───────┼────────┬───────────┐
             ▼           ▼       ▼        ▼           ▼
-         met       exhausted  paused  blocked   cancelled
-       (terminal)  (terminal)         _idle    (terminal)
-                    (budget)    ▲      (resumable)
-                                │ PauseGoal signal / ctx cancel
-                                │
-                          (re-enters active on Resume)
+         met       exhausted  blocked  cancelled   ...
+       (terminal)  (terminal) _idle    (terminal)
+                    (budget)    (resumable)
+
+  A cooperative session-pause (PauseSession) does NOT change the goal status —
+  the goal stays "active". It persists the TASK as paused (task-level checkpoint),
+  emits session_paused, and releases single-flight. ResumeSession re-enters the
+  goal loop (resumeGoalLoop) under the still-"active" goal. Pause/resume is
+  therefore a session-level control, not a goal-status transition.
 ```
 
-Terminal states (`met`, `exhausted`, `cancelled`) are never re-entered — `Resume` guards on `IsTerminal()` before delegating to `resumeGoalLoop`. `paused` and `blocked_idle` are resumable: a paused goal is re-activated to `active` on resume so the `for gs.Status == active` guard enters the loop.
+The `GoalStatus` enum retains a `paused` value for legacy/defensive use, but the production cooperative-pause path no longer transitions a goal to `paused` — it is a **task-level** checkpoint that leaves the goal `active` (see [Pause is Session-Level](#pause-is-session-level)). Terminal states (`met`, `exhausted`, `cancelled`) are never re-entered — `Resume` guards on `IsTerminal()` before delegating to `resumeGoalLoop`. `blocked_idle` is resumable: a blocked goal is re-activated to `active` on resume so the `for gs.Status == active` guard enters the loop.
 
 ## Budgets
 
@@ -245,8 +258,8 @@ The `GoalState` is persisted so a paused/active goal survives app restart and re
 
 - **Persistence contract**: `PersistableBlackboard`/`TaskPersistence` (`core/persistent_blackboard.go`) — `PersistGoalState(taskID, gs)` / `LoadGoalState(taskID)`. The restored state is carried on `TaskState.GoalState` (nil for non-goal tasks). See [memory/blackboard.md](memory/blackboard.md).
 - **Resume entry**: `Orchestrator.Resume` checks `goalState != nil && !goalState.Status.IsTerminal()` and delegates to `resumeGoalLoop` (non-terminal) instead of the plain Conductor path. Terminal statuses fall through to normal resume.
-- **`resumeGoalLoop`** mirrors `runGoalLoop`'s post-derivation body but skips `deriveGoal` — the condition and verify clause are already known. A paused goal is re-activated to `active`. The prior trajectory (`resumeSteps`) is seeded into the executor on the **first resumed turn** via a once-flag wrapper so the resumed run continues the step counter/history from the checkpoint; the turn counter continues from `gs.TurnCount` (not reset to 1). Subsequent turns rely on the Conductor's own accumulated trajectory.
-- **Backend resume**: `Manager.ResumeGoal` → `ResumeTask` loads the unfinished task + persisted `GoalState` and dispatches to the orchestrator's resume path. See [session-lifecycle.md](session-lifecycle.md).
+- **`resumeGoalLoop`** mirrors `runGoalLoop`'s post-derivation body but skips `deriveGoal` — the condition and verify clause are already known. A `blocked_idle` goal is re-activated to `active` (a cooperative session-pause leaves the goal `active` already, so no re-activation is needed on that path). The prior trajectory (`resumeSteps`) is seeded into the executor on the **first resumed turn** via a once-flag wrapper so the resumed run continues the step counter/history from the checkpoint; the turn counter continues from `gs.TurnCount` (not reset to 1). Subsequent turns rely on the Conductor's own accumulated trajectory.
+- **Backend resume**: `ResumeSession` → `ResumeTask` loads the unfinished task + persisted `GoalState` and dispatches to the orchestrator's resume path. See [session-lifecycle.md](session-lifecycle.md).
 
 ## Events
 
@@ -256,7 +269,7 @@ Goal mode uses dedicated session events: one for the proposal sign-off (`goal_pr
 | ----- | --------- | --------------- | ------ | ----------- |
 | `goal_proposal` | backend → frontend | `GoalProposalPayload {request_id, session_id, condition, verify, verification_mode?}` | `goalProposerAdapter.Propose` | Derivation agent called `propose_goal`; surfaces as a pending action that **blocks the agent** until the user responds. `verification_mode` echoes the derivation agent's chosen `executable`/`re_derivation`. Persisted (role `goal_proposal`) so it reappears on reload. |
 | `goal_proposal_response` | frontend → backend | `{request_id, decision, condition?, verify?, verification_mode?}` (`approve` / `cancel`) | `GoalProposalPanel` (Approve/Cancel) | User's sign-off decision (the user may edit `verification_mode` on approval). Both the event path and the RPC path (`ConfirmGoal`/`CancelGoal`) funnel through a single resolver on the desktop pending map. |
-| `goal_status` | backend → frontend | dedicated `goal_status` session event, payload: `{status, turn, condition, max_turns, verification_mode, verdict?, reason?, evidence?, verification?, verification_reason?, verification_evidence?}` | `emitGoalStatus` (`Emitter.GoalStatus`) | Full goal snapshot, emitted on every state transition (paused/met/exhausted/blocked_idle) and after each turn. The `verification` field carries the independent-verifier outcome (`"confirmed"` / `"rejected"` / `"off"`) — present only when `gs.LastVerification` is one of those three values, i.e. immediately after a claimed `"met"` was adjudicated. `verification_mode` echoes `gs.VerificationMode`. `verdict`/`reason` reflect `gs.LastVerdict`; on a rejection, the synthesized `not_met` verdict carries the verifier's rejection reason. `verification_reason`/`verification_evidence` (present on `"confirmed"`) surface WHY the verifier confirmed and the artifacts backing it. Not persisted (transient). |
+| `goal_status` | backend → frontend | dedicated `goal_status` session event, payload: `{status, turn, condition, max_turns, verification_mode, verdict?, reason?, evidence?, verification?, verification_reason?, verification_evidence?}` | `emitGoalStatus` (`Emitter.GoalStatus`) | Full goal snapshot, emitted on every goal-state transition (met/exhausted/blocked_idle) and after each turn. A cooperative session-pause does **not** emit a goal-state transition (the goal stays `active`; the pause surfaces as `session_paused` instead). The `verification` field carries the independent-verifier outcome (`"confirmed"` / `"rejected"` / `"off"`) — present only when `gs.LastVerification` is one of those three values, i.e. immediately after a claimed `"met"` was adjudicated. `verification_mode` echoes `gs.VerificationMode`. `verdict`/`reason` reflect `gs.LastVerdict`; on a rejection, the synthesized `not_met` verdict carries the verifier's rejection reason. `verification_reason`/`verification_evidence` (present on `"confirmed"`) surface WHY the verifier confirmed and the artifacts backing it. Not persisted (transient). |
 | `goal_progress` | backend → frontend | dedicated `goal_progress` session event, payload: `{turn, max_turns, condition}` | `emitGoalProgress` (`Emitter.GoalProgress`) | Mid-loop turn/budget telemetry (emitted after a non-terminal turn). Not persisted (transient). |
 
 `goal_status` and `goal_progress` are each their **own dedicated session event**, emitted via the dedicated `Emitter.GoalStatus` / `Emitter.GoalProgress` methods (not the phase-discriminated `service` channel) so the frontend's live subscription reaches the goal store reliably. The frontend goal store (`useGoalEvents`) reconciles the store from these events; the `goal_proposal` event is handled by the goal handlers hook which writes both the goal store and a chat message (`goal_proposal` DisplayItem). See [../contracts/event-catalog.md](../contracts/event-catalog.md) and [frontend/events.md](frontend/events.md).
@@ -274,14 +287,16 @@ This is the same continuation convention the normal resume path uses (separate `
 
 > **The independent verifier is a fresh `RunConductor`, but NOT a goal turn.** The [Independent Verification](#independent-verification) backstop also launches an isolated `RunConductor` pass — but it is a **control-plane** pass, not one of the per-turn `Executor.Run`s this invariant covers: it does not increment `TurnCount`, is not counted against `MaxTurns`, and runs only after a claimed `"met"` with evidence.
 
-## Single-Flight / Pause-Signal Interaction
+## Pause is Session-Level (Universal Pause Signal)
 
-The goal loop runs under the `Orchestrator` single-flight guard (`requestInFlight.CompareAndSwap`), acquired in `HandleMessage` **before** `runGoalLoop` is entered. The loop holds that guard for its entire multi-turn duration.
+Pause/resume is a **session-level** control, not a goal-level one. A single universal pause signal — `Orchestrator.activePause atomic.Pointer[atomic.Bool]` — serves **every** request (goal and non-goal alike). There is no goal-specific `PauseGoal`; the frontend `PauseSession`/`ResumeSession` RPCs drive the same mechanism for all tasks.
 
-- **Pause is cooperative**: `PauseGoal()` loads the pointer (`o.activeGoalPause.Load()`) and sets the `atomic.Bool` it points to; the loop polls it at the **top of each turn** (not mid-turn). A pause transitions `Status → paused`, emits `goal_status`, and `break`s out of the turn loop — which releases the single-flight lock so a later `Resume` can re-enter.
-- **Signal lifetime**: the pause signal is installed at loop entry (`o.activeGoalPause.Store(&atomic.Bool{})`) and cleared on exit (`defer func() { o.activeGoalPause.Store(nil) }()`), so a stale signal from a prior goal cannot pause a future non-goal request. The field itself is an `atomic.Pointer[atomic.Bool]` — **not** a bare pointer — because the write (in the `HandleMessage`/`Resume` goroutine) and the read (in `PauseGoal`, a Wails-RPC goroutine) are **not** both covered by the single-flight guard. Single-flight serializes `HandleMessage` calls against each other, but `PauseGoal` runs independently and may race a loop's entry/exit swap; the atomic pointer makes that swap race-free. The `*atomic.Bool` it points to is, of course, atomic.
-- **No concurrent HandleMessage**: because the loop holds single-flight for its whole run, a second `HandleMessage` on the same orchestrator returns `ErrRequestInFlight` until the loop pauses/exits. Pause/Resume is the intended control flow, not concurrent requests.
-- **Resume re-enters the loop**: `Resume` (the public task-resume path) takes its own single-flight-equivalent path via the resume goroutine; when it sees a non-terminal `GoalState` it calls `resumeGoalLoop`, which installs its own fresh pause signal.
+- **One signal, every conductor run.** `installPauseSignal()` (called via `defer` at the top of both `HandleMessage` and `Resume`) installs a fresh `*atomic.Bool` and returns a clear function that stores `nil` on exit. Every conductor run launched during the request — a normal Conductor pass, a goal-loop turn, or the verifier pass — receives a **pause-checker** (`newPauseChecker`, wired into `ConductorConfig.PauseChecker`) that reads `activePause` live at **each step boundary** (mid-turn, not only at the top of a turn).
+- **Pause is cooperative and mid-turn.** `PauseSession()` loads the pointer and sets the `atomic.Bool` to `true`. The next step-boundary check in the in-flight conductor run observes it and the executor stops with `ErrPaused`, which the Conductor maps to **`ExecutionStatusPaused`**. The request path then persists the task as paused (`persistTaskOutcome` → `pbb.PauseTask()`) and exits, releasing the single-flight lock so a later `ResumeSession` can re-enter. The session manager emits `session_paused`.
+- **Goal stays "active"; pause is task-level.** A cooperative pause does **not** transition the `GoalStatus` to `paused` — the goal remains `active`. In `runGoalTurns`, a turn whose conductor returns `ExecutionStatusPaused` causes the loop to `break` out (returning `paused=true`), and `goalLoopResult` maps that to `ExecutionStatusPaused` (not `Partial`). The persisted checkpoint + still-`active` goal mean a later `ResumeSession` re-enters `resumeGoalLoop` under the same goal.
+- **Signal lifetime**: installing a fresh signal per request (rather than reusing one) guarantees a stale `true` value from a prior request can never pause a future one. The field is an `atomic.Pointer[atomic.Bool]` — **not** a bare pointer — because the write (in the `HandleMessage`/`Resume` goroutine) and the flip (in `PauseSession`, a Wails-RPC goroutine) are **not** both covered by the single-flight guard; the atomic pointer makes the entry/exit swap race-free.
+- **No concurrent HandleMessage**: the request holds single-flight for its whole run, so a second `HandleMessage` on the same orchestrator returns `ErrRequestInFlight` until the request pauses/exits. Pause/Resume (and the nudge-resume path) is the intended control flow, not concurrent requests.
+- **Resume re-enters the loop**: `ResumeSession` → `ResumeTask` loads the unfinished task + persisted `GoalState` and dispatches to the orchestrator's `Resume`, which installs its own fresh pause signal; when it sees a non-terminal `GoalState` it calls `resumeGoalLoop`, which continues the loop under the still-`active` goal. The optional `nudge` (a user message sent into the paused session) is injected as a trailing user message into the first resumed turn.
 
 ## Configuration
 
@@ -303,8 +318,8 @@ The goal budget is **turn-only**. There are no config-level token or wall-clock 
 - **Verification is mode-driven.** *How* "done" is checked is set per goal (`GoalState.VerificationMode`, chosen at derivation, editable at approval): `executable` (default) re-runs a runnable verify clause (`verifierToolFilter`); `re_derivation` delegates a fresh read-only run of the goal's process (`verifierReDerivationToolFilter`). Both modes are read-only — every mutating tool and every goal-control tool is excluded, so `declare_verification` is the verifier's only output channel. The mode takes effect only while the global gate is `independent`.
 - **A `"met"` rejected by the verifier can never terminate the goal as met.** Only a *confirmed* claim (or `verification: off`, or the nil-verifier seam) terminates as `met`; a rejected/non-declaring claim synthesizes a `not_met` verdict, feeds the reason back into the next agent turn, and continues the loop without re-incrementing the turn counter.
 - Anti-spin: a turn with **zero tool calls AND no verdict** halts as `blocked_idle`.
-- The pause signal is cleared on loop exit; a stale signal never affects a future request.
-- The loop holds the single-flight guard for its entire multi-turn run; `PauseGoal` releases it by breaking out.
+- **Pause is session-level, not goal-level.** A cooperative `PauseSession` persists the **task** as paused (mid-turn, at the next step boundary) but leaves the **goal** `active`; `ResumeSession` re-enters `resumeGoalLoop` under the same goal. The universal pause signal is installed fresh per request and cleared on exit, so a stale signal never affects a future request. See [Pause is Session-Level](#pause-is-session-level).
+- The loop holds the single-flight guard for its entire multi-turn run; `PauseSession` releases it by breaking out (mid-turn, at the next step boundary).
 - Terminal goal states (`met`, `exhausted`, `cancelled`) are never re-entered; `Resume` guards on `IsTerminal()`.
 - The `GoalState` is persisted best-effort; a persistence failure never propagates (degrades only resumability).
 - A turn error does not abort the loop — the agent may recover next turn.
@@ -316,7 +331,7 @@ The goal budget is **turn-only**. There are no config-level token or wall-clock 
 - [orchestration/README.md](orchestration/README.md) — HandleMessage flow, the goal-loop dispatch point
 - [orchestration/executor.md](orchestration/executor.md) — the `Executor.Run` primitive launched once per turn
 - [memory/blackboard.md](memory/blackboard.md) — `GoalState` persistence and `TaskState.GoalState`
-- [session-lifecycle.md](session-lifecycle.md) — task resume, `resumeGoalLoop`, `ResumeGoal`
+- [session-lifecycle.md](session-lifecycle.md) — task resume, `resumeGoalLoop`, `ResumeSession`/`ResumeTask`
 - [tool-system/builtins.md](tool-system/builtins.md) — `propose_goal` and `declare_goal_status` registration
 - [../contracts/event-catalog.md](../contracts/event-catalog.md) — `goal_proposal`, `goal_proposal_response`, `goal_status`/`goal_progress` phases
 - [frontend/events.md](frontend/events.md) — goal event handlers

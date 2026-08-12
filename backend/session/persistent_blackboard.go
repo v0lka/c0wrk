@@ -376,6 +376,18 @@ func (pb *PersistentBlackboard) CancelTask() {
 	pb.shutdownPersister()
 }
 
+// PauseTask marks the task as paused so it survives app restart as a resumable
+// checkpoint. Writes synchronously (bypassing the worker) to guarantee the
+// status change is persisted before returning. Does NOT shut down the
+// persister channel: unlike the terminal finalizers (Complete/Fail/Cancel), a
+// paused task is still live and may receive additional persistence writes
+// (e.g. a final trajectory flush) before the orchestrator fully unwinds.
+func (pb *PersistentBlackboard) PauseTask() {
+	pb.persistSynchronously("task pause", func() error {
+		return pb.store.PersistPause(pb.taskID)
+	})
+}
+
 // ReactivateTask reactivates a completed task back to in_progress.
 func (pb *PersistentBlackboard) ReactivateTask() {
 	pb.persistSafe("task reactivation", func() error {

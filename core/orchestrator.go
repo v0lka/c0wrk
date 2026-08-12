@@ -382,19 +382,20 @@ type Orchestrator struct {
 	// inspect the claimed artifacts).
 	goalVerifier func(ctx context.Context, gs *goal.GoalState, verdict *goal.Verdict, message string, lastTurnOutput string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, deps conductorDeps) (*tools.VerificationOutcome, error)
 
-	// activeGoalPause is the pause signal for the currently-running goal
-	// loop, if any. PauseGoal loads the pointer and sets the atomic; runGoalLoop
-	// polls it at the top of each turn iteration. It is swapped in at goal-loop
-	// entry and cleared (nil) on exit so a stale signal from a prior goal cannot
-	// pause a future non-goal request.
+	// activePause is the universal pause signal for the currently-running
+	// conductor (any mode), if any. PauseSession loads the pointer and sets the
+	// atomic; the conductor's executor polls it at every step boundary (via the
+	// pause-checker wired through ConductorConfig.PauseChecker). It is swapped
+	// in at request entry (HandleMessage/Resume) and cleared (nil) on exit so a
+	// stale signal from a prior request cannot pause a future one.
 	//
 	// The pointer field itself is an atomic.Pointer so the cross-goroutine read
-	// in PauseGoal (a Wails-RPC goroutine) and the write in runGoalLoop/
-	// resumeGoalLoop (the HandleMessage/Resume goroutine) race-free. The
-	// single-flight requestInFlight flag serializes HandleMessage calls against
-	// each other, but does NOT cover PauseGoal, which runs independently — hence
-	// the atomic pointer. The *atomic.Bool it points to is, of course, atomic.
-	activeGoalPause atomic.Pointer[atomic.Bool]
+	// in PauseSession (a Wails-RPC goroutine) and the write in the request
+	// goroutine stay race-free. The single-flight requestInFlight flag serializes
+	// HandleMessage/Resume calls against each other, but does NOT cover
+	// PauseSession, which runs independently — hence the atomic pointer. The
+	// *atomic.Bool it points to is, of course, atomic.
+	activePause atomic.Pointer[atomic.Bool]
 }
 
 // ErrRequestInFlight is returned by HandleMessage when another HandleMessage
@@ -402,6 +403,63 @@ type Orchestrator struct {
 // designed for one concurrent request per instance — the session layer is
 // responsible for serializing per-session.
 var ErrRequestInFlight = errors.New("orchestrator: request already in flight")
+
+// installPauseSignal installs a fresh pause signal for the duration of the
+// current request and returns a clear function to defer. Every conductor run
+// launched during the request (normal path or goal loop) receives a
+// pause-checker (see newPauseChecker) that reads this signal at each step
+// boundary. PauseSession flips the signal from an independent goroutine; the
+// executor then returns ErrPaused, which the Conductor maps to
+// ExecutionStatusPaused — the request persists the task as paused and exits,
+// releasing the single-flight lock so a later Resume can re-enter.
+//
+// Installing a fresh signal per request (rather than reusing one) guarantees a
+// stale true value from a prior request can never pause a future one.
+func (o *Orchestrator) installPauseSignal() func() {
+	pause := &atomic.Bool{}
+	o.activePause.Store(pause)
+	return func() { o.activePause.Store(nil) }
+}
+
+// PauseSession signals the currently-running conductor (any mode) to pause at
+// the next step boundary. It is a no-op when no request is in flight (no
+// signal installed). The pause is cooperative: the executor's pause-checker
+// observes the signal at the top of its next iteration, stops with ErrPaused,
+// and the request path persists the task as paused + releases single-flight so
+// a later Resume can re-enter.
+func (o *Orchestrator) PauseSession() {
+	if p := o.activePause.Load(); p != nil {
+		p.Store(true)
+	}
+}
+
+// newPauseChecker returns a cooperative pause-checker closure suitable for
+// ConductorConfig.PauseChecker. It reads the active request's pause signal
+// live: when PauseSession flips it, the next step-boundary check returns true
+// and the conductor stops. With no signal installed (no request in flight) it
+// always returns false — the default non-pausing behavior — so installing it
+// unconditionally on every conductor run is safe.
+func (o *Orchestrator) newPauseChecker() func(context.Context) bool {
+	return func(context.Context) bool {
+		if p := o.activePause.Load(); p != nil {
+			return p.Load()
+		}
+		return false
+	}
+}
+
+// emitSessionPaused surfaces a cooperative pause to the user. It emits a
+// service message (carrying a "pause" phase so the frontend can style it) and
+// relies on the existing resumable-task safety net to expose a Resume action:
+// the paused task is left in_progress by persistTaskOutcome, so
+// emitResumableIfUnfinished (driven by taskCompletionInfo mapping Paused to a
+// non-success completion) offers the resume button. Nil-safe like all emitters.
+func (o *Orchestrator) emitSessionPaused() {
+	if o.emitter == nil {
+		return
+	}
+	o.emitter.ServiceWithMeta("Task paused — use Resume to continue.", map[string]any{"phase": "pause"})
+}
 
 // LocalModelProbe is a best-effort, non-blocking hook that discovers the real
 // context window for a model served from an OpenAI-compatible endpoint (LM
@@ -669,8 +727,31 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 // limit reached). Callers should check errors.Is(err, orchestration.ErrExecutionIncomplete)
 // and use the returned HandleResult for partial output, plan state, and blackboard.
 // All other errors indicate complete failure; the task is marked failed and nil is returned.
-func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision, plansDir string, resumeSteps []agent.Step, goalState *goal.GoalState) (result *HandleResult, err error) {
-	o.logDebug("orchestrator: resume started", "resumeSteps", len(resumeSteps))
+// Resume continues execution of a previously interrupted task from its checkpoint state.
+// The blackboard must be pre-loaded with the task's persisted state (via RestoreBlackboard).
+//
+// nudge is an optional user message injected on resume (resume-with-nudge):
+// when non-empty it is threaded to the Conductor's PendingUserInterjection so
+// it lands as the final user message next to the pending tool result in the
+// very first resumed LLM call. Empty resumes silently from the checkpoint.
+//
+// Error semantics: when the sp4rk engine returns orchestration.ErrExecutionIncomplete with
+// a non-nil ExecutionResult, Resume returns a valid *HandleResult alongside the error.
+// This indicates partial success — the task made progress but did not finish (e.g., step
+// limit reached). Callers should check errors.Is(err, orchestration.ErrExecutionIncomplete)
+// and use the returned HandleResult for partial output, plan state, and blackboard.
+// All other errors indicate complete failure; the task is marked failed and nil is returned.
+// A cooperative pause (agent.ErrPaused) is handled as a clean checkpoint: the task is
+// persisted as paused (resumable), session_paused is emitted, and Resume returns the
+// HandleResult with a nil error and Status=ExecutionStatusPaused.
+func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision, plansDir string, resumeSteps []agent.Step, goalState *goal.GoalState, nudge string) (result *HandleResult, err error) {
+	o.logDebug("orchestrator: resume started", "resumeSteps", len(resumeSteps), "nudge", nudge != "")
+
+	// Install the universal pause signal for this resumed request. Every
+	// conductor run reads it via the pause-checker at each step boundary;
+	// PauseSession flips it. Mirrors HandleMessage so a resumed task is
+	// pauseable exactly like a fresh one.
+	defer o.installPauseSignal()()
 
 	// Record the resumed execution's outcome in the in-memory conversation
 	// history so future routing and continuation planning see this exchange.
@@ -731,7 +812,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// terminal goal state falls through to the normal resume path.
 	if goalState != nil && !goalState.Status.IsTerminal() {
 		o.logInfo("resume_task: resuming goal loop", "status", goalState.Status, "turn", goalState.TurnCount)
-		return o.resumeGoalLoop(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, routing, goalState, resumeSteps)
+		return o.resumeGoalLoop(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, routing, goalState, resumeSteps, nudge)
 	}
 
 	// Goal-mode-only tools exist solely for goal mode and must not reach a
@@ -755,7 +836,16 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 		}
 	}
 
-	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, nil, resumeSteps, resumeContentBlocks)
+	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, nil, resumeSteps, resumeContentBlocks, nudge)
+	// Cooperative pause: a clean, recoverable checkpoint — not a failure.
+	// Surface it, persist the task as resumable (persistTaskOutcome below),
+	// and return the paused result with a nil error so the backend treats it
+	// as a non-success completion (surfacing a Resume action) rather than an
+	// error.
+	if errors.Is(err, agent.ErrPaused) {
+		o.emitSessionPaused()
+		err = nil
+	}
 	var incompleteErr error
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
 		if pbb, ok := bb.(PersistableBlackboard); ok {
@@ -1279,6 +1369,12 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	}
 	defer o.requestInFlight.Store(false)
 
+	// Install the universal pause signal for this request. Every conductor run
+	// (normal path or goal loop) reads it via the pause-checker at each step
+	// boundary; PauseSession flips it. Cleared on exit so a stale signal can
+	// never pause a future request.
+	defer o.installPauseSignal()()
+
 	// Resolve the effective task message. When the user invokes a skill via
 	// /skill-name, preprocessMessageText strips the reference — potentially
 	// leaving an empty message. resolveTaskMessage rebuilds it so the
@@ -1416,7 +1512,15 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	conductorHistory := truncateHistory(o.conversationHistory, o.config.ConductorHistoryWindow)
 
 	plansDir := opts.SessionPlansDir
-	execResult, err := o.runConductor(ctx, conductorMessage, bb, availableTools, plansDir, conductorHistory, nil, contentBlocks)
+	execResult, err := o.runConductor(ctx, conductorMessage, bb, availableTools, plansDir, conductorHistory, nil, contentBlocks, "")
+	// Cooperative pause: a clean, recoverable checkpoint — not a failure.
+	// Surface it, persist the task as resumable (persistTaskOutcome via
+	// finalizeResult), and return the paused result with a nil error so the
+	// backend surfaces a Resume action rather than an error.
+	if errors.Is(err, agent.ErrPaused) {
+		o.emitSessionPaused()
+		err = nil
+	}
 	// C-5: propagate ErrExecutionIncomplete alongside best-effort result.
 	if err != nil && !errors.Is(err, orchestration.ErrExecutionIncomplete) {
 		// Mark the task as failed so it is not left lingering in_progress

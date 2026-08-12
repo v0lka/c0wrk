@@ -13,7 +13,7 @@
 // unchanged for plain text messages.
 
 import { useCallback } from 'react'
-import { FileText, Target } from 'lucide-react'
+import { FileText, Target, Zap } from 'lucide-react'
 import type { UserMessageMeta, StoredImageMeta } from '@/lib/userMessageMeta'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 
@@ -38,6 +38,18 @@ function GoalBadge(): React.JSX.Element {
     >
       <Target className="size-3 shrink-0" />
       <span>Goal</span>
+    </span>
+  )
+}
+
+function NudgeBadge(): React.JSX.Element {
+  return (
+    <span
+      className="inline-flex items-center gap-1 h-6 px-2 rounded-md bg-info/10 text-xs font-medium text-info shrink-0"
+      title="Nudge — sent while paused to resume the task"
+    >
+      <Zap className="size-3 shrink-0" />
+      <span>Nudge</span>
     </span>
   )
 }
@@ -95,19 +107,21 @@ export function UserMessageMetaBadges({
   isPinned: _isPinned,
 }: UserMessageMetaBadgesProps): React.JSX.Element | null {
   const hasGoal = meta.goal === true
+  const hasNudge = meta.is_nudge === true
   const docs = meta.attachments ?? []
   const images = meta.images ?? []
   const openImage = useOpenImage()
 
-  if (!hasGoal && docs.length === 0 && images.length === 0) {
+  if (!hasGoal && !hasNudge && docs.length === 0 && images.length === 0) {
     return null
   }
 
   return (
     <div className="flex flex-col gap-1 shrink-0 mb-2">
-      {(hasGoal || docs.length > 0) && (
+      {(hasGoal || hasNudge || docs.length > 0) && (
         <div className="flex flex-wrap items-center gap-1.5">
           {hasGoal && <GoalBadge />}
+          {hasNudge && <NudgeBadge />}
           {docs.map((doc) => (
             <DocChip
               key={`${doc.original_name}-${doc.format}`}

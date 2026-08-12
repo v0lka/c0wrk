@@ -8,7 +8,7 @@ The orchestration domain coordinates the full lifecycle of a user request: class
 
 - `core/orchestrator.go` — top-level Orchestrator (HandleMessage, Resume)
 - `core/orchestrator_handle.go` — HandleMessage body: router → Conductor launch, `prepareRequestContext`
-- `core/orchestrator_goal.go` — goal mode: deriveGoal, runGoalLoop, resumeGoalLoop, runGoalTurns, budgets, anti-spin, pause signal (see [../goal-mode.md](../goal-mode.md))
+- `core/orchestrator_goal.go` — goal mode: deriveGoal, runGoalLoop, resumeGoalLoop, runGoalTurns, budgets, anti-spin (see [../goal-mode.md](../goal-mode.md))
 - `core/conductor.go` — Conductor entry point: builds system prompt, tool set, launches `Executor.Run`
 - `core/smallllm/tools_filter.go` — pure tool-set narrowing for the Small-LLM essential-tools variant (see [../small-llm.md](../small-llm.md))
 - `core/tools/delegate.go` — `delegate` tool (subagent launch with DAG + async)
@@ -57,7 +57,7 @@ type Orchestrator struct {
 // Conductor-run dependencies (reflector, toolExec, toolCache, perToolTrunc,
 // toolResultBudget, circuitBreaker, stepDumpTracker, providerName) and
 // goal-loop plumbing (goalProposer, goalTurnRunner,
-// activeGoalPause). The fields above are the ones consumed by the
+// activePause). The fields above are the ones consumed by the
 // route→Conductor flow.
 
 // Configuration
@@ -137,9 +137,9 @@ HandleMessage(ctx, message, sessionID, opts)
 │     The goal loop derives a {condition, verify} goal with user sign-off,
 │     then iterates the Conductor turn-by-turn until the agent declares the
 │     goal met (with evidence), the budget is exhausted, the agent goes idle
-│     (anti-spin), or the goal is paused. Each turn is a fresh Executor.Run;
-│     the loop holds the single-flight guard for its whole run. See
-│     [../goal-mode.md](../goal-mode.md).
+│     (anti-spin), or the task is paused (a session-level control). Each turn
+│     is a fresh Executor.Run; the loop holds the single-flight guard for its
+│     whole run. See [../goal-mode.md](../goal-mode.md).
 │
 ├─ 3. ROUTE (or continuation fast-path):
 │     ├─ Continuation fast-path: if opts.TaskID != "" AND the restored BB
@@ -200,7 +200,7 @@ HandleMessage(ctx, message, sessionID, opts)
 | Simple task | Conductor never calls `delegate` | One ReAct loop, no subagents. Replaces the former "normal" single-step mode without planner overhead. |
 | Complex task | Conductor calls `delegate` with one or more tasks | Subagents run isolated ReAct loops; Conductor sees only summaries. Replaces the former "advanced" multi-step DAG mode. |
 | Interactive skill | Conductor calls `ask_user` / `declare_plan` mid-loop | Skill instructions are executable because the tools are available inside the loop. No pipeline-level gate. |
-| Goal mode | First message carries `/goal` (`opts.Goal`) | `runGoalLoop` replaces the single route→Conductor pass: derives a {condition, verify} goal with user sign-off, then iterates the Conductor turn-by-turn (each a fresh `Executor.Run`) until the agent declares the goal met, the budget is exhausted, the agent goes idle, or the goal is paused. See [../goal-mode.md](../goal-mode.md). |
+| Goal mode | First message carries `/goal` (`opts.Goal`) | `runGoalLoop` replaces the single route→Conductor pass: derives a {condition, verify} goal with user sign-off, then iterates the Conductor turn-by-turn (each a fresh `Executor.Run`) until the agent declares the goal met, the budget is exhausted, the agent goes idle, or the task is paused (session-level). See [../goal-mode.md](../goal-mode.md). |
 
 There is no `executionMode` toggle. The Conductor chooses its own granularity based on task complexity and its system-prompt guidance.
 
@@ -210,7 +210,7 @@ There is no `executionMode` toggle. The Conductor chooses its own granularity ba
 - Routing always produces a valid domain from {"code", "research", "general", "mixed"}.
 - Complexity is always in range [1, 5].
 - Exactly one Conductor `Executor.Run` instance owns a given task from start to finish.
-- **Goal mode is a turn-of-Conductors, not one long-lived executor.** When `opts.Goal && opts.TaskID == ""`, `runGoalLoop` iterates: each turn launches a fresh `Executor.Run` via `RunConductor`, reusing the normal continuation-trajectory mechanism so dialogue context persists across the turn boundary. Routing is decided once at the top of `runGoalLoop` (before derivation) and inherited unchanged by every turn; no turn re-routes. The loop holds the single-flight guard for its whole run; `PauseGoal` releases it by transitioning to `paused` and breaking out. See [../goal-mode.md](../goal-mode.md).
+- **Goal mode is a turn-of-Conductors, not one long-lived executor.** When `opts.Goal && opts.TaskID == ""`, `runGoalLoop` iterates: each turn launches a fresh `Executor.Run` via `RunConductor`, reusing the normal continuation-trajectory mechanism so dialogue context persists across the turn boundary. Routing is decided once at the top of `runGoalLoop` (before derivation) and inherited unchanged by every turn; no turn re-routes. The loop holds the single-flight guard for its whole run; `PauseSession` releases it by stopping the in-flight conductor at the next step boundary (the task is persisted as paused; the goal stays `active`). See [../goal-mode.md](../goal-mode.md).
 - The Conductor always has `ask_user`, `declare_plan`, `execute_plan`, `reflect`, `delegate`, `cancel_delegation`, `finish` available regardless of skill or tool-policy overrides (they are internal tools, bypass policy).
 - `finish` with pending async delegations requires either a prior `cancel_delegation` for each, or an implicit join (the Conductor waits for all pending delegations before finishing).
 - `ExecutionResult.Status` is the typed success contract: success | partial | failed | aborted | cancelled. Callers consult it instead of parsing Output.

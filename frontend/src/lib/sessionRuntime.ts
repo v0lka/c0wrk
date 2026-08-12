@@ -44,6 +44,30 @@ export function stalePromptMatchField(type: MessageType): string | null {
 }
 
 /**
+ * Resolves stale HITL prompts (step_limit, plan_review, tool_confirm, ask_user)
+ * whose owning executor no longer exists after a restart. Returns the messages
+ * that were resolved. Messages already resolved or not HITL types are skipped.
+ * Used by both the paused and the unfinished-task reconciliation paths so the
+ * two resumable states stay consistent.
+ */
+function resolveStaleHitlPrompts(sessionId: string): ChatMessageUI[] {
+  const store = useChatStore.getState()
+  const order = store.messageOrder[sessionId] ?? []
+  const index = store.messages[sessionId] ?? {}
+  const resolvedStale: ChatMessageUI[] = []
+  for (const id of order) {
+    const msg = index[id]
+    if (!msg) continue
+    if (msg.metadata?.resolved === true) continue
+    if (HITL_PROMPT_TYPES.has(msg.type)) {
+      store.updateMessage(sessionId, msg.id, { metadata: { ...msg.metadata, resolved: true, stale: true } })
+      resolvedStale.push(msg)
+    }
+  }
+  return resolvedStale
+}
+
+/**
  * Align chat-store state for `sessionId` with the backend runtime status.
  *
  * - `active` → restore the "task running" flag (input disabled, no false idle).
@@ -59,6 +83,23 @@ export function stalePromptMatchField(type: MessageType): string | null {
  */
 export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntimeStatus): ChatMessageUI[] {
   const store = useChatStore.getState()
+
+  // A cooperatively paused task is a clean checkpoint: set the paused flag and
+  // taskActive=false so the UI shows the paused state (unlocked input,
+  // Resume/Stop). Crucially, a paused task must NOT trigger the
+  // task_failed_resumable banner below — it is resumable via the Resume button
+  // or a nudge message, not a "previous task did not finish" banner.
+  if (status.paused) {
+    store.setPaused(sessionId, true)
+    store.setTaskActive(sessionId, false)
+    // Resolve stale interactive prompts (step_limit, plan_review,
+    // tool_confirm, ask_user) whose owning executor no longer exists after a
+    // restart, so the two resumable states (paused vs failed-but-resumable)
+    // stay consistent. Do NOT inject a task_failed_resumable banner: a paused
+    // task is resumable via the Resume button or a nudge message.
+    return resolveStaleHitlPrompts(sessionId)
+  }
+  store.setPaused(sessionId, false)
   store.setTaskActive(sessionId, status.active)
 
   if (status.active) {
@@ -82,13 +123,7 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
   if (status.has_unfinished_task) {
     // Stale interactive prompts cannot be answered after a restart — the
     // executor waiting for the response no longer exists.
-    const resolvedStale: ChatMessageUI[] = []
-    for (const msg of unresolved) {
-      if (HITL_PROMPT_TYPES.has(msg.type)) {
-        store.updateMessage(sessionId, msg.id, { metadata: { ...msg.metadata, resolved: true, stale: true } })
-        resolvedStale.push(msg)
-      }
-    }
+    const resolvedStale = resolveStaleHitlPrompts(sessionId)
     const hasResumable = unresolved.some(m => m.type === 'task_failed_resumable')
     if (!hasResumable) {
       store.addMessage(sessionId, {

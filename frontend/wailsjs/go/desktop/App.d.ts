@@ -33,8 +33,6 @@ export function CheckForUpdates():Promise<backend.UpdateInfo>;
 
 export function CheckoutBranch(arg1:string):Promise<void>;
 
-export function ClearGoal(arg1:string):Promise<void>;
-
 export function ClearReview(arg1:string):Promise<void>;
 
 export function ClearReviewComments(arg1:string):Promise<void>;
@@ -179,7 +177,7 @@ export function OptimizePrompt(arg1:string):Promise<backend.OptimizePromptRespon
 
 export function PasteFromClipboard(arg1:string,arg2:boolean):Promise<session.PasteResult>;
 
-export function PauseGoal(arg1:string):Promise<void>;
+export function PauseSession(arg1:string):Promise<void>;
 
 export function PickAttachmentFiles():Promise<Array<string>>;
 
@@ -209,7 +207,7 @@ export function ResetToCommit(arg1:string,arg2:string):Promise<void>;
 
 export function ResolvePendingMessage(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Record<string, any>):Promise<void>;
 
-export function ResumeGoal(arg1:string,arg2:string,arg3:string):Promise<void>;
+export function ResumeSession(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function ResumeTask(arg1:string,arg2:string,arg3:string):Promise<void>;
 

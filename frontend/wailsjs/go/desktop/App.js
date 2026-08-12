@@ -50,10 +50,6 @@ export function CheckoutBranch(arg1) {
   return window['go']['desktop']['App']['CheckoutBranch'](arg1);
 }
 
-export function ClearGoal(arg1) {
-  return window['go']['desktop']['App']['ClearGoal'](arg1);
-}
-
 export function ClearReview(arg1) {
   return window['go']['desktop']['App']['ClearReview'](arg1);
 }
@@ -342,8 +338,8 @@ export function PasteFromClipboard(arg1, arg2) {
   return window['go']['desktop']['App']['PasteFromClipboard'](arg1, arg2);
 }
 
-export function PauseGoal(arg1) {
-  return window['go']['desktop']['App']['PauseGoal'](arg1);
+export function PauseSession(arg1) {
+  return window['go']['desktop']['App']['PauseSession'](arg1);
 }
 
 export function PickAttachmentFiles() {
@@ -402,8 +398,8 @@ export function ResolvePendingMessage(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['desktop']['App']['ResolvePendingMessage'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function ResumeGoal(arg1, arg2, arg3) {
-  return window['go']['desktop']['App']['ResumeGoal'](arg1, arg2, arg3);
+export function ResumeSession(arg1, arg2, arg3, arg4) {
+  return window['go']['desktop']['App']['ResumeSession'](arg1, arg2, arg3, arg4);
 }
 
 export function ResumeTask(arg1, arg2, arg3) {

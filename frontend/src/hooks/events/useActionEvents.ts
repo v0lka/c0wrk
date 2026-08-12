@@ -61,6 +61,9 @@ export function useActionEvents(sessionId: string | null): void {
             break
           }
         }
+        // A resume also clears the paused state (session_resumed fires too,
+        // but this covers any resume path and keeps the two consistent).
+        store.setPaused(sessionId, false)
         store.setTaskActive(sessionId, true)
         store.setActivityStatus(sessionId, 'Resuming...')
       }),

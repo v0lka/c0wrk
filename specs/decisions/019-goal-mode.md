@@ -28,7 +28,7 @@ goal abstraction, three problems recur:
 Goal mode addresses this by deriving a crisp {condition, verify} pair with
 user sign-off, then iterating the Conductor turn-by-turn until the agent
 **declares the goal met (with evidence)**, the budget is exhausted, the agent
-goes idle, or the goal is paused.
+goes idle, or the task is paused (a session-level control).
 
 ## Decision
 
@@ -169,17 +169,24 @@ opportunity without forcing them to do the authoring. This mirrors the
 
 The `GoalState` is persisted (`PersistGoalState`/`LoadGoalState`) so a
 paused or active goal survives app restart and resumes into the loop. A
-cooperative pause (`PauseGoal` sets an atomic the loop polls at the top of each
-turn) transitions the goal to `paused`, releases the single-flight lock, and a
-later `Resume` re-enters (`resumeGoalLoop`) with the prior trajectory seeded.
+cooperative pause is a **session-level** control (`PauseSession` flips a
+universal pause signal that every conductor run's pause-checker reads at each
+step boundary; the executor stops mid-turn with `ErrPaused` →
+`ExecutionStatusPaused`) — it persists the **task** as paused and exits,
+releasing the single-flight lock. The **goal stays `active`** (pause is
+task-level); a later `ResumeSession` re-enters (`resumeGoalLoop`) with the
+prior trajectory seeded. There is no goal-specific `PauseGoal`; the same
+`PauseSession`/`ResumeSession` RPCs serve all tasks (goal and non-goal alike).
 
 **Rationale.** A goal can run for many turns (an explicit turn budget, or an
 unlimited ∞ goal the user controls via pause/stop). Forcing the user to keep the
 app open and the loop running for that duration is brittle — a restart, a
 pause-to-think, or a hand-off would discard progress. Persisting the state and
 supporting pause/resume makes a long goal durable and interruptible, matching
-the resumability guarantees of normal tasks. The persistence is best-effort so
-a missing store never blocks a run.
+the resumability guarantees of normal tasks. Making pause session-level (rather
+than goal-specific) means one control surface serves every task and the pause
+semantics are identical whether or not a goal is active. The persistence is
+best-effort so a missing store never blocks a run.
 
 ### 4. Anti-spin auto-pause (not infinite retries)
 

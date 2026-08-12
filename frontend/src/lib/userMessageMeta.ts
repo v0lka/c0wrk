@@ -43,6 +43,10 @@ export interface UserMessageMeta {
   readonly goal?: boolean
   readonly images?: StoredImageMeta[]
   readonly attachments?: StoredAttachmentMeta[]
+  /** True when this user message was sent into a paused session as a nudge
+   *  (nudge-resume path). Merged by the backend (mergeIsNudgeMetadata) so the
+   *  nudge is distinguishable from a fresh request on reload. */
+  readonly is_nudge?: boolean
 }
 
 /** Type guard for a single StoredImageMeta: requires all five string fields.
@@ -95,12 +99,17 @@ export function parseUserMessageMeta(
   // return boundary (mutable is assignable to readonly).
   const result: {
     goal?: boolean
+    is_nudge?: boolean
     images?: StoredImageMeta[]
     attachments?: StoredAttachmentMeta[]
   } = {}
 
   if (metadata.goal === true) {
     result.goal = true
+  }
+
+  if (metadata.is_nudge === true) {
+    result.is_nudge = true
   }
 
   const images = filterValid(metadata.images, isStoredImageMeta)

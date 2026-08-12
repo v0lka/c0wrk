@@ -26,10 +26,12 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/session/title.go` — auto title generation via LLM
 - `backend/frontend_api_session.go` — FrontendAPI session methods
 - `backend/frontend_api_project.go` — project switch state persistence + destination session fallback
-- `core/orchestrator.go` — Orchestrator.HandleMessage, Orchestrator.Resume
-- `core/orchestrator_goal.go` — goal mode (runGoalLoop, resumeGoalLoop, PauseGoal); see [goal-mode.md](goal-mode.md)
-- `backend/session/manager_goal.go` — ResumeGoal, PauseGoal, ClearGoal, SetGoalProposalResolver, ResolveGoalProposal
-- `backend/frontend_api_goal.go` — FrontendAPI.ConfirmGoal/CancelGoal/PauseGoal/ResumeGoal/ClearGoal (goal RPC surface)
+- `core/orchestrator.go` — Orchestrator.HandleMessage, Orchestrator.Resume, `installPauseSignal`/`PauseSession`/`newPauseChecker` (universal pause signal)
+- `core/orchestrator_goal.go` — goal mode (runGoalLoop, resumeGoalLoop, runGoalTurns, goalLoopResult mid-turn-pause mapping); see [goal-mode.md](goal-mode.md)
+- `backend/session/manager_execution.go` — `PauseSession` (delegates to `Orchestrator.PauseSession`), `ResumeSession` (delegates to `ResumeTask`), `hasPausedUnfinishedTask` (nudge-resume router), `SessionRuntimeStatus.Paused`
+- `backend/session/manager_goal.go` — SetGoalProposalResolver, ResolveGoalProposal
+- `backend/frontend_api_session.go` — FrontendAPI.PauseSession/ResumeSession (session-level pause/resume RPC surface)
+- `backend/frontend_api_goal.go` — FrontendAPI.ConfirmGoal/CancelGoal (goal RPC surface)
 - `core/toolnames.go` — NoProjectDisabledTools, NoProjectShellBlacklist constants
 - `backend/project/manager.go` — EnsureNoProject (pseudo-project lifecycle)
 
@@ -237,18 +239,18 @@ User clicks "Resume" (after task_failed_resumable)
 
 #### Goal resume
 
-A task that was running a goal loop when it paused (or was interrupted) is
+A task that was running a goal loop when it was paused (or interrupted) is
 re-entered into the goal loop rather than the plain Conductor path. This
-applies to the user-driven Pause/Resume flow (`FrontendAPI.ResumeGoal` →
-`Manager.ResumeGoal` → `ResumeTask`) and to the app-restart recovery path (the
+applies to the user-driven Pause/Resume flow (`FrontendAPI.ResumeSession` →
+`Manager.ResumeSession` → `ResumeTask`) and to the app-restart recovery path (the
 persisted non-terminal `GoalState` is loaded and passed to
 `orchestrator.Resume`).
 
 - `Orchestrator.Resume` guards on `goalState != nil && !goalState.Status.IsTerminal()`: a terminal goal (`met`/`exhausted`/`cancelled`) falls through to the normal resume path and is never re-entered.
-- A paused goal is re-activated to `active` so the turn loop's `for gs.Status == active` guard enters; the prior trajectory is seeded into the first resumed turn only (subsequent turns rely on the Conductor's accumulated trajectory).
-- The goal-loop pause signal is reinstalled fresh for the resumed loop and cleared on exit, so a stale signal from the prior run cannot affect a future request.
+- A cooperative session-pause leaves the goal `active` (pause is task-level), so on resume the turn loop's `for gs.Status == active` guard enters directly; a `blocked_idle` goal is re-activated to `active` first. The prior trajectory is seeded into the first resumed turn only (subsequent turns rely on the Conductor's accumulated trajectory).
+- The universal pause signal is installed fresh for the resumed request (`installPauseSignal`) and cleared on exit, so a stale signal from the prior run cannot affect a future request.
 
-See [goal-mode.md](goal-mode.md) for the full goal-mode lifecycle, budgets, anti-spin, and the single-flight/pause-signal interaction.
+See [goal-mode.md](goal-mode.md) for the full goal-mode lifecycle, budgets, anti-spin, and the [Pause is Session-Level](goal-mode.md#pause-is-session-level) section.
 
 `recordResumeOutcome` appends **only the assistant side** of the resumed
 execution to the in-memory conversation history — no user/assistant pair is
@@ -332,6 +334,56 @@ User clicks "Cancel"
       └─ Cancel context → executor stops at next iteration
           → emit task_cancelled
 ```
+
+### Session Pause / Resume / Nudge
+
+Pause/resume is a **session-level** control that applies uniformly to **all** tasks — goal and non-goal alike. There is no goal-specific pause; the universal pause signal (`Orchestrator.activePause`) is read by every conductor run's pause-checker at each step boundary. See [goal-mode.md § Pause is Session-Level](goal-mode.md#pause-is-session-level).
+
+**Pause (cooperative, mid-turn):**
+
+```
+User clicks "Pause"
+  → Frontend: pauseSession(sessionId)
+  → Backend: FrontendAPI.PauseSession()
+      └─ Manager.PauseSession()
+          └─ Orchestrator.PauseSession() — flips the active pause signal
+      In-flight conductor run observes the signal at the next step boundary
+        → executor returns ErrPaused → Conductor maps to ExecutionStatusPaused
+        → persistTaskOutcome: pbb.PauseTask() (task persisted as "paused")
+        → emit session_paused (UI unlocks input; shows Resume + Stop)
+        → request exits, releasing the single-flight lock
+```
+
+A cooperative pause is a **clean checkpoint, not a degraded completion** — the trajectory was already flushed, so the checkpoint is live. For a goal task, `runGoalTurns` breaks out of the loop and `goalLoopResult` maps the paused turn to `ExecutionStatusPaused` (the **goal stays `active`** — the pause is task-level).
+
+**Resume:**
+
+```
+User clicks "Resume" (optionally with model/reasoning-effort overrides)
+  → Frontend: resumeSession(sessionId, nudge="", modelOverride, reasoningEffort)
+  → Backend: FrontendAPI.ResumeSession()
+      └─ Manager.ResumeSession() → ResumeTask()
+          └─ loads unfinished task + persisted state (trajectory, goal state)
+          └─ emit task_resumed + session_resumed (UI re-locks input; shows Pause + Stop)
+          └─ orchestrator.Resume → resumeGoalLoop (goal task) or plain Conductor
+```
+
+`ResumeSession(sessionID, nudge, modelOverride, reasoningEffort)` delegates to `ResumeTask`. The optional `nudge` is injected as a trailing user message into the first resumed turn (one-shot). An empty nudge resumes silently from the checkpoint. `session_resumed` clears the UI's paused state (complementary to `session_paused`).
+
+**Nudge-resume (sending a message into a paused session):**
+
+```
+User types a message while paused → Send
+  → Frontend: marks the optimistic user message is_nudge=true; clears paused
+  → Backend: SendMessage detects hasPausedUnfinishedTask(sessionID) == true
+      (and not a goal message) → routes to ResumeSession(text, ...)
+        → the user's text becomes the nudge, injected as a trailing user message
+          into the first resumed turn
+```
+
+The nudge-resume path is how a user "steers" a paused agent: rather than starting a fresh task, the message resumes the paused one with the user's new input appended next to the pending tool result in the very first resumed LLM call. The nudge renders as a normal user message with a "Nudge" badge (see [frontend/rendering.md](frontend/rendering.md)).
+
+**Runtime status after restart / session switch:** `GetSessionRuntimeStatus` reports `Paused: true` when the resumable unfinished task is in the `"paused"` status. The frontend reconciles this on session activation (`reconcileRuntimeStatus`): it sets the `paused` flag and clears `taskActive`, and crucially does **not** inject a `task_failed_resumable` banner — a paused task resumes via the Resume button or a nudge, not a "did not finish" banner.
 
 ### Session Forking
 

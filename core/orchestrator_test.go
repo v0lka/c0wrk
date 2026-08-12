@@ -177,6 +177,7 @@ func (m *mockTaskStore) PersistCompletion(taskID, finalOutput string, attemptCou
 }
 func (m *mockTaskStore) PersistFailure(taskID string) error                           { return nil }
 func (m *mockTaskStore) PersistCancellation(taskID string) error                      { return nil }
+func (m *mockTaskStore) PersistPause(taskID string) error                             { return nil }
 func (m *mockTaskStore) PersistFacts(taskID string, facts []orchestration.Fact) error { return nil }
 func (m *mockTaskStore) PersistAttachments(taskID string, attachments []orchestration.Attachment) error {
 	return nil
@@ -313,6 +314,7 @@ func (m *mockTaskStoreWithReactivate) PersistCompletion(taskID, finalOutput stri
 }
 func (m *mockTaskStoreWithReactivate) PersistFailure(taskID string) error      { return nil }
 func (m *mockTaskStoreWithReactivate) PersistCancellation(taskID string) error { return nil }
+func (m *mockTaskStoreWithReactivate) PersistPause(taskID string) error        { return nil }
 func (m *mockTaskStoreWithReactivate) PersistFacts(taskID string, facts []orchestration.Fact) error {
 	return nil
 }

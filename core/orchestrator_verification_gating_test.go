@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -86,9 +85,8 @@ func TestRunGoalTurns_MetConfirmed_Terminates(t *testing.T) {
 	}
 	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "ship it"}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run)
+	result, _ := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, runner.run)
 
 	if result.Status != goal.StatusMet {
 		t.Fatalf("Status = %q, want %q (confirmed met should terminate as met)", result.Status, goal.StatusMet)
@@ -135,9 +133,8 @@ func TestRunGoalTurns_MetRejected_Continues(t *testing.T) {
 	}
 	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "ship it"}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run)
+	result, _ := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, runner.run)
 
 	if result.Status != goal.StatusMet {
 		t.Fatalf("Status = %q, want %q (second met should be confirmed and terminate)", result.Status, goal.StatusMet)
@@ -189,9 +186,8 @@ func TestRunGoalTurns_MetRejected_LastVerdictCarriesReason(t *testing.T) {
 		Budget:    goal.GoalBudget{MaxTurns: 1},
 	}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run)
+	result, _ := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, runner.run)
 
 	// The rejected met does NOT terminate as met; the budget then halts exhausted.
 	if result.Status != goal.StatusExhausted {
@@ -227,9 +223,8 @@ func TestRunGoalTurns_VerificationOff_ReproducesToday(t *testing.T) {
 	}
 	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "ship it"}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run)
+	result, _ := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, runner.run)
 
 	if result.Status != goal.StatusMet {
 		t.Fatalf("Status = %q, want %q (verification off → met terminates immediately)", result.Status, goal.StatusMet)
@@ -268,9 +263,8 @@ func TestRunGoalTurns_MetRejectedNeverTerminatesAsMet(t *testing.T) {
 		Budget:    goal.GoalBudget{MaxTurns: 3},
 	}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run)
+	result, _ := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, runner.run)
 
 	if result.Status == goal.StatusMet {
 		t.Fatalf("Status = met — a verifier-rejected met must NEVER terminate the goal as met")
@@ -305,9 +299,8 @@ func TestRunGoalTurns_RejectedMetEmitsGoalStatusOnce(t *testing.T) {
 	}
 	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "ship it", Budget: goal.GoalBudget{MaxTurns: 1}}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run)
+	result, _ := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, runner.run)
 
 	if result.Status != goal.StatusExhausted {
 		t.Fatalf("Status = %q, want exhausted (rejected met + budget)", result.Status)
@@ -413,9 +406,8 @@ func TestRunGoalTurns_MetRejected_PromptNoticeOneShot(t *testing.T) {
 	}
 	gs := &goal.GoalState{Status: goal.StatusActive, Condition: "ship it"}
 	bb := orchestration.NewMapBlackboard()
-	pause := &atomic.Bool{}
 
-	result := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, pause, runner.run)
+	result, _ := o.runGoalTurns(context.Background(), "msg", bb, nil, "", nil, gs, runner.run)
 
 	if result.Status != goal.StatusMet {
 		t.Fatalf("Status = %q, want met (second met confirmed)", result.Status)

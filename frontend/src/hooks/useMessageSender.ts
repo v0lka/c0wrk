@@ -40,17 +40,30 @@ export function useMessageSender(): UseMessageSenderResult {
       }
     }
 
+    // A message sent while a task is cooperatively paused is a nudge-resume:
+    // the backend's SendMessage detects the paused task and routes to
+    // ResumeSession (seeding the resumed turn with this text), persisting the
+    // message with is_nudge metadata. We mirror that here optimistically so the
+    // card renders the nudge badge immediately and the UI leaves the paused
+    // state (input re-locks, Pause/Stop return) without waiting for the
+    // session_resumed/task_resumed event.
+    const wasPaused = useChatStore.getState().paused[sessionId] ?? false
+
     useChatStore.getState().addMessage(sessionId, {
       id: generateMessageId(),
       sessionId,
       type: 'user',
       content: messageText,
+      metadata: wasPaused ? { is_nudge: true } : undefined,
       timestamp: Date.now(),
     })
 
     useSessionStore.getState().touchSession(sessionId)
     useChatStore.getState().setTaskActive(sessionId, true)
     useChatStore.getState().setActivityStatus(sessionId, 'Processing...')
+    if (wasPaused) {
+      useChatStore.getState().setPaused(sessionId, false)
+    }
 
     try {
       const modelOverride = useInputModeStore.getState().selectedModel ?? ''

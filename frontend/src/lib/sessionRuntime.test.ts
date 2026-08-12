@@ -36,14 +36,43 @@ describe('reconcileRuntimeStatus', () => {
   it('restores the running flag for an active session and leaves prompts untouched', () => {
     addMsg({ id: 'sl-1', type: 'step_limit', metadata: { request_id: 'r1' } })
 
-    reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: true })
+    reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: true, paused: false })
 
     expect(useChatStore.getState().taskActive[SESSION]).toBe(true)
     expect(sessionMessages()[0]!.metadata?.resolved).toBeUndefined()
   })
 
+  it('restores the paused flag for a paused task without injecting a resume banner', () => {
+    // A cooperatively paused task is a clean checkpoint: set paused, clear
+    // taskActive, and do NOT inject the task_failed_resumable banner (it is
+    // resumable via the Resume button / nudge, not a "did not finish" banner).
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true, paused: true })
+
+    expect(useChatStore.getState().paused[SESSION]).toBe(true)
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(false)
+    expect(sessionMessages().some(m => m.type === 'task_failed_resumable')).toBe(false)
+  })
+
+  it('resolves stale HITL prompts for a paused task without injecting a resume banner', () => {
+    // A paused task with a lingering step_limit prompt: the executor waiting
+    // for the response no longer exists, so the prompt must be resolved as
+    // stale — consistent with the unfinished-task path. No banner is injected.
+    addMsg({ id: 'sl-1', type: 'step_limit', metadata: { request_id: 'r1' } })
+
+    const stale = reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true, paused: true })
+
+    expect(useChatStore.getState().paused[SESSION]).toBe(true)
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(false)
+    const stepLimit = sessionMessages().find(m => m.type === 'step_limit')
+    expect(stepLimit?.metadata?.resolved).toBe(true)
+    expect(stepLimit?.metadata?.stale).toBe(true)
+    expect(sessionMessages().some(m => m.type === 'task_failed_resumable')).toBe(false)
+    expect(stale).toHaveLength(1)
+    expect(stale[0]!.type).toBe('step_limit')
+  })
+
   it('injects a resume banner when an unfinished task exists and none is pending', () => {
-    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true })
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true, paused: false })
 
     expect(useChatStore.getState().taskActive[SESSION]).toBe(false)
     const msgs = sessionMessages()
@@ -55,7 +84,7 @@ describe('reconcileRuntimeStatus', () => {
   it('does not duplicate an existing unresolved resume banner', () => {
     addMsg({ id: 'resume-1', type: 'task_failed_resumable', metadata: { resolved: false } })
 
-    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true })
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true, paused: false })
 
     expect(sessionMessages().filter(m => m.type === 'task_failed_resumable')).toHaveLength(1)
   })
@@ -63,7 +92,7 @@ describe('reconcileRuntimeStatus', () => {
   it('resolves stale step_limit prompts when the task is resumable but not running', () => {
     addMsg({ id: 'sl-1', type: 'step_limit', metadata: { request_id: 'r1' } })
 
-    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true })
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true, paused: false })
 
     const stepLimit = sessionMessages().find(m => m.type === 'step_limit')
     expect(stepLimit?.metadata?.resolved).toBe(true)
@@ -74,7 +103,7 @@ describe('reconcileRuntimeStatus', () => {
     addMsg({ id: 'resume-1', type: 'task_failed_resumable', metadata: { resolved: false } })
     addMsg({ id: 'sl-1', type: 'step_limit', metadata: { request_id: 'r1' } })
 
-    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false })
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false })
 
     for (const msg of sessionMessages()) {
       expect(msg.metadata?.resolved).toBe(true)
@@ -91,7 +120,7 @@ describe('reconcileRuntimeStatus', () => {
   it('resolves stale plan_review when the session completed successfully', () => {
     addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1', resolved: false } })
 
-    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false })
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false })
 
     const planReview = sessionMessages().find(m => m.type === 'plan_review')
     expect(planReview?.metadata?.resolved).toBe(true)
@@ -101,7 +130,7 @@ describe('reconcileRuntimeStatus', () => {
   it('resolves stale plan_review when the task is resumable but not running', () => {
     addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1', resolved: false } })
 
-    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true })
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true, paused: false })
 
     const planReview = sessionMessages().find(m => m.type === 'plan_review')
     expect(planReview?.metadata?.resolved).toBe(true)
@@ -112,7 +141,7 @@ describe('reconcileRuntimeStatus', () => {
     addMsg({ id: 'tc-1', type: 'tool_confirm', metadata: { confirm_id: 'c1' } })
     addMsg({ id: 'au-1', type: 'ask_user', metadata: { request_id: 'r1', questions: [] } })
 
-    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false })
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false })
 
     const toolConfirm = sessionMessages().find(m => m.type === 'tool_confirm')
     expect(toolConfirm?.metadata?.resolved).toBe(true)
@@ -126,7 +155,7 @@ describe('reconcileRuntimeStatus', () => {
   it('leaves plan_review untouched when the session is still active', () => {
     addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1', resolved: false } })
 
-    reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: false })
+    reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: false, paused: false })
 
     const planReview = sessionMessages().find(m => m.type === 'plan_review')
     expect(planReview?.metadata?.resolved).toBe(false)
@@ -135,7 +164,7 @@ describe('reconcileRuntimeStatus', () => {
   it('does not re-resolve already-resolved plan_review', () => {
     addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1', resolved: true, decision: 'approve' } })
 
-    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false })
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false })
 
     const planReview = sessionMessages().find(m => m.type === 'plan_review')
     expect(planReview?.metadata?.resolved).toBe(true)
@@ -147,7 +176,7 @@ describe('reconcileRuntimeStatus', () => {
     addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1' } })
     addMsg({ id: 'resume-1', type: 'task_failed_resumable', metadata: { resolved: false, task_id: 't-9' } })
 
-    const stale = reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false })
+    const stale = reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false })
 
     // Both resolved messages are returned, with their identifying metadata
     // intact, so the caller can map type → match field and persist.
@@ -160,7 +189,7 @@ describe('reconcileRuntimeStatus', () => {
   it('returns an empty list (and does not mutate) for an active session', () => {
     addMsg({ id: 'pr-1', type: 'plan_review', metadata: { request_id: 'r1' } })
 
-    const stale = reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: true })
+    const stale = reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: true, paused: false })
 
     expect(stale).toHaveLength(0)
   })

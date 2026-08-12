@@ -131,7 +131,7 @@ func TestResume_ContinuesStepCounterFromTrajectory(t *testing.T) {
 
 	const prior = 3
 	steps := resumeStepsFixture(prior)
-	result, err := orch.Resume(context.Background(), bb, nil, "", steps, nil)
+	result, err := orch.Resume(context.Background(), bb, nil, "", steps, nil, "")
 	if err != nil {
 		t.Fatalf("Resume failed: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestResume_SeedsContextManagerWithTrajectory(t *testing.T) {
 	bb.SetOriginalRequest("the task")
 
 	steps := resumeStepsFixture(2)
-	if _, err := orch.Resume(context.Background(), bb, nil, "", steps, nil); err != nil {
+	if _, err := orch.Resume(context.Background(), bb, nil, "", steps, nil, ""); err != nil {
 		t.Fatalf("Resume failed: %v", err)
 	}
 
@@ -195,7 +195,7 @@ func TestResume_DefaultsDomainWithoutRouting(t *testing.T) {
 	bb := orchestration.NewMapBlackboard()
 	bb.SetOriginalRequest("task without routing")
 
-	if _, err := orch.Resume(context.Background(), bb, nil, "", nil, nil); err != nil {
+	if _, err := orch.Resume(context.Background(), bb, nil, "", nil, nil, ""); err != nil {
 		t.Fatalf("Resume failed: %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestResume_ReusesRoutingDomain(t *testing.T) {
 	bb.SetOriginalRequest("research task")
 
 	routing := &router.RoutingDecision{Domain: "research", Complexity: 5}
-	if _, err := orch.Resume(context.Background(), bb, routing, "", nil, nil); err != nil {
+	if _, err := orch.Resume(context.Background(), bb, routing, "", nil, nil, ""); err != nil {
 		t.Fatalf("Resume failed: %v", err)
 	}
 
@@ -244,7 +244,7 @@ func TestResume_WorksWithoutPlanAndRouting(t *testing.T) {
 	bb.SetOriginalRequest("plan-less task")
 	bb.StoreFact(orchestration.Fact{Content: "a restored fact", Keywords: []string{"restored"}})
 
-	result, err := orch.Resume(context.Background(), bb, nil, "", nil, nil)
+	result, err := orch.Resume(context.Background(), bb, nil, "", nil, nil, "")
 	if err != nil {
 		t.Fatalf("Resume without plan/routing failed: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestResume_EmptyTrajectoryFallback(t *testing.T) {
 	bb := orchestration.NewMapBlackboard()
 	bb.SetOriginalRequest("no trajectory")
 
-	result, err := orch.Resume(context.Background(), bb, nil, "", nil, nil)
+	result, err := orch.Resume(context.Background(), bb, nil, "", nil, nil, "")
 	if err != nil {
 		t.Fatalf("Resume failed: %v", err)
 	}

@@ -244,9 +244,9 @@ func ensureProposeGoalTool(list []sdktools.ToolDescriptor, registry *sdktools.To
 //     original message as output.
 //  2. Resolve the budget: opts.GoalBudgetOverride sets MaxTurns when present
 //     (otherwise unlimited). Persist the active GoalState.
-//  3. Install the pause signal (PauseGoal flips the atomic; the loop polls it).
-//  4. Iterate turns while Status == active:
-//     - top of turn: if paused → Status=paused, break (release single-flight).
+//  3. Iterate turns while Status == active (the universal pause signal is
+//     installed by HandleMessage; each turn's conductor checks it at every
+//     step boundary):
 //     - run one turn via the turn runner (one Conductor turn over the
 //     already-enriched ctx — routing was established once in step 0 and is
 //     inherited unchanged by every turn, including turn 1; no turn re-routes),
@@ -327,7 +327,7 @@ func (o *Orchestrator) runGoalLoop(
 		// Pass the computed routing (not nil) so finalizeResult does not clobber
 		// the routing decision persisted above — the other two goalLoopResult
 		// call sites (end of runGoalLoop / resumeGoalLoop) pass the real value.
-		return o.goalLoopResult(conductorMessage, bb, routing, goal.StatusActive, ""), nil
+		return o.goalLoopResult(conductorMessage, bb, routing, goal.StatusActive, "", false), nil
 	}
 
 	// Resolve the budget: the per-message override sets MaxTurns when present;
@@ -342,11 +342,9 @@ func (o *Orchestrator) runGoalLoop(
 	gs.Status = goal.StatusActive
 	o.logInfo("goal_loop: goal activated", "condition", gs.Condition, "verify", gs.VerifyClause, "budget", gs.Budget)
 
-	// Pause signal: installed for the duration of this loop and cleared on
-	// exit so a stale signal cannot pause a future request.
-	pause := &atomic.Bool{}
-	o.activeGoalPause.Store(pause)
-	defer func() { o.activeGoalPause.Store(nil) }()
+	// The universal pause signal is installed by HandleMessage for the whole
+	// request (including this goal loop); every turn's conductor run carries
+	// the pause-checker via buildConductorDeps. No goal-specific signal here.
 
 	// Truncate conversation history once; the trajectory accumulates across
 	// turns via the blackboard so the agent keeps dialogue context.
@@ -370,26 +368,31 @@ func (o *Orchestrator) runGoalLoop(
 		}
 	}
 
-	gs = o.runGoalTurns(ctx, conductorMessage, bb, availableTools, plansDir, conversationHistory, gs, pause, turnRunner)
+	gs, paused := o.runGoalTurns(ctx, conductorMessage, bb, availableTools, plansDir, conversationHistory, gs, turnRunner)
 
 	o.persistGoalStateBestEffort(bb, gs)
 	out := message
 	if gs.LastVerdict != nil && gs.LastVerdict.Reason != "" {
 		out = gs.LastVerdict.Reason
 	}
-	return o.goalLoopResult(out, bb, routing, gs.Status, gs.Condition), nil
+	return o.goalLoopResult(out, bb, routing, gs.Status, gs.Condition, paused), nil
 }
 
 // resumeGoalLoop re-enters the goal loop from a persisted, non-terminal
-// GoalState (paused or still active). It mirrors runGoalLoop's post-derivation
-// body but skips deriveGoal — the goal condition and verify clause are already
-// known — and seeds the prior trajectory (resumeSteps) into the executor on the
-// first turn so the resumed run continues the step counter/history from the
-// checkpoint rather than starting fresh.
+// GoalState (active after a cooperative pause). It mirrors runGoalLoop's
+// post-derivation body but skips deriveGoal — the goal condition and verify
+// clause are already known — and seeds the prior trajectory (resumeSteps)
+// into the executor on the first resumed turn so the interrupted turn is
+// CONTINUED (not restarted).
 //
-// A paused goal is re-activated so runGoalTurns's `for gs.Status == active`
-// guard enters the loop; terminal statuses must never reach here (Resume guards
-// on IsTerminal before delegating).
+// nudge is an optional resume-with-nudge user message: when non-empty it is
+// injected into the FIRST resumed turn's conductor run (via
+// ConductorConfig.PendingUserInterjection) so it lands as the final user
+// message next to the pending tool result. Subsequent turns carry no nudge.
+//
+// A cooperatively-paused goal was left active (pause no longer transitions to
+// a paused status); terminal statuses must never reach here (Resume guards on
+// IsTerminal before delegating).
 func (o *Orchestrator) resumeGoalLoop(
 	ctx context.Context,
 	message string,
@@ -399,23 +402,25 @@ func (o *Orchestrator) resumeGoalLoop(
 	routing *router.RoutingDecision,
 	gs *goal.GoalState,
 	resumeSteps []agent.Step,
+	nudge string,
 ) (*HandleResult, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 
-	// Re-activate a paused goal so the turn loop continues. Active goals are
-	// already in the right state; terminal ones never reach here.
+	// Ensure the goal is active so the turn loop's `for gs.Status == active`
+	// guard enters. A cooperatively-paused goal was left active (pause no
+	// longer transitions to a paused status); terminal goals never reach here
+	// (Resume guards on IsTerminal before delegating).
 	gs.Status = goal.StatusActive
 	if gs.CreatedAt.IsZero() {
 		gs.CreatedAt = time.Now()
 	}
-	o.logInfo("goal_loop: resuming", "condition", gs.Condition, "verify", gs.VerifyClause, "turn", gs.TurnCount, "budget", gs.Budget)
+	o.logInfo("goal_loop: resuming", "condition", gs.Condition, "verify", gs.VerifyClause, "turn", gs.TurnCount, "budget", gs.Budget, "nudge", nudge != "")
 
-	// Pause signal for the duration of this resumed loop.
-	pause := &atomic.Bool{}
-	o.activeGoalPause.Store(pause)
-	defer func() { o.activeGoalPause.Store(nil) }()
+	// The universal pause signal is installed by Resume for the whole resumed
+	// request (including this goal loop); every turn's conductor run carries
+	// the pause-checker via buildConductorDeps. No goal-specific signal here.
 
 	conversationHistory := truncateHistory(o.conversationHistory, o.config.ConductorHistoryWindow)
 
@@ -433,9 +438,10 @@ func (o *Orchestrator) resumeGoalLoop(
 	}
 
 	// Wrap the turn runner so the FIRST resumed turn seeds the prior trajectory
-	// into the executor deps. The turn counter continues from gs.TurnCount (not
-	// reset to 1), so a once-flag seeds exactly the first invocation. Subsequent
-	// turns rely on the Conductor's own accumulated trajectory (the same
+	// into the executor deps and injects the resume-with-nudge message. The
+	// turn counter continues from gs.TurnCount (not reset to 1), so once-flags
+	// seed exactly the first invocation. Subsequent turns rely on the
+	// Conductor's own accumulated trajectory and carry no nudge (the same
 	// convention runGoalLoop uses).
 	//
 	// Image content blocks are also re-injected every turn: the conversation
@@ -449,10 +455,19 @@ func (o *Orchestrator) resumeGoalLoop(
 	)
 	seed := resumeSteps
 	seeded := false
+	nudged := false
 	wrapped := func(ctx context.Context, turn int, msg string, b orchestration.Blackboard, tl []sdktools.ToolDescriptor, pd string, hist []llm.Message, deps conductorDeps) (int, *orchestration.ExecutionResult, error) {
 		if !seeded && len(seed) > 0 {
 			deps.resumeSteps = seed
 			seeded = true
+		}
+		// Resume-with-nudge: inject the user nudge into the first resumed turn
+		// only (one-shot). Each turn is a fresh conductor run, so the nudge
+		// must be re-set per-turn — restricting it to the first turn keeps it
+		// from repeating on every subsequent turn.
+		if !nudged && nudge != "" {
+			deps.nudge = nudge
+			nudged = true
 		}
 		if len(resumeContentBlocks) > 0 {
 			deps.contentBlocks = resumeContentBlocks
@@ -460,14 +475,14 @@ func (o *Orchestrator) resumeGoalLoop(
 		return turnRunner(ctx, turn, msg, b, tl, pd, hist, deps)
 	}
 
-	gs = o.runGoalTurns(ctx, message, bb, availableTools, plansDir, conversationHistory, gs, pause, wrapped)
+	gs, paused := o.runGoalTurns(ctx, message, bb, availableTools, plansDir, conversationHistory, gs, wrapped)
 
 	o.persistGoalStateBestEffort(bb, gs)
 	out := message
 	if gs.LastVerdict != nil && gs.LastVerdict.Reason != "" {
 		out = gs.LastVerdict.Reason
 	}
-	return o.goalLoopResult(out, bb, routing, gs.Status, gs.Condition), nil
+	return o.goalLoopResult(out, bb, routing, gs.Status, gs.Condition, paused), nil
 }
 
 // persistGoalStateBestEffort persists the goal state for the current task so a
@@ -501,10 +516,18 @@ const goalVerifierDefaultRejectReason = "the independent verifier could not conf
 // be unit-tested with a mock turn runner and a pre-built GoalState (bypassing
 // the LLM-driven deriveGoal). It mutates and returns gs.
 //
+// Pausing is no longer goal-specific: each turn's conductor run carries the
+// universal pause-checker (wired via buildConductorDeps), so a pause trips at
+// a step boundary INSIDE the turn and surfaces as ExecutionStatusPaused on the
+// turn's result. runGoalTurns detects that and suspends the goal loop.
+//
 // Invariants per turn:
-//   - pause signal (top of turn) → Status=paused, break.
 //   - run one turn via turnRunner (wrapped in counting proxies so the loop
 //     learns the turn's tool-call count).
+//   - paused mid-turn (turn result Status=ExecutionStatusPaused) →
+//     break; goal stays ACTIVE (resume re-enters and seeds the checkpoint).
+//   - cancelled (context cancelled via CancelTask) →
+//     Status=cancelled (terminal), break.
 //   - verdict sink "met" → Status=met, break.
 //   - anti-spin: zero tool calls AND no verdict → Status=blocked_idle, break.
 //   - budget (MaxTurns) hit → Status=exhausted, break.
@@ -517,20 +540,19 @@ func (o *Orchestrator) runGoalTurns(
 	plansDir string,
 	conversationHistory []llm.Message,
 	gs *goal.GoalState,
-	pause *atomic.Bool,
 	turnRunner func(ctx context.Context, turn int, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, deps conductorDeps) (toolCallCount int, result *orchestration.ExecutionResult, err error),
-) *goal.GoalState {
+) (*goal.GoalState, bool) {
+	var paused bool
+
 	for gs.Status == goal.StatusActive {
-		// Pause check (top of turn): a paused goal suspends the loop and
-		// releases the single-flight lock so the user can Resume later.
-		if pause.Load() {
-			gs.Status = goal.StatusPaused
-			o.logInfo("goal_loop: paused by signal", "turn", gs.TurnCount)
-			o.emitGoalStatus(ctx, gs)
-			break
-		}
 		if ctx.Err() != nil {
-			gs.Status = goal.StatusPaused
+			// Context cancelled (user cancel via CancelTask, or app shutdown)
+			// or deadline exceeded. Break out WITHOUT terminalizing the goal
+			// — leave it active so the manager layer decides: a user-initiated
+			// cancel abandons the goal (cancelled), while a shutdown leaves it
+			// active for resume-after-restart. The orchestrator cannot
+			// distinguish the two (it has no access to the manager's
+			// shuttingDown flag).
 			break
 		}
 
@@ -549,6 +571,30 @@ func (o *Orchestrator) runGoalTurns(
 			turn, message, bb, availableTools, plansDir, conversationHistory, deps,
 		)
 		gs.TurnCount = turn
+
+		// Cooperative pause (mid-turn): the universal pause signal tripped at
+		// a step boundary inside this turn's conductor run, so the turn result
+		// carries ExecutionStatusPaused. Break out of the loop but leave the
+		// goal ACTIVE — the turn's partial trajectory was already flushed by
+		// the conductor (trajStore.Flush), so a later Resume re-enters the
+		// loop, seeds the checkpoint, and CONTINUES the interrupted turn
+		// (does not start a new one). Detect before the verdict/anti-spin
+		// logic so a paused (possibly zero-tool-call) turn is never
+		// misclassified as blocked_idle.
+		if execResult != nil && execResult.Status == orchestration.ExecutionStatusPaused {
+			o.logInfo("goal_loop: paused by signal mid-turn (goal stays active)", "turn", gs.TurnCount)
+			paused = true
+			break
+		}
+		// Context cancelled mid-turn (user cancel via CancelTask, or app
+		// shutdown). Break out WITHOUT terminalizing the goal — leave it
+		// active so the manager layer can decide whether to abandon it
+		// (user cancel) or leave it resumable (shutdown). Checked before the
+		// verdict/anti-spin/budget logic so a cancel always takes precedence
+		// over those outcomes.
+		if ctx.Err() != nil {
+			break
+		}
 		// The verification marker described the PREVIOUS turn's met attempt and
 		// has now been rendered into THIS turn's system prompt (built inside
 		// turnRunner → RunConductor from this same gs pointer). Clear it so the
@@ -677,7 +723,7 @@ func (o *Orchestrator) runGoalTurns(
 		_ = terr // a turn error does not abort the loop; the agent may recover next turn
 		_ = execResult
 	}
-	return gs
+	return gs, paused
 }
 
 // execResultOutput extracts the met turn's work product (Output) from the
@@ -748,17 +794,26 @@ func resolveGoalBudget(override *goal.GoalBudget) goal.GoalBudget {
 
 // goalLoopResult builds a HandleResult summarizing the goal loop's outcome.
 // The status is encoded into the HandleResult.Status where it maps cleanly
-// (met→success; paused/blocked_idle→partial; exhausted→failed); non-mappable
-// statuses default to success for met and partial otherwise.
-func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard, routing *router.RoutingDecision, status goal.GoalStatus, condition string) *HandleResult {
+// (met→success; cancelled→cancelled; exhausted→failed); non-mappable
+// statuses (active, blocked_idle) default to partial. A cooperative mid-turn
+// pause (paused=true) overrides the default to ExecutionStatusPaused so
+// finalizeResult→persistTaskOutcome marks the task paused (resumable) and the
+// manager emits session_paused instead of a degraded task_complete.
+func (o *Orchestrator) goalLoopResult(output string, bb orchestration.Blackboard, routing *router.RoutingDecision, status goal.GoalStatus, condition string, paused bool) *HandleResult {
 	execResult := &orchestration.ExecutionResult{Output: output}
 	switch status {
 	case goal.StatusMet:
 		execResult.Status = orchestration.ExecutionStatusSuccess
 	case goal.StatusExhausted:
 		execResult.Status = orchestration.ExecutionStatusFailed
-	default: // paused, blocked_idle, active (derivation path)
-		execResult.Status = orchestration.ExecutionStatusPartial
+	case goal.StatusCancelled:
+		execResult.Status = orchestration.ExecutionStatusCancelled
+	default: // active, blocked_idle (pause/derivation path)
+		if paused {
+			execResult.Status = orchestration.ExecutionStatusPaused
+		} else {
+			execResult.Status = orchestration.ExecutionStatusPartial
+		}
 	}
 	return o.finalizeResult(bb, routing, execResult)
 }
@@ -819,15 +874,17 @@ func (o *Orchestrator) emitGoalProgress(_ context.Context, gs *goal.GoalState) {
 	})
 }
 
-// PauseGoal signals the currently-running goal loop (if any) to pause at the
-// top of its next turn. It is a no-op when no goal loop is active. The pause is
-// cooperative: the loop polls the signal and transitions Status→paused, then
-// releases the single-flight lock so a later Resume can re-enter.
-func (o *Orchestrator) PauseGoal() {
-	if p := o.activeGoalPause.Load(); p != nil {
-		p.Store(true)
-	}
-}
+// PauseGoal has been removed. Pausing is now universal (any conductor mode):
+// PauseSession flips the active pause signal, which the conductor's executor
+// checks at every step boundary (via ConductorConfig.PauseChecker wired through
+// buildConductorDeps). Goal tasks pause through the exact same path — when a
+// turn's conductor returns ExecutionStatusPaused, runGoalTurns breaks out of
+// the loop but leaves the goal ACTIVE (resume re-enters and continues the
+// interrupted turn via trajectory seeding). A cancelled context (CancelTask or
+// shutdown) likewise breaks without terminalizing — the manager layer decides:
+// a user-initiated cancel abandons the goal (cancelled), a shutdown leaves it
+// active for resume-after-restart.
+// See Orchestrator.PauseSession and Orchestrator.installPauseSignal.
 
 // ----------------------------------------------------------------------------
 // Counting wrappers (per-turn tool-call + token usage)

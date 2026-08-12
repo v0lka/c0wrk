@@ -292,6 +292,20 @@ type conductorDeps struct {
 	// Nil when no agentManager is configured (profiles unavailable) — a
 	// non-empty `agent` field is then rejected by delegate validation.
 	agentResolver tools.AgentResolver
+
+	// pauseChecker is the cooperative pause signal wired into every conductor
+	// run via ConductorConfig.PauseChecker → executor.SetPauseChecker. It
+	// reads the active request's pause signal (o.activePause) at each step
+	// boundary; PauseSession flips it. Populated by buildConductorDeps so ALL
+	// conductor runs — normal path and every goal-loop turn — are pauseable
+	// through one universal signal. Nil disables pausing (default).
+	pauseChecker func(context.Context) bool
+
+	// nudge is a one-shot resume-with-nudge user message threaded to
+	// ConductorConfig.PendingUserInterjection. When non-empty it lands as the
+	// final user message after the seeded step history in the very next LLM
+	// call. Set per-resume; empty for fresh tasks (the default no-nudge path).
+	nudge string
 }
 
 // conductorLauncher implements tools.DelegationLauncher by building a fresh
@@ -1751,6 +1765,8 @@ func RunConductor(
 		ConversationHistory: deps.conversationHistory,
 		ResumeSteps:         deps.resumeSteps,
 		ContentBlocks:       deps.contentBlocks,
+		PendingUserInterjection: deps.nudge,
+		PauseChecker:             deps.pauseChecker,
 	}
 
 	var events agent.Events = &agent.NoopEvents{}
@@ -1832,9 +1848,10 @@ func adaptContextFactory(cf ContextManagerFactory) orchestration.ContextManagerF
 // context. For HandleMessage, pass o.conversationHistory so the agent sees
 // previous exchanges. For Resume, pass nil — the Conductor continues the
 // same task and the original request is already the task message.
-func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, resumeSteps []agent.Step, contentBlocks []llm.ContentBlock) (*orchestration.ExecutionResult, error) {
+func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, resumeSteps []agent.Step, contentBlocks []llm.ContentBlock, nudge string) (*orchestration.ExecutionResult, error) {
 	deps := o.buildConductorDeps(conversationHistory, resumeSteps)
 	deps.contentBlocks = contentBlocks
+	deps.nudge = nudge
 	return RunConductor(ctx, message, bb, availableTools, deps, plansDir)
 }
 
@@ -1885,6 +1902,10 @@ func (o *Orchestrator) buildConductorDeps(conversationHistory []llm.Message, res
 			}
 			return o.agentManager.Get(name)
 		},
+		// pauseChecker wires the universal pause signal into every conductor
+		// run (normal path + every goal-loop turn). It reads o.activePause
+		// live; nil-safe when no request is in flight.
+		pauseChecker: o.newPauseChecker(),
 	}
 }
 

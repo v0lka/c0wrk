@@ -12,7 +12,6 @@ func TestGoalStatus_IsTerminal(t *testing.T) {
 		want   bool
 	}{
 		{StatusActive, false},
-		{StatusPaused, false},
 		{StatusBlockedIdle, false},
 		{StatusMet, true},
 		{StatusExhausted, true},

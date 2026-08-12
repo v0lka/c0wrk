@@ -287,6 +287,14 @@ export interface SessionEventMap {
   readonly session_tokens: SessionTokensData
   readonly task_failed_resumable: TaskFailedResumableData
   readonly task_resumed: void
+  /** Emitted when a running task cooperatively pauses at a step-boundary
+   *  checkpoint (PauseSession / mid-turn pause signal). The UI enters a paused
+   *  state: input unlocked, Resume/Stop controls. Complementary to
+   *  session_resumed. */
+  readonly session_paused: void
+  /** Emitted when a paused task resumes (ResumeSession / nudge-resume). Clears
+   *  the UI's paused state: input re-locks, Pause/Stop controls return. */
+  readonly session_resumed: void
   readonly tool_judge_response: ToolJudgeResponseData
   readonly finishing: void
   readonly reflection: ReflectionData

@@ -1512,6 +1512,7 @@ export namespace session {
 	    active: boolean;
 	    has_unfinished_task: boolean;
 	    unfinished_task_id?: string;
+	    paused: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionRuntimeStatus(source);
@@ -1522,6 +1523,7 @@ export namespace session {
 	        this.active = source["active"];
 	        this.has_unfinished_task = source["has_unfinished_task"];
 	        this.unfinished_task_id = source["unfinished_task_id"];
+	        this.paused = source["paused"];
 	    }
 	}
 	export class TerminalCommand {

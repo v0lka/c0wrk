@@ -8,6 +8,7 @@ import { useChatEditor, type ChatEditorAPI } from '@/hooks/useChatEditor'
 import { usePasteHandler } from '@/hooks/usePasteHandler'
 import { extractSkillRefs, extractAgentRefs, filterKnownAgentRefs } from '@/lib/parseReferences'
 import { optimizePrompt } from '@/api/prompt'
+import { pauseSession, resumeSession } from '@/api/chat'
 import { createSession } from '@/api/sessions'
 import { listAgents } from '@/api/agents'
 import { logger } from '@/lib/logger'
@@ -31,6 +32,7 @@ export interface ChatInputController {
   isInputDisabled: boolean
   isNoProject: boolean
   taskActive: boolean
+  paused: boolean
 
   // Mode
   mode: 'chat' | 'terminal'
@@ -48,6 +50,8 @@ export interface ChatInputController {
   // Actions
   handleSend: () => void
   handleOptimize: () => void
+  handlePause: () => void
+  handleResume: () => void
   cancel: () => void
 }
 
@@ -66,6 +70,7 @@ export function useChatInputController(): ChatInputController {
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const taskActive = useChatStore((s) => (activeSessionId ? s.taskActive[activeSessionId] ?? false : false))
+  const paused = useChatStore((s) => (activeSessionId ? s.paused[activeSessionId] ?? false : false))
 
   const mode = useInputModeStore((s) => s.mode)
   const height = useInputModeStore((s) => s.height)
@@ -99,12 +104,19 @@ export function useChatInputController(): ChatInputController {
   const { send, cancel, isProcessing } = useMessageSender()
 
   const isNoProject = !activeProjectId
+  // Input is locked while a task is actively running (taskActive) or when there
+  // is no project. A cooperatively paused task sets taskActive=false, so the
+  // input is unlocked on pause — letting the user send a nudge-resume.
   const isInputDisabled = taskActive || isNoProject
-  const showCancel = taskActive || isProcessing
+  // Stop (cancel) is available whenever a task is running, paused, or a send is
+  // in flight; Pause/Resume flank it depending on the active vs paused state.
+  const showCancel = taskActive || paused || isProcessing
 
   let placeholderText = 'Type a message... (Enter to send, Shift+Enter for new line)'
   if (isNoProject) {
     placeholderText = 'Select or create a project to start'
+  } else if (paused) {
+    placeholderText = 'Paused — send a message to nudge-resume, or press Resume'
   } else if (taskActive) {
     placeholderText = 'Session is processing...'
   }
@@ -181,6 +193,41 @@ export function useChatInputController(): ChatInputController {
   }, [editor, send])
   handleSendHolder.current = handleSend
 
+  // Cooperatively pause the running task. The executor stops at the next step
+  // boundary; the backend emits session_paused to reconcile. Optimistically set
+  // ONLY the paused flag for immediate feedback — taskActive is finalized by
+  // the session_paused event (the task is still running until the step boundary
+  // fires), so setting it here would create a flicker window where a streaming
+  // event (assistant_chunk) could re-assert it before the pause lands.
+  const handlePause = useCallback(async () => {
+    if (!activeSessionId) return
+    useChatStore.getState().setPaused(activeSessionId, true)
+    try {
+      await pauseSession(activeSessionId)
+    } catch (err) {
+      logger.error('Failed to pause session:', err)
+      useChatStore.getState().setPaused(activeSessionId, false)
+    }
+  }, [activeSessionId])
+
+  // Resume a paused task (no nudge). The backend's session_resumed/task_resumed
+  // events reconcile. The user's current model/reasoning selection is forwarded
+  // so a switch made before resuming is honored (same semantics as a fresh send).
+  const handleResume = useCallback(async () => {
+    if (!activeSessionId) return
+    const modelOverride = useInputModeStore.getState().selectedModel ?? ''
+    const reasoningOverride = useInputModeStore.getState().selectedReasoning ?? ''
+    useChatStore.getState().setPaused(activeSessionId, false)
+    useChatStore.getState().setTaskActive(activeSessionId, true)
+    try {
+      await resumeSession(activeSessionId, modelOverride, reasoningOverride, '')
+    } catch (err) {
+      logger.error('Failed to resume session:', err)
+      useChatStore.getState().setPaused(activeSessionId, true)
+      useChatStore.getState().setTaskActive(activeSessionId, false)
+    }
+  }, [activeSessionId])
+
   const handleOptimize = useCallback(async () => {
     const text = editor.getText().trim()
     if (!text || isOptimizing) return
@@ -233,6 +280,7 @@ export function useChatInputController(): ChatInputController {
     isInputDisabled,
     isNoProject,
     taskActive,
+    paused,
     mode,
     setMode,
     height,
@@ -242,6 +290,8 @@ export function useChatInputController(): ChatInputController {
     activeSessionId,
     handleSend,
     handleOptimize,
+    handlePause,
+    handleResume,
     cancel,
   }
 }

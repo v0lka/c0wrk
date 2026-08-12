@@ -47,10 +47,12 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `ForkSession`          | id                           | (\*SessionInfo, error)    | Deep-copy a session into an independent fork (messages, tasks+steps/facts/attachments/trajectory, terminal commands, work directories, review) with regenerated identifiers in one atomic transaction; runtime counters reset, name "`<src> (fork N)`". Rejected when the session has an unfinished (`in_progress`/`failed`) task. The returned session becomes the active session |
 | `ListSessions`         | —                            | ([]SessionInfo, error)    | List active project sessions                          |
 | `GetSessionHistory`    | id                           | ([]ChatMessage, error)    | Get message history                                   |
-| `GetSessionRuntimeStatus` | id                        | (SessionRuntimeStatus, error) | Live/persisted execution state: `{active, has_unfinished_task, unfinished_task_id?}`. Called after history load to reconcile the UI (running flag, resume banner, stale prompts) instead of defaulting to idle |
+| `GetSessionRuntimeStatus` | id                        | (SessionRuntimeStatus, error) | Live/persisted execution state: `{active, has_unfinished_task, unfinished_task_id?, paused}`. `paused` is true when the resumable unfinished task is in the `"paused"` status (a cooperative pause checkpoint). Called after history load to reconcile the UI (running flag, paused flag, resume banner, stale prompts) instead of defaulting to idle |
 | `GetBlackboardState`   | sessionID                    | (\*BlackboardStateResponse, error) | Get blackboard task state                    |
 | `SendMessage`          | id, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode | error                     | Send user message (async execution). Execution mode is derived from the active project (No-Project = CHAT); `activeAgents` carries `#agent` refs; `goal`/`goalBudget` start a goal loop; `reviewMode` renders the Code Review prompt section |
 | `CancelTask`           | id                           | error                     | Cancel running task                                   |
+| `PauseSession`         | sessionID                    | error                     | Cooperatively pause the in-flight task (flips the universal pause signal; the conductor stops at the next step boundary, the task is persisted as `"paused"`, and `session_paused` is emitted). Applies to all tasks — goal and non-goal alike |
+| `ResumeSession`        | sessionID, nudge, modelOverride, reasoningEffort | error                     | Resume a paused task (honors model/reasoning override; the optional `nudge` is injected as a trailing user message into the first resumed turn — the nudge-resume path). Emits `task_resumed` + `session_resumed` |
 | `ResumeTask`           | id, modelOverride, reasoningEffort | error                     | Resume failed task (honors model/reasoning override chosen before resuming)          |
 | `CancelUnfinishedTask` | id                           | error                     | Discard a resumable task (no resume prompt next time) |
 | `GetSessionTokens`    | sessionID                    | SessionTokensResponse     | Get token usage for session (getter, no error return) |
@@ -221,9 +223,8 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | --------------- | --------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------- |
 | `ConfirmGoal`   | sessionID, requestID, condition, verify, verificationMode | error   | Approve a proposed goal (optionally with edits). `verificationMode` (`executable`/`re_derivation`) overrides the derivation-chosen mode. Resolves the pending `goal_proposal` action          |
 | `CancelGoal`    | sessionID, requestID                    | error   | Cancel a proposed goal                                                                               |
-| `PauseGoal`     | sessionID                               | error   | Pause an active goal loop                                                                            |
-| `ResumeGoal`    | sessionID, modelOverride, reasoningEffort | error   | Resume a paused goal loop (optional model/reasoning-effort override)                                                                            |
-| `ClearGoal`     | sessionID                               | error   | Clear the active goal for a session                                                                  |
+
+> Pause/resume is a **session-level** control (not goal-specific): see the Session table below for `PauseSession`/`ResumeSession`.
 
 ### Work Directories (`backend/frontend_api_workdirs.go`)
 

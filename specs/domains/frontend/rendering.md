@@ -45,7 +45,7 @@ ChatMessageRenderer: renders each DisplayItem by type
 
 | Type                 | Description               | Visual Treatment                                                              |
 | -------------------- | ------------------------- | ----------------------------------------------------------------------------- |
-| `user`               | User message              | Right-aligned bubble; `/skill` refs as chips, `@file` refs as clickable links |
+| `user`               | User message              | Right-aligned bubble; `/skill` refs as chips, `@file` refs as clickable links. A message sent into a **paused** session carries an `is_nudge` marker and renders with a Zap "Nudge" badge (`bg-info/10 text-info`) — it is a normal user message that resumes the paused task (nudge-resume) |
 | `assistant`          | Assistant response        | Left-aligned, markdown rendered; local file links clickable (open File Viewer)|
 | `thought`            | Single reasoning block    | Collapsed by default, muted                                                   |
 | `thought_group`      | Multiple thoughts grouped | Collapsible container                                                         |
@@ -106,6 +106,20 @@ The `Markdown` component (`markdownConfig.tsx`) supplies custom `react-markdown`
 - **Local file links** — `href` values that are not external URLs are treated as workspace paths. Clicking resolves the path against the workspace root (`localFileLink.normalizePath`) and opens it in the File Viewer (`openFile` / `openFileAtLine` when a `#L<n>` anchor is present). Rendered as a keyboard-accessible `<span role="link">`.
 - **External URLs** — `http`/`https`/`mailto`/`ftp`/`data:` hrefs (`localFileLink.isExternalUrl`) are dispatched to the system browser via `openExternalURL` → `runtime.BrowserOpenURL` (`open` / `xdg-open` / Windows shell handler). The Wails webview has no default browser, so `<a target="_blank">` is either ignored or opens inside the webview, which cannot render arbitrary pages; clicks are intercepted (`preventDefault`) and routed through the native runtime instead.
 - **Local images** — a local `src` (relative or absolute disk path, not an external/data URL) is resolved to a base64 `data:` URL via the `ReadFileAsDataURL` RPC, because the webview cannot load `file://` or project-root-relative URLs. Candidates are tried in order (`markdownImageResolve.candidateImagePaths`): absolute `src` → single candidate; relative `src` → the markdown document's directory first, then the workspace root. A 1×1 transparent-PNG placeholder shows while loading or on failure (avoids the broken-image flicker). External/data `src` values pass through unchanged. Image embedding is a **file-viewer** feature: the file viewer passes `baseFilePath` + `workspaceRoot` to `Markdown`, chat rendering does not.
+
+### Chat Input Controls (Pause / Resume / Stop)
+
+The chat input toolbar (`ChatInputToolbar`) adapts its controls to the session's execution state, driven from `chatStore.taskActive` + `chatStore.paused`:
+
+| State | Controls | Behavior |
+| ----- | -------- | -------- |
+| **Running** (`taskActive`) | Pause + Stop | Pause → `pauseSession` RPC (optimistic flip to paused; rollback on failure); Stop → `cancelTask` |
+| **Paused** (`paused`) | Resume + Stop | Resume → `resumeSession` RPC (forwards model/reasoning overrides; optimistic flip back to active); Stop → `cancelTask`. The input is **unlocked** (a paused task is not "active"), so the user can type |
+| **Idle** | Optimize + Send | Normal send |
+
+When the user **sends a message while paused**, it is a **nudge-resume**: the optimistic user message is marked `is_nudge: true`, the `paused` flag is cleared, `taskActive` is set, and `sendMessage` routes to `resumeSession` (the backend detects the paused task and injects the text as a trailing user-nudge turn). The placeholder reads "Paused — send a message to nudge-resume, or press Resume".
+
+The goal status indicator (`GoalStatusIndicator`) is a **read-only** badge (icon + turn + budget); it has no Pause/Resume/Clear buttons — pause/resume is session-level.
 
 ## Invariants
 

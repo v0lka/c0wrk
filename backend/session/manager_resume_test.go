@@ -84,6 +84,7 @@ func (s *resumeTaskStore) CompleteTask(_ context.Context, _, _ string, _ int) er
 }
 
 func (s *resumeTaskStore) CancelTask(_ context.Context, _ string) error { return nil }
+func (s *resumeTaskStore) PauseTask(_ context.Context, _ string) error  { return nil }
 
 // functionalOrchestratorFactory builds a real *core.Orchestrator wired with a
 // mock LLM and a real (sp4rk) ContextWindow so the full Resume → Conductor path
@@ -164,7 +165,7 @@ func TestResumeTask_LoadsTrajectoryAndResumesWithoutPlan(t *testing.T) {
 	store.mu.Unlock()
 
 	// ResumeTask must NOT error without routing/plan.
-	if err := mgr.ResumeTask(context.Background(), info.ID, "", ""); err != nil {
+	if err := mgr.ResumeTask(context.Background(), info.ID, "", "", ""); err != nil {
 		t.Fatalf("ResumeTask failed: %v", err)
 	}
 
@@ -223,7 +224,7 @@ func TestResumeTask_ReusesRoutingDecision(t *testing.T) {
 	store.task.SessionID = info.ID
 	store.mu.Unlock()
 
-	if err := mgr.ResumeTask(context.Background(), info.ID, "", ""); err != nil {
+	if err := mgr.ResumeTask(context.Background(), info.ID, "", "", ""); err != nil {
 		t.Fatalf("ResumeTask failed: %v", err)
 	}
 
@@ -266,7 +267,7 @@ func TestResumeTask_EmptyTrajectoryFallback(t *testing.T) {
 	store.task.SessionID = info.ID
 	store.mu.Unlock()
 
-	if err := mgr.ResumeTask(context.Background(), info.ID, "", ""); err != nil {
+	if err := mgr.ResumeTask(context.Background(), info.ID, "", "", ""); err != nil {
 		t.Fatalf("ResumeTask failed: %v", err)
 	}
 
@@ -337,7 +338,7 @@ func TestResumeTask_AppliesModelOverride(t *testing.T) {
 
 	// Resume with a model + reasoning override (mirrors the Resume button
 	// passing the user's current model/reasoning selection).
-	if err := mgr.ResumeTask(context.Background(), info.ID, overrideModel, reasoning); err != nil {
+	if err := mgr.ResumeTask(context.Background(), info.ID, overrideModel, reasoning, ""); err != nil {
 		t.Fatalf("ResumeTask failed: %v", err)
 	}
 
@@ -377,7 +378,7 @@ func TestManager_ResumeTask_ArchivedRejected(t *testing.T) {
 	drainEvents(eventChan) // session_created + session_archived
 
 	// ResumeTask must be rejected with the sentinel error.
-	err = mgr.ResumeTask(context.Background(), info.ID, "", "")
+	err = mgr.ResumeTask(context.Background(), info.ID, "", "", "")
 	if !errors.Is(err, ErrSessionArchived) {
 		t.Errorf("ResumeTask on archived session should return ErrSessionArchived, got %v", err)
 	}

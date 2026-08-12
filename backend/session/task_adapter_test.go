@@ -348,7 +348,7 @@ func TestTaskStoreAdapter_SaveAndLoadGoalState(t *testing.T) {
 		VerifyClause: "go test ./core/goal/...",
 		Budget:       goal.GoalBudget{MaxTurns: 5},
 		TurnCount:    2,
-		Status:       goal.StatusPaused,
+		Status:       goal.StatusActive, // paused goals stay active
 		LastVerdict: &goal.Verdict{
 			Status:     "not_met",
 			Reason:     "still working",
@@ -377,8 +377,8 @@ func TestTaskStoreAdapter_SaveAndLoadGoalState(t *testing.T) {
 	if loaded.VerifyClause != gs.VerifyClause {
 		t.Errorf("VerifyClause: got %q, want %q", loaded.VerifyClause, gs.VerifyClause)
 	}
-	if loaded.Status != goal.StatusPaused {
-		t.Errorf("Status: got %q, want %q", loaded.Status, goal.StatusPaused)
+	if loaded.Status != goal.StatusActive {
+		t.Errorf("Status: got %q, want %q", loaded.Status, goal.StatusActive)
 	}
 	if loaded.Budget.MaxTurns != 5 {
 		t.Errorf("Budget.MaxTurns: got %d, want 5", loaded.Budget.MaxTurns)
@@ -435,7 +435,7 @@ func TestTaskStoreAdapter_LoadTaskState_PopulatesGoalState(t *testing.T) {
 
 	gs := &goal.GoalState{
 		Condition: "ship the feature",
-		Status:    goal.StatusPaused,
+		Status:    goal.StatusActive, // paused goals stay active
 	}
 	if err := adapter.PersistGoalState(taskID, gs); err != nil {
 		t.Fatalf("PersistGoalState failed: %v", err)
@@ -454,8 +454,8 @@ func TestTaskStoreAdapter_LoadTaskState_PopulatesGoalState(t *testing.T) {
 	if state.GoalState.Condition != "ship the feature" {
 		t.Errorf("GoalState.Condition = %q, want %q", state.GoalState.Condition, "ship the feature")
 	}
-	if state.GoalState.Status != goal.StatusPaused {
-		t.Errorf("GoalState.Status = %q, want %q", state.GoalState.Status, goal.StatusPaused)
+	if state.GoalState.Status != goal.StatusActive {
+		t.Errorf("GoalState.Status = %q, want %q", state.GoalState.Status, goal.StatusActive)
 	}
 }
 

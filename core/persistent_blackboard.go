@@ -25,6 +25,10 @@ type PersistableBlackboard interface {
 	CompleteTask(attemptCount int)
 	FailTask()
 	CancelTask()
+	// PauseTask marks the in-progress task as paused, persisting a resumable
+	// checkpoint. Like CancelTask it writes synchronously so the status change
+	// is guaranteed before the method returns.
+	PauseTask()
 	ReactivateTask()
 	TaskID() string
 }
@@ -49,6 +53,9 @@ type TaskPersistence interface {
 	PersistCompletion(taskID, finalOutput string, attemptCount int) error
 	PersistFailure(taskID string) error
 	PersistCancellation(taskID string) error
+	// PersistPause marks an in-progress task as paused so it survives app
+	// restart as a resumable checkpoint.
+	PersistPause(taskID string) error
 	PersistFacts(taskID string, facts []orchestration.Fact) error
 	// PersistAttachments persists the full attachments list for a task so that
 	// user-attached files survive app restart and are rehydrated on continuation.
@@ -89,5 +96,5 @@ type TaskState struct {
 	Facts           []orchestration.Fact       // keyword-tagged facts
 	Attachments     []orchestration.Attachment // user-attached files converted to markdown
 	GoalState       *goal.GoalState            // goal-loop state (nil for non-goal tasks)
-	Status          string                     // "in_progress", "completed", "failed", "cancelled"
+	Status          string                     // "in_progress", "completed", "failed", "cancelled", "paused"
 }

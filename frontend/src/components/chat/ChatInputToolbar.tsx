@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/button'
-import { Play, Square, MessageSquare, Terminal, Sparkles, Loader2, FolderPlus, Paperclip } from 'lucide-react'
+import { Play, Pause, Square, MessageSquare, Terminal, Sparkles, Loader2, FolderPlus, Paperclip } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { ChatInputController } from '@/hooks/useChatInputController'
 import { ModelCombobox } from './ModelCombobox'
@@ -29,6 +29,8 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
     isInputDisabled,
     isNoProject,
     showCancel,
+    taskActive,
+    paused,
     hasContent,
     isOptimizing,
     optimizeError,
@@ -36,6 +38,8 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
     activeSessionId,
     handleSend,
     handleOptimize,
+    handlePause,
+    handleResume,
     cancel,
   } = controller
 
@@ -110,16 +114,44 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
       )}
       <div className="flex-1" />
       {showCancel ? (
-        <Button
-          variant="outline"
-          size="icon"
-          onClick={cancel}
-          className="shrink-0 h-8 w-8 rounded-md border-destructive text-destructive hover:bg-destructive/10 active:bg-destructive/20"
-          title="Cancel"
-          aria-label="Cancel task"
-        >
-          <Square className="h-3.5 w-3.5 fill-current" />
-        </Button>
+        <>
+          {/* Pause (running) / Resume (paused) flank the Stop button. A
+              cooperative pause unlocks the input for a nudge-resume; Resume
+              re-enters the task without a nudge. */}
+          {paused ? (
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={handleResume}
+              className="shrink-0 h-8 w-8 rounded-md border-success text-success hover:bg-success/10 active:bg-success/20"
+              title="Resume task"
+              aria-label="Resume task"
+            >
+              <Play className="h-3.5 w-3.5 fill-current" />
+            </Button>
+          ) : taskActive ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handlePause}
+              className="shrink-0 h-8 w-8 rounded-md text-warning hover:bg-warning/10 active:bg-warning/20"
+              title="Pause task"
+              aria-label="Pause task"
+            >
+              <Pause className="h-3.5 w-3.5" />
+            </Button>
+          ) : null}
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={cancel}
+            className="shrink-0 h-8 w-8 rounded-md border-destructive text-destructive hover:bg-destructive/10 active:bg-destructive/20"
+            title="Cancel"
+            aria-label="Cancel task"
+          >
+            <Square className="h-3.5 w-3.5 fill-current" />
+          </Button>
+        </>
       ) : mode === 'chat' ? (
         <>
           {optimizeError && (

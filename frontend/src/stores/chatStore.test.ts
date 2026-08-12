@@ -708,3 +708,29 @@ describe('addMessage idempotency', () => {
     expect(useChatStore.getState().messages[SESSION]!['goal-status-2-paused']!.content).toBe('v2')
   })
 })
+
+describe('setPaused', () => {
+  const SESSION = 'sess-pause'
+
+  beforeEach(() => {
+    useChatStore.setState({ paused: {} })
+  })
+
+  it('sets paused=true for a session', () => {
+    useChatStore.getState().setPaused(SESSION, true)
+    expect(useChatStore.getState().paused[SESSION]).toBe(true)
+  })
+
+  it('clears the paused entry when set to false (absent key encodes "not paused")', () => {
+    useChatStore.getState().setPaused(SESSION, true)
+    useChatStore.getState().setPaused(SESSION, false)
+    expect(useChatStore.getState().paused[SESSION]).toBeUndefined()
+  })
+
+  it('is a no-op when clearing a session that was never paused', () => {
+    const before = useChatStore.getState().paused
+    useChatStore.getState().setPaused(SESSION, false)
+    // Same reference — no state change emitted.
+    expect(useChatStore.getState().paused).toBe(before)
+  })
+})

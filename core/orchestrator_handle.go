@@ -369,6 +369,12 @@ func (o *Orchestrator) finalizeResult(bb orchestration.Blackboard, routing *rout
 // genuinely successful execution closes the task as "completed".
 func persistTaskOutcome(pbb PersistableBlackboard, execResult *orchestration.ExecutionResult) {
 	switch execResult.Status {
+	case orchestration.ExecutionStatusPaused:
+		// Paused: a cooperative pause is a recoverable checkpoint. Mark the
+		// task paused so SessionRuntimeStatus.Paused can reflect it and a
+		// later Resume re-enters. The trajectory was already flushed by the
+		// conductor's RunConductor (trajStore.Flush) so the checkpoint is live.
+		pbb.PauseTask()
 	case orchestration.ExecutionStatusPartial, orchestration.ExecutionStatusCancelled:
 		// Partial: keep in_progress — resumable.
 		// Cancelled: the session manager persists the cancellation itself.
