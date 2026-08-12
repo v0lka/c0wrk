@@ -83,6 +83,7 @@ type IndexerConfig struct {
 	ChunkFn      ChunkFunc
 	HashFn       HashFunc
 	MaxChunkSize int
+	MaxFileSize  int64
 	Overlap      int
 	OnProgress   ProgressCallback
 	Logger       *slog.Logger
@@ -94,6 +95,7 @@ type Indexer struct {
 	chunkFn      ChunkFunc
 	hashFn       HashFunc
 	maxChunkSize int
+	maxFileSize  int64
 	overlap      int
 	onProgress   ProgressCallback
 	logger       *slog.Logger
@@ -116,7 +118,11 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 	}
 	maxChunkSize := cfg.MaxChunkSize
 	if maxChunkSize <= 0 {
-		maxChunkSize = 1500
+		maxChunkSize = DefaultMaxChunkSize
+	}
+	maxFileSize := cfg.MaxFileSize
+	if maxFileSize <= 0 {
+		maxFileSize = DefaultMaxIndexableFileSize
 	}
 	overlap := cfg.Overlap
 	if overlap <= 0 {
@@ -135,6 +141,7 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 		chunkFn:      cfg.ChunkFn,
 		hashFn:       hashFn,
 		maxChunkSize: maxChunkSize,
+		maxFileSize:  maxFileSize,
 		overlap:      overlap,
 		onProgress:   onProgress,
 		logger:       logger,
@@ -162,7 +169,7 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 		}
 	}()
 
-	files, err := walkProjectFiles(workspacePath, idx.resolverFor(workspacePath))
+	files, err := walkProjectFiles(workspacePath, idx.resolverFor(workspacePath), idx.maxFileSize)
 	if err != nil {
 		return fmt.Errorf("walking project files: %w", err)
 	}
@@ -387,6 +394,31 @@ func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBr
 // parallel chromem and lexical document slices keyed by the same shared
 // document ID.
 func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.Doc, error) {
+	// Size guard (stat once; reused below for lastModified): reject oversized
+	// files before any full read. isBinaryHeader's NUL heuristic cannot catch
+	// every binary format — ONNX/safetensors protobufs begin with readable
+	// ASCII and contain no NUL in their header — so without this guard a
+	// multi-hundred-MB model file would be loaded whole by os.ReadFile and
+	// explode memory during chunking. The limit (idx.maxFileSize) is
+	// configurable via vector_index.max_file_size.
+	//
+	// This read-time check is the universal backstop: walkProjectFiles and
+	// ValidateCollection also apply the same limit as an optimization (so
+	// oversized files never enter the pipeline), but processFile may be
+	// reached via paths that bypass the walk — e.g. a debounced incremental
+	// reindex triggered by a watcher event on a file that grew past the limit.
+	// This check guarantees no oversized file is ever fully read regardless of
+	// the caller.
+	info, statErr := os.Stat(filePath)
+	if statErr != nil {
+		return nil, nil, fmt.Errorf("stat file %s: %w", filePath, statErr)
+	}
+	if tooLargeForIndex(info.Size(), idx.maxFileSize) {
+		idx.logger.Debug("skipping oversized file", "path", filePath, "size", info.Size(),
+			"limit", idx.maxFileSize)
+		return nil, nil, nil
+	}
+
 	// Bounded header pre-read for binary detection: reject multi-GB binary
 	// assets (e.g. .onnx, .safetensors, .psd) before loading them fully into
 	// memory. isBinaryHeader reads at most binaryHeaderSize bytes.
@@ -415,11 +447,9 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 	}
 
 	fileName := filepath.Base(filePath)
-	info, statErr := os.Stat(filePath)
-	lastModified := ""
-	if statErr == nil {
-		lastModified = info.ModTime().UTC().Format("2006-01-02T15:04:05Z")
-	}
+	// info is guaranteed non-nil here: processFile returned early above if the
+	// opening os.Stat failed, so lastModified is always populated.
+	lastModified := info.ModTime().UTC().Format("2006-01-02T15:04:05Z")
 
 	vecDocs := make([]chromem.Document, 0, len(chunks))
 	lexDocs := make([]lexical.Doc, 0, len(chunks))
@@ -555,7 +585,7 @@ func (idx *Indexer) collectDocumentIDs(ctx context.Context, filePaths []string) 
 // ignored by .gitignore or .aiignore (root and nested, resolved via checker)
 // are skipped, as are hidden (leading-dot) entries. Binary content is not
 // detected here — it is a read-time guard applied in processFile.
-func walkProjectFiles(root string, checker ignore.IgnoreChecker) ([]string, error) {
+func walkProjectFiles(root string, checker ignore.IgnoreChecker, maxFileSize int64) ([]string, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolving root path: %w", err)
@@ -579,6 +609,16 @@ func walkProjectFiles(root string, checker ignore.IgnoreChecker) ([]string, erro
 		}
 
 		if isHiddenName(d.Name()) || checker.Ignored(path, false) {
+			return nil
+		}
+
+		// Skip oversized files at walk time so they never enter the pipeline
+		// (and never appear as "new" on every incremental pass, which would
+		// otherwise cause a redundant reindex). This is an optimization: the
+		// universal guarantee — that no file above the limit is ever fully
+		// read — is enforced by processFile's read-time backstop. A stat
+		// failure is treated as skip-safe.
+		if info, infoErr := d.Info(); infoErr == nil && tooLargeForIndex(info.Size(), maxFileSize) {
 			return nil
 		}
 
@@ -701,6 +741,30 @@ func isHiddenName(name string) bool {
 // detection. It matches git's heuristic and is small enough that reading it
 // from a multi-GB file is effectively free.
 const binaryHeaderSize = 512
+
+// DefaultMaxIndexableFileSize is the default upper bound on a file's size (in
+// bytes) for it to be read fully into memory for chunking and embedding. Files
+// larger than this are skipped at walk, validation, and read time. The limit is
+// necessary because the NUL-byte binary check (isBinaryHeader) cannot recognize
+// every binary format: ONNX and safetensors models are protobuf whose leading
+// bytes are readable ASCII field names with no NUL, so a multi-hundred-MB
+// model.onnx would otherwise be loaded whole by os.ReadFile and explode memory
+// during chunking (a 522 MB model yields ~400k chunks). 4 MiB is generous for
+// genuine source code while excluding the large binary assets that cause the
+// hang; it is overridable via vector_index.max_file_size.
+const DefaultMaxIndexableFileSize int64 = 4 * 1024 * 1024 // 4 MiB
+
+// DefaultMaxChunkSize is the default maximum chunk size in characters passed
+// to the chunker. It is sized to fit within the embedding model's context
+// window (MaxSeqLength 512 tokens ≈ ~2000 chars) with room for overlap.
+// Overridable via vector_index.max_chunk_size.
+const DefaultMaxChunkSize = 1500
+
+// tooLargeForIndex reports whether a file of the given byte size exceeds the
+// indexable limit and must be skipped before any full read.
+func tooLargeForIndex(size, limit int64) bool {
+	return size > limit
+}
 
 // containsNullByte reports whether b contains a NUL byte, the classic binary
 // indicator (used by git and diff).

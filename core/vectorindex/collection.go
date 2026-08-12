@@ -164,6 +164,18 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 			return nil //nolint:nilerr // skip unresolvable paths
 		}
 
+		// Size guard: skip oversized files before the full os.ReadFile. Like
+		// binary/empty files they are never added to the collection, so
+		// excluding them here avoids an infinite reindex loop on every pass.
+		// The NUL-byte binary check below cannot recognize every binary format
+		// (ONNX/safetensors protobufs have readable headers), so the size
+		// limit is the reliable backstop against loading a multi-hundred-MB
+		// asset into memory just to hash it. The limit is configurable via
+		// vector_index.max_file_size (default 4 MiB).
+		if info, infoErr := d.Info(); infoErr == nil && tooLargeForIndex(info.Size(), s.maxFileSize) {
+			return nil //nolint:nilerr // skip oversized files
+		}
+
 		// Bounded header pre-read: reject multi-GB binary assets before the
 		// full os.ReadFile. Binary and empty files are never added to the
 		// collection by processFile, so reporting them as "new" every pass

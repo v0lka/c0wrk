@@ -28,6 +28,12 @@ type ServiceConfig struct {
 	// wiring sets thresholds via config.VectorIndexConfig.
 	HybridConfig HybridConfig
 
+	// MaxFileSize is the upper bound (in bytes) on a file's size for it to
+	// be read fully into memory during validation/walk. Files above this are
+	// skipped before any full read. Defaults to DefaultMaxIndexableFileSize
+	// (4 MiB) when zero. Configurable via vector_index.max_file_size.
+	MaxFileSize int64
+
 	// Logger for structured logging.
 	Logger *slog.Logger
 }
@@ -79,6 +85,10 @@ type Service struct {
 	// hybridConfig holds resolved RRF tuning + pre-fusion score
 	// thresholds. Threshold fields of 0 mean "disabled".
 	hybridConfig HybridConfig
+
+	// maxFileSize is the upper bound on a file's size for indexing. See
+	// ServiceConfig.MaxFileSize.
+	maxFileSize int64
 }
 
 // NewService creates a new vector index Service.
@@ -97,6 +107,11 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		readyCh:       make(chan struct{}),
 		logger:        logger,
 		hybridConfig:  ResolveHybridConfig(cfg.HybridConfig),
+	}
+	if cfg.MaxFileSize > 0 {
+		s.maxFileSize = cfg.MaxFileSize
+	} else {
+		s.maxFileSize = DefaultMaxIndexableFileSize
 	}
 
 	return s, nil

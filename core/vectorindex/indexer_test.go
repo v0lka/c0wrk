@@ -364,7 +364,7 @@ func TestWalkProjectFiles(t *testing.T) {
 		}
 	}
 
-	files, err := walkProjectFiles(dir, testIgnoreChecker(t, dir))
+	files, err := walkProjectFiles(dir, testIgnoreChecker(t, dir), DefaultMaxIndexableFileSize)
 	if err != nil {
 		t.Fatalf("walkProjectFiles: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestWalkProjectFiles_WithGitignore(t *testing.T) {
 		}
 	}
 
-	files, err := walkProjectFiles(dir, testIgnoreChecker(t, dir))
+	files, err := walkProjectFiles(dir, testIgnoreChecker(t, dir), DefaultMaxIndexableFileSize)
 	if err != nil {
 		t.Fatalf("walkProjectFiles: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestWalkProjectFiles_WithAiignore(t *testing.T) {
 		}
 	}
 
-	files, err := walkProjectFiles(dir, testIgnoreChecker(t, dir))
+	files, err := walkProjectFiles(dir, testIgnoreChecker(t, dir), DefaultMaxIndexableFileSize)
 	if err != nil {
 		t.Fatalf("walkProjectFiles: %v", err)
 	}
@@ -610,13 +610,115 @@ func TestNewIndexer_Defaults(t *testing.T) {
 		ChunkFn: fakeChunkFunc,
 	})
 
-	if indexer.maxChunkSize != 1500 {
-		t.Errorf("expected default maxChunkSize 1500, got %d", indexer.maxChunkSize)
+	if indexer.maxChunkSize != DefaultMaxChunkSize {
+		t.Errorf("expected default maxChunkSize %d, got %d", DefaultMaxChunkSize, indexer.maxChunkSize)
+	}
+	if indexer.maxFileSize != DefaultMaxIndexableFileSize {
+		t.Errorf("expected default maxFileSize %d, got %d", DefaultMaxIndexableFileSize, indexer.maxFileSize)
 	}
 	if indexer.overlap != 200 {
 		t.Errorf("expected default overlap 200, got %d", indexer.overlap)
 	}
 	if indexer.hashFn == nil {
 		t.Error("expected default hashFn")
+	}
+}
+
+// TestTooLargeForIndex verifies the size threshold used as the reliable
+// backstop against loading oversized binary assets into memory.
+func TestTooLargeForIndex(t *testing.T) {
+	cases := []struct {
+		name string
+		size int64
+		want bool
+	}{
+		{"zero", 0, false},
+		{"small", 1024, false},
+		{"at limit", DefaultMaxIndexableFileSize, false},
+		{"one over", DefaultMaxIndexableFileSize + 1, true},
+		{"model.onnx (522MB)", 522 * 1024 * 1024, true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tooLargeForIndex(tt.size, DefaultMaxIndexableFileSize); got != tt.want {
+				t.Errorf("tooLargeForIndex(%d) = %v, want %v", tt.size, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestProcessFile_SkipsOversized is the regression test for the Flawgate
+// hang: a multi-hundred-MB ONNX model file (protobuf with readable ASCII
+// header, no NUL byte) must be rejected by the size guard — NOT read fully
+// into memory. Without the guard, os.ReadFile + chunkFn would load the whole
+// file and explode memory, hanging the indexer (and, by holding the service
+// write lock, blocking app shutdown).
+func TestProcessFile_SkipsOversized(t *testing.T) {
+	svc := setupTestService(t)
+	indexer := NewIndexer(IndexerConfig{
+		Service: svc,
+		ChunkFn: fakeChunkFunc,
+		HashFn:  fakeHashFunc,
+	})
+
+	root := t.TempDir()
+	// Simulate an ONNX protobuf header: readable ASCII field names with NO NUL
+	// byte (mirrors a real model.onnx whose leading bytes spell "pytorch",
+	// "embeddings.word_embeddings", ...), but large enough to exceed the limit.
+	// The filler is NUL-free so isBinaryHeader does NOT flag it — this proves
+	// the size guard (not the binary heuristic) is what skips the file.
+	header := []byte("\x08\x07\x12\x07pytorch\x1a\x052.1.0 embeddings.word_embeddings")
+	big := make([]byte, DefaultMaxIndexableFileSize+1)
+	for i := range big {
+		big[i] = 'A'
+	}
+	copy(big, header)
+	bigPath := filepath.Join(root, "model.onnx")
+	if err := os.WriteFile(bigPath, big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	vecDocs, lexDocs, err := indexer.processFile(bigPath)
+	if err != nil {
+		t.Fatalf("processFile oversized model: unexpected error: %v", err)
+	}
+	if len(vecDocs) != 0 || len(lexDocs) != 0 {
+		t.Errorf("expected oversized file to be skipped, got %d vec / %d lex docs",
+			len(vecDocs), len(lexDocs))
+	}
+
+	// Sanity: isBinaryHeader alone does NOT flag this as binary (that is exactly
+	// the hole the size guard fills), so the test proves the guard, not the
+	// NUL heuristic, is what skips the file.
+	if binary, _ := isBinaryHeader(bigPath); binary {
+		t.Fatal("expected header to be NUL-free (binary heuristic must NOT catch it); test premise invalid")
+	}
+}
+
+// TestWalkProjectFiles_SkipsOversized verifies oversized files never enter the
+// pipeline at walk time, so they cannot appear as "new" on every incremental
+// pass (which would otherwise drive a redundant reindex).
+func TestWalkProjectFiles_SkipsOversized(t *testing.T) {
+	root := t.TempDir()
+	small := filepath.Join(root, "small.go")
+	if err := os.WriteFile(small, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	big := make([]byte, DefaultMaxIndexableFileSize+1)
+	if err := os.WriteFile(filepath.Join(root, "model.onnx"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := walkProjectFiles(root, testIgnoreChecker(t, root), DefaultMaxIndexableFileSize)
+	if err != nil {
+		t.Fatalf("walkProjectFiles: %v", err)
+	}
+	for _, f := range files {
+		if filepath.Base(f) == "model.onnx" {
+			t.Errorf("oversized model.onnx should not be walked; got %v", files)
+		}
+	}
+	if len(files) != 1 || files[0] != small {
+		t.Errorf("expected only small.go walked, got %v", files)
 	}
 }

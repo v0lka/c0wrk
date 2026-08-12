@@ -118,6 +118,19 @@ type VectorIndexConfig struct {
 	// the legacy behaviour and default. Set 1..N to cap intra-op threads and
 	// lower the CPU spike during (re)indexing at the cost of throughput.
 	EmbeddingThreads int `yaml:"embedding_threads"`
+
+	// MaxFileSize is the upper bound (in bytes) on a file's size for it to be
+	// read fully into memory for chunking and embedding. Files above this are
+	// skipped at walk, validation, and read time. 0 (or unset) defaults to
+	// 4 MiB. Raise it if legitimate large source files are excluded from
+	// vector search; lower it to bound memory on constrained machines.
+	MaxFileSize int64 `yaml:"max_file_size"`
+
+	// MaxChunkSize is the maximum chunk size in characters passed to the
+	// chunker. 0 (or unset) defaults to 1500. It is sized to fit the embedding
+	// model's context window; raising it significantly above 1500 risks
+	// producing chunks the model cannot embed in a single pass.
+	MaxChunkSize int `yaml:"max_chunk_size"`
 }
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.

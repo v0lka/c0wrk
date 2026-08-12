@@ -491,6 +491,17 @@ func ApplyDefaults(cfg *Config) {
 		cfg.VectorIndex.HybridLexicalScoreRatio = &ratio
 	}
 
+	// File-size and chunk-size limits. Zero falls back to the vectorindex
+	// package defaults (4 MiB / 1500 chars). These are applied here (not in
+	// NewManager/NewService) so they are visible in the resolved config the
+	// frontend can inspect, matching the hybrid-threshold pattern above.
+	if cfg.VectorIndex.MaxFileSize == 0 {
+		cfg.VectorIndex.MaxFileSize = vectorindex.DefaultMaxIndexableFileSize
+	}
+	if cfg.VectorIndex.MaxChunkSize == 0 {
+		cfg.VectorIndex.MaxChunkSize = vectorindex.DefaultMaxChunkSize
+	}
+
 	// Proxy defaults
 	if cfg.Proxy.BypassList == nil {
 		cfg.Proxy.BypassList = []string{"localhost", "127.0.0.1"}

@@ -542,6 +542,25 @@ orchestration:
 #   embedding_threads: 1   # minimum CPU load, slowest indexing
 #   embedding_threads: 2   # balance between quiet operation and speed
 #
+# File-size and chunk-size limits:
+#
+#   max_file_size: 4194304   # 4 MiB (default). Files larger than this are
+#                            # skipped before being read into memory for
+#                            # chunking/embedding. Necessary because the NUL-
+#                            # byte binary check cannot recognize every binary
+#                            # format (ONNX/safetensors protobufs have readable
+#                            # ASCII headers with no NUL), so without this limit
+#                            # a multi-hundred-MB model file would be loaded
+#                            # whole and explode memory. Raise it if legitimate
+#                            # large source files are excluded from search;
+#                            # lower it to bound memory on constrained machines.
+#
+#   max_chunk_size: 1500     # characters (default). Maximum chunk size passed
+#                            # to the chunker. Sized to fit the embedding
+#                            # model's context window (MaxSeqLength 512 tokens).
+#                            # Raising it significantly risks producing chunks
+#                            # the model cannot embed in a single pass.
+#
 # vector_index:
 #   hybrid: true
 #   hybrid_rrf_k: 60
@@ -551,6 +570,8 @@ orchestration:
 #   hybrid_vector_score_ratio: 0.25
 #   hybrid_lexical_score_ratio: 0.1
 #   embedding_threads: 0
+#   max_file_size: 4194304
+#   max_chunk_size: 1500
 
 # ---------------------------------------------------------------------------
 # Proxy — HTTP/HTTPS proxy for all outbound connections.

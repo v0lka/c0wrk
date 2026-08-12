@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/sp4rk/embedding"
 )
 
@@ -423,4 +424,76 @@ func TestShutdownReturnsWhenIndexingGoroutineIsStuck(t *testing.T) {
 		t.Fatalf("Shutdown took %v; expected it to return within the grace period when the indexing goroutine is stuck", elapsed)
 	}
 	t.Logf("Shutdown returned in %v with stuck indexing goroutine (grace=%v)", elapsed, mgr.shutdownGrace)
+}
+
+// TestShutdownReturnsWhenInitGoroutineIsStuck is the regression test for the
+// previously unbounded m.initWG.Wait() in Shutdown. initProject's opening step
+// (SetProject's gob-decode of every branch document) is synchronous and not
+// ctx-interruptible; if it stalled on a large or corrupt DB, the old code
+// waited forever — hanging app shutdown even though indexing had its own
+// bounded grace. The fix bounds the init wait with the same grace period, so a
+// stuck init goroutine cannot hold shutdown.
+func TestShutdownReturnsWhenInitGoroutineIsStuck(t *testing.T) {
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	mgr := &Manager{
+		service:       svc,
+		logger:        slog.New(slog.DiscardHandler),
+		shutdownGrace: 100 * time.Millisecond,
+	}
+	// Simulate a stuck init goroutine: it never calls Done(), so initWG never
+	// drains — mirroring initProject wedged inside non-interruptible SetProject.
+	mgr.initWG.Add(1)
+	t.Cleanup(func() {
+		mgr.initWG.Done() // unblock so the test binary doesn't leak the goroutine
+		_ = svc.Close()
+	})
+
+	start := time.Now()
+	mgr.Shutdown()
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("Shutdown took %v; expected it to return within the grace period when the init goroutine is stuck", elapsed)
+	}
+	t.Logf("Shutdown returned in %v with stuck init goroutine (grace=%v)", elapsed, mgr.shutdownGrace)
+}
+
+// TestSwitchProjectReturnsWhenInitGoroutineIsStuck is the regression test for
+// the previously unbounded m.initWG.Wait() in SwitchProject. Both the NoProject
+// and CODE paths now use the same bounded waitBounded as Shutdown, so a stuck
+// init goroutine (e.g. one wedged inside the non-interruptible chromem
+// gob-decode) cannot hang a project switch on the RPC thread forever. On
+// timeout the switch proceeds — initCancel is already called, so the orphaned
+// goroutine aborts at its next ctx check.
+func TestSwitchProjectReturnsWhenInitGoroutineIsStuck(t *testing.T) {
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	mgr := &Manager{
+		service:       svc,
+		logger:        slog.New(slog.DiscardHandler),
+		shutdownGrace: 100 * time.Millisecond,
+	}
+	// Simulate a stuck init goroutine: it never calls Done(), so initWG never
+	// drains — mirroring initProject wedged inside non-interruptible SetProject.
+	mgr.initWG.Add(1)
+	t.Cleanup(func() {
+		mgr.initWG.Done() // unblock so the test binary doesn't leak the goroutine
+		_ = svc.Close()
+	})
+
+	start := time.Now()
+	if err := mgr.SwitchProject(core.NoProjectID, "", "", ProjectCallbacks{}); err != nil {
+		t.Fatalf("SwitchProject: unexpected error: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("SwitchProject took %v; expected it to return within the grace period when the init goroutine is stuck", elapsed)
+	}
+	t.Logf("SwitchProject returned in %v with stuck init goroutine (grace=%v)", elapsed, mgr.shutdownGrace)
 }

@@ -19,15 +19,17 @@ import (
 // provided, indicating vector search is intentionally not configured.
 var ErrEmbeddingDisabled = errors.New("vector search disabled: no embedding function provided")
 
-// shutdownIndexGracePeriod is the maximum time Shutdown waits for background
-// indexing goroutines to exit after cancelling their contexts. Context
-// cancellation normally unblocks them within milliseconds (the embedder is
-// ctx-aware), but a goroutine stuck in non-interruptible work — most notably
-// a synchronous ONNX inference call that ignores ctx.Done() — cannot be
-// interrupted. Rather than block the entire app shutdown forever (which would
-// leave the user with no option but to force-kill the process), Shutdown
-// waits for this period, then skips the blocking service.Close()/closeFn()
-// and lets the OS reclaim resources on process exit.
+// shutdownIndexGracePeriod is the maximum time Shutdown and SwitchProject wait
+// for background init/indexing goroutines to exit after cancelling their
+// contexts. Context cancellation normally unblocks them within milliseconds
+// (the embedder is ctx-aware), but a goroutine stuck in non-interruptible work
+// — most notably a synchronous chromem gob-decode (init) or ONNX inference call
+// (indexing) that ignores ctx.Done() — cannot be interrupted. Rather than block
+// app shutdown or a project switch forever (which would leave the user with no
+// option but to force-kill the process), the caller waits for this period, then
+// proceeds — in Shutdown it skips the blocking service.Close()/closeFn() and lets
+// the OS reclaim resources; in SwitchProject the new init goroutine blocks on
+// s.mu in the background until the old one releases it.
 const shutdownIndexGracePeriod = 10 * time.Second
 
 // ManagerConfig holds configuration for creating a Manager.
@@ -39,6 +41,8 @@ type ManagerConfig struct {
 	ChunkFn       ChunkFunc             // Optional: defaults to adapter over embedding.ChunkFile
 	HashFn        HashFunc              // Optional: defaults to embedding.ComputeFileHash
 	HybridConfig  HybridConfig          // RRF tuning + pre-fusion score thresholds (zero = defaults, thresholds off)
+	MaxFileSize   int64                 // Optional: defaults to DefaultMaxIndexableFileSize (4 MiB)
+	MaxChunkSize  int                   // Optional: defaults to DefaultMaxChunkSize (1500 chars)
 	Logger        *slog.Logger
 }
 
@@ -100,8 +104,10 @@ type Manager struct {
 	workspacePath string
 
 	// Chunk and hash functions for indexing.
-	chunkFn ChunkFunc
-	hashFn  HashFunc
+	chunkFn      ChunkFunc
+	hashFn       HashFunc
+	maxFileSize  int64
+	maxChunkSize int
 
 	// indexingWG tracks ALL background indexing goroutines launched by the
 	// Manager (the initProject-launched full/incremental pass and any
@@ -147,6 +153,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		EmbeddingFunc: cfg.EmbeddingFunc,
 		Logger:        logger,
 		HybridConfig:  cfg.HybridConfig,
+		MaxFileSize:   cfg.MaxFileSize,
 	})
 	if err != nil {
 		return nil, err
@@ -162,12 +169,23 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		hashFn = embedding.ComputeFileHash
 	}
 
+	maxFileSize := cfg.MaxFileSize
+	if maxFileSize <= 0 {
+		maxFileSize = DefaultMaxIndexableFileSize
+	}
+	maxChunkSize := cfg.MaxChunkSize
+	if maxChunkSize <= 0 {
+		maxChunkSize = DefaultMaxChunkSize
+	}
+
 	return &Manager{
-		service: svc,
-		logger:  logger,
-		chunkFn: chunkFn,
-		hashFn:  hashFn,
-		closeFn: cfg.CloseFn,
+		service:      svc,
+		logger:       logger,
+		chunkFn:      chunkFn,
+		hashFn:       hashFn,
+		maxFileSize:  maxFileSize,
+		maxChunkSize: maxChunkSize,
+		closeFn:      cfg.CloseFn,
 	}, nil
 }
 
@@ -224,17 +242,23 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 	// no git branch is detected, and no indexing goroutine or git monitor is
 	// started.
 	if projectID == core.NoProjectID {
-		// Cancel any in-flight async init from a prior CODE project and wait
-		// for that goroutine to exit before resetting the service, so it
-		// can't (re)set a collection/db after we go in-memory below. Mirrors
-		// the CODE path's single-flight teardown.
+		// Cancel any in-flight async init from a prior CODE project and drain it
+		// (bounded) before resetting the service, so it can't (re)set a
+		// collection/db after we go in-memory below. Mirrors the CODE path's
+		// single-flight teardown. The wait is bounded so a stuck init goroutine
+		// (e.g. one blocked in the non-interruptible chromem gob-decode) cannot
+		// hang the project-switch RPC forever; on timeout we proceed because
+		// initCancel is already called, so the orphaned goroutine aborts at its
+		// next ctx check. The s.mu lock it may still hold serializes naturally
+		// with the SetProject call below, bounding the effective wait to the
+		// actual DB work.
 		m.mu.Lock()
 		if m.initCancel != nil {
 			m.initCancel()
 			m.initCancel = nil
 		}
 		m.mu.Unlock()
-		m.initWG.Wait()
+		m.waitBounded(&m.initWG, m.initDrainGrace(), "init (no-project switch)")
 
 		m.mu.Lock()
 		if m.indexCancel != nil {
@@ -257,20 +281,23 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 	}
 
 	// Displace any previous project. Cancel its async init's context and
-	// WAIT for that init goroutine to fully exit before touching shared
-	// state, so only one init runs at a time — no two inits can overlap and
-	// race on m.indexer / m.gitMonitor / the service. In normal use the
-	// previous project's init completed long ago (search became ready), so
-	// this returns immediately; it only blocks during a rapid double-switch,
-	// and then for no longer than the previous synchronous SwitchProject did
-	// (≈ one chromem open).
+	// drain it (bounded) before touching shared state, so only one init runs
+	// at a time — no two inits can overlap and race on m.indexer /
+	// m.gitMonitor / the service. In normal use the previous project's init
+	// completed long ago (search became ready), so this returns immediately;
+	// it only blocks during a rapid double-switch, and then for no longer
+	// than the previous synchronous SwitchProject did (≈ one chromem open).
+	// The wait is bounded so a stuck init goroutine (e.g. one blocked in the
+	// non-interruptible chromem gob-decode) cannot hang the project-switch RPC
+	// forever; on timeout the new init goroutine launched below blocks on s.mu
+	// in the background until the old one releases it, keeping the UI free.
 	m.mu.Lock()
 	if m.initCancel != nil {
 		m.initCancel()
 		m.initCancel = nil
 	}
 	m.mu.Unlock()
-	m.initWG.Wait()
+	m.waitBounded(&m.initWG, m.initDrainGrace(), "init (project switch)")
 
 	m.mu.Lock()
 	if m.indexCancel != nil {
@@ -381,11 +408,13 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	// callback below capture this local via closure, so they are unaffected.
 	m.setStatus(map[string]any{"branch": branch})
 	indexer := NewIndexer(IndexerConfig{
-		Service:    m.service,
-		ChunkFn:    m.chunkFn,
-		HashFn:     m.hashFn,
-		OnProgress: m.wrapProgress(cbs.OnProgress),
-		Logger:     m.logger,
+		Service:      m.service,
+		ChunkFn:      m.chunkFn,
+		HashFn:       m.hashFn,
+		MaxFileSize:  m.maxFileSize,
+		MaxChunkSize: m.maxChunkSize,
+		OnProgress:   m.wrapProgress(cbs.OnProgress),
+		Logger:       m.logger,
 	})
 
 	// Switch to branch collection (opens the per-branch bleve index).
@@ -729,12 +758,15 @@ func (m *Manager) Reindex(ctx context.Context, workspacePath string) error {
 // Shutdown performs orderly cleanup: cancel indexing and async init, stop
 // monitor, close service, and close the embedder via CloseFn (if provided).
 //
-// If a background indexing goroutine does not exit within
-// shutdownIndexGracePeriod after its context is cancelled (e.g. it is stuck
-// inside a non-interruptible ONNX inference call), the blocking
-// service.Close()/closeFn() are skipped — the goroutine holds the service
-// write lock, which Close() needs, so waiting would hang shutdown forever.
-// The OS reclaims the leaked resources when the process exits.
+// Both the async init goroutine and any background indexing goroutines are
+// waited for with a bounded grace period (shutdownIndexGracePeriod). If either
+// does not exit within the grace after its context is cancelled — e.g. it is
+// stuck inside non-interruptible work such as chromem's gob-decode (init),
+// os.ReadFile, or a synchronous ONNX inference call (indexing) — the blocking
+// service.Close()/closeFn() are skipped. A stuck goroutine may hold the
+// service write lock or the embedder mutex, which Close() needs, so waiting
+// would hang shutdown forever. The OS reclaims the leaked resources when the
+// process exits.
 func (m *Manager) Shutdown() {
 	// Cancel the async init goroutine first and wait for it to exit before
 	// closing the service, so it can't touch a closed service. initProject
@@ -757,33 +789,29 @@ func (m *Manager) Shutdown() {
 	}
 	m.mu.Unlock()
 
-	m.initWG.Wait()
 	m.stopDebounce()
+	grace := m.initDrainGrace()
 
-	// Wait for background indexing goroutines (init's full/incremental pass
-	// and any Reindex) before calling service.Close(). These goroutines hold
-	// the service write lock during AddDocuments; Close() needs the same lock
-	// and would deadlock if the goroutine is still in flight.
-	//
-	// Context cancellation (above) normally makes them exit within
-	// milliseconds — the embedder checks ctx before and after acquiring its
-	// mutex. But a goroutine already inside the synchronous ONNX inference
-	// call cannot be interrupted (the C runtime ignores ctx.Done()), so an
-	// unbounded Wait would hang the whole app shutdown. Bound it instead: if
-	// the goroutine doesn't exit within the grace period, skip the blocking
-	// Close()/closeFn() and let the OS reclaim resources on process exit.
-	waitCh := make(chan struct{})
-	go func() {
-		m.indexingWG.Wait()
-		close(waitCh)
-	}()
-	grace := m.shutdownGrace
-	if grace == 0 {
-		grace = shutdownIndexGracePeriod
-	}
-	select {
-	case <-waitCh:
-		// All indexing goroutines exited cleanly; safe to close resources.
+	// Wait for the async init goroutine, bounded by the grace period.
+	// initProject launches the background indexing goroutine, so it must exit
+	// first to know whether indexing was even started. initProject's opening
+	// step — SetProject's gob-decode of every branch document into RAM — is
+	// synchronous and not ctx-interruptible; an unbounded Wait would hang app
+	// shutdown if it stalled on a large or corrupt DB. Bound it instead: if it
+	// does not exit within the grace, skip the blocking Close()/closeFn().
+	initClean := m.waitBounded(&m.initWG, grace, "init")
+
+	// Only wait for indexing if init exited cleanly — otherwise indexing may
+	// never have been launched, and a stuck init goroutine already holds the
+	// service write lock that Close() needs.
+	indexClean := initClean && m.waitBounded(&m.indexingWG, grace, "indexing")
+
+	// Close resources only when both goroutine groups drained cleanly. A stuck
+	// goroutine may still hold the service write lock (during AddDocuments) or
+	// the embedder mutex (during synchronous ONNX inference), which
+	// Close()/closeFn() need; waiting would deadlock. Let the OS reclaim the
+	// leaked resources when the process exits.
+	if indexClean {
 		if m.service != nil {
 			if err := m.service.Close(); err != nil {
 				m.logger.Error("failed to close vector service", "error", err)
@@ -794,9 +822,42 @@ func (m *Manager) Shutdown() {
 				m.logger.Error("failed to close embedder", "error", err)
 			}
 		}
+	}
+}
+
+// initDrainGrace resolves the grace period for bounding an init/indexing
+// goroutine drain. It returns the test-overridable m.shutdownGrace when set,
+// falling back to the production default shutdownIndexGracePeriod. The same
+// bound applies to Shutdown and to SwitchProject's single-flight init drain so
+// a stuck init goroutine (blocked in the non-interruptible chromem gob-decode)
+// cannot hang either path indefinitely.
+func (m *Manager) initDrainGrace() time.Duration {
+	if m.shutdownGrace != 0 {
+		return m.shutdownGrace
+	}
+	return shutdownIndexGracePeriod
+}
+
+// waitBounded waits for wg to drain or for grace to elapse, whichever is first.
+// It returns true if the waitgroup drained cleanly within the grace period, or
+// false if it timed out — in which case the caller must skip any blocking
+// cleanup that depends on those goroutines having exited. This bounds the
+// drain for goroutines that may be stuck inside non-interruptible work
+// (chromem gob-decode, os.ReadFile, or synchronous ONNX inference) so a single
+// stuck goroutine can never hang app shutdown or a project switch.
+func (m *Manager) waitBounded(wg *sync.WaitGroup, grace time.Duration, what string) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
 	case <-time.After(grace):
-		m.logger.Warn("background indexing did not exit within grace period; skipping clean close of vector resources",
-			"grace", grace)
+		m.logger.Warn("vector goroutine did not exit within grace period; skipping clean close of vector resources",
+			"what", what, "grace", grace)
+		return false
 	}
 }
 
