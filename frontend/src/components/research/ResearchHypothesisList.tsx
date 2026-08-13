@@ -3,14 +3,14 @@ import { ChevronRight } from 'lucide-react'
 import type { HypothesisGraph } from '@/types/models'
 import { cn } from '@/lib/utils'
 import {
-  flattenTree,
+  findAllRootToLeafPaths,
   statusColorVar,
   statusTextClass,
-  type TreeNode,
+  type PathEntry,
 } from './researchDagRender'
 
 interface ResearchHypothesisListProps {
-  /** The hypothesis graph to render as an indented tree. */
+  /** The hypothesis graph to render as root-to-leaf paths. */
   graph: HypothesisGraph
   /** Currently selected node id (highlighted). */
   selectedId?: string
@@ -19,13 +19,13 @@ interface ResearchHypothesisListProps {
 }
 
 /**
- * Readable indented tree of research hypotheses.
+ * Research hypothesis paths — a forest of root-to-leaf chains through the
+ * hypothesis DAG.
  *
- * The SVG DAG is compact but illegible for real-world graphs (dozens of nodes
- * packed into a thin sidebar). This list flattens the DAG via `flattenTree`
- * into a DFS-preorder sequence and renders each node as a row indented by its
- * depth — a "vertical tree" that scales to any node count and stays legible at
- * the panel's width.
+ * Unlike the old flattened tree (DFS preorder), each top-level entry in the
+ * list is now a *complete path* from the most general ancestor to a leaf
+ * node. Nodes within a path are indented by their depth (position in the
+ * path), preserving the ancestor-to-leaf sequence.
  *
  * Each row is clickable (toggles selection), shows a status dot, the ID, the
  * title, and — when selected — expands an inline detail panel (status badge,
@@ -37,9 +37,9 @@ export function ResearchHypothesisList({
   selectedId,
   onSelectNode,
 }: ResearchHypothesisListProps) {
-  const rows = useMemo(() => flattenTree(graph), [graph])
+  const paths = useMemo(() => findAllRootToLeafPaths(graph), [graph])
 
-  if (rows.length === 0) {
+  if (paths.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center py-8 text-xs text-muted-foreground select-none">
         No hypotheses yet
@@ -48,26 +48,59 @@ export function ResearchHypothesisList({
   }
 
   return (
-    <ul className="flex flex-col gap-0.5 py-1 select-none" role="tree" aria-label="Hypothesis tree">
-      {rows.map(({ node, depth }) => (
-        <HypothesisRow
-          key={node.id}
-          entry={{ node, depth }}
-          selected={node.id === selectedId}
-          onSelect={onSelectNode}
+    <ul className="flex flex-col gap-0.5 py-1 select-none" role="tree" aria-label="Hypothesis paths">
+      {paths.map((entry, pathIndex) => (
+        <PathGroup
+          key={pathIndex}
+          entry={entry}
+          selectedId={selectedId}
+          onSelectNode={onSelectNode}
+          isFirst={pathIndex === 0}
         />
       ))}
     </ul>
   )
 }
 
-interface HypothesisRowProps {
-  entry: TreeNode
-  selected: boolean
-  onSelect?: (id: string) => void
+/** A single root-to-leaf path rendered as an indented group. */
+interface PathGroupProps {
+  entry: PathEntry
+  selectedId?: string
+  onSelectNode?: (id: string) => void
+  isFirst: boolean
 }
 
-function HypothesisRow({ entry, selected, onSelect }: HypothesisRowProps) {
+function PathGroup({ entry, selectedId, onSelectNode, isFirst }: PathGroupProps) {
+  const { path } = entry
+
+  return (
+    <>
+      {!isFirst && (
+        <li className="py-1">
+          <hr className="border-border/60" />
+        </li>
+      )}
+      {path.map(({ node, depth }) => (
+        <HypothesisRow
+          key={node.id}
+          entry={{ node, depth }}
+          selected={node.id === selectedId}
+          onSelect={onSelectNode}
+          isRoot={depth === 0}
+        />
+      ))}
+    </>
+  )
+}
+
+interface HypothesisRowProps {
+  entry: { node: { id: string; title: string; status: string; parents?: string[]; timebox?: string; result?: string }; depth: number }
+  selected: boolean
+  onSelect?: (id: string) => void
+  isRoot?: boolean
+}
+
+function HypothesisRow({ entry, selected, onSelect, isRoot }: HypothesisRowProps) {
   const { node, depth } = entry
   const isClickable = !!onSelect
 
@@ -90,8 +123,9 @@ function HypothesisRow({ entry, selected, onSelect }: HypothesisRowProps) {
           'group flex items-start gap-1.5 rounded-sm px-1.5 py-1 text-xs transition-colors',
           isClickable && 'cursor-pointer hover:bg-muted',
           selected && 'bg-muted',
+          isRoot && 'border-l-2 border-success/40 pl-1',
         )}
-        style={{ paddingLeft: 6 + depth * 14 }}
+        style={{ paddingLeft: (isRoot ? 1 : 6) + depth * 14 }}
       >
         {/* Depth indicator: chevron for non-root, spacer for root. */}
         {depth > 0 ? (
@@ -115,7 +149,9 @@ function HypothesisRow({ entry, selected, onSelect }: HypothesisRowProps) {
             <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
               {node.id}
             </span>
-            <span className="truncate">{node.title}</span>
+            <span className={cn('truncate', isRoot && 'font-semibold')}>
+              {node.title}
+            </span>
           </div>
 
           {/* Inline detail (only for the selected row). */}
@@ -126,7 +162,7 @@ function HypothesisRow({ entry, selected, onSelect }: HypothesisRowProps) {
   )
 }
 
-function HypothesisDetail({ node }: { node: TreeNode['node'] }) {
+function HypothesisDetail({ node }: { node: { id: string; title: string; status: string; parents?: string[]; timebox?: string; result?: string } }) {
   const parents = (node.parents ?? []).join(', ')
   const hasExtras = node.result || node.timebox || parents
   return (

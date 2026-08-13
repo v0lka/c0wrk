@@ -42,7 +42,7 @@ describe('ResearchHypothesisList', () => {
     expect(container.textContent).toContain('No hypotheses yet')
   })
 
-  it('renders each hypothesis as a row', () => {
+  it('renders each hypothesis as a row within a path group', () => {
     const g = graphOf([{ id: 'H-001' }, { id: 'H-002', parents: ['H-001'] }])
     const { container } = render(<ResearchHypothesisList graph={g} />)
     const rows = container.querySelectorAll('[role="treeitem"]')
@@ -79,7 +79,7 @@ describe('ResearchHypothesisList', () => {
     expect(container.textContent).not.toContain('No details recorded')
   })
 
-  it('indents children deeper than roots', () => {
+  it('indents children deeper than roots within a path', () => {
     const g = graphOf(
       [{ id: 'H-001' }, { id: 'H-002', parents: ['H-001'] }],
     )
@@ -90,5 +90,60 @@ describe('ResearchHypothesisList', () => {
     const rootPad = parseFloat(getComputedStyle(rows[0]!).paddingLeft)
     const childPad = parseFloat(getComputedStyle(rows[1]!).paddingLeft)
     expect(childPad).toBeGreaterThan(rootPad)
+  })
+
+  it('renders multiple paths with a separator between them', () => {
+    // Binary branching: root → left, root → right
+    const g = graphOf(
+      [{ id: 'root' }, { id: 'left' }, { id: 'right' }],
+      [
+        { from: 'root', to: 'left' },
+        { from: 'root', to: 'right' },
+      ],
+    )
+    const { container } = render(<ResearchHypothesisList graph={g} />)
+    // 2 paths × 2 nodes = 4 treeitems, 1 hr separator
+    const rows = container.querySelectorAll('[role="treeitem"]')
+    expect(rows).toHaveLength(4)
+    const hr = container.querySelector('hr')
+    expect(hr).not.toBeNull()
+  })
+
+  it('renders a diamond DAG with two distinct paths', () => {
+    // a → b → d, a → c → d
+    const g = graphOf(
+      [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
+      [
+        { from: 'a', to: 'b' },
+        { from: 'a', to: 'c' },
+        { from: 'b', to: 'd' },
+        { from: 'c', to: 'd' },
+      ],
+    )
+    const { container } = render(<ResearchHypothesisList graph={g} />)
+    // 2 paths × 3 nodes = 6 treeitems
+    const rows = container.querySelectorAll('[role="treeitem"]')
+    expect(rows).toHaveLength(6)
+    // 'd' should appear twice (once in each path).
+    const dRows = Array.from(container.querySelectorAll('[role="treeitem"]')).filter(
+      (row) => row.textContent?.includes('d'),
+    )
+    expect(dRows.length).toBe(2)
+  })
+
+  it('marks root nodes with a left border accent', () => {
+    const g = graphOf([{ id: 'H-001', title: 'Root' }])
+    const { container } = render(<ResearchHypothesisList graph={g} />)
+    const rootDiv = container.querySelector('[role="treeitem"] div')!
+    // border-l-2 should be present on root nodes.
+    expect(rootDiv.className).toContain('border-l-2')
+  })
+
+  it('makes root titles bold (font-semibold)', () => {
+    const g = graphOf([{ id: 'H-001', title: 'Root hypothesis' }])
+    const { container } = render(<ResearchHypothesisList graph={g} />)
+    const titleSpan = container.querySelector('[role="treeitem"] .truncate')!
+    // font-semibold should be applied to root node titles.
+    expect(titleSpan.className).toContain('font-semibold')
   })
 })

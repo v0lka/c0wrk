@@ -14,7 +14,7 @@ import {
   edgePath,
   statusColorVar,
   formatRate,
-  flattenTree,
+  findAllRootToLeafPaths,
   projectDir,
   projectFilePaths,
 } from './researchDagRender'
@@ -231,22 +231,23 @@ describe('layoutDag', () => {
   })
 })
 
-// ── flattenTree ─────────────────────────────────────────────────────────
+// ── findAllRootToLeafPaths ──────────────────────────────────────────────
 
-describe('flattenTree', () => {
+describe('findAllRootToLeafPaths', () => {
   it('returns [] for an empty graph', () => {
-    expect(flattenTree(graphOf([]))).toEqual([])
+    expect(findAllRootToLeafPaths(graphOf([]))).toEqual([])
   })
 
-  it('places a lone root at depth 0', () => {
-    const rows = flattenTree(graphOf([{ id: 'h1' }]))
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.depth).toBe(0)
-    expect(rows[0]!.node.id).toBe('h1')
+  it('emits a single-node path for a lone root', () => {
+    const paths = findAllRootToLeafPaths(graphOf([{ id: 'h1' }]))
+    expect(paths).toHaveLength(1)
+    expect(paths[0]!.path).toHaveLength(1)
+    expect(paths[0]!.path[0]!.node.id).toBe('h1')
+    expect(paths[0]!.path[0]!.depth).toBe(0)
   })
 
-  it('nests children under their parents via edges', () => {
-    const rows = flattenTree(
+  it('emits one path for a linear chain', () => {
+    const paths = findAllRootToLeafPaths(
       graphOf(
         [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
         [
@@ -255,20 +256,52 @@ describe('flattenTree', () => {
         ],
       ),
     )
-    const ids = rows.map((r) => `${r.node.id}@${r.depth}`)
-    // DFS preorder: a (0) → b (1) → c (2)
-    expect(ids).toEqual(['a@0', 'b@1', 'c@2'])
+    expect(paths).toHaveLength(1)
+    expect(paths[0]!.path.map((p) => p.node.id)).toEqual(['a', 'b', 'c'])
+    expect(paths[0]!.path[0]!.depth).toBe(0)
+    expect(paths[0]!.path[1]!.depth).toBe(1)
+    expect(paths[0]!.path[2]!.depth).toBe(2)
   })
 
-  it('also infers parentage from node.parents when there are no edges', () => {
-    const rows = flattenTree(
-      graphOf([{ id: 'a' }, { id: 'b', parents: ['a'] }]),
+  it('emits multiple paths for branching (binary tree)', () => {
+    const paths = findAllRootToLeafPaths(
+      graphOf(
+        [{ id: 'root' }, { id: 'left' }, { id: 'right' }],
+        [
+          { from: 'root', to: 'left' },
+          { from: 'root', to: 'right' },
+        ],
+      ),
     )
-    expect(rows.map((r) => `${r.node.id}@${r.depth}`)).toEqual(['a@0', 'b@1'])
+    expect(paths).toHaveLength(2)
+    // Both paths start at root.
+    expect(paths[0]!.path[0]!.node.id).toBe('root')
+    expect(paths[1]!.path[0]!.node.id).toBe('root')
+    // Leaves are left and right (sorted).
+    expect(paths[0]!.path[1]!.node.id).toBe('left')
+    expect(paths[1]!.path[1]!.node.id).toBe('right')
   })
 
-  it('sorts siblings by id for stable ordering', () => {
-    const rows = flattenTree(
+  it('correctly enumerates a diamond (shared descendant in both paths)', () => {
+    // a → b, a → c, b/d → d, c → d
+    const paths = findAllRootToLeafPaths(
+      graphOf(
+        [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
+        [
+          { from: 'a', to: 'b' },
+          { from: 'a', to: 'c' },
+          { from: 'b', to: 'd' },
+          { from: 'c', to: 'd' },
+        ],
+      ),
+    )
+    expect(paths).toHaveLength(2)
+    expect(paths[0]!.path.map((p) => p.node.id)).toEqual(['a', 'b', 'd'])
+    expect(paths[1]!.path.map((p) => p.node.id)).toEqual(['a', 'c', 'd'])
+  })
+
+  it('sorts sibling branches by id for stable ordering', () => {
+    const paths = findAllRootToLeafPaths(
       graphOf(
         [{ id: 'root' }, { id: 'z' }, { id: 'm' }],
         [
@@ -277,14 +310,14 @@ describe('flattenTree', () => {
         ],
       ),
     )
-    const rootIdx = rows.findIndex((r) => r.node.id === 'root')
-    expect(rows[rootIdx + 1]!.node.id).toBe('m')
-    expect(rows[rootIdx + 2]!.node.id).toBe('z')
+    // Siblings sorted by id → 'm' before 'z'.
+    expect(paths[0]!.path[1]!.node.id).toBe('m')
+    expect(paths[1]!.path[1]!.node.id).toBe('z')
   })
 
   it('breaks cycles instead of recursing forever', () => {
-    // a → b → a (a cycle). Must terminate and not duplicate a.
-    const rows = flattenTree(
+    // a → b → a (cycle). Must terminate.
+    const paths = findAllRootToLeafPaths(
       graphOf(
         [{ id: 'a' }, { id: 'b' }],
         [
@@ -293,16 +326,43 @@ describe('flattenTree', () => {
         ],
       ),
     )
-    const aCount = rows.filter((r) => r.node.id === 'a').length
-    expect(aCount).toBe(1)
+    // Both nodes form paths (cycle boundary stops further expansion).
+    expect(paths.length).toBeGreaterThanOrEqual(1)
+    // No node appears twice in the same path.
+    for (const p of paths) {
+      const ids = p.path.map((n) => n.node.id)
+      const unique = new Set(ids)
+      expect(unique.size).toBe(ids.length)
+    }
   })
 
-  it('appends orphans (unreachable from roots) at depth 0', () => {
-    // 'b' has a parent reference to a non-existent node; it is still rendered.
-    const rows = flattenTree(graphOf([{ id: 'b', parents: ['ghost'] }]))
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.depth).toBe(0)
-    expect(rows[0]!.node.id).toBe('b')
+  it('appends orphans (no parents, no children) as single-node paths', () => {
+    // 'b' has a parent reference to a non-existent node; it has no known
+    // parents so it becomes a root and is emitted as its own path.
+    const paths = findAllRootToLeafPaths(graphOf([{ id: 'b', parents: ['ghost'] }]))
+    expect(paths).toHaveLength(1)
+    expect(paths[0]!.path[0]!.node.id).toBe('b')
+  })
+
+  it('emits each node in every path it belongs to (diamond-safe)', () => {
+    // a → b → d, a → c → d
+    // Node 'd' appears in both paths.
+    const paths = findAllRootToLeafPaths(
+      graphOf(
+        [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
+        [
+          { from: 'a', to: 'b' },
+          { from: 'a', to: 'c' },
+          { from: 'b', to: 'd' },
+          { from: 'c', to: 'd' },
+        ],
+      ),
+    )
+    const dCount = paths.reduce(
+      (acc, p) => acc + (p.path.some((n) => n.node.id === 'd') ? 1 : 0),
+      0,
+    )
+    expect(dCount).toBe(2)
   })
 })
 

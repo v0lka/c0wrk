@@ -267,29 +267,45 @@ export function formatRate(rate: number): string {
   return `${Math.round(rate * 100)}%`
 }
 
-// ── Hypothesis tree (readable indented list) ───────────────────────────
+// ── Hypothesis paths (root-to-leaf enumeration) ───────────────────────
 
-/** A hypothesis plus its depth in the tree (0 for roots). */
+/** A hypothesis plus its depth in the path (0 for roots). */
 export interface TreeNode {
   node: HypothesisNode
   depth: number
 }
 
 /**
- * Flatten a hypothesis graph into a DFS-preorder list of `{ node, depth }`
- * rows for rendering a readable indented tree (the "vertical tree" layout).
- *
- * Roots (no parents) come first, each followed by its children recursively;
- * children are sorted by ID for stable ordering. The parent→child relation is
- * the union of explicit edges and every node's declared `parents`, so the
- * tree stays complete even when the diagram was not updated. A visited-set
- * guards against malformed cycles (a back-edge node is not revisited). Any
- * node not reachable from a root (e.g. its only parent was dropped) is
- * appended at depth 0 so nothing silently disappears.
- *
- * Pure — no DOM — and unit-tested alongside `layoutDag`.
+ * A single root-to-leaf path through the hypothesis DAG.
+ * Each entry in `path` is a `{ node, depth }` where depth is the index
+ * within the path (0 = most-general ancestor, path.length - 1 = leaf).
  */
-export function flattenTree(graph: HypothesisGraph): TreeNode[] {
+export interface PathEntry {
+  /** Ordered sequence of nodes from root (index 0) to leaf (last index). */
+  path: TreeNode[]
+}
+
+/**
+ * Enumerate all root-to-leaf paths in the hypothesis DAG.
+ *
+ * A *root* is any node with no parents (in-degree 0). A *leaf* is any node
+ * with no children (out-degree 0). Every maximal chain root → … → leaf is
+ * emitted as a `PathEntry`.
+ *
+ * **Algorithm:** DFS from every root, tracking an on-path visited set to
+ * break cycles. When a node has no unvisited children, the current path is
+ * a complete root-to-leaf path and is appended to the result.
+ *
+ * **Diamond-safe:** because the visited set is cleared on backtrack, a
+ * node that sits at the convergence of multiple branches appears in
+ * *every* path that reaches it — which is the correct enumeration semantics.
+ *
+ * **Cycle-safe:** the on-path set prevents infinite recursion on malformed
+ * graphs with back-edges.
+ *
+ * Pure — no DOM — and unit-tested.
+ */
+export function findAllRootToLeafPaths(graph: HypothesisGraph): PathEntry[] {
   if (graph.nodes.length === 0) return []
 
   const known = new Set(graph.nodes.map((n) => n.id))
@@ -318,28 +334,67 @@ export function flattenTree(graph: HypothesisGraph): TreeNode[] {
   for (const kids of childrenOf.values()) {
     for (const k of kids) hasParent.add(k)
   }
+
+  // Roots: nodes with no parent.
   const roots = graph.nodes
     .filter((n) => !hasParent.has(n.id))
     .map((n) => n.id)
     .sort()
 
-  const out: TreeNode[] = []
-  const visited = new Set<string>()
-  const walk = (id: string, depth: number) => {
-    if (visited.has(id)) return // cycle guard
-    visited.add(id)
-    const node = graph.nodes.find((n) => n.id === id)
-    if (node) out.push({ node, depth })
-    const kids = (childrenOf.get(id) ?? []).slice().sort()
-    for (const c of kids) walk(c, depth + 1)
-  }
-  for (const r of roots) walk(r, 0)
+  // If no roots exist (all nodes have parents → cycle), treat all nodes as
+  // potential starting points.
+  const startingNodes = roots.length > 0 ? roots : graph.nodes.map((n) => n.id).sort()
 
-  // Defensive: append any orphan not reached from a root at depth 0.
-  for (const n of graph.nodes) {
-    if (!visited.has(n.id)) out.push({ node: n, depth: 0 })
+  const result: PathEntry[] = []
+
+  // DFS from each root, collecting complete root→leaf paths.
+  const onPath = new Set<string>()
+  const currentPath: string[] = []
+
+  const dfs = (id: string) => {
+    onPath.add(id)
+    currentPath.push(id)
+
+    const kids = (childrenOf.get(id) ?? []).slice().sort()
+    const unvisitedKids = kids.filter((c) => !onPath.has(c))
+
+    if (unvisitedKids.length === 0) {
+      // Leaf (or all children already on-path → cycle boundary).
+      // Emit the current path.
+      result.push({
+        path: currentPath.map((nid, depth) => ({
+          node: graph.nodes.find((n) => n.id === nid)!,
+          depth,
+        })),
+      })
+    } else {
+      for (const c of unvisitedKids) {
+        dfs(c)
+      }
+    }
+
+    currentPath.pop()
+    onPath.delete(id)
   }
-  return out
+
+  for (const r of startingNodes) {
+    if (!onPath.has(r)) dfs(r)
+  }
+
+  // Defensive: append any orphan not reached from a root as a single-node path.
+  const reached = new Set<string>()
+  for (const entry of result) {
+    for (const tn of entry.path) reached.add(tn.node.id)
+  }
+  for (const n of graph.nodes) {
+    if (!reached.has(n.id)) {
+      result.push({
+        path: [{ node: n, depth: 0 }],
+      })
+    }
+  }
+
+  return result
 }
 
 // ── Research file paths (derive artifact locations for "open in viewer") ─
