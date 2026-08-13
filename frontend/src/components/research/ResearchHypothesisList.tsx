@@ -4,9 +4,10 @@ import type { HypothesisGraph } from '@/types/models'
 import { cn } from '@/lib/utils'
 import {
   findAllRootToLeafPaths,
+  mergePathsToTree,
   statusColorVar,
   statusTextClass,
-  type PathEntry,
+  type MergedTreeNode,
 } from './researchDagRender'
 
 interface ResearchHypothesisListProps {
@@ -19,13 +20,11 @@ interface ResearchHypothesisListProps {
 }
 
 /**
- * Research hypothesis paths — a forest of root-to-leaf chains through the
- * hypothesis DAG.
+ * Research hypothesis tree — a merged hierarchy from the hypothesis DAG.
  *
- * Unlike the old flattened tree (DFS preorder), each top-level entry in the
- * list is now a *complete path* from the most general ancestor to a leaf
- * node. Nodes within a path are indented by their depth (position in the
- * path), preserving the ancestor-to-leaf sequence.
+ * Shared prefixes (e.g. a diamond DAG where two paths converge on a common
+ * ancestor) are collapsed into a single node with diverging children,
+ * eliminating the duplication that the flat path list produced.
  *
  * Each row is clickable (toggles selection), shows a status dot, the ID, the
  * title, and — when selected — expands an inline detail panel (status badge,
@@ -37,9 +36,9 @@ export function ResearchHypothesisList({
   selectedId,
   onSelectNode,
 }: ResearchHypothesisListProps) {
-  const paths = useMemo(() => findAllRootToLeafPaths(graph), [graph])
+  const tree = useMemo(() => mergePathsToTree(findAllRootToLeafPaths(graph)), [graph])
 
-  if (paths.length === 0) {
+  if (tree.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center py-8 text-xs text-muted-foreground select-none">
         No hypotheses yet
@@ -48,45 +47,60 @@ export function ResearchHypothesisList({
   }
 
   return (
-    <ul className="flex flex-col gap-0.5 py-1 select-none" role="tree" aria-label="Hypothesis paths">
-      {paths.map((entry, pathIndex) => (
-        <PathGroup
-          key={pathIndex}
-          entry={entry}
+    <ul className="flex flex-col gap-0.5 py-1 select-none" role="tree" aria-label="Hypothesis tree">
+      {tree.map((node, index) => (
+        <MergedTreeNodeRow
+          key={node.node.id}
+          node={node}
           selectedId={selectedId}
           onSelectNode={onSelectNode}
-          isFirst={pathIndex === 0}
+          depth={0}
+          isFirst={index === 0}
         />
       ))}
     </ul>
   )
 }
 
-/** A single root-to-leaf path rendered as an indented group. */
-interface PathGroupProps {
-  entry: PathEntry
+/** Recursive render for a merged tree node and all its descendants. */
+interface MergedTreeNodeRowProps {
+  node: MergedTreeNode
   selectedId?: string
   onSelectNode?: (id: string) => void
+  depth: number
   isFirst: boolean
 }
 
-function PathGroup({ entry, selectedId, onSelectNode, isFirst }: PathGroupProps) {
-  const { path } = entry
+function MergedTreeNodeRow({
+  node,
+  selectedId,
+  onSelectNode,
+  depth,
+  isFirst,
+}: MergedTreeNodeRowProps) {
+  const { children } = node
 
   return (
     <>
-      {!isFirst && (
+      {!isFirst && depth === 0 && (
         <li className="py-1">
           <hr className="border-border/60" />
         </li>
       )}
-      {path.map(({ node, depth }) => (
-        <HypothesisRow
-          key={node.id}
-          entry={{ node, depth }}
-          selected={node.id === selectedId}
-          onSelect={onSelectNode}
-          isRoot={depth === 0}
+      <HypothesisRow
+        entry={{ node: node.node, depth }}
+        selected={node.node.id === selectedId}
+        onSelect={onSelectNode}
+        isRoot={depth === 0}
+      />
+      {children.map((child, childIndex) => (
+        <MergedTreeNodeRow
+          key={child.node.id}
+          node={child}
+          selectedId={selectedId}
+          onSelectNode={onSelectNode}
+          depth={depth + 1}
+          isFirst={childIndex === 0}
         />
       ))}
     </>

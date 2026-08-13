@@ -285,6 +285,75 @@ export interface PathEntry {
   path: TreeNode[]
 }
 
+// ── Merged tree (shared-prefix collapse) ──────────────────────────────
+
+/**
+ * A node in the merged hypothesis tree. Shares a single `node` instance
+ * across all paths that pass through it, and collects its descendants in
+ * `children` — eliminating the duplication that the flat path list produces.
+ */
+export interface MergedTreeNode {
+  node: HypothesisNode
+  children: MergedTreeNode[]
+}
+
+/**
+ * Convert a flat list of root-to-leaf paths into a single merged tree
+ * where shared prefixes are collapsed into one node.
+ *
+ * **Algorithm:** Walk each path depth-first, inserting nodes into the tree.
+ * When a node with the same `id` already exists at the expected depth,
+ * reuse it (the depth is identical because the DAG guarantees a unique
+ * topological level for each node). Otherwise create a new child node.
+ *
+ * **Complexity:** O(Σ path_length × branching_factor) — proportional to the
+ * total number of path entries, not O(N²). Each insertion is O(1) because
+ * we traverse the existing tree depth-by-depth and match by node id at each
+ * level.
+ *
+ * Pure — no DOM — and unit-tested.
+ */
+export function mergePathsToTree(paths: PathEntry[]): MergedTreeNode[] {
+  if (paths.length === 0) return []
+
+  const roots: MergedTreeNode[] = []
+
+  for (const entry of paths) {
+    const path = entry.path
+    if (path.length === 0) continue
+
+    let depth = 0
+    let parent: MergedTreeNode | null = null
+
+    for (const treeNode of path) {
+      const nodeId = treeNode.node.id
+
+      if (depth === 0) {
+        // Root level: look for an existing root with this id.
+        let found = roots.find((r) => r.node.id === nodeId)
+        if (!found) {
+          found = { node: treeNode.node, children: [] }
+          roots.push(found)
+        }
+        parent = found
+        depth = 1
+      } else {
+        // Non-root: look for this node among parent's children at the
+        // expected depth.
+        let child: MergedTreeNode | undefined = parent!.children.find((c) => c.node.id === nodeId)
+        if (!child) {
+          child = { node: treeNode.node, children: [] }
+          parent!.children.push(child)
+        }
+        parent = child
+        depth++
+      }
+    }
+  }
+
+  return roots
+}
+
 /**
  * Enumerate all root-to-leaf paths in the hypothesis DAG.
  *

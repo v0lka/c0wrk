@@ -92,8 +92,9 @@ describe('ResearchHypothesisList', () => {
     expect(childPad).toBeGreaterThan(rootPad)
   })
 
-  it('renders multiple paths with a separator between them', () => {
+  it('renders multiple paths with shared root (no separator)', () => {
     // Binary branching: root → left, root → right
+    // After merge: root has children left and right = 3 treeitems, no hr
     const g = graphOf(
       [{ id: 'root' }, { id: 'left' }, { id: 'right' }],
       [
@@ -102,15 +103,18 @@ describe('ResearchHypothesisList', () => {
       ],
     )
     const { container } = render(<ResearchHypothesisList graph={g} />)
-    // 2 paths × 2 nodes = 4 treeitems, 1 hr separator
+    // 3 treeitems: root + left + right (merged under shared root)
     const rows = container.querySelectorAll('[role="treeitem"]')
-    expect(rows).toHaveLength(4)
+    expect(rows).toHaveLength(3)
+    // No separator since there is only 1 root
     const hr = container.querySelector('hr')
-    expect(hr).not.toBeNull()
+    expect(hr).toBeNull()
   })
 
-  it('renders a diamond DAG with two distinct paths', () => {
+  it('renders a diamond DAG with shared nodes collapsed', () => {
     // a → b → d, a → c → d
+    // After merge: a has children b and c; b has child d; c has child d
+    // = 5 treeitems total (a, b, c, d, d) — d appears twice (once per branch)
     const g = graphOf(
       [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
       [
@@ -121,10 +125,10 @@ describe('ResearchHypothesisList', () => {
       ],
     )
     const { container } = render(<ResearchHypothesisList graph={g} />)
-    // 2 paths × 3 nodes = 6 treeitems
+    // 5 treeitems: a + b + c + d(under b) + d(under c)
     const rows = container.querySelectorAll('[role="treeitem"]')
-    expect(rows).toHaveLength(6)
-    // 'd' should appear twice (once in each path).
+    expect(rows).toHaveLength(5)
+    // 'd' should appear twice (once in each branch: b→d and c→d).
     const dRows = Array.from(container.querySelectorAll('[role="treeitem"]')).filter(
       (row) => row.textContent?.includes('d'),
     )
