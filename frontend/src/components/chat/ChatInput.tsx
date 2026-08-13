@@ -8,6 +8,7 @@ import { ChatInputToolbar } from '@/components/chat/ChatInputToolbar'
 import { ChatEditorPane } from '@/components/chat/ChatEditorPane'
 import { AttachmentChips } from '@/components/chat/AttachmentChips'
 import { ImageErrorBanner } from '@/components/chat/ImageErrorBanner'
+import { PromptOptimizeErrorBanner } from '@/components/chat/PromptOptimizeErrorBanner'
 import { DropzoneOverlay } from '@/components/chat/DropzoneOverlay'
 import { cn } from '@/lib/utils'
 
@@ -86,6 +87,7 @@ export function ChatInput() {
         />
         <AttachmentChips />
         <ImageErrorBanner />
+        <PromptOptimizeErrorBanner />
         <ChatEditorPane controller={controller} />
         <ChatInputToolbar controller={controller} />
       </div>

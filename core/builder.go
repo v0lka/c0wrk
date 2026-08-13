@@ -939,6 +939,117 @@ func extractCommitMessage(resp *llm.ChatResponse) string {
 	return ""
 }
 
+// optimizedPromptReasoningPrefixRe matches common reasoning/thinking prefixes
+// that some LLMs (especially small models) may accidentally include at the
+// start of the content field when generating an optimized prompt.  The regex
+// is case-insensitive and captures everything after the prefix so we can strip
+// it.
+var optimizedPromptReasoningPrefixRe = regexp.MustCompile(
+	`(?i)^` +
+		`(?:` +
+		`here(?:['′]s|s) (?:the )?(?:optimized )?prompt(?:,|:) ` +
+		`|the optimized prompt(?:,| is|:) ` +
+		`|based on my analysis(?:,| of|:) ` +
+		`|sure,? ` +
+		`|ok,? ` +
+		`|ok sure,? ` +
+		`|here(?:['′]s|s) an? ` +
+		`|below(?:,| is|:) ` +
+		`|according to my analysis ` +
+		`|this is the optimized prompt ` +
+		`|this prompt ` +
+		`)`,
+)
+
+// --- Prompt optimization extraction markers ---
+
+// optimizedPromptMarkerStart / optimizedPromptMarkerEnd are the exact strings
+// the rewrite prompt instructs the LLM to use as unambiguous boundaries around
+// the optimized prompt.  extractOptimizedPrompt searches for these markers
+// first; only when they are absent does it fall back to the old heuristic.
+const (
+	optimizedPromptMarkerStart = "### OPTIMIZED_PROMPT_START"
+	optimizedPromptMarkerEnd   = "### OPTIMIZED_PROMPT_END"
+)
+
+// extractOptimizedPrompt extracts the optimized prompt text from an LLM
+// response.  It uses a two-phase strategy:
+//
+//  1. Marker-based extraction (preferred): searches all candidate fields
+//     (Content, ReasoningContent, Reasoning) for the
+//     OPTIMIZED_PROMPT_START / OPTIMIZED_PROMPT_END markers.  If both
+//     markers are present in any field, the text between them is returned.
+//  2. Heuristic fallback (legacy): when no markers are found at all, falls
+//     back to stripping markdown fences and common reasoning prefixes.
+//
+// This ensures that reasoning-model outputs containing the markers are
+// extracted unambiguously, while older models that don't use markers still
+// work via the heuristic fallback.
+func extractOptimizedPrompt(resp *llm.ChatResponse) string {
+	if resp == nil {
+		return ""
+	}
+
+	// Collect candidates in priority order.
+	candidates := []string{
+		resp.Message.Content,
+		resp.Message.ReasoningContent,
+		resp.Reasoning,
+	}
+
+	// Phase 1 — marker-based extraction.
+	// Search all candidates for the marker pair. Return the first match.
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if extracted, ok := extractBetweenMarkers(candidate); ok {
+			// Markers were found — return whatever is between them
+			// (may be empty).  Do NOT fall through to heuristic.
+			return extracted
+		}
+	}
+
+	// Phase 2 — heuristic fallback (legacy, for models that don't use markers).
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		candidate = stripMarkdownCodeFence(candidate)
+		if candidate == "" {
+			continue
+		}
+		candidate = optimizedPromptReasoningPrefixRe.ReplaceAllString(candidate, "")
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" {
+			return candidate
+		}
+	}
+
+	return ""
+}
+
+// extractBetweenMarkers searches s for optimizedPromptMarkerStart and
+// optimizedPromptMarkerEnd and returns the text between them.  It returns the
+// text and true when both markers are present (even if the content between
+// them is empty or whitespace-only); otherwise it returns ("", false).
+func extractBetweenMarkers(s string) (string, bool) {
+	startIdx := strings.Index(s, optimizedPromptMarkerStart)
+	if startIdx < 0 {
+		return "", false
+	}
+	endIdx := strings.Index(s[startIdx:], optimizedPromptMarkerEnd)
+	if endIdx < 0 {
+		return "", false
+	}
+	// Content starts after the start marker.
+	contentStart := startIdx + len(optimizedPromptMarkerStart)
+	// Content ends at the start of the end marker.
+	contentEnd := startIdx + endIdx
+	extracted := strings.TrimSpace(s[contentStart:contentEnd])
+	return extracted, true
+}
+
 // buildCommitMessageRequest constructs a commit-message request without forcing
 // sampling parameters. The router applies its family-aware default only when
 // the active model advertises temperature support; reasoning models such as

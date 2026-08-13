@@ -3,6 +3,7 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
+import { useAttachmentsStore } from '@/stores/attachmentsStore'
 import { useMessageSender } from '@/hooks/useMessageSender'
 import { useChatEditor, type ChatEditorAPI } from '@/hooks/useChatEditor'
 import { usePasteHandler } from '@/hooks/usePasteHandler'
@@ -233,17 +234,21 @@ export function useChatInputController(): ChatInputController {
     if (!text || isOptimizing) return
     setIsOptimizing(true)
     setOptimizeError(null)
+    useAttachmentsStore.getState().setPromptOptimizeError(null)
     try {
       const result = await optimizePrompt(text)
       editor.setText(result.optimized_prompt)
     } catch (error) {
       logger.error('Failed to optimize prompt:', error)
-      // Surface a transient inline error so users get feedback when nothing
-      // appears to happen after clicking the sparkles button (W-34).
+      // Restore the original prompt text so the user doesn't lose it.
+      editor.setText(text)
+      // Set a persistent banner (dismissable) alongside the transient
+      // inline error for immediate feedback (W-34).
       const message = error instanceof Error && error.message
         ? `Optimization failed: ${error.message}`
         : 'Optimization failed — try again.'
       setOptimizeError(message)
+      useAttachmentsStore.getState().setPromptOptimizeError(message)
     } finally {
       setIsOptimizing(false)
     }
@@ -255,6 +260,16 @@ export function useChatInputController(): ChatInputController {
     const handle = window.setTimeout(() => setOptimizeError(null), 4000)
     return () => window.clearTimeout(handle)
   }, [optimizeError])
+
+  // Auto-dismiss the persistent optimize banner after 8 seconds.
+  const bannerError = useAttachmentsStore((s) => s.promptOptimizeError)
+  useEffect(() => {
+    if (!bannerError) return
+    const handle = window.setTimeout(() => {
+      useAttachmentsStore.getState().setPromptOptimizeError(null)
+    }, 8000)
+    return () => window.clearTimeout(handle)
+  }, [bannerError])
 
   // Auto-dismiss the send error after a few seconds.
   useEffect(() => {

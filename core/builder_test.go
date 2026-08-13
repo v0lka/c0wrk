@@ -671,3 +671,225 @@ func TestGenerateCommitMessage_RetryLoop(t *testing.T) {
 		})
 	}
 }
+
+// --- extractBetweenMarkers tests ---
+
+func TestExtractBetweenMarkers_Found(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "simple content between markers",
+			in:   "### OPTIMIZED_PROMPT_START\nFix the login bug\n### OPTIMIZED_PROMPT_END",
+			want: "Fix the login bug",
+		},
+		{
+			name: "multi-line prompt between markers",
+			in:   "### OPTIMIZED_PROMPT_START\nFix the login bug\n\nSteps:\n1. Check auth middleware\n2. Fix token validation\n### OPTIMIZED_PROMPT_END",
+			want: "Fix the login bug\n\nSteps:\n1. Check auth middleware\n2. Fix token validation",
+		},
+		{
+			name: "with surrounding text before start marker",
+			in:   "Some preamble\n### OPTIMIZED_PROMPT_START\nExtracted prompt\n### OPTIMIZED_PROMPT_END",
+			want: "Extracted prompt",
+		},
+		{
+			name: "with surrounding text after end marker",
+			in:   "### OPTIMIZED_PROMPT_START\nExtracted prompt\n### OPTIMIZED_PROMPT_END\nSome trailing text",
+			want: "Extracted prompt",
+		},
+		{
+			name: "markers with extra whitespace",
+			in:   "### OPTIMIZED_PROMPT_START\n\n  Trimmed content  \n\n### OPTIMIZED_PROMPT_END",
+			want: "Trimmed content",
+		},
+		{
+			name: "empty content between markers",
+			in:   "### OPTIMIZED_PROMPT_START\n\n### OPTIMIZED_PROMPT_END",
+			want: "",
+		},
+		{
+			name: "only whitespace between markers",
+			in:   "### OPTIMIZED_PROMPT_START\n   \n### OPTIMIZED_PROMPT_END",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := extractBetweenMarkers(tt.in)
+			if !ok {
+				t.Fatalf("extractBetweenMarkers() ok = false, want true")
+			}
+			if got != tt.want {
+				t.Errorf("extractBetweenMarkers(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractBetweenMarkers_NotFound(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{"empty string", ""},
+		{"only start marker", "### OPTIMIZED_PROMPT_START"},
+		{"only end marker", "### OPTIMIZED_PROMPT_END"},
+		{"start but no end", "### OPTIMIZED_PROMPT_START\ncontent"},
+		{"end but no start", "content\n### OPTIMIZED_PROMPT_END"},
+		{"markers in wrong order", "### OPTIMIZED_PROMPT_END\ncontent\n### OPTIMIZED_PROMPT_START"},
+		{"no markers at all", "just plain text"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := extractBetweenMarkers(tt.in)
+			if ok {
+				t.Errorf("extractBetweenMarkers(%q) = ok=true, content=%q, want ok=false", tt.in, got)
+			}
+		})
+	}
+}
+
+// --- extractOptimizedPrompt tests ---
+
+func TestExtractOptimizedPrompt_PrefersMarkersOverContent(t *testing.T) {
+	// Even when Content has dirty text, markers in ReasoningContent should win.
+	resp := &llm.ChatResponse{
+		Message: llm.Message{
+			Content:          "Some preamble text that should be ignored",
+			ReasoningContent: "### OPTIMIZED_PROMPT_START\nExtracted from reasoning\n### OPTIMIZED_PROMPT_END",
+		},
+	}
+	got := extractOptimizedPrompt(resp)
+	if got != "Extracted from reasoning" {
+		t.Errorf("extractOptimizedPrompt() = %q, want %q", got, "Extracted from reasoning")
+	}
+}
+
+func TestExtractOptimizedPrompt_MarkersInContent(t *testing.T) {
+	resp := &llm.ChatResponse{
+		Message: llm.Message{
+			Content: "### OPTIMIZED_PROMPT_START\nClean prompt from content\n### OPTIMIZED_PROMPT_END",
+		},
+	}
+	got := extractOptimizedPrompt(resp)
+	if got != "Clean prompt from content" {
+		t.Errorf("extractOptimizedPrompt() = %q, want %q", got, "Clean prompt from content")
+	}
+}
+
+func TestExtractOptimizedPrompt_MarkersInReasoning(t *testing.T) {
+	// Content is empty, markers are in ReasoningContent.
+	resp := &llm.ChatResponse{
+		Message: llm.Message{
+			Content:          "",
+			ReasoningContent: "### OPTIMIZED_PROMPT_START\nPrompt from reasoning\n### OPTIMIZED_PROMPT_END",
+		},
+	}
+	got := extractOptimizedPrompt(resp)
+	if got != "Prompt from reasoning" {
+		t.Errorf("extractOptimizedPrompt() = %q, want %q", got, "Prompt from reasoning")
+	}
+}
+
+func TestExtractOptimizedPrompt_MarkersInReasoningField(t *testing.T) {
+	// Content and ReasoningContent empty, markers in Reasoning field.
+	resp := &llm.ChatResponse{
+		Message:  llm.Message{Content: "", ReasoningContent: ""},
+		Reasoning: "### OPTIMIZED_PROMPT_START\nPrompt from Reasoning field\n### OPTIMIZED_PROMPT_END",
+	}
+	got := extractOptimizedPrompt(resp)
+	if got != "Prompt from Reasoning field" {
+		t.Errorf("extractOptimizedPrompt() = %q, want %q", got, "Prompt from Reasoning field")
+	}
+}
+
+func TestExtractOptimizedPrompt_FallbackToHeuristic(t *testing.T) {
+	// No markers anywhere — should fall back to heuristic (strip prefix).
+	// The regex matches "the optimized prompt:" (colon directly after prompt).
+	resp := &llm.ChatResponse{
+		Message: llm.Message{
+			Content: "the optimized prompt: Fix the login bug",
+		},
+	}
+	got := extractOptimizedPrompt(resp)
+	if got != "Fix the login bug" {
+		t.Errorf("extractOptimizedPrompt() = %q, want %q", got, "Fix the login bug")
+	}
+}
+
+func TestExtractOptimizedPrompt_FallbackToHeuristic_NoMarkersInReasoning(t *testing.T) {
+	// Content is empty, ReasoningContent has a pattern the regex matches.
+	// `ok,? ` matches "ok, " at the start.
+	resp := &llm.ChatResponse{
+		Message: llm.Message{
+			Content:          "",
+			ReasoningContent: "ok, fix the auth module",
+		},
+	}
+	got := extractOptimizedPrompt(resp)
+	if got != "fix the auth module" {
+		t.Errorf("extractOptimizedPrompt() = %q, want %q", got, "fix the auth module")
+	}
+}
+
+func TestExtractOptimizedPrompt_MarkersEmptyContent(t *testing.T) {
+	// Markers present but content between them is empty — should return empty.
+	resp := &llm.ChatResponse{
+		Message: llm.Message{
+			Content: "### OPTIMIZED_PROMPT_START\n\n### OPTIMIZED_PROMPT_END",
+		},
+	}
+	got := extractOptimizedPrompt(resp)
+	if got != "" {
+		t.Errorf("extractOptimizedPrompt() = %q, want empty", got)
+	}
+}
+
+func TestExtractOptimizedPrompt_MultiLinePrompt(t *testing.T) {
+	resp := &llm.ChatResponse{
+		Message: llm.Message{
+			Content: "### OPTIMIZED_PROMPT_START\nFix the login bug\n\nSteps:\n1. Check auth middleware\n2. Fix token validation\n\nBe specific about file paths.\n### OPTIMIZED_PROMPT_END",
+		},
+	}
+	got := extractOptimizedPrompt(resp)
+	want := "Fix the login bug\n\nSteps:\n1. Check auth middleware\n2. Fix token validation\n\nBe specific about file paths."
+	if got != want {
+		t.Errorf("extractOptimizedPrompt() = %q, want %q", got, want)
+	}
+}
+
+func TestExtractOptimizedPrompt_PrefersContentMarkersOverReasoning(t *testing.T) {
+	// Markers in both Content and ReasoningContent — Content should win.
+	resp := &llm.ChatResponse{
+		Message: llm.Message{
+			Content:          "### OPTIMIZED_PROMPT_START\nFrom content\n### OPTIMIZED_PROMPT_END",
+			ReasoningContent: "### OPTIMIZED_PROMPT_START\nFrom reasoning\n### OPTIMIZED_PROMPT_END",
+		},
+	}
+	got := extractOptimizedPrompt(resp)
+	if got != "From content" {
+		t.Errorf("extractOptimizedPrompt() = %q, want %q", got, "From content")
+	}
+}
+
+func TestExtractOptimizedPrompt_NilResponse(t *testing.T) {
+	got := extractOptimizedPrompt(nil)
+	if got != "" {
+		t.Errorf("extractOptimizedPrompt(nil) = %q, want empty", got)
+	}
+}
+
+func TestExtractOptimizedPrompt_AllEmpty(t *testing.T) {
+	resp := &llm.ChatResponse{
+		Message: llm.Message{Content: ""},
+	}
+	got := extractOptimizedPrompt(resp)
+	if got != "" {
+		t.Errorf("extractOptimizedPrompt() = %q, want empty", got)
+	}
+}

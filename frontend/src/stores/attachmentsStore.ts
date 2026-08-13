@@ -29,6 +29,12 @@ interface AttachmentsState {
    * dismiss, successful attach, or session switch. null = no banner.
    */
   imageError: string | null
+  /**
+   * Transient prompt-optimization error message. Set when the LLM fails to
+   * produce an optimized prompt; cleared on dismiss, successful optimization,
+   * or session switch. null = no banner.
+   */
+  promptOptimizeError: string | null
 }
 
 interface AttachmentsActions {
@@ -36,6 +42,8 @@ interface AttachmentsActions {
   setAttachments: (attachments: AttachmentInfoUI[]) => void
   /** Set the transient image-attachment error message (null to clear). */
   setImageError: (message: string | null) => void
+  /** Set the transient prompt-optimization error message (null to clear). */
+  setPromptOptimizeError: (message: string | null) => void
   /** Clear the store (e.g. on session switch). */
   clear: () => void
 }
@@ -44,6 +52,7 @@ export const useAttachmentsStore = create<AttachmentsState & AttachmentsActions>
   attachments: [],
   namesById: {},
   imageError: null,
+  promptOptimizeError: null,
 
   setAttachments: (attachments) =>
     set((state) => {
@@ -62,7 +71,9 @@ export const useAttachmentsStore = create<AttachmentsState & AttachmentsActions>
 
   setImageError: (message) => set({ imageError: message }),
 
-  clear: () => set({ attachments: [], namesById: {}, imageError: null }),
+  setPromptOptimizeError: (message) => set({ promptOptimizeError: message }),
+
+  clear: () => set({ attachments: [], namesById: {}, imageError: null, promptOptimizeError: null }),
 }))
 
 /**

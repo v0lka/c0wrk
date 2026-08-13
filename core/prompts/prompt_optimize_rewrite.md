@@ -15,4 +15,13 @@ Your task is to rewrite the prompt so it is more effective for an AI coding agen
 
 If no codebase context is provided, optimize the prompt purely based on clarity, specificity, and actionability.
 
-Output **only** the optimized prompt text. No preamble, no explanation, no markdown fencing around the entire output.
+## Output Format
+
+You MUST wrap your optimized prompt between these exact markers:
+
+### OPTIMIZED_PROMPT_START
+<your optimized prompt text goes here>
+### OPTIMIZED_PROMPT_END
+
+Place NOTHING before `### OPTIMIZED_PROMPT_START` and NOTHING after `### OPTIMIZED_PROMPT_END`.
+The markers are required for automated extraction. **Your output must start with `### OPTIMIZED_PROMPT_START` — do NOT include any reasoning, thinking, or explanation text before the start marker.** The optimized prompt between the markers is the only part that will be used.
