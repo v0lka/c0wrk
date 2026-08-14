@@ -2,8 +2,8 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
-import { isConfigResponse, isSecuritySettingsResponse, isProxySettingsResponse, isSmallLLMConfigResponse } from '@/types/guards'
-import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsResponse, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest, SmallLLMConfigResponse } from '@/types/models'
+import { isConfigResponse, isSecuritySettingsResponse, isSmallLLMConfigResponse } from '@/types/guards'
+import type { ConfigResponse, SecuritySettingsResponse, LLMFullConfigRequest, SearchSettingsRequest, ProxySettingsRequest, ModelConfigResponse, ModelConfigRequest, SmallLLMConfigResponse } from '@/types/models'
 
 /** Sentinel value returned by backend when an API key is configured but should not be displayed */
 export const MASKED_API_KEY = '***configured***'
@@ -18,6 +18,25 @@ export async function getConfig(): Promise<ConfigResponse> {
     return result
   } catch (err) {
     logger.error('Failed to get config:', err)
+    throw err
+  }
+}
+
+/**
+ * Cheap probe: whether a default LLM model is configured. Used by flows that
+ * only need this single fact (e.g. the settings close check) and must not pay
+ * for a full GetConfig response.
+ */
+export async function hasDefaultModel(): Promise<boolean> {
+  try {
+    const app = getApp()
+    const result = await app.HasDefaultModel()
+    if (typeof result !== 'boolean') {
+      throw new Error('hasDefaultModel: backend returned non-boolean data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to check default model:', err)
     throw err
   }
 }
@@ -127,20 +146,6 @@ export async function setLogLevel(level: string): Promise<void> {
     await app.SetLogLevel(level)
   } catch (err) {
     logger.error('Failed to set log level:', err)
-    throw err
-  }
-}
-
-export async function getProxySettings(): Promise<ProxySettingsResponse> {
-  try {
-    const app = getApp()
-    const result = await app.GetProxySettings()
-    if (!isProxySettingsResponse(result)) {
-      throw new Error('getProxySettings: backend returned invalid data')
-    }
-    return result
-  } catch (err) {
-    logger.error('Failed to get proxy settings:', err)
     throw err
   }
 }

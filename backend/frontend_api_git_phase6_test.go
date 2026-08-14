@@ -2,10 +2,8 @@ package backend
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -16,7 +14,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Phase 6 tests: discard, gitignore, merge/rebase, commit graph, hunk staging
+// Phase 6 tests: discard, gitignore, merge/rebase, commit graph, per-hunk diff info
 // ---------------------------------------------------------------------------
 //
 // Deterministic parser/helper tests (no git) use table-driven subtests and
@@ -48,128 +46,6 @@ func TestParseGitRefs(t *testing.T) {
 			got := parseGitRefs(tc.input)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("parseGitRefs(%q) mismatch (-want +got):\n%s", tc.input, diff)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// hunkInRange — deterministic, no git
-// ---------------------------------------------------------------------------
-
-func TestHunkInRange(t *testing.T) {
-	tests := []struct {
-		name      string
-		oldStart  int
-		oldCount  int
-		ranges    []HunkRange
-		wantMatch bool
-	}{
-		{name: "exact match", oldStart: 1, oldCount: 3, ranges: []HunkRange{{StartLine: 1, EndLine: 3}}, wantMatch: true},
-		{name: "end mismatch", oldStart: 1, oldCount: 3, ranges: []HunkRange{{StartLine: 1, EndLine: 2}}, wantMatch: false},
-		{name: "start mismatch", oldStart: 2, oldCount: 3, ranges: []HunkRange{{StartLine: 1, EndLine: 4}}, wantMatch: false},
-		{name: "one of several matches", oldStart: 10, oldCount: 5, ranges: []HunkRange{{StartLine: 1, EndLine: 1}, {StartLine: 10, EndLine: 14}}, wantMatch: true},
-		{name: "none match", oldStart: 10, oldCount: 5, ranges: []HunkRange{{StartLine: 1, EndLine: 1}, {StartLine: 20, EndLine: 24}}, wantMatch: false},
-		{name: "default count 1", oldStart: 7, oldCount: 1, ranges: []HunkRange{{StartLine: 7, EndLine: 7}}, wantMatch: true},
-		{name: "pure addition zero old lines", oldStart: 5, oldCount: 0, ranges: []HunkRange{{StartLine: 5, EndLine: 4}}, wantMatch: true},
-		{name: "empty ranges", oldStart: 1, oldCount: 1, ranges: nil, wantMatch: false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := hunkInRange(tc.oldStart, tc.oldCount, tc.ranges)
-			if got != tc.wantMatch {
-				t.Errorf("hunkInRange(start=%d, count=%d, ranges=%v) = %v, want %v",
-					tc.oldStart, tc.oldCount, tc.ranges, got, tc.wantMatch)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// buildHunkPatch — deterministic, no git
-// ---------------------------------------------------------------------------
-
-const twoHunkDiff = `diff --git a/file.txt b/file.txt
-index 1111111..2222222 100644
---- a/file.txt
-+++ b/file.txt
-@@ -1,3 +1,3 @@
- l1
--l2
-+L2
- l3
-@@ -10,3 +10,3 @@
- l10
--l11
-+L11
- l12
-`
-
-func TestBuildHunkPatch(t *testing.T) {
-	tests := []struct {
-		name     string
-		diff     string
-		ranges   []HunkRange
-		wantSel  int
-		wantCont []string // substrings that must appear in the patch
-		wantNot  []string // substrings that must NOT appear in the patch
-	}{
-		{
-			name:     "select first hunk only",
-			diff:     twoHunkDiff,
-			ranges:   []HunkRange{{StartLine: 1, EndLine: 3}},
-			wantSel:  1,
-			wantCont: []string{"--- a/file.txt", "+++ b/file.txt", "@@ -1,3 +1,3 @@", "+L2"},
-			wantNot:  []string{"+L11", "@@ -10,3 +10,3 @@"},
-		},
-		{
-			name:     "select second hunk only",
-			diff:     twoHunkDiff,
-			ranges:   []HunkRange{{StartLine: 10, EndLine: 12}},
-			wantSel:  1,
-			wantCont: []string{"@@ -10,3 +10,3 @@", "+L11"},
-			wantNot:  []string{"+L2", "@@ -1,3 +1,3 @@"}, // file header is shared by all hunks
-		},
-		{
-			name:     "select both hunks",
-			diff:     twoHunkDiff,
-			ranges:   []HunkRange{{StartLine: 1, EndLine: 3}, {StartLine: 10, EndLine: 12}},
-			wantSel:  2,
-			wantCont: []string{"+L2", "+L11"},
-			wantNot:  nil,
-		},
-		{
-			name:     "no matching ranges",
-			diff:     twoHunkDiff,
-			ranges:   []HunkRange{{StartLine: 50, EndLine: 60}},
-			wantSel:  0,
-			wantCont: nil,
-			wantNot:  []string{"+L2", "+L11", "@@ -1,3", "@@ -10,3"},
-		},
-		{
-			name:     "empty diff",
-			diff:     "",
-			ranges:   []HunkRange{{StartLine: 1, EndLine: 1}},
-			wantSel:  0,
-			wantCont: nil,
-			wantNot:  nil,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			patch, sel := buildHunkPatch(tc.diff, tc.ranges)
-			if sel != tc.wantSel {
-				t.Errorf("selected: got %d, want %d", sel, tc.wantSel)
-			}
-			for _, s := range tc.wantCont {
-				if !strings.Contains(patch, s) {
-					t.Errorf("patch missing %q\npatch:\n%s", s, patch)
-				}
-			}
-			for _, s := range tc.wantNot {
-				if strings.Contains(patch, s) {
-					t.Errorf("patch unexpectedly contains %q\npatch:\n%s", s, patch)
-				}
 			}
 		})
 	}
@@ -682,167 +558,6 @@ func TestGetRebaseMergeState_DoesNotEmit(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// StageHunks — integration
-// ---------------------------------------------------------------------------
-
-// firstHunkRange derives the HunkRange (old-file coordinates) for the first
-// hunk in `git diff -- <relPath>` output, so the test adapts to git's actual
-// context-line counts rather than guessing them.
-func firstHunkRange(t *testing.T, dir, relPath string) HunkRange {
-	t.Helper()
-	out := gitOut(t, dir, "diff", "--", relPath)
-	m := regexp.MustCompile(`@@ -(\d+),(\d+) `).FindStringSubmatch(out)
-	if m == nil {
-		t.Fatalf("no hunk header in diff:\n%s", out)
-	}
-	start, count := atoi(t, m[1]), atoi(t, m[2])
-	return HunkRange{StartLine: start, EndLine: start + count - 1}
-}
-
-func atoi(t *testing.T, s string) int {
-	t.Helper()
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			t.Fatalf("atoi(%q): not a digit", s)
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n
-}
-
-func TestStageHunks_NoProject(t *testing.T) {
-	f := &FrontendAPI{}
-	if err := f.StageHunks("/some/file.txt", []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
-		t.Fatal("StageHunks: expected error when no active project")
-	}
-}
-
-func TestStageHunks_EmptyHunksIsNoop(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		path := filepath.Join(dir, "committed.txt")
-		if err := os.WriteFile(path, []byte("changed\n"), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		// Empty hunk slice short-circuits before touching git.
-		if err := f.StageHunks(path, nil); err != nil {
-			t.Fatalf("StageHunks (empty): %v", err)
-		}
-	})
-}
-
-func TestStageHunks_NoUnstagedChanges(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		path := filepath.Join(dir, "committed.txt")
-		if err := f.StageHunks(path, []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
-			t.Fatal("StageHunks: expected error when there are no unstaged changes")
-		}
-	})
-}
-
-func TestStageHunks_NoMatchingRanges(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		path := filepath.Join(dir, "multi.txt")
-		if err := os.WriteFile(path, []byte("l1\nl2\nl3\n"), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		runGit(t, dir, "add", "multi.txt")
-		runGit(t, dir, "commit", "-m", "add multi")
-		if err := os.WriteFile(path, []byte("L1\nl2\nl3\n"), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		// A range that matches no hunk.
-		if err := f.StageHunks(path, []HunkRange{{StartLine: 500, EndLine: 600}}); err == nil {
-			t.Fatal("StageHunks: expected error when no hunks match")
-		}
-	})
-}
-
-func TestStageHunks_StagesSingleHunkOfTwo(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		path := filepath.Join(dir, "multi.txt")
-		// 20 lines; modify line 1 and line 20 — far enough apart to produce
-		// two separate hunks with default (3-line) context.
-		var orig strings.Builder
-		for i := 1; i <= 20; i++ {
-			fmt.Fprintf(&orig, "l%d\n", i)
-		}
-		if err := os.WriteFile(path, []byte(orig.String()), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		runGit(t, dir, "add", "multi.txt")
-		runGit(t, dir, "commit", "-m", "add multi")
-
-		var modified strings.Builder
-		for i := 1; i <= 20; i++ {
-			switch i {
-			case 1:
-				modified.WriteString("L1\n")
-			case 20:
-				modified.WriteString("L20\n")
-			default:
-				fmt.Fprintf(&modified, "l%d\n", i)
-			}
-		}
-		if err := os.WriteFile(path, []byte(modified.String()), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-
-		// Sanity: two hunks present.
-		diff := gitOut(t, dir, "diff", "--", "multi.txt")
-		if got := strings.Count(diff, "\n@@ -"); got != 2 && strings.Count(diff, "@@ -") != 2 {
-			t.Fatalf("expected 2 hunks, got diff:\n%s", diff)
-		}
-
-		first := firstHunkRange(t, dir, "multi.txt")
-		if err := f.StageHunks(path, []HunkRange{first}); err != nil {
-			t.Fatalf("StageHunks: %v", err)
-		}
-
-		// Staged diff contains the first change (L1) but not the second (L20).
-		staged := gitOut(t, dir, "diff", "--cached", "--", "multi.txt")
-		if !strings.Contains(staged, "+L1") {
-			t.Errorf("staged diff missing +L1\n%s", staged)
-		}
-		if strings.Contains(staged, "+L20") {
-			t.Errorf("staged diff should not contain +L20\n%s", staged)
-		}
-		// Unstaged diff still contains the second change (L20).
-		unstaged := gitOut(t, dir, "diff", "--", "multi.txt")
-		if !strings.Contains(unstaged, "+L20") {
-			t.Errorf("unstaged diff missing +L20\n%s", unstaged)
-		}
-	})
-}
-
-func TestStageHunks_EmitsStatusChanged(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		var emitted string
-		f.emitEvent = func(name string, args ...any) {
-			if name == EventGitStatusChanged && len(args) >= 1 {
-				emitted, _ = args[0].(string)
-			}
-		}
-		path := filepath.Join(dir, "multi.txt")
-		if err := os.WriteFile(path, []byte("l1\nl2\nl3\n"), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		runGit(t, dir, "add", "multi.txt")
-		runGit(t, dir, "commit", "-m", "add multi")
-		if err := os.WriteFile(path, []byte("L1\nl2\nl3\n"), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		r := firstHunkRange(t, dir, "multi.txt")
-		if err := f.StageHunks(path, []HunkRange{r}); err != nil {
-			t.Fatalf("StageHunks: %v", err)
-		}
-		if emitted != dir {
-			t.Errorf("event payload: got %q, want %q", emitted, dir)
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // Phase 6 error paths — no project / No Project mode
 // ---------------------------------------------------------------------------
 
@@ -868,15 +583,6 @@ func TestPhase6Git_NoProject(t *testing.T) {
 	}
 	if _, err := f.GetRebaseMergeState(); err == nil {
 		t.Error("GetRebaseMergeState: expected error")
-	}
-	if err := f.StageHunks("/f.txt", []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
-		t.Error("StageHunks: expected error")
-	}
-	if err := f.UnstageHunks("/f.txt", []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
-		t.Error("UnstageHunks: expected error")
-	}
-	if err := f.DiscardHunks("/f.txt", []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
-		t.Error("DiscardHunks: expected error")
 	}
 	if _, err := f.GetFileDiffHunks("/f.txt"); err == nil {
 		t.Error("GetFileDiffHunks: expected error")
@@ -906,15 +612,6 @@ func TestPhase6Git_NoProjectMode(t *testing.T) {
 	if _, err := f.GetRebaseMergeState(); err == nil {
 		t.Error("GetRebaseMergeState: expected error")
 	}
-	if err := f.StageHunks(filepath.Join(f.activeProjectPath, "f.txt"), []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
-		t.Error("StageHunks: expected error")
-	}
-	if err := f.UnstageHunks(filepath.Join(f.activeProjectPath, "f.txt"), []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
-		t.Error("UnstageHunks: expected error")
-	}
-	if err := f.DiscardHunks(filepath.Join(f.activeProjectPath, "f.txt"), []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
-		t.Error("DiscardHunks: expected error")
-	}
 	if _, err := f.GetFileDiffHunks(filepath.Join(f.activeProjectPath, "f.txt")); err == nil {
 		t.Error("GetFileDiffHunks: expected error")
 	}
@@ -923,6 +620,22 @@ func TestPhase6Git_NoProjectMode(t *testing.T) {
 // ---------------------------------------------------------------------------
 // parseHunkInfos — deterministic, no git
 // ---------------------------------------------------------------------------
+
+const twoHunkDiff = `diff --git a/file.txt b/file.txt
+index 1111111..2222222 100644
+--- a/file.txt
++++ b/file.txt
+@@ -1,3 +1,3 @@
+ l1
+-l2
++L2
+ l3
+@@ -10,3 +10,3 @@
+ l10
+-l11
++L11
+ l12
+`
 
 func TestParseHunkInfos(t *testing.T) {
 	t.Run("empty diff returns nil", func(t *testing.T) {
@@ -1086,239 +799,6 @@ func TestGetFileDiffHunks_NoChanges(t *testing.T) {
 		}
 		if len(hunks) != 0 {
 			t.Errorf("expected 0 hunks for clean file, got %d", len(hunks))
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// UnstageHunks — integration
-// ---------------------------------------------------------------------------
-
-func TestUnstageHunks_NoProject(t *testing.T) {
-	f := &FrontendAPI{}
-	if err := f.UnstageHunks("/some/file.txt", []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
-		t.Fatal("UnstageHunks: expected error when no active project")
-	}
-}
-
-func TestUnstageHunks_EmptyHunksIsNoop(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		path := filepath.Join(dir, "committed.txt")
-		if err := f.UnstageHunks(path, nil); err != nil {
-			t.Fatalf("UnstageHunks (empty): %v", err)
-		}
-	})
-}
-
-func TestUnstageHunks_NoStagedChanges(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		path := filepath.Join(dir, "committed.txt")
-		if err := os.WriteFile(path, []byte("changed\n"), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		// Not staged — only unstaged changes exist.
-		if err := f.UnstageHunks(path, []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
-			t.Fatal("UnstageHunks: expected error when there are no staged changes")
-		}
-	})
-}
-
-func TestUnstageHunks_UnstagesSingleHunk(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		path := filepath.Join(dir, "multi.txt")
-		var orig strings.Builder
-		for i := 1; i <= 20; i++ {
-			fmt.Fprintf(&orig, "l%d\n", i)
-		}
-		if err := os.WriteFile(path, []byte(orig.String()), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		runGit(t, dir, "add", "multi.txt")
-		runGit(t, dir, "commit", "-m", "add multi")
-
-		var modified strings.Builder
-		for i := 1; i <= 20; i++ {
-			switch i {
-			case 1:
-				modified.WriteString("L1\n")
-			case 20:
-				modified.WriteString("L20\n")
-			default:
-				fmt.Fprintf(&modified, "l%d\n", i)
-			}
-		}
-		if err := os.WriteFile(path, []byte(modified.String()), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		// Stage both hunks first.
-		runGit(t, dir, "add", "multi.txt")
-
-		// Derive the first hunk's range from the staged diff.
-		stagedDiff := gitOut(t, dir, "diff", "--cached", "--", "multi.txt")
-		m := regexp.MustCompile(`@@ -(\d+),(\d+) `).FindStringSubmatch(stagedDiff)
-		if m == nil {
-			t.Fatalf("no hunk header in staged diff:\n%s", stagedDiff)
-		}
-		start, count := atoi(t, m[1]), atoi(t, m[2])
-		firstRange := HunkRange{StartLine: start, EndLine: start + count - 1}
-
-		if err := f.UnstageHunks(path, []HunkRange{firstRange}); err != nil {
-			t.Fatalf("UnstageHunks: %v", err)
-		}
-
-		// Staged diff should now only contain L20, not L1.
-		stagedDiff = gitOut(t, dir, "diff", "--cached", "--", "multi.txt")
-		if strings.Contains(stagedDiff, "+L1") {
-			t.Errorf("staged diff should not contain +L1 after unstage\n%s", stagedDiff)
-		}
-		if !strings.Contains(stagedDiff, "+L20") {
-			t.Errorf("staged diff should still contain +L20\n%s", stagedDiff)
-		}
-		// Unstaged diff should now contain L1.
-		unstaged := gitOut(t, dir, "diff", "--", "multi.txt")
-		if !strings.Contains(unstaged, "+L1") {
-			t.Errorf("unstaged diff should contain +L1 after unstage\n%s", unstaged)
-		}
-	})
-}
-
-func TestUnstageHunks_EmitsStatusChanged(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		var emitted string
-		f.emitEvent = func(name string, args ...any) {
-			if name == EventGitStatusChanged && len(args) >= 1 {
-				emitted, _ = args[0].(string)
-			}
-		}
-		path := filepath.Join(dir, "multi.txt")
-		commitFile(t, dir, "multi.txt", "l1\nl2\nl3\n")
-		if err := os.WriteFile(path, []byte("L1\nl2\nl3\n"), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		runGit(t, dir, "add", "multi.txt")
-
-		stagedDiff := gitOut(t, dir, "diff", "--cached", "--", "multi.txt")
-		m := regexp.MustCompile(`@@ -(\d+),(\d+) `).FindStringSubmatch(stagedDiff)
-		if m == nil {
-			t.Fatalf("no hunk header in staged diff:\n%s", stagedDiff)
-		}
-		start, count := atoi(t, m[1]), atoi(t, m[2])
-		r := HunkRange{StartLine: start, EndLine: start + count - 1}
-
-		if err := f.UnstageHunks(path, []HunkRange{r}); err != nil {
-			t.Fatalf("UnstageHunks: %v", err)
-		}
-		if emitted != dir {
-			t.Errorf("event payload: got %q, want %q", emitted, dir)
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// DiscardHunks — integration
-// ---------------------------------------------------------------------------
-
-func TestDiscardHunks_NoProject(t *testing.T) {
-	f := &FrontendAPI{}
-	if err := f.DiscardHunks("/some/file.txt", []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
-		t.Fatal("DiscardHunks: expected error when no active project")
-	}
-}
-
-func TestDiscardHunks_EmptyHunksIsNoop(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		path := filepath.Join(dir, "committed.txt")
-		if err := f.DiscardHunks(path, nil); err != nil {
-			t.Fatalf("DiscardHunks (empty): %v", err)
-		}
-	})
-}
-
-func TestDiscardHunks_NoUnstagedChanges(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		path := filepath.Join(dir, "committed.txt")
-		if err := f.DiscardHunks(path, []HunkRange{{StartLine: 1, EndLine: 1}}); err == nil {
-			t.Fatal("DiscardHunks: expected error when there are no unstaged changes")
-		}
-	})
-}
-
-func TestDiscardHunks_DiscardsSingleHunk(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		path := filepath.Join(dir, "multi.txt")
-		var orig strings.Builder
-		for i := 1; i <= 20; i++ {
-			fmt.Fprintf(&orig, "l%d\n", i)
-		}
-		if err := os.WriteFile(path, []byte(orig.String()), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		runGit(t, dir, "add", "multi.txt")
-		runGit(t, dir, "commit", "-m", "add multi")
-
-		var modified strings.Builder
-		for i := 1; i <= 20; i++ {
-			switch i {
-			case 1:
-				modified.WriteString("L1\n")
-			case 20:
-				modified.WriteString("L20\n")
-			default:
-				fmt.Fprintf(&modified, "l%d\n", i)
-			}
-		}
-		if err := os.WriteFile(path, []byte(modified.String()), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-
-		// Discard the first hunk only.
-		first := firstHunkRange(t, dir, "multi.txt")
-		if err := f.DiscardHunks(path, []HunkRange{first}); err != nil {
-			t.Fatalf("DiscardHunks: %v", err)
-		}
-
-		// File should now have l1 restored but L20 still changed.
-		got, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read: %v", err)
-		}
-		content := string(got)
-		if !strings.Contains(content, "l1\n") {
-			t.Errorf("after discard: file should contain l1 (restored)\n%s", content)
-		}
-		if !strings.Contains(content, "L20") {
-			t.Errorf("after discard: file should still contain L20 (not discarded)\n%s", content)
-		}
-		// Unstaged diff should only contain L20, not L1.
-		unstaged := gitOut(t, dir, "diff", "--", "multi.txt")
-		if strings.Contains(unstaged, "+L1") {
-			t.Errorf("unstaged diff should not contain +L1 after discard\n%s", unstaged)
-		}
-		if !strings.Contains(unstaged, "+L20") {
-			t.Errorf("unstaged diff should still contain +L20\n%s", unstaged)
-		}
-	})
-}
-
-func TestDiscardHunks_EmitsStatusChanged(t *testing.T) {
-	withGitRepo(t, func(f *FrontendAPI, dir string) {
-		var emitted string
-		f.emitEvent = func(name string, args ...any) {
-			if name == EventGitStatusChanged && len(args) >= 1 {
-				emitted, _ = args[0].(string)
-			}
-		}
-		path := filepath.Join(dir, "multi.txt")
-		commitFile(t, dir, "multi.txt", "l1\nl2\nl3\n")
-		if err := os.WriteFile(path, []byte("L1\nl2\nl3\n"), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		r := firstHunkRange(t, dir, "multi.txt")
-		if err := f.DiscardHunks(path, []HunkRange{r}); err != nil {
-			t.Fatalf("DiscardHunks: %v", err)
-		}
-		if emitted != dir {
-			t.Errorf("event payload: got %q, want %q", emitted, dir)
 		}
 	})
 }

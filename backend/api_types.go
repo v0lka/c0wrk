@@ -255,10 +255,6 @@ type StashEntry = workspace.StashEntry
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type GitHistoryCommit = workspace.GitHistoryCommit
 
-// HunkRange identifies a contiguous slice of a file in old-file line coordinates.
-// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
-type HunkRange = workspace.HunkRange
-
 // HunkDiffInfo describes a single diff hunk with staging status and raw
 // diff text. Defined in core/workspace; re-exported here as a type alias
 // for ViewModel convenience.

@@ -3,10 +3,14 @@ package backend
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
@@ -47,11 +51,25 @@ type mockBuilder struct {
 	generateCommitMsgErr  error
 	generateCommitMsgDiff string
 
+	// rebuildRouterHook, when non-nil, runs inside RebuildRouter while the
+	// call is being recorded. Tests use it to block the rebuild phase (e.g.
+	// to assert readers are not convoyed behind it) or to observe ordering.
+	// It must not call back into mockBuilder methods that take m.mu.
+	rebuildRouterHook func(*core.BuilderConfig)
+
+	// rebuildRouterCfgs records the default model of each config passed to
+	// RebuildRouter, in call order (guarded by m.mu).
+	rebuildRouterCfgs []string
+
 	getSkillDescriptorsCalls int
 	getSkillDescriptorsRes   []skills.SkillDescriptor
 
 	getAgentDescriptorsCalls int
 	getAgentDescriptorsRes   []agents.AgentDescriptor
+
+	// registry, when non-nil, is returned by ModelRegistry so tests can
+	// exercise the metadata-enrichment path of GetConfig/collectAllModels.
+	registry *llm.ModelRegistry
 }
 
 func (m *mockBuilder) RebuildJudge(_ *core.BuilderConfig) {
@@ -59,11 +77,25 @@ func (m *mockBuilder) RebuildJudge(_ *core.BuilderConfig) {
 	m.rebuildJudgeCalls++
 	m.mu.Unlock()
 }
-func (m *mockBuilder) RebuildRouter(_ *core.BuilderConfig) error {
+func (m *mockBuilder) RebuildRouter(cfg *core.BuilderConfig) error {
 	m.mu.Lock()
 	m.rebuildRouterCalls++
+	m.rebuildRouterCfgs = append(m.rebuildRouterCfgs, cfg.LLM.DefaultModel)
 	m.mu.Unlock()
+	if m.rebuildRouterHook != nil {
+		m.rebuildRouterHook(cfg)
+	}
 	return m.rebuildRouterErr
+}
+
+// routerCfgSnapshot returns a copy of the default models passed to
+// RebuildRouter so far, in call order. Safe for concurrent use.
+func (m *mockBuilder) routerCfgSnapshot() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.rebuildRouterCfgs))
+	copy(out, m.rebuildRouterCfgs)
+	return out
 }
 func (m *mockBuilder) RebuildProxy(_ context.Context, _ *core.BuilderConfig) error {
 	m.mu.Lock()
@@ -136,7 +168,9 @@ func (m *mockBuilder) GetAgentDescriptors(string) []agents.AgentDescriptor {
 	return m.getAgentDescriptorsRes
 }
 func (m *mockBuilder) ModelRegistry() *llm.ModelRegistry {
-	return nil
+	// Tests that exercise the metadata-enrichment path (GetConfig AllModels)
+	// set m.registry; the default nil mirrors the pre-init startup window.
+	return m.registry
 }
 
 func (m *mockBuilder) JudgeAvailable() bool {
@@ -1394,6 +1428,96 @@ func TestGetConfig_AnthropicCompatibleExposed(t *testing.T) {
 	}
 }
 
+// countingTransport is the network canary for GetConfig's network-free
+// guarantee: it counts every HTTP round trip attempted through it and fails
+// each one immediately.
+type countingTransport struct {
+	calls atomic.Int32
+}
+
+func (t *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	t.calls.Add(1)
+	return nil, errors.New("network access is forbidden in GetConfig")
+}
+
+// TestGetConfig_UnknownModelNoNetwork pins the network-free contract of
+// GetConfig: with a live ModelRegistry wired and an enabled model unknown to
+// every local tier, the call resolves from memory alone — no HuggingFace
+// probe, no registered sources, no per-model latency. Before the switch to
+// ResolveLocal this path fired an HTTP lookup (10s client timeout) per
+// unknown model on every settings open.
+func TestGetConfig_UnknownModelNoNetwork(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	transport := &countingTransport{}
+	reg := llm.NewModelRegistry(nil)
+	reg.SetHTTPClient(&http.Client{Transport: transport, Timeout: 10 * time.Second})
+	mock.registry = reg
+
+	// One known model per provider plus an unknown one: covers both the
+	// metadata hit and the fallback path in a single GetConfig call.
+	f.config.LLM.Anthropic.Models = []string{"claude-3-opus", "acme-unknown-model-xyz"}
+	f.config.LLM.ChatGPT.Models = []string{"gpt-4o"}
+
+	start := time.Now()
+	resp := f.GetConfig()
+	elapsed := time.Since(start)
+
+	if !resp.LLM.ModelsReady {
+		t.Fatal("expected ModelsReady=true with a live registry wired")
+	}
+	if got := transport.calls.Load(); got != 0 {
+		t.Fatalf("GetConfig attempted %d HTTP round trip(s); collectAllModels must resolve network-free", got)
+	}
+	// One accidental probe burns the registry's 10s HTTP timeout, far above
+	// this budget; a memory-only read lands in the microseconds.
+	if elapsed > 2*time.Second {
+		t.Fatalf("GetConfig with an unknown model enabled took %v; expected an instant in-memory read", elapsed)
+	}
+
+	// Composition is unchanged: every enabled model appears, in provider
+	// order (anthropic, then chatgpt), and known models keep their family
+	// metadata.
+	wantOrder := []struct{ name, provider string }{
+		{"claude-3-opus", "anthropic"},
+		{"acme-unknown-model-xyz", "anthropic"},
+		{"gpt-4o", "chatgpt"},
+	}
+	if len(resp.LLM.AllModels) != len(wantOrder) {
+		t.Fatalf("AllModels length = %d, want %d: %+v", len(resp.LLM.AllModels), len(wantOrder), resp.LLM.AllModels)
+	}
+	for i, want := range wantOrder {
+		got := resp.LLM.AllModels[i]
+		if got.Name != want.name || got.Provider != want.provider {
+			t.Errorf("AllModels[%d] = {Name: %q, Provider: %q}, want {Name: %q, Provider: %q}", i, got.Name, got.Provider, want.name, want.provider)
+		}
+	}
+	if got := resp.LLM.AllModels[2]; got.Family != "openai_flagship" {
+		t.Errorf("gpt-4o family = %q, want openai_flagship (built-in metadata must still enrich known models)", got.Family)
+	}
+}
+
+// TestGetConfig_NoRegistryKeepsModelsVisible guards the pre-init window: with
+// no registry wired (ModelsReady=false) the configured models still appear so
+// the model picker is never empty.
+func TestGetConfig_NoRegistryKeepsModelsVisible(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	start := time.Now()
+	resp := f.GetConfig()
+	elapsed := time.Since(start)
+
+	if resp.LLM.ModelsReady {
+		t.Fatal("expected ModelsReady=false when no registry is wired")
+	}
+	if len(resp.LLM.AllModels) != 1 || resp.LLM.AllModels[0].Name != "claude-3-opus" {
+		t.Fatalf("AllModels = %+v, want the single configured model", resp.LLM.AllModels)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("GetConfig without a registry took %v; expected an instant in-memory read", elapsed)
+	}
+}
+
 func TestMaskAPIKey_EnvVarPreserved(t *testing.T) {
 	if got := maskAPIKey("${ANTHROPIC_API_KEY}"); got != "${ANTHROPIC_API_KEY}" {
 		t.Errorf("env var reference should not be masked, got %q", got)
@@ -1422,16 +1546,6 @@ func TestSetLogLevel_InvalidLevel(t *testing.T) {
 	err := f.SetLogLevel("TRACE")
 	if err == nil {
 		t.Fatal("expected error for invalid level")
-	}
-}
-
-// --- GetProxySettings ---
-
-func TestGetProxySettings_NilBypassList(t *testing.T) {
-	f, _, _ := newTestAPI(t)
-	resp := f.GetProxySettings()
-	if resp.BypassList == nil {
-		t.Fatal("BypassList must not be nil (JSON would serialize to null)")
 	}
 }
 
@@ -1615,5 +1729,274 @@ func TestUpdateLLMConfig_NoEmitWhenNoProjectAlreadyExists(t *testing.T) {
 	}
 	if got := activeProjectIDOf(f); got != activeProj.ID {
 		t.Fatalf("active project switched: got %q, want %q", got, activeProj.ID)
+	}
+}
+
+// --- UpdateLLMConfig: lock-convoy regression ---
+
+// TestUpdateLLMConfig_ReadersNotBlockedDuringRebuild verifies that GetConfig
+// (a configMu.RLock reader) completes while UpdateLLMConfig is inside its slow
+// rebuild phase. Previously the whole update held configMu.Lock across the
+// YAML persist and the router rebuild, convoying every reader behind the
+// rebuild. The rebuild hook blocks RebuildRouter, so a passing reader proves
+// configMu is released during the heavy phase.
+func TestUpdateLLMConfig_ReadersNotBlockedDuringRebuild(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	rebuildStarted := make(chan struct{})
+	release := make(chan struct{})
+	mock.rebuildRouterHook = func(*core.BuilderConfig) {
+		select {
+		case <-rebuildStarted:
+		default:
+			close(rebuildStarted)
+		}
+		<-release // hold the rebuild phase open until the test lets go
+	}
+
+	updateDone := make(chan error, 1)
+	go func() {
+		updateDone <- f.UpdateLLMConfig(LLMFullConfigRequest{
+			DefaultModel: "claude-3-sonnet",
+			Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
+		})
+	}()
+
+	select {
+	case <-rebuildStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("rebuild phase never started")
+	}
+
+	// The update is now blocked inside RebuildRouter. GetConfig must return
+	// promptly: it takes configMu.RLock, which must be free during the heavy
+	// phase. It must also observe the freshly applied (already mutated) config.
+	type readerResult struct {
+		resp ConfigResponse
+		ok   bool
+	}
+	readerDone := make(chan readerResult, 1)
+	go func() {
+		resp := f.GetConfig()
+		readerDone <- readerResult{resp: resp, ok: true}
+	}()
+
+	select {
+	case res := <-readerDone:
+		if !res.resp.Loaded {
+			t.Error("GetConfig returned unloaded config during rebuild")
+		}
+		if res.resp.LLM.DefaultModel != "claude-3-sonnet" {
+			t.Errorf("GetConfig default_model = %q, want claude-3-sonnet (mutation applied before rebuild)", res.resp.LLM.DefaultModel)
+		}
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("GetConfig blocked while UpdateLLMConfig was in its rebuild phase — configMu lock convoy present")
+	}
+
+	close(release)
+	if err := <-updateDone; err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestUpdateLLMConfig_DeferredSavesSerializedInOrder verifies that overlapping
+// (debounced) saves apply strictly in submission order under saveMu: while the
+// first save is still mid-rebuild, a second save must not yet have mutated the
+// in-memory config, and once both settle the router rebuilds happened in
+// submission order and the persisted file matches the final in-memory state
+// (the first save's persist can never overwrite the second save's state).
+func TestUpdateLLMConfig_DeferredSavesSerializedInOrder(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+
+	const first, second = "claude-3-sonnet", "claude-3-haiku"
+
+	firstRebuildStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	mock.rebuildRouterHook = func(cfg *core.BuilderConfig) {
+		if cfg.LLM.DefaultModel == first {
+			select {
+			case <-firstRebuildStarted:
+			default:
+				close(firstRebuildStarted)
+			}
+			<-releaseFirst
+		}
+	}
+
+	saveErrs := make(chan error, 2)
+	go func() {
+		saveErrs <- f.UpdateLLMConfig(LLMFullConfigRequest{
+			DefaultModel: first,
+			Anthropic:    &ProviderConfigRequest{Models: []string{first}},
+		})
+	}()
+
+	// Wait until the first save is parked inside its rebuild phase.
+	select {
+	case <-firstRebuildStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first save never reached its rebuild phase")
+	}
+
+	// Submit the second save; it must queue on saveMu behind the first.
+	go func() {
+		saveErrs <- f.UpdateLLMConfig(LLMFullConfigRequest{
+			DefaultModel: second,
+			Anthropic:    &ProviderConfigRequest{Models: []string{second}},
+		})
+	}()
+
+	// While the first save is still mid-flight, the config must still reflect
+	// only the first save — the second save's mutation is held back by saveMu.
+	time.Sleep(50 * time.Millisecond)
+	f.configMu.RLock()
+	mid := f.config.LLM.DefaultModel
+	f.configMu.RUnlock()
+	if mid != first {
+		close(releaseFirst)
+		t.Fatalf("second save mutated config before the first save completed: got %q, want %q", mid, first)
+	}
+
+	close(releaseFirst)
+	for i := 0; i < 2; i++ {
+		if err := <-saveErrs; err != nil {
+			t.Fatalf("unexpected error from save %d: %v", i+1, err)
+		}
+	}
+
+	if got := mock.routerCfgSnapshot(); len(got) != 2 || got[0] != first || got[1] != second {
+		t.Fatalf("RebuildRouter order = %v, want [%s %s]", got, first, second)
+	}
+
+	// The persisted file must match the final in-memory state: serialization
+	// prevents the first save's persist from landing after the second's.
+	f.configMu.RLock()
+	inMemory := f.config.LLM.DefaultModel
+	f.configMu.RUnlock()
+	persisted, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to load persisted config: %v", err)
+	}
+	if persisted.LLM.DefaultModel != inMemory {
+		t.Fatalf("persisted default_model = %q, want %q (in-memory final state)", persisted.LLM.DefaultModel, inMemory)
+	}
+}
+
+// TestUpdateLLMConfig_RebuildNotRevertedByConcurrentConfigWriter verifies that
+// the router rebuild in UpdateLLMConfig cannot roll back changes made by a
+// config writer that mutates and rebuilds under configMu.Lock
+// (UpdateSmallLLMConfig, SetModelConfig). The rebuild must re-snapshot the
+// config and hold configMu.RLock across snapshot + rebuild, so a concurrent
+// writer's mutate+rebuild can never interleave between them and leave the
+// router on a snapshot that predates its changes.
+//
+// The hook parks the FIRST RebuildRouter call (UpdateLLMConfig's) and records
+// SmallLLM.Enabled of each rebuild in application (completion) order:
+// with the fix the order is [false (LLM save), true (small-LLM save)] — the
+// small-LLM rebuild lands last and wins; without it the stale LLM-save rebuild
+// completes after the small-LLM one and the router is left on [.., false].
+func TestUpdateLLMConfig_RebuildNotRevertedByConcurrentConfigWriter(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var orderMu sync.Mutex
+	calls := 0
+	applied := make([]bool, 0, 2)
+	mock.rebuildRouterHook = func(cfg *core.BuilderConfig) {
+		orderMu.Lock()
+		calls++
+		mine := calls
+		orderMu.Unlock()
+		if mine == 1 {
+			close(firstEntered)
+			<-releaseFirst // hold the LLM save's rebuild open
+		}
+		orderMu.Lock()
+		applied = append(applied, cfg.SmallLLM.Enabled)
+		orderMu.Unlock()
+	}
+
+	aDone := make(chan error, 1)
+	go func() {
+		aDone <- f.UpdateLLMConfig(LLMFullConfigRequest{
+			DefaultModel: "claude-3-sonnet",
+			Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
+		})
+	}()
+
+	// Wait until the LLM save is parked inside its rebuild phase.
+	select {
+	case <-firstEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("LLM save never reached its rebuild phase")
+	}
+
+	// A config writer that is NOT serialized by saveMu races here. With the
+	// fix it must block on configMu until the LLM save's rebuild completes.
+	bDone := make(chan error, 1)
+	go func() {
+		bDone <- f.UpdateSmallLLMConfig(SmallLLMConfigResponse{Enabled: true})
+	}()
+	select {
+	case err := <-bDone:
+		close(releaseFirst)
+		t.Fatalf("UpdateSmallLLMConfig completed while UpdateLLMConfig was inside its rebuild phase — the rebuild snapshot can be stale (err=%v)", err)
+	case <-time.After(100 * time.Millisecond):
+		// Still blocked: expected under the fix.
+	}
+
+	close(releaseFirst)
+	if err := <-aDone; err != nil {
+		t.Fatalf("unexpected error from UpdateLLMConfig: %v", err)
+	}
+	if err := <-bDone; err != nil {
+		t.Fatalf("unexpected error from UpdateSmallLLMConfig: %v", err)
+	}
+
+	orderMu.Lock()
+	got := append([]bool(nil), applied...)
+	orderMu.Unlock()
+	if len(got) != 2 || got[0] || !got[1] {
+		t.Fatalf("router rebuild application order = %v, want [false true]: the router was left on a snapshot predating the concurrent small-LLM update", got)
+	}
+
+	// Sanity: the small-LLM change survived in memory and on disk.
+	f.configMu.RLock()
+	inMemory := f.config.SmallLLM.Enabled
+	f.configMu.RUnlock()
+	if !inMemory {
+		t.Fatal("in-memory config lost the small-LLM master toggle")
+	}
+	persisted, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to load persisted config: %v", err)
+	}
+	if !persisted.SmallLLM.Enabled {
+		t.Fatal("persisted config lost the small-LLM master toggle")
+	}
+}
+
+// TestHasDefaultModel verifies the cheap default-model probe used by the
+// settings close check: nil config reports false, an empty default_model
+// reports false, and any configured default reports true — without touching
+// the model registry or the network.
+func TestHasDefaultModel(t *testing.T) {
+	tests := []struct {
+		name string
+		api  *FrontendAPI
+		want bool
+	}{
+		{name: "nil config", api: &FrontendAPI{}, want: false},
+		{name: "empty default model", api: &FrontendAPI{config: &config.Config{}}, want: false},
+		{name: "configured default model", api: &FrontendAPI{config: &config.Config{LLM: config.LLMConfig{DefaultModel: "anthropic/claude-sonnet-4"}}}, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.api.HasDefaultModel(); got != tc.want {
+				t.Errorf("HasDefaultModel() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

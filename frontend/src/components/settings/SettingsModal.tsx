@@ -19,7 +19,7 @@ import { SecuritySettings } from './SecuritySettings'
 import { UpdateSettings } from './UpdateSettings'
 import { Settings, Brain, Search, Shield, Info, Server, AlertTriangle, X, Gauge } from 'lucide-react'
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { getConfig } from '@/api/config'
+import { hasDefaultModel } from '@/api/config'
 
 export function SettingsModal() {
   const open = useSettingsStore((s) => s.open)
@@ -61,7 +61,7 @@ export function SettingsModal() {
     // local UI state already has a model, clear the block defensively. The
     // valid-default case is also reported through handleDefaultModelChange
     // (fired with a non-empty model), and close-block correctness is
-    // ultimately driven by the authoritative getConfig re-check in
+    // ultimately driven by the authoritative hasDefaultModel re-check in
     // handleOpenChange.
     if (currentDefaultModel) {
       setCloseBlocked(false)
@@ -81,8 +81,8 @@ export function SettingsModal() {
       checkingRef.current = true
       setCheckingClose(true)
       try {
-        const cfg = await getConfig()
-        if (!cfg?.llm?.default_model) {
+        const hasDefault = await hasDefaultModel()
+        if (!hasDefault) {
           setCloseBlocked(true)
           setActiveTab('llm')
           return

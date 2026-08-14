@@ -165,12 +165,6 @@ export interface GitHistoryCommit {
   refs: string[]
 }
 
-/** A line range identifying a diff hunk for partial staging (Phase 6). */
-export interface HunkRange {
-  start_line: number
-  end_line: number
-}
-
 /** Structured per-hunk diff info with staging status (for the hunk panel). */
 export interface HunkDiffInfo {
   old_start: number

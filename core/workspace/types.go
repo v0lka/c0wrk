@@ -91,15 +91,6 @@ type GitHistoryCommit struct {
 	Refs    []string `json:"refs"`
 }
 
-// HunkRange identifies a contiguous slice of a file in old-file (pre-diff)
-// line coordinates. StartLine and EndLine are 1-based and inclusive;
-// EndLine is StartLine + hunkLineCount - 1 (so a pure-addition hunk with
-// zero old lines has EndLine == StartLine - 1).
-type HunkRange struct {
-	StartLine int `json:"start_line"`
-	EndLine   int `json:"end_line"`
-}
-
 // HunkDiffInfo describes a single diff hunk with its staging status and
 // raw unified-diff text. The frontend uses it to render per-hunk controls
 // (stage / unstage / discard) and hover tooltips with syntax-highlighted

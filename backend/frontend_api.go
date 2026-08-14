@@ -29,6 +29,15 @@ type FrontendAPI struct {
 	configMu         sync.RWMutex
 	configPath       string
 	configLoadErrors []string
+	// saveMu serializes full config-save sequences for writers that must not
+	// hold configMu across slow work (persist → No-Project provisioning →
+	// judge/router rebuild, currently UpdateLLMConfig). configMu above guards
+	// the config fields themselves; saveMu guards the ORDER of saves so
+	// debounced updates apply strictly sequentially — a later save never
+	// mutates f.config while an earlier save is still persisting/rebuilding.
+	// It is acquired BEFORE configMu (saveMu → configMu), and readers such as
+	// GetConfig never take it, so they stay responsive throughout a save.
+	saveMu sync.Mutex
 
 	// Persistence stores
 	store       *session.SQLiteSessionStore

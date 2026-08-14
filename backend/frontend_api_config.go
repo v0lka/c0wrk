@@ -10,7 +10,6 @@ import (
 	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/core/smallllm"
 	"github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/core/version"
 	"github.com/v0lka/sp4rk/llm"
 )
 
@@ -59,6 +58,20 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 	return resp
 }
 
+// HasDefaultModel reports whether a default LLM model is configured. It is a
+// cheap probe for UI flows (e.g. the settings close check) that only need this
+// single fact and must not pay for a full GetConfig response.
+func (f *FrontendAPI) HasDefaultModel() bool {
+	f.configMu.RLock()
+	defer f.configMu.RUnlock()
+
+	if f.config == nil {
+		return false
+	}
+
+	return f.config.LLM.DefaultModel != ""
+}
+
 // buildLLMResponse constructs the sanitized ConfigLLMResponse from config.
 func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 	resp := ConfigLLMResponse{
@@ -96,6 +109,14 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 // from the registry. When reg is nil (registry not yet initialized), models
 // are returned without metadata so the frontend still sees configured models.
 //
+// GUARANTEE: collectAllModels is network-free — it resolves every model via
+// ModelRegistry.ResolveLocal, which serves overrides, built-ins, fuzzy
+// matches, and cached entries purely from memory and returns fallback
+// defaults for unknown models. No HTTP probes, no registered sources, no
+// blocking I/O. GetConfig must remain a pure in-memory read: it runs on every
+// settings open, and a model list containing an unknown model must not stall
+// the UI behind a network timeout.
+//
 // Entries are keyed by composite (provider, model) so that two providers
 // exposing the same bare model name both appear — the frontend uses the
 // composite "provider/name" value to select a specific provider while
@@ -118,7 +139,7 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 			var family string
 			var vision bool
 			if reg != nil {
-				meta, _ := reg.Resolve(f.ctx(), modelName)
+				meta, _ := reg.ResolveLocal(modelName)
 				family = meta.Family
 				vision = meta.Capabilities.Attachment
 			}
@@ -147,11 +168,23 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 
 // UpdateLLMConfig updates the full LLM configuration atomically:
 // default model, each provider's models list, and API keys.
+//
+// Locking layout: the whole update runs under saveMu so debounced saves apply
+// strictly in submission order (mutation → persist → rebuild never interleave
+// between two calls). Inside that, configMu is held only for the fast config
+// mutation — the expensive follow-up work (YAML persist, No-Project
+// provisioning) runs with configMu released, and the judge/router rebuilds run
+// under a shared configMu.RLock with a freshly re-snapshotted config: RLock
+// readers are never convoyed behind a rebuild, yet writers are excluded
+// between snapshot and rebuild so the router can never be rolled back to a
+// snapshot that predates a concurrent config writer's changes.
 func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
-	f.configMu.Lock()
-	defer f.configMu.Unlock()
+	f.saveMu.Lock()
+	defer f.saveMu.Unlock()
 
+	f.configMu.Lock()
 	if f.config == nil {
+		f.configMu.Unlock()
 		return errors.New("config not initialized")
 	}
 
@@ -229,12 +262,28 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 
-	if err := f.persistConfig(); err != nil {
-		f.log().Warn("failed to persist LLM config", "error", err)
+	// Capture the provisioning guard here — after the unlock, f.config must
+	// only be touched under configMu again.
+	defaultModel := f.config.LLM.DefaultModel
+	f.configMu.Unlock()
+
+	// --- Heavy work below runs OUTSIDE configMu (readers stay responsive) ---
+	// saveMu is still held, so concurrent UpdateLLMConfig calls are serialized.
+
+	// Persist under a read lock: the YAML write must see a consistent config
+	// and must not race other config writers (which mutate under configMu.Lock),
+	// but holding RLock keeps every other reader flowing during the disk I/O.
+	f.configMu.RLock()
+	persistErr := f.persistConfig()
+	f.configMu.RUnlock()
+	if persistErr != nil {
+		f.log().Warn("failed to persist LLM config", "error", persistErr)
 	}
 
 	// Clear any config load errors since settings are now valid
+	f.configMu.Lock()
 	f.configLoadErrors = nil
+	f.configMu.Unlock()
 
 	// Ensure No Project exists now that the app is usable.
 	// On a clean first run this is the first time the pseudo-project
@@ -245,7 +294,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	// frontend may debounce-save partial edits before the user has selected
 	// a model. Creating No Project and switching on every keystroke would
 	// disrupt the file panel while the settings dialog is still open.
-	if f.projectManager != nil && f.config.LLM.DefaultModel != "" {
+	if f.projectManager != nil && defaultModel != "" {
 		created, err := f.projectManager.EnsureNoProject()
 		if err != nil {
 			f.log().Warn("failed to ensure No Project after config update", "error", err)
@@ -266,12 +315,23 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	}
 
 	// Rebuild judge and LLM router via the backend builder so new sessions
-	// use the updated provider immediately.
+	// use the updated provider immediately. The snapshot is taken fresh here
+	// rather than carried over from the mutation phase, and configMu.RLock is
+	// held across snapshot + rebuild: config writers that mutate and rebuild
+	// under configMu.Lock (UpdateSmallLLMConfig, SetModelConfig) cannot run
+	// in between, so this rebuild can never apply a snapshot that predates
+	// their changes and roll the router back. RLock stays shared with
+	// readers, so GetConfig is still never convoyed behind the rebuild, and
+	// RebuildJudge/RebuildRouter are core calls that never re-enter
+	// FrontendAPI, so holding the RLock across them cannot deadlock.
 	if b := f.builder(); b != nil {
-		bcfg := ToBuilderConfig(f.config)
-		b.RebuildJudge(bcfg)
-		if err := b.RebuildRouter(bcfg); err != nil {
-			f.log().Warn("failed to rebuild LLM router after config update", "error", err)
+		f.configMu.RLock()
+		fresh := ToBuilderConfig(f.config)
+		b.RebuildJudge(fresh)
+		rebuildErr := b.RebuildRouter(fresh)
+		f.configMu.RUnlock()
+		if rebuildErr != nil {
+			f.log().Warn("failed to rebuild LLM router after config update", "error", rebuildErr)
 		}
 	}
 
@@ -305,24 +365,6 @@ func (f *FrontendAPI) UpdateSearchSettings(settings SearchSettingsRequest) error
 	return nil
 }
 
-// GetProxySettings returns current proxy settings for the UI.
-// The proxy URL password is masked.
-func (f *FrontendAPI) GetProxySettings() ProxySettingsResponse {
-	f.configMu.RLock()
-	defer f.configMu.RUnlock()
-
-	if f.config == nil {
-		return ProxySettingsResponse{BypassList: []string{}}
-	}
-
-	return ProxySettingsResponse{
-		Enabled:    f.config.Proxy.Enabled,
-		URL:        proxy.MaskURL(f.config.Proxy.URL),
-		BypassList: nonNilStringSlice(f.config.Proxy.BypassList),
-		TLSCertDir: f.config.Proxy.TLSCertDir,
-	}
-}
-
 // UpdateProxySettings updates proxy configuration at runtime and propagates
 // the change to all subsystems (LLM providers, web tools, MCP, child processes).
 func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
@@ -335,8 +377,9 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 
 	f.config.Proxy.Enabled = settings.Enabled
 	// Preserve the existing URL when the incoming value is the masked form
-	// returned by GetProxySettings (proxy.MaskURL replaces the password with
-	// "***"). The frontend round-trips the displayed (masked) URL verbatim when
+	// returned by GetConfig's proxy section (proxy.MaskURL replaces the
+	// password with "***"). The frontend round-trips the displayed (masked)
+	// URL verbatim when
 	// only another field (enabled/bypass/cert-dir) is edited, so without this
 	// guard the real password would be silently overwritten with "***" and the
 	// next proxy connection would fail to authenticate. Mirrors the
@@ -955,21 +998,4 @@ func unionAlwaysPresent(primary, extra []string) []string {
 		}
 	}
 	return out
-}
-
-// AppVersionResponse carries build-time version metadata to the frontend.
-type AppVersionResponse struct {
-	Version   string `json:"version"`
-	GitCommit string `json:"gitCommit"`
-	BuildDate string `json:"buildDate"`
-}
-
-// GetAppVersion returns the application version metadata injected at build
-// time via linker flags (or the compile-time defaults for local builds).
-func (f *FrontendAPI) GetAppVersion() AppVersionResponse {
-	return AppVersionResponse{
-		Version:   version.Version,
-		GitCommit: version.GitCommit,
-		BuildDate: version.BuildDate,
-	}
 }

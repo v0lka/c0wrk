@@ -114,10 +114,6 @@ export function DiscardChanges(arg1) {
   return window['go']['desktop']['App']['DiscardChanges'](arg1);
 }
 
-export function DiscardHunks(arg1, arg2) {
-  return window['go']['desktop']['App']['DiscardHunks'](arg1, arg2);
-}
-
 export function DownloadUpdate() {
   return window['go']['desktop']['App']['DownloadUpdate']();
 }
@@ -140,10 +136,6 @@ export function ForkSession(arg1) {
 
 export function GenerateCommitMessage() {
   return window['go']['desktop']['App']['GenerateCommitMessage']();
-}
-
-export function GetAppVersion() {
-  return window['go']['desktop']['App']['GetAppVersion']();
 }
 
 export function GetAttachments(arg1) {
@@ -242,10 +234,6 @@ export function GetProjectUIState(arg1) {
   return window['go']['desktop']['App']['GetProjectUIState'](arg1);
 }
 
-export function GetProxySettings() {
-  return window['go']['desktop']['App']['GetProxySettings']();
-}
-
 export function GetRebaseMergeState() {
   return window['go']['desktop']['App']['GetRebaseMergeState']();
 }
@@ -304,6 +292,10 @@ export function GetUpdateSettings() {
 
 export function GetVectorIndexStatus() {
   return window['go']['desktop']['App']['GetVectorIndexStatus']();
+}
+
+export function HasDefaultModel() {
+  return window['go']['desktop']['App']['HasDefaultModel']();
 }
 
 export function Lifecycle() {
@@ -494,10 +486,6 @@ export function StageFile(arg1) {
   return window['go']['desktop']['App']['StageFile'](arg1);
 }
 
-export function StageHunks(arg1, arg2) {
-  return window['go']['desktop']['App']['StageHunks'](arg1, arg2);
-}
-
 export function StartTerminal(arg1) {
   return window['go']['desktop']['App']['StartTerminal'](arg1);
 }
@@ -544,10 +532,6 @@ export function UnstageAll() {
 
 export function UnstageFile(arg1) {
   return window['go']['desktop']['App']['UnstageFile'](arg1);
-}
-
-export function UnstageHunks(arg1, arg2) {
-  return window['go']['desktop']['App']['UnstageHunks'](arg1, arg2);
 }
 
 export function UnwatchDirectory(arg1) {

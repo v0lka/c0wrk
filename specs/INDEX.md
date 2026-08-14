@@ -35,6 +35,7 @@
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |
 | Message rendering, display items         | [domains/frontend/rendering.md](domains/frontend/rendering.md)           |
 | Code review feature                      | [domains/review.md](domains/review.md)                                   |
+| RESEARCH mode (toggle, research skills seeding, hypothesis graph) | [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Research section), [contracts/event-catalog.md](contracts/event-catalog.md) (`research:*` events) |
 | Core-sp4rk interface boundary            | [contracts/core-sp4rk.md](contracts/core-sp4rk.md)                       |
 | Backend-Core wiring                      | [contracts/backend-core.md](contracts/backend-core.md)                   |
 | Wails bindings, frontend RPC             | [contracts/desktop-frontend.md](contracts/desktop-frontend.md)           |

@@ -65,8 +65,6 @@ export function DisableResearch(arg1:string):Promise<void>;
 
 export function DiscardChanges(arg1:string):Promise<void>;
 
-export function DiscardHunks(arg1:string,arg2:Array<workspace.HunkRange>):Promise<void>;
-
 export function DownloadUpdate():Promise<void>;
 
 export function EmitSessionEvent(arg1:session.Event):Promise<void>;
@@ -78,8 +76,6 @@ export function Fetch(arg1:string,arg2:Array<string>):Promise<string>;
 export function ForkSession(arg1:string):Promise<session.SessionInfo>;
 
 export function GenerateCommitMessage():Promise<string>;
-
-export function GetAppVersion():Promise<backend.AppVersionResponse>;
 
 export function GetAttachments(arg1:string):Promise<Array<session.AttachmentInfo>>;
 
@@ -129,8 +125,6 @@ export function GetProjectSwitchState(arg1:string):Promise<backend.ProjectUIStat
 
 export function GetProjectUIState(arg1:string):Promise<backend.ProjectUIStateResponse>;
 
-export function GetProxySettings():Promise<backend.ProxySettingsResponse>;
-
 export function GetRebaseMergeState():Promise<workspace.MergeRebaseState>;
 
 export function GetResearchGraph(arg1:string):Promise<backend.ResearchGraphDTO>;
@@ -160,6 +154,8 @@ export function GetToolList():Promise<Array<backend.ToolInfo>>;
 export function GetUpdateSettings():Promise<backend.UpdateSettings>;
 
 export function GetVectorIndexStatus():Promise<backend.VectorIndexStatus>;
+
+export function HasDefaultModel():Promise<boolean>;
 
 export function Lifecycle():Promise<backend.FrontendAPILifecycle>;
 
@@ -255,8 +251,6 @@ export function StageAll():Promise<void>;
 
 export function StageFile(arg1:string):Promise<void>;
 
-export function StageHunks(arg1:string,arg2:Array<workspace.HunkRange>):Promise<void>;
-
 export function StartTerminal(arg1:string):Promise<void>;
 
 export function StartTerminalInDir(arg1:string,arg2:string):Promise<void>;
@@ -280,8 +274,6 @@ export function TerminalResize(arg1:string,arg2:number,arg3:number):Promise<void
 export function UnstageAll():Promise<void>;
 
 export function UnstageFile(arg1:string):Promise<void>;
-
-export function UnstageHunks(arg1:string,arg2:Array<workspace.HunkRange>):Promise<void>;
 
 export function UnwatchDirectory(arg1:string):Promise<void>;
 

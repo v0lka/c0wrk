@@ -14,22 +14,6 @@ export namespace backend {
 	        this.description = source["description"];
 	    }
 	}
-	export class AppVersionResponse {
-	    version: string;
-	    gitCommit: string;
-	    buildDate: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new AppVersionResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.version = source["version"];
-	        this.gitCommit = source["gitCommit"];
-	        this.buildDate = source["buildDate"];
-	    }
-	}
 	export class BlackboardAttachmentResponse {
 	    id: string;
 	    original_name: string;
@@ -2121,20 +2105,6 @@ export namespace workspace {
 	        this.new_change_start = source["new_change_start"];
 	        this.staged = source["staged"];
 	        this.diff = source["diff"];
-	    }
-	}
-	export class HunkRange {
-	    start_line: number;
-	    end_line: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new HunkRange(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.start_line = source["start_line"];
-	        this.end_line = source["end_line"];
 	    }
 	}
 	export class MergeRebaseState {

@@ -24,6 +24,8 @@ Frontend communicates with Go exclusively through Wails IPC. No direct Go import
 | `SmallLLMConfigResponse`   | backend  | backend ↔ frontend | Small-LLM profile CRUD (see [../domains/small-llm.md](../domains/small-llm.md)) |
 | `OptimizePromptResponse`   | backend  | backend → frontend | Prompt optimization result          |
 | `SkillDescriptorDTO`       | backend  | backend → frontend | Skill listing                       |
+| `ResearchStatusDTO`        | backend  | backend → frontend | RESEARCH mode view model: toggle + parsed research root + seed result |
+| `ResearchGraphDTO`         | backend  | backend → frontend | Lightweight hypothesis-graph + metrics response (`GetResearchGraph`) |
 | `TerminalCommand`          | backend  | backend → frontend | Terminal command history            |
 | `VectorStoreEntry`         | backend  | backend → frontend | Vector search result                |
 | `BlackboardStateResponse`  | backend  | backend → frontend | Task state for resume UI            |
@@ -33,7 +35,7 @@ Frontend communicates with Go exclusively through Wails IPC. No direct Go import
 
 All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callable from frontend via `window.go.desktop.App.<MethodName>()`.
 
-**Convention**: Methods that can fail return `(T, error)` in Go. Read-only getters that cannot fail return `T` only (e.g., `GetConfig`, `GetSecuritySettings`, `GetProxySettings`, `GetMCPStatus`, `GetMCPServers`, `GetToolList`, `GetVectorIndexStatus`, `ListSkills`, `GetSessionTokens`). The "Returns" column shows the actual signature; Wails surfaces `error` as a rejected Promise in TypeScript.
+**Convention**: Methods that can fail return `(T, error)` in Go. Read-only getters that cannot fail return `T` only (e.g., `GetConfig`, `GetSecuritySettings`, `GetMCPStatus`, `GetMCPServers`, `GetToolList`, `GetVectorIndexStatus`, `ListSkills`, `GetSessionTokens`, `HasDefaultModel`). The "Returns" column shows the actual signature; Wails surfaces `error` as a rejected Promise in TypeScript.
 
 ### Session (`backend/frontend_api_session.go`)
 
@@ -86,7 +88,8 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 | Method                   | Parameters               | Returns                           | Description                    |
 | ------------------------ | ------------------------ | --------------------------------- | ------------------------------ |
-| `GetConfig`              | —                        | ConfigResponse                    | Get current config (sanitized) |
+| `GetConfig`              | —                        | ConfigResponse                    | Get current config (sanitized); pure in-memory read — see the network-free note below |
+| `HasDefaultModel`        | —                        | bool                              | Cheap probe: reports whether a default LLM model is configured (false for nil config and empty default). For UI flows that need only this fact — e.g. the settings close check — and must not pay for a full `GetConfig` response |
 | `UpdateLLMConfig`       | LLMFullConfigRequest    | error                             | Update full LLM multi-provider config |
 | `UpdateSearchSettings`   | SearchSettingsRequest    | error                             | Update search config           |
 | `GetSecuritySettings`    | —                        | SecuritySettingsResponse          | Get security policies          |
@@ -94,12 +97,13 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `GetLogLevel`            | —                        | string                            | Get current log level          |
 | `SetLogLevel`            | level                    | error                             | Set log level dynamically      |
 | `ListProviderModels`     | provider                 | ([]string, error)                 | List models for a provider     |
-| `GetProxySettings`       | —                        | ProxySettingsResponse             | Get proxy configuration        |
 | `UpdateProxySettings`    | ProxySettingsRequest     | error                             | Update proxy configuration     |
 | `GetSmallLLMConfig`      | —                        | SmallLLMConfigResponse            | Get the small-LLM profile (always_present normalized to non-nil; protected orchestration tools unioned in) |
 | `UpdateSmallLLMConfig`   | SmallLLMConfigResponse   | error                             | Validate + persist the small-LLM profile, then rebuild the LLM router. Validation runs before mutation; an invalid payload produces no partial write. |
 | `GetModelConfig`         | model                    | (ModelConfigResponse, error)      | Get per-model overrides (sampling/params) |
 | `SetModelConfig`         | model, ModelConfigRequest | error                            | Set per-model overrides |
+
+> **Network-free config read**: `GetConfig` performs no network I/O. `AllModels` metadata resolves through the sp4rk `ModelRegistry.ResolveLocal` (in-memory tiers: overrides, built-ins, fuzzy matches, lazy cache — including LM Studio probe results written via `SetCachedMetadata`; fallback defaults for unknown models). `GetConfig` runs on every settings open, so it always returns from memory and never blocks behind an HTTP probe or timeout; `HasDefaultModel` exists so single-fact UI checks skip even the full response build.
 
 ### Workspace (`backend/frontend_api_workspace.go`)
 
@@ -153,9 +157,6 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `UnstageFile`          | path                    | error                         | Unstage a single file |
 | `StageAll`             | —                       | error                         | Stage all changes |
 | `UnstageAll`           | —                       | error                         | Unstage all changes |
-| `StageHunks`           | path, hunks []HunkRange | error                         | Stage selected hunks |
-| `UnstageHunks`         | path, hunks []HunkRange | error                         | Unstage selected hunks |
-| `DiscardHunks`         | path, hunks []HunkRange | error                         | Discard selected hunks |
 | `GetFileDiffHunks`     | filePath                | ([]HunkDiffInfo, error)       | Per-hunk diff info for a file (staged/unstaged ranges) |
 | `GetDiffStat`          | path                    | (*DiffStat, error)            | Diff stat for a file |
 | `GetDiffStats`         | —                       | (map[string]DiffStat, error)  | Diff stats for all changed files |
@@ -261,13 +262,23 @@ Code-review authoring surface (human-in-the-loop review of agent changes). Revie
 | ------ | ---------- | ------- | ----------- |
 | `ListAgents` | — | []AgentDescriptorDTO | List available Subagent Profiles (name+description+meta) |
 
+### Research (`backend/frontend_api_research.go`)
+
+RESEARCH mode toggle + hypothesis-graph view model. RESEARCH mode is available only for real projects (`loadProjectForResearch` rejects the No Project pseudo-project); the persisted toggle is `ProjectInfo.ResearchRoot`.
+
+| Method | Parameters | Returns | Description |
+| ------ | ---------- | ------- | ----------- |
+| `EnableResearch` | projectID, rootPath | (*ResearchStatusDTO, error) | Activate RESEARCH mode: resolve the research root (default `<workspace>/.research`; an explicit `rootPath` must be inside the workspace — containment enforced via `config.IsWithinPath`), create it, recursively watch the research tree, seed the research-* skill-pack into the project's `.agents/skills` (idempotent, non-destructive; failure is non-fatal and reported via `SeedResult`), persist the root, invalidate the skill cache and rescan skills for already-running sessions, then emit `research:changed` (action=`enabled`). Idempotent on re-enable. Returns the full status (toggle + parsed root + seed result) |
+| `DisableResearch` | projectID | error | Deactivate RESEARCH mode: clear the persisted research root and unwatch the research tree. Does not delete the research directory or the seeded skills — re-enabling restores prior state. Emits `research:changed` (action=`disabled`) |
+| `GetResearchStatus` | projectID | (*ResearchStatusDTO, error) | Live RESEARCH state: the toggle plus the parsed research root (index, project list, per-project graph/metrics/brief/prior-art). Returns an empty-state DTO (`Enabled=false`, nil `Root`) rather than an error when disabled or the root is not yet parseable |
+| `GetResearchGraph` | projectID | (*ResearchGraphDTO, error) | Lightweight fetch: only the active research project's hypothesis graph + metrics + report flag (omits index, brief, prior-art, and seed result). Used for incremental `research:file_changed` refreshes; the parse cost equals `GetResearchStatus` (both parse the full research root) — only the wire payload is smaller. Empty-state DTO when disabled, the root is unparseable, or there is no active project |
+
 ### Updater (`backend/frontend_api_updater.go`)
 
 Self-update lifecycle. Emits `update:*` global events (see [event-catalog.md](event-catalog.md)).
 
 | Method | Parameters | Returns | Description |
 | ------ | ---------- | ------- | ----------- |
-| `GetAppVersion` | — | AppVersionResponse | Running app version (getter, no error) |
 | `CheckForUpdates` | — | (*UpdateInfo, error) | Query GitHub for the latest release; emits `update:available`/`update:none`/`update:error` |
 | `RunBackgroundUpdateCheck` | — | — | Schedule a background update check (fire-and-forget, no return) |
 | `DownloadUpdate` | — | error | Download + integrity-verify the archive; emits `update:progress`/`update:downloaded`/`update:error` |
