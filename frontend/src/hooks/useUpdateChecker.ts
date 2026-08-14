@@ -8,13 +8,13 @@
 //
 // NOTE: this hook NO LONGER performs an automatic check on mount. The
 // automatic background check is the sole responsibility of the Go backend
-// (FrontendAPI.RunBackgroundUpdateCheck), which honours both the operator gate
-// (config.yaml updates.enabled) and the user gate (update-settings.json
-// enabled + auto_check), respects the check interval, and caches the result so
-// a discovered update is immediately downloadable. The frontend only needs to
-// listen for the resulting update:available event (wired below) and surface the
-// running version. A user can still trigger a manual check from the Settings
-// panel.
+// (FrontendAPI.RunBackgroundUpdateCheck), which honours the operator master
+// gate (config.yaml updates.enabled) and the auto-check preference
+// (config.yaml updates.auto_check), respects the check interval, and caches
+// the result so a discovered update is immediately downloadable. The frontend
+// only needs to listen for the resulting update:available event (wired below)
+// and surface the running version. A user can still trigger a manual check
+// from the Settings panel.
 
 import { useEffect } from 'react'
 import {

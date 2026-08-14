@@ -32,12 +32,14 @@ export interface UpdateInfo {
 
 /** User self-update preferences. Mirrors backend UpdateSettings. */
 export interface UpdateSettings {
-  enabled: boolean
+  /** Mirrors config.yaml updates.auto_check. */
   auto_check: boolean
+  /** The release tag the user dismissed (persisted in update_state.json). */
   skipped_version: string
   current_version: string
-  /** Operator-level gate (config.yaml updates.enabled). When false, automatic
-   *  checks are disabled by an administrator regardless of auto_check. */
+  /** Operator-level master gate (config.yaml updates.enabled). When false, the
+   *  entire update subsystem is disabled by an administrator: CheckForUpdates
+   *  reports no update and the background auto-check never runs. */
   operator_enabled: boolean
 }
 
@@ -95,8 +97,8 @@ export async function skipVersion(version: string): Promise<void> {
   }
 }
 
-/** Return the current self-update preferences (enabled, auto-check, skipped
- *  version, operator gate) plus the running build version. */
+/** Return the current self-update preferences (auto-check, skipped version,
+ *  operator gate) plus the running build version. */
 export async function getUpdateSettings(): Promise<UpdateSettings> {
   try {
     const app = getApp()
@@ -108,13 +110,14 @@ export async function getUpdateSettings(): Promise<UpdateSettings> {
   }
 }
 
-/** Persist the user-level self-update preferences (enabled, auto-check) to
- *  update-settings.json and return the resolved settings. An explicit false is
- *  honoured by the backend (never reset to the default). */
-export async function setUpdateSettings(enabled: boolean, autoCheck: boolean): Promise<UpdateSettings> {
+/** Persist the auto-check preference to config.yaml (updates.auto_check) and
+ *  return the resolved settings. An explicit false is honoured by the backend
+ *  (never reset to the default). The master enable/disable switch
+ *  (updates.enabled) is not controlled by this call. */
+export async function setUpdateSettings(autoCheck: boolean): Promise<UpdateSettings> {
   try {
     const app = getApp()
-    const result = await app.SetUpdateSettings(enabled, autoCheck)
+    const result = await app.SetUpdateSettings(autoCheck)
     return result as UpdateSettings
   } catch (err) {
     logger.error('Failed to set update settings:', err)

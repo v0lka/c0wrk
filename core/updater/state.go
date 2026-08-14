@@ -8,15 +8,15 @@ import (
 )
 
 // State is the persisted self-update runtime state, stored as update_state.json
-// in the agent directory. It is deliberately separate from both config.yaml
-// (operator config) and update-settings.json (user-facing preferences): it
-// records the ephemeral runtime state that drives the background auto-check
-// interval logic.
+// in the agent directory. It is deliberately separate from config.yaml
+// (operator config): it records the ephemeral runtime state that drives the
+// background auto-check interval logic and the user-dismissed release tag.
 //
 // Field semantics:
-//   - SkippedVersion mirrors the tag the user dismissed so the state file is
-//     self-describing; the authoritative skip value lives in
-//     update-settings.json (see backend/frontend_api_updater.go).
+//   - SkippedVersion is the authoritative record of the release tag the user
+//     dismissed (set via SkipVersion, see backend/frontend_api_updater.go);
+//     a release equal to this tag is suppressed until a newer one is
+//     published.
 //   - LastCheck is the wall-clock time of the most recent automatic check
 //     (attempted — whether or not an update was found). A zero value means
 //     "never checked", which always triggers an immediate check.

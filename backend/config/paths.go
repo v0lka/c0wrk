@@ -105,8 +105,9 @@ func UpdateStagingDir(agentDir string) string {
 // timestamp of the last automatic check and the currently-skipped version) and
 // is deliberately NOT part of config.yaml: it is written by the background
 // auto-checker at runtime and read back on the next startup to decide whether
-// another check is due. It is distinct from update-settings.json, which holds
-// the user-facing preferences (enabled / auto-check toggles).
+// another check is due. All update *configuration* (the enabled /
+// auto-check toggles and the check interval) lives in config.yaml under the
+// updates section.
 func UpdateStatePath(agentDir string) string {
 	return filepath.Join(agentDir, "update_state.json")
 }

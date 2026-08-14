@@ -474,8 +474,8 @@ export function SetReviewStatus(arg1, arg2) {
   return window['go']['desktop']['App']['SetReviewStatus'](arg1, arg2);
 }
 
-export function SetUpdateSettings(arg1, arg2) {
-  return window['go']['desktop']['App']['SetUpdateSettings'](arg1, arg2);
+export function SetUpdateSettings(arg1) {
+  return window['go']['desktop']['App']['SetUpdateSettings'](arg1);
 }
 
 export function SetWailsLogger(arg1) {

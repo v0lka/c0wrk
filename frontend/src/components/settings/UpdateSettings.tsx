@@ -1,14 +1,16 @@
 // Updates section for the Settings "about" tab.
 //
-// Shows the running build version, the user-level update preferences (enabled,
-// auto-check) with toggles, and a "Check for updates" button that triggers
-// an explicit check. The check result flows back through the global
-// update:available / update:none / update:error events, which updateStore
-// (and thus the UpdateToast) already consume — so this component only needs to
-// surface the in-flight spinner and the most recent textual outcome of the
-// explicit check. The toast is the primary notification surface.
+// Shows the running build version, the auto-check toggle (persisted to
+// config.yaml updates.auto_check), and a
+// "Check for updates" button that triggers an explicit check. The check result
+// flows back through the global update:available / update:none / update:error
+// events, which updateStore (and thus the UpdateToast) already consume — so
+// this component only needs to surface the in-flight spinner and the most
+// recent textual outcome of the explicit check. The toast is the primary
+// notification surface.
 //
-// The operator-level gate (config.yaml updates.enabled) is reflected via the
+// The operator-level master gate (config.yaml updates.enabled) is the sole
+// enable/disable switch for the whole subsystem. It is reflected via the
 // operator_enabled flag: when an administrator has disabled updates, the
 // auto-check toggle is disabled and a notice is shown.
 
@@ -34,8 +36,8 @@ export function UpdateSettings() {
   const [outcome, setOutcome] = useState<CheckOutcome>('idle')
   const [settings, setSettings] = useState<UpdateSettingsData | null>(null)
 
-  // Load the persisted preferences (enabled, auto-check, operator gate) so the
-  // toggles reflect the authoritative backend state.
+  // Load the persisted preferences (auto-check, operator gate) so the toggles
+  // reflect the authoritative backend state.
   useEffect(() => {
     let cancelled = false
     getUpdateSettings()
@@ -74,13 +76,13 @@ export function UpdateSettings() {
   }, [setChecking, setCurrentVersion])
 
   const handleToggle = useCallback(
-    async (field: 'enabled' | 'auto_check', value: boolean) => {
+    async (field: 'auto_check', value: boolean) => {
       if (!settings) return
       // Optimistically update the local state for snappy feedback.
       const next = { ...settings, [field]: value }
       setSettings(next)
       try {
-        const resolved = await setUpdateSettings(next.enabled, next.auto_check)
+        const resolved = await setUpdateSettings(next.auto_check)
         setSettings(resolved)
       } catch (err) {
         // Revert on failure.
@@ -92,10 +94,8 @@ export function UpdateSettings() {
   )
 
   const operatorDisabled = settings ? !settings.operator_enabled : false
-  // Auto-check is meaningful only when updates are enabled and not
-  // administrator-disabled.
-  const autoCheckDisabled =
-    !settings || !settings.enabled || operatorDisabled
+  // Auto-check is meaningful only when not administrator-disabled.
+  const autoCheckDisabled = !settings || operatorDisabled
 
   return (
     <div className="border-t border-border pt-4">
@@ -108,7 +108,12 @@ export function UpdateSettings() {
               {currentVersion ? `v${currentVersion}` : '—'}
             </p>
           </div>
-          <Button size="sm" variant="outline" onClick={handleCheck} disabled={isChecking}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleCheck}
+            disabled={isChecking || operatorDisabled}
+          >
             <RefreshCw className={`size-4 ${isChecking ? 'animate-spin' : ''}`} />
             Check for updates
           </Button>
@@ -117,17 +122,9 @@ export function UpdateSettings() {
         {operatorDisabled && (
           <p className="flex items-center gap-1.5 text-xs text-warning">
             <ShieldAlert className="size-3.5" />
-            Update checking is disabled by the administrator (config.yaml)
+            Updates are disabled by the administrator (config.yaml)
           </p>
         )}
-
-        {/* Enable updates toggle */}
-        <ToggleRow
-          label="Enable updates"
-          checked={settings ? settings.enabled : true}
-          disabled={!settings || operatorDisabled}
-          onChange={(v) => handleToggle('enabled', v)}
-        />
 
         {/* Auto-check toggle */}
         <ToggleRow

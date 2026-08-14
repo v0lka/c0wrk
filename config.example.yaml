@@ -598,21 +598,34 @@ orchestration:
 # ---------------------------------------------------------------------------
 # Updates — automatic "check for updates"
 # ---------------------------------------------------------------------------
-# Controls the background update check that runs once after the backend is
-# ready. This is the OPERATOR-LEVEL gate (config.yaml); the USER-LEVEL toggle
-# (enabled / auto-check) lives in update-settings.json and is set from the UI.
-# Both must permit a check for the background auto-check to run. A user can
-# always trigger a manual check from the UI regardless of these settings.
+# Controls the self-update subsystem. All update configuration lives here —
+# there is no separate user-preference file.
+#
+# updates.enabled is the master switch for the entire subsystem (operator
+# level). updates.auto_check narrows the automatic background check only: when
+# false the app never polls on startup, but manual checks from the UI still
+# work (provided enabled is true).
+#
+# When updates.enabled is false: CheckForUpdates reports no update, the
+# background auto-check never runs, and the UI disables all update affordances.
 #
 # The check is best-effort and never blocks or breaks startup: network errors
 # are swallowed silently. The timestamp of the last check (and the currently-
 # skipped version) are persisted to ~/.c0wrk/update_state.json, NOT here — this
-# file only configures the cadence and the master switch.
+# file only configures the toggles and the cadence.
 #
 # updates:
-#   # Master switch for the automatic background check. Default: true. When
-#   # false the app never auto-checks on startup (manual checks still work).
+#   # Master switch for the whole update subsystem. Default: true. When false
+#   # the app never auto-checks on startup AND manual checks report no update.
 #   enabled: true
+#   # Whether to poll for updates automatically on startup. Default: true.
+#   # When false only the automatic background check is suppressed — manual
+#   # checks from the UI still work. Also settable from the Settings UI (the
+#   # toggle writes straight back into this file). NOTE: saving from the UI
+#   # re-serializes the ENTIRE config.yaml — any hand-written comments in the
+#   # file are dropped. ${VAR} environment references are preserved as-is (they
+#   # are expanded only at load time).
+#   auto_check: true
 #   # Minimum time between automatic checks, as a duration string parsed by
 #   # time.ParseDuration (e.g. "6h", "30m", "24h"). Default: "6h". An
 #   # unparseable value falls back to 6h.

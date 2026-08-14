@@ -245,7 +245,7 @@ export function SetModelConfig(arg1:string,arg2:backend.ModelConfigRequest):Prom
 
 export function SetReviewStatus(arg1:string,arg2:string):Promise<void>;
 
-export function SetUpdateSettings(arg1:boolean,arg2:boolean):Promise<backend.UpdateSettings>;
+export function SetUpdateSettings(arg1:boolean):Promise<backend.UpdateSettings>;
 
 export function SetWailsLogger(arg1:desktop.wailsLogAdapter):Promise<void>;
 

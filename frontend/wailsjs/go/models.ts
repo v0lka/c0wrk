@@ -1081,7 +1081,6 @@ export namespace backend {
 	    }
 	}
 	export class UpdateSettings {
-	    enabled: boolean;
 	    auto_check: boolean;
 	    skipped_version: string;
 	    current_version: string;
@@ -1093,7 +1092,6 @@ export namespace backend {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
 	        this.auto_check = source["auto_check"];
 	        this.skipped_version = source["skipped_version"];
 	        this.current_version = source["current_version"];

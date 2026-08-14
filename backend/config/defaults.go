@@ -555,14 +555,19 @@ func ApplyDefaults(cfg *Config) {
 		cfg.SmallLLM.LoopHardening.SameToolRepeatNudgeThreshold = 4
 	}
 
-	// Self-update defaults. Enabled defaults to true (a pointer-bool so an
-	// explicit `enabled: false` in YAML is respected rather than overwritten by
-	// the default). CheckInterval defaults to 6h, a conservative cadence that
-	// avoids hammering the GitHub unauthenticated rate limit while still
-	// surfacing new releases promptly.
+	// Self-update defaults. Enabled is the master switch and defaults to true
+	// (a pointer-bool so an explicit `enabled: false` in YAML is respected
+	// rather than overwritten by the default). AutoCheck governs the automatic
+	// background poll and likewise defaults to true. CheckInterval defaults to
+	// 6h, a conservative cadence that avoids hammering the GitHub
+	// unauthenticated rate limit while still surfacing new releases promptly.
 	if cfg.Updates.Enabled == nil {
 		enabled := true
 		cfg.Updates.Enabled = &enabled
+	}
+	if cfg.Updates.AutoCheck == nil {
+		autoCheck := true
+		cfg.Updates.AutoCheck = &autoCheck
 	}
 	if cfg.Updates.CheckInterval == "" {
 		cfg.Updates.CheckInterval = "6h"

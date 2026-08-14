@@ -51,17 +51,24 @@ type Config struct {
 	Updates UpdatesConfig `yaml:"updates"`
 }
 
-// UpdatesConfig controls the background automatic update checker. It is an
-// operator-level toggle (config.yaml), complementing the user-level toggle in
-// update-settings.json (enabled / auto-check): both must permit a check for the
-// background check to run.
+// UpdatesConfig controls the self-update subsystem. Both toggles are
+// operator-level settings in config.yaml; there is no separate user-preference
+// file.
 type UpdatesConfig struct {
-	// Enabled gates the background automatic update check. It is a pointer-bool
-	// so callers can distinguish "unset" (defaults to true) from "explicitly
-	// disabled" (false), matching the ProxyConfig.SetGlobalEnv convention.
-	// When false, the background check never runs, though a user can still
-	// trigger a manual check from the UI.
+	// Enabled is the master switch for the update subsystem. It is a
+	// pointer-bool so callers can distinguish "unset" (defaults to true) from
+	// "explicitly disabled" (false), matching the ProxyConfig.SetGlobalEnv
+	// convention. When false, CheckForUpdates reports no update, the
+	// background auto-check never runs, and the UI disables all update
+	// affordances.
 	Enabled *bool `yaml:"enabled"`
+
+	// AutoCheck controls whether the app polls for updates automatically on
+	// startup. It is a pointer-bool defaulting to true (an absent key keeps
+	// auto-checks on, while an explicit false disables them). When false only
+	// the automatic background check is suppressed — manual checks from the UI
+	// still work (provided Enabled is true).
+	AutoCheck *bool `yaml:"auto_check"`
 
 	// CheckInterval is the minimum time between automatic checks, expressed as
 	// a duration string (e.g. "6h"). Defaults to "6h". It is parsed with

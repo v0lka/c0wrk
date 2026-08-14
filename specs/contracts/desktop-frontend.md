@@ -272,9 +272,9 @@ Self-update lifecycle. Emits `update:*` global events (see [event-catalog.md](ev
 | `RunBackgroundUpdateCheck` | — | — | Schedule a background update check (fire-and-forget, no return) |
 | `DownloadUpdate` | — | error | Download + integrity-verify the archive; emits `update:progress`/`update:downloaded`/`update:error` |
 | `ApplyUpdate` | — | error | Stage the updater re-exec and trigger a graceful quit |
-| `SkipVersion` | ver | error | Mark a version as skipped |
+| `SkipVersion` | ver | error | Mark a version as skipped (persisted in update_state.json) |
 | `GetUpdateSettings` | — | UpdateSettings | Update preferences (getter, no error) |
-| `SetUpdateSettings` | enabled, autoCheck | (UpdateSettings, error) | Update preferences; returns normalized settings |
+| `SetUpdateSettings` | autoCheck | (UpdateSettings, error) | Update auto-check preference (persisted to config.yaml `updates.auto_check`); returns normalized settings |
 
 ## Event Protocol
 

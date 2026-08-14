@@ -2,7 +2,6 @@ package backend
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,22 +32,19 @@ type UpdateInfo struct {
 
 // UpdateSettings carries the user's self-update preferences.
 type UpdateSettings struct {
-	// Enabled gates the whole update subsystem. When false, CheckForUpdates
-	// reports no update and the UI hides update affordances.
-	Enabled bool `json:"enabled"`
-	// AutoCheck controls whether the app polls for updates automatically
-	// (the frontend schedules the periodic CheckForUpdates call).
+	// AutoCheck controls whether the app polls for updates automatically on
+	// startup. It mirrors the updates.auto_check setting in config.yaml; the
+	// master enable/disable gate is updates.enabled.
 	AutoCheck bool `json:"auto_check"`
 	// SkippedVersion is the tag the user explicitly dismissed; that exact
 	// release is suppressed until a newer one is published.
 	SkippedVersion string `json:"skipped_version"`
 	// CurrentVersion echoes the running build version for display.
 	CurrentVersion string `json:"current_version"`
-	// OperatorEnabled reflects the operator-level gate (config.yaml
-	// updates.enabled). When false, the background auto-check is disabled by an
-	// administrator regardless of the user-level AutoCheck preference. Surfaced
-	// so the UI can show a "disabled by administrator" state and avoid showing
-	// an auto-check toggle that cannot take effect.
+	// OperatorEnabled reflects the operator-level master gate (config.yaml
+	// updates.enabled). When false, the entire update subsystem is disabled by
+	// an administrator: CheckForUpdates reports no update, the background
+	// auto-check never runs, and the UI disables all update affordances.
 	OperatorEnabled bool `json:"operator_enabled"`
 }
 
@@ -59,110 +55,40 @@ type UpdateProgress struct {
 	Total int64 `json:"total"`
 }
 
-// updateSettingsFile is the persistent self-update preferences record, stored
-// as JSON in the agent directory. Its on-disk shape is intentionally minimal
-// so future fields can be added without a migration.
-//
-// Enabled and AutoCheck are pointers so an absent field (a missing key or the
-// empty object "{}") can be distinguished from an explicitly-set false: a nil
-// pointer means "unset → apply the default (true)", while &false means the user
-// deliberately turned it off. This prevents a hand-written {"enabled": false}
-// from being silently reset to the enabled-by-default state.
-type updateSettingsFile struct {
-	Enabled        *bool  `json:"enabled,omitempty"`
-	AutoCheck      *bool  `json:"auto_check,omitempty"`
-	SkippedVersion string `json:"skipped_version,omitempty"`
-}
-
-// updateSettingsFilename is the name of the persisted preferences file inside
-// the agent directory.
-const updateSettingsFilename = "update-settings.json"
-
 // downloadTimeout caps a single archive download. It matches the generous
 // fallback used by updater.NewDownloader so the proxy client honours the same
 // bound.
 const downloadTimeout = 10 * time.Minute
 
-// enabled reports whether updates are enabled, treating an absent (nil) value
-// as the default (true). This is the single accessor all call sites use so the
-// nil-means-default rule is applied consistently.
-func (s updateSettingsFile) enabled() bool { return s.Enabled == nil || *s.Enabled }
-
-// autoCheck reports whether automatic checks are enabled, treating an absent
-// (nil) value as the default (true).
-func (s updateSettingsFile) autoCheck() bool { return s.AutoCheck == nil || *s.AutoCheck }
-
-// defaultUpdateSettings returns the preferences used before the user has
-// interacted with the update UI: enabled, automatic checks on, nothing skipped.
-func defaultUpdateSettings() updateSettingsFile {
-	t := true
-	return updateSettingsFile{Enabled: &t, AutoCheck: &t}
+// autoCheckEnabled reports whether automatic background checks are enabled,
+// reading updates.auto_check from config.yaml. Defaults to true when unset
+// (nil pointer), matching the ApplyDefaults convention.
+func (f *FrontendAPI) autoCheckEnabled() bool {
+	f.configMu.RLock()
+	defer f.configMu.RUnlock()
+	if f.config == nil || f.config.Updates.AutoCheck == nil {
+		return true
+	}
+	return *f.config.Updates.AutoCheck
 }
 
-// updateSettingsPath returns the absolute path to the persisted preferences
-// file inside the agent directory.
-func (f *FrontendAPI) updateSettingsPath() string {
-	return filepath.Join(f.agentDir, updateSettingsFilename)
-}
-
-// loadUpdateSettings reads the persisted preferences, falling back to the
-// defaults when the file is missing or unreadable (never returns an error —
-// a corrupt settings file must not block the update flow).
-//
-// A valid JSON file is authoritative: an explicitly-set field is honoured, so
-// {"enabled": false} disables updates. Only an absent (nil) field falls back to
-// the default — so the empty object "{}" keeps updates enabled (first-run
-// behaviour) while a deliberate false is respected.
-func (f *FrontendAPI) loadUpdateSettings() updateSettingsFile {
-	def := defaultUpdateSettings()
+// loadSkippedVersion reads the user-dismissed release tag from update_state.json
+// (the authoritative runtime-state home). Returns "" when the file is missing,
+// unreadable, or the field is unset — never returns an error so a missing state
+// file never blocks the update flow.
+func (f *FrontendAPI) loadSkippedVersion() string {
 	if f.agentDir == "" {
-		return def
+		return ""
 	}
-	data, err := os.ReadFile(f.updateSettingsPath())
-	if err != nil {
-		// Missing file (first run) or unreadable: fall back to defaults.
-		return def
-	}
-	var s updateSettingsFile
-	if err := json.Unmarshal(data, &s); err != nil {
-		return def
-	}
-	// Apply per-field defaults for absent (nil) fields; explicit values
-	// (including false) are kept.
-	if s.Enabled == nil {
-		s.Enabled = def.Enabled
-	}
-	if s.AutoCheck == nil {
-		s.AutoCheck = def.AutoCheck
-	}
-	return s
+	state, _ := updater.LoadState(config.UpdateStatePath(f.agentDir))
+	return state.SkippedVersion
 }
 
-// saveUpdateSettings persists the preferences atomically (tmp + rename) so a
-// crash never leaves a truncated settings file.
-func (f *FrontendAPI) saveUpdateSettings(s updateSettingsFile) error {
-	if f.agentDir == "" {
-		return errors.New("agent directory not configured")
-	}
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal update settings: %w", err)
-	}
-	path := f.updateSettingsPath()
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("write update settings: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("commit update settings: %w", err)
-	}
-	return nil
-}
-
-// operatorUpdateCheckEnabled reports whether the operator-level gate
-// (config.yaml updates.enabled) permits automatic update checks. It defaults to
+// operatorUpdateCheckEnabled reports whether the operator-level master gate
+// (config.yaml updates.enabled) permits the update subsystem. It defaults to
 // true when the config is unset, matching derefBoolDefaultTrue semantics.
+// This is the SOLE enable/disable switch: when false, CheckForUpdates reports
+// no update and the background auto-check never runs.
 func (f *FrontendAPI) operatorUpdateCheckEnabled() bool {
 	f.configMu.RLock()
 	cfg := f.config
@@ -244,17 +170,20 @@ func (f *FrontendAPI) checkAndCache(ctx context.Context, skippedVersion string) 
 // update is available for the current platform. The result is cached so the
 // subsequent DownloadUpdate call does not need to re-check. Emits
 // update:available, update:none, or update:error.
+//
+// The operator-level master gate (config.yaml updates.enabled) is the sole
+// enable/disable switch: when it is false, this method short-circuits and
+// reports no update (without touching the network).
 func (f *FrontendAPI) CheckForUpdates() (*UpdateInfo, error) {
 	current := version.Version
-	prefs := f.loadUpdateSettings()
 
-	if !prefs.enabled() {
+	if !f.operatorUpdateCheckEnabled() {
 		info := &UpdateInfo{Available: false, CurrentVersion: current}
 		f.emitEvent(EventUpdateNone, info)
 		return info, nil
 	}
 
-	result, err := f.checkAndCache(f.ctx(), prefs.SkippedVersion)
+	result, err := f.checkAndCache(f.ctx(), f.loadSkippedVersion())
 	if err != nil {
 		f.emitUpdateError(err.Error())
 		return nil, err
@@ -405,12 +334,17 @@ func (f *FrontendAPI) ApplyUpdate() error {
 
 // SkipVersion records that the user dismissed the given release tag, so the
 // checker suppresses it until a newer release is published. An empty version
-// clears the skip. Persists immediately to update-settings.json and
-// invalidates any cached check result so the next CheckForUpdates reflects it.
+// clears the skip. Persists immediately to update_state.json (preserving the
+// last-check timestamp) and invalidates any cached check result so the next
+// CheckForUpdates reflects it.
 func (f *FrontendAPI) SkipVersion(ver string) error {
-	prefs := f.loadUpdateSettings()
-	prefs.SkippedVersion = ver
-	if err := f.saveUpdateSettings(prefs); err != nil {
+	if f.agentDir == "" {
+		return errors.New("agent directory not configured")
+	}
+	statePath := config.UpdateStatePath(f.agentDir)
+	state, _ := updater.LoadState(statePath) // any read error → zero state
+	state.SkippedVersion = ver
+	if err := updater.SaveState(statePath, state); err != nil {
 		f.emitUpdateError(err.Error())
 		return err
 	}
@@ -425,42 +359,58 @@ func (f *FrontendAPI) SkipVersion(ver string) error {
 	return nil
 }
 
-// GetUpdateSettings returns the current self-update preferences (enabled,
-// auto-check, skipped version) plus the running version for display and the
-// operator-level gate (operator_enabled) so the UI can reflect an
+// GetUpdateSettings returns the current self-update preferences (auto-check,
+// skipped version) plus the running version for display and the operator-level
+// master gate (operator_enabled) so the UI can reflect an
 // administrator-disabled state.
 func (f *FrontendAPI) GetUpdateSettings() UpdateSettings {
-	prefs := f.loadUpdateSettings()
 	return UpdateSettings{
-		Enabled:         prefs.enabled(),
-		AutoCheck:       prefs.autoCheck(),
-		SkippedVersion:  prefs.SkippedVersion,
+		AutoCheck:       f.autoCheckEnabled(),
+		SkippedVersion:  f.loadSkippedVersion(),
 		CurrentVersion:  version.Version,
 		OperatorEnabled: f.operatorUpdateCheckEnabled(),
 	}
 }
 
-// SetUpdateSettings persists the user-level self-update preferences (enabled,
-// auto-check) to update-settings.json and returns the resolved settings. An
-// explicit false is honoured (never reset to the default). Invalidates any
-// cached check result so the next CheckForUpdates reflects the new gates.
-func (f *FrontendAPI) SetUpdateSettings(enabled, autoCheck bool) (UpdateSettings, error) {
-	prefs := f.loadUpdateSettings()
-	prefs.Enabled = &enabled
-	prefs.AutoCheck = &autoCheck
-	if err := f.saveUpdateSettings(prefs); err != nil {
+// SetUpdateSettings persists the auto-check preference to config.yaml
+// (updates.auto_check) and returns the resolved settings. An explicit false is
+// honoured (never reset to the default). Invalidates any cached check result
+// so the next CheckForUpdates reflects the new gate.
+func (f *FrontendAPI) SetUpdateSettings(autoCheck bool) (UpdateSettings, error) {
+	f.configMu.Lock()
+	defer f.configMu.Unlock()
+	if f.config == nil {
+		return UpdateSettings{}, errors.New("config not initialized")
+	}
+	// Snapshot the previous value so it can be restored if the persist fails —
+	// otherwise the in-memory config would hold the unpersisted value and the
+	// UI's revert-on-failure (GetUpdateSettings) would read it back, silently
+	// keeping the rejected change.
+	prev := f.config.Updates.AutoCheck
+	f.config.Updates.AutoCheck = &autoCheck
+	if err := f.persistConfig(); err != nil {
+		f.config.Updates.AutoCheck = prev
 		f.emitUpdateError(err.Error())
 		return UpdateSettings{}, err
 	}
 
-	// Invalidate the cached check so the new gates take effect on the next
+	// Invalidate the cached check so the new gate takes effect on the next
 	// check.
 	f.updateMu.Lock()
 	f.lastCheckResult = nil
 	f.updateMu.Unlock()
 
-	f.log().Info("update settings saved", "enabled", enabled, "auto_check", autoCheck)
-	return f.GetUpdateSettings(), nil
+	f.log().Info("update settings saved", "auto_check", autoCheck)
+	// The write lock is still held here, so read the operator gate directly
+	// from f.config instead of operatorUpdateCheckEnabled() (which takes the
+	// read lock and would deadlock).
+	operatorEnabled := f.config.Updates.Enabled == nil || *f.config.Updates.Enabled
+	return UpdateSettings{
+		AutoCheck:       autoCheck,
+		SkippedVersion:  f.loadSkippedVersion(),
+		CurrentVersion:  version.Version,
+		OperatorEnabled: operatorEnabled,
+	}, nil
 }
 
 // backgroundCheckTimeout bounds the background update check so a dead network
@@ -473,11 +423,12 @@ const defaultCheckInterval = 6 * time.Hour
 
 // RunBackgroundUpdateCheck performs a single gated background update check,
 // intended to be called once at startup (from desktop) in a goroutine. It is
-// the SOLE automatic check path: it honours both the operator gate
-// (config.yaml updates.enabled) and the user gate (update-settings.json enabled
-// + auto_check), respects the check interval recorded in update_state.json,
-// caches the result via checkAndCache (so any discovered update is immediately
-// downloadable), and emits update:available when one is found.
+// the SOLE automatic check path: it honours the operator master gate
+// (config.yaml updates.enabled) and the auto-check preference (config.yaml
+// updates.auto_check), respects the check interval and skipped version
+// recorded in update_state.json, caches the result via checkAndCache (so any
+// discovered update is immediately downloadable), and emits update:available
+// when one is found.
 //
 // Network failures are swallowed (logged at debug) and never break startup.
 func (f *FrontendAPI) RunBackgroundUpdateCheck() {
@@ -490,11 +441,11 @@ func (f *FrontendAPI) RunBackgroundUpdateCheck() {
 		return
 	}
 
-	// User gate (update-settings.json): respect the user's enabled + auto_check
-	// preferences — the same gates the manual path consults.
-	prefs := f.loadUpdateSettings()
-	if !prefs.enabled() || !prefs.autoCheck() {
-		log.Debug("automatic update check disabled by user preferences")
+	// Auto-check gate (config.yaml): respect the updates.auto_check
+	// preference — when false only the automatic background poll is
+	// suppressed; manual checks from the UI still work.
+	if !f.autoCheckEnabled() {
+		log.Debug("automatic update check disabled by config (updates.auto_check=false)")
 		return
 	}
 
@@ -521,13 +472,19 @@ func (f *FrontendAPI) RunBackgroundUpdateCheck() {
 	// update is downloadable regardless of which path found it.
 	checkCtx, cancel := context.WithTimeout(f.ctx(), backgroundCheckTimeout)
 	defer cancel()
-	result, err := f.checkAndCache(checkCtx, prefs.SkippedVersion)
+	result, err := f.checkAndCache(checkCtx, state.SkippedVersion)
 
 	// Record that a check was attempted (success or failure) so a transient
-	// network blip does not cause a retry storm on every startup. Preserve the
-	// known skipped version (authoritative value lives in update-settings.json,
-	// mirrored here so the state file is self-describing).
-	recorded := updater.State{LastCheck: time.Now(), SkippedVersion: prefs.SkippedVersion}
+	// network blip does not cause a retry storm on every startup. Re-read the
+	// state just before saving: the network check above can take up to
+	// backgroundCheckTimeout, and a SkipVersion call completed during that
+	// window must not be clobbered by the stale pre-check snapshot.
+	fresh, _ := updater.LoadState(statePath) // any read error → keep pre-check snapshot
+	skipped := state.SkippedVersion
+	if fresh.SkippedVersion != "" {
+		skipped = fresh.SkippedVersion
+	}
+	recorded := updater.State{LastCheck: time.Now(), SkippedVersion: skipped}
 	if wErr := updater.SaveState(statePath, recorded); wErr != nil {
 		log.Debug("could not persist update state", "error", wErr)
 	}
