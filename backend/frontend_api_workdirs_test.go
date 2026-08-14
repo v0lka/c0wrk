@@ -421,8 +421,12 @@ func TestDeleteWorkDirectory_ScopeGuardIgnoresWrongOwner(t *testing.T) {
 // (the "/src" in "frontend/src") NOT mistaken for absolute paths.
 func TestExtractPromptPathCandidates(t *testing.T) {
 	absDir := t.TempDir()
+	// os.UserHomeDir reads $HOME on Unix and %USERPROFILE% on Windows
+	// (not %HOME%); override both to a temp dir so the "~/..." expansion
+	// resolves to fakeHome on every platform Go supports.
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome)
 
 	text := "check " + absDir + " and ~/projects/x also look at frontend/src/main.tsx"
 	got := extractPromptPathCandidates(text)
