@@ -46,4 +46,3 @@ func (f *FrontendAPI) CancelGoal(sessionID, requestID string) error {
 	}
 	return nil
 }
-

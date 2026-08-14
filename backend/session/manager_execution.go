@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -75,20 +77,107 @@ func (m *Manager) loadWorkDirectories(session *Session) []core.WorkDirectory {
 	return dirs
 }
 
+// implicitTempRoots computes the host OS temporary-directory roots that are
+// always allowed for task execution, even when no auxiliary work directories
+// are configured and even in CHAT mode (No Project). Agent-authored shell
+// commands and tool paths routinely reference the OS temp tree (mktemp
+// scratch, downloaded artifacts, scratch files of managed CLI tools), so those
+// roots are injected as implicit containment peers of the workspace. They
+// never surface in the system prompt or the UI — they are security roots
+// only, set via sdktools.WithAllowedRoots.
+//
+// goos is the runtime.GOOS value (parameterised for testability), tempDir the
+// os.TempDir() value, and systemRootEnv the %SystemRoot% value (Windows only,
+// e.g. "C:\Windows"). On Windows the candidates are tempDir and
+// %SystemRoot%\Temp (the classic inherited-TMP location); everywhere else
+// they are "/tmp" and tempDir. Candidates are validated and normalized with
+// host-independent string analysis (NOT filepath.Clean/Join, whose separator
+// semantics depend on the host OS — the branches must behave identically on
+// every CI runner): trailing separators are trimmed, duplicates dropped, and
+// empty, relative, or drive-relative inputs skipped. The containment API
+// requires roots to be absolute paths.
+func implicitTempRoots(goos, tempDir, systemRootEnv string) []string {
+	var candidates []string
+	if goos == "windows" {
+		candidates = append(candidates, tempDir)
+		if systemRootEnv != "" {
+			candidates = append(candidates, strings.TrimRight(systemRootEnv, "\\/")+"\\Temp")
+		}
+	} else {
+		candidates = append(candidates, "/tmp", tempDir)
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	roots := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if !isAbsForGOOS(goos, c) {
+			continue
+		}
+		norm := trimTrailingSeps(goos, c)
+		if _, dup := seen[norm]; dup {
+			continue
+		}
+		seen[norm] = struct{}{}
+		roots = append(roots, norm)
+	}
+	return roots
+}
+
+// isAbsForGOOS reports whether p is absolute for the given GOOS, using pure
+// string analysis so a windows branch evaluated on a POSIX host (and vice
+// versa) yields the same verdict as on its native host. Windows absolute
+// forms: volume letter + separator (e.g. "C:\Temp") or a UNC path
+// ("\\server\share"). Drive-relative paths ("C:foo") are NOT absolute.
+func isAbsForGOOS(goos, p string) bool {
+	if goos == "windows" {
+		if len(p) >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/') && isVolumeLetter(p[0]) {
+			return true
+		}
+		return strings.HasPrefix(p, `\\`)
+	}
+	return strings.HasPrefix(p, "/")
+}
+
+// isVolumeLetter reports whether c is a Windows drive letter (A-Z, a-z).
+func isVolumeLetter(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+// trimTrailingSeps removes trailing path separators for the given GOOS while
+// preserving the minimal absolute form ("/" on POSIX, the volume root "C:\"
+// on Windows). Host-independent: a trailing backslash is a separator only
+// for the windows GOOS, where on POSIX it is a legal filename character.
+func trimTrailingSeps(goos, p string) string {
+	minLen := 1
+	if goos == "windows" {
+		minLen = 3
+	}
+	for len(p) > minLen && (p[len(p)-1] == '/' || (goos == "windows" && p[len(p)-1] == '\\')) {
+		p = p[:len(p)-1]
+	}
+	return p
+}
+
 // injectWorkDirectories injects the session's auxiliary work directories into
 // the context as both allowed roots (security containment) and the
 // prompt-facing directory list. dirs must be loaded by the caller (shared with
 // injectIgnoreChecker so loadWorkDirectories runs once per task rather than
-// twice). Returns ctx unchanged when no directories are configured.
+// twice). Allowed roots are ALWAYS set: the work-directory paths plus the
+// implicit host temp roots from implicitTempRoots, so tasks with no configured
+// directories (including CHAT-mode No Project sessions) still operate freely
+// inside the OS temp tree. The prompt-facing core.WithWorkDirectories is
+// applied only when directories are configured — implicit temp roots never
+// reach the system prompt or the UI.
 func (m *Manager) injectWorkDirectories(ctx context.Context, dirs []core.WorkDirectory) context.Context {
+	paths := make([]string, 0, len(dirs))
+	for i := range dirs {
+		paths = append(paths, dirs[i].Path)
+	}
+	paths = append(paths, implicitTempRoots(runtime.GOOS, os.TempDir(), os.Getenv("SystemRoot"))...)
+	ctx = sdktools.WithAllowedRoots(ctx, paths)
 	if len(dirs) == 0 {
 		return ctx
 	}
-	paths := make([]string, len(dirs))
-	for i := range dirs {
-		paths[i] = dirs[i].Path
-	}
-	ctx = sdktools.WithAllowedRoots(ctx, paths)
 	return core.WithWorkDirectories(ctx, dirs)
 }
 
@@ -453,8 +542,10 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 	// Inject auxiliary work directories (allowed roots + prompt list), and
 	// attach a multi-root ignore checker so glob/ripgrep honour each root's
 	// own .gitignore + .aiignore. dirs is loaded once and shared so the
-	// (DB-hitting) loadWorkDirectories runs a single time per task. Both are
-	// no-ops for No Project sessions.
+	// (DB-hitting) loadWorkDirectories runs a single time per task. Allowed
+	// roots ALWAYS include the implicit host temp roots (see implicitTempRoots),
+	// also for No Project sessions; the prompt-facing list and the ignore
+	// checker remain no-ops when no directories are configured.
 	dirs := m.loadWorkDirectories(session)
 	taskCtx = m.injectWorkDirectories(taskCtx, dirs)
 	taskCtx = m.injectIgnoreChecker(taskCtx, session, dirs)
@@ -998,8 +1089,10 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	// Inject auxiliary work directories (allowed roots + prompt list), and
 	// attach a multi-root ignore checker so glob/ripgrep honour each root's
 	// own .gitignore + .aiignore. dirs is loaded once and shared so the
-	// (DB-hitting) loadWorkDirectories runs a single time per task. Both are
-	// no-ops for No Project sessions.
+	// (DB-hitting) loadWorkDirectories runs a single time per task. Allowed
+	// roots ALWAYS include the implicit host temp roots (see implicitTempRoots),
+	// also for No Project sessions; the prompt-facing list and the ignore
+	// checker remain no-ops when no directories are configured.
 	dirs := m.loadWorkDirectories(session)
 	taskCtx = m.injectWorkDirectories(taskCtx, dirs)
 	taskCtx = m.injectIgnoreChecker(taskCtx, session, dirs)

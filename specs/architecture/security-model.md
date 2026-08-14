@@ -68,7 +68,20 @@ The session has a set of equal-peer root directories, combined into the canonica
 
 All roots are treated as **equal peers**: any operation (read or write) permitted inside the workspace is permitted inside the temp directory and any auxiliary directory, and vice versa. There are no second-class roots. Relative paths still resolve against the workspace only; auxiliary directories are reachable only via absolute paths.
 
-The system temp directory (`os.TempDir()`) is NOT a session root. It is allowed as a `bash_exec` working directory (see `validateWorkDir` in `github.com/v0lka/sp4rk/tools/builtins/workdir.go`) but does not participate in auto-approval or session-root containment checks.
+### Implicit Temp Roots
+
+Alongside the user-visible roots above, the host OS temporary tree is injected as a set of **implicit temp roots**. They are added **unconditionally** at every task execution by `injectWorkDirectories` (`backend/session/manager_execution.go`, set computed by `implicitTempRoots`) — even when no auxiliary work directories are configured and in CHAT mode (No Project) — because agent-authored shell commands and tool paths routinely reference the OS temp tree (`mktemp` scratch files, downloaded artifacts, scratch files of managed CLI tools). They flow through the same allowed-roots channel (`tools.WithAllowedRoots`) and therefore into `tools.SessionRoots(ctx)`: they are full containment/auto-approval peers of the workspace, and operations inside them are auto-approved exactly like workspace operations.
+
+The per-platform set (mirroring `implicitTempRoots`):
+
+- **macOS / Linux (every non-Windows `GOOS`)**: `/tmp` and `os.TempDir()` — on macOS `os.TempDir()` is `$TMPDIR` (typically `/var/folders/...`); on Linux it is `/tmp` unless `TMPDIR` is set, so the pair usually deduplicates to the single root `/tmp`.
+- **Windows**: `os.TempDir()` (`%TEMP%`/`%TMP%`) and `%SystemRoot%\Temp` (the classic inherited-TMP location); the `%SystemRoot%\Temp` entry is omitted when `SystemRoot` is unset or relative, so a non-absolute `Temp` root is never fabricated.
+
+Trailing separators are trimmed and duplicates dropped; empty, relative, or drive-relative inputs are skipped — the containment API requires roots to be absolute paths, so a relative `TMPDIR` never yields a root element. Normalization is host-independent string analysis rather than `filepath.Clean`, whose separator semantics depend on the host OS; the per-platform branches therefore behave identically on every CI runner (linux, macOS, windows).
+
+**Invisibility.** Implicit temp roots never reach the system prompt or the UI. The prompt-facing `core.WithWorkDirectories` (and the frontend work-directories list) is applied only when user-configured auxiliary directories exist; temp roots are security-containment roots only. An agent operating in `/tmp` gets no announcement of it — the roots are invisible by design, both to the LLM and to the user.
+
+**Accepted risk.** `/tmp` and its Windows counterparts are world-writable shared scratch guarded only by the sticky bit — any local process or user can create files there, so auto-approved operations inside the temp tree may read or overwrite files created by other local users of the machine. This risk is accepted deliberately: the OS temp tree is the standard scratch location that tools legitimately need on every platform, and gating it with per-call confirmations would make routine agent operations (`mktemp` scratch, downloads, CLI tool scratch) unusable. Symlink-based attacks rooted in the temp tree remain mitigated by the unconditional [Symlink Confirmation](#symlink-confirmation) gate, which forces confirmation for any path whose components traverse a symlink.
 
 ## Operations Outside Session Roots
 
@@ -79,6 +92,8 @@ File operations (both read and write) targeting paths **outside** the session ro
 - `always_deny` tools: blocked immediately, never reach confirmation.
 
 This means reading or writing arbitrary files on the filesystem (e.g., `/etc/hosts`, `~/Documents/notes.txt`) is possible, but the user always sees a confirmation prompt first. The only exception is relative paths that escape the workspace via `..` components — these are rejected by `resolvePath` as invalid input (relative paths cannot escape the workspace).
+
+> **Note — implicit temp roots count as inside.** The host OS temp tree ([Implicit Temp Roots](#implicit-temp-roots)) is part of the session roots, so operations targeting it do **not** trigger the outside-root confirmation described here. An `always_allow` file tool reading or writing `/tmp/anything` auto-approves exactly like a workspace path. This is a deliberate, documented trade-off (world-writable scratch is the standard location tools need on every platform), not an oversight — see the accepted-risk note in the session-roots section.
 
 **Shell commands referencing out-of-root paths.** `bash_exec` and `posh_exec` now implement the same path-containment analysis in their `ToolJudger.Judge()` as the file tools: the command string is scanned for path-like tokens (absolute paths, `~`/`~user` tilde expansion, `$VAR`/`${VAR}`/`$env:VAR` environment expansion, and `..`-relative references resolved against the working directory) via `tools.PathsOutsideRoots` (`github.com/v0lka/sp4rk/tools/shellpaths.go`). Any resolved path outside the session roots produces a non-empty reason, so the call escalates to confirmation under any policy except `always_deny` — including `always_allow`. This closes the previously-documented gap where a shell command under `always_allow` could execute `cat /etc/passwd` without confirmation. Credential-file reads (e.g., `cat ~/.ssh/id_rsa`) are caught here by path-locality rather than a literal-filename blacklist; the blacklist focuses on path-agnostic destructive mutations.
 

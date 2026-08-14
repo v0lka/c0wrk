@@ -232,7 +232,7 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 
 **Rules:**
 - **Shell execution is policy-gated, never auto-trusted.** `bash_exec`/`posh_exec` default to `user_confirm`; the blacklist Judge runs before auto-approval.
-- **Path containment is enforced.** Operations outside session roots (workspace + temp + auxiliary dirs) ALWAYS require user confirmation, regardless of policy. Relative paths escaping via `..` are rejected by `resolvePath`.
+- **Path containment is enforced.** Operations outside session roots (workspace + temp + auxiliary dirs) ALWAYS require user confirmation, regardless of policy. Relative paths escaping via `..` are rejected by `resolvePath`. The host OS temp tree (`/tmp`, `os.TempDir()`, `%SystemRoot%\Temp`) is injected as an implicit session root on every task — see [Implicit Temp Roots](./specs/architecture/security-model.md#implicit-temp-roots) for the per-platform set and the accepted risk.
 - **Symlink traversal is always detected** before policy resolution and forces confirmation — agents must not follow symlinks out of session roots silently.
 - **Argument/command scanning is mandatory** for shell tools; suspicious shell expansions (`$var`, `$(cmd)`, backticks) that can mask paths MUST be flagged in the confirmation dialog.
 - **Ephemeral / scoped execution.** Session temp directories are per-session (`~/.c0wrk/projects/<id>/<session>/temp/`); scratch artifacts are isolated, not global.
