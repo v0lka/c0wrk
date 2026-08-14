@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -28,6 +29,21 @@ const NoProjectWorkspaceSegment = "workspace"
 // ---------------------------------------------------------------------------
 // Top-level ~/.c0wrk/ paths
 // ---------------------------------------------------------------------------
+
+// AgentDir returns the canonical agent data directory (~/.c0wrk). It resolves
+// the user's home directory and joins it with DefaultAgentDir; if the home
+// directory cannot be determined it falls back to "./" + DefaultAgentDir
+// (relative to the working directory). This is the single source of truth for
+// the computation — every other path helper takes the returned value as its
+// agentDir argument, so callers must never recompute homeDir + DefaultAgentDir
+// inline.
+func AgentDir() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = "."
+	}
+	return filepath.Join(homeDir, DefaultAgentDir)
+}
 
 // ConfigPath returns the path to config.yaml within the agent directory.
 func ConfigPath(agentDir string) string {
@@ -93,6 +109,16 @@ func UpdateStagingDir(agentDir string) string {
 // the user-facing preferences (enabled / auto-check toggles).
 func UpdateStatePath(agentDir string) string {
 	return filepath.Join(agentDir, "update_state.json")
+}
+
+// WindowStatePath returns the path to window_state.json inside the agent
+// directory. This file holds the persisted OS-level window geometry (width,
+// height, maximized flag) so the application window reopens at the size the
+// user left it. It is deliberately NOT part of config.yaml: window geometry is
+// runtime state (written on resize/shutdown, read on startup), not an
+// operator-facing setting — mirroring the update_state.json split.
+func WindowStatePath(agentDir string) string {
+	return filepath.Join(agentDir, "window_state.json")
 }
 
 // ---------------------------------------------------------------------------

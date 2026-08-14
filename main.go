@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"runtime/debug"
 
 	"github.com/wailsapp/wails/v2"
@@ -58,11 +57,7 @@ func mainImpl() int {
 		}
 	}()
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = "."
-	}
-	agentDir := filepath.Join(homeDir, config.DefaultAgentDir)
+	agentDir := config.AgentDir()
 	logDir := config.LogsDir(agentDir)
 
 	wlog, wlogErr := desktop.NewWailsLogger(logDir)
@@ -73,10 +68,16 @@ func mainImpl() int {
 	app := desktop.NewApp()
 	app.SetWailsLogger(wlog)
 
+	// Restore the persisted window size (written on resize/shutdown) so the
+	// app reopens at the size the user left it. On first run (no state file)
+	// this returns the built-in 1400x900 default. The maximized flag is
+	// re-applied in Startup once the Wails context exists.
+	windowBounds := desktop.LoadWindowBounds(agentDir)
+
 	runErr := wails.Run(&options.App{
 		Title:            "c0wrk",
-		Width:            1400,
-		Height:           900,
+		Width:            windowBounds.Width,
+		Height:           windowBounds.Height,
 		MinWidth:         1024,
 		MinHeight:        600,
 		BackgroundColour: options.NewRGB(40, 44, 52),

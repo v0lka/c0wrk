@@ -293,7 +293,7 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
           ref={contentRef}
           className="pointer-events-none absolute left-0 top-0 origin-top-left"
           style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
-          dangerouslySetInnerHTML={svgHtml ? { __html: svgHtml } : undefined}
+          dangerouslySetInnerHTML={svgHtml ? { __html: svgHtml } : undefined} // eslint-disable-line react/no-danger -- DOMPurify-sanitized SVG (svg-only profile) from mermaid strict mode
         />
         {!svgHtml && (
           <div className="absolute inset-0 flex items-center justify-center">

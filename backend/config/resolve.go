@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 )
 
 // ResolvedConfig contains the result of config path resolution and loading.
@@ -33,12 +32,7 @@ func CreateDefault(path string) (*Config, error) {
 // If neither config file exists, a default config file is created at the primary path.
 // On total failure it returns a default config with load errors populated.
 func ResolveAndLoad(log *slog.Logger) *ResolvedConfig {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		log.Error("failed to get user home directory", "error", err)
-		homeDir = "."
-	}
-	agentDir := filepath.Join(homeDir, DefaultAgentDir)
+	agentDir := AgentDir()
 	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		log.Error("failed to create agent directory", "error", err)
 	}

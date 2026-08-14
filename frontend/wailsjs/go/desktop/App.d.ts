@@ -187,6 +187,8 @@ export function PasteFromClipboard(arg1:string,arg2:boolean):Promise<session.Pas
 
 export function PauseSession(arg1:string):Promise<void>;
 
+export function PersistWindowBounds():Promise<void>;
+
 export function PickAttachmentFiles():Promise<Array<string>>;
 
 export function PickDirectory():Promise<string>;

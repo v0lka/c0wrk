@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -145,11 +144,7 @@ func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved
 // string so the caller can abort startup. On success, returns the tools/bin/
 // directory path and whether any tools were actually installed.
 func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath string, toolsInstalled bool) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = "."
-	}
-	agentDir := filepath.Join(homeDir, config.DefaultAgentDir)
+	agentDir := config.AgentDir()
 
 	toolsDir := config.ToolsDir(agentDir)
 	binDir := config.ToolsBinDir(agentDir)

@@ -34,7 +34,7 @@ interface FileViewerState {
   width: number
   collapsed: boolean
   /**
-   * When `true` (default) the viewer is docked in-flow as a fixed,
+   * When `true` the viewer is docked in-flow as a fixed,
    * horizontally-resizable, collapsible panel — the classic layout.
    *
    * When `false` the viewer "floats": it becomes an absolute overlay above the
@@ -90,7 +90,10 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
       activeFile: null,
       width: getDefaultViewerWidth(),
       collapsed: false,
-      pinned: true,
+      // Default UNPINNED (floating): on first start the viewer does not claim
+      // permanent docked space and recedes to the slim rail until a file is
+      // opened. Users who pin it get their choice persisted and restored.
+      pinned: false,
       highlightLine: null,
       fileIcons: {},
 
@@ -187,6 +190,11 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
           activeFile: newActive,
           files: restFiles,
           fileIcons: restIcons,
+          // An unpinned (floating) viewer auto-collapses once it has no open
+          // tabs — an empty floating panel would just obscure the chat, so it
+          // recedes to the slim docked rail until a file is opened again. When
+          // pinned or tabs remain, `collapsed` is left untouched.
+          ...(!s.pinned && newTabs.length === 0 ? { collapsed: true } : {}),
         }
       }),
 
@@ -277,12 +285,15 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
 
       clearHighlightLine: () => set({ highlightLine: null }),
 
-      closeAllFiles: () => set({
+      closeAllFiles: () => set((s) => ({
         files: {},
         openTabs: [],
         activeFile: null,
         fileIcons: {},
-      }),
+        // Same empty-auto-collapse rule as closeFile: an unpinned viewer with
+        // no tabs recedes to the docked rail instead of floating empty.
+        ...(!s.pinned ? { collapsed: true } : {}),
+      })),
 
       restoreProjectFiles: (openTabs, activeFile) => set((s) => {
         const uniqueTabs = openTabs.filter((tab, idx) => openTabs.indexOf(tab) === idx)
@@ -313,12 +324,15 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
           activeFile: normalizedActive,
           files: nextFiles,
           fileIcons: nextIcons,
+          // Empty-auto-collapse rule (matches closeFile/closeAllFiles): an
+          // unpinned viewer restoring zero tabs recedes to the docked rail.
+          ...(!s.pinned && uniqueTabs.length === 0 ? { collapsed: true } : {}),
         }
       }),
     }),
     {
       name: 'c0wrk-file-viewer',
-      version: 3,
+      version: 4,
       migrate: (persistedState, _version) => {
         const state = persistedState as Partial<FileViewerState & FileViewerActions>
         if (_version < 2) {
@@ -329,6 +343,12 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
           // classic layout for existing users on upgrade.
           state.pinned = true
         }
+        // v4: the default for `pinned` changed to false (unpinned floating) so
+        // the right viewer does not claim permanent docked space on first
+        // start. This migration intentionally does NOT overwrite the persisted
+        // value — existing users keep their chosen pin state; only fresh
+        // installs (no persisted state) get the new false default from the
+        // store initializer above.
         return state as FileViewerState & FileViewerActions
       },
       partialize: (state) => ({

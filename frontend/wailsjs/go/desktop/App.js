@@ -358,6 +358,10 @@ export function PauseSession(arg1) {
   return window['go']['desktop']['App']['PauseSession'](arg1);
 }
 
+export function PersistWindowBounds() {
+  return window['go']['desktop']['App']['PersistWindowBounds']();
+}
+
 export function PickAttachmentFiles() {
   return window['go']['desktop']['App']['PickAttachmentFiles']();
 }

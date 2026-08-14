@@ -197,6 +197,13 @@ func (a *App) Startup(ctx context.Context) {
 	startTime := time.Now()
 	a.ctx = ctx
 
+	// ── Restore maximized window state ───────────────────────────────
+	// The window SIZE is already restored via wails.Run options in main.go
+	// (LoadWindowBounds seeds Width/Height). The maximized flag cannot be
+	// expressed in those options, so it is re-applied here once the Wails
+	// context exists. Best-effort: a missing/invalid state file is a no-op.
+	a.restoreMaximizedWindow()
+
 	// Register the native file-drop listener. The DragAndDrop option in main.go
 	// enables Wails' drag-and-drop plumbing; OnFileDrop subscribes to it and
 	// forwards the dropped absolute paths to the frontend as a files:dropped
@@ -218,11 +225,7 @@ func (a *App) Startup(ctx context.Context) {
 
 	// ── Phase 0: Resolve agent directory (needed for logger paths) ──
 	// Compute early so logger.Init can write to the correct directory.
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = "."
-	}
-	agentDir := filepath.Join(homeDir, config.DefaultAgentDir)
+	agentDir := config.AgentDir()
 	logDir := config.LogsDir(agentDir)
 
 	// ── Phase 1: Shell Environment + Logger ──────────────────────────
@@ -486,6 +489,12 @@ func (a *App) Startup(ctx context.Context) {
 
 // Shutdown is called when the Wails app is shutting down.
 func (a *App) Shutdown(ctx context.Context) {
+	// Persist the final window geometry so a normal quit preserves the size
+	// even if no resize fired this session. Best-effort: a torn-down context
+	// makes this a no-op, and the debounced frontend saves already captured
+	// any prior resize.
+	a.saveWindowBounds(a.log())
+
 	// Drain all pending confirmation/ask-user/step-limit channels so that
 	// blocked goroutines can exit cleanly instead of leaking.
 	a.pendingConfirmations.Range(func(key, value any) bool {

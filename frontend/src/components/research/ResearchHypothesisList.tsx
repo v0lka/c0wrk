@@ -78,7 +78,7 @@ export function ResearchHypothesisList({
     if (container.scrollTop !== scrollYRef.current) {
       container.scrollTop = scrollYRef.current
     }
-  }, [graph])
+  }, [graph, scrollContainerRef])
 
   if (tree.length === 0) {
     return (
