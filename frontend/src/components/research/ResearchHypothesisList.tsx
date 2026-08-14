@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { ChevronRight } from 'lucide-react'
 import type { HypothesisGraph } from '@/types/models'
 import { cn } from '@/lib/utils'
@@ -17,6 +17,9 @@ interface ResearchHypothesisListProps {
   selectedId?: string
   /** Called when a hypothesis row is clicked. */
   onSelectNode?: (id: string) => void
+  /** Ref to the scroll container (parent div with overflow-auto). Used to
+   *  preserve scroll position across incremental graph updates. */
+  scrollContainerRef?: React.RefObject<HTMLDivElement | null>
 }
 
 /**
@@ -35,8 +38,47 @@ export function ResearchHypothesisList({
   graph,
   selectedId,
   onSelectNode,
+  scrollContainerRef,
 }: ResearchHypothesisListProps) {
   const tree = useMemo(() => mergePathsToTree(findAllRootToLeafPaths(graph)), [graph])
+
+  // Preserve scroll position across incremental graph updates.
+  // When the graph changes (e.g. from a file-change event), mergePathsToTree
+  // re-runs and React reconciles the DOM. Node insertions/removals above the
+  // viewport shift the content and cause a scroll jump. We track the user's
+  // scroll position via a passive listener (captured before the next commit)
+  // and restore it after the graph-driven re-render commits.
+  //
+  // The previous implementation used two dependency-less useLayoutEffects:
+  // the first saved scrollTop into a ref, the second compared against it.
+  // Since both run sequentially after the same commit (before any scroll
+  // change), the comparison was always equal — a no-op.
+  const scrollYRef = useRef<number>(0)
+
+  // Track scroll position continuously so scrollYRef always holds the latest
+  // value when a graph update lands.
+  useEffect(() => {
+    const container = scrollContainerRef?.current
+    if (!container) return
+    const onScroll = () => {
+      scrollYRef.current = container.scrollTop
+    }
+    // Seed with the current position: the listener only fires on subsequent
+    // scroll events, not on the initial mount.
+    scrollYRef.current = container.scrollTop
+    container.addEventListener('scroll', onScroll, { passive: true })
+    return () => container.removeEventListener('scroll', onScroll)
+  }, [scrollContainerRef])
+
+  // After a graph change commits, restore the saved scroll position if the
+  // DOM mutations shifted the viewport.
+  useLayoutEffect(() => {
+    const container = scrollContainerRef?.current
+    if (!container) return
+    if (container.scrollTop !== scrollYRef.current) {
+      container.scrollTop = scrollYRef.current
+    }
+  }, [graph])
 
   if (tree.length === 0) {
     return (

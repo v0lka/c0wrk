@@ -282,6 +282,17 @@ func ProjectResearchPath(workspacePath string) string {
 	return filepath.Join(workspacePath, ".research")
 }
 
+// IsResearchPath returns true if absPath is within the research directory
+// rooted at researchRoot. Used by the workspace watcher callback to filter
+// file-change events to only those affecting research artifacts.
+func IsResearchPath(researchRoot, absPath string) bool {
+	ok, err := pathutil.IsWithinPath(researchRoot, absPath)
+	if err != nil {
+		return false
+	}
+	return ok
+}
+
 // SessionStepDumpDir returns the per-step dump directory for a session,
 // derived from the session's LLM dump path.
 func SessionStepDumpDir(agentDir, projectID, sessionID string) string {

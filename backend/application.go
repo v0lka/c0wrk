@@ -50,6 +50,13 @@ type ApplicationConfig struct {
 	// incremental re-indexing so that subsequent searches reflect the change
 	// without waiting for the filesystem watcher. Nil disables the hook.
 	FileChangeNotifyFunc func()
+
+	// FileChangedWorkspaceEmitter is called alongside FileChangeNotifyFunc to
+	// emit the workspace:tree_changed event so the frontend (research panel,
+	// file tree, etc.) refreshes its view after agent-initiated file writes.
+	// Nil is safe — the event is best-effort; the filesystem watcher handles
+	// manual edits.
+	FileChangedWorkspaceEmitter func()
 }
 
 // Application is the central ViewModel that ties together the OrchestratorBuilder,
@@ -143,11 +150,16 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 
 	// 4a. Post-execute hook: after a file-mutating tool (write_file, edit_file,
 	// bash_exec) completes successfully, notify the vector index manager so it
-	// triggers debounced incremental re-indexing. This ensures subsequent
-	// searches reflect the change without relying solely on the filesystem
-	// watcher (which has latency on macOS and may miss same-process writes).
+	// triggers debounced incremental re-indexing. Also emit the
+	// workspace:tree_changed event so the frontend (research panel, file tree,
+	// etc.) refreshes its view after agent-initiated file writes. This is
+	// essential because the filesystem watcher (fsnotify/FSEvents) has latency
+	// on macOS and may miss same-process writes — the post-execute hook fires
+	// synchronously after the tool returns, ensuring the frontend is notified
+	// without delay.
 	if cfg.FileChangeNotifyFunc != nil {
 		notifyFn := cfg.FileChangeNotifyFunc
+		emitFn := cfg.FileChangedWorkspaceEmitter
 		builder.ToolRegistry().SetPostExecuteHook(func(_ context.Context, toolName string, res sdktools.ToolResult, execErr error) {
 			// Only notify on a genuine successful file mutation. Skip error
 			// results (policy deny, tool error) and non-nil execution errors
@@ -160,6 +172,9 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 				return
 			}
 			notifyFn()
+			if emitFn != nil {
+				emitFn()
+			}
 		})
 	}
 

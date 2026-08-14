@@ -635,3 +635,23 @@ export interface ResearchStatus {
   root?: ResearchRoot
   seed_result?: ResearchSeedResult
 }
+
+/** Lightweight response for GetResearchGraph: only the hypothesis graph,
+ *  metrics, and report flag for a single project — no brief, index, or root
+ *  metadata. Used by the incremental file-change update path. */
+export interface ResearchGraphResponse {
+  project_id: string
+  graph: {
+    nodes: HypothesisNode[]
+    edges: HypothesisEdge[]
+  }
+  metrics: {
+    total: number
+    by_status: Record<string, number>
+    confirmation_rate: number
+    depth: number
+    breadth: number
+    active_front?: string[]
+  }
+  has_report: boolean
+}

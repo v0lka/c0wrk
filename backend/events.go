@@ -107,6 +107,13 @@ const EventMCPReady = "mcp:ready"
 // "disabled") so the frontend can refresh the Research panel and project list.
 const EventResearchChanged = "research:changed"
 
+// EventResearchFileChanged is emitted when a file inside the research
+// directory changes (hypothesis cards, brief, prior-art, graph, etc.).
+// The payload is a map[string]string carrying the "project_id" and "paths"
+// (comma-separated list of changed file paths) so the frontend can
+// incrementally update the hypothesis graph without a full status refetch.
+const EventResearchFileChanged = "research:file_changed"
+
 // ---------------------------------------------------------------------------
 // Self-update events (emitted by FrontendAPI updater methods)
 // ---------------------------------------------------------------------------

@@ -55,6 +55,10 @@ type FrontendAPI struct {
 	activeProjectPath string
 	activeProjectMu   sync.RWMutex
 
+	// Active research root path (empty when RESEARCH is off). Guarded by
+	// activeProjectMu so it stays in sync with project switches.
+	activeResearchRoot string
+
 	// Skill cache (invalidated on project switch)
 	skillCache            []SkillDescriptorDTO
 	skillCacheGen         uint64 // atomic — bumped to invalidate

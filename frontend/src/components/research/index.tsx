@@ -1,7 +1,8 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { FlaskConical, FileText, BookMarked, FileCheck2, Plus, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useResearchStatusEvents } from '@/hooks/useResearchStatusEvents'
+import { useResearchFileWatcher } from '@/hooks/useResearchFileWatcher'
 import { useResearchStore, selectActiveProject } from '@/stores/researchStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { ResearchToggle } from './ResearchToggle'
@@ -28,6 +29,10 @@ export function ResearchPanel() {
   // Side-effect hook: keeps researchStore in sync with the backend.
   useResearchStatusEvents()
 
+  // Side-effect hook: incrementally updates the hypothesis graph when files
+  // inside the research directory change (hypothesis cards, brief, etc.).
+  useResearchFileWatcher()
+
   const enabled = useResearchStore((s) => s.status?.enabled ?? false)
   const project = useResearchStore(selectActiveProject)
   const rootPath = useResearchStore((s) => s.status?.research_root ?? '')
@@ -39,6 +44,10 @@ export function ResearchPanel() {
   const onSelectNode = useCallback((id: string) => {
     setSelectedNode((prev) => (prev === id ? undefined : id))
   }, [])
+
+  // Ref to the scroll container for preserving scroll position across
+  // incremental graph updates.
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
 
   // Open a research artifact file in the file viewer (path-agnostic ReadFile).
   const openArtifact = useCallback((filePath: string) => {
@@ -86,7 +95,10 @@ export function ResearchPanel() {
       {metrics && <ResearchMetricsRow metrics={metrics} />}
 
       {/* Hypothesis list (readable vertical tree) */}
-      <div className="flex-1 min-h-0 overflow-auto px-1">
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 min-h-0 overflow-auto px-1"
+      >
         {isLoading && !project ? (
           <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
             Loading…
@@ -96,6 +108,7 @@ export function ResearchPanel() {
             graph={graph}
             selectedId={selectedNode}
             onSelectNode={onSelectNode}
+            scrollContainerRef={scrollContainerRef}
           />
         )}
       </div>

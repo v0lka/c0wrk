@@ -247,6 +247,14 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 	f.activeProjectMu.Lock()
 	f.activeProjectID = p.ID
 	f.activeProjectPath = p.WorkspacePath
+	// Track the active research root so the workspace watcher callback can
+	// emit research:file_changed events for file modifications inside it.
+	// This mirrors what EnableResearch does, ensuring the incremental update
+	// path works even when switching to a project that already has research
+	// enabled (e.g. after a restart or project switch).
+	if p.ResearchRoot != "" {
+		f.activeResearchRoot = p.ResearchRoot
+	}
 	f.activeProjectMu.Unlock()
 
 	// Invalidate cached skill list since project-local skills may differ.
@@ -270,10 +278,10 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 // (~/.c0wrk/projects/__no_project__/<sid>/workspace/). The watcher is scoped to
 // the active session's workspace so only that session's file changes emit
 // workspace:tree_changed — other sessions and session-infra directories
-// (plans/, temp/, logs) that live outside workspace/ are excluded. Because
-// fsnotify/FSEvents watches recursively on macOS, scoping to the session
-// workspace (rather than the shared project dir) is what prevents cross-session
-// noise.
+// (plans/, temp/, logs) that live outside workspace/ are excluded. fsnotify is
+// NOT recursive (it only reports events for explicitly-added directories, even
+// on macOS), so scoping to the session workspace — rather than the shared
+// project dir — is what prevents cross-session noise.
 //
 // The watcher root must follow the active session. It is created here for the
 // most recently active session (if any) and re-scoped on every session switch
@@ -305,6 +313,13 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 
 	// CODE mode: tear down the previous watcher and create a new one scoped
 	// to the project workspace.
+	// Read the active research root BEFORE acquiring watcherMu so the lock
+	// order stays activeProjectMu → watcherMu (switchProjectActivate runs
+	// first and has already set it for a project with research enabled).
+	f.activeProjectMu.RLock()
+	researchRoot := f.activeResearchRoot
+	f.activeProjectMu.RUnlock()
+
 	f.watcherMu.Lock()
 	defer f.watcherMu.Unlock()
 	if f.watcher != nil {
@@ -312,7 +327,24 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		f.watcher = nil
 	}
 	watcher, err := workspace.NewWatcher(p.WorkspacePath, func(changedPaths []string) {
-		f.emitEvent(EventWorkspaceTreeChanged, nil)
+		// Snapshot the active project fields under the lock to avoid a data
+		// race between this callback (fsnotify goroutine) and project
+		// switches / research toggles (main thread). Reading these fields
+		// without the lock violated Go's memory model.
+		f.activeProjectMu.RLock()
+		snapProjectID := f.activeProjectID
+		snapResearchRoot := f.activeResearchRoot
+		f.activeProjectMu.RUnlock()
+
+		// Emit research:file_changed for any changed path inside the research
+		// directory. The helper returns whether the change set was
+		// research-scoped so we can annotate workspace:tree_changed — the
+		// frontend's full-refetch path skips when the incremental path will
+		// handle the update, avoiding a redundant double fetch.
+		researchScoped := f.emitResearchFileChanged(snapResearchRoot, snapProjectID, changedPaths)
+		f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
+			"research_scoped": researchScoped,
+		})
 
 		// An ignore-rule file (.gitignore/.aiignore/.ignore) change anywhere
 		// under a watched root makes the cached ignore resolver stale. Evict
@@ -347,6 +379,55 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		return
 	}
 	f.watcher = watcher
+
+	// Recursively watch the research artifact tree so edits to hypothesis
+	// cards, the brief, prior-art, or graph files (which live in nested
+	// subdirectories like .research/R-NNN/hypotheses/) are detected. The
+	// workspace watcher is NOT recursive (fsnotify only reports events for
+	// explicitly-added directories), so without this the research panel
+	// never receives research:file_changed and does not auto-update. New
+	// subdirectories created inside the tree are auto-added by the watcher.
+	if researchRoot != "" {
+		if err := watcher.WatchTree(researchRoot); err != nil {
+			f.log().Debug("failed to watch research tree", "root", researchRoot, "error", err)
+		}
+	}
+}
+
+// emitResearchFileChanged checks whether any of the changed paths fall inside
+// the research directory and, if so, emits a research:file_changed event
+// carrying the project ID and comma-separated paths. It returns true when at
+// least one path was research-scoped, so the caller can annotate
+// workspace:tree_changed and the frontend can skip a redundant full status
+// refetch (the incremental path via useResearchFileWatcher handles it).
+//
+// The caller must pass already-snapshotted researchRoot and projectID values
+// (read under activeProjectMu) to avoid the data race between the fsnotify
+// callback goroutine and project switches / research toggles on the main
+// thread. DRY-extracted from the CODE-mode and No-Project watcher callbacks.
+func (f *FrontendAPI) emitResearchFileChanged(researchRoot, projectID string, changedPaths []string) bool {
+	if researchRoot == "" {
+		return false
+	}
+	var researchPaths []string
+	for _, p := range changedPaths {
+		if config.IsResearchPath(researchRoot, p) {
+			researchPaths = append(researchPaths, p)
+		}
+	}
+	if len(researchPaths) == 0 {
+		return false
+	}
+	f.log().Debug("research: file changed in research dir, emitting event",
+		"project_id", projectID,
+		"research_root", researchRoot,
+		"paths", researchPaths,
+	)
+	f.emitEvent(EventResearchFileChanged, map[string]string{
+		"project_id": projectID,
+		"paths":      strings.Join(researchPaths, ","),
+	})
+	return true
 }
 
 // reScopeNoProjectWatcher tears down the current watcher (if any) and creates a
@@ -376,7 +457,18 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 		return fmt.Errorf("failed to create session workspace for watcher: %w", err)
 	}
 	watcher, err := workspace.NewWatcher(root, func(changedPaths []string) {
-		f.emitEvent(EventWorkspaceTreeChanged, nil)
+		// Snapshot the active project fields under the lock (see CODE-mode
+		// callback for rationale).
+		f.activeProjectMu.RLock()
+		snapProjectID := f.activeProjectID
+		snapResearchRoot := f.activeResearchRoot
+		f.activeProjectMu.RUnlock()
+
+		researchScoped := f.emitResearchFileChanged(snapResearchRoot, snapProjectID, changedPaths)
+		f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
+			"research_scoped": researchScoped,
+		})
+
 		// Invalidate skill cache in case project-local skills changed.
 		f.invalidateSkillCache()
 		// Invalidate agent cache in case project-local agents changed.

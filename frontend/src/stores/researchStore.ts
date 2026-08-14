@@ -1,5 +1,9 @@
 import { create } from 'zustand'
-import type { ResearchProject, ResearchStatus } from '@/types/models'
+import type {
+  ResearchProject,
+  ResearchStatus,
+  ResearchGraphResponse,
+} from '@/types/models'
 
 // --- State types ---
 
@@ -21,6 +25,10 @@ interface ResearchState {
 interface ResearchActions {
   /** Replace the parsed status, stamping it with the projectId it belongs to. */
   loadStatus: (status: ResearchStatus, projectId: string) => void
+  /** Incrementally update only the active project's graph, metrics, brief,
+   *  and has_report fields. Preserves status, projectId, isLoading, error.
+   *  Used by the file-change update path to avoid full refetches. */
+  loadGraph: (graphResponse: ResearchGraphResponse) => void
   setLoading: (loading: boolean) => void
   setToggling: (toggling: boolean) => void
   setError: (error: string | null) => void
@@ -47,6 +55,41 @@ export const useResearchStore = create<ResearchStore>((set) => ({
 
   loadStatus: (status, projectId) =>
     set({ status, projectId, isLoading: false, error: null }),
+
+  loadGraph: (graphResponse) =>
+    set((state) => {
+      const root = state.status?.root
+      if (!root || root.projects.length === 0) return state
+
+      // Guard: only apply the update if the response belongs to the active
+      // project. Prevents stale incremental updates (e.g. from a previous
+      // project that was switched away from) from overwriting fresh data.
+      const activeProjectId = root.active_project_id
+      if (activeProjectId && graphResponse.project_id !== activeProjectId) {
+        return state
+      }
+
+      const projects = root.projects.map((p) => {
+        if (p.id !== graphResponse.project_id) return p
+        // Update only the fields that can change from file edits.
+        // Brief is preserved by the spread (it doesn't change from hypothesis
+        // card edits). Graph, metrics, and has_report are replaced.
+        return {
+          ...p,
+          graph: {
+            nodes: graphResponse.graph.nodes,
+            edges: graphResponse.graph.edges,
+          },
+          metrics: graphResponse.metrics,
+          has_report: graphResponse.has_report,
+        }
+      })
+
+      // Return a new root with updated projects (new reference for React).
+      const newRoot = { ...root, projects }
+      const newStatus = { ...state.status!, root: newRoot }
+      return { status: newStatus }
+    }),
 
   setLoading: (loading) => set({ isLoading: loading }),
 

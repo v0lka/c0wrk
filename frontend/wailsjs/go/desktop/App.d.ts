@@ -133,6 +133,8 @@ export function GetProxySettings():Promise<backend.ProxySettingsResponse>;
 
 export function GetRebaseMergeState():Promise<workspace.MergeRebaseState>;
 
+export function GetResearchGraph(arg1:string):Promise<backend.ResearchGraphDTO>;
+
 export function GetResearchStatus(arg1:string):Promise<backend.ResearchStatusDTO>;
 
 export function GetReview(arg1:string):Promise<review.Review>;

@@ -2,7 +2,7 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
-import type { ResearchStatus } from '@/types/models'
+import type { ResearchStatus, ResearchGraphResponse } from '@/types/models'
 
 /**
  * Enable RESEARCH mode for a project. Seeds the methodology skill-pack,
@@ -48,6 +48,22 @@ export async function getResearchStatus(projectId: string): Promise<ResearchStat
     return result as unknown as ResearchStatus
   } catch (err) {
     logger.error('Failed to get research status:', err)
+    throw err
+  }
+}
+
+/**
+ * Get only the hypothesis graph and metrics for a research project.
+ * Lightweight alternative to getResearchStatus for incremental file-change
+ * updates — avoids parsing the full research root (index, brief, prior-art).
+ */
+export async function getResearchGraph(projectId: string): Promise<ResearchGraphResponse> {
+  try {
+    const app = getApp()
+    const result = await app.GetResearchGraph(projectId)
+    return result as unknown as ResearchGraphResponse
+  } catch (err) {
+    logger.error('Failed to get research graph:', err)
     throw err
   }
 }

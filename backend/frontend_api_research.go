@@ -46,6 +46,36 @@ type ResearchStatusDTO struct {
 	SeedResult *ResearchSeedResultDTO `json:"seed_result,omitempty"`
 }
 
+// ResearchGraphDTO is the lightweight response for GetResearchGraph. It
+// carries only the hypothesis graph (nodes + edges) and computed metrics
+// for a single research project — no brief, seed result, or root metadata.
+// Used by the frontend's incremental file-change update path so the full
+// status fetch is avoided when only hypothesis cards changed.
+type ResearchGraphDTO struct {
+	ProjectID string          `json:"project_id"`
+	Graph     ResearchGraph   `json:"graph"`
+	Metrics   ResearchMetrics `json:"metrics"`
+	HasReport bool            `json:"has_report"`
+}
+
+// ResearchGraph holds the hypothesis graph (nodes and edges) for a single
+// research project.
+type ResearchGraph struct {
+	Nodes []research.HypothesisNode `json:"nodes"`
+	Edges []research.HypothesisEdge `json:"edges"`
+}
+
+// ResearchMetrics holds the computed progress metrics for a research project.
+// ByStatus keys are stringified HypothesisStatus values.
+type ResearchMetrics struct {
+	Total            int            `json:"total"`
+	ByStatus         map[string]int `json:"by_status"`
+	ConfirmationRate float64        `json:"confirmation_rate"`
+	Depth            int            `json:"depth"`
+	Breadth          int            `json:"breadth"`
+	ActiveFront      []string       `json:"active_front,omitempty"`
+}
+
 // ResearchSeedResultDTO mirrors research.SeedSkillsResult for the frontend:
 // which skills were newly seeded, overwritten, left current, or preserved
 // (user-owned).
@@ -114,6 +144,30 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 	if err := os.MkdirAll(researchRoot, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create research root %q: %w", researchRoot, err)
 	}
+
+	// Track the active research root so the workspace watcher callback can
+	// emit research:file_changed events for file modifications inside it.
+	f.activeProjectMu.Lock()
+	f.activeProjectID = projectID
+	f.activeProjectPath = proj.WorkspacePath
+	f.activeResearchRoot = researchRoot
+	f.activeProjectMu.Unlock()
+
+	// Recursively watch the research artifact tree so the file watcher
+	// detects edits to hypothesis cards / brief / graph in nested
+	// subdirectories (.research/R-NNN/hypotheses/…). The watcher was created
+	// at project-switch time but did not watch the research tree (research
+	// was off then); add it now. Best-effort: a nil watcher (e.g. early in
+	// startup) is skipped — switchProjectSetupWatcher picks it up on the next
+	// project switch.
+	f.watcherMu.Lock()
+	if f.watcher != nil {
+		if werr := f.watcher.WatchTree(researchRoot); werr != nil {
+			f.log().Debug("failed to watch research tree on enable",
+				"root", researchRoot, "error", werr)
+		}
+	}
+	f.watcherMu.Unlock()
 
 	// Seed the research skill-pack into the project's local skills directory.
 	skillsDir := config.ProjectSkillsPath(proj.WorkspacePath)
@@ -199,6 +253,34 @@ func (f *FrontendAPI) DisableResearch(projectID string) error {
 		return fmt.Errorf("failed to clear research root: %w", err)
 	}
 
+	// Clear the tracked research root so the watcher stops emitting
+	// research:file_changed events. Only activeResearchRoot is cleared — the
+	// active project ID/path must be preserved so git, workspace, and session
+	// operations continue to target the correct project after toggling
+	// RESEARCH off.
+	f.activeProjectMu.Lock()
+	researchRootToUnwatch := ""
+	if f.activeProjectID == projectID {
+		researchRootToUnwatch = f.activeResearchRoot
+		f.activeResearchRoot = ""
+	}
+	f.activeProjectMu.Unlock()
+
+	// Stop watching the research artifact tree so file edits inside it no
+	// longer emit research:file_changed. The tree was added by EnableResearch
+	// (or switchProjectSetupWatcher); it must be explicitly removed because
+	// fsnotify watches persist until Remove/Close.
+	if researchRootToUnwatch != "" {
+		f.watcherMu.Lock()
+		if f.watcher != nil {
+			if werr := f.watcher.UnwatchTree(researchRootToUnwatch); werr != nil {
+				f.log().Debug("failed to unwatch research tree on disable",
+					"root", researchRootToUnwatch, "error", werr)
+			}
+		}
+		f.watcherMu.Unlock()
+	}
+
 	f.emitEvent(EventResearchChanged, map[string]string{
 		"project_id": projectID,
 		"action":     "disabled",
@@ -244,6 +326,77 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 		ResearchRoot: proj.ResearchRoot,
 		Root:         root,
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// GetResearchGraph
+// ---------------------------------------------------------------------------
+
+// GetResearchGraph returns only the hypothesis graph and computed metrics for
+// a single research project. It produces a smaller wire payload than
+// GetResearchStatus (it omits the index, brief, prior-art, and seed result),
+// which is useful for incremental file-change updates where only hypothesis
+// cards have been modified. Note: the parse cost is identical to
+// GetResearchStatus — both call parseResearchRootBestEffort (which parses the
+// full research root); only the serialized JSON response is smaller.
+func (f *FrontendAPI) GetResearchGraph(projectID string) (*ResearchGraphDTO, error) {
+	if projectID == "" {
+		return nil, errors.New("project_id is required")
+	}
+	if f.projectManager == nil {
+		return nil, errors.New("project subsystem not initialized")
+	}
+
+	proj, err := f.loadProjectForResearch(projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Empty state when no research root is persisted.
+	if proj.ResearchRoot == "" {
+		return &ResearchGraphDTO{
+			ProjectID: projectID,
+		}, nil
+	}
+
+	// Parse the full root to get the active project.
+	root := f.parseResearchRootBestEffort(proj.ResearchRoot)
+	if root == nil {
+		return &ResearchGraphDTO{
+			ProjectID: projectID,
+		}, nil
+	}
+
+	active := research.PickActiveProject(root)
+	if active == nil {
+		return &ResearchGraphDTO{
+			ProjectID: projectID,
+		}, nil
+	}
+
+	// Build the response from the active project's graph and metrics.
+	dto := &ResearchGraphDTO{
+		ProjectID: active.ID,
+		HasReport: active.HasReport,
+	}
+
+	for _, n := range active.Graph.Nodes {
+		dto.Graph.Nodes = append(dto.Graph.Nodes, *n)
+	}
+	dto.Graph.Edges = active.Graph.Edges
+
+	m := active.Metrics
+	dto.Metrics.Total = m.Total
+	dto.Metrics.ByStatus = make(map[string]int, len(m.ByStatus))
+	for k, v := range m.ByStatus {
+		dto.Metrics.ByStatus[string(k)] = v
+	}
+	dto.Metrics.ConfirmationRate = m.ConfirmationRate
+	dto.Metrics.Depth = m.Depth
+	dto.Metrics.Breadth = m.Breadth
+	dto.Metrics.ActiveFront = m.ActiveFront
+
+	return dto, nil
 }
 
 // ---------------------------------------------------------------------------

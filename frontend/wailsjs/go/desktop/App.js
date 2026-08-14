@@ -250,6 +250,10 @@ export function GetRebaseMergeState() {
   return window['go']['desktop']['App']['GetRebaseMergeState']();
 }
 
+export function GetResearchGraph(arg1) {
+  return window['go']['desktop']['App']['GetResearchGraph'](arg1);
+}
+
 export function GetResearchStatus(arg1) {
   return window['go']['desktop']['App']['GetResearchStatus'](arg1);
 }

@@ -318,21 +318,29 @@ func (a *App) Startup(ctx context.Context) {
 		}
 	}
 
+	// Workspace tree changed emitter: called alongside fileChangeNotify to
+	// emit the workspace:tree_changed event so the frontend (research panel,
+	// file tree, etc.) refreshes its view after agent-initiated file writes.
+	fileChangedWorkspaceEmitter := func() {
+		a.emit("workspace:tree_changed")
+	}
+
 	application, err := a.buildApplication(backend.ApplicationConfig{
-		Config:               cfg,
-		Logger:               log,
-		AgentDir:             agentDir,
-		SessionStore:         sessStore,
-		TaskStore:            sessStore,
-		UIEmitFunc:           uiEmitFunc,
-		AskUserFunc:          askUserFunc,
-		PlanApprovalFunc:     planApprovalFunc,
-		GoalProposer:         goalProposer,
-		ConfirmFunc:          confirmFunc,
-		HITLHandler:          hitlHandler,
-		VectorSearchFunc:     vectorSearchFunc,
-		VectorSearchWaitFunc: vectorSearchWaitFunc,
-		FileChangeNotifyFunc: fileChangeNotify,
+		Config:                      cfg,
+		Logger:                      log,
+		AgentDir:                    agentDir,
+		SessionStore:                sessStore,
+		TaskStore:                   sessStore,
+		UIEmitFunc:                  uiEmitFunc,
+		AskUserFunc:                 askUserFunc,
+		PlanApprovalFunc:            planApprovalFunc,
+		GoalProposer:                goalProposer,
+		ConfirmFunc:                 confirmFunc,
+		HITLHandler:                 hitlHandler,
+		VectorSearchFunc:            vectorSearchFunc,
+		VectorSearchWaitFunc:        vectorSearchWaitFunc,
+		FileChangeNotifyFunc:        fileChangeNotify,
+		FileChangedWorkspaceEmitter: fileChangedWorkspaceEmitter,
 	}, log, startTime)
 	if err != nil {
 		return
