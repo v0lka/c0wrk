@@ -19,6 +19,7 @@ type CancelDelegationTool struct {
 func NewCancelDelegationTool() *CancelDelegationTool {
 	return &CancelDelegationTool{
 		BaseTool: &sdktools.BaseTool{
+			ToolGroup:       sdktools.GroupSystem,
 			ToolName:        "cancel_delegation",
 			ToolDescription: toolCancelDelegationDescription,
 			Schema: json.RawMessage(`{

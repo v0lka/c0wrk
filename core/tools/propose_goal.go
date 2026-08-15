@@ -56,6 +56,7 @@ type ProposeGoalTool struct {
 func NewProposeGoalTool() *ProposeGoalTool {
 	return &ProposeGoalTool{
 		BaseTool: &sdktools.BaseTool{
+			ToolGroup:       sdktools.GroupSystem,
 			ToolName:        "propose_goal",
 			ToolDescription: toolProposeGoalDescription,
 			Schema: json.RawMessage(`{

@@ -209,6 +209,21 @@ func UpdateSearchTool(registry *ToolRegistry, providerName, apiKey string, limit
 	UpdateSearchToolWithClient(registry, providerName, apiKey, limits, nil)
 }
 
+// UpdateShellTool re-registers the shell-execution tool (bash_exec on Unix,
+// posh_exec on Windows) with an updated command blacklist. The blacklist is
+// compiled into the tool at construction time, so a runtime edit of
+// security.groups.execute.blacklist takes effect by replacing the registered
+// instance — mirroring UpdateSearchTool. A pattern that fails to compile is
+// reported as an error and leaves the previously registered tool in place.
+func UpdateShellTool(registry *ToolRegistry, blacklist []string, timeouts builtins.BashTimeouts) error {
+	shellTool, err := newShellExecTool(blacklist, timeouts)
+	if err != nil {
+		return fmt.Errorf("shell tool: %w", err)
+	}
+	registry.Register(shellTool)
+	return nil
+}
+
 // UpdateSearchToolWithClient replaces or removes the web_search tool in the registry
 // with an optional HTTP client for proxy support.
 func UpdateSearchToolWithClient(registry *ToolRegistry, providerName, apiKey string, limits builtins.WebSearchLimits, client *http.Client) {

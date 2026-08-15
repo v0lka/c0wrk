@@ -8,7 +8,7 @@ The ReAct loop primitive (Thought → Action → Observation) is a **sp4rk engin
 
 - `core/conductor.go` — Conductor entry point: builds system prompt + tool set, injects the Delegation Registry, launches an `Executor.Run` as the Conductor
 - `core/tools/delegate.go` — `delegate` tool: builds and launches `Executor.Run` instances as subagents via `github.com/v0lka/sp4rk/agent.RunSubAgent`
-- `core/conductor.go` — `mandatorySubagentTools` / `resolveTaskTools` (read-only built-ins + MCP tools always unioned into a subagent's toolset so exploration/MCP capability is never dropped)
+- `core/conductor.go` — `resolveTaskTools` (group-based subagent toolset resolution: `all` | `read-only` | group-token list; the `system` group is always included — ADR-024)
 
 Engine files (`github.com/v0lka/sp4rk/agent/executor.go`, `executor_run.go`, `subagent.go`, `events.go`, `github.com/v0lka/sp4rk/tools/builtins/batch.go`) are documented in [the sp4rk executor spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/executor.md).
 
@@ -30,12 +30,15 @@ The Executor is the same primitive in both cases. The difference is the tool set
 
 c0wrk registers consumer-specific meta-tools (`delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `reflect`, `declare_step_complete`, `ask_user`) as non-cacheable via `Executor.AddNonCacheableTools`. These tools bypass `ToolResultCache` and Stage-1 truncation (their results are not large outputs worth fragmenting). The names are also passed to the sp4rk Conductor's `ConductorConfig.NonCacheableTools`. The default non-cacheable set (`tool_result_read`, `finish`, `batch`, etc.) is an engine concern — see the sp4rk executor spec.
 
-### Critical Always-Allowed Tools
+### Group-Based Subagent Toolsets
 
-`mandatorySubagentTools` in `core/conductor.go` (applied in `resolveTaskTools`) unions a mandatory base into every subagent's toolset whenever the Conductor grants an explicit tool list (the delegation `tools` array) or selects `"read-only"` mode, so exploration and MCP capability are never dropped. The base is every MCP-sourced tool plus `subagentReadOnlyToolNames`:
+`resolveTaskTools` in `core/conductor.go` resolves a delegation's toolset from **capability groups** (ADR-024) — never from tool-name lists:
 
-- **Read-only exploration**: `read_file`, `list_directory`, `glob`, `ripgrep`, `semantic_search`, `web_search`, `web_fetch`, `read_skill_resource`
-- **Internal/meta**: `finish`, `store_fact`, `search_facts`, `read_step_output`, `list_step_outputs`, `read_final_result`, `tool_result_read`, `update_checklist`, `declare_step_complete`, `ask_user`
+- `"all"` (default / absent) — full toolset minus Conductor-only tools
+- `"read-only"` — `system ∪ local_read ∪ remote_read` groups, **no MCP**
+- array of group tokens (`local-read`, `execute`, …; kebab-case, underscores normalized) — the always-included `system` group plus exactly the granted groups
+
+Unknown tokens fail closed (profile parser `ParseError`, delegate-task validation error, or resolver error — the delegation never launches with a silently widened/narrowed toolset).
 
 Mode-disabled tools (e.g. `glob`/`ripgrep`/`semantic_search` in No-Project/CHAT mode) are filtered out at selection time. The Conductor-only tools (`delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `reflect`) are stripped from subagents via `stripConductorOnlyTools`; `delegate`/`cancel_delegation` are re-added only when `allow_redelegate` is true (depth-capped).
 
@@ -65,7 +68,7 @@ The following are sp4rk engine primitives, documented in [the sp4rk executor spe
 
 - `finish` is ALWAYS available in every executor instance (never filtered out).
 - Consumer meta-tools registered via `AddNonCacheableTools` are excluded from caching and Stage-1 truncation.
-- `mandatorySubagentTools` (c0wrk, in `core/conductor.go`) are unioned into any explicit subagent tool list so read-only/MCP tools are never dropped.
+- Subagent toolsets resolve from capability groups (`resolveTaskTools`, ADR-024); the `system` group is always included.
 - Each executor instance has its own `ContextManager` (isolated memory); the Conductor context never shares with subagent contexts.
 - Untrusted tool output is wrapped in `<untrusted-content>` before reaching the LLM (engine behavior; c0wrk's session-root/auto-approval gating runs in the registry, see [../../architecture/security-model.md](../../architecture/security-model.md)).
 

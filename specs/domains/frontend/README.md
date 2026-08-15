@@ -174,7 +174,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 | `GetConfig()` RPC              | `default_model`    | Default model display      |
 | `GetConfig()` RPC              | provider `.models` | Per-provider enabled models|
 | `GetLogLevel()` RPC            | log level          | Console/log verbosity      |
-| `GetSecuritySettings()` RPC    | `default_policy`   | Tool confirmation UI state |
+| `GetSecuritySettings()` RPC    | `security.groups`  | Tool-group policy UI state (per-group policy + execute blacklist, ADR-024) |
 | `ListSkills()` RPC             | skills             | `/skill` autocomplete      |
 | `localStorage`                 | panel widths       | Persistent layout          |
 | `localStorage`                 | collapsed states   | Sidebar/file viewer state  |

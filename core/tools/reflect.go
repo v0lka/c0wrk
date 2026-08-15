@@ -34,6 +34,7 @@ type ReflectTool struct {
 func NewReflectTool() *ReflectTool {
 	return &ReflectTool{
 		BaseTool: &sdktools.BaseTool{
+			ToolGroup:       sdktools.GroupSystem,
 			ToolName:        "reflect",
 			ToolDescription: toolReflectDescription,
 			Schema: json.RawMessage(`{

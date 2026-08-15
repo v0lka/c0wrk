@@ -22,6 +22,7 @@ type appBuilder interface {
 	RebuildProxy(context.Context, *core.BuilderConfig) error
 	UpdateSearchTool(*core.BuilderConfig)
 	UpdateSecurityPolicies(*core.BuilderConfig)
+	UpdateShellBlacklist(*core.BuilderConfig) error
 	ReconfigureMCP(context.Context, *core.BuilderConfig) error
 	ListProviderModels(context.Context, string, *core.BuilderConfig) ([]string, error)
 	SetMCPWorkDir(string)

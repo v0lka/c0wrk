@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/v0lka/c0wrk/backend/config"
-	"github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // --- UpdateMCPServers ---
@@ -153,56 +153,54 @@ func TestGetToolList_NoApp(t *testing.T) {
 	}
 }
 
-func TestGetToolList_FiltersInternal(t *testing.T) {
-	// This test verifies IsInternalTool filtering logic at the FrontendAPI level.
-	// Internal tools (finish, tool_result_read, etc.) must never appear in the
-	// returned list. We test the filter predicate directly since constructing a
-	// full Application with registered tools requires heavyweight builder infra.
-	internalTools := []string{"finish", "tool_result_read", "update_checklist", "read_step_output", "read_final_result"}
-	for _, tool := range internalTools {
-		if !tools.IsInternalTool(tool) {
-			t.Errorf("IsInternalTool(%q) = false, want true", tool)
-		}
+func TestGetToolList_BuildToolInfos(t *testing.T) {
+	// buildToolInfos is the pure core of GetToolList (the full method needs a
+	// live Application with heavyweight builder infra). It must skip
+	// system-group tools BY GROUP, label every tool with its group, and
+	// resolve the effective policy from the live registry map.
+	descriptors := []sdktools.ToolDescriptor{
+		{Name: "bash_exec", Description: "shell", Source: "core", Group: sdktools.GroupExecute},
+		{Name: "read_file", Description: "read", Source: "core", Group: sdktools.GroupLocalRead},
+		{Name: "finish", Description: "internal", Source: "core", Group: sdktools.GroupSystem},
+		{Name: "mcp_query", Description: "mcp tool", Source: "mcp:test-server", Group: sdktools.GroupLocalMCP},
+		{Name: "web_fetch", Description: "web", Source: "core", Group: sdktools.GroupRemoteRead},
 	}
-	externalTools := []string{"bash_exec", "read_file", "write_file", "web_search"}
-	for _, tool := range externalTools {
-		if tools.IsInternalTool(tool) {
-			t.Errorf("IsInternalTool(%q) = true, want false", tool)
-		}
+	policies := map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupExecute:   sdktools.PolicyAlwaysDeny,
+		sdktools.GroupLocalRead: sdktools.PolicyAlwaysAllow,
+		sdktools.GroupLocalMCP:  sdktools.PolicyUserConfirm,
+		// GroupRemoteRead deliberately absent → fail-safe user_confirm.
 	}
-}
 
-// --- resolveToolPolicy ---
+	got := buildToolInfos(descriptors, policies)
 
-func TestResolveToolPolicy_Override(t *testing.T) {
-	f, _, _ := newTestAPI(t)
-	f.config.Security.ToolPolicies = map[string]config.ToolPolicyConfig{
-		"bash_exec": {Policy: "always_deny"},
+	byName := make(map[string]ToolInfo, len(got))
+	for _, info := range got {
+		byName[info.Name] = info
 	}
-	f.config.Security.DefaultPolicy = "always_allow"
-
-	if got := f.resolveToolPolicy("bash_exec"); got != "always_deny" {
-		t.Errorf("per-tool override not used: got %q", got)
+	if _, ok := byName["finish"]; ok {
+		t.Error("system-group tool 'finish' must be filtered out by group")
 	}
-}
-
-func TestResolveToolPolicy_FallsBackToDefault(t *testing.T) {
-	f, _, _ := newTestAPI(t)
-	f.config.Security.ToolPolicies = nil
-	f.config.Security.DefaultPolicy = "always_allow"
-
-	if got := f.resolveToolPolicy("bash_exec"); got != "always_allow" {
-		t.Errorf("fallback to default not used: got %q", got)
+	if len(got) != 4 {
+		t.Fatalf("expected 4 tools after filtering, got %d: %+v", len(got), got)
 	}
-}
 
-func TestResolveToolPolicy_UltimateDefault(t *testing.T) {
-	f, _, _ := newTestAPI(t)
-	f.config.Security.ToolPolicies = nil
-	f.config.Security.DefaultPolicy = ""
-
-	if got := f.resolveToolPolicy("bash_exec"); got != "user_confirm" {
-		t.Errorf("ultimate default not applied: got %q", got)
+	exec := byName["bash_exec"]
+	if exec.Group != "execute" || exec.Policy != "deny" {
+		t.Errorf("bash_exec = group %q policy %q, want execute/deny", exec.Group, exec.Policy)
+	}
+	read := byName["read_file"]
+	if read.Group != "local_read" || read.Policy != "allow" {
+		t.Errorf("read_file = group %q policy %q, want local_read/allow", read.Group, read.Policy)
+	}
+	mcpTool := byName["mcp_query"]
+	if mcpTool.Group != "local_mcp" || mcpTool.Policy != "user_confirm" {
+		t.Errorf("mcp_query = group %q policy %q, want local_mcp/user_confirm", mcpTool.Group, mcpTool.Policy)
+	}
+	// A group without a registry entry fails safe to user_confirm.
+	web := byName["web_fetch"]
+	if web.Policy != "user_confirm" {
+		t.Errorf("web_fetch policy = %q, want fail-safe user_confirm", web.Policy)
 	}
 }
 

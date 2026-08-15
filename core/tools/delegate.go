@@ -67,6 +67,7 @@ type DelegateTool struct {
 func NewDelegateTool() *DelegateTool {
 	return &DelegateTool{
 		BaseTool: &sdktools.BaseTool{
+			ToolGroup:       sdktools.GroupSystem,
 			ToolName:        "delegate",
 			ToolDescription: toolDelegateDescription,
 			Schema: json.RawMessage(`{
@@ -83,10 +84,10 @@ func NewDelegateTool() *DelegateTool {
 					"task": {"type": "string", "description": "Full task description with What/How/Where/Acceptance Criteria"},
 					"acceptance_criteria": {"type": "array", "items": {"type": "string"}, "description": "Optional explicit criteria the subagent verifies before finishing"},
 					"tools": {
-						"description": "Tool subset: \"all\" (default), \"read-only\", or array of tool names. Omit for all tools.",
+						"description": "Capability groups granted to the subagent, on top of the always-included system group (finish, facts, checklist, meta tools): \"all\" (default — full toolset minus Conductor-only tools), \"read-only\" (read-only exploration: local-read + remote-read, no MCP), or an array of group names to grant selectively (e.g. [\"local-read\",\"execute\"]).",
 						"anyOf": [
 							{"type": "string", "enum": ["all", "read-only"]},
-							{"type": "array", "items": {"type": "string"}}
+							{"type": "array", "items": {"type": "string", "enum": ["execute", "local-read", "local-write", "remote-read", "remote-write", "local-mcp", "remote-mcp", "system"]}}
 						]
 					},
 					"depends_on": {"type": "array", "items": {"type": "string"}, "description": "IDs of delegations that must complete before this one starts"},
@@ -206,6 +207,60 @@ func buildDelegateToolResult(results []DelegationResult) sdktools.ToolResult {
 	return sdktools.ToolResult{Content: sb.String()}
 }
 
+// validateDelegationTools validates a delegation task's `tools` field: nil
+// (omit), the strings ""/"all"/"read-only", or an array of capability-group
+// tokens (kebab or underscore spelling; canonicalized by the resolver). Any
+// other shape fails with a message listing the valid values — the alternative
+// (silently degrading to the safe minimum at launch time) hides a broken
+// toolset request from the Conductor.
+func validateDelegationTools(v any) error {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case string:
+		switch t {
+		case "", "all", "read-only":
+			return nil
+		}
+		return fmt.Errorf("tools: invalid value %q (valid strings: \"all\", \"read-only\"; or an array of group names: %s)",
+			t, strings.Join(agents.ToolGroupTokens(), ", "))
+	case []any:
+		for _, item := range t {
+			s, isString := item.(string)
+			if !isString {
+				return fmt.Errorf("tools: group names must be strings, got %T", item)
+			}
+			if err := validateDelegationGroupToken(s); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []string:
+		for _, s := range t {
+			if err := validateDelegationGroupToken(s); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("tools: unexpected type %T (valid: \"all\", \"read-only\", or an array of group names)", v)
+	}
+}
+
+// validateDelegationGroupToken checks a single tools-array element: it must be
+// a declared capability-group token. "all"/"read-only" are string-only values
+// and are rejected inside arrays with a targeted hint.
+func validateDelegationGroupToken(s string) error {
+	switch s {
+	case "all", "read-only":
+		return fmt.Errorf("tools: %q must be passed as a plain string, not inside an array", s)
+	}
+	if _, ok := agents.NormalizeToolGroupToken(s); !ok {
+		return fmt.Errorf("tools: unknown tool group %q (valid groups: %s)", s, strings.Join(agents.ToolGroupTokens(), ", "))
+	}
+	return nil
+}
+
 // validateDelegationTasks checks IDs are unique within the batch, depends_on
 // references exist (in the batch or the registry), the combined graph is
 // acyclic, modes are valid, and — when an AgentResolver is present — every
@@ -237,6 +292,13 @@ func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistr
 		}
 		if mode != "blocking" && mode != "async" {
 			return fmt.Errorf("task %q: mode must be \"blocking\" or \"async\", got %q", task.ID, mode)
+		}
+		// Validate the tools request up front: unknown strings/groups fail the
+		// whole delegate call with a message listing the valid values, instead
+		// of launching a subagent whose toolset silently collapsed to the
+		// always-granted system group (fail-closed, but loud).
+		if err := validateDelegationTools(task.Tools); err != nil {
+			return fmt.Errorf("task %q: %w", task.ID, err)
 		}
 		// Validate the agent profile name up front so an unknown name fails
 		// fast (no subagent launches) with a clear message. When no resolver

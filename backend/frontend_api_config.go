@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/core/smallllm"
-	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/llm"
 )
 
@@ -410,39 +411,59 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 	return nil
 }
 
-// GetSecuritySettings returns current security settings for the UI.
-// Internal tools are filtered out from the policy map.
+// GetSecuritySettings returns current security settings for the UI. The
+// response is group-based: every configurable tool group (seven of them — the
+// reserved "system" group is never configurable and never included) is
+// returned with its policy and, for the execute group, its command blacklist.
 func (f *FrontendAPI) GetSecuritySettings() SecuritySettingsResponse {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
 
 	if f.config == nil {
-		return SecuritySettingsResponse{DefaultPolicy: "user_confirm"}
+		// No config loaded yet: surface the canonical defaults so the UI has
+		// a complete group set to render (ApplyDefaults is idempotent and
+		// pure — the canonical source of the seven groups and their policies).
+		var defaults config.Config
+		config.ApplyDefaults(&defaults)
+		return SecuritySettingsResponse{
+			Groups: groupPoliciesToResponse(defaults.Security.Groups),
+		}
 	}
 	resp := SecuritySettingsResponse{
-		DefaultPolicy:              f.config.Security.DefaultPolicy,
-		ToolPolicies:               make(map[string]ToolPolicyResponse),
+		Groups:                     groupPoliciesToResponse(f.config.Security.Groups),
 		AutoApproveWorkspaceWrites: f.config.Security.AutoApproveWorkspaceWrites,
 		SmartApprove:               f.config.Security.SmartApprove,
 	}
 	if b := f.builder(); b != nil {
 		resp.JudgeAvailable = b.JudgeAvailable()
 	}
-	for name, cfg := range f.config.Security.ToolPolicies {
-		// Filter out internal tools
-		if tools.IsInternalTool(name) {
-			continue
-		}
-		resp.ToolPolicies[name] = ToolPolicyResponse{
-			Policy:    cfg.Policy,
-			Blacklist: cfg.Blacklist,
-		}
-	}
 	return resp
 }
 
-// UpdateSecuritySettings updates security settings at runtime.
-// Internal tools are silently stripped from incoming policy updates.
+// groupPoliciesToResponse converts config group policies into the frontend
+// response shape, deep-copying blacklist slices so the caller cannot mutate
+// the live config through the returned map.
+func groupPoliciesToResponse(groups map[string]config.GroupPolicyConfig) map[string]GroupPolicyResponse {
+	out := make(map[string]GroupPolicyResponse, len(groups))
+	for name, g := range groups {
+		entry := GroupPolicyResponse{Policy: g.Policy}
+		if len(g.Blacklist) > 0 {
+			entry.Blacklist = make([]string, len(g.Blacklist))
+			copy(entry.Blacklist, g.Blacklist)
+		}
+		out[name] = entry
+	}
+	return out
+}
+
+// UpdateSecuritySettings updates security settings at runtime. The incoming
+// groups map REPLACES the stored one (the frontend always sends the complete
+// set of seven groups). Validation mirrors config file validation: only the
+// fixed set of configurable groups is accepted, the reserved "system" group
+// is rejected, policies must use the group enum, a blacklist is an
+// execute-only feature, and blacklist patterns must compile. An invalid
+// payload mutates nothing. A changed execute-group blacklist re-registers the
+// shell tool so the edit applies without an app restart.
 func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -451,27 +472,30 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 		return errors.New("config not initialized")
 	}
 
-	// Update config — replace the full policy set so config stays in sync
-	// with the registry (the frontend always sends the complete set).
-	f.config.Security.DefaultPolicy = settings.DefaultPolicy
+	newGroups, err := responseToGroupPolicies(settings.Groups)
+	if err != nil {
+		return err
+	}
+
+	// Replace the full group set so config stays in sync with the registry
+	// (the frontend always sends the complete set).
+	prevBlacklist := f.config.Security.Groups[config.ToolGroupExecute].Blacklist
+	f.config.Security.Groups = newGroups
 	f.config.Security.AutoApproveWorkspaceWrites = settings.AutoApproveWorkspaceWrites
 	f.config.Security.SmartApprove = settings.SmartApprove
-	newPolicies := make(map[string]config.ToolPolicyConfig, len(settings.ToolPolicies))
-	for name, policyCfg := range settings.ToolPolicies {
-		// Silently skip internal tools
-		if tools.IsInternalTool(name) {
-			continue
-		}
-		newPolicies[name] = config.ToolPolicyConfig{
-			Policy:    policyCfg.Policy,
-			Blacklist: policyCfg.Blacklist,
-		}
-	}
-	f.config.Security.ToolPolicies = newPolicies
 
 	// Apply policies to the shared tool registry via the backend builder.
 	if b := f.builder(); b != nil {
-		b.UpdateSecurityPolicies(ToBuilderConfig(f.config))
+		builderCfg := ToBuilderConfig(f.config)
+		b.UpdateSecurityPolicies(builderCfg)
+		// The command blacklist is compiled into the shell tool instance at
+		// registration; re-register the tool when it changed so the edit
+		// takes effect immediately instead of after an app restart.
+		if !slices.Equal(prevBlacklist, newGroups[config.ToolGroupExecute].Blacklist) {
+			if err := b.UpdateShellBlacklist(builderCfg); err != nil {
+				return fmt.Errorf("failed to apply execute blacklist: %w", err)
+			}
+		}
 	}
 
 	if err := f.persistConfig(); err != nil {
@@ -479,6 +503,59 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 	}
 
 	return nil
+}
+
+// responseToGroupPolicies validates a frontend groups payload and converts it
+// into config group policies, deep-copying blacklist slices. The rules mirror
+// config.validate — the fixed set of configurable groups, the policy enum,
+// execute-only blacklists, and blacklist pattern compilation — so a UI-sourced
+// update can never store what the config loader would reject on the next
+// start.
+func responseToGroupPolicies(groups map[string]GroupPolicyResponse) (map[string]config.GroupPolicyConfig, error) {
+	out := make(map[string]config.GroupPolicyConfig, len(groups))
+	for name, g := range groups {
+		if name == config.ToolGroupSystem {
+			return nil, fmt.Errorf(
+				"security group %q is reserved for system tools and cannot be configured",
+				config.ToolGroupSystem,
+			)
+		}
+		if !config.IsConfigurableToolGroup(name) {
+			return nil, fmt.Errorf(
+				"unknown security group %q; must be one of: %s",
+				name, strings.Join(config.SortedToolGroupNames(), ", "),
+			)
+		}
+		switch g.Policy {
+		case config.GroupPolicyAllow, config.GroupPolicyUserConfirm, config.GroupPolicyDeny:
+		default:
+			return nil, fmt.Errorf(
+				"security group %q has invalid policy %q; must be one of: %s, %s, %s",
+				name, g.Policy, config.GroupPolicyAllow, config.GroupPolicyUserConfirm, config.GroupPolicyDeny,
+			)
+		}
+		if name != config.ToolGroupExecute && len(g.Blacklist) > 0 {
+			return nil, fmt.Errorf(
+				"security group %q does not support a blacklist; only %q does",
+				name, config.ToolGroupExecute,
+			)
+		}
+		for _, pattern := range g.Blacklist {
+			if _, err := regexp.Compile(pattern); err != nil {
+				return nil, fmt.Errorf(
+					"security group %q blacklist pattern %q does not compile: %w",
+					name, pattern, err,
+				)
+			}
+		}
+		entry := config.GroupPolicyConfig{Policy: g.Policy}
+		if len(g.Blacklist) > 0 {
+			entry.Blacklist = make([]string, len(g.Blacklist))
+			copy(entry.Blacklist, g.Blacklist)
+		}
+		out[name] = entry
+	}
+	return out, nil
 }
 
 // GetSmallLLMConfig returns the current effective small-LLM profile

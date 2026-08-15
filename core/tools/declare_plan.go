@@ -51,6 +51,7 @@ type ApprovalFunc func(ctx context.Context, planPath, planMarkdown string) (deci
 func NewDeclarePlanTool(approvalFunc ApprovalFunc) *DeclarePlanTool {
 	return &DeclarePlanTool{
 		BaseTool: &sdktools.BaseTool{
+			ToolGroup:       sdktools.GroupSystem,
 			ToolName:        "declare_plan",
 			ToolDescription: toolDeclarePlanDescription,
 			Schema: json.RawMessage(`{

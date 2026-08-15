@@ -395,14 +395,18 @@ export interface ProxySettingsRequest {
   tls_cert_dir: string
 }
 
-export interface ToolPolicyResponse {
-  policy: string
+export type GroupPolicy = 'allow' | 'user_confirm' | 'deny'
+
+/** One security tool group's policy (mirrors backend GroupPolicyResponse). */
+export interface SecurityGroupPolicy {
+  policy: GroupPolicy
+  /** Regex patterns of shell commands forced to confirmation; execute group only. */
   blacklist?: string[]
 }
 
 export interface SecuritySettingsResponse {
-  default_policy: string
-  tool_policies: Record<string, ToolPolicyResponse>
+  /** The seven configurable tool groups (the reserved "system" group is never sent). */
+  groups: Record<string, SecurityGroupPolicy>
   auto_approve_workspace_writes: boolean
   smart_approve: boolean
   /** Read-only: whether the strict judge is operational. Sent by the backend. */
@@ -454,6 +458,9 @@ export interface ToolInfo {
   name: string
   description: string
   source: string
+  /** Capability group (e.g. "execute", "local_read") — system tools are never listed. */
+  group: string
+  /** Effective group policy ("allow"|"user_confirm"|"deny"); display-only, not editable per tool. */
   policy: string
 }
 

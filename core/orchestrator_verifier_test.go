@@ -20,49 +20,78 @@ func descriptorSet(ds []sdktools.ToolDescriptor) map[string]bool {
 	return out
 }
 
-// TestVerifierToolFilter verifies the verifier toolset is exactly: read-only
-// tools + the shell tool + all MCP tools + declare_verification, with every
-// mutating tool and every goal-control tool hard-excluded (acceptance: "excludes
-// every mutating tool and every goal-control tool; includes read-only +
-// bash_exec/posh_exec + all MCP tools").
+// TestVerifierToolFilter verifies the verifier toolset is drawn from the
+// include GROUPS (system + local_read + remote_read + execute + local_mcp +
+// remote_mcp), with every mutating tool (local_write/remote_write groups) and
+// every goal-control tool hard-excluded (acceptance: "verifier include =
+// system+local_read+remote_read+execute+local_mcp+remote_mcp
+// (+declare_verification); hard-exclusion of mutating ones is preserved").
 func TestVerifierToolFilter(t *testing.T) {
 	descs := []sdktools.ToolDescriptor{
-		// Read-only / meta — must be included.
-		{Name: "read_file"}, {Name: "glob"}, {Name: "ripgrep"}, {Name: "finish"},
-		{Name: "store_fact"}, {Name: "search_facts"}, {Name: "ask_user"},
-		// Shell tool — must be included (re-run the verify clause).
-		{Name: activeShellToolName()},
-		// MCP tool — must be included regardless of name.
-		{Name: "mcp_linter", SourceCategory: sdktools.SourceCategoryMCP},
-		// Verdict channel — must be included (the verifier's only output).
-		{Name: "declare_verification"},
-		// Mutating tools — must be EXCLUDED.
-		{Name: "write_file"}, {Name: "edit_file"},
-		{Name: "delete_file"}, {Name: "delete_directory"}, {Name: "create_directory"},
-		// Goal-control / coordination tools — must be EXCLUDED.
-		{Name: "declare_goal_status"}, {Name: "declare_plan"}, {Name: "delegate"},
-		{Name: "subagent"}, {Name: "propose_goal"}, {Name: "reflect"},
-		{Name: "cancel_delegation"},
-		// declare_step_complete is in subagentReadOnlyToolNames but MUST be
-		// excluded here (the verifier doesn't run plan steps).
-		{Name: "declare_step_complete"},
-		// An arbitrary non-included tool — excluded by the include criteria.
-		{Name: "some_random_mutation_tool"},
+		// local_read — included.
+		{Name: "read_file", Group: sdktools.GroupLocalRead},
+		{Name: "glob", Group: sdktools.GroupLocalRead},
+		{Name: "ripgrep", Group: sdktools.GroupLocalRead},
+		// remote_read — included.
+		{Name: "web_fetch", Group: sdktools.GroupRemoteRead},
+		// system — included (meta tools).
+		{Name: "finish", Group: sdktools.GroupSystem},
+		{Name: "store_fact", Group: sdktools.GroupSystem},
+		{Name: "search_facts", Group: sdktools.GroupSystem},
+		{Name: "ask_user", Group: sdktools.GroupSystem},
+		{Name: "read_step_output", Group: sdktools.GroupSystem},
+		{Name: "batch", Group: sdktools.GroupSystem},
+		{Name: "semantic_search", Group: sdktools.GroupSystem},
+		// execute — included (re-run the verify clause).
+		{Name: activeShellToolName(), Group: sdktools.GroupExecute},
+		// MCP groups — included regardless of tool name.
+		{Name: "mcp_linter", Group: sdktools.GroupLocalMCP, SourceCategory: sdktools.SourceCategoryMCP},
+		{Name: "mcp_remote", Group: sdktools.GroupRemoteMCP, SourceCategory: sdktools.SourceCategoryMCP},
+		// Verdict channel — included (the verifier's only output).
+		{Name: "declare_verification", Group: sdktools.GroupSystem},
+		// local_write / remote_write — EXCLUDED by group.
+		{Name: "write_file", Group: sdktools.GroupLocalWrite},
+		{Name: "edit_file", Group: sdktools.GroupLocalWrite},
+		{Name: "delete_file", Group: sdktools.GroupLocalWrite},
+		{Name: "delete_directory", Group: sdktools.GroupLocalWrite},
+		{Name: "create_directory", Group: sdktools.GroupLocalWrite},
+		{Name: "deploy_hook", Group: sdktools.GroupRemoteWrite},
+		// Goal-control / coordination tools — EXCLUDED by name even though
+		// their group (system) is included.
+		{Name: "declare_goal_status", Group: sdktools.GroupSystem},
+		{Name: "declare_plan", Group: sdktools.GroupSystem},
+		{Name: "execute_plan", Group: sdktools.GroupSystem},
+		{Name: "delegate", Group: sdktools.GroupSystem},
+		{Name: "subagent", Group: sdktools.GroupSystem},
+		{Name: "propose_goal", Group: sdktools.GroupSystem},
+		{Name: "reflect", Group: sdktools.GroupSystem},
+		{Name: "cancel_delegation", Group: sdktools.GroupSystem},
+		{Name: "declare_step_complete", Group: sdktools.GroupSystem},
+		// Untagged tool — matches no include group (fail-closed).
+		{Name: "untagged_tool"},
 	}
 
 	got := verifierToolFilter(descs, nil)
 	set := descriptorSet(got)
 
-	for _, want := range []string{"read_file", "glob", "ripgrep", "finish", "store_fact", "search_facts", "ask_user", activeShellToolName(), "mcp_linter", "declare_verification"} {
+	for _, want := range []string{
+		"read_file", "glob", "ripgrep", "web_fetch", "finish", "store_fact",
+		"search_facts", "ask_user", "read_step_output", "batch", "semantic_search",
+		activeShellToolName(), "mcp_linter", "mcp_remote", "declare_verification",
+	} {
 		if !set[want] {
 			t.Errorf("verifierToolFilter: expected %q INCLUDED, got %v", want, set)
 		}
 	}
 
 	for _, unwanted := range []string{
-		"write_file", "edit_file", "delete_file", "delete_directory", "create_directory",
-		"declare_goal_status", "declare_plan", "delegate", "subagent", "propose_goal",
-		"reflect", "cancel_delegation", "declare_step_complete", "some_random_mutation_tool",
+		// Mutating groups.
+		"write_file", "edit_file", "delete_file", "delete_directory", "create_directory", "deploy_hook",
+		// Goal-control / coordination tools.
+		"declare_goal_status", "declare_plan", "execute_plan", "delegate", "subagent",
+		"propose_goal", "reflect", "cancel_delegation", "declare_step_complete",
+		// Untagged.
+		"untagged_tool",
 	} {
 		if set[unwanted] {
 			t.Errorf("verifierToolFilter: expected %q EXCLUDED, got %v", unwanted, set)
@@ -70,26 +99,42 @@ func TestVerifierToolFilter(t *testing.T) {
 	}
 }
 
-// TestVerifierToolFilter_DeclareStepCompleteExcludedEvenThoughReadOnly is a
-// focused regression: declare_step_complete lives in subagentReadOnlyToolNames
-// (an include criterion) but the verifier must NEVER have it. The hard-exclude
-// set must win over the include criteria.
-func TestVerifierToolFilter_DeclareStepCompleteExcludedEvenThoughReadOnly(t *testing.T) {
-	_, isReadOnly := subagentReadOnlyToolNames["declare_step_complete"]
-	if !isReadOnly {
-		t.Fatal("precondition: declare_step_complete should be in subagentReadOnlyToolNames for this regression to be meaningful")
+// TestVerifierToolFilter_DeclareStepCompleteExcludedEvenThoughSystemGrouped is
+// a focused regression: declare_step_complete carries an INCLUDED group
+// (system) but the verifier must NEVER have it. The name-based hard-exclude
+// must win over the group include.
+func TestVerifierToolFilter_DeclareStepCompleteExcludedEvenThoughSystemGrouped(t *testing.T) {
+	if _, isExcluded := verifierExcludedToolNames["declare_step_complete"]; !isExcluded {
+		t.Fatal("precondition: declare_step_complete should be in verifierExcludedToolNames for this regression to be meaningful")
 	}
-	got := verifierToolFilter([]sdktools.ToolDescriptor{{Name: "declare_step_complete"}}, nil)
+	got := verifierToolFilter([]sdktools.ToolDescriptor{
+		{Name: "declare_step_complete", Group: sdktools.GroupSystem},
+	}, nil)
 	if len(got) != 0 {
 		t.Errorf("expected declare_step_complete excluded, got %d descriptor(s)", len(got))
 	}
 }
 
+// TestVerifierToolFilter_ExecutePlanExcludedEvenThoughSystemGrouped guards the
+// group-migration delta: execute_plan is a system-group tool that the OLD
+// include set (name-based) never granted; it launches plan-step subagents with
+// full toolsets and must stay excluded under the group-based include too.
+func TestVerifierToolFilter_ExecutePlanExcludedEvenThoughSystemGrouped(t *testing.T) {
+	got := verifierToolFilter([]sdktools.ToolDescriptor{
+		{Name: "execute_plan", Group: sdktools.GroupSystem},
+	}, nil)
+	if len(got) != 0 {
+		t.Errorf("expected execute_plan excluded, got %d descriptor(s)", len(got))
+	}
+}
+
 // TestVerifierToolFilter_DisabledToolsDropped verifies mode-disabled tools are
-// dropped even when they match an include criterion.
+// dropped even when their group is included.
 func TestVerifierToolFilter_DisabledToolsDropped(t *testing.T) {
 	descs := []sdktools.ToolDescriptor{
-		{Name: "read_file"}, {Name: "glob"}, {Name: activeShellToolName()},
+		{Name: "read_file", Group: sdktools.GroupLocalRead},
+		{Name: "glob", Group: sdktools.GroupLocalRead},
+		{Name: activeShellToolName(), Group: sdktools.GroupExecute},
 	}
 	// read_file and glob disabled (e.g. CHAT / No-Project mode disables glob).
 	got := verifierToolFilter(descs, map[string]bool{"read_file": true, "glob": true})
@@ -103,11 +148,11 @@ func TestVerifierToolFilter_DisabledToolsDropped(t *testing.T) {
 }
 
 // TestVerifierToolFilter_DeclareVerificationAlwaysIncluded verifies the verdict
-// channel is present even when the input list provides it standalone.
+// channel is present even when it is the only included tool provided.
 func TestVerifierToolFilter_DeclareVerificationAlwaysIncluded(t *testing.T) {
 	got := verifierToolFilter([]sdktools.ToolDescriptor{
-		{Name: "declare_verification"},
-		{Name: "write_file"}, // excluded
+		{Name: "declare_verification", Group: sdktools.GroupSystem},
+		{Name: "write_file", Group: sdktools.GroupLocalWrite}, // excluded
 	}, nil)
 	set := descriptorSet(got)
 	if !set["declare_verification"] {
@@ -119,10 +164,12 @@ func TestVerifierToolFilter_DeclareVerificationAlwaysIncluded(t *testing.T) {
 }
 
 // TestVerifierToolFilter_DeduplicatesByName verifies duplicate tool names
-// collapse to a single entry (matches mandatorySubagentTools semantics).
+// collapse to a single entry (LLM providers reject duplicate tool names).
 func TestVerifierToolFilter_DeduplicatesByName(t *testing.T) {
 	got := verifierToolFilter([]sdktools.ToolDescriptor{
-		{Name: "read_file"}, {Name: "read_file"}, {Name: "finish"},
+		{Name: "read_file", Group: sdktools.GroupLocalRead},
+		{Name: "read_file", Group: sdktools.GroupLocalRead},
+		{Name: "finish", Group: sdktools.GroupSystem},
 	}, nil)
 	if len(got) != 2 {
 		t.Errorf("expected dedup to 2 tools, got %d", len(got))
@@ -210,65 +257,86 @@ func TestResolveGoalVerifier_Injectable(t *testing.T) {
 	}
 }
 
-// TestVerifierExcludedToolNames_ContainsRequiredMutatingAndControlTools is a
-// completeness guard: every mutating tool and every goal-control tool named in
-// the spec MUST appear in the exclude set, so none can ever leak into the
-// verifier's toolset by accident.
-func TestVerifierExcludedToolNames_ContainsRequiredMutatingAndControlTools(t *testing.T) {
-	required := []string{
-		// Mutating
-		"write_file", "edit_file", "delete_file", "delete_directory", "create_directory",
+// TestVerifierExclusions_ContainRequiredControlToolsAndMutatingGroups is a
+// completeness guard: every goal-control tool named in the spec MUST appear in
+// the name-based exclude set, and both mutating groups MUST appear in the
+// group-based exclude set, so none can ever leak into the verifier's toolset.
+func TestVerifierExclusions_ContainRequiredControlToolsAndMutatingGroups(t *testing.T) {
+	requiredNames := []string{
 		// Goal-control
-		"declare_goal_status", "declare_plan", "delegate", "subagent",
+		"declare_goal_status", "declare_plan", "execute_plan", "delegate", "subagent",
 		"propose_goal", "reflect", "declare_step_complete", "cancel_delegation",
 	}
-	for _, name := range required {
+	for _, name := range requiredNames {
 		if _, ok := verifierExcludedToolNames[name]; !ok {
 			t.Errorf("verifierExcludedToolNames missing required entry %q", name)
+		}
+	}
+	for _, g := range []sdktools.ToolGroup{sdktools.GroupLocalWrite, sdktools.GroupRemoteWrite} {
+		if _, ok := verifierExcludedGroups[g]; !ok {
+			t.Errorf("verifierExcludedGroups missing mutating group %q", g)
+		}
+		if _, included := verifierIncludeGroups[g]; included {
+			t.Errorf("mutating group %q must NOT be in verifierIncludeGroups", g)
 		}
 	}
 }
 
 // ----------------------------------------------------------------------------
-// Re-derivation mode toolset tests (step_3)
+// Re-derivation mode toolset tests
 //
 // These verify the mode-branching contract: the re_derivation verifier toolset
-// is the executable toolset PLUS delegate + read_step_output, while every
-// mutating tool and every OTHER goal-control tool remains excluded.
+// is the executable toolset PLUS delegate, while every mutating tool and every
+// OTHER goal-control tool remains excluded.
 // ----------------------------------------------------------------------------
 
 // verifierFixtureDescriptors is the canonical tool list both modes filter over.
 func verifierFixtureDescriptors() []sdktools.ToolDescriptor {
 	return []sdktools.ToolDescriptor{
-		// Read-only / meta — included in both modes.
-		{Name: "read_file"}, {Name: "glob"}, {Name: "ripgrep"}, {Name: "finish"},
-		{Name: "store_fact"}, {Name: "search_facts"}, {Name: "ask_user"},
-		// Step-output / final-result readers — included in both modes.
-		{Name: "read_step_output"}, {Name: "read_final_result"},
-		// Shell tool — included in both modes (re-run the verify clause).
-		{Name: activeShellToolName()},
-		// MCP tool — included in both modes regardless of name.
-		{Name: "mcp_linter", SourceCategory: sdktools.SourceCategoryMCP},
-		// Verdict channel — included in both modes (the verifier's output).
-		{Name: "declare_verification"},
-		// delegate — included ONLY in re_derivation mode.
-		{Name: "delegate"},
-		// Mutating tools — excluded in both modes.
-		{Name: "write_file"}, {Name: "edit_file"},
-		{Name: "delete_file"}, {Name: "delete_directory"}, {Name: "create_directory"},
+		// local_read / remote_read / system — included in both modes.
+		{Name: "read_file", Group: sdktools.GroupLocalRead},
+		{Name: "glob", Group: sdktools.GroupLocalRead},
+		{Name: "ripgrep", Group: sdktools.GroupLocalRead},
+		{Name: "web_fetch", Group: sdktools.GroupRemoteRead},
+		{Name: "finish", Group: sdktools.GroupSystem},
+		{Name: "store_fact", Group: sdktools.GroupSystem},
+		{Name: "search_facts", Group: sdktools.GroupSystem},
+		{Name: "ask_user", Group: sdktools.GroupSystem},
+		// Step-output / final-result readers (system) — included in both modes.
+		{Name: "read_step_output", Group: sdktools.GroupSystem},
+		{Name: "read_final_result", Group: sdktools.GroupSystem},
+		// Shell tool (execute) — included in both modes (re-run the verify clause).
+		{Name: activeShellToolName(), Group: sdktools.GroupExecute},
+		// MCP tools — included in both modes regardless of name.
+		{Name: "mcp_linter", Group: sdktools.GroupLocalMCP, SourceCategory: sdktools.SourceCategoryMCP},
+		// Verdict channel (system) — included in both modes.
+		{Name: "declare_verification", Group: sdktools.GroupSystem},
+		// delegate (system) — included ONLY in re_derivation mode.
+		{Name: "delegate", Group: sdktools.GroupSystem},
+		// Mutating tools — excluded in both modes (by group).
+		{Name: "write_file", Group: sdktools.GroupLocalWrite},
+		{Name: "edit_file", Group: sdktools.GroupLocalWrite},
+		{Name: "delete_file", Group: sdktools.GroupLocalWrite},
+		{Name: "delete_directory", Group: sdktools.GroupLocalWrite},
+		{Name: "create_directory", Group: sdktools.GroupLocalWrite},
 		// Goal-control / coordination tools (other than delegate) — excluded in both.
-		{Name: "declare_goal_status"}, {Name: "declare_plan"}, {Name: "subagent"},
-		{Name: "propose_goal"}, {Name: "reflect"}, {Name: "cancel_delegation"},
-		{Name: "declare_step_complete"},
+		{Name: "declare_goal_status", Group: sdktools.GroupSystem},
+		{Name: "declare_plan", Group: sdktools.GroupSystem},
+		{Name: "execute_plan", Group: sdktools.GroupSystem},
+		{Name: "subagent", Group: sdktools.GroupSystem},
+		{Name: "propose_goal", Group: sdktools.GroupSystem},
+		{Name: "reflect", Group: sdktools.GroupSystem},
+		{Name: "cancel_delegation", Group: sdktools.GroupSystem},
+		{Name: "declare_step_complete", Group: sdktools.GroupSystem},
 	}
 }
 
-// TestVerifierReDerivationToolFilter_AddsDelegateAndStepOutput verifies the
-// headline re_derivation acceptance criterion: delegate + read_step_output are
-// INCLUDED (re_derivation needs delegate to spin up a fresh read-only run and
-// read_step_output to read it), while every mutating tool and every OTHER
-// goal-control tool remains excluded.
-func TestVerifierReDerivationToolFilter_AddsDelegateAndStepOutput(t *testing.T) {
+// TestVerifierReDerivationToolFilter_AddsDelegate verifies the headline
+// re_derivation acceptance criterion: delegate is INCLUDED (re_derivation needs
+// it to spin up a fresh read-only run; read_step_output reads that run's
+// result), while every mutating tool and every OTHER goal-control tool remains
+// excluded.
+func TestVerifierReDerivationToolFilter_AddsDelegate(t *testing.T) {
 	got := verifierReDerivationToolFilter(verifierFixtureDescriptors(), nil)
 	set := descriptorSet(got)
 
@@ -277,9 +345,9 @@ func TestVerifierReDerivationToolFilter_AddsDelegateAndStepOutput(t *testing.T) 
 			t.Errorf("re_derivation: expected %q INCLUDED, got %v", want, set)
 		}
 	}
-	// The re_derivation toolset still carries the shared read-only/test/verdict
+	// The re_derivation toolset still carries the shared read/test/verdict
 	// tools so the verifier can corroborate the delegated run's findings.
-	for _, want := range []string{"read_file", "glob", "finish", activeShellToolName(), "mcp_linter", "declare_verification"} {
+	for _, want := range []string{"read_file", "glob", "web_fetch", "finish", activeShellToolName(), "mcp_linter", "declare_verification"} {
 		if !set[want] {
 			t.Errorf("re_derivation: expected shared read-only/test tool %q INCLUDED, got %v", want, set)
 		}
@@ -295,7 +363,7 @@ func TestVerifierReDerivationToolFilter_AddsDelegateAndStepOutput(t *testing.T) 
 	}
 	// Every OTHER goal-control tool excluded — only delegate is granted.
 	for _, unwanted := range []string{
-		"declare_goal_status", "declare_plan", "subagent", "propose_goal",
+		"declare_goal_status", "declare_plan", "execute_plan", "subagent", "propose_goal",
 		"reflect", "cancel_delegation", "declare_step_complete",
 	} {
 		if set[unwanted] {
@@ -312,10 +380,10 @@ func TestVerifierToolFilter_ExecutableExcludesDelegate(t *testing.T) {
 	if set["delegate"] {
 		t.Error("executable mode: delegate must be EXCLUDED (it is granted only in re_derivation mode)")
 	}
-	// read_step_output is still present (it is a read-only tool, unrelated to
+	// read_step_output is still present (it is a system tool, unrelated to
 	// the delegate grant).
 	if !set["read_step_output"] {
-		t.Error("executable mode: read_step_output should still be present (it is a read-only tool)")
+		t.Error("executable mode: read_step_output should still be present (it is a system tool)")
 	}
 }
 
@@ -337,21 +405,15 @@ func TestVerifierReDerivationToolFilter_DelegateDisabledByMode(t *testing.T) {
 
 // TestVerifierReDerivationExcludedToolNames_OmitsDelegateOnly is a
 // completeness guard on the re_derivation exclusion set: it is the executable
-// exclusion set MINUS delegate (the one coordination tool granted in that mode),
-// and every mutating tool + every other goal-control tool is still present.
+// exclusion set MINUS delegate (the one coordination tool granted in that
+// mode), and every other goal-control tool is still present.
 func TestVerifierReDerivationExcludedToolNames_OmitsDelegateOnly(t *testing.T) {
 	// delegate is NOT in the re_derivation exclusion set (it is granted).
 	if _, present := verifierReDerivationExcludedToolNames["delegate"]; present {
 		t.Error("re_derivation exclusion set must NOT contain delegate (it is granted in that mode)")
 	}
-	// Every mutating tool excluded.
-	for _, name := range []string{"write_file", "edit_file", "delete_file", "delete_directory", "create_directory"} {
-		if _, ok := verifierReDerivationExcludedToolNames[name]; !ok {
-			t.Errorf("re_derivation exclusion set missing mutating tool %q", name)
-		}
-	}
 	// Every OTHER goal-control tool excluded (the full executable set minus delegate).
-	for _, name := range []string{"declare_goal_status", "declare_plan", "subagent", "propose_goal", "reflect", "cancel_delegation", "declare_step_complete"} {
+	for _, name := range []string{"declare_goal_status", "declare_plan", "execute_plan", "subagent", "propose_goal", "reflect", "cancel_delegation", "declare_step_complete"} {
 		if _, ok := verifierReDerivationExcludedToolNames[name]; !ok {
 			t.Errorf("re_derivation exclusion set missing goal-control tool %q", name)
 		}

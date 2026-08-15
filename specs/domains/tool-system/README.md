@@ -27,12 +27,13 @@ Engine files (`github.com/v0lka/sp4rk/tools/tool.go`, `safety.go`, `registry.go`
 │  │  (basic store: Register, Get, List, Execute) │   │
 │  └─────────────────────────────────────────────┘   │
 │                                                     │
-│  + resolvePolicy()        policy resolution chain     │
+│  + groupPolicy()         group policy resolution (security.groups)        │
 │  + confirmAndExecute()    user confirmation flow      │
 │  + SetJudge()             LLM safety evaluation        │
 │  + SetPreExecuteHook()    pre-execution gate          │
 │  + SetToolFilter()         registration filter         │
-│  + SetSkillPolicyOverrides()  skill-derived policy layer │
+│  + SetGroupPolicies()     group → policy map (ADR-024)      │
+│  + GroupPolicies()        read back group policies         │
 │  + RegisterWithSource()   filtered registration       │
 │  + SetDisabledTools()     block tools by name (e.g., No Project) │
 │  + DisabledTools()        read disabled-tool set       │
@@ -49,28 +50,31 @@ core ToolRegistry.Execute(ctx, name, input)
 │
 ├─ 1. Lookup tool by name → not found? return error result
 ├─ 2. Required-field validation (JSON-Schema "required" params; fail-closed) → missing? return error result
-├─ 3. Disabled tool (No Project mode)? → return error result (applies to ALL tools including internal)
-├─ 4. Internal tool? → execute immediately (bypass remaining policy/judge/hook checks)
+├─ 3. Disabled tool (No Project mode)? → return error result (applies to ALL tools including system-group)
+├─ 4. Tool's group == system? → execute immediately (bypass remaining policy/judge/hook checks)
 ├─ 5. PostExecuteHook deferred (runs on every later return path)
-├─ 6. Extra bash blacklist match? → return error result (per-session, e.g., No Project blocks dev commands)
+├─ 6. Extra shell blacklist match? → return error result (per-session, e.g., No Project blocks dev commands; reason names the matched pattern)
 ├─ 7. PreExecuteHook (blocking gate, e.g., index ready)
-├─ 8. Symlink Gate: detect symlinks in input paths
-│      ├─ Symlinks found → force confirmation (unless always_deny)
-│      └─ No symlinks → continue
-├─ 9. resolvePolicy: per-tool > skill > default > tool's own
-└─ 10. Apply policy:
-      ├─ AlwaysAllow → execute (unless ToolJudger flags)
-      ├─ AlwaysDeny → error result
-      └─ UserConfirm → confirmFunc blocks → execute or deny
+├─ 8. Group policy == deny? → return error result (hard block, names the group)
+├─ 9. Gather safety signals once: tool Judge outcome (hard: blacklist/SSRF; soft: path containment) + symlink analysis (escape/unresolvable = hard; in-roots = not a concern)
+└─ 10. Branch on the tool's GROUP policy:
+      ├─ allow → hard reason ⇒ confirm (DisableJudge=true, never passes Smart Approve)
+      │           soft reason ⇒ Smart Approve may allow, else confirm
+      │           clean ⇒ execute
+      ├─ deny → error result (step 8)
+      └─ user_confirm → local_write + auto_approve_workspace_writes + Judge.Allow ⇒ execute
+                         hard reason ⇒ confirm (DisableJudge=true)
+                         otherwise Smart Approve (ALLOW ⇒ execute, else confirm; off ⇒ plain confirm)
 ```
 
-The policy resolution, auto-approval (session roots), and symlink gate are c0wrk's session-security layer — detailed in [../../architecture/security-model.md](../../architecture/security-model.md).
+The group policy resolution, auto-approval (session roots), and symlink gate are c0wrk's session-security layer — detailed in [../../architecture/security-model.md](../../architecture/security-model.md). The model, gate order, and migration are decided in [ADR-024](../../decisions/024-group-policies.md).
 
 ## Invariants
 
 - Tool names are unique within the registry
-- Internal tools bypass policy and judge checks. The set (in `core/tools/registry.go` `internalTools`) is: `ask_user`, `delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `propose_goal`, `declare_goal_status`, `declare_verification`, `reflect`, `finish`, `list_step_outputs`, `read_step_output`, `read_final_result`, `read_skill_resource`, `read_attachment`, `search_facts`, `semantic_search`, `update_checklist`, `declare_step_complete`, `store_fact`, `tool_result_read`, and `batch` (`sdktools.ToolBatch`). The disabled-tool check (No Project mode) applies to all tools including internal ones, but the extra-bash-blacklist check runs AFTER the internal-tool bypass. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
-- The symlink gate runs before policy resolution for every non-internal tool call
+- `system`-group tools bypass policy and judge checks — membership is declared on the tool itself (`ToolGroup: sdktools.GroupSystem` on `BaseTool`), not an out-of-band name set. The disabled-tool check (No Project mode) applies to all tools including system-group ones, but the extra-bash-blacklist check runs AFTER the system-group bypass. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
+- A tool with an undeclared group matches no allow-list (fail-closed for group filtering, subagent budgets, verifier sets)
+- The symlink analysis runs during safety-signal gathering for every non-system tool call; only escapes out of the session roots (or unresolvable paths) are hard reasons
 - MCP tools carry source category `mcp` (source tag = the MCP server's name); core built-in tools carry source category `core`
 - Disabled tools are blocked at execution time; `SetDisabledTools`/`DisabledTools` deep-copy the map to prevent concurrent mutation
 - The registry is thread-safe (sync.RWMutex)
@@ -82,11 +86,17 @@ From `config.yaml`:
 
 ```yaml
 security:
-  default_policy: "user_confirm"
   smart_approve: false  # strict OWASP ASI judge for effective user_confirm (opt-in)
-  tool_policies:
-    bash_exec: { policy: "user_confirm" }  # key matches the active shell tool: bash_exec (Unix) / posh_exec (Windows)
-    write_file: { policy: "user_confirm" }
+  groups:               # per-capability-group policy (ADR-024); system is reserved
+    local_read:  { policy: allow }
+    remote_read: { policy: allow }
+    execute:                   # bash_exec (Unix) / posh_exec (Windows); only group with a blacklist
+      policy: user_confirm
+      blacklist: ["rm\\s+-rf\\s+/", "sudo\\s+"]
+    local_write: { policy: user_confirm }
+    local_mcp:   { policy: user_confirm }
+    remote_mcp:  { policy: user_confirm }
+    remote_write: { policy: user_confirm }
 
 toolLimits:
   readDefaultLines: 2000

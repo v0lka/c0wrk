@@ -1,6 +1,7 @@
 package config
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/v0lka/c0wrk/core/vectorindex"
@@ -216,171 +217,26 @@ func ApplyDefaults(cfg *Config) {
 		t := true
 		cfg.Security.InjectionDefense.Enabled = &t
 	}
-	if cfg.Security.DefaultPolicy == "" {
-		cfg.Security.DefaultPolicy = "user_confirm"
+
+	// Security tool-group defaults (security.groups). Each configurable
+	// group is created with its default policy unless the user set one; the
+	// execute group also receives the default command blacklist (the union of
+	// the bash/posh lists) unless the user provided one.
+	if cfg.Security.Groups == nil {
+		cfg.Security.Groups = make(map[string]GroupPolicyConfig)
 	}
-	if cfg.Security.ToolPolicies == nil {
-		cfg.Security.ToolPolicies = make(map[string]ToolPolicyConfig)
-	}
-	// Default tool policies
-	if _, ok := cfg.Security.ToolPolicies["bash_exec"]; !ok {
-		cfg.Security.ToolPolicies["bash_exec"] = ToolPolicyConfig{
-			Policy: "user_confirm",
-			Blacklist: []string{
-				// The blacklist is organized into four destructive categories
-				// that are mirrored (conceptually) by the posh_exec blacklist
-				// below. Keep the categories in sync when editing either list.
-				// (See TestApplyDefaults_BlacklistCategorySymmetry.)
-
-				// --- Destructive file/disk operations ---
-				`rm\s+-rf\s+/`,
-				`mkfs`,
-				`dd\s+if=`,
-				// `dd of=` writing to a block or kernel-memory device destroys the
-				// disk or escalates privileges (e.g. `dd of=/dev/sda bs=1M` with
-				// no if=, which the `dd\s+if=` pattern above misses). Shares the
-				// same device-prefix list as the narrowed /dev/ redirect above so
-				// benign targets like `dd of=/dev/null` stay unblocked. `[^|]*`
-				// prevents the match from jumping across a pipe (mirrors the
-				// existing `(tee|dd)\b[^|]*/etc/(passwd|shadow|sudoers)` pattern).
-				`dd\b[^|]*\bof=/dev/(sd|hd|vd|xvd|nvme|mmcblk|loop|ram|zram|dm-|md|disk|mapper|mem|kmem|port)`,
-				// Write/redirect to a block or kernel-memory device destroys the
-				// disk or escalates privileges. Narrowed from a blanket `>\s*/dev/`
-				// so the ubiquitous benign /dev family (/dev/null, /dev/zero,
-				// /dev/full, /dev/random, /dev/std*, /dev/fd, /dev/tty) — the most
-				// common redirect targets in robust shell commands like
-				// `cmd 2>/dev/null` — no longer trigger a forced confirmation under
-				// always_allow. The prefix alternation matches every real block
-				// device family (SATA/SCSI sd, legacy IDE hd, virtio vd, Xen xvd,
-				// NVMe nvme, SD/eMMC mmcblk, loop, RAM disks ram/zram,
-				// device-mapper dm-, RAID md, stable symlinks disk/ & mapper/,
-				// kernel mem/port) while sharing none of its prefixes with any
-				// benign /dev entry.
-				`>\s*/dev/(sd|hd|vd|xvd|nvme|mmcblk|loop|ram|zram|dm-|md|disk|mapper|mem|kmem|port)`,
-
-				// --- Power-state (mirrors posh Stop/Restart-Computer) ---
-				`\b(shutdown|reboot|halt|poweroff|init\s+[06])\b`,
-
-				// --- Remote-exec / download-cradle (mirrors posh IWR|iex) ---
-				// Piped execution of fetched content (curl|sh etc.) — a classic
-				// supply-chain / RCE vector. Blocks regardless of policy, even
-				// under always_allow.
-				`\b(curl|wget)\b.*\|\s*(?:\S*/)?(?:env\s+)?\b(sh|bash|zsh|dash|ksh|fish|perl\d*|node|ruby|python[\d.]*)\b`,
-
-				// --- Irreversible system writes (mirrors posh Set-Content on System32) ---
-				`>\s*/etc/(passwd|shadow|sudoers|group|fstab)\b`,
-				`(tee|dd)\b[^|]*/etc/(passwd|shadow|sudoers)\b`,
-				`\bchmod\b[^|]*\b777\b[^|]*/(etc|usr|boot|bin|sbin)\b`,
-				`>\s*/boot/`,
-
-				// --- Misc hardening (mirrors posh registry/scheduled-task tampering) ---
-				`:\(\)\s*\{`,       // fork bomb
-				`\bcrontab\s+-r\b`, // wipe crontab
-				`\b(iptables|ufw|nft)\b[^|]*(-F\b|--flush\b|-X\b|-P\s+\w+)`, // firewall flush
-
-				// --- Privilege escalation ---
-				`sudo\s+`,
-
-				// --- SCM (git) — mutating subcommands only ---
-				// Blocks git operations that change the repository, its history, or
-				// the working tree/index. Read-only commands (status, log, diff,
-				// show, blame, ls-files, rev-parse, describe, fetch, ...) are
-				// intentionally NOT blocked so they flow through normally. Dual-mode
-				// subcommands (branch, tag, config, stash, remote) are blocked
-				// wholesale: RE2 has no lookahead, so flagless mutating forms (e.g.
-				// `git branch x`, `git stash`, `git config k v`, `git tag v1`)
-				// cannot be reliably separated from read-only forms. `git fetch` is
-				// excluded — it only adds objects and updates remote-tracking refs,
-				// never the working tree, local branches, or history (additive /
-				// non-destructive). See TestApplyDefaults_GitMutatingBlacklist.
-				// working tree / index / staging:
-				`\bgit\s+(add|rm|mv|clean|checkout|switch|restore|stash|apply)\b`,
-				// history / commits / refs (incl. history rewrites):
-				`\bgit\s+(commit|am|merge|rebase|revert|cherry-pick|reset|notes|replace|update-ref|symbolic-ref|reflog|bisect|filter-branch|filter-repo|fast-import)\b`,
-				// branch / tag / remote / submodule / network / exfil (transmit patch
-				// data or spawn a network server bound to the repo):
-				`\bgit\s+(branch|tag|remote|submodule|clone|push|pull|send-email|imap-send|daemon|instaweb)\b`,
-				// repo lifecycle / config / maintenance:
-				`\bgit\s+(init|config|gc|prune|worktree|maintenance)\b`,
-			},
+	for name, policy := range defaultToolGroupPolicies {
+		group, ok := cfg.Security.Groups[name]
+		if !ok {
+			group = GroupPolicyConfig{}
 		}
-	}
-	// posh_exec (PowerShell) mirrors bash_exec's user_confirm policy but with a
-	// Windows/PowerShell-specific blacklist organized into the same destructive
-	// categories as bash_exec (destructive file/disk, power-state,
-	// remote-exec/download-cradle, irreversible system writes, misc hardening)
-	// so the two shells stay conceptually aligned. PowerShell is
-	// case-insensitive for cmdlets and matches parameters by case-insensitive
-	// prefix (-r/-rec/-recurse, -f/-fo/-force), and Remove-Item has aliases
-	// (del, erase, ri, rm, rd, rmdir). RE2 has no lookaheads, so the two-order
-	// requirement for -Recurse + -Force is expressed as two patterns.
-	if _, ok := cfg.Security.ToolPolicies["posh_exec"]; !ok {
-		cfg.Security.ToolPolicies["posh_exec"] = ToolPolicyConfig{
-			Policy: "user_confirm",
-			Blacklist: []string{
-				// --- Destructive file/disk operations ---
-				`(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-r\w*.*-f\w*`,
-				`(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-f\w*.*-r\w*`,
-				`(?i)Format-Volume`,
-				`(?i)Clear-Disk`,
-
-				// --- Power-state (mirrors bash shutdown/halt/poweroff) ---
-				`(?i)Stop-Computer`,
-				`(?i)Restart-Computer`,
-
-				// --- Remote-exec / download-cradle (mirrors bash curl|sh) ---
-				// Piped or chained execution of fetched content
-				// (Invoke-WebRequest | Invoke-Expression) — the #1 PowerShell
-				// RCE / supply-chain vector.
-				`(?i)\b(Invoke-WebRequest|iwr|irm|Invoke-RestMethod|curl|wget)\b[^|]*\|\s*(Invoke-Expression|iex)\b`,
-				`(?i)\b(Invoke-WebRequest|iwr|irm|Invoke-RestMethod|curl|wget)\b[^;]*;[^;]*\b(Invoke-Expression|iex)\b`,
-
-				// --- Irreversible system writes (mirrors bash >/etc/passwd) ---
-				`(?i)\b(Set-Content|Clear-Content|Out-File|Add-Content)\b[^|]*\b(Windows\\System32|\\Windows\\|\\etc\\|\\boot)`,
-
-				// --- Misc hardening ---
-				`(?i)\bSet-ItemProperty\b[^|]*HKLM`,                   // registry tampering
-				`(?i)\b(Register-ScheduledTask|schtasks\s+/create)\b`, // scheduled tasks
-				`(?i)Set-ExecutionPolicy`,                             // execution-policy tampering
-
-				// --- SCM (git) — mutating subcommands only ---
-				// Mirrors bash_exec. See that block for the full rationale: only
-				// mutating git subcommands are blocked; read-only commands (status,
-				// log, diff, show, fetch, ...) are NOT blocked; dual-mode subcommands
-				// (branch, tag, config, stash, remote) are blocked wholesale because
-				// RE2 has no lookahead. Patterns are case-insensitive ((?i) prefix)
-				// because PowerShell resolves the git executable case-insensitively,
-				// so `Git commit` / `GIT PUSH` must still match.
-				// working tree / index / staging:
-				`(?i)\bgit\s+(add|rm|mv|clean|checkout|switch|restore|stash|apply)\b`,
-				// history / commits / refs (incl. history rewrites):
-				`(?i)\bgit\s+(commit|am|merge|rebase|revert|cherry-pick|reset|notes|replace|update-ref|symbolic-ref|reflog|bisect|filter-branch|filter-repo|fast-import)\b`,
-				// branch / tag / remote / submodule / network / exfil:
-				`(?i)\bgit\s+(branch|tag|remote|submodule|clone|push|pull|send-email|imap-send|daemon|instaweb)\b`,
-				// repo lifecycle / config / maintenance:
-				`(?i)\bgit\s+(init|config|gc|prune|worktree|maintenance)\b`,
-			},
+		if group.Policy == "" {
+			group.Policy = policy
 		}
-	}
-	if _, ok := cfg.Security.ToolPolicies["write_file"]; !ok {
-		cfg.Security.ToolPolicies["write_file"] = ToolPolicyConfig{
-			Policy: "user_confirm",
+		if name == ToolGroupExecute && group.Blacklist == nil {
+			group.Blacklist = defaultExecuteGroupBlacklist()
 		}
-	}
-	if _, ok := cfg.Security.ToolPolicies["edit_file"]; !ok {
-		cfg.Security.ToolPolicies["edit_file"] = ToolPolicyConfig{
-			Policy: "user_confirm",
-		}
-	}
-	if _, ok := cfg.Security.ToolPolicies["web_search"]; !ok {
-		cfg.Security.ToolPolicies["web_search"] = ToolPolicyConfig{
-			Policy: "always_allow",
-		}
-	}
-	if _, ok := cfg.Security.ToolPolicies["web_fetch"]; !ok {
-		cfg.Security.ToolPolicies["web_fetch"] = ToolPolicyConfig{
-			Policy: "always_allow",
-		}
+		cfg.Security.Groups[name] = group
 	}
 
 	// Search defaults
@@ -572,4 +428,196 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Updates.CheckInterval == "" {
 		cfg.Updates.CheckInterval = "6h"
 	}
+}
+
+// defaultBashExecBlacklist returns the POSIX-shell half of the default
+// "execute" group blacklist patterns (see defaultExecuteGroupBlacklist).
+func defaultBashExecBlacklist() []string {
+	return []string{
+		// The blacklist is organized into four destructive categories
+		// that are mirrored (conceptually) by the posh_exec blacklist
+		// below. Keep the categories in sync when editing either list.
+		// (See TestApplyDefaults_BlacklistCategorySymmetry.)
+
+		// --- Destructive file/disk operations ---
+		`rm\s+-rf\s+/`,
+		`mkfs`,
+		`dd\s+if=`,
+		// `dd of=` writing to a block or kernel-memory device destroys the
+		// disk or escalates privileges (e.g. `dd of=/dev/sda bs=1M` with
+		// no if=, which the `dd\s+if=` pattern above misses). Shares the
+		// same device-prefix list as the narrowed /dev/ redirect above so
+		// benign targets like `dd of=/dev/null` stay unblocked. `[^|]*`
+		// prevents the match from jumping across a pipe (mirrors the
+		// existing `(tee|dd)\b[^|]*/etc/(passwd|shadow|sudoers)` pattern).
+		`dd\b[^|]*\bof=/dev/(sd|hd|vd|xvd|nvme|mmcblk|loop|ram|zram|dm-|md|disk|mapper|mem|kmem|port)`,
+		// Write/redirect to a block or kernel-memory device destroys the
+		// disk or escalates privileges. Narrowed from a blanket `>\s*/dev/`
+		// so the ubiquitous benign /dev family (/dev/null, /dev/zero,
+		// /dev/full, /dev/random, /dev/std*, /dev/fd, /dev/tty) — the most
+		// common redirect targets in robust shell commands like
+		// `cmd 2>/dev/null` — no longer trigger a forced confirmation under
+		// always_allow. The prefix alternation matches every real block
+		// device family (SATA/SCSI sd, legacy IDE hd, virtio vd, Xen xvd,
+		// NVMe nvme, SD/eMMC mmcblk, loop, RAM disks ram/zram,
+		// device-mapper dm-, RAID md, stable symlinks disk/ & mapper/,
+		// kernel mem/port) while sharing none of its prefixes with any
+		// benign /dev entry.
+		`>\s*/dev/(sd|hd|vd|xvd|nvme|mmcblk|loop|ram|zram|dm-|md|disk|mapper|mem|kmem|port)`,
+
+		// --- Power-state (mirrors posh Stop/Restart-Computer) ---
+		`\b(shutdown|reboot|halt|poweroff|init\s+[06])\b`,
+
+		// --- Remote-exec / download-cradle (mirrors posh IWR|iex) ---
+		// Piped execution of fetched content (curl|sh etc.) — a classic
+		// supply-chain / RCE vector. Blocks regardless of policy, even
+		// under always_allow.
+		`\b(curl|wget)\b.*\|\s*(?:\S*/)?(?:env\s+)?\b(sh|bash|zsh|dash|ksh|fish|perl\d*|node|ruby|python[\d.]*)\b`,
+
+		// --- Irreversible system writes (mirrors posh Set-Content on System32) ---
+		`>\s*/etc/(passwd|shadow|sudoers|group|fstab)\b`,
+		`(tee|dd)\b[^|]*/etc/(passwd|shadow|sudoers)\b`,
+		`\bchmod\b[^|]*\b777\b[^|]*/(etc|usr|boot|bin|sbin)\b`,
+		`>\s*/boot/`,
+
+		// --- Misc hardening (mirrors posh registry/scheduled-task tampering) ---
+		`:\(\)\s*\{`,       // fork bomb
+		`\bcrontab\s+-r\b`, // wipe crontab
+		`\b(iptables|ufw|nft)\b[^|]*(-F\b|--flush\b|-X\b|-P\s+\w+)`, // firewall flush
+
+		// --- Privilege escalation ---
+		`sudo\s+`,
+
+		// --- SCM (git) — mutating subcommands only ---
+		// Blocks git operations that change the repository, its history, or
+		// the working tree/index. Read-only commands (status, log, diff,
+		// show, blame, ls-files, rev-parse, describe, fetch, ...) are
+		// intentionally NOT blocked so they flow through normally. Dual-mode
+		// subcommands (branch, tag, config, stash, remote) are blocked
+		// wholesale: RE2 has no lookahead, so flagless mutating forms (e.g.
+		// `git branch x`, `git stash`, `git config k v`, `git tag v1`)
+		// cannot be reliably separated from read-only forms. `git fetch` is
+		// excluded — it only adds objects and updates remote-tracking refs,
+		// never the working tree, local branches, or history (additive /
+		// non-destructive). See TestApplyDefaults_GitMutatingBlacklist.
+		// working tree / index / staging:
+		`\bgit\s+(add|rm|mv|clean|checkout|switch|restore|stash|apply)\b`,
+		// history / commits / refs (incl. history rewrites):
+		`\bgit\s+(commit|am|merge|rebase|revert|cherry-pick|reset|notes|replace|update-ref|symbolic-ref|reflog|bisect|filter-branch|filter-repo|fast-import)\b`,
+		// branch / tag / remote / submodule / network / exfil (transmit patch
+		// data or spawn a network server bound to the repo):
+		`\bgit\s+(branch|tag|remote|submodule|clone|push|pull|send-email|imap-send|daemon|instaweb)\b`,
+		// repo lifecycle / config / maintenance:
+		`\bgit\s+(init|config|gc|prune|worktree|maintenance)\b`,
+	}
+}
+
+// defaultPoshExecBlacklist returns the Windows/PowerShell half of the
+// default "execute" group blacklist patterns (see
+// defaultExecuteGroupBlacklist).
+func defaultPoshExecBlacklist() []string {
+	return []string{
+		// --- Destructive file/disk operations ---
+		`(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-r\w*.*-f\w*`,
+		`(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-f\w*.*-r\w*`,
+		`(?i)Format-Volume`,
+		`(?i)Clear-Disk`,
+
+		// --- Power-state (mirrors bash shutdown/halt/poweroff) ---
+		`(?i)Stop-Computer`,
+		`(?i)Restart-Computer`,
+
+		// --- Remote-exec / download-cradle (mirrors bash curl|sh) ---
+		// Piped or chained execution of fetched content
+		// (Invoke-WebRequest | Invoke-Expression) — the #1 PowerShell
+		// RCE / supply-chain vector.
+		`(?i)\b(Invoke-WebRequest|iwr|irm|Invoke-RestMethod|curl|wget)\b[^|]*\|\s*(Invoke-Expression|iex)\b`,
+		`(?i)\b(Invoke-WebRequest|iwr|irm|Invoke-RestMethod|curl|wget)\b[^;]*;[^;]*\b(Invoke-Expression|iex)\b`,
+
+		// --- Irreversible system writes (mirrors bash >/etc/passwd) ---
+		`(?i)\b(Set-Content|Clear-Content|Out-File|Add-Content)\b[^|]*\b(Windows\\System32|\\Windows\\|\\etc\\|\\boot)`,
+
+		// --- Misc hardening ---
+		`(?i)\bSet-ItemProperty\b[^|]*HKLM`,                   // registry tampering
+		`(?i)\b(Register-ScheduledTask|schtasks\s+/create)\b`, // scheduled tasks
+		`(?i)Set-ExecutionPolicy`,                             // execution-policy tampering
+
+		// --- SCM (git) — mutating subcommands only ---
+		// Mirrors bash_exec. See that block for the full rationale: only
+		// mutating git subcommands are blocked; read-only commands (status,
+		// log, diff, show, fetch, ...) are NOT blocked; dual-mode subcommands
+		// (branch, tag, config, stash, remote) are blocked wholesale because
+		// RE2 has no lookahead. Patterns are case-insensitive ((?i) prefix)
+		// because PowerShell resolves the git executable case-insensitively,
+		// so `Git commit` / `GIT PUSH` must still match.
+		// working tree / index / staging:
+		`(?i)\bgit\s+(add|rm|mv|clean|checkout|switch|restore|stash|apply)\b`,
+		// history / commits / refs (incl. history rewrites):
+		`(?i)\bgit\s+(commit|am|merge|rebase|revert|cherry-pick|reset|notes|replace|update-ref|symbolic-ref|reflog|bisect|filter-branch|filter-repo|fast-import)\b`,
+		// branch / tag / remote / submodule / network / exfil:
+		`(?i)\bgit\s+(branch|tag|remote|submodule|clone|push|pull|send-email|imap-send|daemon|instaweb)\b`,
+		// repo lifecycle / config / maintenance:
+		`(?i)\bgit\s+(init|config|gc|prune|worktree|maintenance)\b`,
+	}
+}
+
+// defaultExecuteGroupBlacklist returns the default blacklist for the
+// "execute" security group: the union of the bash_exec and posh_exec default
+// lists. Both shells share the group, so the group-level blacklist covers
+// both dialects; exact duplicate patterns (none today) are deduplicated.
+func defaultExecuteGroupBlacklist() []string {
+	unified := defaultBashExecBlacklist()
+	seen := make(map[string]struct{}, len(unified))
+	for _, pattern := range unified {
+		seen[pattern] = struct{}{}
+	}
+	for _, pattern := range defaultPoshExecBlacklist() {
+		if _, dup := seen[pattern]; dup {
+			continue
+		}
+		seen[pattern] = struct{}{}
+		unified = append(unified, pattern)
+	}
+	return unified
+}
+
+// defaultToolGroupPolicies is the single source of truth for the configurable
+// security tool groups (everything except the reserved ToolGroupSystem) and
+// their default policies: reads run without confirmation; anything that
+// mutates local state, executes commands, or crosses a process/network
+// boundary requires user confirmation.
+var defaultToolGroupPolicies = map[string]string{
+	ToolGroupLocalRead:   GroupPolicyAllow,
+	ToolGroupRemoteRead:  GroupPolicyAllow,
+	ToolGroupExecute:     GroupPolicyUserConfirm,
+	ToolGroupLocalWrite:  GroupPolicyUserConfirm,
+	ToolGroupLocalMCP:    GroupPolicyUserConfirm,
+	ToolGroupRemoteMCP:   GroupPolicyUserConfirm,
+	ToolGroupRemoteWrite: GroupPolicyUserConfirm,
+}
+
+// sortedToolGroupNames lists the configurable group names in stable order for
+// error messages and documentation.
+var sortedToolGroupNames = func() []string {
+	names := make([]string, 0, len(defaultToolGroupPolicies))
+	for name := range defaultToolGroupPolicies {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}()
+
+// IsConfigurableToolGroup reports whether name is one of the configurable
+// security tool groups (every declared group except the reserved "system"
+// group, which policy configuration must never touch). It is the single
+// predicate behind config validation and runtime security-settings updates.
+func IsConfigurableToolGroup(name string) bool {
+	_, ok := defaultToolGroupPolicies[name]
+	return ok
+}
+
+// SortedToolGroupNames returns a copy of the configurable group names in
+// stable order for error messages and documentation.
+func SortedToolGroupNames() []string {
+	return append([]string(nil), sortedToolGroupNames...)
 }

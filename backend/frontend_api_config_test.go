@@ -25,31 +25,33 @@ import (
 
 // mockBuilder records calls to appBuilder methods for test assertions.
 type mockBuilder struct {
-	mu                      sync.Mutex
-	rebuildJudgeCalls       int
-	rebuildRouterCalls      int
-	rebuildProxyCalls       int
-	updateSearchToolCalls   int
-	updateSecPolicyCalls    int
-	reconfigureMCPCalls     int
-	listProviderModelsCalls int
-	setMCPWorkDirCalls      int
-	optimizePromptCalls     int
-	getBaseSkillDirsCalls   int
-	generateCommitMsgCalls  int
-	getBaseAgentDirsCalls   int
+	mu                        sync.Mutex
+	rebuildJudgeCalls         int
+	rebuildRouterCalls        int
+	rebuildProxyCalls         int
+	updateSearchToolCalls     int
+	updateSecPolicyCalls      int
+	updateShellBlacklistCalls int
+	reconfigureMCPCalls       int
+	listProviderModelsCalls   int
+	setMCPWorkDirCalls        int
+	optimizePromptCalls       int
+	getBaseSkillDirsCalls     int
+	generateCommitMsgCalls    int
+	getBaseAgentDirsCalls     int
 
 	// Configurable return values for methods that have them.
-	rebuildRouterErr      error
-	rebuildProxyErr       error
-	reconfigureMCPErr     error
-	listProviderModelsRes []string
-	listProviderModelsErr error
-	optimizePromptRes     *core.OptimizePromptResult
-	optimizePromptErr     error
-	generateCommitMsgRes  string
-	generateCommitMsgErr  error
-	generateCommitMsgDiff string
+	rebuildRouterErr        error
+	rebuildProxyErr         error
+	reconfigureMCPErr       error
+	updateShellBlacklistErr error
+	listProviderModelsRes   []string
+	listProviderModelsErr   error
+	optimizePromptRes       *core.OptimizePromptResult
+	optimizePromptErr       error
+	generateCommitMsgRes    string
+	generateCommitMsgErr    error
+	generateCommitMsgDiff   string
 
 	// rebuildRouterHook, when non-nil, runs inside RebuildRouter while the
 	// call is being recorded. Tests use it to block the rebuild phase (e.g.
@@ -112,6 +114,12 @@ func (m *mockBuilder) UpdateSecurityPolicies(_ *core.BuilderConfig) {
 	m.mu.Lock()
 	m.updateSecPolicyCalls++
 	m.mu.Unlock()
+}
+func (m *mockBuilder) UpdateShellBlacklist(_ *core.BuilderConfig) error {
+	m.mu.Lock()
+	m.updateShellBlacklistCalls++
+	m.mu.Unlock()
+	return m.updateShellBlacklistErr
 }
 func (m *mockBuilder) ReconfigureMCP(_ context.Context, _ *core.BuilderConfig) error {
 	m.mu.Lock()
@@ -944,12 +952,12 @@ func TestUpdateProxySettings_NewURLApplied(t *testing.T) {
 
 // --- UpdateSecuritySettings ---
 
-func TestUpdateSecuritySettings_AppliesPolicies(t *testing.T) {
+func TestUpdateSecuritySettings_AppliesGroups(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
 	err := f.UpdateSecuritySettings(SecuritySettingsResponse{
-		DefaultPolicy: "always_allow",
-		ToolPolicies: map[string]ToolPolicyResponse{
-			"bash_exec": {Policy: "user_confirm"},
+		Groups: map[string]GroupPolicyResponse{
+			config.ToolGroupExecute:    {Policy: config.GroupPolicyUserConfirm, Blacklist: []string{`rm\s+-rf`}},
+			config.ToolGroupLocalWrite: {Policy: config.GroupPolicyDeny},
 		},
 	})
 	if err != nil {
@@ -958,47 +966,151 @@ func TestUpdateSecuritySettings_AppliesPolicies(t *testing.T) {
 	if mock.updateSecPolicyCalls != 1 {
 		t.Errorf("UpdateSecurityPolicies called %d times, want 1", mock.updateSecPolicyCalls)
 	}
-	if f.config.Security.DefaultPolicy != "always_allow" {
-		t.Errorf("DefaultPolicy = %q, want always_allow", f.config.Security.DefaultPolicy)
+	got := f.config.Security.Groups[config.ToolGroupExecute]
+	if got.Policy != config.GroupPolicyUserConfirm {
+		t.Errorf("execute policy = %q, want user_confirm", got.Policy)
+	}
+	if len(got.Blacklist) != 1 || got.Blacklist[0] != `rm\s+-rf` {
+		t.Errorf("execute blacklist = %v, want [rm\\s+-rf]", got.Blacklist)
+	}
+	if got := f.config.Security.Groups[config.ToolGroupLocalWrite].Policy; got != config.GroupPolicyDeny {
+		t.Errorf("local_write policy = %q, want deny", got)
+	}
+	// The payload changed the execute blacklist, so the shell tool must be
+	// re-registered for the edit to apply without a restart.
+	if mock.updateShellBlacklistCalls != 1 {
+		t.Errorf("UpdateShellBlacklist called %d times, want 1", mock.updateShellBlacklistCalls)
 	}
 }
 
-func TestUpdateSecuritySettings_FiltersInternal(t *testing.T) {
-	f, _, _ := newTestAPI(t)
+// TestUpdateSecuritySettings_NoShellReregistrationWhenBlacklistUnchanged
+// verifies that a policy-only update leaves the shell tool alone: the
+// blacklist is compiled into the tool instance, so re-registration is
+// reserved for actual blacklist edits.
+func TestUpdateSecuritySettings_NoShellReregistrationWhenBlacklistUnchanged(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+	before := f.config.Security.Groups[config.ToolGroupExecute].Blacklist
+
 	err := f.UpdateSecuritySettings(SecuritySettingsResponse{
-		DefaultPolicy: "user_confirm",
-		ToolPolicies: map[string]ToolPolicyResponse{
-			"finish":    {Policy: "always_allow"}, // internal
-			"bash_exec": {Policy: "user_confirm"},
+		Groups: map[string]GroupPolicyResponse{
+			config.ToolGroupExecute:    {Policy: config.GroupPolicyAllow, Blacklist: before},
+			config.ToolGroupLocalWrite: {Policy: config.GroupPolicyDeny},
 		},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, ok := f.config.Security.ToolPolicies["finish"]; ok {
-		t.Error("internal tool 'finish' should have been filtered out")
+	if mock.updateSecPolicyCalls != 1 {
+		t.Errorf("UpdateSecurityPolicies called %d times, want 1", mock.updateSecPolicyCalls)
 	}
-	if _, ok := f.config.Security.ToolPolicies["bash_exec"]; !ok {
-		t.Error("bash_exec should be preserved")
+	if mock.updateShellBlacklistCalls != 0 {
+		t.Errorf("UpdateShellBlacklist called %d times, want 0 for an unchanged blacklist", mock.updateShellBlacklistCalls)
 	}
 }
 
-// TestGetUpdateSecuritySettings_SmartApproveRoundTrip verifies that the
-// SmartApprove flag survives a get → set → get cycle and propagates to the
-// shared tool registry via UpdateSecurityPolicies.
-func TestGetUpdateSecuritySettings_SmartApproveRoundTrip(t *testing.T) {
+// TestUpdateSecuritySettings_RejectsSystemGroup verifies the reserved system
+// group cannot be configured from the UI (mirroring config-file validation)
+// and that an invalid payload mutates nothing.
+func TestUpdateSecuritySettings_RejectsSystemGroup(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+	before := f.config.Security.Groups[config.ToolGroupExecute].Policy
+
+	err := f.UpdateSecuritySettings(SecuritySettingsResponse{
+		Groups: map[string]GroupPolicyResponse{
+			config.ToolGroupSystem: {Policy: config.GroupPolicyAllow},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for the reserved system group")
+	}
+	if mock.updateSecPolicyCalls != 0 {
+		t.Error("UpdateSecurityPolicies must not be called on an invalid payload")
+	}
+	if got := f.config.Security.Groups[config.ToolGroupExecute].Policy; got != before {
+		t.Errorf("config mutated by a rejected payload: %q -> %q", before, got)
+	}
+}
+
+func TestUpdateSecuritySettings_RejectsInvalidPayloads(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	cases := []struct {
+		name    string
+		groups  map[string]GroupPolicyResponse
+		wantErr bool
+	}{
+		{
+			name: "bad policy enum",
+			groups: map[string]GroupPolicyResponse{
+				config.ToolGroupLocalRead: {Policy: "always_allow"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "unknown group name",
+			groups: map[string]GroupPolicyResponse{
+				"totally_fake": {Policy: config.GroupPolicyAllow},
+			},
+			wantErr: true,
+		},
+		{
+			name: "blacklist pattern does not compile",
+			groups: map[string]GroupPolicyResponse{
+				config.ToolGroupExecute: {Policy: config.GroupPolicyAllow, Blacklist: []string{"("}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "blacklist outside execute",
+			groups: map[string]GroupPolicyResponse{
+				config.ToolGroupLocalWrite: {Policy: config.GroupPolicyAllow, Blacklist: []string{"x"}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid groups",
+			groups: map[string]GroupPolicyResponse{
+				config.ToolGroupExecute:  {Policy: config.GroupPolicyAllow, Blacklist: []string{`sudo\s+`}},
+				config.ToolGroupLocalMCP: {Policy: config.GroupPolicyUserConfirm},
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			err := f.UpdateSecuritySettings(SecuritySettingsResponse{Groups: tt.groups})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestGetUpdateSecuritySettings_GroupsRoundTrip verifies a get -> set -> get
+// cycle returns the same group set (policies and the execute blacklist) and
+// that the SmartApprove flag propagates to the shared tool registry via
+// UpdateSecurityPolicies.
+func TestGetUpdateSecuritySettings_GroupsRoundTrip(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
 	f.config.Security.SmartApprove = false
 
-	// Default-off getter exposes the stored value.
+	// Default-off flag is exposed as stored.
 	if got := f.GetSecuritySettings().SmartApprove; got {
 		t.Fatalf("SmartApprove = true, want false by default")
 	}
 
-	if err := f.UpdateSecuritySettings(SecuritySettingsResponse{
-		DefaultPolicy: "user_confirm",
-		SmartApprove:  true,
-	}); err != nil {
+	in := SecuritySettingsResponse{
+		Groups: map[string]GroupPolicyResponse{
+			config.ToolGroupExecute:     {Policy: config.GroupPolicyDeny, Blacklist: []string{`mkfs`}},
+			config.ToolGroupLocalRead:   {Policy: config.GroupPolicyAllow},
+			config.ToolGroupRemoteRead:  {Policy: config.GroupPolicyAllow},
+			config.ToolGroupLocalWrite:  {Policy: config.GroupPolicyUserConfirm},
+			config.ToolGroupLocalMCP:    {Policy: config.GroupPolicyUserConfirm},
+			config.ToolGroupRemoteMCP:   {Policy: config.GroupPolicyUserConfirm},
+			config.ToolGroupRemoteWrite: {Policy: config.GroupPolicyUserConfirm},
+		},
+		SmartApprove: true,
+	}
+	if err := f.UpdateSecuritySettings(in); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !f.config.Security.SmartApprove {
@@ -1007,8 +1119,36 @@ func TestGetUpdateSecuritySettings_SmartApproveRoundTrip(t *testing.T) {
 	if mock.updateSecPolicyCalls != 1 {
 		t.Errorf("UpdateSecurityPolicies called %d times, want 1", mock.updateSecPolicyCalls)
 	}
-	if got := f.GetSecuritySettings().SmartApprove; !got {
+
+	got := f.GetSecuritySettings()
+	if !got.SmartApprove {
 		t.Error("SmartApprove not reflected in GetSecuritySettings")
+	}
+	for name, want := range in.Groups {
+		g, ok := got.Groups[name]
+		if !ok {
+			t.Errorf("group %q missing from GetSecuritySettings", name)
+			continue
+		}
+		if g.Policy != want.Policy {
+			t.Errorf("group %q policy = %q, want %q", name, g.Policy, want.Policy)
+		}
+		if len(g.Blacklist) != len(want.Blacklist) {
+			t.Errorf("group %q blacklist = %v, want %v", name, g.Blacklist, want.Blacklist)
+		}
+	}
+}
+
+// TestGetSecuritySettings_NoConfigDefaults verifies the nil-config branch
+// still hands the UI a complete, editable default group set.
+func TestGetSecuritySettings_NoConfigDefaults(t *testing.T) {
+	f := &FrontendAPI{} // f.config == nil
+	got := f.GetSecuritySettings()
+	if len(got.Groups) != 7 {
+		t.Fatalf("expected the 7 configurable groups from defaults, got %d: %v", len(got.Groups), got.Groups)
+	}
+	if got.Groups[config.ToolGroupExecute].Policy != config.GroupPolicyUserConfirm {
+		t.Errorf("default execute policy = %q, want user_confirm", got.Groups[config.ToolGroupExecute].Policy)
 	}
 }
 

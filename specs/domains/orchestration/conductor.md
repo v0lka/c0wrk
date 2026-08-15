@@ -174,7 +174,7 @@ The guard is consulted in `UpdateChecklistTool.Execute` after parsing succeeds a
 ## Invariants
 
 - Exactly one Conductor `Executor.Run` instance is active per task at any time.
-- The Conductor tool set always includes `delegate`, `declare_plan`, `execute_plan`, `reflect`, `cancel_delegation`, `ask_user`, `finish`, `update_checklist`, `declare_step_complete`, `read_step_output`, `list_step_outputs`, `read_final_result`, and `search_facts`, regardless of routing domain, skill policy overrides, or No Project mode. These are internal tools and bypass policy.
+- The Conductor tool set always includes `delegate`, `declare_plan`, `execute_plan`, `reflect`, `cancel_delegation`, `ask_user`, `finish`, `update_checklist`, `declare_step_complete`, `read_step_output`, `list_step_outputs`, `read_final_result`, and `search_facts`, regardless of routing domain or No Project mode. These are `system`-group tools (`sdktools.GroupSystem`, ADR-024) and bypass policy.
 - The Conductor installs a `ChecklistGuardFunc` that rejects standalone (empty `step_id`) `update_checklist` calls once a plan is declared **in the current run**; a standalone checklist is only valid for plan-less tasks. A restored plan from a previous (completed) task does NOT count as declared — the guard consults a per-run `planRunState`, not the raw blackboard plan.
 - When a plan is declared **in the current run**, `delegate` is disabled (PlanChecker guard via `launcher.HasDeclaredPlan()`); `execute_plan` is the only execution path for plan steps. A restored plan does not disable `delegate`.
 - Active skill bodies are rendered verbatim in the Conductor system prompt (no truncation).

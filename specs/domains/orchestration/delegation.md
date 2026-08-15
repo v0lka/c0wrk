@@ -31,7 +31,7 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
       "summary": "5-7 word UI label",
       "task": "Full task description with What/How/Where/Acceptance Criteria",
       "acceptance_criteria": ["criterion 1", "criterion 2"],
-      "tools": ["read_file", "edit_file", "bash_exec"] | "all" | "read-only",
+      "tools": ["local-read", "local-write", "execute"] | "all" | "read-only",
       "depends_on": ["del_0"],
       "mode": "blocking" | "async",
       "max_steps": 50 | null,
@@ -49,7 +49,7 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
 | `tasks[].summary` | yes | Short label emitted to the UI plan panel. |
 | `tasks[].task` | yes | Full task description. Convention: What/How/Where/Acceptance Criteria (same format as the prior plan-step description, so existing UI rendering works unchanged). |
 | `tasks[].acceptance_criteria` | no | Optional explicit list; if present, the subagent verifies before calling `finish`. |
-| `tasks[].tools` | no | Tool subset for the subagent. `"all"` (default) = full tool set; `"read-only"` = search/read tools only; array = explicit list. The mandatory base (`mandatorySubagentTools` in `core/conductor.go`: every MCP tool plus `subagentReadOnlyToolNames` — `read_file`, `list_directory`, `glob`, `ripgrep`, `semantic_search`, `web_search`, `web_fetch`, `read_skill_resource`, `search_facts`, `read_step_output`, `list_step_outputs`, `read_final_result`, `tool_result_read`, `finish`, `store_fact`, `update_checklist`, `declare_step_complete`, `ask_user`) is ALWAYS unioned in regardless of this field, so exploration/MCP capability is never dropped. |
+| `tasks[].tools` | no | Tool subset for the subagent, resolved by **capability group** (ADR-024). `"all"` (default) = full tool set minus Conductor-only tools; `"read-only"` = the `system ∪ local_read ∪ remote_read` groups, no MCP; array = group tokens (kebab-case: `execute`, `local-read`, `local-write`, `remote-read`, `remote-write`, `local-mcp`, `remote-mcp`, `system`) granted on top of the ALWAYS-included `system` group (finish, facts, checklist, meta tools). Unknown tokens fail closed — the delegation never launches. |
 | `tasks[].depends_on` | no | IDs of blocking delegations that must complete before this one starts. Used to express a DAG across multiple `delegate` calls within one Conductor run. `depends_on` can only reference **blocking** tasks — async tasks run in the background and cannot be depended upon. |
 | `tasks[].mode` | no | `"blocking"` (default): the tool result contains the subagent output. `"async"`: the tool result returns immediately with `delegation_id`; the Conductor reads results later via `read_step_output(id)`. |
 | `tasks[].max_steps` | no | Per-subagent ReAct iteration cap. Empty = derived from routing complexity (`complexity × 30`, same formula as the Conductor via `stepsPerComplexity`). A Subagent Profile's `max_steps` (when > 0) overrides this field and the default. |
@@ -78,8 +78,8 @@ delegate.Execute(ctx, input)
 │     ├─ Task description = task + injected context from depends_on outputs
 │     │   (truncated to OrchestratorConfig.MaxDependencyContextChars, shared
 │     │   across dependencies — same logic as the prior step dependency injection)
-│     ├─ Tool set = tools field + mandatory base (mandatorySubagentTools:
-│     │   read-only exploration, MCP, and internal/meta tools — always unioned in)
+│     ├─ Tool set = resolveTaskTools(tools field) — group-based:
+│     │   system group always included + granted groups (ADR-024)
 │     ├─ System prompt = buildSystemPrompt; when an agent profile is set,
 │     │   buildSpecializedSystemPrompt applies it (profile body replaces the
 │     │   core directive, shared project-context prefix preserved)
@@ -214,7 +214,7 @@ The **combined** context is tail-truncated to `OrchestratorConfig.MaxDependencyC
 - The combined graph of delegations across all `delegate` calls in a Conductor run is always a valid DAG (no cycles).
 - A subagent's context is always a child of the Conductor's context, so cancelling the Conductor cancels all subagents.
 - A subagent never shares its `ContextManager` with the Conductor or with other subagents.
-- The mandatory base (`mandatorySubagentTools` in `core/conductor.go` — every MCP tool plus `subagentReadOnlyToolNames`: `read_file`, `list_directory`, `glob`, `ripgrep`, `semantic_search`, `web_search`, `web_fetch`, `read_skill_resource`, `search_facts`, `read_step_output`, `list_step_outputs`, `read_final_result`, `tool_result_read`, `finish`, `store_fact`, `update_checklist`, `declare_step_complete`, `ask_user`) is always available to subagents regardless of the `tools` field.
+- The `system` group (agent-infrastructure/meta tools) is always included in a subagent's toolset regardless of the `tools` field; toolsets resolve from capability groups via `resolveTaskTools` (`core/conductor.go`) — see [ADR-024](../../decisions/024-group-policies.md).
 - `delegate`, `cancel_delegation` are available to a subagent only when `allow_redelegate` is true; `declare_plan` and `reflect` remain Conductor-only.
 - Recursive delegation depth never exceeds `OrchestratorConfig.MaxRedelegationDepth`.
 - The Delegation Registry is scoped to a single Conductor run (or a single subagent run for child registries); it does not persist across sessions.

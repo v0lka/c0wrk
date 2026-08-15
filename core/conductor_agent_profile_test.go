@@ -32,46 +32,6 @@ func captureContextFactory(captured *string) ContextManagerFactory {
 	}
 }
 
-// --- normalizeToolPreference ---
-
-// TestNormalizeToolPreference_StringSlice converts the []string form returned
-// by Agent.ToolPreference() into []any so parseToolNames can consume it.
-func TestNormalizeToolPreference_StringSlice(t *testing.T) {
-	in := []string{"edit_file", "bash_exec", "write_file"}
-	got := normalizeToolPreference(in)
-
-	arr, ok := got.([]any)
-	if !ok {
-		t.Fatalf("normalized []string must become []any, got %T", got)
-	}
-	if len(arr) != 3 {
-		t.Fatalf("expected 3 elements, got %d", len(arr))
-	}
-	for i, want := range in {
-		if arr[i] != want {
-			t.Errorf("element %d = %v, want %v", i, arr[i], want)
-		}
-	}
-}
-
-// TestNormalizeToolPreference_ReadonlyString passes through unchanged.
-func TestNormalizeToolPreference_ReadonlyString(t *testing.T) {
-	got := normalizeToolPreference("read-only")
-	if got != "read-only" {
-		t.Errorf("read-only string must pass through unchanged, got %v", got)
-	}
-}
-
-// TestNormalizeToolPreference_NilAndOthers pass through unchanged.
-func TestNormalizeToolPreference_NilAndOthers(t *testing.T) {
-	if got := normalizeToolPreference(nil); got != nil {
-		t.Errorf("nil must pass through unchanged, got %v", got)
-	}
-	if got := normalizeToolPreference(42); got != 42 {
-		t.Errorf("non-string-slice must pass through unchanged, got %v", got)
-	}
-}
-
 // --- resolveAgentAllowRedelegate ---
 
 // TestResolveAgentAllowRedelegate_ProfileTrueOverrides verifies a profile with

@@ -37,6 +37,7 @@ type ExecutePlanTool struct {
 func NewExecutePlanTool() *ExecutePlanTool {
 	return &ExecutePlanTool{
 		BaseTool: &sdktools.BaseTool{
+			ToolGroup:       sdktools.GroupSystem,
 			ToolName:        "execute_plan",
 			ToolDescription: toolExecutePlanDescription,
 			Schema: json.RawMessage(`{

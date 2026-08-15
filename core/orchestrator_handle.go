@@ -195,9 +195,9 @@ func (o *Orchestrator) enrichAgentContext(ctx context.Context, userAgents []stri
 	return ctx
 }
 
-// reactivateSkills re-applies skill activation (context value + tool policy
-// overrides + emitter event) from a restored routing decision. Used by the
-// continuation fast-path to avoid calling the router while still wiring skills.
+// reactivateSkills re-applies skill activation (context value + emitter event)
+// from a restored routing decision. Used by the continuation fast-path to
+// avoid calling the router while still wiring skills.
 func (o *Orchestrator) reactivateSkills(ctx context.Context, routing *router.RoutingDecision, userSkills []string) context.Context {
 	mergedSkillNames := mergeSkillNames(routing.MatchedSkills, userSkills)
 	if len(mergedSkillNames) == 0 || o.skillManager == nil {
@@ -217,10 +217,6 @@ func (o *Orchestrator) reactivateSkills(ctx context.Context, routing *router.Rou
 		ctx = WithActiveSkills(ctx, &ActiveSkills{Skills: activeSkills})
 		o.emitter.SkillsActivated(activatedNames)
 		o.logInfo("skills_activated", "skills", activatedNames)
-		skillOverrides := o.buildSkillPolicyOverrides(activeSkills)
-		if len(skillOverrides) > 0 && o.coreToolRegistry != nil {
-			o.coreToolRegistry.SetSkillPolicyOverrides(skillOverrides)
-		}
 	}
 	return ctx
 }
@@ -241,9 +237,9 @@ func (o *Orchestrator) collectActiveSkillDescriptors(routing *router.RoutingDeci
 	return descriptors
 }
 
-// routeAndActivateSkills performs routing, activates matched skills, and applies
-// skill policy overrides. Clarification is not handled here — the Conductor
-// decides when to ask via the ask_user tool (ADR-012).
+// routeAndActivateSkills performs routing and activates matched skills.
+// Clarification is not handled here — the Conductor decides when to ask via
+// the ask_user tool (ADR-012).
 func (o *Orchestrator) routeAndActivateSkills(
 	ctx context.Context,
 	message string,
@@ -311,15 +307,6 @@ func (o *Orchestrator) routeAndActivateSkills(
 			ctx = WithActiveSkills(ctx, &ActiveSkills{Skills: activeSkills})
 			o.emitter.SkillsActivated(activatedNames)
 			o.logInfo("skills_activated", "skills", activatedNames)
-
-			// Apply skill-derived tool policy overrides.
-			// Skill *policy* stays task-wide here — the tool registry is
-			// shared across the task and tools are keyed by name, not by step,
-			// so per-step policy is not meaningful. Deliberate asymmetry.
-			skillOverrides := o.buildSkillPolicyOverrides(activeSkills)
-			if len(skillOverrides) > 0 && o.coreToolRegistry != nil {
-				o.coreToolRegistry.SetSkillPolicyOverrides(skillOverrides)
-			}
 		}
 	}
 

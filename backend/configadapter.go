@@ -45,12 +45,14 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 		}
 	}
 
-	// Convert tool policies.
-	toolPolicies := make(map[string]core.BuilderToolPolicy, len(cfg.Security.ToolPolicies))
-	for name, p := range cfg.Security.ToolPolicies {
-		toolPolicies[name] = core.BuilderToolPolicy{
-			Policy:    p.Policy,
-			Blacklist: p.Blacklist,
+	// Convert tool groups (the security schema). The system group is not
+	// configurable and config validation already rejects it; entries are
+	// copied verbatim — the builder skips anything invalid defensively.
+	groups := make(map[string]core.BuilderGroupPolicy, len(cfg.Security.Groups))
+	for name, g := range cfg.Security.Groups {
+		groups[name] = core.BuilderGroupPolicy{
+			Policy:    g.Policy,
+			Blacklist: g.Blacklist,
 		}
 	}
 
@@ -141,8 +143,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 		Security: core.BuilderSecurityConfig{
 			JudgeModel:                 cfg.Security.Judge.Model,
 			InjectionDefenseEnabled:    derefBool(cfg.Security.InjectionDefense.Enabled),
-			ToolPolicies:               toolPolicies,
-			DefaultPolicy:              cfg.Security.DefaultPolicy,
+			Groups:                     groups,
 			AutoApproveWorkspaceWrites: cfg.Security.AutoApproveWorkspaceWrites,
 			SmartApprove:               cfg.Security.SmartApprove,
 			AgentsMDMaxBytes:           cfg.Security.AgentsMDMaxBytes,

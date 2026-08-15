@@ -21,6 +21,7 @@ type AskUserTool struct {
 func NewAskUserTool(fn AskUserFunc) *AskUserTool {
 	return &AskUserTool{
 		BaseTool: &sdktools.BaseTool{
+			ToolGroup:       sdktools.GroupSystem,
 			ToolName:        "ask_user",
 			ToolDescription: toolAskUserDescription,
 			Schema: json.RawMessage(`{

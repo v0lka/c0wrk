@@ -40,7 +40,7 @@ c0wrk is a **desktop AI coding-agent** (Go backend + React/TypeScript frontend, 
 | --------------------------------------- | ------------- | ----------------------------------------------------------------------------------------------------- |
 | LLM provider API keys                   | Critical      | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `TAVILY_API_KEY`, proxy credentials — billed, scope = blast radius |
 | SQLite database                         | High          | `~/.c0wrk/database.db` — sessions, chat messages (`session_messages`), projects, reviews, work dirs   |
-| Configuration file                      | High          | `~/.c0wrk/config.yaml` — provider keys (env-expanded), tool policies, blacklists, injection-defense toggles |
+| Configuration file                      | High          | `~/.c0wrk/config.yaml` — provider keys (env-expanded), tool-group policies (`security.groups`), execute blacklist, injection-defense toggles |
 | System & role prompts                   | High          | `core/prompts/*.md` embedded into the system prompt — extraction reveals guardrails & business logic  |
 | Agent conversation history / context    | High          | Multi-turn message logs persisted in SQLite; vectorized codebase index                                |
 | Vector index (embeddings)               | Medium/High   | `chromem-go` index of the user's source code; file-hash sidecars — persistent searchable memory       |
@@ -105,7 +105,7 @@ Entry points where untrusted input or adversarial content reaches the system:
 │  Untrusted content sources (ASI01 vectors)              │
 │  Files, web pages, tool/MCP output, AGENTS.md, deps     │
 └──────────────────────────┬──────────────────────────────┘
-                           │ per-tool policy → judge → confirmation
+                           │ group policy → judge → confirmation
 ┌──────────────────────────▼──────────────────────────────┐
 │  Execution / Action zone                                │
 │  Filesystem, shell, web, DB, vector store, MCP procs    │
@@ -124,7 +124,7 @@ These are inherent architectural trade-offs the design knowingly accepts — not
 | Agent runs under the user's own OS credentials (no sandbox/tenant isolation) | High     | Accepted: c0wrk is a single-user local desktop tool. The tool-policy pipeline + confirmation gates bound the agent's *latitude*, not the OS-level *reach* (least agency, not least privilege). |
 | Local LLM servers may use an empty API key                            | Medium   | Accepted for local-dev convenience; only `localhost`/named local providers. Production cloud providers require keys.          |
 | `~/.agents/AGENTS.md` is machine-wide writable and feeds every prompt | Medium   | Accepted trade-off (ADR-020) for global-instructions utility; mitigated by untrusted framing + tool-policy gating; not eliminated. |
-| LLM-based safety judge is advisory/on-demand by default; Smart Approve makes it an automatic gate for effective `user_confirm` calls (opt-in, default off)   | Medium   | When Smart Approve is off, the judge remains advisory only (invoked via the "Ask Agent" button). When Smart Approve is on, a strict OWASP ASI judge automatically evaluates `user_confirm` calls after all deterministic gates and workspace auto-approval; only a strict ALLOW skips UI, every other outcome (CONFIRM, timeout, error, unparseable) falls back to manual confirmation. The policy/judge-blacklist/symlink/confirmation pipeline remains the hard gate; Smart Approve never weakens `always_deny`, symlink-forced confirmation, or the fail-closed nil-ConfirmFunc invariant. |
+| LLM-based safety judge is advisory/on-demand by default; Smart Approve makes it an automatic gate for effective `user_confirm` calls (opt-in, default off)   | Medium   | When Smart Approve is off, the judge remains advisory only (invoked via the "Ask Agent" button). When Smart Approve is on, a strict OWASP ASI judge automatically evaluates `user_confirm` calls after all deterministic gates and workspace auto-approval; only a strict ALLOW skips UI, every other outcome (CONFIRM, timeout, error, unparseable) falls back to manual confirmation. The group-policy/judge-blacklist/symlink/confirmation pipeline remains the hard gate; Smart Approve never weakens a `deny` group, hard safety reasons (blacklist, SSRF, symlink escape), or the fail-closed nil-ConfirmFunc invariant. |
 | No LLM-based output-content judging for injection detection           | Medium   | Accepted; injection defense is prompt-level spotlighting + tag-escape, judged externally/by firewall.                         |
 | No session-level wall-clock time-box (ASI10)                          | Low      | Accepted trade-off: agent autonomy is bounded by step/loop caps, the 50-turn goal ceiling, and circuit breakers, but there is no hard wall-clock deadline. A long-running session can in principle run indefinitely until those caps hit. |
 | Pre-1.0 breaking-change surface                                       | Low      | Tracked via CHANGELOG semver discipline until 1.0.                                                                            |
@@ -138,11 +138,11 @@ These are inherent architectural trade-offs the design knowingly accepts — not
 
 c0wrk is a local single-user desktop application; there is no multi-tenant authentication surface. Authorization is **tool-level**, enforced by the policy pipeline in `core/tools/registry.go`:
 
-- **Tool policies** — `always_allow` / `user_confirm` / `always_deny` (default `user_confirm`, the safest). Resolution order: per-tool config → skill policy → registry default → tool's own `DefaultPolicy()`.
-- **Internal tools** (agent infrastructure: `ask_user`, `finish`, `delegate`, `store_fact`, `batch`, `declare_plan`, `execute_plan`, `update_checklist`, etc.) bypass policy — they must not be extended carelessly.
+- **Tool-group policies** — `allow` / `user_confirm` / `deny` (default `user_confirm`, the safest), configured per **capability group** in `security.groups` (ADR-024). Every tool declares exactly one of the 8 groups (`execute`, `local_read`, `local_write`, `remote_read`, `remote_write`, `local_mcp`, `remote_mcp`, `system`); the registry resolves the call's policy from its group alone — there is no per-tool override layer. An unconfigured group resolves fail-safe to `user_confirm`.
+- **The `system` group** (agent infrastructure: `ask_user`, `finish`, `delegate`, `store_fact`, `batch`, `declare_plan`, `execute_plan`, `update_checklist`, etc.) bypasses policy — it is a reserved group that cannot be configured and must not be extended carelessly. A tool with an undeclared group matches no allow-list and fails closed.
 - **LLM-provider authentication** — API keys are supplied per provider via `${ENV_VAR}` expansion; local servers may omit keys.
 
-**Rules:** Every new side-effecting tool MUST declare an explicit policy (default `user_confirm`). Tools added to the internal-tools set require explicit security review. Never ship a tool as `always_allow` without a `ToolJudger` for its dangerous operations.
+**Rules:** Every new tool MUST declare a capability group (`ToolGroup` on `BaseTool`); side-effecting tools belong to a mutating group whose default policy is `user_confirm`. Tagging a tool `GroupSystem` requires explicit security review — it bypasses every gate. Never ship a tool in an `allow` group without a `ToolJudger` for its dangerous operations.
 
 ### Data Protection
 
@@ -196,13 +196,13 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 **Relevant.** The agent can invoke many side-effecting tools; individually-allowed actions can be chained or looped into harm.
 
 **Rules:**
-- **Per-tool least privilege.** Each tool declares an explicit policy; default to `user_confirm`. Dangerous operations (delete, shell exec, web write) are programmatically restricted regardless of agent request.
+- **Group-based least privilege.** Each tool declares a capability group; mutating groups default to `user_confirm`. Dangerous operations (delete, shell exec, web write) are programmatically restricted regardless of agent request.
 - **Parameter schemas validated before execution** (type, range, allowlists) via the registry's param manager. A centralized required-field check (`validateRequiredFields`) runs in the registry for every tool as defense-in-depth, so a tool whose author forgot per-tool validation still rejects inputs missing a JSON Schema `required` parameter.
 - **Shell-exec blacklist is mandatory** for `bash_exec`/`posh_exec`. The blacklist runs via `ToolJudger.Judge()` BEFORE workspace auto-approval so a blacklisted command with in-workspace paths (e.g. `rm -rf /workspace/.git`) still escalates to confirmation. Patterns MUST cover recursive deletion, privilege escalation (`sudo`), destructive disk ops (`mkfs`, `dd`), device writes, and pipe-to-shell (`curl | sh`).
 - **Tool-call allowlist, not denylist.** The registry exposes only registered tools; never expose arbitrary shell access beyond `bash_exec`/`posh_exec`.
 - **Budget / loop-depth caps** must remain enforced (executor loop caps, tool limits in `config.yaml`).
 - **Irreversible actions require a human-approval gate.** Confirmation MUST carry a human-readable `JudgeReasoning` so the operator understands *why* before deciding.
-- **`always_deny` is never bypassed** by auto-approval, judge, or symlink check.
+- **A `deny` group policy is never bypassed** by auto-approval, judge, or symlink check.
 
 ### ASI03 — Agent Identity and Privilege Abuse
 
@@ -279,7 +279,7 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 - **Confirmation blocks until the user responds** (no timeout) — this is intentional; do not implement confirmation timeouts.
 - **Distinguish denial outcomes.** `Deny` returns an error the agent adapts to; `Deny & Stop` cancels the whole task — the UI must make these distinct.
 - **Resist approval fatigue.** The default policy is `user_confirm`; `auto_approve_workspace_writes` defaults to `false`. Convenience overrides that weaken confirmation must remain opt-in and documented.
-- **Smart Approve is opt-in and conservative.** When `security.smart_approve` is enabled, a strict OWASP ASI judge evaluates effective `user_confirm` calls. Only a strict ALLOW (clearly safe, narrowly scoped, reversible/read-only, no material ASI risk) skips the UI; CONFIRM, judge errors, timeouts, and unparseable responses ALWAYS fall back to manual confirmation. The strict verdict reasoning is shown to the user (never an agent-authored justification); the advisory "Ask Agent" button is hidden because the call was already evaluated. Workspace auto-approval retains priority. Smart Approve never weakens `always_deny`, symlink-forced confirmation, or the fail-closed nil-ConfirmFunc invariant.
+- **Smart Approve is opt-in and conservative.** When `security.smart_approve` is enabled, a strict OWASP ASI judge evaluates effective `user_confirm` calls. Only a strict ALLOW (clearly safe, narrowly scoped, reversible/read-only, no material ASI risk) skips the UI; CONFIRM, judge errors, timeouts, and unparseable responses ALWAYS fall back to manual confirmation. The strict verdict reasoning is shown to the user (never an agent-authored justification); the advisory "Ask Agent" button is hidden because the call was already evaluated. Workspace auto-approval retains priority. Smart Approve never weakens a `deny` group, hard safety reasons (blacklist, SSRF, symlink escape), or the fail-closed nil-ConfirmFunc invariant.
 
 ### ASI10 — Rogue Agents
 
@@ -318,7 +318,7 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 ### Framework / integration specific
 
 - **Wails bindings** (`frontend/wailsjs/...`) are generated — do not hand-edit; rebuild to regenerate. New frontend-callable methods go in the matching `backend/frontend_api_*.go`.
-- **Tool registry pattern.** Reusable built-in tools live in `sp4rk/tools/builtins/`; c0wrk-specific tools (e.g. `ask_user`) in `core/tools/`; wire via `core/tools/RegisterBuiltinTools`. Every tool declares a policy.
+- **Tool registry pattern.** Reusable built-in tools live in `sp4rk/tools/builtins/`; c0wrk-specific tools (e.g. `ask_user`) in `core/tools/`; wire via `core/tools/RegisterBuiltinTools`. Every tool declares a capability group (`ToolGroup` on `BaseTool`, ADR-024); the group drives both policy and tool budgets.
 - **MCP integration.** New MCP tools are always untrusted; their output is spotlighted and their calls pass the policy pipeline. Do not mark MCP tools trusted.
 - **Prompts are data.** `core/prompts/*.md` are `go:embed`ded; tests verify every `.md` is referenced — update both when adding/removing prompts.
 
@@ -329,11 +329,11 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 Any AI coding agent (c0wrk itself, Copilot, Cursor, etc.) working on this repository MUST:
 
 1. **Read and follow this SECURITY.md** before making changes, plus [`specs/architecture/security-model.md`](./specs/architecture/security-model.md), [`specs/decisions/020-multi-source-agents-md-threat-model.md`](./specs/decisions/020-multi-source-agents-md-threat-model.md), and (for any self-update work) [`specs/decisions/023-auto-update.md`](./specs/decisions/023-auto-update.md).
-2. **Never weaken the tool-policy pipeline.** Do not change `default_policy` away from `user_confirm`, remove blacklist entries, or bypass symlink/SSRF/path-containment checks.
+2. **Never weaken the tool-policy pipeline.** Do not change a mutating group's policy away from `user_confirm` in defaults, remove blacklist entries, or bypass symlink/SSRF/path-containment checks. Hard safety reasons (blacklist, SSRF, symlink escape) must never become Smart Approve-passable.
 3. **Never mark untrusted output as trusted.** External/MCP tool output stays wrapped in `<untrusted-content>`; new external tools stay `Untrusted: true`.
 4. **Never hard-code or log secrets.** Use `${ENV_VAR}`; never write API keys, tokens, or passwords into source, logs, tool results, facts, or messages.
 5. **Use the centralized path API** for all filesystem containment — no inline `HasPrefix`/`filepath.Rel` checks.
-6. **Never add a tool to the internal-tools set** (which bypasses all policy) without explicit security review.
+6. **Never tag a tool `GroupSystem`** (the reserved group that bypasses all policy) without explicit security review, and never leave a tool's group undeclared — undeclared groups match no allow-list (fail closed).
 7. **Never `go install` the ONNX runtime differently** — always via `make fetch-onnx`.
 8. **Never commit** secrets, `.cache/`, `build/bin/`, `config.local.yaml`, coverage outputs, or anything in `.gitignore`.
 9. **Run `make build` → `make lint` → `make test`** before declaring done; all three must be clean.
@@ -346,7 +346,7 @@ Any AI coding agent (c0wrk itself, Copilot, Cursor, etc.) working on this reposi
 
 | File | Purpose |
 | --- | --- |
-| [config.example.yaml](./config.example.yaml) | Authoritative reference for every security tunable: `security.default_policy`, `security.tool_policies` (incl. shell blacklists), `security.injection_defense.enabled`, `security.auto_approve_workspace_writes`, `security.smart_approve`, `security.judge`, `toolLimits`, `proxy`, LLM provider keys (`${ENV_VAR}`). |
+| [config.example.yaml](./config.example.yaml) | Authoritative reference for every security tunable: `security.groups` (per-group `allow`/`user_confirm`/`deny` policies + the `execute` blacklist), `security.injection_defense.enabled`, `security.auto_approve_workspace_writes`, `security.smart_approve`, `security.judge`, `toolLimits`, `proxy`, LLM provider keys (`${ENV_VAR}`). |
 | [.golangci.yml](./.golangci.yml) | Linter config enforcing `errcheck`, `govet`, `staticcheck`, `errorlint`, `bodyclose`, `noctx`, `sqlclosecheck`, `perfsprint`, `unconvert`, `depguard`, etc. |
 | [.gitignore](./.gitignore) | Excludes `.cache/`, `build/bin/`, `config.local.yaml`, coverage outputs. |
 | [.github/workflows/ci.yml](./.github/workflows/ci.yml) | CI gate: build / lint / test on Linux + macOS. |
@@ -365,3 +365,4 @@ Any AI coding agent (c0wrk itself, Copilot, Cursor, etc.) working on this reposi
 | 2026-08-07 | 1.1     | Security hardening: untrusted-flagging for 5 external-output tools (ASI01/ASI07); stdio MCP env allowlist isolation (ASI04); pipe-to-shell blacklist pattern; `max_redelegationDepth` exposed in config (ASI07); security-event logging at policy denials/blocks (ASI03/ASI09); fail-closed checksum for missing per-platform hashes (ASI04); `store_fact` secret-pattern scanner (ASI06); centralized required-field validation (ASI02); eslint `react/no-danger` (FE-R1); npm audit fix. Rules updated to reflect now-enforced controls; wall-clock time-box documented as accepted trade-off. |
 | 2026-08-09 | 1.2     | Self-update attack surface: documented the in-app auto-update pipeline (`core/updater/`) as an ASI04 supply-chain delivery vector; added the unsigned/SHA256-only trade-off to Known Risks (ADR-023); added rule 10 forbidding weakening the self-update integrity gate (fail-closed SHA256, HTTPS-only, location validation, traversal guards). |
 | 2026-08-11 | 1.3     | Smart Approve: strict OWASP ASI (ASI01–ASI10) LLM judge can now automatically resolve effective `user_confirm` calls (opt-in, `security.smart_approve`, default off). Only a strict ALLOW skips UI; CONFIRM/timeout/error/unparseable always fall back to manual confirmation with the verdict reasoning shown and "Ask Agent" hidden. Workspace auto-approval retains priority; `always_allow`/`always_deny`/symlink-forced confirmation unchanged. Also fixes fail-closed behavior: nil `ConfirmFunc` now denies `user_confirm` execution instead of executing silently (aligns with the sp4rk engine invariant). Updated Known Risks to reflect the judge is no longer purely advisory when Smart Approve is enabled. |
+| 2026-08-15 | 1.4     | Tool-capability group policies (ADR-024): per-tool `security.tool_policies`/`security.default_policy` replaced by `security.groups.<group>.{policy, blacklist?}` over 8 declared groups (reserved `system` bypasses policy); skill-policy overrides and per-tool registry overrides removed (group policy is the single resolution layer); the legacy per-tool schema is removed outright — stale keys have no effect; judge reasons classified hard (blacklist/SSRF/symlink escape — never Smart Approve-passable) vs soft (path containment); subagent/verifier tool budgets keyed by group tokens. Rules 2/6 and the Authorization section updated. |

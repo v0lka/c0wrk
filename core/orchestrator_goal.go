@@ -965,34 +965,57 @@ func (s *memVerificationSink) Last() *tools.VerificationOutcome {
 	return s.outcome
 }
 
-// verifierExcludedToolNames are tools the verification pass MUST NOT have. They
-// are split into two groups:
+// verifierIncludeGroups are the capability groups the verification pass may
+// draw from:
 //
-//  1. Mutating tools — the verifier is read-only/test-only; it must never edit
-//     the codebase, create/delete files, or otherwise change state. (bash_exec /
-//     posh_exec are allowed because the verify clause is often a shell command —
-//     e.g. `go test`, `npm run build` — which the verifier must re-run to check
-//     the claimed outcome.)
+//   - system — meta tools with no filesystem/network side effect of their own
+//     (finish, fact memory, checklist, step-output readers, declare_verification)
+//   - local_read + remote_read — re-check the claimed outcome by inspection
+//   - execute — re-run the verify clause, which is often a shell command
+//     (e.g. `go test`, `npm run build`)
+//   - local_mcp + remote_mcp — user-installed checkers/tests; installing an
+//     MCP server widens the verifier the same way it widens every other agent
 //
-//  2. Goal-control / coordination tools — the verifier's ONLY output channel is
-//     declare_verification. It must not change the goal lifecycle
-//     (declare_goal_status, propose_goal), declare or execute plans
-//     (declare_plan, declare_step_complete), delegate or spin off subagents
-//     (delegate, subagent, cancel_delegation), or self-reflect (reflect). Each
-//     of those would let the verifier either tamper with the goal it is judging
-//     or escape its isolated read-only mandate.
+// The mutating groups (local_write, remote_write) are absent from this set and
+// are additionally hard-excluded via verifierExcludedGroups, so a mis-tagged
+// tool still cannot reach the verifier.
+var verifierIncludeGroups = map[sdktools.ToolGroup]struct{}{
+	sdktools.GroupSystem:    {},
+	sdktools.GroupLocalRead: {},
+	sdktools.GroupRemoteRead:{},
+	sdktools.GroupExecute:   {},
+	sdktools.GroupLocalMCP:  {},
+	sdktools.GroupRemoteMCP: {},
+}
+
+// verifierExcludedGroups are capability groups the verification pass must
+// NEVER see, even if a tool in them were (mis)tagged into an included group
+// context. The verifier is read-only/test-only: it must never mutate local
+// filesystem state or push changes to remote systems.
+var verifierExcludedGroups = map[sdktools.ToolGroup]struct{}{
+	sdktools.GroupLocalWrite:  {},
+	sdktools.GroupRemoteWrite: {},
+}
+
+// verifierExcludedToolNames are goal-control / coordination TOOLS the
+// verification pass must not have even though their capability group (system)
+// is included: the verifier's ONLY output channel is declare_verification. It
+// must not change the goal lifecycle (declare_goal_status, propose_goal),
+// declare or execute plans (declare_plan, execute_plan — execute_plan launches
+// plan-step subagents with full toolsets and would let the verifier mutate
+// state by proxy), complete plan steps (declare_step_complete), spawn or
+// cancel subagents (delegate, subagent, cancel_delegation), or self-reflect
+// (reflect). Each of those would let the verifier tamper with the goal it is
+// judging or escape its isolated read-only mandate.
 //
-// These names without a core constant (delete_file, delete_directory,
-// create_directory, declare_goal_status, declare_plan, delegate, propose_goal,
-// reflect, cancel_delegation) are referenced as literals because the sp4rk SDK
-// does not export constants for them; they match the built-in tool names.
+// These names without a core constant (declare_goal_status, declare_plan,
+// execute_plan, delegate, propose_goal, reflect, cancel_delegation) are
+// referenced as literals because the sp4rk SDK does not export constants for
+// them; they match the built-in tool names.
 var verifierExcludedToolNames = map[string]struct{}{
-	// Mutating file tools.
-	ToolWriteFile: {}, ToolEditFile: {},
-	"delete_file": {}, "delete_directory": {}, "create_directory": {},
 	// Goal-control / coordination tools.
 	"declare_goal_status": {}, ToolDeclareStepComplete: {},
-	"declare_plan": {}, "delegate": {}, ToolSubAgent: {},
+	"declare_plan": {}, "execute_plan": {}, "delegate": {}, ToolSubAgent: {},
 	"propose_goal": {}, "reflect": {}, "cancel_delegation": {},
 }
 
@@ -1000,44 +1023,38 @@ var verifierExcludedToolNames = map[string]struct{}{
 // mode: it is verifierExcludedToolNames MINUS "delegate". re_derivation needs
 // `delegate` to spin up a fresh read-only execution of the goal's process, so
 // it is the ONE coordination tool the verifier is granted in that mode. Every
-// mutating tool and every OTHER goal-control tool (declare_goal_status,
-// declare_plan, propose_goal, reflect, cancel_delegation, subagent,
-// declare_step_complete) remains excluded so the verifier never edits state or
-// tampers with the goal lifecycle.
+// other goal-control tool remains excluded so the verifier never edits state
+// or tampers with the goal lifecycle.
 var verifierReDerivationExcludedToolNames = map[string]struct{}{
-	// Mutating file tools (unchanged).
-	ToolWriteFile: {}, ToolEditFile: {},
-	"delete_file": {}, "delete_directory": {}, "create_directory": {},
 	// Goal-control / coordination tools — MINUS delegate.
 	"declare_goal_status": {}, ToolDeclareStepComplete: {},
-	"declare_plan": {}, ToolSubAgent: {},
+	"declare_plan": {}, "execute_plan": {}, ToolSubAgent: {},
 	"propose_goal": {}, "reflect": {}, "cancel_delegation": {},
 }
 
 // buildVerifierToolset is the shared core of the two verification-mode tool
-// filters. A tool is INCLUDED when it is:
+// filters. A tool is INCLUDED when:
 //
-//   - a non-mutating read-only / meta tool (subagentReadOnlyToolNames), OR
-//   - the platform shell-execution tool (activeShellToolName — bash_exec on
-//     Unix, posh_exec on Windows), needed to re-run the verify clause, OR
-//   - an MCP-sourced tool (all of them — MCP tools are user-installed
-//     capabilities and may include read-only checkers/tests), OR
-//   - declare_verification itself — the verifier's verdict channel (the only
-//     internal coordination tool the verifier is allowed; without it the pass
-//     could never report an outcome), OR
-//   - delegate — ONLY when allowDelegate is true (re_derivation mode), so the
-//     verifier can spin up a fresh read-only execution of the goal's process.
+//   - its capability group is in verifierIncludeGroups (system + reads +
+//     execute + MCP), OR
+//   - it is declare_verification itself — the verifier's verdict channel (the
+//     one internal coordination tool the verifier is allowed; without it the
+//     pass could never report an outcome). Kept as an explicit name-based
+//     include so the guarantee survives any future group re-tagging, OR
+//   - it is delegate — ONLY when allowDelegate is true (re_derivation mode),
+//     so the verifier can spin up a fresh read-only execution of the goal's
+//     process.
 //
 // Every tool in excluded is then HARD-EXCLUDED regardless of the include
-// criteria (so e.g. declare_step_complete — present in subagentReadOnlyToolNames
-// — is stripped), and finally any tool disabled in the current mode
-// (disabledTools, e.g. glob/ripgrep in CHAT mode) is dropped. This mirrors
-// conductorLauncher.mandatorySubagentTools but with the verification-specific
-// exclusion set layered on top.
+// criteria (so e.g. declare_step_complete — a system-group tool — is stripped),
+// every tool in a mutating group (verifierExcludedGroups) is hard-excluded,
+// and finally any tool disabled in the current mode (disabledTools, e.g.
+// glob/ripgrep in CHAT mode) is dropped. This mirrors resolveTaskTools'
+// group-based selection with the verification-specific exclusions layered on
+// top; tools with an undeclared (zero) group match no include criterion.
 func buildVerifierToolset(all []sdktools.ToolDescriptor, disabled map[string]bool, excluded map[string]struct{}, allowDelegate bool) []sdktools.ToolDescriptor {
 	out := make([]sdktools.ToolDescriptor, 0, len(all))
 	seen := make(map[string]struct{}, len(all))
-	shell := activeShellToolName()
 	for _, d := range all {
 		if _, ok := seen[d.Name]; ok {
 			continue
@@ -1047,18 +1064,20 @@ func buildVerifierToolset(all []sdktools.ToolDescriptor, disabled map[string]boo
 		if disabled[d.Name] {
 			continue
 		}
-		// Hard exclusion: mutating + goal-control tools are stripped even when
-		// they match an include criterion (e.g. declare_step_complete is in
-		// subagentReadOnlyToolNames but must be excluded here).
+		// Hard exclusion: goal-control tools are stripped even when their
+		// capability group (system) is included.
 		if _, isExcluded := excluded[d.Name]; isExcluded {
 			continue
 		}
-		isMCP := d.SourceCategory == sdktools.SourceCategoryMCP
-		_, isReadOnly := subagentReadOnlyToolNames[d.Name]
-		isShell := d.Name == shell
+		// Hard exclusion by group: mutating tools never reach the verifier,
+		// regardless of tagging accidents elsewhere.
+		if _, isExcludedGroup := verifierExcludedGroups[d.Group]; isExcludedGroup {
+			continue
+		}
+		_, groupIncluded := verifierIncludeGroups[d.Group]
 		isVerdict := d.Name == "declare_verification" // the verifier's verdict channel
 		isDelegate := allowDelegate && d.Name == "delegate"
-		if !isMCP && !isReadOnly && !isShell && !isVerdict && !isDelegate {
+		if !groupIncluded && !isVerdict && !isDelegate {
 			continue
 		}
 		seen[d.Name] = struct{}{}
@@ -1068,21 +1087,21 @@ func buildVerifierToolset(all []sdktools.ToolDescriptor, disabled map[string]boo
 }
 
 // verifierToolFilter builds the read-only/test toolset for the EXECUTABLE
-// verification pass (the default mode): read-only + shell + MCP +
-// declare_verification, with every mutating tool and every goal-control tool
-// (including delegate) hard-excluded. Guarantees declare_verification is
-// present so the verifier can report its verdict.
+// verification pass (the default mode): system + read + execute + MCP groups,
+// with every mutating tool and every goal-control tool (including delegate)
+// hard-excluded. Guarantees declare_verification is present so the verifier
+// can report its verdict.
 func verifierToolFilter(all []sdktools.ToolDescriptor, disabled map[string]bool) []sdktools.ToolDescriptor {
 	return buildVerifierToolset(all, disabled, verifierExcludedToolNames, false)
 }
 
 // verifierReDerivationToolFilter builds the toolset for the RE_DERIVATION
-// verification pass: the executable toolset PLUS delegate + read_step_output.
-// delegate lets the verifier spin up a fresh read-only sub-agent that re-runs
-// the goal's process; read_step_output (already in subagentReadOnlyToolNames)
-// reads that delegated run's result. Every mutating tool and every OTHER
-// goal-control tool remains excluded — only delegate is added to the
-// coordination set. Guarantees declare_verification is present.
+// verification pass: the executable toolset PLUS delegate. delegate lets the
+// verifier spin up a fresh read-only sub-agent that re-runs the goal's
+// process; read_step_output (a system-group tool) reads that delegated run's
+// result. Every mutating tool and every OTHER goal-control tool remains
+// excluded — only delegate is added to the coordination set. Guarantees
+// declare_verification is present.
 func verifierReDerivationToolFilter(all []sdktools.ToolDescriptor, disabled map[string]bool) []sdktools.ToolDescriptor {
 	return buildVerifierToolset(all, disabled, verifierReDerivationExcludedToolNames, true)
 }

@@ -400,6 +400,20 @@ export namespace backend {
 	
 	    }
 	}
+	export class GroupPolicyResponse {
+	    policy: string;
+	    blacklist?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new GroupPolicyResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.policy = source["policy"];
+	        this.blacklist = source["blacklist"];
+	    }
+	}
 	export class ProviderConfigRequest {
 	    api_key?: string;
 	    base_url?: string;
@@ -821,23 +835,8 @@ export namespace backend {
 	        this.api_key = source["api_key"];
 	    }
 	}
-	export class ToolPolicyResponse {
-	    policy: string;
-	    blacklist?: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new ToolPolicyResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.policy = source["policy"];
-	        this.blacklist = source["blacklist"];
-	    }
-	}
 	export class SecuritySettingsResponse {
-	    default_policy: string;
-	    tool_policies: Record<string, ToolPolicyResponse>;
+	    groups: Record<string, GroupPolicyResponse>;
 	    auto_approve_workspace_writes: boolean;
 	    smart_approve: boolean;
 	    judge_available: boolean;
@@ -848,8 +847,7 @@ export namespace backend {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.default_policy = source["default_policy"];
-	        this.tool_policies = this.convertValues(source["tool_policies"], ToolPolicyResponse, true);
+	        this.groups = this.convertValues(source["groups"], GroupPolicyResponse, true);
 	        this.auto_approve_workspace_writes = source["auto_approve_workspace_writes"];
 	        this.smart_approve = source["smart_approve"];
 	        this.judge_available = source["judge_available"];
@@ -1025,6 +1023,7 @@ export namespace backend {
 	    name: string;
 	    description: string;
 	    source: string;
+	    group: string;
 	    policy: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1036,10 +1035,10 @@ export namespace backend {
 	        this.name = source["name"];
 	        this.description = source["description"];
 	        this.source = source["source"];
+	        this.group = source["group"];
 	        this.policy = source["policy"];
 	    }
 	}
-	
 	export class UpdateInfo {
 	    available: boolean;
 	    current_version: string;

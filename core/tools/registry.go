@@ -12,53 +12,19 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// internalTools is the set of tool names that are always allowed,
-// excluded from policy configuration, and bypass the tool judge entirely.
-var internalTools = map[string]struct{}{
-	"ask_user":              {},
-	"finish":                {},
-	"list_step_outputs":     {},
-	"read_final_result":     {},
-	"read_skill_resource":   {},
-	"read_step_output":      {},
-	"read_attachment":       {},
-	"search_facts":          {},
-	"tool_result_read":      {},
-	"semantic_search":       {},
-	"update_checklist":      {},
-	"declare_step_complete": {},
-	"store_fact":            {},
-	"delegate":              {},
-	"cancel_delegation":     {},
-	"declare_plan":          {},
-	"execute_plan":          {},
-	"propose_goal":          {},
-	"declare_goal_status":   {},
-	"declare_verification":  {},
-	"reflect":               {},
-	sdktools.ToolBatch:      {},
-}
-
-// IsInternalTool returns true if the given tool name is an internal tool
-// that is always allowed and bypasses policy/judge checks.
-func IsInternalTool(name string) bool {
-	_, ok := internalTools[name]
-	return ok
-}
-
-// goalModeTools is the set of internal tools that exist ONLY for goal mode:
+// goalModeTools is the set of system-group tools that exist ONLY for goal mode:
 // they have no meaning (and must not be offered to the agent) outside an
 // active goal pursuit.
 //   - propose_goal          starts a goal (derivation phase)
 //   - declare_goal_status   reports the agent's self-evaluation verdict
 //   - declare_verification  reports the independent verifier's verdict
 //
-// All three are already internal (always allowed, policy/judge-exempt, hidden
-// from the security UI). This set is concerned purely with AVAILABILITY: it
-// tells the orchestrator which internal tools to strip from a non-goal
-// Conductor run's available-tool list, so the agent never sees goal-only
-// tools when goal mode is off. The goal loop and the independent verifier
-// deliberately receive the UNSTRIPPED list — verifierToolFilter/
+// All three are already system tools (always allowed, policy/judge-exempt,
+// hidden from the security UI). This set is concerned purely with
+// AVAILABILITY: it tells the orchestrator which system tools to strip from a
+// non-goal Conductor run's available-tool list, so the agent never sees
+// goal-only tools when goal mode is off. The goal loop and the independent
+// verifier deliberately receive the UNSTRIPPED list — verifierToolFilter/
 // verifierReDerivationToolFilter build their read-only toolset (which must
 // include declare_verification) from it.
 var goalModeTools = map[string]struct{}{
@@ -68,10 +34,10 @@ var goalModeTools = map[string]struct{}{
 }
 
 // IsGoalModeTool returns true if the given tool name exists ONLY for goal
-// mode. Such tools are internal (always allowed, policy-exempt) but are
-// additionally gated: they are offered to the agent only when the session is
-// running a goal loop (HandleMessage/ResumeTask strip them from the
-// available-tool list on the non-goal path).
+// mode. Such tools are system tools (policy-exempt) but are additionally
+// gated: they are offered to the agent only when the session is running a
+// goal loop (HandleMessage/ResumeTask strip them from the available-tool list
+// on the non-goal path).
 func IsGoalModeTool(name string) bool {
 	_, ok := goalModeTools[name]
 	return ok
@@ -99,12 +65,12 @@ func StripGoalModeTools(in []sdktools.ToolDescriptor) []sdktools.ToolDescriptor 
 type ToolFilter func(toolName, source string) bool
 
 // ToolRegistry stores all available tools and provides them to Executor.
-// It embeds the sp4rk ToolRegistry for basic operations and adds policy enforcement on top.
-// Thread-safe via sync.RWMutex.
+// It embeds the sp4rk ToolRegistry for basic operations and adds group-based
+// policy enforcement on top. Thread-safe via sync.RWMutex.
 //
 // TODO(S-14): Replace embedding with composition — store *sdktools.ToolRegistry as a
-// private field and explicitly delegate only the methods the core layer intends to
-// expose. This gives full control over the public surface area and prevents
+// private field and explicitly delegate only the methods the core layer intends
+// to expose. This gives full control over the public surface area and prevents
 // accidental exposure of sp4rk-internal methods to callers. The refactor requires
 // auditing all callers that access sp4rk methods through the embedded type.
 type ToolRegistry struct {
@@ -115,10 +81,7 @@ type ToolRegistry struct {
 	mu                         sync.RWMutex
 	confirmFunc                sdktools.ConfirmFunc
 	judge                      *sdktools.ToolJudge
-	policyOverrides            map[string]sdktools.ToolPolicy
-	skillPolicyOverrides       map[string]sdktools.ToolPolicy
-	defaultPolicy              sdktools.ToolPolicy
-	hasDefaultPolicy           bool
+	groupPolicies              map[sdktools.ToolGroup]sdktools.ToolPolicy
 	preExecuteHook             PreExecuteHook
 	postExecuteHook            PostExecuteHook
 	toolFilter                 ToolFilter
@@ -134,7 +97,7 @@ type ToolRegistry struct {
 // is aborted and the error is returned as a tool error result.
 type PreExecuteHook func(ctx context.Context, toolName string, source string) error
 
-// PostExecuteHook is called after a non-internal tool execution path completes
+// PostExecuteHook is called after a non-system tool execution path completes
 // (regardless of success or error). It receives the tool name, the result, and
 // the execution error so it can react to file mutations (e.g., triggering
 // vector index refresh) while distinguishing genuine successes from failed
@@ -153,10 +116,9 @@ func NewToolRegistry() *ToolRegistry {
 
 // Clone returns a copy of this ToolRegistry that shares the underlying sp4rk
 // ToolRegistry (tools themselves are stateless and shared) but has independent
-// policy state (policyOverrides, skillPolicyOverrides, defaultPolicy, judge,
-// confirmFunc, hooks). This is used to give each session/orchestrator its own
-// policy view so that runtime mutations — in particular skill-derived
-// SetSkillPolicyOverrides — do not leak across concurrent sessions.
+// policy state (groupPolicies, judge, confirmFunc, hooks). This gives each
+// session/orchestrator its own policy view so runtime mutations on a clone do
+// not leak across concurrent sessions.
 func (r *ToolRegistry) Clone() *ToolRegistry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -165,8 +127,6 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		ToolRegistry:               r.ToolRegistry, // shared sp4rk registry (tool definitions)
 		confirmFunc:                r.confirmFunc,
 		judge:                      r.judge,
-		defaultPolicy:              r.defaultPolicy,
-		hasDefaultPolicy:           r.hasDefaultPolicy,
 		preExecuteHook:             r.preExecuteHook,
 		postExecuteHook:            r.postExecuteHook,
 		toolFilter:                 r.toolFilter,
@@ -181,16 +141,10 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 			cloned.disabledTools[k] = v
 		}
 	}
-	if r.policyOverrides != nil {
-		cloned.policyOverrides = make(map[string]sdktools.ToolPolicy, len(r.policyOverrides))
-		for k, v := range r.policyOverrides {
-			cloned.policyOverrides[k] = v
-		}
-	}
-	if r.skillPolicyOverrides != nil {
-		cloned.skillPolicyOverrides = make(map[string]sdktools.ToolPolicy, len(r.skillPolicyOverrides))
-		for k, v := range r.skillPolicyOverrides {
-			cloned.skillPolicyOverrides[k] = v
+	if r.groupPolicies != nil {
+		cloned.groupPolicies = make(map[sdktools.ToolGroup]sdktools.ToolPolicy, len(r.groupPolicies))
+		for k, v := range r.groupPolicies {
+			cloned.groupPolicies[k] = v
 		}
 	}
 	return cloned
@@ -287,28 +241,47 @@ func (r *ToolRegistry) GetJudge() *sdktools.ToolJudge {
 	return r.judge
 }
 
-// SetPolicyOverrides sets per-tool policy overrides from configuration.
-func (r *ToolRegistry) SetPolicyOverrides(overrides map[string]sdktools.ToolPolicy) {
+// SetGroupPolicies sets the group→policy map that Execute consults for every
+// non-system tool (security.groups in config.yaml). It replaces any previous
+// map. Groups without an entry resolve to PolicyUserConfirm (fail-safe); the
+// reserved system group is never configurable and ignores entries.
+func (r *ToolRegistry) SetGroupPolicies(policies map[sdktools.ToolGroup]sdktools.ToolPolicy) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.policyOverrides = overrides
+	r.groupPolicies = policies
 }
 
-// SetDefaultPolicy sets the default policy for tools without explicit overrides.
-func (r *ToolRegistry) SetDefaultPolicy(p sdktools.ToolPolicy) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.defaultPolicy = p
-	r.hasDefaultPolicy = true
+// GroupPolicies returns a copy of the current group→policy map.
+func (r *ToolRegistry) GroupPolicies() map[sdktools.ToolGroup]sdktools.ToolPolicy {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[sdktools.ToolGroup]sdktools.ToolPolicy, len(r.groupPolicies))
+	for k, v := range r.groupPolicies {
+		out[k] = v
+	}
+	return out
+}
+
+// groupPolicy returns the effective policy for a tool group. A group without a
+// configured entry fails safe to PolicyUserConfirm — the same posture as the
+// config group defaults (reads may be widened to allow; everything else
+// confirms).
+func (r *ToolRegistry) groupPolicy(group sdktools.ToolGroup) sdktools.ToolPolicy {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if p, ok := r.groupPolicies[group]; ok {
+		return p
+	}
+	return sdktools.PolicyUserConfirm
 }
 
 // SetAutoApproveWorkspaceWrites enables or disables session-root-based
-// auto-approval for file write tools with PolicyUserConfirm. When enabled,
-// write_file, edit_file, delete_file, delete_directory, and create_directory
-// auto-execute without confirmation when all paths in their input are within
-// the session workspace or the session temp directory (both treated as equal
-// peers). Symlink traversals out of session roots are still forced to
-// confirmation regardless.
+// auto-approval for tools in the local_write group with an effective
+// PolicyUserConfirm. When enabled, write_file, edit_file, delete_file,
+// delete_directory, and create_directory auto-execute without confirmation
+// when their targets resolve inside the session roots (workspace, temp
+// directory, and any additional allowed roots — equal peers). Symlink
+// traversals that resolve out of the session roots still force confirmation.
 func (r *ToolRegistry) SetAutoApproveWorkspaceWrites(enabled bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -316,30 +289,32 @@ func (r *ToolRegistry) SetAutoApproveWorkspaceWrites(enabled bool) {
 }
 
 // SetSmartApprove enables or disables strict automatic evaluation of calls
-// whose effective policy is PolicyUserConfirm. Only a strict ALLOW executes
-// without UI; every other outcome remains a user confirmation.
+// whose effective policy is PolicyUserConfirm, and of soft tool-judge
+// escalations under PolicyAlwaysAllow. Only a strict ALLOW executes without
+// UI; every other outcome remains a user confirmation. Hard safety reasons
+// never reach Smart Approve — they confirm directly.
 func (r *ToolRegistry) SetSmartApprove(enabled bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.smartApprove = enabled
 }
 
-// SetPreExecuteHook sets a hook that is called before every non-internal tool execution.
+// SetPreExecuteHook sets a hook that is called before every non-system tool execution.
 func (r *ToolRegistry) SetPreExecuteHook(hook PreExecuteHook) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.preExecuteHook = hook
 }
 
-// SetPostExecuteHook sets a hook that is called after a non-internal tool
-// execution path completes. The hook receives the tool name, result, and the
+// SetPostExecuteHook sets a hook that is called after every non-system tool
+// execution path completes. The hook receives the tool name, result, and
 // execution error. The hook is registered via defer after the tool-not-found,
-// disabled-tool, and internal-tool early returns, so it fires only for tools
+// disabled-tool, and system-group early returns, so it fires only for tools
 // that reach policy/security resolution: successful execution, policy denials,
-// pre-execute-hook errors, symlink confirmation, and user-confirmation
-// outcomes (allow/deny). It does NOT fire when the tool is not found,
-// disabled, or an internal tool. The hook should filter on err,
-// result.IsError, and toolName to avoid unnecessary work.
+// pre-execute-hook errors, blacklist blocks, and user-confirmation outcomes
+// (allow/deny). It does NOT fire when the tool is not found, disabled, or a
+// system tool. The hook should filter on err, result.IsError, and toolName to
+// avoid unnecessary work.
 func (r *ToolRegistry) SetPostExecuteHook(hook PostExecuteHook) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -369,43 +344,38 @@ func (r *ToolRegistry) RegisterWithSource(tool sdktools.Tool, source string) {
 	}
 }
 
-// resolvePolicy returns the effective policy for a tool.
-// Resolution order: per-tool override > skill override > registry default > tool's own default.
-func (r *ToolRegistry) resolvePolicy(name string, tool sdktools.Tool) sdktools.ToolPolicy {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if p, ok := r.policyOverrides[name]; ok {
-		return p
-	}
-	if p, ok := r.skillPolicyOverrides[name]; ok {
-		return p
-	}
-	if r.hasDefaultPolicy {
-		return r.defaultPolicy
-	}
-	return tool.DefaultPolicy()
-}
-
-// SetSkillPolicyOverrides sets per-tool policy overrides derived from active skills.
-// These have lower priority than config-sourced policyOverrides but higher than default.
-func (r *ToolRegistry) SetSkillPolicyOverrides(overrides map[string]sdktools.ToolPolicy) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.skillPolicyOverrides = overrides
-}
-
 // Execute looks up a tool by name and executes it with the given input.
 // Returns an error if the tool is not found.
-// Security policy is resolved via resolvePolicy() and applied accordingly.
-// Internal tools bypass policy and judge checks, but disabled-tool checks
-// (No Project mode) are applied to all tools including internal ones.
+//
+// Security is resolved by the tool's capability GROUP (Tool.Group()), never by
+// tool name. Gate order:
+//
+//  1. required-field validation (schema "required" keys),
+//  2. disabled tools (No Project mode) — applies to every tool, system included,
+//  3. system group → execute directly (internal orchestration tools),
+//  4. extra shell blacklist (No Project) — hard block; the reason names the
+//     matched pattern,
+//  5. pre-execute hook,
+//  6. group policy deny → block,
+//  7. group policy allow: tool Judge + symlink signals — a HARD reason
+//     (command blacklist, SSRF, symlink escape) forces a confirmation the
+//     advisory judge cannot weaken; a SOFT reason (path containment) goes to
+//     Smart Approve and confirms unless the strict judge allows; a clean call
+//     executes,
+//  8. group policy user_confirm: local_write tools with
+//     auto_approve_workspace_writes whose paths resolve inside the session
+//     roots execute; everything else goes through Smart Approve (never around
+//     a hard reason) and otherwise confirms.
+//
+// Hard reasons never pass Smart Approve: they confirm directly with the
+// advisory Ask Agent action disabled.
 func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (result sdktools.ToolResult, err error) {
 	tool, ok := r.Get(name)
 	if !ok {
 		return sdktools.ToolResult{Content: "tool not found: " + name, IsError: true}, nil
 	}
 
-	// Centralized required-field validation (ASI02-R2, defense-in-depth).
+	// Gate 1: centralized required-field validation (ASI02-R2, defense-in-depth).
 	// Ensures every tool — including new ones whose author forgot per-tool
 	// validation — rejects inputs missing a JSON Schema "required" top-level
 	// key. Fail-safe: schema parse errors or missing "required" are skipped,
@@ -417,8 +387,8 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		}, nil
 	}
 
-	// Check disabled tools (No Project mode) — MUST precede internal bypass
-	// so that tools like semantic_search are blocked at execution time too.
+	// Gate 2: disabled tools (No Project mode) — MUST precede the system-group
+	// bypass so that tools like semantic_search are blocked at execution time too.
 	r.mu.RLock()
 	disabled := r.disabledTools
 	extraShellBL := r.extraShellBlacklist
@@ -431,8 +401,9 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		}, nil
 	}
 
-	// Internal tools bypass remaining policy/judge checks
-	if IsInternalTool(name) {
+	// Gate 3: system group — internal orchestration/state tools bypass the
+	// remaining policy and judge checks.
+	if tool.Group() == sdktools.GroupSystem {
 		return tool.Execute(ctx, input)
 	}
 
@@ -440,7 +411,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	// (policy denials, pre-execute-hook errors, successful execution, etc.).
 	// The hook filters on err, result.IsError, and toolName to skip irrelevant
 	// calls. It does not cover the early returns above (tool not found,
-	// disabled tool, internal tool) — see SetPostExecuteHook docs.
+	// disabled tool, system tool) — see SetPostExecuteHook docs.
 	r.mu.RLock()
 	postHook := r.postExecuteHook
 	r.mu.RUnlock()
@@ -450,31 +421,23 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		}()
 	}
 
-	// Extra shell blacklist check (per-session, e.g. No Project mode).
-	// Applies to all shell-exec tools (bash_exec, posh_exec). Parses the input
-	// to extract the command and checks it against compiled patterns.
-	if sdktools.IsShellExecTool(name) && len(extraShellBL) > 0 {
-		var params struct {
-			Command string `json:"command"`
-		}
-		if err := json.Unmarshal(input, &params); err == nil && params.Command != "" {
-			for _, re := range extraShellBL {
-				if re.MatchString(params.Command) {
-					r.log().Warn("security: shell command blocked by No Project extra blacklist",
-						"tool", name, "command", params.Command, "pattern", re.String())
-					return sdktools.ToolResult{
-						Content: fmt.Sprintf("command %q is not available in No Project mode", params.Command),
-						IsError: true,
-					}, nil
-				}
-			}
-		}
+	// Gate 4: extra shell blacklist (per-session, e.g. No Project mode) — a
+	// hard block that no policy can weaken. Applies to all shell-exec tools
+	// (bash_exec, posh_exec); the reason names the matched pattern so the user
+	// can see which rule fired.
+	if pattern, command := matchExtraShellBlacklist(name, input, extraShellBL); pattern != "" {
+		r.log().Warn("security: shell command blocked by No Project extra blacklist",
+			"tool", name, "command", command, "pattern", pattern)
+		return sdktools.ToolResult{
+			Content: fmt.Sprintf("command %q is not available in No Project mode (matched blacklist pattern %q)", command, pattern),
+			IsError: true,
+		}, nil
 	}
 
-	// Get source for hooks
+	// Get source for hooks and the strict judge.
 	source := r.GetToolSource(name)
 
-	// Pre-execute hook (e.g., indexing gate for MCP tools)
+	// Pre-execute hook (e.g., indexing gate for MCP tools).
 	r.mu.RLock()
 	hook := r.preExecuteHook
 	r.mu.RUnlock()
@@ -484,142 +447,187 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		}
 	}
 
-	// Symlink detection gate: force-confirm when any tool input contains paths
-	// that traverse symlinks, regardless of policy. Shows resolved paths in the
-	// confirmation dialog so the user can make an informed decision.
-	// sdktools.PolicyAlwaysDeny is still respected — symlinks don't bypass explicit denies.
-	if intercepted, result, err := r.checkSymlinksAndConfirm(ctx, tool, name, input); intercepted {
-		return result, err
-	}
+	group := tool.Group()
 
-	policy := r.resolvePolicy(name, tool)
-
-	// PolicyAlwaysAllow safety filter: run the tool-specific Judge BEFORE
-	// workspace/temp auto-approval. A command like "rm -rf /workspace/.git"
-	// has all paths inside the workspace but must still hit the bash_exec
-	// blacklist; a web_fetch to a private IP must still hit SSRF protection.
-	// Path-locality must NEVER bypass safety checks implemented via ToolJudger.
-	// Only tools that implement ToolJudger are affected; tools without one
-	// fall through to auto-approval / direct execution unchanged.
-	if policy == sdktools.PolicyAlwaysAllow {
-		if judger, ok := tool.(sdktools.ToolJudger); ok {
-			allow, reasoning := judger.Judge(ctx, input)
-			if !allow && reasoning != "" {
-				r.log().Warn("security: always_allow tool escalated to confirmation by safety judge",
-					"tool", name, "reasoning", reasoning)
-				return r.confirmAndExecute(ctx, tool, name, input, reasoning)
-			}
-		}
-	}
-
-	// Workspace/temp auto-approval: if all paths in the input are within the
-	// session roots (workspace, temp directory, and any additional allowed
-	// roots — equal peers), execute without confirmation.
-	// Auto-approval ONLY applies to sdktools.PolicyAlwaysAllow (or no explicit policy
-	// when the tool's own default permits it). sdktools.PolicyUserConfirm and
-	// sdktools.PolicyAlwaysDeny are NEVER weakened by path-locality heuristics — a
-	// user-controlled `working_directory` argument must not bypass an explicit
-	// confirm policy (e.g., bash_exec running ./scripts/x.sh inside the
-	// workspace). PolicyUserConfirm auto-approval for write tools is handled
-	// below via the tool's ToolJudger + autoApproveWorkspaceWrites flag.
-	// Judge-flagged calls (above) have already escalated to confirmation and
-	// never reach this point.
-	if policy == sdktools.PolicyAlwaysAllow {
-		if sdktools.AllPathsInSessionRoots(ctx, input) {
-			r.log().Debug("auto-approved: all paths within session roots", "tool", name)
-			return tool.Execute(ctx, input)
-		}
-	}
-
-	switch policy {
-	case sdktools.PolicyAlwaysAllow:
-		// Judge-escalated calls were handled above; non-Judge or Judge-cleared
-		// calls execute directly. Workspace/temp auto-approval (above) already
-		// returned for path-local AlwaysAllow calls.
-		return tool.Execute(ctx, input)
-
-	case sdktools.PolicyAlwaysDeny:
-		r.log().Warn("security: tool blocked by policy (always_deny)", "tool", name)
+	// Gate 6: group policy deny — a hard block.
+	policy := r.groupPolicy(group)
+	if policy == sdktools.PolicyAlwaysDeny {
+		r.log().Warn("security: tool blocked by group policy (deny)", "tool", name, "group", string(group))
 		return sdktools.ToolResult{
-			Content: fmt.Sprintf("tool %q blocked by security policy", name),
+			Content: fmt.Sprintf("tool %q blocked by security policy (group %q is set to deny)", name, group),
 			IsError: true,
 		}, nil
+	}
 
-	case sdktools.PolicyUserConfirm:
-		// Session-root auto-approval: when enabled, allow file write tools to
-		// execute without confirmation if the tool's Judge reports the target
-		// is within the session workspace or temp directory (equal peers).
-		// Symlinks are already intercepted by checkSymlinksAndConfirm above,
-		// so any path that reached this point is a real (non-symlink) path.
-		confirmReason := defaultConfirmReason(name)
-		r.mu.RLock()
-		autoApprove := r.autoApproveWorkspaceWrites
-		r.mu.RUnlock()
-		if autoApprove {
-			if judger, ok := tool.(sdktools.ToolJudger); ok {
-				allow, reason := judger.Judge(ctx, input)
-				if allow {
-					r.log().Debug("workspace auto-approve: Judge allows", "tool", name, "reason", reason)
-					return tool.Execute(ctx, input)
-				}
-				if reason != "" {
-					confirmReason = reason
-				}
-			}
+	// Tool-local safety signals, gathered once and shared by every policy
+	// branch below:
+	//   - the tool's own Judge (command blacklist / SSRF = hard; path
+	//     containment = soft),
+	//   - symlink traversal detection (an escape out of the session roots or
+	//     unresolvable input = hard; a symlink whose resolution stays inside
+	//     the roots is NOT a concern — containment reasons about resolved
+	//     paths).
+	judgeOutcome := judgeToolCall(ctx, tool, input)
+	symlinkReason := r.symlinkHardReason(ctx, name, tool, input)
+	hardReason, softReason := splitSafetyReasons(judgeOutcome, symlinkReason)
+
+	if policy == sdktools.PolicyAlwaysAllow {
+		// Hard reasons are security-control triggers (command blacklist, SSRF,
+		// symlink escapes). They force a confirmation the advisory Ask Agent
+		// action cannot weaken (DisableJudge=true) and never pass Smart
+		// Approve — path-locality or a lenient judge must not bypass a fired
+		// security control.
+		if hardReason != "" {
+			r.log().Warn("security: allow-policy tool escalated by hard safety reason",
+				"tool", name, "group", string(group), "reason", hardReason)
+			return r.confirmAndExecuteWithOptions(ctx, tool, name, input, hardReason, true)
 		}
-
-		// Smart Approve is deliberately last among automatic gates and applies
-		// only to the effective user_confirm policy. Workspace auto-approval
-		// above therefore retains priority, while symlink and always_deny paths
-		// have already returned before reaching this point.
-		r.mu.RLock()
-		smartApprove := r.smartApprove
-		strictJudge := r.judge
-		r.mu.RUnlock()
-		if smartApprove {
-			reasoning := "Strict judge is unavailable; requiring manual confirmation for safety"
-			verdict := sdktools.VerdictConfirm
-			if strictJudge != nil {
-				var judgeErr error
-				verdict, reasoning, judgeErr = strictJudge.JudgeStrict(ctx, sdktools.StrictJudgeRequest{
-					ToolName:    name,
-					Input:       input,
-					TaskContext: sdktools.TaskContextFrom(ctx),
-					ToolSource:  source,
-				})
-				if judgeErr != nil {
-					verdict = sdktools.VerdictConfirm
-					reasoning = "Strict judge evaluation failed; requiring manual confirmation for safety"
-				}
-			}
-
-			verdictText := "CONFIRM"
-			if verdict == sdktools.VerdictAllow {
-				verdictText = "ALLOW"
-			}
-			r.log().Info("security: smart approve verdict",
-				"tool", name,
-				"source", source,
-				"verdict", verdictText,
-				"asi_scope", "ASI01,ASI02,ASI03,ASI05,ASI09")
-
-			if verdict == sdktools.VerdictAllow {
-				return tool.Execute(ctx, input)
-			}
-			return r.confirmAndExecuteWithOptions(ctx, tool, name, input, reasoning, true)
+		// Soft reasons are advisory scope questions (e.g. a read outside the
+		// session roots): Smart Approve weighs them and confirms unless the
+		// strict judge allows. Without Smart Approve they fall back to a plain
+		// confirmation.
+		if softReason != "" {
+			r.log().Info("security: allow-policy tool escalated by soft safety reason",
+				"tool", name, "group", string(group), "reason", softReason)
+			return r.smartApproveOrConfirm(ctx, tool, name, source, input, softReason)
 		}
-
-		// Smart Approve is off (or not applicable): retain the richest reason
-		// produced by the existing workspace auto-approval check.
-		return r.confirmAndExecute(ctx, tool, name, input, confirmReason)
-
-	default:
 		return tool.Execute(ctx, input)
 	}
+
+	// Effective policy: PolicyUserConfirm (the fail-safe default for any group
+	// without a configured entry).
+
+	// Session-root auto-approval: local_write tools whose targets resolve
+	// inside the session roots (workspace, temp directory, and additional
+	// allowed roots — equal peers) execute without confirmation when
+	// auto_approve_workspace_writes is enabled. The Judge's containment check
+	// resolves symlinks and normalizes ".." (pathutil underneath), so a
+	// symlink whose resolution stays inside the roots auto-approves while an
+	// escape fails containment. Hard reasons preempt auto-approval.
+	r.mu.RLock()
+	autoApprove := r.autoApproveWorkspaceWrites
+	r.mu.RUnlock()
+	if group == sdktools.GroupLocalWrite && autoApprove && hardReason == "" && judgeOutcome.Allow {
+		r.log().Debug("workspace auto-approve: local_write target within session roots",
+			"tool", name, "reason", judgeOutcome.Reason)
+		return tool.Execute(ctx, input)
+	}
+
+	if hardReason != "" {
+		r.log().Warn("security: user_confirm tool escalated by hard safety reason",
+			"tool", name, "group", string(group), "reason", hardReason)
+		return r.confirmAndExecuteWithOptions(ctx, tool, name, input, hardReason, true)
+	}
+
+	// Smart Approve is deliberately last among automatic gates and applies
+	// only to the effective user_confirm policy. Workspace auto-approval above
+	// therefore retains priority, while deny and hard-reason paths have
+	// already returned before reaching this point.
+	return r.smartApproveOrConfirm(ctx, tool, name, source, input, softReason)
+}
+
+// judgeToolCall runs the tool's optional local safety judge. Tools without a
+// judge report no concern (zero outcome: no reason, not hard).
+func judgeToolCall(ctx context.Context, tool sdktools.Tool, input json.RawMessage) sdktools.JudgeOutcome {
+	if judger, ok := tool.(sdktools.ToolJudger); ok {
+		return judger.Judge(ctx, input)
+	}
+	return sdktools.JudgeOutcome{}
+}
+
+// splitSafetyReasons folds the collected signals into (hardReason, softReason).
+// At most one reason survives: a hard reason (symlink escape, command
+// blacklist, SSRF) always wins; only a soft judge escalation (path
+// containment) yields a soft reason. Empty strings mean "clean".
+func splitSafetyReasons(judge sdktools.JudgeOutcome, symlinkReason string) (hard, soft string) {
+	if !judge.Allow && judge.Reason != "" && judge.Severity == sdktools.JudgeSeverityHard {
+		return judge.Reason, ""
+	}
+	if symlinkReason != "" {
+		return symlinkReason, ""
+	}
+	if !judge.Allow && judge.Reason != "" {
+		return "", judge.Reason
+	}
+	return "", ""
+}
+
+// smartApproveOrConfirm applies the Smart Approve gate. When enabled, the
+// strict judge evaluates the call and only a strict ALLOW executes without UI;
+// every other verdict (and a missing or failing judge) stays a user
+// confirmation with the advisory Ask Agent action disabled (DisableJudge=true)
+// — the advisory judge must not re-decide what the strict judge already ran
+// on. When Smart Approve is off, the call goes straight to confirmation with
+// the supplied reason (or the default per-tool reason when there is none).
+func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason string) (sdktools.ToolResult, error) {
+	r.mu.RLock()
+	smartApprove := r.smartApprove
+	strictJudge := r.judge
+	r.mu.RUnlock()
+
+	if !smartApprove {
+		if reason == "" {
+			reason = defaultConfirmReason(name)
+		}
+		return r.confirmAndExecute(ctx, tool, name, input, reason)
+	}
+
+	reasoning := "Strict judge is unavailable; requiring manual confirmation for safety"
+	verdict := sdktools.VerdictConfirm
+	if strictJudge != nil {
+		var judgeErr error
+		verdict, reasoning, judgeErr = strictJudge.JudgeStrict(ctx, sdktools.StrictJudgeRequest{
+			ToolName:    name,
+			Input:       input,
+			TaskContext: sdktools.TaskContextFrom(ctx),
+			ToolSource:  source,
+		})
+		if judgeErr != nil {
+			verdict = sdktools.VerdictConfirm
+			reasoning = "Strict judge evaluation failed; requiring manual confirmation for safety"
+		}
+	}
+
+	verdictText := "CONFIRM"
+	if verdict == sdktools.VerdictAllow {
+		verdictText = "ALLOW"
+	}
+	r.log().Info("security: smart approve verdict",
+		"tool", name,
+		"source", source,
+		"verdict", verdictText,
+		"asi_scope", "ASI01,ASI02,ASI03,ASI05,ASI09")
+
+	if verdict == sdktools.VerdictAllow {
+		return tool.Execute(ctx, input)
+	}
+	return r.confirmAndExecuteWithOptions(ctx, tool, name, input, reasoning, true)
+}
+
+// matchExtraShellBlacklist checks a shell-exec tool's command against extra
+// per-session blacklist patterns. It returns the matched pattern and the
+// command, or empty strings when nothing matched (a command-less or
+// unparseable input never matches).
+func matchExtraShellBlacklist(name string, input json.RawMessage, patterns []*regexp.Regexp) (pattern, command string) {
+	if !sdktools.IsShellExecTool(name) || len(patterns) == 0 {
+		return "", ""
+	}
+	var params struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(input, &params); err != nil || params.Command == "" {
+		return "", ""
+	}
+	for _, re := range patterns {
+		if re.MatchString(params.Command) {
+			return re.String(), params.Command
+		}
+	}
+	return "", ""
 }
 
 // defaultConfirmReason returns a human-readable explanation of why a tool whose
-// resolved policy is PolicyUserConfirm requires the user's approval before it
+// effective policy is PolicyUserConfirm requires the user's approval before it
 // can run. It is used when there is no richer reason available (e.g. no
 // symlink traversal, no judge flag, no auto-approve denial) — previously this
 // case surfaced an empty string, leaving the confirmation dialog without any
@@ -654,8 +662,9 @@ func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool sdktools.Tool
 }
 
 // confirmAndExecuteWithOptions requests user confirmation and optionally
-// disables the advisory Ask Agent action when strict judging already ran.
-// Missing confirmation infrastructure is a denial, never implicit approval.
+// disables the advisory Ask Agent action when strict judging already ran or a
+// hard security control fired. Missing confirmation infrastructure is a
+// denial, never implicit approval.
 func (r *ToolRegistry) confirmAndExecuteWithOptions(ctx context.Context, tool sdktools.Tool, name string, input json.RawMessage, reasoning string, disableJudge bool) (sdktools.ToolResult, error) {
 	r.mu.RLock()
 	confirmFunc := r.confirmFunc

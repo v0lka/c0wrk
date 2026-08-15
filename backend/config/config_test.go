@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -249,28 +251,20 @@ llm:
 		t.Errorf("Expected default history_window 10, got %d", cfg.Router.HistoryWindow)
 	}
 
-	// Check Security defaults
-	if cfg.Security.DefaultPolicy != "user_confirm" {
-		t.Errorf("Expected default policy 'user_confirm', got %q", cfg.Security.DefaultPolicy)
+	// Check Security defaults: every configurable group is created with its
+	// default policy and the execute group receives the default blacklist.
+	for group, want := range defaultToolGroupPolicies {
+		got, ok := cfg.Security.Groups[group]
+		if !ok {
+			t.Errorf("Expected default security group %q", group)
+			continue
+		}
+		if got.Policy != want {
+			t.Errorf("Expected group %q policy %q, got %q", group, want, got.Policy)
+		}
 	}
-	if cfg.Security.ToolPolicies == nil {
-		t.Error("Expected ToolPolicies to be initialized")
-	}
-	// Check default tool policies
-	if bashPolicy, ok := cfg.Security.ToolPolicies["bash_exec"]; !ok {
-		t.Error("Expected default bash_exec policy")
-	} else if bashPolicy.Policy != "user_confirm" {
-		t.Errorf("Expected bash_exec policy 'user_confirm', got %q", bashPolicy.Policy)
-	}
-	if writeFilePolicy, ok := cfg.Security.ToolPolicies["write_file"]; !ok {
-		t.Error("Expected default write_file policy")
-	} else if writeFilePolicy.Policy != "user_confirm" {
-		t.Errorf("Expected write_file policy 'user_confirm', got %q", writeFilePolicy.Policy)
-	}
-	if editFilePolicy, ok := cfg.Security.ToolPolicies["edit_file"]; !ok {
-		t.Error("Expected default edit_file policy")
-	} else if editFilePolicy.Policy != "user_confirm" {
-		t.Errorf("Expected edit_file policy 'user_confirm', got %q", editFilePolicy.Policy)
+	if len(cfg.Security.Groups[ToolGroupExecute].Blacklist) == 0 {
+		t.Error("Expected default execute-group blacklist")
 	}
 
 	// Check LLM retry defaults
@@ -310,23 +304,17 @@ llm:
 // broken patterns (e.g. a misplaced \b that prevents the pattern from ever
 // matching real input).
 func TestApplyDefaults_BlacklistCategorySymmetry(t *testing.T) {
-	cfg := &Config{}
-	ApplyDefaults(cfg)
-
-	tools := []string{"bash_exec", "posh_exec"}
-	policies := map[string]ToolPolicyConfig{}
-	for _, tool := range tools {
-		pol, ok := cfg.Security.ToolPolicies[tool]
-		if !ok {
-			t.Fatalf("expected default %s policy", tool)
-		}
+	shellBlacklists := map[string][]string{
+		"bash_exec": defaultBashExecBlacklist(),
+		"posh_exec": defaultPoshExecBlacklist(),
+	}
+	for tool, blacklist := range shellBlacklists {
 		// Validity guard: every blacklist pattern must compile as valid RE2.
-		for i, pat := range pol.Blacklist {
+		for i, pat := range blacklist {
 			if _, err := regexp.Compile(pat); err != nil {
 				t.Errorf("%s blacklist[%d] %q does not compile: %v", tool, i, pat, err)
 			}
 		}
-		policies[tool] = pol
 	}
 
 	// Each category carries one canonical command per shell that MUST be
@@ -376,13 +364,13 @@ func TestApplyDefaults_BlacklistCategorySymmetry(t *testing.T) {
 	}
 	for _, c := range categories {
 		t.Run(c.name, func(t *testing.T) {
-			for _, tool := range tools {
+			for tool, blacklist := range shellBlacklists {
 				cmd, ok := c.cmds[tool]
 				if !ok {
 					t.Fatalf("no canonical command for %s in category %q", tool, c.name)
 				}
 				matched := false
-				for _, pat := range policies[tool].Blacklist {
+				for _, pat := range blacklist {
 					if regexp.MustCompile(pat).MatchString(cmd) {
 						matched = true
 						break
@@ -407,15 +395,10 @@ func TestApplyDefaults_BlacklistCategorySymmetry(t *testing.T) {
 // accidentally re-broadening to a blanket `>\s*/dev/`, which forces spurious
 // confirmations under always_allow).
 func TestApplyDefaults_DestructiveDevPaths(t *testing.T) {
-	cfg := &Config{}
-	ApplyDefaults(cfg)
+	blacklist := defaultBashExecBlacklist()
 
-	pol, ok := cfg.Security.ToolPolicies["bash_exec"]
-	if !ok {
-		t.Fatalf("expected default bash_exec policy")
-	}
-	compiled := make([]*regexp.Regexp, 0, len(pol.Blacklist))
-	for i, pat := range pol.Blacklist {
+	compiled := make([]*regexp.Regexp, 0, len(blacklist))
+	for i, pat := range blacklist {
 		re, err := regexp.Compile(pat)
 		if err != nil {
 			t.Errorf("bash_exec blacklist[%d] %q does not compile: %v", i, pat, err)
@@ -494,9 +477,6 @@ func TestApplyDefaults_DestructiveDevPaths(t *testing.T) {
 // when the git patterns are edited (e.g. accidentally re-broadening to a
 // blanket \bgit\b, or dropping a mutating subcommand).
 func TestApplyDefaults_GitMutatingBlacklist(t *testing.T) {
-	cfg := &Config{}
-	ApplyDefaults(cfg)
-
 	mustBlock := []string{
 		// working tree / index / staging
 		"git add -A",
@@ -577,14 +557,13 @@ func TestApplyDefaults_GitMutatingBlacklist(t *testing.T) {
 		"git CHECKOUT feature",
 	}
 
-	tools := []string{"bash_exec", "posh_exec"}
-	for _, tool := range tools {
-		pol, ok := cfg.Security.ToolPolicies[tool]
-		if !ok {
-			t.Fatalf("expected default %s policy", tool)
-		}
-		compiled := make([]*regexp.Regexp, 0, len(pol.Blacklist))
-		for i, pat := range pol.Blacklist {
+	tools := map[string][]string{
+		"bash_exec": defaultBashExecBlacklist(),
+		"posh_exec": defaultPoshExecBlacklist(),
+	}
+	for tool, blacklist := range tools {
+		compiled := make([]*regexp.Regexp, 0, len(blacklist))
+		for i, pat := range blacklist {
 			re, err := regexp.Compile(pat)
 			if err != nil {
 				t.Errorf("%s blacklist[%d] %q does not compile: %v", tool, i, pat, err)
@@ -1262,81 +1241,6 @@ func TestMCPServerConfig_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestConfigValidation_RejectsInternalToolPolicies tests that config validation
-// rejects a config where an internal tool name appears in Security.ToolPolicies.
-func TestConfigValidation_RejectsInternalToolPolicies(t *testing.T) {
-	internalTools := []string{"ask_user", "finish", "list_step_outputs", "read_final_result", "read_skill_resource", "read_step_output", "read_attachment", "search_facts", "semantic_search", "update_checklist", "declare_step_complete", "store_fact", "tool_result_read"}
-
-	for _, toolName := range internalTools {
-		t.Run(toolName, func(t *testing.T) {
-			content := fmt.Sprintf(`
-llm:
-  default_model: claude-3-haiku
-  anthropic:
-    api_key: "test-key"
-    models:
-      - claude-3-haiku
-security:
-  tool_policies:
-    %s:
-      policy: always_allow
-`, toolName)
-			configPath := writeTestConfig(t, content)
-
-			_, err := Load(configPath)
-			if err == nil {
-				t.Fatalf("expected error when internal tool %q is in tool_policies, got nil", toolName)
-			}
-
-			expectedSubstring := "internal tool"
-			if !contains(err.Error(), expectedSubstring) {
-				t.Errorf("expected error to contain %q, got: %v", expectedSubstring, err)
-			}
-		})
-	}
-}
-
-// TestConfigValidation_AcceptsNonInternalToolPolicies tests that config validation
-// accepts a config where a non-internal tool appears in Security.ToolPolicies.
-func TestConfigValidation_AcceptsNonInternalToolPolicies(t *testing.T) {
-	nonInternalTools := []string{"bash_exec", "file_write", "file_read"}
-
-	for _, toolName := range nonInternalTools {
-		t.Run(toolName, func(t *testing.T) {
-			content := fmt.Sprintf(`
-llm:
-  default_model: claude-3-haiku
-  anthropic:
-    api_key: "test-key"
-    models:
-      - claude-3-haiku
-security:
-  tool_policies:
-    %s:
-      policy: always_allow
-`, toolName)
-			configPath := writeTestConfig(t, content)
-
-			cfg, err := Load(configPath)
-			if err != nil {
-				t.Fatalf("unexpected error for non-internal tool %q: %v", toolName, err)
-			}
-
-			// Verify the policy was loaded correctly
-			if cfg.Security.ToolPolicies == nil {
-				t.Fatalf("expected ToolPolicies to be initialized")
-			}
-			policy, ok := cfg.Security.ToolPolicies[toolName]
-			if !ok {
-				t.Errorf("expected policy for tool %q to be loaded", toolName)
-			}
-			if policy.Policy != "always_allow" {
-				t.Errorf("expected policy 'always_allow' for tool %q, got %q", toolName, policy.Policy)
-			}
-		})
-	}
-}
-
 // TestCreateDefault_CreatesFileWithDefaults tests that CreateDefault creates a YAML file
 // with all default values applied.
 func TestCreateDefault_CreatesFileWithDefaults(t *testing.T) {
@@ -1357,8 +1261,8 @@ func TestCreateDefault_CreatesFileWithDefaults(t *testing.T) {
 	if cfg.LogLevel != "DEBUG" {
 		t.Errorf("LogLevel = %q, want 'DEBUG'", cfg.LogLevel)
 	}
-	if cfg.Security.DefaultPolicy != "user_confirm" {
-		t.Errorf("DefaultPolicy = %q, want 'user_confirm'", cfg.Security.DefaultPolicy)
+	if got := cfg.Security.Groups[ToolGroupExecute].Policy; got != GroupPolicyUserConfirm {
+		t.Errorf("execute group policy = %q, want %q", got, GroupPolicyUserConfirm)
 	}
 
 	// The file must be readable YAML that round-trips back to the same defaults.
@@ -1615,5 +1519,441 @@ goal_loop:
 
 	if !contains(err.Error(), "goal_loop.verification") {
 		t.Errorf("expected error to mention 'goal_loop.verification', got: %v", err)
+	}
+}
+
+// securityGroupsTestBase is the minimal LLM section every security-groups test
+// needs so Load reaches the security validation stage.
+const securityGroupsTestBase = `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+`
+
+// TestApplyDefaults_SecurityGroups verifies the default group set and policies
+// of the security.groups schema.
+func TestApplyDefaults_SecurityGroups(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	if cfg.Security.Groups == nil {
+		t.Fatal("expected Security.Groups to be initialized")
+	}
+
+	wantPolicies := map[string]string{
+		ToolGroupLocalRead:   GroupPolicyAllow,
+		ToolGroupRemoteRead:  GroupPolicyAllow,
+		ToolGroupExecute:     GroupPolicyUserConfirm,
+		ToolGroupLocalWrite:  GroupPolicyUserConfirm,
+		ToolGroupLocalMCP:    GroupPolicyUserConfirm,
+		ToolGroupRemoteMCP:   GroupPolicyUserConfirm,
+		ToolGroupRemoteWrite: GroupPolicyUserConfirm,
+	}
+	if len(cfg.Security.Groups) != len(wantPolicies) {
+		t.Fatalf("expected %d groups, got %d: %v", len(wantPolicies), len(cfg.Security.Groups), cfg.Security.Groups)
+	}
+	for name, want := range wantPolicies {
+		group, ok := cfg.Security.Groups[name]
+		if !ok {
+			t.Errorf("missing default group %q", name)
+			continue
+		}
+		if group.Policy != want {
+			t.Errorf("group %q policy = %q, want %q", name, group.Policy, want)
+		}
+	}
+
+	// The blacklist is an execute-only feature: the default execute group
+	// carries one, every other group must not.
+	for name, group := range cfg.Security.Groups {
+		if name == ToolGroupExecute {
+			if len(group.Blacklist) == 0 {
+				t.Error("default execute group blacklist is empty")
+			}
+			continue
+		}
+		if len(group.Blacklist) > 0 {
+			t.Errorf("group %q unexpectedly carries a blacklist", name)
+		}
+	}
+
+	// Defaults must never materialize the reserved system group.
+	if _, ok := cfg.Security.Groups[ToolGroupSystem]; ok {
+		t.Errorf("reserved group %q must not be created by defaults", ToolGroupSystem)
+	}
+}
+
+// TestApplyDefaults_ExecuteGroupBlacklistUnion verifies that the default
+// execute-group blacklist is exactly the union of the bash_exec and
+// posh_exec default lists, and that every pattern compiles as valid RE2.
+func TestApplyDefaults_ExecuteGroupBlacklistUnion(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	bash := defaultBashExecBlacklist()
+	posh := defaultPoshExecBlacklist()
+	got := cfg.Security.Groups[ToolGroupExecute].Blacklist
+
+	want := make([]string, 0, len(bash)+len(posh))
+	want = append(want, bash...)
+	for _, pattern := range posh {
+		dup := false
+		for _, existing := range want {
+			if existing == pattern {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			want = append(want, pattern)
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("execute blacklist = union mismatch:\ngot  %d patterns\nwant %d patterns", len(got), len(want))
+	}
+	if len(got) != len(bash)+len(posh) {
+		t.Errorf("expected union of %d+%d patterns without loss, got %d", len(bash), len(posh), len(got))
+	}
+
+	// Validity guard: every blacklist pattern must compile as valid RE2.
+	for i, pattern := range got {
+		if _, err := regexp.Compile(pattern); err != nil {
+			t.Errorf("execute blacklist pattern %d %q does not compile: %v", i, pattern, err)
+		}
+	}
+}
+
+// TestApplyDefaults_SecurityGroups_PartialOverride verifies that user-provided
+// group entries survive defaults while missing entries and fields are filled.
+func TestApplyDefaults_SecurityGroups_PartialOverride(t *testing.T) {
+	content := securityGroupsTestBase + `
+security:
+  groups:
+    execute:
+      policy: allow
+      blacklist:
+        - "custom-dangerous-cmd"
+    local_write:
+      policy: deny
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	// User overrides must be preserved verbatim.
+	execute := cfg.Security.Groups[ToolGroupExecute]
+	if execute.Policy != GroupPolicyAllow {
+		t.Errorf("execute policy = %q, want %q (user override must survive)", execute.Policy, GroupPolicyAllow)
+	}
+	if !reflect.DeepEqual(execute.Blacklist, []string{"custom-dangerous-cmd"}) {
+		t.Errorf("execute blacklist = %v, want [custom-dangerous-cmd]", execute.Blacklist)
+	}
+	if localWrite := cfg.Security.Groups[ToolGroupLocalWrite]; localWrite.Policy != GroupPolicyDeny {
+		t.Errorf("local_write policy = %q, want %q", localWrite.Policy, GroupPolicyDeny)
+	}
+
+	// Groups the user did not mention must get their defaults.
+	if localRead := cfg.Security.Groups[ToolGroupLocalRead]; localRead.Policy != GroupPolicyAllow {
+		t.Errorf("local_read policy = %q, want default %q", localRead.Policy, GroupPolicyAllow)
+	}
+	if remoteWrite := cfg.Security.Groups[ToolGroupRemoteWrite]; remoteWrite.Policy != GroupPolicyUserConfirm {
+		t.Errorf("remote_write policy = %q, want default %q", remoteWrite.Policy, GroupPolicyUserConfirm)
+	}
+}
+
+// TestConfigValidation_RejectsUnknownSecurityGroup verifies that an
+// unrecognized group name is rejected.
+func TestConfigValidation_RejectsUnknownSecurityGroup(t *testing.T) {
+	content := securityGroupsTestBase + `
+security:
+  groups:
+    local_read:
+      policy: allow
+    totally_fake:
+      policy: allow
+`
+	configPath := writeTestConfig(t, content)
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("expected validation error for unknown security group")
+	}
+	if !contains(err.Error(), `unknown security group "totally_fake"`) {
+		t.Errorf("expected error to mention the unknown group, got: %v", err)
+	}
+}
+
+// TestConfigValidation_RejectsSystemSecurityGroup verifies that the reserved
+// system group cannot be configured.
+func TestConfigValidation_RejectsSystemSecurityGroup(t *testing.T) {
+	content := securityGroupsTestBase + `
+security:
+  groups:
+    system:
+      policy: allow
+`
+	configPath := writeTestConfig(t, content)
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("expected validation error for reserved system group")
+	}
+	if !contains(err.Error(), `reserved`) {
+		t.Errorf("expected error to mention the reserved group, got: %v", err)
+	}
+}
+
+// TestConfigValidation_RejectsGroupBlacklistOutsideExecute verifies that a
+// blacklist is rejected on any group other than execute.
+func TestConfigValidation_RejectsGroupBlacklistOutsideExecute(t *testing.T) {
+	for _, group := range []string{
+		ToolGroupLocalRead, ToolGroupRemoteRead, ToolGroupLocalWrite,
+		ToolGroupLocalMCP, ToolGroupRemoteMCP, ToolGroupRemoteWrite,
+	} {
+		t.Run(group, func(t *testing.T) {
+			content := fmt.Sprintf(`%s
+security:
+  groups:
+    %s:
+      policy: allow
+      blacklist:
+        - "some-pattern"
+`, securityGroupsTestBase, group)
+			configPath := writeTestConfig(t, content)
+
+			_, err := Load(configPath)
+			if err == nil {
+				t.Fatal("expected validation error for blacklist outside execute")
+			}
+			if !contains(err.Error(), "does not support a blacklist") {
+				t.Errorf("expected error to mention blacklist restriction, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestConfigValidation_RejectsInvalidGroupPolicyEnum verifies that non-empty
+// policy values outside the group enum are rejected. (An empty policy means
+// "unset" and is replaced by the group default during ApplyDefaults, so it is
+// valid — see TestApplyDefaults_SecurityGroups_PartialOverride.)
+func TestConfigValidation_RejectsInvalidGroupPolicyEnum(t *testing.T) {
+	for _, policy := range []string{"always_allow", "sometimes", "ALLOW"} {
+		t.Run("policy="+policy, func(t *testing.T) {
+			content := fmt.Sprintf(`%s
+security:
+  groups:
+    local_read:
+      policy: %q
+`, securityGroupsTestBase, policy)
+			configPath := writeTestConfig(t, content)
+
+			_, err := Load(configPath)
+			if err == nil {
+				t.Fatal("expected validation error for invalid group policy")
+			}
+			if !contains(err.Error(), "invalid policy") {
+				t.Errorf("expected error to mention invalid policy, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestConfigValidation_AcceptsValidSecurityGroups verifies that a fully valid
+// groups section parses, keeps user values, and passes validation.
+func TestConfigValidation_AcceptsValidSecurityGroups(t *testing.T) {
+	content := securityGroupsTestBase + `
+security:
+  groups:
+    local_read:
+      policy: deny
+    execute:
+      policy: user_confirm
+      blacklist:
+        - "rm\\s+-rf\\s+/"
+    remote_write:
+      policy: allow
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	if cfg.Security.Groups[ToolGroupLocalRead].Policy != GroupPolicyDeny {
+		t.Errorf("local_read policy = %q, want %q", cfg.Security.Groups[ToolGroupLocalRead].Policy, GroupPolicyDeny)
+	}
+	if cfg.Security.Groups[ToolGroupRemoteWrite].Policy != GroupPolicyAllow {
+		t.Errorf("remote_write policy = %q, want %q", cfg.Security.Groups[ToolGroupRemoteWrite].Policy, GroupPolicyAllow)
+	}
+	if !contains(strings.Join(cfg.Security.Groups[ToolGroupExecute].Blacklist, "\n"), `rm\s+-rf\s+/`) {
+		t.Errorf("execute blacklist = %v, want to contain the user pattern", cfg.Security.Groups[ToolGroupExecute].Blacklist)
+	}
+}
+
+// legacySecurityYAML is a pre-group-policies (pre-ADR-024) config file: the
+// security section still uses tool_policies/default_policy, and one partial
+// groups entry proves new-schema user values survive alongside the legacy
+// keys being ignored.
+const legacySecurityYAML = `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+security:
+  judge:
+    model: judge-model
+  default_policy: always_allow
+  tool_policies:
+    bash_exec:
+      policy: always_allow
+      blacklist:
+        - "legacy-pattern-.*"
+    write_file:
+      policy: always_deny
+    web_search:
+      policy: user_confirm
+  groups:
+    local_read:
+      policy: deny
+`
+
+// TestLoad_LegacySecuritySchema_DroppedAndDefaultsApplied verifies the
+// ADR-024 contract for existing users: a config written by an older build
+// loads without errors, the legacy tool_policies/default_policy keys (and
+// their values) never reach the Config struct, and every security group is
+// back-filled with its default policy unless the new groups schema set one.
+func TestLoad_LegacySecuritySchema_DroppedAndDefaultsApplied(t *testing.T) {
+	configPath := writeTestConfig(t, legacySecurityYAML)
+
+	result, err := LoadWithResult(configPath)
+	if err != nil {
+		t.Fatalf("LoadWithResult() failed on legacy config: %v", err)
+	}
+	if len(result.LoadErrors) > 0 {
+		t.Fatalf("LoadErrors = %v, want none", result.LoadErrors)
+	}
+
+	groups := result.Config.Security.Groups
+	if len(groups) != len(SortedToolGroupNames()) {
+		t.Fatalf("groups count = %d, want %d (%v)", len(groups), len(SortedToolGroupNames()), groups)
+	}
+	// The one group the user set via the NEW schema keeps its value.
+	if got := groups[ToolGroupLocalRead].Policy; got != GroupPolicyDeny {
+		t.Errorf("local_read policy = %q, want %q (new-schema value must survive)", got, GroupPolicyDeny)
+	}
+	// Legacy values must not leak into the new schema: default_policy
+	// "always_allow" and the tool_policies entries are discarded, so every
+	// other group falls back to its default policy.
+	if got := groups[ToolGroupExecute].Policy; got != GroupPolicyUserConfirm {
+		t.Errorf("execute policy = %q, want default %q (default_policy must not leak)", got, GroupPolicyUserConfirm)
+	}
+	if got := groups[ToolGroupRemoteRead].Policy; got != GroupPolicyAllow {
+		t.Errorf("remote_read policy = %q, want default %q (tool_policies.web_search must not leak)", got, GroupPolicyAllow)
+	}
+	if got := groups[ToolGroupLocalWrite].Policy; got != GroupPolicyUserConfirm {
+		t.Errorf("local_write policy = %q, want default %q (tool_policies.write_file must not leak)", got, GroupPolicyUserConfirm)
+	}
+	// The legacy per-tool blacklist must not leak either: the execute group
+	// gets the default blacklist union, not "legacy-pattern-.*".
+	wantBlacklist := defaultExecuteGroupBlacklist()
+	if !reflect.DeepEqual(groups[ToolGroupExecute].Blacklist, wantBlacklist) {
+		t.Errorf("execute blacklist = %v, want default %v (legacy per-tool blacklist must not leak)", groups[ToolGroupExecute].Blacklist, wantBlacklist)
+	}
+	// Unrelated security settings survive untouched.
+	if result.Config.Security.Judge.Model != "judge-model" {
+		t.Errorf("judge model = %q, want %q", result.Config.Security.Judge.Model, "judge-model")
+	}
+}
+
+// TestLegacySecuritySchema_RoundTripWipesLegacyKeys proves the second half of
+// the contract: after loading a legacy config, the next Save writes the new
+// groups schema and physically erases the legacy keys from the file.
+func TestLegacySecuritySchema_RoundTripWipesLegacyKeys(t *testing.T) {
+	configPath := writeTestConfig(t, legacySecurityYAML)
+
+	result, err := LoadWithResult(configPath)
+	if err != nil {
+		t.Fatalf("LoadWithResult() failed: %v", err)
+	}
+
+	savedPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := Save(result.Config, savedPath); err != nil {
+		t.Fatalf("Save() failed: %v", err)
+	}
+	raw, err := os.ReadFile(savedPath)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	text := string(raw)
+
+	for _, legacyKey := range []string{"tool_policies", "default_policy", "always_allow", "legacy-pattern"} {
+		if strings.Contains(text, legacyKey) {
+			t.Errorf("saved config still contains legacy key %q:\n%s", legacyKey, text)
+		}
+	}
+	for _, want := range []string{"groups:", "local_read:", "deny"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("saved config is missing %q:\n%s", want, text)
+		}
+	}
+
+	// The saved file must load back cleanly (defaults idempotent, validation
+	// passes) — this is exactly what the next app start will do.
+	reloaded, err := LoadWithResult(savedPath)
+	if err != nil {
+		t.Fatalf("reload of saved config failed: %v", err)
+	}
+	if got := reloaded.Config.Security.Groups[ToolGroupLocalRead].Policy; got != GroupPolicyDeny {
+		t.Errorf("reloaded local_read policy = %q, want %q", got, GroupPolicyDeny)
+	}
+}
+
+// TestResolveAndLoad_LegacyConfig_StartsWithoutErrors exercises the real
+// startup path (desktop/startup_phases.go -> ResolveAndLoad) against a
+// config.yaml written by an older build: startup must succeed with no load
+// errors, use the user's file (not a fallback), and expose default group
+// policies.
+func TestResolveAndLoad_LegacyConfig_StartsWithoutErrors(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	orig, _ := os.Getwd()
+	tmpWd := t.TempDir()
+	if err := os.Chdir(tmpWd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	// Write the legacy config where the app expects it.
+	agentDir := filepath.Join(tmpHome, DefaultAgentDir)
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("mkdir agent dir: %v", err)
+	}
+	if err := os.WriteFile(ConfigPath(agentDir), []byte(legacySecurityYAML), 0o644); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	resolved := ResolveAndLoad(newDiscardLogger())
+	if resolved.Config == nil {
+		t.Fatal("expected non-nil Config")
+	}
+	if len(resolved.LoadErrors) > 0 {
+		t.Fatalf("LoadErrors = %v, want none (legacy config must not break startup)", resolved.LoadErrors)
+	}
+	if resolved.ConfigPath != ConfigPath(agentDir) {
+		t.Errorf("ConfigPath = %q, want %q", resolved.ConfigPath, ConfigPath(agentDir))
+	}
+	if got := resolved.Config.Security.Groups[ToolGroupExecute].Policy; got != GroupPolicyUserConfirm {
+		t.Errorf("execute policy = %q, want default %q", got, GroupPolicyUserConfirm)
 	}
 }

@@ -923,15 +923,24 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}
 
 	// A profile's tool preference (when non-nil) overrides the task field. The
-	// profile is the authoritative tool grant for a specialized subagent. The
-	// []string form from ToolPreference is converted to []any so
-	// resolveTaskTools → parseToolNames can consume it.
+	// profile is the authoritative tool grant for a specialized subagent;
+	// resolveTaskTools accepts ToolPreference's []string group-token form
+	// directly (parseToolGroups handles both []string and []any). An invalid
+	// `tools` field (unknown/duplicate group token) fails the delegation —
+	// never silently widened to the full toolset.
 	if profile != nil {
-		if pref := profile.ToolPreference(); pref != nil {
-			t.Tools = normalizeToolPreference(pref)
+		pref, err := profile.ToolPreference()
+		if err != nil {
+			return agent.SubAgentTask{}, fmt.Errorf("delegation %q: profile %q: %w", t.ID, t.Agent, err)
+		}
+		if pref != nil {
+			t.Tools = pref
 		}
 	}
-	taskTools := l.resolveTaskTools(t)
+	taskTools, err := l.resolveTaskTools(t)
+	if err != nil {
+		return agent.SubAgentTask{}, err
+	}
 	taskDesc := l.buildTaskDescription(t, registry, maxSteps)
 
 	// Derive compaction strategy from the Conductor's routing domain +
@@ -984,28 +993,6 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}, nil
 }
 
-// normalizeToolPreference converts the value returned by agents.Agent.
-// ToolPreference() into the shape DelegationTask.Tools expects:
-//
-//   - a string ("read-only") passes through unchanged;
-//   - a []string (comma-list of mutating tool names) becomes []any so
-//     parseToolNames (which consumes []any) can read it;
-//   - any other type (including nil) passes through unchanged.
-//
-// Without this conversion a []string would fall through to resolveTaskTools'
-// "unexpected type" branch and grant only the safe minimum, defeating the
-// profile's explicit tool grant.
-func normalizeToolPreference(pref any) any {
-	if names, ok := pref.([]string); ok {
-		out := make([]any, 0, len(names))
-		for _, n := range names {
-			out = append(out, n)
-		}
-		return out
-	}
-	return pref
-}
-
 // conductorOnlyToolNames are tools that must never be handed to a regular
 // (non-redelegating) subagent: delegate/cancel_delegation would let it spawn
 // further subagents outside the allow_redelegate/depth-cap machinery, and
@@ -1043,50 +1030,120 @@ func stripConductorOnlyTools(descs []sdktools.ToolDescriptor) []sdktools.ToolDes
 	return out
 }
 
-func (l *conductorLauncher) resolveTaskTools(t tools.DelegationTask) []sdktools.ToolDescriptor {
+// resolveTaskTools computes a delegation task's toolset from the capability
+// groups carried by DelegationTask.Tools:
+//
+//   - nil (or the strings ""/"all"): everything, minus Conductor-only and
+//     mode-disabled tools — the default full grant.
+//   - "read-only": the read-only preset = system ∪ local_read ∪ remote_read.
+//     MCP tools are NOT part of the preset — installing an MCP server must
+//     never silently widen a read-only delegation (see the regression test in
+//     conductor_tools_test.go).
+//   - an array of group tokens (kebab "local-read" or underscore
+//     "local_read" spelling): system ∪ the granted groups. The system group
+//     (finish, fact memory, checklist, meta tools) is always granted — a
+//     subagent that cannot finish or record facts is unusable — and nothing
+//     else is added: the grant is exactly what was requested.
+//
+// Anything else fails the delegation with a comprehensible error (fail-closed
+// rather than silently degrading to a minimal set). A tool whose capability
+// group is not declared (zero ToolGroup) matches no grant. Conductor-only
+// tools are stripped in every branch; the redelegating path re-adds delegate
+// and cancel_delegation explicitly (see runRedelegBlocking).
+func (l *conductorLauncher) resolveTaskTools(t tools.DelegationTask) ([]sdktools.ToolDescriptor, error) {
 	all := l.stripDisabled(l.allToolDescriptors())
-	mandatory := l.mandatorySubagentTools(all)
 
 	// No explicit tool request: give everything (minus conductor-only and
 	// mode-disabled tools).
 	if t.Tools == nil {
-		return stripConductorOnlyTools(all)
+		return stripConductorOnlyTools(all), nil
 	}
 	switch v := t.Tools.(type) {
 	case string:
 		switch v {
-		case "all", "":
-			return stripConductorOnlyTools(all)
+		case "", "all":
+			return stripConductorOnlyTools(all), nil
 		case "read-only":
-			// Read-only delegation: only the mandatory read + MCP + meta base.
-			return stripConductorOnlyTools(mandatory)
+			grants := map[sdktools.ToolGroup]struct{}{
+				sdktools.GroupSystem:     {},
+				sdktools.GroupLocalRead:  {},
+				sdktools.GroupRemoteRead: {},
+			}
+			return stripConductorOnlyTools(l.toolsByGroups(all, grants)), nil
 		default:
-			// Unrecognized string (not "all"/""/"read-only"): fall back to the
-			// safe minimum, mirroring the unknown-type branch below. The
-			// delegate tool schema documents only "all"/"read-only"/array, so a
-			// bare string (e.g. a single tool name sent as a string) is invalid
-			// input. Granting the full mutating toolset here would fail open
-			// and defeat least-privilege / the Conductor's tool-selection intent.
-			return stripConductorOnlyTools(mandatory)
+			return nil, fmt.Errorf("unknown tools value %q (valid: \"all\", \"read-only\", or an array of group names: %s)",
+				v, strings.Join(agents.ToolGroupTokens(), ", "))
 		}
 	default:
-		// Explicit tool list: the Conductor is selecting MUTATING tools to
-		// grant. The mandatory read-only/MCP base is ALWAYS added on top so
-		// every subagent can explore files and use MCP tools regardless of
-		// what the Conductor chose to list. This fixes the bug where a
-		// subagent received only the explicitly-named mutating tools and lost
-		// read_file/list_directory/MCP tools entirely.
-		if names, ok := parseToolNames(t.Tools); ok {
-			requested := filterToolsByName(all, names)
-			return stripConductorOnlyTools(unionToolDescriptors(mandatory, requested))
+		grants, err := parseToolGroups(t.Tools)
+		if err != nil {
+			return nil, err
 		}
-		// Unexpected tool-request type: fall back to the safe minimum
-		// (read-only + MCP base) instead of granting the full mutating
-		// toolset. Returning everything would defeat the Conductor's
-		// tool-selection intent if an unknown DelegationTask.Tools shape
-		// ever reaches this code path.
-		return stripConductorOnlyTools(mandatory)
+		grants[sdktools.GroupSystem] = struct{}{}
+		return stripConductorOnlyTools(l.toolsByGroups(all, grants)), nil
 	}
+}
+
+// toolsByGroups returns the descriptors whose capability group is in grants,
+// deduplicated by name (duplicates make LLM providers reject the request).
+// Descriptors with an undeclared (zero) group never match — fail-closed for
+// tools that forgot to declare their group.
+func (l *conductorLauncher) toolsByGroups(all []sdktools.ToolDescriptor, grants map[sdktools.ToolGroup]struct{}) []sdktools.ToolDescriptor {
+	out := make([]sdktools.ToolDescriptor, 0, len(all))
+	seen := make(map[string]struct{}, len(all))
+	for _, d := range all {
+		if _, ok := seen[d.Name]; ok {
+			continue
+		}
+		if _, ok := grants[d.Group]; !ok {
+			continue
+		}
+		seen[d.Name] = struct{}{}
+		out = append(out, d)
+	}
+	return out
+}
+
+// parseToolGroups parses DelegationTask.Tools' array form — either []any from
+// the delegate tool's JSON input or []string from an agent profile's
+// ToolPreference — into a set of capability groups. Accepts kebab and
+// underscore spellings; unknown tokens fail with the list of valid groups.
+func parseToolGroups(v any) (map[sdktools.ToolGroup]struct{}, error) {
+	var tokens []string
+	switch arr := v.(type) {
+	case []any:
+		tokens = make([]string, 0, len(arr))
+		for _, item := range arr {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("tools: group names must be strings, got %T", item)
+			}
+			tokens = append(tokens, s)
+		}
+	case []string:
+		tokens = arr
+	default:
+		return nil, fmt.Errorf("unexpected tools type %T (valid: \"all\", \"read-only\", or an array of group names)", v)
+	}
+	grants := make(map[sdktools.ToolGroup]struct{}, len(tokens))
+	for _, tok := range tokens {
+		g, err := parseToolGroupToken(tok)
+		if err != nil {
+			return nil, err
+		}
+		grants[g] = struct{}{}
+	}
+	return grants, nil
+}
+
+// parseToolGroupToken canonicalizes a single group token (kebab or underscore)
+// to its sdktools.ToolGroup value, failing on unknown tokens.
+func parseToolGroupToken(tok string) (sdktools.ToolGroup, error) {
+	g := sdktools.ToolGroup(strings.ReplaceAll(strings.TrimSpace(tok), "-", "_"))
+	if !sdktools.IsValidToolGroup(g) {
+		return "", fmt.Errorf("unknown tool group %q (valid groups: %s)", tok, strings.Join(agents.ToolGroupTokens(), ", "))
+	}
+	return g, nil
 }
 
 func (l *conductorLauncher) allToolDescriptors() []sdktools.ToolDescriptor {
@@ -1110,57 +1167,6 @@ func (l *conductorLauncher) stripDisabled(descs []sdktools.ToolDescriptor) []sdk
 		if !l.deps.disabledTools[d.Name] {
 			out = append(out, d)
 		}
-	}
-	return out
-}
-
-// mandatorySubagentTools returns the tools that MUST always be present in a
-// subagent's toolset regardless of the Conductor's requested list: all
-// MCP-sourced tools plus the read-only/meta built-in tools, minus any tool
-// disabled in the current mode. The Conductor may only add mutating built-in
-// tools on top of this base (see resolveTaskTools). The read/MCP composition
-// therefore differs between CODE mode (all read tools) and CHAT / No-Project
-// mode (glob/ripgrep/semantic_search disabled).
-func (l *conductorLauncher) mandatorySubagentTools(all []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
-	disabled := l.deps.disabledTools
-	out := make([]sdktools.ToolDescriptor, 0, len(all))
-	seen := make(map[string]struct{}, len(all))
-	for _, d := range all {
-		if disabled[d.Name] {
-			continue
-		}
-		isMCP := d.SourceCategory == sdktools.SourceCategoryMCP
-		_, isReadOnly := subagentReadOnlyToolNames[d.Name]
-		if !isMCP && !isReadOnly {
-			continue
-		}
-		if _, ok := seen[d.Name]; ok {
-			continue
-		}
-		seen[d.Name] = struct{}{}
-		out = append(out, d)
-	}
-	return out
-}
-
-// unionToolDescriptors merges two descriptor lists, deduplicating by tool name
-// (preserving the first occurrence — base wins over requested on conflict).
-func unionToolDescriptors(base, extra []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
-	seen := make(map[string]struct{}, len(base)+len(extra))
-	out := make([]sdktools.ToolDescriptor, 0, len(base)+len(extra))
-	for _, d := range base {
-		if _, ok := seen[d.Name]; ok {
-			continue
-		}
-		seen[d.Name] = struct{}{}
-		out = append(out, d)
-	}
-	for _, d := range extra {
-		if _, ok := seen[d.Name]; ok {
-			continue
-		}
-		seen[d.Name] = struct{}{}
-		out = append(out, d)
 	}
 	return out
 }
@@ -1355,69 +1361,6 @@ func (l *conductorLauncher) configureExecutor(executor *agent.Executor) {
 		executor.SetReasoningEffort(l.deps.reasoningEffort)
 	}
 	executor.AddNonCacheableTools(coreNonCacheableToolNames...)
-}
-
-func parseToolNames(v any) ([]string, bool) {
-	if arr, ok := v.([]any); ok {
-		names := make([]string, 0, len(arr))
-		for _, item := range arr {
-			if s, ok := item.(string); ok {
-				names = append(names, s)
-			}
-		}
-		return names, true
-	}
-	return nil, false
-}
-
-func filterToolsByName(all []sdktools.ToolDescriptor, names []string) []sdktools.ToolDescriptor {
-	nameSet := make(map[string]struct{}, len(names))
-	for _, n := range names {
-		nameSet[n] = struct{}{}
-	}
-	out := make([]sdktools.ToolDescriptor, 0, len(names)+16)
-	// added prevents duplicate tool names when an internal tool (e.g.
-	// semantic_search) is already in names; duplicates make DeepSeek
-	// reject the request with HTTP 400 "Tool names must be unique."
-	added := make(map[string]struct{}, len(names)+16)
-	for _, d := range all {
-		if _, ok := nameSet[d.Name]; ok {
-			out = append(out, d)
-			added[d.Name] = struct{}{}
-		}
-	}
-	internal := []string{"finish", "store_fact", "search_facts", "read_step_output", "read_final_result", "update_checklist", "declare_step_complete", "semantic_search", "ask_user", "tool_result_read", "list_step_outputs"}
-	for _, name := range internal {
-		if _, ok := added[name]; ok {
-			continue
-		}
-		for _, d := range all {
-			if d.Name == name {
-				out = append(out, d)
-				added[d.Name] = struct{}{}
-				break
-			}
-		}
-	}
-	return out
-}
-
-// subagentReadOnlyToolNames are non-mutating tools that must always be
-// available to a subagent, regardless of the Conductor's requested tool list.
-// They are read-only exploration tools (read_file, glob, web_search, ...) and
-// internal meta-tools (finish, store_fact, ...). MCP-sourced tools are handled
-// separately in mandatorySubagentTools (always included via SourceCategory) and
-// do not need to appear here. Mode-disabled tools (e.g. glob/ripgrep/
-// semantic_search in CHAT mode) are filtered out at selection time.
-var subagentReadOnlyToolNames = map[string]struct{}{
-	// Read-only exploration
-	ToolReadFile: {}, ToolListDirectory: {}, ToolGlob: {}, ToolRipgrep: {},
-	ToolSemanticSearch: {}, ToolWebSearch: {}, ToolWebFetch: {}, ToolReadSkillRes: {},
-	// Internal meta (read-oriented)
-	ToolSearchFacts: {}, ToolReadStepOutput: {}, ToolListStepOutput: {},
-	ToolReadFinalResult: {}, ToolToolResultRead: {},
-	ToolFinish: {}, ToolStoreFact: {}, ToolUpdateChecklist: {},
-	ToolDeclareStepComplete: {}, ToolAskUser: {},
 }
 
 // conductorPublisher implements tools.PlanPublisher.

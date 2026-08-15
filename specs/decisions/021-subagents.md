@@ -80,7 +80,9 @@ name.
 ---
 name: code-reviewer          # required, must match dir name; lowercase alnum + hyphens
 description: Reviews Go code. # required; drives #-autocomplete + "Available Subagents"
-tools: read-only             # optional: "all"(default) | "read-only" | comma-list of mutating tools
+tools: read-only             # optional: "all"(default) | "read-only" | comma-list of tool-group tokens
+                             #   (kebab-case groups per ADR-024: execute, local-read, local-write,
+                             #    remote-read, remote-write, local-mcp, remote-mcp, system)
 max-steps: 25                # optional: ReAct iteration cap; 0 = derive from complexity
 model: claude-haiku-4        # optional: per-agent model override
 allow-redelegate: false      # optional: permit nested delegation (default false)
@@ -136,9 +138,15 @@ When `delegate(agent: "name")` or a plan step carrying `agent: "name"` executes,
 - **System prompt.** The profile body replaces the generic `OrchestratorSystem`
   core directive via `buildSpecializedSystemPrompt` (the shared project context —
   workspace, AGENTS.md, env — is preserved).
-- **Tools.** `Agent.ToolPreference()` → `normalizeToolPreference` →
-  `DelegationTask.Tools` (`nil` = all; `"read-only"` = base only; comma-list =
-  named mutating tools on top of the read-only base).
+- **Tools.** `Agent.ToolPreference()` →
+  `DelegationTask.Tools` (`nil`/`all` = full toolset minus Conductor-only tools;
+  `"read-only"` = `system ∪ local_read ∪ remote_read`, no MCP; a comma-list of
+  **tool-group tokens** (kebab-case; underscores normalized) = the always-included
+  `system` group plus exactly the granted groups). The runtime resolver is
+  `resolveTaskTools` (`core/conductor.go`); unknown tokens fail closed at three
+  layers (profile parser `ParseError`, delegate-task validation, runtime resolver).
+  Group semantics per [ADR-024](024-group-policies.md) — the v1 name-based list
+  was replaced by groups.
 - **Max-steps.** A profile `max-steps` > 0 overrides both the task field and the
   complexity-derived default.
 - **Model.** A profile `model` wraps the caller via

@@ -296,15 +296,22 @@ type BuilderCircuitBreaker struct {
 type BuilderSecurityConfig struct {
 	JudgeModel              string
 	InjectionDefenseEnabled bool
-	ToolPolicies            map[string]BuilderToolPolicy
-	DefaultPolicy           string
 
-	// AutoApproveWorkspaceWrites, when true, auto-executes file write tools
-	// within the session workspace without user confirmation.
+	// Groups maps tool-group names (the sdktools.Group* values) to their
+	// policy. This is the security schema (security.groups in config.yaml):
+	// the registry resolves every non-system tool's policy from its
+	// capability group alone — per-tool policy overrides do not exist.
+	// The reserved "system" group is not configurable and never appears here.
+	Groups map[string]BuilderGroupPolicy
+
+	// AutoApproveWorkspaceWrites, when true, auto-executes local_write tools
+	// whose targets resolve inside the session workspace without user
+	// confirmation.
 	AutoApproveWorkspaceWrites bool
 
 	// SmartApprove enables strict automatic judging only after a call resolves
-	// to PolicyUserConfirm and existing workspace auto-approval did not allow it.
+	// to PolicyUserConfirm (or a soft escalation under PolicyAlwaysAllow) and
+	// existing workspace auto-approval did not allow it.
 	SmartApprove bool
 
 	// AgentsMDMaxBytes caps the AGENTS.md content read from the workspace before
@@ -320,8 +327,10 @@ type BuilderSecurityConfig struct {
 	AgentsMDSearchPaths []string
 }
 
-// BuilderToolPolicy holds per-tool policy and optional blacklist.
-type BuilderToolPolicy struct {
+// BuilderGroupPolicy holds one tool group's security policy and, for the
+// execute group only, its command blacklist. Policy values are the short
+// config enum: "allow", "user_confirm", "deny".
+type BuilderGroupPolicy struct {
 	Policy    string
 	Blacklist []string
 }

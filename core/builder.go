@@ -575,10 +575,10 @@ func (b *OrchestratorBuilder) Build(
 	// manager; nil-safe when no agent dirs are configured.
 	sessionAgentMgr := b.buildSessionAgentManager(workspacePath, logger)
 
-	// Per-session ToolRegistry clone: skill-derived policy overrides set during
-	// HandleMessage must NOT leak to other concurrent sessions. The clone shares
-	// the underlying sp4rk ToolRegistry (tools themselves are stateless), but each
-	// session has its own policyOverrides/skillPolicyOverrides view.
+	// Per-session ToolRegistry clone: runtime policy mutations on a session
+	// registry must NOT leak to other concurrent sessions. The clone shares
+	// the underlying sp4rk ToolRegistry (tools themselves are stateless), but
+	// each session has its own groupPolicies view.
 	sessionRegistry := b.registry.Clone()
 
 	// HITLHandler.OnToolCall is invoked by the executor before every tool call
@@ -687,6 +687,23 @@ func (b *OrchestratorBuilder) RebuildJudge(cfg *BuilderConfig) {
 // UpdateSecurityPolicies applies security policy overrides from config.
 func (b *OrchestratorBuilder) UpdateSecurityPolicies(cfg *BuilderConfig) {
 	b.applySecurityPolicies(cfg)
+}
+
+// UpdateShellBlacklist re-registers the shell-execution tool with the
+// execute-group command blacklist from cfg. The blacklist is compiled into
+// the tool instance at construction time, so runtime blacklist edits
+// (security settings UI) require re-registration to take effect without an
+// app restart. A compile failure leaves the previously registered tool in
+// place and is returned to the caller.
+func (b *OrchestratorBuilder) UpdateShellBlacklist(cfg *BuilderConfig) error {
+	var blacklist []string
+	if execGroup, ok := cfg.Security.Groups[string(sdktools.GroupExecute)]; ok {
+		blacklist = execGroup.Blacklist
+	}
+	return tools.UpdateShellTool(b.registry, blacklist, builtins.BashTimeouts{
+		MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
+		WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
+	})
 }
 
 // UpdateSearchTool replaces or removes the web_search tool in the registry.
@@ -2044,20 +2061,43 @@ func newJudgeDumpProvider(inner llm.Provider, logger *slog.Logger, providerName 
 	return &judgeDumpProvider{inner: inner, logger: logger, providerName: providerName}
 }
 
-// applySecurityPolicies applies per-tool policy overrides and default policy.
+// applySecurityPolicies applies group-based security policies to the tool
+// registry: every non-system tool resolves its policy from its capability
+// group (the sdktools.Group* values), never from its name. The reserved
+// system group is not configurable and any entry for it is skipped
+// defensively; unknown group names are likewise skipped.
 func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
-	policyOverrides := make(map[string]sdktools.ToolPolicy)
-	for toolName, policyCfg := range cfg.Security.ToolPolicies {
-		policyOverrides[toolName] = sdktools.ParseToolPolicy(policyCfg.Policy)
+	groupPolicies := make(map[sdktools.ToolGroup]sdktools.ToolPolicy, len(cfg.Security.Groups))
+	for name, group := range cfg.Security.Groups {
+		g := sdktools.ToolGroup(name)
+		if g == sdktools.GroupSystem || !sdktools.IsValidToolGroup(g) {
+			if b.logger != nil {
+				b.logger.Warn("ignoring unconfigurable or unknown security group", "group", name)
+			}
+			continue
+		}
+		groupPolicies[g] = parseGroupPolicy(group.Policy)
 	}
-	b.registry.SetPolicyOverrides(policyOverrides)
-
-	if cfg.Security.DefaultPolicy != "" {
-		b.registry.SetDefaultPolicy(sdktools.ParseToolPolicy(cfg.Security.DefaultPolicy))
-	}
+	b.registry.SetGroupPolicies(groupPolicies)
 
 	b.registry.SetAutoApproveWorkspaceWrites(cfg.Security.AutoApproveWorkspaceWrites)
 	b.registry.SetSmartApprove(cfg.Security.SmartApprove)
+}
+
+// parseGroupPolicy maps the short config enum used by
+// security.groups.<group>.policy ("allow" | "user_confirm" | "deny", see the
+// backend/config GroupPolicy* constants) onto sdktools policy values. The
+// mapping lives here because core never imports backend/config. Anything
+// unrecognized — including an empty value — fails safe to user confirmation.
+func parseGroupPolicy(policy string) sdktools.ToolPolicy {
+	switch policy {
+	case "allow":
+		return sdktools.PolicyAlwaysAllow
+	case "deny":
+		return sdktools.PolicyAlwaysDeny
+	default: // "user_confirm", "", unknown → fail safe
+		return sdktools.PolicyUserConfirm
+	}
 }
 
 // applySmallLLMPresets seeds the builder-level reasoning-effort default when
@@ -2121,13 +2161,16 @@ func resolveSamplingFunc(s BuilderSmallLLMConfig) func(family string) *float64 {
 
 // configToBuiltinToolsConfig converts BuilderConfig to BuiltinToolsConfig.
 func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
-	var bashBlacklist []string
-	// The shell-execution tool registers as bash_exec on Unix and posh_exec on
-	// Windows; read the blacklist from the policy entry that matches the tool
-	// actually registered on this platform so the configured blacklist applies
-	// to the correct tool name per platform.
-	if bashCfg, ok := cfg.Security.ToolPolicies[activeShellToolName()]; ok {
-		bashBlacklist = bashCfg.Blacklist
+	// The command blacklist is sourced from the execute group
+	// (security.groups.execute.blacklist) and compiled into the shell-exec
+	// tool, whose Judge reports a match as a hard escalation naming the
+	// pattern. Presence-based: an explicitly empty blacklist ([] in YAML)
+	// clears the patterns, while an absent group leaves them unset (the
+	// config loader back-fills defaults, so this only affects programmatically
+	// built configs).
+	var shellBlacklist []string
+	if execGroup, ok := cfg.Security.Groups[string(sdktools.GroupExecute)]; ok {
+		shellBlacklist = execGroup.Blacklist
 	}
 
 	return tools.BuiltinToolsConfig{
@@ -2148,7 +2191,7 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 			MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 			WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
 		},
-		ShellBlacklist: bashBlacklist,
+		ShellBlacklist: shellBlacklist,
 		SearchProvider: cfg.Search.Provider,
 		SearchAPIKey:   cfg.ExpandEnvVars(cfg.Search.APIKey),
 		SearchTimeout:  time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,

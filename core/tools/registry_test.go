@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,14 +15,22 @@ import (
 
 	"github.com/v0lka/sp4rk/llm"
 	sdktools "github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
-// mockTool is a simple echo tool for testing.
+// ── Test doubles ──────────────────────────────────────────────────────────
+
+// mockTool is a simple echo tool for testing. Its group mirrors the
+// capability taxonomy: newMockTool defaults to local_write (the
+// user_confirm-postured mutating group) and newMockReadOnlyTool to
+// local_read (the allow-postured read group). defaultPolicy stays for the
+// sdktools.Tool interface; the registry resolves policy from the GROUP.
 type mockTool struct {
 	name          string
 	description   string
 	inputSchema   json.RawMessage
 	defaultPolicy sdktools.ToolPolicy
+	group         sdktools.ToolGroup
 }
 
 func newMockTool(name, description string) *mockTool {
@@ -29,6 +39,7 @@ func newMockTool(name, description string) *mockTool {
 		description:   description,
 		inputSchema:   json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}}}`),
 		defaultPolicy: sdktools.PolicyUserConfirm,
+		group:         sdktools.GroupLocalWrite,
 	}
 }
 
@@ -38,6 +49,17 @@ func newMockReadOnlyTool(name, description string) *mockTool {
 		description:   description,
 		inputSchema:   json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}}}`),
 		defaultPolicy: sdktools.PolicyAlwaysAllow,
+		group:         sdktools.GroupLocalRead,
+	}
+}
+
+func newMockSystemTool(name, description string) *mockTool {
+	return &mockTool{
+		name:          name,
+		description:   description,
+		inputSchema:   json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}}}`),
+		defaultPolicy: sdktools.PolicyAlwaysAllow,
+		group:         sdktools.GroupSystem,
 	}
 }
 
@@ -59,12 +81,30 @@ func (m *mockTool) DefaultPolicy() sdktools.ToolPolicy {
 
 func (m *mockTool) IsUntrusted() bool { return false }
 
+func (m *mockTool) Group() sdktools.ToolGroup { return m.group }
+
 func (m *mockTool) Execute(ctx context.Context, input json.RawMessage) (sdktools.ToolResult, error) {
 	// Simple echo: return the input as content
 	return sdktools.ToolResult{
 		Content: string(input),
 		IsError: false,
 	}, nil
+}
+
+// setDefaultGroupPolicies installs the production default group policies
+// (reads allow; everything mutating/remote confirms) mirroring
+// backend/config defaultToolGroupPolicies, so tests exercise the same
+// resolution the builder performs from security.groups.
+func setDefaultGroupPolicies(registry *ToolRegistry) {
+	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupLocalRead:   sdktools.PolicyAlwaysAllow,
+		sdktools.GroupRemoteRead:  sdktools.PolicyAlwaysAllow,
+		sdktools.GroupExecute:     sdktools.PolicyUserConfirm,
+		sdktools.GroupLocalWrite:  sdktools.PolicyUserConfirm,
+		sdktools.GroupLocalMCP:    sdktools.PolicyUserConfirm,
+		sdktools.GroupRemoteMCP:   sdktools.PolicyUserConfirm,
+		sdktools.GroupRemoteWrite: sdktools.PolicyUserConfirm,
+	})
 }
 
 type scriptedJudgeProvider struct {
@@ -97,6 +137,8 @@ func newStrictJudge(response string, err error) (*sdktools.ToolJudge, *scriptedJ
 	return sdktools.NewToolJudge(provider, "test-model", 1, nil), provider
 }
 
+// ── Registry basics ───────────────────────────────────────────────────────
+
 func TestToolRegistry_RegisterAndGet(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockTool("echo", "An echo tool")
@@ -124,7 +166,7 @@ func TestToolRegistry_Execute(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockTool("echo", "An echo tool")
 	registry.Register(tool)
-	// newMockTool defaults to PolicyUserConfirm; since nil ConfirmFunc is now
+	// newMockTool resolves to user_confirm; since nil ConfirmFunc is
 	// fail-closed, install an auto-allow callback for this happy-path test.
 	registry.SetConfirmFunc(func(_ context.Context, _ sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		return sdktools.ConfirmAllowOnce, nil
@@ -138,6 +180,7 @@ func TestToolRegistry_Execute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+
 	if result.Content != `{"message":"hello"}` {
 		t.Errorf("expected content %q, got %q", `{"message":"hello"}`, result.Content)
 	}
@@ -238,6 +281,8 @@ func TestToolRegistry_MultipleTools(t *testing.T) {
 	}
 }
 
+// ── Confirmation flows ────────────────────────────────────────────────────
+
 func TestConfirmFunc_AllowOnce(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockTool("mutating", "A mutating tool")
@@ -321,6 +366,7 @@ func TestConfirmFunc_DenyAndStop(t *testing.T) {
 
 func TestConfirmFunc_ReadOnlyBypass(t *testing.T) {
 	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry) // local_read → allow
 	tool := newMockReadOnlyTool("readonly", "A read-only tool")
 	registry.Register(tool)
 
@@ -341,13 +387,14 @@ func TestConfirmFunc_ReadOnlyBypass(t *testing.T) {
 		t.Error("expected IsError to be false")
 	}
 	if confirmCalled {
-		t.Error("expected confirmFunc NOT to be called for PolicyAlwaysAllow tool")
+		t.Error("expected confirmFunc NOT to be called for an allow-group tool")
 	}
 }
 
 func TestConfirmFunc_NilFunc(t *testing.T) {
 	registry := NewToolRegistry()
-	// Use a tool with PolicyAlwaysAllow so it executes without confirmation
+	setDefaultGroupPolicies(registry)
+	// Use a tool in an allow group so it executes without confirmation
 	tool := newMockReadOnlyTool("readonly", "A read-only tool")
 	registry.Register(tool)
 
@@ -383,10 +430,14 @@ func TestConfirmFunc_ConfirmFuncError(t *testing.T) {
 	}
 }
 
-// TestPolicyAlwaysAllow_ExecutesImmediately tests that PolicyAlwaysAllow executes without confirmation.
+// ── Group policy resolution ───────────────────────────────────────────────
+
+// TestPolicyAlwaysAllow_ExecutesImmediately tests that an allow group
+// executes without confirmation.
 func TestPolicyAlwaysAllow_ExecutesImmediately(t *testing.T) {
 	registry := NewToolRegistry()
-	tool := newMockReadOnlyTool("always_allow", "A tool with PolicyAlwaysAllow")
+	setDefaultGroupPolicies(registry)
+	tool := newMockReadOnlyTool("always_allow", "A tool in the local_read group")
 	registry.Register(tool)
 
 	confirmCalled := false
@@ -409,20 +460,21 @@ func TestPolicyAlwaysAllow_ExecutesImmediately(t *testing.T) {
 		t.Errorf("expected content %q, got %q", `{"data":"test"}`, result.Content)
 	}
 	if confirmCalled {
-		t.Error("expected confirmFunc NOT to be called for PolicyAlwaysAllow")
+		t.Error("expected confirmFunc NOT to be called for an allow group")
 	}
 }
 
-// TestPolicyAlwaysDeny_BlocksExecution tests that PolicyAlwaysDeny blocks execution.
+// TestPolicyAlwaysDeny_BlocksExecution tests that a deny group blocks execution.
 func TestPolicyAlwaysDeny_BlocksExecution(t *testing.T) {
 	registry := NewToolRegistry()
-	tool := &mockTool{
-		name:          "always_deny",
-		description:   "A tool with PolicyAlwaysDeny",
-		inputSchema:   json.RawMessage(`{"type":"object"}`),
-		defaultPolicy: sdktools.PolicyAlwaysDeny,
-	}
+	tool := newMockTool("always_deny", "A tool in a deny-postured group")
 	registry.Register(tool)
+
+	// The tool's own DefaultPolicy is user_confirm, but the GROUP policy is
+	// what counts: deny wins regardless of the tool's own default.
+	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupLocalWrite: sdktools.PolicyAlwaysDeny,
+	})
 
 	ctx := context.Background()
 	input := json.RawMessage(`{"data":"test"}`)
@@ -432,17 +484,21 @@ func TestPolicyAlwaysDeny_BlocksExecution(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.IsError {
-		t.Error("expected IsError to be true for PolicyAlwaysDeny")
+		t.Error("expected IsError to be true for a deny group")
 	}
 	if !strings.Contains(result.Content, "blocked by security policy") {
 		t.Errorf("expected security policy error, got: %s", result.Content)
 	}
+	if !strings.Contains(result.Content, "local_write") {
+		t.Errorf("expected the deny message to name the group, got: %s", result.Content)
+	}
 }
 
-// TestPolicyUserConfirm_AlwaysCallsConfirmFunc tests that PolicyUserConfirm always calls confirmFunc.
+// TestPolicyUserConfirm_AlwaysCallsConfirmFunc tests that a user_confirm
+// group always calls confirmFunc.
 func TestPolicyUserConfirm_AlwaysCallsConfirmFunc(t *testing.T) {
 	registry := NewToolRegistry()
-	tool := newMockTool("user_confirm", "A tool with PolicyUserConfirm")
+	tool := newMockTool("user_confirm", "A tool in a user_confirm group")
 	registry.Register(tool)
 
 	confirmCalled := false
@@ -462,15 +518,14 @@ func TestPolicyUserConfirm_AlwaysCallsConfirmFunc(t *testing.T) {
 		t.Error("expected IsError to be false")
 	}
 	if !confirmCalled {
-		t.Error("expected confirmFunc to be called for PolicyUserConfirm")
+		t.Error("expected confirmFunc to be called for a user_confirm group")
 	}
 }
 
-// TestPolicyUserConfirm_SurfacesDefaultReason verifies that when a tool's
-// resolved policy is PolicyUserConfirm and no richer reason (symlink traversal,
-// judge flag, or auto-approve denial) is available, the confirmation request
-// still carries a human-readable reason explaining why approval is needed —
-// instead of the empty string that previously left the dialog unexplained.
+// TestPolicyUserConfirm_SurfacesDefaultReason verifies that when a tool
+// resolves to user_confirm and no richer reason (symlink traversal, judge
+// flag, or auto-approve denial) is available, the confirmation request still
+// carries a human-readable reason explaining why approval is needed.
 func TestPolicyUserConfirm_SurfacesDefaultReason(t *testing.T) {
 	registry := NewToolRegistry()
 	registry.Register(newMockTool("write_file", "writes a file"))
@@ -485,15 +540,16 @@ func TestPolicyUserConfirm_SurfacesDefaultReason(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if gotReason == "" {
-		t.Fatal("expected a non-empty human-readable reason for a PolicyUserConfirm tool, got empty string")
+		t.Fatal("expected a non-empty human-readable reason for a user_confirm tool, got empty string")
 	}
 	if gotReason != "This tool creates or overwrites a file." {
 		t.Errorf("expected write_file-specific reason, got %q", gotReason)
 	}
 }
 
-// TestPolicyUserConfirm_DefaultReason_GenericFallback verifies that a tool name
-// without a specific mapping falls back to the generic mutating-action reason.
+// TestPolicyUserConfirm_DefaultReason_GenericFallback verifies that a tool
+// name without a specific mapping falls back to the generic mutating-action
+// reason.
 func TestPolicyUserConfirm_DefaultReason_GenericFallback(t *testing.T) {
 	registry := NewToolRegistry()
 	registry.Register(newMockTool("some_custom_tool", "custom"))
@@ -588,16 +644,18 @@ func TestToolRegistry_UnregisterCleansUpSource(t *testing.T) {
 	}
 }
 
-// TestPolicyOverrideFromConfig tests that policy overrides from config take precedence.
-func TestPolicyOverrideFromConfig(t *testing.T) {
+// TestGroupPolicyFromConfig tests that group policies supplied by the builder
+// (security.groups in config.yaml) drive execution: an execute-group tool set
+// to allow executes without confirmation.
+func TestGroupPolicyFromConfig(t *testing.T) {
 	registry := NewToolRegistry()
-	// Tool has PolicyUserConfirm by default
-	tool := newMockTool("overridden_tool", "A tool with overridden policy")
+	// local_write group → user_confirm posture by default
+	tool := newMockTool("overridden_tool", "A tool whose group is set to allow")
 	registry.Register(tool)
 
-	// Override to PolicyAlwaysAllow
-	registry.SetPolicyOverrides(map[string]sdktools.ToolPolicy{
-		"overridden_tool": sdktools.PolicyAlwaysAllow,
+	// Widen the group to allow
+	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupLocalWrite: sdktools.PolicyAlwaysAllow,
 	})
 
 	confirmCalled := false
@@ -617,7 +675,57 @@ func TestPolicyOverrideFromConfig(t *testing.T) {
 		t.Error("expected IsError to be false")
 	}
 	if confirmCalled {
-		t.Error("expected confirmFunc NOT to be called when policy is overridden to PolicyAlwaysAllow")
+		t.Error("expected confirmFunc NOT to be called when the group policy is allow")
+	}
+}
+
+// TestGroupPolicies_FailSafeDefault verifies that a group WITHOUT a
+// configured entry fails safe to user_confirm — an unconfigured read tool
+// must not silently execute.
+func TestGroupPolicies_FailSafeDefault(t *testing.T) {
+	registry := NewToolRegistry()
+	// No SetGroupPolicies call at all: unconfigured groups confirm.
+	registry.Register(newMockReadOnlyTool("test_tool", "desc"))
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmAllowOnce, nil
+	})
+
+	result, err := registry.Execute(context.Background(), "test_tool", []byte(`{"input":"hello"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected no error (confirm auto-allowed)")
+	}
+	if !confirmCalled {
+		t.Error("expected confirmFunc to be called for a tool whose group has no configured policy")
+	}
+}
+
+// TestGroupPolicies_ReplacementNotMerge verifies SetGroupPolicies REPLACES
+// the map: tightening one group must not leave a stale allow from a previous
+// configuration round (mirrors UpdateSecurityPolicies re-application).
+func TestGroupPolicies_ReplacementNotMerge(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupLocalRead: sdktools.PolicyAlwaysAllow,
+	})
+	registry.Register(newMockReadOnlyTool("reader", "reads"))
+
+	// Second application narrows the map to a deny-only entry.
+	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupLocalRead: sdktools.PolicyAlwaysDeny,
+	})
+
+	result, err := registry.Execute(context.Background(), "reader", []byte(`{"input":"hello"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when the group is re-applied as deny")
 	}
 }
 
@@ -652,61 +760,13 @@ func TestWorkspacePathFrom_EmptyContext(t *testing.T) {
 	}
 }
 
-func TestSetDefaultPolicy(t *testing.T) {
-	reg := NewToolRegistry()
-	tool := newMockReadOnlyTool("test_tool", "desc")
-	reg.Register(tool)
+// ── Tool-local judge mocks ────────────────────────────────────────────────
 
-	// Before setting default policy, tool's own default is used
-	result, err := reg.Execute(context.Background(), "test_tool", []byte(`{"input":"hello"}`))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Error("expected no error with default policy")
-	}
-
-	// Set global default to AlwaysDeny
-	reg.SetDefaultPolicy(sdktools.PolicyAlwaysDeny)
-	result, err = reg.Execute(context.Background(), "test_tool", []byte(`{"input":"hello"}`))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected IsError=true when global default is AlwaysDeny")
-	}
-	if !strings.Contains(result.Content, "blocked by security policy") {
-		t.Errorf("expected blocked message, got: %s", result.Content)
-	}
-}
-
-func TestSetDefaultPolicy_OverriddenByPerTool(t *testing.T) {
-	reg := NewToolRegistry()
-	tool := newMockReadOnlyTool("test_tool", "desc")
-	reg.Register(tool)
-
-	// Set global default to deny
-	reg.SetDefaultPolicy(sdktools.PolicyAlwaysDeny)
-
-	// But per-tool override to allow
-	reg.SetPolicyOverrides(map[string]sdktools.ToolPolicy{
-		"test_tool": sdktools.PolicyAlwaysAllow,
-	})
-
-	result, err := reg.Execute(context.Background(), "test_tool", []byte(`{"input":"hello"}`))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Error("per-tool override should take precedence over global default")
-	}
-}
-
-// mockJudgerTool is a tool that implements ToolJudger for testing.
+// mockJudgerTool is a tool in an allow group (local_read) that implements
+// ToolJudger, defaulting to a SOFT outcome (path-containment posture).
 type mockJudgerTool struct {
 	mockTool
-	judgeResult    bool
-	judgeReasoning string
+	outcome sdktools.JudgeOutcome
 }
 
 func newMockJudgerTool(name string, allow bool, reasoning string) *mockJudgerTool {
@@ -716,18 +776,36 @@ func newMockJudgerTool(name string, allow bool, reasoning string) *mockJudgerToo
 			description:   "A tool with ToolJudger",
 			inputSchema:   json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}}}`),
 			defaultPolicy: sdktools.PolicyAlwaysAllow,
+			group:         sdktools.GroupLocalRead,
 		},
-		judgeResult:    allow,
-		judgeReasoning: reasoning,
+		outcome: sdktools.JudgeOutcome{Allow: allow, Reason: reasoning, Severity: sdktools.JudgeSeveritySoft},
 	}
 }
 
-func (m *mockJudgerTool) Judge(ctx context.Context, input json.RawMessage) (allow bool, reasoning string) {
-	return m.judgeResult, m.judgeReasoning
+// newMockHardJudgerTool builds a judger tool whose outcome is a HARD
+// security-control trigger (command blacklist / SSRF posture).
+func newMockHardJudgerTool(name, reasoning string) *mockJudgerTool {
+	tool := newMockJudgerTool(name, false, reasoning)
+	tool.outcome.Severity = sdktools.JudgeSeverityHard
+	return tool
 }
 
-// mockConfirmJudgerTool is a tool with PolicyUserConfirm that implements ToolJudger.
-// Used to test workspace auto-approval for write tools.
+// newMockExecuteJudgerTool builds a judger tool in the execute group with an
+// explicit outcome (bash_exec posture).
+func newMockExecuteJudgerTool(name string, outcome sdktools.JudgeOutcome) *mockJudgerTool {
+	tool := newMockJudgerTool(name, outcome.Allow, outcome.Reason)
+	tool.group = sdktools.GroupExecute
+	tool.outcome = outcome
+	return tool
+}
+
+func (m *mockJudgerTool) Judge(ctx context.Context, input json.RawMessage) sdktools.JudgeOutcome {
+	return m.outcome
+}
+
+// mockConfirmJudgerTool is a local_write tool that implements ToolJudger,
+// mirroring the write builtins: an allowed (in-roots) outcome carries a
+// reason; a denied outcome carries the containment reason. Soft severity.
 type mockConfirmJudgerTool struct {
 	mockTool
 	judgeResult    bool
@@ -735,34 +813,46 @@ type mockConfirmJudgerTool struct {
 }
 
 func newMockConfirmJudgerTool(name string, policy sdktools.ToolPolicy, allow bool, reasoning string) *mockConfirmJudgerTool {
+	_ = policy // the policy parameter is retained for call-site clarity; group drives resolution
 	return &mockConfirmJudgerTool{
 		mockTool: mockTool{
 			name:          name,
 			description:   "A confirm tool with ToolJudger",
 			inputSchema:   json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`),
-			defaultPolicy: policy,
+			defaultPolicy: sdktools.PolicyUserConfirm,
+			group:         sdktools.GroupLocalWrite,
 		},
 		judgeResult:    allow,
 		judgeReasoning: reasoning,
 	}
 }
 
-func (m *mockConfirmJudgerTool) Judge(ctx context.Context, input json.RawMessage) (allow bool, reasoning string) {
-	return m.judgeResult, m.judgeReasoning
+func (m *mockConfirmJudgerTool) Judge(ctx context.Context, input json.RawMessage) sdktools.JudgeOutcome {
+	return sdktools.JudgeOutcome{
+		Allow:    m.judgeResult,
+		Reason:   m.judgeReasoning,
+		Severity: sdktools.JudgeSeveritySoft,
+	}
 }
 
-// TestPolicyAlwaysAllow_WithToolJudgerFlags tests that PolicyAlwaysAllow escalates to confirmation
-// when the tool implements ToolJudger and returns allow=false with non-empty reasoning.
+// ── Allow-group judge interactions ────────────────────────────────────────
+
+// TestPolicyAlwaysAllow_WithToolJudgerFlags tests that an allow-group tool
+// with a SOFT judge escalation goes to confirmation when Smart Approve is off
+// (the default), and that the judge reason is surfaced.
 func TestPolicyAlwaysAllow_WithToolJudgerFlags(t *testing.T) {
 	registry := NewToolRegistry()
-	tool := newMockJudgerTool("judger_tool", false, "dangerous command detected")
+	setDefaultGroupPolicies(registry)
+	tool := newMockJudgerTool("judger_tool", false, "path outside session roots: /etc/passwd")
 	registry.Register(tool)
 
 	confirmCalled := false
 	var receivedReasoning string
+	var receivedDisableJudge bool
 	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
 		receivedReasoning = req.JudgeReasoning
+		receivedDisableJudge = req.DisableJudge
 		return sdktools.ConfirmAllowOnce, nil
 	})
 
@@ -779,15 +869,122 @@ func TestPolicyAlwaysAllow_WithToolJudgerFlags(t *testing.T) {
 	if !confirmCalled {
 		t.Error("expected confirmFunc to be called when ToolJudger flags the call")
 	}
-	if receivedReasoning != "dangerous command detected" {
-		t.Errorf("expected reasoning %q, got %q", "dangerous command detected", receivedReasoning)
+	if receivedReasoning != "path outside session roots: /etc/passwd" {
+		t.Errorf("expected the judge reason to be surfaced, got %q", receivedReasoning)
+	}
+	if receivedDisableJudge {
+		t.Error("a soft escalation with Smart Approve off must keep the advisory Ask Agent action available")
 	}
 }
 
-// TestPolicyAlwaysAllow_WithToolJudgerAllows tests that PolicyAlwaysAllow executes directly
-// when the tool implements ToolJudger and returns allow=true.
+// TestPolicyAlwaysAllow_HardReasonForcesConfirmationWithDisabledJudge is the
+// hard-severity counterpart: a HARD reason (command blacklist, SSRF) under an
+// allow group forces confirmation with the advisory judge disabled — a fired
+// security control must never be weakened by the advisory Ask Agent action.
+func TestPolicyAlwaysAllow_HardReasonForcesConfirmationWithDisabledJudge(t *testing.T) {
+	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
+	const pattern = `rm\s+-rf\s+/`
+	registry.Register(newMockHardJudgerTool("judger_tool", "command matches blacklist pattern: "+pattern))
+
+	var req sdktools.ConfirmationRequest
+	registry.SetConfirmFunc(func(_ context.Context, r sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		req = r
+		return sdktools.ConfirmDeny, nil
+	})
+
+	result, err := registry.Execute(context.Background(), "judger_tool", json.RawMessage(`{"command":"rm -rf /"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true after denying the forced confirmation")
+	}
+	if !strings.Contains(req.JudgeReasoning, pattern) {
+		t.Errorf("expected the confirmation reason to contain the matched blacklist pattern %q, got %q", pattern, req.JudgeReasoning)
+	}
+	if !req.DisableJudge {
+		t.Error("a hard reason must disable the advisory Ask Agent action (DisableJudge=true)")
+	}
+}
+
+// TestPolicyAlwaysAllow_HardReasonNeverPassesSmartApprove proves hard
+// reasons never reach Smart Approve: even with Smart Approve on and the
+// strict judge scripted to ALLOW, a hard escalation still confirms (and the
+// strict judge is not consulted at all).
+func TestPolicyAlwaysAllow_HardReasonNeverPassesSmartApprove(t *testing.T) {
+	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
+	registry.SetSmartApprove(true)
+	registry.Register(newMockHardJudgerTool("judger_tool", "command matches blacklist pattern: shutdown"))
+
+	judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: looks fine to me", nil)
+	registry.SetJudge(judge)
+
+	var req sdktools.ConfirmationRequest
+	confirmCalled := false
+	registry.SetConfirmFunc(func(_ context.Context, r sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		req = r
+		return sdktools.ConfirmDeny, nil
+	})
+
+	result, err := registry.Execute(context.Background(), "judger_tool", json.RawMessage(`{"command":"shutdown now"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !confirmCalled {
+		t.Fatal("expected confirmation: hard reasons must not be auto-approved by Smart Approve")
+	}
+	if result.IsError != true {
+		t.Error("expected IsError=true after denying the forced confirmation")
+	}
+	if got := provider.callCount(); got != 0 {
+		t.Errorf("strict judge calls = %d, want 0 (hard reasons short-circuit Smart Approve)", got)
+	}
+	if !req.DisableJudge {
+		t.Error("hard-reason confirmation must disable the advisory judge")
+	}
+}
+
+// TestPolicyAlwaysAllow_SoftReasonSmartApproveAllow verifies a soft
+// escalation under an allow group CAN be auto-approved when Smart Approve's
+// strict judge allows — soft evidence is advisory and may be weighed.
+func TestPolicyAlwaysAllow_SoftReasonSmartApproveAllow(t *testing.T) {
+	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
+	registry.SetSmartApprove(true)
+	registry.Register(newMockJudgerTool("judger_tool", false, "path outside session roots: /etc/hosts"))
+
+	judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: benign read of a public file", nil)
+	registry.SetJudge(judge)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmAllowOnce, nil
+	})
+
+	result, err := registry.Execute(context.Background(), "judger_tool", json.RawMessage(`{"path":"/etc/hosts"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected the strict-judge ALLOW to execute the call")
+	}
+	if confirmCalled {
+		t.Error("expected no confirmation when Smart Approve allows a soft escalation")
+	}
+	if got := provider.callCount(); got != 1 {
+		t.Errorf("strict judge calls = %d, want 1", got)
+	}
+}
+
+// TestPolicyAlwaysAllow_WithToolJudgerAllows tests that an allow-group tool
+// whose judge reports no concern executes directly.
 func TestPolicyAlwaysAllow_WithToolJudgerAllows(t *testing.T) {
 	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
 	tool := newMockJudgerTool("judger_tool", true, "")
 	registry.Register(tool)
 
@@ -815,10 +1012,11 @@ func TestPolicyAlwaysAllow_WithToolJudgerAllows(t *testing.T) {
 	}
 }
 
-// TestPolicyAlwaysAllow_WithoutToolJudger tests that PolicyAlwaysAllow executes directly
-// when the tool does not implement ToolJudger.
+// TestPolicyAlwaysAllow_WithoutToolJudger tests that an allow-group tool
+// without a judge executes directly.
 func TestPolicyAlwaysAllow_WithoutToolJudger(t *testing.T) {
 	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
 	tool := newMockReadOnlyTool("no_judger_tool", "A tool without ToolJudger")
 	registry.Register(tool)
 
@@ -846,10 +1044,12 @@ func TestPolicyAlwaysAllow_WithoutToolJudger(t *testing.T) {
 	}
 }
 
-// TestPolicyAlwaysAllow_WithToolJudgerEmptyReasoning tests that PolicyAlwaysAllow executes directly
-// when the tool implements ToolJudger but returns empty reasoning (no concern to report).
+// TestPolicyAlwaysAllow_WithToolJudgerEmptyReasoning tests that an allow
+// group executes directly when the tool's judge returns no concern
+// (allow=false with empty reasoning means "no tool-specific concern").
 func TestPolicyAlwaysAllow_WithToolJudgerEmptyReasoning(t *testing.T) {
 	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
 	tool := newMockJudgerTool("judger_tool", false, "")
 	registry.Register(tool)
 
@@ -877,13 +1077,16 @@ func TestPolicyAlwaysAllow_WithToolJudgerEmptyReasoning(t *testing.T) {
 	}
 }
 
-// TestAutoApproval_WorkspacePath verifies that PolicyUserConfirm is NOT bypassed
-// even when all paths in the input are within the workspace directory.
-// (Per C-2 in the 2026-06-05 review: workspace-locality MUST NOT silently
-// downgrade an explicit user_confirm policy.)
+// ── user_confirm auto-approval (local_write) ──────────────────────────────
+
+// TestAutoApproval_WorkspacePath verifies that a plain user_confirm tool
+// WITHOUT a judge is never auto-approved, even when all paths in the input
+// are within the workspace. Workspace-locality alone must not silently
+// downgrade an explicit confirm posture.
 func TestAutoApproval_WorkspacePath(t *testing.T) {
 	registry := NewToolRegistry()
-	tool := newMockTool("mutating", "A mutating tool") // defaultPolicy: PolicyUserConfirm
+	setDefaultGroupPolicies(registry)
+	tool := newMockTool("mutating", "A mutating tool without a judge")
 	registry.Register(tool)
 
 	confirmCalled := false
@@ -904,18 +1107,18 @@ func TestAutoApproval_WorkspacePath(t *testing.T) {
 		t.Error("expected IsError to be false")
 	}
 	if !confirmCalled {
-		t.Error("expected confirmFunc to be called: workspace-locality must not bypass PolicyUserConfirm")
+		t.Error("expected confirmFunc to be called: workspace-locality must not bypass user_confirm without a judge")
 	}
 }
 
 // TestAutoApproval_UserConfirmWithJudger_WorkspaceEnabled tests that when
-// autoApproveWorkspaceWrites is enabled and a PolicyUserConfirm tool's Judge
-// returns allow=true, the tool executes without confirmation for workspace paths.
+// autoApproveWorkspaceWrites is enabled and a local_write tool's Judge
+// reports an in-roots target, the tool executes without confirmation.
 func TestAutoApproval_UserConfirmWithJudger_WorkspaceEnabled(t *testing.T) {
 	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
 	registry.SetAutoApproveWorkspaceWrites(true)
 
-	// Tool with PolicyUserConfirm + ToolJudger that allows workspace paths
 	tool := newMockConfirmJudgerTool("write_file", sdktools.PolicyUserConfirm, true, "target is within session workspace")
 	registry.Register(tool)
 
@@ -939,10 +1142,11 @@ func TestAutoApproval_UserConfirmWithJudger_WorkspaceEnabled(t *testing.T) {
 }
 
 // TestAutoApproval_UserConfirmWithJudger_WorkspaceDisabled tests that when
-// autoApproveWorkspaceWrites is disabled, a PolicyUserConfirm tool always
-// requires confirmation regardless of Judge result.
+// autoApproveWorkspaceWrites is disabled, a local_write tool always requires
+// confirmation regardless of Judge result.
 func TestAutoApproval_UserConfirmWithJudger_WorkspaceDisabled(t *testing.T) {
 	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
 	// autoApproveWorkspaceWrites defaults to false
 
 	tool := newMockConfirmJudgerTool("write_file", sdktools.PolicyUserConfirm, true, "target is within session workspace")
@@ -967,15 +1171,15 @@ func TestAutoApproval_UserConfirmWithJudger_WorkspaceDisabled(t *testing.T) {
 	}
 }
 
-// TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace tests that even with
-// auto-approve enabled, a PolicyUserConfirm tool still requires confirmation
-// when the Judge returns allow=false (e.g., path outside workspace).
+// TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace tests that even
+// with auto-approve enabled, a local_write tool still requires confirmation
+// when the Judge reports an out-of-roots target.
 func TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace(t *testing.T) {
 	registry := NewToolRegistry()
 	registry.SetAutoApproveWorkspaceWrites(true)
 
-	// Tool with PolicyUserConfirm + ToolJudger that denies (returns allow=false)
-	// This simulates bash_exec's Judge or a write tool targeting outside workspace.
+	// Judge denies with no reason: no soft reason is recorded, so the plain
+	// default reason confirmation fires.
 	tool := newMockConfirmJudgerTool("write_file", sdktools.PolicyUserConfirm, false, "")
 	registry.Register(tool)
 
@@ -1000,14 +1204,8 @@ func TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace(t *testing.T) {
 
 // TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace_ReasoningSurfaced
 // verifies that when auto-approve is enabled and the Judge denies with a
-// non-empty reason (e.g., "path is outside the session workspace and temp
-// directory: /etc/passwd"), that reason is surfaced to the user via
+// non-empty reason, that reason is surfaced via
 // ConfirmationRequest.JudgeReasoning rather than being discarded.
-//
-// The security-model spec states: "user_confirm tools: confirmation is
-// already required by policy; the Judge reason is surfaced in the
-// confirmation dialog." Without surfacing, the user sees a confirm prompt
-// with no explanation of why the call was escalated.
 func TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace_ReasoningSurfaced(t *testing.T) {
 	registry := NewToolRegistry()
 	registry.SetAutoApproveWorkspaceWrites(true)
@@ -1037,10 +1235,11 @@ func TestAutoApproval_UserConfirmWithJudger_OutsideWorkspace_ReasoningSurfaced(t
 	}
 }
 
-// even when all paths in the input are within the session temp directory.
+// TestAutoApproval_TempDir verifies a plain user_confirm tool is not
+// auto-approved even when all paths are within the session temp directory.
 func TestAutoApproval_TempDir(t *testing.T) {
 	registry := NewToolRegistry()
-	tool := newMockTool("mutating", "A mutating tool") // defaultPolicy: PolicyUserConfirm
+	tool := newMockTool("mutating", "A mutating tool")
 	registry.Register(tool)
 
 	confirmCalled := false
@@ -1061,17 +1260,47 @@ func TestAutoApproval_TempDir(t *testing.T) {
 		t.Error("expected IsError to be false")
 	}
 	if !confirmCalled {
-		t.Error("expected confirmFunc to be called: temp-dir locality must not bypass PolicyUserConfirm")
+		t.Error("expected confirmFunc to be called: temp-dir locality must not bypass user_confirm")
 	}
 }
 
-// TestAutoApproval_AlwaysAllow_WorkspacePath verifies that PolicyAlwaysAllow
-// tools still execute without confirmation when paths are inside the workspace
-// (the auto-approval optimization remains for explicitly-allow policies).
-func TestAutoApproval_AlwaysAllow_WorkspacePath(t *testing.T) {
+// TestAutoApproval_NonLocalWriteGroupNotAutoApproved verifies the
+// group-scoping of workspace auto-approval: an execute-group tool whose Judge
+// allows (in-roots command) is NOT auto-approved — auto-approval is a
+// local_write privilege; execute goes through Smart Approve / confirmation.
+func TestAutoApproval_NonLocalWriteGroupNotAutoApproved(t *testing.T) {
 	registry := NewToolRegistry()
-	tool := newMockReadOnlyTool("readonly", "A read-only tool") // defaultPolicy: PolicyAlwaysAllow
-	registry.Register(tool)
+	setDefaultGroupPolicies(registry)
+	registry.SetAutoApproveWorkspaceWrites(true)
+
+	registry.Register(newMockExecuteJudgerTool("bash_exec", sdktools.JudgeOutcome{
+		Allow:  true,
+		Reason: "command stays within session roots",
+	}))
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmAllowOnce, nil
+	})
+
+	ctx := sdktools.WithWorkspacePath(context.Background(), "/workspace")
+	_, err := registry.Execute(ctx, "bash_exec", json.RawMessage(`{"command":"ls /workspace"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !confirmCalled {
+		t.Error("expected confirmation: execute-group tools must not use local_write auto-approval")
+	}
+}
+
+// TestAutoApproval_AllowGroupCleanExecutes verifies that an allow-group tool
+// with no judge concerns executes without confirmation when paths are inside
+// the workspace.
+func TestAutoApproval_AllowGroupCleanExecutes(t *testing.T) {
+	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
+	registry.Register(newMockReadOnlyTool("readonly", "A read-only tool"))
 
 	confirmCalled := false
 	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
@@ -1079,27 +1308,23 @@ func TestAutoApproval_AlwaysAllow_WorkspacePath(t *testing.T) {
 		return sdktools.ConfirmAllowOnce, nil
 	})
 
-	ctx := context.Background()
-	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
-	input := json.RawMessage(`{"path": "/workspace/file.txt"}`)
-
-	_, err := registry.Execute(ctx, "readonly", input)
+	ctx := sdktools.WithWorkspacePath(context.Background(), "/workspace")
+	_, err := registry.Execute(ctx, "readonly", json.RawMessage(`{"path": "/workspace/file.txt"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if confirmCalled {
-		t.Error("expected confirmFunc NOT to be called for PolicyAlwaysAllow tools")
+		t.Error("expected confirmFunc NOT to be called for a clean allow-group call")
 	}
 }
 
-// TestAutoApproval_AllowedRoot verifies that a PolicyAlwaysAllow tool with a
-// path inside an additional allowed root (auxiliary work directory) auto-approves
-// without confirmation — the same treatment as workspace/temp paths, now that
-// auto-approval consults the full set of session roots.
+// TestAutoApproval_AllowedRoot verifies that an allow-group tool with a path
+// inside an additional allowed root (auxiliary work directory) executes
+// without confirmation — the same treatment as workspace/temp paths.
 func TestAutoApproval_AllowedRoot(t *testing.T) {
 	registry := NewToolRegistry()
-	tool := newMockReadOnlyTool("readonly", "A read-only tool") // defaultPolicy: PolicyAlwaysAllow
-	registry.Register(tool)
+	setDefaultGroupPolicies(registry)
+	registry.Register(newMockReadOnlyTool("readonly", "A read-only tool"))
 
 	confirmCalled := false
 	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
@@ -1107,121 +1332,99 @@ func TestAutoApproval_AllowedRoot(t *testing.T) {
 		return sdktools.ConfirmAllowOnce, nil
 	})
 
-	ctx := context.Background()
-	ctx = sdktools.WithAllowedRoots(ctx, []string{"/aux"})
-	input := json.RawMessage(`{"path": "/aux/file.txt"}`)
-
-	_, err := registry.Execute(ctx, "readonly", input)
+	ctx := sdktools.WithAllowedRoots(context.Background(), []string{"/aux"})
+	_, err := registry.Execute(ctx, "readonly", json.RawMessage(`{"path": "/aux/file.txt"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if confirmCalled {
-		t.Error("expected confirmFunc NOT to be called for PolicyAlwaysAllow tools with paths inside an allowed root")
+		t.Error("expected confirmFunc NOT to be called for allow-group tools with paths inside an allowed root")
 	}
 }
 
-// TestAutoApproval_AlwaysAllow_JudgerFlagsBeforeAutoApprove is a regression
-// test for a security hole: when a PolicyAlwaysAllow tool implements ToolJudger
-// and the Judge flags the call (allow=false with non-empty reasoning), the call
-// MUST escalate to user confirmation even if all paths in the input are inside
-// the session workspace or temp directory.
-//
-// Previously, workspace/temp auto-approval ran BEFORE the Judge check, so a
-// command like "rm -rf /workspace/.git" (paths inside workspace, but matches
-// the bash_exec blacklist) would execute without confirmation. Now the Judge
-// runs first and short-circuits to confirmation on flagged calls.
-func TestAutoApproval_AlwaysAllow_JudgerFlagsBeforeAutoApprove(t *testing.T) {
+// TestAutoApproval_AllowGroup_JudgerHardFlagsBeforeAutoApprove is a
+// regression test for a security hole: when an allow-group tool implements
+// ToolJudger and the judge reports a HARD flag (e.g. a blacklisted command),
+// the call MUST escalate to user confirmation even if all paths in the input
+// are inside the session workspace — and with the advisory judge disabled.
+func TestAutoApproval_AllowGroup_JudgerHardFlagsBeforeAutoApprove(t *testing.T) {
 	registry := NewToolRegistry()
-	// Tool with AlwaysAllow + ToolJudger that flags the call (simulates
-	// bash_exec with a blacklisted command like "rm -rf /workspace/.git").
-	tool := newMockJudgerTool("bash_exec", false, "command matches blacklist pattern: rm -rf")
-	registry.Register(tool)
+	setDefaultGroupPolicies(registry)
+	registry.Register(newMockHardJudgerTool("bash_exec", "command matches blacklist pattern: rm -rf"))
 
-	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
-		confirmCalled = true
+	var req sdktools.ConfirmationRequest
+	registry.SetConfirmFunc(func(_ context.Context, r sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		req = r
 		return sdktools.ConfirmAllowOnce, nil
 	})
 
-	ctx := context.Background()
-	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
-	// Input has paths inside the workspace — would trigger auto-approval
-	// if the Judge check ran after. The Judge must run first.
+	ctx := sdktools.WithWorkspacePath(context.Background(), "/workspace")
+	// Input has paths inside the workspace — locality must not matter.
 	input := json.RawMessage(`{"command": "rm -rf /workspace/.git"}`)
 
 	_, err := registry.Execute(ctx, "bash_exec", input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !confirmCalled {
-		t.Error("expected confirmFunc to be called: Judge-flagged calls must escalate to confirmation even when paths are inside workspace")
+	if req.ToolName == "" {
+		t.Fatal("expected confirmFunc to be called: hard-flagged calls must escalate even when paths are inside workspace")
+	}
+	if !req.DisableJudge {
+		t.Error("hard-flagged confirmation must disable the advisory judge")
 	}
 }
 
-// TestAutoApproval_AlwaysAllow_JudgerAllowsWithWorkspacePath verifies that a
-// PolicyAlwaysAllow tool whose Judge returns allow=true still auto-approves
-// when paths are inside the workspace (Judge ran first, cleared the call,
-// then workspace auto-approval applied).
-func TestAutoApproval_AlwaysAllow_JudgerAllowsWithWorkspacePath(t *testing.T) {
+// TestAutoApproval_AllowGroup_JudgerAllowsWithWorkspacePath verifies that an
+// allow-group tool whose judge reports no concern executes when paths are
+// inside the workspace.
+func TestAutoApproval_AllowGroup_JudgerAllowsWithWorkspacePath(t *testing.T) {
 	registry := NewToolRegistry()
-	// Tool with AlwaysAllow + ToolJudger that allows (simulates read_file
-	// reading inside workspace).
-	tool := newMockJudgerTool("read_file", true, "within workspace")
-	registry.Register(tool)
+	setDefaultGroupPolicies(registry)
+	registry.Register(newMockJudgerTool("read_file", true, ""))
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
 		return sdktools.ConfirmAllowOnce, nil
 	})
 
-	ctx := context.Background()
-	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
-	input := json.RawMessage(`{"path": "/workspace/file.txt"}`)
-
-	_, err := registry.Execute(ctx, "read_file", input)
+	ctx := sdktools.WithWorkspacePath(context.Background(), "/workspace")
+	_, err := registry.Execute(ctx, "read_file", json.RawMessage(`{"path": "/workspace/file.txt"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if confirmCalled {
-		t.Error("expected confirmFunc NOT to be called when Judge allows and path is inside workspace")
+		t.Error("expected confirmFunc NOT to be called when the judge reports no concern")
 	}
 }
 
-// TestAutoApproval_AlwaysAllow_JudgerEmptyReasoningWithWorkspacePath verifies
-// that a PolicyAlwaysAllow tool whose Judge returns allow=false with EMPTY
-// reasoning (e.g., bash_exec without blacklist match) still auto-approves
-// when paths are inside the workspace. Empty reasoning means "no concern to
-// report" — the call is not escalated, only flagged calls with non-empty
-// reasoning trigger confirmation.
-func TestAutoApproval_AlwaysAllow_JudgerEmptyReasoningWithWorkspacePath(t *testing.T) {
+// TestAutoApproval_AllowGroup_JudgerEmptyReasoningWithWorkspacePath verifies
+// that an allow-group tool whose judge returns no concern (empty reason)
+// still executes when paths are inside the workspace: empty reasoning means
+// "no concern to report".
+func TestAutoApproval_AllowGroup_JudgerEmptyReasoningWithWorkspacePath(t *testing.T) {
 	registry := NewToolRegistry()
-	// Tool with AlwaysAllow + ToolJudger that returns allow=false, reasoning=""
-	// (simulates bash_exec without blacklist match).
-	tool := newMockJudgerTool("bash_exec", false, "")
-	registry.Register(tool)
+	setDefaultGroupPolicies(registry)
+	registry.Register(newMockJudgerTool("bash_exec", false, ""))
 
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
 		return sdktools.ConfirmAllowOnce, nil
 	})
 
-	ctx := context.Background()
-	ctx = sdktools.WithWorkspacePath(ctx, "/workspace")
-	input := json.RawMessage(`{"command": "ls /workspace"}`)
-
-	_, err := registry.Execute(ctx, "bash_exec", input)
+	ctx := sdktools.WithWorkspacePath(context.Background(), "/workspace")
+	_, err := registry.Execute(ctx, "bash_exec", json.RawMessage(`{"command": "ls /workspace"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if confirmCalled {
-		t.Error("expected confirmFunc NOT to be called when Judge returns empty reasoning (no concern) and path is inside workspace")
+		t.Error("expected confirmFunc NOT to be called when the judge reports no concern")
 	}
 }
 
-// TestAutoApproval_OutsideWorkspace tests that PolicyUserConfirm still requires
-// confirmation when paths are outside the workspace.
+// TestAutoApproval_OutsideWorkspace tests that a user_confirm tool still
+// requires confirmation when paths are outside the workspace.
 func TestAutoApproval_OutsideWorkspace(t *testing.T) {
 	registry := NewToolRegistry()
 	tool := newMockTool("mutating", "A mutating tool")
@@ -1249,104 +1452,245 @@ func TestAutoApproval_OutsideWorkspace(t *testing.T) {
 	}
 }
 
-// TestIsInternalTool_ReturnsTrueForInternalTools tests that IsInternalTool()
-// returns true for each internal tool.
-func TestIsInternalTool_ReturnsTrueForInternalTools(t *testing.T) {
-	internalToolNames := []string{"ask_user", "finish", "list_step_outputs", "read_final_result", "read_skill_resource", "read_step_output", "read_attachment", "search_facts", "semantic_search", "update_checklist", "declare_step_complete", "store_fact", "tool_result_read", "delegate", "cancel_delegation", "declare_plan", "reflect", "batch"}
+// ── local_write containment with real write_file (symlinks, "..") ─────────
 
-	for _, name := range internalToolNames {
-		t.Run(name, func(t *testing.T) {
-			if !IsInternalTool(name) {
-				t.Errorf("IsInternalTool(%q) = false, want true", name)
-			}
-		})
+// TestLocalWriteAutoApproval_SymlinkInsideRootsAutoApproved proves that a
+// write through a symlink whose resolution lands INSIDE the session roots is
+// auto-approved (no confirmation): containment reasons about resolved paths.
+// Uses the real WriteFileTool so the real EvalSymlinks-based judge runs; the
+// write never happens (confirmation is never requested) except through the
+// symlinked in-root target.
+func TestLocalWriteAutoApproval_SymlinkInsideRootsAutoApproved(t *testing.T) {
+	ws := t.TempDir()
+	realDir := filepath.Join(ws, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-}
-
-// TestIsInternalTool_ReturnsFalseForNonInternalTools tests that IsInternalTool()
-// returns false for non-internal tools like "bash_exec".
-func TestIsInternalTool_ReturnsFalseForNonInternalTools(t *testing.T) {
-	nonInternalTools := []string{"bash_exec", "file_write", "file_read", "search_code", "edit_file"}
-
-	for _, name := range nonInternalTools {
-		t.Run(name, func(t *testing.T) {
-			if IsInternalTool(name) {
-				t.Errorf("IsInternalTool(%q) = true, want false", name)
-			}
-		})
+	link := filepath.Join(ws, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatal(err)
 	}
-}
 
-// TestInternalTool_BypassesPolicyAlwaysDeny tests that internal tools bypass
-// policy resolution and execute even when the default policy is PolicyAlwaysDeny.
-func TestInternalTool_BypassesPolicyAlwaysDeny(t *testing.T) {
 	registry := NewToolRegistry()
-	// Register a mock internal tool (using "finish" as the name)
-	tool := &mockTool{
-		name:          "finish",
-		description:   "Finish the task",
-		inputSchema:   json.RawMessage(`{"type":"object"}`),
-		defaultPolicy: sdktools.PolicyAlwaysDeny, // Even with AlwaysDeny as tool's default
-	}
-	registry.Register(tool)
+	registry.SetAutoApproveWorkspaceWrites(true)
+	registry.Register(builtins.NewWriteFileTool())
 
-	// Set global default policy to AlwaysDeny
-	registry.SetDefaultPolicy(sdktools.PolicyAlwaysDeny)
-
-	// Set up a confirm func that should NOT be called for internal tools
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmDeny, nil
+	})
+
+	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
+	input, _ := json.Marshal(map[string]string{"path": filepath.Join(link, "file.txt"), "content": "x"})
+
+	_, err := registry.Execute(ctx, "write_file", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if confirmCalled {
+		t.Error("expected no confirmation: a symlink resolving inside the roots auto-approves")
+	}
+}
+
+// TestLocalWriteAutoApproval_SymlinkEscapeForcesHardConfirm proves the
+// counterpart: a write through a symlink that ESCAPES the session roots is a
+// hard confirmation even with auto-approval and Smart Approve both enabled
+// (the strict judge is never consulted, and the advisory judge is disabled).
+func TestLocalWriteAutoApproval_SymlinkEscapeForcesHardConfirm(t *testing.T) {
+	ws := t.TempDir()
+	outside := t.TempDir() // a different root: outside the workspace
+	link := filepath.Join(ws, "escape")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewToolRegistry()
+	registry.SetAutoApproveWorkspaceWrites(true)
+	registry.SetSmartApprove(true)
+	registry.Register(builtins.NewWriteFileTool())
+	judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: looks fine", nil)
+	registry.SetJudge(judge)
+
+	var req sdktools.ConfirmationRequest
+	confirmCalled := false
+	registry.SetConfirmFunc(func(_ context.Context, r sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		req = r
+		return sdktools.ConfirmDeny, nil
+	})
+
+	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
+	input, _ := json.Marshal(map[string]string{"path": filepath.Join(link, "file.txt"), "content": "x"})
+
+	_, err := registry.Execute(ctx, "write_file", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !confirmCalled {
+		t.Fatal("expected a hard confirmation for a symlink escaping the session roots")
+	}
+	if !strings.Contains(strings.ToLower(req.JudgeReasoning), "symlink") {
+		t.Errorf("expected the confirmation reason to explain the symlink escape, got %q", req.JudgeReasoning)
+	}
+	if !req.DisableJudge {
+		t.Error("symlink-escape confirmation must disable the advisory judge")
+	}
+	if got := provider.callCount(); got != 0 {
+		t.Errorf("strict judge calls = %d, want 0 (hard reasons short-circuit Smart Approve)", got)
+	}
+}
+
+// TestLocalWriteAutoApproval_DotDotNormalizationAutoApproved verifies ".."
+// normalization on the happy side: a path with an inner ".." that still
+// resolves inside the workspace auto-approves.
+func TestLocalWriteAutoApproval_DotDotNormalizationAutoApproved(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewToolRegistry()
+	registry.SetAutoApproveWorkspaceWrites(true)
+	registry.Register(builtins.NewWriteFileTool())
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmDeny, nil
+	})
+
+	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
+	input, _ := json.Marshal(map[string]string{"path": filepath.Join(ws, "sub", "..", "ok.txt"), "content": "x"})
+
+	_, err := registry.Execute(ctx, "write_file", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if confirmCalled {
+		t.Error("expected no confirmation: an in-root path with inner '..' normalizes inside the roots")
+	}
+}
+
+// TestLocalWriteAutoApproval_DotDotEscapeBlocked verifies the escape side of
+// ".." normalization: enough ".." segments to climb OUT of the workspace must
+// fail containment and force confirmation.
+func TestLocalWriteAutoApproval_DotDotEscapeBlocked(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, "sub", "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewToolRegistry()
+	registry.SetAutoApproveWorkspaceWrites(true)
+	registry.Register(builtins.NewWriteFileTool())
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmDeny, nil
+	})
+
+	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
+	input, _ := json.Marshal(map[string]string{
+		"path":    filepath.Join(ws, "sub", "deep", "..", "..", "..", "outside.txt"),
+		"content": "x",
+	})
+
+	_, err := registry.Execute(ctx, "write_file", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !confirmCalled {
+		t.Error("expected confirmation: a '..'-normalized escape out of the workspace must not auto-approve")
+	}
+}
+
+// ── System group (internal tools) ─────────────────────────────────────────
+
+// TestSystemToolGroupBypassesPolicyAndJudge verifies the core replacement for
+// the old name-based IsInternalTool gate: a tool whose GROUP is system
+// executes directly, bypassing a deny-everything group map, the judge, and
+// confirmation.
+func TestSystemToolGroupBypassesPolicyAndJudge(t *testing.T) {
+	registry := NewToolRegistry()
+	// Deny every configurable group: system must still execute.
+	denyAll := map[sdktools.ToolGroup]sdktools.ToolPolicy{}
+	for _, g := range sdktools.AllToolGroups() {
+		if g != sdktools.GroupSystem {
+			denyAll[g] = sdktools.PolicyAlwaysDeny
+		}
+	}
+	registry.SetGroupPolicies(denyAll)
+	registry.Register(newMockSystemTool("finish", "Finish the task"))
+
+	judge, provider := newStrictJudge("VERDICT: CONFIRM\nREASON: never runs", nil)
+	registry.SetJudge(judge)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
 		return sdktools.ConfirmAllowOnce, nil
 	})
 
-	ctx := context.Background()
-	input := json.RawMessage(`{"status":"success"}`)
-
-	// Execute the internal tool - it should bypass policy and execute successfully
-	result, err := registry.Execute(ctx, "finish", input)
+	result, err := registry.Execute(context.Background(), "finish", json.RawMessage(`{"status":"success"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.IsError {
-		t.Errorf("expected IsError to be false for internal tool, got true with content: %s", result.Content)
+		t.Errorf("expected IsError to be false for a system tool, got true with content: %s", result.Content)
 	}
 	if result.Content != `{"status":"success"}` {
 		t.Errorf("expected content %q, got %q", `{"status":"success"}`, result.Content)
 	}
 	if confirmCalled {
-		t.Error("expected confirmFunc NOT to be called for internal tools")
+		t.Error("expected confirmFunc NOT to be called for a system tool")
+	}
+	if got := provider.callCount(); got != 0 {
+		t.Errorf("strict judge calls = %d, want 0 for a system tool", got)
 	}
 }
 
-// TestInternalTool_BypassesPolicyUserConfirm tests that internal tools bypass
-// policy resolution and execute even when the policy would require user confirmation.
-func TestInternalTool_BypassesPolicyUserConfirm(t *testing.T) {
+// TestSystemGroupByDeclarationNotName proves the bypass keys on the GROUP,
+// not the name: a tool NAMED "finish" but declaring local_write is NOT
+// bypassed, while a tool with an arbitrary name in the system group IS.
+func TestSystemGroupByDeclarationNotName(t *testing.T) {
 	registry := NewToolRegistry()
-	// Register a mock internal tool
-	tool := newMockTool("ask_user", "Ask the user a question")
-	registry.Register(tool)
+	setDefaultGroupPolicies(registry)
+	// "finish" name but local_write group → must confirm.
+	registry.Register(newMockTool("finish", "name-collision tool"))
 
-	// Set up a confirm func that should NOT be called for internal tools
 	confirmCalled := false
-	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		confirmCalled = true
 		return sdktools.ConfirmAllowOnce, nil
 	})
 
-	ctx := context.Background()
-	input := json.RawMessage(`{"question":"What is your name?"}`)
+	if _, err := registry.Execute(context.Background(), "finish", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !confirmCalled {
+		t.Error("a tool named 'finish' but grouped local_write must still confirm — the gate keys on Group(), not the name")
+	}
+}
 
-	// Execute the internal tool - it should bypass confirmation
-	result, err := registry.Execute(ctx, "ask_user", input)
+// TestSystemToolDisabledInNoProjectStillBlocked verifies gate ordering: the
+// disabled-tools gate (No Project mode) runs BEFORE the system-group bypass,
+// so a disabled system tool (semantic_search) is blocked at execution time.
+func TestSystemToolDisabledInNoProjectStillBlocked(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(newMockSystemTool("semantic_search", "vector search"))
+	registry.SetDisabledTools(map[string]bool{"semantic_search": true})
+
+	result, err := registry.Execute(context.Background(), "semantic_search", json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.IsError {
-		t.Errorf("expected IsError to be false for internal tool, got true")
+	if !result.IsError {
+		t.Fatal("expected IsError=true: disabled tools are blocked even in the system group")
 	}
-	if confirmCalled {
-		t.Error("expected confirmFunc NOT to be called for internal tools")
+	if !strings.Contains(result.Content, "No Project mode") {
+		t.Errorf("expected the No Project block message, got %q", result.Content)
 	}
 }
 
@@ -1374,26 +1718,30 @@ func TestIsGoalModeTool_GeneralCoordinationToolsExcluded(t *testing.T) {
 	}
 }
 
-// TestGoalModeTools_AreAllInternal is a completeness guard: every goal-mode
-// tool MUST also be an internal tool. Internal classification is what hides
-// them from the security UI and exempts them from policy/confirmation. If a
-// goal-mode tool ever loses its internal status, the security tab would show
-// it and policies would apply, violating the goal-mode tool contract.
-func TestGoalModeTools_AreAllInternal(t *testing.T) {
-	for name := range goalModeTools {
-		if !IsInternalTool(name) {
-			t.Errorf("goal-mode tool %q is NOT classified as internal — it must be internal to be hidden from the security UI and exempt from policies", name)
+// TestGoalModeTools_AreAllSystem is a completeness guard over the REAL tool
+// instances: every goal-mode tool must (a) declare the system group on its
+// BaseTool — system classification is what hides it from the security UI and
+// exempts it from policy/confirmation — and (b) appear in the goalModeTools
+// availability set, so the orchestrator can strip it from non-goal runs.
+func TestGoalModeTools_AreAllSystem(t *testing.T) {
+	for _, tool := range []sdktools.Tool{
+		NewProposeGoalTool(),
+		NewDeclareGoalStatusTool(),
+		NewDeclareVerificationTool(),
+	} {
+		name := tool.Name()
+		if !IsGoalModeTool(name) {
+			t.Errorf("goal tool %q is missing from the goalModeTools availability set", name)
+		}
+		if got := tool.Group(); got != sdktools.GroupSystem {
+			t.Errorf("goal tool %q declares group %q, want %q — it must stay hidden from the security UI and exempt from policies", name, got, sdktools.GroupSystem)
 		}
 	}
-}
 
-// TestDeclareVerification_IsInternal guards the regression where declare_verification
-// was documented as internal but missing from the internalTools map. Its doc
-// comment and constructor (PolicyAlwaysAllow) promise internal-tool behavior;
-// IsInternalTool must honor that.
-func TestDeclareVerification_IsInternal(t *testing.T) {
-	if !IsInternalTool("declare_verification") {
-		t.Error("declare_verification must be classified as internal (hidden from security UI, policy/judge-exempt)")
+	// The availability set must not outgrow the real goal tools: a fourth
+	// entry would strip a tool that no longer exists here.
+	if len(goalModeTools) != 3 {
+		t.Errorf("goalModeTools has %d entries, want 3 — update TestGoalModeTools_AreAllSystem with the added/removed tool", len(goalModeTools))
 	}
 }
 
@@ -1411,35 +1759,26 @@ func TestStripGoalModeTools_RemovesGoalSpecificTools(t *testing.T) {
 	for _, t := range got {
 		names[t.Name] = true
 	}
+
 	for _, removed := range []string{"propose_goal", "declare_goal_status", "declare_verification"} {
 		if names[removed] {
-			t.Errorf("StripGoalModeTools: goal tool %q should be removed", removed)
+			t.Errorf("expected goal-mode tool %q to be stripped", removed)
 		}
 	}
 	for _, kept := range []string{"read_file", "bash_exec", "finish", "delegate", "declare_plan", "reflect"} {
 		if !names[kept] {
-			t.Errorf("StripGoalModeTools: non-goal tool %q should be kept", kept)
+			t.Errorf("expected non-goal tool %q to be kept", kept)
 		}
 	}
 }
 
-// TestStripGoalModeTools_EmptyAndNilInputs verifies the helper is safe for
-// edge-case inputs (the orchestrator may call it with an empty list).
-func TestStripGoalModeTools_EmptyAndNilInputs(t *testing.T) {
-	if got := StripGoalModeTools(nil); got != nil {
-		t.Errorf("StripGoalModeTools(nil) = %v, want nil", got)
-	}
-	if got := StripGoalModeTools([]sdktools.ToolDescriptor{}); len(got) != 0 {
-		t.Errorf("StripGoalModeTools(empty) returned %d items, want 0", len(got))
-	}
-}
-
-// --- PreExecuteHook tests ---
+// ── Pre-execute hook ──────────────────────────────────────────────────────
 
 // TestPreExecuteHook_BlocksUntilReleased verifies that the hook can block
 // tool execution until released, and then the tool result is correct.
 func TestPreExecuteHook_BlocksUntilReleased(t *testing.T) {
 	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
 	tool := newMockReadOnlyTool("blocked_tool", "A tool that waits for hook")
 	registry.Register(tool)
 
@@ -1489,10 +1828,12 @@ func TestPreExecuteHook_BlocksUntilReleased(t *testing.T) {
 	}
 }
 
-// TestPreExecuteHook_ErrorPreventsExecution verifies that when the hook returns
-// an error, tool execution is aborted and the error is returned in the result.
+// TestPreExecuteHook_ErrorPreventsExecution verifies that when the hook
+// returns an error, tool execution is aborted and the error is returned in
+// the result.
 func TestPreExecuteHook_ErrorPreventsExecution(t *testing.T) {
 	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
 	tool := newMockReadOnlyTool("error_hook_tool", "A tool with failing hook")
 	registry.Register(tool)
 
@@ -1515,12 +1856,12 @@ func TestPreExecuteHook_ErrorPreventsExecution(t *testing.T) {
 	}
 }
 
-// TestPreExecuteHook_NotCalledForInternalTools verifies that the pre-execute
-// hook is NOT invoked for internal tools (e.g., ask_user).
-func TestPreExecuteHook_NotCalledForInternalTools(t *testing.T) {
+// TestPreExecuteHook_NotCalledForSystemTools verifies that the pre-execute
+// hook is NOT invoked for system tools (e.g., ask_user).
+func TestPreExecuteHook_NotCalledForSystemTools(t *testing.T) {
 	registry := NewToolRegistry()
-	// Register a mock tool under an internal tool name
-	tool := newMockReadOnlyTool("ask_user", "Internal ask_user tool")
+	// Register a mock system tool under an internal tool name
+	tool := newMockSystemTool("ask_user", "System ask_user tool")
 	registry.Register(tool)
 
 	var hookCalled bool
@@ -1537,17 +1878,18 @@ func TestPreExecuteHook_NotCalledForInternalTools(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.IsError {
-		t.Error("expected IsError to be false for internal tool")
+		t.Error("expected IsError to be false for system tool")
 	}
 	if hookCalled {
-		t.Error("expected pre-execute hook NOT to be called for internal tool 'ask_user'")
+		t.Error("expected pre-execute hook NOT to be called for system tool 'ask_user'")
 	}
 }
 
-// TestPreExecuteHook_ReceivesCorrectSource verifies that the hook receives the
-// correct source string for a tool registered with RegisterWithSource.
+// TestPreExecuteHook_ReceivesCorrectSource verifies that the hook receives
+// the correct source string for a tool registered with RegisterWithSource.
 func TestPreExecuteHook_ReceivesCorrectSource(t *testing.T) {
 	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
 	tool := newMockReadOnlyTool("mcp_search", "An MCP tool")
 	registry.RegisterWithSource(tool, "mcp:test-server")
 
@@ -1578,6 +1920,8 @@ func TestPreExecuteHook_ReceivesCorrectSource(t *testing.T) {
 		t.Errorf("expected hook source %q, got %q", "mcp:test-server", capturedSource)
 	}
 }
+
+// ── Smart Approve ─────────────────────────────────────────────────────────
 
 func TestSmartApprove_UserConfirmFlow(t *testing.T) {
 	tests := []struct {
@@ -1639,6 +1983,51 @@ func TestSmartApprove_UserConfirmFlow(t *testing.T) {
 	}
 }
 
+// TestSmartApprove_UserConfirmHardReasonSkipsStrictJudge proves hard reasons
+// never reach Smart Approve on the user_confirm path: a user_confirm tool
+// with a HARD judge reason confirms directly even with Smart Approve on and
+// the strict judge scripted to ALLOW.
+func TestSmartApprove_UserConfirmHardReasonSkipsStrictJudge(t *testing.T) {
+	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
+	registry.SetSmartApprove(true)
+	registry.Register(newMockExecuteJudgerTool("bash_exec", sdktools.JudgeOutcome{
+		Reason:   "command matches blacklist pattern: mkfs",
+		Severity: sdktools.JudgeSeverityHard,
+	}))
+
+	judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: trust me", nil)
+	registry.SetJudge(judge)
+
+	var req sdktools.ConfirmationRequest
+	confirmCalled := false
+	registry.SetConfirmFunc(func(_ context.Context, r sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		req = r
+		return sdktools.ConfirmDeny, nil
+	})
+
+	result, err := registry.Execute(context.Background(), "bash_exec", json.RawMessage(`{"command":"mkfs.ext4 /dev/sda1"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !confirmCalled {
+		t.Fatal("expected confirmation: hard reasons must not be auto-approved by Smart Approve")
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true after denying the forced confirmation")
+	}
+	if !strings.Contains(req.JudgeReasoning, "mkfs") {
+		t.Errorf("expected the blacklist reason to surface, got %q", req.JudgeReasoning)
+	}
+	if !req.DisableJudge {
+		t.Error("hard-reason confirmation must disable the advisory judge")
+	}
+	if got := provider.callCount(); got != 0 {
+		t.Errorf("strict judge calls = %d, want 0 (hard reasons short-circuit Smart Approve)", got)
+	}
+}
+
 func TestSmartApprove_WorkspaceAutoApproveHasPriority(t *testing.T) {
 	registry := NewToolRegistry()
 	registry.SetAutoApproveWorkspaceWrites(true)
@@ -1666,20 +2055,24 @@ func TestSmartApprove_WorkspaceAutoApproveHasPriority(t *testing.T) {
 	}
 }
 
+// TestSmartApprove_OnlyEffectiveUserConfirm verifies Smart Approve applies
+// only to the effective user_confirm posture: allow-group clean calls
+// execute without consulting the strict judge, and deny groups stay blocked.
 func TestSmartApprove_OnlyEffectiveUserConfirm(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
+		group  sdktools.ToolGroup
 		policy sdktools.ToolPolicy
 	}{
-		{name: "always_allow", policy: sdktools.PolicyAlwaysAllow},
-		{name: "always_deny", policy: sdktools.PolicyAlwaysDeny},
+		{name: "allow group executes without strict judge", group: sdktools.GroupLocalRead, policy: sdktools.PolicyAlwaysAllow},
+		{name: "deny group stays blocked without strict judge", group: sdktools.GroupLocalWrite, policy: sdktools.PolicyAlwaysDeny},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			policy := tt.policy
 			registry := NewToolRegistry()
 			registry.SetSmartApprove(true)
-			tool := newMockTool("policy_tool", "policy test")
-			tool.defaultPolicy = policy
+			registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{tt.group: tt.policy})
+			tool := newMockReadOnlyTool("policy_tool", "policy test")
+			tool.group = tt.group
 			registry.Register(tool)
 			judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: safe", nil)
 			registry.SetJudge(judge)
@@ -1688,11 +2081,11 @@ func TestSmartApprove_OnlyEffectiveUserConfirm(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Execute() error = %v", err)
 			}
-			if policy == sdktools.PolicyAlwaysDeny && !result.IsError {
-				t.Error("always_deny must remain blocked")
+			if tt.policy == sdktools.PolicyAlwaysDeny && !result.IsError {
+				t.Error("deny group must remain blocked")
 			}
-			if policy == sdktools.PolicyAlwaysAllow && result.IsError {
-				t.Error("always_allow must retain legacy execution")
+			if tt.policy == sdktools.PolicyAlwaysAllow && result.IsError {
+				t.Error("allow group must execute")
 			}
 			if got := provider.callCount(); got != 0 {
 				t.Errorf("strict judge calls = %d, want 0", got)
@@ -1735,20 +2128,21 @@ func TestConfirmFunc_NilUserConfirmFailsClosed(t *testing.T) {
 		t.Fatalf("Execute() error = %v", err)
 	}
 	if !result.IsError {
-		t.Fatal("nil ConfirmFunc must deny PolicyUserConfirm execution")
+		t.Fatal("nil ConfirmFunc must deny user_confirm execution")
 	}
 	if !strings.Contains(result.Content, "confirmation is unavailable") {
 		t.Errorf("unexpected denial content: %q", result.Content)
 	}
 }
 
-// --- PostExecuteHook tests ---
+// ── Post-execute hook ─────────────────────────────────────────────────────
 
 // TestPostExecuteHook_CalledAfterSuccessfulExecution verifies that the
-// post-execute hook is called with the correct tool name and result after
-// a successful tool execution.
+// post-execute hook is called with the correct tool name and result after a
+// successful tool execution.
 func TestPostExecuteHook_CalledAfterSuccessfulExecution(t *testing.T) {
 	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
 	tool := newMockReadOnlyTool("my_tool", "A tool")
 	registry.Register(tool)
 
@@ -1788,12 +2182,12 @@ func TestPostExecuteHook_CalledAfterSuccessfulExecution(t *testing.T) {
 	}
 }
 
-// TestPostExecuteHook_NotCalledForInternalTools verifies that the hook is
-// NOT invoked for internal tools (e.g. ask_user, finish).
-func TestPostExecuteHook_NotCalledForInternalTools(t *testing.T) {
+// TestPostExecuteHook_NotCalledForSystemTools verifies that the hook is NOT
+// invoked for system tools (e.g. ask_user, finish).
+func TestPostExecuteHook_NotCalledForSystemTools(t *testing.T) {
 	registry := NewToolRegistry()
-	// Register a mock tool under an internal tool name.
-	tool := newMockReadOnlyTool("ask_user", "Internal ask_user tool")
+	// Register a mock system tool under an internal tool name.
+	tool := newMockSystemTool("ask_user", "System ask_user tool")
 	registry.Register(tool)
 
 	var hookCalled bool
@@ -1809,19 +2203,21 @@ func TestPostExecuteHook_NotCalledForInternalTools(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if hookCalled {
-		t.Error("expected post-execute hook NOT to be called for internal tool 'ask_user'")
+		t.Error("expected post-execute hook NOT to be called for system tool 'ask_user'")
 	}
 }
 
-// TestPostExecuteHook_CalledOnPolicyDeny verifies that the hook IS called
-// (with an error result) when a tool is blocked by policy. This is correct
-// because the defer covers all return paths — the hook can filter on
+// TestPostExecuteHook_CalledOnGroupDeny verifies that the hook IS called
+// (with an error result) when a tool is blocked by its group policy. The
+// defer covers all return paths below the early gates — the hook filters on
 // result.IsError.
-func TestPostExecuteHook_CalledOnPolicyDeny(t *testing.T) {
+func TestPostExecuteHook_CalledOnGroupDeny(t *testing.T) {
 	registry := NewToolRegistry()
-	tool := newMockTool("denied_tool", "A tool with deny policy")
+	tool := newMockTool("denied_tool", "A tool in a deny group")
 	registry.Register(tool)
-	registry.SetPolicyOverrides(map[string]sdktools.ToolPolicy{"denied_tool": sdktools.PolicyAlwaysDeny})
+	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupLocalWrite: sdktools.PolicyAlwaysDeny,
+	})
 
 	var mu sync.Mutex
 	var capturedName string
@@ -1851,10 +2247,11 @@ func TestPostExecuteHook_CalledOnPolicyDeny(t *testing.T) {
 	}
 }
 
-// TestPostExecuteHook_PreservedInClone verifies that the hook is shared
-// with cloned registries (per-session clones inherit the hook).
+// TestPostExecuteHook_PreservedInClone verifies that the hook is shared with
+// cloned registries (per-session clones inherit the hook).
 func TestPostExecuteHook_PreservedInClone(t *testing.T) {
 	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
 	tool := newMockReadOnlyTool("cloned_tool", "A tool")
 	registry.Register(tool)
 
@@ -1877,9 +2274,10 @@ func TestPostExecuteHook_PreservedInClone(t *testing.T) {
 	}
 }
 
-// --- ToolFilter tests ---
+// ── ToolFilter ────────────────────────────────────────────────────────────
 
-// TestToolFilter_BlocksRegistration verifies that a filter can reject tools during registration.
+// TestToolFilter_BlocksRegistration verifies that a filter can reject tools
+// during registration.
 func TestToolFilter_BlocksRegistration(t *testing.T) {
 	registry := NewToolRegistry()
 	registry.SetToolFilter(func(toolName, source string) bool {
@@ -1898,7 +2296,8 @@ func TestToolFilter_BlocksRegistration(t *testing.T) {
 	}
 }
 
-// TestToolFilter_AllowsRegistration verifies that a permissive filter allows tools.
+// TestToolFilter_AllowsRegistration verifies that a permissive filter allows
+// tools.
 func TestToolFilter_AllowsRegistration(t *testing.T) {
 	registry := NewToolRegistry()
 	registry.SetToolFilter(func(toolName, source string) bool {
@@ -1914,7 +2313,8 @@ func TestToolFilter_AllowsRegistration(t *testing.T) {
 	}
 }
 
-// TestToolFilter_NilAllowsAll verifies that a nil filter allows all tools (default behavior).
+// TestToolFilter_NilAllowsAll verifies that a nil filter allows all tools
+// (default behavior).
 func TestToolFilter_NilAllowsAll(t *testing.T) {
 	registry := NewToolRegistry()
 	// No filter set
@@ -1928,17 +2328,15 @@ func TestToolFilter_NilAllowsAll(t *testing.T) {
 	}
 }
 
-// TestAutoApproval_AlwaysDenyRespected tests that PolicyAlwaysDeny is still
+// TestAutoApproval_DenyGroupRespected tests that a deny group is still
 // respected even when all paths are within the workspace.
-func TestAutoApproval_AlwaysDenyRespected(t *testing.T) {
+func TestAutoApproval_DenyGroupRespected(t *testing.T) {
 	registry := NewToolRegistry()
-	tool := &mockTool{
-		name:          "always_deny",
-		description:   "A tool with PolicyAlwaysDeny",
-		inputSchema:   json.RawMessage(`{"type":"object"}`),
-		defaultPolicy: sdktools.PolicyAlwaysDeny,
-	}
+	tool := newMockTool("always_deny", "A tool in a deny-postured group")
 	registry.Register(tool)
+	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupLocalWrite: sdktools.PolicyAlwaysDeny,
+	})
 
 	confirmCalled := false
 	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
@@ -1955,13 +2353,56 @@ func TestAutoApproval_AlwaysDenyRespected(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.IsError {
-		t.Error("expected IsError to be true for PolicyAlwaysDeny")
+		t.Error("expected IsError to be true for a deny group")
 	}
 	if !strings.Contains(result.Content, "blocked by security policy") {
 		t.Errorf("expected security policy error, got: %s", result.Content)
 	}
 	if confirmCalled {
-		t.Error("expected confirmFunc NOT to be called for PolicyAlwaysDeny")
+		t.Error("expected confirmFunc NOT to be called for a deny group")
+	}
+}
+
+// ── Gate ordering ─────────────────────────────────────────────────────────
+
+// TestGateOrder_DenyBeforeJudgeAndSymlink verifies a deny group blocks BEFORE
+// any judge or symlink reasoning runs: the block message is the policy
+// message, not a confirmation.
+func TestGateOrder_DenyBeforeJudgeAndSymlink(t *testing.T) {
+	ws := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(ws, "escape")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewToolRegistry()
+	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupLocalRead: sdktools.PolicyAlwaysDeny,
+	})
+	registry.Register(builtins.NewReadFileTool()) // judge would soft-deny out-of-root too
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmAllowOnce, nil
+	})
+
+	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
+	input, _ := json.Marshal(map[string]string{"path": filepath.Join(link, "file.txt")})
+
+	result, err := registry.Execute(ctx, "read_file", input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected the deny group to block the call")
+	}
+	if !strings.Contains(result.Content, "blocked by security policy") {
+		t.Errorf("expected the policy block message, got %q", result.Content)
+	}
+	if confirmCalled {
+		t.Error("deny must block before any confirmation path is reached")
 	}
 }
 

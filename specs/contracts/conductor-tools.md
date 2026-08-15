@@ -2,7 +2,7 @@
 
 ## Boundary Rule
 
-Conductor tools (`delegate`, `declare_plan`, `execute_plan`, `reflect`, `cancel_delegation`) are internal tools registered in `core/tools/registry.go` and added to the Conductor's tool set in `core/conductor.go`. They are always allowed (bypass policy and judge) and are never available to regular plan-step executors — only to the Conductor and, selectively, to subagents with `allow_redelegate: true`.
+Conductor tools (`delegate`, `declare_plan`, `execute_plan`, `reflect`, `cancel_delegation`) are `system`-group tools (`sdktools.GroupSystem`, ADR-024) registered in `core/tools/builtin_registration.go` and added to the Conductor's tool set in `core/conductor.go`. They are always allowed (bypass policy and judge) and are never available to regular plan-step executors — only to the Conductor and, selectively, to subagents with `allow_redelegate: true`.
 
 Planning and delegation are **orthogonal** mechanisms:
 - **Planning** (`declare_plan` + `execute_plan`) manages task complexity and gets user sign-off. `execute_plan` runs all plan steps in DAG order with parallelism, emitting `plan_step_start`/`plan_step_complete` events.
@@ -28,38 +28,28 @@ Planning and delegation are **orthogonal** mechanisms:
 
 ## Initialization
 
-Conductor tools are registered at startup in `core/tools/builtin_registration.go` alongside the existing internal tools. They are added to the `internalTools` set in `core/tools/registry.go`:
+Conductor tools are registered at startup in `core/tools/builtin_registration.go`. Each constructor tags the tool `ToolGroup: sdktools.GroupSystem` (`BaseTool` field) — the **reserved `system` group** that bypasses policy (ADR-024). Membership is declared on the tool itself; there is no out-of-band name set:
 
 ```go
-var internalTools = map[string]struct{}{
-    // ... read/write + lifecycle helpers (ask_user, finish, list_step_outputs,
-    //     read_final_result, read_skill_resource, read_step_output, read_attachment,
-    //     search_facts, tool_result_read, semantic_search, update_checklist,
-    //     declare_step_complete, store_fact) ...
-    "delegate":           {},
-    "cancel_delegation":  {},
-    "declare_plan":       {},
-    "execute_plan":       {},
-    "reflect":            {},
-    // goal-mode-only (also in goalModeTools; offered to the agent only during a
-    // goal loop — stripped on the non-goal path):
-    "propose_goal":         {},
-    "declare_goal_status":  {},
-    "declare_verification": {},
-    // batch composite tool (sdktools.ToolBatch):
-    sdktools.ToolBatch:     {},
+// core/tools/delegate.go (representative)
+return &sdktools.BaseTool{
+    // ...
+    ToolGroup: sdktools.GroupSystem, // bypasses security.groups policy
 }
+// system-group c0wrk tools: delegate, cancel_delegation, declare_plan,
+// execute_plan, reflect, propose_goal, declare_goal_status,
+// declare_verification, ask_user, ... (see builtins.md catalog)
 ```
 
 The Conductor tool set is assembled in `core/conductor.go`:
 
 ```
 conductorTools = filterByDomain(fileOps + search + web) +
-                 internalTools +
+                 systemGroupTools +
                  { delegate, declare_plan, execute_plan, reflect, cancel_delegation }
 ```
 
-Subagent tool sets are assembled in the `delegate` tool based on the `tools` field of each task, plus internal tools, plus `delegate` + `cancel_delegation` only when `allow_redelegate: true`.
+Subagent tool sets are assembled in the `delegate` tool by `resolveTaskTools` from the `tools` field of each task (group tokens; the `system` group always included), plus `delegate` + `cancel_delegation` only when `allow_redelegate: true`.
 
 ## Data Flow Across Boundary
 
@@ -205,7 +195,7 @@ Direction: Conductor → `reflect` tool → `Reflector.Reflect` → tool result 
 
 ### Goal-Mode Tools
 
-Three additional internal tools exist ONLY for goal mode (registered in `core/tools/builtin_registration.go`, listed in `goalModeTools` in `core/tools/registry.go`). They are offered to the agent only during an active goal loop — `HandleMessage`/`ResumeTask` strip them from the available-tool list on the non-goal path. The goal loop and the independent verifier deliberately receive the unstripped list.
+Three additional system-group tools exist ONLY for goal mode (registered in `core/tools/builtin_registration.go`, listed in `goalModeTools` in `core/tools/registry.go`). They are offered to the agent only during an active goal loop — `HandleMessage`/`ResumeTask` strip them from the available-tool list on the non-goal path. The goal loop and the independent verifier deliberately receive the unstripped list.
 
 | Tool | Input | Purpose |
 | ---- | ----- | ------- |
@@ -235,11 +225,11 @@ All errors are tool-level (`ToolResult{ IsError: true, Content: "..." }`), not G
 
 - If you change the `delegate` input schema, update `core/tools/delegate.go`, the Conductor system-prompt guidance in `core/systemprompt.go`, and [../domains/orchestration/delegation.md](../domains/orchestration/delegation.md).
 - If you change the `DelegationRegistry` API, update `delegate`, `cancel_delegation`, `read_step_output`, and the `finish` join check in the executor.
-- If you add a new Conductor tool, add it to `internalTools` in `core/tools/registry.go`, register it in `core/tools/builtin_registration.go`, add it to the Conductor tool set in `core/conductor.go`, and document it in this contract.
+- If you add a new Conductor tool, tag it `ToolGroup: sdktools.GroupSystem` on its `BaseTool` (requires security review — it bypasses policy), register it in `core/tools/builtin_registration.go`, add it to the Conductor tool set in `core/conductor.go`, and document it in this contract.
 - If you change the `declare_plan` event payload, the frontend plan panel ([../domains/frontend/events.md](../domains/frontend/events.md)) must be updated to match.
 - If you change the `Plan` / `PlanStep` struct in `github.com/v0lka/sp4rk/orchestration/types.go`, both `delegate` and `declare_plan` are affected (they share these types).
 - If you change the `Reflector.Reflect` signature, update the `reflect` tool wrapper.
-- If you remove or rename an internal tool, update the `internalTools` set and the "always available" invariants in [conductor.md](../domains/orchestration/conductor.md) and [delegation.md](../domains/orchestration/delegation.md).
+- If you remove or rename a system-group tool, update the "always available" invariants in [conductor.md](../domains/orchestration/conductor.md) and [delegation.md](../domains/orchestration/delegation.md).
 
 ## Related Specs
 

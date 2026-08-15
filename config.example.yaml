@@ -224,9 +224,6 @@ security:
   judge:
     model: "" # Model override for judge calls (empty = use default)
 
-  # Default policy for tools not listed below: "user_confirm" | "always_allow" | "always_deny"
-  default_policy: "user_confirm"
-
   # When true, file write tools (write_file, edit_file, delete_file,
   # delete_directory, create_directory) execute without confirmation when
   # all paths in their input are within the session workspace OR the session
@@ -243,17 +240,43 @@ security:
   #   - CONFIRM, judge errors, timeouts, and unparseable responses always
   #     fall back to manual confirmation (the "Ask Agent" button is hidden
   #     because the strict judge already evaluated the call).
-  # Only effective user_confirm calls are judged; always_allow/always_deny
-  # and symlink-forced confirmations are unchanged. Default: false.
+  # Only effective user_confirm calls are judged; allow/deny and
+  # symlink-forced confirmations are unchanged. Default: false.
   smart_approve: false
 
-  # Per-tool security policies
-  tool_policies:
-    bash_exec:
+  # --- Tool security groups (security.groups) ---
+  # Policies are configured per tool GROUP, not per tool name. Every tool
+  # belongs to exactly one group:
+  #   local_read   — read-only local filesystem tools (read_file, glob,
+  #                  ripgrep, list_directory).                    Default: allow
+  #   remote_read  — read-only remote access (web_search, web_fetch).
+  #                                                                Default: allow
+  #   execute      — shell execution (bash_exec, posh_exec). The only group
+  #                  that supports a command blacklist.  Default: user_confirm
+  #   local_write  — local filesystem writes (write_file, edit_file,
+  #                  delete_file, create_directory, delete_directory).
+  #                                                 Default: user_confirm
+  #   local_mcp    — MCP servers launched locally over the stdio transport.
+  #                                                 Default: user_confirm
+  #   remote_mcp   — MCP servers reached over the network (http transport).
+  #                                                 Default: user_confirm
+  #   remote_write — tools that mutate remote resources (e.g. remote MCP
+  #                  mutations).                     Default: user_confirm
+  # Policy values: "allow" | "user_confirm" | "deny". A group omitted here
+  # keeps its default. Unset groups fail safe to user_confirm.
+  groups:
+    local_read:
+      policy: "allow"
+    remote_read:
+      policy: "allow"
+    execute:
       policy: "user_confirm"
+      # The execute blacklist applies to every shell command (bash_exec and
+      # posh_exec alike). The patterns cover both shell dialects, organized
+      # into destructive categories; PowerShell-specific patterns carry an
+      # (?i) prefix because PowerShell is case-insensitive.
+      # A matching command is forced to confirmation regardless of policy.
       blacklist:
-        # The blacklist is organized into four destructive categories mirrored
-        # (conceptually) by the posh_exec blacklist below. Keep categories in sync.
         # --- Destructive file/disk operations ---
         - 'rm\s+-rf\s+/'
         - "mkfs"
@@ -261,7 +284,7 @@ security:
         # `dd of=` writing to a block or kernel-memory device destroys the disk
         # or escalates privileges (e.g. `dd of=/dev/sda bs=1M` with no if=, which
         # the `dd\s+if=` pattern misses). Shares the same device-prefix list as
-        # the narrowed /dev/ redirect above so benign targets like
+        # the narrowed /dev/ redirect below so benign targets like
         # `dd of=/dev/null` stay unblocked. `[^|]*` prevents the match from
         # jumping across a pipe.
         - 'dd\b[^|]*\bof=/dev/(sd|hd|vd|xvd|nvme|mmcblk|loop|ram|zram|dm-|md|disk|mapper|mem|kmem|port)'
@@ -270,22 +293,22 @@ security:
         # /dev family (/dev/null, /dev/zero, /dev/full, /dev/random, /dev/std*,
         # /dev/fd, /dev/tty) — the most common redirect targets in commands like
         # `cmd 2>/dev/null` — no longer trigger a forced confirmation under
-        # always_allow. Matches every real block device family (sd, hd, vd, xvd,
+        # allow. Matches every real block device family (sd, hd, vd, xvd,
         # nvme, mmcblk, loop, ram, zram, dm-, md, disk, mapper) plus kernel
         # mem/port, sharing none of its prefixes with any benign /dev entry.
         - '>\s*/dev/(sd|hd|vd|xvd|nvme|mmcblk|loop|ram|zram|dm-|md|disk|mapper|mem|kmem|port)'
-        # --- Power-state (mirrors posh Stop/Restart-Computer) ---
+        # --- Power-state (shutdown / Stop-Computer) ---
         - '\b(shutdown|reboot|halt|poweroff|init\s+[06])\b'
-        # --- Remote-exec / download-cradle (mirrors posh IWR|iex) ---
-        # Piped execution of fetched content (curl|sh etc.) — a classic
-        # supply-chain / RCE vector. Blocks regardless of policy, even under always_allow.
+        # --- Remote-exec / download-cradle (curl|sh, IWR|iex) ---
+        # Piped execution of fetched content — a classic supply-chain / RCE
+        # vector. Blocks regardless of policy, even under allow.
         - '\b(curl|wget)\b.*\|\s*(?:\S*/)?(?:env\s+)?\b(sh|bash|zsh|dash|ksh|fish|perl\d*|node|ruby|python[\d.]*)\b'
-        # --- Irreversible system writes (mirrors posh Set-Content on System32) ---
+        # --- Irreversible system writes (>/etc/passwd, System32) ---
         - '>\s*/etc/(passwd|shadow|sudoers|group|fstab)\b'
         - '(tee|dd)\b[^|]*/etc/(passwd|shadow|sudoers)\b'
         - '\bchmod\b[^|]*\b777\b[^|]*/(etc|usr|boot|bin|sbin)\b'
         - '>\s*/boot/'
-        # --- Misc hardening (mirrors posh registry/scheduled-task tampering) ---
+        # --- Misc hardening (registry/scheduled-task tampering) ---
         - ':\(\)\s*\{' # fork bomb
         - '\bcrontab\s+-r\b' # wipe crontab
         - '\b(iptables|ufw|nft)\b[^|]*(-F\b|--flush\b|-X\b|-P\s+\w+)' # firewall flush
@@ -310,60 +333,40 @@ security:
         - '\bgit\s+(branch|tag|remote|submodule|clone|push|pull|send-email|imap-send|daemon|instaweb)\b'
         # repo lifecycle / config / maintenance:
         - '\bgit\s+(init|config|gc|prune|worktree|maintenance)\b'
-    posh_exec:
-      policy: "user_confirm"
-      # PowerShell is case-insensitive for cmdlets, matches parameters by
-      # case-insensitive prefix (-r/-rec/-recurse, -f/-fo/-force), and Remove-Item
-      # has aliases (del, erase, ri, rm, rd, rmdir). RE2 has no lookaheads, so the
-      # two-order requirement for -Recurse + -Force is expressed as two patterns.
-      blacklist:
-        # --- Destructive file/disk operations ---
+        # --- PowerShell specifics (case-insensitive cmdlets/aliases) ---
+        # Remove-Item matches parameters by case-insensitive prefix
+        # (-r/-rec/-recurse, -f/-fo/-force) and has aliases (del, erase, ri,
+        # rm, rd, rmdir). RE2 has no lookaheads, so the two-order requirement
+        # for -Recurse + -Force is expressed as two patterns.
         - '(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-r\w*.*-f\w*'
         - '(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-f\w*.*-r\w*'
         - '(?i)Format-Volume'
         - '(?i)Clear-Disk'
-        # --- Power-state (mirrors bash shutdown/halt/poweroff) ---
         - '(?i)Stop-Computer'
         - '(?i)Restart-Computer'
-        # --- Remote-exec / download-cradle (mirrors bash curl|sh) ---
         # Piped or chained execution of fetched content
-        # (Invoke-WebRequest | Invoke-Expression) — the #1 PowerShell RCE / supply-chain vector.
+        # (Invoke-WebRequest | Invoke-Expression) — the #1 PowerShell RCE /
+        # supply-chain vector.
         - '(?i)\b(Invoke-WebRequest|iwr|irm|Invoke-RestMethod|curl|wget)\b[^|]*\|\s*(Invoke-Expression|iex)\b'
         - '(?i)\b(Invoke-WebRequest|iwr|irm|Invoke-RestMethod|curl|wget)\b[^;]*;[^;]*\b(Invoke-Expression|iex)\b'
-        # --- Irreversible system writes (mirrors bash >/etc/passwd) ---
         - '(?i)\b(Set-Content|Clear-Content|Out-File|Add-Content)\b[^|]*\b(Windows\\System32|\\Windows\\|\\etc\\|\\boot)'
-        # --- Misc hardening ---
         - '(?i)\bSet-ItemProperty\b[^|]*HKLM' # registry tampering
         - '(?i)\b(Register-ScheduledTask|schtasks\s+/create)\b' # scheduled tasks
         - '(?i)Set-ExecutionPolicy' # execution-policy tampering
-        # --- SCM (git) — mutating subcommands only ---
-        # Mirrors bash_exec. Only mutating git subcommands are blocked; read-only
-        # commands (status, log, diff, show, fetch, ...) are NOT blocked; dual-mode
-        # subcommands (branch, tag, config, stash, remote) are blocked wholesale
-        # because RE2 has no lookahead. Patterns are case-insensitive ((?i) prefix)
-        # because PowerShell resolves the git executable case-insensitively.
-        # working tree / index / staging:
+        # PowerShell resolves the git executable case-insensitively, so the
+        # mutating git subcommand patterns above are repeated with (?i):
         - '(?i)\bgit\s+(add|rm|mv|clean|checkout|switch|restore|stash|apply)\b'
-        # history / commits / refs (incl. history rewrites):
         - '(?i)\bgit\s+(commit|am|merge|rebase|revert|cherry-pick|reset|notes|replace|update-ref|symbolic-ref|reflog|bisect|filter-branch|filter-repo|fast-import)\b'
-        # branch / tag / remote / submodule / network / exfil:
         - '(?i)\bgit\s+(branch|tag|remote|submodule|clone|push|pull|send-email|imap-send|daemon|instaweb)\b'
-        # repo lifecycle / config / maintenance:
         - '(?i)\bgit\s+(init|config|gc|prune|worktree|maintenance)\b'
-    write_file:
+    local_write:
       policy: "user_confirm"
-    edit_file:
+    local_mcp:
       policy: "user_confirm"
-    create_directory:
+    remote_mcp:
       policy: "user_confirm"
-    delete_directory:
+    remote_write:
       policy: "user_confirm"
-    delete_file:
-      policy: "user_confirm"
-    web_search:
-      policy: "always_allow"
-    web_fetch:
-      policy: "always_allow"
 
   # --- Indirect prompt injection defense ---
   # Content from untrusted external tools (web_search, web_fetch, bash_exec,

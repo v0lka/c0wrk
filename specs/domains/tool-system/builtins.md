@@ -16,48 +16,48 @@ Engine files (`github.com/v0lka/sp4rk/tools/builtins/*.go`, including `file_read
 
 ## Tool Catalog
 
-c0wrk's registered tools and their default policy / trust classification:
+c0wrk's registered tools, their capability group (ADR-024 — drives policy and tool budgets; default policies: read-only groups `allow`, mutating groups `user_confirm`, `system` unconfigurable), and trust classification:
 
-| Tool                  | Category  | Default Policy | Untrusted | Description                                        |
+| Tool                  | Category  | Group          | Untrusted | Description                                        |
 | --------------------- | --------- | -------------- | --------- | -------------------------------------------------- |
-| `bash_exec` / `posh_exec` | Execution | user_confirm | yes | Shell command execution with timeout and blacklist. `bash_exec` (bash) on Unix, `posh_exec` (PowerShell) on Windows — exactly one registers, selected by build tag (see [Shell-Execution Tool](#shell-execution-tool-bash_exec--posh_exec)) |
-| `read_file`           | File      | always_allow   | yes       | Read file contents (streaming, O(1) memory, default 2000-line window); document formats (pdf, docx, pptx, xlsx, odt, html, htm) auto-converted to markdown via markitdown |
-| `write_file`          | File      | user_confirm   | no        | Create/overwrite file                              |
-| `edit_file`           | File      | user_confirm   | no        | Apply targeted edits to existing file              |
-| `list_directory`      | File      | always_allow   | no        | List directory contents                            |
-| `create_directory`    | File      | user_confirm   | no        | Create directory (recursive)                       |
-| `delete_directory`    | File      | user_confirm   | no        | Remove directory recursively                       |
-| `delete_file`         | File      | user_confirm   | no        | Remove single file                                 |
-| `glob`                | Search    | always_allow   | yes       | Glob pattern file matching                         |
-| `ripgrep`             | Search    | always_allow   | yes       | Fast regex content search (shells out to `rg`)     |
-| `semantic_search`     | Search    | internal       | no        | Vector similarity search (optional)                |
-| `web_fetch`           | Web       | always_allow   | yes       | Fetch URL content                                  |
-| `web_search`          | Web       | always_allow   | yes       | Search the web (optional, needs API key)           |
-| `finish`              | Agent     | internal       | no        | Signal task/step completion                        |
-| `ask_user`            | Agent     | internal       | no        | Prompt user for information (c0wrk-specific, `core/tools/askuser.go`) |
-| `propose_goal`        | Agent     | internal       | no        | Goal-mode derivation: submit a {condition, verify} goal proposal for user sign-off. Blocks until the user approves (optionally with edits) or cancels. A no-op outside a derivation Conductor run (no `GoalProposer` in context). See [../goal-mode.md](../goal-mode.md). |
-| `declare_goal_status` | Agent     | internal       | no        | Goal-mode self-evaluation: write a structured {status, evidence, reason} verdict into the context-injected `GoalStatusSink`. Status `"met"` **requires non-empty evidence** (each entry must have non-empty `type`/`ref`/`summary`). A no-op outside a goal-loop turn (no sink in context). See [../goal-mode.md](../goal-mode.md). |
-| `declare_verification` | Agent   | internal       | no        | Goal-mode verification: write the independent verifier's structured {confirmed, reason, evidence} verdict into the context-injected `VerificationSink`. `confirmed: true` **requires non-empty evidence**. A no-op outside a verification turn (no sink in context). See [../goal-mode.md](../goal-mode.md). |
-| `list_step_outputs`   | Agent     | internal       | no        | List completed step results                        |
-| `read_step_output`    | Agent     | internal       | no        | Read specific step output                          |
-| `read_final_result`   | Agent     | internal       | no        | Read the prior task's final result from the blackboard |
-| `update_checklist`    | Agent     | internal       | no        | Update checklist for current step or standalone. Rejects standalone (empty step_id) when a plan is declared via a `ChecklistGuard` in context. |
-| `declare_step_complete` | Agent   | internal       | no        | Signal inline plan step completion (emits `plan_step_complete`) |
-| `store_fact`          | Agent     | internal       | no        | Store fact to blackboard                           |
-| `search_facts`        | Agent     | internal       | no        | Search blackboard facts                            |
-| `read_attachment`     | Agent     | internal       | no        | Read the markdown content of a user-attached file by ID (from the context-injected `AttachmentStore`) |
-| `batch`               | Agent     | internal       | no        | Execute multiple tool calls sequentially in one turn (intercepted at executor level) |
-| `read_skill_resource` | Agent     | internal       | no        | Read skill resource files                          |
-| `tool_result_read`    | Agent     | internal       | no        | Read cached tool result fragments by hash          |
-| `delegate`            | Agent     | internal       | no        | Launch a subagent for a delegated task (`core/tools/delegate.go`) |
-| `cancel_delegation`   | Agent     | internal       | no        | Cancel a running delegation (`core/tools/cancel_delegation.go`) |
-| `reflect`             | Agent     | internal       | no        | Trigger a reflection pass over the task (`core/tools/reflect.go`) |
-| `declare_plan`        | Agent     | internal       | no        | Publish a plan for user sign-off (`core/tools/declare_plan.go`) |
-| `execute_plan`        | Agent     | internal       | no        | Execute a declared plan inline (`core/tools/execute_plan.go`) |
+| `bash_exec` / `posh_exec` | Execution | `execute` | yes | Shell command execution with timeout and blacklist. `bash_exec` (bash) on Unix, `posh_exec` (PowerShell) on Windows — exactly one registers, selected by build tag (see [Shell-Execution Tool](#shell-execution-tool-bash_exec--posh_exec)) |
+| `read_file`           | File      | `local_read` | yes       | Read file contents (streaming, O(1) memory, default 2000-line window); document formats (pdf, docx, pptx, xlsx, odt, html, htm) auto-converted to markdown via markitdown |
+| `write_file`          | File      | `local_write` | no        | Create/overwrite file                              |
+| `edit_file`           | File      | `local_write` | no        | Apply targeted edits to existing file              |
+| `list_directory`      | File      | `local_read` | no        | List directory contents                            |
+| `create_directory`    | File      | `local_write` | no        | Create directory (recursive)                       |
+| `delete_directory`    | File      | `local_write` | no        | Remove directory recursively                       |
+| `delete_file`         | File      | `local_write` | no        | Remove single file                                 |
+| `glob`                | Search    | `local_read` | yes       | Glob pattern file matching                         |
+| `ripgrep`             | Search    | `local_read` | yes       | Fast regex content search (shells out to `rg`)     |
+| `semantic_search`     | Search    | `system` | no        | Vector similarity search (optional)                |
+| `web_fetch`           | Web       | `remote_read` | yes       | Fetch URL content                                  |
+| `web_search`          | Web       | `remote_read` | yes       | Search the web (optional, needs API key)           |
+| `finish`              | Agent     | `system` | no        | Signal task/step completion                        |
+| `ask_user`            | Agent     | `system` | no        | Prompt user for information (c0wrk-specific, `core/tools/askuser.go`) |
+| `propose_goal`        | Agent     | `system` | no        | Goal-mode derivation: submit a {condition, verify} goal proposal for user sign-off. Blocks until the user approves (optionally with edits) or cancels. A no-op outside a derivation Conductor run (no `GoalProposer` in context). See [../goal-mode.md](../goal-mode.md). |
+| `declare_goal_status` | Agent     | `system` | no        | Goal-mode self-evaluation: write a structured {status, evidence, reason} verdict into the context-injected `GoalStatusSink`. Status `"met"` **requires non-empty evidence** (each entry must have non-empty `type`/`ref`/`summary`). A no-op outside a goal-loop turn (no sink in context). See [../goal-mode.md](../goal-mode.md). |
+| `declare_verification` | Agent   | `system` | no        | Goal-mode verification: write the independent verifier's structured {confirmed, reason, evidence} verdict into the context-injected `VerificationSink`. `confirmed: true` **requires non-empty evidence**. A no-op outside a verification turn (no sink in context). See [../goal-mode.md](../goal-mode.md). |
+| `list_step_outputs`   | Agent     | `system` | no        | List completed step results                        |
+| `read_step_output`    | Agent     | `system` | no        | Read specific step output                          |
+| `read_final_result`   | Agent     | `system` | no        | Read the prior task's final result from the blackboard |
+| `update_checklist`    | Agent     | `system` | no        | Update checklist for current step or standalone. Rejects standalone (empty step_id) when a plan is declared via a `ChecklistGuard` in context. |
+| `declare_step_complete` | Agent   | `system` | no        | Signal inline plan step completion (emits `plan_step_complete`) |
+| `store_fact`          | Agent     | `system` | no        | Store fact to blackboard                           |
+| `search_facts`        | Agent     | `system` | no        | Search blackboard facts                            |
+| `read_attachment`     | Agent     | `system` | no        | Read the markdown content of a user-attached file by ID (from the context-injected `AttachmentStore`) |
+| `batch`               | Agent     | `system` | no        | Execute multiple tool calls sequentially in one turn (intercepted at executor level) |
+| `read_skill_resource` | Agent     | `system` | no        | Read skill resource files                          |
+| `tool_result_read`    | Agent     | `system` | no        | Read cached tool result fragments by hash          |
+| `delegate`            | Agent     | `system` | no        | Launch a subagent for a delegated task (`core/tools/delegate.go`) |
+| `cancel_delegation`   | Agent     | `system` | no        | Cancel a running delegation (`core/tools/cancel_delegation.go`) |
+| `reflect`             | Agent     | `system` | no        | Trigger a reflection pass over the task (`core/tools/reflect.go`) |
+| `declare_plan`        | Agent     | `system` | no        | Publish a plan for user sign-off (`core/tools/declare_plan.go`) |
+| `execute_plan`        | Agent     | `system` | no        | Execute a declared plan inline (`core/tools/execute_plan.go`) |
 
-The internal-tools set is defined in `core/tools/registry.go` (`internalTools`): `ask_user`, `delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `propose_goal`, `declare_goal_status`, `declare_verification`, `reflect`, `finish`, `list_step_outputs`, `read_step_output`, `read_final_result`, `read_skill_resource`, `read_attachment`, `search_facts`, `semantic_search`, `update_checklist`, `declare_step_complete`, `store_fact`, `tool_result_read`, and `batch` (`sdktools.ToolBatch`). All of them bypass policy/judge checks during execution. `batch` is additionally intercepted at the executor level before reaching the registry.
+These agent-infrastructure tools are tagged `ToolGroup: sdktools.GroupSystem` on their constructors — the **reserved `system` group** bypasses policy/judge checks during execution (membership is declared on the tool, not an out-of-band name set; the group cannot appear in `security.groups`). `batch` is additionally intercepted at the executor level before reaching the registry.
 
-Three internal tools are **goal-mode-only** (`goalModeTools`, gated by `IsGoalModeTool`/`StripGoalModeTools`): `propose_goal`, `declare_goal_status`, and `declare_verification`. They are offered to the agent **only** when the session is running a goal loop — a non-goal Conductor run strips them from the available-tool list so the agent never sees goal-specific tools when goal mode is off. The goal loop and the independent verifier receive the unstripped list. See [../goal-mode.md](../goal-mode.md).
+Three system-group tools are **goal-mode-only** (`goalModeTools`, gated by `IsGoalModeTool`/`StripGoalModeTools`): `propose_goal`, `declare_goal_status`, and `declare_verification`. They are offered to the agent **only** when the session is running a goal loop — a non-goal Conductor run strips them from the available-tool list so the agent never sees goal-specific tools when goal mode is off. The goal loop and the independent verifier receive the unstripped list. See [../goal-mode.md](../goal-mode.md).
 
 ### Shell-Execution Tool (`bash_exec` / `posh_exec`)
 
@@ -72,7 +72,7 @@ Prompt data references the shell tool through the `{shell_tool}` placeholder rat
 
 #### Blacklist / Policy Key
 
-The blacklist and per-tool policy are read from the policy entry whose key matches the platform's active shell tool name (`bash_exec` on Unix, `posh_exec` on Windows). In `core/builder.go` → `configToBuiltinToolsConfig`, the blacklist is sourced from `cfg.Security.ToolPolicies[activeShellToolName()].Blacklist`; in `applySecurityPolicies` the policy is resolved the same way. A Windows deployment therefore configures `posh_exec`, not `bash_exec`.
+The shell blacklist and policy are read from the **`execute` group** (`security.groups.execute`) — a single platform-agnostic entry covering both `bash_exec` and `posh_exec`. In `core/builder.go` → `configToBuiltinToolsConfig`, the blacklist is sourced from `cfg.Security.Groups["execute"].Blacklist`; in `applySecurityPolicies` the group policies are applied to the registry via `SetGroupPolicies`. The default blacklist is the dedup union of the bash and PowerShell pattern sets (35 patterns), so both dialects' dangerous idioms are covered on every platform (ADR-024).
 
 ## Registration Order
 
@@ -109,11 +109,11 @@ The `ask_user` tool and its UI types (`AskUserFunc`, `AskUserRequest`, `AskUserR
 
 ## Goal-Mode Tools (`propose_goal`, `declare_goal_status`, `declare_verification`)
 
-Goal mode adds three internal coordination tools (all `PolicyAlwaysAllow` — they bypass the tool judge because they are coordination primitives, not user-facing capabilities). They are safe to register unconditionally and are no-ops outside a goal-mode run (the context value they read is nil).
+Goal mode adds three system-group coordination tools (`ToolGroup: sdktools.GroupSystem` — they bypass policy and the tool judge because they are coordination primitives, not user-facing capabilities). They are safe to register unconditionally and are no-ops outside a goal-mode run (the context value they read is nil).
 
 - **`propose_goal`** (`core/tools/propose_goal.go`) — used by the derivation agent to submit a {condition, verify, verification_mode} goal for user sign-off. It reads a `GoalProposer` from the context (`GoalProposerFrom`), which the orchestrator injects during `deriveGoal` (desktop supplies the implementation that emits a `goal_proposal` event and blocks for the user response). The approved (possibly user-edited) values are echoed back so the agent commits to the user's wording. A no-op (clear error) when no proposer is in context.
 - **`declare_goal_status`** (`core/tools/declare_goal_status.go`) — the single channel through which the goal loop learns a structured verdict. It writes a typed `goal.Verdict` into the per-turn `GoalStatusSink` (`GoalStatusSinkFrom`), which `runGoalTurns` injects. **Declaring status `"met"` requires non-empty evidence** — enforced at the tool boundary so a bare "done" can never terminate the loop without a concrete, inspectable artifact. The tool executor does not validate inputs against the JSON schema, so the check rejects both an absent array and a present-but-empty entry (`evidence:[{}]`, `evidence:[{"ref":""}]`): each entry must have non-empty `type`, `ref`, and `summary`. A no-op (clear error) when no sink is in context.
-- **`declare_verification`** (`core/tools/declare_verification.go`) — the single channel through which the independent verifier reports its structured outcome. It writes a `VerificationOutcome` (`Confirmed`, `Reason`, `Evidence`) into the per-turn `VerificationSink`, which the verification pass injects. **Declaring `confirmed: true` requires non-empty evidence**, mirroring `declare_goal_status`'s guard. A no-op (clear error) when no sink is in context. Offered only to the independent verifier, not the main agent (`verifierToolFilter`/`verifierReDerivationToolFilter` build the verifier's read-only toolset from the unstripped list).
+- **`declare_verification`** (`core/tools/declare_verification.go`) — the single channel through which the independent verifier reports its structured outcome. It writes a `VerificationOutcome` (`Confirmed`, `Reason`, `Evidence`) into the per-turn `VerificationSink`, which the verification pass injects. **Declaring `confirmed: true` requires non-empty evidence**, mirroring `declare_goal_status`'s guard. A no-op (clear error) when no sink is in context. Offered only to the independent verifier, not the main agent (`verifierToolFilter`/`verifierReDerivationToolFilter` build the verifier's group-based toolset — see [../goal-mode.md](../goal-mode.md)).
 
 All three follow the same context-injection pattern as `declare_plan`/`ask_user`: the orchestrator injects the dependency via a context value before the relevant Conductor run; the tool reads it back at execution time. See [../goal-mode.md](../goal-mode.md) for the full goal-mode lifecycle.
 
@@ -184,7 +184,8 @@ The following are sp4rk engine primitives, documented in [the sp4rk builtins spe
 4. If the tool needs config, add a field to `BuiltinToolsConfig`
 5. If config comes from `config.yaml`, update `core/builder.go` → `configToBuiltinToolsConfig()`
 6. If the tool reads data from external sources (filesystem, web, subprocess), set `Untrusted: true` on `BaseTool` so output is wrapped before entering the LLM context
-7. If the tool is mutating (writes files, runs commands), set `DefaultPolicy: PolicyUserConfirm`
+7. Declare the tool's **capability group** — set `ToolGroup` on `BaseTool` (sp4rk builtins: pick from `tools/group.go`; c0wrk orchestration/infra tools: `sdktools.GroupSystem`, which requires security review). The group drives the tool's policy (`security.groups`), subagent budgets, and verifier sets; an undeclared group fails closed everywhere (ADR-024)
+8. If the tool is mutating (writes files, runs commands), it belongs to a mutating group (`local_write`, `execute`, `remote_write`, `remote_mcp`) whose default policy is `user_confirm`
 
 ## Related Specs
 

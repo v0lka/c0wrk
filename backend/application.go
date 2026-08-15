@@ -308,6 +308,14 @@ func (app *Application) ListTools() []sdktools.ToolDescriptor {
 	return app.builder.ToolRegistry().List()
 }
 
+// GroupPolicies returns the live group→policy map enforced by the shared
+// tool registry (what security.groups resolved to after the builder applied
+// them). Callers use it to report each tool's EFFECTIVE policy — the same
+// map Execute consults — instead of re-deriving it from config.
+func (app *Application) GroupPolicies() map[sdktools.ToolGroup]sdktools.ToolPolicy {
+	return app.builder.ToolRegistry().GroupPolicies()
+}
+
 // Shutdown stops all managed resources (manager, MCP gateway).
 func (app *Application) Shutdown() {
 	if app.manager != nil {

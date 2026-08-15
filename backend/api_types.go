@@ -147,11 +147,16 @@ type ProxySettingsRequest struct {
 	TLSCertDir string   `json:"tls_cert_dir"`
 }
 
-// SecuritySettingsResponse holds security settings for the frontend.
+// SecuritySettingsResponse holds security settings for the frontend. The
+// tool-security schema is group-based (security.groups): the frontend edits
+// exactly the seven configurable groups — per-tool policies no longer exist.
 type SecuritySettingsResponse struct {
-	DefaultPolicy              string                        `json:"default_policy"`
-	ToolPolicies               map[string]ToolPolicyResponse `json:"tool_policies"`
-	AutoApproveWorkspaceWrites bool                          `json:"auto_approve_workspace_writes"`
+	// Groups maps the configurable tool-group names (config.ToolGroup*) to
+	// their policy (and, for the "execute" group only, a command blacklist).
+	// GetSecuritySettings always returns the full set of seven groups;
+	// UpdateSecuritySettings replaces the stored set with what it receives.
+	Groups                     map[string]GroupPolicyResponse `json:"groups"`
+	AutoApproveWorkspaceWrites bool                           `json:"auto_approve_workspace_writes"`
 	// SmartApprove enables the strict OWASP ASI judge for effective
 	// user_confirm calls. Only a strict ALLOW skips UI; every other outcome
 	// still requires the user. Default: false.
@@ -163,8 +168,11 @@ type SecuritySettingsResponse struct {
 	JudgeAvailable bool `json:"judge_available"`
 }
 
-// ToolPolicyResponse holds per-tool policy for the frontend.
-type ToolPolicyResponse struct {
+// GroupPolicyResponse holds one tool group's policy for the frontend. It
+// mirrors config.GroupPolicyConfig: a policy from the group enum
+// ("allow"|"user_confirm"|"deny") and — execute group only — a regex
+// blacklist of shell commands forced to confirmation.
+type GroupPolicyResponse struct {
 	Policy    string   `json:"policy"`
 	Blacklist []string `json:"blacklist,omitempty"`
 }
@@ -310,12 +318,21 @@ type ProjectUIStateResponse struct {
 	UpdatedAt      string   `json:"updated_at"`
 }
 
-// ToolInfo represents a tool with its metadata, source, and policy for the frontend.
+// ToolInfo represents a tool with its metadata, source, security group, and
+// effective policy for the frontend. Policy is derived from the tool's GROUP
+// on the live registry — per-tool configuration does not exist, so the value
+// is display-only.
 type ToolInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Source      string `json:"source"`
-	Policy      string `json:"policy"`
+	// Group is the tool's capability group (one of the config.ToolGroup*
+	// names except the reserved "system" group — system tools are filtered
+	// out of the list entirely).
+	Group string `json:"group"`
+	// Policy is the effective group policy ("allow"|"user_confirm"|"deny")
+	// enforced by the shared tool registry for this tool's group.
+	Policy string `json:"policy"`
 }
 
 // VectorIndexStatus describes the current state of the vector index for the frontend.

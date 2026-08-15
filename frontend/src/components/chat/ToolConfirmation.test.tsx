@@ -27,7 +27,9 @@ vi.mock('@/api/runtime', () => ({
 import { ToolConfirmation } from './ToolConfirmation'
 import type { DisplayItem } from '@/types/messages'
 
-function makeItem(reasoning: string | undefined): Extract<DisplayItem, { kind: 'tool_confirm' }> {
+function makeItem(
+  metadata: Record<string, unknown>,
+): Extract<DisplayItem, { kind: 'tool_confirm' }> {
   return {
     kind: 'tool_confirm',
     message: {
@@ -39,12 +41,15 @@ function makeItem(reasoning: string | undefined): Extract<DisplayItem, { kind: '
         confirm_id: 'c1',
         tool: 'write_file',
         args: '{"path":"/x/f.txt","content":"hi"}',
-        ...(reasoning !== undefined ? { reasoning } : {}),
+        ...metadata,
       },
       timestamp: 1,
     },
   }
 }
+
+const reasonItem = (reasoning: string | undefined) =>
+  makeItem(reasoning !== undefined ? { reasoning } : {})
 
 describe('ToolConfirmation — confirmation reason', () => {
   let container: HTMLElement
@@ -62,7 +67,7 @@ describe('ToolConfirmation — confirmation reason', () => {
     })
 
   it('renders the human-readable reason when metadata.reasoning is present', () => {
-    render(makeItem('This tool creates or overwrites a file.'))
+    render(reasonItem('This tool creates or overwrites a file.'))
     const text = container.textContent ?? ''
     expect(text).toContain('Why approval is needed')
     expect(text).toContain('This tool creates or overwrites a file.')
@@ -72,11 +77,40 @@ describe('ToolConfirmation — confirmation reason', () => {
   })
 
   it('renders no reason block when metadata.reasoning is empty', () => {
-    render(makeItem(''))
+    render(reasonItem(''))
     const text = container.textContent ?? ''
     expect(text).not.toContain('Why approval is needed')
     // Card still renders the tool and actions.
     expect(text).toContain('write_file')
     expect(text).toContain('Allow Once')
+  })
+
+  it('renders the confirmation reason with the matched blacklist pattern', () => {
+    // A shell command that matched a security.groups.execute blacklist pattern
+    // is forced to confirmation; the reason names the matched pattern so the
+    // user can see WHICH rule fired.
+    render(
+      reasonItem(
+        'command "rm -rf /" matched blacklist pattern "rm\\s+-rf\\s+/" — confirmation required',
+      ),
+    )
+    const text = container.textContent ?? ''
+    expect(text).toContain('Why approval is needed')
+    expect(text).toContain('matched blacklist pattern')
+    expect(text).toContain('rm -rf /')
+  })
+
+  it('hides the Ask Agent action when disable_judge is set', () => {
+    render(makeItem({ reasoning: 'Judge already evaluated this call', disable_judge: true }))
+    const text = container.textContent ?? ''
+    expect(text).not.toContain('Ask Agent')
+    // The manual decision actions remain available.
+    expect(text).toContain('Allow Once')
+    expect(text).toContain('Deny')
+  })
+
+  it('shows the Ask Agent action when disable_judge is not set', () => {
+    render(reasonItem('This tool can modify your system and requires your approval.'))
+    expect(container.textContent ?? '').toContain('Ask Agent')
   })
 })

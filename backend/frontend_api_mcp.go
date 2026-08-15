@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/v0lka/c0wrk/backend/config"
-	"github.com/v0lka/c0wrk/core/tools"
+	sdktools "github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
@@ -55,58 +55,63 @@ func (f *FrontendAPI) GetMCPServers() map[string]config.MCPServerConfig {
 	return result
 }
 
-// GetToolList returns all registered tools with source and policy info.
-// Internal tools are filtered out from the list.
+// GetToolList returns all registered tools with source, security group, and
+// effective policy info. System-group tools (internal orchestration tools)
+// are filtered out — classification is by the descriptor's group, never by
+// tool name. The policy is read from the LIVE registry group-policy map (the
+// same map Execute consults), so the list reflects what is actually enforced
+// after runtime updates, not a re-derivation from config.
 func (f *FrontendAPI) GetToolList() []ToolInfo {
 	if f.app == nil {
 		return []ToolInfo{}
 	}
 
-	// Get descriptors from the backend application.
-	descriptors := f.app.ListTools()
+	// Descriptors and effective group policies from the backend application.
+	return buildToolInfos(f.app.ListTools(), f.app.GroupPolicies())
+}
 
-	f.configMu.RLock()
-	defer f.configMu.RUnlock()
-
+// buildToolInfos converts tool descriptors into frontend ToolInfo entries,
+// skipping system-group tools. A group without a configured entry fails safe
+// to user_confirm — mirroring the registry's own resolution.
+func buildToolInfos(
+	descriptors []sdktools.ToolDescriptor,
+	policies map[sdktools.ToolGroup]sdktools.ToolPolicy,
+) []ToolInfo {
 	toolInfos := make([]ToolInfo, 0, len(descriptors))
 	for _, desc := range descriptors {
-		// Filter out internal tools
-		if tools.IsInternalTool(desc.Name) {
+		// Filter out internal (system-group) tools.
+		if desc.Group == sdktools.GroupSystem {
 			continue
 		}
-
-		// Resolve effective policy
-		policy := f.resolveToolPolicy(desc.Name)
 
 		toolInfos = append(toolInfos, ToolInfo{
 			Name:        desc.Name,
 			Description: desc.Description,
 			Source:      desc.Source,
-			Policy:      policy,
+			Group:       string(desc.Group),
+			Policy:      effectiveGroupPolicy(policies, desc.Group),
 		})
 	}
 
 	return toolInfos
 }
 
-// resolveToolPolicy returns the effective policy string for a tool.
-// It checks policy overrides and default policy from config.
-func (f *FrontendAPI) resolveToolPolicy(toolName string) string {
-	if f.config == nil {
-		return "user_confirm"
+// effectiveGroupPolicy renders the effective policy for a tool group as the
+// config enum string ("allow"|"user_confirm"|"deny"). Missing entries and
+// unrecognized values fail safe to user_confirm, exactly like
+// core/tools.ToolRegistry.groupPolicy (a raw map index is NOT enough — the
+// ToolPolicy zero value is PolicyAlwaysAllow, so an absent group would
+// otherwise render as "allow").
+func effectiveGroupPolicy(policies map[sdktools.ToolGroup]sdktools.ToolPolicy, group sdktools.ToolGroup) string {
+	if p, ok := policies[group]; ok {
+		switch p {
+		case sdktools.PolicyAlwaysAllow:
+			return config.GroupPolicyAllow
+		case sdktools.PolicyAlwaysDeny:
+			return config.GroupPolicyDeny
+		}
 	}
-
-	// Check per-tool override first
-	if policyCfg, ok := f.config.Security.ToolPolicies[toolName]; ok {
-		return policyCfg.Policy
-	}
-
-	// Fall back to default policy
-	if f.config.Security.DefaultPolicy != "" {
-		return f.config.Security.DefaultPolicy
-	}
-
-	return "user_confirm"
+	return config.GroupPolicyUserConfirm
 }
 
 // UpdateMCPServers updates MCP server configuration and hot-reloads the gateway.

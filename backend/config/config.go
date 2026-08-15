@@ -7,8 +7,8 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 
-	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/llm"
 
 	"gopkg.in/yaml.v3"
@@ -336,12 +336,44 @@ type InjectionDefenseConfig struct {
 	Enabled *bool `yaml:"enabled"` // pointer to distinguish "not set" from "false"; nil defaults to true
 }
 
+// Tool group names for the security.groups schema. The set of configurable
+// groups is fixed; every non-internal tool maps into exactly one group (the
+// mapping itself lives in core, see core/builder.go).
+const (
+	ToolGroupLocalRead   = "local_read"   // read-only access to local workspace files
+	ToolGroupRemoteRead  = "remote_read"  // read-only access to remote resources (web_fetch, web_search)
+	ToolGroupExecute     = "execute"      // shell execution (bash_exec, posh_exec)
+	ToolGroupLocalWrite  = "local_write"  // writes to local workspace files
+	ToolGroupLocalMCP    = "local_mcp"    // MCP servers launched locally (stdio)
+	ToolGroupRemoteMCP   = "remote_mcp"   // MCP servers reached over the network (http)
+	ToolGroupRemoteWrite = "remote_write" // writes to remote resources (e.g. remote MCP mutations)
+
+	// ToolGroupSystem is a reserved group covering internal/system tools (the
+	// sdktools.GroupSystem each such tool declares on its BaseTool). Its
+	// policy is fixed (always allowed, never surfaced for
+	// confirmation) and it MUST NOT appear in config.yaml — validation rejects
+	// it so users cannot widen or narrow the internal-tools bypass from the
+	// config file.
+	ToolGroupSystem = "system"
+)
+
+// Policy values accepted by security.groups.<group>.policy.
+const (
+	GroupPolicyAllow       = "allow"        // execute without confirmation
+	GroupPolicyUserConfirm = "user_confirm" // ask the user before each call
+	GroupPolicyDeny        = "deny"         // refuse to execute
+)
+
 // SecurityConfig holds security settings.
 type SecurityConfig struct {
-	Judge            JudgeConfig                 `yaml:"judge"`
-	InjectionDefense InjectionDefenseConfig      `yaml:"injection_defense"`
-	ToolPolicies     map[string]ToolPolicyConfig `yaml:"tool_policies"`
-	DefaultPolicy    string                      `yaml:"default_policy"`
+	Judge            JudgeConfig            `yaml:"judge"`
+	InjectionDefense InjectionDefenseConfig `yaml:"injection_defense"`
+
+	// Groups is the tool-security schema: a fixed set of tool groups, each
+	// with its own policy (and, for the "execute" group only, an optional
+	// command blacklist). See the ToolGroup* constants for the group names and
+	// defaults.go for the default policies.
+	Groups map[string]GroupPolicyConfig `yaml:"groups"`
 
 	// AutoApproveWorkspaceWrites, when true, auto-executes file write tools
 	// (write_file, edit_file, delete_file, delete_directory, create_directory)
@@ -363,10 +395,15 @@ type SecurityConfig struct {
 	AgentsMDMaxBytes int `yaml:"agents_md_max_bytes"`
 }
 
-// ToolPolicyConfig holds per-tool security policy configuration.
-type ToolPolicyConfig struct {
-	Policy    string   `yaml:"policy"`    // "always_allow"|"always_deny"|"user_confirm"
-	Blacklist []string `yaml:"blacklist"` // regex patterns (e.g. for bash)
+// GroupPolicyConfig holds per-group security policy configuration
+// (security.groups.<group>).
+type GroupPolicyConfig struct {
+	Policy string `yaml:"policy"` // "allow"|"user_confirm"|"deny"
+	// Blacklist holds regex patterns applied to shell commands; only the
+	// "execute" group supports it and validation rejects it on any other
+	// group. A matching command is forced to confirmation regardless of
+	// Policy.
+	Blacklist []string `yaml:"blacklist,omitempty"`
 }
 
 // JudgeConfig holds LLM-based tool safety judge settings.
@@ -794,10 +831,45 @@ func validate(cfg *Config) error {
 		return err
 	}
 
-	// Validate that internal tools are not in tool_policies
-	for toolName := range cfg.Security.ToolPolicies {
-		if tools.IsInternalTool(toolName) {
-			return fmt.Errorf("tool %q is an internal tool and cannot have a custom policy", toolName)
+	// Validate the security.groups schema: only the fixed set of configurable
+	// groups is accepted, the reserved "system" group must never appear in
+	// config, policies must use the group enum, and a blacklist is an
+	// execute-only feature.
+	for name, group := range cfg.Security.Groups {
+		if name == ToolGroupSystem {
+			return fmt.Errorf(
+				"security group %q is reserved for system tools and cannot be configured",
+				ToolGroupSystem,
+			)
+		}
+		if !IsConfigurableToolGroup(name) {
+			return fmt.Errorf(
+				"unknown security group %q; must be one of: %s",
+				name, strings.Join(sortedToolGroupNames, ", "),
+			)
+		}
+		switch group.Policy {
+		case GroupPolicyAllow, GroupPolicyUserConfirm, GroupPolicyDeny:
+			// valid
+		default:
+			return fmt.Errorf(
+				"security group %q has invalid policy %q; must be one of: %s, %s, %s",
+				name, group.Policy, GroupPolicyAllow, GroupPolicyUserConfirm, GroupPolicyDeny,
+			)
+		}
+		if name != ToolGroupExecute && len(group.Blacklist) > 0 {
+			return fmt.Errorf(
+				"security group %q does not support a blacklist; only %q does",
+				name, ToolGroupExecute,
+			)
+		}
+		for _, pattern := range group.Blacklist {
+			if _, err := regexp.Compile(pattern); err != nil {
+				return fmt.Errorf(
+					"security group %q blacklist pattern %q does not compile: %w",
+					name, pattern, err,
+				)
+			}
 		}
 	}
 

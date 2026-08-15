@@ -896,20 +896,6 @@ func lastReasoningContent(bb orchestration.Blackboard) string {
 	return last
 }
 
-// buildSkillPolicyOverrides creates tool policy overrides from active skills.
-// Tools listed in a skill's allowed-tools field get PolicyAlwaysAllow,
-// enabling the agent to use them without manual confirmation.
-func (o *Orchestrator) buildSkillPolicyOverrides(activeSkills []*skills.Skill) map[string]sdktools.ToolPolicy {
-	overrides := make(map[string]sdktools.ToolPolicy)
-	for _, s := range activeSkills {
-		for _, toolName := range s.Metadata.AllowedToolList() {
-			// Only set if not already overridden by config
-			overrides[toolName] = sdktools.PolicyAlwaysAllow
-		}
-	}
-	return overrides
-}
-
 // injectVectorSearchHints queries the vector index for relevant files and
 // attaches the results as VectorSearchHints on the returned context.
 // It also reads AGENTS.md from the workspace root and injects its full

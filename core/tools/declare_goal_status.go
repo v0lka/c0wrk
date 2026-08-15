@@ -50,6 +50,7 @@ type DeclareGoalStatusTool struct {
 func NewDeclareGoalStatusTool() *DeclareGoalStatusTool {
 	return &DeclareGoalStatusTool{
 		BaseTool: &sdktools.BaseTool{
+			ToolGroup:       sdktools.GroupSystem,
 			ToolName:        "declare_goal_status",
 			ToolDescription: toolDeclareGoalStatusDescription,
 			Schema: json.RawMessage(`{

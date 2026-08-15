@@ -20,52 +20,59 @@ import (
 
 // TestToolRegistry_Clone_Independent verifies that the per-session clone
 // produced by ToolRegistry.Clone() does not share mutable policy state with
-// the parent registry. Regression guard for C-3 (skill policy leak across
-// sessions).
+// the parent registry. Regression guard for C-3 (policy leak across sessions).
 func TestToolRegistry_Clone_Independent(t *testing.T) {
 	parent := tools.NewToolRegistry()
-	parent.SetPolicyOverrides(map[string]sdktools.ToolPolicy{
-		ToolBashExec: sdktools.PolicyAlwaysDeny,
+	parent.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupExecute: sdktools.PolicyAlwaysDeny,
 	})
 
 	child := parent.Clone()
-
-	// Mutate the child: skill policy override should NOT propagate to parent.
-	child.SetSkillPolicyOverrides(map[string]sdktools.ToolPolicy{
-		ToolWriteFile: sdktools.PolicyAlwaysAllow,
-	})
-
-	// Reset the parent's policy so we can detect leakage.
-	parent.SetSkillPolicyOverrides(nil)
-
-	// The parent must not have inherited the child's skill override.
-	// We cannot read the policy directly, but we can clone again and verify
-	// that the new clone does not see the leaked override.
-	other := parent.Clone()
-	_ = other
-
-	// Independent SetPolicyOverrides on parent should not show up on child.
-	parent.SetPolicyOverrides(map[string]sdktools.ToolPolicy{
-		ToolReadFile: sdktools.PolicyAlwaysDeny,
-	})
-
-	// Best-effort smoke: ensure both registries can independently set policy
-	// without panicking and that Clone returns a non-nil pointer.
 	if child == nil {
 		t.Fatal("Clone returned nil")
 	}
+	// The clone starts with a COPY of the parent's map.
+	if got := child.GroupPolicies()[sdktools.GroupExecute]; got != sdktools.PolicyAlwaysDeny {
+		t.Fatalf("clone lost the parent's execute policy: got %v, want always_deny", got)
+	}
+
+	// Replacing the child's map must NOT propagate to the parent.
+	child.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupLocalWrite: sdktools.PolicyAlwaysAllow,
+	})
+	if _, ok := parent.GroupPolicies()[sdktools.GroupLocalWrite]; ok {
+		t.Error("parent inherited the child's group-policy mutation")
+	}
+	if got := parent.GroupPolicies()[sdktools.GroupExecute]; got != sdktools.PolicyAlwaysDeny {
+		t.Errorf("parent execute policy = %v, want always_deny", got)
+	}
+
+	// Replacing the parent's map afterwards must not show up on the child
+	// either: the child keeps its own map untouched.
+	parent.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupExecute: sdktools.PolicyAlwaysAllow,
+	})
+	if got := child.GroupPolicies()[sdktools.GroupLocalWrite]; got != sdktools.PolicyAlwaysAllow {
+		t.Errorf("child's own local_write policy = %v, want always_allow", got)
+	}
+	if _, ok := child.GroupPolicies()[sdktools.GroupExecute]; ok {
+		t.Error("child saw the parent's later mutation — the maps must be independent")
+	}
 }
 
-// TestApplySecurityPolicies covers the BuilderConfig → registry policy mapping.
-// We exercise the helper directly via a fake builder so we don't need a full
-// async-init builder instance.
+// TestApplySecurityPolicies covers the BuilderConfig → registry group-policy
+// mapping. We exercise the helper directly via a fake builder so we don't
+// need a full async-init builder instance.
 func TestApplySecurityPolicies(t *testing.T) {
 	cfg := &BuilderConfig{
 		Security: BuilderSecurityConfig{
-			DefaultPolicy: "user_confirm",
-			ToolPolicies: map[string]BuilderToolPolicy{
-				ToolReadFile: {Policy: "always_allow"},
-				ToolBashExec: {Policy: "always_deny"},
+			Groups: map[string]BuilderGroupPolicy{
+				"local_read":   {Policy: "allow"},
+				"execute":      {Policy: "deny", Blacklist: []string{"rm\\s+-rf"}},
+				"local_write":  {Policy: "user_confirm"},
+				"system":       {Policy: "allow"},    // must be skipped: not configurable
+				"bogus_group":  {Policy: "allow"},    // must be skipped: unknown group
+				"typo_allowed": {Policy: "nonsense"}, // fail-safe → user_confirm
 			},
 		},
 		ExpandEnvVars: func(s string) string { return s },
@@ -73,6 +80,23 @@ func TestApplySecurityPolicies(t *testing.T) {
 
 	b := &OrchestratorBuilder{registry: tools.NewToolRegistry()}
 	b.applySecurityPolicies(cfg)
+
+	got := b.registry.GroupPolicies()
+	want := map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupLocalRead:  sdktools.PolicyAlwaysAllow,
+		sdktools.GroupExecute:    sdktools.PolicyAlwaysDeny,
+		sdktools.GroupLocalWrite: sdktools.PolicyUserConfirm,
+	}
+	for group, policy := range want {
+		if got[group] != policy {
+			t.Errorf("group policy %q = %v, want %v", group, got[group], policy)
+		}
+	}
+	for _, skipped := range []sdktools.ToolGroup{sdktools.GroupSystem, sdktools.ToolGroup("bogus_group"), sdktools.ToolGroup("typo_allowed")} {
+		if _, ok := got[skipped]; ok {
+			t.Errorf("group %q must be skipped by applySecurityPolicies", skipped)
+		}
+	}
 
 	// Re-applying must not panic.
 	b.applySecurityPolicies(cfg)
@@ -82,7 +106,7 @@ func TestApplySecurityPolicies(t *testing.T) {
 // constructing a builder without an ExpandEnvVars hook should not panic.
 func TestNewOrchestratorBuilder_NilExpandEnvVars(t *testing.T) {
 	cfg := &BuilderConfig{
-		Security: BuilderSecurityConfig{DefaultPolicy: "user_confirm"},
+		Security: BuilderSecurityConfig{},
 		// ExpandEnvVars intentionally omitted.
 	}
 
@@ -118,7 +142,7 @@ func TestBuilder_Build_FullPipeline(t *testing.T) {
 			},
 			Retry: BuilderRetryConfig{MaxRetries: 1, InitialBackoff: "1s", MaxBackoff: "10s"},
 		},
-		Security: BuilderSecurityConfig{DefaultPolicy: "user_confirm"},
+		Security: BuilderSecurityConfig{},
 		Orchestration: BuilderOrchestrationConfig{
 			MaxDependencyContextChars: 8000,
 			MaxJudgeCacheSize:         1000,
@@ -799,7 +823,7 @@ func TestExtractOptimizedPrompt_MarkersInReasoning(t *testing.T) {
 func TestExtractOptimizedPrompt_MarkersInReasoningField(t *testing.T) {
 	// Content and ReasoningContent empty, markers in Reasoning field.
 	resp := &llm.ChatResponse{
-		Message:  llm.Message{Content: "", ReasoningContent: ""},
+		Message:   llm.Message{Content: "", ReasoningContent: ""},
 		Reasoning: "### OPTIMIZED_PROMPT_START\nPrompt from Reasoning field\n### OPTIMIZED_PROMPT_END",
 	}
 	got := extractOptimizedPrompt(resp)

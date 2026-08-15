@@ -23,6 +23,7 @@ type DeclareStepCompleteTool struct {
 // NewDeclareStepCompleteTool creates the declare_step_complete tool.
 func NewDeclareStepCompleteTool() *DeclareStepCompleteTool {
 	return &DeclareStepCompleteTool{BaseTool: &sdktools.BaseTool{
+		ToolGroup:       sdktools.GroupSystem,
 		ToolName:        "declare_step_complete",
 		ToolDescription: toolDeclareStepCompleteDescription,
 		Schema: json.RawMessage(`{

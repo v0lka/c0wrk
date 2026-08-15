@@ -1,73 +1,75 @@
-import { useState, useEffect, type KeyboardEvent } from "react";
-import { Info, Plus, X, Loader2, AlertTriangle } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { useState, useEffect } from "react";
+import { Loader2, AlertTriangle, Info } from "lucide-react";
 import { getSecuritySettings, updateSecuritySettings } from "@/api/config";
 import { getToolList } from "@/api/mcp";
 import { logger } from "@/lib/logger";
-import type { ToolInfo, SecuritySettingsResponse, ToolPolicyResponse } from "@/types/models";
-
-type ToolPolicy = "always_allow" | "always_deny" | "user_confirm";
+import { SecurityGroupCard } from "./SecurityGroupCard";
+import {
+  DEFAULT_GROUP_POLICY,
+  EXECUTE_GROUP,
+  GROUP_ORDER,
+} from "@/lib/securityGroups";
+import type {
+  GroupPolicy,
+  SecurityGroupPolicy,
+  SecuritySettingsResponse,
+  ToolInfo,
+} from "@/types/models";
 
 interface LocalSettings {
-  default_policy: ToolPolicy;
-  tool_policies: Record<string, { policy: ToolPolicy; blacklist?: string[] }>;
+  groups: Record<string, SecurityGroupPolicy>;
   auto_approve_workspace_writes: boolean;
   smart_approve: boolean;
 }
 
-const policyOptions: { value: ToolPolicy; label: string }[] = [
-  { value: "always_allow", label: "Always Allow" },
-  { value: "always_deny", label: "Always Deny" },
-  { value: "user_confirm", label: "User Confirm" },
-];
+const initialSettings: LocalSettings = {
+  groups: {},
+  auto_approve_workspace_writes: false,
+  smart_approve: false,
+};
 
-const BLACKLIST_TOOLS = ["bash_exec"];
-const INTERNAL_TOOLS = new Set(["ask_user", "finish", "list_step_outputs", "read_step_output"]);
-
+/**
+ * Security settings tab, group-based (security.groups): the seven configurable
+ * tool groups each have a policy dropdown; the execute group additionally has
+ * a command-blacklist editor. The reserved "system" group is not configurable
+ * and never rendered. Tool policies are group-level — the tool list inside
+ * each card is display-only (data from GetToolList).
+ */
 export function SecuritySettings() {
-  const [settings, setSettings] = useState<LocalSettings>({
-    default_policy: "user_confirm",
-    tool_policies: {},
-    auto_approve_workspace_writes: false,
-    smart_approve: false,
-  });
+  const [settings, setSettings] = useState<LocalSettings>(initialSettings);
   const [tools, setTools] = useState<ToolInfo[]>([]);
-  const [newPattern, setNewPattern] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [judgeAvailable, setJudgeAvailable] = useState(false);
 
   useEffect(() => {
     Promise.all([
       getSecuritySettings().then((r) => {
-        const tp: Record<string, { policy: ToolPolicy; blacklist?: string[] }> = {};
-        for (const [name, data] of Object.entries(r.tool_policies || {})) {
-          tp[name] = { policy: (data.policy as ToolPolicy) || "user_confirm", blacklist: data.blacklist };
-        }
         setSettings({
-          default_policy: (r.default_policy as ToolPolicy) || "user_confirm",
-          tool_policies: tp,
+          groups: r.groups || {},
           auto_approve_workspace_writes: r.auto_approve_workspace_writes || false,
           smart_approve: r.smart_approve || false,
         });
         setJudgeAvailable(r.judge_available ?? false);
       }),
-      getToolList().then((r) => setTools((r || []).filter((t) => !INTERNAL_TOOLS.has(t.name)))),
+      getToolList().then((r) => setTools(r || [])),
     ])
       .catch((err) => logger.error("Failed to load security settings:", err))
       .finally(() => setIsLoading(false));
   }, []);
 
+  // Saves the FULL group set — exactly the seven configurable groups from
+  // GROUP_ORDER — plus the two flags: the group schema only, never a per-tool
+  // policy map. Normalizing here guarantees the payload shape even if the
+  // backend response ever drifted.
   const save = async (next: LocalSettings) => {
     setSettings(next);
+    const groups: Record<string, SecurityGroupPolicy> = {};
+    for (const group of GROUP_ORDER) {
+      groups[group] = next.groups[group] ?? { policy: DEFAULT_GROUP_POLICY };
+    }
     try {
-      const tp: Record<string, ToolPolicyResponse> = {};
-      for (const [name, data] of Object.entries(next.tool_policies)) {
-        tp[name] = { policy: data.policy, blacklist: data.blacklist };
-      }
       await updateSecuritySettings({
-        default_policy: next.default_policy,
-        tool_policies: tp,
+        groups,
         auto_approve_workspace_writes: next.auto_approve_workspace_writes,
         smart_approve: next.smart_approve,
       } as SecuritySettingsResponse);
@@ -76,54 +78,20 @@ export function SecuritySettings() {
     }
   };
 
-  const handlePolicy = (tool: string, policy: ToolPolicy) => {
+  const handlePolicy = (group: string, policy: GroupPolicy) => {
+    const prev = settings.groups[group] ?? { policy: DEFAULT_GROUP_POLICY };
     save({
       ...settings,
-      tool_policies: { ...settings.tool_policies, [tool]: { ...settings.tool_policies[tool], policy } },
+      groups: { ...settings.groups, [group]: { ...prev, policy } },
     });
   };
 
-  const addBlacklist = () => {
-    if (!newPattern.trim()) return;
-    const bl = settings.tool_policies["bash_exec"]?.blacklist || [];
-    if (bl.includes(newPattern.trim())) {
-      setNewPattern("");
-      return;
-    }
+  const handleBlacklist = (group: string, blacklist: string[]) => {
+    const prev = settings.groups[group] ?? { policy: DEFAULT_GROUP_POLICY };
     save({
       ...settings,
-      tool_policies: {
-        ...settings.tool_policies,
-        bash_exec: {
-          ...settings.tool_policies["bash_exec"],
-          policy: settings.tool_policies["bash_exec"]?.policy || "user_confirm",
-          blacklist: [...bl, newPattern.trim()],
-        },
-      },
+      groups: { ...settings.groups, [group]: { ...prev, blacklist } },
     });
-    setNewPattern("");
-  };
-
-  const removeBlacklist = (pattern: string) => {
-    const bl = (settings.tool_policies["bash_exec"]?.blacklist || []).filter((p) => p !== pattern);
-    save({
-      ...settings,
-      tool_policies: {
-        ...settings.tool_policies,
-        bash_exec: {
-          ...settings.tool_policies["bash_exec"],
-          policy: settings.tool_policies["bash_exec"]?.policy || "user_confirm",
-          blacklist: bl,
-        },
-      },
-    });
-  };
-
-  const handleKey = (e: KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      addBlacklist();
-    }
   };
 
   const handleAutoApprove = (checked: boolean) => {
@@ -134,27 +102,18 @@ export function SecuritySettings() {
     save({ ...settings, smart_approve: checked });
   };
 
-  // Group tools by source, core first
-  const grouped = tools.reduce<Record<string, ToolInfo[]>>((acc, t) => {
-    const src = t.source || "core";
-    (acc[src] ??= []).push(t);
+  // Tools grouped by their backend-reported security group.
+  const toolsByGroup = tools.reduce<Record<string, ToolInfo[]>>((acc, t) => {
+    const g = t.group || "";
+    (acc[g] ??= []).push(t);
     return acc;
   }, {});
-  const sources = Object.keys(grouped).sort((a, b) => (a === "core" ? -1 : b === "core" ? 1 : a.localeCompare(b)));
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-8 gap-2">
         <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
         <span className="text-sm text-muted-foreground">Loading security settings...</span>
-      </div>
-    );
-  }
-
-  if (tools.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-8 gap-2">
-        <span className="text-sm text-muted-foreground">No tools available.</span>
       </div>
     );
   }
@@ -209,92 +168,30 @@ export function SecuritySettings() {
         <p className="text-xs text-muted-foreground pl-12">
           When enabled, a strict OWASP ASI (ASI01–ASI10) judge automatically evaluates calls that require
           confirmation. A safe verdict executes without UI; any risk, error, or ambiguity falls back to manual
-          confirmation. Only affects the effective user_confirm policy — always_allow, always_deny, and symlink-forced
+          confirmation. Only affects the effective user_confirm policy — allow, deny, and symlink-forced
           confirmations are unchanged.
         </p>
       </div>
 
-      {sources.map((source) => (
-        <div key={source} className="flex flex-col gap-4">
-          <h3 className="text-sm font-semibold text-muted-foreground border-b border-border pb-1">
-            {source === "core" ? "Built-in Tools" : `MCP: ${source}`}
-          </h3>
-          {(grouped[source] || [])
-            .sort((a, b) => a.name.localeCompare(b.name))
-            .map((tool) => {
-              const policy = (settings.tool_policies[tool.name]?.policy || "user_confirm") as ToolPolicy;
-              const bl = settings.tool_policies[tool.name]?.blacklist || [];
-              const hasBl = BLACKLIST_TOOLS.includes(tool.name);
-              return (
-                <div key={tool.name} className="flex flex-col gap-3">
-                  <div className="flex flex-col gap-1">
-                    <span className="text-sm font-medium font-mono">{tool.name}</span>
-                    <span className="text-xs text-muted-foreground">{tool.description}</span>
-                  </div>
-                  <div className="flex gap-1 p-1 bg-muted rounded-lg flex-wrap">
-                    {policyOptions.map((opt) => (
-                      <Button
-                        key={opt.value}
-                        variant={policy === opt.value ? "secondary" : "ghost"}
-                        size="sm"
-                        className={`flex-1 gap-2 justify-center transition-all duration-200 ${policy === opt.value ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                        onClick={() => handlePolicy(tool.name, opt.value)}
-                      >
-                        <span className="text-xs">{opt.label}</span>
-                      </Button>
-                    ))}
-                  </div>
-                  {hasBl && (
-                    <div className="mt-2 space-y-2">
-                      <p className="text-xs text-muted-foreground">Blacklist patterns (regex):</p>
-                      {bl.length > 0 && (
-                        <div className="flex flex-wrap gap-2">
-                          {bl.map((p) => (
-                            <div key={p} className="flex items-center gap-1 px-2 py-1 bg-muted rounded text-xs">
-                              <code className="font-mono">{p}</code>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-4 w-4 p-0 hover:bg-destructive/20"
-                                onClick={() => removeBlacklist(p)}
-                              >
-                                <X className="h-3 w-3" />
-                              </Button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      <div className="flex gap-2">
-                        <Input
-                          placeholder="e.g., rm\\s+-rf"
-                          value={newPattern}
-                          onChange={(e) => setNewPattern(e.target.value)}
-                          onKeyDown={handleKey}
-                          className="h-8 text-xs font-mono"
-                        />
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8"
-                          onClick={addBlacklist}
-                          disabled={!newPattern.trim()}
-                        >
-                          <Plus className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-        </div>
+      {/* The seven configurable tool groups */}
+      {GROUP_ORDER.map((group) => (
+        <SecurityGroupCard
+          key={group}
+          group={group}
+          policy={settings.groups[group]?.policy ?? DEFAULT_GROUP_POLICY}
+          blacklist={group === EXECUTE_GROUP ? settings.groups[group]?.blacklist ?? [] : []}
+          tools={toolsByGroup[group] ?? []}
+          onPolicyChange={handlePolicy}
+          onBlacklistChange={handleBlacklist}
+        />
       ))}
 
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" />
         <p>
-          <strong>User Confirm</strong> requires manual approval. <strong>Always Allow</strong> disables confirmations
-          (use with caution).
+          Policies apply to entire groups, not individual tools. <strong>User Confirm</strong> requires manual
+          approval per call; <strong>Allow</strong> executes without confirmations (use with caution);{" "}
+          <strong>Deny</strong> blocks execution. Internal orchestration tools are always allowed and not listed.
         </p>
       </div>
     </div>

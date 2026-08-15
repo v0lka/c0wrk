@@ -60,6 +60,7 @@ type DeclareVerificationTool struct {
 func NewDeclareVerificationTool() *DeclareVerificationTool {
 	return &DeclareVerificationTool{
 		BaseTool: &sdktools.BaseTool{
+			ToolGroup:       sdktools.GroupSystem,
 			ToolName:        "declare_verification",
 			ToolDescription: toolDeclareVerificationDescription,
 			Schema: json.RawMessage(`{

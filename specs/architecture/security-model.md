@@ -6,30 +6,32 @@ c0wrk executes arbitrary tools (filesystem operations, shell commands, web reque
 
 ## Policy Resolution
 
-When a tool is about to execute, its effective policy is resolved in this order (first match wins):
+Every tool declares exactly one **capability group** (ADR-024; sp4rk `tools/group.go`). A call's effective policy is the policy configured for that group in `security.groups` — there is no per-tool override layer, no skill-derived policy layer, and no registry default-policy fallback:
 
 ```
-1. Per-tool config override     (config.yaml Security.ToolPolicies["tool_name"])
-2. Skill policy override        (from active skill's policy declarations)
-3. Registry default policy      (config.yaml Security.DefaultPolicy)
-4. Tool's own default           (Tool.DefaultPolicy() method)
+effective policy = security.groups[tool.Group()].policy
+                   (unconfigured group → fail-safe user_confirm)
 ```
 
-Source: `core/tools/registry.go` `resolvePolicy()`
+The eight groups: `execute` (shell), `local_read`, `local_write`, `remote_read`, `remote_write`, `local_mcp`, `remote_mcp` (MCP, transport-derived or pinned via `ServerConfig.ToolGroupOverride`), and the reserved `system`. A tool whose group is undeclared matches no allow-list anywhere (fail-closed).
+
+Config-facing policy names are the short enum `allow` / `user_confirm` / `deny`; the registry maps them to the sp4rk runtime values `PolicyAlwaysAllow` / `PolicyUserConfirm` / `PolicyAlwaysDeny`.
+
+Source: `core/tools/registry.go` `groupPolicy()`; builder wiring in `core/builder.go` `applySecurityPolicies`. See [ADR-024](../decisions/024-group-policies.md) for the full model, gate order, and migration.
 
 ## Tool Policies
 
-| Policy         | Behavior                                                                                               |
-| -------------- | ------------------------------------------------------------------------------------------------------ |
-| `always_allow` | Execute immediately. No confirmation, no judge (unless tool implements ToolJudger and flags the call). |
-| `user_confirm` | Block execution, send confirmation request to frontend. User must allow or deny.                       |
-| `always_deny`  | Immediately return error result. Tool is never executed.                                               |
+| Policy (config)  | Runtime value          | Behavior                                                                                               |
+| ---------------- | ---------------------- | ------------------------------------------------------------------------------------------------------ |
+| `allow`          | `PolicyAlwaysAllow`   | Execute immediately. No confirmation, no judge (unless tool implements ToolJudger and flags the call). |
+| `user_confirm`   | `PolicyUserConfirm`   | Block execution, send confirmation request to frontend. User must allow or deny.                       |
+| `deny`           | `PolicyAlwaysDeny`    | Immediately return error result. Tool is never executed.                                               |
 
-Default if nothing configured: `user_confirm` (safest default).
+Default if nothing configured: `user_confirm` (safest default). Defaults per group: `local_read`/`remote_read` = `allow`; every mutating group (`execute`, `local_write`, `local_mcp`, `remote_mcp`, `remote_write`) = `user_confirm`.
 
-## Internal Tools
+## The `system` Group (Policy Bypass)
 
-These tools bypass ALL policy checks, judge evaluation, and confirmation flow:
+Tools tagged `ToolGroup: sdktools.GroupSystem` bypass ALL policy checks, judge evaluation, and confirmation flow:
 
 - `ask_user` — prompts the user for information
 - `finish` — signals task completion
@@ -54,7 +56,7 @@ These tools bypass ALL policy checks, judge evaluation, and confirmation flow:
 - `reflect` — triggers reflection on the current trajectory
 - `batch` — executes multiple tool calls sequentially
 
-Source: `core/tools/registry.go` `internalTools` map
+Source: `sdktools.GroupSystem` tags on the tool constructors (`sp4rk` builtins and `core/tools/*.go`); the registry gate is `tool.Group() == sdktools.GroupSystem` in `core/tools/registry.go` `Execute`. The group is reserved — it cannot appear in `security.groups` (config validation rejects it).
 
 Rationale: these tools are agent-infrastructure, not user-facing operations. Blocking them would break the execution loop.
 
@@ -81,21 +83,21 @@ Trailing separators are trimmed and duplicates dropped; empty, relative, or driv
 
 **Invisibility.** Implicit temp roots never reach the system prompt or the UI. The prompt-facing `core.WithWorkDirectories` (and the frontend work-directories list) is applied only when user-configured auxiliary directories exist; temp roots are security-containment roots only. An agent operating in `/tmp` gets no announcement of it — the roots are invisible by design, both to the LLM and to the user.
 
-**Accepted risk.** `/tmp` and its Windows counterparts are world-writable shared scratch guarded only by the sticky bit — any local process or user can create files there, so auto-approved operations inside the temp tree may read or overwrite files created by other local users of the machine. This risk is accepted deliberately: the OS temp tree is the standard scratch location that tools legitimately need on every platform, and gating it with per-call confirmations would make routine agent operations (`mktemp` scratch, downloads, CLI tool scratch) unusable. Symlink-based attacks rooted in the temp tree remain mitigated by the unconditional [Symlink Confirmation](#symlink-confirmation) gate, which forces confirmation for any path whose components traverse a symlink.
+**Accepted risk.** `/tmp` and its Windows counterparts are world-writable shared scratch guarded only by the sticky bit — any local process or user can create files there, so auto-approved operations inside the temp tree may read or overwrite files created by other local users of the machine. This risk is accepted deliberately: the OS temp tree is the standard scratch location that tools legitimately need on every platform, and gating it with per-call confirmations would make routine agent operations (`mktemp` scratch, downloads, CLI tool scratch) unusable. Symlink-based attacks rooted in the temp tree remain mitigated by the [Symlink Confirmation](#symlink-confirmation) gate: a traversal that resolves **outside** the session roots is a hard reason that always forces user confirmation.
 
 ## Operations Outside Session Roots
 
-File operations (both read and write) targeting paths **outside** the session roots are allowed, but **only after explicit user confirmation** — regardless of the tool's resolved policy:
+File operations (both read and write) targeting paths **outside** the session roots produce a **soft** (path-containment) safety reason from the tool's `ToolJudger.Judge()`. Soft reasons never execute silently:
 
-- `always_allow` tools (e.g., `read_file`, `list_directory`): the tool's `ToolJudger.Judge()` returns `allow=false` with a reason, which the registry routes to `confirmAndExecute`.
-- `user_confirm` tools (e.g., `write_file`, `edit_file`, `bash_exec`, `posh_exec`): confirmation is already required by policy; the confirmation carries a human-readable reason explaining the mutating action (from `defaultConfirmReason`), supplemented by the Judge reason when one is available.
-- `always_deny` tools: blocked immediately, never reach confirmation.
+- `allow` groups (e.g. `local_read`, `remote_read`): the soft reason routes the call to `smartApproveOrConfirm` — with Smart Approve enabled, only a strict judge `ALLOW` executes; otherwise (and always with Smart Approve off) the user sees a confirmation prompt.
+- `user_confirm` groups (e.g. `local_write`, `execute`): confirmation is already required by policy; the containment reason joins the soft-reason signal and is shown in the confirmation prompt (after the Smart Approve gate, when enabled).
+- `deny` groups: blocked immediately by the group-policy gate — before any judge or symlink analysis runs.
 
-This means reading or writing arbitrary files on the filesystem (e.g., `/etc/hosts`, `~/Documents/notes.txt`) is possible, but the user always sees a confirmation prompt first. The only exception is relative paths that escape the workspace via `..` components — these are rejected by `resolvePath` as invalid input (relative paths cannot escape the workspace).
+This means reading or writing arbitrary files on the filesystem (e.g., `/etc/hosts`, `~/Documents/notes.txt`) is possible, but only through the soft-escalation path above — the user always sees a confirmation prompt unless Smart Approve's strict judge explicitly allowed the call. The only exception is relative paths that escape the workspace via `..` components — these are rejected by `resolvePath` as invalid input (relative paths cannot escape the workspace).
 
-> **Note — implicit temp roots count as inside.** The host OS temp tree ([Implicit Temp Roots](#implicit-temp-roots)) is part of the session roots, so operations targeting it do **not** trigger the outside-root confirmation described here. An `always_allow` file tool reading or writing `/tmp/anything` auto-approves exactly like a workspace path. This is a deliberate, documented trade-off (world-writable scratch is the standard location tools need on every platform), not an oversight — see the accepted-risk note in the session-roots section.
+> **Note — implicit temp roots count as inside.** The host OS temp tree ([Implicit Temp Roots](#implicit-temp-roots)) is part of the session roots, so operations targeting it do **not** trigger the outside-root escalation described here. A `local_read` file tool reading or writing `/tmp/anything` executes exactly like a workspace path. This is a deliberate, documented trade-off (world-writable scratch is the standard location tools need on every platform), not an oversight — see the accepted-risk note in the session-roots section.
 
-**Shell commands referencing out-of-root paths.** `bash_exec` and `posh_exec` now implement the same path-containment analysis in their `ToolJudger.Judge()` as the file tools: the command string is scanned for path-like tokens (absolute paths, `~`/`~user` tilde expansion, `$VAR`/`${VAR}`/`$env:VAR` environment expansion, and `..`-relative references resolved against the working directory) via `tools.PathsOutsideRoots` (`github.com/v0lka/sp4rk/tools/shellpaths.go`). Any resolved path outside the session roots produces a non-empty reason, so the call escalates to confirmation under any policy except `always_deny` — including `always_allow`. This closes the previously-documented gap where a shell command under `always_allow` could execute `cat /etc/passwd` without confirmation. Credential-file reads (e.g., `cat ~/.ssh/id_rsa`) are caught here by path-locality rather than a literal-filename blacklist; the blacklist focuses on path-agnostic destructive mutations.
+**Shell commands referencing out-of-root paths.** `bash_exec` and `posh_exec` implement the same path-containment analysis in their `ToolJudger.Judge()` as the file tools: the command string is scanned for path-like tokens (absolute paths, `~`/`~user` tilde expansion, `$VAR`/`${VAR}`/`$env:VAR` environment expansion, and `..`-relative references resolved against the working directory) via `tools.PathsOutsideRoots` (`github.com/v0lka/sp4rk/tools/shellpaths.go`). Any resolved path outside the session roots produces a soft reason, so the call escalates under any group policy except `deny` — including `allow`. This closes the previously-documented gap where a shell command under `allow` could execute `cat /etc/passwd` without confirmation. Credential-file reads (e.g., `cat ~/.ssh/id_rsa`) are caught here by path-locality rather than a literal-filename blacklist; the blacklist focuses on path-agnostic destructive mutations.
 
 ## PolicyAlwaysAllow Judge Gate
 
@@ -103,20 +105,22 @@ For tools with `PolicyAlwaysAllow` that implement the `ToolJudger` interface, th
 
 Without this ordering, a command like `rm -rf /workspace/.git` would have all paths inside the workspace (triggering auto-approval) but still match the bash_exec blacklist — auto-approval would execute the blacklisted command without confirmation. Running the Judge first ensures flagged calls escalate to confirmation regardless of where the paths point.
 
-Only calls where the Judge returns `allow=false` **with non-empty reasoning** are escalated. `allow=false` with empty reasoning (e.g., bash_exec without a blacklist match) is treated as "no concern to report" and proceeds to auto-approval / direct execution.
+The Judge returns a `JudgeOutcome{Allow, Reason, Severity}`; flagged outcomes are classified into **hard** and **soft** reasons (ADR-024):
+
+- **Hard** (a fired security control: blacklist pattern, SSRF, symlink escape) → confirmation with `DisableJudge=true`. The advisory "Ask Agent" action is disabled and Smart Approve can NEVER allow the call.
+- **Soft** (a scope question: path containment outside session roots) → Smart Approve (when enabled) may allow the call; every other outcome — or Smart Approve disabled — falls back to a plain confirmation.
+- `allow=true` / no concern reported → proceeds to auto-approval / direct execution.
 
 ## Workspace Auto-Approval
 
-After the PolicyAlwaysAllow Judge gate (if applicable), the registry checks if ALL file paths in the tool input fall within any session root — workspace, temp directory, or an auxiliary work directory — via the single `tools.AllPathsInSessionRoots(ctx, input)` check (which consults `SessionRoots(ctx)`):
+After the allow-policy Judge gate (if applicable), two paths lead to execution without a confirmation prompt:
 
-1. The session's temporary directory and any auxiliary directories (`TempDirFrom(ctx)` + `AllowedRootsFrom(ctx)`)
-2. The current workspace directory (`WorkspacePathFrom(ctx)`)
+1. **`allow` groups with clean safety signals.** When the judge reports no concern (no hard reason, no soft escalation — i.e. the call's paths are all inside the session roots and no security control fired), the tool executes directly. A flagged call never reaches this path: hard reasons confirm immediately, soft reasons go to Smart Approve / confirmation.
+2. **`local_write` under `security.auto_approve_workspace_writes`.** Write tools (`write_file`, `edit_file`, `delete_file`, `delete_directory`, `create_directory`) whose effective policy is `user_confirm` execute without confirmation when the setting is enabled and the tool's `ToolJudger.Judge()` verdict is clean — the Judge's containment check resolves symlinks and normalizes `..` (pathutil underneath), so the target must resolve inside the session roots (workspace, temp directory, or an auxiliary work directory — equal peers). A hard reason always preempts this auto-approval.
 
-If yes AND policy is `always_allow`: tool executes without confirmation. (The `AllPathsInSessionRoots` auto-approval path applies only to `PolicyAlwaysAllow`. `PolicyUserConfirm` write tools are auto-approved by a separate mechanism: when `security.auto_approve_workspace_writes` is enabled and the tool's `ToolJudger.Judge()` reports the target is within session roots, the tool executes; otherwise it is confirmed. `PolicyAlwaysDeny` is never weakened.)
+`deny` groups never reach either path (blocked earlier), and workspace auto-approval applies only to the `local_write` group — an `execute` command inside the workspace still confirms under `user_confirm`.
 
 Rationale: operations within the session roots are the normal working mode. Requiring confirmation for every file read/write within the project or temp directory would be unusable.
-
-Important: `always_deny` is NEVER bypassed by auto-approval. Judge-flagged `always_allow` calls (with non-empty reasoning) are escalated to confirmation before auto-approval is considered.
 
 ## Judge System
 
@@ -145,15 +149,16 @@ When `security.smart_approve` is enabled (default: false), a **strict OWASP ASI 
 
 A strict `ALLOW` executes the tool without UI. A `CONFIRM` (or any failure outcome) falls back to manual confirmation with the strict judge's reasoning shown and the advisory "Ask Agent" button hidden (the `ConfirmationRequest.DisableJudge` flag signals this to the frontend).
 
-Smart Approve applies ONLY to effective `PolicyUserConfirm`. `PolicyAlwaysAllow`, `PolicyAlwaysDeny`, and symlink-forced confirmations are unchanged. Workspace auto-approval retains priority (a workspace-auto-approved call never reaches the strict judge).
+Smart Approve applies to effective `PolicyUserConfirm` calls and to **soft** escalations of `allow`-policy calls (path containment). `deny`, **hard** safety reasons (blacklist, SSRF, symlink escape — always `DisableJudge=true`), and workspace auto-approval are unchanged: a denied group never executes, a hard reason always reaches the user, and a workspace-auto-approved call never reaches the strict judge.
 
 ## Confirmation Flow
 
 Every confirmation request carries a **human-readable reason** in `ConfirmationRequest.JudgeReasoning` (surfaced to the frontend as `tool_confirm` event `reasoning`), so the user understands *why* approval is needed before deciding. The reason is derived per trigger:
 
 - **Symlink traversal** → the formatted symlink chain (`FormatSymlinkReasoning`).
-- **`always_allow` + Judge flagged** → the tool-specific Judge reasoning (e.g. blacklist match, path outside session roots).
-- **`user_confirm` + auto-approve denied** → the Judge reasoning that denied auto-approval.
+- **`allow` group + hard Judge reason** (blacklist match, SSRF, symlink escape) → the tool-specific Judge reasoning, with the advisory Ask Agent action disabled.
+- **`allow` group + soft Judge reason** (path containment) → the containment reason, shown on the confirmation produced when Smart Approve is off or its strict judge did not allow.
+- **`user_confirm` + hard reason / Smart Approve outcome** → the hard reason or the strict judge's reasoning (see below).
 - **`user_confirm` (plain)** → a mutating-action explanation from `defaultConfirmReason(name)` (e.g. "This tool runs a shell command on your system."), so the dialog is never blank.
 - **Smart Approve CONFIRM/failure** → the strict judge's reasoning (e.g. "ASI05: command downloads and executes unverified code"). The `ConfirmationRequest.DisableJudge` flag is set to `true`, signaling the frontend to hide the advisory "Ask Agent" button (the call was already strictly evaluated).
 
@@ -182,7 +187,7 @@ ToolRegistry.Execute()
 
 ## Symlink Confirmation
 
-Before policy resolution, the registry inspects ALL tool call inputs (both structured tools and the shell-exec tool) for paths that traverse symlinks. If symlinks are detected, the call is forcibly routed to user confirmation regardless of the tool's resolved policy — except `always_deny`, which returns an error immediately.
+After the group-policy deny gate, during safety-signal gathering, the registry inspects ALL tool call inputs (both structured tools and the shell-exec tool) for paths that traverse symlinks. A traversal whose resolution **escapes** the session roots (or input that cannot be resolved at all) is a **hard** reason: the call is routed to user confirmation with `DisableJudge=true` under any group policy — it never passes Smart Approve. A symlink whose resolution stays **inside** the session roots is not a concern: every containment check in the pipeline reasons about resolved paths, so an in-root resolution auto-approves exactly like a direct path. Well-known OS-level infrastructure symlinks (e.g. `/tmp` → `/private/tmp`) are exempt from the escape classification via sp4rk's `IsOSLevelSymlink`.
 
 ### Detection
 
@@ -239,13 +244,13 @@ If the input contains suspicious (unexpandable) shell expressions, a warning is 
 
 ### Source
 
-`core/tools/registry_symlink.go` — integration method `checkSymlinksAndConfirm()` (calls `sdktools.DetectSymlinksInToolInput`). Injected in `core/tools/registry.go` `Execute()` between the pre-execute hook and policy resolution. Detection, traversal, and formatting (`SymlinkTraversal` type, `DetectSymlinksInToolInput`, `FormatSymlinkReasoning`) live in `github.com/v0lka/sp4rk/tools/symlink.go`.
+`core/tools/registry_symlink.go` — the `symlinkHardReason()` integration (calls `sdktools.DetectSymlinksInToolInput` and classifies escapes). Invoked from `core/tools/registry.go` `Execute()` during safety-signal gathering, after the deny gate and before policy branching. Detection, traversal, and formatting (`SymlinkTraversal` type, `DetectSymlinksInToolInput`, `FormatSymlinkReasoning`) live in `github.com/v0lka/sp4rk/tools/symlink.go`.
 
 ## Bash Blacklist
 
-The shell-execution tool (`bash_exec` on Unix, `posh_exec` on Windows) has a regex-based blacklist (the `blacklist` list on the shell tool's `Security.ToolPolicies` entry) that blocks dangerous command patterns. The blacklist is read from the policy entry keyed by the platform's active shell tool name — `cfg.Security.ToolPolicies[activeShellToolName()].Blacklist` — so on Windows the entry is configured under `posh_exec`, on Unix under `bash_exec` (see [builtins.md § Shell-Execution Tool](../domains/tool-system/builtins.md#shell-execution-tool-bash_exec--posh_exec)). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's policy resolves to `AlwaysAllow`, the tool's `Judge()` evaluates the command against compiled blacklist regexes. A match returns `allow=false` with a non-empty reasoning identifying the matched pattern, which escalates to user confirmation via the PolicyAlwaysAllow Judge Gate (above). The gate runs **before** workspace/temp auto-approval, so a blacklisted command with paths inside the workspace (e.g., `rm -rf /workspace/.git`) is still routed to confirmation.
+The shell-execution tool (`bash_exec` on Unix, `posh_exec` on Windows) has a regex-based blacklist that blocks dangerous command patterns. The blacklist is the `blacklist` list on the **`execute` group** in `security.groups` (`cfg.Security.Groups["execute"].Blacklist` → the builder's `Groups[GroupExecute].Blacklist`) — a single platform-agnostic list whose default is the dedup union of the bash and PowerShell pattern sets (see [builtins.md § Shell-Execution Tool](../domains/tool-system/builtins.md#shell-execution-tool-bash_exec--posh_exec)). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's group policy resolves to `allow`, the tool's `Judge()` evaluates the command against compiled blacklist regexes. A match returns `allow=false, severity=hard` with a non-empty reasoning identifying the matched pattern, which escalates to confirmation with `DisableJudge=true` via the PolicyAlwaysAllow Judge Gate (above) — Smart Approve can never allow it. The gate runs **before** workspace/temp auto-approval, so a blacklisted command with paths inside the workspace (e.g., `rm -rf /workspace/.git`) is still routed to confirmation.
 
-> **Invariant — the blacklist never hard-denies.** The blacklist exists **only** to route specific commands to user confirmation when `bash_exec`/`posh_exec` is set to `always_allow`; it is **never** an unrecoverable block. A blacklist match always flows through `confirmAndExecute` (`core/tools/registry.go`), where the user can choose **Allow Once** to execute **any** command — including blacklisted ones — without exception. There is no code path where a blacklist match produces a final `deny` that the user cannot override; the `allow=false` returned by `ToolJudger.Judge()` on a match means "a safety concern exists, escalate to confirmation", not "deny". The user's ability to run an arbitrary shell command via confirmation must remain unconditional under `always_allow`. This invariant applies equally to `user_confirm` policy (the blacklist reason merely enriches the prompt) and to every blacklist pattern — git or otherwise.
+> **Invariant — the blacklist never hard-denies.** The blacklist exists **only** to route specific commands to user confirmation when the `execute` group's policy is `allow`; it is **never** an unrecoverable block. A blacklist match always flows through `confirmAndExecute` (`core/tools/registry.go`), where the user can choose **Allow Once** to execute **any** command — including blacklisted ones — without exception. There is no code path where a blacklist match produces a final `deny` that the user cannot override; the `allow=false` returned by `ToolJudger.Judge()` on a match means "a safety concern exists, escalate to confirmation", not "deny". The user's ability to run an arbitrary shell command via confirmation must remain unconditional under `allow`. This invariant applies equally to `user_confirm` policy (the blacklist reason merely enriches the prompt) and to every blacklist pattern — git or otherwise.
 
 The default bash_exec and posh_exec blacklists (`backend/config/defaults.go`, mirrored in `config.example.yaml`) are organized into four symmetric conceptual categories, kept in lock-step by `TestApplyDefaults_BlacklistCategorySymmetry`:
 
@@ -331,15 +336,16 @@ Source: `github.com/v0lka/sp4rk/security/wrap.go` (wrapping), `core/prompts/inje
 
 ## Invariants
 
-- Internal tools ALWAYS execute, regardless of any policy configuration
-- Symlink detection ALWAYS runs for all non-internal tools, before policy resolution
-- When symlinks are detected, the call ALWAYS forces user confirmation (unless policy is `always_deny`)
-- `always_deny` is NEVER bypassed (not by auto-approval, not by judge, not by symlink check, not by any mechanism)
-- For `PolicyAlwaysAllow` tools implementing `ToolJudger`, the Judge runs BEFORE workspace/temp auto-approval — safety checks (blacklist, SSRF, path containment) NEVER bypassed by path-locality
+- `GroupSystem` tools ALWAYS execute, regardless of any policy configuration (the group cannot be configured); every non-system tool resolves its policy from its capability group alone — an unconfigured group fails safe to `user_confirm`
+- A tool with an UNDECLARED group matches no allow-list anywhere (registry filtering, subagent budgets, verifier sets) — fail-closed
+- Symlink analysis runs for every non-system tool during safety-signal gathering: a symlink whose resolution stays inside the session roots is NOT a concern; an escape out of the roots (or an unresolvable/suspicious path) is a **hard** reason
+- HARD safety reasons (command blacklist match, SSRF, symlink escape) ALWAYS force confirmation with `DisableJudge=true` — they never pass Smart Approve, under any group policy; SOFT reasons (path containment) force confirmation unless Smart Approve's strict judge allows the call
+- `deny` group policy is NEVER bypassed (not by auto-approval, not by judge, not by symlink check, not by any mechanism)
+- For `allow`-policy tools implementing `ToolJudger`, the Judge runs BEFORE workspace/temp auto-approval — safety checks (blacklist, SSRF, path containment) NEVER bypassed by path-locality
 - The session workspace, temp directory, and auxiliary work directories are equal peers — any operation permitted in one is permitted in the others
-- Operations outside session roots (workspace, temp directory, or an auxiliary work directory) ALWAYS require user confirmation, regardless of the tool's resolved policy (except `always_deny`)
+- Operations outside session roots (workspace, temp directory, or an auxiliary work directory) always escalate: a soft containment reason routes the call to Smart Approve (strict ALLOW only) or a user confirmation, regardless of the tool's group policy
 - Relative paths that escape the workspace via `..` components are rejected by `resolvePath` — they cannot target paths outside the workspace
-- Auto-approval only applies when ALL paths in the input are within session roots (workspace, temp directory, or an auxiliary work directory) AND the PolicyAlwaysAllow Judge gate (if any) did not flag the call
+- Direct execution without confirmation happens only when the call is clean (no hard reason, no soft escalation) under an `allow` group, or via workspace auto-approval (`local_write` + `auto_approve_workspace_writes` + a clean Judge verdict)
 - Confirmation blocks the executor goroutine until the user responds (no timeout)
 - A denied tool returns an error ToolResult to the LLM (agent can adapt its strategy)
 - `ConfirmDenyAndStop` cancels the entire context (unrecoverable for the current task)
@@ -350,31 +356,22 @@ Source: `github.com/v0lka/sp4rk/security/wrap.go` (wrapping), `core/prompts/inje
 
 ## Configuration
 
-In `config.yaml`:
+In `config.yaml` (see [config.example.yaml](../../config.example.yaml) — the authoritative reference, and [ADR-024](../decisions/024-group-policies.md) for the group-policy design):
 
 ```yaml
 security:
-  default_policy: "user_confirm" # default for tools without explicit override
-  tool_policies:
-    bash_exec:          # key must match the active shell tool: bash_exec (Unix) or posh_exec (Windows)
-      policy: "user_confirm"
+  groups:
+    local_read:   { policy: allow }        # read_file, list_directory, glob, ripgrep
+    remote_read:  { policy: allow }        # web_fetch, web_search
+    execute:                                  # bash_exec (Unix) / posh_exec (Windows)
+      policy: user_confirm                 # the only group with a blacklist
       blacklist:
         - "rm\\s+-rf\\s+/"
         - "sudo\\s+"
-    write_file:
-      policy: "user_confirm"
-    edit_file:
-      policy: "user_confirm"
-    create_directory:
-      policy: "user_confirm"
-    delete_directory:
-      policy: "user_confirm"
-    delete_file:
-      policy: "user_confirm"
-    web_search:
-      policy: "always_allow"
-    web_fetch:
-      policy: "always_allow"
+    local_write:  { policy: user_confirm } # write_file, edit_file, delete_*, create_directory
+    local_mcp:    { policy: user_confirm } # stdio MCP server tools
+    remote_mcp:   { policy: user_confirm } # http MCP server tools
+    remote_write: { policy: user_confirm } # remote mutations (e.g. pinned MCP servers)
 
   # Smart Approve: strict OWASP ASI judge auto-resolves effective user_confirm
   # calls. Only a strict ALLOW skips UI; all other outcomes fall back to manual
@@ -386,11 +383,13 @@ security:
     enabled: true  # Wraps untrusted tool output in <untrusted-content> tags
 ```
 
+Notes: the `system` group is reserved (config validation rejects it); a blacklist is valid **only** on `execute`; the default execute blacklist is the dedup union of the bash and PowerShell pattern lists; an unconfigured group resolves fail-safe to `user_confirm`.
+
 ## Anti-Patterns
 
-- Setting `default_policy: "always_allow"` in production — removes all safety gates
-- Adding tools to the `internalTools` set without careful consideration — they bypass everything
-- Relying on the **advisory** judge as a primary safety mechanism — it is on-demand only; Smart Approve's strict judge is a gate, but only when explicitly enabled and only for effective `user_confirm`
+- Setting a mutating group's policy to `allow` in production — removes all safety gates for every tool in that group
+- Tagging a tool `GroupSystem` without careful consideration — it bypasses everything; leaving a tool's group undeclared is equally wrong (it fails closed everywhere, including tool budgets and verifier sets)
+- Relying on the **advisory** judge as a primary safety mechanism — it is on-demand only; Smart Approve's strict judge is a gate, but only when explicitly enabled, only for effective `user_confirm`, and **hard** safety reasons (blacklist, SSRF, symlink escape) never pass Smart Approve at all
 - Implementing confirmation timeout — blocking indefinitely is intentional (user may be away)
 
 ## Related Specs

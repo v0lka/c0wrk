@@ -3,60 +3,47 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// checkSymlinksAndConfirm is the integration method called from ToolRegistry.Execute().
-// It detects symlinks in the tool input and, if found, forces confirmation
-// (respecting sdktools.PolicyAlwaysDeny). Returns intercepted=true if the call was handled.
-func (r *ToolRegistry) checkSymlinksAndConfirm(ctx context.Context, tool sdktools.Tool, name string, input json.RawMessage) (intercepted bool, result sdktools.ToolResult, err error) {
+// symlinkHardReason returns a HARD confirmation reason when the tool input
+// contains symlink traversals that ESCAPE the session roots, or shell input
+// that cannot be resolved at all (unexpandable/dynamic tokens). Returns ""
+// when there is nothing to escalate.
+//
+// A symlink whose resolution stays INSIDE the session roots is not a concern:
+// every containment check in the pipeline reasons about resolved paths, so an
+// in-root resolution qualifies for auto-approval exactly like a direct path.
+// Benign OS-level infrastructure (well-known OS symlinks such as /tmp →
+// /private/tmp, or symlinks that are ancestors of a session root) is exempt
+// even when the traversal technically lands outside, so the classification is
+// delegated to sp4rk's IsOSLevelSymlink — os_symlinks.go is the single source
+// of truth shared by the sp4rk symlink walker and this core gate.
+//
+// Unresolvable input escalates fail-closed (hard), mirroring the SSRF judge's
+// "unassessable" posture. The deny policy is enforced by Execute before this
+// runs, so an escape never bypasses an explicit deny.
+func (r *ToolRegistry) symlinkHardReason(ctx context.Context, name string, tool sdktools.Tool, input json.RawMessage) string {
 	inside, outside, suspicious := sdktools.DetectSymlinksInToolInput(ctx, name, input, tool.InputSchema(), r.log())
 	if len(inside) == 0 && len(outside) == 0 && !suspicious {
-		return false, sdktools.ToolResult{}, nil
+		return ""
 	}
 
-	// If every detected symlink traversal is benign OS-level infrastructure
-	// (a well-known OS symlink, or a symlink that is an ancestor of any session
-	// root), skip the confirmation gate. Classification is delegated to sp4rk's
-	// IsOSLevelSymlink so the well-known list is never duplicated here —
-	// os_symlinks.go is the single source of truth shared by both the sp4rk
-	// symlink walker and this core gate. All session roots (workspace, temp dir,
-	// and auxiliary work directories) are legitimate targets reachable through
-	// a symlink.
-	if allTraversalsOSLevel(inside, outside, sdktools.SessionRoots(ctx)...) {
-		return false, sdktools.ToolResult{}, nil
-	}
+	roots := sdktools.SessionRoots(ctx)
 
-	policy := r.resolvePolicy(name, tool)
-	if policy == sdktools.PolicyAlwaysDeny {
-		return true, sdktools.ToolResult{
-			Content: fmt.Sprintf("tool %q blocked by security policy", name),
-			IsError: true,
-		}, nil
-	}
-
-	reasoning := sdktools.FormatSymlinkReasoning(inside, outside, suspicious)
-	result, err = r.confirmAndExecute(ctx, tool, name, input, reasoning)
-	return true, result, err
-}
-
-// allTraversalsOSLevel reports whether every given symlink traversal is benign
-// OS-level infrastructure: a well-known OS symlink, or a symlink that is an
-// ancestor of the workspace or temp root. Returns true for an empty set
-// (nothing to confirm). roots is the set of legitimate session roots
-// (workspace, temp dir) that may legitimately be reached through a symlink.
-func allTraversalsOSLevel(inside, outside []sdktools.SymlinkTraversal, roots ...string) bool {
-	for _, t := range inside {
-		if !sdktools.IsOSLevelSymlink(t.SymlinkAt, roots...) {
-			return false
-		}
-	}
+	// Escapes are only the traversals that are neither OS-level
+	// infrastructure nor resolvable inside the session roots.
+	escapes := make([]sdktools.SymlinkTraversal, 0, len(outside))
 	for _, t := range outside {
 		if !sdktools.IsOSLevelSymlink(t.SymlinkAt, roots...) {
-			return false
+			escapes = append(escapes, t)
 		}
 	}
-	return true
+	if len(escapes) == 0 && !suspicious {
+		// Only in-root (or OS-level) traversals — acceptable.
+		return ""
+	}
+
+	return sdktools.FormatSymlinkReasoning(inside, escapes, suspicious)
 }

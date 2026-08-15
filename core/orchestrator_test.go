@@ -28,6 +28,7 @@ type mockTool struct {
 	name        string
 	description string
 	result      tools.ToolResult
+	group       tools.ToolGroup
 }
 
 func (m *mockTool) Name() string                    { return m.name }
@@ -35,23 +36,27 @@ func (m *mockTool) Description() string             { return m.description }
 func (m *mockTool) InputSchema() json.RawMessage    { return json.RawMessage(`{"type":"object"}`) }
 func (m *mockTool) DefaultPolicy() tools.ToolPolicy { return tools.PolicyAlwaysAllow }
 func (m *mockTool) IsUntrusted() bool               { return false }
+func (m *mockTool) Group() tools.ToolGroup          { return m.group }
 func (m *mockTool) Execute(ctx context.Context, input json.RawMessage) (tools.ToolResult, error) {
 	return m.result, nil
 }
 
-// createTestRegistry creates a ToolRegistry with mock tools for testing.
+// createTestRegistry creates a sp4rk ToolRegistry with mock tools for
+// testing (the plain SDK registry — no c0wrk policy layer involved).
 func createTestRegistry() *tools.ToolRegistry {
 	reg := tools.NewToolRegistry()
 	// Register a mock bash_exec tool
 	reg.Register(&mockTool{
 		name:        "bash_exec",
 		description: "Execute bash commands",
+		group:       tools.GroupExecute,
 		result:      tools.ToolResult{Content: "PASSED:Build succeeded", IsError: false},
 	})
 	// Register a mock write_file tool
 	reg.Register(&mockTool{
 		name:        "write_file",
 		description: "Write files",
+		group:       tools.GroupLocalWrite,
 		result:      tools.ToolResult{Content: "File written", IsError: false},
 	})
 	return reg

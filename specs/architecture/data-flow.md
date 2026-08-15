@@ -41,7 +41,8 @@ core/orchestrator.go: Orchestrator.HandleMessage(ctx, msg, sessionID, opts)
   │      └─ Otherwise: Router.Route(ctx, msg, tools, history, skills)
   │           → RoutingDecision {domain, complexity, matchedSkills}
   │           → Emitter.Routing("conductor", domain, complexity)
-  │           → Activate matched skills + apply skill-derived tool policy overrides
+  │           → Activate matched skills (skills narrow the available toolset;
+             policy comes from security.groups only — ADR-024)
   │
   ├─ 2. CONDUCTOR: runConductor() — a single ReAct loop owns the task end-to-end
   │      ├─ Executor drives the Conductor: LLM ↔ tool-call ↔ observe ↔ repeat
@@ -193,20 +194,25 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
   ├─ 1. Lookup tool by name
   ├─ 2. Required-field validation (defense-in-depth) — reject inputs missing
   │      a JSON Schema "required" top-level key
-  ├─ 3. Disabled-tools check (No Project mode) — applies to ALL tools, including internal
-  ├─ 4. Internal tool? → execute immediately, bypass policy/judge (disabled check above still applies)
+  ├─ 3. Disabled-tools check (No Project mode) — applies to ALL tools, including system-group
+  ├─ 4. Tool's group == system? → execute immediately, bypass policy/judge (disabled check above still applies)
   ├─ 5. Register PostExecuteHook (deferred, runs on every non-early return path)
-  ├─ 6. Extra shell blacklist check (per-session, e.g. No Project mode) — bash_exec/posh_exec only
+  ├─ 6. Extra shell blacklist check (per-session, e.g. No Project mode) — bash_exec/posh_exec only;
+  │      hard block, reason names the matched pattern
   ├─ 7. PreExecuteHook? → call (may block for indexing gate)
-  ├─ 8. Symlink gate: detect symlinks in input paths → force confirmation
-  ├─ 9. Resolve policy: per-tool > skill > default > tool's own
-  ├─ 10. PolicyAlwaysAllow Judge gate: ToolJudger flags call (reason != "")? → confirmation
-  ├─ 11. Auto-approval check (PolicyAlwaysAllow only): all paths in session roots? → execute
-  └─ 12. Apply policy:
-       ├─ AlwaysAllow → execute (Judge gate already ran above)
-       ├─ AlwaysDeny → return error result
-       └─ UserConfirm → confirmFunc() blocks until user responds
-                (session-root auto-approve of write tools via autoApproveWorkspaceWrites + ToolJudger may short-circuit)
+  ├─ 8. Group policy == deny? → return error result (hard block, names the group)
+  ├─ 9. Gather safety signals once: ToolJudger outcome (hard: blacklist/SSRF;
+  │      soft: path containment) + symlink analysis (escape/unresolvable = hard;
+  │      resolution staying inside the roots = not a concern)
+  └─ 10. Branch on the tool's GROUP policy (security.groups, ADR-024; unconfigured
+         group → fail-safe user_confirm):
+       ├─ allow → hard reason ⇒ confirm (DisableJudge=true, never passes Smart Approve);
+       │          soft reason ⇒ Smart Approve may allow, else confirm; clean ⇒ execute
+       ├─ deny → return error result (step 8)
+       └─ user_confirm → confirmFunc() blocks until user responds
+                (local_write + auto_approve_workspace_writes + Judge.Allow ⇒ execute;
+                 hard reason ⇒ confirm with DisableJudge=true; otherwise Smart Approve
+                 evaluates: strict ALLOW ⇒ execute, anything else ⇒ confirm)
                 │
                 ▼ (if confirmed)
          tool.Execute(ctx, input)
