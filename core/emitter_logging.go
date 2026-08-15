@@ -80,6 +80,16 @@ func (l *loggingEmitter) SetDisplayContextWindow(window int) {
 	}
 }
 
+// SetDisplayContextWindowForModel delegates to the inner emitter if it
+// supports model-scoped display-window injection, so the lazy probe's
+// late-arriving runtime window can refresh the status bar through the
+// logging wrapper.
+func (l *loggingEmitter) SetDisplayContextWindowForModel(model string, window int) {
+	if s, ok := l.inner.(DisplayContextWindowForModelSetter); ok {
+		s.SetDisplayContextWindowForModel(model, window)
+	}
+}
+
 // SetLastModel delegates to the inner emitter if it supports last-model
 // injection, so the orchestrator can route the selected model/family through
 // the logging wrapper for immediate context_fill synchronization.

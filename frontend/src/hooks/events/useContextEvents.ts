@@ -3,8 +3,55 @@
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isContextFillData, isContextCompactionData, isSessionTokensData } from '@/types/events'
+import type { ContextFillData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
+import type { TokenInfo } from '@/types/models'
 import { generateMessageId } from '@/lib/ids'
+
+/** Minimal store surface handleContextFill needs — the chatStore subset. */
+export interface ContextFillStore {
+  setStepContextFill: (stepId: string, fill: number) => void
+  setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
+}
+
+/**
+ * Applies a context_fill event to the store.
+ *
+ * Two shapes arrive on this channel:
+ * - Step-scoped copies (plan_step_id set — subagent/executor steps): update
+ *   only the step fill and the token totals. A subagent's own fill must not
+ *   clobber the conductor's session-level fill the status bar renders.
+ * - Session-root events (no plan_step_id — conductor emissions AND the
+ *   SetDisplayContextWindowForModel re-broadcast that corrects the window
+ *   after a lazy local-model probe lands): also refresh the session-level
+ *   fill_percent/used_tokens/max_tokens. Without this merge, a window
+ *   correction arriving after the last LLM call (idle status bar) would
+ *   never reach the UI — the next session_tokens event only comes with the
+ *   next LLM call.
+ *
+ * The optional-spread guards mirror the session_tokens handler: the type
+ * guard (isContextFillData) does not verify these fields, so coercing an
+ * absent value to 0 would overwrite a previously-valid fill.
+ */
+export function handleContextFill(store: ContextFillStore, sessionId: string, data: ContextFillData): void {
+  const totals: Partial<TokenInfo> = {
+    total_input_tokens: data.session_input_tokens ?? 0,
+    total_output_tokens: data.session_output_tokens ?? 0,
+    model: data.model,
+    family: data.family,
+  }
+  if (data.plan_step_id) {
+    store.setStepContextFill(data.plan_step_id, data.fill_percent)
+    store.setSessionTokens(sessionId, totals)
+    return
+  }
+  store.setSessionTokens(sessionId, {
+    ...totals,
+    ...(typeof data.fill_percent === 'number' ? { fill_percent: data.fill_percent } : {}),
+    ...(typeof data.used_tokens === 'number' ? { used_tokens: data.used_tokens } : {}),
+    ...(typeof data.max_tokens === 'number' ? { max_tokens: data.max_tokens } : {}),
+  })
+}
 
 export function useContextEvents(sessionId: string | null): void {
   useEffect(() => {
@@ -16,16 +63,7 @@ export function useContextEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'context_fill', (data) => {
         if (!isContextFillData(data)) { reportDroppedEvent('context_fill', data); return }
-        const store = useChatStore.getState()
-        if (data.plan_step_id) {
-          store.setStepContextFill(data.plan_step_id, data.fill_percent)
-        }
-        store.setSessionTokens(sessionId, {
-          total_input_tokens: data.session_input_tokens ?? 0,
-          total_output_tokens: data.session_output_tokens ?? 0,
-          model: data.model,
-          family: data.family,
-        })
+        handleContextFill(useChatStore.getState(), sessionId, data)
       }),
     )
 
@@ -47,10 +85,11 @@ export function useContextEvents(sessionId: string | null): void {
     // --- session_tokens ---
     // Carries the conductor's context-window fill_percent (guarded server-side by
     // the isSessionRoot emitter, so subagent emissions never leak their own fill).
-    // context_fill events deliberately omit fill_percent here; with merge
-    // semantics they update only token totals, preserving the session-level fill.
-    // used_tokens/max_tokens follow the same session-root-only cache path as
-    // fill_percent, so the status bar can render a "N of M" tooltip.
+    // Session-root context_fill events (see handleContextFill) update the same
+    // cached fill; step-scoped ones update only token totals, preserving the
+    // session-level fill. used_tokens/max_tokens follow the same
+    // session-root-only cache path as fill_percent, so the status bar can
+    // render a "N of M" tooltip.
     cleanups.push(
       onSessionEvent(sessionId, 'session_tokens', (data) => {
         if (!isSessionTokensData(data)) { reportDroppedEvent('session_tokens', data); return }

@@ -141,7 +141,9 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 			if reg != nil {
 				meta, _ := reg.ResolveLocal(modelName)
 				family = meta.Family
-				vision = meta.Capabilities.Attachment
+				// ResolveLocal output is enriched (non-nil capabilities), but
+				// guard anyway: a raw/partial record must not panic the listing.
+				vision = meta.Capabilities != nil && meta.Capabilities.Attachment
 			}
 
 			info := ModelInfo{
@@ -793,6 +795,15 @@ func (f *FrontendAPI) GetModelConfig(model string) (ModelConfigResponse, error) 
 
 	defMeta, _ := llm.ResolveBuiltInModel(model)
 
+	// defMeta.Capabilities is a pointer (nil = inherit); the response DTO
+	// carries the effective value type. ResolveBuiltInModel always resolves
+	// to non-nil capabilities (catalog or the optimistic fallback), but guard
+	// so a future nil-returning path degrades to all-false instead of panicking.
+	defCaps := llm.ModelCapabilities{}
+	if defMeta.Capabilities != nil {
+		defCaps = *defMeta.Capabilities
+	}
+
 	resp := ModelConfigResponse{
 		Model:                model,
 		ContextWindow:        defMeta.ContextWindow,
@@ -800,13 +811,13 @@ func (f *FrontendAPI) GetModelConfig(model string) (ModelConfigResponse, error) 
 		TokenizerType:        defMeta.TokenizerType,
 		Family:               defMeta.Family,
 		Protocol:             string(defMeta.Protocol),
-		Capabilities:         defMeta.Capabilities,
+		Capabilities:         defCaps,
 		DefaultContextWindow: defMeta.ContextWindow,
 		DefaultOutputLimit:   defMeta.OutputLimit,
 		DefaultTokenizerType: defMeta.TokenizerType,
 		DefaultFamily:        defMeta.Family,
 		DefaultProtocol:      string(defMeta.Protocol),
-		DefaultCapabilities:  defMeta.Capabilities,
+		DefaultCapabilities:  defCaps,
 	}
 
 	if override, ok := f.config.LLM.Models[model]; ok {
@@ -881,11 +892,16 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 	}
 
 	defMeta, _ := llm.ResolveBuiltInModel(model)
+	defCaps := llm.ModelCapabilities{}
+	if defMeta.Capabilities != nil {
+		defCaps = *defMeta.Capabilities
+	}
 
 	// Record the "inherit" sentinel for any field that matches the built-in
-	// default — the override-seeding merge in buildRouter treats the sentinel
-	// as "inherit default", so storing the default value verbatim would be
-	// redundant. Capabilities is compared by value (nil = inherit).
+	// default — buildRouter seeds the override PARTIAL (only explicitly set
+	// fields), and the registry treats a zero/empty sentinel as "inherit from
+	// lower tiers", so storing the default value verbatim would be redundant.
+	// Capabilities is compared by value (nil = inherit).
 	var newCW, newOL int
 	var newTok, newFam, newProto string
 	var newCaps *llm.ModelCapabilities
@@ -905,7 +921,7 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 	if req.Protocol != string(defMeta.Protocol) {
 		newProto = req.Protocol
 	}
-	if req.Capabilities != nil && *req.Capabilities != defMeta.Capabilities {
+	if req.Capabilities != nil && *req.Capabilities != defCaps {
 		newCaps = req.Capabilities
 	}
 

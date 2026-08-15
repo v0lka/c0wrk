@@ -775,7 +775,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	o.wireAttachmentNameResolver(bb)
 
 	// Emit initial context_fill
-	o.emitInitialContextFill(ctx)
+	o.emitInitialContextFill()
 
 	// Resolve effective domain/complexity for the resumed execution. The task
 	// is NOT re-routed: a persisted routing decision is reused so the system
@@ -1160,11 +1160,19 @@ func (o *Orchestrator) capAgentsMD(content string) string {
 // the user-facing fill display (status bar, compaction messages) is computed
 // relative to the real window, not the internal "effective max" the executor
 // uses for compaction.
-func (o *Orchestrator) emitInitialContextFill(ctx context.Context) {
+//
+// Resolution is deliberately ResolveLocal (network-free): this runs on every
+// HandleMessage on the UI-critical path, where a full Resolve could fire a
+// HuggingFace lookup (10s timeout) for an unknown self-hosted model id and
+// stall the initial fill. The local tiers cover the meaningful sources —
+// config override, observed runtime (lazy server probe), built-in catalog,
+// lazy cache — and a late-arriving probe result refreshes the display via
+// SetDisplayContextWindowForModel once it lands.
+func (o *Orchestrator) emitInitialContextFill() {
 	var contextWindow int
 	if o.modelRegistry != nil {
 		model := o.config.Model
-		meta, _ := o.modelRegistry.Resolve(ctx, model)
+		meta, _ := o.modelRegistry.ResolveLocal(model)
 		if meta.ContextWindow > 0 {
 			contextWindow = meta.ContextWindow
 		}

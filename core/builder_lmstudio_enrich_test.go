@@ -75,7 +75,7 @@ func TestBuildLocalModelProbe_PopulatesRegistry(t *testing.T) {
 	b := newLocalProbeBuilder(t)
 	registry := llm.NewModelRegistry(nil)
 
-	probe := b.buildLocalModelProbe(cfg, registry)
+	probe := b.buildLocalModelProbe(cfg, registry, nil)
 	// The synchronous dispatcher (injected via newLocalProbeBuilder) runs the
 	// network probe inline, so by the time probe() returns the registry is
 	// already populated — no polling or sleep required.
@@ -104,7 +104,7 @@ func TestBuildLocalModelProbe_ClampsOutputLimitToWindow(t *testing.T) {
 	b := newLocalProbeBuilder(t)
 	registry := llm.NewModelRegistry(nil)
 
-	probe := b.buildLocalModelProbe(cfg, registry)
+	probe := b.buildLocalModelProbe(cfg, registry, nil)
 	probe("acme-local-7b")
 
 	meta, _ := registry.Resolve(context.Background(), "acme-local-7b")
@@ -126,7 +126,7 @@ func TestBuildLocalModelProbe_ClampsOutputLimitToWindow(t *testing.T) {
 // fallback path end-to-end through buildLocalModelProbe: when the LM Studio
 // native endpoint is absent (404 on /api/v0/models) but the server exposes
 // max_model_len on /v1/models, the discovered window is written to the
-// registry (SetCachedMetadata) and surfaced by Resolve.
+// registry (SetRuntimeMetadata) and surfaced by Resolve.
 //
 // Note: httptest binds 127.0.0.1, so this test does NOT by itself prove that a
 // public-host provider is probed — the request is served by a loopback address
@@ -173,7 +173,7 @@ func TestBuildLocalModelProbe_OpenAIFallbackPopulatesRegistry(t *testing.T) {
 	b := newLocalProbeBuilder(t)
 	registry := llm.NewModelRegistry(nil)
 
-	probe := b.buildLocalModelProbe(cfg, registry)
+	probe := b.buildLocalModelProbe(cfg, registry, nil)
 	probe(model)
 
 	meta, _ := registry.Resolve(context.Background(), model)
@@ -205,7 +205,7 @@ func TestBuildLocalModelProbe_SkipsNonOpenAIProvider(t *testing.T) {
 	b := newLocalProbeBuilder(t)
 	registry := llm.NewModelRegistry(nil)
 
-	probe := b.buildLocalModelProbe(cfg, registry)
+	probe := b.buildLocalModelProbe(cfg, registry, nil)
 	// Should be a no-op: no matching local openai provider.
 	probe("acme-test-anthropic-model")
 
@@ -224,7 +224,7 @@ func TestBuildLocalModelProbe_SkipsNonOpenAIProvider(t *testing.T) {
 
 // TestBuildLocalModelProbe_ConfigOverrideWins verifies that a config.yaml
 // override (Resolution tier 1) is never clobbered by a later probe result
-// (tier 3). The user's config always wins.
+// (runtime tier 1.5). The user's config always wins.
 func TestBuildLocalModelProbe_ConfigOverrideWins(t *testing.T) {
 	body := lmStudioModelsPayload(t, lmStudioModel{
 		ID:               "qwen2.5-coder-7b",
@@ -239,7 +239,7 @@ func TestBuildLocalModelProbe_ConfigOverrideWins(t *testing.T) {
 	})
 	b := newLocalProbeBuilder(t)
 
-	probe := b.buildLocalModelProbe(cfg, registry)
+	probe := b.buildLocalModelProbe(cfg, registry, nil)
 	// The synchronous dispatcher runs the probe inline, so by the time probe()
 	// returns the override-vs-cache precedence is already settled.
 	probe("qwen2.5-coder-7b")
@@ -250,6 +250,129 @@ func TestBuildLocalModelProbe_ConfigOverrideWins(t *testing.T) {
 	}
 	if meta.OutputLimit != 2048 {
 		t.Errorf("config override clobbered by probe: got output limit %d, want 2048", meta.OutputLimit)
+	}
+}
+
+// TestBuildLocalModelProbe_RuntimeWindowBeatsBuiltinCatalog is the regression
+// test for the self-hosted context-window bug: a well-known checkpoint served
+// by LM Studio at a RUNTIME context length below the catalog maximum. The
+// catalog entry "qwen/qwen3.6-35b-a3b" pins ContextWindow=262144; when the
+// server reports a runtime window of 32768, the probe's observed value must
+// win — both for the executor's compaction math and the status-bar max.
+// (Before the runtime tier existed, the probe wrote tier 3 and was
+// permanently shadowed by the built-in tier 2.)
+func TestBuildLocalModelProbe_RuntimeWindowBeatsBuiltinCatalog(t *testing.T) {
+	body := lmStudioModelsPayload(t, lmStudioModel{
+		ID:                  "qwen/qwen3.6-35b-a3b",
+		MaxContextLength:    262144, // catalog capability
+		LoadedContextLength: 32768,  // runtime window LM Studio actually serves
+	})
+	srv, _, _ := newLMStudioServer(t, http.StatusOK, body)
+
+	cfg := localProbeCfg(t, srv.URL, "qwen/qwen3.6-35b-a3b")
+	// No user override: registry starts from the built-in catalog.
+	registry := llm.NewModelRegistry(nil)
+	b := newLocalProbeBuilder(t)
+
+	probe := b.buildLocalModelProbe(cfg, registry, nil)
+	probe("qwen/qwen3.6-35b-a3b")
+
+	meta, ok := registry.ResolveLocal("qwen/qwen3.6-35b-a3b")
+	if !ok {
+		t.Fatal("expected model to resolve")
+	}
+	if meta.ContextWindow != 32768 {
+		t.Errorf("runtime window shadowed by catalog: got %d, want 32768", meta.ContextWindow)
+	}
+	if meta.OutputLimit != 8192 {
+		t.Errorf("OutputLimit not clamped to window/4: got %d, want 8192", meta.OutputLimit)
+	}
+}
+
+// TestBuildLocalModelProbe_PartialOverridePlusProbeSurfacesWindow covers the
+// exact reported configuration: a user override pinning ONLY the output limit
+// (context window left to inherit) for a self-hosted, built-in-catalog model.
+// buildRouter must seed the override PARTIAL, so the unset window inherits
+// from the probe's observed runtime tier — not from the catalog spec that the
+// old merge-with-ResolveBuiltInModel seeding pinned into tier 1.
+func TestBuildLocalModelProbe_PartialOverridePlusProbeSurfacesWindow(t *testing.T) {
+	body := lmStudioModelsPayload(t, lmStudioModel{
+		ID:                  "qwen/qwen3.6-35b-a3b",
+		MaxContextLength:    262144,
+		LoadedContextLength: 32768,
+	})
+	srv, _, _ := newLMStudioServer(t, http.StatusOK, body)
+
+	cfg := localProbeCfg(t, srv.URL, "qwen/qwen3.6-35b-a3b")
+	// Partial override exactly as buildRouter now seeds it from a config.yaml
+	// entry that sets only output_limit (ContextWindow 0 = inherit).
+	registry := llm.NewModelRegistry(map[string]llm.ModelMetadata{
+		"qwen/qwen3.6-35b-a3b": {OutputLimit: 65536},
+	})
+	b := newLocalProbeBuilder(t)
+
+	probe := b.buildLocalModelProbe(cfg, registry, nil)
+	probe("qwen/qwen3.6-35b-a3b")
+
+	meta, _ := registry.ResolveLocal("qwen/qwen3.6-35b-a3b")
+	if meta.ContextWindow != 32768 {
+		t.Errorf("window did not inherit from runtime probe: got %d, want 32768", meta.ContextWindow)
+	}
+	if meta.OutputLimit != 65536 {
+		t.Errorf("user-pinned output limit not authoritative: got %d, want 65536", meta.OutputLimit)
+	}
+}
+
+// TestBuildLocalModelProbe_OnWindowCallbackFires verifies the probe notifies
+// its caller with the discovered window, so the orchestrator-side wiring can
+// refresh the emitter's display window (status bar) mid-task.
+func TestBuildLocalModelProbe_OnWindowCallbackFires(t *testing.T) {
+	body := lmStudioModelsPayload(t, lmStudioModel{
+		ID:               "qwen2.5-coder-7b",
+		MaxContextLength: 262144,
+	})
+	srv, _, _ := newLMStudioServer(t, http.StatusOK, body)
+
+	cfg := localProbeCfg(t, srv.URL, "qwen2.5-coder-7b")
+	registry := llm.NewModelRegistry(nil)
+	b := newLocalProbeBuilder(t)
+
+	var gotModel string
+	var gotWindow int
+	probe := b.buildLocalModelProbe(cfg, registry, func(model string, window int) {
+		gotModel, gotWindow = model, window
+	})
+	probe("qwen2.5-coder-7b")
+
+	if gotModel != "qwen2.5-coder-7b" {
+		t.Errorf("callback model = %q, want qwen2.5-coder-7b", gotModel)
+	}
+	if gotWindow != 262144 {
+		t.Errorf("callback window = %d, want 262144", gotWindow)
+	}
+}
+
+// TestBuildLocalModelProbe_OnWindowCallbackNotFiredOnMiss verifies the
+// callback stays silent when the server reports no window (cloud providers),
+// so the display window is not clobbered with a zero/garbage value.
+func TestBuildLocalModelProbe_OnWindowCallbackNotFiredOnMiss(t *testing.T) {
+	// /v1/models-style listing without any window field (a genuine cloud API).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := localProbeCfg(t, srv.URL, "gpt-4o")
+	registry := llm.NewModelRegistry(nil)
+	b := newLocalProbeBuilder(t)
+
+	called := false
+	probe := b.buildLocalModelProbe(cfg, registry, func(string, int) { called = true })
+	probe("gpt-4o")
+
+	if called {
+		t.Error("callback fired although no window was discovered")
 	}
 }
 

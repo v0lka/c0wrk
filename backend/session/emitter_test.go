@@ -564,6 +564,112 @@ func TestEventEmitterEmitSessionTokensForwardsDisplayFill(t *testing.T) {
 	}
 }
 
+// TestEventEmitterSetDisplayContextWindowForModel_MidTaskRefresh verifies the
+// late-arriving probe refresh: after a fill was reported on the pre-probe
+// (catalog) basis, the model-scoped correction swaps the display window and
+// re-broadcasts a context_fill on the corrected basis, so an idle status bar
+// shows the observed runtime window without waiting for the next message.
+func TestEventEmitterSetDisplayContextWindowForModel_MidTaskRefresh(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SetLastModel("qwen/qwen3.6-35b-a3b", "qwen")
+	// Pre-probe fill on the catalog basis (262144).
+	emitter.SetDisplayContextWindow(262_144)
+	emitter.ContextFill(15.0, 40_000, 190_000, "ok", "step_1")
+
+	// The LM Studio probe observes the runtime window (32768).
+	emitter.SetDisplayContextWindowForModel("qwen/qwen3.6-35b-a3b", 32_768)
+
+	data, ok := received.Data.(ContextFillEventData)
+	if !ok {
+		t.Fatalf("expected re-broadcast ContextFillEventData, got %T", received.Data)
+	}
+	if data.MaxTokens != 32_768 {
+		t.Errorf("re-broadcast MaxTokens = %v, want 32768", data.MaxTokens)
+	}
+	wantPercent := float64(40_000) / float64(32_768) * 100
+	if data.FillPercent != wantPercent {
+		t.Errorf("re-broadcast FillPercent = %v, want %v (runtime basis)", data.FillPercent, wantPercent)
+	}
+	if data.UsedTokens != 40_000 {
+		t.Errorf("re-broadcast UsedTokens = %v, want 40000", data.UsedTokens)
+	}
+	if data.Model != "qwen/qwen3.6-35b-a3b" {
+		t.Errorf("re-broadcast Model = %q, want qwen/qwen3.6-35b-a3b", data.Model)
+	}
+
+	// A subsequent executor fill on the OLD internal basis is recomputed
+	// against the refreshed display window.
+	emitter.ContextFill(50.0, 20_000, 25_000, "ok", "step_2")
+	data, ok = received.Data.(ContextFillEventData)
+	if !ok {
+		t.Fatalf("expected ContextFillEventData, got %T", received.Data)
+	}
+	if data.MaxTokens != 32_768 {
+		t.Errorf("post-refresh fill MaxTokens = %v, want 32768", data.MaxTokens)
+	}
+}
+
+// TestEventEmitterSetDisplayContextWindowForModel_StaleModelDropped verifies
+// the model guard: a probe result for a model the user has already switched
+// away from must NOT corrupt the current model's display window.
+func TestEventEmitterSetDisplayContextWindowForModel_StaleModelDropped(t *testing.T) {
+	var received Event
+	emit := func(e Event) { received = e }
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SetLastModel("glm-5.2", "glm")
+	emitter.SetDisplayContextWindow(200_000)
+	emitter.ContextFill(10.0, 20_000, 180_000, "ok", "")
+
+	// Late probe result for the PREVIOUS model arrives after the switch.
+	emitter.SetDisplayContextWindowForModel("qwen/qwen3.6-35b-a3b", 32_768)
+
+	// No re-broadcast, and the display basis stays on the current model's window.
+	data, ok := received.Data.(ContextFillEventData)
+	if !ok {
+		t.Fatalf("expected ContextFillEventData, got %T", received.Data)
+	}
+	if data.MaxTokens != 200_000 {
+		t.Errorf("stale probe corrupted display window: MaxTokens = %v, want 200000", data.MaxTokens)
+	}
+
+	emitter.ContextFill(10.0, 20_000, 180_000, "ok", "")
+	data, _ = received.Data.(ContextFillEventData)
+	if data.MaxTokens != 200_000 {
+		t.Errorf("display basis changed by stale probe: MaxTokens = %v, want 200000", data.MaxTokens)
+	}
+}
+
+// TestEventEmitterSetDisplayContextWindowForModel_NoFillNoRebroadcast verifies
+// that when no fill has been reported yet (used == 0, e.g. the probe lands
+// before the first LLM call), the window is applied silently without emitting
+// a bogus 0%-fill event; the first real ContextFill then uses the corrected
+// basis.
+func TestEventEmitterSetDisplayContextWindowForModel_NoFillNoRebroadcast(t *testing.T) {
+	var received Event
+	var emits int
+	emit := func(e Event) { received = e; emits++ }
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SetDisplayContextWindowForModel("qwen/qwen3.6-35b-a3b", 32_768)
+
+	if emits != 0 {
+		t.Fatalf("expected no event emission on empty fill cache, got %d", emits)
+	}
+
+	emitter.ContextFill(25.0, 8_000, 24_000, "ok", "")
+	data, ok := received.Data.(ContextFillEventData)
+	if !ok {
+		t.Fatalf("expected ContextFillEventData, got %T", received.Data)
+	}
+	if data.MaxTokens != 32_768 {
+		t.Errorf("MaxTokens = %v, want corrected 32768", data.MaxTokens)
+	}
+}
+
 // TestEventEmitterContextCompactionScaling verifies that compaction before/after
 // percentages are scaled from the internal effective-max basis to the display
 // (real window) basis so the "compacted from X% to Y%" message is consistent

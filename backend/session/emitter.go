@@ -168,6 +168,70 @@ func (e *EventEmitter) SetDisplayContextWindow(window int) {
 	e.tokens.displayContextWindow = window
 }
 
+// SetDisplayContextWindowForModel applies a LATE-ARRIVING display-window
+// correction discovered by the lazy self-hosted server probe (LM Studio /
+// vLLM / Ollama). The initial context_fill of a task is emitted before the
+// async probe completes, so it carries the pre-probe window (catalog spec or
+// fallback); this method lets the probe's observed runtime window correct the
+// status bar mid-task instead of waiting for the next message.
+//
+// The update is MODEL-SCOPED: when the most recently reported model is known
+// and differs from `model`, the update is dropped — the user switched models
+// after the probe was fired, and a stale window would corrupt the new model's
+// display (the new model's own probe or the next initial context_fill
+// supplies the correct value). An empty lastModel (nothing reported yet)
+// accepts the update: the probe was fired for the session's active model.
+//
+// When a fill has already been reported (used > 0) on the session root, a
+// refreshed context_fill event is re-broadcast on the new basis so an idle
+// status bar corrects immediately; during active execution the next executor
+// fill would correct it anyway, but no further events arrive after a task
+// ends.
+func (e *EventEmitter) SetDisplayContextWindowForModel(model string, window int) {
+	if window <= 0 {
+		return
+	}
+	e.tokens.mu.Lock()
+	if e.tokens.lastModel != "" && !strings.EqualFold(e.tokens.lastModel, model) {
+		e.tokens.mu.Unlock()
+		return
+	}
+	e.tokens.displayContextWindow = window
+	if !e.isSessionRoot || e.tokens.lastUsedTokens <= 0 {
+		e.tokens.mu.Unlock()
+		return
+	}
+	// Snapshot the cached fill state for the re-broadcast, then emit outside
+	// the tokens lock (emitEvent takes e.mu).
+	used := e.tokens.lastUsedTokens
+	status := e.tokens.lastFillStatus
+	totalIn := e.tokens.sessionInputTokens
+	totalOut := e.tokens.sessionOutputTokens
+	lastModel := e.tokens.lastModel
+	lastFamily := e.tokens.lastFamily
+	percent := float64(used) / float64(window) * 100
+	e.tokens.lastFillPercent = percent
+	e.tokens.lastMaxTokens = window
+	e.tokens.mu.Unlock()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "context_fill",
+		Data: ContextFillEventData{
+			FillPercent:         percent,
+			UsedTokens:          used,
+			MaxTokens:           window,
+			Status:              status,
+			SessionInputTokens:  totalIn,
+			SessionOutputTokens: totalOut,
+			Model:               lastModel,
+			Family:              lastFamily,
+		},
+	})
+}
+
 // SetToolCallIDSink registers a callback invoked after each ToolCall with the
 // tool name and the generated tool_call_id. The session Manager sets it so the
 // desktop-layer confirmation callback can attach the matching tool_call_id to

@@ -147,6 +147,25 @@ type DisplayContextWindowSetter interface {
 	SetDisplayContextWindow(window int)
 }
 
+// DisplayContextWindowForModelSetter is an optional interface that Emitter
+// implementations can implement to accept a LATE-ARRIVING, model-scoped
+// display-window correction.
+//
+// The initial context_fill of every task injects the display window resolved
+// at HandleMessage start — before the async self-hosted server probe (LM
+// Studio / vLLM) has completed, so it carries the catalog spec or fallback
+// window. When the probe lands mid-task, the orchestrator-side probe callback
+// pushes the observed runtime window through this interface so the status
+// bar's context max corrects without waiting for the next message.
+//
+// The `model` argument lets the emitter guard against a stale probe: when the
+// most recently reported model differs, the update is dropped (the user has
+// switched models since the probe was fired; the new model's own probe — or
+// the next emitInitialContextFill — will supply the correct window).
+type DisplayContextWindowForModelSetter interface {
+	SetDisplayContextWindowForModel(model string, window int)
+}
+
 // LastModelSetter is an optional interface that Emitter implementations can
 // implement so the model surfaced in context_fill / session_tokens events is
 // synchronized the instant a per-request model override is applied — before

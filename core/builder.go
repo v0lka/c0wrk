@@ -597,7 +597,17 @@ func (b *OrchestratorBuilder) Build(
 	// per-session model registry so the discovered context window lands exactly
 	// where Resolve will read it. The probe is a harmless no-op for cloud-only
 	// setups (their /v1/models listing omits the context-window field).
-	localProbe := b.buildLocalModelProbe(cfg, modelReg)
+	//
+	// The onWindow callback pushes a late-arriving probe result into the
+	// emitter's display window so the status bar corrects MID-task: the initial
+	// context_fill (emitted at HandleMessage start, before the async probe
+	// completes) carries the pre-probe window (catalog spec / fallback), and
+	// without this refresh it would stay wrong for the entire first task.
+	localProbe := b.buildLocalModelProbe(cfg, modelReg, func(model string, window int) {
+		if setter, ok := emitter.(DisplayContextWindowForModelSetter); ok {
+			setter.SetDisplayContextWindowForModel(model, window)
+		}
+	})
 	// Probe the session's default model once at construction so the first
 	// request benefits from the real context window if it is served by an
 	// OpenAI-compatible endpoint.
@@ -1483,45 +1493,41 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 
 	// Only config.yaml-derived user overrides are seeded into the registry at
 	// construction (Resolution tier 1). LM Studio / local-server context-window
-	// discovery is performed lazily per-session — see Build + probeLocalModel —
-	// and written into the registry via SetCachedMetadata (tier 3) so config
-	// always wins and the network is never touched at startup.
+	// discovery is performed lazily per-session (see Build + buildLocalModelProbe)
+	// and written into the registry via SetRuntimeMetadata (tier 1.5, ABOVE the
+	// built-in catalog) so the server's observed runtime window beats the
+	// catalog spec, while an explicit config.yaml value still wins.
 	//
-	// A partial override (one with a 0/empty/nil field) inherits the
-	// corresponding value from the built-in catalog via ResolveBuiltInModel, so
-	// e.g. overriding only the context window keeps the model's built-in output
-	// limit, tokenizer, family, capabilities, and protocol intact. For an
-	// unknown model the built-in resolver returns the fallback defaults, which
-	// is the prior behaviour.
+	// Entries are seeded PARTIAL: only the fields the user actually set are
+	// carried (unset scalars stay zero/empty = inherit), and the registry's
+	// enrichPartialOverride fills the rest at Resolve time from the tiers
+	// below (observed runtime -> built-in catalog -> cache -> fallback).
+	// Merging ResolveBuiltInModel values HERE — as an earlier version did —
+	// pins the catalog window (262144) or the fallback (128000) into tier 1,
+	// permanently shadowing both the lazy server probe and the model's real
+	// non-standard window: a user override pinning only the output limit still
+	// carried a wrong context window at tier 1.
 	//
-	// Capabilities is overridden atomically: a non-nil override replaces all
-	// four flags at once (there is no per-flag partial override), matching the
-	// dialog's "submit the full capability set" UX. TokenizerType/Family/
-	// Protocol are string sentinels — empty = inherit (DetectProtocol/
-	// resolveFamily derive the effective value at Resolve time), non-empty =
-	// authoritative override.
+	// Capabilities is overridden atomically via its pointer: nil = inherit
+	// (the registry fills the effective set from the tiers below), non-nil =
+	// authoritative — including an all-false set, which is exactly why the
+	// field is a pointer (a value struct could not distinguish "user disabled
+	// everything" from "user set nothing"). There is no per-flag partial
+	// override, matching the dialog's "submit the full capability set" UX.
+	// TokenizerType/Family/Protocol are string sentinels — empty = inherit
+	// (DetectProtocol/resolveFamily derive the effective value at Resolve
+	// time), non-empty = authoritative override.
 	overrides := make(map[string]llm.ModelMetadata)
 	for name, override := range cfg.LLM.Models {
-		base, _ := llm.ResolveBuiltInModel(name)
-		if override.ContextWindow > 0 {
-			base.ContextWindow = override.ContextWindow
+		entry := llm.ModelMetadata{
+			ContextWindow: override.ContextWindow,
+			OutputLimit:   override.OutputLimit,
+			TokenizerType: override.TokenizerType,
+			Family:        override.Family,
+			Protocol:      llm.APIProtocol(override.Protocol),
+			Capabilities:  override.Capabilities,
 		}
-		if override.OutputLimit > 0 {
-			base.OutputLimit = override.OutputLimit
-		}
-		if override.TokenizerType != "" {
-			base.TokenizerType = override.TokenizerType
-		}
-		if override.Family != "" {
-			base.Family = override.Family
-		}
-		if override.Protocol != "" {
-			base.Protocol = llm.APIProtocol(override.Protocol)
-		}
-		if override.Capabilities != nil {
-			base.Capabilities = *override.Capabilities
-		}
-		overrides[name] = base
+		overrides[name] = entry
 	}
 
 	// Auto-remap the Google protocol for Gemma/Gemini checkpoints served by a
@@ -1638,13 +1644,13 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 // carries the built-in Capabilities (so multimodal flag is preserved), but
 // leaves ContextWindow / OutputLimit / TokenizerType at their zero values. The
 // ModelRegistry then inherits those unset scalars from its lower non-network
-// tiers at Resolve time (built-in catalog → cache → fallback). This is
-// essential because the lazy model probe (buildLocalModelProbe) writes the
-// model's REAL context window to the cache tier via SetCachedMetadata; a
-// wholesale override that also carried the catalog/fallback window (128000 for
-// a catalog miss) would permanently shadow that probe result, leaving the
-// context-fill accounting and compaction thresholds pinned to an inflated
-// window.
+// tiers at Resolve time (observed runtime -> built-in catalog -> cache ->
+// fallback). This is essential because the lazy model probe
+// (buildLocalModelProbe) writes the model's REAL runtime context window via
+// SetRuntimeMetadata; a wholesale override that also carried the
+// catalog/fallback window (128000 for a catalog miss) would permanently shadow
+// that probe result, leaving the context-fill accounting and compaction
+// thresholds pinned to an inflated window.
 //
 // An explicit protocol override seeded from cfg.LLM.Models (already present in
 // overrides with a non-empty protocol) is respected: the user's choice always
@@ -1683,7 +1689,7 @@ func remapLocalGoogleProtocols(
 // buildLocalModelProbe returns a LocalModelProbe that, for the given model,
 // locates its OpenAI-compatible provider and fires an asynchronous
 // context-window probe whose result is written into the per-session model
-// registry via SetCachedMetadata.
+// registry via SetRuntimeMetadata.
 //
 // Any OpenAI-compatible provider is probed — local/LAN (LM Studio), a
 // self-hosted server on a public host (vLLM/TGI/Ollama behind a domain or
@@ -1701,11 +1707,15 @@ func remapLocalGoogleProtocols(
 // The network probe runs on a detached goroutine (dispatched via b.asyncRunner)
 // with a fresh context.Background() (bounded to 3s inside each probe) so it is
 // not tied to the caller's request lifetime and never blocks HandleMessage /
-// session creation. Results land in the registry cache (Resolution tier 3), so
-// a config.yaml override (tier 1) or a built-in spec (tier 2) always wins.
-// Tests override asyncRunner to run the probe synchronously, making assertions
-// deterministic without polling.
-func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry *llm.ModelRegistry) LocalModelProbe {
+// session creation. Results land in the registry's observed-runtime tier
+// (Resolution 1.5): above the built-in catalog so the server's enforced
+// runtime window supersedes the checkpoint spec, below a config.yaml override
+// (tier 1) so the user's explicit choice always wins. onWindow, when non-nil,
+// is invoked on the same goroutine with the discovered window, letting the
+// caller refresh user-facing display state (the status bar's context max)
+// mid-task. Tests override asyncRunner to run the probe synchronously, making
+// assertions deterministic without polling.
+func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry *llm.ModelRegistry, onWindow func(model string, window int)) LocalModelProbe {
 	// Snapshot proxyClient under read lock once at probe construction so the
 	// closure does not touch b.mu on every invocation.
 	b.mu.RLock()
@@ -1731,26 +1741,40 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 			if window <= 0 {
 				return
 			}
-			// SetCachedMetadata writes to Resolution tier 3, which is shadowed
-			// by config overrides (tier 1) and built-in specs (tier 2), so a
-			// well-known or user-overridden model is never clobbered.
+			// SetRuntimeMetadata writes to Resolution tier 1.5 — ABOVE the
+			// built-in catalog and the lazy cache, BELOW a config.yaml
+			// override (tier 1) — so the user's explicit choice is never
+			// clobbered. A tier-3 write (SetCachedMetadata) is NOT enough:
+			// self-hosted servers routinely serve well-known checkpoints at a
+			// runtime context length far below the catalog maximum (LM Studio
+			// loads models at a user-chosen length; the catalog says 262144),
+			// and the catalog tier would permanently shadow the observed
+			// runtime window, pinning compaction budgets and the status-bar
+			// max to a window the server will never honor.
 			//
 			// OutputLimit mirrors the model registry's built-in fallback
 			// (tier 5: 32768) so self-hosted models are not regressed — neither
 			// LM Studio nor vLLM expose a per-model output cap in their model
 			// listings — but is clamped to at most a quarter of the discovered
 			// window. An OutputLimit larger than the context window drives
-			// EffectiveMax negative and silently disables compaction (CheckFill
-			// returns "ok"), so without the clamp a small-context model
+			// EffectiveMax negative and disables compaction (CheckFill reports
+			// "reject"), so without the clamp a small-context model
 			// (7B/13B commonly run at 8K/16K/32K) would grow unbounded until
 			// the API rejects it.
-			registry.SetCachedMetadata(model, llm.ModelMetadata{
+			//
+			// TokenizerType is deliberately left empty: the probe observes
+			// only the window, and a synthetic "approximate" here would sit in
+			// tier 1.5 — ABOVE the built-in catalog — shadowing the exact
+			// tokenizer a well-known checkpoint carries there.
+			registry.SetRuntimeMetadata(model, llm.ModelMetadata{
 				ContextWindow: window,
 				OutputLimit:   min(32768, window/4),
-				TokenizerType: "approximate",
 			})
 			log.Debug("lazy model probe populated context window",
 				"model", model, "context_window", window)
+			if onWindow != nil {
+				onWindow(model, window)
+			}
 		})
 	}
 }

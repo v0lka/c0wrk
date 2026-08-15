@@ -42,7 +42,7 @@ func (o *Orchestrator) prepareRequestContext(ctx context.Context, message string
 	ctx = o.injectVectorSearchHints(ctx, message)
 
 	// Emit initial 0% context_fill so the frontend has a baseline before any LLM call.
-	o.emitInitialContextFill(ctx)
+	o.emitInitialContextFill()
 
 	return ctx
 }
