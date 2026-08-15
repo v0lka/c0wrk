@@ -18,32 +18,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-// jsdom in this environment does not expose window.localStorage, which
-// zustand's persist middleware captures at store-creation time. Polyfill it
-// before any store module is imported so the real inputModeStore works.
-vi.hoisted(() => {
-  const g = globalThis as Record<string, unknown>
-  const win = (g.window as Record<string, unknown> | undefined) ?? g
-  g.IS_REACT_ACT_ENVIRONMENT = true
-  win.IS_REACT_ACT_ENVIRONMENT = true
-  const map = new Map<string, string>()
-  win.localStorage = {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => { map.set(k, v) },
-    removeItem: (k: string) => { map.delete(k) },
-    clear: () => map.clear(),
-    key: (i: number) => Array.from(map.keys())[i] ?? null,
-    get length() { return map.size },
-  }
-  // crypto.randomUUID may be absent in the test runtime; stub it so the
-  // handler's error-path toast id doesn't throw.
-  const c = (g.crypto ?? {}) as Record<string, unknown>
-  if (typeof c.randomUUID !== 'function') {
-    c.randomUUID = () => 'test-uuid-' + Math.random().toString(36).slice(2)
-    g.crypto = c
-  }
-})
-
 import { usePasteHandler } from '@/hooks/usePasteHandler'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
@@ -127,9 +101,14 @@ let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
-  useInputModeStore.setState({ selectedModel: null })
-  useAttachmentsStore.getState().clear()
-  useSessionStore.setState({ sessions: [], activeSessionId: 'sess-1' })
+  // Store mutations run inside act(): roots from earlier tests may still be
+  // mounted and subscribed, so an unwrapped mutation would re-render them
+  // outside act().
+  act(() => {
+    useInputModeStore.setState({ selectedModel: null })
+    useAttachmentsStore.getState().clear()
+    useSessionStore.setState({ sessions: [], activeSessionId: 'sess-1' })
+  })
 
   spies.pasteFromClipboard.mockReset()
   spies.createSession.mockReset()
@@ -158,7 +137,7 @@ describe('usePasteHandler routing', () => {
   })
 
   it('surfaces a localized banner and stages nothing when the image is rejected (non-vision)', async () => {
-    useInputModeStore.setState({ selectedModel: 'novision-m' })
+    act(() => { useInputModeStore.setState({ selectedModel: 'novision-m' }) })
     act(() => { root.render(<Harness />) })
 
     // The backend returns the vision sentinel; the frontend synthesizes the
@@ -192,7 +171,7 @@ describe('usePasteHandler routing', () => {
   })
 
   it('surfaces a banner when pasted image files are skipped (non-vision, kind=files)', async () => {
-    useInputModeStore.setState({ selectedModel: 'novision-m' })
+    act(() => { useInputModeStore.setState({ selectedModel: 'novision-m' }) })
     act(() => { root.render(<Harness />) })
 
     // Clipboard had image files; vision off → backend skipped them and reports
@@ -214,7 +193,7 @@ describe('usePasteHandler routing', () => {
   it('does not clear an existing banner when nothing was staged and nothing skipped', async () => {
     // A concurrent/empty result with no files and no skips must leave an
     // existing banner (e.g. from a concurrent drop) untouched.
-    useAttachmentsStore.getState().setImageError('stale banner from a drop')
+    act(() => { useAttachmentsStore.getState().setImageError('stale banner from a drop') })
     spies.pasteFromClipboard.mockResolvedValue({ kind: 'files', files: [] })
 
     await act(async () => { await runPaste() })
@@ -255,7 +234,7 @@ describe('usePasteHandler routing', () => {
     spies.createSession.mockResolvedValue(newSession)
     spies.pasteFromClipboard.mockResolvedValue({ kind: 'text', files: [], text: 't' })
 
-    useSessionStore.setState({ sessions: [], activeSessionId: null })
+    act(() => { useSessionStore.setState({ sessions: [], activeSessionId: null }) })
     await act(async () => { await runPaste() })
 
     expect(spies.createSession).toHaveBeenCalledOnce()

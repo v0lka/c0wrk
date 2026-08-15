@@ -6,7 +6,6 @@ import { ImageErrorBanner } from './ImageErrorBanner'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
 
 // Enable React's act() flushing in this jsdom environment.
-;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
 
 let root: Root | null = null
 

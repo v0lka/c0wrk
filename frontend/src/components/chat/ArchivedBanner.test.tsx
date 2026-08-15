@@ -4,7 +4,6 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 // Enable React's act() flushing in this jsdom environment.
-;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
 
 // --- Mock the session API wrapper so the test never touches the Wails backend ---
 const { archiveSessionMock } = vi.hoisted(() => ({

@@ -293,7 +293,7 @@ function NumberField({ label, value, onChange, defaultValue, onReset, disabled }
         className="h-9 text-sm"
       />
       <p className="text-xs text-muted-foreground">
-        Default: {defaultValue.toLocaleString()} tokens
+        Default: {defaultValue.toLocaleString('en-US')} tokens
         {isDefault ? ' (using default)' : ' (overridden)'}
       </p>
     </div>

@@ -6,7 +6,6 @@ import { UserMessageMetaBadges } from './UserMessageMetaBadges'
 import type { UserMessageMeta } from '@/lib/userMessageMeta'
 
 // Enable React's act() flushing in this jsdom environment.
-;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
 
 // Mock the file-viewer store so image clicks never reach the real store. We
 // expose both the hook (unused here but imported by the component) and a

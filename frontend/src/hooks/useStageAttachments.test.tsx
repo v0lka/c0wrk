@@ -14,25 +14,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-// jsdom in this environment does not expose window.localStorage, which
-// zustand's persist middleware captures at store-creation time. Polyfill it
-// before any store module is imported so the real inputModeStore works.
-vi.hoisted(() => {
-  const g = globalThis as Record<string, unknown>
-  const win = (g.window as Record<string, unknown> | undefined) ?? g
-  g.IS_REACT_ACT_ENVIRONMENT = true
-  win.IS_REACT_ACT_ENVIRONMENT = true
-  const map = new Map<string, string>()
-  win.localStorage = {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => { map.set(k, v) },
-    removeItem: (k: string) => { map.delete(k) },
-    clear: () => map.clear(),
-    key: (i: number) => Array.from(map.keys())[i] ?? null,
-    get length() { return map.size },
-  }
-})
-
 import { useStageAttachments } from '@/hooks/useStageAttachments'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
@@ -117,9 +98,14 @@ let root: Root
 beforeEach(() => {
   // Reset stores to a clean baseline. Default effective model is non-vision
   // (defaultModel='novision-m'); per-test setState overrides selectedModel.
-  useInputModeStore.setState({ selectedModel: null })
-  useAttachmentsStore.getState().clear()
-  useSessionStore.setState({ sessions: [], activeSessionId: null })
+  // Mutations run inside act(): roots from earlier tests may still be mounted
+  // and subscribed (they are replaced, never unmounted), so an unwrapped
+  // mutation would re-render them outside act().
+  act(() => {
+    useInputModeStore.setState({ selectedModel: null })
+    useAttachmentsStore.getState().clear()
+    useSessionStore.setState({ sessions: [], activeSessionId: null })
+  })
 
   spies.attachFiles.mockReset()
   spies.createSession.mockReset()
@@ -173,7 +159,7 @@ describe('useStageAttachments.stageAttachmentPaths (vision gate)', () => {
   })
 
   it('stages images on a vision model without filtering', async () => {
-    useInputModeStore.setState({ selectedModel: 'vision-m' })
+    act(() => { useInputModeStore.setState({ selectedModel: 'vision-m' }) })
     rerender()
 
     spies.attachFiles.mockResolvedValue([makeAttachment('i1'), makeAttachment('d1')])
@@ -208,10 +194,10 @@ describe('useStageAttachments.stageAttachmentPaths (vision gate)', () => {
   })
 
   it('clears a stale image error on a successful vision-supported stage', async () => {
-    useInputModeStore.setState({ selectedModel: 'vision-m' })
+    act(() => { useInputModeStore.setState({ selectedModel: 'vision-m' }) })
     rerender()
     // Seed a stale error from a previous failed attempt.
-    useAttachmentsStore.getState().setImageError('stale')
+    act(() => { useAttachmentsStore.getState().setImageError('stale') })
 
     spies.attachFiles.mockResolvedValue([makeAttachment('a1')])
 
@@ -233,7 +219,7 @@ describe('useStageAttachments.stageAttachmentPaths (vision gate)', () => {
 
   it('names the bare model in the rejection banner when model is composite', async () => {
     // selectedModel is "provider/name"; banner should show the bare "name".
-    useInputModeStore.setState({ selectedModel: 'novision-m' })
+    act(() => { useInputModeStore.setState({ selectedModel: 'novision-m' }) })
     rerender()
 
     await act(async () => { await stage('sess-1', ['/p/img.png']) })

@@ -3,11 +3,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-vi.hoisted(() => {
-  const g = globalThis as Record<string, unknown>
-  g.IS_REACT_ACT_ENVIRONMENT = true
-})
-
 // Mock the Zustand stores the menu's "View History" / "Add to .gitignore"
 // handlers reach into. Mocking (rather than using the real persisted stores)
 // avoids the zustand `persist` middleware, which crashes under jsdom when

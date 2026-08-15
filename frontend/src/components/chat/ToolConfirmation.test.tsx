@@ -3,11 +3,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-vi.hoisted(() => {
-  const g = globalThis as Record<string, unknown>
-  g.IS_REACT_ACT_ENVIRONMENT = true
-})
-
 // Mock the chat store so the component renders without a real Zustand store.
 // The component selects updateMessage and setActivityStatus individually, so
 // the mock must invoke the selector with state containing both.

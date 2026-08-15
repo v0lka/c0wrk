@@ -4,11 +4,6 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import type { ActiveGoal } from '@/stores/goalStore'
 
-vi.hoisted(() => {
-  const g = globalThis as Record<string, unknown>
-  g.IS_REACT_ACT_ENVIRONMENT = true
-})
-
 // Mock the stores with minimal state the component selects.
 const { updateMessage, clearPendingProposal, confirmGoal, cancelGoal, useActiveGoal } = vi.hoisted(() => ({
   updateMessage: vi.fn(),

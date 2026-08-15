@@ -3,33 +3,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-// jsdom in this environment does not always expose `window.localStorage`,
-// which zustand's `persist` middleware captures at store-creation time
-// (via createJSONStorage(() => window.localStorage)). Polyfill it before any
-// store module is imported so the real inputModeStore works in tests.
-vi.hoisted(() => {
-  const g = globalThis as Record<string, unknown>
-  const win = (g.window as Record<string, unknown> | undefined) ?? g
-  // Enable React's act() flushing in this jsdom environment.
-  g.IS_REACT_ACT_ENVIRONMENT = true
-  win.IS_REACT_ACT_ENVIRONMENT = true
-  // jsdom in this environment does not expose `window.localStorage`, which
-  // zustand's `persist` middleware captures at store-creation time (via
-  // createJSONStorage(() => window.localStorage)). Install an in-memory
-  // polyfill before any store module is imported so the real inputModeStore
-  // works in tests. (Assign directly — reading it first would touch Node's
-  // experimental global localStorage accessor and log a warning.)
-  const map = new Map<string, string>()
-  win.localStorage = {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => { map.set(k, v) },
-    removeItem: (k: string) => { map.delete(k) },
-    clear: () => map.clear(),
-    key: (i: number) => Array.from(map.keys())[i] ?? null,
-    get length() { return map.size },
-  }
-})
-
 import { ModelCombobox } from './ModelCombobox'
 import { useInputModeStore } from '@/stores/inputModeStore'
 
@@ -215,7 +188,9 @@ describe('ModelCombobox default-model persistence', () => {
 
     spies.setDefaultModel.mockRejectedValue(new Error('boom'))
 
-    act(() => {
+    // Async act so the rejection's rollback microtask runs inside the act
+    // scope rather than after it.
+    await act(async () => {
       // Last option button is the 'gpt-4o' model.
       options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
@@ -231,13 +206,18 @@ describe('ModelCombobox default-model persistence', () => {
 
     spies.setDefaultModel.mockRejectedValue(new Error('boom'))
 
-    act(() => {
+    // Async act so the rejection's rollback microtask runs inside the act
+    // scope rather than after it. The optimistic value is captured
+    // synchronously right after the click, before the rollback flushes.
+    let optimistic: string | null = 'unset'
+    await act(async () => {
       // Last option button is the 'gpt-4o' model.
       options[options.length - 1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      optimistic = useInputModeStore.getState().selectedModel
     })
 
     // Optimistically applied synchronously on click …
-    expect(useInputModeStore.getState().selectedModel).toBe('chatgpt/gpt-4o')
+    expect(optimistic).toBe('chatgpt/gpt-4o')
 
     // … then rolled back once the persist rejects, so the selector never
     // advertises a default that was not actually saved.

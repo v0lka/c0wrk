@@ -30,7 +30,6 @@ beforeEach(() => {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
-  ;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
 })
 
 afterEach(() => {

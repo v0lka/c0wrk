@@ -18,24 +18,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-// jsdom lacks window.localStorage, which zustand persist captures at store
-// creation. Polyfill before any store import so the real inputModeStore works.
-vi.hoisted(() => {
-  const g = globalThis as Record<string, unknown>
-  const win = (g.window as Record<string, unknown> | undefined) ?? g
-  g.IS_REACT_ACT_ENVIRONMENT = true
-  win.IS_REACT_ACT_ENVIRONMENT = true
-  const map = new Map<string, string>()
-  win.localStorage = {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => { map.set(k, v) },
-    removeItem: (k: string) => { map.delete(k) },
-    clear: () => map.clear(),
-    key: (i: number) => Array.from(map.keys())[i] ?? null,
-    get length() { return map.size },
-  }
-})
-
 // Registry capturing onGlobalEvent subscriptions so tests can emit events.
 const { registry, stageSpy } = vi.hoisted(() => ({
   registry: new Map<string, Array<(data: unknown) => void>>(),
@@ -102,9 +84,9 @@ beforeEach(() => {
   // Unmount any component left mounted by a previous test. Failing to do so
   // leaks live subscribers to the global mode store: a mode change in this
   // test would re-trigger their effects and accumulate subscriptions.
-  root?.unmount()
+  act(() => { root?.unmount() })
 
-  useInputModeStore.setState({ mode: 'chat' })
+  act(() => { useInputModeStore.setState({ mode: 'chat' }) })
   registry.clear()
   stageSpy.mockReset()
   capturedDragActive = false
@@ -167,7 +149,7 @@ describe('useFileDrop', () => {
   })
 
   it('is a no-op in terminal mode (never stages)', async () => {
-    useInputModeStore.setState({ mode: 'terminal' })
+    act(() => { useInputModeStore.setState({ mode: 'terminal' }) })
     mount('sess-1')
 
     await act(async () => {

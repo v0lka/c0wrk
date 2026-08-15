@@ -12,8 +12,6 @@ vi.mock('@/api/runtime', () => ({
   clipboardSetText: vi.fn().mockResolvedValue(true),
 }))
 
-;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
-
 let root: Root | null = null
 
 const item: Extract<DisplayItem, { kind: 'user' }> = {

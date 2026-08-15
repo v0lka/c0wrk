@@ -14,25 +14,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-// jsdom in this environment does not expose window.localStorage, which
-// zustand's persist middleware captures at store-creation time. Polyfill it
-// before any store module is imported so the real inputModeStore works.
-vi.hoisted(() => {
-  const g = globalThis as Record<string, unknown>
-  const win = (g.window as Record<string, unknown> | undefined) ?? g
-  g.IS_REACT_ACT_ENVIRONMENT = true
-  win.IS_REACT_ACT_ENVIRONMENT = true
-  const map = new Map<string, string>()
-  win.localStorage = {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => { map.set(k, v) },
-    removeItem: (k: string) => { map.delete(k) },
-    clear: () => map.clear(),
-    key: (i: number) => Array.from(map.keys())[i] ?? null,
-    get length() { return map.size },
-  }
-})
-
 import { useAttachmentsInput } from '@/hooks/useAttachmentsInput'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
@@ -117,10 +98,15 @@ let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
-  // Reset stores to a clean baseline.
-  useInputModeStore.setState({ selectedModel: null })
-  useAttachmentsStore.getState().clear()
-  useSessionStore.setState({ sessions: [], activeSessionId: null })
+  // Reset stores to a clean baseline. Mutations run inside act(): roots from
+  // earlier tests may still be mounted and subscribed (they are replaced,
+  // never unmounted), so an unwrapped mutation would re-render them outside
+  // act().
+  act(() => {
+    useInputModeStore.setState({ selectedModel: null })
+    useAttachmentsStore.getState().clear()
+    useSessionStore.setState({ sessions: [], activeSessionId: null })
+  })
 
   spies.pickAttachmentFiles.mockReset()
   spies.attachFiles.mockReset()
@@ -182,7 +168,7 @@ describe('useAttachmentsInput.handleAttach (📎 button)', () => {
 
   it('rejects images on a non-vision model, staging documents only', async () => {
     // Select a non-vision model as the effective model.
-    useInputModeStore.setState({ selectedModel: 'novision-m' })
+    act(() => { useInputModeStore.setState({ selectedModel: 'novision-m' }) })
     // Re-render so the hook re-binds to the new selectedModel.
     setActiveSession('sess-1')
 
@@ -198,7 +184,7 @@ describe('useAttachmentsInput.handleAttach (📎 button)', () => {
   })
 
   it('rejects an image-only selection on a non-vision model and stages nothing', async () => {
-    useInputModeStore.setState({ selectedModel: 'novision-m' })
+    act(() => { useInputModeStore.setState({ selectedModel: 'novision-m' }) })
     setActiveSession('sess-1')
 
     spies.pickAttachmentFiles.mockResolvedValue(['/p/img.png'])

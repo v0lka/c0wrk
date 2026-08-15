@@ -100,7 +100,14 @@ export function SettingsModal() {
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[600px] max-h-[80vh] flex flex-col overflow-hidden" showCloseButton={false}>
+      <DialogContent
+        className="sm:max-w-[600px] max-h-[80vh] flex flex-col overflow-hidden"
+        showCloseButton={false}
+        // No DialogDescription in this panel; opt out explicitly so Radix
+        // does not warn about the missing description (and does not point
+        // aria-describedby at a non-existent node).
+        aria-describedby={undefined}
+      >
         <DialogHeader className="flex flex-row items-center justify-between">
           <DialogTitle>Settings</DialogTitle>
           <button

@@ -3,11 +3,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-vi.hoisted(() => {
-  const g = globalThis as Record<string, unknown>
-  g.IS_REACT_ACT_ENVIRONMENT = true
-})
-
 // Controllable store state. VectorSearchResults uses the hook form
 // `useVectorIndexStore(selector)`, so the mock applies the selector to this
 // shared object. Mocking (rather than the real persisted store) avoids the

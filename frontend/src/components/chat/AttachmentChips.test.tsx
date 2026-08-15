@@ -8,7 +8,6 @@ import { useSessionStore } from '@/stores/sessionStore'
 import type { AttachmentInfoUI } from '@/types/models'
 
 // Enable React's act() flushing in this jsdom environment.
-;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
 
 // Mock removeAttachment so the chip remove button doesn't call the Wails backend.
 vi.mock('@/api/attachments', () => ({

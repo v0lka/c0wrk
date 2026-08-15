@@ -3,10 +3,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-vi.hoisted(() => {
-  ;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
-})
-
 import { EllipsisHint } from './EllipsisHint'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
@@ -21,6 +17,14 @@ describe('EllipsisHint', () => {
       unobserve() {}
       disconnect() {}
     })
+    // vi.useFakeTimers() does not fake requestAnimationFrame; Radix schedules
+    // post-open updates (popper position, presence) via rAF, which would fire
+    // after the act() block and warn. Run frames synchronously instead.
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
+      cb(0)
+      return 0
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => {})
     container = document.createElement('div')
     document.body.replaceChildren(container)
     root = createRoot(container)
@@ -79,7 +83,7 @@ describe('EllipsisHint', () => {
     expect(container.querySelector('[data-slot="tooltip-trigger"]')).not.toBeNull()
   })
 
-  it('reveals the full value in a wrapping tooltip on hover when alwaysShow', () => {
+  it('reveals the full value in a wrapping tooltip on hover when alwaysShow', async () => {
     vi.useFakeTimers()
     const full = 'very long untruncated value here that should wrap'
     render(
@@ -88,7 +92,9 @@ describe('EllipsisHint', () => {
       </EllipsisHint>,
     )
     const trigger = container.querySelector('[data-slot="tooltip-trigger"]') as HTMLElement
-    act(() => {
+    // Async act: flushes microtask-scheduled Radix updates (popper/presence)
+    // inside the act scope instead of after it.
+    await act(async () => {
       trigger.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse' }))
       trigger.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse' }))
       vi.advanceTimersByTime(400)

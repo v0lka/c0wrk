@@ -4,32 +4,6 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import type { ReactNode } from 'react'
 
-// jsdom in this environment does not expose `window.localStorage`, which
-// zustand's `persist` middleware captures at store-creation time (via
-// createJSONStorage(() => window.localStorage)). Install an in-memory
-// polyfill before any store module is imported so reviewStore works.
-vi.hoisted(() => {
-  const g = globalThis as Record<string, unknown>
-  const win = (g.window as Record<string, unknown> | undefined) ?? g
-  g.IS_REACT_ACT_ENVIRONMENT = true
-  win.IS_REACT_ACT_ENVIRONMENT = true
-  const map = new Map<string, string>()
-  win.localStorage = {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => {
-      map.set(k, v)
-    },
-    removeItem: (k: string) => {
-      map.delete(k)
-    },
-    clear: () => map.clear(),
-    key: (i: number) => Array.from(map.keys())[i] ?? null,
-    get length() {
-      return map.size
-    },
-  }
-})
-
 // vi.mock factories are hoisted, so the mock objects must be created via
 // vi.hoisted() to be accessible inside the factory.
 const { reviewMocks, runtimeMocks, gitMocks, chatMocks } = vi.hoisted(() => ({

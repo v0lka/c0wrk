@@ -3,25 +3,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-// jsdom in this environment does not expose `window.localStorage`, which
-// zustand's `persist` middleware captures at store-creation time (e.g.
-// themeStore, soundStore). Install an in-memory polyfill before any store
-// module is imported — same approach as ThemeSelector.test.
-vi.hoisted(() => {
-  const g = globalThis as Record<string, unknown>
-  const win = (g.window as Record<string, unknown> | undefined) ?? g
-  win.IS_REACT_ACT_ENVIRONMENT = true
-  const map = new Map<string, string>()
-  win.localStorage = {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => { map.set(k, v) },
-    removeItem: (k: string) => { map.delete(k) },
-    clear: () => map.clear(),
-    key: (i: number) => Array.from(map.keys())[i] ?? null,
-    get length() { return map.size },
-  }
-})
-
 // Spies created via vi.hoisted so they exist before vi.mock factories run.
 // Only the functions the mounted components actually call are mocked; the
 // rest of the module surface stays absent per the project's partial-mock

@@ -14,7 +14,6 @@ import { createRoot, type Root } from 'react-dom/client'
 import type { ReactElement } from 'react'
 
 // Enable React's act() flushing in this jsdom environment.
-;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
 
 import type { SessionInfo } from '@/types/models'
 

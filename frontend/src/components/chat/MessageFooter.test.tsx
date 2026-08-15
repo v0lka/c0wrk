@@ -3,11 +3,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-vi.hoisted(() => {
-  const g = globalThis as Record<string, unknown>
-  g.IS_REACT_ACT_ENVIRONMENT = true
-})
-
 import { MessageFooter } from './MessageFooter'
 
 describe('MessageFooter', () => {

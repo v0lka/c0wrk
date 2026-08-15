@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { registerLanguages } from '@/lib/hljsLanguages'
 import { detectHljsLanguage, highlightCodeLine } from './hunkCodeHighlight'
 
@@ -93,8 +93,15 @@ describe('highlightCodeLine', () => {
   })
 
   it('falls back to escaped text for unregistered language', () => {
-    const html = highlightCodeLine('some code', 'cobol')
-    expect(html).toBe('some code')
-    expect(html).not.toContain('hljs-')
+    // highlight.js logs "Could not find the language 'cobol'..." on the
+    // unknown-language path — expected noise for this exact scenario.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const html = highlightCodeLine('some code', 'cobol')
+      expect(html).toBe('some code')
+      expect(html).not.toContain('hljs-')
+    } finally {
+      errorSpy.mockRestore()
+    }
   })
 })

@@ -1,15 +1,9 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MCPServerCard } from './MCPServerCard'
 import type { MCPServerStatus } from '@/types/models'
-
-// MCPServerCard is a pure presentational component (no stores), so no
-// localStorage/IS_REACT_ACT_ENVIRONMENT hoisting is required — just enable act.
-vi.hoisted(() => {
-  ;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
-})
 
 let container: HTMLDivElement
 let root: Root

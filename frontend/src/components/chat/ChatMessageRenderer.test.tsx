@@ -5,8 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
 
-;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
-
 let root: Root | null = null
 
 function message(id: string, type: ChatMessageUI['type'], content: string): ChatMessageUI {

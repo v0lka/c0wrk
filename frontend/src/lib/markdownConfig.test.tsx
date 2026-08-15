@@ -3,10 +3,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-vi.hoisted(() => {
-  ;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
-})
-
 // Avoid persisted localStorage stores during Markdown rendering.
 vi.mock('@/stores/themeStore', () => ({
   useThemeStore: (selector: (s: { theme: 'dark' | 'light' }) => unknown) =>

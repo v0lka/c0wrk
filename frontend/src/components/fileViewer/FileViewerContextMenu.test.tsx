@@ -3,11 +3,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-vi.hoisted(() => {
-  const g = globalThis as Record<string, unknown>
-  g.IS_REACT_ACT_ENVIRONMENT = true
-})
-
 // Mock the Zustand stores so the component's handlers reach into controlled
 // fakes instead of the real persisted stores (which crash under jsdom when
 // `window.localStorage` is undefined). Only the surface the component uses is
