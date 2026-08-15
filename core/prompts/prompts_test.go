@@ -10,9 +10,6 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		name  string
 		value string
 	}{
-		{"PlannerBase", PlannerBase},
-		{"PlannerReplan", PlannerReplan},
-		{"PlannerInformed", PlannerInformed},
 		{"OrchestratorSystem", OrchestratorSystem},
 		{"OrchestratorSystemLite", OrchestratorSystemLite},
 		{"OrchestratorLiteScaffold", OrchestratorLiteScaffold},
@@ -44,31 +41,6 @@ func TestEmbeddedPrompts_NonEmpty(t *testing.T) {
 		{"OrchestratorMistral", OrchestratorMistral},
 		{"OrchestratorKimi", OrchestratorKimi},
 		{"OrchestratorOpenAICodex", OrchestratorOpenAICodex},
-		// Family-specific planner prompts
-		{"PlannerDefault", PlannerDefault},
-		{"PlannerAnthropic", PlannerAnthropic},
-		{"PlannerOpenAIFlagship", PlannerOpenAIFlagship},
-		{"PlannerOpenAIStandard", PlannerOpenAIStandard},
-		{"PlannerGoogle", PlannerGoogle},
-		{"PlannerQwen", PlannerQwen},
-		{"PlannerGLM", PlannerGLM},
-		{"PlannerDeepSeek", PlannerDeepSeek},
-		{"PlannerMistral", PlannerMistral},
-		{"PlannerKimi", PlannerKimi},
-		{"PlannerOpenAICodex", PlannerOpenAICodex},
-		// Planner mode-specific composable prompt sections
-		{"PlannerPlanPreamble", PlannerPlanPreamble},
-		{"PlannerSingleStepPreamble", PlannerSingleStepPreamble},
-		{"PlannerMultiStepToT", PlannerMultiStepToT},
-		{"PlannerSingleStepToT", PlannerSingleStepToT},
-		{"PlannerMultiStepGuidance", PlannerMultiStepGuidance},
-		{"PlannerSingleStepGuidance", PlannerSingleStepGuidance},
-		{"PlannerDomainAssignment", PlannerDomainAssignment},
-		{"PlannerAgentProfiles", PlannerAgentProfiles},
-		{"PlannerExtraSections", PlannerExtraSections},
-		{"PlannerContinuationPreamble", PlannerContinuationPreamble},
-		{"PlannerContinuationIncompletePreamble", PlannerContinuationIncompletePreamble},
-		{"PlannerContinuationSingleStep", PlannerContinuationSingleStep},
 	}
 
 	for _, tt := range tests {
@@ -90,8 +62,6 @@ func TestEmbeddedPrompts_ContainExpectedKeywords(t *testing.T) {
 		value    string
 		keywords []string
 	}{
-		{"PlannerBase", PlannerBase, []string{"step", "agent"}},
-		{"PlannerReplan", PlannerReplan, []string{"plan"}},
 		{"OrchestratorSystem", OrchestratorSystem, []string{"task"}},
 		{"OrchestratorSystemLite", OrchestratorSystemLite, []string{"react", "finish"}},
 		{"OrchestratorLiteScaffold", OrchestratorLiteScaffold, []string{"scaffold", "step"}},
@@ -120,8 +90,6 @@ func TestEmbeddedPrompts_ContainExpectedKeywords(t *testing.T) {
 func TestEmbeddedPrompts_AreDistinct(t *testing.T) {
 	prompts := map[string]string{
 		// Core prompts
-		"PlannerBase":        PlannerBase,
-		"PlannerReplan":      PlannerReplan,
 		"OrchestratorSystem": OrchestratorSystem,
 		"ReflectorSystem":    ReflectorSystem,
 		"RouterSystem":       RouterSystem,
@@ -137,18 +105,6 @@ func TestEmbeddedPrompts_AreDistinct(t *testing.T) {
 		"OrchestratorQwen":           OrchestratorQwen,
 		"OrchestratorGLM":            OrchestratorGLM,
 		"OrchestratorOpenAICodex":    OrchestratorOpenAICodex,
-		// Family-specific planner prompts (all must be distinct)
-		"PlannerDefault":        PlannerDefault,
-		"PlannerAnthropic":      PlannerAnthropic,
-		"PlannerOpenAIFlagship": PlannerOpenAIFlagship,
-		"PlannerOpenAIStandard": PlannerOpenAIStandard,
-		"PlannerGoogle":         PlannerGoogle,
-		"PlannerDeepSeek":       PlannerDeepSeek,
-		"PlannerMistral":        PlannerMistral,
-		"PlannerKimi":           PlannerKimi,
-		"PlannerQwen":           PlannerQwen,
-		"PlannerGLM":            PlannerGLM,
-		"PlannerOpenAICodex":    PlannerOpenAICodex,
 	}
 
 	seen := make(map[string]string) // content -> name
@@ -172,26 +128,10 @@ func TestFamilyPrompt_Orchestrator(t *testing.T) {
 	}
 }
 
-func TestFamilyPrompt_Planner(t *testing.T) {
-	families := []string{"anthropic", "openai_flagship", "openai_standard", "google", "deepseek", "mistral", "kimi", "qwen", "glm", "openai_codex", "default"}
-	for _, fam := range families {
-		t.Run(fam, func(t *testing.T) {
-			result := FamilyPrompt("planner", fam)
-			if result == "" {
-				t.Errorf("FamilyPrompt(planner, %s) returned empty", fam)
-			}
-		})
-	}
-}
-
 func TestFamilyPrompt_UnknownFamily_FallsBackToDefault(t *testing.T) {
 	result := FamilyPrompt("orchestrator", "unknown_family")
 	if result != OrchestratorDefault {
 		t.Error("expected fallback to OrchestratorDefault for unknown family")
-	}
-	result = FamilyPrompt("planner", "unknown_family")
-	if result != PlannerDefault {
-		t.Error("expected fallback to PlannerDefault for unknown family")
 	}
 }
 

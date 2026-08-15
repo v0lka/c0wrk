@@ -3,93 +3,6 @@ package prompts
 
 import _ "embed"
 
-// Planner prompts
-
-//go:embed planner_base.md
-var PlannerBase string
-
-//go:embed planner_replan.md
-var PlannerReplan string
-
-//go:embed planner_informed.md
-var PlannerInformed string
-
-// Planner family-specific prompts
-
-//go:embed planner_default.md
-var PlannerDefault string
-
-//go:embed planner_anthropic.md
-var PlannerAnthropic string
-
-//go:embed planner_openai_flagship.md
-var PlannerOpenAIFlagship string
-
-//go:embed planner_openai_standard.md
-var PlannerOpenAIStandard string
-
-//go:embed planner_google.md
-var PlannerGoogle string
-
-//go:embed planner_deepseek.md
-var PlannerDeepSeek string
-
-//go:embed planner_mistral.md
-var PlannerMistral string
-
-//go:embed planner_kimi.md
-var PlannerKimi string
-
-//go:embed planner_qwen.md
-var PlannerQwen string
-
-//go:embed planner_glm.md
-var PlannerGLM string
-
-//go:embed planner_openai_codex.md
-var PlannerOpenAICodex string
-
-// Planner mode-specific composable prompt sections used by core.Planner to
-// assemble plan/replan/continuation system prompts. Each piece is rendered as
-// a separate markdown file so the planning policy lives next to the other
-// prompt assets rather than as inline Go string literals.
-
-//go:embed planner_plan_preamble.md
-var PlannerPlanPreamble string
-
-//go:embed planner_single_step_preamble.md
-var PlannerSingleStepPreamble string
-
-//go:embed planner_multi_step_tot.md
-var PlannerMultiStepToT string
-
-//go:embed planner_single_step_tot.md
-var PlannerSingleStepToT string
-
-//go:embed planner_multi_step_guidance.md
-var PlannerMultiStepGuidance string
-
-//go:embed planner_single_step_guidance.md
-var PlannerSingleStepGuidance string
-
-//go:embed planner_domain_assignment.md
-var PlannerDomainAssignment string
-
-//go:embed planner_agent_profiles.md
-var PlannerAgentProfiles string
-
-//go:embed planner_extra_sections.md
-var PlannerExtraSections string
-
-//go:embed planner_continuation_preamble.md
-var PlannerContinuationPreamble string
-
-//go:embed planner_incomplete_continuation_preamble.md
-var PlannerContinuationIncompletePreamble string
-
-//go:embed planner_continuation_single_step.md
-var PlannerContinuationSingleStep string
-
 // Orchestrator prompts
 
 //go:embed orchestrator_system.md
@@ -263,8 +176,6 @@ func FamilyPrompt(agent, family string) string {
 	switch agent {
 	case "orchestrator":
 		return orchestratorFamilyPrompt(family)
-	case "planner":
-		return plannerFamilyPrompt(family)
 	default:
 		return ""
 	}
@@ -294,32 +205,5 @@ func orchestratorFamilyPrompt(family string) string {
 		return OrchestratorOpenAICodex
 	default:
 		return OrchestratorDefault
-	}
-}
-
-func plannerFamilyPrompt(family string) string {
-	switch family {
-	case "anthropic":
-		return PlannerAnthropic
-	case "openai_flagship":
-		return PlannerOpenAIFlagship
-	case "openai_standard":
-		return PlannerOpenAIStandard
-	case "google":
-		return PlannerGoogle
-	case "deepseek":
-		return PlannerDeepSeek
-	case "mistral":
-		return PlannerMistral
-	case "kimi":
-		return PlannerKimi
-	case "qwen":
-		return PlannerQwen
-	case "glm":
-		return PlannerGLM
-	case "openai_codex":
-		return PlannerOpenAICodex
-	default:
-		return PlannerDefault
 	}
 }

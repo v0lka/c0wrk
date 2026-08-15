@@ -49,12 +49,8 @@ func TestSubstituteShellTool_LeavesUnrelatedTextIntact(t *testing.T) {
 func TestEmbeddedPrompts_ShellToolResolved(t *testing.T) {
 	want := expectedShellToolName(runtime.GOOS)
 	sections := map[string]string{
-		"OrchestratorSystem":        OrchestratorSystem,
-		"OrchestratorPlanContext":   OrchestratorPlanContext,
-		"PlannerInformed":           PlannerInformed,
-		"PlannerExtraSections":      PlannerExtraSections,
-		"PlannerSingleStepGuidance": PlannerSingleStepGuidance,
-		"PlannerAgentProfiles":      PlannerAgentProfiles,
+		"OrchestratorSystem":      OrchestratorSystem,
+		"OrchestratorPlanContext": OrchestratorPlanContext,
 	}
 	for name, content := range sections {
 		t.Run(name, func(t *testing.T) {
@@ -77,12 +73,8 @@ func TestEmbeddedPrompts_ShellToolResolved(t *testing.T) {
 // global side effect (init()).
 func TestEmbeddedPrompts_RawTemplatePreserved(t *testing.T) {
 	for name, content := range map[string]string{
-		"OrchestratorSystem":        OrchestratorSystem,
-		"OrchestratorPlanContext":   OrchestratorPlanContext,
-		"PlannerInformed":           PlannerInformed,
-		"PlannerExtraSections":      PlannerExtraSections,
-		"PlannerSingleStepGuidance": PlannerSingleStepGuidance,
-		"PlannerAgentProfiles":      PlannerAgentProfiles,
+		"OrchestratorSystem":      OrchestratorSystem,
+		"OrchestratorPlanContext": OrchestratorPlanContext,
 	} {
 		if !strings.Contains(content, ShellToolPlaceholder) {
 			t.Errorf("%s lost the raw %q placeholder (template should be preserved, not pre-substituted)", name, ShellToolPlaceholder)
