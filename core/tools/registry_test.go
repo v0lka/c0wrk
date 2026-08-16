@@ -729,6 +729,45 @@ func TestGroupPolicies_ReplacementNotMerge(t *testing.T) {
 	}
 }
 
+// TestApplySecurityState_ReplacesAllThreeComponentsAtomically verifies the
+// runtime security push API: one call must replace the group-policy map, the
+// auto-approve flag, and the Smart Approve flag together (a torn update would
+// let a call run with new policies but old flags), deep-copy the caller's map
+// (a broadcast push passes one map to many registries; each must stay
+// independently mutable), and leave the caller's map unaliased.
+func TestApplySecurityState_ReplacesAllThreeComponentsAtomically(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.SetGroupPolicies(map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupExecute: sdktools.PolicyAlwaysAllow,
+	})
+	registry.SetAutoApproveWorkspaceWrites(true)
+	registry.SetSmartApprove(true)
+
+	source := map[sdktools.ToolGroup]sdktools.ToolPolicy{
+		sdktools.GroupExecute: sdktools.PolicyAlwaysDeny,
+	}
+	registry.ApplySecurityState(source, false, false)
+
+	if got := registry.GroupPolicies()[sdktools.GroupExecute]; got != sdktools.PolicyAlwaysDeny {
+		t.Fatalf("execute policy = %v, want always_deny", got)
+	}
+	registry.mu.RLock()
+	autoApprove, smartApprove := registry.autoApproveWorkspaceWrites, registry.smartApprove
+	registry.mu.RUnlock()
+	if autoApprove {
+		t.Error("autoApproveWorkspaceWrites must be replaced with false")
+	}
+	if smartApprove {
+		t.Error("smartApprove must be replaced with false")
+	}
+
+	// The caller's map must not alias registry state.
+	source[sdktools.GroupLocalWrite] = sdktools.PolicyAlwaysAllow
+	if _, ok := registry.GroupPolicies()[sdktools.GroupLocalWrite]; ok {
+		t.Error("registry aliased the caller's map — ApplySecurityState must deep-copy")
+	}
+}
+
 func TestWithWorkspacePath_AndWorkspacePathFrom_Wrapper(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1980,6 +2019,36 @@ func TestSmartApprove_UserConfirmFlow(t *testing.T) {
 				t.Errorf("strict judge calls = %d, want %d", got, tt.wantJudgeCalls)
 			}
 		})
+	}
+}
+
+// TestSmartApprove_UnavailableJudgeKeepsConcreteReason pins the reasoning
+// shown when Smart Approve is enabled but no strict judge is configured: the
+// confirmation must still explain WHY the call needs confirmation (the
+// concrete reason — a soft escalation or the per-tool default), prefixed only
+// with a note that the strict judge could not decide, instead of degrading to
+// a generic "judge unavailable" text that hides the actual cause.
+func TestSmartApprove_UnavailableJudgeKeepsConcreteReason(t *testing.T) {
+	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
+	registry.SetSmartApprove(true)
+	registry.Register(newMockTool("bash_exec", "runs a command"))
+
+	var gotRequest sdktools.ConfirmationRequest
+	registry.SetConfirmFunc(func(_ context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		gotRequest = req
+		return sdktools.ConfirmDeny, nil
+	})
+
+	if _, err := registry.Execute(context.Background(), "bash_exec", json.RawMessage(`{"command":"ls"}`)); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	const wantPrefix = "Strict judge is unavailable; "
+	if !strings.HasPrefix(gotRequest.JudgeReasoning, wantPrefix) {
+		t.Errorf("JudgeReasoning = %q, want prefix %q", gotRequest.JudgeReasoning, wantPrefix)
+	}
+	if want := defaultConfirmReason("bash_exec"); !strings.Contains(gotRequest.JudgeReasoning, want) {
+		t.Errorf("JudgeReasoning = %q, want it to contain the per-tool default reason %q", gotRequest.JudgeReasoning, want)
 	}
 }
 

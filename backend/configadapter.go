@@ -55,6 +55,23 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			Blacklist: g.Blacklist,
 		}
 	}
+	// Effective view for the core layer: an unset (nil) execute blacklist
+	// means the shipped defaults are in force (the same derivation
+	// ApplyDefaults applies at load), so a runtime security-settings save
+	// that stored "unset" still registers the shell tool with the default
+	// patterns. An explicitly emptied list is used as stored. The key is
+	// also CREATED when absent: the core consumers of BuilderConfig treat a
+	// missing execute entry as an empty blacklist, and the defaults are the
+	// fail-safe reading (every other incomplete-config fallback in this
+	// schema degrades to user_confirm, not to allow).
+	if g, ok := groups[config.ToolGroupExecute]; !ok {
+		groups[config.ToolGroupExecute] = core.BuilderGroupPolicy{
+			Blacklist: config.DefaultExecuteGroupBlacklist(),
+		}
+	} else if g.Blacklist == nil {
+		g.Blacklist = config.DefaultExecuteGroupBlacklist()
+		groups[config.ToolGroupExecute] = g
+	}
 
 	// Convert MCP servers.
 	mcpServers := make(map[string]core.BuilderMCPServer, len(cfg.MCP.Servers))

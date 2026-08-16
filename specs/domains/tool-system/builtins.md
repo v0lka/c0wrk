@@ -72,7 +72,7 @@ Prompt data references the shell tool through the `{shell_tool}` placeholder rat
 
 #### Blacklist / Policy Key
 
-The shell blacklist and policy are read from the **`execute` group** (`security.groups.execute`) — a single platform-agnostic entry covering both `bash_exec` and `posh_exec`. In `core/builder.go` → `configToBuiltinToolsConfig`, the blacklist is sourced from `cfg.Security.Groups["execute"].Blacklist`; in `applySecurityPolicies` the group policies are applied to the registry via `SetGroupPolicies`. The default blacklist is the dedup union of the bash and PowerShell pattern sets (35 patterns), so both dialects' dangerous idioms are covered on every platform (ADR-024).
+The shell blacklist and policy are read from the **`execute` group** (`security.groups.execute`) — a single platform-agnostic entry covering both `bash_exec` and `posh_exec`. In `core/builder.go` → `configToBuiltinToolsConfig`, the blacklist is sourced from `cfg.Security.Groups["execute"].Blacklist`; in `applySecurityPolicies` the group policies are applied to the shared registry and every live per-session clone via `ApplySecurityState`. The default blacklist is the dedup union of the bash and PowerShell pattern sets, restricted to **cross-dialect-safe** patterns (the list is compiled into both shell tools, and only one of them runs per host, so a dialect-specific pattern could only ever hard-confirm benign commands of the other dialect — e.g. `rm -r -f <dir>` is the routine Unix spelling of `rm -rf <dir>`). The PowerShell alias patterns that cannot satisfy that invariant are appended as a Windows-only platform supplement in `core/tools/shelltool_windows.go`, so both dialects' dangerous idioms stay covered on their own platform (ADR-024 §2).
 
 ## Registration Order
 
@@ -185,7 +185,7 @@ The following are sp4rk engine primitives, documented in [the sp4rk builtins spe
 5. If config comes from `config.yaml`, update `core/builder.go` → `configToBuiltinToolsConfig()`
 6. If the tool reads data from external sources (filesystem, web, subprocess), set `Untrusted: true` on `BaseTool` so output is wrapped before entering the LLM context
 7. Declare the tool's **capability group** — set `ToolGroup` on `BaseTool` (sp4rk builtins: pick from `tools/group.go`; c0wrk orchestration/infra tools: `sdktools.GroupSystem`, which requires security review). The group drives the tool's policy (`security.groups`), subagent budgets, and verifier sets; an undeclared group fails closed everywhere (ADR-024)
-8. If the tool is mutating (writes files, runs commands), it belongs to a mutating group (`local_write`, `execute`, `remote_write`, `remote_mcp`) whose default policy is `user_confirm`
+8. If the tool is mutating (writes files, runs commands), it belongs to a mutating group (`local_write`, `execute`, `local_mcp`, `remote_mcp`, `remote_write`) whose default policy is `user_confirm`
 
 ## Related Specs
 

@@ -102,6 +102,54 @@ func TestApplySecurityPolicies(t *testing.T) {
 	b.applySecurityPolicies(cfg)
 }
 
+// TestUpdateSecurityPolicies_ReachesLiveSessionRegistries verifies that a
+// runtime security-policy push reaches ALREADY-OPEN sessions: Build hands
+// each session its own registry clone, so applying the new state only to the
+// shared builder registry would leave live sessions executing on stale state
+// — a deny set in the security settings UI would fail open on every session
+// created before the save. The clone registered by registerSessionRegistry
+// must receive every subsequent applySecurityPolicies push until the
+// orchestrator's cleanup hook unregisters it.
+func TestUpdateSecurityPolicies_ReachesLiveSessionRegistries(t *testing.T) {
+	cfgOf := func(execPolicy string, autoApprove, smartApprove bool) *BuilderConfig {
+		return &BuilderConfig{
+			Security: BuilderSecurityConfig{
+				Groups:                     map[string]BuilderGroupPolicy{"execute": {Policy: execPolicy}},
+				AutoApproveWorkspaceWrites: autoApprove,
+				SmartApprove:               smartApprove,
+			},
+			ExpandEnvVars: func(s string) string { return s },
+		}
+	}
+
+	b := &OrchestratorBuilder{registry: tools.NewToolRegistry()}
+	b.applySecurityPolicies(cfgOf("user_confirm", false, false))
+
+	// The "already-open session": a registered clone created under the old
+	// security state (what Build does for every session).
+	session := b.registerSessionRegistry()
+
+	// The runtime push (the security settings UI save path) must reach the
+	// live session clone, not just the shared registry.
+	b.UpdateSecurityPolicies(cfgOf("deny", true, true))
+	if got := b.registry.GroupPolicies()[sdktools.GroupExecute]; got != sdktools.PolicyAlwaysDeny {
+		t.Fatalf("shared registry execute policy = %v, want always_deny", got)
+	}
+	if got := session.GroupPolicies()[sdktools.GroupExecute]; got != sdktools.PolicyAlwaysDeny {
+		t.Fatalf("live session registry execute policy = %v, want always_deny — a runtime deny must reach already-open sessions", got)
+	}
+
+	// Unregistering (the orchestrator cleanup hook) stops future pushes.
+	b.unregisterSessionRegistry(session)
+	b.UpdateSecurityPolicies(cfgOf("allow", false, false))
+	if got := session.GroupPolicies()[sdktools.GroupExecute]; got != sdktools.PolicyAlwaysDeny {
+		t.Fatalf("unregistered session execute policy = %v, want always_deny (no pushes after cleanup)", got)
+	}
+	if got := b.registry.GroupPolicies()[sdktools.GroupExecute]; got != sdktools.PolicyAlwaysAllow {
+		t.Fatalf("shared registry execute policy = %v, want always_allow", got)
+	}
+}
+
 // TestNewOrchestratorBuilder_NilExpandEnvVars verifies the W-14 nil-guard:
 // constructing a builder without an ExpandEnvVars hook should not panic.
 func TestNewOrchestratorBuilder_NilExpandEnvVars(t *testing.T) {

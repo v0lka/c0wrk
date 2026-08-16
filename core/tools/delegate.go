@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -12,6 +14,65 @@ import (
 )
 
 const toolDelegateDescription = `Launch one or more subagents to execute units of work in isolated ReAct loops. Each task runs in its own context with its own tool set; only the summary output returns. Use this to break large tasks into parallel or sequential pieces, or to isolate context-heavy investigation. Tasks with depends_on wait for their dependencies to complete first; tasks without dependencies run in parallel. blocking mode returns the output in the tool result; async mode returns immediately with a delegation_id (read results later via read_step_output). depends_on can only reference blocking tasks — async tasks run in the background and cannot be depended upon. By default subagents cannot delegate further; set allow_redelegate=true to permit nesting (capped by config).`
+
+// delegateSchemaTemplate is the delegate tool's JSON schema. The
+// tasks[].tools group-token enum is injected from the SDK group table at
+// construction time (see delegateGroupEnumJSON) so it can never drift from
+// what the resolver accepts.
+const delegateSchemaTemplate = `{
+	"type": "object",
+	"properties": {
+		"tasks": {
+			"type": "array",
+			"minItems": 1,
+			"items": {
+				"type": "object",
+				"properties": {
+					"id": {"type": "string", "description": "Unique delegation identifier (e.g. del_1)"},
+					"summary": {"type": "string", "description": "5-7 word label for UI display"},
+					"task": {"type": "string", "description": "Full task description with What/How/Where/Acceptance Criteria"},
+					"acceptance_criteria": {"type": "array", "items": {"type": "string"}, "description": "Optional explicit criteria the subagent verifies before finishing"},
+					"tools": {
+						"description": "Capability groups granted to the subagent, on top of the always-included system group (finish, facts, checklist, meta tools — but NOT the goal-loop tools, which never reach a subagent): \"all\" (default — full toolset minus Conductor-only tools), \"read-only\" (read-only exploration: local-read + remote-read, no MCP), or a non-empty array of group names to grant selectively (e.g. [\"local-read\",\"execute\"]); [\"system\"] alone grants only the system group. Kebab-case (\"local-read\") is the canonical spelling; the underscore spelling of the same tokens (\"local_read\") is also accepted, mirroring Subagent Profile AGENT.md tool lists.",
+						"anyOf": [
+							{"type": "string", "enum": ["all", "read-only"]},
+							{"type": "array", "minItems": 1, "items": {"type": "string", "enum": ["__GROUP_TOKENS__"]}}
+						]
+					},
+					"depends_on": {"type": "array", "items": {"type": "string"}, "description": "IDs of delegations that must complete before this one starts"},
+					"mode": {"type": "string", "enum": ["blocking", "async"], "description": "blocking (default) returns output in result; async returns delegation_id immediately"},
+					"max_steps": {"type": "integer", "description": "Per-subagent ReAct iteration cap; 0 = config default"},
+					"allow_redelegate": {"type": "boolean", "description": "Grant the subagent the delegate tool (capped by config maxRedelegationDepth); default false"},
+					"agent": {"type": "string", "description": "Name of a Subagent Profile (.agents/agents/<name>/AGENT.md) to apply. When set, the profile's system prompt, tool preference, max-steps, model, and allow-redelegate override the task fields. Unknown name fails fast."}
+				},
+				"required": ["id", "summary", "task"]
+			}
+		}
+	},
+	"required": ["tasks"]
+}`
+
+// delegateGroupEnumJSON renders the tasks[].tools enum values as a
+// comma-separated JSON fragment: every capability-group token the delegation
+// resolver accepts. It is derived from sdktools.AllToolGroups — the same
+// table parseToolGroupToken (core/conductor.go) validates against — in both
+// spellings: the ToolGroup value (underscore form) and its kebab-case twin.
+// A hardcoded literal here would be a third copy of the group vocabulary
+// that could silently drift from the resolver.
+func delegateGroupEnumJSON() string {
+	seen := make(map[string]struct{}, 16)
+	var tokens []string
+	for _, g := range sdktools.AllToolGroups() {
+		for _, tok := range []string{string(g), strings.ReplaceAll(string(g), "_", "-")} {
+			if _, dup := seen[tok]; dup {
+				continue
+			}
+			seen[tok] = struct{}{}
+			tokens = append(tokens, strconv.Quote(tok))
+		}
+	}
+	return strings.Join(tokens, ",")
+}
 
 // DelegationTask describes a single subagent invocation.
 type DelegationTask struct {
@@ -70,38 +131,12 @@ func NewDelegateTool() *DelegateTool {
 			ToolGroup:       sdktools.GroupSystem,
 			ToolName:        "delegate",
 			ToolDescription: toolDelegateDescription,
-			Schema: json.RawMessage(`{
-	"type": "object",
-	"properties": {
-		"tasks": {
-			"type": "array",
-			"minItems": 1,
-			"items": {
-				"type": "object",
-				"properties": {
-					"id": {"type": "string", "description": "Unique delegation identifier (e.g. del_1)"},
-					"summary": {"type": "string", "description": "5-7 word label for UI display"},
-					"task": {"type": "string", "description": "Full task description with What/How/Where/Acceptance Criteria"},
-					"acceptance_criteria": {"type": "array", "items": {"type": "string"}, "description": "Optional explicit criteria the subagent verifies before finishing"},
-					"tools": {
-						"description": "Capability groups granted to the subagent, on top of the always-included system group (finish, facts, checklist, meta tools): \"all\" (default — full toolset minus Conductor-only tools), \"read-only\" (read-only exploration: local-read + remote-read, no MCP), or an array of group names to grant selectively (e.g. [\"local-read\",\"execute\"]).",
-						"anyOf": [
-							{"type": "string", "enum": ["all", "read-only"]},
-							{"type": "array", "items": {"type": "string", "enum": ["execute", "local-read", "local-write", "remote-read", "remote-write", "local-mcp", "remote-mcp", "system"]}}
-						]
-					},
-					"depends_on": {"type": "array", "items": {"type": "string"}, "description": "IDs of delegations that must complete before this one starts"},
-					"mode": {"type": "string", "enum": ["blocking", "async"], "description": "blocking (default) returns output in result; async returns delegation_id immediately"},
-					"max_steps": {"type": "integer", "description": "Per-subagent ReAct iteration cap; 0 = config default"},
-					"allow_redelegate": {"type": "boolean", "description": "Grant the subagent the delegate tool (capped by config maxRedelegationDepth); default false"},
-					"agent": {"type": "string", "description": "Name of a Subagent Profile (.agents/agents/<name>/AGENT.md) to apply. When set, the profile's system prompt, tool preference, max-steps, model, and allow-redelegate override the task fields. Unknown name fails fast."}
-				},
-				"required": ["id", "summary", "task"]
-			}
-		}
-	},
-	"required": ["tasks"]
-}`),
+			Schema: json.RawMessage(strings.Replace(
+				delegateSchemaTemplate,
+				`"__GROUP_TOKENS__"`,
+				delegateGroupEnumJSON(),
+				1,
+			)),
 			Policy: sdktools.PolicyAlwaysAllow,
 			// ASI07: subagent output may carry content a subagent read from
 			// external sources (indirect-injection vector). Treat as untrusted.
@@ -208,11 +243,15 @@ func buildDelegateToolResult(results []DelegationResult) sdktools.ToolResult {
 }
 
 // validateDelegationTools validates a delegation task's `tools` field: nil
-// (omit), the strings ""/"all"/"read-only", or an array of capability-group
-// tokens (kebab or underscore spelling; canonicalized by the resolver). Any
-// other shape fails with a message listing the valid values — the alternative
-// (silently degrading to the safe minimum at launch time) hides a broken
-// toolset request from the Conductor.
+// (omit), the strings ""/"all"/"read-only", or a non-empty array of
+// capability-group tokens (kebab or underscore spelling; canonicalized by the
+// resolver). An empty array is rejected rather than resolved to a system-only
+// grant — an empty grant list is a degenerate request that would otherwise
+// silently strip every working tool from the subagent; a deliberate
+// system-only grant is expressed as ["system"]. Any other shape fails with a
+// message listing the valid values — the alternative (silently degrading to
+// the safe minimum at launch time) hides a broken toolset request from the
+// Conductor.
 func validateDelegationTools(v any) error {
 	switch t := v.(type) {
 	case nil:
@@ -225,6 +264,9 @@ func validateDelegationTools(v any) error {
 		return fmt.Errorf("tools: invalid value %q (valid strings: \"all\", \"read-only\"; or an array of group names: %s)",
 			t, strings.Join(agents.ToolGroupTokens(), ", "))
 	case []any:
+		if len(t) == 0 {
+			return errors.New("tools: empty array — omit the field (or pass \"all\") for the full toolset; to grant only the always-included system group, pass [\"system\"]")
+		}
 		for _, item := range t {
 			s, isString := item.(string)
 			if !isString {
@@ -236,6 +278,9 @@ func validateDelegationTools(v any) error {
 		}
 		return nil
 	case []string:
+		if len(t) == 0 {
+			return errors.New("tools: empty array — omit the field (or pass \"all\") for the full toolset; to grant only the always-included system group, pass [\"system\"]")
+		}
 		for _, s := range t {
 			if err := validateDelegationGroupToken(s); err != nil {
 				return err

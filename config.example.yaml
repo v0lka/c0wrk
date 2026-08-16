@@ -226,8 +226,9 @@ security:
 
   # When true, file write tools (write_file, edit_file, delete_file,
   # delete_directory, create_directory) execute without confirmation when
-  # all paths in their input are within the session workspace OR the session
-  # temp directory (both treated as equal peers). Symlink traversals out of
+  # all paths in their input are within the session roots — the workspace,
+  # the session temp directory, and any additional working directories
+  # (all treated as equal peers). Symlink traversals that resolve out of
   # session roots are still forced to confirmation regardless.
   # Default: false. Set to true if you prefer convenience over safety for
   # write operations within your own projects.
@@ -263,7 +264,9 @@ security:
   #   remote_write — tools that mutate remote resources (e.g. remote MCP
   #                  mutations).                     Default: user_confirm
   # Policy values: "allow" | "user_confirm" | "deny". A group omitted here
-  # keeps its default. Unset groups fail safe to user_confirm.
+  # keeps its default policy (reads: allow; mutations: user_confirm); the
+  # registry additionally fails safe to user_confirm for any group that has
+  # no configured entry at all.
   groups:
     local_read:
       policy: "allow"
@@ -276,6 +279,12 @@ security:
       # into destructive categories; PowerShell-specific patterns carry an
       # (?i) prefix because PowerShell is case-insensitive.
       # A matching command is forced to confirmation regardless of policy.
+      # NOTE: omit `blacklist:` entirely to track the app's shipped defaults —
+      # an explicit list (this example's) is pinned and will NOT receive
+      # future default-list improvements. Saving a list identical to the
+      # shipped defaults — from any settings tab — stores it as unset for the
+      # same reason, so an untouched blacklist never gets pinned into this
+      # file.
       blacklist:
         # --- Destructive file/disk operations ---
         - 'rm\s+-rf\s+/'
@@ -335,11 +344,17 @@ security:
         - '\bgit\s+(init|config|gc|prune|worktree|maintenance)\b'
         # --- PowerShell specifics (case-insensitive cmdlets/aliases) ---
         # Remove-Item matches parameters by case-insensitive prefix
-        # (-r/-rec/-recurse, -f/-fo/-force) and has aliases (del, erase, ri,
-        # rm, rd, rmdir). RE2 has no lookaheads, so the two-order requirement
-        # for -Recurse + -Force is expressed as two patterns.
-        - '(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-r\w*.*-f\w*'
-        - '(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-f\w*.*-r\w*'
+        # (-r/-rec/-recurse, -f/-fo/-force); RE2 has no lookaheads, so the
+        # two-order requirement for -Recurse + -Force is expressed as two
+        # patterns. Only the unambiguous cmdlet name carries the short-flag
+        # patterns here: this list is also compiled into bash_exec on Unix,
+        # where the Remove-Item ALIASES (rm, del, erase, ri, rd, rmdir) are
+        # ordinary vocabulary (`rm -r -f <dir>` is the routine spelling of an
+        # in-workspace delete). The alias patterns are instead enforced as a
+        # Windows-only platform supplement inside the app (see ADR-024) and
+        # cannot be removed by editing this list.
+        - '(?i)\bRemove-Item\b.*-r\w*.*-f\w*'
+        - '(?i)\bRemove-Item\b.*-f\w*.*-r\w*'
         - '(?i)Format-Volume'
         - '(?i)Clear-Disk'
         - '(?i)Stop-Computer'

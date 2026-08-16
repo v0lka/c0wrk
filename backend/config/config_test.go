@@ -385,6 +385,79 @@ func TestApplyDefaults_BlacklistCategorySymmetry(t *testing.T) {
 	}
 }
 
+// TestDefaultExecuteGroupBlacklist_CrossDialectSafe pins the invariant that
+// the unified execute-group blacklist (the union of both shell lists, compiled
+// into bash_exec AND posh_exec) contains no pattern that hard-confirms a
+// benign command of the other dialect. PowerShell alias tokens that cannot be
+// made dialect-neutral (rm, del, erase, ri, rd, rmdir) are excluded from this
+// list entirely and enforced as a Windows-only platform supplement instead
+// (core/tools/shelltool_windows.go, pinned by its own build-tagged test). The
+// concrete regressions guarded here: bare `rm` with generic short flags (the
+// Unix idiom `rm -r -f <dir>`, separate-flags spelling of `rm -rf <dir>`),
+// long-flag spellings (`rm -Recurse -Force`, but also GNU `rm --recursive
+// --force`), and alias tokens inside benign Unix compounds (`grep -ri …`).
+func TestDefaultExecuteGroupBlacklist_CrossDialectSafe(t *testing.T) {
+	blacklist := DefaultExecuteGroupBlacklist()
+	compiled := make([]*regexp.Regexp, 0, len(blacklist))
+	for _, pat := range blacklist {
+		re, err := regexp.Compile(pat)
+		if err != nil {
+			t.Fatalf("pattern %q does not compile: %v", pat, err)
+		}
+		compiled = append(compiled, re)
+	}
+	matches := func(cmd string) bool {
+		for _, re := range compiled {
+			if re.MatchString(cmd) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Benign Unix rm spellings (non-root targets) must stay unblocked: they
+	// are ordinary in-workspace deletes gated by the group policy, not by
+	// the irreversible blacklist.
+	for _, cmd := range []string{
+		"rm -r -f ./build",
+		"rm -f -r dist",
+		"rm -rf ./node_modules",
+		"rm -r -f /tmp/ci-workspace",
+		"rm --recursive --force dist", // GNU long-option spelling
+		"rm -Recurse -Force ./build",  // invalid as Unix flags; PowerShell-only vocabulary
+	} {
+		if matches(cmd) {
+			t.Errorf("unified blacklist hard-confirms benign Unix command %q", cmd)
+		}
+	}
+
+	// Benign Unix compounds containing PowerShell alias tokens must stay
+	// unblocked: `.*` crosses `&&`/`;`, so an alias alternation here would
+	// hard-confirm ordinary multi-command lines.
+	for _, cmd := range []string{
+		"rmdir foo && rm -r -f build",
+		"grep -ri secret . && rm -r -f dist",
+		"echo del; rm -r -f x",
+	} {
+		if matches(cmd) {
+			t.Errorf("unified blacklist hard-confirms benign Unix compound %q", cmd)
+		}
+	}
+
+	// Destructive PowerShell deletions via the unambiguous cmdlet name must
+	// stay blocked (the rm/del/… alias spellings are the Windows platform
+	// supplement's contract, not this list's).
+	for _, cmd := range []string{
+		"Remove-Item -r -f C:\\Temp\\victims",
+		"Remove-Item -Recurse -Force C:\\Temp\\victims",
+		"Remove-Item -Force -Recurse C:\\Temp\\victims",
+	} {
+		if !matches(cmd) {
+			t.Errorf("unified blacklist fails to block destructive PowerShell command %q", cmd)
+		}
+	}
+}
+
 // TestApplyDefaults_DestructiveDevPaths locks in the behavior of the
 // destructive /dev/ redirect and `dd of=` patterns in the bash_exec default
 // blacklist: genuine block-device / kernel-memory writes MUST be blocked, while
@@ -1017,6 +1090,67 @@ llm:
 	}
 	if findSubstring(savedContent, "actual-secret-value") {
 		t.Errorf("saved config should NOT contain the resolved secret value")
+	}
+}
+
+// TestSave_ExecuteBlacklistStoredAsUnset verifies the store-as-unset rule at
+// the persistence boundary: Save never pins an execute blacklist that is
+// exactly the shipped defaults into the file — whatever save path ran (LLM
+// setup, MCP, search, the security tab — they all funnel through Save), the
+// file keeps omitting `blacklist:` so future default-list improvements keep
+// flowing (the contract config.example.yaml documents). The in-memory config
+// is NOT mutated by Save; a customized list round-trips verbatim.
+func TestSave_ExecuteBlacklistStoredAsUnset(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+	cfg.LLM.DefaultModel = "model"
+	cfg.LLM.Anthropic.APIKey = "key"
+	cfg.LLM.Anthropic.Models = []string{"model"}
+
+	// ApplyDefaults materialized the default blacklist — the exact state any
+	// unrelated settings save would persist from.
+	if cfg.Security.Groups[ToolGroupExecute].Blacklist == nil {
+		t.Fatal("precondition: ApplyDefaults must materialize the default blacklist")
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	var onDisk map[string]any
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read saved config: %v", err)
+	}
+	if err := yaml.Unmarshal(data, &onDisk); err != nil {
+		t.Fatalf("failed to parse saved config: %v", err)
+	}
+	exec, _ := onDisk["security"].(map[string]any)["groups"].(map[string]any)["execute"].(map[string]any)
+	if _, pinned := exec["blacklist"]; pinned {
+		t.Error("saved config pins the default-equal execute blacklist — it must be omitted (stored as unset)")
+	}
+
+	// The in-memory config is untouched: Save marshals a view, it does not
+	// reset the live state it was handed.
+	if cfg.Security.Groups[ToolGroupExecute].Blacklist == nil {
+		t.Error("Save mutated the in-memory config: the caller's blacklist must be left as-is")
+	}
+
+	// A customized list is written verbatim.
+	cfg.Security.Groups[ToolGroupExecute] = GroupPolicyConfig{
+		Policy:    GroupPolicyUserConfirm,
+		Blacklist: []string{`custom\s+pattern`},
+	}
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save with a custom blacklist failed: %v", err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to re-read saved config: %v", err)
+	}
+	if !findSubstring(string(data), `custom\s+pattern`) {
+		t.Errorf("custom blacklist must round-trip verbatim, got:\n%s", data)
 	}
 }
 
@@ -1864,7 +1998,7 @@ func TestLoad_LegacySecuritySchema_DroppedAndDefaultsApplied(t *testing.T) {
 	}
 	// The legacy per-tool blacklist must not leak either: the execute group
 	// gets the default blacklist union, not "legacy-pattern-.*".
-	wantBlacklist := defaultExecuteGroupBlacklist()
+	wantBlacklist := DefaultExecuteGroupBlacklist()
 	if !reflect.DeepEqual(groups[ToolGroupExecute].Blacklist, wantBlacklist) {
 		t.Errorf("execute blacklist = %v, want default %v (legacy per-tool blacklist must not leak)", groups[ToolGroupExecute].Blacklist, wantBlacklist)
 	}

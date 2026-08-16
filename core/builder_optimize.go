@@ -128,7 +128,7 @@ func (b *OrchestratorBuilder) runOptimizeRewriteLoop(
 	userPrompt string,
 ) (string, error) {
 	const (
-		maxRetries    = 2
+		maxRetries     = 2
 		maxCallRetries = 2
 	)
 

@@ -224,9 +224,11 @@ ask a question, present a roadmap, and wait for approval because those are
 tool calls available inside its loop. If a model ignores a skill's
 instructions, that is an instruction-following failure, not an architectural
 one. Optional hard guardrails (e.g. blocking `delegate` until a
-`declare_plan` is approved) can be added later via per-skill tool-policy
-overrides (`core/orchestrator.go` `buildSkillPolicyOverrides` already
-exists), but are not required for the design to function.
+`declare_plan` is approved) were originally sketched as per-skill
+tool-policy overrides; that mechanism was later removed by ADR-024 — group
+policies are the single policy surface, and skills narrow the available
+toolset only — so such guardrails would now be expressed as capability-group
+policies. They are not required for the design to function.
 
 ## Consequences
 

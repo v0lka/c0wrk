@@ -322,6 +322,12 @@ type Orchestrator struct {
 	toolResultBudget agent.ToolResultBudget
 	circuitBreaker   agent.CircuitBreakerConfig
 
+	// onCleanup is invoked exactly once from Cleanup (session delete or app
+	// shutdown) to release builder-owned resources tied to this orchestrator's
+	// lifetime — currently the session registry's live-tracking entry (see
+	// OrchestratorBuilder.registerSessionRegistry). Nil when no hook is set.
+	onCleanup func()
+
 	// isNoProject is set to true when this orchestrator runs inside the
 	// "No Project" pseudo-project. When true, the routing domain is
 	// overridden from "code" to "general" so that code-oriented planning
@@ -501,7 +507,7 @@ type OrchestratorDeps struct {
 	VectorSearchFunc builtins.VectorSearchFunc // optional, for auto-RAG hint generation
 	SkillManager     *skills.SkillManager      // optional, for skill discovery and activation
 	AgentManager     *agents.AgentManager      // optional, for subagent discovery ("Available/Requested Subagents" prompt sections); nil-safe
-	CoreToolRegistry *tools.ToolRegistry       // core tool registry for skill policy overrides
+	CoreToolRegistry *tools.ToolRegistry       // per-session registry for No-Project tool disabling and the extra shell blacklist
 	ModelSwitcher    *llm.Router               // raw LLM router for per-message model override
 
 	// Tool result caching and per-tool truncation.
@@ -523,6 +529,12 @@ type OrchestratorDeps struct {
 	// switches and the default model are not probed (they fall back to the
 	// registry's built-in/override metadata). Optional, nil-safe.
 	LocalModelProbe LocalModelProbe
+
+	// OnCleanup is invoked exactly once from Cleanup, when the orchestrator's
+	// session is deleted or the app shuts down. The builder uses it to release
+	// the session registry's live-tracking entry (see
+	// registerSessionRegistry). Optional, nil-safe.
+	OnCleanup func()
 }
 
 // NewOrchestrator creates a new Orchestrator with all components.
@@ -574,6 +586,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		perToolTrunc:     deps.PerToolTruncation,
 		toolResultBudget: deps.ToolResultBudget,
 		circuitBreaker:   deps.CircuitBreaker,
+		onCleanup:        deps.OnCleanup,
 	}
 
 	return o
@@ -583,7 +596,16 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 // Idempotent — safe to call multiple times.
 func (o *Orchestrator) Cleanup() {
 	// StepDumpTracker cleanup is owned by the session layer; the orchestrator
-	// only holds a reference for per-step dump wiring. No-op here.
+	// only holds a reference for per-step dump wiring.
+	//
+	// Run and clear the cleanup hook: clearing before invoking makes repeated
+	// calls no-ops, matching the idempotency contract above (the session
+	// manager calls Cleanup on both session delete and app shutdown).
+	if o.onCleanup != nil {
+		fn := o.onCleanup
+		o.onCleanup = nil
+		fn()
+	}
 }
 
 // SetGoalProposer injects the goal-proposer hook (the desktop approval flow

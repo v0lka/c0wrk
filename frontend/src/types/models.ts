@@ -400,8 +400,14 @@ export type GroupPolicy = 'allow' | 'user_confirm' | 'deny'
 /** One security tool group's policy (mirrors backend GroupPolicyResponse). */
 export interface SecurityGroupPolicy {
   policy: GroupPolicy
-  /** Regex patterns of shell commands forced to confirmation; execute group only. */
-  blacklist?: string[]
+  /**
+   * Regex patterns of shell commands forced to confirmation; execute group
+   * only. Present-but-null for the other groups (the backend serializes the
+   * key unconditionally so the execute group's explicit-empty choice
+   * survives the round trip); the execute group always carries a non-null
+   * list — the effective defaults when unset.
+   */
+  blacklist?: string[] | null
 }
 
 export interface SecuritySettingsResponse {
@@ -411,6 +417,12 @@ export interface SecuritySettingsResponse {
   smart_approve: boolean
   /** Read-only: whether the strict judge is operational. Sent by the backend. */
   judge_available?: boolean
+  /**
+   * Read-only: the shipped default execute-blacklist patterns, sent by the
+   * backend so the settings UI can offer a one-click restore. Saving them
+   * lands the config back in the track-defaults state (store-as-unset).
+   */
+  execute_blacklist_defaults?: string[]
 }
 
 // --- Small LLM profile config ---

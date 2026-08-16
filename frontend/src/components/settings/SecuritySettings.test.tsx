@@ -32,6 +32,7 @@ vi.mock('@/api/mcp', () => ({
 }))
 
 import { SecuritySettings } from './SecuritySettings'
+import { getSecuritySettings } from '@/api/config'
 
 let container: HTMLDivElement
 let root: Root
@@ -99,5 +100,78 @@ describe('SecuritySettings — group schema', () => {
     expect(payload.tool_policies).toBeUndefined()
     expect(payload.auto_approve_workspace_writes).toBe(false)
     expect(payload.smart_approve).toBe(false)
+  })
+
+  it('a failed save surfaces the backend error and reverts the UI to the enforced settings', async () => {
+    updateSecuritySettingsMock.mockRejectedValueOnce(
+      new Error('security group "execute" blacklist pattern "(" does not compile'),
+    )
+    await render()
+
+    const execSelect = selects().find((s) => s.getAttribute('aria-label') === 'Execute policy')
+    if (!execSelect) throw new Error('Execute policy dropdown not found')
+    // getSecuritySettings has already run once for the initial load; count
+    // from here so the assertion is independent of earlier tests.
+    // vi.mocked() exposes the mock's call log while keeping the API type.
+    const callsBefore = vi.mocked(getSecuritySettings).mock.calls.length
+
+    await act(async () => {
+      execSelect.value = 'deny'
+      execSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    // The backend rejection message is visible to the user...
+    const text = container.textContent ?? ''
+    expect(text).toContain('blacklist pattern "(" does not compile')
+    // ...and the displayed policy re-syncs with the enforced state
+    // (execute stays user_confirm from getSecuritySettings, not the
+    // optimistic 'deny' that was never persisted).
+    expect(execSelect.value).toBe('user_confirm')
+    expect(getSecuritySettings).toHaveBeenCalledTimes(callsBefore + 1) // rollback re-fetch
+  })
+
+  it('a Wails string rejection (not an Error) still surfaces the backend message', async () => {
+    // Wails v2 rejects RPC failures with the Go error text as a plain string.
+    updateSecuritySettingsMock.mockRejectedValueOnce(
+      'security groups payload is missing: local_read, remote_mcp',
+    )
+    await render()
+
+    const execSelect = selects().find((s) => s.getAttribute('aria-label') === 'Execute policy')
+    if (!execSelect) throw new Error('Execute policy dropdown not found')
+
+    await act(async () => {
+      execSelect.value = 'deny'
+      execSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    const text = container.textContent ?? ''
+    expect(text).toContain('missing: local_read, remote_mcp')
+  })
+
+  it('a failed initial load renders no editable controls (fail-closed) and retries into the settings', async () => {
+    // The initial load fails: local group state would be empty, and any save
+    // from it would replace every live policy with defaults. The component
+    // must therefore not render the editable surface at all.
+    vi.mocked(getSecuritySettings).mockRejectedValueOnce(new Error('config not initialized'))
+    await render()
+
+    expect(selects()).toHaveLength(0)
+    const text = container.textContent ?? ''
+    expect(text).toContain('Failed to load security settings: config not initialized')
+    expect(text).toContain('Editing is disabled')
+    expect(updateSecuritySettingsMock).not.toHaveBeenCalled()
+
+    // Retry re-loads; the default mock resolves, so the editable surface
+    // appears with the enforced policies.
+    const retry = container.querySelector('button[type="button"]')
+    if (!retry) throw new Error('Retry button not found')
+    await act(async () => {
+      retry.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(selects()).toHaveLength(7)
+    const execSelect = selects().find((s) => s.getAttribute('aria-label') === 'Execute policy')
+    expect(execSelect?.value).toBe('user_confirm')
   })
 })

@@ -217,6 +217,11 @@ func ensureProposeGoalTool(list []sdktools.ToolDescriptor, registry *sdktools.To
 				Description: t.Description(),
 				InputSchema: t.InputSchema(),
 				Source:      "core",
+				// Group is load-bearing under ADR-024 (group budgets,
+				// verifier sets, filtering): an undeclared-group descriptor
+				// matches no allow-list. propose_goal is an orchestration
+				// tool, i.e. GroupSystem.
+				Group: sdktools.GroupSystem,
 			})
 		}
 	}
@@ -976,25 +981,44 @@ func (s *memVerificationSink) Last() *tools.VerificationOutcome {
 //   - local_mcp + remote_mcp — user-installed checkers/tests; installing an
 //     MCP server widens the verifier the same way it widens every other agent
 //
-// The mutating groups (local_write, remote_write) are absent from this set and
-// are additionally hard-excluded via verifierExcludedGroups, so a mis-tagged
-// tool still cannot reach the verifier.
+// The mutating groups (local_write, remote_write) are absent from this set,
+// so their tools match no include criterion; they are additionally hard-
+// excluded via verifierExcludedGroups (a declarative restatement of the same
+// invariant), and the classic mutating builtins are name-excluded via
+// verifierMutatingToolNames — so a mis-tagged mutating tool still cannot
+// reach the verifier.
 var verifierIncludeGroups = map[sdktools.ToolGroup]struct{}{
-	sdktools.GroupSystem:    {},
-	sdktools.GroupLocalRead: {},
-	sdktools.GroupRemoteRead:{},
-	sdktools.GroupExecute:   {},
-	sdktools.GroupLocalMCP:  {},
-	sdktools.GroupRemoteMCP: {},
+	sdktools.GroupSystem:     {},
+	sdktools.GroupLocalRead:  {},
+	sdktools.GroupRemoteRead: {},
+	sdktools.GroupExecute:    {},
+	sdktools.GroupLocalMCP:   {},
+	sdktools.GroupRemoteMCP:  {},
 }
 
 // verifierExcludedGroups are capability groups the verification pass must
-// NEVER see, even if a tool in them were (mis)tagged into an included group
-// context. The verifier is read-only/test-only: it must never mutate local
-// filesystem state or push changes to remote systems.
+// NEVER see. The verifier is read-only/test-only: it must never mutate local
+// filesystem state or push changes to remote systems. The set is disjoint
+// from verifierIncludeGroups, so it is behaviorally redundant with the
+// include check — it states the invariant at the exclusion site. The
+// name-based backstop below is what catches a mutating builtin mis-tagged
+// into an included group (the include/exclude group checks would both miss
+// such a tool).
 var verifierExcludedGroups = map[sdktools.ToolGroup]struct{}{
 	sdktools.GroupLocalWrite:  {},
 	sdktools.GroupRemoteWrite: {},
+}
+
+// verifierMutatingToolNames are the classic filesystem-mutating builtins,
+// hard-excluded BY NAME as a belt-and-braces backstop on top of the
+// group-based exclusion: if one of these were ever (mis)tagged into an
+// included group (e.g. write_file accidentally tagged GroupSystem), it would
+// pass both group checks — the name exclusion still strips it. Group tagging
+// itself is pinned by the sp4rk-side TestBuiltinToolGroups_ExactMapping.
+var verifierMutatingToolNames = map[string]struct{}{
+	// Mutating file tools.
+	ToolWriteFile: {}, ToolEditFile: {},
+	"delete_file": {}, "delete_directory": {}, "create_directory": {},
 }
 
 // verifierExcludedToolNames are goal-control / coordination TOOLS the
@@ -1048,10 +1072,12 @@ var verifierReDerivationExcludedToolNames = map[string]struct{}{
 // Every tool in excluded is then HARD-EXCLUDED regardless of the include
 // criteria (so e.g. declare_step_complete — a system-group tool — is stripped),
 // every tool in a mutating group (verifierExcludedGroups) is hard-excluded,
-// and finally any tool disabled in the current mode (disabledTools, e.g.
-// glob/ripgrep in CHAT mode) is dropped. This mirrors resolveTaskTools'
-// group-based selection with the verification-specific exclusions layered on
-// top; tools with an undeclared (zero) group match no include criterion.
+// every classic mutating builtin is hard-excluded by name
+// (verifierMutatingToolNames — the mis-tagging backstop), and finally any tool
+// disabled in the current mode (disabledTools, e.g. glob/ripgrep in CHAT
+// mode) is dropped. This mirrors resolveTaskTools' group-based selection
+// with the verification-specific exclusions layered on top; tools with an
+// undeclared (zero) group match no include criterion.
 func buildVerifierToolset(all []sdktools.ToolDescriptor, disabled map[string]bool, excluded map[string]struct{}, allowDelegate bool) []sdktools.ToolDescriptor {
 	out := make([]sdktools.ToolDescriptor, 0, len(all))
 	seen := make(map[string]struct{}, len(all))
@@ -1069,9 +1095,14 @@ func buildVerifierToolset(all []sdktools.ToolDescriptor, disabled map[string]boo
 		if _, isExcluded := excluded[d.Name]; isExcluded {
 			continue
 		}
-		// Hard exclusion by group: mutating tools never reach the verifier,
-		// regardless of tagging accidents elsewhere.
+		// Hard exclusion by group: mutating tools never reach the verifier.
 		if _, isExcludedGroup := verifierExcludedGroups[d.Group]; isExcludedGroup {
+			continue
+		}
+		// Hard exclusion by name: the classic mutating builtins are
+		// stripped even if a tagging accident put them in an included
+		// group (belt-and-braces on top of the group checks above).
+		if _, isMutating := verifierMutatingToolNames[d.Name]; isMutating {
 			continue
 		}
 		_, groupIncluded := verifierIncludeGroups[d.Group]
@@ -1155,7 +1186,8 @@ func renderReportedEvidence(verdict *goal.Verdict) string {
 //   - executable (default): prompts.GoalVerification directive + verifierToolFilter
 //     (read-only/test). The agent independently re-runs the verify clause.
 //   - re_derivation: prompts.GoalReDerivation directive + verifierReDerivationToolFilter
-//     (read-only/test PLUS delegate + read_step_output). The agent delegates a
+//     (read-only/test PLUS delegate; read_step_output is already present via
+//     the system group in both modes). The agent delegates a
 //     fresh read-only run of the goal's process and confirms only if it comes
 //     back clean.
 //
@@ -1203,7 +1235,8 @@ func (o *Orchestrator) defaultGoalVerifier(
 	//    clause over the read-only/test toolset (verifierToolFilter).
 	//  - re_derivation: the agent DELEGATES a fresh read-only run of the goal's
 	//    process via the `delegate` tool (verifierReDerivationToolFilter adds
-	//    delegate + read_step_output) and confirms only if it comes back clean.
+	//    delegate; read_step_output arrives via the system group) and confirms
+	//    only if it comes back clean.
 	//
 	// Both directives share the {goal_condition}/{goal_verify_clause}/
 	// {reported_evidence}/{shell_tool} placeholder set, resolved by

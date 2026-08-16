@@ -3,9 +3,12 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
+	sdktools "github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
@@ -22,6 +25,44 @@ func TestShellExecToolName_Unix(t *testing.T) {
 	}
 	if got := tool.Name(); got != "bash_exec" {
 		t.Errorf("tool name = %q, want %q", got, "bash_exec")
+	}
+}
+
+// TestShellExecTool_UnixHasNoAliasSupplement verifies the Unix counterpart of
+// the Windows alias supplement (shelltool_windows.go): newShellExecTool must
+// pass the configured blacklist through unchanged — no hidden PowerShell
+// alias patterns — so the routine Unix idiom `rm -r -f <dir>` (and its GNU
+// long-option spelling, and alias tokens inside compounds) stays a
+// policy-gated call rather than a hard blacklist confirmation. The unified
+// default list's own cross-dialect safety is pinned in
+// backend/config.TestDefaultExecuteGroupBlacklist_CrossDialectSafe.
+func TestShellExecTool_UnixHasNoAliasSupplement(t *testing.T) {
+	tool, err := newShellExecTool(nil, builtins.DefaultBashTimeouts())
+	if err != nil {
+		t.Fatalf("newShellExecTool: unexpected error: %v", err)
+	}
+	judger, ok := tool.(sdktools.ToolJudger)
+	if !ok {
+		t.Fatal("bash_exec tool does not implement ToolJudger")
+	}
+
+	for _, cmd := range []string{
+		"rm -r -f ./build",
+		"rm --recursive --force dist",
+		"rmdir foo && rm -r -f build",
+		"grep -ri secret . && rm -r -f dist",
+	} {
+		input, err := json.Marshal(map[string]string{"command": cmd})
+		if err != nil {
+			t.Fatalf("marshal input: %v", err)
+		}
+		outcome := judger.Judge(context.Background(), input)
+		// JudgeSeverityHard is the zero value (meaningless on Allow=true), so
+		// a hard blacklist match is precisely: not allowed, with a reason,
+		// classified hard.
+		if !outcome.Allow && outcome.Reason != "" && outcome.Severity == sdktools.JudgeSeverityHard {
+			t.Errorf("Unix constructor must not hard-block %q: reason=%q", cmd, outcome.Reason)
+		}
 	}
 }
 

@@ -654,9 +654,12 @@ func TestBuildSystemPrompt_ReactWithActiveSkills(t *testing.T) {
 		Skills: []*skills.Skill{
 			{
 				Metadata: skills.SkillMetadata{
-					Name:         "data-analysis",
-					Description:  "Analyze datasets and generate visualizations.",
-					AllowedTools: "Read Write Bash(jq:*)",
+					Name:        "data-analysis",
+					Description: "Analyze datasets and generate visualizations.",
+					// AllowedTools is intentionally NOT set: the skill policy
+					// layer is gone (ADR-024), and the prompt must render no
+					// tool-permission line even when frontmatter carries one —
+					// asserted by TestBuildSystemPrompt_SkillAllowedToolsNotGranted.
 				},
 				Body:    "1. Read the dataset using read_file.\n2. Process with jq.",
 				DirPath: "/skills/data-analysis",
@@ -676,8 +679,8 @@ func TestBuildSystemPrompt_ReactWithActiveSkills(t *testing.T) {
 	if !strings.Contains(result, "Read the dataset") {
 		t.Error("react mode prompt should contain the skill body")
 	}
-	if !strings.Contains(result, "Allowed tools: Read Write Bash(jq:*)") {
-		t.Error("react mode prompt should contain the skill allowed-tools")
+	if strings.Contains(result, "Allowed tools:") {
+		t.Error("react mode prompt must NOT contain an 'Allowed tools:' line — the skill policy layer was removed (ADR-024)")
 	}
 	// Plan Context should NOT be present (ReAct mode)
 	if strings.Contains(result, "Plan Context") {
@@ -686,6 +689,43 @@ func TestBuildSystemPrompt_ReactWithActiveSkills(t *testing.T) {
 	// ReAct mode should include the Completion section
 	if !strings.Contains(result, "single-step mode") {
 		t.Error("react mode prompt should contain single-step mode completion instruction")
+	}
+}
+
+// TestBuildSystemPrompt_SkillAllowedToolsNotGranted guards the ADR-024 removal
+// of the skill policy layer: skill frontmatter may still declare an
+// allowed-tools field (Claude-Code vocabulary), but the system prompt must
+// render no permission line for it — the engine grants nothing based on that
+// field, so promising "Allowed tools:" would mislead the model into assuming
+// permissions that no gate enforces.
+func TestBuildSystemPrompt_SkillAllowedToolsNotGranted(t *testing.T) {
+	ctx := tools.WithWorkspacePath(context.Background(), "/test/workspace")
+	ctx = WithActiveSkills(ctx, &ActiveSkills{
+		Skills: []*skills.Skill{
+			{
+				Metadata: skills.SkillMetadata{
+					Name:         "data-analysis",
+					Description:  "Analyze datasets and generate visualizations.",
+					AllowedTools: "Read Write Bash(jq:*)",
+				},
+				Body:    "1. Read the dataset using read_file.\n2. Process with jq.",
+				DirPath: "/skills/data-analysis",
+			},
+		},
+	})
+
+	for _, planMode := range []bool{true, false} {
+		testCtx := ctx
+		if planMode {
+			testCtx = context.WithValue(ctx, PlanModeKey, true)
+		}
+		result := buildSystemPrompt(testCtx, "analyze this dataset", llm.ModelMetadata{Family: "openai_flagship"})
+		if strings.Contains(result, "Allowed tools:") {
+			t.Errorf("planMode=%v: prompt renders an 'Allowed tools:' line for skill frontmatter; the skill policy layer is removed (ADR-024) and no engine gate honors it", planMode)
+		}
+		if !strings.Contains(result, "Read the dataset") {
+			t.Errorf("planMode=%v: skill body must still render", planMode)
+		}
 	}
 }
 
@@ -1847,4 +1887,31 @@ func TestAugmentWithAttachments(t *testing.T) {
 			t.Errorf("expected attachment header at start for empty message, got %q", got)
 		}
 	})
+}
+
+// TestOrchestrator_CleanupHookRunsOnce verifies the OnCleanup lifecycle hook:
+// Cleanup invokes the hook exactly once (session delete and app shutdown both
+// call it), leaving repeated calls as no-ops, and a nil hook stays safe. The
+// builder relies on this contract to release per-session registry tracking
+// (registerSessionRegistry) without double-unregistering.
+func TestOrchestrator_CleanupHookRunsOnce(t *testing.T) {
+	var calls int
+	o := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
+		OnCleanup: func() { calls++ },
+	})
+
+	o.Cleanup()
+	if calls != 1 {
+		t.Fatalf("Cleanup hook called %d times, want exactly 1", calls)
+	}
+
+	// Idempotency: the second Cleanup (app shutdown after session delete)
+	// must not re-run the hook.
+	o.Cleanup()
+	if calls != 1 {
+		t.Fatalf("Cleanup hook called %d times after repeated Cleanup, want 1", calls)
+	}
+
+	// Nil hook must be safe.
+	NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{}).Cleanup()
 }

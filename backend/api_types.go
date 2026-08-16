@@ -166,6 +166,14 @@ type SecuritySettingsResponse struct {
 	// no judge is operational (e.g. no LLM model configured). Always sent; the
 	// backend ignores any incoming value during updates.
 	JudgeAvailable bool `json:"judge_available"`
+	// ExecuteBlacklistDefaults carries the shipped default patterns for the
+	// execute group's command blacklist. Read-only: the settings UI offers
+	// them as a one-click restore, so a user who emptied the blacklist can
+	// return to the default posture without re-typing patterns — saving them
+	// hits the store-as-unset rule (config.StoreDefaultBlacklistAsUnset) and
+	// lands the config back in the track-defaults state. Always sent; the
+	// backend ignores any incoming value during updates.
+	ExecuteBlacklistDefaults []string `json:"execute_blacklist_defaults"`
 }
 
 // GroupPolicyResponse holds one tool group's policy for the frontend. It
@@ -173,8 +181,15 @@ type SecuritySettingsResponse struct {
 // ("allow"|"user_confirm"|"deny") and — execute group only — a regex
 // blacklist of shell commands forced to confirmation.
 type GroupPolicyResponse struct {
-	Policy    string   `json:"policy"`
-	Blacklist []string `json:"blacklist,omitempty"`
+	Policy string `json:"policy"`
+	// Blacklist is serialized WITHOUT omitempty: for the execute group the
+	// nil-vs-empty distinction is meaningful (nil = unset, the shipped
+	// defaults are in force; empty = explicitly no patterns) and must
+	// survive the JSON round trip — the settings UI echoes
+	// GetSecuritySettings output straight back into UpdateSecuritySettings
+	// on every save. Non-execute groups serialize null, which the update
+	// path ignores.
+	Blacklist []string `json:"blacklist"`
 }
 
 // SmallLLMConfigResponse is the small-LLM profile configuration exposed to the

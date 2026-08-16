@@ -133,10 +133,10 @@ func SeedSkills(destSkillsDir string, logger *slog.Logger) (*SeedSkillsResult, e
 type seedAction int
 
 const (
-	actionSeed seedAction = iota // newly written
-	actionUpdate                 // overwritten (version differed)
-	actionCurrent                // already current, skipped
-	actionPreserve               // user-owned, skipped
+	actionSeed     seedAction = iota // newly written
+	actionUpdate                     // overwritten (version differed)
+	actionCurrent                    // already current, skipped
+	actionPreserve                   // user-owned, skipped
 )
 
 // seedOne handles a single embedded skill: decides the action from the

@@ -43,7 +43,7 @@ func TestExampleConfigReflectsGroupsSchema(t *testing.T) {
 			t.Errorf("example group %q policy = %q, want default %q", group, got.Policy, want)
 		}
 	}
-	if !reflect.DeepEqual(result.Config.Security.Groups[ToolGroupExecute].Blacklist, defaultExecuteGroupBlacklist()) {
+	if !reflect.DeepEqual(result.Config.Security.Groups[ToolGroupExecute].Blacklist, DefaultExecuteGroupBlacklist()) {
 		t.Error("example execute blacklist differs from the compiled-in default union")
 	}
 

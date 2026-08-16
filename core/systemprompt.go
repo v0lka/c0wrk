@@ -274,9 +274,11 @@ func formatActiveSkills(ctx context.Context, preamble string) string {
 		if s.Metadata.Description != "" {
 			sb.WriteString("Description: " + s.Metadata.Description + "\n")
 		}
-		if len(s.Metadata.AllowedToolList()) > 0 {
-			sb.WriteString("Allowed tools: " + s.Metadata.AllowedTools + "\n")
-		}
+		// No tool-permission line is rendered: the skill policy layer was
+		// removed by ADR-024 (tool budgets are capability-group based), and a
+		// stale "Allowed tools:" line would promise the model a grant the
+		// engine no longer enforces. Skill frontmatter may still carry an
+		// allowed-tools field for other consumers, but it grants nothing.
 		sb.WriteString("\n")
 		sb.WriteString(s.Body)
 		sb.WriteString("\n\n")

@@ -338,7 +338,8 @@ type InjectionDefenseConfig struct {
 
 // Tool group names for the security.groups schema. The set of configurable
 // groups is fixed; every non-internal tool maps into exactly one group (the
-// mapping itself lives in core, see core/builder.go).
+// mapping is declared per tool via ToolGroup on each tool's constructor —
+// see the ADR-024 group table and tools/group.go in sp4rk).
 const (
 	ToolGroupLocalRead   = "local_read"   // read-only access to local workspace files
 	ToolGroupRemoteRead  = "remote_read"  // read-only access to remote resources (web_fetch, web_search)
@@ -788,7 +789,17 @@ func LoadWithResult(path string) (*LoadResult, error) {
 
 // Save writes the configuration to a YAML file atomically.
 func Save(cfg *Config, path string) error {
-	data, err := yaml.Marshal(cfg)
+	// Marshal a store-as-unset view of the security groups: an execute
+	// blacklist exactly equal to the shipped defaults is written as omitted,
+	// so every persist path — not just the security settings tab — preserves
+	// the file-format contract that omitting `blacklist:` tracks the app's
+	// shipped defaults (config.example.yaml). The in-memory config is left
+	// untouched: ApplyDefaults re-derives the effective list at load, and the
+	// runtime consumers (ToBuilderConfig, groupPoliciesToResponse) treat nil
+	// and the materialized defaults identically.
+	view := *cfg
+	view.Security.Groups = StoreDefaultBlacklistAsUnset(cfg.Security.Groups)
+	data, err := yaml.Marshal(&view)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}

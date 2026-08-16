@@ -251,6 +251,32 @@ func (r *ToolRegistry) SetGroupPolicies(policies map[sdktools.ToolGroup]sdktools
 	r.groupPolicies = policies
 }
 
+// ApplySecurityState atomically replaces the registry's global security
+// state: the group→policy map, session-root write auto-approval, and Smart
+// Approve. It is the push API for runtime security-settings updates
+// (applySecurityPolicies), used for both the shared builder registry and the
+// live per-session clones cloned from it. The policies map is deep-copied so
+// the caller's map never aliases registry state — a broadcast push may pass
+// the same map to many registries, and each must stay independently mutable
+// (Clone contract). Replacing the whole map under one lock acquisition also
+// means a concurrently executing tool never observes a torn update (e.g. new
+// group policies with the old Smart Approve flag).
+func (r *ToolRegistry) ApplySecurityState(
+	policies map[sdktools.ToolGroup]sdktools.ToolPolicy,
+	autoApproveWorkspaceWrites bool,
+	smartApprove bool,
+) {
+	copied := make(map[sdktools.ToolGroup]sdktools.ToolPolicy, len(policies))
+	for g, p := range policies {
+		copied[g] = p
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.groupPolicies = copied
+	r.autoApproveWorkspaceWrites = autoApproveWorkspaceWrites
+	r.smartApprove = smartApprove
+}
+
 // GroupPolicies returns a copy of the current group→policy map.
 func (r *ToolRegistry) GroupPolicies() map[sdktools.ToolGroup]sdktools.ToolPolicy {
 	r.mu.RLock()
@@ -559,6 +585,13 @@ func splitSafetyReasons(judge sdktools.JudgeOutcome, symlinkReason string) (hard
 // — the advisory judge must not re-decide what the strict judge already ran
 // on. When Smart Approve is off, the call goes straight to confirmation with
 // the supplied reason (or the default per-tool reason when there is none).
+//
+// The user-facing reasoning always keeps the concrete cause (the supplied
+// reason or the per-tool default): when the strict judge is missing, fails, or
+// returns a Confirm without a reasoning, only a short note explaining why
+// Smart Approve could not decide is prepended, so the confirmation card never
+// degrades to a generic "judge unavailable" text that hides WHY this call
+// needs confirmation.
 func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason string) (sdktools.ToolResult, error) {
 	r.mu.RLock()
 	smartApprove := r.smartApprove
@@ -572,7 +605,10 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 		return r.confirmAndExecute(ctx, tool, name, input, reason)
 	}
 
-	reasoning := "Strict judge is unavailable; requiring manual confirmation for safety"
+	if reason == "" {
+		reason = defaultConfirmReason(name)
+	}
+	reasoning := "Strict judge is unavailable; " + reason
 	verdict := sdktools.VerdictConfirm
 	if strictJudge != nil {
 		var judgeErr error
@@ -584,8 +620,11 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 		})
 		if judgeErr != nil {
 			verdict = sdktools.VerdictConfirm
-			reasoning = "Strict judge evaluation failed; requiring manual confirmation for safety"
+			reasoning = "Strict judge evaluation failed; " + reason
 		}
+	}
+	if verdict != sdktools.VerdictAllow && reasoning == "" {
+		reasoning = reason
 	}
 
 	verdictText := "CONFIRM"

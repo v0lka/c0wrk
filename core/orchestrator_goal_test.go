@@ -528,8 +528,8 @@ func TestRunGoalTurns_TurnBudgetExhausted(t *testing.T) {
 func TestRunGoalTurns_PausedMidTurnBreaks(t *testing.T) {
 	o := newGoalTestOrchestrator()
 	runner := &mockGoalTurnRunner{
-		turnCalls:    []int{1}, // turn 1 makes progress before pausing
-		pauseAtTurn:  1,        // turn 1's conductor returns ExecutionStatusPaused
+		turnCalls:   []int{1}, // turn 1 makes progress before pausing
+		pauseAtTurn: 1,        // turn 1's conductor returns ExecutionStatusPaused
 	}
 	gs := &goal.GoalState{Status: goal.StatusActive}
 	bb := orchestration.NewMapBlackboard()

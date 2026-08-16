@@ -510,6 +510,14 @@ type planStepOutcome struct {
 // as failed outcomes with a directly-emitted terminal event pair (the
 // translator never ran, so no SubAgentLaunch/Complete fired for them).
 func (l *conductorLauncher) defaultPlanStepWave(ctx context.Context, ready []orchestration.PlanStep, registry *tools.DelegationRegistry) []planStepOutcome {
+	// Plan-step subagents get the same narrowed context as every other
+	// subagent launch path: goal-loop sinks cleared (defense in depth on top
+	// of resolveTaskTools stripping the goal tools from every toolset), no
+	// Conductor-only delegation/plan machinery, and no subagent-roster prompt
+	// sections. Plan steps are plain blocking subagents — they need none of
+	// the Conductor's context handles (the registry is passed explicitly and
+	// the profile resolver survives the narrowing).
+	ctx = subagentCtx(ctx)
 	subTasks := make([]agent.SubAgentTask, 0, len(ready))
 	outcomes := make([]planStepOutcome, 0, len(ready))
 	for _, step := range ready {
@@ -747,6 +755,17 @@ func subagentCtx(ctx context.Context) context.Context {
 	ctx = tools.WithReflectionRunner(ctx, nil)
 	ctx = tools.WithPlanChecker(ctx, nil)
 	ctx = orchestration.WithDelegationRegistry(ctx, nil)
+	// Clear the goal-loop sinks so no delegated subagent can write goal-status
+	// or verification verdicts into the loop it serves under: those channels
+	// belong to the goal-loop Conductor and the independent verifier only.
+	// resolveTaskTools already strips the goal tools from every subagent
+	// toolset; this nil-ing is defense in depth (a future GroupSystem tool
+	// or a hand-written toolset cannot reach the sinks either). The verifier
+	// itself does not run through subagentCtx — it is a direct RunConductor
+	// call with its own fresh sink (defaultGoalVerifier), and the re-derivation
+	// sub-agent it delegates SHOULD land here with the sink cleared.
+	ctx = tools.WithGoalStatusSink(ctx, nil)
+	ctx = tools.WithVerificationSink(ctx, nil)
 	// Clear the Conductor-only subagent roster so no subagent inherits the
 	// "Available Subagents"/"Requested Subagents" prompt sections (ADR-021 §4).
 	ctx = WithAvailableAgents(ctx, nil)
@@ -815,6 +834,12 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	// is cleared explicitly here.
 	taskCtx = WithAvailableAgents(taskCtx, nil)
 	taskCtx = WithUserAgents(taskCtx, nil)
+	// Clear the goal-loop sinks here for the same reason: a redelegating
+	// subagent holds delegate/cancel_delegation but must still never write
+	// goal-status or verification verdicts (resolveTaskTools strips the goal
+	// tools from its toolset; this is the second layer).
+	taskCtx = tools.WithGoalStatusSink(taskCtx, nil)
+	taskCtx = tools.WithVerificationSink(taskCtx, nil)
 
 	// Build the subagent task. The finishJoinExecutor in the sp4rk Conductor
 	// will guard against finish with pending async sub-delegations
@@ -1030,6 +1055,22 @@ func stripConductorOnlyTools(descs []sdktools.ToolDescriptor) []sdktools.ToolDes
 	return out
 }
 
+// stripSubagentTools removes everything a delegated task agent must never
+// hold, layered on the mode-disabled filter the caller already applied: the
+// Conductor-only orchestration tools (delegate, declare_plan, reflect, ...)
+// and the goal-loop actor tools (propose_goal, declare_goal_status,
+// declare_verification). The goal tools are GroupSystem, so without this
+// strip they would ride the always-granted system group into every subagent —
+// but only the goal-loop Conductor and the independent verifier may ever call
+// them (the verifier's toolset is built by verifierToolFilter from the raw
+// registry list, not via resolveTaskTools, and keeps declare_verification).
+// A task subagent that declared a goal status or verification verdict would
+// forge the goal loop's state-machine inputs; subagentCtx additionally clears
+// the goal/verification sinks as a second layer.
+func stripSubagentTools(descs []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
+	return tools.StripGoalModeTools(stripConductorOnlyTools(descs))
+}
+
 // resolveTaskTools computes a delegation task's toolset from the capability
 // groups carried by DelegationTask.Tools:
 //
@@ -1039,37 +1080,43 @@ func stripConductorOnlyTools(descs []sdktools.ToolDescriptor) []sdktools.ToolDes
 //     MCP tools are NOT part of the preset — installing an MCP server must
 //     never silently widen a read-only delegation (see the regression test in
 //     conductor_tools_test.go).
-//   - an array of group tokens (kebab "local-read" or underscore
+//   - a non-empty array of group tokens (kebab "local-read" or underscore
 //     "local_read" spelling): system ∪ the granted groups. The system group
 //     (finish, fact memory, checklist, meta tools) is always granted — a
 //     subagent that cannot finish or record facts is unusable — and nothing
-//     else is added: the grant is exactly what was requested.
+//     else is added: the grant is exactly what was requested. An empty array
+//     is an error, not a valid way to request a system-only subagent (that is
+//     ["system"]): the resolver fails closed instead of silently stripping
+//     every working tool.
 //
 // Anything else fails the delegation with a comprehensible error (fail-closed
 // rather than silently degrading to a minimal set). A tool whose capability
 // group is not declared (zero ToolGroup) matches no grant. Conductor-only
-// tools are stripped in every branch; the redelegating path re-adds delegate
-// and cancel_delegation explicitly (see runRedelegBlocking).
+// tools AND the goal-loop actor tools are stripped in every branch (see
+// stripSubagentTools) — the latter ride the always-granted system group but
+// belong to the goal-loop Conductor and the independent verifier only; the
+// redelegating path re-adds delegate and cancel_delegation explicitly (see
+// runRedelegBlocking).
 func (l *conductorLauncher) resolveTaskTools(t tools.DelegationTask) ([]sdktools.ToolDescriptor, error) {
 	all := l.stripDisabled(l.allToolDescriptors())
 
 	// No explicit tool request: give everything (minus conductor-only and
 	// mode-disabled tools).
 	if t.Tools == nil {
-		return stripConductorOnlyTools(all), nil
+		return stripSubagentTools(all), nil
 	}
 	switch v := t.Tools.(type) {
 	case string:
 		switch v {
 		case "", "all":
-			return stripConductorOnlyTools(all), nil
+			return stripSubagentTools(all), nil
 		case "read-only":
 			grants := map[sdktools.ToolGroup]struct{}{
 				sdktools.GroupSystem:     {},
 				sdktools.GroupLocalRead:  {},
 				sdktools.GroupRemoteRead: {},
 			}
-			return stripConductorOnlyTools(l.toolsByGroups(all, grants)), nil
+			return stripSubagentTools(l.toolsByGroups(all, grants)), nil
 		default:
 			return nil, fmt.Errorf("unknown tools value %q (valid: \"all\", \"read-only\", or an array of group names: %s)",
 				v, strings.Join(agents.ToolGroupTokens(), ", "))
@@ -1080,7 +1127,7 @@ func (l *conductorLauncher) resolveTaskTools(t tools.DelegationTask) ([]sdktools
 			return nil, err
 		}
 		grants[sdktools.GroupSystem] = struct{}{}
-		return stripConductorOnlyTools(l.toolsByGroups(all, grants)), nil
+		return stripSubagentTools(l.toolsByGroups(all, grants)), nil
 	}
 }
 
@@ -1108,6 +1155,10 @@ func (l *conductorLauncher) toolsByGroups(all []sdktools.ToolDescriptor, grants 
 // the delegate tool's JSON input or []string from an agent profile's
 // ToolPreference — into a set of capability groups. Accepts kebab and
 // underscore spellings; unknown tokens fail with the list of valid groups.
+// An empty token list fails too: it would otherwise resolve to a grant of
+// only the always-added system group — a subagent stripped of every working
+// tool (validateDelegationTools rejects the JSON form up front; this guards
+// programmatic DelegationTask construction).
 func parseToolGroups(v any) (map[sdktools.ToolGroup]struct{}, error) {
 	var tokens []string
 	switch arr := v.(type) {
@@ -1124,6 +1175,9 @@ func parseToolGroups(v any) (map[sdktools.ToolGroup]struct{}, error) {
 		tokens = arr
 	default:
 		return nil, fmt.Errorf("unexpected tools type %T (valid: \"all\", \"read-only\", or an array of group names)", v)
+	}
+	if len(tokens) == 0 {
+		return nil, errors.New("tools: empty array — omit the field (or pass \"all\") for the full toolset; to grant only the always-included system group, pass [\"system\"]")
 	}
 	grants := make(map[sdktools.ToolGroup]struct{}, len(tokens))
 	for _, tok := range tokens {
@@ -1688,28 +1742,28 @@ func RunConductor(
 	maxSteps := complexity * stepsPerComplexity
 
 	cfg := orchestration.ConductorConfig{
-		LLM:                 callerForConductor(deps),
-		Tools:               deps.toolExec,
-		ToolRegistry:        deps.toolRegistry,
-		TokenCounter:        deps.tokenCounter,
-		Model:               deps.model,
-		ModelRegistry:       deps.modelRegistry,
-		ContextFactory:      adaptContextFactory(deps.contextFactory),
-		SystemPrompt:        systemPromptFactory,
-		MaxSteps:            maxSteps,
-		ToolResultBudget:    deps.toolResultBudget,
-		CircuitBreaker:      deps.circuitBreaker,
-		HITLHandler:         deps.hitlHandler,
-		ToolCache:           deps.toolCache,
-		PerToolTruncation:   deps.perToolTrunc,
-		ReasoningEffort:     deps.reasoningEffort,
-		PreWarningPercent:   deps.preWarningPct,
-		NonCacheableTools:   coreNonCacheableToolNames,
-		ConversationHistory: deps.conversationHistory,
-		ResumeSteps:         deps.resumeSteps,
-		ContentBlocks:       deps.contentBlocks,
+		LLM:                     callerForConductor(deps),
+		Tools:                   deps.toolExec,
+		ToolRegistry:            deps.toolRegistry,
+		TokenCounter:            deps.tokenCounter,
+		Model:                   deps.model,
+		ModelRegistry:           deps.modelRegistry,
+		ContextFactory:          adaptContextFactory(deps.contextFactory),
+		SystemPrompt:            systemPromptFactory,
+		MaxSteps:                maxSteps,
+		ToolResultBudget:        deps.toolResultBudget,
+		CircuitBreaker:          deps.circuitBreaker,
+		HITLHandler:             deps.hitlHandler,
+		ToolCache:               deps.toolCache,
+		PerToolTruncation:       deps.perToolTrunc,
+		ReasoningEffort:         deps.reasoningEffort,
+		PreWarningPercent:       deps.preWarningPct,
+		NonCacheableTools:       coreNonCacheableToolNames,
+		ConversationHistory:     deps.conversationHistory,
+		ResumeSteps:             deps.resumeSteps,
+		ContentBlocks:           deps.contentBlocks,
 		PendingUserInterjection: deps.nudge,
-		PauseChecker:             deps.pauseChecker,
+		PauseChecker:            deps.pauseChecker,
 	}
 
 	var events agent.Events = &agent.NoopEvents{}

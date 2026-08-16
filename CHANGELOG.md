@@ -11,6 +11,9 @@ All notable changes to **c0wrk**. Dates follow the tag date.
 ### Security
 - Documented auto-update as a supply-chain attack surface in [SECURITY.md](./SECURITY.md) (ASI04): unsigned/SHA256-only trade-off recorded as an accepted risk; added a rule forbidding weakening the self-update integrity gate.
 
+### Security (breaking)
+- **Per-tool security policies replaced by capability groups** ([ADR-024](./specs/decisions/024-group-policies.md)). `security.tool_policies` and `security.default_policy` are **removed**; policy is configured exclusively via `security.groups.<group>.policy` (`allow` / `user_confirm` / `deny`) for the seven capability groups (`execute`, `local_read`, `local_write`, `remote_read`, `remote_write`, `local_mcp`, `remote_mcp`; the reserved `system` group is never configurable). The per-tool shell blacklist is unified into `security.groups.execute.blacklist`. A config file that still carries the legacy keys loads them inert — **no automatic migration exists**: the next settings Save silently drops them. Convert by hand: merge `tool_policies.<tool>.blacklist` entries (`bash_exec` and `posh_exec` unify) into `groups.execute.blacklist`, and map each `tool_policies.<tool>.policy` to the policy of the tool's owning group (see the group table in ADR-024). Unconfigured groups keep the safe defaults (reads `allow`, mutations `user_confirm`).
+
 ## v0.5.2 — 2026-08-06
 
 ### Added

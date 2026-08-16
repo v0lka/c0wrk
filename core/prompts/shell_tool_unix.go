@@ -6,10 +6,12 @@ package prompts
 // this platform. On Unix it is bash_exec; on Windows (see
 // shell_tool_windows.go) it is posh_exec.
 //
-// This mirrors core.activeShellToolName() (from step 1) but lives in the
-// prompts package because core cannot be imported here without a circular
-// dependency (core already imports core/prompts). The literal strings match
-// the tool-name constants in core/toolnames.go (ToolBashExec / ToolPoshExec).
+// The core package keeps a test-only equivalent (shellname_unix_test.go /
+// shellname_windows_test.go) because core cannot be imported here without a
+// circular dependency (core already imports core/prompts); production core
+// code resolves the shell tool via its `execute` capability group. The
+// literal strings match the tool-name constants in core/toolnames.go
+// (ToolBashExec / ToolPoshExec).
 //
 // SubstituteShellTool uses it to resolve the {shell_tool} placeholder in
 // embedded prompt markdown so platform-specific tool-priority guidance

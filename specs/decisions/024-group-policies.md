@@ -100,7 +100,19 @@ security:
   groups `allow`; every mutating group `user_confirm`.
 - A regex **blacklist is valid only on `execute`** (config validation rejects
   it elsewhere). The default execute blacklist is the dedup union of the bash
-  and PowerShell pattern lists (35 patterns).
+  and PowerShell pattern lists, **restricted to cross-dialect-safe patterns**:
+  exactly one shell tool is registered per host (bash_exec on Unix, posh_exec
+  on Windows), so the unified list always carries the other dialect's
+  patterns, and a pattern may only hard-confirm command text that is dangerous
+  under whichever shell reads it. The PowerShell Remove-Item **alias**
+  patterns (`rm`, `del`, `erase`, `ri`, `rd`, `rmdir` — `rm -r -f <dir>` is
+  the routine Unix delete spelling) cannot satisfy that invariant and are
+  therefore NOT in
+  the unified list; they are enforced as a Windows-only platform supplement at
+  shell-tool construction (`core/tools/shelltool_windows.go`), restoring full
+  PowerShell coverage without Unix false positives. The supplement is an
+  engine-level floor: it applies on top of whatever the configurable group
+  blacklist contains and is not user-removable.
 - Unknown group names, `system` in config, blacklist outside `execute`, and
   invalid policy enums are load errors.
 - An unconfigured group at runtime resolves fail-safe to `user_confirm` (never
@@ -149,6 +161,12 @@ severity `hard` or `soft`:
   paths). Soft reasons are what Smart Approve exists to weigh; without Smart
   Approve they fall back to a plain confirmation.
 
+Severity is per-source: the SDK file judge's path containment is a soft scope
+question by design (sp4rk's safety model reasons about the symlink-resolved
+path), while c0wrk's registry-level symlink analysis classifies an escape or
+unresolvable traversal as a fired control — hard — so `splitSafetyReasons`
+can never let it be auto-approved away.
+
 A symlink whose resolution stays inside the session roots is explicitly **not**
 a reason (containment reasons about resolved paths; OS-level symlinks like
 `/tmp → /private/tmp` remain exempt via `IsOSLevelSymlink`).
@@ -190,11 +208,15 @@ The goal-mode verifier sets switched from name lists to groups: include
 `system + local_read + remote_read + execute + local_mcp + remote_mcp` (+
 `delegate` in `re_derivation`), hard-exclude groups `local_write` /
 `remote_write` plus the goal-control names (`declare_goal_status`,
-`execute_plan`, `propose_plan`-family, `reflect`, `cancel_delegation`, …).
+`execute_plan`, `propose_goal`, `reflect`, `cancel_delegation`, …).
 `execute_plan` moved from an implicit to an explicit exclusion (it launches
-subagents with full toolsets). Two non-mutating meta-tools (`batch`,
-`read_attachment`) are now included via the system group — previously they fell
-out of the name list by accident.
+subagents with full toolsets). The classic mutating builtin names
+(`write_file`, `edit_file`, `delete_file`, `delete_directory`,
+`create_directory`) stay name-excluded as a mis-tagging backstop: a mutating
+builtin accidentally tagged into an included group passes both group checks
+but is still stripped. Two non-mutating meta-tools (`batch`,
+`read_attachment`) are now included via the system group — previously they
+fell out of the name list by accident.
 
 ### 7. Legacy schema
 
@@ -206,10 +228,14 @@ and no migration path exists. Policy is configured exclusively via
 The YAML decoder ignores unknown keys, so a config file that still carries
 stale `tool_policies`/`default_policy` entries loads with those entries having
 **no effect** — groups the file does not configure resolve to their defaults
-(reads `allow`, mutations `user_confirm`). A pre-groups installation upgrading
-across this change converts its config by hand (or by first running a build
-that performed the one-shot automatic migration, which produced a
-`groups`-based file with a timestamped backup).
+(reads `allow`, mutations `user_confirm`). There is **no automatic migration
+and no backup**: a pre-groups installation upgrading across this change
+converts its config by hand — `tool_policies.<tool>.blacklist` entries from
+either platform list (`bash_exec` and `posh_exec` unify) merge into
+`groups.execute.blacklist`, and `tool_policies.<tool>.policy` maps to the
+policy of the tool's owning group (see the group table above). A legacy file
+that is not hand-converted silently drops those settings on the next Save
+(verified by test: legacy keys load inert and are wiped).
 
 ## Consequences
 

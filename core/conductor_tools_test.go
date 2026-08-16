@@ -40,6 +40,11 @@ func subagentToolSet() []sdktools.ToolDescriptor {
 		{Name: "declare_plan", Group: sdktools.GroupSystem},
 		{Name: "execute_plan", Group: sdktools.GroupSystem},
 		{Name: "reflect", Group: sdktools.GroupSystem},
+		// system, goal-loop-only (stripped from EVERY subagent toolset: they
+		// belong to the goal-loop Conductor and the independent verifier)
+		{Name: "propose_goal", Group: sdktools.GroupSystem},
+		{Name: "declare_goal_status", Group: sdktools.GroupSystem},
+		{Name: "declare_verification", Group: sdktools.GroupSystem},
 		// execute
 		{Name: "bash_exec", Group: sdktools.GroupExecute},
 		// local_write
@@ -120,6 +125,24 @@ func TestResolveTaskTools_AllStringMatchesDefault(t *testing.T) {
 		}
 		if len(got) != len(def) {
 			t.Errorf("tools=%q: got %d tools, want %d (same as nil)", v, len(got), len(def))
+		}
+	}
+}
+
+// TestResolveTaskTools_EmptyArrayRejected verifies an empty tools array fails
+// the delegation instead of resolving to a system-only toolset. A degenerate
+// grant that strips every working tool is a caller error; the deliberate
+// system-only grant is expressed as ["system"].
+func TestResolveTaskTools_EmptyArrayRejected(t *testing.T) {
+	l := &conductorLauncher{deps: conductorDeps{toolRegistry: newSubagentTestRegistry(subagentToolSet())}}
+	for _, v := range []any{[]any{}, []string{}} {
+		_, err := l.resolveTaskTools(tools.DelegationTask{Tools: v})
+		if err == nil {
+			t.Errorf("resolveTaskTools(%#v) = nil error, want empty-array rejection", v)
+			continue
+		}
+		if !strings.Contains(err.Error(), "empty array") {
+			t.Errorf("resolveTaskTools(%#v) = %q, want message containing %q", v, err.Error(), "empty array")
 		}
 	}
 }
@@ -274,8 +297,8 @@ func TestResolveTaskTools_UnknownInputsFailClosed(t *testing.T) {
 // semantic_search in CHAT / No-Project mode).
 func TestResolveTaskTools_ChatModeDisabledDropped(t *testing.T) {
 	l := &conductorLauncher{deps: conductorDeps{
-		toolRegistry:   newSubagentTestRegistry(subagentToolSet()),
-		disabledTools:  map[string]bool{ToolGlob: true, ToolRipgrep: true, ToolSemanticSearch: true},
+		toolRegistry:  newSubagentTestRegistry(subagentToolSet()),
+		disabledTools: map[string]bool{ToolGlob: true, ToolRipgrep: true, ToolSemanticSearch: true},
 	}}
 	got, err := l.resolveTaskTools(tools.DelegationTask{Tools: []any{"local-read"}})
 	if err != nil {
@@ -336,4 +359,58 @@ func newSubagentTestRegistry(descs []sdktools.ToolDescriptor) *sdktools.ToolRegi
 		_ = r.RegisterWithSourceCategory(&mockSubagentTool{name: d.Name, group: d.Group}, source, d.SourceCategory)
 	}
 	return r
+}
+
+// TestResolveTaskTools_GoalToolsNeverGranted verifies the goal-loop actor
+// tools (propose_goal, declare_goal_status, declare_verification) never reach
+// a delegated subagent in ANY branch: they ride the always-granted system
+// group, but they belong to the goal-loop Conductor and the independent
+// verifier (whose toolset is built by verifierToolFilter from the raw
+// registry list, not via resolveTaskTools). A subagent that could call
+// declare_goal_status/declare_verification would forge the goal loop's
+// state-machine inputs; outside goal mode the tools would be advertised yet
+// always error ("no sink in context"). The explicit "system" grant cases pin
+// that even asking for the system group by name does not widen the strip.
+func TestResolveTaskTools_GoalToolsNeverGranted(t *testing.T) {
+	goalTools := []string{"propose_goal", "declare_goal_status", "declare_verification"}
+	for _, tc := range []struct {
+		name  string
+		tools any
+	}{
+		{name: "nil default", tools: nil},
+		{name: "all string", tools: "all"},
+		{name: "empty string", tools: ""},
+		{name: "read-only preset", tools: "read-only"},
+		{name: "kebab system grant", tools: []any{"system"}},
+		{name: "full grant", tools: []any{"execute", "local-read", "local-write", "remote-read", "remote-write", "local-mcp", "remote-mcp"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &conductorLauncher{deps: conductorDeps{toolRegistry: newSubagentTestRegistry(subagentToolSet())}}
+			got, err := l.resolveTaskTools(tools.DelegationTask{Tools: tc.tools})
+			if err != nil {
+				t.Fatalf("resolveTaskTools: unexpected error: %v", err)
+			}
+			assertAbsent(t, descriptorNames(got), goalTools)
+		})
+	}
+}
+
+// TestSubagentCtxClearsGoalSinks verifies the defense-in-depth layer behind
+// the goal-tool strip: subagentCtx clears the goal-status and verification
+// sinks so that even a hand-written or future mis-tagged system tool cannot
+// write the goal loop's verdict channels from inside a delegation. The
+// verifier is unaffected — it runs via a direct RunConductor call with its
+// own fresh sink (defaultGoalVerifier), never through subagentCtx.
+func TestSubagentCtxClearsGoalSinks(t *testing.T) {
+	ctx := tools.WithGoalStatusSink(context.Background(), &memGoalStatusSink{})
+	ctx = tools.WithVerificationSink(ctx, &memVerificationSink{})
+
+	ctx = subagentCtx(ctx)
+
+	if tools.GoalStatusSinkFrom(ctx) != nil {
+		t.Error("goal status sink must be cleared in subagent contexts")
+	}
+	if tools.VerificationSinkFrom(ctx) != nil {
+		t.Error("verification sink must be cleared in subagent contexts")
+	}
 }

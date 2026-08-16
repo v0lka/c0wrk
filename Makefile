@@ -1,4 +1,4 @@
-.PHONY: build test lint dev-desktop bump fetch-onnx fetch-embedding-model clean-onnx clean frontend-deps
+.PHONY: build test lint fmt-check dev-desktop bump fetch-onnx fetch-embedding-model clean-onnx clean frontend-deps
 
 # ONNX Runtime version
 ONNX_VERSION := 1.24.1
@@ -85,9 +85,22 @@ test:
 	go test ./...
 	cd frontend && npm test
 
-lint:
+lint: fmt-check
 	golangci-lint run
 	cd frontend && npm run lint
+
+# golangci-lint's `run` mode skips the formatters section (gofumpt is enabled
+# under linters.formatters but only executes via `golangci-lint fmt`), so
+# gofmt violations would otherwise pass `make lint` silently. This check
+# fails on any file that gofmt would rewrite. Every Go file in the module is
+# covered: the package dirs plus the root main.go and internal/.
+fmt-check:
+	@unformatted=$$(gofmt -l main.go internal core backend desktop 2>/dev/null); \
+	if [ -n "$$unformatted" ]; then \
+		echo "gofmt violations (run gofmt -w on these files):"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
 
 dev-desktop:
 	cd frontend && npm run dev

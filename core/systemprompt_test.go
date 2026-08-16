@@ -154,13 +154,13 @@ func TestFormatResearchContext_ResearchButNoSnapshot(t *testing.T) {
 func TestFormatResearchContext_RendersSnapshot(t *testing.T) {
 	ctx := coretools.WithResearch(context.Background())
 	ctx = WithResearchContext(ctx, &ResearchContext{
-		RootPath:         "/ws/.research",
-		ProjectCount:     2,
-		ActiveID:         "R-002",
-		ActiveTitle:      "Empty Scaffold",
-		PhaseHint:        "setup: brief defined, no hypotheses formulated yet (research-hypothesis)",
-		TotalHypotheses:  0,
-		ActiveFront:      0,
+		RootPath:        "/ws/.research",
+		ProjectCount:    2,
+		ActiveID:        "R-002",
+		ActiveTitle:     "Empty Scaffold",
+		PhaseHint:       "setup: brief defined, no hypotheses formulated yet (research-hypothesis)",
+		TotalHypotheses: 0,
+		ActiveFront:     0,
 	})
 	got := formatResearchContext(ctx)
 	for _, want := range []string{

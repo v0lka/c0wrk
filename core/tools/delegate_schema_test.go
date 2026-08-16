@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	sdktools "github.com/v0lka/sp4rk/tools"
+
 	"github.com/v0lka/sp4rk/llm"
 )
 
@@ -105,8 +107,14 @@ func TestDelegateSchema_NoTypelessProperties(t *testing.T) {
 }
 
 // TestDelegateToolsSchema_EnumListsGroups verifies the tasks[].tools array
-// enum is the capability-group list (kebab-case) so the Conductor's LLM can
-// only ever emit valid group tokens to the resolver.
+// enum covers every group token the resolver accepts. The enum is generated
+// from sdktools.AllToolGroups (see delegateGroupEnumJSON) — the same table
+// parseToolGroupToken validates against — so this test derives its expected
+// set from the SDK independently and compares set-wise: every declared group
+// must appear in both spellings (underscore value and kebab-case twin), with
+// no duplicates and no foreign tokens. A new SDK group without a schema enum
+// entry would make schema-enforcing providers reject requests the resolver
+// accepts.
 func TestDelegateToolsSchema_EnumListsGroups(t *testing.T) {
 	raw := NewDelegateTool().InputSchema()
 	var parsed map[string]any
@@ -130,13 +138,34 @@ func TestDelegateToolsSchema_EnumListsGroups(t *testing.T) {
 
 	arrItems, _ := arrBranch["items"].(map[string]any)
 	enum, _ := arrItems["enum"].([]any)
-	want := []string{"execute", "local-read", "local-write", "remote-read", "remote-write", "local-mcp", "remote-mcp", "system"}
-	if len(enum) != len(want) {
-		t.Fatalf("array enum must list all %d groups, got %v", len(want), enum)
+
+	// Expected set, derived independently from the SDK group table.
+	want := map[string]bool{}
+	for _, g := range sdktools.AllToolGroups() {
+		want[string(g)] = true
+		if kebab := strings.ReplaceAll(string(g), "_", "-"); kebab != string(g) {
+			want[kebab] = true
+		}
 	}
-	for i, w := range want {
-		if enum[i] != w {
-			t.Errorf("array enum[%d] = %v, want %q", i, enum[i], w)
+	got := map[string]bool{}
+	for _, v := range enum {
+		tok, _ := v.(string)
+		if got[tok] {
+			t.Errorf("duplicate enum token %q", tok)
+		}
+		got[tok] = true
+	}
+	if len(enum) != len(want) {
+		t.Errorf("array enum must list all %d accepted tokens, got %d: %v", len(want), len(enum), enum)
+	}
+	for tok := range want {
+		if !got[tok] {
+			t.Errorf("array enum is missing accepted token %q — schema-enforcing providers would reject it", tok)
+		}
+	}
+	for tok := range got {
+		if !want[tok] {
+			t.Errorf("array enum lists unknown token %q that the resolver would reject", tok)
 		}
 	}
 }
@@ -144,7 +173,10 @@ func TestDelegateToolsSchema_EnumListsGroups(t *testing.T) {
 // TestValidateDelegationTools verifies the `tools` field's runtime validation:
 // nil/presets pass, group arrays (kebab and underscore) pass, and everything
 // else fails closed with a message listing the valid values (acceptance
-// criterion 4 for the delegate entry point).
+// criterion 4 for the delegate entry point). An empty array is REJECTED: it
+// would otherwise resolve to a system-only toolset — a degenerate grant that
+// strips every working tool from the subagent; ["system"] expresses that
+// intent explicitly.
 func TestValidateDelegationTools(t *testing.T) {
 	valid := []any{
 		nil,
@@ -154,7 +186,7 @@ func TestValidateDelegationTools(t *testing.T) {
 		[]any{"local-read", "execute"},
 		[]any{"local_read"}, // underscore spelling accepted
 		[]string{"remote-read", "local-mcp"},
-		[]any{}, // empty array = no extra groups (system-only toolset)
+		[]any{"system"}, // explicit system-only grant is allowed
 	}
 	for _, v := range valid {
 		if err := validateDelegationTools(v); err != nil {
@@ -172,6 +204,8 @@ func TestValidateDelegationTools(t *testing.T) {
 		{v: []any{"read-only"}, wantMsg: `"read-only" must be passed as a plain string`},
 		{v: []any{42}, wantMsg: "group names must be strings"},
 		{v: 42, wantMsg: "unexpected type"},
+		{v: []any{}, wantMsg: "empty array"},
+		{v: []string{}, wantMsg: "empty array"},
 	}
 	for _, tt := range invalid {
 		err := validateDelegationTools(tt.v)

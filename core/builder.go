@@ -46,6 +46,14 @@ type OrchestratorBuilder struct {
 	mu       sync.RWMutex
 	registry *tools.ToolRegistry
 	gateway  *mcp.Gateway
+	// sessionRegistries tracks the per-session registry clones created by
+	// Build so runtime security-policy pushes (applySecurityPolicies) reach
+	// already-open sessions, not only sessions built after the change.
+	// Entries are added by registerSessionRegistry (Build) and removed by the
+	// orchestrator's cleanup hook (OrchestratorDeps.OnCleanup), which the
+	// session manager invokes on session delete and app shutdown. Guarded by
+	// b.mu.
+	sessionRegistries map[*tools.ToolRegistry]struct{}
 	// mcpWorkDir is the default working directory requested for MCP stdio
 	// server processes. It is applied to the gateway by runMCPInit (when the
 	// gateway is first assigned) or by SetMCPWorkDir (when the gateway is
@@ -578,8 +586,11 @@ func (b *OrchestratorBuilder) Build(
 	// Per-session ToolRegistry clone: runtime policy mutations on a session
 	// registry must NOT leak to other concurrent sessions. The clone shares
 	// the underlying sp4rk ToolRegistry (tools themselves are stateless), but
-	// each session has its own groupPolicies view.
-	sessionRegistry := b.registry.Clone()
+	// each session has its own groupPolicies view. registerSessionRegistry
+	// also records the clone as live so global security-policy pushes reach
+	// this session without a restart; its entry is released by the cleanup
+	// hook wired into OrchestratorDeps below.
+	sessionRegistry := b.registerSessionRegistry()
 
 	// HITLHandler.OnToolCall is invoked by the executor before every tool call
 	// (see executor_run.go processSingleToolCall). PolicyUserConfirm tools fall
@@ -634,12 +645,16 @@ func (b *OrchestratorBuilder) Build(
 		VectorSearchFunc:  b.vectorSearchFunc,
 		SkillManager:      sessionSkillMgr,
 		AgentManager:      sessionAgentMgr,
-		CoreToolRegistry:  sessionRegistry, // for skill policy overrides (per-session)
+		CoreToolRegistry:  sessionRegistry, // per-session registry (No-Project tool disabling, extra shell blacklist)
 		ToolCache:         toolCache,
 		PerToolTruncation: perToolTruncation,
 		StepDumpTracker:   stepDumpTracker,
 		ProviderName:      cfg.LLM.DefaultProviderName(),
 		LocalModelProbe:   localProbe,
+		// Release the session registry's live-tracking entry when the session
+		// orchestrator is cleaned up, so security pushes stop reaching dead
+		// clones and the builder does not accumulate registries forever.
+		OnCleanup: func() { b.unregisterSessionRegistry(sessionRegistry) },
 	}), nil
 }
 
@@ -684,7 +699,9 @@ func (b *OrchestratorBuilder) RebuildJudge(cfg *BuilderConfig) {
 // in builder_mcp.go to keep MCP gateway lifecycle code adjacent to its
 // configuration helpers (W-16 file split).
 
-// UpdateSecurityPolicies applies security policy overrides from config.
+// UpdateSecurityPolicies applies security policy overrides from config to
+// the shared registry and every live session registry, so the change is in
+// force for already-open sessions as well as future ones.
 func (b *OrchestratorBuilder) UpdateSecurityPolicies(cfg *BuilderConfig) {
 	b.applySecurityPolicies(cfg)
 }
@@ -696,6 +713,11 @@ func (b *OrchestratorBuilder) UpdateSecurityPolicies(cfg *BuilderConfig) {
 // app restart. A compile failure leaves the previously registered tool in
 // place and is returned to the caller.
 func (b *OrchestratorBuilder) UpdateShellBlacklist(cfg *BuilderConfig) error {
+	// Invariant: BuilderConfig.Security.Groups carries a complete execute
+	// entry — ToBuilderConfig back-fills the shipped defaults for a missing
+	// or nil blacklist, mirroring the config loader. A missing key here
+	// would compile an EMPTY blacklist (fail-open), so hand-built configs
+	// must populate it the same way.
 	var blacklist []string
 	if execGroup, ok := cfg.Security.Groups[string(sdktools.GroupExecute)]; ok {
 		blacklist = execGroup.Blacklist
@@ -2061,11 +2083,47 @@ func newJudgeDumpProvider(inner llm.Provider, logger *slog.Logger, providerName 
 	return &judgeDumpProvider{inner: inner, logger: logger, providerName: providerName}
 }
 
+// registerSessionRegistry clones the shared registry for a new session and
+// records the clone as live. The clone and the insert happen atomically under
+// b.mu so a concurrent applySecurityPolicies push cannot slip between them:
+// either the clone is created after the parent registry was updated (it
+// inherits the new security state) or it is already tracked here and receives
+// the push. The entry is released by unregisterSessionRegistry via the
+// orchestrator's cleanup hook.
+func (b *OrchestratorBuilder) registerSessionRegistry() *tools.ToolRegistry {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	clone := b.registry.Clone()
+	if b.sessionRegistries == nil {
+		b.sessionRegistries = make(map[*tools.ToolRegistry]struct{})
+	}
+	b.sessionRegistries[clone] = struct{}{}
+	return clone
+}
+
+// unregisterSessionRegistry removes a session registry from the live set. It
+// is the cleanup hook wired into every orchestrator built by Build so tracked
+// clones do not outlive their sessions.
+func (b *OrchestratorBuilder) unregisterSessionRegistry(r *tools.ToolRegistry) {
+	b.mu.Lock()
+	delete(b.sessionRegistries, r)
+	b.mu.Unlock()
+}
+
 // applySecurityPolicies applies group-based security policies to the tool
 // registry: every non-system tool resolves its policy from its capability
 // group (the sdktools.Group* values), never from its name. The reserved
 // system group is not configurable and any entry for it is skipped
 // defensively; unknown group names are likewise skipped.
+//
+// The state is pushed to the shared registry AND every live per-session
+// registry clone: each session executes on its own clone (see Build), so a
+// runtime edit from the security settings UI must reach already-open sessions
+// too — otherwise a deny set in the UI would silently fail-open on every
+// session created before the save (the same save's execute blacklist does
+// reach them, because it re-registers the tool in the shared sp4rk registry
+// the clones embed). The push holds b.mu across the whole update so a Build
+// racing it cannot miss the new state (see registerSessionRegistry).
 func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	groupPolicies := make(map[sdktools.ToolGroup]sdktools.ToolPolicy, len(cfg.Security.Groups))
 	for name, group := range cfg.Security.Groups {
@@ -2078,10 +2136,19 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 		}
 		groupPolicies[g] = parseGroupPolicy(group.Policy)
 	}
-	b.registry.SetGroupPolicies(groupPolicies)
 
-	b.registry.SetAutoApproveWorkspaceWrites(cfg.Security.AutoApproveWorkspaceWrites)
-	b.registry.SetSmartApprove(cfg.Security.SmartApprove)
+	autoApprove := cfg.Security.AutoApproveWorkspaceWrites
+	smartApprove := cfg.Security.SmartApprove
+
+	// Lock ordering is b.mu → registry mu: registerSessionRegistry clones
+	// under b.mu (same order), and the registries never call back into the
+	// builder, so no reverse order exists.
+	b.mu.Lock()
+	b.registry.ApplySecurityState(groupPolicies, autoApprove, smartApprove)
+	for r := range b.sessionRegistries {
+		r.ApplySecurityState(groupPolicies, autoApprove, smartApprove)
+	}
+	b.mu.Unlock()
 }
 
 // parseGroupPolicy maps the short config enum used by

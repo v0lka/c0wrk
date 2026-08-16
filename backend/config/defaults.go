@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
@@ -234,7 +235,7 @@ func ApplyDefaults(cfg *Config) {
 			group.Policy = policy
 		}
 		if name == ToolGroupExecute && group.Blacklist == nil {
-			group.Blacklist = defaultExecuteGroupBlacklist()
+			group.Blacklist = DefaultExecuteGroupBlacklist()
 		}
 		cfg.Security.Groups[name] = group
 	}
@@ -431,7 +432,7 @@ func ApplyDefaults(cfg *Config) {
 }
 
 // defaultBashExecBlacklist returns the POSIX-shell half of the default
-// "execute" group blacklist patterns (see defaultExecuteGroupBlacklist).
+// "execute" group blacklist patterns (see DefaultExecuteGroupBlacklist).
 func defaultBashExecBlacklist() []string {
 	return []string{
 		// The blacklist is organized into four destructive categories
@@ -457,7 +458,7 @@ func defaultBashExecBlacklist() []string {
 		// /dev/full, /dev/random, /dev/std*, /dev/fd, /dev/tty) — the most
 		// common redirect targets in robust shell commands like
 		// `cmd 2>/dev/null` — no longer trigger a forced confirmation under
-		// always_allow. The prefix alternation matches every real block
+		// allow. The prefix alternation matches every real block
 		// device family (SATA/SCSI sd, legacy IDE hd, virtio vd, Xen xvd,
 		// NVMe nvme, SD/eMMC mmcblk, loop, RAM disks ram/zram,
 		// device-mapper dm-, RAID md, stable symlinks disk/ & mapper/,
@@ -471,7 +472,7 @@ func defaultBashExecBlacklist() []string {
 		// --- Remote-exec / download-cradle (mirrors posh IWR|iex) ---
 		// Piped execution of fetched content (curl|sh etc.) — a classic
 		// supply-chain / RCE vector. Blocks regardless of policy, even
-		// under always_allow.
+		// under allow.
 		`\b(curl|wget)\b.*\|\s*(?:\S*/)?(?:env\s+)?\b(sh|bash|zsh|dash|ksh|fish|perl\d*|node|ruby|python[\d.]*)\b`,
 
 		// --- Irreversible system writes (mirrors posh Set-Content on System32) ---
@@ -512,14 +513,34 @@ func defaultBashExecBlacklist() []string {
 	}
 }
 
-// defaultPoshExecBlacklist returns the Windows/PowerShell half of the
+// defaultPoshExecBlacklist returns the PowerShell-originated half of the
 // default "execute" group blacklist patterns (see
-// defaultExecuteGroupBlacklist).
+// DefaultExecuteGroupBlacklist): only the cross-dialect-safe subset — every
+// pattern here must also be safe to compile into bash_exec. The
+// Windows-alias-only patterns that are NOT cross-dialect safe live in
+// core/tools/shelltool_windows.go as a platform supplement instead.
 func defaultPoshExecBlacklist() []string {
 	return []string{
 		// --- Destructive file/disk operations ---
-		`(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-r\w*.*-f\w*`,
-		`(?i)\b(Remove-Item|del|erase|ri|rm|rd|rmdir)\b.*-f\w*.*-r\w*`,
+		// These patterns run in the unified execute-group blacklist, which
+		// is compiled into bash_exec AND posh_exec. The two shell tools are
+		// mutually exclusive per host (Unix registers bash_exec, Windows
+		// posh_exec), so a PowerShell-specific pattern can only ever match
+		// — and hard-confirm — benign commands of the other dialect. The
+		// list therefore keeps only tokens unambiguous on both sides:
+		//   - the cmdlet name Remove-Item (no Unix command is spelled like
+		//     it) keeps the alias-style short-flag patterns;
+		//   - the Remove-Item ALIASES (rm, del, erase, ri, rd, rmdir) are
+		//     Windows-only vocabulary: `rm` is the ordinary Unix delete
+		//     (`rm -r -f <dir>` is the routine separate-flags spelling of
+		//     an in-workspace `rm -rf <dir>`; GNU rm even accepts the
+		//     --recursive/--force spellings), and `ri`/`rmdir` are ordinary
+		//     Unix tokens (`grep -ri`). They are enforced as a platform
+		//     supplement in core/tools/shelltool_windows.go, so they never
+		//     compile into bash_exec. See
+		//     TestDefaultExecuteGroupBlacklist_CrossDialectSafe.
+		`(?i)\bRemove-Item\b.*-r\w*.*-f\w*`,
+		`(?i)\bRemove-Item\b.*-f\w*.*-r\w*`,
 		`(?i)Format-Volume`,
 		`(?i)Clear-Disk`,
 
@@ -561,11 +582,19 @@ func defaultPoshExecBlacklist() []string {
 	}
 }
 
-// defaultExecuteGroupBlacklist returns the default blacklist for the
+// DefaultExecuteGroupBlacklist returns the default blacklist for the
 // "execute" security group: the union of the bash_exec and posh_exec default
 // lists. Both shells share the group, so the group-level blacklist covers
 // both dialects; exact duplicate patterns (none today) are deduplicated.
-func defaultExecuteGroupBlacklist() []string {
+// Because every pattern in the union is compiled into BOTH shell tools, each
+// pattern must be safe to apply to the other dialect: a pattern may only
+// hard-confirm command text that is dangerous under whichever shell reads it
+// (dialect-specific tokens, or token+flag combinations the other shell's
+// command set cannot express benignly). Patterns that cannot be made
+// dialect-neutral (the PowerShell Remove-Item aliases — `rm` is the ordinary
+// Unix delete) are NOT part of this union; they are enforced as a
+// Windows-only platform supplement in core/tools/shelltool_windows.go.
+func DefaultExecuteGroupBlacklist() []string {
 	unified := defaultBashExecBlacklist()
 	seen := make(map[string]struct{}, len(unified))
 	for _, pattern := range unified {
@@ -579,6 +608,34 @@ func defaultExecuteGroupBlacklist() []string {
 		unified = append(unified, pattern)
 	}
 	return unified
+}
+
+// StoreDefaultBlacklistAsUnset implements the store-as-unset rule: groups in
+// which the execute blacklist is exactly the shipped default pattern list are
+// returned with that blacklist stored as UNSET (nil), so a config that merely
+// carries the defaults keeps tracking future default improvements instead of
+// pinning today's list. It is the single rule behind BOTH persistence
+// boundaries — Save applies it to every config write (LLM setup, MCP, search,
+// the security tab, ... all funnel through it), and the runtime
+// security-settings update applies it to its in-memory replacement. nil and
+// every other list pass through untouched; an explicitly emptied list does
+// not match, so clearing the blacklist stays an intentional choice. The
+// comparison is order-sensitive, mirroring how the list is stored and
+// compared everywhere else. The input map is never mutated: when the rule
+// applies, a detached copy is returned (the group set has a handful of
+// entries).
+func StoreDefaultBlacklistAsUnset(groups map[string]GroupPolicyConfig) map[string]GroupPolicyConfig {
+	exec, ok := groups[ToolGroupExecute]
+	if !ok || exec.Blacklist == nil || !slices.Equal(exec.Blacklist, DefaultExecuteGroupBlacklist()) {
+		return groups
+	}
+	out := make(map[string]GroupPolicyConfig, len(groups))
+	for name, g := range groups {
+		out[name] = g
+	}
+	exec.Blacklist = nil
+	out[ToolGroupExecute] = exec
+	return out
 }
 
 // defaultToolGroupPolicies is the single source of truth for the configurable

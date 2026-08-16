@@ -402,7 +402,7 @@ export namespace backend {
 	}
 	export class GroupPolicyResponse {
 	    policy: string;
-	    blacklist?: string[];
+	    blacklist: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new GroupPolicyResponse(source);
@@ -840,6 +840,7 @@ export namespace backend {
 	    auto_approve_workspace_writes: boolean;
 	    smart_approve: boolean;
 	    judge_available: boolean;
+	    execute_blacklist_defaults: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new SecuritySettingsResponse(source);
@@ -851,6 +852,7 @@ export namespace backend {
 	        this.auto_approve_workspace_writes = source["auto_approve_workspace_writes"];
 	        this.smart_approve = source["smart_approve"];
 	        this.judge_available = source["judge_available"];
+	        this.execute_blacklist_defaults = source["execute_blacklist_defaults"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

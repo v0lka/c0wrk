@@ -195,7 +195,7 @@ Direction: Conductor → `reflect` tool → `Reflector.Reflect` → tool result 
 
 ### Goal-Mode Tools
 
-Three additional system-group tools exist ONLY for goal mode (registered in `core/tools/builtin_registration.go`, listed in `goalModeTools` in `core/tools/registry.go`). They are offered to the agent only during an active goal loop — `HandleMessage`/`ResumeTask` strip them from the available-tool list on the non-goal path. The goal loop and the independent verifier deliberately receive the unstripped list.
+Three additional system-group tools exist ONLY for goal mode (registered in `core/tools/builtin_registration.go`, listed in `goalModeTools` in `core/tools/registry.go`). They are offered to the goal-loop Conductor and the independent verifier only — `HandleMessage`/`ResumeTask` strip them from the Conductor's available-tool list on the non-goal path, and `resolveTaskTools` strips them from EVERY delegated subagent toolset (via `stripSubagentTools`, even when the `system` group is granted explicitly). `subagentCtx` (and the redelegating path) additionally clear the goal-status/verification sinks, so a task subagent can neither see nor reach the goal loop's verdict channels; the verifier keeps `declare_verification` because `verifierToolFilter`/`verifierReDerivationToolFilter` build its toolset from the raw registry list, not via `resolveTaskTools`.
 
 | Tool | Input | Purpose |
 | ---- | ----- | ------- |

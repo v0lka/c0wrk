@@ -128,6 +128,25 @@ func TestVerifierToolFilter_ExecutePlanExcludedEvenThoughSystemGrouped(t *testin
 	}
 }
 
+// TestVerifierToolFilter_MisTaggedMutatingBuiltinExcluded guards the
+// belt-and-braces NAME backstop (verifierMutatingToolNames): a classic
+// mutating builtin mis-tagged into an INCLUDED group (e.g. write_file
+// accidentally tagged GroupSystem) passes both group checks — the name
+// exclusion must still strip it so a tagging accident can never hand the
+// verifier a mutating tool.
+func TestVerifierToolFilter_MisTaggedMutatingBuiltinExcluded(t *testing.T) {
+	for _, name := range []string{
+		ToolWriteFile, ToolEditFile, "delete_file", "delete_directory", "create_directory",
+	} {
+		got := verifierToolFilter([]sdktools.ToolDescriptor{
+			{Name: name, Group: sdktools.GroupSystem}, // mis-tagged into an included group
+		}, nil)
+		if len(got) != 0 {
+			t.Errorf("expected mis-tagged mutating builtin %q excluded, got %d descriptor(s)", name, len(got))
+		}
+	}
+}
+
 // TestVerifierToolFilter_DisabledToolsDropped verifies mode-disabled tools are
 // dropped even when their group is included.
 func TestVerifierToolFilter_DisabledToolsDropped(t *testing.T) {
