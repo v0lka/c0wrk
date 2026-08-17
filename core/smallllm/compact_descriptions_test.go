@@ -14,17 +14,14 @@ import (
 
 // realBuiltinDescriptors builds descriptors for the subset of builtins that
 // can be instantiated without runtime dependencies. Their descriptions are the
-// real full rubric texts the compact set is measured against.
+// real full rubric texts our compact set is measured against. The platform
+// shell tool (bash_exec on Unix, posh_exec on Windows) is contributed by
+// platformShellTool in the build-tagged test files.
 func realBuiltinDescriptors(t *testing.T) []tools.ToolDescriptor {
 	t.Helper()
 
-	bashTool, err := builtins.NewBashExecTool(nil)
-	if err != nil {
-		t.Fatalf("NewBashExecTool: %v", err)
-	}
-
 	impls := []tools.Tool{
-		bashTool,
+		platformShellTool(t),
 		builtins.NewReadFileTool(),
 		builtins.NewWriteFileTool(),
 		builtins.NewEditFileTool(),
