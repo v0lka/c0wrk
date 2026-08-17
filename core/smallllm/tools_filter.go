@@ -9,7 +9,24 @@
 // (the completion channel, fact memory, and the human-interaction channel),
 // and every MCP-sourced tool. There is no domain-specific allow-listing — the
 // router and the user decide which tools are relevant; this function only
-// assembles their choices and (optionally) enforces a size budget.
+// assembles their choices and enforces a slot budget on the router-matched
+// portion.
+//
+// The tool population is split into two classes with different budget
+// semantics:
+//
+//   - guaranteed (always-present ∪ protected ∪ MCP-sourced): NEVER trimmed.
+//     These are explicit user/operator choices; dropping them would silently
+//     break pinned workflows, the completion channel, or user-installed MCP
+//     integrations.
+//   - router-matched: fills the free slots left after the guaranteed set,
+//     i.e. at most maxTools − len(guaranteed) tools, in registry order.
+//
+// Because guaranteed tools are never trimmed, the result can legitimately
+// exceed maxTools when the guaranteed set alone is larger than the budget.
+// Config-level validation (validateSmallLLMConfig in the backend) rejects
+// such profiles up front; SelectTools itself never fails and never trims a
+// guaranteed tool (defense in depth).
 //
 // All functions in this package are pure and deterministic — no LLM, embedding,
 // or network calls. They are factored out so they can be unit-tested in
@@ -29,7 +46,7 @@ import (
 const finishToolName = "finish"
 
 // protectedToolNames are retained regardless of the matched/always-present
-// lists and always survive the maxTools budget: the completion channel, the
+// lists and never consume trimmable capacity: the completion channel, the
 // fact memory (store/search), and the human-interaction channel. MCP-sourced
 // tools are likewise always kept (they are user-installed and not part of the
 // orchestration-noise problem).
@@ -57,97 +74,113 @@ func ProtectedToolNames() []string {
 	return out
 }
 
-// SelectTools assembles the small-LLM tool set from four sources:
+// SelectTools assembles the small-LLM tool set from two classes of sources:
 //
-//   - matchedNames:  tools the router selected for this task.
-//   - alwaysPresent: tools the user pinned to every task.
-//   - protectedToolNames: orchestration-mandatory tools (finish + memory +
-//     human interaction) that must never be dropped.
-//   - every MCP-sourced tool (user-installed, outside the noise problem).
+//   - guaranteed, never trimmed: the user's always-present pins, the protected
+//     orchestration tools, and every MCP-sourced tool (user-installed).
+//   - matchedNames: the tools the router selected for this task. When
+//     maxTools > 0, at most maxTools − len(guaranteed) of them are kept,
+//     filling the free slots in registry (input) order; maxTools <= 0 means
+//     unlimited.
 //
-// It builds the union keep-set, filters the full descriptor list to those
-// whose Name is in the keep-set OR whose SourceCategory is MCP, deduplicates
-// by name (first occurrence wins), and — when maxTools > 0 and the result
-// exceeds the budget — trims it down while guaranteeing that protected tools
-// and MCP tools always survive.
+// The full descriptor list is swept once in registry order, deduplicated by
+// name (first occurrence wins), and each surviving descriptor is classified as
+// guaranteed or matched. Emission preserves registry order: every guaranteed
+// descriptor, plus matched descriptors while free slots remain. When the
+// guaranteed set alone meets or exceeds maxTools, zero matched tools are kept
+// — and the guaranteed set is returned in full, even though its length then
+// exceeds maxTools (see the package comment).
 func SelectTools(all []sdktools.ToolDescriptor, matchedNames, alwaysPresent []string, maxTools int) []sdktools.ToolDescriptor {
-	// a. Build keep-set: union of alwaysPresent + matchedNames + protectedToolNames.
-	keep := make(map[string]struct{}, len(matchedNames)+len(alwaysPresent)+len(protectedToolNames))
-	for _, n := range matchedNames {
-		keep[n] = struct{}{}
-	}
+	// a. Guaranteed name set: alwaysPresent ∪ protectedToolNames.
+	guaranteedNames := make(map[string]struct{}, len(alwaysPresent)+len(protectedToolNames))
 	for _, n := range alwaysPresent {
-		keep[n] = struct{}{}
+		guaranteedNames[n] = struct{}{}
 	}
 	for n := range protectedToolNames {
-		keep[n] = struct{}{}
+		guaranteedNames[n] = struct{}{}
+	}
+	matchedSet := make(map[string]struct{}, len(matchedNames))
+	for _, n := range matchedNames {
+		matchedSet[n] = struct{}{}
 	}
 
-	// b + c. Filter to keep-set / MCP and dedup by name.
-	out := make([]sdktools.ToolDescriptor, 0, len(all))
+	// b. Single registry-order sweep: dedup by name and classify each
+	// descriptor as guaranteed (name in the guaranteed set or MCP-sourced) or
+	// matched (router-selected, budgeted).
+	type candidate struct {
+		desc       sdktools.ToolDescriptor
+		guaranteed bool
+	}
+	candidates := make([]candidate, 0, len(all))
 	seen := make(map[string]struct{}, len(all))
 	for _, d := range all {
 		if _, dup := seen[d.Name]; dup {
 			continue
 		}
-		_, nameKept := keep[d.Name]
-		if nameKept || d.SourceCategory == sdktools.SourceCategoryMCP {
-			out = append(out, d)
-			seen[d.Name] = struct{}{}
+		isGuaranteed := d.SourceCategory == sdktools.SourceCategoryMCP
+		if !isGuaranteed {
+			_, isGuaranteed = guaranteedNames[d.Name]
 		}
-	}
-
-	// d. Enforce the size budget, preserving protected + MCP tools.
-	if maxTools > 0 && len(out) > maxTools {
-		out = trimToBudget(out, maxTools)
-	}
-	return out
-}
-
-// trimToBudget shrinks result so its length is at most maxTools, never dropping
-// a protected descriptor (a tool whose Name is in protectedToolNames or whose
-// SourceCategory is MCP). Non-protected descriptors are trimmed, in input
-// order, to fit the remaining budget. If the protected set alone already
-// meets/exceeds the budget, only the protected descriptors are returned.
-func trimToBudget(result []sdktools.ToolDescriptor, maxTools int) []sdktools.ToolDescriptor {
-	protectedCount := 0
-	for _, d := range result {
-		if isProtected(d) {
-			protectedCount++
-		}
-	}
-	budget := maxTools - protectedCount
-	if budget <= 0 {
-		// Protected tools alone fill the budget; they always survive.
-		out := make([]sdktools.ToolDescriptor, 0, protectedCount)
-		for _, d := range result {
-			if isProtected(d) {
-				out = append(out, d)
-			}
-		}
-		return out
-	}
-	out := make([]sdktools.ToolDescriptor, 0, maxTools)
-	kept := 0
-	for _, d := range result {
-		if isProtected(d) {
-			out = append(out, d)
+		if _, isMatched := matchedSet[d.Name]; !isGuaranteed && !isMatched {
 			continue
 		}
-		if kept < budget {
-			out = append(out, d)
-			kept++
+		seen[d.Name] = struct{}{}
+		candidates = append(candidates, candidate{desc: d, guaranteed: isGuaranteed})
+	}
+
+	// c. Free slots for matched tools: the guaranteed population is counted
+	// first and is never trimmed, so slots can legitimately be zero (or the
+	// guaranteed set larger than the whole budget).
+	freeSlots := len(candidates) // maxTools <= 0 → unlimited
+	if maxTools > 0 {
+		guaranteedCount := 0
+		for _, c := range candidates {
+			if c.guaranteed {
+				guaranteedCount++
+			}
 		}
+		freeSlots = maxTools - guaranteedCount
+		if freeSlots < 0 {
+			freeSlots = 0
+		}
+	}
+
+	// d. Emit in registry order: guaranteed always, matched while slots last.
+	out := make([]sdktools.ToolDescriptor, 0, len(candidates))
+	used := 0
+	for _, c := range candidates {
+		if c.guaranteed {
+			out = append(out, c.desc)
+			continue
+		}
+		if used >= freeSlots {
+			continue
+		}
+		out = append(out, c.desc)
+		used++
 	}
 	return out
 }
 
-// isProtected reports whether a descriptor must survive the maxTools budget:
-// MCP-sourced tools (user-installed) and the protected built-in base.
-func isProtected(d sdktools.ToolDescriptor) bool {
-	if d.SourceCategory == sdktools.SourceCategoryMCP {
-		return true
+// HasRegisteredMatch reports whether at least one matched tool name refers to
+// a tool actually present in the registry slice. An empty matched list — or a
+// list of names that match nothing registered (hallucinated by the routing
+// LLM) — yields false. Callers use this to detect a failed semantic tool
+// selection (empty or invalid matched_tools) and fall back to the unfiltered
+// tool set instead of narrowing to the guaranteed-only set, which would strip
+// every file/exec tool from the Conductor.
+func HasRegisteredMatch(matched []string, registry []sdktools.ToolDescriptor) bool {
+	if len(matched) == 0 || len(registry) == 0 {
+		return false
 	}
-	_, ok := protectedToolNames[d.Name]
-	return ok
+	registered := make(map[string]struct{}, len(registry))
+	for _, d := range registry {
+		registered[d.Name] = struct{}{}
+	}
+	for _, name := range matched {
+		if _, ok := registered[name]; ok {
+			return true
+		}
+	}
+	return false
 }

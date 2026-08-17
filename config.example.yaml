@@ -27,16 +27,29 @@ llm:
     api_key: "${ANTHROPIC_API_KEY}"
     models:
       - "claude-sonnet-4-20250514"
+    # Optional: per-provider output-token budget for every model above.
+    # Applies when the provider's real limits differ from the built-in catalog
+    # (proxies, gateways). 0 / omitted = inherit executor.output_token_reserve.
+    # A per-model llm.models output_limit still wins over this value.
+    # output_token_reserve: 12288
 
   openai_compatible:
     # Each key is a named provider (e.g. "lmstudio", "localai", "ollama").
     # The provider name is used in composite model IDs: "lmstudio/gpt-4".
+    # NOTE: reliable tool calling on self-hosted servers (vLLM, llama.cpp, LM Studio,
+    # Ollama) requires server-side configuration — see docs/self-hosted-models.md
+    # (parser/template per model family, sampling defaults, diagnostics checklist).
     lmstudio:
       base_url: "http://localhost:1234/v1"
       api_key: "" # Local servers usually don't need a key
       models:
         - "gpt-4"
         - "deepseek-chat"
+      # Optional: output-token budget shared by all models of this provider —
+      # both the context-window reserve and the MaxTokens ceiling. Useful when
+      # a self-hosted gateway caps output below/above the built-in catalog.
+      # 0 / omitted = inherit executor.output_token_reserve.
+      # output_token_reserve: 8192
 
   anthropic_compatible:
     # Each key is a named provider speaking Anthropic's Messages API
@@ -142,7 +155,28 @@ router:
 # ---------------------------------------------------------------------------
 executor:
   max_retries: 2 # Maximum retries on execution failure (legacy, retained for framework.go)
-  output_token_reserve: 4096 # Tokens reserved for model output generation
+  # Tokens reserved for model output generation: subtracted from the model's
+  # context window during overflow validation and used as the executor's
+  # MaxTokens ceiling for models without explicit metadata. Can be overridden
+  # per provider (see llm.*.output_token_reserve) and per model
+  # (see llm.models.<name>.output_limit) — those win over this global value.
+  output_token_reserve: 8192
+  # --- Mechanical Edit Verification -----------------------------------------
+  # After every SUCCESSFUL write_file / edit_file in a CODE task, run the
+  # configured command (e.g. `go test ./...`, `npm test`, `ruff check .`) and
+  # inject its truncated output back into the agent context as a system
+  # observation — "edit → verify → result" instead of self-attested done.
+  #
+  # Security: the command is ALWAYS taken from this config, never from the
+  # model. It still passes the execute-group deny policy and the shell command
+  # blacklist; interactive confirmation is skipped because you authored the
+  # command. Re-runs are debounced: no second run until the next new edit.
+  # Not active in CHAT (No Project) mode or goal-loop turns. Default: off.
+  verify_on_edit:
+    enabled: false # Master switch (default off)
+    command: "" # e.g. "go test ./... -count=1" — required when enabled
+    timeout: 2m # Go duration; empty/invalid falls back to 2m; effectively capped by timeouts.bashMaxTimeout
+    max_output_chars: 4000 # Cap on injected output (0 → SDK default 4000)
   # --- Context Compaction ---------------------------------------------------
   compaction:
     # Sliding-window compaction
@@ -686,10 +720,19 @@ orchestration:
 #       - ripgrep
 #       - bash_exec
 #       - semantic_search
-#     # Caps the total number of tools exposed after the router match, the
-#     # always-present list, and the protected base are unioned. Protected
-#     # tools and MCP tools always survive the cap. 0 = unlimited. Default: 12.
-#     max_tools: 12
+#     # Slot budget for router-matched tools. The guaranteed set — always
+#     # present ∪ protected (finish, memory, ask_user) ∪ every MCP tool — is
+#     # NEVER trimmed: at most max_tools − len(guaranteed) router-matched
+#     # tools are kept, filled in registry order. Validation rejects a cap
+#     # smaller than the guaranteed set itself. 0 = unlimited. Default: 16.
+#     max_tools: 16
+#     # Replace every known builtin's full description (rubric:
+#     # purpose/when-to-use/inputs/outputs/example/anti-example, 480-1100
+#     # chars) with a one-line compact variant while this variant is active —
+#     # saves prompt tokens on small models. Off by default: when off,
+#     # descriptions are byte-identical to the non-small-LLM behavior.
+#     # Unknown tools (e.g. MCP) always keep their original descriptions.
+#     compact_descriptions: false
 #
 #   # --- System Prompt Simplification ---------------------------------------
 #   # Applies prompt-simplification variants to shrink the system prompt. Each
@@ -712,10 +755,24 @@ orchestration:
 #   sampling:
 #     # Gates this variant.
 #     enabled: false
-#     # Generation temperature (lower = more deterministic). Default: 0.1.
-#     temperature: 0.1
-#     # Nucleus-sampling probability mass. Default: 0.9.
-#     top_p: 0.9
+#     # Every sampling parameter below uses "inherit by default": an unset
+#     # (zero) value keeps the per-family vendor preset instead of replacing
+#     # it with a constant. Only explicitly set parameters override the
+#     # preset — enabling the variant with no values is a behavioral no-op.
+#     # Generation temperature (lower = more deterministic). When set, must
+#     # be > 0. Default: inherit the vendor preset.
+#     temperature: 0
+#     # Nucleus-sampling probability mass. When set, must be in (0, 1].
+#     # Default: inherit the vendor preset.
+#     top_p: 0
+#     # Top-k sampling. When set, must be >= 1. Only sent to providers that
+#     # support it (Anthropic, Google, LM Studio/vLLM-style endpoints).
+#     # Default: inherit the vendor preset.
+#     top_k: 0
+#     # Repetition penalty. When set, must be in [1, 2]. Only sent to
+#     # providers that support it (LM Studio/vLLM-style endpoints).
+#     # Default: inherit the vendor preset.
+#     repetition_penalty: 0
 #     # Reasoning depth: "" (inherit the model default) | "off" | "low" |
 #     # "medium". Smaller models generally benefit from reduced effort.
 #     # Default: "" (inherit).
@@ -744,6 +801,37 @@ orchestration:
 #     # Same-tool (varied args, similar results) calls before a corrective
 #     # nudge. Default: 4.
 #     same_tool_repeat_nudge_threshold: 4
+#
+#   # --- Context Management --------------------------------------------------
+#   # Aggressive context management for small context windows: tightens
+#   # compaction, prunes older tool outputs harder, and reserves headroom for
+#   # the model's own answer. Every value here is tighter than — or, for the
+#   # reserve, equal to — the general executor/compaction defaults (keep_last
+#   # 10, block_size 7, trigger 85%, tool keep_last 3, reserve 8192).
+#   context:
+#     # Gates this variant in addition to the master `enabled` toggle above
+#     # (overrides are applied only when both are on).
+#     enabled: false
+#     # Compaction overrides (context.compaction keeps the general
+#     # keep_last/block_size/trigger_percent semantics, with tighter values).
+#     compaction:
+#       # Messages kept verbatim at the conversation tail during compaction.
+#       # Default: 6 (vs 10 general).
+#       keep_last: 6
+#       # Batch size for pruning per compaction round. Default: 5 (vs 7).
+#       block_size: 5
+#       # Percentage of the context window at which compaction triggers.
+#       # Default: 80 (vs 85).
+#       trigger_percent: 80
+#     # Tool outputs: keep only the N most recent outputs verbatim; older ones
+#     # are pruned harder than the general keep_last 3. Default: 2. Must be
+#     # >= 1 when the variant is enabled.
+#     tool_output_keep_last_n: 2
+#     # Tokens reserved from the context window for the model's own answer
+#     # (compaction fires early enough to leave room). Default: 8192 (same
+#     # as the general executor default). Must be >= 1 when the variant is
+#     # enabled.
+#     output_token_reserve: 8192
 
 # ---------------------------------------------------------------------------
 # Goal — budget model.

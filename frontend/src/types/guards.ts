@@ -89,5 +89,5 @@ export function isSessionRenamed(v: unknown): v is { id: string; name: string } 
 
 export function isSmallLLMConfigResponse(v: unknown): v is SmallLLMConfigResponse {
     return isObj(v)
-        && has(v, 'enabled', 'essential_tools', 'system_prompt', 'sampling', 'loop_hardening')
+        && has(v, 'enabled', 'essential_tools', 'system_prompt', 'sampling', 'loop_hardening', 'context')
 }

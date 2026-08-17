@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { PlanGroup, PlanItem } from '@/types/models'
+import type { AgentMetricsData } from '@/types/events'
 
 // --- State types ---
 
@@ -8,6 +9,8 @@ export interface SessionStats {
   routingComplexity?: number
   attemptCount?: number
   maxAttempts?: number
+  /** Last per-run agent quality report (agent_metrics event on finish/abort). */
+  lastAgentMetrics?: AgentMetricsData
 }
 
 interface PlanState {

@@ -278,6 +278,18 @@ type conductorDeps struct {
 	// is assembled.
 	systemPromptOverride orchestration.SystemPromptFactory
 
+	// verifyOnEdit, when non-nil, arms the mechanical edit-verification hook
+	// (executor.verify_on_edit) on the main executor and every subagent
+	// executor: after a successful write_file/edit_file the runner executes
+	// the user-configured command and the executor injects its (truncated)
+	// output as a system observation. Suppressed for CHAT mode (see
+	// buildConductorDeps) and specialized goal passes (see RunConductor).
+	verifyOnEdit agent.EditVerifyRunner
+
+	// verifyOnEditMaxOutputChars caps the injected verification output;
+	// 0 falls back to agent.DefaultVerifyOnEditCap.
+	verifyOnEditMaxOutputChars int
+
 	// goalProposer is the backend hook that submits a {condition, verify}
 	// goal proposal to the user and blocks for approval. Used by deriveGoal,
 	// which wraps it in a capturingProposer (to record the agent's proposal)
@@ -1414,6 +1426,14 @@ func (l *conductorLauncher) configureExecutor(executor *agent.Executor) {
 	if l.deps.reasoningEffort != "" {
 		executor.SetReasoningEffort(l.deps.reasoningEffort)
 	}
+	// Mechanical edit verification (executor.verify_on_edit): subagent
+	// executors that perform file edits get the same hook as the main
+	// executor. RunConductor nils deps.verifyOnEdit for specialized goal
+	// passes before the launcher is built, so this is automatically inert
+	// there.
+	if l.deps.verifyOnEdit != nil {
+		executor.SetVerifyOnEdit(l.deps.verifyOnEdit, l.deps.verifyOnEditMaxOutputChars)
+	}
 	executor.AddNonCacheableTools(coreNonCacheableToolNames...)
 }
 
@@ -1741,29 +1761,41 @@ func RunConductor(
 	// checks — it is bounded exactly like a normal executor run.
 	maxSteps := complexity * stepsPerComplexity
 
+	// verify-on-edit is suppressed for specialized passes (goal derivation /
+	// goal verification / ask-user) — those override the system prompt and run
+	// with model-specific budgets; mechanical edit verification belongs to
+	// ordinary CODE-task execution only. Nilling deps.verifyOnEdit here (deps
+	// is a value copy) also disarms the subagent executors the launcher later
+	// builds from these deps.
+	if deps.systemPromptOverride != nil {
+		deps.verifyOnEdit = nil
+	}
+
 	cfg := orchestration.ConductorConfig{
-		LLM:                     callerForConductor(deps),
-		Tools:                   deps.toolExec,
-		ToolRegistry:            deps.toolRegistry,
-		TokenCounter:            deps.tokenCounter,
-		Model:                   deps.model,
-		ModelRegistry:           deps.modelRegistry,
-		ContextFactory:          adaptContextFactory(deps.contextFactory),
-		SystemPrompt:            systemPromptFactory,
-		MaxSteps:                maxSteps,
-		ToolResultBudget:        deps.toolResultBudget,
-		CircuitBreaker:          deps.circuitBreaker,
-		HITLHandler:             deps.hitlHandler,
-		ToolCache:               deps.toolCache,
-		PerToolTruncation:       deps.perToolTrunc,
-		ReasoningEffort:         deps.reasoningEffort,
-		PreWarningPercent:       deps.preWarningPct,
-		NonCacheableTools:       coreNonCacheableToolNames,
-		ConversationHistory:     deps.conversationHistory,
-		ResumeSteps:             deps.resumeSteps,
-		ContentBlocks:           deps.contentBlocks,
-		PendingUserInterjection: deps.nudge,
-		PauseChecker:            deps.pauseChecker,
+		LLM:                        callerForConductor(deps),
+		Tools:                      deps.toolExec,
+		ToolRegistry:               deps.toolRegistry,
+		TokenCounter:               deps.tokenCounter,
+		Model:                      deps.model,
+		ModelRegistry:              deps.modelRegistry,
+		ContextFactory:             adaptContextFactory(deps.contextFactory),
+		SystemPrompt:               systemPromptFactory,
+		MaxSteps:                   maxSteps,
+		ToolResultBudget:           deps.toolResultBudget,
+		CircuitBreaker:             deps.circuitBreaker,
+		HITLHandler:                deps.hitlHandler,
+		ToolCache:                  deps.toolCache,
+		PerToolTruncation:          deps.perToolTrunc,
+		ReasoningEffort:            deps.reasoningEffort,
+		PreWarningPercent:          deps.preWarningPct,
+		NonCacheableTools:          coreNonCacheableToolNames,
+		ConversationHistory:        deps.conversationHistory,
+		ResumeSteps:                deps.resumeSteps,
+		ContentBlocks:              deps.contentBlocks,
+		PendingUserInterjection:    deps.nudge,
+		PauseChecker:               deps.pauseChecker,
+		VerifyOnEdit:               deps.verifyOnEdit,
+		VerifyOnEditMaxOutputChars: deps.verifyOnEditMaxOutputChars,
 	}
 
 	var events agent.Events = &agent.NoopEvents{}
@@ -1903,6 +1935,11 @@ func (o *Orchestrator) buildConductorDeps(conversationHistory []llm.Message, res
 		// run (normal path + every goal-loop turn). It reads o.activePause
 		// live; nil-safe when no request is in flight.
 		pauseChecker: o.newPauseChecker(),
+		// verify-on-edit: suppressed in No Project (CHAT) mode — CHAT exposes
+		// no file-edit tools, so verification there is never meaningful. The
+		// runner itself is built by the builder from user config only.
+		verifyOnEdit:               o.verifyOnEditForMode(),
+		verifyOnEditMaxOutputChars: o.verifyOnEditMaxOutputChars,
 	}
 }
 

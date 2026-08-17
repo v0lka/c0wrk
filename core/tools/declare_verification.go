@@ -11,13 +11,12 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolDeclareVerificationDescription = `Declare your verification verdict on whether the goal's success condition has been satisfied. Use this after running the verification clause — it is the single channel through which the verification pass reports its structured outcome {confirmed, reason, evidence}.
-
-confirmed is a boolean:
-  - true:   you have verified the success condition holds. REQUIRES concrete evidence (file paths changed, test output, command results). A bare "done" without evidence fails verification.
-  - false:  the condition could not be verified (still unmet, or verification failed).
-
-Each evidence entry points at something concrete the user (or a verifier) can inspect: a file path, a test/command and its output, or a qualitative note with a clear ref.`
+const toolDeclareVerificationDescription = `Purpose: record the independent verifier's verdict on the goal condition — the structured outcome of the verification pass.
+Use when: you are executing the verification pass itself; declare once, after actually running the checks the verify clause names. Confirming REQUIRES concrete evidence — a bare "done" is rejected.
+Inputs: confirmed (true: the condition holds; false: it could not be verified); reason (narrative of what was verified or why it failed); evidence (array of {type, ref, summary} artifacts — REQUIRED when confirmed=true).
+Outputs: the verdict is stored for the goal loop to read.
+Example: confirmed true, reason naming the checks run, evidence citing the command and its passing output.
+Anti-example: not for mid-task checks (run them directly as you work); never confirm without evidence; declaring is not a substitute for running the checks.`
 
 // VerificationOutcome is the structured result of an independent verification
 // pass. It mirrors goal.Verdict in shape but is a distinct type so the goal

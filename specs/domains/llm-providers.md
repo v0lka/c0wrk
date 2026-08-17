@@ -41,7 +41,7 @@ per-session Orchestrator
 
 - **Per-task**: `HandleOptions.ModelOverride` (from the frontend model selector) switches the Conductor's model via `Router.SetModel`.
 - **Per-delegation**: a targeted **Subagent Profile's** `model` frontmatter field (`.agents/agents/<name>/AGENT.md`, [ADR-021](../decisions/021-subagents.md)) overrides the model for a subagent, applied via `agent.NewModelOverrideCaller` during the subagent build (empty = Conductor's active model).
-- **Small-LLM sampling override**: when `small_llm.enabled && small_llm.sampling.enabled` (see [../small-llm.md](../small-llm.md)), `core/builder.go` `resolveSamplingFunc` replaces the per-family `prompt.DefaultSampling` temperature with a constant SmallLLM temperature for the router's `SamplingFunc`. The builder-level reasoning-effort default is also seeded from the profile (`applySmallLLMPresets`); per-request overrides (`HandleOptions.ReasoningEffort`) still take precedence. When the variant is off, the router uses the per-family default — identical to the pre-profile behavior.
+- **Small-LLM sampling override**: when `small_llm.enabled && small_llm.sampling.enabled` (see [../small-llm.md](../small-llm.md)), `core/builder.go` `resolveSamplingFunc` layers the explicitly set SmallLLM sampling parameters (temperature, top_p, top_k, repetition_penalty; zero = unset) on top of the per-family `prompt.DefaultSampling` preset for the router's `SamplingFunc` — unset parameters inherit the vendor preset. The builder-level reasoning-effort default is also seeded from the profile (`applySmallLLMPresets`); per-request overrides (`HandleOptions.ReasoningEffort`) still take precedence. When the variant is off, the router uses the per-family default unchanged.
 - Composite model IDs are `"provider/model"` (e.g. `openai/gpt-4o`, `anthropic/claude-3-7-sonnet`).
 
 ## Context Window Resolution
@@ -58,9 +58,20 @@ The probe is best-effort and non-fatal: only OpenAI-compatible providers are que
 
 **Settings-facing resolution.** UI paths that must never block resolve model metadata through the registry's network-free `ModelRegistry.ResolveLocal` (sp4rk): `GetConfig`'s `AllModels` enrichment (`backend/frontend_api_config.go` `collectAllModels`) serves overrides, built-ins, fuzzy matches, and cached entries (including LM Studio probe results written via `SetCachedMetadata`) purely from memory, returning fallback defaults for unknown models. Runtime resolution keeps the full `Resolve` path (network tiers, guarded by a negative cache that suppresses repeat failed probes). The network-free `GetConfig` invariant is specified in [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md).
 
+## Output-Token Reserve
+
+The output-token budget for a model resolves through the same tiering as the context window (first match wins):
+
+1. **Per-model override** — `llm.models.<name>.output_limit` (user config tier).
+2. **Per-provider override** — `llm.<provider>.output_token_reserve` (`anthropic`, `chatgpt`, `openai_compatible.<name>`, `anthropic_compatible.<name>`), applied at router construction by `core/builder.go` `applyProviderOutputReserves`: it seeds `ModelMetadata.OutputLimit` into the registry overrides for every model the provider lists. An explicit per-model `output_limit` is never clobbered, and because the seeded value lands in the overrides tier it also shadows the runtime probe cache — an operator-level statement that the gateway's real budget differs from the catalog.
+3. **Global** — `executor.output_token_reserve` (default **8192**; modern coding/reasoning models regularly emit multi-thousand-token tool-call replies), carried into `llm.RouterConfig.OutputTokenReserve` as the fallback for models whose metadata carries no `OutputLimit`. The Small-LLM context variant tightens this global value when enabled (see [small-llm.md](small-llm.md)).
+4. **Discovered/static** — the probe cache (`min(32768, window/4)`) and the sp4rk SDK static fallback (32768).
+
+The budget plays two roles: it is subtracted from the context window during overflow validation, and it caps the executor's per-request `MaxTokens` (the agent loop reads the model's `ContextWindow.OutputLimit()`), so a single provider-level knob adjusts both the validation reserve and the generation ceiling — the right granularity for self-hosted gateways (LM Studio, vLLM) whose effective limits differ from the built-in catalog.
+
 ## Configuration
 
-Provider configuration lives in `config.yaml` under each provider block (api key, base URL, model list, defaults). The authoritative reference for every tunable is `config.example.yaml`. Env vars are expanded as `${VAR}`; on macOS `config.LoadShellEnvironment()` runs before any other init so Finder-launched apps inherit shell env.
+Provider configuration lives in `config.yaml` under each provider block (api key, base URL, model list, defaults). The authoritative reference for every tunable is `config.example.yaml`. Env vars are expanded as `${VAR}`; on macOS `config.LoadShellEnvironment()` runs before any other init so Finder-launched apps inherit shell env. For self-hosted servers (vLLM, llama.cpp, LM Studio, Ollama), reliable tool calling additionally requires **server-side** configuration — tool-call parser/chat-template selection per model family, sampling defaults, context-window sizing; the operational guide is [../../docs/self-hosted-models.md](../../docs/self-hosted-models.md).
 
 ## Related Specs
 

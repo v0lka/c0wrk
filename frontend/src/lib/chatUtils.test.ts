@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { roleToType, chatMessageToUI, rebuildPlanFromHistory, groupMessages, isPersistableHistoryMessage } from './chatUtils'
+import { roleToType, chatMessageToUI, rebuildPlanFromHistory, groupMessages, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow } from './chatUtils'
 import type { ChatMessage } from '@/types/models'
 import type { ChatMessageUI } from '@/types/messages'
 
@@ -259,6 +259,26 @@ describe('reconstructContent (via chatMessageToUI)', () => {
     expect(result.content).toBe('Tools assigned: ')
   })
 
+  it('status agent_metrics never renders raw JSON as content', () => {
+    // Mirrors what backend/session/event_persister.go persists for an
+    // "agent_metrics" event: role "status", raw JSON payload as content.
+    // The live handler writes the payload to planStore only — never to the
+    // chat — so reconstruction must not expose the JSON either (history-load
+    // filters these rows; this guards any non-filtering conversion path).
+    const payload = {
+      finish: 'full', parse_errors: 1, steps: 3, output_tokens: 42,
+      nudges: { repeat: 0, same_tool: 0, fruitless: 0, parse: 1 },
+      aborts: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0 },
+      small_llm: { enabled: false, variants: [] },
+    }
+    const result = chatMessageToUI(makeMsg({
+      role: 'status',
+      content: JSON.stringify(payload),
+      metadata: JSON.stringify(payload),
+    }))
+    expect(result.content).toBe('')
+  })
+
   it('task_resumed passes rawContent through', () => {
     const result = chatMessageToUI(makeMsg({
       role: 'task_resumed',
@@ -288,8 +308,50 @@ describe('reconstructContent (via chatMessageToUI)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// 3a. agent_metrics history helpers
+// ---------------------------------------------------------------------------
+
+describe('lastAgentMetricsFromHistory / isAgentMetricsRow', () => {
+  const metricsPayload = {
+    finish: 'partial', parse_errors: 2, steps: 7, output_tokens: 512,
+    nudges: { repeat: 1, same_tool: 0, fruitless: 1, parse: 2 },
+    aborts: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0 },
+    small_llm: { enabled: true, variants: ['lite'] },
+  }
+  const metricsMsg = chatMessageToUI(makeMsg({
+    id: 9,
+    role: 'status',
+    content: JSON.stringify(metricsPayload),
+    metadata: JSON.stringify(metricsPayload),
+  }))
+
+  it('returns the newest metrics payload from history', () => {
+    const older = { ...metricsPayload, steps: 1, finish: 'full' }
+    const messages = [
+      chatMessageToUI(makeMsg({ id: 8, role: 'status', content: JSON.stringify(older), metadata: JSON.stringify(older) })),
+      metricsMsg,
+    ]
+    const got = lastAgentMetricsFromHistory(messages)
+    expect(got?.steps).toBe(7)
+    expect(got?.finish).toBe('partial')
+  })
+
+  it('returns undefined when no row carries metrics', () => {
+    const messages = [chatMessageToUI(makeMsg({ role: 'status', metadata: JSON.stringify({ skills: ['x'] }) }))]
+    expect(lastAgentMetricsFromHistory(messages)).toBeUndefined()
+  })
+
+  it('isAgentMetricsRow matches status rows with metrics metadata only', () => {
+    expect(isAgentMetricsRow(metricsMsg)).toBe(true)
+    expect(isAgentMetricsRow(chatMessageToUI(makeMsg({ role: 'status', metadata: JSON.stringify({ skills: ['x'] }) })))).toBe(false)
+    expect(isAgentMetricsRow(chatMessageToUI(makeMsg({ role: 'user', content: 'hi' })))).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // 3. buildHistoryId (tested through chatMessageToUI .id)
 // ---------------------------------------------------------------------------
+
 describe('buildHistoryId (via chatMessageToUI)', () => {
   it('routing → id starts with "routing-"', () => {
     const result = chatMessageToUI(makeMsg({

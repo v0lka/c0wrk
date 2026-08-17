@@ -24,3 +24,14 @@ import (
 func newShellExecTool(blacklist []string, timeouts builtins.BashTimeouts) (tools.Tool, error) {
 	return builtins.NewBashExecToolWithTimeouts(blacklist, timeouts)
 }
+
+// ShellExecToolName returns the name of the platform-registered
+// shell-execution tool: "bash_exec" on Unix, "posh_exec" on Windows (see
+// shelltool_windows.go). Callers that must address the shell tool by name —
+// e.g. the verify-on-edit runner's ExecuteUnattended call — use this instead
+// of a hardcoded literal so they stay portable across the build-tagged
+// registration split (a hardcoded "bash_exec" would fail with
+// tool-not-found on Windows, where only posh_exec is registered).
+func ShellExecToolName() string {
+	return "bash_exec"
+}

@@ -41,9 +41,12 @@ var docExts = map[string]struct{}{
 
 // docFileDescription augments the sp4rk read_file description with explicit
 // mention of supported document formats.
-const docFileDescription = `Reads and returns the contents of a file at the given path. Supports pagination via optional line range parameters. Output includes a metadata header showing the file name, returned line range, and total line count. When more content remains beyond the returned range, a continuation hint is appended.
-
-Document formats (pdf, docx, pptx, xlsx, odt, html, htm) are automatically converted to markdown for readability. Use start_line and end_line to read specific portions of a large document.`
+const docFileDescription = `Purpose: read a file's contents by path, optionally a line range; document formats (pdf, docx, pptx, xlsx, odt, html, htm) are transparently converted to markdown for readability.
+Use when: you already know the exact path — discover paths first with list_directory, glob or ripgrep, then open the file here.
+Inputs: path (absolute or workspace-relative); optional start_line / end_line (1-based, inclusive) to read a portion of a large file or converted document.
+Outputs: content with a metadata header (file name, returned range, total line count); when content remains beyond the range, a continuation hint names the next start_line — continue with another read_file call; an over-long single line is truncated with a hash marker — recover it via tool_result_read(line=N).
+Example: start_line 100, end_line 250 reads the second chunk of a long file.
+Anti-example: not for pattern search (ripgrep), meaning search (semantic_search) or name search (glob); do not read huge files whole — paginate.`
 
 // isDocExt reports whether the file at path has a document/binary extension
 // that should be converted to markdown via markitdown.

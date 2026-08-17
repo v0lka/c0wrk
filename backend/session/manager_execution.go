@@ -763,6 +763,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 					Error:     err.Error(),
 				},
 			})
+			m.emitAgentMetrics(id, "failed")
 			m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
 			return
 		}
@@ -938,6 +939,7 @@ func (m *Manager) tryContinueInterruptedTask(
 				Error:     err.Error(),
 			},
 		})
+		m.emitAgentMetrics(id, "failed")
 		m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
 		return true
 	}
@@ -1157,6 +1159,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 					Error:     err.Error(),
 				},
 			})
+			m.emitAgentMetrics(id, "failed")
 			m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
 			return
 		}
@@ -1356,7 +1359,21 @@ func (m *Manager) emitTaskCancelledUnlessShuttingDown(id string) bool {
 		Type:      "task_cancelled",
 		Data:      TaskCancelledData{SessionID: id},
 	})
+	m.emitAgentMetrics(id, "cancelled")
 	return true
+}
+
+// emitAgentMetrics emits the aggregated agent quality metrics (parse errors,
+// loop-detector nudges/aborts, steps, output tokens and the active Small-LLM
+// profile) for the task run that just finished — complete, cancel or failure.
+// The counters reset afterwards, so one agent_metrics event covers exactly
+// one task run. No-op when the session is no longer tracked.
+func (m *Manager) emitAgentMetrics(sessionID, finish string) {
+	s, ok := m.GetSession(sessionID)
+	if !ok || s == nil || s.emitter == nil {
+		return
+	}
+	s.emitter.EmitAgentMetrics(finish)
 }
 
 // persistCancellationIfUnfinished marks the session's unfinished task (if any)
@@ -1526,6 +1543,11 @@ func (m *Manager) unfinishedTaskID(sessionID string) string {
 // store, lookup error, or no unfinished record). reason is a concise,
 // contextual cause prepended to the banner message and carried in the
 // structured Reason field; pass "" for the generic message.
+//
+// This helper emits ONLY the banner. The "agent_metrics" counters reset on
+// every emission, so exactly one agent_metrics event must fire per terminal
+// path — emitting it here would double-count on the emitTaskComplete path
+// (which already emits) and zero out the real per-run report in the UI.
 func (m *Manager) emitResumableIfUnfinished(sessionID, reason string) bool {
 	taskID := m.unfinishedTaskID(sessionID)
 	if taskID == "" {
@@ -1653,6 +1675,7 @@ func (m *Manager) emitTaskComplete(sessionID string, result *core.HandleResult, 
 		data.Plan = plan
 	}
 	m.emitFunc(Event{SessionID: sessionID, Type: "task_complete", Data: data})
+	m.emitAgentMetrics(sessionID, completion)
 
 	// On a genuinely successful completion, NEVER offer a resume action — the
 	// result above is final. If the task that just ran is still marked

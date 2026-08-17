@@ -168,6 +168,11 @@ type LLMConfig struct {
 type AnthropicConfig struct {
 	APIKey string   `yaml:"api_key"`
 	Models []string `yaml:"models"` // enabled models for this provider
+	// OutputTokenReserve overrides the output-token budget for every model
+	// served by this provider: it is subtracted from the context window in
+	// overflow validation and caps executor MaxTokens. 0 = inherit the global
+	// executor.output_token_reserve.
+	OutputTokenReserve int `yaml:"output_token_reserve"`
 }
 
 // OpenAICompatibleConfig holds OpenAI-compatible provider configuration.
@@ -175,6 +180,11 @@ type OpenAICompatibleConfig struct {
 	BaseURL string   `yaml:"base_url"`
 	APIKey  string   `yaml:"api_key"`
 	Models  []string `yaml:"models"` // enabled models for this provider
+	// OutputTokenReserve overrides the output-token budget for every model
+	// served by this provider: it is subtracted from the context window in
+	// overflow validation and caps executor MaxTokens. 0 = inherit the global
+	// executor.output_token_reserve.
+	OutputTokenReserve int `yaml:"output_token_reserve"`
 }
 
 // AnthropicCompatibleConfig holds Anthropic-compatible provider configuration
@@ -183,12 +193,22 @@ type AnthropicCompatibleConfig struct {
 	BaseURL string   `yaml:"base_url"`
 	APIKey  string   `yaml:"api_key"`
 	Models  []string `yaml:"models"` // enabled models for this provider
+	// OutputTokenReserve overrides the output-token budget for every model
+	// served by this provider: it is subtracted from the context window in
+	// overflow validation and caps executor MaxTokens. 0 = inherit the global
+	// executor.output_token_reserve.
+	OutputTokenReserve int `yaml:"output_token_reserve"`
 }
 
 // ChatGPTConfig holds ChatGPT (OpenAI) provider configuration.
 type ChatGPTConfig struct {
 	APIKey string   `yaml:"api_key"`
 	Models []string `yaml:"models"` // enabled models for this provider
+	// OutputTokenReserve overrides the output-token budget for every model
+	// served by this provider: it is subtracted from the context window in
+	// overflow validation and caps executor MaxTokens. 0 = inherit the global
+	// executor.output_token_reserve.
+	OutputTokenReserve int `yaml:"output_token_reserve"`
 }
 
 // ModelOverride allows overriding built-in model metadata.
@@ -290,6 +310,33 @@ type ExecutorConfig struct {
 	ToolOutputPruning  ToolOutputPruningConfig `yaml:"toolOutputPruning"`
 	HistoryMutation    HistoryMutationConfig   `yaml:"historyMutation"`
 	CircuitBreaker     CircuitBreakerConfig    `yaml:"circuitBreaker"`
+	// VerifyOnEdit runs a user-configured verification command (tests/linter)
+	// after every successful file edit in CODE tasks and injects its output
+	// into the conversation as a system observation. Default off; the command
+	// always comes from this config, never from the model. See
+	// specs/domains/verify-on-edit.md.
+	VerifyOnEdit VerifyOnEditConfig `yaml:"verify_on_edit"`
+}
+
+// VerifyOnEditConfig holds the verify-on-edit settings. The zero value is a
+// fully disabled no-op.
+type VerifyOnEditConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Command is the shell command executed after a successful write_file/
+	// edit_file call. It runs through the bash tool machinery, so the
+	// execute-group deny policy and the command blacklist still apply — but
+	// because the command is user-configured (not model-authored) it is not
+	// routed through interactive confirmation.
+	Command string `yaml:"command"`
+	// Timeout is a Go duration string ("120s", "2m"). Empty or invalid values
+	// fall back to 2 minutes. The effective timeout is capped by
+	// timeouts.bashMaxTimeout — the bash tool enforces its own maximum on
+	// every command, so a larger value here is clamped (with a warning).
+	Timeout string `yaml:"timeout"`
+	// MaxOutputChars caps the verification output injected into the model
+	// context (truncated with a marker when exceeded). 0 falls back to the
+	// SDK default (agent.DefaultVerifyOnEditCap, currently 4000).
+	MaxOutputChars int `yaml:"max_output_chars"`
 }
 
 // CompactionConfig holds context compaction settings.
@@ -518,6 +565,10 @@ type SmallLLMConfig struct {
 	// model that repeats itself or fails to make progress is nudged/aborted
 	// sooner, conserving the token budget.
 	LoopHardening LoopHardeningConfig `yaml:"loop_hardening"`
+
+	// Context applies aggressive context management: tighter compaction, stricter
+	// tool-output pruning, and a larger output token reserve.
+	Context SmallLLMContextConfig `yaml:"context"`
 }
 
 // EssentialToolsConfig narrows the tool set visible to a small LLM to reduce
@@ -528,12 +579,23 @@ type EssentialToolsConfig struct {
 	Enabled bool `yaml:"enabled"`
 
 	// AlwaysPresent is the allow-list of tool names always exposed when this
-	// variant is active. Tools not in this list are hidden from the model.
+	// variant is active. Tools not in this list are hidden from the model
+	// unless the router matches them into a free slot.
 	AlwaysPresent []string `yaml:"always_present"`
 
-	// MaxTools caps the total number of tools exposed to the model after the
-	// always-present set is applied.
+	// MaxTools caps the router-matched slots: at most
+	// maxTools − len(guaranteed) matched tools are kept, where guaranteed =
+	// always-present ∪ protected ∪ MCP. The guaranteed set itself is never
+	// trimmed (validateSmallLLMConfig rejects configs where it alone exceeds
+	// MaxTools).
 	MaxTools int `yaml:"max_tools"`
+
+	// CompactDescriptions replaces every known builtin's full rubric
+	// description with a one-line compact variant while this variant is
+	// active, shrinking prompt overhead on small models. Off by default:
+	// with it off, descriptions are byte-identical to the non-SmallLLM
+	// behavior.
+	CompactDescriptions bool `yaml:"compact_descriptions"`
 }
 
 // SystemPromptConfig applies prompt-simplification variants to shrink the
@@ -555,15 +617,30 @@ type SystemPromptConfig struct {
 }
 
 // SmallLLMSamplingConfig overrides LLM sampling parameters for a small model.
+// Every parameter uses zero as the "not set" sentinel: an unset parameter
+// inherits the per-family vendor preset (prompt.DefaultSampling) instead of
+// clobbering it, so enabling the sampling variant with no explicit values is
+// a behavioral no-op. Out-of-range values are rejected by validation
+// (frontend_api_config.go) whenever they are set.
 type SmallLLMSamplingConfig struct {
 	// Enabled gates this variant.
 	Enabled bool `yaml:"enabled"`
 
 	// Temperature sets generation temperature (lower = more deterministic).
+	// 0 (unset) inherits the vendor preset; when set it must be > 0.
 	Temperature float64 `yaml:"temperature"`
 
-	// TopP sets nucleus-sampling probability mass.
+	// TopP sets nucleus-sampling probability mass. 0 (unset) inherits the
+	// vendor preset; when set it must be in (0, 1].
 	TopP float64 `yaml:"top_p"`
+
+	// TopK sets top-k sampling. 0 (unset) inherits the vendor preset; when
+	// set it must be >= 1.
+	TopK int `yaml:"top_k"`
+
+	// RepetitionPenalty penalizes repeated tokens. 0 (unset) inherits the
+	// vendor preset; when set it must be in [1, 2].
+	RepetitionPenalty float64 `yaml:"repetition_penalty"`
 
 	// ReasoningEffort controls reasoning depth: "" (inherit) | "off" | "low" |
 	// "medium". Smaller models generally benefit from reduced reasoning effort.
@@ -597,6 +674,46 @@ type LoopHardeningConfig struct {
 	SameToolRepeatNudgeThreshold int `yaml:"same_tool_repeat_nudge_threshold"`
 }
 
+// SmallLLMContextConfig is the fifth small-LLM profile variant: aggressive
+// context management. When active it tightens the executor's compaction knobs
+// (smaller sliding window, smaller summarization block, earlier trigger),
+// prunes tool outputs more aggressively, and reserves more output tokens so a
+// small model is less likely to exhaust the context window mid-task. The
+// general executor defaults are NOT changed — the overrides only apply while
+// both the master toggle (SmallLLM.Enabled) and this variant's toggle are
+// enabled.
+type SmallLLMContextConfig struct {
+	// Enabled gates this variant (in addition to the master SmallLLM.Enabled).
+	Enabled bool `yaml:"enabled"`
+
+	// Compaction overrides the executor compaction knobs.
+	Compaction SmallLLMCompactionConfig `yaml:"compaction"`
+
+	// ToolOutputKeepLastN overrides the executor's tool-output pruning depth
+	// (stricter than the general executor default).
+	ToolOutputKeepLastN int `yaml:"tool_output_keep_last_n"`
+
+	// OutputTokenReserve overrides the token budget reserved for the model's
+	// output (e.g. 8192).
+	OutputTokenReserve int `yaml:"output_token_reserve"`
+}
+
+// SmallLLMCompactionConfig holds the compaction-tightening overrides. Zero
+// values mean "do not override" — the corresponding executor baseline is kept.
+type SmallLLMCompactionConfig struct {
+	// KeepLast overrides the sliding-window keep-last count (variant default 6
+	// vs the general executor default of 10).
+	KeepLast int `yaml:"keep_last"`
+
+	// BlockSize overrides the summarization block size (variant default 5 vs
+	// the general 7).
+	BlockSize int `yaml:"block_size"`
+
+	// TriggerPercent overrides the predictive compaction trigger percentage
+	// (variant default 80 vs the general 85).
+	TriggerPercent int `yaml:"trigger_percent"`
+}
+
 // ExpandEnvVars expands ${ENV_VAR} patterns in a string with their environment variable values.
 // This is a public function that can be used at runtime for values that bypass config file loading.
 func ExpandEnvVars(s string) string {
@@ -620,14 +737,18 @@ type ProviderWithModels struct {
 	APIKey       string
 	BaseURL      string
 	Models       []string // enabled models for this one provider
+	// OutputTokenReserve is the per-provider output-token budget override
+	// (0 = inherit the global executor.output_token_reserve).
+	OutputTokenReserve int
 }
 
 // providerEntry is the canonical, single-source-of-truth provider list.
 type providerEntry struct {
-	name    string
-	apiKey  string
-	baseURL string
-	models  []string
+	name               string
+	apiKey             string
+	baseURL            string
+	models             []string
+	outputTokenReserve int
 }
 
 // allProviderEntries returns the flat list of all known providers.
@@ -646,16 +767,16 @@ func (c *LLMConfig) allProviderEntries() []providerEntry {
 	sort.Strings(anthropicKeys)
 	entries := make([]providerEntry, 0, 2+len(openaiKeys)+len(anthropicKeys))
 	entries = append(entries,
-		providerEntry{"anthropic", c.Anthropic.APIKey, "", c.Anthropic.Models},
-		providerEntry{"chatgpt", c.ChatGPT.APIKey, "", c.ChatGPT.Models},
+		providerEntry{name: "anthropic", apiKey: c.Anthropic.APIKey, models: c.Anthropic.Models, outputTokenReserve: c.Anthropic.OutputTokenReserve},
+		providerEntry{name: "chatgpt", apiKey: c.ChatGPT.APIKey, models: c.ChatGPT.Models, outputTokenReserve: c.ChatGPT.OutputTokenReserve},
 	)
 	for _, name := range openaiKeys {
 		cfg := c.OpenAICompatible[name]
-		entries = append(entries, providerEntry{name, cfg.APIKey, cfg.BaseURL, cfg.Models})
+		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, outputTokenReserve: cfg.OutputTokenReserve})
 	}
 	for _, name := range anthropicKeys {
 		cfg := c.AnthropicCompatible[name]
-		entries = append(entries, providerEntry{name, cfg.APIKey, cfg.BaseURL, cfg.Models})
+		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, outputTokenReserve: cfg.OutputTokenReserve})
 	}
 	return entries
 }
@@ -685,11 +806,12 @@ func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
 	result := make([]ProviderWithModels, 0, len(c.allProviderEntries()))
 	for _, p := range c.allProviderEntries() {
 		result = append(result, ProviderWithModels{
-			Name:         p.name,
-			ProviderType: c.providerType(p.name),
-			APIKey:       p.apiKey,
-			BaseURL:      p.baseURL,
-			Models:       p.models,
+			Name:               p.name,
+			ProviderType:       c.providerType(p.name),
+			APIKey:             p.apiKey,
+			BaseURL:            p.baseURL,
+			Models:             p.models,
+			OutputTokenReserve: p.outputTokenReserve,
 		})
 	}
 	return result

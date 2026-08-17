@@ -29,6 +29,8 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			APIKey:       p.APIKey,
 			BaseURL:      p.BaseURL,
 			Models:       p.Models,
+
+			OutputTokenReserve: p.OutputTokenReserve,
 		}
 	}
 
@@ -156,6 +158,12 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 				SameToolRepeatAbortThreshold: cfg.Executor.CircuitBreaker.SameToolRepeatAbortThreshold,
 				SameToolResultSizeDelta:      cfg.Executor.CircuitBreaker.SameToolResultSizeDelta,
 			},
+			VerifyOnEdit: core.BuilderVerifyOnEditConfig{
+				Enabled:        cfg.Executor.VerifyOnEdit.Enabled,
+				Command:        cfg.Executor.VerifyOnEdit.Command,
+				Timeout:        cfg.Executor.VerifyOnEdit.Timeout,
+				MaxOutputChars: cfg.Executor.VerifyOnEdit.MaxOutputChars,
+			},
 		},
 		Security: core.BuilderSecurityConfig{
 			JudgeModel:                 cfg.Security.Judge.Model,
@@ -187,15 +195,18 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 		SmallLLM: core.BuilderSmallLLMConfig{
 			Enabled: cfg.SmallLLM.Enabled,
 			EssentialTools: core.BuilderSmallLLMEssentialConfig{
-				Enabled:       cfg.SmallLLM.EssentialTools.Enabled,
-				AlwaysPresent: cfg.SmallLLM.EssentialTools.AlwaysPresent,
-				MaxTools:      cfg.SmallLLM.EssentialTools.MaxTools,
+				Enabled:             cfg.SmallLLM.EssentialTools.Enabled,
+				AlwaysPresent:       cfg.SmallLLM.EssentialTools.AlwaysPresent,
+				MaxTools:            cfg.SmallLLM.EssentialTools.MaxTools,
+				CompactDescriptions: cfg.SmallLLM.EssentialTools.CompactDescriptions,
 			},
 			Sampling: core.BuilderSmallLLMSampling{
-				Enabled:         cfg.SmallLLM.Sampling.Enabled,
-				Temperature:     cfg.SmallLLM.Sampling.Temperature,
-				TopP:            cfg.SmallLLM.Sampling.TopP,
-				ReasoningEffort: cfg.SmallLLM.Sampling.ReasoningEffort,
+				Enabled:           cfg.SmallLLM.Sampling.Enabled,
+				Temperature:       cfg.SmallLLM.Sampling.Temperature,
+				TopP:              cfg.SmallLLM.Sampling.TopP,
+				TopK:              cfg.SmallLLM.Sampling.TopK,
+				RepetitionPenalty: cfg.SmallLLM.Sampling.RepetitionPenalty,
+				ReasoningEffort:   cfg.SmallLLM.Sampling.ReasoningEffort,
 			},
 			LoopHardening: core.BuilderLoopHardening{
 				Enabled:                      cfg.SmallLLM.LoopHardening.Enabled,
@@ -209,6 +220,16 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 				Lite:              cfg.SmallLLM.SystemPrompt.Lite,
 				FewShot:           cfg.SmallLLM.SystemPrompt.FewShot,
 				ReasoningScaffold: cfg.SmallLLM.SystemPrompt.ReasoningScaffold,
+			},
+			Context: core.BuilderSmallLLMContext{
+				Enabled: cfg.SmallLLM.Context.Enabled,
+				Compaction: core.BuilderSmallLLMCompaction{
+					KeepLast:       cfg.SmallLLM.Context.Compaction.KeepLast,
+					BlockSize:      cfg.SmallLLM.Context.Compaction.BlockSize,
+					TriggerPercent: cfg.SmallLLM.Context.Compaction.TriggerPercent,
+				},
+				ToolOutputKeepLastN: cfg.SmallLLM.Context.ToolOutputKeepLastN,
+				OutputTokenReserve:  cfg.SmallLLM.Context.OutputTokenReserve,
 			},
 		},
 		ToolLimits: core.BuilderToolLimitsConfig{

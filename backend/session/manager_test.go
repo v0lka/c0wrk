@@ -1355,6 +1355,63 @@ func TestEmitTaskComplete_DegradedWithoutSafetyNetEmitsWarning(t *testing.T) {
 	}
 }
 
+// TestEmitTaskComplete_DegradedEmitsExactlyOneAgentMetrics is the regression
+// test for the double agent_metrics emission on degraded completions: the
+// counters reset on every emission, so a second (zeroed) event used to
+// overwrite the real per-run quality report in the UI. With a tracked session
+// and an unfinished task record, a partial completion must produce exactly
+// one agent_metrics event carrying the run's real counters and the precise
+// "partial" finish label, alongside the resumable banner.
+func TestEmitTaskComplete_DegradedEmitsExactlyOneAgentMetrics(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+	manager.SetTaskStore(&mockTaskStoreForResumable{
+		unfinished: &TaskRecord{ID: "task-1", SessionID: "sess-1", Status: "in_progress"},
+	})
+
+	// Track the session with a real emitter so emitAgentMetrics is not a no-op.
+	emitter := NewEventEmitter("sess-1", manager.emitFunc)
+	manager.mu.Lock()
+	manager.sessions["sess-1"] = &Session{ID: "sess-1", emitter: emitter}
+	manager.mu.Unlock()
+
+	// Seed the run's quality counters.
+	emitter.ExecutorDiagnostic(1, "parse_error_nudge", map[string]any{"tool": "finish"})
+	emitter.StepStart(1)
+	emitter.StepStart(2)
+
+	drainEvents(eventChan)
+	manager.emitTaskComplete("sess-1", &core.HandleResult{
+		Output: "partial output",
+		Status: orchestration.ExecutionStatusPartial,
+	}, nil)
+
+	events := collectEvents(eventChan, 5)
+	var metrics []AgentMetricsData
+	resumable := false
+	for _, e := range events {
+		switch e.Type {
+		case "agent_metrics":
+			if data, ok := e.Data.(AgentMetricsData); ok {
+				metrics = append(metrics, data)
+			}
+		case "task_failed_resumable":
+			resumable = true
+		}
+	}
+	if len(metrics) != 1 {
+		t.Fatalf("expected exactly 1 agent_metrics event, got %d: %+v", len(metrics), metrics)
+	}
+	if metrics[0].Finish != "partial" {
+		t.Errorf("expected finish=partial, got %q", metrics[0].Finish)
+	}
+	if metrics[0].ParseErrors != 1 || metrics[0].Steps != 2 {
+		t.Errorf("expected the run's real counters (parse_errors=1, steps=2), got %+v", metrics[0])
+	}
+	if !resumable {
+		t.Error("expected the resumable banner alongside the single metrics event")
+	}
+}
+
 // TestGetSessionRuntimeStatus verifies active/unfinished reporting without
 // restoring sessions as a side effect.
 func TestGetSessionRuntimeStatus(t *testing.T) {

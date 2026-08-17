@@ -434,6 +434,13 @@ export interface SmallLLMEssentialTools {
   enabled: boolean
   always_present: string[]
   max_tools: number
+  /** Replace builtin tool descriptions with one-line compact variants. */
+  compact_descriptions: boolean
+  /**
+   * Read-only: protected orchestration tools the backend always keeps
+   * (unioned into always_present). Rendered as locked chips; ignored on write.
+   */
+  protected_tools: string[]
 }
 
 export interface SmallLLMSystemPrompt {
@@ -446,6 +453,8 @@ export interface SmallLLMSampling {
   enabled: boolean
   temperature: number
   top_p: number
+  top_k: number
+  repetition_penalty: number
   reasoning_effort: string
 }
 
@@ -458,12 +467,25 @@ export interface SmallLLMLoopHardening {
   same_tool_repeat_nudge_threshold: number
 }
 
+/** Context-management variant: aggressive compaction/pruning/reserve tuning. */
+export interface SmallLLMContext {
+  enabled: boolean
+  compaction: {
+    keep_last: number
+    block_size: number
+    trigger_percent: number
+  }
+  tool_output_keep_last_n: number
+  output_token_reserve: number
+}
+
 export interface SmallLLMConfigResponse {
   enabled: boolean
   essential_tools: SmallLLMEssentialTools
   system_prompt: SmallLLMSystemPrompt
   sampling: SmallLLMSampling
   loop_hardening: SmallLLMLoopHardening
+  context: SmallLLMContext
 }
 
 export interface ToolInfo {

@@ -9,7 +9,12 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolExecutePlanDescription = `Execute all steps of the declared plan in DAG order, with parallelism for independent steps. Each step runs as an isolated executor with its own context, tool set, and checklist. Plan-step executors emit plan_step_start/plan_step_complete events (not subagent events), so the full plan workflow — progress tracking, checklist nesting, plan panel — works correctly. Call this ONCE after declare_plan approval; it runs ALL steps to completion (in dependency-ordered waves) and returns aggregated results. Available only when a plan has been declared via declare_plan. Do NOT use delegate for plan steps — execute_plan is the only execution path for a declared plan.`
+const toolExecutePlanDescription = `Purpose: start executing the approved roadmap — its tasks, in dependency order, with per-task verification.
+Use when: the user has approved the plan; call ONCE per plan. Work tasks in the specified order (or in explicit parallel groups), verify each against its acceptance criteria before moving on, and report progress after each task.
+Inputs: none — it executes the plan already declared via declare_plan; the steps, their order, and per-step agents come from that declaration.
+Outputs: the execution run — per-task progress events and a completion report (tasks done/failed, checks run).
+Example: a plan where task 2 declares depends_on ["task_1"] and runs after it.
+Anti-example: do not call to delegate a single task (delegate does that); not before the roadmap is approved; never implement unapproved additions.`
 
 // PlanStepExecutor builds and runs all steps of a declared plan in DAG order
 // with parallelism. The implementation lives in the core layer

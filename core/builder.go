@@ -499,10 +499,15 @@ func (b *OrchestratorBuilder) Build(
 	// Resolve reasoning effort for step executors
 	reasoningEffort := b.reasoningEffort
 
+	// Small-LLM context-management override: tightens compaction, tool-output
+	// pruning, and the output token reserve when both the master toggle and the
+	// context variant are enabled (no-op otherwise).
+	exec := applyContextManagement(cfg.Executor, cfg.SmallLLM)
+
 	// Build orchestrator config
 	orchConfig := OrchestratorConfig{
-		KeepFirst:                 cfg.Executor.Compaction.SlidingWindow.KeepFirst,
-		KeepLast:                  cfg.Executor.Compaction.SlidingWindow.KeepLast,
+		KeepFirst:                 exec.Compaction.SlidingWindow.KeepFirst,
+		KeepLast:                  exec.Compaction.SlidingWindow.KeepLast,
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 		MaxRedelegationDepth:      cfg.Orchestration.MaxRedelegationDepth,
 		// OrchestratorConfig.Model is used for model METADATA resolution
@@ -511,7 +516,7 @@ func (b *OrchestratorBuilder) Build(
 		Model:                   llm.BareModel(llmRouter.ActiveModel()),
 		ReasoningEffort:         reasoningEffort,
 		HITLHandler:             hitlHandler,
-		PreWarningPercent:       cfg.Executor.Compaction.Thresholds.PreWarningPercent,
+		PreWarningPercent:       exec.Compaction.Thresholds.PreWarningPercent,
 		InjectionDefenseEnabled: cfg.Security.InjectionDefenseEnabled,
 		AgentsMDMaxBytes:        cfg.Security.AgentsMDMaxBytes,
 		AgentsMDSearchPaths:     cfg.Security.AgentsMDSearchPaths,
@@ -524,6 +529,8 @@ func (b *OrchestratorBuilder) Build(
 				Enabled:       cfg.SmallLLM.EssentialTools.Enabled,
 				AlwaysPresent: cfg.SmallLLM.EssentialTools.AlwaysPresent,
 				MaxTools:      cfg.SmallLLM.EssentialTools.MaxTools,
+
+				CompactDescriptions: cfg.SmallLLM.EssentialTools.CompactDescriptions,
 			},
 			SystemPrompt: SmallLLMSystemPromptSettings{
 				Lite:              cfg.SmallLLM.SystemPrompt.Lite,
@@ -626,6 +633,39 @@ func (b *OrchestratorBuilder) Build(
 		localProbe(defaultModel)
 	}
 
+	// Mechanical edit verification (executor.verify_on_edit): arm the hook
+	// only when the user enabled it AND a workspace is active. The runner is
+	// built exclusively from user config — the command never originates from
+	// model output. Executed via ExecuteUnattended so group-deny and the
+	// command blacklist still apply (see core/verify_on_edit.go).
+	var verifyOnEditRunner agent.EditVerifyRunner
+	if cfg.Executor.VerifyOnEdit.Enabled {
+		switch {
+		case strings.TrimSpace(cfg.Executor.VerifyOnEdit.Command) == "":
+			// The command is documented as required when the feature is on;
+			// an empty one would silently disable verification, so surface it.
+			logger.Warn("verify-on-edit is enabled but executor.verify_on_edit.command is empty — verification is inactive until a command is configured")
+		case workspacePath == "":
+			logger.Debug("verify-on-edit enabled but no workspace is active — verification stays inactive for this orchestrator")
+		}
+		if workspacePath != "" {
+			verifyOnEditRunner = buildEditVerifyRunner(
+				sessionRegistry,
+				workspacePath,
+				cfg.Executor.VerifyOnEdit.Command,
+				cfg.Executor.VerifyOnEdit.Timeout,
+				time.Duration(cfg.Timeouts.BashMaxTimeout)*time.Second,
+				logger,
+			)
+			if verifyOnEditRunner != nil {
+				logger.Info("verify-on-edit enabled",
+					"command", cfg.Executor.VerifyOnEdit.Command,
+					"timeout", cfg.Executor.VerifyOnEdit.Timeout,
+					"max_output_chars", cfg.Executor.VerifyOnEdit.MaxOutputChars)
+			}
+		}
+	}
+
 	return NewOrchestrator(orchConfig, OrchestratorDeps{
 		Router:            coreRouter,
 		LLM:               loggedLLM,
@@ -651,6 +691,11 @@ func (b *OrchestratorBuilder) Build(
 		StepDumpTracker:   stepDumpTracker,
 		ProviderName:      cfg.LLM.DefaultProviderName(),
 		LocalModelProbe:   localProbe,
+		// Mechanical edit verification runner (nil = disabled). Inert in No
+		// Project (CHAT) mode and goal-loop turns (see buildConductorDeps,
+		// RunConductor, defaultGoalTurnRunner).
+		VerifyOnEdit:               verifyOnEditRunner,
+		VerifyOnEditMaxOutputChars: cfg.Executor.VerifyOnEdit.MaxOutputChars,
 		// Release the session registry's live-tracking entry when the session
 		// orchestrator is cleaned up, so security pushes stop reaching dead
 		// clones and the builder does not accumulate registries forever.
@@ -836,8 +881,10 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 			{Role: "user", Content: userMessage},
 		},
 		MaxTokens:       30,
-		Temperature:     &temp,
+		Temperature:     &temp, // explicit value wins over any profile
 		ReasoningEffort: reasoningEffort,
+		// Auxiliary text composition call — summarization class.
+		CallPurpose: llm.CallPurposeSummarization,
 	}
 	caller := agent.LLMCaller(llmRouter)
 	if dw := agent.DumpWriterFromContext(ctx); dw != nil {
@@ -1100,10 +1147,11 @@ func extractBetweenMarkers(s string) (string, bool) {
 }
 
 // buildCommitMessageRequest constructs a commit-message request without forcing
-// sampling parameters. The router applies its family-aware default only when
-// the active model advertises temperature support; reasoning models such as
-// GPT-5/o-series and kimi-k2-thinking therefore receive no unsupported
-// temperature field.
+// sampling parameters. The request declares a summarization purpose, so the
+// router applies the deterministic profile (temperature 0 or the family-safe
+// floor) instead of the vendor preset — only when the active model advertises
+// temperature support; reasoning models such as GPT-5/o-series and
+// kimi-k2-thinking therefore receive no unsupported temperature field.
 func buildCommitMessageRequest(diff, extraUserText, reasoningEffort string) llm.ChatRequest {
 	// Reasoning models count reasoning tokens against the output-token budget.
 	// 2048 comfortably covers reasoning plus a short Conventional Commits
@@ -1123,6 +1171,8 @@ func buildCommitMessageRequest(diff, extraUserText, reasoningEffort string) llm.
 		},
 		MaxTokens:       commitMsgMaxTokens,
 		ReasoningEffort: reasoningEffort,
+		// Auxiliary text composition call — deterministic profile.
+		CallPurpose: llm.CallPurposeSummarization,
 	}
 }
 
@@ -1580,6 +1630,15 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	// above from cfg.LLM.Models always wins and is never clobbered here.
 	remapLocalGoogleProtocols(overrides, cfg.LLM.ProviderConfigs, cfg.ExpandEnvVars)
 
+	// Per-provider output-token reserve: seed ModelMetadata.OutputLimit for
+	// every model of a provider that sets output_token_reserve. The registry
+	// uses OutputLimit both as the context-window reserve and as the executor
+	// MaxTokens ceiling, so a provider-level budget raises the generation
+	// ceiling for all of its models at once. Priority: per-model llm.models
+	// output_limit > per-provider output_token_reserve > global
+	// executor.output_token_reserve (the RouterConfig fallback).
+	applyProviderOutputReserves(overrides, cfg.LLM.ProviderConfigs)
+
 	modelRegistry := llm.NewModelRegistry(overrides)
 	if proxyClient != nil {
 		modelRegistry.SetHTTPClient(proxyClient)
@@ -1639,13 +1698,18 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		})
 	}
 
+	// Small-LLM context-management override: keeps the router's token budget
+	// (safety margin, output reserve) in sync with the executor tightening
+	// applied in Build (no-op unless both toggles are enabled).
+	exec := applyContextManagement(cfg.Executor, cfg.SmallLLM)
+
 	routerCfg := llm.RouterConfig{
 		Providers:           providers,
 		MaxRetries:          cfg.LLM.Retry.MaxRetries,
 		InitialBackoff:      initialBackoff,
 		MaxBackoff:          maxBackoff,
-		SafetyMarginPercent: cfg.Executor.Compaction.SafetyMarginPercent,
-		OutputTokenReserve:  cfg.Executor.OutputTokenReserve,
+		SafetyMarginPercent: exec.Compaction.SafetyMarginPercent,
+		OutputTokenReserve:  exec.OutputTokenReserve,
 		HTTPClient:          llmClient,
 		Logger:              b.logger,
 		SamplingFunc:        resolveSamplingFunc(cfg.SmallLLM),
@@ -1663,6 +1727,51 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	}
 
 	return llmRouter, modelRegistry, nil
+}
+
+// applyProviderOutputReserves seeds ModelMetadata.OutputLimit into the model
+// overrides for every model served by a provider that sets a per-provider
+// output_token_reserve. The router treats a model's OutputLimit both as the
+// reserve subtracted from the context window during overflow validation and as
+// the executor's MaxTokens ceiling, so one provider-level knob raises the
+// generation budget for all of that provider's models at once — the right
+// granularity for self-hosted gateways (LM Studio, vLLM) whose real limits
+// differ from the built-in catalog.
+//
+// Priority: an explicit per-model llm.models output_limit always wins and is
+// never clobbered; models without any per-provider seeding keep inheriting the
+// global executor.output_token_reserve that llm.NewRouter applies as the
+// last-resort fallback. Unset (0) and negative provider values are ignored.
+// When two providers list the SAME bare model name with different reserves,
+// the lexicographically first provider name wins — iteration is over sorted
+// provider names, so the outcome does not depend on Go's randomized map
+// iteration order. The function is idempotent.
+func applyProviderOutputReserves(
+	overrides map[string]llm.ModelMetadata,
+	providerConfigs map[string]BuilderProviderConfig,
+) {
+	names := make([]string, 0, len(providerConfigs))
+	for name := range providerConfigs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		pc := providerConfigs[name]
+		if pc.OutputTokenReserve <= 0 {
+			continue
+		}
+		for _, model := range pc.Models {
+			if model == "" {
+				continue
+			}
+			entry, ok := overrides[model]
+			if ok && entry.OutputLimit > 0 {
+				continue // explicit per-model override (or an earlier provider) wins
+			}
+			entry.OutputLimit = pc.OutputTokenReserve
+			overrides[model] = entry
+		}
+	}
 }
 
 // remapLocalGoogleProtocols rewrites the built-in Google protocol to
@@ -1903,6 +2012,12 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 	summarizeCaller = agent.NewDumpCaller(summarizeCaller, dumpWriter, b.logger)
 	compactionEffort := b.reasoningEffort
 
+	// Small-LLM context-management override: tightens the compaction strategy
+	// and tool-output pruning baselines when both the master toggle and the
+	// context variant are enabled. Per-step pruning overrides (below) still
+	// take precedence over the tightened baseline.
+	exec := applyContextManagement(cfg.Executor, cfg.SmallLLM)
+
 	return func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string, pruningOverrides ...orchestration.PruningOverride) ContextManager {
 		counter, err := llm.NewTokenCounter(modelMeta.TokenizerType)
 		if err != nil {
@@ -1913,16 +2028,16 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 
 		strategy := sdkmemory.NewCompactionStrategy(compactionStrategy, sdkmemory.CompactionConfig{
 			SlidingWindow: struct{ KeepFirst, KeepLast int }{
-				KeepFirst: cfg.Executor.Compaction.SlidingWindow.KeepFirst,
-				KeepLast:  cfg.Executor.Compaction.SlidingWindow.KeepLast,
+				KeepFirst: exec.Compaction.SlidingWindow.KeepFirst,
+				KeepLast:  exec.Compaction.SlidingWindow.KeepLast,
 			},
 			Summarization: struct {
 				BlockSize           int
 				KeepLast            int
 				ObservationTruncate int
 			}{
-				BlockSize:           cfg.Executor.Compaction.Summarization.BlockSize,
-				KeepLast:            cfg.Executor.Compaction.Summarization.KeepLast,
+				BlockSize:           exec.Compaction.Summarization.BlockSize,
+				KeepLast:            exec.Compaction.Summarization.KeepLast,
 				ObservationTruncate: cfg.Executor.Compaction.ObservationTruncate,
 			},
 			Hierarchical: struct{ DistantRatio, MiddleRatio, RecentRatio float64 }{
@@ -1943,6 +2058,9 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 						{Role: "user", Content: blockText},
 					},
 					ReasoningEffort: compactionEffort,
+					// Compaction summaries are deterministic calls: no vendor
+					// preset, temperature pinned to the family-safe floor.
+					CallPurpose: llm.CallPurposeCompaction,
 				}
 				resp, err := summarizeCaller.Call(ctx, req)
 				if err != nil {
@@ -1953,13 +2071,13 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 		})
 
 		thresholds := sdkmemory.CompactionThresholds{
-			PredictivePercent: cfg.Executor.Compaction.Thresholds.PredictivePercent,
+			PredictivePercent: exec.Compaction.Thresholds.PredictivePercent,
 			WarningPercent:    cfg.Executor.Compaction.Thresholds.WarningPercent,
 			EmergencyPercent:  cfg.Executor.Compaction.Thresholds.EmergencyPercent,
 		}
 
 		pruning := sdkmemory.ToolOutputPruning{
-			KeepLastN:        cfg.Executor.ToolOutputPruning.KeepLastN,
+			KeepLastN:        exec.ToolOutputPruning.KeepLastN,
 			ProtectedTools:   cfg.Executor.ToolOutputPruning.ProtectedTools,
 			ThresholdPercent: cfg.Executor.ToolOutputPruning.ThresholdPercent,
 			Logger:           b.logger,
@@ -2202,23 +2320,78 @@ func applyLoopHardening(cb agent.CircuitBreakerConfig, s BuilderSmallLLMConfig) 
 	return cb
 }
 
-// resolveSamplingFunc returns the SamplingFunc for the LLM router. When the
-// SmallLLM sampling variant is enabled (and the master toggle is on) it
-// returns a constant SmallLLM temperature, replacing the per-family
-// DefaultSampling default. Otherwise it falls back to the per-family default —
-// identical to the pre-SmallLLM behavior.
-//
-// TopP: the sp4rk llm.ChatRequest has no TopP field and the router only
-// consumes temperature from the SamplingFunc, so SmallLLM TopP is intentionally
-// not applied here (it cannot reach the API without a sp4rk change). The value
-// is carried in the profile for forward compatibility.
-func resolveSamplingFunc(s BuilderSmallLLMConfig) func(family string) *float64 {
-	if s.Enabled && s.Sampling.Enabled {
-		t := s.Sampling.Temperature
-		return func(string) *float64 { return &t }
+// applyContextManagement tightens the executor's context-management knobs —
+// compaction (sliding-window keep-last, summarization block size, predictive
+// trigger), tool-output pruning depth, and the output token reserve — when the
+// SmallLLM context variant is enabled (and the master toggle is on). Each knob
+// is overridden independently: a zero value in the profile means "keep the
+// executor baseline" for that knob. When the variant is disabled the executor
+// config is returned byte-for-byte unchanged.
+func applyContextManagement(exec BuilderExecutorConfig, s BuilderSmallLLMConfig) BuilderExecutorConfig {
+	if !s.Enabled || !s.Context.Enabled {
+		return exec
 	}
-	return func(family string) *float64 {
-		return prompt.DefaultSampling(family).Temperature
+	c := s.Context
+	if c.Compaction.KeepLast > 0 {
+		exec.Compaction.SlidingWindow.KeepLast = c.Compaction.KeepLast
+	}
+	if c.Compaction.BlockSize > 0 {
+		exec.Compaction.Summarization.BlockSize = c.Compaction.BlockSize
+	}
+	if c.Compaction.TriggerPercent > 0 {
+		exec.Compaction.Thresholds.PredictivePercent = c.Compaction.TriggerPercent
+	}
+	if c.ToolOutputKeepLastN > 0 {
+		exec.ToolOutputPruning.KeepLastN = c.ToolOutputKeepLastN
+	}
+	if c.OutputTokenReserve > 0 {
+		exec.OutputTokenReserve = c.OutputTokenReserve
+	}
+	return exec
+}
+
+// resolveSamplingFunc returns the SamplingFunc for the LLM router. The
+// per-family vendor matrix preset (prompt.DefaultSampling) is always the
+// base. When the sampling variant is enabled (and the SmallLLM master toggle
+// is on), only the fields the user set explicitly (non-zero) override the
+// preset; every unset field inherits the vendor value. A fully-unset profile
+// therefore reproduces the vendor preset exactly — enabling the variant alone
+// never degrades a family to hardcoded constants such as a constant
+// temperature, which previously broke vendor-tuned 27-30B model presets.
+//
+// prompt.SamplingConfig is converted field-by-field into llm.SamplingDefaults
+// because the llm package cannot import prompt (it would create an import
+// cycle through prompt's in-package tests). MaxTokens is deliberately not
+// forwarded: the router-level preset is sampling-only.
+func resolveSamplingFunc(s BuilderSmallLLMConfig) llm.SamplingFunc {
+	override := s.Enabled && s.Sampling.Enabled
+	return func(family string) llm.SamplingDefaults {
+		c := prompt.DefaultSampling(family)
+		d := llm.SamplingDefaults{
+			Temperature:       c.Temperature,
+			TopP:              c.TopP,
+			TopK:              c.TopK,
+			RepetitionPenalty: c.RepetitionPenalty,
+			PresencePenalty:   c.PresencePenalty,
+		}
+		if !override {
+			return d
+		}
+		// Zero means "not set" — inherit the vendor preset instead of
+		// clobbering it (see BuilderSmallLLMSampling field docs).
+		if s.Sampling.Temperature > 0 {
+			d.Temperature = &s.Sampling.Temperature
+		}
+		if s.Sampling.TopP > 0 {
+			d.TopP = &s.Sampling.TopP
+		}
+		if s.Sampling.TopK > 0 {
+			d.TopK = &s.Sampling.TopK
+		}
+		if s.Sampling.RepetitionPenalty > 0 {
+			d.RepetitionPenalty = &s.Sampling.RepetitionPenalty
+		}
+		return d
 	}
 }
 

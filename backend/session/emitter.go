@@ -104,6 +104,9 @@ type EventEmitter struct {
 	// Shared token accumulation (shared across WithPlanStepID copies)
 	tokens *tokenState
 
+	// Shared agent quality metrics (shared across WithPlanStepID copies)
+	metrics *metricsState
+
 	// Tool call ID generation (shared across WithPlanStepID copies)
 	toolCallIDs *toolCallIDGen
 
@@ -134,6 +137,7 @@ func NewEventEmitter(sessionID string, emit func(Event)) *EventEmitter {
 		sessionID:     sessionID,
 		emit:          emit,
 		tokens:        &tokenState{lastFillStatus: "ok"},
+		metrics:       &metricsState{},
 		toolCallIDs:   &toolCallIDGen{epoch: time.Now().UnixMilli()},
 		isSessionRoot: true,
 	}
@@ -265,6 +269,7 @@ func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
 		planStepID:             id,
 		retryAttempt:           e.retryAttempt,
 		tokens:                 e.tokens,
+		metrics:                e.metrics,
 		toolCallIDs:            e.toolCallIDs,
 		logger:                 e.logger,
 		attachmentNameResolver: e.attachmentNameResolver,
@@ -281,6 +286,7 @@ func (e *EventEmitter) WithRetryAttempt(attempt int) core.Emitter {
 		planStepID:             e.planStepID,
 		retryAttempt:           attempt,
 		tokens:                 e.tokens,
+		metrics:                e.metrics,
 		toolCallIDs:            e.toolCallIDs,
 		logger:                 e.logger,
 		attachmentNameResolver: e.attachmentNameResolver,
@@ -442,6 +448,7 @@ func (e *EventEmitter) computeProgress(completedCount int) float64 {
 
 // StepStart emits a step start event.
 func (e *EventEmitter) StepStart(stepNum int) {
+	e.metrics.observeStep()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.emitEvent(Event{
@@ -935,6 +942,7 @@ func (e *EventEmitter) GoalProgress(data map[string]any) {
 // ExecutorDiagnostic logs an internal executor diagnostic at DEBUG level.
 // These are internal diagnostics, not user-facing events.
 func (e *EventEmitter) ExecutorDiagnostic(stepNum int, event string, details map[string]any) {
+	e.metrics.observeDiagnostic(event)
 	e.log().Debug("emitter: executor diagnostic",
 		"stepNum", stepNum,
 		"event", event,
@@ -998,6 +1006,31 @@ func (e *EventEmitter) ToolsAssigned(toolNames []string) {
 			Tools: toolNames,
 		},
 	})
+}
+
+// SetSmallLLMProfile snapshots the Small-LLM profile state the session runs
+// under; it annotates the "agent_metrics" payload so measurements can be
+// grouped by active optimization variants. Metrics are collected regardless —
+// an unset profile just reports enabled=false with no variants.
+func (e *EventEmitter) SetSmallLLMProfile(enabled bool, variants []string) {
+	e.metrics.setSmallLLM(SmallLLMMetaInfo{Enabled: enabled, Variants: variants})
+}
+
+// EmitAgentMetrics emits the "agent_metrics" event carrying the accumulated
+// agent quality counters and resets them, covering exactly one task run.
+// finish describes the terminal state ("full", "partial", "failed",
+// "aborted" or "cancelled"). Returns the emitted payload.
+func (e *EventEmitter) EmitAgentMetrics(finish string) AgentMetricsData {
+	_, outputTokens := e.SessionTokenTotals()
+	data := e.metrics.snapshot(finish, outputTokens)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "agent_metrics",
+		Data:      data,
+	})
+	return data
 }
 
 // StepTodoUpdate emits a step_todo_update event with the current checklist.

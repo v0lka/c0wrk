@@ -965,3 +965,82 @@ func TestExtractOptimizedPrompt_AllEmpty(t *testing.T) {
 		t.Errorf("extractOptimizedPrompt() = %q, want empty", got)
 	}
 }
+
+// TestApplyProviderOutputReserves covers the per-provider output-token reserve
+// seeding (D4): per-model overrides win, per-provider values apply to every
+// listed model, unset/zero/negative provider values are ignored, and existing
+// partial overrides are enriched rather than clobbered.
+func TestApplyProviderOutputReserves(t *testing.T) {
+	overrides := map[string]llm.ModelMetadata{
+		// Explicit per-model override — must never be clobbered.
+		"model-with-explicit": {ContextWindow: 100000, OutputLimit: 2048},
+		// Partial override without OutputLimit — reserve must be added,
+		// other fields preserved.
+		"model-partial": {ContextWindow: 32000},
+	}
+	providerConfigs := map[string]BuilderProviderConfig{
+		"gateway": {
+			ProviderType:       "openai",
+			Models:             []string{"model-a", "model-with-explicit", "model-partial", ""},
+			OutputTokenReserve: 8192,
+		},
+		"unset-provider": {
+			ProviderType: "openai",
+			Models:       []string{"model-b"},
+		},
+		"negative-provider": {
+			ProviderType:       "openai",
+			Models:             []string{"model-c"},
+			OutputTokenReserve: -1,
+		},
+	}
+
+	applyProviderOutputReserves(overrides, providerConfigs)
+
+	if got := overrides["model-a"].OutputLimit; got != 8192 {
+		t.Errorf("model-a OutputLimit = %d, want 8192 (seeded from provider)", got)
+	}
+	if got := overrides["model-with-explicit"].OutputLimit; got != 2048 {
+		t.Errorf("model-with-explicit OutputLimit = %d, want 2048 (per-model wins)", got)
+	}
+	partial := overrides["model-partial"]
+	if partial.OutputLimit != 8192 {
+		t.Errorf("model-partial OutputLimit = %d, want 8192 (seeded)", partial.OutputLimit)
+	}
+	if partial.ContextWindow != 32000 {
+		t.Errorf("model-partial ContextWindow = %d, want 32000 (preserved)", partial.ContextWindow)
+	}
+	if _, ok := overrides["model-b"]; ok {
+		t.Error("model-b should not be seeded when provider reserve is unset")
+	}
+	if _, ok := overrides["model-c"]; ok {
+		t.Error("model-c should not be seeded when provider reserve is negative")
+	}
+}
+
+// TestApplyProviderOutputReserves_ConflictingProvidersDeterministic: when two
+// providers list the same bare model name with different reserves, the
+// lexicographically first provider name must win — regardless of Go's
+// randomized map iteration order (verified over repeated runs).
+func TestApplyProviderOutputReserves_ConflictingProvidersDeterministic(t *testing.T) {
+	providerConfigs := map[string]BuilderProviderConfig{
+		"zzz-gateway": {
+			ProviderType:       "openai",
+			Models:             []string{"shared-model"},
+			OutputTokenReserve: 4096,
+		},
+		"aaa-gateway": {
+			ProviderType:       "openai",
+			Models:             []string{"shared-model"},
+			OutputTokenReserve: 8192,
+		},
+	}
+
+	for i := 0; i < 50; i++ {
+		overrides := map[string]llm.ModelMetadata{}
+		applyProviderOutputReserves(overrides, providerConfigs)
+		if got := overrides["shared-model"].OutputLimit; got != 8192 {
+			t.Fatalf("run %d: shared-model OutputLimit = %d, want 8192 (aaa-gateway wins, lexicographic order)", i, got)
+		}
+	}
+}

@@ -8,7 +8,12 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolReflectDescription = `Invoke the reflector on the current execution trajectory or a specific delegation's trajectory. Use this proactively when the direction seems wrong, or reactively when a delegation failed and you need structured analysis before retrying. Returns the reflection's summary, suggested action (retry | replan | abort), root cause, and action plan. The reflection is also persisted to the blackboard and emitted to the UI.`
+const toolReflectDescription = `Purpose: pause and re-evaluate the strategy — replan instead of repeating a failing approach.
+Use when: multiple attempts at the same goal have failed, or an earlier step already satisfied the user's request, or the goal turns out to be already achieved. Reflection is the runtime's escape hatch from unproductive loops.
+Inputs: none required — the runtime triggers reflection when due; optionally scope ("trajectory" | "delegation") narrows the target and delegation_id (required with scope "delegation") picks the subagent run.
+Outputs: a revised plan of action for the remaining work.
+Example: two consecutive failed test runs -> reflect reconsiders the approach rather than launching a third identical run.
+Anti-example: not a progress report (use your reply); not after every minor error — only when the strategy itself is in doubt; once the goal is met, finish instead of reflecting.`
 
 // ReflectionResult is the surfaced outcome of a reflection call.
 type ReflectionResult struct {

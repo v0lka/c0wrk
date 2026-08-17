@@ -269,11 +269,37 @@ func (o *Orchestrator) routeAndActivateSkills(
 
 	routing, err := o.router.Route(ctx, routingMessage, availableTools, o.conversationHistory, routerSkills)
 	if err != nil {
-		o.logDebug("orchestrator: routing failed", "error", err)
-		if pbb, ok := bb.(PersistableBlackboard); ok {
-			pbb.FailTask()
+		// Small-LLM degradation path: when semantic tool matching is enabled
+		// and the routing JSON is unparseable even after the router's
+		// built-in repair retry, fail safe instead of failing the task —
+		// continue with a default routing decision. The tool filter then
+		// falls back to the full tool set (applySmallLLMToolFilter).
+		if errors.Is(err, router.ErrRoutingParse) && o.smallLLMToolMatchingEnabled() {
+			if o.logger != nil {
+				o.logger.Warn("orchestrator: routing decision unparseable after repair retry; continuing with default routing",
+					"error", err)
+			}
+			if o.emitter != nil {
+				o.emitter.ServiceWithMeta(
+					"Routing fallback: unparseable routing JSON — continuing with default routing",
+					map[string]any{
+						"phase":    "orchestration",
+						"fallback": "routing_parse",
+						"error":    err.Error(),
+					},
+				)
+			}
+			routing = &router.RoutingDecision{
+				Domain:     router.DomainGeneral,
+				Complexity: defaultResumeComplexity,
+			}
+		} else {
+			o.logDebug("orchestrator: routing failed", "error", err)
+			if pbb, ok := bb.(PersistableBlackboard); ok {
+				pbb.FailTask()
+			}
+			return ctx, nil, nil, nil, fmt.Errorf("routing failed: %w", err)
 		}
-		return ctx, nil, nil, nil, fmt.Errorf("routing failed: %w", err)
 	}
 
 	// No Project mode: override code domain to general so that

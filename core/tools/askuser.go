@@ -9,7 +9,12 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolAskUserDescription = `Ask the user one or more questions and present selectable answer options for each. Supports single-select (default) and multi-select modes per question. The user can pick from predefined options or provide a custom free-text answer for each question. Not available in non-interactive (CLI) mode.`
+const toolAskUserDescription = `Purpose: ask the user one or more questions with selectable answer options — the sole channel for user-directed questions.
+Use when: requirements are ambiguous, several valid approaches compete, or a decision genuinely belongs to the user. Batch related questions into a single call instead of drip-feeding them.
+Inputs: questions — an array of {id (unique non-empty), question, options: [{label, value}] (values unique within the question), multi_select (default false = exclusive choice), recommended (optional array of option values)}.
+Outputs: the user's selections — predefined values or custom free text — keyed by question id.
+Example: one question with options "REST" and "GraphQL", recommended ["REST"].
+Anti-example: unavailable in non-interactive (CLI) mode; not for progress reports or rhetorical questions (say it in your reply); do not ask what the codebase itself answers — search first.`
 
 // AskUserTool asks the user a question and returns their answer.
 type AskUserTool struct {

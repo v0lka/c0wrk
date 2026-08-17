@@ -13,7 +13,12 @@ import (
 	"github.com/v0lka/sp4rk/agents"
 )
 
-const toolDelegateDescription = `Launch one or more subagents to execute units of work in isolated ReAct loops. Each task runs in its own context with its own tool set; only the summary output returns. Use this to break large tasks into parallel or sequential pieces, or to isolate context-heavy investigation. Tasks with depends_on wait for their dependencies to complete first; tasks without dependencies run in parallel. blocking mode returns the output in the tool result; async mode returns immediately with a delegation_id (read results later via read_step_output). depends_on can only reference blocking tasks — async tasks run in the background and cannot be depended upon. By default subagents cannot delegate further; set allow_redelegate=true to permit nesting (capped by config).`
+const toolDelegateDescription = `Purpose: launch subagents that each run a task in their own context window — parallelize independent work, keep the main context lean.
+Use when: tasks are independent and parallelizable, or the main context risks overflow. Target a specialized Subagent Profile via agent. The subagent sees the blackboard and its task brief — not this chat's full history.
+Inputs: tasks — array of {id (unique, e.g. del_1), summary (5-7 word UI label), task (What/How/Where/Acceptance criteria), acceptance_criteria (optional explicit checks), tools (optional: "all" | "read-only" | array of group tokens), depends_on (prerequisite ids), mode ("blocking" | "async"), max_steps (0 = config default), allow_redelegate (default false), agent (optional Subagent Profile name)}.
+Outputs: progress events per subagent; blocking tasks return output in this result, async ones return a delegation id at once.
+Example: two independent refactors as two tasks without depends_on — they run in parallel.
+Anti-example: no re-delegation from inside a subagent unless allow_redelegate is set; not for sequential steps (chain via depends_on or run inline); delegating does not replace reading key files yourself.`
 
 // delegateSchemaTemplate is the delegate tool's JSON schema. The
 // tasks[].tools group-token enum is injected from the SDK group table at

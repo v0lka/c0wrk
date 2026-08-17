@@ -202,13 +202,19 @@ type SmallLLMConfigResponse struct {
 	SystemPrompt   SmallLLMSystemPromptResp   `json:"system_prompt"`
 	Sampling       SmallLLMSamplingResp       `json:"sampling"`
 	LoopHardening  SmallLLMLoopHardeningResp  `json:"loop_hardening"`
+	Context        SmallLLMContextResp        `json:"context"`
 }
 
 // SmallLLMEssentialToolsResp is the always-present tool-subset variant.
+// ProtectedTools is read-only informational: the backend always includes the
+// protected set regardless of any UI selection, so the UI can render those
+// tools as locked. It is ignored on write.
 type SmallLLMEssentialToolsResp struct {
-	Enabled       bool     `json:"enabled"`
-	AlwaysPresent []string `json:"always_present"`
-	MaxTools      int      `json:"max_tools"`
+	Enabled             bool     `json:"enabled"`
+	AlwaysPresent       []string `json:"always_present"`
+	MaxTools            int      `json:"max_tools"`
+	CompactDescriptions bool     `json:"compact_descriptions"`
+	ProtectedTools      []string `json:"protected_tools"`
 }
 
 // SmallLLMSystemPromptResp is the prompt-simplification variant.
@@ -218,12 +224,15 @@ type SmallLLMSystemPromptResp struct {
 	ReasoningScaffold bool `json:"reasoning_scaffold"`
 }
 
-// SmallLLMSamplingResp is the sampling-override variant.
+// SmallLLMSamplingResp is the sampling-override variant. Zero numeric values
+// mean "inherit the vendor preset" (not "send 0").
 type SmallLLMSamplingResp struct {
-	Enabled         bool    `json:"enabled"`
-	Temperature     float64 `json:"temperature"`
-	TopP            float64 `json:"top_p"`
-	ReasoningEffort string  `json:"reasoning_effort"`
+	Enabled           bool    `json:"enabled"`
+	Temperature       float64 `json:"temperature"`
+	TopP              float64 `json:"top_p"`
+	TopK              int     `json:"top_k"`
+	RepetitionPenalty float64 `json:"repetition_penalty"`
+	ReasoningEffort   string  `json:"reasoning_effort"`
 }
 
 // SmallLLMLoopHardeningResp is the tightened circuit-breaker variant.
@@ -234,6 +243,22 @@ type SmallLLMLoopHardeningResp struct {
 	FruitlessNudgeThreshold      int  `json:"fruitless_nudge_threshold"`
 	FruitlessAbortThreshold      int  `json:"fruitless_abort_threshold"`
 	SameToolRepeatNudgeThreshold int  `json:"same_tool_repeat_nudge_threshold"`
+}
+
+// SmallLLMContextResp is the aggressive context-management variant.
+type SmallLLMContextResp struct {
+	Enabled             bool                   `json:"enabled"`
+	Compaction          SmallLLMCompactionResp `json:"compaction"`
+	ToolOutputKeepLastN int                    `json:"tool_output_keep_last_n"`
+	OutputTokenReserve  int                    `json:"output_token_reserve"`
+}
+
+// SmallLLMCompactionResp holds the compaction-tightening overrides of the
+// context variant.
+type SmallLLMCompactionResp struct {
+	KeepLast       int `json:"keep_last"`
+	BlockSize      int `json:"block_size"`
+	TriggerPercent int `json:"trigger_percent"`
 }
 
 // FileNode represents a file or directory entry in the workspace tree.

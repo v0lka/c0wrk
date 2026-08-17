@@ -1410,6 +1410,16 @@ func validSmallLLMConfig() SmallLLMConfigResponse {
 			FruitlessAbortThreshold:      5,
 			SameToolRepeatNudgeThreshold: 4,
 		},
+		Context: SmallLLMContextResp{
+			Enabled: true,
+			Compaction: SmallLLMCompactionResp{
+				KeepLast:       6,
+				BlockSize:      5,
+				TriggerPercent: 80,
+			},
+			ToolOutputKeepLastN: 2,
+			OutputTokenReserve:  8192,
+		},
 	}
 }
 
@@ -1500,7 +1510,9 @@ func TestUpdateSmallLLMConfig_PersistFailureRestoresInMemory(t *testing.T) {
 	f.configPath = ""
 
 	change := validSmallLLMConfig()
-	change.EssentialTools.MaxTools = 3
+	// Must stay valid under validateSmallLLMConfig (guaranteed = 7 ≤ 10) so
+	// the persist step itself is what fails, not validation.
+	change.EssentialTools.MaxTools = 10
 	err := f.UpdateSmallLLMConfig(change)
 	if err == nil {
 		t.Fatal("expected error when persist fails")
@@ -1562,6 +1574,35 @@ func TestUpdateSmallLLMConfig_NegativeMaxTools(t *testing.T) {
 	}
 }
 
+func TestUpdateSmallLLMConfig_RejectsMaxToolsBelowGuaranteed(t *testing.T) {
+	f, mock, _ := newTestAPI(t)
+
+	// validSmallLLMConfig pins 2 tools; the guaranteed set is
+	// 2 always-present ∪ 5 protected (no overlap) = 7. A cap of 6 would leave
+	// zero router-matched slots and the never-trimmed guaranteed set would
+	// silently exceed the budget — validation must reject it with an
+	// actionable message instead.
+	cfg := validSmallLLMConfig()
+	cfg.EssentialTools.MaxTools = 6
+
+	err := f.UpdateSmallLLMConfig(cfg)
+	if err == nil {
+		t.Fatal("expected error when max_tools is below the guaranteed tool count")
+	}
+	if !strings.Contains(err.Error(), "guaranteed tool count") {
+		t.Errorf("error should explain the guaranteed-count constraint, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "max_tools") {
+		t.Errorf("error should name max_tools, got: %v", err)
+	}
+	if f.config.SmallLLM.Enabled {
+		t.Error("config was mutated despite validation error")
+	}
+	if mock.rebuildRouterCalls != 0 {
+		t.Errorf("RebuildRouter called %d times, want 0", mock.rebuildRouterCalls)
+	}
+}
+
 func TestUpdateSmallLLMConfig_NegativeThresholds(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
 
@@ -1580,16 +1621,85 @@ func TestUpdateSmallLLMConfig_NegativeThresholds(t *testing.T) {
 	}
 }
 
+func TestUpdateSmallLLMConfig_InvalidContextRanges(t *testing.T) {
+	// Each case mutates one knob of an otherwise-valid enabled context
+	// variant and expects rejection.
+	cases := []struct {
+		name   string
+		mutate func(*SmallLLMConfigResponse)
+	}{
+		{
+			name:   "keep_last below 2 rejected",
+			mutate: func(c *SmallLLMConfigResponse) { c.Context.Compaction.KeepLast = 1 },
+		},
+		{
+			name:   "trigger_percent 100 rejected",
+			mutate: func(c *SmallLLMConfigResponse) { c.Context.Compaction.TriggerPercent = 100 },
+		},
+		{
+			name:   "trigger_percent zero rejected",
+			mutate: func(c *SmallLLMConfigResponse) { c.Context.Compaction.TriggerPercent = 0 },
+		},
+		{
+			name:   "block_size below 2 rejected",
+			mutate: func(c *SmallLLMConfigResponse) { c.Context.Compaction.BlockSize = 1 },
+		},
+		{
+			name:   "tool_output_keep_last_n zero rejected",
+			mutate: func(c *SmallLLMConfigResponse) { c.Context.ToolOutputKeepLastN = 0 },
+		},
+		{
+			name:   "output_token_reserve zero rejected",
+			mutate: func(c *SmallLLMConfigResponse) { c.Context.OutputTokenReserve = 0 },
+		},
+		{
+			name:   "negative keep_last rejected",
+			mutate: func(c *SmallLLMConfigResponse) { c.Context.Compaction.KeepLast = -3 },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, mock, _ := newTestAPI(t)
+
+			cfg := validSmallLLMConfig()
+			tc.mutate(&cfg)
+
+			if err := f.UpdateSmallLLMConfig(cfg); err == nil {
+				t.Fatal("expected validation error")
+			}
+			if f.config.SmallLLM.Enabled {
+				t.Error("config was mutated despite validation error")
+			}
+			if mock.rebuildRouterCalls != 0 {
+				t.Errorf("RebuildRouter called %d times, want 0", mock.rebuildRouterCalls)
+			}
+		})
+	}
+}
+
+func TestUpdateSmallLLMConfig_DisabledContextAllowsZeroValues(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	// Variant off → zero values are accepted (they mean "do not override").
+	cfg := validSmallLLMConfig()
+	cfg.Context = SmallLLMContextResp{}
+
+	if err := f.UpdateSmallLLMConfig(cfg); err != nil {
+		t.Fatalf("disabled context variant with zero values must be accepted, got: %v", err)
+	}
+}
+
 func TestUpdateSmallLLMConfig_InvalidSampling(t *testing.T) {
 	f, _, _ := newTestAPI(t)
 
-	t.Run("non-positive temperature rejected", func(t *testing.T) {
-		// Temperature 0 is the YAML zero-value / ApplyDefaults sentinel; it
-		// must be rejected so it is not silently clobbered to 0.1 on reload.
+	t.Run("negative temperature rejected, zero inherits", func(t *testing.T) {
+		// Temperature 0 is the "inherit the vendor preset" sentinel: it must
+		// be accepted so enabling the variant without explicit values keeps
+		// vendor presets intact. Only explicitly negative values are invalid.
 		cfg := validSmallLLMConfig()
 		cfg.Sampling.Temperature = 0
-		if err := f.UpdateSmallLLMConfig(cfg); err == nil {
-			t.Fatal("expected error for zero temperature")
+		if err := f.UpdateSmallLLMConfig(cfg); err != nil {
+			t.Fatalf("zero temperature means inherit and must be accepted, got: %v", err)
 		}
 		cfg = validSmallLLMConfig()
 		cfg.Sampling.Temperature = -0.5
@@ -1602,6 +1712,40 @@ func TestUpdateSmallLLMConfig_InvalidSampling(t *testing.T) {
 		cfg.Sampling.TopP = 1.5
 		if err := f.UpdateSmallLLMConfig(cfg); err == nil {
 			t.Fatal("expected error for top_p > 1")
+		}
+		cfg = validSmallLLMConfig()
+		cfg.Sampling.TopP = -0.1
+		if err := f.UpdateSmallLLMConfig(cfg); err == nil {
+			t.Fatal("expected error for negative top_p")
+		}
+	})
+	t.Run("top_k out of range", func(t *testing.T) {
+		cfg := validSmallLLMConfig()
+		cfg.Sampling.TopK = -3
+		if err := f.UpdateSmallLLMConfig(cfg); err == nil {
+			t.Fatal("expected error for negative top_k")
+		}
+		cfg = validSmallLLMConfig()
+		cfg.Sampling.TopK = 0 // zero means inherit, valid
+		if err := f.UpdateSmallLLMConfig(cfg); err != nil {
+			t.Fatalf("zero top_k means inherit and must be accepted, got: %v", err)
+		}
+	})
+	t.Run("repetition_penalty out of range", func(t *testing.T) {
+		cfg := validSmallLLMConfig()
+		cfg.Sampling.RepetitionPenalty = 0.5
+		if err := f.UpdateSmallLLMConfig(cfg); err == nil {
+			t.Fatal("expected error for repetition_penalty < 1")
+		}
+		cfg = validSmallLLMConfig()
+		cfg.Sampling.RepetitionPenalty = 2.5
+		if err := f.UpdateSmallLLMConfig(cfg); err == nil {
+			t.Fatal("expected error for repetition_penalty > 2")
+		}
+		cfg = validSmallLLMConfig()
+		cfg.Sampling.RepetitionPenalty = 0 // zero means inherit, valid
+		if err := f.UpdateSmallLLMConfig(cfg); err != nil {
+			t.Fatalf("zero repetition_penalty means inherit and must be accepted, got: %v", err)
 		}
 	})
 	t.Run("invalid reasoning effort", func(t *testing.T) {
@@ -1654,10 +1798,12 @@ func TestSmallLLMConfig_RoundTrip_FullProfileLossless(t *testing.T) {
 			ReasoningScaffold: true,
 		},
 		Sampling: SmallLLMSamplingResp{
-			Enabled:         true,
-			Temperature:     0.15,
-			TopP:            0.85,
-			ReasoningEffort: "low",
+			Enabled:           true,
+			Temperature:       0.15,
+			TopP:              0.85,
+			TopK:              40,
+			RepetitionPenalty: 1.15,
+			ReasoningEffort:   "low",
 		},
 		LoopHardening: SmallLLMLoopHardeningResp{
 			Enabled:                      true,
@@ -1666,6 +1812,16 @@ func TestSmallLLMConfig_RoundTrip_FullProfileLossless(t *testing.T) {
 			FruitlessNudgeThreshold:      4,
 			FruitlessAbortThreshold:      6,
 			SameToolRepeatNudgeThreshold: 5,
+		},
+		Context: SmallLLMContextResp{
+			Enabled: true,
+			Compaction: SmallLLMCompactionResp{
+				KeepLast:       6,
+				BlockSize:      5,
+				TriggerPercent: 80,
+			},
+			ToolOutputKeepLastN: 2,
+			OutputTokenReserve:  8192,
 		},
 	}
 
@@ -1738,6 +1894,12 @@ func TestSmallLLMConfig_RoundTrip_FullProfileLossless(t *testing.T) {
 	if got.Sampling.TopP != want.Sampling.TopP {
 		t.Errorf("Sampling.TopP = %v, want %v", got.Sampling.TopP, want.Sampling.TopP)
 	}
+	if got.Sampling.TopK != want.Sampling.TopK {
+		t.Errorf("Sampling.TopK = %d, want %d", got.Sampling.TopK, want.Sampling.TopK)
+	}
+	if got.Sampling.RepetitionPenalty != want.Sampling.RepetitionPenalty {
+		t.Errorf("Sampling.RepetitionPenalty = %v, want %v", got.Sampling.RepetitionPenalty, want.Sampling.RepetitionPenalty)
+	}
 	if got.Sampling.ReasoningEffort != want.Sampling.ReasoningEffort {
 		t.Errorf("Sampling.ReasoningEffort = %q, want %q", got.Sampling.ReasoningEffort, want.Sampling.ReasoningEffort)
 	}
@@ -1760,6 +1922,26 @@ func TestSmallLLMConfig_RoundTrip_FullProfileLossless(t *testing.T) {
 	}
 	if got.LoopHardening.SameToolRepeatNudgeThreshold != want.LoopHardening.SameToolRepeatNudgeThreshold {
 		t.Errorf("LoopHardening.SameToolRepeatNudgeThreshold = %d, want %d", got.LoopHardening.SameToolRepeatNudgeThreshold, want.LoopHardening.SameToolRepeatNudgeThreshold)
+	}
+
+	// Context management.
+	if got.Context.Enabled != want.Context.Enabled {
+		t.Errorf("Context.Enabled = %v, want %v", got.Context.Enabled, want.Context.Enabled)
+	}
+	if got.Context.Compaction.KeepLast != want.Context.Compaction.KeepLast {
+		t.Errorf("Context.Compaction.KeepLast = %d, want %d", got.Context.Compaction.KeepLast, want.Context.Compaction.KeepLast)
+	}
+	if got.Context.Compaction.BlockSize != want.Context.Compaction.BlockSize {
+		t.Errorf("Context.Compaction.BlockSize = %d, want %d", got.Context.Compaction.BlockSize, want.Context.Compaction.BlockSize)
+	}
+	if got.Context.Compaction.TriggerPercent != want.Context.Compaction.TriggerPercent {
+		t.Errorf("Context.Compaction.TriggerPercent = %d, want %d", got.Context.Compaction.TriggerPercent, want.Context.Compaction.TriggerPercent)
+	}
+	if got.Context.ToolOutputKeepLastN != want.Context.ToolOutputKeepLastN {
+		t.Errorf("Context.ToolOutputKeepLastN = %d, want %d", got.Context.ToolOutputKeepLastN, want.Context.ToolOutputKeepLastN)
+	}
+	if got.Context.OutputTokenReserve != want.Context.OutputTokenReserve {
+		t.Errorf("Context.OutputTokenReserve = %d, want %d", got.Context.OutputTokenReserve, want.Context.OutputTokenReserve)
 	}
 }
 

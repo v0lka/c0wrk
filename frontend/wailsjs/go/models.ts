@@ -907,6 +907,58 @@ export namespace backend {
 	        this.description = source["description"];
 	    }
 	}
+	export class SmallLLMCompactionResp {
+	    keep_last: number;
+	    block_size: number;
+	    trigger_percent: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SmallLLMCompactionResp(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.keep_last = source["keep_last"];
+	        this.block_size = source["block_size"];
+	        this.trigger_percent = source["trigger_percent"];
+	    }
+	}
+	export class SmallLLMContextResp {
+	    enabled: boolean;
+	    compaction: SmallLLMCompactionResp;
+	    tool_output_keep_last_n: number;
+	    output_token_reserve: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SmallLLMContextResp(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.compaction = this.convertValues(source["compaction"], SmallLLMCompactionResp);
+	        this.tool_output_keep_last_n = source["tool_output_keep_last_n"];
+	        this.output_token_reserve = source["output_token_reserve"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class SmallLLMLoopHardeningResp {
 	    enabled: boolean;
 	    repeat_nudge_threshold: number;
@@ -933,6 +985,8 @@ export namespace backend {
 	    enabled: boolean;
 	    temperature: number;
 	    top_p: number;
+	    top_k: number;
+	    repetition_penalty: number;
 	    reasoning_effort: string;
 	
 	    static createFrom(source: any = {}) {
@@ -944,6 +998,8 @@ export namespace backend {
 	        this.enabled = source["enabled"];
 	        this.temperature = source["temperature"];
 	        this.top_p = source["top_p"];
+	        this.top_k = source["top_k"];
+	        this.repetition_penalty = source["repetition_penalty"];
 	        this.reasoning_effort = source["reasoning_effort"];
 	    }
 	}
@@ -967,6 +1023,8 @@ export namespace backend {
 	    enabled: boolean;
 	    always_present: string[];
 	    max_tools: number;
+	    compact_descriptions: boolean;
+	    protected_tools: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new SmallLLMEssentialToolsResp(source);
@@ -977,6 +1035,8 @@ export namespace backend {
 	        this.enabled = source["enabled"];
 	        this.always_present = source["always_present"];
 	        this.max_tools = source["max_tools"];
+	        this.compact_descriptions = source["compact_descriptions"];
+	        this.protected_tools = source["protected_tools"];
 	    }
 	}
 	export class SmallLLMConfigResponse {
@@ -985,6 +1045,7 @@ export namespace backend {
 	    system_prompt: SmallLLMSystemPromptResp;
 	    sampling: SmallLLMSamplingResp;
 	    loop_hardening: SmallLLMLoopHardeningResp;
+	    context: SmallLLMContextResp;
 	
 	    static createFrom(source: any = {}) {
 	        return new SmallLLMConfigResponse(source);
@@ -997,6 +1058,7 @@ export namespace backend {
 	        this.system_prompt = this.convertValues(source["system_prompt"], SmallLLMSystemPromptResp);
 	        this.sampling = this.convertValues(source["sampling"], SmallLLMSamplingResp);
 	        this.loop_hardening = this.convertValues(source["loop_hardening"], SmallLLMLoopHardeningResp);
+	        this.context = this.convertValues(source["context"], SmallLLMContextResp);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1017,6 +1079,7 @@ export namespace backend {
 		    return a;
 		}
 	}
+	
 	
 	
 	

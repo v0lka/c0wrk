@@ -57,6 +57,7 @@ type Session struct {
 	WorkspacePath           string // workspace directory (from project)
 	TempDir                 string // session-specific temp directory
 	orchestrator            *core.Orchestrator
+	emitter                 *EventEmitter      // session emitter; agent quality metrics are read from it on task finish
 	logFile                 *os.File           // session log file handle, closed on deletion
 	dumpFile                *os.File           // LLM dump file handle (DEBUG mode only), closed on deletion
 	cancel                  context.CancelFunc // cancel for current task
@@ -146,6 +147,7 @@ type Manager struct {
 	fileTracker         *FileCoherenceTracker
 	converter           *markitdown.Converter // lazy-init markitdown converter for AttachFiles
 	converterMu         sync.Mutex            // guards lazy converter initialization
+	smallLLM            SmallLLMMetaInfo      // Small-LLM profile annotating agent_metrics events (guarded by mu)
 
 	// ignoreCache caches per-root ignore.Resolver instances so the directory
 	// tree is walked only once per root (not on every SendMessage). The key
@@ -327,6 +329,24 @@ func (m *Manager) SetMaxSummaryLen(n int) {
 	m.maxSummaryLen = n
 }
 
+// SetSmallLLMProfile records the Small-LLM profile sessions run under, so
+// "agent_metrics" events can be grouped by the active optimization variants.
+// Metrics collection itself is profile-independent; the profile only
+// annotates the payload. Applies to emitters created after the call.
+func (m *Manager) SetSmallLLMProfile(cfg config.SmallLLMConfig) {
+	info := smallLLMProfileFromConfig(cfg)
+	m.mu.Lock()
+	m.smallLLM = info
+	m.mu.Unlock()
+}
+
+// smallLLMProfile returns the recorded Small-LLM profile snapshot.
+func (m *Manager) smallLLMProfile() SmallLLMMetaInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.smallLLM
+}
+
 // SetServiceLLMTimeout sets the timeout for one-shot "service" LLM requests
 // performed by the manager itself (currently session title generation). A
 // value <= 0 leaves the default (2 min) in place.
@@ -482,6 +502,9 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	emitter.SetToolCallIDSink(func(tool, toolCallID string) {
 		m.lastToolCallIDs.Store(id, toolCallIDEntry{id: toolCallID, tool: tool})
 	})
+	// Annotate agent metrics with the Small-LLM profile the session runs under.
+	smallLLM := m.smallLLMProfile()
+	emitter.SetSmallLLMProfile(smallLLM.Enabled, smallLLM.Variants)
 
 	// Snapshot mutable fields under read lock.
 	m.mu.RLock()
@@ -638,6 +661,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		WorkspacePath:       workspacePath,
 		TempDir:             tempDir,
 		orchestrator:        orchestrator,
+		emitter:             emitter,
 		logFile:             logFile,
 		dumpFile:            dumpFile,
 		active:              false,
@@ -769,6 +793,9 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	emitter.SetToolCallIDSink(func(tool, toolCallID string) {
 		m.lastToolCallIDs.Store(id, toolCallIDEntry{id: toolCallID, tool: tool})
 	})
+	// Annotate agent metrics with the Small-LLM profile the session runs under.
+	smallLLM := m.smallLLMProfile()
+	emitter.SetSmallLLMProfile(smallLLM.Enabled, smallLLM.Variants)
 
 	// Snapshot mutable fields under read lock
 	m.mu.RLock()
@@ -890,6 +917,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		WorkspacePath: workspacePath,
 		TempDir:       tempDir,
 		orchestrator:  orchestrator,
+		emitter:       emitter,
 		logFile:       logFile,
 		dumpFile:      dumpFile,
 		active:        false,

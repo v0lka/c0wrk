@@ -248,3 +248,45 @@ type SkillsActivatedData struct {
 type ToolsAssignedData struct {
 	Tools []string `json:"tools"`
 }
+
+// AgentMetricsData is the typed Data payload for "agent_metrics" events,
+// emitted once per task finish or abort. It aggregates executor quality
+// counters collected over the whole session so the effect of Small-LLM (and
+// any other) profiles can be measured against data instead of impressions.
+type AgentMetricsData struct {
+	// Finish describes the terminal state the task ended in:
+	// "full", "partial", "failed", "aborted" (task_complete path),
+	// "cancelled" (task_cancelled) or "failed" (task_failed_resumable).
+	Finish string `json:"finish"`
+	// ParseErrors counts malformed model outputs that triggered a corrective
+	// nudge or an abort (tool-input parse errors and tool-call syntax leaks).
+	ParseErrors int `json:"parse_errors"`
+	// Nudges counts corrective nudges emitted by the executor loop detectors,
+	// broken down by detector kind.
+	Nudges AgentMetricsCounters `json:"nudges"`
+	// Aborts counts hard loop-breaker aborts, broken down by detector kind.
+	Aborts AgentMetricsCounters `json:"aborts"`
+	// Steps counts executor steps observed in the session (conductor plus
+	// delegated subagents sharing the session metrics).
+	Steps int `json:"steps"`
+	// OutputTokens is the session-wide accumulated output token usage.
+	OutputTokens int              `json:"output_tokens"`
+	SmallLLM     SmallLLMMetaInfo `json:"small_llm"`
+}
+
+// AgentMetricsCounters breaks nudges/aborts down by executor loop detector:
+// repeat — identical tool calls, same_tool — same tool with similar results,
+// fruitless — no-progress detector, parse — malformed output detectors.
+type AgentMetricsCounters struct {
+	Repeat    int `json:"repeat"`
+	SameTool  int `json:"same_tool"`
+	Fruitless int `json:"fruitless"`
+	Parse     int `json:"parse"`
+}
+
+// SmallLLMMetaInfo snapshots the Small-LLM profile state the session ran
+// under, so metrics can be grouped by active optimization variants.
+type SmallLLMMetaInfo struct {
+	Enabled  bool     `json:"enabled"`
+	Variants []string `json:"variants"`
+}

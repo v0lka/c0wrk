@@ -228,8 +228,8 @@ llm:
 	if cfg.Executor.MaxRetries != 2 {
 		t.Errorf("Expected default max_retries 2, got %d", cfg.Executor.MaxRetries)
 	}
-	if cfg.Executor.OutputTokenReserve != 4096 {
-		t.Errorf("Expected default output_token_reserve 4096, got %d", cfg.Executor.OutputTokenReserve)
+	if cfg.Executor.OutputTokenReserve != 8192 {
+		t.Errorf("Expected default output_token_reserve 8192, got %d", cfg.Executor.OutputTokenReserve)
 	}
 
 	// Check Compaction defaults
@@ -734,12 +734,16 @@ func TestGetAllProviderConfigs(t *testing.T) {
 		Anthropic: AnthropicConfig{
 			APIKey: "anthropic-key",
 			Models: []string{"claude-3-haiku", "claude-opus"},
+
+			OutputTokenReserve: 12288,
 		},
 		OpenAICompatible: map[string]OpenAICompatibleConfig{
 			"deepseek": {
 				APIKey:  "deepseek-key",
 				BaseURL: "https://api.deepseek.com",
 				Models:  []string{"deepseek-chat"},
+
+				OutputTokenReserve: 16384,
 			},
 			"openrouter": {
 				APIKey:  "openrouter-key",
@@ -771,6 +775,9 @@ func TestGetAllProviderConfigs(t *testing.T) {
 	if len(providers[0].Models) != 2 {
 		t.Errorf("Expected 2 anthropic models, got %d", len(providers[0].Models))
 	}
+	if providers[0].OutputTokenReserve != 12288 {
+		t.Errorf("anthropic OutputTokenReserve = %d, want 12288", providers[0].OutputTokenReserve)
+	}
 
 	// Check second provider (chatgpt — sorted after anthropic)
 	if providers[1].Name != "chatgpt" {
@@ -789,6 +796,9 @@ func TestGetAllProviderConfigs(t *testing.T) {
 	}
 	if providers[2].BaseURL != "https://api.deepseek.com" {
 		t.Errorf("Third provider BaseURL = %q, want 'https://api.deepseek.com'", providers[2].BaseURL)
+	}
+	if providers[2].OutputTokenReserve != 16384 {
+		t.Errorf("deepseek OutputTokenReserve = %d, want 16384", providers[2].OutputTokenReserve)
 	}
 
 	// Check fourth provider (openrouter — sorted after deepseek)

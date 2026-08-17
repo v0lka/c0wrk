@@ -54,6 +54,10 @@ type BuilderSmallLLMConfig struct {
 	// small model that repeats itself or makes no progress is caught sooner.
 	LoopHardening BuilderLoopHardening
 
+	// Context applies aggressive context management: tighter compaction,
+	// stricter tool-output pruning, and a larger output token reserve.
+	Context BuilderSmallLLMContext
+
 	// SystemPrompt applies prompt-simplification variants (currently the Lite
 	// core-directive swap) to shrink the system prompt injected for a small
 	// model. When Lite is active, buildSystemPromptWith trades the verbose
@@ -86,21 +90,33 @@ type BuilderSmallLLMSystemPromptConfig struct {
 	ReasoningScaffold bool
 }
 
-// BuilderSmallLLMSampling holds the sampling-variant overrides.
+// BuilderSmallLLMSampling holds the sampling-variant overrides. Every
+// parameter uses zero as the "not set" sentinel: an unset field inherits the
+// per-family vendor preset (prompt.DefaultSampling) instead of clobbering it,
+// so enabling the variant with no explicit values is a behavioral no-op.
 type BuilderSmallLLMSampling struct {
 	// Enabled gates this variant (in addition to the master SmallLLM.Enabled).
 	Enabled bool
 
 	// Temperature sets generation temperature (lower = more deterministic).
-	// Applied via the LLM router's SamplingFunc when enabled.
+	// 0 (unset) inherits the vendor preset; positive values override it via
+	// the LLM router's SamplingFunc when the variant is enabled.
 	Temperature float64
 
-	// TopP sets nucleus-sampling probability mass. NOTE: the sp4rk
-	// llm.ChatRequest does not expose a TopP field and the router never
-	// consumes TopP from the SamplingFunc, so this value is currently carried
-	// for forward compatibility and logged but not applied to the request
-	// without a sp4rk change. Temperature is the active lever.
+	// TopP sets nucleus-sampling probability mass. 0 (unset) inherits the
+	// vendor preset; values in (0, 1] override it via the router's
+	// SamplingFunc when the variant is enabled.
 	TopP float64
+
+	// TopK sets top-k sampling. 0 (unset) inherits the vendor preset; values
+	// >= 1 override it via the router's SamplingFunc when the variant is
+	// enabled.
+	TopK int
+
+	// RepetitionPenalty penalizes repeated tokens. 0 (unset) inherits the
+	// vendor preset; values in [1, 2] override it via the router's
+	// SamplingFunc when the variant is enabled.
+	RepetitionPenalty float64
 
 	// ReasoningEffort controls reasoning depth: "" (inherit) | "off" | "low" |
 	// "medium". When non-empty it seeds the builder-level default; per-request
@@ -121,6 +137,36 @@ type BuilderLoopHardening struct {
 	SameToolRepeatNudgeThreshold int
 }
 
+// BuilderSmallLLMCompaction holds the compaction-tightening overrides. Zero
+// values mean "do not override" — the executor baseline is kept for that knob.
+type BuilderSmallLLMCompaction struct {
+	// KeepLast overrides the executor sliding-window keep-last count.
+	KeepLast int
+
+	// BlockSize overrides the summarization block size.
+	BlockSize int
+
+	// TriggerPercent overrides the predictive compaction trigger percentage.
+	TriggerPercent int
+}
+
+// BuilderSmallLLMContext holds the aggressive context-management overrides:
+// tighter compaction, stricter tool-output pruning, larger output token
+// reserve. Applied via applyContextManagement.
+type BuilderSmallLLMContext struct {
+	// Enabled gates this variant (in addition to the master SmallLLM.Enabled).
+	Enabled bool
+
+	// Compaction overrides the executor compaction knobs.
+	Compaction BuilderSmallLLMCompaction
+
+	// ToolOutputKeepLastN overrides the executor tool-output pruning depth.
+	ToolOutputKeepLastN int
+
+	// OutputTokenReserve overrides the token budget reserved for output.
+	OutputTokenReserve int
+}
+
 // BuilderSmallLLMEssentialConfig holds the always-present-tool-set narrowing
 // settings for the essential-tools variant.
 type BuilderSmallLLMEssentialConfig struct {
@@ -128,12 +174,19 @@ type BuilderSmallLLMEssentialConfig struct {
 	Enabled bool
 
 	// AlwaysPresent is the allow-list of tool names always exposed when this
-	// variant is active. finish and all MCP tools are always preserved
-	// regardless.
+	// variant is active. Protected orchestration tools and all MCP tools are
+	// always preserved regardless, and the guaranteed set is never trimmed.
 	AlwaysPresent []string
 
-	// MaxTools caps the total number of tools exposed after narrowing.
+	// MaxTools caps the router-matched slots: at most
+	// maxTools − len(guaranteed) matched tools are kept, where guaranteed =
+	// always-present ∪ protected ∪ MCP. The guaranteed set itself is never
+	// trimmed (validation rejects configs where it alone exceeds MaxTools).
 	MaxTools int
+
+	// CompactDescriptions swaps full builtin tool descriptions for one-line
+	// compact variants (small-LLM essential-tools extension).
+	CompactDescriptions bool
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +210,12 @@ type BuilderProviderConfig struct {
 	APIKey       string   // raw value (may contain ${ENV_VAR})
 	BaseURL      string   // raw value
 	Models       []string // enabled models for this one provider
+	// OutputTokenReserve overrides the output-token budget for every model of
+	// this provider (0 = inherit the global executor.output_token_reserve).
+	// It is seeded into the model-registry overrides as ModelMetadata.OutputLimit,
+	// so it drives both the context-window reserve and the executor MaxTokens
+	// ceiling. A per-model llm.models output_limit still wins over it.
+	OutputTokenReserve int
 }
 
 // DefaultProviderName returns the logical name of the provider that owns DefaultModel.
@@ -211,6 +270,17 @@ type BuilderExecutorConfig struct {
 	ToolOutputPruning  BuilderToolOutputPruning
 	HistoryMutation    BuilderHistoryMutation
 	CircuitBreaker     BuilderCircuitBreaker
+	VerifyOnEdit       BuilderVerifyOnEditConfig
+}
+
+// BuilderVerifyOnEditConfig mirrors config.VerifyOnEditConfig: the
+// verify-on-edit settings for mechanical edit verification. Zero value =
+// disabled.
+type BuilderVerifyOnEditConfig struct {
+	Enabled        bool
+	Command        string
+	Timeout        string // Go duration string; empty/invalid falls back to 2m
+	MaxOutputChars int    // 0 falls back to agent.DefaultVerifyOnEditCap
 }
 
 // BuilderHistoryMutation configures regular history mutation (tool result

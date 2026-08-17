@@ -46,6 +46,14 @@ Mode-disabled tools (e.g. `glob`/`ripgrep`/`semantic_search` in No-Project/CHAT 
 
 When the Small-LLM profile's `loop_hardening` variant is active (`small_llm.enabled && small_llm.loop_hardening.enabled` — see [../small-llm.md](../small-llm.md)), `core/builder.go` `applyLoopHardening` overrides the executor's circuit-breaker `CircuitBreakerConfig` with tighter-or-equal thresholds (`repeat_nudge_threshold`, `parse_error_abort_threshold`, `fruitless_nudge_threshold`, `fruitless_abort_threshold`, `same_tool_repeat_nudge_threshold` — four strictly tighter, `parse_error_abort_threshold` equal to the baseline) so a small model that repeats itself or stalls is nudged/aborted sooner. Only the thresholds present in the profile are overridden; all others keep their baseline. The override is applied once at builder construction and is inert when the profile is off.
 
+### Verify-on-Edit Mechanical Verification
+
+`executor.verify_on_edit` (see `config.example.yaml`) enables a post-write verification hook (engine primitive: sp4rk `agent/verify_on_edit.go`): after every **successful** `write_file` / `edit_file` in a CODE task, the executor runs the configured command (e.g. `go test ./...`, `npm test`) and injects its truncated output back into the agent context as a system observation — "edit → verify → result" instead of self-attested completion.
+
+- The command is ALWAYS taken from config, never from model output (hard security constraint — the model cannot choose what gets executed).
+- `ExecuteUnattended` keeps the hard security gates intact; the hook is purely observational.
+- CHAT mode and the goal loop are excluded; the hook only applies to the executor's edit path.
+
 ## Engine Behavior (canonical in sp4rk)
 
 The following are sp4rk engine primitives, documented in [the sp4rk executor spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/executor.md) — do not duplicate here:

@@ -1,5 +1,14 @@
 ## Worked Examples — Correct ReAct Cycles
 
+## Edit → Verify Cycle
+
+After a successful `edit_file` / `write_file`, the system may automatically run
+the user-configured verification command (tests/linter) and return its output as
+a `[verify_on_edit]` system observation. Treat that observation as the ground
+truth of your change: if it reports failures or a verification error, fix them
+BEFORE declaring the task complete. A finish that contradicts a failing
+verification observation is wrong.
+
 Study these cycles. They show the EXACT shape your turns must take: a brief
 Thought (plain text), then a REAL tool call emitted through the function-calling
 mechanism — never tool syntax typed into your text content. Each `Action:` line
@@ -48,7 +57,9 @@ Action: `read_file` with path `frontend/src/app.tsx`.
 Observation: file contents returned.
 
 Do NOT abandon the task or conclude failure after one error. Read the diagnostic,
-correct the specific argument, and retry the same operation.
+correct the specific argument, and retry the same operation. A retry with a
+corrected argument is legitimate and is never treated as a loop; only repeating
+the exact same failing call unchanged gets intercepted.
 
 ### Example 4 — Call `finish` when done
 

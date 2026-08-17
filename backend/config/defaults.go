@@ -86,7 +86,12 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Executor.MaxRetries = 2
 	}
 	if cfg.Executor.OutputTokenReserve == 0 {
-		cfg.Executor.OutputTokenReserve = 4096
+		// 8192: modern coding/reasoning models regularly emit multi-thousand-
+		// token tool-call replies; a smaller reserve risks truncated responses
+		// and premature context-window overflow aborts. Only affects the
+		// context-window validation budget (input side), so the cost on large
+		// windows is negligible.
+		cfg.Executor.OutputTokenReserve = 8192
 	}
 
 	// Compaction defaults
@@ -383,14 +388,19 @@ func ApplyDefaults(cfg *Config) {
 		cfg.SmallLLM.EssentialTools.AlwaysPresent = defaultSmallLLMAlwaysPresent
 	}
 	if cfg.SmallLLM.EssentialTools.MaxTools == 0 {
-		cfg.SmallLLM.EssentialTools.MaxTools = 12
+		// Slot budget for router-matched tools on top of the never-trimmed
+		// guaranteed set: always_present (12) ∪ protected (5, 4 overlap) =
+		// 13 unique tools, MCP joins at runtime. 16 leaves 3 free slots with
+		// the default always-present list; validateSmallLLMConfig rejects
+		// configs where the guaranteed set alone exceeds the budget.
+		cfg.SmallLLM.EssentialTools.MaxTools = 16
 	}
-	if cfg.SmallLLM.Sampling.Temperature == 0 {
-		cfg.SmallLLM.Sampling.Temperature = 0.1
-	}
-	if cfg.SmallLLM.Sampling.TopP == 0 {
-		cfg.SmallLLM.Sampling.TopP = 0.9
-	}
+	// Sampling parameters are deliberately NOT seeded: zero means "inherit
+	// the vendor preset" (see SmallLLMSamplingConfig). Seeding a constant
+	// temperature here previously forced 0.1/top_p 0.9 onto every family the
+	// moment the sampling variant was enabled, clobbering vendor-tuned
+	// presets (the 27-30B regression). Users who want an override set an
+	// explicit value in YAML or the UI.
 	// ReasoningEffort defaults to "" (inherit the model's default). It is left
 	// unset rather than forced so an explicit "" in YAML is preserved.
 
@@ -410,6 +420,27 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.SmallLLM.LoopHardening.SameToolRepeatNudgeThreshold == 0 {
 		cfg.SmallLLM.LoopHardening.SameToolRepeatNudgeThreshold = 4
+	}
+
+	// Small-LLM context-management variant defaults. Like the other variants,
+	// these are seeded unconditionally (zero → variant default) so the values
+	// are visible/editable; the profile itself stays a no-op until both the
+	// master toggle and the variant toggle are enabled. Zero continues to mean
+	// "do not override" at apply time.
+	if cfg.SmallLLM.Context.Compaction.KeepLast == 0 {
+		cfg.SmallLLM.Context.Compaction.KeepLast = 6
+	}
+	if cfg.SmallLLM.Context.Compaction.BlockSize == 0 {
+		cfg.SmallLLM.Context.Compaction.BlockSize = 5
+	}
+	if cfg.SmallLLM.Context.Compaction.TriggerPercent == 0 {
+		cfg.SmallLLM.Context.Compaction.TriggerPercent = 80
+	}
+	if cfg.SmallLLM.Context.ToolOutputKeepLastN == 0 {
+		cfg.SmallLLM.Context.ToolOutputKeepLastN = 2
+	}
+	if cfg.SmallLLM.Context.OutputTokenReserve == 0 {
+		cfg.SmallLLM.Context.OutputTokenReserve = 8192
 	}
 
 	// Self-update defaults. Enabled is the master switch and defaults to true

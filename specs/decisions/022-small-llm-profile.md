@@ -12,12 +12,13 @@ There is no reliable signal to auto-detect "small" from a model name or context 
 
 ## Decision
 
-Introduce a **Small-LLM profile**: a master toggle (`small_llm.enabled`, manual only — no auto-detection) gating four independently sub-toggled variants, each addressing one dimension of small-model overhead:
+Introduce a **Small-LLM profile**: a master toggle (`small_llm.enabled`, manual only — no auto-detection) gating five independently sub-toggled variants, each addressing one dimension of small-model overhead:
 
 1. **Essential Tools** — narrow the visible tool set via semantic router matching + a user-pinned always-present list + a protected orchestration base (finish, fact memory, ask_user) + every MCP tool, with an optional `max_tools` budget. Reduces per-prompt schema overhead.
 2. **System Prompt Simplification** — a "Lite" core-directive swap (compact `OrchestratorSystemLite`), with optional reasoning-scaffold and few-shot blocks appended (both require Lite). The injection-defense section is never touched.
-3. **Sampling Overrides** — a constant low temperature (replacing per-family defaults) plus an optional reasoning-effort seed. TopP is carried but not applied pending sp4rk plumbing.
+3. **Sampling Overrides** — per-parameter overrides (temperature, top_p, top_k, repetition_penalty) layered on top of the per-family vendor preset, plus an optional reasoning-effort seed. Unset (zero) parameters inherit the vendor preset; the original constant-temperature replacement (seeded to 0.1) was reverted after it clobbered vendor-tuned presets (the 27-30B regression).
 4. **Loop Hardening** — tighter circuit-breaker thresholds so repetition/no-progress is caught sooner.
+5. **Context Management** — tighter compaction (keep_last/block_size/trigger), harder tool-output pruning, and a larger output token reserve, applied identically at every executor-config materialization site.
 
 Design rules:
 

@@ -46,6 +46,7 @@
 | Multi-source AGENTS.md threat model     | [decisions/020-multi-source-agents-md-threat-model.md](decisions/020-multi-source-agents-md-threat-model.md) |
 | Subagent Profiles (`.agents/agents`, `#agent-name` mentions) | [decisions/021-subagents.md](decisions/021-subagents.md) |
 | Tool-capability group policies (`security.groups`, group tool budgets) | [decisions/024-group-policies.md](decisions/024-group-policies.md), [architecture/security-model.md](architecture/security-model.md) |
+| Dual-repo dev flow (unpublished sp4rk APIs, parent `go.work`, pin-advance release step) | [decisions/025-dual-repo-dev-flow.md](decisions/025-dual-repo-dev-flow.md) |
 
 ## Domain Dependency Graph
 
@@ -105,7 +106,8 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [llm-providers.md](domains/llm-providers.md) - Thin c0wrk wiring note (provider config → core/builder → sp4rk Router)
 - [session-lifecycle.md](domains/session-lifecycle.md) - Session and task lifecycle
 - [goal-mode.md](domains/goal-mode.md) - Goal mode: multi-turn agent-driven loop over a user-approved success condition (derivation → approval → self-eval loop, budgets, anti-spin, pause/resume)
-- [small-llm.md](domains/small-llm.md) - Small-LLM profile: master-toggle + four variants (essential-tools narrowing, system-prompt Lite swap, sampling override, loop hardening) for tuning c0wrk to small/local models
+- [small-llm.md](domains/small-llm.md) - Small-LLM profile: master-toggle + five variants (essential-tools narrowing, system-prompt Lite swap, sampling override, loop hardening, context management) for tuning c0wrk to small/local models
+- [verify-on-edit.md](domains/verify-on-edit.md) - Verify on edit: user-configured test/linter command runs after successful file edits, output injected as a system observation (edit → verify → result; config-only command, all hard security gates intact)
 - [tool-manager.md](domains/tool-manager.md) - External binary dependency manager (rg/uv/markitdown): pinned-version reconciliation, SHA256 verification, no-auto-update supply-chain guarantee
 - [workspace.md](domains/workspace.md) - File tree, vector index, workspace watcher
 - [review.md](domains/review.md) - Code review feature (review sessions, diff parsing, hunk/file/general comments, clone-on-fork)
@@ -148,6 +150,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [019-goal-mode.md](decisions/019-goal-mode.md) - Goal mode: self-agent + evidence-mandate, derive-then-confirm UX, persist + pause/resume, anti-spin auto-pause
 - [020-multi-source-agents-md-threat-model.md](decisions/020-multi-source-agents-md-threat-model.md) - Threat model for global/c0wrk/project AGENTS.md sources (all untrusted advisory; tool-policy pipeline is the hard boundary)
 - [021-subagents.md](decisions/021-subagents.md) - Subagent Profiles: `.agents/agents` persona/budget profiles applied at delegation time, `#agent-name` mention routing (parallels skills)
-- [022-small-llm-profile.md](decisions/022-small-llm-profile.md) - Small-LLM profile: manual master toggle + four independently sub-toggled variants (essential tools, system-prompt Lite, sampling, loop hardening) for tuning c0wrk to small/local models
+- [022-small-llm-profile.md](decisions/022-small-llm-profile.md) - Small-LLM profile: manual master toggle + five independently sub-toggled variants (essential tools, system-prompt Lite, sampling, loop hardening, context management) for tuning c0wrk to small/local models
 - [023-auto-update.md](decisions/023-auto-update.md) - Self-update: single-binary re-exec, SHA256-only fail-closed verification, unsigned GitHub-Releases trust anchor, `.old` rollback; threat model for the supply-chain delivery vector (ASI04)
 - [024-group-policies.md](decisions/024-group-policies.md) - Tool-capability group policies: 8 declared groups (incl. reserved `system`), `security.groups.<group>.{policy,blacklist?}`, hard/soft judge severities, legacy per-tool schema removed
+- [025-dual-repo-dev-flow.md](decisions/025-dual-repo-dev-flow.md) - Dual-repo dev flow: mid-cycle c0wrk builds via the parent-dir `go.work` while the `go.mod` sp4rk pin lags unpublished APIs; commit-sp4rk-then-repin is the mandatory release step

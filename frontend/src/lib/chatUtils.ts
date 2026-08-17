@@ -1,5 +1,7 @@
 import type { ChatMessageUI, MessageType, DisplayItem, GroupedMessages } from '@/types/messages'
 import type { ChatMessage, PlanGroup, PlanItem } from '@/types/models'
+import type { AgentMetricsData } from '@/types/events'
+import { isAgentMetricsData } from '@/types/events'
 import { reconstructContent, buildHistoryId, collapseThoughts, dedupThoughtVsAnswer, extractMeta } from './chatUtilsHelpers'
 import {
   handlePlanStepStart, handlePlanStepComplete, handleSubAgentLaunch, handleSubAgentComplete,
@@ -83,6 +85,32 @@ export function chatMessageToUI(msg: ChatMessage): ChatMessageUI {
  */
 export function isPersistableHistoryMessage(msg: ChatMessage): boolean {
   return msg.role !== 'event_unknown'
+}
+
+/**
+ * Extract the newest per-run agent quality report from persisted history
+ * rows. The Go persister stores `agent_metrics` events as role-`status`
+ * messages (payload in metadata); the live handler routes the same payload
+ * to `planStore.sessionStats.lastAgentMetrics` — this restores that store
+ * state on reload. Returns undefined when the session has no metrics row.
+ */
+export function lastAgentMetricsFromHistory(messages: ChatMessageUI[]): AgentMetricsData | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const meta = messages[i]!.metadata
+    if (meta !== undefined && isAgentMetricsData(meta)) return meta
+  }
+  return undefined
+}
+
+/**
+ * Predicate for persisted `agent_metrics` rows (role `status`, payload in
+ * metadata). These rows are session store-state, not chat content — the
+ * live `agent_metrics` handler never adds a chat message — so history-load
+ * filters them out of the chat while `lastAgentMetricsFromHistory` turns
+ * the newest one back into the ExecutionPanels stats row.
+ */
+export function isAgentMetricsRow(msg: ChatMessageUI): boolean {
+  return msg.type === 'status' && msg.metadata !== undefined && isAgentMetricsData(msg.metadata)
 }
 
 /** Transform a flat list of ChatMessageUI into a display-ready tree. */

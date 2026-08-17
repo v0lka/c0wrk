@@ -253,8 +253,16 @@ type SmallLLMEssentialSettings struct {
 	// tools (finish, fact memory, ask_user) and all MCP tools are kept
 	// additionally by SelectTools.
 	AlwaysPresent []string
-	// MaxTools caps the total number of tools exposed after selection.
+	// MaxTools caps the router-matched slots: at most
+	// maxTools − len(guaranteed) matched tools are kept, where guaranteed =
+	// always-present ∪ protected ∪ MCP. The guaranteed set itself is never
+	// trimmed (validation rejects configs where it alone exceeds MaxTools).
 	MaxTools int
+
+	// CompactDescriptions swaps full builtin descriptions for one-line
+	// compact variants while the essential-tools variant is active.
+	// Off by default: descriptions stay byte-identical to full form.
+	CompactDescriptions bool
 }
 
 // SmallLLMSystemPromptSettings holds the prompt-simplification variant
@@ -327,6 +335,15 @@ type Orchestrator struct {
 	// lifetime — currently the session registry's live-tracking entry (see
 	// OrchestratorBuilder.registerSessionRegistry). Nil when no hook is set.
 	onCleanup func()
+
+	// verifyOnEdit, when non-nil, is the mechanical edit-verification runner
+	// (executor.verify_on_edit). Propagated into conductor deps for CODE-task
+	// conductor runs and their subagent executors; suppressed in No Project
+	// (CHAT) mode and goal-loop turns. See core/verify_on_edit.go.
+	verifyOnEdit agent.EditVerifyRunner
+	// verifyOnEditMaxOutputChars caps the verification output injected into
+	// context; 0 falls back to agent.DefaultVerifyOnEditCap.
+	verifyOnEditMaxOutputChars int
 
 	// isNoProject is set to true when this orchestrator runs inside the
 	// "No Project" pseudo-project. When true, the routing domain is
@@ -535,6 +552,18 @@ type OrchestratorDeps struct {
 	// the session registry's live-tracking entry (see
 	// registerSessionRegistry). Optional, nil-safe.
 	OnCleanup func()
+
+	// VerifyOnEdit, when non-nil, arms the mechanical edit-verification hook
+	// (executor.verify_on_edit): after every successful write_file/edit_file
+	// the runner executes the user-configured command and the executor injects
+	// its output as a system observation. Built by buildEditVerifyRunner from
+	// config — never from model input. Nil (default) disables the hook
+	// entirely. Inactive in No Project (CHAT) mode and in goal-loop turns.
+	VerifyOnEdit agent.EditVerifyRunner
+
+	// VerifyOnEditMaxOutputChars caps the verification output injected into
+	// context; 0 falls back to agent.DefaultVerifyOnEditCap.
+	VerifyOnEditMaxOutputChars int
 }
 
 // NewOrchestrator creates a new Orchestrator with all components.
@@ -561,32 +590,34 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 	}
 
 	o := &Orchestrator{
-		router:           deps.Router,
-		llm:              deps.LLM,
-		modelSwitcher:    deps.ModelSwitcher,
-		toolRegistry:     deps.ToolRegistry,
-		toolExec:         deps.ToolExec,
-		config:           cfg,
-		contextFactory:   deps.ContextFactory,
-		logger:           deps.Logger,
-		emitter:          emitter,
-		modelRegistry:    deps.ModelRegistry,
-		localModelProbe:  deps.LocalModelProbe,
-		bbFactory:        deps.BBFactory,
-		trackingCaller:   deps.TrackingCaller,
-		tokenCounter:     deps.TokenCounter,
-		vectorSearchFunc: deps.VectorSearchFunc,
-		skillManager:     deps.SkillManager,
-		agentManager:     deps.AgentManager,
-		coreToolRegistry: deps.CoreToolRegistry,
-		reflector:        deps.Reflector,
-		providerName:     deps.ProviderName,
-		stepDumpTracker:  deps.StepDumpTracker,
-		toolCache:        deps.ToolCache,
-		perToolTrunc:     deps.PerToolTruncation,
-		toolResultBudget: deps.ToolResultBudget,
-		circuitBreaker:   deps.CircuitBreaker,
-		onCleanup:        deps.OnCleanup,
+		router:                     deps.Router,
+		llm:                        deps.LLM,
+		modelSwitcher:              deps.ModelSwitcher,
+		toolRegistry:               deps.ToolRegistry,
+		toolExec:                   deps.ToolExec,
+		config:                     cfg,
+		contextFactory:             deps.ContextFactory,
+		logger:                     deps.Logger,
+		emitter:                    emitter,
+		modelRegistry:              deps.ModelRegistry,
+		localModelProbe:            deps.LocalModelProbe,
+		bbFactory:                  deps.BBFactory,
+		trackingCaller:             deps.TrackingCaller,
+		tokenCounter:               deps.TokenCounter,
+		vectorSearchFunc:           deps.VectorSearchFunc,
+		skillManager:               deps.SkillManager,
+		agentManager:               deps.AgentManager,
+		coreToolRegistry:           deps.CoreToolRegistry,
+		reflector:                  deps.Reflector,
+		providerName:               deps.ProviderName,
+		stepDumpTracker:            deps.StepDumpTracker,
+		toolCache:                  deps.ToolCache,
+		perToolTrunc:               deps.PerToolTruncation,
+		toolResultBudget:           deps.ToolResultBudget,
+		circuitBreaker:             deps.CircuitBreaker,
+		onCleanup:                  deps.OnCleanup,
+		verifyOnEdit:               deps.VerifyOnEdit,
+		verifyOnEditMaxOutputChars: deps.VerifyOnEditMaxOutputChars,
 	}
 
 	return o
@@ -1701,20 +1732,31 @@ func (o *Orchestrator) disabledToolNames() map[string]bool {
 // small-LLM profile is active. It delegates to smallllm.SelectTools, which
 // unions the router-matched tool names (routing.MatchedTools), the user's
 // always-present list, the protected orchestration tools (finish + memory +
-// ask_user), and every MCP-sourced tool, then (optionally) enforces the
-// MaxTools budget. It runs exactly once per task, before the non-goal ReAct
-// loop starts (HandleMessage applies it after the goal-mode early return, so
-// goal mode is intentionally never narrowed).
+// ask_user), and every MCP-sourced tool, then fills the remaining MaxTools
+// slots (maxTools − len(guaranteed)) with router-matched tools in registry
+// order — the guaranteed set itself is never trimmed. It runs exactly once per
+// task, before the non-goal ReAct loop starts (HandleMessage applies it after
+// the goal-mode early return, so goal mode is intentionally never narrowed).
 //
 // When the profile is OFF (the default), it returns the tools untouched — zero
 // behavior change. When filtering is active (master ON + essential ON + a
 // routing decision is present), it emits a ToolsAssigned event so the UI can
 // surface the curated tool set as a card.
+//
+// Degradation guard: semantic tool selection can fail without erroring — the
+// router returns an empty matched_tools array, returns names that match
+// nothing registered, or routing itself fell back after an unparseable
+// routing JSON (routeAndActivateSkills). Narrowing to the guaranteed-only set
+// in that case would strip every file/exec tool from the Conductor, so the
+// filter degrades to the full (unfiltered) input set instead of the empty
+// match and emits a diagnostic. The task continues; description compaction
+// still applies to the fallback set (it is orthogonal to narrowing), so only
+// the tool-count budget suffers.
 func (o *Orchestrator) applySmallLLMToolFilter(in []sdktools.ToolDescriptor, routing *router.RoutingDecision) []sdktools.ToolDescriptor {
 	sc := o.config.SmallLLM
 	// Master toggle AND the essential-tools variant must both be enabled.
 	// When either is off, return the input untouched (zero behavior change).
-	if !sc.Enabled || !sc.EssentialTools.Enabled {
+	if !o.smallLLMToolMatchingEnabled() {
 		return in
 	}
 
@@ -1722,7 +1764,21 @@ func (o *Orchestrator) applySmallLLMToolFilter(in []sdktools.ToolDescriptor, rou
 	if routing != nil {
 		matched = routing.MatchedTools
 	}
+
+	// Empty or invalid matched tools = failed semantic selection. Fall back to
+	// the full tool set rather than a guaranteed-only (empty match) set, and
+	// surface the fallback as a diagnostic. This also covers the routing-parse
+	// fallback path, whose default decision carries no matched tools.
+	// Description compaction still applies: the fallback ships the FULL
+	// descriptor payload — the largest one possible — so the
+	// compact_descriptions toggle matters most exactly here.
+	if !smallllm.HasRegisteredMatch(matched, in) {
+		o.emitToolSelectionFallback(len(matched))
+		return smallllm.MaybeCompactDescriptions(in, sc.EssentialTools.CompactDescriptions)
+	}
+
 	filtered := smallllm.SelectTools(in, matched, sc.EssentialTools.AlwaysPresent, sc.EssentialTools.MaxTools)
+	filtered = smallllm.MaybeCompactDescriptions(filtered, sc.EssentialTools.CompactDescriptions)
 
 	// Surface the curated tool set as a UI card when filtering is active
 	// (master + essential on AND a routing decision is present). Mirrors
@@ -1736,4 +1792,35 @@ func (o *Orchestrator) applySmallLLMToolFilter(in []sdktools.ToolDescriptor, rou
 		o.logInfo("tools_assigned", "count", len(names))
 	}
 	return filtered
+}
+
+// smallLLMToolMatchingEnabled reports whether the small-LLM profile's semantic
+// tool matching is active: master toggle AND the essential-tools variant both
+// on. This mirrors the exact condition builder.go passes to the router's
+// SetToolMatching, so the filter and the router's matched_tools request stay
+// in lockstep.
+func (o *Orchestrator) smallLLMToolMatchingEnabled() bool {
+	sc := o.config.SmallLLM
+	return sc.Enabled && sc.EssentialTools.Enabled
+}
+
+// emitToolSelectionFallback surfaces the full-toolset degradation as a
+// diagnostic event (existing ServiceWithMeta pattern) so the UI can show why
+// the curated tool card is absent. Never fatal.
+func (o *Orchestrator) emitToolSelectionFallback(matchedCount int) {
+	if o.logger != nil {
+		o.logger.Warn("orchestrator: small-LLM tool match unusable (empty or unregistered matched_tools); using full tool set",
+			"matched", matchedCount)
+	}
+	if o.emitter == nil {
+		return
+	}
+	o.emitter.ServiceWithMeta(
+		"Tool selection fallback: no usable matched tools — full tool set in use for this task",
+		map[string]any{
+			"phase":        "orchestration",
+			"fallback":     "small_llm_tool_match",
+			"matchedTools": matchedCount,
+		},
+	)
 }

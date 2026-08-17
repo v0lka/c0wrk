@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isTaskCompleteData } from './events'
+import { isAgentMetricsData, isTaskCompleteData } from './events'
 
 describe('isTaskCompleteData', () => {
     it('accepts valid data with string output', () => {
@@ -52,5 +52,52 @@ describe('isTaskCompleteData', () => {
 
     it('rejects object with unrelated fields only', () => {
         expect(isTaskCompleteData({ foo: 'bar' })).toBe(false)
+    })
+})
+
+describe('isAgentMetricsData', () => {
+    const valid = {
+        finish: 'full',
+        parse_errors: 2,
+        nudges: { repeat: 1, same_tool: 1, fruitless: 0, parse: 1 },
+        aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0 },
+        steps: 12,
+        output_tokens: 3400,
+        small_llm: { enabled: true, variants: ['essential_tools', 'sampling'] },
+    }
+
+    it('accepts a valid payload', () => {
+        expect(isAgentMetricsData(valid)).toBe(true)
+    })
+
+    it('accepts a payload with an empty variants array (profile off)', () => {
+        expect(isAgentMetricsData({ ...valid, small_llm: { enabled: false, variants: [] } })).toBe(true)
+    })
+
+    it('rejects null/undefined/string', () => {
+        expect(isAgentMetricsData(null)).toBe(false)
+        expect(isAgentMetricsData(undefined)).toBe(false)
+        expect(isAgentMetricsData('agent_metrics')).toBe(false)
+    })
+
+    it('rejects missing counter blocks', () => {
+        expect(isAgentMetricsData({ ...valid, nudges: undefined })).toBe(false)
+        expect(isAgentMetricsData({ ...valid, aborts: undefined })).toBe(false)
+    })
+
+    it('rejects malformed counter blocks', () => {
+        expect(isAgentMetricsData({ ...valid, nudges: { repeat: 1 } })).toBe(false)
+        expect(isAgentMetricsData({ ...valid, aborts: { repeat: 'x', same_tool: 1, fruitless: 1, parse: 1 } })).toBe(false)
+    })
+
+    it('rejects wrong scalar types', () => {
+        expect(isAgentMetricsData({ ...valid, parse_errors: '2' })).toBe(false)
+        expect(isAgentMetricsData({ ...valid, steps: true })).toBe(false)
+        expect(isAgentMetricsData({ ...valid, finish: 42 })).toBe(false)
+    })
+
+    it('rejects malformed small_llm block', () => {
+        expect(isAgentMetricsData({ ...valid, small_llm: { enabled: 'yes' } })).toBe(false)
+        expect(isAgentMetricsData({ ...valid, small_llm: undefined })).toBe(false)
     })
 })

@@ -4,6 +4,7 @@
  */
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 import { isArrayOf } from '@/types/guards'
+import { isAgentMetricsData } from '@/types/events'
 
 /** Build a composite tool key for correlating tool_call ↔ tool_result. */
 export function makeToolKey(
@@ -155,6 +156,14 @@ export function reconstructContent(role: string, rawContent: string, meta: Recor
       // the live handler's "Tools assigned: …" text on reload.
       if (isArrayOf(meta.tools, (s): s is string => typeof s === 'string')) {
         return `Tools assigned: ${meta.tools.join(', ')}`
+      }
+      // agent_metrics rows carry the per-run quality report; they are store-
+      // state, not chat content — history-load restores them into
+      // planStore.sessionStats (see lastAgentMetricsFromHistory) and filters
+      // them out of the chat, so raw JSON never renders. The empty string is
+      // the fallback for any path that converts rows without filtering.
+      if (isAgentMetricsData(meta)) {
+        return ''
       }
       return (meta.content as string) || rawContent
     }

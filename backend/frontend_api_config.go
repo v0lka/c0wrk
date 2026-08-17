@@ -696,6 +696,14 @@ func (f *FrontendAPI) UpdateSmallLLMConfig(cfg SmallLLMConfigResponse) error {
 		}
 	}
 
+	// Keep the session manager's Small-LLM snapshot in sync so agent_metrics
+	// events created afterwards are annotated with the updated profile.
+	if app := f.app; app != nil {
+		if mgr := app.Manager(); mgr != nil {
+			mgr.SetSmallLLMProfile(f.config.SmallLLM)
+		}
+	}
+
 	return nil
 }
 
@@ -719,24 +727,42 @@ func validateSmallLLMConfig(cfg SmallLLMConfigResponse) error {
 		// always_present may be empty: protected orchestration tools
 		// (finish, fact memory, ask_user) and every MCP tool are always kept
 		// implicitly by SelectTools, so an empty list is valid. max_tools is a
-		// size budget (0 = unlimited) and must simply be non-negative.
+		// slot budget (0 = unlimited) and must simply be non-negative.
 		if cfg.EssentialTools.MaxTools < 0 {
 			return fmt.Errorf("small_llm.essential_tools.max_tools must be non-negative, got %d", cfg.EssentialTools.MaxTools)
 		}
+		// The guaranteed set (always_present ∪ protected orchestration tools;
+		// MCP tools join at runtime) is never trimmed by SelectTools, so a cap
+		// smaller than the guaranteed count would leave zero router-matched
+		// slots and the result would silently exceed the budget. Reject up
+		// front with an actionable message.
+		if cfg.EssentialTools.MaxTools > 0 {
+			guaranteed := unionAlwaysPresent(cfg.EssentialTools.AlwaysPresent, smallllm.ProtectedToolNames())
+			if len(guaranteed) > cfg.EssentialTools.MaxTools {
+				return fmt.Errorf(
+					"small_llm.essential_tools.max_tools (%d) is smaller than the guaranteed tool count (%d = always_present ∪ protected orchestration tools); guaranteed tools are never trimmed — raise max_tools, trim always_present, or set max_tools to 0 for unlimited",
+					cfg.EssentialTools.MaxTools, len(guaranteed),
+				)
+			}
+		}
 	}
 
-	// Sampling: temperature > 0 and 0 < top_p <= 1 when the variant is on.
-	if cfg.Sampling.Enabled {
-		// Temperature 0 is the YAML zero-value and doubles as the "unset"
-		// sentinel in ApplyDefaults (which substitutes 0.1). Treat it the
-		// same way here so an explicit 0 is not silently clobbered on
-		// reload: require a strictly positive value when the variant is on.
-		if cfg.Sampling.Temperature <= 0 {
-			return fmt.Errorf("small_llm.sampling.temperature must be positive when sampling is enabled, got %v", cfg.Sampling.Temperature)
-		}
-		if cfg.Sampling.TopP <= 0 || cfg.Sampling.TopP > 1 {
-			return fmt.Errorf("small_llm.sampling.top_p must be in the range (0, 1], got %v", cfg.Sampling.TopP)
-		}
+	// Sampling: each parameter uses zero as the "inherit the vendor preset"
+	// sentinel, so zero is always valid. Any explicitly set (non-zero) value
+	// must fall in its supported range — regardless of whether the variant is
+	// currently enabled, so a stored out-of-range value cannot go live the
+	// moment the toggle flips on.
+	if cfg.Sampling.Temperature < 0 {
+		return fmt.Errorf("small_llm.sampling.temperature must be > 0 when set, got %v (0 inherits the vendor preset)", cfg.Sampling.Temperature)
+	}
+	if cfg.Sampling.TopP < 0 || cfg.Sampling.TopP > 1 {
+		return fmt.Errorf("small_llm.sampling.top_p must be in the range (0, 1] when set, got %v (0 inherits the vendor preset)", cfg.Sampling.TopP)
+	}
+	if cfg.Sampling.TopK < 0 {
+		return fmt.Errorf("small_llm.sampling.top_k must be >= 1 when set, got %d (0 inherits the vendor preset)", cfg.Sampling.TopK)
+	}
+	if rp := cfg.Sampling.RepetitionPenalty; rp != 0 && (rp < 1 || rp > 2) {
+		return fmt.Errorf("small_llm.sampling.repetition_penalty must be in the range [1, 2] when set, got %v (0 inherits the vendor preset)", rp)
 	}
 	if _, ok := validSmallLLMReasoningEfforts[cfg.Sampling.ReasoningEffort]; !ok {
 		return fmt.Errorf("small_llm.sampling.reasoning_effort %q is invalid (allowed: off, low, medium)", cfg.Sampling.ReasoningEffort)
@@ -765,6 +791,39 @@ func validateSmallLLMConfig(cfg SmallLLMConfigResponse) error {
 		}
 	}
 
+	// Context-management variant: non-negative always; sane tight ranges when
+	// the variant is active.
+	ctx := cfg.Context
+	contextInts := []int{
+		ctx.Compaction.KeepLast,
+		ctx.Compaction.BlockSize,
+		ctx.Compaction.TriggerPercent,
+		ctx.ToolOutputKeepLastN,
+		ctx.OutputTokenReserve,
+	}
+	for _, v := range contextInts {
+		if v < 0 {
+			return errors.New("small_llm.context values must be non-negative")
+		}
+	}
+	if ctx.Enabled {
+		if ctx.Compaction.KeepLast < 2 {
+			return fmt.Errorf("small_llm.context.compaction.keep_last must be >= 2 when context is enabled, got %d", ctx.Compaction.KeepLast)
+		}
+		if ctx.Compaction.BlockSize < 2 {
+			return fmt.Errorf("small_llm.context.compaction.block_size must be >= 2 when context is enabled, got %d", ctx.Compaction.BlockSize)
+		}
+		if ctx.Compaction.TriggerPercent < 1 || ctx.Compaction.TriggerPercent >= 100 {
+			return fmt.Errorf("small_llm.context.compaction.trigger_percent must be in [1, 100) when context is enabled, got %d", ctx.Compaction.TriggerPercent)
+		}
+		if ctx.ToolOutputKeepLastN < 1 {
+			return fmt.Errorf("small_llm.context.tool_output_keep_last_n must be >= 1 when context is enabled, got %d", ctx.ToolOutputKeepLastN)
+		}
+		if ctx.OutputTokenReserve < 1 {
+			return fmt.Errorf("small_llm.context.output_token_reserve must be >= 1 when context is enabled, got %d", ctx.OutputTokenReserve)
+		}
+	}
+
 	return nil
 }
 
@@ -779,9 +838,14 @@ func smallLLMToResponse(c config.SmallLLMConfig) SmallLLMConfigResponse {
 	return SmallLLMConfigResponse{
 		Enabled: c.Enabled,
 		EssentialTools: SmallLLMEssentialToolsResp{
-			Enabled:       c.EssentialTools.Enabled,
-			AlwaysPresent: nonNilStringSlice(unionAlwaysPresent(c.EssentialTools.AlwaysPresent, smallllm.ProtectedToolNames())),
-			MaxTools:      c.EssentialTools.MaxTools,
+			Enabled:             c.EssentialTools.Enabled,
+			AlwaysPresent:       nonNilStringSlice(unionAlwaysPresent(c.EssentialTools.AlwaysPresent, smallllm.ProtectedToolNames())),
+			MaxTools:            c.EssentialTools.MaxTools,
+			CompactDescriptions: c.EssentialTools.CompactDescriptions,
+			// Read-only metadata so the UI can render protected tools as
+			// locked chips without duplicating the backend list. Ignored on
+			// write (responseToSmallLLM does not map it back).
+			ProtectedTools: nonNilStringSlice(smallllm.ProtectedToolNames()),
 		},
 		SystemPrompt: SmallLLMSystemPromptResp{
 			Lite:              c.SystemPrompt.Lite,
@@ -789,10 +853,12 @@ func smallLLMToResponse(c config.SmallLLMConfig) SmallLLMConfigResponse {
 			ReasoningScaffold: c.SystemPrompt.ReasoningScaffold,
 		},
 		Sampling: SmallLLMSamplingResp{
-			Enabled:         c.Sampling.Enabled,
-			Temperature:     c.Sampling.Temperature,
-			TopP:            c.Sampling.TopP,
-			ReasoningEffort: c.Sampling.ReasoningEffort,
+			Enabled:           c.Sampling.Enabled,
+			Temperature:       c.Sampling.Temperature,
+			TopP:              c.Sampling.TopP,
+			TopK:              c.Sampling.TopK,
+			RepetitionPenalty: c.Sampling.RepetitionPenalty,
+			ReasoningEffort:   c.Sampling.ReasoningEffort,
 		},
 		LoopHardening: SmallLLMLoopHardeningResp{
 			Enabled:                      c.LoopHardening.Enabled,
@@ -801,6 +867,16 @@ func smallLLMToResponse(c config.SmallLLMConfig) SmallLLMConfigResponse {
 			FruitlessNudgeThreshold:      c.LoopHardening.FruitlessNudgeThreshold,
 			FruitlessAbortThreshold:      c.LoopHardening.FruitlessAbortThreshold,
 			SameToolRepeatNudgeThreshold: c.LoopHardening.SameToolRepeatNudgeThreshold,
+		},
+		Context: SmallLLMContextResp{
+			Enabled: c.Context.Enabled,
+			Compaction: SmallLLMCompactionResp{
+				KeepLast:       c.Context.Compaction.KeepLast,
+				BlockSize:      c.Context.Compaction.BlockSize,
+				TriggerPercent: c.Context.Compaction.TriggerPercent,
+			},
+			ToolOutputKeepLastN: c.Context.ToolOutputKeepLastN,
+			OutputTokenReserve:  c.Context.OutputTokenReserve,
 		},
 	}
 }
@@ -811,9 +887,10 @@ func responseToSmallLLM(r SmallLLMConfigResponse) config.SmallLLMConfig {
 	return config.SmallLLMConfig{
 		Enabled: r.Enabled,
 		EssentialTools: config.EssentialToolsConfig{
-			Enabled:       r.EssentialTools.Enabled,
-			AlwaysPresent: r.EssentialTools.AlwaysPresent,
-			MaxTools:      r.EssentialTools.MaxTools,
+			Enabled:             r.EssentialTools.Enabled,
+			AlwaysPresent:       r.EssentialTools.AlwaysPresent,
+			MaxTools:            r.EssentialTools.MaxTools,
+			CompactDescriptions: r.EssentialTools.CompactDescriptions,
 		},
 		SystemPrompt: config.SystemPromptConfig{
 			Lite:              r.SystemPrompt.Lite,
@@ -821,10 +898,12 @@ func responseToSmallLLM(r SmallLLMConfigResponse) config.SmallLLMConfig {
 			ReasoningScaffold: r.SystemPrompt.ReasoningScaffold,
 		},
 		Sampling: config.SmallLLMSamplingConfig{
-			Enabled:         r.Sampling.Enabled,
-			Temperature:     r.Sampling.Temperature,
-			TopP:            r.Sampling.TopP,
-			ReasoningEffort: r.Sampling.ReasoningEffort,
+			Enabled:           r.Sampling.Enabled,
+			Temperature:       r.Sampling.Temperature,
+			TopP:              r.Sampling.TopP,
+			TopK:              r.Sampling.TopK,
+			RepetitionPenalty: r.Sampling.RepetitionPenalty,
+			ReasoningEffort:   r.Sampling.ReasoningEffort,
 		},
 		LoopHardening: config.LoopHardeningConfig{
 			Enabled:                      r.LoopHardening.Enabled,
@@ -833,6 +912,16 @@ func responseToSmallLLM(r SmallLLMConfigResponse) config.SmallLLMConfig {
 			FruitlessNudgeThreshold:      r.LoopHardening.FruitlessNudgeThreshold,
 			FruitlessAbortThreshold:      r.LoopHardening.FruitlessAbortThreshold,
 			SameToolRepeatNudgeThreshold: r.LoopHardening.SameToolRepeatNudgeThreshold,
+		},
+		Context: config.SmallLLMContextConfig{
+			Enabled: r.Context.Enabled,
+			Compaction: config.SmallLLMCompactionConfig{
+				KeepLast:       r.Context.Compaction.KeepLast,
+				BlockSize:      r.Context.Compaction.BlockSize,
+				TriggerPercent: r.Context.Compaction.TriggerPercent,
+			},
+			ToolOutputKeepLastN: r.Context.ToolOutputKeepLastN,
+			OutputTokenReserve:  r.Context.OutputTokenReserve,
 		},
 	}
 }

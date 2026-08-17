@@ -8,7 +8,12 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolCancelDelegationDescription = `Cancel a pending or running async delegation by its ID. The subagent's context is cancelled and the delegation is marked cancelled. No-op for already completed, failed, or cancelled delegations. Use this before calling finish if you have pending async delegations you no longer need.`
+const toolCancelDelegationDescription = `Purpose: cancel a currently running subagent task.
+Use when: only when the delegated work has clearly gone the wrong way or duplicates other work — the subagent may already be minutes into execution and cancellation discards its progress.
+Inputs: id (the running delegation's id, as returned by delegate).
+Outputs: cancellation confirmation; the subagent is terminated.
+Example: cancel a subagent that started editing the wrong module.
+Anti-example: do not cancel on the first odd intermediate event — read its progress first; completed tasks cannot be canceled; to redo work launch a corrected delegation instead of cancel-and-hope.`
 
 // CancelDelegationTool cancels an async delegation via the registry in context.
 type CancelDelegationTool struct {

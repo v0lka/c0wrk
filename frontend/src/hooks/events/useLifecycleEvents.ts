@@ -6,6 +6,7 @@ import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import {
   isRoutingData, isStepData, isRetryData, isStepRetryData,
   isServiceData, isSkillsActivatedData, isToolsAssignedData,
+  isAgentMetricsData,
 } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
 import { usePlanStore } from '@/stores/planStore'
@@ -129,6 +130,20 @@ export function useLifecycleEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'finishing', () => {
         useChatStore.getState().setActivityStatus(sessionId, 'Finishing...')
+      }),
+    )
+
+    // --- agent_metrics ---
+    // Aggregated per-run agent quality report emitted on task finish/abort:
+    // parse errors, loop-detector nudges/aborts by kind, steps, output tokens
+    // and the active small-LLM profile. Stored alongside routing stats in
+    // planStore.sessionStats and rendered in the ExecutionPanels stats row.
+    cleanups.push(
+      onSessionEvent(sessionId, 'agent_metrics', (data) => {
+        if (!isAgentMetricsData(data)) { reportDroppedEvent('agent_metrics', data); return }
+        usePlanStore.getState().setSessionStats(sessionId, {
+          lastAgentMetrics: data,
+        })
       }),
     )
 

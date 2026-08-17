@@ -1,6 +1,6 @@
 import { useEffect, useRef, useMemo } from 'react'
 import { useChatStore, useSessionMessages } from '@/stores/chatStore'
-import { groupMessages, chatMessageToUI, rebuildPlanFromHistory, isPersistableHistoryMessage } from '@/lib/chatUtils'
+import { groupMessages, chatMessageToUI, rebuildPlanFromHistory, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow } from '@/lib/chatUtils'
 import { useSessionStore } from '@/stores/sessionStore'
 import { usePlanStore } from '@/stores/planStore'
 import { getSessionHistory, getSessionRuntimeStatus, getPendingActions, resolveStalePrompt } from '@/api/chat'
@@ -85,10 +85,19 @@ export function ChatArea() {
           logger.debug(`Filtered ${droppedCount} transient event_unknown row(s) from session history`)
         }
         const uiMessages = filteredHistory.map((msg) => chatMessageToUI(msg))
+        // agent_metrics rows are session store-state, not chat content (the
+        // live handler writes them to planStore, never to the chat): restore
+        // the newest report into the ExecutionPanels stats row and keep the
+        // rows out of the message list so no raw-JSON card renders.
+        const agentMetrics = lastAgentMetricsFromHistory(uiMessages)
+        if (agentMetrics) {
+          usePlanStore.getState().setSessionStats(activeSessionId, { lastAgentMetrics: agentMetrics })
+        }
+        const chatMessages = uiMessages.filter((m) => !isAgentMetricsRow(m))
         // Merge (not replace) so live events delivered while the RPC was in
         // flight — e.g. a terminal `error` — are not clobbered.
-        useChatStore.getState().mergeHistoryMessages(activeSessionId, uiMessages, loadStartedAt)
-        rebuildPlanFromHistory(uiMessages, usePlanStore.getState())
+        useChatStore.getState().mergeHistoryMessages(activeSessionId, chatMessages, loadStartedAt)
+        rebuildPlanFromHistory(chatMessages, usePlanStore.getState())
       }
 
       // Reconcile AFTER the merge so the store is populated. Fetch the

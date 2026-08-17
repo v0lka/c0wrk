@@ -10,7 +10,12 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolProposeGoalDescription = `Propose a goal — a {condition, verify} pair — for user sign-off before committing to it. Use this when the derivation agent has crystallized a goal from the user's request. The call blocks until the user approves (optionally with edits) or cancels. Returns the user's decision: the approved condition/verify (which may differ from the proposal if the user edited them), or an error message if the user cancelled.`
+const toolProposeGoalDescription = `Purpose: propose a session goal — the verifiable success condition the agent will pursue and be measured against.
+Use when: at the start of a substantial task whose desired end state can be phrased as a checkable condition (tests, build, grep). Skip for trivial or exploratory asks.
+Inputs: condition (one precise sentence, verifiable after implementation); verify (how you will prove it — a runnable check); verification_mode (optional: "executable" | "re_derivation", default executable).
+Outputs: a pending goal proposal confirmed or declined by the user; once confirmed it drives the loop.
+Example: condition "go test ./... passes for package core", verify "run go test ./core and check exit 0", before a bug-fix task.
+Anti-example: no vague conditions ("improve the code") — unverifiable; do not re-propose mid-task (declare_goal_status is the update path); not for read-only questions.`
 
 // GoalProposal is the {condition, verify} pair the agent submits for sign-off.
 //

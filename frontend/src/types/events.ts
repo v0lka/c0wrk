@@ -102,6 +102,30 @@ export interface ToolJudgeResponseData { confirm_id: string; reasoning?: string;
 export interface TerminalOutputData { data: string }
 export interface SkillsActivatedData { skills: string[] }
 export interface ToolsAssignedData { tools: string[] }
+
+/** Per-run agent quality counters, as emitted in the `agent_metrics` event
+ *  payload on task finish/abort. Mirrors the Go `AgentMetricsData` struct. */
+export interface AgentMetricsCounters {
+  readonly repeat: number
+  readonly same_tool: number
+  readonly fruitless: number
+  readonly parse: number
+}
+
+export interface AgentMetricsSmallLLM {
+  readonly enabled: boolean
+  readonly variants: readonly string[]
+}
+
+export interface AgentMetricsData {
+  readonly finish: string
+  readonly parse_errors: number
+  readonly nudges: AgentMetricsCounters
+  readonly aborts: AgentMetricsCounters
+  readonly steps: number
+  readonly output_tokens: number
+  readonly small_llm: AgentMetricsSmallLLM
+}
 export interface BlackboardUpdatedData { change_type: string }
 
 /** Backend AttachmentInfo record (snake_case), as emitted in the
@@ -302,6 +326,7 @@ export interface SessionEventMap {
   readonly terminal_output: TerminalOutputData
   readonly skills_activated: SkillsActivatedData
   readonly tools_assigned: ToolsAssignedData
+  readonly agent_metrics: AgentMetricsData
   readonly blackboard_updated: BlackboardUpdatedData
   readonly step_todo_update: StepTodoUpdateData
   readonly plan_review_ready: PlanReviewReadyData
@@ -463,6 +488,32 @@ export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableD
 export function isTerminalOutputData(d: unknown): d is TerminalOutputData { return isObj(d) && typeof d.data === 'string' }
 export function isSkillsActivatedData(d: unknown): d is SkillsActivatedData { return isObj(d) && Array.isArray(d.skills) }
 export function isToolsAssignedData(d: unknown): d is ToolsAssignedData { return isObj(d) && Array.isArray(d.tools) }
+
+function isAgentMetricsCounters(v: unknown): v is AgentMetricsCounters {
+  if (!isObj(v)) return false
+  return (
+    typeof v.repeat === 'number' &&
+    typeof v.same_tool === 'number' &&
+    typeof v.fruitless === 'number' &&
+    typeof v.parse === 'number'
+  )
+}
+
+/** Guard for the `agent_metrics` payload; validates shape, not semantics. */
+export function isAgentMetricsData(d: unknown): d is AgentMetricsData {
+  if (!isObj(d)) return false
+  return (
+    typeof d.finish === 'string' &&
+    typeof d.parse_errors === 'number' &&
+    typeof d.steps === 'number' &&
+    typeof d.output_tokens === 'number' &&
+    isAgentMetricsCounters(d.nudges) &&
+    isAgentMetricsCounters(d.aborts) &&
+    isObj(d.small_llm) &&
+    typeof (d.small_llm as { enabled?: unknown }).enabled === 'boolean' &&
+    Array.isArray((d.small_llm as { variants?: unknown }).variants)
+  )
+}
 export function isReflectionData(d: unknown): d is ReflectionData { return isObj(d) && has(d, 'summary', 'attempt') }
 export function isToolJudgeResponseData(d: unknown): d is ToolJudgeResponseData { return isObj(d) && has(d, 'confirm_id') }
 export function isBlackboardUpdatedData(d: unknown): d is BlackboardUpdatedData { return isObj(d) && has(d, 'change_type') }

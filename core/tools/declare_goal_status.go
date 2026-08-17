@@ -11,14 +11,12 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolDeclareGoalStatusDescription = `Declare your self-evaluation verdict on whether the active goal has been reached. Use this after you have VERIFIED the goal — not merely after you believe you have done the work. Execute the verify clause (running any command it names) and cite its real exit code / output as evidence before declaring "met"; do not declare the goal met from an assumption that a check would pass. This is the single channel through which the goal loop learns your structured verdict {status, evidence, reason}.
-
-status is one of:
-  - "met":      you have satisfied the goal's success condition. REQUIRES concrete evidence (file paths changed, test output, command results). A bare "done" without evidence fails evaluation.
-  - "not_met":  you have made progress but the condition is not yet satisfied; continue working.
-  - "blocked":  you cannot make further progress without external input or a changed situation.
-
-Each evidence entry points at something concrete the user (or a verifier) can inspect: a file path, a test/command and its output, or a qualitative note with a clear ref.`
+const toolDeclareGoalStatusDescription = `Purpose: declare the final status of the session goal — the terminal verdict that ends the loop.
+Use when: exactly once, after the verification pass has checked the goal condition. Treat the condition literally. No tool calls may follow this one.
+Inputs: status ("met" | "not_met" | "blocked"); reason (narrative: what was done, what remains, or what blocks); evidence (array of {type, ref, summary} artifacts — REQUIRED when status="met").
+Outputs: the verdict is recorded and the session loop terminates.
+Example: status "met" with evidence citing the test run that proves the condition.
+Anti-example: not for intermediate progress (report in replies); never before verification ran; never more than once; "not_met" means keep working, "blocked" means external input is required.`
 
 // GoalStatusSink is the context-injected destination for self-evaluation
 // verdicts. The goal loop (runGoalLoop) injects a concrete sink into the

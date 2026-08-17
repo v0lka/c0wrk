@@ -49,8 +49,10 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 			{Role: "system", Content: coreprompts.PromptOptimizeExtract},
 			{Role: "user", Content: userPrompt},
 		},
-		MaxTokens:       500,
-		Temperature:     &extractTemp,
+		MaxTokens:   500,
+		Temperature: &extractTemp, // explicit value wins over any profile
+		// Auxiliary text composition call — summarization class.
+		CallPurpose:     llm.CallPurposeSummarization,
 		ReasoningEffort: reasoningEffort,
 	}
 	extractResp, err := router.Call(ctx, extractReq)
@@ -141,8 +143,10 @@ func (b *OrchestratorBuilder) runOptimizeRewriteLoop(
 				{Role: "system", Content: coreprompts.PromptOptimizeRewrite},
 				{Role: "user", Content: userPrompt},
 			},
-			MaxTokens:       2000,
-			Temperature:     &rewriteTemp,
+			MaxTokens:   2000,
+			Temperature: &rewriteTemp, // explicit value wins over any profile
+			// Auxiliary text composition call — summarization class.
+			CallPurpose:     llm.CallPurposeSummarization,
 			ReasoningEffort: reasoningEffort,
 		}
 

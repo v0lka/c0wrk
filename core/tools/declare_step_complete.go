@@ -8,7 +8,12 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolDeclareStepCompleteDescription = `Signal that an inline plan step is complete. Call this after you finish executing a plan step inline (without delegating to a subagent) to mark it as completed or failed in the plan panel. Do NOT call this for steps you delegated via delegate — the system tracks delegated step completion automatically. Pass success=false with an error message if the step could not be completed. If you are not executing a declared plan inline, do not call this tool.`
+const toolDeclareStepCompleteDescription = `Purpose: mark a declared plan step as completed or failed in the plan panel.
+Use when: exactly once per step, right after finishing it — and only for steps you execute inline; delegated steps are tracked automatically by the system.
+Inputs: step_id; success (bool); error (optional failure message when success=false).
+Outputs: the step's status update in the plan panel.
+Example: step_id "step_2", success true once its acceptance criteria verify green.
+Anti-example: not for delegated steps; never call twice for one step; do not report success while acceptance criteria are unmet.`
 
 // StepCompleteFunc is called by declare_step_complete to signal that an
 // inline plan step has finished. success=false indicates failure; errMsg

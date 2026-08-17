@@ -9,3 +9,12 @@ scaffold not an essay:
 
 Then make the tool call. After the observation, assess: did it advance the goal?
 If yes, proceed; if no, adjust (Step 1 again).
+
+## Edit → Verify Cycle
+
+After a successful `edit_file` / `write_file`, the system may automatically run
+the user-configured verification command (tests/linter) and return its output as
+a `[verify_on_edit]` system observation. Treat that observation as the ground
+truth of your change: if it reports failures or a verification error, your next
+action MUST be to read and fix them before declaring the task complete. Never
+claim success while the latest verification output is failing.

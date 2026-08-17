@@ -9,12 +9,14 @@ import {
   SamplingSection,
   LoopHardeningSection,
 } from './SmallLLMSections'
+import { ContextSection } from './SmallLLMContextSection'
 import type {
   SmallLLMConfigResponse,
   SmallLLMEssentialTools,
   SmallLLMSystemPrompt,
   SmallLLMSampling,
   SmallLLMLoopHardening,
+  SmallLLMContext,
 } from '@/types/models'
 
 export function SmallLLMSettings() {
@@ -26,6 +28,7 @@ export function SmallLLMSettings() {
     system_prompt: true,
     sampling: true,
     loop_hardening: true,
+    context: true,
   })
 
   useEffect(() => {
@@ -70,6 +73,9 @@ export function SmallLLMSettings() {
   }
   const patchLoopHardening = (p: Partial<SmallLLMLoopHardening>) => {
     if (config) save({ ...config, loop_hardening: { ...config.loop_hardening, ...p } })
+  }
+  const patchContext = (p: Partial<SmallLLMContext>) => {
+    if (config) save({ ...config, context: { ...config.context, ...p } })
   }
 
   if (isLoading) {
@@ -134,6 +140,12 @@ export function SmallLLMSettings() {
             patch={patchLoopHardening}
             open={openSections.loop_hardening}
             onOpenChange={(o) => setSection('loop_hardening', o)}
+          />
+          <ContextSection
+            slice={config.context}
+            patch={patchContext}
+            open={openSections.context}
+            onOpenChange={(o) => setSection('context', o)}
           />
         </>
       ) : (

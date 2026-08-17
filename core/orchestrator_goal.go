@@ -570,6 +570,12 @@ func (o *Orchestrator) runGoalTurns(
 		// Count tool calls for this turn only (anti-spin detection).
 		counter := &turnUsageCounter{}
 		deps.toolExec = &countingToolExec{inner: deps.toolExec, counter: counter}
+		// Goal-loop turns never trigger mechanical edit verification
+		// (executor.verify_on_edit): goal progress turns are not ordinary
+		// CODE-task execution, and re-running the verify command after every
+		// goal-turn edit would duplicate what the executor of the underlying
+		// task already reports.
+		deps.verifyOnEdit = nil
 
 		toolCalls, execResult, terr := turnRunner(
 			tools.WithGoalStatusSink(WithGoalState(ctx, gs), sink),

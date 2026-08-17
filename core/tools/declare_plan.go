@@ -8,7 +8,12 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolDeclarePlanDescription = `Publish a roadmap to the plan panel and blackboard. Use this to surface a structured plan to the user before large implementations, or to track a multi-step task's shape. With mode="present" the plan is displayed but execution continues. With mode="await_approval" the tool blocks until the user approves, requests changes, or abandons — use this when an active skill prescribes an approval gate before implementation, or when the task is large enough that committing without sign-off is risky. On "request changes" the tool returns the feedback; revise and call declare_plan again.`
+const toolDeclarePlanDescription = `Purpose: publish the task roadmap — ordered steps with acceptance criteria — for user sign-off before any implementation.
+Use when: the user asked to plan first or the task is genuinely multi-step; call once, before acting. Steps may carry an agent field targeting a subagent for that step. Dependencies reference step ids; independent steps can run in parallel. After approval the plan is append-only — new steps may only be added at the end, never edited or deleted.
+Inputs: mode (optional: "present" | "await_approval"); tasks — array of {id (stable, e.g. step_1), summary (5-7 word UI label), description (What/How/Where/Acceptance criteria), depends_on (prerequisite ids), agent (optional Subagent Profile name for this step)}.
+Outputs: with "present" the plan is displayed and execution continues; with "await_approval" the call blocks until the user approves, requests changes, or abandons.
+Example: step 1 "write failing tests", step 2 "implement" with depends_on ["step_1"].
+Anti-example: never implement before approval in await_approval mode; single-step tasks need no plan — act directly; never rewrite approved steps — append corrections instead.`
 
 // PlanPublisher serializes a plan, persists it to the session plans directory,
 // emits the PlanGenerated event, and sets the plan on the blackboard.
