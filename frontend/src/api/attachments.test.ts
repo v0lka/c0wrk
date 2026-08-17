@@ -36,6 +36,8 @@ describe('mapAttachment', () => {
         size_bytes: 4096,
         is_image: true,
         thumbnail: 'data:image/jpeg;base64,abc',
+        path: '/tmp/screenshot.png',
+        media_type: 'image/png',
       }),
     ).toEqual({
       id: 'img1',
@@ -44,6 +46,8 @@ describe('mapAttachment', () => {
       sizeBytes: 4096,
       isImage: true,
       thumbnail: 'data:image/jpeg;base64,abc',
+      path: '/tmp/screenshot.png',
+      mediaType: 'image/png',
     })
   })
 

@@ -5,6 +5,8 @@ import { useCallback, useState } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
+import { useAttachmentsStore } from '@/stores/attachmentsStore'
+import { buildUserMessageMeta } from '@/lib/userMessageMeta'
 import { sendMessage, cancelTask } from '@/api/chat'
 import { createSession } from '@/api/sessions'
 import { generateMessageId } from '@/lib/ids'
@@ -49,12 +51,23 @@ export function useMessageSender(): UseMessageSenderResult {
     // session_resumed/task_resumed event.
     const wasPaused = useChatStore.getState().paused[sessionId] ?? false
 
+    // Optimistic metadata mirroring the SNAKE_CASE blob the backend persists
+    // via PendingMessageMetadata: the goal flag, the staged attachments
+    // (document summaries + image records), and the nudge marker. Snapshot the
+    // pending list BEFORE the send RPC — the backend's send-clear
+    // "attachments:changed" event empties the store only after this message is
+    // already rendered with its goal/attachment badges, so the indicators no
+    // longer wait for a session/project switch to appear.
+    const goalEnabled = useInputModeStore.getState().goalEnabled
+    const pendingAttachments = useAttachmentsStore.getState().attachments
+    const metadata = buildUserMessageMeta(goalEnabled, pendingAttachments, wasPaused)
+
     useChatStore.getState().addMessage(sessionId, {
       id: generateMessageId(),
       sessionId,
       type: 'user',
       content: messageText,
-      metadata: wasPaused ? { is_nudge: true } : undefined,
+      metadata,
       timestamp: Date.now(),
     })
 
@@ -68,7 +81,6 @@ export function useMessageSender(): UseMessageSenderResult {
     try {
       const modelOverride = useInputModeStore.getState().selectedModel ?? ''
       const reasoningOverride = useInputModeStore.getState().selectedReasoning ?? ''
-      const goalEnabled = useInputModeStore.getState().goalEnabled
       const goalBudget = useInputModeStore.getState().goalBudget
       await sendMessage(sessionId, messageText, activeSkills ?? [], activeAgents ?? [], modelOverride, reasoningOverride, goalEnabled, goalBudget)
       // Goal is per-task opt-in: after a goal-defining message is sent, reset

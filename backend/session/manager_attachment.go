@@ -31,6 +31,14 @@ type AttachmentInfo struct {
 	SizeBytes    int64  `json:"size_bytes"`
 	IsImage      bool   `json:"is_image"`
 	Thumbnail    string `json:"thumbnail,omitempty"` // JPEG data URI for image attachments
+	// Path is the on-disk location of a staged image attachment (absent for
+	// documents). The UI mirrors it into the optimistic user-message metadata
+	// so image thumbnails render immediately instead of after a reload.
+	Path string `json:"path,omitempty"`
+	// MediaType is the staged image's MIME type (e.g. "image/png"; absent for
+	// documents). Together with Path it lets the UI build a complete
+	// StoredImageMetadata record optimistically.
+	MediaType string `json:"media_type,omitempty"`
 }
 
 // AttachmentFailure describes a single file that could not be converted or
@@ -91,6 +99,8 @@ func combinedAttachmentInfos(docs []orchestration.Attachment, images []ImageAtta
 			SizeBytes:    img.SizeBytes,
 			IsImage:      true,
 			Thumbnail:    img.ThumbnailB64,
+			Path:         img.FilePath,
+			MediaType:    img.MediaType,
 		})
 	}
 	return out

@@ -17,8 +17,9 @@ import type { AttachmentInfoUI, PasteResultUI } from '@/types/models'
 export type { AttachmentInfoRaw, PasteResultRaw } from '@/types/events'
 
 /** Map a single snake_case backend record to camelCase UI record.
- *  Image-only fields (`is_image`/`thumbnail`) are forwarded when present so
- *  the UI can render thumbnails and gate image-only affordances. */
+ *  Image-only fields (`is_image`/`thumbnail`/`path`/`media_type`) are
+ *  forwarded when present so the UI can render thumbnails and gate image-only
+ *  affordances. */
 export function mapAttachment(raw: AttachmentInfoRaw): AttachmentInfoUI {
   return {
     id: raw.id,
@@ -27,6 +28,8 @@ export function mapAttachment(raw: AttachmentInfoRaw): AttachmentInfoUI {
     sizeBytes: raw.size_bytes,
     isImage: raw.is_image,
     thumbnail: raw.thumbnail,
+    path: raw.path,
+    mediaType: raw.media_type,
   }
 }
 

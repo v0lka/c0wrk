@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { parseUserMessageMeta } from './userMessageMeta'
+import { parseUserMessageMeta, buildUserMessageMeta } from './userMessageMeta'
+import type { AttachmentInfoUI } from '@/types/models'
 
 // Sample well-formed records mirroring the backend SNAKE_CASE shape.
 const validImage = {
@@ -204,6 +205,98 @@ describe('parseUserMessageMeta', () => {
           attachments: [{ original_name: undefined }],
         }),
       ).not.toThrow()
+    })
+  })
+})
+
+describe('buildUserMessageMeta', () => {
+  const DOC: AttachmentInfoUI = {
+    id: 'd1',
+    originalName: 'report.pdf',
+    format: 'pdf',
+    sizeBytes: 4096,
+  }
+  const IMG: AttachmentInfoUI = {
+    id: 'img-1',
+    originalName: 'cat.png',
+    format: 'png',
+    sizeBytes: 2048,
+    isImage: true,
+    thumbnail: 'data:image/jpeg;base64,AAA',
+    path: '/tmp/img-1.png',
+    mediaType: 'image/png',
+  }
+
+  it('returns undefined for a plain text message (no goal, no attachments, no nudge)', () => {
+    expect(buildUserMessageMeta(false, [])).toBeUndefined()
+  })
+
+  it('returns {goal:true} for a goal-only message', () => {
+    expect(buildUserMessageMeta(true, [])).toEqual({ goal: true })
+  })
+
+  it('returns {is_nudge:true} for a nudge-only message', () => {
+    expect(buildUserMessageMeta(false, [], true)).toEqual({ is_nudge: true })
+  })
+
+  it('maps document attachments to StoredAttachmentMeta records', () => {
+    expect(buildUserMessageMeta(false, [DOC])).toEqual({
+      attachments: [{ original_name: 'report.pdf', format: 'pdf', size_bytes: 4096 }],
+    })
+  })
+
+  it('maps image attachments to StoredImageMeta records', () => {
+    expect(buildUserMessageMeta(false, [IMG])).toEqual({
+      images: [
+        {
+          id: 'img-1',
+          name: 'cat.png',
+          thumbnail: 'data:image/jpeg;base64,AAA',
+          path: '/tmp/img-1.png',
+          media_type: 'image/png',
+        },
+      ],
+    })
+  })
+
+  it('combines all signals in one blob', () => {
+    expect(buildUserMessageMeta(true, [DOC, IMG], true)).toEqual({
+      goal: true,
+      is_nudge: true,
+      attachments: [{ original_name: 'report.pdf', format: 'pdf', size_bytes: 4096 }],
+      images: [
+        {
+          id: 'img-1',
+          name: 'cat.png',
+          thumbnail: 'data:image/jpeg;base64,AAA',
+          path: '/tmp/img-1.png',
+          media_type: 'image/png',
+        },
+      ],
+    })
+  })
+
+  it('skips image records missing any required field (parse would drop them anyway)', () => {
+    const incomplete = { ...IMG, path: undefined } as AttachmentInfoUI
+    expect(buildUserMessageMeta(false, [incomplete])).toBeUndefined()
+  })
+
+  it('round-trips through parseUserMessageMeta', () => {
+    const built = buildUserMessageMeta(true, [DOC, IMG], true)
+    expect(built).toBeDefined()
+    expect(parseUserMessageMeta(built)).toEqual({
+      goal: true,
+      is_nudge: true,
+      attachments: [{ original_name: 'report.pdf', format: 'pdf', size_bytes: 4096 }],
+      images: [
+        {
+          id: 'img-1',
+          name: 'cat.png',
+          thumbnail: 'data:image/jpeg;base64,AAA',
+          path: '/tmp/img-1.png',
+          media_type: 'image/png',
+        },
+      ],
     })
   })
 })

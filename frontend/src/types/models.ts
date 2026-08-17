@@ -78,6 +78,12 @@ export interface AttachmentInfoUI {
   readonly isImage?: boolean
   /** JPEG data URI (64px) for image attachments; absent for non-images. */
   readonly thumbnail?: string
+  /** On-disk location of the staged image; absent for non-images. Mirrored
+   *  into the optimistic user-message metadata (StoredImageMeta) at send time
+   *  so image thumbnails render immediately. */
+  readonly path?: string
+  /** MIME type of the staged image (e.g. "image/png"); absent for non-images. */
+  readonly mediaType?: string
 }
 
 /** Discriminator for the kind of content found on the clipboard by the

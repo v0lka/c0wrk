@@ -15,6 +15,7 @@
 // not break message reconstruction.
 
 import { isObj } from '@/types/guards'
+import type { AttachmentInfoUI } from '@/types/models'
 
 /** Per-image record persisted in ChatMessage.Metadata. Mirrors the backend
  *  StoredImageMetadata (snake_case). Carries the thumbnail data URI and the
@@ -123,4 +124,56 @@ export function parseUserMessageMeta(
   }
 
   return result
+}
+
+/**
+ * Build the optimistic user-message metadata blob at send time, mirroring the
+ * SNAKE_CASE shape the Go backend persists via PendingMessageMetadata
+ * (manager_attachment.go). The optimistic message in useMessageSender carries
+ * this blob so goal/attachment/image indicators render immediately instead of
+ * appearing only after a session reload.
+ *
+ * - Image attachments (isImage=true) map to StoredImageMeta records; an image
+ *   missing any of the five required fields is skipped — parseUserMessageMeta
+ *   would drop it on re-parse anyway, so we never stage a half-formed record.
+ * - Document attachments map to StoredAttachmentMeta records.
+ * - `goal`/`is_nudge` are included only when true (mirroring omitempty).
+ *
+ * Returns `undefined` when no signal is present so plain text messages keep an
+ * empty metadata field.
+ */
+export function buildUserMessageMeta(
+  goal: boolean,
+  attachments: readonly AttachmentInfoUI[],
+  isNudge = false,
+): Record<string, unknown> | undefined {
+  const images: StoredImageMeta[] = []
+  const docs: StoredAttachmentMeta[] = []
+  for (const a of attachments) {
+    if (a.isImage === true) {
+      if (a.id && a.originalName && a.thumbnail && a.path && a.mediaType) {
+        images.push({
+          id: a.id,
+          name: a.originalName,
+          thumbnail: a.thumbnail,
+          path: a.path,
+          media_type: a.mediaType,
+        })
+      }
+    } else {
+      docs.push({
+        original_name: a.originalName,
+        format: a.format,
+        size_bytes: a.sizeBytes,
+      })
+    }
+  }
+
+  const meta: Record<string, unknown> = {}
+  if (goal) meta.goal = true
+  if (isNudge) meta.is_nudge = true
+  if (images.length > 0) meta.images = images
+  if (docs.length > 0) meta.attachments = docs
+
+  return Object.keys(meta).length > 0 ? meta : undefined
 }

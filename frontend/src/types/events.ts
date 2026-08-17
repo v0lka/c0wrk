@@ -142,6 +142,12 @@ export interface AttachmentInfoRaw {
   readonly is_image?: boolean
   /** JPEG data URI (64px) for image attachments; omitted for non-images. */
   readonly thumbnail?: string
+  /** On-disk location of the staged image; omitted for non-images. Mirrored
+   *  into the optimistic user-message metadata so image thumbnails render
+   *  immediately instead of after a session reload. */
+  readonly path?: string
+  /** MIME type of the staged image (e.g. "image/png"); omitted for non-images. */
+  readonly media_type?: string
 }
 
 /** Backend PasteResult record (snake_case), as returned by the
