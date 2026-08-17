@@ -12,6 +12,7 @@
 import { useState, useRef, useCallback } from 'react'
 import type { RefObject } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useTerminalRegistryStore } from '@/stores/terminalRegistryStore'
 import {
   createSession,
   renameSession,
@@ -71,6 +72,9 @@ export function useSessionActions(): SessionActions {
       try {
         await deleteSession(id)
         removeSession(id)
+        // The backend stopped this session's terminal PTY in DeleteSession;
+        // drop its (now-dead) instance from the app-lifetime registry.
+        useTerminalRegistryStore.getState().removeInstances([id])
       } catch (error) {
         logger.error('Failed to delete session:', error)
       }

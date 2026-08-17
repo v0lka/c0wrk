@@ -1,5 +1,7 @@
 import { useState, useCallback, useRef } from "react";
 import { useProjectStore } from "@/stores/projectStore";
+import { useSessionStore } from "@/stores/sessionStore";
+import { useTerminalRegistryStore } from "@/stores/terminalRegistryStore";
 import { renameProject, deleteProject } from "@/api/projects";
 import { useProjectSwitchState } from "@/hooks/useProjectSwitchState";
 import { CreateProjectDialog } from "@/components/project/CreateProjectDialog";
@@ -51,6 +53,16 @@ export function ProjectSelector() {
     async (id: string) => {
       try {
         await deleteProject(id);
+        // The backend deleted the project's sessions (stopping their
+        // terminal PTYs). Collect their ids BEFORE the session list is
+        // re-scoped by the project switch below and drop the dead terminal
+        // instances from the app-lifetime registry.
+        const removedSessionIds = (useSessionStore.getState().sessions ?? [])
+          .filter((s) => s.project_id === id)
+          .map((s) => s.id);
+        if (removedSessionIds.length > 0) {
+          useTerminalRegistryStore.getState().removeInstances(removedSessionIds);
+        }
         removeProject(id);
         if (id === activeProjectId) {
           const remaining = useProjectStore.getState().projects;

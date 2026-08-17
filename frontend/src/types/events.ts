@@ -330,6 +330,12 @@ export interface SessionEventMap {
   readonly reflection: ReflectionData
   readonly session_renamed: SessionRenamedData
   readonly terminal_output: TerminalOutputData
+  /** Fired when a session's shell process exits on its own (user typed
+   *  `exit`, shell crash). No payload — the event itself is the signal. The
+   *  UI keeps the terminal instance mounted and resurrects the shell lazily
+   *  on next activation. Not fired for explicit stop (session deletion, app
+   *  shutdown, StartTerminalInDir restarts). */
+  readonly terminal_exited: void
   readonly skills_activated: SkillsActivatedData
   readonly tools_assigned: ToolsAssignedData
   readonly agent_metrics: AgentMetricsData

@@ -1,7 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { terminalInput, terminalResize, startTerminal, startTerminalInDir, stopTerminal } from '@/api/terminal'
+import { terminalInput, terminalResize, startTerminal, startTerminalInDir } from '@/api/terminal'
 import { useTerminalEvents } from '@/hooks/events/useTerminalEvents'
 import { useXTermTheme } from '@/hooks/useXTermTheme'
 import { useInputModeStore } from '@/stores/inputModeStore'
@@ -11,10 +11,26 @@ import { logger } from '@/lib/logger'
 interface TerminalProps {
     sessionId: string
     visible: boolean
-    onReady?: () => void
+    /** True only for the instance backing the currently active session.
+     * Gates global "Open in Terminal" requests (pendingTerminalDir) so
+     * exactly one mounted instance — the active one — consumes them. */
+    isActive: boolean
+    onReady?: (sessionId: string) => void
 }
 
-export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
+/**
+ * A single session's terminal. The component is mounted for the app lifetime
+ * once the session's terminal is first opened (see TerminalPanel): switching
+ * sessions/projects only toggles visibility — the xterm.js instance (with its
+ * scrollback) and the backend PTY stay alive. The shell is NOT stopped on
+ * unmount; unmounting only happens when the session is deleted (backend
+ * already stopped that PTY) or the app closes (backend StopAll on shutdown).
+ *
+ * If the shell exits on its own (user typed `exit`), the backend emits
+ * terminal_exited; the instance then resurrects the shell lazily — on next
+ * activation, click, or keystroke — preserving the existing buffer.
+ */
+export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProps) {
     const containerRef = useRef<HTMLDivElement>(null)
     const termRef = useRef<XTerm | null>(null)
     const fitAddonRef = useRef<FitAddon | null>(null)
@@ -27,12 +43,42 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
     const themeRef = useRef(theme)
     themeRef.current = theme
 
+    // Dead-shell tracking: set on terminal_exited, cleared when a restart
+    // succeeded. restarting guards against concurrent restart attempts.
+    const endedRef = useRef(false)
+    const restartingRef = useRef(false)
+
     // Subscribe to terminal output at the top level; the callback safely accesses
     // termRef.current (set in useEffect below, but events only flow after startTerminal).
     useTerminalEvents({
         sessionId,
         onOutput: (bytes: Uint8Array) => { termRef.current?.write(bytes) },
+        onExited: () => { endedRef.current = true },
     })
+
+    // Resurrect a dead shell. Input typed while dead is buffered and replayed
+    // once the new shell is up, so no keystroke is lost.
+    const restart = useCallback((pendingInput?: string) => {
+        if (restartingRef.current) return
+        restartingRef.current = true
+        startTerminal(sessionId)
+            .then(() => {
+                endedRef.current = false
+                if (pendingInput) {
+                    return terminalInput(sessionId, pendingInput)
+                }
+                return undefined
+            })
+            .catch((err) => {
+                logger.error('Failed to restart terminal:', err)
+                termRef.current?.writeln(
+                    `\r\n\x1b[31mFailed to restart terminal: ${err instanceof Error ? err.message : String(err)}\x1b[0m`,
+                )
+            })
+            .finally(() => {
+                restartingRef.current = false
+            })
+    }, [sessionId])
 
     useEffect(() => {
         const container = containerRef.current
@@ -54,6 +100,11 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
         term.focus()
 
         term.onData((data) => {
+            if (endedRef.current) {
+                // Shell is dead — resurrect it and replay this keystroke.
+                restart(data)
+                return
+            }
             terminalInput(sessionId, data).catch((err) => {
                 logger.error('Terminal input error:', err)
                 term.writeln(`\r\n\x1b[31m[Input error: ${err instanceof Error ? err.message : String(err)}]\x1b[0m`)
@@ -75,11 +126,11 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
         }
 
         startPromise.then(() => {
-            onReady?.()
+            onReady?.(sessionId)
         }).catch((err) => {
             logger.error('Failed to start terminal:', err)
             term.writeln(`\r\n\x1b[31mFailed to start terminal: ${err instanceof Error ? err.message : String(err)}\x1b[0m`)
-            onReady?.()
+            onReady?.(sessionId)
         })
 
         const handleResize = () => {
@@ -107,14 +158,16 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
         return () => {
             clearTimeout(resizeTimeout)
             ro.disconnect()
-            stopTerminal(sessionId).catch((err) => {
-                logger.error('Failed to stop terminal:', err)
-            })
+            // Deliberately NO stopTerminal here: the PTY must outlive this
+            // component. Terminals are per-session and kept alive for the
+            // whole app lifetime; the backend stops them on session deletion
+            // (DeleteSession) and app shutdown (StopAll). Only the xterm.js
+            // renderer is disposed.
             term.dispose()
             termRef.current = null
             fitAddonRef.current = null
         }
-    }, [sessionId, onReady])
+    }, [sessionId, onReady, restart])
 
     // Apply theme changes to the live terminal without restarting the session.
     // xterm.js re-renders when options.theme is reassigned, so switching the
@@ -129,7 +182,9 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
     // that arrive after the terminal is already running. The initial mount
     // case is handled by the main effect above (which reads pendingTerminalDir
     // from the store); this effect handles subsequent directory changes by
-    // restarting the terminal in the new directory.
+    // restarting the terminal in the new directory. Only the ACTIVE session's
+    // instance may consume the request — the directory targets the session
+    // the user is currently looking at.
     const pendingTerminalDir = useInputModeStore((s) => s.pendingTerminalDir)
     const isFirstDirRun = useRef(true)
     useEffect(() => {
@@ -137,10 +192,11 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
             isFirstDirRun.current = false
             return
         }
-        if (!pendingTerminalDir) return
+        if (!pendingTerminalDir || !isActive) return
         startTerminalInDir(sessionId, pendingTerminalDir)
             .then(() => {
                 useInputModeStore.getState().clearPendingTerminalDir()
+                endedRef.current = false
                 termRef.current?.focus()
             })
             .catch((err) => {
@@ -150,11 +206,16 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
                 )
                 useInputModeStore.getState().clearPendingTerminalDir()
             })
-    }, [pendingTerminalDir, sessionId])
+    }, [pendingTerminalDir, sessionId, isActive])
 
     useEffect(() => {
         let timer: ReturnType<typeof setTimeout> | undefined
         if (visible && termRef.current) {
+            // Lazy resurrection: the shell died while the instance was hidden
+            // (or in plain sight) — bring it back when the panel is shown.
+            if (endedRef.current) {
+                restart()
+            }
             timer = setTimeout(() => {
                 termRef.current?.focus()
                 try {
@@ -169,9 +230,12 @@ export function Terminal({ sessionId, visible, onReady }: TerminalProps) {
         return () => {
             if (timer) clearTimeout(timer)
         }
-    }, [visible])
+    }, [visible, restart])
 
     const handleClick = () => {
+        if (endedRef.current) {
+            restart()
+        }
         termRef.current?.focus()
     }
 

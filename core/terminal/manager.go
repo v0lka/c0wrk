@@ -28,18 +28,25 @@ type Session struct {
 // NewManager creates a new terminal manager.
 // The rootCtx is the application lifecycle context — cancelling it triggers
 // cleanup of all active terminal sessions.
-func NewManager(rootCtx context.Context, logger *slog.Logger, emit func(sessionID string, data []byte)) *Manager {
+// The emit callback streams raw PTY output; onExit is fired when a shell
+// process exits on its own (not on explicit Stop/StopAll). Both are optional
+// (nil → no-op).
+func NewManager(rootCtx context.Context, logger *slog.Logger, emit func(sessionID string, data []byte), onExit func(sessionID string)) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if emit == nil {
 		emit = func(string, []byte) {} // no-op fallback
 	}
+	if onExit == nil {
+		onExit = func(string) {} // no-op fallback
+	}
 	return &Manager{
 		rootCtx:  rootCtx,
 		sessions: make(map[string]*Session),
 		logger:   logger,
 		emit:     emit,
+		onExit:   onExit,
 	}
 }
 
@@ -219,4 +226,10 @@ func (m *Manager) readLoop(ctx context.Context, sessionID string, ptmx *os.File)
 
 	m.emit(sessionID, []byte("\r\n\x1b[31m[Terminal session ended]\x1b[0m\r\n"))
 	m.logger.Info("terminal process exited", "session_id", sessionID)
+
+	// Signal natural exit so the UI can resurrect the shell lazily (on next
+	// activation). Explicit Stop/StopAll paths do not fire this — they either
+	// remove the terminal for good (session delete, app shutdown) or are
+	// immediately followed by a fresh Start (StartTerminalInDir).
+	m.onExit(sessionID)
 }

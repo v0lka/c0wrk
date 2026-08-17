@@ -18,6 +18,11 @@ type Manager struct {
 	sessions map[string]*Session
 	logger   *slog.Logger
 	emit     func(sessionID string, data []byte)
+	// onExit, when set, is invoked when a session's shell process exits on
+	// its own (user types `exit`, shell crash). It is NOT invoked for explicit
+	// Stop/StopAll teardown (session deletion, app shutdown, StartTerminalInDir
+	// restarts) — those paths already have a defined follow-up state.
+	onExit func(sessionID string)
 }
 
 // buildTermEnv returns the current process environment with terminal-specific

@@ -10,12 +10,22 @@ import (
 )
 
 // StartTerminal starts a new PTY-backed shell for the given session.
+// Terminals are kept alive per-session for the whole app lifetime (the UI
+// persists one xterm.js instance per session and never stops the PTY on
+// session/project switches), so a start request for a session that already
+// has an active terminal is treated as a reattach: it returns nil and the
+// caller's terminal attaches to the live output stream.
 func (f *FrontendAPI) StartTerminal(sessionID string) error {
 	if f.terminalManager == nil {
 		return errors.New("terminal manager not initialized")
 	}
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
+	}
+
+	// Reattach: the PTY is already running for this session.
+	if f.terminalManager.IsActive(sessionID) {
+		return nil
 	}
 
 	workDir, ok := f.app.Manager().GetSessionWorkspacePath(sessionID)

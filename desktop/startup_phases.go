@@ -238,10 +238,20 @@ func (a *App) initDatabase(dbPath string, log *slog.Logger) *sql.DB {
 // (string(data) would corrupt invalid UTF-8 split across read boundaries, and
 // json.Marshal replaces invalid UTF-8 with U+FFFD).
 func (a *App) initTerminalManager(log *slog.Logger) *terminal.Manager {
-	return terminal.NewManager(a.ctx, log, func(sessionID string, data []byte) {
-		eventName := fmt.Sprintf("session:%s:terminal_output", sessionID)
-		a.emit(eventName, map[string]string{"data": base64.StdEncoding.EncodeToString(data)})
-	})
+	return terminal.NewManager(a.ctx, log,
+		func(sessionID string, data []byte) {
+			eventName := fmt.Sprintf("session:%s:terminal_output", sessionID)
+			a.emit(eventName, map[string]string{"data": base64.StdEncoding.EncodeToString(data)})
+		},
+		func(sessionID string) {
+			// Natural shell exit (user typed `exit` / shell crashed). The UI
+			// keeps the per-session terminal instance mounted and resurrects
+			// the shell lazily on next activation. Empty-object payload so it
+			// passes the frontend's null-payload event filter.
+			eventName := fmt.Sprintf("session:%s:terminal_exited", sessionID)
+			a.emit(eventName, map[string]string{})
+		},
+	)
 }
 
 // initStores creates the project + session + review SQLite stores. Order
