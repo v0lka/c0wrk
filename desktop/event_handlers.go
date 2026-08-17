@@ -222,13 +222,19 @@ func (a *App) runJudgeEvaluation(confirmID string, pendingData *pendingConfirmDa
 	judgeCtx, judgeCancel := context.WithTimeout(parentCtx, 120*time.Second)
 	defer judgeCancel()
 
-	// Inject session dump writer for judge LLM call observability.
-	if sess, ok := a.app.Manager().GetSession(pendingData.sessionID); ok {
+	// Inject session dump writer for judge LLM call observability, then
+	// enrich the judge context with the session's security scope (workspace,
+	// temp dir, EnvInfo, auxiliary work directories as allowed roots) so the
+	// judge LLM knows the session's directory scope — explicit and implicit
+	// additional work directories included.
+	sess, sessOK := a.app.Manager().GetSession(pendingData.sessionID)
+	if sessOK {
 		if dumpFile := sess.DumpFile(); dumpFile != nil {
 			defer func() { _ = dumpFile.Close() }()
 			judgeCtx = agent.WithDumpWriter(judgeCtx, dumpFile)
 		}
 	}
+	judgeCtx = a.app.Manager().JudgeContext(judgeCtx, pendingData.sessionID)
 
 	responsePayload := session.JudgeResponsePayload{ConfirmID: confirmID}
 

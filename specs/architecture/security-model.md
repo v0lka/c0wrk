@@ -129,7 +129,9 @@ The `ToolJudge` (`github.com/v0lka/sp4rk/tools/judge.go`) provides LLM-based saf
 ### Advisory Judge (on-demand)
 
 - Invoked on-demand via the frontend "Ask Agent" button on a pending confirmation card
-- Uses path-locality fast-paths (session-root auto-allow for non-shell tools) and an LRU cache keyed by `tool + input`
+- The desktop handler builds the judge context via `session.Manager.JudgeContext` — the same security scope a live task gets: session workspace path (+ case-folding flag), session temp directory, `EnvInfo`, and the auxiliary work directories as allowed roots (user-configured project/session directories plus the implicit host temp roots). Without this the judge LLM cannot know the session's directory scope and would treat operations inside legitimate additional work directories as out-of-workspace violations.
+- The judge prompt lists the session directories (`## Session Directories`: workspace + additional roots) so the LLM recognizes paths inside them as in-scope; the advisory cache key includes the session roots, so a verdict is never reused across sessions with different directory scopes
+- Uses path-locality fast-paths (session-root auto-allow for non-shell tools) and an LRU cache keyed by `tool + input + session roots`
 - Provides reasoning displayed to the user in the confirmation dialog; the verdict does NOT auto-resolve the confirmation
 - When a tool has `PolicyAlwaysAllow` but implements the `ToolJudger` interface, the tool-specific judge may flag suspicious calls and escalate to user confirmation
 - File tools use `judgeReadInSessionRoots` / `judgeWriteInSessionRoots` (in `github.com/v0lka/sp4rk/tools/builtins/file_judge.go`) to check whether the target path is inside the session workspace or temp directory. Operations outside both roots return `allow=false` with a reason, escalating to user confirmation.
@@ -144,7 +146,7 @@ When `security.smart_approve` is enabled (default: false), a **strict OWASP ASI 
 - Returns only `ALLOW` or `CONFIRM`; a strict `ALLOW` requires the call to be clearly task-relevant, narrowly scoped, reversible or read-only, from a trusted source, with no material ASI risk
 - Does NOT use the advisory cache (verdicts are context-dependent and must not be reused across different tasks/sources)
 - Fails safe to `CONFIRM` on timeout, provider error, nil response, or unparseable output
-- Passes task context, tool source (`core` or MCP server name), and compact environment info to the LLM
+- Passes task context, tool source (`core` or MCP server name), compact environment info, and the session's directory roots (`session_directories`: workspace + auxiliary work directories, explicit or host-injected) to the LLM
 - Does not log raw tool arguments in the structured verdict log
 
 A strict `ALLOW` executes the tool without UI. A `CONFIRM` (or any failure outcome) falls back to manual confirmation with the strict judge's reasoning shown and the advisory "Ask Agent" button hidden (the `ConfirmationRequest.DisableJudge` flag signals this to the frontend).
