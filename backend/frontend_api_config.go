@@ -668,6 +668,22 @@ func (f *FrontendAPI) UpdateSmallLLMConfig(cfg SmallLLMConfigResponse) error {
 		return errors.New("config not initialized")
 	}
 
+	// Reconcile a stale slot budget BEFORE validation (systemic fix): a
+	// config persisted by an older build can carry a max_tools below the
+	// guaranteed set (always_present ∪ protected) — e.g. update_checklist
+	// moved into the protected set and grew the union past an old cap, while
+	// the stored always_present list kept stale entries. validateSmallLLMConfig
+	// would then reject EVERY save from the settings panel — including a bare
+	// master-toggle flip — with no UI-only remedy (the protected tools are
+	// locked chips the user cannot un-pin), locking the profile behind a
+	// hand-edited YAML. The guaranteed set is never trimmed at runtime
+	// anyway, so raising the cap to its size only makes the stored budget
+	// honest; the next successful persist writes the reconciled value.
+	if r := reconcileSmallLLMCap(&cfg); r.from != r.to {
+		f.log().Info("small-LLM: max_tools was below the guaranteed tool count; raised to the guaranteed set size (stale config reconciled)",
+			"from", r.from, "to", r.to)
+	}
+
 	// Validate before mutation — a bad payload must not partially overwrite
 	// the persisted config.
 	if err := validateSmallLLMConfig(cfg); err != nil {
@@ -735,7 +751,10 @@ func validateSmallLLMConfig(cfg SmallLLMConfigResponse) error {
 		// MCP tools join at runtime) is never trimmed by SelectTools, so a cap
 		// smaller than the guaranteed count would leave zero router-matched
 		// slots and the result would silently exceed the budget. Reject up
-		// front with an actionable message.
+		// front with an actionable message. Note: UpdateSmallLLMConfig
+		// reconciles stale caps to the guaranteed count BEFORE calling this
+		// validator (see reconcileSmallLLMCap), so the save path self-heals
+		// instead of failing; this check remains the invariant's safety net.
 		if cfg.EssentialTools.MaxTools > 0 {
 			guaranteed := unionAlwaysPresent(cfg.EssentialTools.AlwaysPresent, smallllm.ProtectedToolNames())
 			if len(guaranteed) > cfg.EssentialTools.MaxTools {
@@ -924,6 +943,34 @@ func responseToSmallLLM(r SmallLLMConfigResponse) config.SmallLLMConfig {
 			OutputTokenReserve:  r.Context.OutputTokenReserve,
 		},
 	}
+}
+
+// capReconciliation reports a max_tools adjustment made by
+// reconcileSmallLLMCap: from == to means no change was needed.
+type capReconciliation struct {
+	from int
+	to   int
+}
+
+// reconcileSmallLLMCap raises EssentialTools.MaxTools to the guaranteed tool
+// count (always_present ∪ protected orchestration tools) when a stale
+// persisted cap sits below it. Guaranteed tools are never trimmed by
+// SelectTools, so a cap below that count is unenforceable — it only breaks
+// validation (see UpdateSmallLLMConfig). Negative caps and the unlimited
+// sentinel (0) are passed through untouched: validation still rejects
+// negatives and honors 0 as unlimited.
+func reconcileSmallLLMCap(cfg *SmallLLMConfigResponse) capReconciliation {
+	et := &cfg.EssentialTools
+	if et.MaxTools <= 0 {
+		return capReconciliation{from: et.MaxTools, to: et.MaxTools}
+	}
+	guaranteed := len(unionAlwaysPresent(et.AlwaysPresent, smallllm.ProtectedToolNames()))
+	if guaranteed <= et.MaxTools {
+		return capReconciliation{from: et.MaxTools, to: et.MaxTools}
+	}
+	from := et.MaxTools
+	et.MaxTools = guaranteed
+	return capReconciliation{from: from, to: guaranteed}
 }
 
 // GetLogLevel returns the current log level.

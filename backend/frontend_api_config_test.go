@@ -1574,32 +1574,52 @@ func TestUpdateSmallLLMConfig_NegativeMaxTools(t *testing.T) {
 	}
 }
 
-func TestUpdateSmallLLMConfig_RejectsMaxToolsBelowGuaranteed(t *testing.T) {
+// TestUpdateSmallLLMConfig_SelfHealsMaxToolsBelowGuaranteed pins the
+// save-time reconciliation: a cap below the guaranteed set is unenforceable
+// (guaranteed tools are never trimmed), so instead of rejecting the save —
+// which locked the settings panel behind a hand-editable-only error — the
+// update path raises the cap to the guaranteed count. See
+// TestReconcileSmallLLMCap_Passthrough for the sentinel/negative guards and
+// TestValidateSmallLLMConfig_RejectsCapBelowGuaranteed for the retained
+// validator safety net.
+func TestUpdateSmallLLMConfig_SelfHealsMaxToolsBelowGuaranteed(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
 
 	// validSmallLLMConfig pins 2 tools; the guaranteed set is
-	// 2 always-present ∪ 5 protected (no overlap) = 7. A cap of 6 would leave
-	// zero router-matched slots and the never-trimmed guaranteed set would
-	// silently exceed the budget — validation must reject it with an
-	// actionable message instead.
+	// 2 always-present ∪ 5 protected (no overlap) = 7. A cap of 6 would
+	// leave zero router-matched slots and the never-trimmed guaranteed set
+	// would exceed the budget — the save reconciles it to 7.
 	cfg := validSmallLLMConfig()
 	cfg.EssentialTools.MaxTools = 6
 
-	err := f.UpdateSmallLLMConfig(cfg)
+	if err := f.UpdateSmallLLMConfig(cfg); err != nil {
+		t.Fatalf("save must succeed after reconciliation, got: %v", err)
+	}
+	if got := f.config.SmallLLM.EssentialTools.MaxTools; got != 7 {
+		t.Errorf("MaxTools = %d, want 7 (raised to the guaranteed count)", got)
+	}
+	if mock.rebuildRouterCalls != 1 {
+		t.Errorf("RebuildRouter called %d times, want 1", mock.rebuildRouterCalls)
+	}
+}
+
+// TestValidateSmallLLMConfig_RejectsCapBelowGuaranteed keeps the validator's
+// safety net covered: reconcileSmallLLMCap normally prevents this state from
+// reaching validation via UpdateSmallLLMConfig, but the validator remains the
+// invariant's single source of truth for any future caller.
+func TestValidateSmallLLMConfig_RejectsCapBelowGuaranteed(t *testing.T) {
+	cfg := validSmallLLMConfig()
+	cfg.EssentialTools.MaxTools = 6
+
+	err := validateSmallLLMConfig(cfg)
 	if err == nil {
-		t.Fatal("expected error when max_tools is below the guaranteed tool count")
+		t.Fatal("expected validator error when max_tools is below the guaranteed tool count")
 	}
 	if !strings.Contains(err.Error(), "guaranteed tool count") {
 		t.Errorf("error should explain the guaranteed-count constraint, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "max_tools") {
 		t.Errorf("error should name max_tools, got: %v", err)
-	}
-	if f.config.SmallLLM.Enabled {
-		t.Error("config was mutated despite validation error")
-	}
-	if mock.rebuildRouterCalls != 0 {
-		t.Errorf("RebuildRouter called %d times, want 0", mock.rebuildRouterCalls)
 	}
 }
 

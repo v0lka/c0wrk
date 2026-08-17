@@ -50,7 +50,7 @@ export function SmallLLMSettings() {
       setError(null)
     } catch (err) {
       logger.error('Failed to update Small LLM config:', err)
-      setError(err instanceof Error ? err.message : 'Failed to save Small LLM settings')
+      setError(err instanceof Error ? err.message : String(err))
       try {
         setConfig(await getSmallLLMConfig())
       } catch {

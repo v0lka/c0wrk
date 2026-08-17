@@ -725,6 +725,9 @@ orchestration:
 #     # NEVER trimmed: at most max_tools − len(guaranteed) router-matched
 #     # tools are kept, filled in registry order. Validation rejects a cap
 #     # smaller than the guaranteed set itself. 0 = unlimited. Default: 16.
+#     # A persisted cap below the guaranteed count (possible with configs
+#     # saved by older builds) is raised to it automatically on save, so a
+#     # stale config self-heals instead of rejecting every settings change.
 #     max_tools: 16
 #     # Replace every known builtin's full description (rubric:
 #     # purpose/when-to-use/inputs/outputs/example/anti-example, 480-1100
