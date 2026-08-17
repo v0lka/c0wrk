@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -91,10 +92,23 @@ func TestEditVerifyRunner_ExitZero(t *testing.T) {
 	}
 }
 
+// nonZeroExitShellCommand returns a command that writes "boom" to stderr and
+// exits with status 7, in the platform shell's dialect (bash_exec on Unix,
+// posh_exec — Windows PowerShell — on Windows). Windows PowerShell 5.1 has no
+// bash-style ">&2" stream redirection (it is a parse error there; stream
+// merging arrived only in PowerShell 7), so the Windows dialect targets
+// stderr via the .NET console API instead.
+func nonZeroExitShellCommand() string {
+	if runtime.GOOS == "windows" {
+		return "[Console]::Error.WriteLine('boom'); exit 7"
+	}
+	return "echo boom >&2; exit 7"
+}
+
 func TestEditVerifyRunner_NonZeroExit(t *testing.T) {
 	ws := t.TempDir()
 	runner := buildEditVerifyRunner(newVerifyTestRegistry(t), ws,
-		"echo boom >&2; exit 7", "30s", 0, nil)
+		nonZeroExitShellCommand(), "30s", 0, nil)
 	res := runner(context.Background())
 	if res.Err != nil {
 		t.Fatalf("unexpected Err: %v", res.Err)
