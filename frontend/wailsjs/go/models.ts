@@ -1788,6 +1788,8 @@ export namespace session {
 	    size_bytes: number;
 	    is_image: boolean;
 	    thumbnail?: string;
+	    path?: string;
+	    media_type?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AttachmentInfo(source);
@@ -1801,6 +1803,8 @@ export namespace session {
 	        this.size_bytes = source["size_bytes"];
 	        this.is_image = source["is_image"];
 	        this.thumbnail = source["thumbnail"];
+	        this.path = source["path"];
+	        this.media_type = source["media_type"];
 	    }
 	}
 	export class ChatMessage {

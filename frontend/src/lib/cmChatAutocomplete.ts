@@ -48,7 +48,12 @@ function invalidateAgentsCache() {
 let rootSubActive = false
 function ensureRootSubscription() {
   if (rootSubActive) return
-  rootSubActive = true
+  // The flag is flipped only AFTER every subscription is registered:
+  // subscribe() throws when the Wails runtime is not injected yet, and a
+  // premature flag would permanently skip re-registration on later calls,
+  // killing cache invalidation (and with it @-completions) for the whole
+  // session. This function is fully synchronous, so no re-entrancy is
+  // possible before the flag is set.
   let prevRoot = useFileTreeStore.getState().rootPath
   useFileTreeStore.subscribe((s) => {
     if (s.rootPath !== prevRoot) {
@@ -76,6 +81,7 @@ function ensureRootSubscription() {
   subscribe('agents:changed', () => {
     invalidateAgentsCache()
   })
+  rootSubActive = true
 }
 
 async function getSkills(): Promise<SkillDescriptor[]> {
@@ -105,8 +111,16 @@ async function getFiles(): Promise<FileEntry[]> {
   if (!rootPath) return []
   if (filesLoaded && filesCacheRoot === rootPath) return filesCache
   try {
-    filesCache = await listDirectory(rootPath, true)
-    filesLoaded = true
+    const entries = await listDirectory(rootPath, true)
+    filesCache = entries
+    // Cache only non-empty listings. An empty result may be a transient
+    // failure — the workspace directory not yet materialized (No Project
+    // sessions create it lazily), or an invalid RPC payload degraded to []
+    // by the api guard. Caching it would suppress @-completions until the
+    // next workspace:tree_changed event or an app restart (the reported
+    // "hints stop appearing until restart" bug). Retrying on the next
+    // completion trigger self-heals once the directory exists.
+    filesLoaded = entries.length > 0
     filesCacheRoot = rootPath
   } catch {
     filesCache = []

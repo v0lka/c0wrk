@@ -117,4 +117,3 @@ func TestCombinedAttachmentInfos_ImageCarriesPathAndMediaType(t *testing.T) {
 		t.Errorf("img entry = %+v, want Format=png with thumbnail", img)
 	}
 }
-

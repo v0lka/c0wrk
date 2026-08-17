@@ -86,9 +86,21 @@ func ListDirRecursive(absDir string, ignoredPaths map[string]bool, opts ...ListD
 		o(&cfg)
 	}
 
-	var nodes []FileNode
+	// Non-nil even for an empty walk: a nil slice serializes to `null` over
+	// the Wails binding, which the frontend's shape guard treats as invalid
+	// and degrades to `[]` — making a missing directory indistinguishable
+	// from an empty one. `[]` keeps the "empty" signal explicit.
+	nodes := make([]FileNode, 0)
 	walkErr := filepath.WalkDir(absDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			if path == absDir {
+				// The walk root itself is missing or unreadable. Unlike
+				// nested paths (skipped below), swallowing this would return
+				// (empty, nil), letting callers cache an "empty workspace"
+				// for a directory that may simply not exist yet. Surface the
+				// error so callers retry once the directory materializes.
+				return walkErr
+			}
 			if cfg.logger != nil {
 				cfg.logger.Warn("skipping unreadable path", "path", path, "error", walkErr)
 			}
