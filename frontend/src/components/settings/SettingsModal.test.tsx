@@ -22,6 +22,7 @@ vi.mock('@/api/config', () => ({
 
 import { SettingsModal } from './SettingsModal'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useUIStore } from '@/stores/uiStore'
 
 let container: HTMLDivElement
 let root: Root
@@ -173,5 +174,34 @@ describe('SettingsModal close flow', () => {
 
     expect(useSettingsStore.getState().open).toBe(false)
     expect(bannerText()).not.toContain('Default model is not configured.')
+  })
+})
+
+describe('SettingsModal General tab: session statistics display toggle', () => {
+  it('shows the Session Statistics control, off by default, and toggling flips the uiStore flag', async () => {
+    useUIStore.setState({ showSessionStats: false })
+    useSettingsStore.setState({ open: true, activeTab: 'general' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    expect(bannerText()).toContain('Session Statistics')
+    expect(bannerText()).toContain('Hidden')
+
+    // The Toggle renders an sr-only checkbox; flipping it must update the
+    // persisted uiStore flag that gates the ExecutionPanels stats row.
+    const headers = Array.from(document.body.querySelectorAll('span'))
+    const statsHeader = headers.find((s) => s.textContent === 'Session Statistics')
+    expect(statsHeader).toBeDefined()
+    const scope = statsHeader!.closest('div.flex.flex-col')
+    const statsToggle = scope!.querySelector<HTMLInputElement>('input[type="checkbox"]')
+    expect(statsToggle).toBeDefined()
+    expect(statsToggle!.checked).toBe(false)
+
+    await act(async () => {
+      statsToggle!.click()
+    })
+    expect(useUIStore.getState().showSessionStats).toBe(true)
   })
 })

@@ -36,6 +36,13 @@ interface UIState {
    * chosen proportion survives reloads.
    */
   chatSessionListRatio: number
+  /**
+   * Whether the per-run session statistics row (finish state, steps, output
+   * tokens, loop-detector counters) renders under the chat. Display-only:
+   * metrics are always collected and persisted; this toggle just hides or
+   * shows the summary. Off by default. Persisted.
+   */
+  showSessionStats: boolean
 }
 
 interface UIActions {
@@ -44,6 +51,7 @@ interface UIActions {
   setWorkspaceTab: (tab: WorkspaceTab) => void
   setSidebarWidth: (width: number) => void
   setChatSessionListRatio: (ratio: number) => void
+  setShowSessionStats: (show: boolean) => void
 }
 
 // --- Store ---
@@ -55,6 +63,7 @@ export const useUIStore = create<UIState & UIActions>()(
       workspaceTab: 'explorer',
       sidebarWidth: getDefaultSidebarWidth(),
       chatSessionListRatio: 0.5,
+      showSessionStats: false,
 
       setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
 
@@ -69,31 +78,38 @@ export const useUIStore = create<UIState & UIActions>()(
       setChatSessionListRatio: (ratio) => set({
         chatSessionListRatio: Math.max(0, Math.min(1, ratio)),
       }),
+
+      setShowSessionStats: (show) => set({ showSessionStats: show }),
     }),
     {
       name: 'c0wrk-sidebar-collapsed',
-      version: 3,
+      version: 4,
       // Bump version and implement migration when adding/removing/renaming persisted fields.
       migrate: (persistedState, _version) => {
         const prev = (persistedState ?? {}) as {
           sidebarCollapsed?: boolean
           chatSessionListRatio?: number
           sidebarWidth?: number
+          showSessionStats?: boolean
         }
-        // v1→v2 added chatSessionListRatio; v2→v3 added sidebarWidth. On every
-        // migration (and fresh installs) missing fields take their creator
-        // default; persist's shallow merge already covers fresh installs, but
-        // explicit defaults here make the migration resilient to partial data.
+        // v1→v2 added chatSessionListRatio; v2→v3 added sidebarWidth;
+        // v3→v4 added showSessionStats (default off — the stats row is
+        // opt-in). On every migration (and fresh installs) missing fields
+        // take their creator default; persist's shallow merge already covers
+        // fresh installs, but explicit defaults here make the migration
+        // resilient to partial data.
         return {
           sidebarCollapsed: prev.sidebarCollapsed ?? false,
           chatSessionListRatio: prev.chatSessionListRatio ?? 0.5,
           sidebarWidth: prev.sidebarWidth ?? getDefaultSidebarWidth(),
+          showSessionStats: prev.showSessionStats ?? false,
         }
       },
       partialize: (state) => ({
         sidebarCollapsed: state.sidebarCollapsed,
         sidebarWidth: state.sidebarWidth,
         chatSessionListRatio: state.chatSessionListRatio,
+        showSessionStats: state.showSessionStats,
       }),
     }
   )

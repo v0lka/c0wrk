@@ -11,6 +11,7 @@ import { LogLevelSelector } from './LogLevelSelector'
 import { ThemeSelector } from './ThemeSelector'
 import { ProxySettings } from './ProxySettings'
 import { SoundSettings } from './SoundSettings'
+import { SessionStatsSettings } from './SessionStatsSettings'
 import { LLMSettings } from './LLMSettings'
 import { SmallLLMSettings } from './SmallLLMSettings'
 import { SearchSettings } from './SearchSettings'
@@ -174,6 +175,9 @@ export function SettingsModal() {
               <LogLevelSelector />
               <div className="border-t border-border pt-4">
                 <SoundSettings />
+              </div>
+              <div className="border-t border-border pt-4">
+                <SessionStatsSettings />
               </div>
               <div className="border-t border-border pt-4">
                 <h3 className="text-sm font-medium mb-3">HTTP Proxy</h3>

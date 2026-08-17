@@ -13,6 +13,7 @@ import type { ReactElement } from 'react'
 import { ExecutionPanels } from './ExecutionPanels'
 import { usePlanStore } from '@/stores/planStore'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useUIStore } from '@/stores/uiStore'
 import type { AgentMetricsData } from '@/types/events'
 import type { PlanGroup } from '@/types/models'
 
@@ -51,6 +52,8 @@ describe('ExecutionPanels render guard', () => {
     root = null
     usePlanStore.setState({ planGroups: [], sessionStats: {} })
     useSessionStore.setState({ activeSessionId: 's1' })
+    // Stats row display is opt-in (Settings → General, off by default).
+    useUIStore.setState({ showSessionStats: false })
   })
 
   afterEach(() => {
@@ -69,18 +72,35 @@ describe('ExecutionPanels render guard', () => {
     expect(container.innerHTML).toBe('')
   })
 
-  it('renders the stats row once the agent_metrics report arrives (plan-less task)', () => {
+  it('hides the stats row when agent_metrics arrives but display is off (default)', () => {
+    // Metrics are always collected into the store; the display toggle gates
+    // only the rendering — with it off (the default), a plan-less task must
+    // not render the container at all.
+    usePlanStore.setState({
+      sessionStats: { s1: { lastAgentMetrics: metrics } },
+    })
+    const container = render(<ExecutionPanels />)
+    expect(container.innerHTML).toBe('')
+  })
+
+  it('renders the stats row once the agent_metrics report arrives and display is enabled', () => {
+    useUIStore.setState({ showSessionStats: true })
     usePlanStore.setState({
       sessionStats: { s1: { lastAgentMetrics: metrics } },
     })
     const container = render(<ExecutionPanels />)
     expect(container.textContent).toContain('finish: full')
     expect(container.textContent).toContain('steps: 3')
+    expect(container.textContent).toContain('out tokens: 1200')
   })
 
-  it('renders the plan section without any stats', () => {
-    usePlanStore.setState({ planGroups: [planGroup] })
+  it('renders the plan section without the stats row when display is off', () => {
+    usePlanStore.setState({
+      planGroups: [planGroup],
+      sessionStats: { s1: { lastAgentMetrics: metrics } },
+    })
     const container = render(<ExecutionPanels />)
     expect(container.textContent).toContain('Execution plan')
+    expect(container.textContent).not.toContain('finish: full')
   })
 })

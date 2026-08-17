@@ -20,6 +20,8 @@ function countersSummary(c: AgentMetricsCounters): string {
  * report delivered by the `agent_metrics` event on task finish/abort
  * (parse errors, loop-detector nudges/aborts, steps, output tokens and the
  * active small-LLM profile). Minimal by design — data, not decoration.
+ * Rendered only when the user enables it in Settings → General; collection
+ * and persistence happen regardless of this display toggle.
  */
 function SessionStatsRow({ sessionId }: { sessionId: string }) {
   const stats = usePlanStore(s => s.sessionStats[sessionId])
@@ -53,15 +55,18 @@ export function ExecutionPanels() {
   const planFailed = usePlanFailed()
   const planTotal = usePlanTotal()
   const sessionStats = usePlanStore(s => (activeSessionId ? s.sessionStats[activeSessionId] : undefined))
+  const showSessionStats = useUIStore(s => s.showSessionStats)
   const sidebarCollapsed = useUIStore(s => s.sidebarCollapsed)
   const viewerCollapsed = useFileViewerStore(s => s.collapsed)
 
   const [planOpen, setPlanOpen] = useState(false)
 
   const hasPlan = planGroups.length > 0
-  // The stats row renders only once the per-run agent_metrics report arrives;
-  // routing/retry stats alone must not produce an empty bordered container.
-  const hasMetrics = sessionStats?.lastAgentMetrics !== undefined
+  // The stats row renders only once the per-run agent_metrics report arrives
+  // AND the user enabled the display in Settings → General (hidden by
+  // default; metrics are still collected). Without the setting, routing/retry
+  // stats alone must not produce an empty bordered container.
+  const hasMetrics = showSessionStats && sessionStats?.lastAgentMetrics !== undefined
   if (!activeSessionId || (!hasPlan && !hasMetrics)) return null
 
   return (
@@ -102,7 +107,7 @@ export function ExecutionPanels() {
           )}
         </div>
       )}
-      <SessionStatsRow sessionId={activeSessionId} />
+      {showSessionStats && <SessionStatsRow sessionId={activeSessionId} />}
     </div>
   )
 }
