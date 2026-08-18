@@ -551,7 +551,13 @@ const (
 // the send may queue. The caller must hold session.mu. The same conditions are
 // checked by ValidateLiveSend before the frontend persists the message and by
 // the live branch here under the lock (the authoritative gate).
-func liveSendRejectionLocked(session *Session, goal bool, activeSkills, activeAgents []string) error {
+func liveSendRejectionLocked(session *Session, goal bool, text string, activeSkills, activeAgents []string) error {
+	// A leading "/goal" command selects goal mode even when the explicit goal
+	// flag is absent. The fresh-task path detects it via
+	// DetectAndStripGoalMode; the live-send gate must reject it identically
+	// instead of queueing the raw text as a plain LLM interjection.
+	_, isGoalPrefix := core.DetectAndStripGoalMode(text)
+	goal = goal || isGoalPrefix
 	switch {
 	case session.pausing:
 		return ErrPausePending
@@ -596,7 +602,7 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 	// delivered by that request or becomes its follow-up task — never lost
 	// and never duplicated.
 	if session.active {
-		if err := liveSendRejectionLocked(session, goal, activeSkills, activeAgents); err != nil {
+		if err := liveSendRejectionLocked(session, goal, text, activeSkills, activeAgents); err != nil {
 			session.mu.Unlock()
 			return SendFresh, err
 		}
@@ -1553,7 +1559,7 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 // no-op. The authoritative re-check still happens under the session lock in
 // sendMessage — a message that passes here but finds the task finished
 // afterwards simply starts a normal task.
-func (m *Manager) ValidateLiveSend(sessionID string, goal bool, activeSkills, activeAgents []string) error {
+func (m *Manager) ValidateLiveSend(sessionID string, goal bool, text string, activeSkills, activeAgents []string) error {
 	m.mu.RLock()
 	sess := m.sessions[sessionID]
 	m.mu.RUnlock()
@@ -1565,7 +1571,7 @@ func (m *Manager) ValidateLiveSend(sessionID string, goal bool, activeSkills, ac
 	if !sess.active {
 		return nil
 	}
-	return liveSendRejectionLocked(sess, goal, activeSkills, activeAgents)
+	return liveSendRejectionLocked(sess, goal, text, activeSkills, activeAgents)
 }
 
 // emitTaskCancelledUnlessShuttingDown emits the "task_cancelled" event for the

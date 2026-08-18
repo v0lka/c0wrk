@@ -47,6 +47,9 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
     // succeeded. restarting guards against concurrent restart attempts.
     const endedRef = useRef(false)
     const restartingRef = useRef(false)
+    // Keystrokes typed while a restart is in flight are accumulated here and
+    // replayed once the new shell is up, so no keystroke is lost.
+    const pendingInputRef = useRef('')
 
     // Subscribe to terminal output at the top level; the callback safely accesses
     // termRef.current (set in useEffect below, but events only flow after startTerminal).
@@ -59,17 +62,23 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
     // Resurrect a dead shell. Input typed while dead is buffered and replayed
     // once the new shell is up, so no keystroke is lost.
     const restart = useCallback((pendingInput?: string) => {
+        if (pendingInput) {
+            pendingInputRef.current += pendingInput
+        }
         if (restartingRef.current) return
         restartingRef.current = true
         startTerminal(sessionId)
             .then(() => {
                 endedRef.current = false
-                if (pendingInput) {
-                    return terminalInput(sessionId, pendingInput)
+                const buffered = pendingInputRef.current
+                pendingInputRef.current = ''
+                if (buffered) {
+                    return terminalInput(sessionId, buffered)
                 }
                 return undefined
             })
             .catch((err) => {
+                pendingInputRef.current = ''
                 logger.error('Failed to restart terminal:', err)
                 termRef.current?.writeln(
                     `\r\n\x1b[31mFailed to restart terminal: ${err instanceof Error ? err.message : String(err)}\x1b[0m`,

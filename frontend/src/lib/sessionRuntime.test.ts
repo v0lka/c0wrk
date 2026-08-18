@@ -68,12 +68,12 @@ describe('reconcileRuntimeStatus', () => {
     expect(useChatStore.getState().taskActive[SESSION]).toBe(false)
   })
 
-  it('clears a stale pause-in-flight flag for a still-running task (pause signal lost on restart)', () => {
+  it('preserves a pause-in-flight flag for a still-running task (pause not yet landed)', () => {
     useChatStore.setState({ pausing: { [SESSION]: true } })
 
     reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: true, paused: false })
 
-    expect(useChatStore.getState().pausing[SESSION]).toBeUndefined()
+    expect(useChatStore.getState().pausing[SESSION]).toBe(true)
     expect(useChatStore.getState().taskActive[SESSION]).toBe(true)
     expect(useChatStore.getState().paused[SESSION]).toBeUndefined()
   })

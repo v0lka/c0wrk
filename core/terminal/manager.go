@@ -214,22 +214,22 @@ func (m *Manager) readLoop(ctx context.Context, sessionID string, ptmx *os.File)
 	// Clean up the session when the process exits naturally. Stop() cannot
 	// reclaim the fd/context once the session is gone from the map, so
 	// readLoop must mirror its teardown to avoid leaking the PTY fd and the
-	// per-session context.
+	// per-session context. An explicit Stop/StopAll removes the session from
+	// the map first, so this readLoop observes a missing or mismatched session
+	// and must stay silent: emitting the "session ended" marker or firing
+	// onExit here would mark a healthy replacement shell dead.
 	m.mu.Lock()
-	if sess, exists := m.sessions[sessionID]; exists && sess.ptmx == ptmx {
+	sess, exists := m.sessions[sessionID]
+	naturalExit := exists && sess.ptmx == ptmx
+	if naturalExit {
 		delete(m.sessions, sessionID)
-		m.mu.Unlock()
-		m.teardown(sess, sessionID)
-	} else {
-		m.mu.Unlock()
 	}
+	m.mu.Unlock()
 
-	m.emit(sessionID, []byte("\r\n\x1b[31m[Terminal session ended]\x1b[0m\r\n"))
-	m.logger.Info("terminal process exited", "session_id", sessionID)
-
-	// Signal natural exit so the UI can resurrect the shell lazily (on next
-	// activation). Explicit Stop/StopAll paths do not fire this — they either
-	// remove the terminal for good (session delete, app shutdown) or are
-	// immediately followed by a fresh Start (StartTerminalInDir).
-	m.onExit(sessionID)
+	if naturalExit {
+		m.teardown(sess, sessionID)
+		m.emit(sessionID, []byte("\r\n\x1b[31m[Terminal session ended]\x1b[0m\r\n"))
+		m.logger.Info("terminal process exited", "session_id", sessionID)
+		m.onExit(sessionID)
+	}
 }

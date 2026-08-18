@@ -102,10 +102,14 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
   }
   store.setPaused(sessionId, false)
   store.setTaskActive(sessionId, status.active)
-  // A pause-in-flight flag never survives a reconcile: the backend status is
-  // authoritative — the task either landed paused (handled above), is running
-  // (the pause signal did not survive the restart/switch), or is idle.
-  store.setPausing(sessionId, false)
+  // A pause-in-flight flag survives while the task is still running: the
+  // backend status has no visibility into the in-memory pause window, so
+  // clearing it here would unlock the input for a send the backend then
+  // rejects with ErrPausePending. Once the task is no longer active the flag
+  // is stale and is cleared.
+  if (!status.active) {
+    store.setPausing(sessionId, false)
+  }
 
   if (status.active) {
     // A live task owns its pending prompts (step_limit, ask_user, ...);

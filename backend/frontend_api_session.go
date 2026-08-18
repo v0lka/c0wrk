@@ -251,7 +251,7 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []
 	// between this check and the authoritative queue is harmless — a message
 	// that passes but finds the task finished afterwards simply starts a
 	// normal task).
-	if err := f.app.Manager().ValidateLiveSend(id, goal, activeSkills, activeAgents); err != nil {
+	if err := f.app.Manager().ValidateLiveSend(id, goal, text, activeSkills, activeAgents); err != nil {
 		return err
 	}
 

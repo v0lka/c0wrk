@@ -35,7 +35,7 @@ interface ChatState {
   // non-clickable spinner, the input stays locked (taskActive is still true)
   // and the activity label is overridden with "Pausing". Cleared by the
   // terminal events (session_paused/task_complete/task_cancelled/error) and
-  // by the runtime reconcile on session switch.
+  // by the runtime reconcile once the task is no longer active.
   pausing: Record<string, boolean>
   // Context fill per step: stepId -> fill percent
   stepContextFill: Record<string, number>
