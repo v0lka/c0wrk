@@ -85,7 +85,7 @@ Large tool outputs may be truncated in two stages:
 
 Use `store_fact` and `search_facts` to maintain knowledge across execution steps:
 
-- **Store early and often.** After each tool call that reveals important information — API signatures, architectural decisions, error patterns, configuration details, file contents you will need later — immediately call `store_fact` with 3-5 descriptive keywords. Do not wait until the end of your investigation.
+- **Store early and often.** After each tool call that reveals important information — API signatures, architectural decisions, error patterns, configuration details, file contents you will need later — immediately call `store_fact` with 3-10 descriptive keywords. Do not wait until the end of your investigation.
 - **Store before context grows large.** Earlier tool outputs may become unavailable as the context window fills. If you read a file or discover a key detail, store the essential findings right away so they remain accessible via `search_facts`.
 - **Search before each new subtask.** Before starting work on a new step or switching focus, call `search_facts` to retrieve relevant prior context. Facts persist across steps and execution cycles.
 - **Never fabricate from memory.** If you cannot find a fact via `search_facts` and the original tool output is no longer visible, re-read the source or state that the information is unavailable. Do not reconstruct content from memory.

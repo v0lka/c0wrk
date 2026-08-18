@@ -36,7 +36,7 @@ var compactDescriptions = map[string]string{
 	"web_search": "Web search returning {title, URL, snippet} results. For reading a known URL use web_fetch; never paste secrets into a query.",
 
 	// sp4rk builtins — memory & workspace
-	"store_fact":        "Persist a durable fact (3-5 keywords) for later retrieval across steps. Store early — before context grows; retrieve via search_facts.",
+	"store_fact":        "Persist a durable fact (3-10 keywords) for later retrieval across steps. Store early — before context grows; retrieve via search_facts.",
 	"search_facts":      "Recall previously stored facts by keywords (ranked by relevance). For new information search the codebase instead; never reconstruct from memory.",
 	"read_step_output":  "Read the full raw output of one completed plan step by ID, when its summary is insufficient.",
 	"list_step_outputs": "List completed plan steps with short previews — discover step IDs before read_step_output.",
