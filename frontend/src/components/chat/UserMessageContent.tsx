@@ -2,8 +2,9 @@
 
 import { useMemo, useCallback } from 'react'
 import { Markdown } from '@/lib/markdownConfig'
+import { resolveChatWorkspaceRoot } from '@/lib/chatWorkspaceRoot'
+import { normalizePath } from '@/lib/localFileLink'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
-import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { parseSegments } from './userMessageSegments'
 
 interface UserMessageContentProps {
@@ -14,9 +15,9 @@ export function UserMessageContent({ content }: UserMessageContentProps) {
     const segments = useMemo(() => parseSegments(content), [content])
     const hasRefs = useMemo(() => segments.some((s) => s.type !== 'text'), [segments])
 
-    const handleFileClick = useCallback((path: string, startLine?: number) => {
-        const rootPath = useFileTreeStore.getState().rootPath
-        const fullPath = rootPath && !path.startsWith('/') ? `${rootPath}/${path}` : path
+    const handleFileClick = useCallback(async (path: string, startLine?: number) => {
+        const rootPath = await resolveChatWorkspaceRoot()
+        const fullPath = rootPath && !path.startsWith('/') ? normalizePath(rootPath, path) : path
         if (startLine !== undefined) {
             useFileViewerStore.getState().openFileAtLine(fullPath, startLine)
         } else {

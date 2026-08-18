@@ -1,4 +1,4 @@
-import { isValidElement, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { isValidElement, useEffect, useMemo, useState, type AnchorHTMLAttributes, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkEmoji from 'remark-emoji'
@@ -13,8 +13,8 @@ import { isLocalFileHref, isExternalUrl, parseLocalFileHref, normalizePath } fro
 import { readFileAsDataURL } from '@/api/workspace'
 import { openExternalURL } from '@/api/runtime'
 import { EXTERNAL_SRC_RE, candidateImagePaths } from '@/lib/markdownImageResolve'
+import { resolveChatWorkspaceRoot } from '@/lib/chatWorkspaceRoot'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
-import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { MermaidBlock } from '@/components/chat/MermaidBlock'
 import type { PluggableList } from 'unified'
 
@@ -51,7 +51,12 @@ const rehypePlugins: PluggableList = [
 
 // --- Custom link component for local file navigation ---
 
-const MarkdownLink: Components['a'] = ({ href, children, node: _node, ...rest }) => {
+type MarkdownLinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & {
+  node?: unknown
+  workspaceRoot?: string | null
+}
+
+const MarkdownLink = ({ href, children, node: _node, workspaceRoot, ...rest }: MarkdownLinkProps) => {
   // External URLs (http, https, mailto, ftp, …) must be dispatched to the
   // system browser. The Wails webview ignores `<a target="_blank">` or opens
   // it inside the webview, which cannot render arbitrary web pages. We render
@@ -76,9 +81,9 @@ const MarkdownLink: Components['a'] = ({ href, children, node: _node, ...rest })
     return <a href={href} {...rest}>{children}</a>
   }
 
-  const handleClick = () => {
+  const handleClick = async () => {
     const { path, line } = parseLocalFileHref(href!)
-    const rootPath = useFileTreeStore.getState().rootPath
+    const rootPath = workspaceRoot || (await resolveChatWorkspaceRoot())
     if (!rootPath) return
     const resolved = normalizePath(rootPath, path)
     if (line !== undefined) {
@@ -94,7 +99,7 @@ const MarkdownLink: Components['a'] = ({ href, children, node: _node, ...rest })
       onClick={handleClick}
       role="link"
       tabIndex={0}
-      onKeyDown={(e) => { if (e.key === 'Enter') handleClick() }}
+      onKeyDown={(e) => { if (e.key === 'Enter') void handleClick() }}
     >
       {children}
     </span>
@@ -223,7 +228,9 @@ function createMarkdownComponents(
   workspaceRoot?: string | null,
 ): Components {
   return {
-    a: MarkdownLink,
+    a: ((props: MarkdownLinkProps) => (
+      <MarkdownLink {...props} workspaceRoot={workspaceRoot} />
+    )) as Components['a'],
     pre: MarkdownPre,
     img: ({ src, alt, title, node: _node }) => (
       <MarkdownImage
