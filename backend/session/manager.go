@@ -62,6 +62,7 @@ type Session struct {
 	dumpFile                *os.File           // LLM dump file handle (DEBUG mode only), closed on deletion
 	cancel                  context.CancelFunc // cancel for current task
 	active                  bool               // is currently processing
+	pausing                 bool               // pause requested: the running task is on its way to a cooperative pause checkpoint (guarded by mu)
 	done                    chan struct{}      // closed when task goroutine finishes
 	lastCompletedTaskID     string             // tracks last completed task for continuations
 	mu                      sync.Mutex

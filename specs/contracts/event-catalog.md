@@ -133,7 +133,7 @@ See [../domains/goal-mode.md](../domains/goal-mode.md).
 | `session_renamed`  | `{id, old_name, new_name}` | useLifecycleEvents | Title changed (auto or manual) |
 | `session_pinned`   | `{id, pinned}`             | useLifecycleEvents | Session pin toggled on (affects ordering/filtering) |
 | `session_unpinned` | `{id, pinned}`             | useLifecycleEvents | Session pin toggled off |
-| `message_received` | `{session_id, text}`       | useLifecycleEvents | User message persisted         |
+| `message_received` | `{session_id, text}`       | useLifecycleEvents | User message persisted — now also emitted for live interjections (send while a task runs; the frontend renders its own optimistic copy, so this emission is for non-optimistic listeners) |
 
 ### Attachments
 

@@ -10,6 +10,7 @@ import { usePasteHandler } from '@/hooks/usePasteHandler'
 import { extractSkillRefs, extractAgentRefs, filterKnownAgentRefs } from '@/lib/parseReferences'
 import { optimizePrompt } from '@/api/prompt'
 import { pauseSession, resumeSession } from '@/api/chat'
+import { computeChatInputDisabled, computeChatPlaceholder } from '@/lib/chatInputLock'
 import { createSession } from '@/api/sessions'
 import { listAgents } from '@/api/agents'
 import { logger } from '@/lib/logger'
@@ -107,22 +108,22 @@ export function useChatInputController(): ChatInputController {
   const { send, cancel, isProcessing } = useMessageSender()
 
   const isNoProject = !activeProjectId
-  // Input is locked while a task is actively running (taskActive) or when there
-  // is no project. A cooperatively paused task sets taskActive=false, so the
-  // input is unlocked on pause — letting the user send a nudge-resume.
-  const isInputDisabled = taskActive || isNoProject
+  // Input lock policy + placeholder live in the pure helpers (chatInputLock)
+  // so the matrix is unit-testable without the editor harness:
+  //  - taskActive alone does NOT lock the input: a message sent while a task
+  //    runs is live-delivered to the running request's next LLM call.
+  //  - The pausing window (Pause clicked → session_paused received) DOES
+  //    lock it: a send in that window races the pause→paused transition, so
+  //    the backend rejects it and the UI mirrors that by disabling input.
+  //  - A cooperatively paused task sets taskActive=false, so the input is
+  //    unlocked on pause — letting the user send a nudge-resume.
+  const lockInput = { taskActive, paused, pausing, isNoProject }
+  const isInputDisabled = computeChatInputDisabled(lockInput)
   // Stop (cancel) is available whenever a task is running, paused, or a send is
   // in flight; Pause/Resume flank it depending on the active vs paused state.
   const showCancel = taskActive || paused || isProcessing
 
-  let placeholderText = 'Type a message... (Enter to send, Shift+Enter for new line)'
-  if (isNoProject) {
-    placeholderText = 'Select or create a project to start'
-  } else if (paused) {
-    placeholderText = 'Paused — send a message to nudge-resume, or press Resume'
-  } else if (taskActive) {
-    placeholderText = 'Session is processing...'
-  }
+  const placeholderText = computeChatPlaceholder(lockInput)
 
   // The editor needs a stable onSend reference, but handleSend captures the
   // editor itself. We resolve the cycle by holding the latest handleSend in a

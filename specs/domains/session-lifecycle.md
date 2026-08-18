@@ -7,7 +7,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 ## Key Files
 
 - `backend/session/manager.go` — SessionManager (session CRUD, message routing, plan review state)
-- `backend/session/manager_execution.go` — SendMessage, CancelTask execution flows
+- `backend/session/manager_execution.go` — SendMessage (incl. the live-send branch + `ErrPausePending` pausing-window rejection), CancelTask execution flows
 - `core/tools/declare_plan.go` — `declare_plan` tool (`present` / `await_approval` modes); under ADR-012 plan review is a Conductor-invoked tool, not a pipeline stage
 - `backend/events.go` — `EventPlanApprovalResponse` constant (frontend → backend plan-approval decision event)
 - `backend/config/paths.go` — centralized path functions (single source of truth for ~/.c0wrk/ directory structure)
@@ -26,7 +26,10 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/session/title.go` — auto title generation via LLM
 - `backend/frontend_api_session.go` — FrontendAPI session methods
 - `backend/frontend_api_project.go` — project switch state persistence + destination session fallback
-- `core/orchestrator.go` — Orchestrator.HandleMessage, Orchestrator.Resume, `installPauseSignal`/`PauseSession`/`newPauseChecker` (universal pause signal)
+- `core/orchestrator.go` — Orchestrator.HandleMessage, Orchestrator.Resume, `installPauseSignal`/`PauseSession`/`newPauseChecker` (universal pause signal); live user-message queue (`QueueLiveUserMessage`/`DrainLiveUserMessages`/`TakeLiveUserMessages`/`DiscardLiveUserMessages`, wired into every conductor run via `ConductorConfig.UserMessageSource`)
+- `backend/session/manager_execution.go` — `ErrPausePending`, `finishLiveLeftover` (follow-up task for undelivered live messages), `sendMessage(presented)` wrapper, `session.pausing` lifecycle
+- `backend/session/manager_live_send_test.go` — live-send tests (queue-into-running-task, pausing-window rejection, goal/skill rejection, pausing-flag lifecycle)
+- `frontend/src/lib/chatInputLock.ts` — pure input-lock matrix helpers (`computeChatInputDisabled`, `computeChatPlaceholder`) for the live-send affordance
 - `core/orchestrator_goal.go` — goal mode (runGoalLoop, resumeGoalLoop, runGoalTurns, goalLoopResult mid-turn-pause mapping); see [goal-mode.md](goal-mode.md)
 - `backend/session/manager_execution.go` — `PauseSession` (delegates to `Orchestrator.PauseSession`), `ResumeSession` (delegates to `ResumeTask`), `hasPausedUnfinishedTask` (nudge-resume router), `SessionRuntimeStatus.Paused`
 - `backend/session/manager_goal.go` — SetGoalProposalResolver, ResolveGoalProposal
@@ -343,14 +346,18 @@ Pause/resume is a **session-level** control that applies uniformly to **all** ta
 
 ```
 User clicks "Pause"
-  → Frontend: pauseSession(sessionId)
+  → Frontend: pauseSession(sessionId); sets ONLY the `pausing` in-flight flag
+      (input locks for the window, activity label reads "Pausing")
   → Backend: FrontendAPI.PauseSession()
-      └─ Manager.PauseSession()
-          └─ Orchestrator.PauseSession() — flips the active pause signal
+      └─ Manager.PauseSession() — sets session.pausing (under session.mu,
+          only when a task is active) + Orchestrator.PauseSession() flips
+          the active pause signal
       In-flight conductor run observes the signal at the next step boundary
         → executor returns ErrPaused → Conductor maps to ExecutionStatusPaused
         → persistTaskOutcome: pbb.PauseTask() (task persisted as "paused")
         → emit session_paused (UI unlocks input; shows Resume + Stop)
+        → request epilogue clears session.pausing; the input re-opens —
+          sends now become nudge-resumes
         → request exits, releasing the single-flight lock
 ```
 
@@ -382,6 +389,43 @@ User types a message while paused → Send
 ```
 
 The nudge-resume path is how a user "steers" a paused agent: rather than starting a fresh task, the message resumes the paused one with the user's new input appended next to the pending tool result in the very first resumed LLM call. The nudge renders as a normal user message with a "Nudge" badge (see [frontend/rendering.md](frontend/rendering.md)).
+
+**Live-send (sending a message while a task is running):**
+
+A message sent while a task is already executing does NOT pause the task and does NOT wait for completion — it is queued into the running request and delivered to the LLM in the very next request, exactly as a resume-with-nudge would land it.
+
+```
+User types a message while a task runs → Send
+  → Frontend: optimistic user message with is_nudge=true; the input stays
+      open while a task runs (see the input-lock matrix below)
+  → Backend: FrontendAPI.SendMessage — live checks before persisting:
+      ├─ HasPendingAttachments → reject (attachments are task-start-only)
+      └─ persists the message with is_nudge (interjection semantics)
+  → Manager.SendMessage — live branch under session.mu (session.active):
+      ├─ session.pausing → ErrPausePending (the pausing window)
+      ├─ goal flag → reject (goal supersedes running work; needs idle)
+      ├─ skills/agents refs → reject (they reshape task context at start)
+      └─ otherwise → orchestrator.QueueLiveUserMessage(text);
+          emit message_received; return nil (no task started)
+  → Delivery: the running request's executor polls the queue at every step
+      boundary (right after the pause check, before the LLM call):
+        ├─ message → appended to the trajectory as a nudge-only step +
+        │   pushed to the ContextManager → renders as the FINAL {role:user}
+        │   message of the next LLM request, next to the pending tool result
+        └─ one message per boundary (FIFO); the rest stay queued
+```
+
+Invariants and edge cases:
+
+- **Pausing window**: between `PauseSession` (sets `session.pausing` + flips the signal under `session.mu`) and the request epilogue (clears `pausing`), live sends are rejected with `ErrPausePending`. The UI locks the input for the window (`pausing` flag); once `session_paused` lands, sends become nudge-resumes instead.
+- **Cancel (Stop)**: the epilogue discards queued-but-undelivered messages (`DiscardLiveUserMessages`) — an undelivered message in a cancelled exchange does not leak into a future request.
+- **Completion with leftovers**: when the task finishes successfully without delivering a queued message, the epilogue takes the leftovers atomically (`TakeLiveUserMessages` under the same lock that flipped `active=false`) and launches a follow-up continuation task carrying them (joined with `\n\n`). The message was already persisted/rendered at send time, so the follow-up re-enters the send path in "presented" mode (no duplicate `message_received`, no title regen).
+- **Pause/resumable outcome**: leftovers stay queued; the resumed request drains them at its first step boundary.
+- **Race-freedom**: queueing happens under `session.mu` while `active=true`; the epilogue's take happens under the same mutex as the `active=false` flip — a send racing the completion either joins the follow-up (queued before the flip) or starts a normal task (observed `active=false`), never both.
+- **Scope**: live delivery applies to the session's main Conductor run only (normal path, resume, every goal-loop turn). Subagent executors never receive live messages.
+- **Text-only**: attachments, `/goal` requests, and `/skill`/`#agent` references are rejected on the live path (they are task-start concerns); the user is asked to wait for pause/completion.
+
+**Input-lock matrix (frontend)**: `computeChatInputDisabled` (pure helper, `lib/chatInputLock.ts`): input is disabled iff `pausing || isNoProject`. A running (`taskActive`) or paused session keeps the input open — running sends interject live; paused sends nudge-resume. The placeholder advertises the affordance ("your message joins the next request to the model").
 
 **Runtime status after restart / session switch:** `GetSessionRuntimeStatus` reports `Paused: true` when the resumable unfinished task is in the `"paused"` status. The frontend reconciles this on session activation (`reconcileRuntimeStatus`): it sets the `paused` flag and clears `taskActive`, and crucially does **not** inject a `task_failed_resumable` banner — a paused task resumes via the Resume button or a nudge, not a "did not finish" banner.
 

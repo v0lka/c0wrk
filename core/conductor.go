@@ -313,6 +313,18 @@ type conductorDeps struct {
 	// through one universal signal. Nil disables pausing (default).
 	pauseChecker func(context.Context) bool
 
+	// userMessageSource is the live user-message queue wired into every
+	// conductor run via ConductorConfig.UserMessageSource →
+	// executor.SetUserMessageSource. The executor polls it at every step
+	// boundary (right after the pause check); a non-empty return is delivered
+	// to the LLM as a {role:user} interjection in the very next request.
+	// Populated by buildConductorDeps so ALL conductor runs — normal path,
+	// resume, and every goal-loop turn — deliver queued live messages. Nil
+	// disables live delivery (default). Subagent executors are built
+	// separately and never receive the source: a live message belongs to the
+	// user's dialogue with the Conductor, not to a delegated subtask.
+	userMessageSource func(context.Context) string
+
 	// nudge is a one-shot resume-with-nudge user message threaded to
 	// ConductorConfig.PendingUserInterjection. When non-empty it lands as the
 	// final user message after the seeded step history in the very next LLM
@@ -1794,6 +1806,7 @@ func RunConductor(
 		ContentBlocks:              deps.contentBlocks,
 		PendingUserInterjection:    deps.nudge,
 		PauseChecker:               deps.pauseChecker,
+		UserMessageSource:          deps.userMessageSource,
 		VerifyOnEdit:               deps.verifyOnEdit,
 		VerifyOnEditMaxOutputChars: deps.verifyOnEditMaxOutputChars,
 	}
@@ -1935,6 +1948,11 @@ func (o *Orchestrator) buildConductorDeps(conversationHistory []llm.Message, res
 		// run (normal path + every goal-loop turn). It reads o.activePause
 		// live; nil-safe when no request is in flight.
 		pauseChecker: o.newPauseChecker(),
+		// userMessageSource wires the live user-message queue into every
+		// conductor run (normal path + every goal-loop turn). The executor
+		// drains one message per step boundary; nil-safe when the queue is
+		// empty (returns "").
+		userMessageSource: func(context.Context) string { return o.DrainLiveUserMessages() },
 		// verify-on-edit: suppressed in No Project (CHAT) mode — CHAT exposes
 		// no file-edit tools, so verification there is never meaningful. The
 		// runner itself is built by the builder from user config only.

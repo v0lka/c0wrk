@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -420,6 +421,19 @@ type Orchestrator struct {
 	// PauseSession, which runs independently — hence the atomic pointer. The
 	// *atomic.Bool it points to is, of course, atomic.
 	activePause atomic.Pointer[atomic.Bool]
+
+	// liveMu guards liveMessages — the queue of user messages sent while a
+	// request is already executing (live-send). Producers run on Wails-RPC
+	// goroutines (QueueLiveUserMessage); the sole consumer is the running
+	// request's executor, polling DrainLiveUserMessages at every step boundary
+	// via ConductorConfig.UserMessageSource. The queue is request-scoped in
+	// lifetime (cleared at request entry) but orchestrator-scoped in identity,
+	// so a message queued in the closing window of a finishing request is
+	// drained by the request epilogue (or a later request) rather than lost.
+	liveMu sync.Mutex
+	// liveMessages holds queued live user messages in FIFO order. Guarded by
+	// liveMu.
+	liveMessages []string
 }
 
 // ErrRequestInFlight is returned by HandleMessage when another HandleMessage
@@ -470,6 +484,63 @@ func (o *Orchestrator) newPauseChecker() func(context.Context) bool {
 		}
 		return false
 	}
+}
+
+// QueueLiveUserMessage appends a user message to the live queue. The running
+// request's executor drains the queue at its next step boundary and delivers
+// the message to the LLM as a {role:user} interjection (the same landing spot
+// as a resume-with-nudge). Safe to call from any goroutine; a no-op for an
+// empty message. Multiple queued messages are delivered in FIFO order, one per
+// step boundary (the executor drains at most one message per boundary).
+func (o *Orchestrator) QueueLiveUserMessage(text string) {
+	if text == "" {
+		return
+	}
+	o.liveMu.Lock()
+	defer o.liveMu.Unlock()
+	o.liveMessages = append(o.liveMessages, text)
+}
+
+// DrainLiveUserMessages atomically removes and returns the single oldest
+// queued live message (FIFO), or "" when the queue is empty. It is the
+// ConductorConfig.UserMessageSource closure body: the executor polls it at
+// every step boundary, so one message lands per boundary and the rest stay
+// queued for subsequent boundaries.
+func (o *Orchestrator) DrainLiveUserMessages() string {
+	o.liveMu.Lock()
+	defer o.liveMu.Unlock()
+	if len(o.liveMessages) == 0 {
+		return ""
+	}
+	msg := o.liveMessages[0]
+	o.liveMessages = o.liveMessages[1:]
+	return msg
+}
+
+// TakeLiveUserMessages atomically removes and returns ALL queued live
+// messages (FIFO order), or nil when the queue is empty. Used by the request
+// epilogue when the task completed without delivering them: the messages
+// become the follow-up task's text, so they must leave the queue atomically
+// (a subsequent live send must not interleave with the take).
+func (o *Orchestrator) TakeLiveUserMessages() []string {
+	o.liveMu.Lock()
+	defer o.liveMu.Unlock()
+	if len(o.liveMessages) == 0 {
+		return nil
+	}
+	msgs := o.liveMessages
+	o.liveMessages = nil
+	return msgs
+}
+
+// DiscardLiveUserMessages drops all queued live messages. Used when the
+// request is cancelled (user stop): an undelivered message in a cancelled run
+// must not leak into a future request — the UI already rendered it, and the
+// user's stop is an explicit decision to halt the exchange.
+func (o *Orchestrator) DiscardLiveUserMessages() {
+	o.liveMu.Lock()
+	defer o.liveMu.Unlock()
+	o.liveMessages = nil
 }
 
 // emitSessionPaused surfaces a cooperative pause to the user. It emits a

@@ -45,7 +45,7 @@ ChatMessageRenderer: renders each DisplayItem by type
 
 | Type                 | Description               | Visual Treatment                                                              |
 | -------------------- | ------------------------- | ----------------------------------------------------------------------------- |
-| `user`               | User message              | Right-aligned bubble; `/skill` refs as chips, `@file` refs as clickable links. A message sent into a **paused** session carries an `is_nudge` marker and renders with a Zap "Nudge" badge (`bg-info/10 text-info`) — it is a normal user message that resumes the paused task (nudge-resume) |
+| `user`               | User message              | Right-aligned bubble; `/skill` refs as chips, `@file` refs as clickable links. A message sent into a **paused** session carries an `is_nudge` marker and renders with a Zap "Nudge" badge (`bg-info/10 text-info`) — it is a normal user message that resumes the paused task (nudge-resume). A message sent while a task is **running** (live interjection) carries the same marker and badge — it interjects into the running task's next LLM request |
 | `assistant`          | Assistant response        | Left-aligned, markdown rendered; local file links clickable (open File Viewer)|
 | `thought`            | Single reasoning block    | Collapsed by default, muted                                                   |
 | `thought_group`      | Multiple thoughts grouped | Collapsible container                                                         |
@@ -113,11 +113,16 @@ The chat input toolbar (`ChatInputToolbar`) adapts its controls to the session's
 
 | State | Controls | Behavior |
 | ----- | -------- | -------- |
-| **Running** (`taskActive`) | Pause + Stop | Pause → `pauseSession` RPC (optimistic flip to paused; rollback on failure); Stop → `cancelTask` |
+| **Running** (`taskActive`) | Pause + Stop | Pause → `pauseSession` RPC (sets ONLY the `pausing` in-flight flag; the input locks for the window); Stop → `cancelTask`. The input stays **open** (live-send): a message sent now interjects into the running task's next LLM request |
+| **Pausing** (`pausing`) | Stop | Pause renders as a non-clickable spinner; activity label reads "Pausing". Input **locked** (sends in this window race the pause→paused transition and are rejected server-side with `ErrPausePending`). Cleared by `session_paused` or any terminal event |
 | **Paused** (`paused`) | Resume + Stop | Resume → `resumeSession` RPC (forwards model/reasoning overrides; optimistic flip back to active); Stop → `cancelTask`. The input is **unlocked** (a paused task is not "active"), so the user can type |
 | **Idle** | Optimize + Send | Normal send |
 
+The input-lock matrix is a pure helper (`lib/chatInputLock.ts` `computeChatInputDisabled`): the input is disabled iff `pausing || isNoProject`. The placeholder advertises the affordance per state (running: "Working — your message joins the next request to the model"; pausing: "Pausing — the input unlocks once the pause lands").
+
 When the user **sends a message while paused**, it is a **nudge-resume**: the optimistic user message is marked `is_nudge: true`, the `paused` flag is cleared, `taskActive` is set, and `sendMessage` routes to `resumeSession` (the backend detects the paused task and injects the text as a trailing user-nudge turn). The placeholder reads "Paused — send a message to nudge-resume, or press Resume".
+
+When the user **sends a message while a task is running**, it is a **live interjection**: the optimistic user message is marked `is_nudge: true` (same Zap badge as a nudge-resume) but the UI state is untouched — the task keeps running. The backend queues the text into the running request; it lands as the final user message of the next LLM request (see [session-lifecycle.md](../session-lifecycle.md) "Live-send"). A failed live send (e.g. attachments staged) reverts nothing but the optimistic message: the still-running task's state flags are preserved.
 
 The goal status indicator (`GoalStatusIndicator`) is a **read-only** badge (icon + turn + budget); it has no Pause/Resume/Clear buttons — pause/resume is session-level.
 

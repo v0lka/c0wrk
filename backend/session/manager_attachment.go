@@ -258,6 +258,27 @@ func (m *Manager) PendingMessageMetadata(sessionID string, goal bool) (json.RawM
 	return data, nil
 }
 
+// HasPendingAttachments reports whether the session has staged (not yet
+// flushed) document or image attachments. Used by the live-send gate: a
+// message sent while a task is running cannot carry attachments (they are
+// flushed into the blackboard/context only at task start), so the frontend
+// API rejects the send and asks the user to wait for pause/completion.
+//
+// This is a memory-only lookup — it never restores a session as a side effect
+// (mirroring GetSessionRuntimeStatus) and returns false when the session is
+// not in memory or has no staged attachments.
+func (m *Manager) HasPendingAttachments(sessionID string) bool {
+	m.mu.RLock()
+	sess := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if sess == nil {
+		return false
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return len(sess.pendingAttachments) > 0 || len(sess.pendingImageAttachments) > 0
+}
+
 // emitAttachmentsChanged emits an "attachments:changed" event for the given
 // session, carrying the current pending list (and optional failures). This is
 // the single emit point so the payload shape stays consistent across

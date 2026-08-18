@@ -38,6 +38,37 @@ var ErrNoActiveTask = errors.New("no active task to cancel")
 // other caller of the manager. Restore the session to clear the flag.
 var ErrSessionArchived = errors.New("session is archived: restore it before sending messages or resuming tasks")
 
+// ErrPausePending is returned by SendMessage when the session's running task
+// has been signalled to pause but the cooperative pause has not landed yet
+// (the executor stops at its next step boundary). Sends are rejected in that
+// window to avoid racing the pause→paused transition: once session_paused is
+// emitted, a message becomes a nudge-resume instead. The UI locks the input
+// for the window; this is the server-side backstop.
+var ErrPausePending = errors.New("session is pausing — send again once the pause completes")
+
+// finishLiveLeftover launches the follow-up task for live messages that were
+// queued but never delivered before the request finished (liveActionFollowUp).
+// leftover is nil for every other epilogue action. The messages were already
+// persisted and rendered at send time, so the follow-up re-enters sendMessage
+// as a presented relaunch (no duplicate message_received, no title regen). A
+// fresh context is used: the original task's cancel func must not govern the
+// follow-up.
+func (m *Manager) finishLiveLeftover(_ context.Context, id string, _ *Session, leftover []string) {
+	if len(leftover) == 0 {
+		return
+	}
+	joined := strings.Join(leftover, "\n\n")
+	m.log().Info("launching follow-up task for undelivered live messages", "session_id", id, "count", len(leftover))
+	if _, err := m.sendMessage(ContextWithSessionID(context.Background(), id), id, joined, nil, nil, "", "", false, "", false, true); err != nil {
+		m.log().Error("failed to launch follow-up task for live messages", "session_id", id, "error", err)
+		m.emitFunc(Event{
+			SessionID: id,
+			Type:      "error",
+			Data:      ErrorData{SessionID: id, Error: "queued message could not start a follow-up task: " + err.Error()},
+		})
+	}
+}
+
 // loadWorkDirectories fetches project-scoped and session-scoped auxiliary work
 // directories for the given session. It is best-effort: nil stores or listing
 // errors are logged and skipped. Project-scoped entries come first, then
@@ -458,13 +489,93 @@ func (m *Manager) InvalidateIgnoreCache(changedPaths []string) {
 // Runs in a goroutine, results come via events.
 // reviewMode, when true, marks the message as carrying code review feedback
 // the agent must address (see core HandleOptions.ReviewMode).
+//
+// This is the single-return convenience form of SendMessageClassified for
+// callers that do not need the authoritative send classification.
 func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills, activeAgents []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, reviewMode bool) error {
+	_, err := m.SendMessageClassified(ctx, id, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode)
+	return err
+}
+
+// SendClassification describes how a user message was dispatched relative to
+// the session's running/paused state. It is the authoritative result of the
+// session-locked decision in sendMessage, so callers can persist the correct
+// is_nudge metadata: a nudge-resume and a live interjection both carry the
+// badge, while a fresh task (or a continuation of a completed task) does not.
+type SendClassification int
+
+const (
+	// SendFresh means no task was running or paused when the message arrived —
+	// it started a new task (or, on a continuation, re-entered the prior
+	// completed task).
+	SendFresh SendClassification = iota
+	// SendNudgeResume means the message resumed a paused task and is injected
+	// as a trailing user nudge.
+	SendNudgeResume
+	// SendLive means the message was queued into a running task as a live
+	// interjection.
+	SendLive
+)
+
+// SendMessageClassified runs a user message and returns the authoritative send
+// classification (fresh / nudge-resume / live) so the caller can persist the
+// correct is_nudge metadata after the decision is made under the session lock.
+// The task itself runs in a goroutine and reports via events.
+func (m *Manager) SendMessageClassified(ctx context.Context, id, text string, activeSkills, activeAgents []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, reviewMode bool) (SendClassification, error) {
+	return m.sendMessage(ctx, id, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode, false)
+}
+
+// liveAction tells the request epilogue what to do with live user messages
+// that were queued but not delivered before the request finished.
+type liveAction int
+
+const (
+	// liveActionNone keeps the queue: the messages remain queued and a later
+	// request (resume, follow-up, or a fresh task) delivers them. Used for
+	// paused and failed/resumable outcomes — the next entry point drains the
+	// queue at its first step boundary.
+	liveActionNone liveAction = iota
+	// liveActionFollowUp takes the leftovers and launches a continuation task
+	// carrying them (they were already persisted + rendered, so the follow-up
+	// skips re-presentation). Used when the task completed successfully
+	// without delivering them.
+	liveActionFollowUp
+	// liveActionDiscard drops the queue: the user stopped the run, and an
+	// undelivered message in a cancelled exchange must not leak into a future
+	// request. Used for user-initiated cancellation.
+	liveActionDiscard
+)
+
+// liveSendRejectionLocked returns the error that must reject a live send (a
+// message arriving while a task is running) for the given request, or nil when
+// the send may queue. The caller must hold session.mu. The same conditions are
+// checked by ValidateLiveSend before the frontend persists the message and by
+// the live branch here under the lock (the authoritative gate).
+func liveSendRejectionLocked(session *Session, goal bool, activeSkills, activeAgents []string) error {
+	switch {
+	case session.pausing:
+		return ErrPausePending
+	case goal:
+		return errors.New("goal requests cannot be sent while a task is running — pause or wait for completion first")
+	case len(activeSkills) > 0 || len(activeAgents) > 0:
+		return errors.New("skill or agent references cannot be sent while a task is running — pause or wait for completion first")
+	case session.orchestrator == nil:
+		return errors.New("session is already processing a task")
+	}
+	return nil
+}
+
+// sendMessage is the implementation behind SendMessage. presented marks a
+// relaunch of an already-rendered message (the live-send follow-up): it skips
+// the message_received emission and title generation because the UI and the
+// message store already hold the message from the original send.
+func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills, activeAgents []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, reviewMode, presented bool) (SendClassification, error) {
 	session, err := m.getOrRestoreSession(id)
 	if err != nil {
-		return fmt.Errorf("failed to restore session: %w", err)
+		return SendFresh, fmt.Errorf("failed to restore session: %w", err)
 	}
 	if session == nil {
-		return fmt.Errorf("session not found: %s", id)
+		return SendFresh, fmt.Errorf("session not found: %s", id)
 	}
 
 	session.mu.Lock()
@@ -473,12 +584,36 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 	// launching a task on an archived session.
 	if session.Archived {
 		session.mu.Unlock()
-		return ErrSessionArchived
+		return SendFresh, ErrSessionArchived
 	}
-	// Check if already active (prevent double-send on the same session)
+	// Live-send: a message arriving while a task is already running is queued
+	// into the RUNNING request instead of starting a new one — the executor
+	// drains the queue at its next step boundary and delivers the text to the
+	// LLM as a user interjection (the same landing spot as a resume-with-
+	// nudge). The queue-while-locked ordering pairs with the request epilogue
+	// (which flips active=false and takes leftovers under the same lock), so a
+	// message sent in the closing window of a finishing request is either
+	// delivered by that request or becomes its follow-up task — never lost
+	// and never duplicated.
 	if session.active {
+		if err := liveSendRejectionLocked(session, goal, activeSkills, activeAgents); err != nil {
+			session.mu.Unlock()
+			return SendFresh, err
+		}
+		session.orchestrator.QueueLiveUserMessage(text)
 		session.mu.Unlock()
-		return errors.New("session is already processing a task")
+		// Emit message_received so non-optimistic listeners see the user
+		// message (mirrors the normal path; the frontend renders its own
+		// optimistic copy and ignores this event).
+		m.emitFunc(Event{
+			SessionID: id,
+			Type:      "message_received",
+			Data: MessageReceivedData{
+				SessionID: id,
+				Text:      text,
+			},
+		})
+		return SendLive, nil
 	}
 	session.mu.Unlock()
 
@@ -500,7 +635,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 				Text:      text,
 			},
 		})
-		return m.ResumeSession(ctx, id, modelOverride, reasoningEffort, text)
+		return SendNudgeResume, m.ResumeSession(ctx, id, modelOverride, reasoningEffort, text)
 	}
 
 	// Determine RESEARCH mode from the project's research root (loaded before
@@ -550,15 +685,20 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 	taskCtx = m.injectWorkDirectories(taskCtx, dirs)
 	taskCtx = m.injectIgnoreChecker(taskCtx, session, dirs)
 
-	// Emit message received event
-	m.emitFunc(Event{
-		SessionID: id,
-		Type:      "message_received",
-		Data: MessageReceivedData{
+	// Emit message received event. Skipped for a presented relaunch (the
+	// live-send follow-up): the message was already emitted when it was
+	// queued into the running task, and the frontend renders its own
+	// optimistic copy.
+	if !presented {
+		m.emitFunc(Event{
 			SessionID: id,
-			Text:      text,
-		},
-	})
+			Type:      "message_received",
+			Data: MessageReceivedData{
+				SessionID: id,
+				Text:      text,
+			},
+		})
+	}
 
 	// Check if this is the first message (session has default name)
 	// and spawn title generation in background.
@@ -570,7 +710,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 	store := m.sessionStore
 	serviceLLMTimeout := m.serviceLLMTimeout
 	m.mu.RUnlock()
-	if sessionName == "Session "+safeSessionPrefix(id) && titleGen != nil {
+	if !presented && sessionName == "Session "+safeSessionPrefix(id) && titleGen != nil {
 		dumpFile := session.DumpFile()
 		go func() {
 			if dumpFile != nil {
@@ -601,13 +741,39 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 
 	// Launch goroutine to handle the message
 	go func(ctx context.Context, msg string, skills []string, agents []string) {
+		// action tells the request epilogue what to do with queued-but-
+		// undelivered live messages. The zero value (liveActionNone) keeps
+		// them queued — the default for every path that either delegated to
+		// another flow (tryContinueInterruptedTask's resumed run drains the
+		// queue itself) or left the task resumable (paused/failed: the next
+		// resume delivers them).
+		action := liveActionNone
 		defer close(doneCh)
 		defer func() {
 			session.mu.Lock()
 			session.active = false
 			session.cancel = nil
 			session.done = nil
+			// The pausing window is over regardless of how the request ended:
+			// either the pause landed (the task is now persisted as paused —
+			// sends become nudge-resumes) or a terminal event superseded it.
+			session.pausing = false
+			var leftover []string
+			if orch := session.orchestrator; orch != nil {
+				switch action {
+				case liveActionFollowUp:
+					// Take under the same lock hold that flipped
+					// active=false: a live send that raced the completion
+					// either queued before this point (becomes the follow-up)
+					// or sees active=false after (starts a normal task) —
+					// never both.
+					leftover = orch.TakeLiveUserMessages()
+				case liveActionDiscard:
+					orch.DiscardLiveUserMessages()
+				}
+			}
 			session.mu.Unlock()
+			m.finishLiveLeftover(ctx, id, session, leftover)
 		}()
 
 		// Snapshot pending attachments and clear them so they are flushed
@@ -651,11 +817,14 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 			// through to the goal dispatch below. Best-effort; a missing task
 			// store or no unfinished task is a no-op.
 			m.abandonUnfinishedTaskForGoal(id)
-		} else if m.tryContinueInterruptedTask(ctx, id, session, msg, modelOverride, reasoningEffort, pendingAttachments) {
+		} else if took, resumeAction := m.tryContinueInterruptedTask(ctx, id, session, msg, modelOverride, reasoningEffort, pendingAttachments); took {
 			// Continue an interrupted (unfinished) task if one exists: the new
 			// user message is appended as a final user-nudge turn to the prior
 			// trajectory and the ReAct cycle resumes — no routing, no new task,
-			// no conversation-history pair. Returns true when it took the path.
+			// no conversation-history pair. resumeAction propagates how the
+			// resumed run ended so the epilogue treats its leftovers the same
+			// way as a fresh run's.
+			action = resumeAction
 			return
 		}
 
@@ -748,6 +917,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 				// persisted as cancelled. The goal is abandoned (cancelled)
 				// only on a user cancel, not on shutdown.
 				if m.emitTaskCancelledUnlessShuttingDown(id) {
+					action = liveActionDiscard
 					m.abandonGoalIfUnfinished(id)
 					m.persistCancellationIfUnfinished(id)
 				}
@@ -779,6 +949,7 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 		// still treat as cancellation — do not emit partial results as final.
 		if ctx.Err() == context.Canceled {
 			if m.emitTaskCancelledUnlessShuttingDown(id) {
+				action = liveActionDiscard
 				m.abandonGoalIfUnfinished(id)
 				m.persistCancellationIfUnfinished(id)
 			}
@@ -796,10 +967,11 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 
 		// Emit done event with result (carries the typed success contract;
 		// degraded outcomes surface a resumable action or a fallback warning).
+		action = liveActionFollowUp
 		m.emitTaskComplete(id, result, nil)
 	}(taskCtx, text, activeSkills, activeAgents)
 
-	return nil
+	return SendFresh, nil
 }
 
 // parseGoalBudget parses a goal-budget override string into a *goal.GoalBudget.
@@ -851,32 +1023,32 @@ func (m *Manager) tryContinueInterruptedTask(
 	message string,
 	modelOverride, reasoningEffort string,
 	pendingAttachments []orchestration.Attachment,
-) bool {
+) (bool, liveAction) {
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
 	if ts == nil {
-		return false
+		return false, liveActionNone
 	}
 
 	adapter := NewTaskStoreAdapter(ts)
 	taskID, err := adapter.GetUnfinishedTaskID(id)
 	if err != nil {
 		m.log().Warn("continue-interrupted-task: failed to look up unfinished task; falling back to fresh task", "session", id, "error", err)
-		return false
+		return false, liveActionNone
 	}
 	if taskID == "" {
-		return false
+		return false, liveActionNone
 	}
 
 	// Restore the blackboard (facts / step results) for the interrupted task.
 	bb, err := RestoreBlackboard(taskID, id, adapter, nil)
 	if err != nil {
 		m.log().Warn("continue-interrupted-task: failed to restore blackboard; falling back to fresh task", "session", id, "error", err)
-		return false
+		return false, liveActionNone
 	}
 	if bb == nil {
-		return false
+		return false, liveActionNone
 	}
 
 	// Apply per-request model/reasoning overrides. This path bypasses
@@ -898,7 +1070,7 @@ func (m *Manager) tryContinueInterruptedTask(
 	resumeSteps, err := adapter.LoadTrajectory(taskID)
 	if err != nil {
 		m.log().Warn("continue-interrupted-task: failed to load trajectory; falling back to fresh task", "session", id, "error", err)
-		return false
+		return false, liveActionNone
 	}
 	resumeSteps = append(resumeSteps, agent.Step{UserNudge: message})
 
@@ -928,8 +1100,9 @@ func (m *Manager) tryContinueInterruptedTask(
 			if m.emitTaskCancelledUnlessShuttingDown(id) {
 				m.abandonGoalIfUnfinished(id)
 				bb.CancelTask()
+				return true, liveActionDiscard
 			}
-			return true
+			return true, liveActionNone
 		}
 		m.emitFunc(Event{
 			SessionID: id,
@@ -941,7 +1114,7 @@ func (m *Manager) tryContinueInterruptedTask(
 		})
 		m.emitAgentMetrics(id, "failed")
 		m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
-		return true
+		return true, liveActionNone
 	}
 
 	// Store the task ID for potential further continuations.
@@ -952,7 +1125,7 @@ func (m *Manager) tryContinueInterruptedTask(
 	}
 
 	m.emitTaskComplete(id, result, nil)
-	return true
+	return true, liveActionFollowUp
 }
 
 // ResumeTask checks for an unfinished task in the given session and resumes it.
@@ -1120,13 +1293,25 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 
 	// Launch goroutine (same pattern as SendMessage).
 	go func() {
+		action := liveActionNone
 		defer close(resumeDoneCh)
 		defer func() {
 			session.mu.Lock()
 			session.active = false
 			session.cancel = nil
 			session.done = nil
+			session.pausing = false
+			var leftover []string
+			if orch := session.orchestrator; orch != nil {
+				switch action {
+				case liveActionFollowUp:
+					leftover = orch.TakeLiveUserMessages()
+				case liveActionDiscard:
+					orch.DiscardLiveUserMessages()
+				}
+			}
 			session.mu.Unlock()
+			m.finishLiveLeftover(ctx, id, session, leftover)
 		}()
 
 		result, err := session.orchestrator.Resume(taskCtx, bb, routing, config.SessionPlansDir(m.agentDir, session.ProjectID, id), resumeSteps, goalState, nudge)
@@ -1145,6 +1330,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 				// the task as cancelled. The goal is abandoned (cancelled)
 				// only on a user cancel, not on shutdown.
 				if m.emitTaskCancelledUnlessShuttingDown(id) {
+					action = liveActionDiscard
 					m.abandonGoalIfUnfinished(id)
 					bb.CancelTask()
 				}
@@ -1171,6 +1357,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		// the HandleMessage goroutine's safety net.
 		if taskCtx.Err() == context.Canceled {
 			if m.emitTaskCancelledUnlessShuttingDown(id) {
+				action = liveActionDiscard
 				m.abandonGoalIfUnfinished(id)
 				bb.CancelTask()
 			}
@@ -1194,6 +1381,7 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 			session.mu.Unlock()
 		}
 
+		action = liveActionFollowUp
 		m.emitTaskComplete(id, result, nil)
 	}()
 
@@ -1249,6 +1437,17 @@ func (m *Manager) PauseSession(sessionID string) error {
 	if orch == nil {
 		return errors.New("orchestrator not initialized")
 	}
+	// Flag the pausing window under the session lock: from here until the
+	// running request's epilogue flips it off, live sends are rejected with
+	// ErrPausePending (the UI mirrors this by locking the input). The flag is
+	// set under the lock BEFORE the pause signal is flipped (after unlock), so
+	// a send that races the signal flip still observes pausing=true and is
+	// rejected — the window stays closed for the whole pause-in-flight period.
+	session.mu.Lock()
+	if session.active {
+		session.pausing = true
+	}
+	session.mu.Unlock()
 	orch.PauseSession()
 	return nil
 }
@@ -1343,6 +1542,30 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 	}
 
 	return status, nil
+}
+
+// ValidateLiveSend performs the live-send gate checks without queuing: when a
+// task is currently running, it returns the same rejection errors the live
+// branch of sendMessage would (pause window, goal, skill/agent references).
+// The frontend API calls this BEFORE persisting the user message so a rejected
+// live send never leaves a phantom persisted message. It is a memory-only
+// lookup (no session restore side effect); when no task is running it is a
+// no-op. The authoritative re-check still happens under the session lock in
+// sendMessage — a message that passes here but finds the task finished
+// afterwards simply starts a normal task.
+func (m *Manager) ValidateLiveSend(sessionID string, goal bool, activeSkills, activeAgents []string) error {
+	m.mu.RLock()
+	sess := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if sess == nil {
+		return nil
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if !sess.active {
+		return nil
+	}
+	return liveSendRejectionLocked(sess, goal, activeSkills, activeAgents)
 }
 
 // emitTaskCancelledUnlessShuttingDown emits the "task_cancelled" event for the

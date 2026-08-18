@@ -100,7 +100,7 @@ beforeEach(() => {
   spies.createSession.mockReset().mockResolvedValue(makeSession('fresh-session'))
   act(() => {
     useSessionStore.setState({ sessions: [], activeSessionId: null })
-    useChatStore.setState({ messages: {}, messageOrder: {}, paused: {} })
+    useChatStore.setState({ messages: {}, messageOrder: {}, paused: {}, taskActive: {} })
     useInputModeStore.setState({ goalEnabled: false, goalBudget: '', selectedModel: null, selectedReasoning: null })
     useAttachmentsStore.getState().clear()
   })

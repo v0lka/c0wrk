@@ -243,46 +243,42 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []
 			f.log().Error("failed to update session activity", "error", err)
 		}
 	}
-	// A message sent into a paused session becomes a nudge-resume (the manager's
-	// SendMessage detects the paused task and routes to ResumeSession). When that
-	// is the case, flag the persisted user message with is_nudge so the UI can
-	// render it as a nudge rather than a fresh request. Goal requests supersede a
-	// paused task, so they are never nudges.
-	isNudgeResume := false
+	// Authoritative live-send gate: validate the pause window, goal mode, and
+	// skill/agent references BEFORE persisting anything, so a rejected live
+	// send never leaves a phantom persisted message. The manager re-checks the
+	// same conditions under the session lock in sendMessage; this early call
+	// only moves the common rejection ahead of the store write (the race
+	// between this check and the authoritative queue is harmless — a message
+	// that passes but finds the task finished afterwards simply starts a
+	// normal task).
+	if err := f.app.Manager().ValidateLiveSend(id, goal, activeSkills, activeAgents); err != nil {
+		return err
+	}
+
+	// Attachments cannot join a live interjection: they are flushed into the
+	// blackboard/context only at task start. This UX gate uses the runtime
+	// status snapshot; the manager's authoritative live branch ignores
+	// attachments (it queues text only), so this is purely a guard.
 	if !goal {
 		if status, statusErr := f.app.Manager().GetSessionRuntimeStatus(id); statusErr == nil {
-			isNudgeResume = status.Paused
-		}
-	}
-	// Save user message to store (original text with /skill and @file markers for display on reload).
-	// Best-effort persistence: log and continue to avoid disrupting the user session.
-	if f.store != nil {
-		// Persist the user-message metadata blob so attachments survive a
-		// backend restart and can be reconstructed. The blob carries the goal
-		// flag, image attachments (thumbnail + on-disk path, never the full
-		// base64), and document attachment summaries (name/format/size). Read
-		// before SendMessage snapshots and clears the pending lists.
-		var messageMetadata json.RawMessage
-		if mgr := f.app.Manager(); mgr != nil {
-			if md, mdErr := mgr.PendingMessageMetadata(id, goal); mdErr == nil {
-				messageMetadata = md
-			} else {
-				f.log().Warn("failed to read pending message metadata", "session_id", id, "error", mdErr)
+			if status.Active && !status.Paused && f.app.Manager().HasPendingAttachments(id) {
+				return errors.New("attachments cannot be sent while a task is running — send text only, or wait for the pause/completion")
 			}
 		}
-		// When this is a nudge-resume, merge is_nudge: true into the metadata
-		// so the message is distinguishable from a fresh user request on reload.
-		if isNudgeResume {
-			messageMetadata = mergeIsNudgeMetadata(messageMetadata)
-		}
-		if err := f.store.SaveMessage(context.Background(), session.ChatMessage{
-			SessionID: id,
-			Role:      "user",
-			Content:   text,
-			Metadata:  messageMetadata,
-			CreatedAt: time.Now().Format(time.RFC3339),
-		}); err != nil {
-			f.log().Error("failed to save user message to store", "error", err)
+	}
+
+	// Snapshot the pending-attachment metadata BEFORE the manager call: the
+	// manager's fresh/resume path snapshots and clears the pending lists, and
+	// the metadata blob must capture them for restart reconstruction. The
+	// message itself is persisted AFTER the authoritative dispatch so the
+	// is_nudge flag matches the actual decision (live/nudge vs fresh) and a
+	// rejected send never reaches the store.
+	var messageMetadata json.RawMessage
+	if mgr := f.app.Manager(); mgr != nil {
+		if md, mdErr := mgr.PendingMessageMetadata(id, goal); mdErr == nil {
+			messageMetadata = md
+		} else {
+			f.log().Warn("failed to read pending message metadata", "session_id", id, "error", mdErr)
 		}
 	}
 
@@ -301,9 +297,30 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []
 	// session-scoped auxiliary working directories (best-effort: never blocks).
 	f.autoAddPromptWorkDirs(id, text)
 
-	if err := f.app.Manager().SendMessage(f.ctx(), id, processedText, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode); err != nil {
+	classification, err := f.app.Manager().SendMessageClassified(f.ctx(), id, processedText, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode)
+	if err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
+
+	// Persist the user message with the authoritative classification. Both a
+	// live interjection and a nudge-resume carry is_nudge: true (they are not
+	// fresh requests); a fresh task — including a continuation of a completed
+	// task — does not.
+	if f.store != nil {
+		if classification != session.SendFresh {
+			messageMetadata = mergeIsNudgeMetadata(messageMetadata)
+		}
+		if err := f.store.SaveMessage(context.Background(), session.ChatMessage{
+			SessionID: id,
+			Role:      "user",
+			Content:   text,
+			Metadata:  messageMetadata,
+			CreatedAt: time.Now().Format(time.RFC3339),
+		}); err != nil {
+			f.log().Error("failed to save user message to store", "error", err)
+		}
+	}
+
 	return nil
 }
 
@@ -514,7 +531,9 @@ func (f *FrontendAPI) ResolvePendingMessage(sessionID, role, matchField, matchVa
 // mergeIsNudgeMetadata merges is_nudge: true into a user-message metadata blob.
 // A nil/empty input yields a fresh {"is_nudge":true} blob. Existing keys are
 // preserved; is_nudge is added/overwritten. The result marks the persisted
-// user message as a nudge sent into a paused session (nudge-resume path).
+// user message as a nudge — either a nudge-resume into a paused session or a
+// live interjection into a running task — so the UI can distinguish it from a
+// fresh request on reload.
 func mergeIsNudgeMetadata(raw json.RawMessage) json.RawMessage {
 	merged := make(map[string]any)
 	if len(raw) > 0 {

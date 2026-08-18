@@ -49,7 +49,13 @@ export function useMessageSender(): UseMessageSenderResult {
     // card renders the nudge badge immediately and the UI leaves the paused
     // state (input re-locks, Pause/Stop return) without waiting for the
     // session_resumed/task_resumed event.
+    //
+    // A message sent while a task is RUNNING is a live interjection: the
+    // backend queues it into the running request (delivered at the next LLM
+    // call) and also persists it with is_nudge. Same badge, different flow:
+    // the UI stays in the running state — the task is untouched.
     const wasPaused = useChatStore.getState().paused[sessionId] ?? false
+    const isRunning = useChatStore.getState().taskActive[sessionId] ?? false
 
     // Optimistic metadata mirroring the SNAKE_CASE blob the backend persists
     // via PendingMessageMetadata: the goal flag, the staged attachments
@@ -60,10 +66,11 @@ export function useMessageSender(): UseMessageSenderResult {
     // longer wait for a session/project switch to appear.
     const goalEnabled = useInputModeStore.getState().goalEnabled
     const pendingAttachments = useAttachmentsStore.getState().attachments
-    const metadata = buildUserMessageMeta(goalEnabled, pendingAttachments, wasPaused)
+    const metadata = buildUserMessageMeta(goalEnabled, pendingAttachments, wasPaused || isRunning)
 
+    const optimisticId = generateMessageId()
     useChatStore.getState().addMessage(sessionId, {
-      id: generateMessageId(),
+      id: optimisticId,
       sessionId,
       type: 'user',
       content: messageText,
@@ -72,10 +79,17 @@ export function useMessageSender(): UseMessageSenderResult {
     })
 
     useSessionStore.getState().touchSession(sessionId)
-    useChatStore.getState().setTaskActive(sessionId, true)
-    useChatStore.getState().setActivityStatus(sessionId, 'Processing...')
     if (wasPaused) {
+      // Nudge-resume: optimistically leave the paused state (input re-locks,
+      // Pause/Stop return). A live send keeps the running state as is.
       useChatStore.getState().setPaused(sessionId, false)
+      useChatStore.getState().setTaskActive(sessionId, true)
+      useChatStore.getState().setActivityStatus(sessionId, 'Processing...')
+    }
+    if (!wasPaused && !isRunning) {
+      // Fresh task: mark active and show the activity label.
+      useChatStore.getState().setTaskActive(sessionId, true)
+      useChatStore.getState().setActivityStatus(sessionId, 'Processing...')
     }
 
     try {
@@ -95,6 +109,10 @@ export function useMessageSender(): UseMessageSenderResult {
     } catch (error) {
       logger.error('Failed to send message:', error)
       const errorMessage = error instanceof Error ? error.message : String(error)
+      // Roll back the optimistic user message: a rejected send (e.g. a live
+      // send into the pausing window, or a goal/skill/agent reference into a
+      // running task) must not leave a phantom user card next to the error.
+      useChatStore.getState().removeMessage(sessionId, optimisticId)
       useChatStore.getState().addMessage(sessionId, {
         id: generateMessageId(),
         sessionId,
@@ -102,7 +120,13 @@ export function useMessageSender(): UseMessageSenderResult {
         content: `Failed to send message: ${errorMessage}`,
         timestamp: Date.now(),
       })
-      useChatStore.getState().setTaskActive(sessionId, false)
+      // A failed LIVE send leaves the running task untouched: the task is
+      // still active (its events keep flowing), so only the optimistic user
+      // message is rolled back — never the task-active state. Nudge-resume
+      // and fresh-task sends revert their optimistic flags as before.
+      if (!isRunning) {
+        useChatStore.getState().setTaskActive(sessionId, false)
+      }
     } finally {
       setIsProcessing(false)
     }

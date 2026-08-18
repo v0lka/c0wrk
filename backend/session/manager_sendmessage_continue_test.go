@@ -342,7 +342,7 @@ func TestTryContinueInterruptedTask_NoTaskStore_ReturnsFalse(t *testing.T) {
 	sess, _ := manager.GetSession(info.ID)
 
 	// No SetTaskStore → m.taskStore is nil.
-	if manager.tryContinueInterruptedTask(context.Background(), info.ID, sess, "anything", "", "", nil) {
+	if took, _ := manager.tryContinueInterruptedTask(context.Background(), info.ID, sess, "anything", "", "", nil); took {
 		t.Error("expected false when no task store is configured")
 	}
 }
@@ -361,7 +361,7 @@ func TestTryContinueInterruptedTask_NoUnfinishedTask_ReturnsFalse(t *testing.T) 
 	store := &resumeTaskStore{task: nil} // no unfinished task
 	manager.SetTaskStore(store)
 
-	if manager.tryContinueInterruptedTask(context.Background(), info.ID, sess, "anything", "", "", nil) {
+	if took, _ := manager.tryContinueInterruptedTask(context.Background(), info.ID, sess, "anything", "", "", nil); took {
 		t.Error("expected false when there is no unfinished task")
 	}
 	store.mu.Lock()
@@ -387,7 +387,7 @@ func TestTryContinueInterruptedTask_SkipsOrchestratorWhenIdle(t *testing.T) {
 	// testManager builds a nil orchestrator; the helper must return false
 	// without dereferencing it when there is no unfinished task.
 	manager.SetTaskStore(&resumeTaskStore{task: nil})
-	if manager.tryContinueInterruptedTask(context.Background(), info.ID, sess, "msg", "", "", nil) {
+	if took, _ := manager.tryContinueInterruptedTask(context.Background(), info.ID, sess, "msg", "", "", nil); took {
 		t.Error("expected false (idle) and no orchestrator interaction")
 	}
 }
