@@ -2,9 +2,11 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,6 +67,12 @@ type mockTaskPersistence struct {
 
 	// Control error behavior
 	persistError error
+
+	// Facts-persistence instrumentation: per-call processing delay, an
+	// optional block channel (closed to unblock), and a call counter.
+	factDelay time.Duration
+	factBlock chan struct{}
+	factCalls int
 
 	// For LoadTaskState
 	loadState *core.TaskState
@@ -133,6 +141,17 @@ func (m *mockTaskPersistence) PersistPause(taskID string) error {
 }
 
 func (m *mockTaskPersistence) PersistFacts(taskID string, facts []orchestration.Fact) error {
+	m.mu.Lock()
+	m.factCalls++
+	delay := m.factDelay
+	block := m.factBlock
+	m.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	if block != nil {
+		<-block
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.persistError
@@ -559,4 +578,116 @@ func TestPersistentBlackboard_NotifyChanged_NilSafe(t *testing.T) {
 	pb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{{ID: "s1", Description: "d"}}})
 	pb.StoreFact(orchestration.Fact{Keywords: []string{"k"}, Content: "c"})
 	pb.CompleteTask(0)
+}
+
+// ---------------------------------------------------------------------------
+// Fact persistence reliability (regression: "Stored: fact" not always shown)
+// ---------------------------------------------------------------------------
+
+// TestPersistentBlackboard_StoreFact_PersistsAllUnderConcurrentBurst is the
+// regression test for the dropped-facts bug. The persistence worker's channel
+// buffer holds 8 ops; with more concurrent StoreFact callers than buffer slots
+// (parallel delegations storing facts at once), the old non-blocking enqueue
+// silently DROPPED the excess writes while notifyChanged("fact") still fired —
+// the frontend then fetched SQLite state without the just-stored fact, and the
+// tool card showed "Stored". persistSafe must instead wait for queue space
+// (bounded by the persistence timeout) so every write lands.
+func TestPersistentBlackboard_StoreFact_PersistsAllUnderConcurrentBurst(t *testing.T) {
+	// A per-call delay makes the worker slow enough that 12 concurrent callers
+	// overflow the 8-slot buffer. Total drain time (~240ms) stays far below the
+	// 5s enqueue deadline, so the assertion is timing-robust.
+	mock := &mockTaskPersistence{factDelay: 20 * time.Millisecond}
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+
+	var factNotifications atomic.Int64
+	pb.SetOnChanged(func(changeType string) {
+		if changeType == "fact" {
+			factNotifications.Add(1)
+		}
+	})
+
+	const n = 12
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pb.StoreFact(orchestration.Fact{Keywords: []string{"k", "burst"}, Content: fmt.Sprintf("fact %d", i)})
+		}()
+	}
+	wg.Wait()
+
+	mock.mu.Lock()
+	persisted := mock.factCalls
+	mock.mu.Unlock()
+	if persisted != n {
+		t.Fatalf("expected all %d fact writes to be persisted, got %d (writes were dropped)", n, persisted)
+	}
+	if got := factNotifications.Load(); got != n {
+		t.Errorf("expected %d fact notifications, got %d", n, got)
+	}
+	if got := len(pb.GetFacts()); got != n {
+		t.Errorf("in-memory facts: got %d, want %d", got, n)
+	}
+}
+
+// TestPersistentBlackboard_StoreFact_NoNotifyWhenPersistFails verifies the
+// notification gate: a failed DB write must NOT fire blackboard_updated, since
+// the frontend refetch reads SQLite and would show state without the fact.
+func TestPersistentBlackboard_StoreFact_NoNotifyWhenPersistFails(t *testing.T) {
+	mock := &mockTaskPersistence{persistError: errors.New("db locked")}
+	pb := NewPersistentBlackboard("t1", "s1", mock, testLogger())
+
+	var factNotifications atomic.Int64
+	pb.SetOnChanged(func(changeType string) {
+		if changeType == "fact" {
+			factNotifications.Add(1)
+		}
+	})
+
+	pb.StoreFact(orchestration.Fact{Keywords: []string{"k"}, Content: "c"})
+
+	if got := factNotifications.Load(); got != 0 {
+		t.Errorf("expected no fact notification on persist failure, got %d", got)
+	}
+	// The in-memory blackboard still records the fact (execution continues).
+	if got := len(pb.GetFacts()); got != 1 {
+		t.Errorf("in-memory facts: got %d, want 1", got)
+	}
+}
+
+// TestPersistentBlackboard_StoreFact_NoNotifyWhenPersistTimesOut covers the
+// hung-worker variant: a write that exceeds the persistence timeout must
+// neither block the agent forever nor advertise itself via a notification.
+func TestPersistentBlackboard_StoreFact_NoNotifyWhenPersistTimesOut(t *testing.T) {
+	block := make(chan struct{})
+	mock := &mockTaskPersistence{factBlock: block}
+	pb := NewPersistentBlackboardWithTimeout("t1", "s1", mock, testLogger(), 50*time.Millisecond)
+
+	var factNotifications atomic.Int64
+	pb.SetOnChanged(func(changeType string) {
+		if changeType == "fact" {
+			factNotifications.Add(1)
+		}
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pb.StoreFact(orchestration.Fact{Keywords: []string{"k"}, Content: "c"})
+	}()
+	select {
+	case <-done:
+		// StoreFact returned once the timeout expired — good.
+	case <-time.After(2 * time.Second):
+		t.Fatal("StoreFact did not return after the persistence timeout")
+	}
+	close(block) // let the worker finish and exit cleanly
+
+	if got := factNotifications.Load(); got != 0 {
+		t.Errorf("expected no fact notification on timed-out persistence, got %d", got)
+	}
+	if got := len(pb.GetFacts()); got != 1 {
+		t.Errorf("in-memory facts: got %d, want 1", got)
+	}
 }

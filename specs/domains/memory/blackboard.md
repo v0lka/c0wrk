@@ -100,6 +100,8 @@ Committed attachments survive app restart: `PersistentBlackboard.AddAttachment` 
 - Step results are immutable once written (no overwrite)
 - Facts accumulate monotonically (no deletion during a task)
 - Non-finalizing writes are serialized through a single background worker goroutine (with timeout + panic recovery); finalizing writes (`CompleteTask`/`FailTask`/`CancelTask`) run synchronously so the status change is persisted before returning
+- The worker's enqueue is lossless: when the channel buffer is full, `persistSafe` waits for queue space (bounded by the persistence timeout) instead of dropping the write — a dropped fact/step write has no later re-flush, so it would stay missing from the database (and the Blackboard panel) until the next full-list rewrite
+- `blackboard_updated` change notifications fire only after the write has landed in SQLite (gated on persistence success): the frontend panel refetches the database, so announcing un-persisted state would fetch state without the just-stored fact right after `store_fact` reported success
 - `RestoreBlackboard` recreates the full in-memory state from SQLite
 - Attachments are staged as pending on the session and flushed into the blackboard exactly once on the next `SendMessage` (the pending list is cleared after the snapshot)
 - `GoalState` persistence is best-effort: a missing store/task ID is a no-op and a failure is logged but never propagates (degrades only resumability); a non-terminal restored goal re-enters the goal loop on `Resume`

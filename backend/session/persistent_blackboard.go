@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -15,6 +16,11 @@ import (
 // defaultPersistenceTimeout is the maximum time allowed for a single
 // blackboard write operation to the database.
 const defaultPersistenceTimeout = 5 * time.Second
+
+// persistEnqueueRetryInterval is how long persistSafe waits between enqueue
+// attempts when the worker's channel buffer is full (bounded by the overall
+// persistence timeout).
+const persistEnqueueRetryInterval = 5 * time.Millisecond
 
 // ---------------------------------------------------------------------------
 // PersistentBlackboard — decorator that persists write operations
@@ -108,31 +114,55 @@ func (pb *PersistentBlackboard) notifyChanged(changeType string) {
 // persistSafe enqueues a non-critical persistence operation (step results,
 // facts, reflections, attachments) to the background worker. The caller blocks
 // until the operation completes or the timeout expires; errors are logged and
-// optionally emitted to the user. A non-blocking send drops the operation if
-// the buffer is full or the worker has already been shut down — acceptable for
-// non-critical writes. Channel access is guarded by persistMu so the send is
-// race-free against shutdownPersister's close (no recover needed).
-func (pb *PersistentBlackboard) persistSafe(operation string, fn func() error) {
+// optionally emitted to the user, and also returned so write methods can gate
+// change notifications on the write having actually landed (a
+// blackboard_updated event must never advertise state the database does not
+// hold — the frontend fetch reads SQLite, not the in-memory blackboard).
+//
+// Enqueueing retries until buffer space frees up, bounded by the same timeout
+// budget as the write itself: the caller already blocks on the result, so
+// waiting for queue space adds no latency in the healthy path, while a plain
+// drop would silently lose the write — facts and step results are flushed
+// only by their own write methods, so a dropped op stays missing from the
+// database (and the Blackboard panel) until the next full-list rewrite. When
+// the budget is exhausted the operation is abandoned and the error returned.
+// Channel access is guarded by persistMu so each attempt is race-free against
+// shutdownPersister's close (the mutex is never held across the retry sleep).
+func (pb *PersistentBlackboard) persistSafe(operation string, fn func() error) error {
 	done := make(chan error, 1)
 	op := persistOp{operation: operation, fn: fn, done: done}
 
-	pb.persistMu.Lock()
-	ch := pb.persistCh
-	if ch == nil {
-		pb.persistMu.Unlock()
-		pb.logWarn("persistence worker already shut down; skipping "+operation, "task_id", pb.taskID)
-		return
+	timeout := pb.persistenceTimeout
+	if timeout == 0 {
+		timeout = defaultPersistenceTimeout
 	}
-	select {
-	case ch <- op:
-		pb.persistMu.Unlock()
-	default:
-		pb.persistMu.Unlock()
-		pb.logWarn("persistence worker full; skipping "+operation, "task_id", pb.taskID)
-		return
-	}
+	deadline := time.Now().Add(timeout)
 
-	pb.waitPersistenceResult(operation, done)
+	for {
+		pb.persistMu.Lock()
+		ch := pb.persistCh
+		if ch == nil {
+			pb.persistMu.Unlock()
+			err := errors.New("persistence worker already shut down")
+			pb.logWarn("persistence worker already shut down; skipping "+operation, "task_id", pb.taskID)
+			return err
+		}
+		select {
+		case ch <- op:
+			pb.persistMu.Unlock()
+			return pb.waitPersistenceResult(operation, done)
+		default:
+			pb.persistMu.Unlock()
+		}
+
+		if remaining := time.Until(deadline); remaining > 0 {
+			time.Sleep(min(remaining, persistEnqueueRetryInterval))
+			continue
+		}
+		err := fmt.Errorf("persistence queue still full after %s", timeout)
+		pb.logWarn("persistence worker full; skipping "+operation, "task_id", pb.taskID)
+		return err
+	}
 }
 
 // persistSynchronously executes a critical finalizing write (CompleteTask,
@@ -143,8 +173,9 @@ func (pb *PersistentBlackboard) persistSafe(operation string, fn func() error) {
 // issue was detected" warning. Running synchronously removes that race — the
 // write either succeeds (task marked done) or fails (logged/emitted; the
 // follow-up warning is then legitimate, not spurious). Panics are recovered so
-// the conductor is never crashed by a persistence failure.
-func (pb *PersistentBlackboard) persistSynchronously(operation string, fn func() error) {
+// the conductor is never crashed by a persistence failure. The error is
+// returned so callers can gate change notifications on the write landing.
+func (pb *PersistentBlackboard) persistSynchronously(operation string, fn func() error) error {
 	var err error
 	func() {
 		defer func() {
@@ -167,10 +198,14 @@ func (pb *PersistentBlackboard) persistSynchronously(operation string, fn func()
 			)
 		}
 	}
+	return err
 }
 
 // waitPersistenceResult waits for a persistence operation to complete or timeout.
-func (pb *PersistentBlackboard) waitPersistenceResult(operation string, done <-chan error) {
+// Returns the operation's error (or the timeout error); logging and the
+// optional user-facing warning happen here so every persistSafe caller
+// surfaces failures uniformly.
+func (pb *PersistentBlackboard) waitPersistenceResult(operation string, done <-chan error) error {
 	timeout := pb.persistenceTimeout
 	if timeout == 0 {
 		timeout = defaultPersistenceTimeout
@@ -194,6 +229,7 @@ func (pb *PersistentBlackboard) waitPersistenceResult(operation string, done <-c
 			)
 		}
 	}
+	return err
 }
 
 // persistenceWorker is the single goroutine that executes persist operations
@@ -233,22 +269,25 @@ func (pb *PersistentBlackboard) shutdownPersister() {
 // SetOriginalRequest sets the original user request and persists a new task record.
 func (pb *PersistentBlackboard) SetOriginalRequest(req string) {
 	pb.MapBlackboard.SetOriginalRequest(req)
-	pb.persistSafe("new task", func() error {
+	_ = pb.persistSafe("new task", func() error {
 		return pb.store.PersistNewTask(pb.taskID, pb.sessionID, req)
 	})
 }
 
-// SetPlan stores a plan and persists it.
+// SetPlan stores a plan and persists it. The change notification is gated on
+// the write landing (see StoreFact for the rationale).
 func (pb *PersistentBlackboard) SetPlan(plan *orchestration.Plan) {
 	pb.MapBlackboard.SetPlan(plan)
-	pb.persistSafe("plan", func() error {
+	if err := pb.persistSafe("plan", func() error {
 		return pb.store.PersistPlan(pb.taskID, plan)
-	})
-	pb.notifyChanged("plan")
+	}); err == nil {
+		pb.notifyChanged("plan")
+	}
 }
 
 // SetStepResult records a step result and persists it.
 // The summary is generated using the same logic as MapBlackboard.
+// The change notification is gated on the write landing (see StoreFact).
 func (pb *PersistentBlackboard) SetStepResult(stepID, output string, err error, steps []agent.Step) {
 	pb.MapBlackboard.SetStepResult(stepID, output, err, steps)
 
@@ -263,54 +302,66 @@ func (pb *PersistentBlackboard) SetStepResult(stepID, output string, err error, 
 		errText = err.Error()
 	}
 
-	pb.persistSafe("step result ("+stepID+")", func() error {
+	if persistErr := pb.persistSafe("step result ("+stepID+")", func() error {
 		return pb.store.PersistStepResult(pb.taskID, stepID, summary, output, errText, steps)
-	})
-	pb.notifyChanged("step_result")
+	}); persistErr == nil {
+		pb.notifyChanged("step_result")
+	}
 }
 
 // AddReflection appends a reflection and persists it.
+// The change notification is gated on the write landing (see StoreFact).
 func (pb *PersistentBlackboard) AddReflection(r orchestration.Reflection) {
 	pb.MapBlackboard.AddReflection(r)
-	pb.persistSafe("reflection", func() error {
+	if err := pb.persistSafe("reflection", func() error {
 		return pb.store.PersistReflection(pb.taskID, r)
-	})
-	pb.notifyChanged("reflection")
+	}); err == nil {
+		pb.notifyChanged("reflection")
+	}
 }
 
-// StoreFact appends a fact and persists the full facts list.
+// StoreFact appends a fact and persists the full facts list. The change
+// notification fires only when the write landed: the frontend refreshes its
+// Blackboard panel from SQLite, so announcing a fact the database does not
+// hold yet (dropped/timed-out write) makes the panel fetch state WITHOUT the
+// fact right after the tool reported success — the fact then looks missing.
 func (pb *PersistentBlackboard) StoreFact(fact orchestration.Fact) {
 	pb.MapBlackboard.StoreFact(fact)
 	facts := pb.GetFacts()
-	pb.persistSafe("facts", func() error {
+	if err := pb.persistSafe("facts", func() error {
 		return pb.store.PersistFacts(pb.taskID, facts)
-	})
-	pb.notifyChanged("fact")
+	}); err == nil {
+		pb.notifyChanged("fact")
+	}
 }
 
 // AddAttachment appends an attachment and persists the full attachments list.
+// The change notification is gated on the write landing (see StoreFact).
 func (pb *PersistentBlackboard) AddAttachment(a orchestration.Attachment) {
 	pb.MapBlackboard.AddAttachment(a)
 	attachments := pb.GetAttachments()
-	pb.persistSafe("attachments", func() error {
+	if err := pb.persistSafe("attachments", func() error {
 		return pb.store.PersistAttachments(pb.taskID, attachments)
-	})
-	pb.notifyChanged("attachment")
+	}); err == nil {
+		pb.notifyChanged("attachment")
+	}
 }
 
 // RemoveAttachment removes an attachment and persists the full attachments list
 // when an attachment was actually removed. Read methods (GetAttachments /
-// GetAttachment) are promoted from the embedded MapBlackboard.
+// GetAttachment) are promoted from the embedded MapBlackboard. The change
+// notification is gated on the write landing (see StoreFact).
 func (pb *PersistentBlackboard) RemoveAttachment(id string) bool {
 	removed := pb.MapBlackboard.RemoveAttachment(id)
 	if !removed {
 		return false
 	}
 	attachments := pb.GetAttachments()
-	pb.persistSafe("attachments", func() error {
+	if err := pb.persistSafe("attachments", func() error {
 		return pb.store.PersistAttachments(pb.taskID, attachments)
-	})
-	pb.notifyChanged("attachment")
+	}); err == nil {
+		pb.notifyChanged("attachment")
+	}
 	return true
 }
 
@@ -325,7 +376,7 @@ func (pb *PersistentBlackboard) SetRouting(routing *router.RoutingDecision) {
 	pb.routingMu.Lock()
 	pb.routing = routing
 	pb.routingMu.Unlock()
-	pb.persistSafe("routing", func() error {
+	_ = pb.persistSafe("routing", func() error {
 		return pb.store.PersistRouting(pb.taskID, routing)
 	})
 }
@@ -349,10 +400,12 @@ func (pb *PersistentBlackboard) Routing() *router.RoutingDecision {
 // and trip a spurious persistence warning.
 func (pb *PersistentBlackboard) CompleteTask(attemptCount int) {
 	finalOutput := pb.GetFinalResult()
-	pb.persistSynchronously("task completion", func() error {
+	err := pb.persistSynchronously("task completion", func() error {
 		return pb.store.PersistCompletion(pb.taskID, finalOutput, attemptCount)
 	})
-	pb.notifyChanged("completed")
+	if err == nil {
+		pb.notifyChanged("completed")
+	}
 	pb.shutdownPersister()
 }
 
@@ -360,7 +413,7 @@ func (pb *PersistentBlackboard) CompleteTask(attemptCount int) {
 // Writes the failure synchronously (bypassing the worker) to guarantee the
 // status change is persisted before returning.
 func (pb *PersistentBlackboard) FailTask() {
-	pb.persistSynchronously("task failure", func() error {
+	_ = pb.persistSynchronously("task failure", func() error {
 		return pb.store.PersistFailure(pb.taskID)
 	})
 	pb.shutdownPersister()
@@ -370,7 +423,7 @@ func (pb *PersistentBlackboard) FailTask() {
 // Writes the cancellation synchronously (bypassing the worker) to guarantee
 // the status change is persisted before returning.
 func (pb *PersistentBlackboard) CancelTask() {
-	pb.persistSynchronously("task cancellation", func() error {
+	_ = pb.persistSynchronously("task cancellation", func() error {
 		return pb.store.PersistCancellation(pb.taskID)
 	})
 	pb.shutdownPersister()
@@ -383,14 +436,14 @@ func (pb *PersistentBlackboard) CancelTask() {
 // paused task is still live and may receive additional persistence writes
 // (e.g. a final trajectory flush) before the orchestrator fully unwinds.
 func (pb *PersistentBlackboard) PauseTask() {
-	pb.persistSynchronously("task pause", func() error {
+	_ = pb.persistSynchronously("task pause", func() error {
 		return pb.store.PersistPause(pb.taskID)
 	})
 }
 
 // ReactivateTask reactivates a completed task back to in_progress.
 func (pb *PersistentBlackboard) ReactivateTask() {
-	pb.persistSafe("task reactivation", func() error {
+	_ = pb.persistSafe("task reactivation", func() error {
 		return pb.store.ReactivateTask(pb.taskID)
 	})
 }
