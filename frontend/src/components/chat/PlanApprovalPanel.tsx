@@ -107,6 +107,13 @@ export function PlanApprovalPanel({ item }: PlanApprovalPanelProps) {
             rows={3}
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
+            onKeyDown={(e) => {
+              // Match the chat input: Enter sends, Shift+Enter inserts a newline.
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                if (feedback.trim()) resolve('request_changes', feedback)
+              }
+            }}
             placeholder="Your feedback for the plan..."
           />
           <div className="flex gap-2 justify-end">
