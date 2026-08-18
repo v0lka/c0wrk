@@ -50,7 +50,7 @@ var compactDescriptions = map[string]string{
 
 	// c0wrk orchestration tools
 	"ask_user":              "Ask the user questions with selectable options (single/multi-select; free text allowed) — the only channel for user-directed questions; batch related questions.",
-	"execute_plan":          "Execute the approved roadmap in dependency order with per-task verification; call ONCE per plan. For a single delegated task use delegate.",
+	"execute_plan":          "Execute the approved roadmap in dependency order with per-task verification. Re-call to resume (skip successful, re-run failed/unstarted); {\"steps\":[...]} re-runs named steps + dependents. One task: delegate.",
 	"reflect":               "Re-evaluate and replan the strategy when attempts keep failing or the goal is already met — runtime-triggered; optional scope/delegation_id target a subagent's run.",
 	"delegate":              "Launch a subagent on an independent task in its own context (parallelizable). No re-delegation unless allow-redelegate; sequential work stays inline.",
 	"cancel_delegation":     "Cancel a running subagent by its delegation id — only when it clearly went the wrong way; progress is discarded.",

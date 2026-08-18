@@ -344,9 +344,6 @@ type conductorLauncher struct {
 	// DAG scheduler — wave detection, failure cascade, cycle detection, and
 	// cancellation — without real LLM-driven executors.
 	runPlanStepWave func(ctx context.Context, ready []orchestration.PlanStep, registry *tools.DelegationRegistry) []planStepOutcome
-	// executed guards against a second Execute call for the same plan: each
-	// declared plan runs at most once so a retry re-runs every step.
-	executed bool
 	// planState tracks whether a plan was declared in THIS Conductor run. It
 	// is shared with the conductorPublisher so HasDeclaredPlan (the delegate
 	// guard) reflects only plans declared via declare_plan, not restored ones.
@@ -371,14 +368,21 @@ func (l *conductorLauncher) HasDeclaredPlan() bool {
 	return l.bb != nil && l.bb.GetPlan() != nil
 }
 
-// ExecutePlan runs all steps of the declared plan in DAG order with
-// parallelism for independent steps. It implements tools.PlanStepExecutor.
+// Execute runs the declared plan's steps in DAG order with parallelism for
+// independent steps. It implements tools.PlanStepExecutor.
 //
 // A plan restored from a previous (completed) task is refused: planRunState
 // (fresh per run) tracks whether declare_plan ran in THIS run, and Execute
 // will not re-run a restored plan's steps (which would duplicate side
 // effects). The Conductor must publish a new plan via declare_plan, or use
 // delegate for plan-less work.
+//
+// Execute is resumable. A step that already has a successful result on the
+// blackboard (StepResult.Error == nil) is skipped, so a second call re-runs
+// only failed or never-started steps instead of repeating side effects. An
+// explicit stepIDs list forces the named steps — and any step that depends on
+// them, directly or transitively — to re-run even if they previously
+// succeeded; other already-successful steps are still skipped.
 //
 // Each step runs as an isolated subagent (its own Executor + ContextManager),
 // but events are emitted as plan_step_start/plan_step_complete (not
@@ -390,7 +394,7 @@ func (l *conductorLauncher) HasDeclaredPlan() bool {
 //   - stored on the blackboard (SetStepResult) — accessible via read_step_output
 //   - marked in the inlineStepLifecycle (markCompleted) — prevents the
 //     finish-fallback completeAll from double-completing
-func (l *conductorLauncher) Execute(ctx context.Context) ([]tools.PlanStepResult, error) {
+func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]tools.PlanStepResult, error) {
 	plan := l.bb.GetPlan()
 	if plan == nil || len(plan.Steps) == 0 {
 		return nil, errors.New("no plan declared — call declare_plan first")
@@ -408,14 +412,15 @@ func (l *conductorLauncher) Execute(ctx context.Context) ([]tools.PlanStepResult
 		return nil, errors.New("execute_plan: the plan on the blackboard was restored from a previous (completed) task and was not declared in this run — call declare_plan to publish a new plan, or use delegate for plan-less work")
 	}
 
-	// Idempotency: execute_plan runs at most once per declared plan. A second
-	// call would re-run every step from scratch — wasting tokens/time and
-	// risking duplicated side effects (e.g. a file-mutating step runs twice).
-	// Reject it so the Conductor reflects and publishes a new plan to retry.
-	if l.executed {
-		return nil, errors.New("execute_plan already ran for this plan — a declared plan executes at most once; publish a new plan via declare_plan to retry")
+	// Compute the forced-rerun set when explicit step IDs were requested.
+	var forced map[string]bool
+	if len(stepIDs) > 0 {
+		var err error
+		forced, err = forcedRerunSet(plan, stepIDs)
+		if err != nil {
+			return nil, err
+		}
 	}
-	l.executed = true
 
 	// Local registry for dependency resolution between plan steps. This is
 	// SEPARATE from the Conductor's main delegation registry — plan steps are
@@ -427,12 +432,37 @@ func (l *conductorLauncher) Execute(ctx context.Context) ([]tools.PlanStepResult
 	// otherwise be non-reproducible across runs).
 	indexByID := make(map[string]int, len(plan.Steps))
 	pending := make(map[string]orchestration.PlanStep, len(plan.Steps))
+	results := make([]tools.PlanStepResult, 0, len(plan.Steps))
+
 	for i, step := range plan.Steps {
-		pending[step.ID] = step
 		indexByID[step.ID] = i
 		if err := localReg.Register(step.ID, step.Summary, step.DependsOn, "blocking"); err != nil {
 			return nil, fmt.Errorf("register plan step %q: %w", step.ID, err)
 		}
+
+		// Skip an already-successful step unless it is in the forced-rerun set.
+		// Its previous result is replayed into the local registry so dependents
+		// see their dependency as satisfied and can read its output.
+		if !forced[step.ID] {
+			if sr, ok := l.successfulStepResult(step.ID); ok {
+				localReg.Complete(step.ID, sr.FullOutput, nil, sr.Steps)
+				results = append(results, tools.PlanStepResult{
+					StepID: step.ID, Summary: step.Summary,
+					Status: "completed", Output: sr.FullOutput,
+				})
+				// The step already succeeded on the blackboard. If this run has
+				// not yet recorded its terminal state (the plan was re-declared
+				// on a continuation), emit a synthesized success pair so the
+				// plan panel does not leave it "pending". On a same-run retry
+				// the step is already completed and needs no new events.
+				if l.deps.lifecycle != nil && !l.deps.lifecycle.isCompleted(step.ID) {
+					l.emitSkippedStepCompleted(step.ID)
+					l.deps.lifecycle.markCompleted(step.ID)
+				}
+				continue
+			}
+		}
+		pending[step.ID] = step
 	}
 
 	// Resolve the wave dispatcher: the production default builds isolated
@@ -444,7 +474,6 @@ func (l *conductorLauncher) Execute(ctx context.Context) ([]tools.PlanStepResult
 	}
 
 	subCtx := subagentCtx(ctx)
-	results := make([]tools.PlanStepResult, 0, len(plan.Steps))
 
 	for len(pending) > 0 {
 		if ctx.Err() != nil {
@@ -517,6 +546,58 @@ func (l *conductorLauncher) Execute(ctx context.Context) ([]tools.PlanStepResult
 		return cmp.Compare(indexByID[a.StepID], indexByID[b.StepID])
 	})
 	return results, nil
+}
+
+// successfulStepResult returns the blackboard's successful StepResult for the
+// step, if one exists. A step with no result (never ran) or an error result
+// (failed) is not successful and therefore eligible to (re)run.
+func (l *conductorLauncher) successfulStepResult(stepID string) (orchestration.StepResult, bool) {
+	sr, ok := l.bb.GetStepResult(stepID)
+	if !ok || sr.Error != nil {
+		return orchestration.StepResult{}, false
+	}
+	return sr, true
+}
+
+// forcedRerunSet computes the set of step IDs that must re-run when explicit
+// step IDs are passed to execute_plan: the targets themselves plus every step
+// that transitively depends on a target (its output is now stale). Returns an
+// error if any target is not part of the plan.
+func forcedRerunSet(plan *orchestration.Plan, targets []string) (map[string]bool, error) {
+	known := make(map[string]bool, len(plan.Steps))
+	for _, s := range plan.Steps {
+		known[s.ID] = true
+	}
+
+	forced := make(map[string]bool, len(targets))
+	for _, id := range targets {
+		if !known[id] {
+			return nil, fmt.Errorf("unknown step %q", id)
+		}
+		forced[id] = true
+	}
+
+	// Fixpoint over direct dependents: a step is forced if it is a target or
+	// any of its dependencies is forced.
+	for {
+		changed := false
+		for _, s := range plan.Steps {
+			if forced[s.ID] {
+				continue
+			}
+			for _, dep := range s.DependsOn {
+				if forced[dep] {
+					forced[s.ID] = true
+					changed = true
+					break
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	return forced, nil
 }
 
 // planStepOutcome is the result of executing one plan step within a wave. It
@@ -593,6 +674,19 @@ func (l *conductorLauncher) emitNeverStartedStep(stepID, errMsg string) {
 	desc, summary := lookupStepDesc(l.bb, stepID)
 	l.deps.emitter.PlanStepStart(stepID, desc, summary)
 	l.deps.emitter.PlanStepComplete(stepID, false, 0, errMsg)
+}
+
+// emitSkippedStepCompleted emits the PlanStepStart + PlanStepComplete(success=true)
+// terminal pair for a step skipped by the resume path because it already has a
+// successful result on the blackboard. Mirrors emitNeverStartedStep, but the
+// step succeeded, so the terminal pair records success and an empty error.
+func (l *conductorLauncher) emitSkippedStepCompleted(stepID string) {
+	if l.deps.emitter == nil {
+		return
+	}
+	desc, summary := lookupStepDesc(l.bb, stepID)
+	l.deps.emitter.PlanStepStart(stepID, desc, summary)
+	l.deps.emitter.PlanStepComplete(stepID, true, 0, "")
 }
 
 // planStepDepsReady checks whether all dependencies of a plan step are
@@ -2111,6 +2205,19 @@ func (l *inlineStepLifecycle) markCompleted(stepID string) {
 	delete(l.started, stepID)
 	delete(l.startedAt, stepID)
 	l.mu.Unlock()
+}
+
+// isCompleted reports whether the step already reached a terminal state in this
+// run's lifecycle. Used by the execute_plan resume path to decide whether a
+// skipped (already-successful) step needs a synthesized terminal pair: on a
+// same-run retry it is already recorded, on a re-declared continuation it is not.
+func (l *inlineStepLifecycle) isCompleted(stepID string) bool {
+	if l == nil || stepID == "" {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.completed[stepID]
 }
 
 // planDeclaredInRun reports whether a plan was declared in the CURRENT

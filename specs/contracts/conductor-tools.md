@@ -129,13 +129,13 @@ Direction: Conductor → `declare_plan` tool → `PlanPublisher` (blackboard + e
 ```
 Conductor
   │
-  ├─ tool_call: execute_plan({})   // no args; plan read from blackboard
+  ├─ tool_call: execute_plan({})   // optional {"steps": ["step_2", ...]}; plan read from blackboard
   │
   ▼
 execute_plan.Execute(ctx, input)
   │
   ├─ Read PlanStepExecutor from ctx
-  ├─ executor.Execute(ctx):
+  ├─ executor.Execute(ctx, input.Steps):
   │    ├─ Read Plan from blackboard (GetPlan)
   │    ├─ Build a local DelegationRegistry for dependency resolution
   │    ├─ Wave loop (DAG-ordered):
@@ -163,7 +163,8 @@ Direction: Conductor → `execute_plan` tool → `PlanStepExecutor.Execute` → 
 
 **Behavioral notes:**
 
-- **Idempotent per plan:** `execute_plan` runs at most once per declared plan. A second call is rejected with an error so the Conductor publishes a new plan via `declare_plan` to retry rather than re-running every step (which would waste tokens and risk duplicated side effects).
+- **Resumable (no-arg retry):** a second `execute_plan` call does NOT reject and does NOT re-run everything. Steps that already have a successful result on the blackboard (`StepResult.Error == nil`) are skipped, and only failed or never-started steps re-run. Failed steps have an error result; never-started steps (whose dependencies became unsatisfiable) have no result at all — both are therefore eligible to run again. Skipped steps are replayed into the local `DelegationRegistry` as completed so their dependents can proceed and read their previous output.
+- **Explicit step targets:** `{"steps": ["step_2"]}` forces the named steps — plus every step that transitively depends on them, since their inputs are now stale — to re-run even if they previously succeeded. Other already-successful steps are still skipped. Unknown step IDs are rejected before any step is dispatched.
 - **Deterministic result ordering:** the aggregated `PlanStepResult[]` is sorted by plan-declaration index. Without this the order would be randomised by map iteration (steps within a parallel wave are dispatched in non-deterministic order).
 - **Never-started steps emit a terminal pair:** when a step never launches — because its dependencies became unsatisfiable (an upstream step failed) or because its `SubAgentTask` construction failed — the translator never fired `SubAgentLaunch`/`SubAgentComplete` for it. In that case `Execute` (or `defaultPlanStepWave` for build failures) emits a synthesized `PlanStepStart` + `PlanStepComplete(success=false)` directly on the root emitter, then `markCompleted` records it. This guarantees no plan step is left stuck "pending" in the plan panel after a failure cascade.
 

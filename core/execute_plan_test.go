@@ -306,7 +306,7 @@ func TestExecute_NoPlan_ReturnsError(t *testing.T) {
 	bb := orchestration.NewMapBlackboard()
 	l := &conductorLauncher{bb: bb}
 
-	_, err := l.Execute(context.Background())
+	_, err := l.Execute(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error when no plan declared")
 	}
@@ -332,7 +332,7 @@ func TestExecute_RestoredPlan_Refused(t *testing.T) {
 		runPlanStepWave: rec.dispatch,
 	}
 
-	_, err := l.Execute(context.Background())
+	_, err := l.Execute(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error for restored (not declared) plan")
 	}
@@ -343,10 +343,6 @@ func TestExecute_RestoredPlan_Refused(t *testing.T) {
 	// any step runs.
 	if rec.calls != 0 {
 		t.Errorf("expected 0 dispatch calls (guard rejects before execution), got %d", rec.calls)
-	}
-	// executed flag must remain false so a later declare_plan+execute_plan works.
-	if l.executed {
-		t.Error("expected executed=false (guard must not flip the idempotency flag)")
 	}
 }
 
@@ -368,7 +364,7 @@ func TestExecute_DeclaredInRun_Proceeds(t *testing.T) {
 		runPlanStepWave: rec.dispatch,
 	}
 
-	results, err := l.Execute(context.Background())
+	results, err := l.Execute(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("expected Execute to proceed for a declared plan, got error: %v", err)
 	}
@@ -492,7 +488,7 @@ func TestExecute_LinearDAG_RunsInSequence(t *testing.T) {
 		runPlanStepWave: rec.dispatch,
 	}
 
-	results, err := l.Execute(context.Background())
+	results, err := l.Execute(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
@@ -537,7 +533,7 @@ func TestExecute_DiamondDAG_ParallelIndependentSteps(t *testing.T) {
 		runPlanStepWave: rec.dispatch,
 	}
 
-	results, err := l.Execute(context.Background())
+	results, err := l.Execute(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
@@ -583,7 +579,7 @@ func TestExecute_UpstreamFailureCascadesAndEmitsTerminalEvents(t *testing.T) {
 		runPlanStepWave: (&waveRecorder{outcomes: map[string]error{"step_1": errors.New("boom")}}).dispatch,
 	}
 
-	results, err := l.Execute(context.Background())
+	results, err := l.Execute(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
@@ -644,7 +640,7 @@ func TestExecute_DependencyCycle_FailsAllAsUnsatisfiable(t *testing.T) {
 		runPlanStepWave: rec.dispatch,
 	}
 
-	results, err := l.Execute(context.Background())
+	results, err := l.Execute(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
@@ -681,7 +677,7 @@ func TestExecute_CancelledContext_MarksAllFailed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancelled before Execute starts
 
-	results, err := l.Execute(ctx)
+	results, err := l.Execute(ctx, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Execute error = %v, want context.Canceled", err)
 	}
@@ -698,10 +694,121 @@ func TestExecute_CancelledContext_MarksAllFailed(t *testing.T) {
 	}
 }
 
-// TestExecute_Idempotent_SecondCallRejected verifies #3b: execute_plan runs at
-// most once per launcher — a second call is rejected with a clear error so the
-// Conductor reflects and publishes a new plan instead of re-running every step.
-func TestExecute_Idempotent_SecondCallRejected(t *testing.T) {
+// TestExecute_Resume_SkipsSuccessfulAndRerunsFailed verifies the resume
+// semantics: a second execute_plan call skips steps that already completed
+// successfully on the blackboard and re-runs only failed/never-started steps
+// (instead of rejecting the call or re-running everything).
+func TestExecute_Resume_SkipsSuccessfulAndRerunsFailed(t *testing.T) {
+	rec := &waveRecorder{outcomes: map[string]error{"step_2": errors.New("boom")}}
+	l := &conductorLauncher{
+		deps: conductorDeps{emitter: &mockEmitter{}},
+		bb: planWith(
+			step("step_1", "A"),
+			step("step_2", "B", "step_1"),
+			step("step_3", "C", "step_2"),
+		),
+		runPlanStepWave: rec.dispatch,
+	}
+
+	first, err := l.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("first Execute returned error: %v", err)
+	}
+	// step_1 completed, step_2 failed, step_3 never-started (unsatisfiable).
+	if got := failedIDs(first); !equalStrings(got, []string{"step_2", "step_3"}) {
+		t.Fatalf("first-run failed = %v, want [step_2 step_3]", got)
+	}
+
+	// Fix step_2 and reset the recorder so the resume can be asserted in isolation.
+	delete(rec.outcomes, "step_2")
+	rec.waves = nil
+	rec.calls = 0
+
+	second, err := l.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("resume Execute returned error: %v", err)
+	}
+	if rec.calls != 2 {
+		t.Fatalf("expected 2 dispatches on resume (step_2 then step_3), got %d: %v", rec.calls, rec.waves)
+	}
+	if len(rec.waves) != 2 ||
+		len(rec.waves[0]) != 1 || rec.waves[0][0] != "step_2" ||
+		len(rec.waves[1]) != 1 || rec.waves[1][0] != "step_3" {
+		t.Errorf("resume waves = %v, want [[step_2] [step_3]]", rec.waves)
+	}
+	if got := resultIDs(second); !equalStrings(got, []string{"step_1", "step_2", "step_3"}) {
+		t.Errorf("resume result order = %v, want [step_1 step_2 step_3]", got)
+	}
+	for _, r := range second {
+		if r.Status != "completed" {
+			t.Errorf("step %q status = %q, want completed", r.StepID, r.Status)
+		}
+	}
+	// step_1 was NOT re-dispatched; its output comes from the first run's
+	// stored result.
+	var step1Output string
+	for _, r := range second {
+		if r.StepID == "step_1" {
+			step1Output = r.Output
+		}
+	}
+	if step1Output != "A output" {
+		t.Errorf("step_1 output = %q, want previous stored output %q", step1Output, "A output")
+	}
+}
+
+// TestExecute_ForceRerun_SpecificStepAndDependents verifies explicit step
+// targets: forcing a step re-runs it plus every transitive dependent, while
+// other already-successful steps are still skipped.
+func TestExecute_ForceRerun_SpecificStepAndDependents(t *testing.T) {
+	rec := &waveRecorder{}
+	l := &conductorLauncher{
+		deps: conductorDeps{emitter: &mockEmitter{}},
+		bb: planWith(
+			step("step_1", "A"),
+			step("step_2", "B", "step_1"),
+			step("step_3", "C", "step_2"),
+		),
+		runPlanStepWave: rec.dispatch,
+	}
+
+	if _, err := l.Execute(context.Background(), nil); err != nil {
+		t.Fatalf("first Execute returned error: %v", err)
+	}
+
+	rec.waves = nil
+	rec.calls = 0
+
+	results, err := l.Execute(context.Background(), []string{"step_2"})
+	if err != nil {
+		t.Fatalf("forced Execute returned error: %v", err)
+	}
+	if rec.calls != 2 {
+		t.Fatalf("expected 2 dispatches (step_2 then step_3), got %d: %v", rec.calls, rec.waves)
+	}
+	if len(rec.waves) != 2 ||
+		len(rec.waves[0]) != 1 || rec.waves[0][0] != "step_2" ||
+		len(rec.waves[1]) != 1 || rec.waves[1][0] != "step_3" {
+		t.Errorf("forced waves = %v, want [[step_2] [step_3]]", rec.waves)
+	}
+	if got := resultIDs(results); !equalStrings(got, []string{"step_1", "step_2", "step_3"}) {
+		t.Errorf("result order = %v, want [step_1 step_2 step_3]", got)
+	}
+	// step_1 must be skipped (reported from its previous result, not re-run).
+	var step1Output string
+	for _, r := range results {
+		if r.StepID == "step_1" {
+			step1Output = r.Output
+		}
+	}
+	if step1Output != "A output" {
+		t.Errorf("step_1 output = %q, want previous stored output %q", step1Output, "A output")
+	}
+}
+
+// TestExecute_ForceRerun_UnknownStepRejected verifies explicit step targets are
+// validated against the declared plan before any step is dispatched.
+func TestExecute_ForceRerun_UnknownStepRejected(t *testing.T) {
 	rec := &waveRecorder{}
 	l := &conductorLauncher{
 		deps:            conductorDeps{emitter: &mockEmitter{}},
@@ -709,23 +816,76 @@ func TestExecute_Idempotent_SecondCallRejected(t *testing.T) {
 		runPlanStepWave: rec.dispatch,
 	}
 
-	if _, err := l.Execute(context.Background()); err != nil {
-		t.Fatalf("first Execute returned error: %v", err)
+	_, err := l.Execute(context.Background(), []string{"nope"})
+	if err == nil {
+		t.Fatal("expected error for unknown step, got nil")
 	}
-	if rec.calls != 1 {
-		t.Fatalf("expected 1 dispatch on first call, got %d", rec.calls)
+	if !strings.Contains(err.Error(), "unknown step") {
+		t.Errorf("error = %q, want it to mention 'unknown step'", err.Error())
+	}
+	if rec.calls != 0 {
+		t.Errorf("expected 0 dispatch calls for an unknown step, got %d", rec.calls)
+	}
+}
+
+// TestExecute_Resume_SkippedStepLifecycleRecordsSuccess verifies the resume
+// skip path records an already-successful step in the current run's lifecycle:
+// it emits a synthesized success terminal pair (so a re-declared plan panel
+// shows it completed rather than pending) and marks it completed so the finish
+// fallback does not re-synthesize it with a wrong success flag.
+func TestExecute_Resume_SkippedStepLifecycleRecordsSuccess(t *testing.T) {
+	emitter := &mockEmitter{}
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{
+		{ID: "step_1", Summary: "A", Description: "desc step_1"},
+		{ID: "step_2", Summary: "B", Description: "desc step_2", DependsOn: []string{"step_1"}},
+	}})
+	// step_1 already succeeded on the blackboard (e.g. from a previous run).
+	bb.SetStepResult("step_1", "A output", nil, nil)
+
+	lc := newInlineStepLifecycle(emitter, bb)
+	rec := &waveRecorder{}
+	l := &conductorLauncher{
+		deps:            conductorDeps{emitter: emitter, lifecycle: lc},
+		bb:              bb,
+		runPlanStepWave: rec.dispatch,
 	}
 
-	_, err := l.Execute(context.Background())
-	if err == nil {
-		t.Fatal("expected second Execute to be rejected, got nil error")
+	results, err := l.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "at most once") {
-		t.Errorf("second-call error = %q, want it to mention 'at most once'", err.Error())
+
+	// step_1 is skipped (not dispatched); step_2 runs in the only wave.
+	if rec.calls != 1 || len(rec.waves) != 1 || !equalStrings(rec.waves[0], []string{"step_2"}) {
+		t.Fatalf("expected single wave [step_2], got calls=%d waves=%v", rec.calls, rec.waves)
 	}
-	// No additional dispatch from the rejected call.
-	if rec.calls != 1 {
-		t.Errorf("expected dispatch count to stay at 1 after rejected second call, got %d", rec.calls)
+	if got := resultIDs(results); !equalStrings(got, []string{"step_1", "step_2"}) {
+		t.Errorf("result order = %v, want [step_1 step_2]", got)
+	}
+
+	// The skipped step must emit exactly one synthesized success terminal pair.
+	step1Completes := 0
+	step1Success := false
+	for _, c := range emitter.planStepCompletes {
+		if c.stepID == "step_1" {
+			step1Completes++
+			step1Success = c.success
+		}
+	}
+	if step1Completes != 1 {
+		t.Fatalf("expected exactly 1 PlanStepComplete for skipped step_1, got %d: %v", step1Completes, emitter.planStepCompletes)
+	}
+	if !step1Success {
+		t.Errorf("skipped step_1 terminal pair must be success=true, got false")
+	}
+
+	// The finish fallback must NOT synthesize a second (failure) terminal for
+	// the skipped step — it is already recorded as completed.
+	before := len(emitter.planStepCompletes)
+	lc.completeAll(false, "boom")
+	if after := len(emitter.planStepCompletes); after != before {
+		t.Errorf("completeAll double-completed the skipped step: before=%d after=%d (%v)", before, after, emitter.planStepCompletes)
 	}
 }
 
