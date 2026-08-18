@@ -96,6 +96,10 @@ export function useBackgroundSessionWatcher(): void {
         store.setTaskActive(sessionId, false)
         store.clearStreamingText(sessionId)
         store.setActivityStatus(sessionId, null)
+        // A pause that was still in flight (user clicked Pause, then switched
+        // sessions before the step boundary) is superseded by the terminal
+        // event — clear its spinner flag.
+        store.setPausing(sessionId, false)
       }
 
       cleanups.push(

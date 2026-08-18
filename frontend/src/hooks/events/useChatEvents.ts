@@ -121,6 +121,7 @@ export function useChatEvents(sessionId: string | null): void {
         store.clearStreamingText(sessionId)
         store.setActivityStatus(sessionId, null)
         store.setTaskActive(sessionId, false)
+        store.setPausing(sessionId, false)
       }),
     )
 
@@ -132,6 +133,7 @@ export function useChatEvents(sessionId: string | null): void {
         store.clearStreamingText(sessionId)
         store.setActivityStatus(sessionId, null)
         store.setTaskActive(sessionId, false)
+        store.setPausing(sessionId, false)
         if (data.output) {
           // Dedup: in the implicit text-only finish path the executor streams
           // the answer via assistant_done (already flushed to a permanent
@@ -235,6 +237,7 @@ export function useChatEvents(sessionId: string | null): void {
         store.setActivityStatus(sessionId, null)
         store.setTaskActive(sessionId, false)
         store.setPaused(sessionId, false)
+        store.setPausing(sessionId, false)
         store.addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,
@@ -252,6 +255,9 @@ export function useChatEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'session_paused', () => {
         const store = useChatStore.getState()
+        // The pause landed: drop the in-flight flag FIRST so the spinner is
+        // replaced by the paused controls (Resume/Stop) in the same commit.
+        store.setPausing(sessionId, false)
         store.setPaused(sessionId, true)
         store.setTaskActive(sessionId, false)
         store.setActivityStatus(sessionId, 'Paused')
@@ -264,6 +270,7 @@ export function useChatEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'session_resumed', () => {
         const store = useChatStore.getState()
+        store.setPausing(sessionId, false)
         store.setPaused(sessionId, false)
         store.setTaskActive(sessionId, true)
         store.setActivityStatus(sessionId, 'Resuming...')

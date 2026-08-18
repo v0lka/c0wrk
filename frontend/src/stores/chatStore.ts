@@ -27,6 +27,16 @@ interface ChatState {
   // .paused field are the authoritative sources; the UI sets this optimistically
   // on Pause/Resume button clicks and reconciles on session switch/restart.
   paused: Record<string, boolean>
+  // Pause-in-flight per session: sessionId -> true between the user clicking
+  // Pause and the backend's session_paused event. A cooperative pause lands at
+  // the next step boundary — the ReAct loop keeps emitting progress events
+  // (step_start, assistant_chunk, ...) meanwhile — so `paused` must NOT be
+  // set optimistically. While `pausing` is true the pause action renders as a
+  // non-clickable spinner, the input stays locked (taskActive is still true)
+  // and the activity label is overridden with "Pausing". Cleared by the
+  // terminal events (session_paused/task_complete/task_cancelled/error) and
+  // by the runtime reconcile on session switch.
+  pausing: Record<string, boolean>
   // Context fill per step: stepId -> fill percent
   stepContextFill: Record<string, number>
   // Session tokens: sessionId -> token info
@@ -45,6 +55,7 @@ interface ChatActions {
   setActivityStatus: (sessionId: string, status: string | null) => void
   setTaskActive: (sessionId: string, active: boolean) => void
   setPaused: (sessionId: string, paused: boolean) => void
+  setPausing: (sessionId: string, pausing: boolean) => void
   setStepContextFill: (stepId: string, fill: number) => void
   clearStepContextFill: () => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
@@ -117,6 +128,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   activityStatus: {},
   taskActive: {},
   paused: {},
+  pausing: {},
   stepContextFill: {},
   sessionTokens: {},
 
@@ -268,6 +280,17 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
       return { paused: rest }
     }
     return { paused: { ...s.paused, [sessionId]: true } }
+  }),
+
+  setPausing: (sessionId, pausing) => set((s) => {
+    // Same absent-key convention as paused: clearing deletes the entry so no
+    // state change is emitted for sessions that were never pausing.
+    if (!pausing) {
+      if (!(sessionId in s.pausing)) return s
+      const { [sessionId]: _pausing, ...rest } = s.pausing
+      return { pausing: rest }
+    }
+    return { pausing: { ...s.pausing, [sessionId]: true } }
   }),
 
   setStepContextFill: (stepId, fill) => set((s) => ({

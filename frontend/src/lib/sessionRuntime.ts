@@ -90,6 +90,7 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
   // task_failed_resumable banner below — it is resumable via the Resume button
   // or a nudge message, not a "previous task did not finish" banner.
   if (status.paused) {
+    store.setPausing(sessionId, false)
     store.setPaused(sessionId, true)
     store.setTaskActive(sessionId, false)
     // Resolve stale interactive prompts (step_limit, plan_review,
@@ -101,6 +102,10 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
   }
   store.setPaused(sessionId, false)
   store.setTaskActive(sessionId, status.active)
+  // A pause-in-flight flag never survives a reconcile: the backend status is
+  // authoritative — the task either landed paused (handled above), is running
+  // (the pause signal did not survive the restart/switch), or is idle.
+  store.setPausing(sessionId, false)
 
   if (status.active) {
     // A live task owns its pending prompts (step_limit, ask_user, ...);

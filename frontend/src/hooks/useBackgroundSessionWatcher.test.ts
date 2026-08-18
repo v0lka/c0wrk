@@ -84,8 +84,16 @@ const chatStoreState = {
   taskActive: {} as Record<string, boolean>,
   activityStatus: {} as Record<string, string>,
   streamingText: {} as Record<string, string>,
+  pausing: {} as Record<string, boolean>,
   setTaskActive: (sid: string, active: boolean) => {
     chatStoreState.taskActive = { ...chatStoreState.taskActive, [sid]: active }
+  },
+  setPausing: (sid: string, pausing: boolean) => {
+    if (pausing) {
+      chatStoreState.pausing = { ...chatStoreState.pausing, [sid]: true }
+    } else {
+      delete chatStoreState.pausing[sid]
+    }
   },
   setActivityStatus: (sid: string, status: string | null) => {
     if (status === null) {
@@ -147,6 +155,7 @@ function resetStores(): void {
   chatStoreState.taskActive = {}
   chatStoreState.activityStatus = {}
   chatStoreState.streamingText = {}
+  chatStoreState.pausing = {}
   sessionStoreState.activeSessionId = null
 }
 

@@ -734,3 +734,38 @@ describe('setPaused', () => {
     expect(useChatStore.getState().paused).toBe(before)
   })
 })
+
+describe('setPausing', () => {
+  const SESSION = 'sess-pausing'
+
+  beforeEach(() => {
+    useChatStore.setState({ pausing: {} })
+  })
+
+  it('sets pausing=true for a session', () => {
+    useChatStore.getState().setPausing(SESSION, true)
+    expect(useChatStore.getState().pausing[SESSION]).toBe(true)
+  })
+
+  it('clears the pausing entry when set to false (absent key encodes "not pausing")', () => {
+    useChatStore.getState().setPausing(SESSION, true)
+    useChatStore.getState().setPausing(SESSION, false)
+    expect(useChatStore.getState().pausing[SESSION]).toBeUndefined()
+  })
+
+  it('is a no-op when clearing a session that was never pausing', () => {
+    const before = useChatStore.getState().pausing
+    useChatStore.getState().setPausing(SESSION, false)
+    // Same reference — no state change emitted.
+    expect(useChatStore.getState().pausing).toBe(before)
+  })
+
+  it('is independent of the paused flag (in-flight vs landed pause)', () => {
+    useChatStore.getState().setPausing(SESSION, true)
+    useChatStore.getState().setPaused(SESSION, true)
+    useChatStore.getState().setPausing(SESSION, false)
+    // session_paused clearing the in-flight flag must not un-pause the task.
+    expect(useChatStore.getState().pausing[SESSION]).toBeUndefined()
+    expect(useChatStore.getState().paused[SESSION]).toBe(true)
+  })
+})

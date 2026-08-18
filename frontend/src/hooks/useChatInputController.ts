@@ -34,6 +34,7 @@ export interface ChatInputController {
   isNoProject: boolean
   taskActive: boolean
   paused: boolean
+  pausing: boolean
 
   // Mode
   mode: 'chat' | 'terminal'
@@ -72,6 +73,7 @@ export function useChatInputController(): ChatInputController {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const taskActive = useChatStore((s) => (activeSessionId ? s.taskActive[activeSessionId] ?? false : false))
   const paused = useChatStore((s) => (activeSessionId ? s.paused[activeSessionId] ?? false : false))
+  const pausing = useChatStore((s) => (activeSessionId ? s.pausing[activeSessionId] ?? false : false))
 
   const mode = useInputModeStore((s) => s.mode)
   const height = useInputModeStore((s) => s.height)
@@ -195,19 +197,29 @@ export function useChatInputController(): ChatInputController {
   handleSendHolder.current = handleSend
 
   // Cooperatively pause the running task. The executor stops at the next step
-  // boundary; the backend emits session_paused to reconcile. Optimistically set
-  // ONLY the paused flag for immediate feedback — taskActive is finalized by
-  // the session_paused event (the task is still running until the step boundary
-  // fires), so setting it here would create a flicker window where a streaming
-  // event (assistant_chunk) could re-assert it before the pause lands.
+  // boundary, so the pause is NOT instantaneous — the ReAct loop keeps
+  // emitting events until it lands. We therefore set ONLY the `pausing`
+  // in-flight flag (never `paused` optimistically): the Pause button renders
+  // as a non-clickable spinner, the activity label reads "Pausing", and the
+  // input stays locked (taskActive is still true — no premature nudge-resume).
+  // The real paused state (unlocked input, Resume/Stop) is entered only on the
+  // backend's session_paused event; a terminal event (task_complete/cancelled/
+  // error) or the reconcile on session switch clears a stale flag.
   const handlePause = useCallback(async () => {
     if (!activeSessionId) return
-    useChatStore.getState().setPaused(activeSessionId, true)
+    const store = useChatStore.getState()
+    if (store.taskActive[activeSessionId] !== true) return
+    store.setPausing(activeSessionId, true)
+    store.setActivityStatus(activeSessionId, 'Pausing')
     try {
       await pauseSession(activeSessionId)
     } catch (err) {
       logger.error('Failed to pause session:', err)
-      useChatStore.getState().setPaused(activeSessionId, false)
+      // The pause request failed — the task keeps running, so the in-flight
+      // flag and label must not linger. Progress events will restore the
+      // normal activity status on the next step.
+      store.setPausing(activeSessionId, false)
+      store.setActivityStatus(activeSessionId, null)
     }
   }, [activeSessionId])
 
@@ -296,6 +308,7 @@ export function useChatInputController(): ChatInputController {
     isNoProject,
     taskActive,
     paused,
+    pausing,
     mode,
     setMode,
     height,

@@ -31,6 +31,7 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
     showCancel,
     taskActive,
     paused,
+    pausing,
     hasContent,
     isOptimizing,
     optimizeError,
@@ -117,7 +118,11 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
         <>
           {/* Pause (running) / Resume (paused) flank the Stop button. A
               cooperative pause unlocks the input for a nudge-resume; Resume
-              re-enters the task without a nudge. */}
+              re-enters the task without a nudge. While a pause is in flight
+              (between the Pause click and the session_paused event) the
+              action button is a NON-CLICKABLE spinner: the ReAct loop is
+              still stopping, so neither Pause nor Resume is meaningful and
+              the input stays locked (no premature nudge-resume). */}
           {paused ? (
             <Button
               variant="outline"
@@ -128,6 +133,17 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
               aria-label="Resume task"
             >
               <Play className="h-3.5 w-3.5 fill-current" />
+            </Button>
+          ) : pausing ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              disabled
+              className="shrink-0 h-8 w-8 rounded-md text-warning"
+              title="Pausing — waiting for the current step to finish"
+              aria-label="Pausing task"
+            >
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
             </Button>
           ) : taskActive ? (
             <Button

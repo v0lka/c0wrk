@@ -13,6 +13,8 @@ function resetStore(): void {
     taskActive: {},
     streamingText: {},
     activityStatus: {},
+    paused: {},
+    pausing: {},
   })
 }
 
@@ -51,6 +53,29 @@ describe('reconcileRuntimeStatus', () => {
     expect(useChatStore.getState().paused[SESSION]).toBe(true)
     expect(useChatStore.getState().taskActive[SESSION]).toBe(false)
     expect(sessionMessages().some(m => m.type === 'task_failed_resumable')).toBe(false)
+  })
+
+  it('clears a stale pause-in-flight flag when the task is paused (pause landed in the background)', () => {
+    // The user clicked Pause and switched sessions before the step boundary;
+    // the pause landed with no listener, so on switch-back the in-flight
+    // spinner flag is stale while the backend reports paused.
+    useChatStore.setState({ pausing: { [SESSION]: true }, taskActive: { [SESSION]: true } })
+
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true, paused: true })
+
+    expect(useChatStore.getState().paused[SESSION]).toBe(true)
+    expect(useChatStore.getState().pausing[SESSION]).toBeUndefined()
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(false)
+  })
+
+  it('clears a stale pause-in-flight flag for a still-running task (pause signal lost on restart)', () => {
+    useChatStore.setState({ pausing: { [SESSION]: true } })
+
+    reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: true, paused: false })
+
+    expect(useChatStore.getState().pausing[SESSION]).toBeUndefined()
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(true)
+    expect(useChatStore.getState().paused[SESSION]).toBeUndefined()
   })
 
   it('resolves stale HITL prompts for a paused task without injecting a resume banner', () => {

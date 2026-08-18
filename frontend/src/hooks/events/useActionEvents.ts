@@ -45,6 +45,7 @@ export function useActionEvents(sessionId: string | null): void {
         })
         useChatStore.getState().setActivityStatus(sessionId, null)
         useChatStore.getState().setTaskActive(sessionId, false)
+        useChatStore.getState().setPausing(sessionId, false)
       }),
     )
 
@@ -63,6 +64,7 @@ export function useActionEvents(sessionId: string | null): void {
         }
         // A resume also clears the paused state (session_resumed fires too,
         // but this covers any resume path and keeps the two consistent).
+        store.setPausing(sessionId, false)
         store.setPaused(sessionId, false)
         store.setTaskActive(sessionId, true)
         store.setActivityStatus(sessionId, 'Resuming...')
