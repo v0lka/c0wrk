@@ -354,6 +354,312 @@ func TestResumeTask_AppliesModelOverride(t *testing.T) {
 	}
 }
 
+// TestResumeTask_ModelSwitchRebasesContextWindow verifies that switching the
+// model while a task is paused and resuming it rebases the CONTEXT WINDOW to
+// the newly-selected model: both the display basis (initial context_fill
+// MaxTokens) and the compaction basis (the ModelMetadata the ContextFactory
+// receives) must reflect the new model's window, not the previous model's.
+// The existing override test only asserts the model NAME; the window was
+// previously untested (test factories hardcoded 128000).
+func TestResumeTask_ModelSwitchRebasesContextWindow(t *testing.T) {
+	const (
+		bigModel   = "resume-win-big"
+		smallModel = "resume-win-small"
+		provider   = "test"
+	)
+	const (
+		bigWindow   = 200_000
+		smallWindow = 32_768
+	)
+
+	trajJSON, _ := json.Marshal([]agent.Step{
+		{Thought: "prior", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+	})
+	store := &resumeTaskStore{
+		task: &TaskRecord{
+			ID: "task-resume-window", SessionID: "ignored", OriginalRequest: "interrupted task",
+			Status: "in_progress",
+		},
+		trajectory: trajJSON,
+	}
+
+	switcher, err := llm.NewRouter(context.Background(), llm.RouterConfig{
+		Providers: []llm.ProviderEntry{
+			{Name: provider, ProviderType: "openai", BaseURL: "http://localhost:9999", Models: []string{bigModel, smallModel}},
+		},
+		MaxRetries:     1,
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     100 * time.Millisecond,
+	}, nil)
+	if err != nil {
+		t.Fatalf("build llm router: %v", err)
+	}
+
+	// Registry knows both models with DIFFERENT context windows.
+	modelReg := llm.NewModelRegistry(map[string]llm.ModelMetadata{
+		bigModel:   {ContextWindow: bigWindow, OutputLimit: 8192, TokenizerType: "approximate"},
+		smallModel: {ContextWindow: smallWindow, OutputLimit: 4096, TokenizerType: "approximate"},
+	})
+
+	// Capturing context factory records the ModelMetadata window each run
+	// receives (the compaction basis) while building a real ContextWindow.
+	var factoryMu sync.Mutex
+	var factoryWindows []int
+	cf := func(systemPrompt string, meta llm.ModelMetadata, _ string, _ ...orchestration.PruningOverride) core.ContextManager {
+		factoryMu.Lock()
+		factoryWindows = append(factoryWindows, meta.ContextWindow)
+		factoryMu.Unlock()
+		cw := memory.NewContextWindow(memory.ContextWindowConfig{
+			SystemPrompt: systemPrompt,
+			ModelMeta:    meta,
+		})
+		return core.NewCoreContextManager(cw)
+	}
+
+	factory := func(emitter core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+		registry := sdktools.NewToolRegistry()
+		return core.NewOrchestrator(core.OrchestratorConfig{Model: bigModel}, core.OrchestratorDeps{
+			LLM:            &finishLLM{answer: "resumed-window-done"},
+			ModelSwitcher:  switcher,
+			ModelRegistry:  modelReg,
+			ToolExec:       registry,
+			ToolRegistry:   registry,
+			TokenCounter:   llm.NewSimpleTokenCounter(),
+			ContextFactory: cf,
+			Emitter:        emitter,
+			CircuitBreaker: agent.CircuitBreakerConfig{RepeatNudgeThreshold: 3, RepeatAbortThreshold: 4},
+		}), nil
+	}
+
+	var eventsMu sync.Mutex
+	var allEvents []Event
+	eventChan := make(chan Event, 100)
+	mgr := NewManager(factory, func(e Event) {
+		eventsMu.Lock()
+		allEvents = append(allEvents, e)
+		eventsMu.Unlock()
+		eventChan <- e
+	}, t.TempDir())
+	t.Cleanup(mgr.Shutdown)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	// Sanity: starts on the big model.
+	if got := switcher.ActiveModel(); got != llm.CompositeModelID(provider, bigModel) {
+		t.Fatalf("precondition: ActiveModel = %q, want %q", got, llm.CompositeModelID(provider, bigModel))
+	}
+
+	// Resume with the SMALL-window model override (user switched while paused).
+	if err := mgr.ResumeTask(context.Background(), info.ID, llm.CompositeModelID(provider, smallModel), "", ""); err != nil {
+		t.Fatalf("ResumeTask failed: %v", err)
+	}
+	if _, ok := waitForEvent(eventChan, "task_complete", 3*time.Second); !ok {
+		t.Fatal("timeout waiting for task_complete event")
+	}
+
+	// 1. Display basis: the initial context_fill must carry the new window.
+	var firstFill *ContextFillEventData
+	eventsMu.Lock()
+	for i := range allEvents {
+		if allEvents[i].Type == "context_fill" {
+			if data, ok := allEvents[i].Data.(ContextFillEventData); ok {
+				d := data
+				firstFill = &d
+				break
+			}
+		}
+	}
+	eventsMu.Unlock()
+	if firstFill == nil {
+		t.Fatal("expected at least one context_fill event")
+	}
+	if firstFill.MaxTokens != smallWindow {
+		t.Errorf("initial context_fill MaxTokens = %d, want %d (display window must rebase to the resumed model)", firstFill.MaxTokens, smallWindow)
+	}
+
+	// 2. Compaction basis: the ContextFactory must receive the new window.
+	factoryMu.Lock()
+	windows := append([]int(nil), factoryWindows...)
+	factoryMu.Unlock()
+	if len(windows) == 0 {
+		t.Fatal("context factory was never invoked")
+	}
+	for _, w := range windows {
+		if w != smallWindow {
+			t.Errorf("ContextFactory received ContextWindow = %d, want %d on every resumed run (compaction basis must rebase to the resumed model)", w, smallWindow)
+			break
+		}
+	}
+}
+
+// TestResumeTask_ModelSwitchToCatalogModel_WindowFollowsCatalog reproduces the
+// reported bug scenario EXACTLY: a session started on a model UNKNOWN to the
+// registry (fallback 128000 window) is paused, the user switches to a
+// catalog-known model (glm-5.2, 1M window in the built-in sp4rk catalog), and
+// resumes. The display basis (initial context_fill MaxTokens) and the
+// compaction basis (ModelMetadata handed to the ContextFactory) must follow
+// the catalog — 1000000, not the previous task's 128000 fallback.
+//
+// Uses a pure catalog registry (NewModelRegistry(nil)) like the real app, so
+// glm-5.2 resolves through the built-in tier rather than an override.
+func TestResumeTask_ModelSwitchToCatalogModel_WindowFollowsCatalog(t *testing.T) {
+	const (
+		provider     = "Z-ai"
+		unknownModel = "some-unknown-model"
+		knownModel   = "glm-5.2"
+		wantWindow   = 1000000
+	)
+
+	trajJSON, _ := json.Marshal([]agent.Step{
+		{Thought: "prior", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+	})
+	store := &resumeTaskStore{
+		task: &TaskRecord{
+			ID: "task-resume-catalog", SessionID: "ignored", OriginalRequest: "interrupted task",
+			Status: "in_progress",
+		},
+		trajectory: trajJSON,
+	}
+
+	switcher, err := llm.NewRouter(context.Background(), llm.RouterConfig{
+		Providers: []llm.ProviderEntry{
+			{Name: provider, ProviderType: "openai", BaseURL: "http://localhost:9999", Models: []string{unknownModel, knownModel}},
+		},
+		MaxRetries:     1,
+		InitialBackoff: 10 * time.Millisecond,
+		MaxBackoff:     100 * time.Millisecond,
+	}, nil)
+	if err != nil {
+		t.Fatalf("build llm router: %v", err)
+	}
+
+	// Pure catalog registry — exactly what the real app builds for a session
+	// without llm.models overrides. glm-5.2 must resolve via the built-in tier.
+	modelReg := llm.NewModelRegistry(nil)
+	if meta, _ := modelReg.ResolveLocal(knownModel); meta.ContextWindow != wantWindow {
+		t.Fatalf("precondition: catalog must know %s with %d window, got %d", knownModel, wantWindow, meta.ContextWindow)
+	}
+
+	var factoryMu sync.Mutex
+	var factoryWindows []int
+	cf := func(systemPrompt string, meta llm.ModelMetadata, _ string, _ ...orchestration.PruningOverride) core.ContextManager {
+		factoryMu.Lock()
+		factoryWindows = append(factoryWindows, meta.ContextWindow)
+		factoryMu.Unlock()
+		cw := memory.NewContextWindow(memory.ContextWindowConfig{
+			SystemPrompt: systemPrompt,
+			ModelMeta:    meta,
+		})
+		return core.NewCoreContextManager(cw)
+	}
+
+	factory := func(emitter core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+		registry := sdktools.NewToolRegistry()
+		return core.NewOrchestrator(core.OrchestratorConfig{Model: unknownModel}, core.OrchestratorDeps{
+			LLM:            &finishLLM{answer: "resumed-catalog-done"},
+			ModelSwitcher:  switcher,
+			ModelRegistry:  modelReg,
+			ToolExec:       registry,
+			ToolRegistry:   registry,
+			TokenCounter:   llm.NewSimpleTokenCounter(),
+			ContextFactory: cf,
+			Emitter:        emitter,
+			CircuitBreaker: agent.CircuitBreakerConfig{RepeatNudgeThreshold: 3, RepeatAbortThreshold: 4},
+		}), nil
+	}
+
+	var eventsMu sync.Mutex
+	var allEvents []Event
+	eventChan := make(chan Event, 100)
+	mgr := NewManager(factory, func(e Event) {
+		eventsMu.Lock()
+		allEvents = append(allEvents, e)
+		eventsMu.Unlock()
+		eventChan <- e
+	}, t.TempDir())
+	t.Cleanup(mgr.Shutdown)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	// First task on the UNKNOWN model: initial fill must carry the 128000
+	// fallback — the state the status bar was left in when the task paused.
+	if err := mgr.ResumeTask(context.Background(), info.ID, llm.CompositeModelID(provider, unknownModel), "", ""); err != nil {
+		t.Fatalf("ResumeTask (unknown model) failed: %v", err)
+	}
+	if _, ok := waitForEvent(eventChan, "task_complete", 3*time.Second); !ok {
+		t.Fatal("timeout waiting for task_complete event (unknown model run)")
+	}
+
+	// Switch during pause to the catalog-known model and resume.
+	if err := mgr.ResumeTask(context.Background(), info.ID, llm.CompositeModelID(provider, knownModel), "", ""); err != nil {
+		t.Fatalf("ResumeTask (known model) failed: %v", err)
+	}
+	if _, ok := waitForEvent(eventChan, "task_complete", 3*time.Second); !ok {
+		t.Fatal("timeout waiting for task_complete event (known model run)")
+	}
+
+	// Walk every context_fill in order; all fills AFTER the model switch must
+	// carry the catalog window (1M), never the stale 128000 fallback.
+	eventsMu.Lock()
+	fills := make([]ContextFillEventData, 0, len(allEvents))
+	for i := range allEvents {
+		if allEvents[i].Type == "context_fill" {
+			if data, ok := allEvents[i].Data.(ContextFillEventData); ok {
+				fills = append(fills, data)
+			}
+		}
+	}
+	eventsMu.Unlock()
+	if len(fills) == 0 {
+		t.Fatal("expected context_fill events")
+	}
+
+	// The last fill before the switch belongs to the unknown-model task and
+	// legitimately reports 128000. Find the first fill of the second task:
+	// it must be 1M.
+	sawKnown := false
+	for _, f := range fills {
+		if f.Model == knownModel || f.Model == llm.CompositeModelID(provider, knownModel) {
+			sawKnown = true
+			if f.MaxTokens != wantWindow {
+				t.Errorf("context_fill for %s: MaxTokens = %d, want %d (catalog window must replace the fallback after the switch)", knownModel, f.MaxTokens, wantWindow)
+			}
+		}
+	}
+	if !sawKnown {
+		t.Fatal("no context_fill carried the switched-to model")
+	}
+
+	// Compaction basis: every ContextFactory invocation of the second task
+	// must use the catalog window.
+	factoryMu.Lock()
+	windows := append([]int(nil), factoryWindows...)
+	factoryMu.Unlock()
+	knownFactoryWindows := 0
+	for _, w := range windows {
+		if w == wantWindow {
+			knownFactoryWindows++
+		}
+	}
+	if knownFactoryWindows == 0 {
+		t.Errorf("ContextFactory never received the %d catalog window (got %v) — compaction basis stayed on the old model's window", wantWindow, windows)
+	}
+}
+
 // TestManager_ResumeTask_ArchivedRejected verifies that an archived session
 // cannot resume an interrupted task. The guard must fire before the task store
 // is consulted, so no trajectory/blackboard work occurs.
