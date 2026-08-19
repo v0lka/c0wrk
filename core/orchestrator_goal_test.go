@@ -1213,6 +1213,54 @@ func TestEmitGoalStatus_AllFields(t *testing.T) {
 	}
 }
 
+// TestEmitGoalStatus_CreatedAtIdentity verifies the goal_status wire contract
+// carries the per-run identity (created_at) the frontend uses to order
+// snapshots across consecutive goal runs — turn counts reset per run, so a turn
+// comparison alone cannot discriminate them. A zero CreatedAt (pre-field state)
+// omits the key so the frontend falls back to its turn-only heuristic.
+func TestEmitGoalStatus_CreatedAtIdentity(t *testing.T) {
+	emitter := &spyEmitter{}
+	o := &Orchestrator{emitter: emitter}
+
+	createdAt := time.Unix(1724073600, 123456789)
+	gs := &goal.GoalState{
+		Status:    goal.StatusActive,
+		TurnCount: 1,
+		Condition: "ship it",
+		Budget:    goal.GoalBudget{MaxTurns: 5},
+		CreatedAt: createdAt,
+	}
+	o.emitGoalStatus(context.Background(), gs)
+	if len(emitter.calls) != 1 {
+		t.Fatalf("expected 1 emission, got %d", len(emitter.calls))
+	}
+	meta, ok := emitter.calls[0].args[0].(map[string]any)
+	if !ok {
+		t.Fatalf("emission args[0] is %T, want map[string]any", emitter.calls[0].args[0])
+	}
+	if got := meta["created_at"]; got != createdAt.UnixMilli() {
+		t.Errorf("meta[created_at] = %v, want %d", got, createdAt.UnixMilli())
+	}
+
+	// A zero CreatedAt must omit the key (older/unscheduled state) rather than
+	// emit a nonsense epoch value.
+	emitter2 := &spyEmitter{}
+	o2 := &Orchestrator{emitter: emitter2}
+	o2.emitGoalStatus(context.Background(), &goal.GoalState{
+		Status:    goal.StatusActive,
+		TurnCount: 1,
+		Condition: "ship it",
+		Budget:    goal.GoalBudget{MaxTurns: 5},
+	})
+	meta2, ok := emitter2.calls[0].args[0].(map[string]any)
+	if !ok {
+		t.Fatalf("emission args[0] is %T, want map[string]any", emitter2.calls[0].args[0])
+	}
+	if _, present := meta2["created_at"]; present {
+		t.Errorf("meta[created_at] should be omitted for a zero CreatedAt, got %v", meta2["created_at"])
+	}
+}
+
 // TestEmitGoalStatus_VerificationConfirmed verifies that when the independent
 // verifier confirmed the goal, emitGoalStatus surfaces the verifier's reason
 // and evidence alongside the "confirmed" marker.

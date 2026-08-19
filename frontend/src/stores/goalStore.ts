@@ -44,6 +44,11 @@ export interface ActiveGoal {
    *  the goal_status snapshot and preserved across turns. Absent means the
    *  default ('executable'). */
   verificationMode?: string
+  /** Per-run identity (Unix milliseconds) echoed from goal_status.created_at.
+   *  Distinguishes consecutive goal runs in the same session — turn counts
+   *  reset per run, so a turn comparison alone cannot order snapshots across
+   *  runs. Absent on older backend snapshots. */
+  createdAt?: number
 }
 
 /** Live mid-loop progress telemetry for a session's goal (goal_progress). */

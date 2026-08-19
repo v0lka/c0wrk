@@ -69,6 +69,34 @@ func (m *Manager) finishLiveLeftover(_ context.Context, id string, _ *Session, l
 	}
 }
 
+// deactivateSessionTask flips the session back to idle and, for a follow-up
+// action, drains the queued live messages under the same lock hold. It returns
+// the drained leftovers (nil for any other action). Terminal events must be
+// emitted AFTER this call: a consumer reacting to task_complete/session_paused
+// treats the session as free to resume/send, so it must already observe
+// active == false — otherwise a fast follow-up hits a spurious
+// "session is already processing a task" error.
+func (m *Manager) deactivateSessionTask(session *Session, action liveAction) []string {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	session.active = false
+	session.cancel = nil
+	session.done = nil
+	session.pausing = false
+
+	if session.orchestrator == nil {
+		return nil
+	}
+	switch action {
+	case liveActionFollowUp:
+		return session.orchestrator.TakeLiveUserMessages()
+	case liveActionDiscard:
+		session.orchestrator.DiscardLiveUserMessages()
+	}
+	return nil
+}
+
 // loadWorkDirectories fetches project-scoped and session-scoped auxiliary work
 // directories for the given session. It is best-effort: nil stores or listing
 // errors are logged and skipped. Project-scoped entries come first, then
@@ -754,31 +782,13 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 		// queue itself) or left the task resumable (paused/failed: the next
 		// resume delivers them).
 		action := liveActionNone
+		finished := false
 		defer close(doneCh)
 		defer func() {
-			session.mu.Lock()
-			session.active = false
-			session.cancel = nil
-			session.done = nil
-			// The pausing window is over regardless of how the request ended:
-			// either the pause landed (the task is now persisted as paused —
-			// sends become nudge-resumes) or a terminal event superseded it.
-			session.pausing = false
-			var leftover []string
-			if orch := session.orchestrator; orch != nil {
-				switch action {
-				case liveActionFollowUp:
-					// Take under the same lock hold that flipped
-					// active=false: a live send that raced the completion
-					// either queued before this point (becomes the follow-up)
-					// or sees active=false after (starts a normal task) —
-					// never both.
-					leftover = orch.TakeLiveUserMessages()
-				case liveActionDiscard:
-					orch.DiscardLiveUserMessages()
-				}
+			if finished {
+				return
 			}
-			session.mu.Unlock()
+			leftover := m.deactivateSessionTask(session, action)
 			m.finishLiveLeftover(ctx, id, session, leftover)
 		}()
 
@@ -967,14 +977,26 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 		// Resume/Stop controls) instead of a misleading failed/resumable banner.
 		// The task is persisted as paused (resumable); a later Resume re-enters.
 		if result != nil && result.Status == orchestration.ExecutionStatusPaused {
+			// Deactivate BEFORE the terminal event: a consumer reacting to
+			// session_paused treats the session as free to resume/send, so it
+			// must already observe active == false (see deactivateSessionTask).
+			leftover := m.deactivateSessionTask(session, action)
+			finished = true
 			m.emitFunc(Event{SessionID: id, Type: "session_paused"})
+			m.finishLiveLeftover(ctx, id, session, leftover)
 			return
 		}
 
 		// Emit done event with result (carries the typed success contract;
 		// degraded outcomes surface a resumable action or a fallback warning).
 		action = liveActionFollowUp
+		// Deactivate BEFORE emitting task_complete: the event is the frontend's
+		// signal that the session is free for a Resume/Send, so a consumer
+		// reacting to it must already observe active == false.
+		leftover := m.deactivateSessionTask(session, action)
+		finished = true
 		m.emitTaskComplete(id, result, nil)
+		m.finishLiveLeftover(ctx, id, session, leftover)
 	}(taskCtx, text, activeSkills, activeAgents)
 
 	return SendFresh, nil
@@ -1300,23 +1322,13 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	// Launch goroutine (same pattern as SendMessage).
 	go func() {
 		action := liveActionNone
+		finished := false
 		defer close(resumeDoneCh)
 		defer func() {
-			session.mu.Lock()
-			session.active = false
-			session.cancel = nil
-			session.done = nil
-			session.pausing = false
-			var leftover []string
-			if orch := session.orchestrator; orch != nil {
-				switch action {
-				case liveActionFollowUp:
-					leftover = orch.TakeLiveUserMessages()
-				case liveActionDiscard:
-					orch.DiscardLiveUserMessages()
-				}
+			if finished {
+				return
 			}
-			session.mu.Unlock()
+			leftover := m.deactivateSessionTask(session, action)
 			m.finishLiveLeftover(ctx, id, session, leftover)
 		}()
 
@@ -1376,7 +1388,13 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		// Checked before the task-ID store below so a paused result does not
 		// update lastCompletedTaskID (the task is not completed).
 		if result != nil && result.Status == orchestration.ExecutionStatusPaused {
+			// Deactivate BEFORE the terminal event so a consumer reacting to
+			// session_paused already observes active == false (see
+			// deactivateSessionTask).
+			leftover := m.deactivateSessionTask(session, action)
+			finished = true
 			m.emitFunc(Event{SessionID: id, Type: "session_paused"})
+			m.finishLiveLeftover(ctx, id, session, leftover)
 			return
 		}
 
@@ -1388,7 +1406,13 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		}
 
 		action = liveActionFollowUp
+		// Close the processing window BEFORE emitting task_complete: the event
+		// is the frontend's signal that the session is free for a Resume/Send,
+		// so a consumer reacting to it must already observe active == false.
+		leftover := m.deactivateSessionTask(session, action)
+		finished = true
 		m.emitTaskComplete(id, result, nil)
+		m.finishLiveLeftover(ctx, id, session, leftover)
 	}()
 
 	return nil

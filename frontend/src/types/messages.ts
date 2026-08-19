@@ -14,6 +14,7 @@ export type MessageType =
   | 'service'
   | 'review_prompt'
   | 'goal_proposal'
+  | 'goal_status'
 
 export interface ChatMessageUI {
   id: string

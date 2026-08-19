@@ -257,6 +257,10 @@ export interface GoalStatusData {
    *  're_derivation'). Absent on older backend snapshots; consumers fall back
    *  to a previously-seen value or the default ('executable'). */
   readonly verification_mode?: string
+  /** Per-run identity stamped from GoalState.CreatedAt (Unix milliseconds).
+   *  Turn counts reset per goal run, so this discriminates consecutive runs in
+   *  the same session. Absent on older backend snapshots. */
+  readonly created_at?: number
 }
 
 /**

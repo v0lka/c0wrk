@@ -1,8 +1,10 @@
 import type { ChatMessageUI, MessageType, DisplayItem, GroupedMessages } from '@/types/messages'
 import type { ChatMessage, PlanGroup, PlanItem } from '@/types/models'
 import type { AgentMetricsData } from '@/types/events'
-import { isAgentMetricsData } from '@/types/events'
+import { isAgentMetricsData, isGoalStatusData } from '@/types/events'
+import type { ActiveGoal } from '@/stores/goalStore'
 import { reconstructContent, buildHistoryId, collapseThoughts, dedupThoughtVsAnswer, extractMeta } from './chatUtilsHelpers'
+import { buildGoalTransitionNotice, goalStatusToActiveGoal, type GoalCarryOver } from './goalTransition'
 import {
   handlePlanStepStart, handlePlanStepComplete, handleSubAgentLaunch, handleSubAgentComplete,
   handleReflection, handleStepTodoUpdate,
@@ -26,6 +28,7 @@ type ChatRole = 'user' | 'assistant' | 'tool_call' | 'tool_result'
   | 'step_todo_update' | 'memory_read' | 'plan_review'
   | 'review_prompt'
   | 'goal_proposal'
+  | 'goal_status'
 
 export const roleToType: Record<ChatRole, MessageType> = {
   user: 'user', assistant: 'assistant', tool_call: 'tool_call', tool_result: 'tool_result',
@@ -46,6 +49,7 @@ export const roleToType: Record<ChatRole, MessageType> = {
   plan_review: 'plan_review',
   review_prompt: 'review_prompt',
   goal_proposal: 'goal_proposal',
+  goal_status: 'goal_status',
 }
 
 /** Convert a persisted ChatMessage to ChatMessageUI, matching live event shape. */
@@ -184,6 +188,19 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
       case 'error': pushItem({ kind: 'error', message: msg }, planStepId); break
       case 'routing': case 'retry': case 'step_retry':
         pushItem({ kind: 'service', id: msg.id, variant: msg.type as 'routing' | 'retry' | 'step_retry', content: msg.content, metadata: meta }, planStepId); break
+      case 'goal_status': {
+        // Persisted goal_status snapshots render as the same compact transition
+        // notice the live handler produces (a service message). A bare
+        // mid-loop active snapshot produces no notice and is skipped — it is
+        // store state, not chat content.
+        if (meta && isGoalStatusData(meta)) {
+          const notice = buildGoalTransitionNotice(meta)
+          if (notice) {
+            pushItem({ kind: 'service', id: msg.id, variant: 'status', content: notice, metadata: meta }, planStepId)
+          }
+        }
+        break
+      }
       case 'status':
         pushItem({ kind: 'service', id: msg.id, variant: 'status', content: msg.content, metadata: meta }, planStepId); break
       case 'step_done': case 'thinking': case 'task_resumed': break
@@ -306,4 +323,77 @@ export function rebuildPlanFromHistory(messages: ChatMessageUI[], store: PlanSto
   group.failedCount = group.items.filter(it => it.status === 'failed').length
 
   store.setPlan(group)
+}
+
+/** Actions interface for goal store dependency injection. */
+export interface GoalStoreActions {
+  setActiveGoal: (sessionId: string, goal: ActiveGoal) => void
+}
+
+/** Rebuild goalStore from persisted history messages (called after history
+ *  load). The live goal_status events populate the store in real time; on
+ *  reload the persisted goal_status rows are the only source, so the status-bar
+ *  badge and the settled goal proposal card's verdict survive a restart. The
+ *  latest snapshot wins (it carries the final status, turn, verdict, evidence
+ *  and verification outcome).
+ */
+export function rebuildGoalFromHistory(
+  messages: ChatMessageUI[],
+  store: GoalStoreActions,
+  current: ActiveGoal | undefined,
+): void {
+  let last: { sessionId: string; goal: ActiveGoal } | undefined
+  let carry: GoalCarryOver | undefined
+  for (const msg of messages) {
+    // The persisted goal_proposal row carries the approved verify clause and
+    // verification mode. The goal_status snapshots that follow it do NOT echo
+    // the verify clause at all and omit verification_mode on older backend
+    // snapshots, so recover those fields here and thread them through the same
+    // goalStatusToActiveGoal preservation path the live handler uses.
+    if (msg.type === 'goal_proposal') {
+      const meta = extractMeta(msg)
+      if (meta && typeof meta.verify === 'string') {
+        carry = {
+          verify: meta.verify || undefined,
+          verificationMode:
+            typeof meta.verification_mode === 'string' && meta.verification_mode
+              ? meta.verification_mode
+              : undefined,
+        }
+      }
+      continue
+    }
+    if (msg.type !== 'goal_status') continue
+    const meta = extractMeta(msg)
+    if (!meta || !isGoalStatusData(meta)) continue
+    last = { sessionId: msg.sessionId, goal: goalStatusToActiveGoal(meta, carry) }
+  }
+  if (!last) return
+  // A freshly-approved goal seeds activeGoal as {status:'active', turn:0} with
+  // no createdAt (see GoalProposalPanel.onApprove); the first goal_status for
+  // the new run has not landed yet. Persisted goal_status rows always start at
+  // turn 1, so a turn-0 in-memory entry is unambiguously that seed — never let
+  // a stale prior-run snapshot from history clobber it in the reload race.
+  if (current && current.turn === 0 && current.createdAt === undefined) return
+  // A live goal_status event can land while the history RPC is in flight and
+  // already advance the store beyond the snapshot's latest row. Turn count is
+  // monotonic only WITHIN a goal run (it resets to 1 on a new run), so a turn
+  // comparison alone cannot order snapshots across runs. Order by run identity
+  // first: created_at is the backend's per-run stamp (a new run gets a new
+  // CreatedAt, a resume keeps it), so a newer-run in-memory snapshot must win
+  // even when its turn number is lower, and a stale prior-run in-memory
+  // snapshot must lose to a newer-run history row even when its turn is higher.
+  const currentRun = current?.createdAt
+  const lastRun = last.goal.createdAt
+  if (current && currentRun !== undefined && lastRun !== undefined) {
+    if (currentRun > lastRun) return // live event is from a newer run — keep it
+    if (currentRun === lastRun && current.turn > last.goal.turn) return // same run: newer turn wins
+    // currentRun < lastRun (history has a newer run) or same run with a
+    // non-newer turn: rebuild from history below.
+  } else if (current && current.turn > last.goal.turn) {
+    // created_at missing on either side (older snapshots): fall back to the
+    // turn heuristic.
+    return
+  }
+  store.setActiveGoal(last.sessionId, last.goal)
 }

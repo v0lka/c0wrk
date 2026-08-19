@@ -854,6 +854,14 @@ func (o *Orchestrator) emitGoalStatus(_ context.Context, gs *goal.GoalState) {
 		"max_turns":         gs.Budget.MaxTurns,
 		"verification_mode": gs.VerificationMode,
 	}
+	// created_at is the goal run's identity: a fresh run gets a new CreatedAt
+	// (buildGoalState), while a resumed run keeps the persisted one, so turn
+	// counts — which reset per run — can be ordered unambiguously across
+	// consecutive goal runs in the same session. Zero means the state predates
+	// this field; omit it so the frontend falls back to its turn-only heuristic.
+	if !gs.CreatedAt.IsZero() {
+		data["created_at"] = gs.CreatedAt.UnixMilli()
+	}
 	if gs.LastVerdict != nil {
 		data["verdict"] = gs.LastVerdict.Status
 		data["reason"] = gs.LastVerdict.Reason

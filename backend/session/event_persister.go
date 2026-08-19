@@ -192,7 +192,7 @@ func (p *EventPersister) Persist(evt Event) {
 		"memory_read", "message_received", "blackboard_updated",
 		"tool_judge_response", "session_created", "session_deleted",
 		"session_renamed",
-		"goal_status", "goal_progress",
+		"goal_progress",
 		// UI-only state events emitted with a SessionID. These drive live UI
 		// updates (attachment chips, sidebar pin/archive toggles) but carry no
 		// conversational content — persisting them would store the raw JSON
@@ -204,6 +204,12 @@ func (p *EventPersister) Persist(evt Event) {
 		return // transient — no persistence needed
 	case "plan_review_ready":
 		role = "plan_review"
+	case "goal_status":
+		// Persist the full goal state snapshot so the frontend can rebuild the
+		// goal store (status-bar badge + settled goal card verdict) and re-render
+		// the turn-transition notice after a session reload. goal_progress stays
+		// transient — the snapshot already carries turn/budget telemetry.
+		role = "goal_status"
 	case "goal_proposal":
 		// Persist the goal-proposal pending action so it reappears via
 		// GetPendingActions after a reload (the agent remains blocked until

@@ -168,6 +168,12 @@ export function reconstructContent(role: string, rawContent: string, meta: Recor
       return (meta.content as string) || rawContent
     }
     case 'task_resumed': return rawContent
+    case 'goal_status':
+      // Persisted goal_status rows carry the raw snapshot JSON as content (the
+      // persister writes metadata into content for non-assistant roles). The
+      // chat renders the transition notice from the metadata in groupMessages,
+      // so keep content empty here — raw JSON must never surface.
+      return ''
     case 'task_failed_resumable':
       return (meta.message as string) || 'Plan execution failed. You can resume to retry from where it left off.'
     case 'step_limit': {
@@ -282,6 +288,20 @@ export function buildHistoryId(
       // "Proposed Goal" duplicate on background sessions.
       const requestId = meta.request_id as string | undefined
       return requestId ? `goal-proposal-${requestId}` : `history-${dbId}`
+    }
+    case 'goal_status': {
+      // The live handler (handleGoalStatusEvent) emits the turn-transition
+      // notice with the deterministic id `goal-status-${run}-${turn}-${status}`
+      // (run = created_at, the per-run identity). Give the persisted snapshot
+      // the same id so a live event landing during the history RPC dedupes
+      // against the reloaded row instead of rendering twice, and so two goal
+      // runs whose turn counts both reset to 1 don't collide.
+      const turn = meta.turn as number | undefined
+      const status = meta.status as string | undefined
+      const run = meta.created_at as number | undefined
+      return (typeof turn === 'number' && typeof status === 'string')
+        ? `goal-status-${run ?? 'legacy'}-${turn}-${status}`
+        : `history-${dbId}`
     }
     default:
       return `history-${dbId}`

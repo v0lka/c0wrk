@@ -3,22 +3,32 @@ import { Badge } from '@/components/ui/badge'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useActiveGoal, useGoalStatus } from '@/stores/goalStore'
 
-// The indicator is only relevant while a goal loop is running. A cooperative
-// pause leaves the goal `active` (resume re-enters), so only `active` keeps it
-// visible; `idle` (no goal), `met` (goal satisfied) and any other terminal
-// state hide it.
+// The indicator shows the active session's committed goal as a compact read-only
+// badge. A cooperative pause leaves the goal `active` (resume re-enters), so
+// `active` keeps the badge visible; the goal loop's halting outcomes (`met`,
+// `exhausted`, `blocked_idle`) are shown too so a completed goal session keeps
+// its outcome visible in the status bar after a reload. `idle` (no goal) hides
+// the badge.
 //
-// This is a read-only status badge (icon, turn counter, turn budget). The
-// Pause/Resume/Stop controls are session-level and live in the ChatInputToolbar
-// — a goal pause is a task-level pause now, not a goal-specific action.
-const VISIBLE_STATUSES = new Set(['active'])
+// This is a read-only status badge (icon, status label, turn counter, turn
+// budget). The Pause/Resume/Stop controls are session-level and live in the
+// ChatInputToolbar — a goal pause is a task-level pause now, not a goal-specific
+// action.
+const VISIBLE_STATUSES = new Set(['active', 'met', 'exhausted', 'blocked_idle'])
+
+/** Compact status label for each visible goal state. */
+const STATUS_LABELS: Record<string, string> = {
+  active: 'Goal',
+  met: 'Goal met',
+  exhausted: 'Goal exhausted',
+  blocked_idle: 'Goal blocked',
+}
 
 /**
  * Persistent goal status badge shown in the status bar's left cluster. Reflects
  * the active session's committed goal lifecycle as a compact summary (icon,
- * turn counter, turn budget). Hidden when there is no active session or the
- * goal status is anything other than `active` (covers `idle`, `met`,
- * `exhausted`, `blocked_idle`).
+ * status label, turn counter, and — while active — turn budget). Hidden when
+ * there is no active session or the goal status is `idle` (no goal).
  */
 export function GoalStatusIndicator() {
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
@@ -31,6 +41,7 @@ export function GoalStatusIndicator() {
   // maxTurns <= 0 (or unset) means an unlimited turn budget.
   const budget = activeGoal?.maxTurns && activeGoal.maxTurns > 0 ? activeGoal.maxTurns : '∞'
   const title = activeGoal?.condition ? `Goal: ${activeGoal.condition}` : 'Goal'
+  const label = STATUS_LABELS[status] ?? 'Goal'
 
   return (
     <Badge
@@ -39,9 +50,11 @@ export function GoalStatusIndicator() {
       title={title}
     >
       <Target className="size-3 shrink-0" />
-      <span className="shrink-0">Goal</span>
+      <span className="shrink-0">{label}</span>
       <span className="shrink-0 text-muted-foreground/70">· turn {turn}</span>
-      <span className="shrink-0 text-muted-foreground/70">· budget {budget}</span>
+      {status === 'active' && (
+        <span className="shrink-0 text-muted-foreground/70">· budget {budget}</span>
+      )}
     </Badge>
   )
 }

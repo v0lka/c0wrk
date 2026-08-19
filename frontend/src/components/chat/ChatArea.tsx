@@ -1,8 +1,9 @@
 import { useEffect, useRef, useMemo } from 'react'
 import { useChatStore, useSessionMessages } from '@/stores/chatStore'
-import { groupMessages, chatMessageToUI, rebuildPlanFromHistory, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow } from '@/lib/chatUtils'
+import { groupMessages, chatMessageToUI, rebuildPlanFromHistory, rebuildGoalFromHistory, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow } from '@/lib/chatUtils'
 import { useSessionStore } from '@/stores/sessionStore'
 import { usePlanStore } from '@/stores/planStore'
+import { useGoalStore } from '@/stores/goalStore'
 import { getSessionHistory, getSessionRuntimeStatus, getPendingActions, resolveStalePrompt } from '@/api/chat'
 import { reconcileRuntimeStatus, reconcilePendingActions, stalePromptMatchField } from '@/lib/sessionRuntime'
 import { generateMessageId } from '@/lib/ids'
@@ -98,6 +99,10 @@ export function ChatArea() {
         // flight — e.g. a terminal `error` — are not clobbered.
         useChatStore.getState().mergeHistoryMessages(activeSessionId, chatMessages, loadStartedAt)
         rebuildPlanFromHistory(chatMessages, usePlanStore.getState())
+        // Rebuild the goal store from persisted goal_status snapshots so the
+        // status-bar badge and the settled goal card's verdict survive a reload
+        // (live goal_status events are not replayed on session load).
+        rebuildGoalFromHistory(chatMessages, useGoalStore.getState(), useGoalStore.getState().activeGoal[activeSessionId])
       }
 
       // Reconcile AFTER the merge so the store is populated. Fetch the

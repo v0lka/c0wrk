@@ -235,3 +235,48 @@ func TestEventPersister_UIStateEventsAreTransient(t *testing.T) {
 		t.Fatalf("expected 0 persisted rows for transient UI state events, got %d: %+v", len(rows), rows)
 	}
 }
+
+// TestEventPersister_GoalStatusPersisted_GoalProgressTransient verifies that a
+// goal_status snapshot survives a reload (role "goal_status", full metadata) so
+// the frontend can rebuild the goal store and re-render the turn-transition
+// notice, while goal_progress remains live-only telemetry and is dropped.
+func TestEventPersister_GoalStatusPersisted_GoalProgressTransient(t *testing.T) {
+	store := &captureStore{}
+	p := NewEventPersister(store)
+
+	p.Persist(Event{
+		SessionID: "s1",
+		Type:      "goal_status",
+		Data: map[string]any{
+			"status":    "met",
+			"turn":      2,
+			"condition": "ship it",
+			"max_turns": 5,
+			"verdict":   "met",
+			"reason":    "tests green",
+		},
+	})
+	p.Persist(Event{
+		SessionID: "s1",
+		Type:      "goal_progress",
+		Data: map[string]any{
+			"turn":      2,
+			"max_turns": 5,
+			"condition": "ship it",
+		},
+	})
+
+	rows := store.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 persisted row (goal_status only), got %d: %+v", len(rows), rows)
+	}
+	if rows[0].Role != "goal_status" {
+		t.Errorf("expected role goal_status, got %q", rows[0].Role)
+	}
+	// The persister stores the JSON metadata; the frontend reads it from the
+	// metadata field (not content). Just verify the row is non-empty so the
+	// reload path has a payload to reconstruct.
+	if rows[0].Content == "" {
+		t.Error("expected non-empty goal_status content (metadata JSON)")
+	}
+}

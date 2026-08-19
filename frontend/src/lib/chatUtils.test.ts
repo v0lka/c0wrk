@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { roleToType, chatMessageToUI, rebuildPlanFromHistory, groupMessages, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow } from './chatUtils'
+import { roleToType, chatMessageToUI, rebuildPlanFromHistory, rebuildGoalFromHistory, groupMessages, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow } from './chatUtils'
 import type { ChatMessage } from '@/types/models'
 import type { ChatMessageUI } from '@/types/messages'
 
@@ -843,3 +843,306 @@ describe('groupMessages — plan_review sinking', () => {
     expect((planReviews[planReviews.length - 1]! as { message: ChatMessageUI }).message.id).toBe('pr-2')
   })
 })
+
+describe('rebuildGoalFromHistory', () => {
+  function makeUI(overrides: Partial<ChatMessageUI>): ChatMessageUI {
+    return {
+      id: 'msg-1',
+      sessionId: 'sess-1',
+      type: 'user',
+      content: '',
+      timestamp: Date.now(),
+      ...overrides,
+    }
+  }
+
+  it('rebuilds the goal store from the latest persisted goal_status snapshot', () => {
+    const setActiveGoal = vi.fn()
+    const messages: ChatMessageUI[] = [
+      makeUI({ type: 'user', content: 'build it' }),
+      makeUI({
+        id: 'gs-1',
+        type: 'goal_status',
+        content: '',
+        metadata: { status: 'active', turn: 1, condition: 'ship it', max_turns: 5 },
+      }),
+      makeUI({
+        id: 'gs-2',
+        type: 'goal_status',
+        content: '',
+        metadata: {
+          status: 'met',
+          turn: 2,
+          condition: 'ship it',
+          max_turns: 5,
+          verdict: 'met',
+          reason: 'tests green',
+        },
+      }),
+    ]
+
+    rebuildGoalFromHistory(messages, { setActiveGoal }, undefined)
+
+    expect(setActiveGoal).toHaveBeenCalledOnce()
+    const [sessionId, goal] = setActiveGoal.mock.calls[0]!
+    expect(sessionId).toBe('sess-1')
+    expect(goal.status).toBe('met')
+    expect(goal.turn).toBe(2)
+    expect(goal.condition).toBe('ship it')
+    expect(goal.maxTurns).toBe(5)
+    expect(goal.verdict).toBe('met')
+    expect(goal.reason).toBe('tests green')
+  })
+
+  it('preserves the proposal verify clause and verification mode on rebuild', () => {
+    const setActiveGoal = vi.fn()
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'gp-1',
+        type: 'goal_proposal',
+        content: 'ship it',
+        metadata: {
+          request_id: 'gp_1',
+          condition: 'ship it',
+          verify: 'go test ./...',
+          verification_mode: 're_derivation',
+        },
+      }),
+      makeUI({
+        id: 'gs-1',
+        type: 'goal_status',
+        content: '',
+        // The snapshot neither echoes verify nor (on older backends) mode.
+        metadata: { status: 'met', turn: 2, condition: 'ship it', max_turns: 5 },
+      }),
+    ]
+
+    rebuildGoalFromHistory(messages, { setActiveGoal }, undefined)
+
+    expect(setActiveGoal).toHaveBeenCalledOnce()
+    const [, goal] = setActiveGoal.mock.calls[0]!
+    expect(goal.verify).toBe('go test ./...')
+    expect(goal.verificationMode).toBe('re_derivation')
+  })
+
+  it('prefers a snapshot verification mode over the proposal mode on rebuild', () => {
+    const setActiveGoal = vi.fn()
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'gp-1',
+        type: 'goal_proposal',
+        content: 'ship it',
+        metadata: { request_id: 'gp_1', condition: 'ship it', verify: 'v', verification_mode: 're_derivation' },
+      }),
+      makeUI({
+        id: 'gs-1',
+        type: 'goal_status',
+        content: '',
+        metadata: { status: 'met', turn: 2, condition: 'ship it', max_turns: 5, verification_mode: 'executable' },
+      }),
+    ]
+
+    rebuildGoalFromHistory(messages, { setActiveGoal }, undefined)
+
+    expect(setActiveGoal).toHaveBeenCalledOnce()
+    const [, goal] = setActiveGoal.mock.calls[0]!
+    expect(goal.verify).toBe('v')
+    expect(goal.verificationMode).toBe('executable')
+  })
+
+  it('does not call setActiveGoal when there is no goal_status snapshot', () => {
+    const setActiveGoal = vi.fn()
+    const messages: ChatMessageUI[] = [
+      makeUI({ type: 'user', content: 'hello' }),
+      makeUI({ type: 'assistant', content: 'hi' }),
+    ]
+
+    rebuildGoalFromHistory(messages, { setActiveGoal }, undefined)
+
+    expect(setActiveGoal).not.toHaveBeenCalled()
+  })
+
+  it('ignores malformed goal_status rows', () => {
+    const setActiveGoal = vi.fn()
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'gs-1',
+        type: 'goal_status',
+        content: '',
+        metadata: { status: 'active' }, // missing turn/condition/max_turns
+      }),
+    ]
+
+    rebuildGoalFromHistory(messages, { setActiveGoal }, undefined)
+
+    expect(setActiveGoal).not.toHaveBeenCalled()
+  })
+
+  it('does not clobber a newer in-memory goal snapshot', () => {
+    const setActiveGoal = vi.fn()
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'gs-1',
+        type: 'goal_status',
+        content: '',
+        metadata: { status: 'active', turn: 4, condition: 'ship it', max_turns: 5 },
+      }),
+    ]
+
+    rebuildGoalFromHistory(messages, { setActiveGoal }, {
+      condition: 'ship it',
+      status: 'met',
+      turn: 5,
+      maxTurns: 5,
+    })
+
+    expect(setActiveGoal).not.toHaveBeenCalled()
+  })
+
+  it('keeps a freshly-approved turn-0 seed over a stale prior-run snapshot', () => {
+    const setActiveGoal = vi.fn()
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'gs-1',
+        type: 'goal_status',
+        content: '',
+        metadata: { status: 'met', turn: 3, condition: 'ship it', max_turns: 5, created_at: 2000 },
+      }),
+    ]
+
+    rebuildGoalFromHistory(messages, { setActiveGoal }, {
+      condition: 'ship it',
+      status: 'active',
+      turn: 0,
+      verify: 'go test ./...',
+    })
+
+    expect(setActiveGoal).not.toHaveBeenCalled()
+  })
+
+  it('does not clobber a live snapshot from a newer run even when its turn is lower', () => {
+    const setActiveGoal = vi.fn()
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'gs-1',
+        type: 'goal_status',
+        content: '',
+        metadata: { status: 'met', turn: 3, condition: 'ship it', max_turns: 5, created_at: 1000 },
+      }),
+    ]
+
+    rebuildGoalFromHistory(messages, { setActiveGoal }, {
+      condition: 'ship it',
+      status: 'active',
+      turn: 1,
+      maxTurns: 5,
+      createdAt: 2000,
+    })
+
+    expect(setActiveGoal).not.toHaveBeenCalled()
+  })
+
+  it('rebuilds over a stale in-memory snapshot from an older run even when its turn is higher', () => {
+    const setActiveGoal = vi.fn()
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'gs-1',
+        type: 'goal_status',
+        content: '',
+        metadata: { status: 'met', turn: 1, condition: 'ship it', max_turns: 5, created_at: 2000 },
+      }),
+    ]
+
+    rebuildGoalFromHistory(messages, { setActiveGoal }, {
+      condition: 'ship it',
+      status: 'met',
+      turn: 5,
+      maxTurns: 5,
+      createdAt: 1000,
+    })
+
+    expect(setActiveGoal).toHaveBeenCalledOnce()
+    const [sessionId, goal] = setActiveGoal.mock.calls[0]!
+    expect(sessionId).toBe('sess-1')
+    expect(goal.turn).toBe(1)
+    expect(goal.createdAt).toBe(2000)
+  })
+
+  it('same run: does not clobber a newer in-memory turn', () => {
+    const setActiveGoal = vi.fn()
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'gs-1',
+        type: 'goal_status',
+        content: '',
+        metadata: { status: 'active', turn: 2, condition: 'ship it', max_turns: 5, created_at: 1000 },
+      }),
+    ]
+
+    rebuildGoalFromHistory(messages, { setActiveGoal }, {
+      condition: 'ship it',
+      status: 'active',
+      turn: 3,
+      maxTurns: 5,
+      createdAt: 1000,
+    })
+
+    expect(setActiveGoal).not.toHaveBeenCalled()
+  })
+
+  it('same run: rebuilds over an equal or older in-memory turn', () => {
+    const setActiveGoal = vi.fn()
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'gs-1',
+        type: 'goal_status',
+        content: '',
+        metadata: { status: 'met', turn: 2, condition: 'ship it', max_turns: 5, created_at: 1000 },
+      }),
+    ]
+
+    rebuildGoalFromHistory(messages, { setActiveGoal }, {
+      condition: 'ship it',
+      status: 'active',
+      turn: 2,
+      maxTurns: 5,
+      createdAt: 1000,
+    })
+
+    expect(setActiveGoal).toHaveBeenCalledOnce()
+  })
+})
+
+describe('groupMessages — goal_status', () => {
+  function makeUI(overrides: Partial<ChatMessageUI> = {}): ChatMessageUI {
+    return {
+      id: 'gs-1',
+      sessionId: 'sess-1',
+      type: 'goal_status',
+      content: '',
+      metadata: { status: 'met', turn: 2, condition: 'ship it', max_turns: 5 },
+      timestamp: Date.now(),
+      ...overrides,
+    }
+  }
+
+  it('renders a terminal snapshot as a service transition notice', () => {
+    const result = groupMessages([makeUI()])
+    const services = result.items.filter(i => i.kind === 'service')
+    expect(services).toHaveLength(1)
+    if (services[0]!.kind === 'service') {
+      expect(services[0]!.content).toBe('Goal met (turn 2/5)')
+    }
+  })
+
+  it('skips a bare active snapshot (no transition notice)', () => {
+    const result = groupMessages([
+      makeUI({
+        id: 'gs-active',
+        metadata: { status: 'active', turn: 1, condition: 'ship it', max_turns: 5 },
+      }),
+    ])
+    expect(result.items.filter(i => i.kind === 'service')).toHaveLength(0)
+  })
+})
+
