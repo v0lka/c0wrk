@@ -18,9 +18,11 @@ import { SearchSettings } from './SearchSettings'
 import { MCPSettings } from './MCPSettings'
 import { SecuritySettings } from './SecuritySettings'
 import { UpdateSettings } from './UpdateSettings'
+import { ExperimentalSettings } from './ExperimentalSettings'
 import { Settings, Brain, Search, Shield, Info, Server, AlertTriangle, X, Gauge } from 'lucide-react'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { hasDefaultModel } from '@/api/config'
+import { useExperimentalFeatures } from '@/hooks/useExperimentalFeatures'
 
 export function SettingsModal() {
   const open = useSettingsStore((s) => s.open)
@@ -33,6 +35,16 @@ export function SettingsModal() {
   const [currentDefaultModel, setCurrentDefaultModel] = useState('')
   const checkingRef = useRef(false)
   const prevOpenRef = useRef(open)
+  const experimentalEnabled = useExperimentalFeatures()
+
+  // If the experimental switch is turned off while the Small-LLM tab is
+  // active, fall back to General — the tab itself is hidden and must never
+  // remain the active (rendered) content.
+  useEffect(() => {
+    if (!experimentalEnabled && activeTab === 'small-llm') {
+      setActiveTab('general')
+    }
+  }, [experimentalEnabled, activeTab, setActiveTab])
 
   useEffect(() => {
     if (open && !prevOpenRef.current) {
@@ -138,7 +150,7 @@ export function SettingsModal() {
           className="mt-4 flex-1 flex flex-col overflow-hidden min-h-0"
         >
           <ConfigWarningBanner className="mb-2" refreshKey={bannerRefreshKey} />
-          <TabsList className="grid w-full grid-cols-7">
+          <TabsList className={`grid w-full ${experimentalEnabled ? 'grid-cols-7' : 'grid-cols-6'}`}>
             <TabsTrigger value="general" className="gap-1">
               <Settings className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">General</span>
@@ -147,10 +159,12 @@ export function SettingsModal() {
               <Brain className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">LLM</span>
             </TabsTrigger>
-            <TabsTrigger value="small-llm" className="gap-1">
-              <Gauge className="h-4 w-4" />
-              <span className="hidden sm:inline text-xs">Small LLM</span>
-            </TabsTrigger>
+            {experimentalEnabled && (
+              <TabsTrigger value="small-llm" className="gap-1">
+                <Gauge className="h-4 w-4" />
+                <span className="hidden sm:inline text-xs">Small LLM</span>
+              </TabsTrigger>
+            )}
             <TabsTrigger value="search" className="gap-1">
               <Search className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">Search</span>
@@ -180,6 +194,9 @@ export function SettingsModal() {
                 <SessionStatsSettings />
               </div>
               <div className="border-t border-border pt-4">
+                <ExperimentalSettings />
+              </div>
+              <div className="border-t border-border pt-4">
                 <h3 className="text-sm font-medium mb-3">HTTP Proxy</h3>
                 <ProxySettings />
               </div>
@@ -190,9 +207,11 @@ export function SettingsModal() {
             <LLMSettings onSettingsSaved={handleSettingsSaved} onDefaultModelChange={handleDefaultModelChange} />
           </TabsContent>
 
-          <TabsContent value="small-llm" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
-            <SmallLLMSettings />
-          </TabsContent>
+          {experimentalEnabled && (
+            <TabsContent value="small-llm" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
+              <SmallLLMSettings />
+            </TabsContent>
+          )}
 
           <TabsContent value="search" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
             <SearchSettings />

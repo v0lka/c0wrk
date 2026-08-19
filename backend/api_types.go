@@ -12,12 +12,20 @@ import (
 
 // ConfigResponse is the typed response for GetConfig, with sanitized (masked) API keys.
 type ConfigResponse struct {
-	Loaded       bool                  `json:"loaded"`
-	LogLevel     string                `json:"log_level"`
-	ConfigErrors []string              `json:"config_errors"`
-	LLM          ConfigLLMResponse     `json:"llm"`
-	Search       ConfigSearchResp      `json:"search"`
-	Proxy        ProxySettingsResponse `json:"proxy"`
+	Loaded       bool                         `json:"loaded"`
+	LogLevel     string                       `json:"log_level"`
+	ConfigErrors []string                     `json:"config_errors"`
+	LLM          ConfigLLMResponse            `json:"llm"`
+	Search       ConfigSearchResp             `json:"search"`
+	Proxy        ProxySettingsResponse        `json:"proxy"`
+	Experimental ExperimentalSettingsResponse `json:"experimental"`
+}
+
+// ExperimentalSettingsResponse exposes the master experimental-features switch
+// to the settings UI. It carries no feature-specific state by design — the
+// switch is all-or-nothing.
+type ExperimentalSettingsResponse struct {
+	Enabled bool `json:"enabled"`
 }
 
 // ReasoningInfo holds native reasoning options for a model family.

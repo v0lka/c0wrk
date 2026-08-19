@@ -41,6 +41,9 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 			BypassList: nonNilStringSlice(f.config.Proxy.BypassList),
 			TLSCertDir: f.config.Proxy.TLSCertDir,
 		},
+		Experimental: ExperimentalSettingsResponse{
+			Enabled: f.config.Experimental.Enabled,
+		},
 	}
 
 	// Populate AllModels: flat list of all enabled models.
@@ -71,6 +74,15 @@ func (f *FrontendAPI) HasDefaultModel() bool {
 	}
 
 	return f.config.LLM.DefaultModel != ""
+}
+
+// experimentalFeaturesEnabled reports whether experimental features are
+// currently enabled. It returns false when the config is not yet initialized
+// (fail-closed: gated features stay hidden/off).
+func (f *FrontendAPI) experimentalFeaturesEnabled() bool {
+	f.configMu.RLock()
+	defer f.configMu.RUnlock()
+	return f.config != nil && f.config.Experimental.Enabled
 }
 
 // buildLLMResponse constructs the sanitized ConfigLLMResponse from config.
@@ -405,6 +417,45 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 		if err := b.RebuildProxy(context.Background(), bcfg); err != nil {
 			f.log().Warn("failed to rebuild proxy after settings update", "error", err)
 			return fmt.Errorf("proxy rebuild failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// UpdateExperimentalFeatures toggles the master experimental-features switch
+// at runtime. It persists the change and rebuilds the LLM router so the
+// Small-LLM profile (one of the gated features) takes effect for new sessions
+// without an app restart. RESEARCH mode is gated at its RPC boundary instead
+// (EnableResearch / GetResearchStatus / GetResearchGraph), so no rebuild is
+// needed for it here.
+func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
+	f.configMu.Lock()
+	defer f.configMu.Unlock()
+
+	if f.config == nil {
+		return errors.New("config not initialized")
+	}
+
+	f.config.Experimental.Enabled = enabled
+
+	if err := f.persistConfig(); err != nil {
+		f.log().Warn("failed to persist experimental features toggle", "error", err)
+	}
+
+	// Rebuild the LLM router so the Small-LLM profile (sampling overrides,
+	// tool matching, context management) is applied or removed immediately.
+	if b := f.builder(); b != nil {
+		if err := b.RebuildRouter(ToBuilderConfig(f.config)); err != nil {
+			f.log().Warn("failed to rebuild LLM router after experimental-features toggle", "error", err)
+		}
+	}
+
+	// Keep the session manager's Small-LLM snapshot in sync so agent_metrics
+	// events created afterwards are annotated with the effective profile.
+	if app := f.app; app != nil {
+		if mgr := app.Manager(); mgr != nil {
+			mgr.SetSmallLLMProfile(effectiveSmallLLMConfig(f.config))
 		}
 	}
 

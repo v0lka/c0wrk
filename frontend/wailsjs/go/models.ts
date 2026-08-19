@@ -301,6 +301,18 @@ export namespace backend {
 		}
 	}
 	
+	export class ExperimentalSettingsResponse {
+	    enabled: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExperimentalSettingsResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	    }
+	}
 	export class ProxySettingsResponse {
 	    enabled: boolean;
 	    url: string;
@@ -340,6 +352,7 @@ export namespace backend {
 	    llm: ConfigLLMResponse;
 	    search: ConfigSearchResp;
 	    proxy: ProxySettingsResponse;
+	    experimental: ExperimentalSettingsResponse;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigResponse(source);
@@ -353,6 +366,7 @@ export namespace backend {
 	        this.llm = this.convertValues(source["llm"], ConfigLLMResponse);
 	        this.search = this.convertValues(source["search"], ConfigSearchResp);
 	        this.proxy = this.convertValues(source["proxy"], ProxySettingsResponse);
+	        this.experimental = this.convertValues(source["experimental"], ExperimentalSettingsResponse);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -373,6 +387,7 @@ export namespace backend {
 		    return a;
 		}
 	}
+	
 	
 	export class FileIconResponse {
 	    icon: string;

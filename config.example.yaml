@@ -648,6 +648,19 @@ orchestration:
 #                         # env vars at init time.
 
 # ---------------------------------------------------------------------------
+# Experimental Features
+# ---------------------------------------------------------------------------
+# Master switch for features that are still under active development. It is
+# all-or-nothing: enabling it exposes every gated feature, disabling it hides
+# every gated feature and treats each as off. Gated features today:
+#   - RESEARCH mode (the left-sidebar research panel)
+#   - the Small-LLM profile settings tab
+#
+# experimental:
+#   # Master switch. Default: false (all experimental features off).
+#   enabled: false
+
+# ---------------------------------------------------------------------------
 # Updates — automatic "check for updates"
 # ---------------------------------------------------------------------------
 # Controls the self-update subsystem. All update configuration lives here —

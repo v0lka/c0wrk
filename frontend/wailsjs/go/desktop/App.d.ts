@@ -277,6 +277,8 @@ export function UnstageFile(arg1:string):Promise<void>;
 
 export function UnwatchDirectory(arg1:string):Promise<void>;
 
+export function UpdateExperimentalFeatures(arg1:boolean):Promise<void>;
+
 export function UpdateLLMConfig(arg1:backend.LLMFullConfigRequest):Promise<void>;
 
 export function UpdateMCPServers(arg1:Record<string, config.MCPServerConfig>):Promise<void>;

@@ -107,6 +107,9 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
+	if !f.experimentalFeaturesEnabled() {
+		return nil, errors.New("experimental features are disabled")
+	}
 	if f.projectManager == nil || f.projStore == nil {
 		return nil, errors.New("project subsystem not initialized")
 	}
@@ -302,6 +305,12 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
+	if !f.experimentalFeaturesEnabled() {
+		return &ResearchStatusDTO{
+			Enabled:   false,
+			ProjectID: projectID,
+		}, nil
+	}
 	if f.projectManager == nil {
 		return nil, errors.New("project subsystem not initialized")
 	}
@@ -342,6 +351,11 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 func (f *FrontendAPI) GetResearchGraph(projectID string) (*ResearchGraphDTO, error) {
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
+	}
+	if !f.experimentalFeaturesEnabled() {
+		return &ResearchGraphDTO{
+			ProjectID: projectID,
+		}, nil
 	}
 	if f.projectManager == nil {
 		return nil, errors.New("project subsystem not initialized")

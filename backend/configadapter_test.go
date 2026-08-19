@@ -52,6 +52,7 @@ func TestAgentsMDSearchPaths_NoHomeDir(t *testing.T) {
 // so a config change takes effect on rebuild.
 func TestToBuilderConfig_SmallLLMSystemPrompt(t *testing.T) {
 	cfg := &config.Config{}
+	cfg.Experimental.Enabled = true
 	cfg.SmallLLM.Enabled = true
 	cfg.SmallLLM.SystemPrompt.Lite = true
 	cfg.SmallLLM.SystemPrompt.FewShot = true
@@ -95,6 +96,7 @@ func TestToBuilderConfig_SmallLLMSystemPrompt(t *testing.T) {
 // BuilderSmallLLMContext so a config change takes effect on rebuild.
 func TestToBuilderConfig_SmallLLMContext(t *testing.T) {
 	cfg := &config.Config{}
+	cfg.Experimental.Enabled = true
 	cfg.SmallLLM.Enabled = true
 	cfg.SmallLLM.Context.Enabled = true
 	cfg.SmallLLM.Context.Compaction.KeepLast = 6
@@ -134,6 +136,25 @@ func TestToBuilderConfig_SmallLLMContext(t *testing.T) {
 	}
 	if !bc.SmallLLM.Context.Enabled {
 		t.Error("Context.Enabled should still map the config value")
+	}
+}
+
+// TestToBuilderConfig_ExperimentalGatesSmallLLM verifies the experimental
+// master switch forces the Small-LLM profile off regardless of the stored
+// SmallLLM.Enabled value, and restores it when experimental features are on.
+func TestToBuilderConfig_ExperimentalGatesSmallLLM(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.SmallLLM.Enabled = true
+
+	// Experimental off (zero value) → the effective Small-LLM master is off.
+	if bc := ToBuilderConfig(cfg); bc.SmallLLM.Enabled {
+		t.Error("experimental off should force SmallLLM.Enabled false")
+	}
+
+	// Experimental on → the stored Small-LLM master flows through.
+	cfg.Experimental.Enabled = true
+	if bc := ToBuilderConfig(cfg); !bc.SmallLLM.Enabled {
+		t.Error("experimental on should preserve SmallLLM.Enabled true")
 	}
 }
 

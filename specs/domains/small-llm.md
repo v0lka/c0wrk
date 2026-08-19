@@ -150,6 +150,7 @@ per-session Orchestrator.HandleMessage (non-goal path):
 ## Invariants
 
 - The master `SmallLLM.Enabled` toggle gates every variant; when it is off, behavior is identical to the un-profiled baseline (zero behavior change at every variant's call site).
+- The experimental-features master switch (`experimental.enabled`) gates the whole profile at the `ToBuilderConfig` boundary: when off, the builder sees `SmallLLM.Enabled = false` regardless of the stored `small_llm.enabled`, so the profile is inert for every session. The stored value is preserved so re-enabling experimental features restores the prior profile.
 - Each variant is independently gated by BOTH the master toggle and its own sub-toggle (defense-in-depth).
 - The essential-tools filter runs exactly once per task, before the non-goal ReAct loop starts; it is never applied in goal mode.
 - **The guaranteed set (always-present ∪ protected ∪ MCP) is never trimmed.** `max_tools` is a slot budget for router-matched tools only: at most `max_tools − len(guaranteed)` matched tools are kept, filled deterministically in registry order. The result may exceed `max_tools` when the guaranteed set alone is larger than the budget.
@@ -166,7 +167,7 @@ per-session Orchestrator.HandleMessage (non-goal path):
 
 ## Configuration
 
-From `config.yaml` (via BuilderConfig → OrchestratorConfig). The authoritative reference for every tunable is `config.example.yaml`.
+From `config.yaml` (via BuilderConfig → OrchestratorConfig). The authoritative reference for every tunable is `config.example.yaml`. Every `small_llm.*` value below takes effect only when the top-level `experimental.enabled` switch is on; with it off the profile is inert regardless of these values.
 
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |

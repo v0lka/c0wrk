@@ -214,7 +214,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	manager.StartEnvInfoCollection()
 	manager.SetMaxSummaryLen(cfg.Config.Orchestration.MaxSummaryLength)
 	// Annotate agent quality metrics with the active Small-LLM profile (if any).
-	manager.SetSmallLLMProfile(cfg.Config.SmallLLM)
+	manager.SetSmallLLMProfile(effectiveSmallLLMConfig(cfg.Config))
 	manager.SetServiceLLMTimeout(time.Duration(cfg.Config.Timeouts.ServiceLLMRequestTimeout) * time.Second)
 	if cfg.SessionStore != nil {
 		manager.SetSessionStore(cfg.SessionStore)

@@ -44,6 +44,11 @@ type Config struct {
 	// is exposed so behaviour can be tuned without a rebuild.
 	SmallLLM SmallLLMConfig `yaml:"small_llm"`
 
+	// Experimental gates features that are still under active development as a
+	// single master switch (all-or-nothing). When disabled, every gated feature
+	// is treated as off and its UI affordances are hidden. Default: off.
+	Experimental ExperimentalConfig `yaml:"experimental"`
+
 	// Updates configures the automatic "check for updates" subsystem that runs
 	// in the background after the backend is ready. The state it produces (the
 	// timestamp of the last check) is persisted to update_state.json, not to
@@ -536,6 +541,16 @@ type AgentsConfig struct {
 
 // envVarPattern matches ${ENV_VAR} patterns for substitution.
 var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+// ExperimentalConfig gates experimental features behind a single master switch.
+// It is all-or-nothing by design: there is no per-feature toggle, so enabling
+// it exposes every gated feature and disabling it hides every gated feature.
+type ExperimentalConfig struct {
+	// Enabled is the master switch for experimental features. When false, every
+	// gated feature (RESEARCH mode, the Small-LLM profile) is treated as off.
+	// Default: false.
+	Enabled bool `yaml:"enabled"`
+}
 
 // SmallLLMConfig configures optimizations applied when running on a "small"
 // (low-capacity / cheaper) LLM. The master toggle is manual only — there is no

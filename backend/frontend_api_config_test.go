@@ -2473,6 +2473,13 @@ func TestUpdateLLMConfig_DeferredSavesSerializedInOrder(t *testing.T) {
 func TestUpdateLLMConfig_RebuildNotRevertedByConcurrentConfigWriter(t *testing.T) {
 	f, mock, cfgPath := newTestAPI(t)
 
+	// Experimental features gate the Small-LLM mapping in ToBuilderConfig;
+	// enable them so the small-LLM save's rebuild snapshot reflects
+	// SmallLLM.Enabled=true, which is what this test asserts about ordering.
+	f.configMu.Lock()
+	f.config.Experimental.Enabled = true
+	f.configMu.Unlock()
+
 	firstEntered := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	var orderMu sync.Mutex

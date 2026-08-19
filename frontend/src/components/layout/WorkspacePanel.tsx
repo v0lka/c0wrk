@@ -6,12 +6,24 @@ import { GitPanel } from "@/components/GitPanel";
 import { ResearchPanel } from "@/components/research";
 import { useProjectStore, selectIsNoProject } from "@/stores/projectStore";
 import { useUIStore } from "@/stores/uiStore";
+import { useExperimentalFeatures } from "@/hooks/useExperimentalFeatures";
+import { useEffect } from "react";
 import { FolderTree, GitBranch, Search, FlaskConical } from "lucide-react";
 
 export function WorkspacePanel() {
   const isNoProject = useProjectStore(selectIsNoProject);
   const workspaceTab = useUIStore((s) => s.workspaceTab);
   const setWorkspaceTab = useUIStore((s) => s.setWorkspaceTab);
+  const experimentalEnabled = useExperimentalFeatures();
+
+  // If the experimental switch is turned off while the research tab is active,
+  // fall back to the explorer tab — the research icon (and its panel) is
+  // hidden and must never remain the active (rendered) content.
+  useEffect(() => {
+    if (!experimentalEnabled && workspaceTab === "research") {
+      setWorkspaceTab("explorer");
+    }
+  }, [experimentalEnabled, workspaceTab, setWorkspaceTab]);
 
   // In CHAT (No Project) mode, hide the tab strip entirely — only show the file
   // explorer with file-name search. Git and Semantics are unavailable anyway.
@@ -53,14 +65,16 @@ export function WorkspacePanel() {
             </TooltipTrigger>
             <TooltipContent side="bottom">Search</TooltipContent>
           </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <TabsTrigger value="research" className="px-2">
-                <FlaskConical className="size-4" />
-              </TabsTrigger>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">Research</TooltipContent>
-          </Tooltip>
+          {experimentalEnabled && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <TabsTrigger value="research" className="px-2">
+                  <FlaskConical className="size-4" />
+                </TabsTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Research</TooltipContent>
+            </Tooltip>
+          )}
         </TabsList>
 
         <TabsContent value="explorer" className="flex flex-col overflow-hidden">
@@ -75,9 +89,11 @@ export function WorkspacePanel() {
           <VectorStorePanel />
         </TabsContent>
 
-        <TabsContent value="research" className="flex-1 overflow-hidden">
-          <ResearchPanel />
-        </TabsContent>
+        {experimentalEnabled && (
+          <TabsContent value="research" className="flex-1 overflow-hidden">
+            <ResearchPanel />
+          </TabsContent>
+        )}
       </Tabs>
     </TooltipProvider>
   );

@@ -17,6 +17,18 @@ func derefBool(b *bool) bool {
 	return *b
 }
 
+// effectiveSmallLLMConfig returns the Small-LLM profile with the master toggle
+// forced off when experimental features are disabled. It copies the profile so
+// the caller never mutates the live config; the stored sub-variants are
+// preserved so re-enabling experimental features restores the prior profile.
+func effectiveSmallLLMConfig(cfg *config.Config) config.SmallLLMConfig {
+	profile := cfg.SmallLLM
+	if !cfg.Experimental.Enabled {
+		profile.Enabled = false
+	}
+	return profile
+}
+
 // ToBuilderConfig converts a *config.Config into a *core.BuilderConfig.
 // This is the single conversion point so that core never imports backend/config.
 func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
@@ -193,7 +205,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			Verification: cfg.GoalLoop.Verification,
 		},
 		SmallLLM: core.BuilderSmallLLMConfig{
-			Enabled: cfg.SmallLLM.Enabled,
+			Enabled: cfg.SmallLLM.Enabled && cfg.Experimental.Enabled,
 			EssentialTools: core.BuilderSmallLLMEssentialConfig{
 				Enabled:             cfg.SmallLLM.EssentialTools.Enabled,
 				AlwaysPresent:       cfg.SmallLLM.EssentialTools.AlwaysPresent,

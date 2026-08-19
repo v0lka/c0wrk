@@ -19,6 +19,7 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useWorkDirsStore } from '@/stores/workDirsStore'
+import { useExperimentalFeatures } from '@/hooks/useExperimentalFeatures'
 import type { ToolManagerToolInfo, ToolManagerProgressData } from '@/types/events'
 import { isStartupError, isRuntimeError, isVectorIndexPayload, isToolManagerStartData, isToolManagerProgressData } from '@/types/events'
 import type { StartupError, RuntimeError } from '@/types/events'
@@ -60,6 +61,7 @@ function App() {
   useSessionEvents(activeSessionId)
   useBackgroundSessionWatcher()
   useUpdateChecker()
+  useExperimentalFeatures()
 
   // ── Tool manager lifecycle ────────────────────────────────────────────
 

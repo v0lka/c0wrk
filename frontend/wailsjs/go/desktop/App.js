@@ -538,6 +538,10 @@ export function UnwatchDirectory(arg1) {
   return window['go']['desktop']['App']['UnwatchDirectory'](arg1);
 }
 
+export function UpdateExperimentalFeatures(arg1) {
+  return window['go']['desktop']['App']['UpdateExperimentalFeatures'](arg1);
+}
+
 export function UpdateLLMConfig(arg1) {
   return window['go']['desktop']['App']['UpdateLLMConfig'](arg1);
 }

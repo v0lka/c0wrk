@@ -325,6 +325,13 @@ export interface ConfigResponse {
   llm: ConfigLLMResponse
   search: ConfigSearchResp
   proxy: ProxySettingsResponse
+  /** Optional to keep existing typed mocks/test fixtures compatible. */
+  experimental?: ConfigExperimentalResponse
+}
+
+/** Master experimental-features switch (all-or-nothing). */
+export interface ConfigExperimentalResponse {
+  enabled: boolean
 }
 
 export interface ProviderConfigRequest {
