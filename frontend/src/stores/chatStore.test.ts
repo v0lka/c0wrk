@@ -204,6 +204,46 @@ describe('groupMessages', () => {
     expect(result.items[0]!.kind).toBe('thought')
   })
 
+  it('promotes reasoning into content when a thought content is empty', () => {
+    const msg = makeUI({
+      type: 'thought',
+      content: '',
+      metadata: { step_num: 1, reasoning: 'I need to inspect the file first.' },
+    })
+    const result = groupMessages([msg])
+    expect(result.items).toHaveLength(1)
+    const t = result.items[0]! as DisplayItem & { kind: 'thought' }
+    expect(t.kind).toBe('thought')
+    expect(t.content).toBe('I need to inspect the file first.')
+    expect(t.reasoning).toBeUndefined()
+  })
+
+  it('promotes reasoning into content when a thought content is only "(proceeding)"', () => {
+    const msg = makeUI({
+      type: 'thought',
+      content: '(proceeding)',
+      metadata: { step_num: 1, reasoning: 'First I will read the code.' },
+    })
+    const result = groupMessages([msg])
+    const t = result.items[0]! as DisplayItem & { kind: 'thought' }
+    expect(t.kind).toBe('thought')
+    expect(t.content).toBe('First I will read the code.')
+    expect(t.reasoning).toBeUndefined()
+  })
+
+  it('keeps reasoning as a separate card when a thought content is meaningful', () => {
+    const msg = makeUI({
+      type: 'thought',
+      content: 'Let me think about this.',
+      metadata: { step_num: 1, reasoning: 'The answer should consider edge cases.' },
+    })
+    const result = groupMessages([msg])
+    const t = result.items[0]! as DisplayItem & { kind: 'thought' }
+    expect(t.kind).toBe('thought')
+    expect(t.content).toBe('Let me think about this.')
+    expect(t.reasoning).toBe('The answer should consider edge cases.')
+  })
+
   it('collapses consecutive thoughts into a thought_group', () => {
     const t1 = makeUI({
       type: 'thought',

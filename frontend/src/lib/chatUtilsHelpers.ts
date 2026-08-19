@@ -50,6 +50,29 @@ export function collapseThoughts(items: DisplayItem[]): DisplayItem[] {
 }
 
 /**
+ * Promote a thought's reasoning_content into the visible content slot when the
+ * model's text content is empty or only the "(proceeding)" placeholder.
+ *
+ * Reasoning models (DeepSeek/GLM) commonly emit empty text content on
+ * tool-call steps, or the model may echo the "(proceeding)" placeholder back
+ * into its own content. In both cases the reasoning_content is the only
+ * meaningful text and should render where `content` would render — not inside
+ * a separate collapsible "Reasoning" card.
+ */
+export function promoteReasoningToContent(
+  content: string,
+  reasoning?: string,
+): { content: string; reasoning?: string } {
+  const trimmed = content.trim()
+  const normalized = trimmed.toLowerCase()
+  const proceedingOnly = normalized === '' || normalized === '(proceeding)' || normalized === 'proceeding'
+  if (proceedingOnly && reasoning !== undefined && reasoning.trim() !== '') {
+    return { content: reasoning, reasoning: undefined }
+  }
+  return { content, reasoning }
+}
+
+/**
  * Suppress the visible `content` of a thought that duplicates the final
  * answer delivered as an assistant message.
  *
