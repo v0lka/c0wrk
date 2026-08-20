@@ -3,7 +3,7 @@ import type { ChatMessage, PlanGroup, PlanItem } from '@/types/models'
 import type { AgentMetricsData } from '@/types/events'
 import { isAgentMetricsData, isGoalStatusData } from '@/types/events'
 import type { ActiveGoal } from '@/stores/goalStore'
-import { reconstructContent, buildHistoryId, collapseThoughts, dedupThoughtVsAnswer, extractMeta, promoteReasoningToContent } from './chatUtilsHelpers'
+import { reconstructContent, buildHistoryId, collapseThoughts, dedupThoughtVsAnswer, extractMeta, normalizeThoughtContent } from './chatUtilsHelpers'
 import { buildGoalTransitionNotice, goalStatusToActiveGoal, type GoalCarryOver } from './goalTransition'
 import {
   handlePlanStepStart, handlePlanStepComplete, handleSubAgentLaunch, handleSubAgentComplete,
@@ -171,8 +171,7 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
       case 'assistant': pushItem({ kind: 'assistant', message: msg }, planStepId); break
       case 'thought': {
         const reasoning = meta?.reasoning as string | undefined
-        const promoted = promoteReasoningToContent(msg.content, reasoning)
-        pushItem({ kind: 'thought', id: msg.id, stepNum: (meta?.step_num as number) ?? 0, content: promoted.content, reasoning: promoted.reasoning }, planStepId)
+        pushItem({ kind: 'thought', id: msg.id, stepNum: (meta?.step_num as number) ?? 0, content: normalizeThoughtContent(msg.content), reasoning }, planStepId)
         break
       }
       case 'tool_call': handleToolCall(msg, meta, planStepId, stepIndexMap, toolItemsByKey, pendingResults, pushItem, toolItemById); break

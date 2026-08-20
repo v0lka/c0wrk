@@ -204,7 +204,7 @@ describe('groupMessages', () => {
     expect(result.items[0]!.kind).toBe('thought')
   })
 
-  it('promotes reasoning into content when a thought content is empty', () => {
+  it('suppresses empty thought content but keeps reasoning', () => {
     const msg = makeUI({
       type: 'thought',
       content: '',
@@ -214,11 +214,11 @@ describe('groupMessages', () => {
     expect(result.items).toHaveLength(1)
     const t = result.items[0]! as DisplayItem & { kind: 'thought' }
     expect(t.kind).toBe('thought')
-    expect(t.content).toBe('I need to inspect the file first.')
-    expect(t.reasoning).toBeUndefined()
+    expect(t.content).toBe('')
+    expect(t.reasoning).toBe('I need to inspect the file first.')
   })
 
-  it('promotes reasoning into content when a thought content is only "(proceeding)"', () => {
+  it('suppresses "(proceeding)" content but keeps reasoning', () => {
     const msg = makeUI({
       type: 'thought',
       content: '(proceeding)',
@@ -227,8 +227,8 @@ describe('groupMessages', () => {
     const result = groupMessages([msg])
     const t = result.items[0]! as DisplayItem & { kind: 'thought' }
     expect(t.kind).toBe('thought')
-    expect(t.content).toBe('First I will read the code.')
-    expect(t.reasoning).toBeUndefined()
+    expect(t.content).toBe('')
+    expect(t.reasoning).toBe('First I will read the code.')
   })
 
   it('keeps reasoning as a separate card when a thought content is meaningful', () => {

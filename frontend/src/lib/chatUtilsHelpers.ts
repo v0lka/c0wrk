@@ -50,26 +50,24 @@ export function collapseThoughts(items: DisplayItem[]): DisplayItem[] {
 }
 
 /**
- * Promote a thought's reasoning_content into the visible content slot when the
- * model's text content is empty or only the "(proceeding)" placeholder.
+ * Normalize a thought's text content for display.
  *
  * Reasoning models (DeepSeek/GLM) commonly emit empty text content on
  * tool-call steps, or the model may echo the "(proceeding)" placeholder back
- * into its own content. In both cases the reasoning_content is the only
- * meaningful text and should render where `content` would render — not inside
- * a separate collapsible "Reasoning" card.
+ * into its own content. In both cases there is no meaningful visible content,
+ * so the content block must be suppressed while `reasoning_content` keeps
+ * rendering on its own in the collapsible "Reasoning" card.
+ *
+ * Returns the original content unchanged when it is meaningful, and '' when it
+ * is empty or only the "(proceeding)" placeholder.
  */
-export function promoteReasoningToContent(
-  content: string,
-  reasoning?: string,
-): { content: string; reasoning?: string } {
+export function normalizeThoughtContent(content: string): string {
   const trimmed = content.trim()
   const normalized = trimmed.toLowerCase()
-  const proceedingOnly = normalized === '' || normalized === '(proceeding)' || normalized === 'proceeding'
-  if (proceedingOnly && reasoning !== undefined && reasoning.trim() !== '') {
-    return { content: reasoning, reasoning: undefined }
+  if (normalized === '' || normalized === '(proceeding)' || normalized === 'proceeding') {
+    return ''
   }
-  return { content, reasoning }
+  return content
 }
 
 /**
