@@ -310,7 +310,10 @@ type conductorDeps struct {
 	// reads the active request's pause signal (o.activePause) at each step
 	// boundary; PauseSession flips it. Populated by buildConductorDeps so ALL
 	// conductor runs — normal path and every goal-loop turn — are pauseable
-	// through one universal signal. Nil disables pausing (default).
+	// through one universal signal. Subagent executors are wired with the same
+	// checker via configureExecutor, so delegated/plan-step subagents pause at
+	// their own step boundary too (instead of running to natural completion).
+	// Nil disables pausing (default).
 	pauseChecker func(context.Context) bool
 
 	// userMessageSource is the live user-message queue wired into every
@@ -520,7 +523,25 @@ func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]to
 		// Execute the ready wave (builds subagents + runs concurrently in
 		// production; returns canned outcomes under a test stub).
 		outcomes := dispatch(subCtx, ready, localReg)
+		pausedWave := false
 		for _, oc := range outcomes {
+			step := pending[oc.stepID]
+
+			if isPaused(oc.err) {
+				localReg.CompletePaused(oc.stepID, oc.output, oc.steps)
+				l.bb.SetStepResult(oc.stepID, oc.output, oc.err, oc.steps)
+				results = append(results, tools.PlanStepResult{
+					StepID: oc.stepID, Summary: step.Summary,
+					Status: "paused", Output: oc.output, Error: oc.err,
+				})
+				if l.deps.lifecycle != nil {
+					l.deps.lifecycle.markCompleted(oc.stepID)
+				}
+				delete(pending, oc.stepID)
+				pausedWave = true
+				continue
+			}
+
 			localReg.Complete(oc.stepID, oc.output, oc.err, oc.steps)
 			l.bb.SetStepResult(oc.stepID, oc.output, oc.err, oc.steps)
 
@@ -528,7 +549,6 @@ func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]to
 			if oc.err != nil {
 				status = "failed"
 			}
-			step := pending[oc.stepID]
 			results = append(results, tools.PlanStepResult{
 				StepID: oc.stepID, Summary: step.Summary,
 				Status: status, Output: oc.output, Error: oc.err,
@@ -537,6 +557,13 @@ func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]to
 				l.deps.lifecycle.markCompleted(oc.stepID)
 			}
 			delete(pending, oc.stepID)
+		}
+
+		// A cooperative pause stopped one or more steps in this wave. Stop
+		// scheduling further waves; the remaining steps are left unrun and
+		// will be (re)dispatched on resume via a fresh execute_plan call.
+		if pausedWave {
+			break
 		}
 	}
 
@@ -649,6 +676,16 @@ func (l *conductorLauncher) defaultPlanStepWave(ctx context.Context, ready []orc
 	}
 
 	for _, sr := range agent.RunSubAgentsParallel(ctx, subTasks) {
+		if isPaused(sr.Error) {
+			l.bb.SetStepResult(sr.StepID, sr.Output, sr.Error, sr.Steps)
+			outcomes = append(outcomes, planStepOutcome{
+				stepID: sr.StepID,
+				output: sr.Output,
+				steps:  sr.Steps,
+				err:    sr.Error,
+			})
+			continue
+		}
 		var execErr error
 		if sr.Error != nil {
 			execErr = sr.Error
@@ -736,9 +773,19 @@ func (l *conductorLauncher) Launch(ctx context.Context, tasks []tools.Delegation
 		}
 
 		waveResults := l.runWave(ctx, ready, registry)
+		paused := false
 		for _, r := range waveResults {
 			results = append(results, r)
 			delete(pending, r.ID)
+			if r.Status == tools.DelegationStatusPaused {
+				paused = true
+			}
+		}
+		// A cooperative pause stopped one or more subagents in this wave. Stop
+		// scheduling further waves; remaining tasks are left unrun and will be
+		// (re)dispatched on resume.
+		if paused {
+			return results
 		}
 	}
 	return results
@@ -891,6 +938,35 @@ func subagentCtx(ctx context.Context) context.Context {
 	return ctx
 }
 
+// isPaused reports whether err is a cooperative-pause sentinel. It handles
+// both the in-memory sentinel (agent.ErrPaused) and the string-reconstructed
+// error produced by a persistence round-trip: TaskPersistence.PersistStepResult
+// stores ErrorText and LoadTaskState rebuilds it via errors.New(ErrorText), so
+// a paused checkpoint must remain detectable after the task is restored on
+// resume. The ErrPaused message is a unique, stable sentinel string, so
+// equality is safe here.
+func isPaused(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, agent.ErrPaused) || err.Error() == agent.ErrPaused.Error()
+}
+
+// pausedCheckpoint returns the blackboard's paused checkpoint for a step, if
+// one exists. A paused checkpoint is a StepResult whose Error is the
+// cooperative-pause sentinel and whose Steps hold the subagent's partial
+// trajectory — the seed used to resume that subagent from where it stopped.
+func (l *conductorLauncher) pausedCheckpoint(stepID string) (orchestration.StepResult, bool) {
+	if l.bb == nil {
+		return orchestration.StepResult{}, false
+	}
+	sr, ok := l.bb.GetStepResult(stepID)
+	if !ok || !isPaused(sr.Error) {
+		return orchestration.StepResult{}, false
+	}
+	return sr, true
+}
+
 func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tools.DelegationTask, registry *tools.DelegationRegistry) []tools.DelegationResult {
 	subCtx := subagentCtx(ctx)
 	subTasks := make([]agent.SubAgentTask, 0, len(tasks))
@@ -915,6 +991,12 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 	subResults := agent.RunSubAgentsParallel(subCtx, subTasks)
 	out := make([]tools.DelegationResult, 0, len(subResults))
 	for _, sr := range subResults {
+		if isPaused(sr.Error) {
+			l.bb.SetStepResult(sr.StepID, sr.Output, sr.Error, sr.Steps)
+			registry.CompletePaused(sr.StepID, sr.Output, sr.Steps)
+			out = append(out, tools.DelegationResult{ID: sr.StepID, Status: tools.DelegationStatusPaused, Output: sr.Output, Error: sr.Error})
+			continue
+		}
 		var execErr error
 		if sr.Error != nil {
 			execErr = sr.Error
@@ -987,6 +1069,12 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	ch := agent.RunSubAgent(taskCtx, t.ID, st.Executor, st.CM, redelegTools, st.TaskDesc, st.Emitter, st.TodoUpdateFunc)
 	sr := <-ch
 
+	if isPaused(sr.Error) {
+		l.bb.SetStepResult(t.ID, sr.Output, sr.Error, sr.Steps)
+		registry.CompletePaused(t.ID, sr.Output, sr.Steps)
+		return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusPaused, Output: sr.Output, Error: sr.Error}
+	}
+
 	var execErr error
 	if sr.Error != nil {
 		execErr = sr.Error
@@ -1019,6 +1107,11 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 		ch := agent.RunSubAgent(asyncCtx, t.ID, subTask.Executor, subTask.CM, subTask.TaskTools, subTask.TaskDesc, subTask.Emitter, subTask.TodoUpdateFunc)
 		select {
 		case sr := <-ch:
+			if isPaused(sr.Error) {
+				l.bb.SetStepResult(t.ID, sr.Output, sr.Error, sr.Steps)
+				registry.CompletePaused(t.ID, sr.Output, sr.Steps)
+				return
+			}
 			var execErr error
 			if sr.Error != nil {
 				execErr = sr.Error
@@ -1086,6 +1179,16 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}
 	taskDesc := l.buildTaskDescription(t, registry, maxSteps)
 
+	// Resume a paused subagent from its checkpoint: the partial trajectory
+	// (Steps) persisted on the blackboard is seeded into both the executor and
+	// the ContextManager so the subagent continues from where it stopped
+	// instead of restarting. Only a cooperative-pause checkpoint is resumed; a
+	// failed step is re-run fresh.
+	var resumeSteps []agent.Step
+	if cp, ok := l.pausedCheckpoint(t.ID); ok {
+		resumeSteps = append([]agent.Step(nil), cp.Steps...)
+	}
+
 	// Derive compaction strategy from the Conductor's routing domain +
 	// complexity (inherited via context). Subagents inherit the same
 	// domain/complexity as the Conductor unless the task overrides it.
@@ -1113,6 +1216,13 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	if ccm, ok := cm.(interface{ SetTask(string) }); ok {
 		ccm.SetTask(taskDesc)
 	}
+	if len(resumeSteps) > 0 {
+		sscm, ok := cm.(orchestration.StepSeedable)
+		if !ok {
+			return agent.SubAgentTask{}, fmt.Errorf("delegation %q: paused checkpoint requires a StepSeedable context manager (got %T)", t.ID, cm)
+		}
+		sscm.SeedSteps(resumeSteps)
+	}
 
 	caller := l.callerForStep(cm, t.ID)
 	// A profile's per-agent model override forces req.Model on every call.
@@ -1121,7 +1231,17 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	if profile != nil {
 		caller = agent.NewModelOverrideCaller(caller, profile.Metadata.Model)
 	}
-	executor := agent.NewExecutor(caller, l.deps.toolExec, maxSteps, agent.WithTokenCounter(l.deps.tokenCounter), agent.WithEvents(scopedEvents), agent.WithToolResultBudget(l.deps.toolResultBudget), agent.WithCircuitBreaker(l.deps.circuitBreaker), agent.WithHITL(l.deps.hitlHandler))
+	execOpts := []agent.Option{
+		agent.WithTokenCounter(l.deps.tokenCounter),
+		agent.WithEvents(scopedEvents),
+		agent.WithToolResultBudget(l.deps.toolResultBudget),
+		agent.WithCircuitBreaker(l.deps.circuitBreaker),
+		agent.WithHITL(l.deps.hitlHandler),
+	}
+	if len(resumeSteps) > 0 {
+		execOpts = append(execOpts, agent.WithResumeSteps(resumeSteps))
+	}
+	executor := agent.NewExecutor(caller, l.deps.toolExec, maxSteps, execOpts...)
 	executor.SetPlanContext(t.ID, 0, 0)
 	l.configureExecutor(executor)
 
@@ -1517,6 +1637,14 @@ func (l *conductorLauncher) scopePlanStepEvents(stepID, summary string) agent.Ev
 }
 
 func (l *conductorLauncher) configureExecutor(executor *agent.Executor) {
+	// Cooperative pause signal: subagent executors must observe the same
+	// universal pause signal as the Conductor so a PauseSession pauses them at
+	// their own step boundary (mid-task) instead of letting them run to
+	// natural completion. Nil disables pausing (default) — mirrors the
+	// Conductor's ConductorConfig.PauseChecker wiring.
+	if l.deps.pauseChecker != nil {
+		executor.SetPauseChecker(l.deps.pauseChecker)
+	}
 	if l.deps.hitlHandler != nil {
 		executor.SetHITLHandler(l.deps.hitlHandler)
 	}

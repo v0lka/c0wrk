@@ -61,7 +61,7 @@ func (t *CancelDelegationTool) Execute(ctx context.Context, input json.RawMessag
 	if d == nil {
 		return sdktools.ErrorResult("cancel_delegation: unknown delegation id %q", params.ID), nil
 	}
-	if d.Status == DelegationStatusCompleted || d.Status == DelegationStatusFailed || d.Status == DelegationStatusCancelled {
+	if d.Status == DelegationStatusCompleted || d.Status == DelegationStatusFailed || d.Status == DelegationStatusCancelled || d.Status == DelegationStatusPaused {
 		return sdktools.ToolResult{Content: fmt.Sprintf("Delegation %q is already %s; no action taken.", params.ID, d.Status)}, nil
 	}
 

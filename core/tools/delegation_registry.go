@@ -18,6 +18,7 @@ const (
 	DelegationStatusCompleted DelegationStatus = "completed"
 	DelegationStatusFailed    DelegationStatus = "failed"
 	DelegationStatusCancelled DelegationStatus = "cancelled"
+	DelegationStatusPaused    DelegationStatus = "paused"
 )
 
 // Delegation records a single subagent invocation launched by the delegate tool.
@@ -119,8 +120,9 @@ func (r *DelegationRegistry) Complete(id, output string, execErr error, steps []
 	}
 	// Don't overwrite a Cancelled status — Cancel may have been called
 	// concurrently with the async goroutine's context-done path. The
-	// cancellation is intentional and should take precedence.
-	if d.Status == DelegationStatusCancelled {
+	// cancellation is intentional and should take precedence. A Paused status
+	// is likewise terminal for this run and must not be clobbered.
+	if d.Status == DelegationStatusCancelled || d.Status == DelegationStatusPaused {
 		return
 	}
 	d.Output = output
@@ -135,8 +137,31 @@ func (r *DelegationRegistry) Complete(id, output string, execErr error, steps []
 	delete(r.cancelFuncs, id)
 }
 
+// CompletePaused marks a delegation as paused — a recoverable checkpoint. It
+// stores the subagent's partial trajectory (steps) so a resumed run can seed
+// its executor and continue from where it stopped. Distinct from Complete,
+// which maps any non-nil error to "failed": a cooperative pause is a
+// checkpoint, not a failure.
+func (r *DelegationRegistry) CompletePaused(id, output string, steps []agent.Step) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.delegations[id]
+	if !ok {
+		return
+	}
+	if d.Status == DelegationStatusCancelled {
+		return
+	}
+	d.Output = output
+	d.Steps = steps
+	d.CompletedAt = time.Now()
+	d.Status = DelegationStatusPaused
+	delete(r.cancelFuncs, id)
+}
+
 // Cancel cancels a pending or running delegation via its stored CancelFunc
-// and marks it "cancelled". No-op for completed, failed, or unknown delegations.
+// and marks it "cancelled". No-op for completed, failed, cancelled, paused, or
+// unknown delegations.
 func (r *DelegationRegistry) Cancel(id string) {
 	r.mu.Lock()
 	d, ok := r.delegations[id]
@@ -144,7 +169,7 @@ func (r *DelegationRegistry) Cancel(id string) {
 		r.mu.Unlock()
 		return
 	}
-	if d.Status == DelegationStatusCompleted || d.Status == DelegationStatusFailed || d.Status == DelegationStatusCancelled {
+	if d.Status == DelegationStatusCompleted || d.Status == DelegationStatusFailed || d.Status == DelegationStatusCancelled || d.Status == DelegationStatusPaused {
 		r.mu.Unlock()
 		return
 	}

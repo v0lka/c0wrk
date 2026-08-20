@@ -29,7 +29,7 @@ type PlanStepExecutor interface {
 type PlanStepResult struct {
 	StepID  string
 	Summary string
-	Status  string // "completed" | "failed"
+	Status  string // "completed" | "failed" | "paused"
 	Output  string
 	Error   error
 }
@@ -91,7 +91,7 @@ type executePlanInput struct {
 }
 
 func buildExecutePlanResult(results []PlanStepResult) sdktools.ToolResult {
-	var completed, failed []string
+	var completed, failed, paused []string
 	summaries := make([]string, 0, len(results))
 	for _, r := range results {
 		status := r.Status
@@ -107,9 +107,11 @@ func buildExecutePlanResult(results []PlanStepResult) sdktools.ToolResult {
 			completed = append(completed, r.StepID)
 		case "failed":
 			failed = append(failed, r.StepID)
+		case "paused":
+			paused = append(paused, r.StepID)
 		}
 		line := fmt.Sprintf("[%s] %s — %s", r.StepID, r.Summary, status)
-		if r.Error != nil {
+		if r.Error != nil && status != "paused" {
 			line += fmt.Sprintf(": %v", r.Error)
 		}
 		if r.Output != "" {
@@ -119,10 +121,14 @@ func buildExecutePlanResult(results []PlanStepResult) sdktools.ToolResult {
 	}
 
 	var b string
-	if len(failed) > 0 {
+	switch {
+	case len(paused) > 0:
+		b = fmt.Sprintf("Plan execution paused — %d succeeded, %d failed, %d paused.\n\n%s\n\nRe-invoke execute_plan to resume the paused steps.",
+			len(completed), len(failed), len(paused), joinResults(summaries))
+	case len(failed) > 0:
 		b = fmt.Sprintf("Plan execution completed with %d succeeded, %d failed.\n\n%s",
 			len(completed), len(failed), joinResults(summaries))
-	} else {
+	default:
 		b = fmt.Sprintf("Plan execution completed — %d step(s) succeeded.\n\n%s",
 			len(completed), joinResults(summaries))
 	}

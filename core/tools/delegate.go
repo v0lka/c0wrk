@@ -207,10 +207,13 @@ func buildDelegateToolResult(results []DelegationResult) sdktools.ToolResult {
 	var blocking []DelegationResult
 	var asyncIDs []string
 	var failed []string
+	var paused []string
 	for _, r := range results {
 		switch r.Status {
 		case DelegationStatusCompleted, DelegationStatusFailed:
 			blocking = append(blocking, r)
+		case DelegationStatusPaused:
+			paused = append(paused, r.ID)
 		case DelegationStatusRunning, DelegationStatusPending:
 			asyncIDs = append(asyncIDs, r.ID)
 		}
@@ -235,6 +238,13 @@ func buildDelegateToolResult(results []DelegationResult) sdktools.ToolResult {
 		sb.WriteString("## Async delegations launched\n\n")
 		for _, id := range asyncIDs {
 			fmt.Fprintf(&sb, "- %s (running in background; read results via read_step_output(id=%q))\n", id, id)
+		}
+		sb.WriteString("\n")
+	}
+	if len(paused) > 0 {
+		sb.WriteString("## Delegations paused\n\n")
+		for _, id := range paused {
+			fmt.Fprintf(&sb, "- %s (paused at a step boundary; its partial trajectory is checkpointed. Re-invoke delegate with the same task id to resume.)\n", id)
 		}
 		sb.WriteString("\n")
 	}
