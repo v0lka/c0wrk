@@ -25,6 +25,9 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 - `frontend/src/stores/themeStore.ts`
 - `frontend/src/stores/soundStore.ts`
 - `frontend/src/stores/updateStore.ts`
+- `frontend/src/stores/experimentalStore.ts`
+- `frontend/src/stores/researchStore.ts`
+- `frontend/src/stores/terminalRegistryStore.ts`
 
 ## Store Catalog
 
@@ -33,14 +36,14 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 | `chatStore`          | Messages per session, streaming text, activity flags (`taskActive`), token counts, and a per-session `paused` map (absent-key = not paused; `setPaused` action drives it from `session_paused`/`session_resumed` events) | No           |
 | `planStore`          | DAG items (`planGroups` — single session-reset array, not keyed by sessionId), step status, routing stats (`sessionStats` — keyed by sessionId) | No           |
 | `sessionStore`       | Session list (sorted by last_active_at), active session ID, project-switch reset (`resetForProjectSwitch`) | No           |
-| `projectStore`       | Project list (sorted by last_active_at, No Project always first), active project ID, lastRealProjectId (for CODE toggle) | No           |
+| `projectStore`       | Project list (sorted by last_active_at, No Project always first), active project ID, lastRealProjectId (for CODE toggle), createDialogOpen (Create Project dialog visibility) | No           |
 | `fileTreeStore`      | Lazy-loaded directory tree, expanded dirs, search, git status      | No           |
-| `fileViewerStore`    | Open files (content/diff/language), tabs, panel width, project-switch file restore (`restoreProjectFiles`) | localStorage |
-| `inputModeStore`     | Chat/terminal input mode, panel height, expanded state, selected model override, selected reasoning effort | localStorage |
+| `fileViewerStore`    | Open files (content/diff/language), tabs, panel width, collapsed state, and `pinned` dock-vs-floating preference; unpinned is the default and auto-collapses on outside focus | localStorage |
+| `inputModeStore`     | Chat/terminal input mode, panel height, expanded state, selected model override, selected reasoning effort, pending text insertion (`pendingInsertion`), pending terminal directory (`pendingTerminalDir`), and goal-mode fields (`goalEnabled`, `goalBudget` — in-memory only, not persisted) | localStorage |
 | `blackboardStore`    | Blackboard facts and metadata for current session                  | No           |
 | `gitPanelStore`      | Git panel UI state (branch info ahead/behind, merge/rebase state, sort/filter, commit draft) | localStorage |
 | `settingsStore`      | Settings modal open/close, active tab                              | No           |
-| `uiStore`            | Sidebar collapsed state (log level is fetched via `GetLogLevel` RPC, not stored) | localStorage |
+| `uiStore`            | Sidebar collapsed state and clamped width, active workspace tab (`workspaceTab`), chat session-list/workspace split ratio (`chatSessionListRatio`), and session-stats row visibility (`showSessionStats`) (log level is fetched via `GetLogLevel` RPC, not stored) | localStorage |
 | `vectorIndexStore`   | Vector index status, progress, and search mode                     | localStorage (mode only) |
 | `workDirsStore`      | Auxiliary work directories (project-scoped + session-scoped lists), modal open/close state | No           |
 | `goalStore`          | Goal-mode state per session (lifecycle status, turn/budget, active goal condition+verify, pending proposal, verdict reason+evidence, independent verifier outcome `verification`/`verificationReason`/`verificationEvidence`, per-goal `verificationMode`); reconciled from `goal_status`/`goal_progress` service-phase events. The status-bar indicator (`GoalStatusIndicator`) is a **read-only** badge (icon + turn + budget) that reads `useGoalStatus` (primitive string) + `useActiveGoal` (direct ref) — it offers no Pause/Resume/Clear controls (pause/resume is session-level, driven from `chatStore.paused`). | No           |
@@ -49,6 +52,9 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 | `themeStore`         | Active UI theme (`dark` / `light`); `setTheme` writes `<html data-theme>` instantly so the palette applies without a restart. Re-read pre-paint in `main.tsx` to avoid FOUC. | localStorage |
 | `soundStore`         | Master toggle for sound notifications; tones are synthesized in the webview via the Web Audio API (`lib/sound.ts`), so the `enabled` preference is the only persisted state | localStorage |
 | `updateStore`        | Self-update UI state machine (`phase`, release `info`, `currentVersion`, download `progress`, `errorMessage`, `isChecking`, `isDownloading`); transitions driven by `useUpdateChecker` from global `update:*` events; exposes per-primitive selector hooks (`useUpdatePhase`, `useUpdateProgress`, …). Transient — not persisted. | No           |
+| `experimentalStore`  | Effective Experimental Features gate from runtime config (master `enabled` switch loaded from `GetConfig`, updated in place from Settings) | No           |
+| `researchStore`      | Experimental research status, hypothesis graph, metrics, and report for the active project (guarded by `projectId` against stale fetches) | No           |
+| `terminalRegistryStore` | App-lifetime per-session terminal instances (insertion-ordered session IDs + readiness set; removed only on explicit session/project deletion) | No           |
 
 ## Critical Anti-Patterns
 

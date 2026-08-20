@@ -41,13 +41,7 @@ return &sdktools.BaseTool{
 // declare_verification, ask_user, ... (see builtins.md catalog)
 ```
 
-The Conductor tool set is assembled in `core/conductor.go`:
-
-```
-conductorTools = filterByDomain(fileOps + search + web) +
-                 systemGroupTools +
-                 { delegate, declare_plan, execute_plan, reflect, cancel_delegation }
-```
+The Conductor tool set in `core/conductor.go` is the standard file/search/internal tools plus the conductor-only tools (`delegate`, `declare_plan`, `execute_plan`, `reflect`, `cancel_delegation`). The conductor-only names are held in `conductorOnlyToolNames` and are only ever *removed* from subagent toolsets: `stripConductorOnlyTools` drops them from a descriptor list, and `stripSubagentTools` additionally drops the goal-loop actor tools.
 
 Subagent tool sets are assembled in the `delegate` tool by `resolveTaskTools` from the `tools` field of each task (group tokens; the `system` group always included), plus `delegate` + `cancel_delegation` only when `allow_redelegate: true`.
 
@@ -86,6 +80,8 @@ delegate.Execute(ctx, input)
 ```
 
 Direction: Conductor → `delegate` tool → `RunSubAgent` → subagent `Executor.Run`. Results flow back: subagent → `RunSubAgent` channel → `delegate` tool → tool result → Conductor.
+
+**Cooperative pause and resume:** every subagent Executor receives the session pause checker. When a subagent stops with `agent.ErrPaused`, its partial `[]agent.Step` trajectory is stored on the blackboard as the step result's checkpoint rather than treated as a fresh failure. Rebuilding the same delegation/plan step reads only that cooperative-pause result, seeds the checkpoint into both `orchestration.StepSeedable.SeedSteps` on the isolated ContextManager and `agent.WithResumeSteps` on the Executor, and continues step numbering from the checkpoint. Ordinary failed steps re-run from a fresh context. A paused checkpoint with a ContextManager that does not implement `StepSeedable` fails before dispatch; silently restarting and discarding the trajectory is not permitted.
 
 ### `declare_plan`
 
@@ -213,6 +209,7 @@ All three bypass policy and judge (they are internal). They are NOT in `conducto
 | `delegate` validation error (duplicate ID, cycle, depth exceeded) | Tool result `isError: true`; no subagents launch. Conductor continues its loop. |
 | Subagent `Finished: false` | Tool result `isError: true` with the abort reason. Conductor decides retry/reflect/finish. |
 | Subagent runtime error | Same as above. |
+| Paused subagent checkpoint cannot seed its ContextManager | Tool result `isError: true` before dispatch; the checkpoint remains on the blackboard and is never replaced by a fresh restart. |
 | Subagent cancelled (via `cancel_delegation` or parent cancel) | Registry status "cancelled"; no error to the Conductor (intentional). |
 | `declare_plan` approval callback error | Tool result `isError: true`; Conductor may retry or proceed without approval. |
 | `declare_plan` write failure (SessionPlansDir) | Tool result `isError: true` with the filesystem error. |
@@ -226,6 +223,7 @@ All errors are tool-level (`ToolResult{ IsError: true, Content: "..." }`), not G
 
 - If you change the `delegate` input schema, update `core/tools/delegate.go`, the Conductor system-prompt guidance in `core/systemprompt.go`, and [../domains/orchestration/delegation.md](../domains/orchestration/delegation.md).
 - If you change the `DelegationRegistry` API, update `delegate`, `cancel_delegation`, `read_step_output`, and the `finish` join check in the executor.
+- If you change paused-subagent checkpoint encoding or resume seeding, update `conductorLauncher.pausedCheckpoint` / `buildSubAgentTask`, the blackboard `StepResult` persistence, and [../domains/orchestration/delegation.md](../domains/orchestration/delegation.md).
 - If you add a new Conductor tool, tag it `ToolGroup: sdktools.GroupSystem` on its `BaseTool` (requires security review — it bypasses policy), register it in `core/tools/builtin_registration.go`, add it to the Conductor tool set in `core/conductor.go`, and document it in this contract.
 - If you change the `declare_plan` event payload, the frontend plan panel ([../domains/frontend/events.md](../domains/frontend/events.md)) must be updated to match.
 - If you change the `Plan` / `PlanStep` struct in `github.com/v0lka/sp4rk/orchestration/types.go`, both `delegate` and `declare_plan` are affected (they share these types).

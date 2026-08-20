@@ -89,6 +89,7 @@ type RoutingDecision struct {
     Complexity         int      // 1-5
     NeedsClarification bool     // present on the type; c0wrk does not branch on it
     MatchedSkills      []string
+    MatchedTools       []string // semantic tool selection (Small-LLM essential-tools profile)
 }
 
 // Handle options
@@ -132,8 +133,10 @@ HandleMessage(ctx, message, sessionID, opts)
 ├─ 2. Load available tools from registry (filtered via ListFiltered
 │     to exclude disabled tools in No Project mode)
 │
-├─ GOAL MODE (first message only): when opts.Goal && opts.TaskID == "",
-│     dispatch to runGoalLoop instead of the route→Conductor flow below.
+├─ GOAL MODE: when opts.Goal, dispatch to runGoalLoop instead of the
+│     route→Conductor flow below. Goal mode runs on BOTH a fresh task
+│     (opts.TaskID == "") and a continuation (opts.TaskID != ""); on a
+│     continuation the prior task's blackboard is restored first.
 │     The goal loop derives a {condition, verify} goal with user sign-off,
 │     then iterates the Conductor turn-by-turn until the agent declares the
 │     goal met (with evidence), the budget is exhausted, the agent goes idle
@@ -201,7 +204,7 @@ HandleMessage(ctx, message, sessionID, opts)
 | Simple task | Conductor never calls `delegate` | One ReAct loop, no subagents. Replaces the former "normal" single-step mode without planner overhead. |
 | Complex task | Conductor calls `delegate` with one or more tasks | Subagents run isolated ReAct loops; Conductor sees only summaries. Replaces the former "advanced" multi-step DAG mode. |
 | Interactive skill | Conductor calls `ask_user` / `declare_plan` mid-loop | Skill instructions are executable because the tools are available inside the loop. No pipeline-level gate. |
-| Goal mode | First message carries `/goal` (`opts.Goal`) | `runGoalLoop` replaces the single route→Conductor pass: derives a {condition, verify} goal with user sign-off, then iterates the Conductor turn-by-turn (each a fresh `Executor.Run`) until the agent declares the goal met, the budget is exhausted, the agent goes idle, or the task is paused (session-level). See [../goal-mode.md](../goal-mode.md). |
+| Goal mode | Any message with `opts.Goal` (fresh task or continuation) | `runGoalLoop` replaces the single route→Conductor pass: derives a {condition, verify} goal with user sign-off, then iterates the Conductor turn-by-turn (each a fresh `Executor.Run`) until the agent declares the goal met, the budget is exhausted, the agent goes idle, or the task is paused (session-level). See [../goal-mode.md](../goal-mode.md). |
 
 There is no `executionMode` toggle. The Conductor chooses its own granularity based on task complexity and its system-prompt guidance.
 
@@ -211,7 +214,7 @@ There is no `executionMode` toggle. The Conductor chooses its own granularity ba
 - Routing always produces a valid domain from {"code", "research", "general", "mixed"}.
 - Complexity is always in range [1, 5].
 - Exactly one Conductor `Executor.Run` instance owns a given task from start to finish.
-- **Goal mode is a turn-of-Conductors, not one long-lived executor.** When `opts.Goal && opts.TaskID == ""`, `runGoalLoop` iterates: each turn launches a fresh `Executor.Run` via `RunConductor`, reusing the normal continuation-trajectory mechanism so dialogue context persists across the turn boundary. Routing is decided once at the top of `runGoalLoop` (before derivation) and inherited unchanged by every turn; no turn re-routes. The loop holds the single-flight guard for its whole run; `PauseSession` releases it by stopping the in-flight conductor at the next step boundary (the task is persisted as paused; the goal stays `active`). See [../goal-mode.md](../goal-mode.md).
+- **Goal mode is a turn-of-Conductors, not one long-lived executor.** When `opts.Goal`, `runGoalLoop` iterates: each turn launches a fresh `Executor.Run` via `RunConductor`, reusing the normal continuation-trajectory mechanism so dialogue context persists across the turn boundary. Goal mode runs on BOTH a fresh task (`opts.TaskID == ""`) and a continuation (`opts.TaskID != ""`); on a continuation the prior task's blackboard is restored and the agent derives a fresh goal against the inherited facts/history. Routing is decided once at the top of `runGoalLoop` (before derivation) and inherited unchanged by every turn; no turn re-routes. The loop holds the single-flight guard for its whole run; `PauseSession` releases it by stopping the in-flight conductor at the next step boundary (the task is persisted as paused; the goal stays `active`). See [../goal-mode.md](../goal-mode.md).
 - The Conductor always has `ask_user`, `declare_plan`, `execute_plan`, `reflect`, `delegate`, `cancel_delegation`, `finish` available (they are `system`-group tools — bypass policy; ADR-024).
 - `finish` with pending async delegations requires either a prior `cancel_delegation` for each, or an implicit join (the Conductor waits for all pending delegations before finishing).
 - `ExecutionResult.Status` is the typed success contract: success | partial | failed | aborted | cancelled. Callers consult it instead of parsing Output.

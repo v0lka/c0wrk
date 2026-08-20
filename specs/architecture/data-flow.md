@@ -87,7 +87,7 @@ frontend: window.runtime.EventsOn(eventName, handler)
 React re-renders affected components
 ```
 
-Persistence is a **separate concern** from event emission. Task state (step results, facts, reflections) is persisted by `PersistentBlackboard` on each write. Chat messages are persisted by `FrontendAPI.SendMessage()` before orchestration starts. Token counts are persisted via a callback wired through `emitter.SetTokenPersist()`. The emitter itself only emits — it does not write to SQLite.
+Persistence is a **separate concern** from event emission. Task state (step results, facts, reflections) is persisted by `PersistentBlackboard` on each write. Chat messages are persisted by `FrontendAPI.SendMessage()` after the dispatch/classification returns — deliberately ordered so the `is_nudge` flag matches the actual decision (live/nudge vs fresh) and a rejected send never reaches the store. Token counts are persisted via a callback wired through `emitter.SetTokenPersist()`. The emitter itself only emits — it does not write to SQLite.
 
 Event naming:
 
@@ -143,7 +143,11 @@ desktop/startup.go (background goroutine, after EventBackendReady):
 Application startup follows a phased approach. The window starts hidden (gated by the `C0WRK_START_HIDDEN` env var) and is revealed unconditionally during Phase 2 so the frontend mounts and subscribes to events before `backend:ready`:
 
 ```
-main.go: wails.Run(options.App{StartHidden: os.Getenv("C0WRK_START_HIDDEN") != "false"})
+main.go:
+  ├─ LoadWindowBounds(~/.c0wrk/window_state.json)
+  │   └─ valid width/height + maximized state seed Wails options;
+  │      missing/malformed/below-minimum dimensions use defaults
+  └─ wails.Run(options.App{StartHidden: os.Getenv("C0WRK_START_HIDDEN") != "false", ...})
   ↓
 Phase 0: resolve agent directory
 Phase 1: shell env + logger (<50ms)
@@ -176,6 +180,13 @@ emitBackendReady():
 - `splash` (initial): renders `<ToolInstallSplash />` if `tool_manager:start` received, otherwise a minimal spinner
 - `tool_manager:done` → `waiting_ready` (spinner with "Starting c0wrk…")
 - `backend:ready` → `main` (`<AppLayout />`)
+
+**Window and shutdown state flow:**
+
+- `AppLayout` debounces native resize events into `PersistWindowBounds`; `desktop.App.Shutdown` performs a final best-effort geometry save before teardown.
+- Shutdown first marks the session manager as shutting down, cancels in-flight task contexts, waits for their goroutines, and persists every task still `in_progress` as `paused`. Completed/failed outcomes that won the race retain their actual state.
+- Pending HITL channels are resolved with their stop/abandon/cancel outcomes, vector/frontend resources and terminals are cleaned up, judge goroutines drain, and the database closes last.
+- The next launch restores validated width, height, and maximized state and exposes paused tasks through normal runtime-status/resume flow.
 
 ## Tool Execution Flow
 
@@ -262,6 +273,8 @@ Orchestrator.HandleMessage()
 - Config changes require explicit reload (no hot-watching of config file)
 - Blackboard is created per-task, never shared across tasks
 - Async init in builder (LLM router, model registry, tool judge — gated by `initDone`) MUST complete before any Build() call returns; MCP gateway init (`mcpDone`) is intentionally decoupled and does NOT block Build() or session restore
+- Native window geometry is saved on debounced resize and final shutdown; only dimensions at or above the minimum usable size are restored
+- Graceful application shutdown converts each still-running `in_progress` task into a persisted `paused` checkpoint after its execution goroutine stops
 
 ## Anti-Patterns
 

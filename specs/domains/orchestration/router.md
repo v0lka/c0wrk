@@ -46,13 +46,12 @@ c0wrk's Conductor selects a compaction strategy from `routing.Domain`:
 
 The complexity score informs the Conductor's system-prompt guidance on whether to delegate. It is no longer mapped to a fixed step count (the Conductor chooses its own granularity).
 
-| Level | Meaning | Conductor guidance |
-| ----- | ------- | ------------------ |
-| 1 | Trivial (single action) | Handle inline; do not delegate. |
-| 2 | Simple (few actions, clear path) | Handle inline or delegate one task. |
-| 3 | Medium (multiple actions, some exploration) | Delegate coherent units. |
-| 4 | Complex (significant exploration + implementation) | Delegate; consider `declare_plan` first. |
-| 5 | Large (multiple subsystems, extensive work) | Delegate; call `declare_plan` with `await_approval` for large roadmaps. |
+| Complexity band | Conductor guidance |
+| --------------- | ------------------ |
+| `<= 1` (simple) | Handle inline — read files, search, answer, call `finish`. No checklist, `delegate`, or plan needed. |
+| `>= 2` | The Conductor decides whether to plan. Planning is RECOMMENDED (not required) when complexity is high (`> 3`) OR the task decomposes into a DAG of independent steps — `declare_plan` then `execute_plan`. Otherwise handle it plan-less: proceed inline or `delegate` coherent units to subagents. A plan-less path MUST open a checklist (`update_checklist` with empty `step_id`). |
+
+Regardless of band, a global skill-prescribed clause overrides the bands when an active skill mandates an approval gate (`declare_plan` with `await_approval`), and the `>= 2` band carries the planning-vs-delegation orthogonality reminder (`declare_plan` and `delegate` must not be mixed).
 
 ## c0wrk Routing Policy
 

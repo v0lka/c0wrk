@@ -31,7 +31,6 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | `Executor.AddNonCacheableTools` | github.com/v0lka/sp4rk/agent | core/conductor                          | Extends the non-cacheable tool set with consumer-specific meta-tools (delegate, declare_plan, reflect, etc.) |
 | `WithResumeSteps` (Option) | github.com/v0lka/sp4rk/agent     | core/orchestrator (Resume)                   | Seeds prior ReAct steps into the Executor so the step counter resumes from `len(steps)+1` and the full trajectory syncs to the TrajectoryStore |
 | `Step.UserNudge`           | github.com/v0lka/sp4rk/agent     | core/session (tryContinueInterruptedTask)    | User message appended to a resumed trajectory; rendered as a `{role:user}` turn |
-| `ConductorConfig.NonCacheableTools` | github.com/v0lka/sp4rk/orchestration | core/conductor                     | Lists consumer-specific non-cacheable tool names passed to the sp4rk Conductor's executor |
 
 ### Consumed from `github.com/v0lka/sp4rk/orchestration`
 
@@ -43,6 +42,7 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | `StepSeedable`     | github.com/v0lka/sp4rk/orchestration | core/conductor                                | Optional `ContextManager` capability (`SeedSteps`) used to resume an executor from a checkpoint |
 | `ConductorConfig.ResumeSteps` | github.com/v0lka/sp4rk/orchestration | core/orchestrator (`runConductor`)    | Prior ReAct steps seeded into the ContextManager + Executor on resume |
 | `ConductorConfig`  | github.com/v0lka/sp4rk/orchestration | core/conductor (`RunConductor`)           | Engine configuration (incl. `ToolCache`, `PerToolTruncation`, `NonCacheableTools`, `ResumeSteps`) |
+| `ConductorConfig.NonCacheableTools` | github.com/v0lka/sp4rk/orchestration | core/conductor | Lists consumer-specific non-cacheable tool names passed to the sp4rk Conductor's executor |
 | `Plan`, `PlanStep` | github.com/v0lka/sp4rk/orchestration | core/types (direct use)                       | Plan data structures       |
 | `CompletedStep`    | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Step result record         |
 | `Reflection`       | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Reflector output           |
@@ -71,7 +71,7 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | `BaseTool`             | github.com/v0lka/sp4rk/tools   | core/tools/builtins, MCP tools | Base impl with Untrusted field               |
 | `ContentBackedReader`  | github.com/v0lka/sp4rk/tools   | core/tools (`read_file_doc.go`) | Optional interface; `IsContentBacked` opts document-format `read_file` reads into content-backed caching |
 | `ToolRegistry`         | github.com/v0lka/sp4rk/tools   | core/tools (embedded)          | Basic tool store                |
-| `ListFiltered`         | github.com/v0lka/sp4rk/tools   | core/orchestrator              | Filtered tool listing (e.g., exclude disabled tools) |
+| `ToolRegistry.ListFiltered` | github.com/v0lka/sp4rk/tools | core/orchestrator              | Method on `ToolRegistry` — `ListFiltered(excludeNames map[string]bool) []ToolDescriptor`; filtered tool listing (e.g., exclude disabled tools) |
 | `ToolDescriptor`       | github.com/v0lka/sp4rk/tools   | core/orchestrator, planner     | Tool metadata                                 |
 | `ToolPolicy`           | github.com/v0lka/sp4rk/tools   | core/tools                     | Policy enum                                   |
 | `ToolResult`           | github.com/v0lka/sp4rk/tools   | core/tools                     | Execution result                              |
@@ -165,7 +165,7 @@ Core bridges c0wrk-specific configuration into sp4rk engine components via small
 | Plan structure          | sp4rk → core  | `orchestration.Plan` (direct)                       |
 | Orchestration lifecycle | core → sp4rk  | `core.Emitter` (embeds `agent.Events`; passed directly to the engine) |
 | Blackboard state        | sp4rk ↔ core  | `orchestration.Blackboard` (direct, shared)         |
-| Context window status   | sp4rk → core  | `ContextManager.FillPercent()` / `AvailableTokens()` / `MaxTokens()` / `UsedTokens()` |
+| Context window status   | sp4rk → core  | `ContextManager.FillPercent()` / `AvailableTokens()` / `OutputLimit()` |
 | CompactionResult        | sp4rk → core  | `CompactionResult{BeforePercent, AfterPercent}` (no `Strategy` field) |
 
 ## Error Propagation

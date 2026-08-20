@@ -226,7 +226,7 @@ executor:
   # compaction (which triggers at fill % thresholds).
   historyMutation:
     toolResultEvictionStep: 10 # Evict tool results to cache refs after N steps (0 = disabled)
-    evictStepStatus: false # Evict set_step_status results immediately (pure bookkeeping)
+    evictStepStatus: false # Evict update_checklist results immediately (pure bookkeeping)
     dedupRepeatedReads: false # Replace duplicate file reads with cache reference
 
   # --- Circuit Breaker (loop protection) ------------------------------------
@@ -733,6 +733,10 @@ orchestration:
 #       - ripgrep
 #       - bash_exec
 #       - semantic_search
+#       - store_fact
+#       - search_facts
+#       - ask_user
+#       - finish
 #     # Slot budget for router-matched tools. The guaranteed set — always
 #     # present ∪ protected (finish, memory, ask_user) ∪ every MCP tool — is
 #     # NEVER trimmed: at most max_tools − len(guaranteed) router-matched
@@ -857,7 +861,7 @@ orchestration:
 # goal until it declares the condition met, goes idle (anti-spin), or hits the
 # turn cap. There are no token or wall-clock caps at the config level — a
 # per-goal turn limit is selected in the UI (BudgetCombobox: ∞ / 3 / 5 / 10
-# turns, or a custom number). An unlimited goal (∞) is bounded only by the
-# internal goalLoopMaxTurns safety ceiling (50 turns).
+# turns, or a custom number). An unlimited goal (∞) has no internal turn cap —
+# the user controls it via pause/stop.
 
 

@@ -66,9 +66,16 @@ The session has a set of equal-peer root directories, combined into the canonica
 
 1. **Workspace** (`WorkspacePathFrom(ctx)`) — the project workspace directory. In CODE mode this is the project path; in CHAT (No Project) mode this is the per-session isolated workspace.
 2. **Session temp directory** (`TempDirFrom(ctx)`) — a per-session directory under `~/.c0wrk/projects/<projectID>/<sessionID>/temp/` used for scratch files, intermediate outputs, and plan review artifacts.
-3. **Auxiliary work directories** (`AllowedRootsFrom(ctx)`) — user-configured additional working directories, each an absolute path with a description. They are scoped to a **project** (apply to all sessions of that project) or to a single **session**. Both scopes are loaded fresh at each task execution (in `backend/session/manager_execution.go` via `injectWorkDirectories`) and injected via `tools.WithAllowedRoots`. Their path and description are also added to the system prompt alongside the workspace/temp descriptions.
+3. **Auxiliary work directories** (`AllowedRootsFrom(ctx)`) — additional working directories, each an absolute path with a description. They are scoped to a **project** (apply to all sessions of that project) or to a single **session**. Both scopes are loaded fresh at each task execution (in `backend/session/manager_execution.go` via `injectWorkDirectories`) and injected via `tools.WithAllowedRoots`. Their path and description are also added to the system prompt alongside the workspace/temp descriptions.
+
+Auxiliary roots enter persistence through two paths:
+
+- Explicit `AddWorkDirectory` RPC calls validate and normalize a user-selected project/session root.
+- Before dispatching a message, `FrontendAPI.autoAddPromptWorkDirs` best-effort extracts directory path candidates explicitly present in that prompt. Only existing directories are added, broad sensitive roots (filesystem root, home, and other system-wide locations) are skipped, and normalized paths already recorded for the session are deduplicated. Auto-discovered roots are always session-scoped, carry the fixed prompt-discovered description, emit one `workdirs:changed` event when at least one root is added, and never block message delivery on extraction/stat/persistence failure.
 
 All roots are treated as **equal peers**: any operation (read or write) permitted inside the workspace is permitted inside the temp directory and any auxiliary directory, and vice versa. There are no second-class roots. Relative paths still resolve against the workspace only; auxiliary directories are reachable only via absolute paths.
+
+Filesystem case sensitivity is detected per physical root before request/judge context construction. `Manager.detectCaseInsensitive` resolves root symlinks for the cache key, shares an in-flight probe among concurrent callers, and caches each distinct root independently for the manager lifetime. Empty paths and defensive probe/type failures use the fail-safe case-sensitive result; one root's result never leaks to another filesystem.
 
 ### Implicit Temp Roots
 
@@ -345,6 +352,8 @@ Source: `github.com/v0lka/sp4rk/security/wrap.go` (wrapping), `core/prompts/inje
 - `deny` group policy is NEVER bypassed (not by auto-approval, not by judge, not by symlink check, not by any mechanism)
 - For `allow`-policy tools implementing `ToolJudger`, the Judge runs BEFORE workspace/temp auto-approval — safety checks (blacklist, SSRF, path containment) NEVER bypassed by path-locality
 - The session workspace, temp directory, and auxiliary work directories are equal peers — any operation permitted in one is permitted in the others
+- Prompt-discovered auxiliary roots are existing, normalized, non-sensitive directories persisted at session scope with path deduplication; discovery failures leave message delivery unchanged
+- Filesystem case-sensitivity probes are cached and shared per symlink-resolved physical root; distinct roots retain independent results
 - Operations outside session roots (workspace, temp directory, or an auxiliary work directory) always escalate: a soft containment reason routes the call to Smart Approve (strict ALLOW only) or a user confirmation, regardless of the tool's group policy
 - Relative paths that escape the workspace via `..` components are rejected by `resolvePath` — they cannot target paths outside the workspace
 - Direct execution without confirmation happens only when the call is clean (no hard reason, no soft escalation) under an `allow` group, or via workspace auto-approval (`local_write` + `auto_approve_workspace_writes` + a clean Judge verdict)

@@ -43,11 +43,11 @@ Detailed system specs live in [`specs/`](specs/) — start with [`specs/INDEX.md
 
 - **React 19** + **TypeScript ~5.7** + **Vite 6**
 - **Tailwind CSS v4** (One Dark default + One Light override via `data-theme="light"`, both via `@theme` custom properties; toggled by `themeStore`)
-- **Zustand 5** for state management (17 domain stores: chat, plan, session, projects, file tree, file viewer, input mode, blackboard, git panel, settings, UI, vector index, theme, goal, review, attachments, work dirs)
+- **Zustand 5** for state management. Domain stores cover chat, plans, sessions/projects, file tree/viewer, input mode, blackboard, Git, settings/UI/theme/sound, vector index, goals/reviews, attachments/workdirs, updates, and the per-session terminal registry; see [`AGENTS.md`](AGENTS.md#state-management-zustand-stores) for the current catalog.
 - **shadcn/ui** (new-york style) + **Radix UI** primitives
 - **lucide-react** icons, **react-markdown** 10, **highlight.js** 11, **Mermaid** 11 (lazy-loaded)
 - In-app code/markdown editing via **CodeMirror 6**, embedded terminal via **xterm.js**, virtualized lists via **@tanstack/react-virtual**, character-level diffs via **diff** v9, file-tree icons via Nerd Fonts
-- Communication with Go via Wails-generated RPC bindings + session-scoped events (41 event types)
+- Communication with Go goes through typed wrappers in `frontend/src/api/*` over Wails RPC, plus session-scoped and global events. [`specs/contracts/event-catalog.md`](specs/contracts/event-catalog.md) is the authoritative event catalog.
 
 See the "Frontend architecture" section of [`AGENTS.md`](AGENTS.md) for the full design-system, state-management, and event-handling conventions.
 
@@ -116,7 +116,7 @@ mkdir -p ~/.c0wrk
 cp config.example.yaml ~/.c0wrk/config.yaml
 ```
 
-Then edit provider credentials (for example `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `TAVILY_API_KEY`) and adjust provider/model settings in `~/.c0wrk/config.yaml`.
+Then edit provider credentials (for example `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `TAVILY_API_KEY`) and adjust provider/model settings in `~/.c0wrk/config.yaml`.
 
 ## Configuration
 
@@ -127,8 +127,10 @@ Key points:
 - Environment placeholders are supported as `${ENV_VAR}`.
 - The active LLM provider is resolved from `llm.default_model` — the Router looks up which provider has the model in its enabled `models` list.
 - MCP servers are configured under `mcp.servers`.
-- Security defaults and per-tool policies are configured under `security`.
-- Runtime limits are configurable under `toolLimits`, `timeouts`, and `executor`.
+- Security policy is configured exclusively by capability group under `security.groups`; the legacy `security.default_policy` and `security.tool_policies` keys are inert. The `execute` group alone supports a command blacklist. See [`specs/decisions/024-group-policies.md`](specs/decisions/024-group-policies.md).
+- `experimental.enabled` gates both RESEARCH and the Small-LLM profile. `executor.verify_on_edit` is opt-in and runs only a config-authored command through the unattended hard-safety path.
+- Main agent calls use `timeouts.llmRequestTimeout`; one-shot title, commit-message, and prompt-optimization calls use `timeouts.serviceLLMRequestTimeout`.
+- Runtime limits are configurable under `toolLimits`, `timeouts`, `executor`, and `vector_index`; update checks use the `updates` section.
 - The SQLite database is always stored at `~/.c0wrk/database.db` (the `memory.database` config key has been retired).
 
 Runtime config lives at `~/.c0wrk/config.yaml` (default dir constant `config.DefaultAgentDir = ".c0wrk"`). On macOS, `startup.go` calls `config.LoadShellEnvironment()` **before** any other init because Finder-launched apps don't inherit the shell env — preserve this ordering if you touch `Startup`.
@@ -140,9 +142,11 @@ Project-level commands (from the `Makefile`):
 ```bash
 make frontend-deps   # npm install in frontend/
 make test            # go test ./... && cd frontend && npm test (vitest)
-make lint            # golangci-lint run && cd frontend && npm run lint
+make fmt-check       # fail if gofmt would rewrite any Go source
+make lint            # make fmt-check + golangci-lint + frontend ESLint
 make dev-desktop     # frontend Vite dev server only
-make build           # wails build + fetch ONNX runtime + fetch embedding model
+make build           # versioned wails build + ONNX runtime + embedding model
+make bump            # update the pinned sp4rk revision with GOWORK=off (release point only)
 make clean           # remove build/bin, .cache, frontend/dist
 ```
 
@@ -159,6 +163,10 @@ make clean-onnx            # remove ONNX runtime libs from app bundle/cache
 - Single package (root module): `go test ./core/...`
 - Single test: `go test ./core -run TestOrchestrator_PlanExecuteMode -v`
 - Tests use in-package style (`package agent`, not `agent_test`); many packages have a `testhelpers_test.go`.
+
+### Cross-repository sp4rk workflow
+
+`c0wrk` remains a single published Go module with no checked-in `go.work` or `replace` directive. During a cross-cutting c0wrk/sp4rk development cycle, a developer may use a `go.work` in the repositories' shared parent directory. At the release point, publish the sp4rk change first, then run `make bump` to update `go.mod`/`go.sum` from the remote with `GOWORK=off`; verify the standalone module with `GOWORK=off` before release. See [`specs/decisions/025-dual-repo-dev-flow.md`](specs/decisions/025-dual-repo-dev-flow.md).
 
 ### Frontend-only workflows
 
@@ -193,13 +201,15 @@ make build
 This runs:
 
 1. frontend dependency install,
-2. `wails build`,
+2. `wails build` with `core/version.Version`, `GitCommit`, and `BuildDate` linker metadata,
 3. ONNX runtime fetch/copy,
 4. embedding model/tokenizer fetch/copy.
 
+Set `VERSION`, `GITCOMMIT`, or `BUILDDATE` to override the Makefile's git/time-derived defaults for a local build. The release workflow supplies the release tag as `VERSION` on every platform.
+
 ### ONNX runtime requirement
 
-The app bundle needs the ONNX runtime library in `build/bin/c0wrk-desktop.app/Contents/MacOS/`.
+The built application needs the platform ONNX Runtime library next to the executable (inside the macOS app bundle, or in `build/bin` on Linux/Windows).
 
 After `make build`, this is handled automatically. If you run `wails build` directly, run this afterward:
 
@@ -233,7 +243,7 @@ Vector index needs ONNX Runtime plus a quantized embedding model + tokenizer (fe
 
 ## Continuous integration
 
-CI runs on pushes to `main` and pull requests targeting `main` (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Before opening a PR, run the full local validation sequence:
+CI runs on pushes to `main` and pull requests targeting `main` across Linux, macOS, and Windows (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Before opening a PR, run the full local validation sequence:
 
 ```bash
 make build
@@ -241,7 +251,11 @@ make lint
 make test
 ```
 
-All three must pass clean. `make test` runs both Go tests (`go test ./...`) and frontend tests (`cd frontend && npm test` via vitest). See the "Pre-PR checklist" section of [`AGENTS.md`](AGENTS.md) for details.
+All three must pass clean. `make lint` includes `fmt-check`; `make test` runs both Go tests (`go test ./...`) and frontend tests (`cd frontend && npm test` via vitest).
+
+Every contribution must also follow [`SECURITY.md`](SECURITY.md). Treat files, web/MCP output, attachments, clipboard/drop content, and generated artifacts as untrusted; preserve capability-group policy, path/symlink/SSRF/blacklist gates, and never place secrets in source, logs, prompts, facts, or test fixtures. If behavior, a cross-layer interface, configuration, or an architectural invariant changes, update the affected documents under [`specs/`](specs/) according to [`specs/META.md`](specs/META.md); accepted ADRs are immutable and are superseded by a new ADR.
+
+See the "Pre-PR checklist" section of [`AGENTS.md`](AGENTS.md) for implementation conventions.
 
 ---
 
@@ -265,8 +279,8 @@ git push origin v0.1.0
 What happens next:
 
 1. Pushing a tag named `v*` triggers the **Release** workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml)).
-2. The workflow builds the app for **3 OSes** (macOS arm64, Linux amd64, Windows amd64), bundling the ONNX Runtime shared library and embedding the vector-search models.
-3. On success it **publishes a GitHub Release** tied to that tag, with **auto-generated release notes** and **3 downloadable artifacts**.
+2. The workflow builds the app for **3 OSes** (macOS arm64, Linux amd64, Windows amd64), injects the release tag plus commit/build time into `core/version`, and bundles the ONNX Runtime shared library and embedding models.
+3. It generates a `SHA256SUMS` file for the three archives and publishes a GitHub Release tied to that tag with auto-generated release notes.
 
 Verify the result under **Releases** → your tag, then promote / announce the release URL.
 
@@ -285,7 +299,7 @@ To exercise the workflow without cutting a real release:
 
 ### Artifact inventory
 
-Each release publishes three archives. Unzip/extract the one matching your OS and architecture.
+Each release publishes three platform archives plus `SHA256SUMS`. Unzip/extract the archive matching your OS and architecture.
 
 | Filename                              | Target                       | Contents                                                                          |
 | ------------------------------------- | ---------------------------- | --------------------------------------------------------------------------------- |
@@ -293,9 +307,9 @@ Each release publishes three archives. Unzip/extract the one matching your OS an
 | `c0wrk-desktop-linux-amd64.tar.gz`    | Linux (amd64)                | `c0wrk-desktop` binary + `libonnxruntime.so` + embedding models                   |
 | `c0wrk-desktop-windows-amd64.zip`     | Windows (amd64)              | `c0wrk-desktop.exe` + `onnxruntime.dll` + embedding models                        |
 
-> The ONNX Runtime shared library and the quantized embedding model + tokenizer are bundled so vector search works out of the box — no extra download step is required on the user's machine.
+> The ONNX Runtime shared library and the quantized embedding model + tokenizer are bundled so vector search works out of the box — no extra download step is required on the user's machine. The in-app updater verifies the selected archive fail-closed against `SHA256SUMS`; artifacts are still unsigned, so the checksum establishes release-byte integrity but not authorship if the release account and checksum are both compromised.
 
-End-user installation steps for each platform live in [README.md](README.md#download--install).
+End-user installation steps for each platform live in [README.md](README.md).
 
 ### Follow-ups (not done in v1)
 
@@ -305,4 +319,3 @@ These items are deliberately **out of scope** for the first release and tracked 
 - **Windows code-signing certificate** — sign `c0wrk-desktop.exe` to silence SmartScreen.
 - **Universal macOS binary** — ship a single `c0wrk-desktop-macos-universal` artifact covering both arm64 and amd64.
 - **Linux arm64 build** — add a `c0wrk-desktop-linux-arm64.tar.gz` target.
-- **Optional in-app version stamping** — inject the release version into the app via `-ldflags` (e.g. `-X main.version=v0.1.0`) so the UI can show the running build.

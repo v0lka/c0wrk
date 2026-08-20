@@ -52,11 +52,12 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `GetSessionHistory`    | id                           | ([]ChatMessage, error)    | Get message history                                   |
 | `GetSessionRuntimeStatus` | id                        | (SessionRuntimeStatus, error) | Live/persisted execution state: `{active, has_unfinished_task, unfinished_task_id?, paused}`. `paused` is true when the resumable unfinished task is in the `"paused"` status (a cooperative pause checkpoint). Called after history load to reconcile the UI (running flag, paused flag, resume banner, stale prompts) instead of defaulting to idle |
 | `GetBlackboardState`   | sessionID                    | (\*BlackboardStateResponse, error) | Get blackboard task state                    |
-| `SendMessage`          | id, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode | error                     | Send user message (async execution). Execution mode is derived from the active project (No-Project = CHAT); `activeAgents` carries `#agent` refs; `goal`/`goalBudget` start a goal loop; `reviewMode` renders the Code Review prompt section |
+| `EmitSessionEvent`     | evt                          | —                               | Emit a session-scoped event (UI + persistence path so it survives app restarts) |
+| `SendMessage`          | id, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode | error                     | Send user message (async execution). Execution mode is derived from the active project (No-Project = CHAT); `activeAgents` carries `#agent` refs; `goal`/`goalBudget` start a goal loop; `reviewMode` renders the Code Review prompt section. Rejected for archived sessions (archived history is read-only) |
 | `CancelTask`           | id                           | error                     | Cancel running task                                   |
 | `PauseSession`         | sessionID                    | error                     | Cooperatively pause the in-flight task (flips the universal pause signal; the conductor stops at the next step boundary, the task is persisted as `"paused"`, and `session_paused` is emitted). Applies to all tasks — goal and non-goal alike |
-| `ResumeSession`        | sessionID, nudge, modelOverride, reasoningEffort | error                     | Resume a paused task (honors model/reasoning override; the optional `nudge` is injected as a trailing user message into the first resumed turn — the nudge-resume path). Emits `task_resumed` + `session_resumed` |
-| `ResumeTask`           | id, modelOverride, reasoningEffort | error                     | Resume failed task (honors model/reasoning override chosen before resuming)          |
+| `ResumeSession`        | sessionID, modelOverride, reasoningEffort, nudge | error                     | Resume a paused task (honors model/reasoning override; the optional `nudge` is injected as a trailing user message into the first resumed turn — the nudge-resume path). Emits `task_resumed` + `session_resumed`; rejected for archived sessions |
+| `ResumeTask`           | id, modelOverride, reasoningEffort | error                     | Resume failed task (honors model/reasoning override chosen before resuming); rejected for archived sessions |
 | `CancelUnfinishedTask` | id                           | error                     | Discard a resumable task (no resume prompt next time) |
 | `GetSessionTokens`    | sessionID                    | SessionTokensResponse     | Get token usage for session (getter, no error return) |
 | `GetBlackboardAttachmentMarkdown` | sessionID, attachmentID | (string, error) | Fetch a blackboard attachment's stored markdown (excluded from `GetAttachments` metadata) |
@@ -139,8 +140,8 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 | Method               | Parameters            | Returns                      | Description         |
 | -------------------- | --------------------- | ---------------------------- | ------------------- |
-| `StartTerminal`      | sessionID             | error                        | Start PTY terminal  |
-| `StartTerminalInDir` | sessionID, workDir    | error                        | Start a PTY terminal in a specific working directory |
+| `StartTerminal`      | sessionID             | error                        | Start or reattach to the session's PTY. An existing PTY remains alive across session/project switches and makes this call an idempotent reattach |
+| `StartTerminalInDir` | sessionID, workDir    | error                        | Restart the session PTY in a workspace-contained directory |
 | `TerminalInput`      | sessionID, data       | error                        | Write to terminal   |
 | `TerminalResize`     | sessionID, cols, rows | error                        | Resize terminal     |
 | `StopTerminal`       | sessionID             | error                        | Stop terminal       |
@@ -208,13 +209,14 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `GetPendingActions` | sessionID  | (*PendingActionsResponse, error) | Unresolved pending actions for a session (tool confirmations, ask-user forms, step-limit/resume prompts, goal proposals) |
 | `PickDirectory`  | —          | (string, error) | Native directory picker dialog |
 | `PickAttachmentFiles` | —     | ([]string, error) | Native multi-select file picker exposing two filters: "Supported documents" (built from `core/markitdown.SupportedExtensions()`) and "Images" (`*.png;*.jpg;*.jpeg;*.gif;*.webp`). No "All files" filter — a wildcard resolves to a dynamic UTType on macOS that corrupts the panel's content-type filter. Returns `([]string{}, nil)` on cancel. Must remain on `App` — it requires the Wails context like `PickDirectory` |
+| `PersistWindowBounds` | —      | —               | Persist live native width/height/maximized state atomically to `~/.c0wrk/window_state.json`; frontend calls it after a debounced resize and desktop shutdown saves once more |
 | `SetWailsLogger` | wl         | —             | Binding artifact: stores Wails log adapter (called internally, not from frontend) |
 
 ### Prompt (`backend/frontend_api_prompt.go`)
 
 | Method           | Parameters | Returns                             | Description          |
 | ---------------- | ---------- | ----------------------------------- | -------------------- |
-| `OptimizePrompt` | prompt     | (\*OptimizePromptResponse, error)   | Optimize user prompt |
+| `OptimizePrompt` | prompt     | (\*OptimizePromptResponse, error)   | Three-stage optimization: translate/extract keywords, optional vector-context lookup, then rewrite. Rewrite validation and LLM-call failures each retry up to two additional attempts; final failure rejects the Promise and leaves the original editor text intact |
 
 ### Skills (`backend/frontend_api_skills.go`)
 
@@ -242,6 +244,8 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `DeleteWorkDirectory`           | scope, ownerID, id                          | error                             | Delete a directory; emits `workdirs:changed` |
 
 `scope` is `"project"` or `"session"`; `ownerID` is the corresponding project/session ID. `WorkDirectoryRecord` is `project.WorkDirectoryRecord{ID, Path, Description, CreatedAt}`. The `workdirs:changed` event triggers a UI reload; directories are loaded into the execution context on the next message (via `tools.WithAllowedRoots`), and — together with the workspace path — feed a multi-root ignore checker (`tools.WithIgnoreChecker`) so `glob`/`ripgrep` honour each root's own `.gitignore` + `.aiignore` ([ADR-016](../decisions/016-aiignore.md)).
+
+`SendMessage` also performs best-effort session-scope discovery before execution: absolute/extractable directory paths explicitly mentioned in the prompt are normalized, required to exist, filtered against broad sensitive roots, deduplicated against existing session records, and saved with the prompt-discovered description. At least one addition emits a single `workdirs:changed`; extraction/stat/store failures never reject the message. Individual tool calls still pass through session-root containment, symlink analysis, and capability-group policy.
 
 ### Review (`backend/frontend_api_review.go`)
 
@@ -272,7 +276,7 @@ RESEARCH mode toggle + hypothesis-graph view model. RESEARCH mode is available o
 
 | Method | Parameters | Returns | Description |
 | ------ | ---------- | ------- | ----------- |
-| `EnableResearch` | projectID, rootPath | (*ResearchStatusDTO, error) | Activate RESEARCH mode: resolve the research root (default `<workspace>/.research`; an explicit `rootPath` must be inside the workspace — containment enforced via `config.IsWithinPath`), create it, recursively watch the research tree, seed the research-* skill-pack into the project's `.agents/skills` (idempotent, non-destructive; failure is non-fatal and reported via `SeedResult`), persist the root, invalidate the skill cache and rescan skills for already-running sessions, then emit `research:changed` (action=`enabled`). Idempotent on re-enable. Returns the full status (toggle + parsed root + seed result) |
+| `EnableResearch` | projectID, rootPath | (*ResearchStatusDTO, error) | Activate RESEARCH mode: resolve the research root (default `<workspace>/.research`; an explicit `rootPath` must be inside the workspace — containment enforced via `config.IsWithinPath`), create it, recursively watch the research tree, seed the research-* skill-pack into the project's `.agents/skills` (idempotent, non-destructive; failure is non-fatal and logged, while successful per-skill outcomes are returned via `SeedResult`), persist the root, invalidate the skill cache and rescan skills for already-running sessions, then emit `research:changed` (action=`enabled`). Idempotent on re-enable. Returns the full status (toggle + parsed root + seed result) |
 | `DisableResearch` | projectID | error | Deactivate RESEARCH mode: clear the persisted research root and unwatch the research tree. Does not delete the research directory or the seeded skills — re-enabling restores prior state. Emits `research:changed` (action=`disabled`) |
 | `GetResearchStatus` | projectID | (*ResearchStatusDTO, error) | Live RESEARCH state: the toggle plus the parsed research root (index, project list, per-project graph/metrics/brief/prior-art). Returns an empty-state DTO (`Enabled=false`, nil `Root`) rather than an error when disabled or the root is not yet parseable |
 | `GetResearchGraph` | projectID | (*ResearchGraphDTO, error) | Lightweight fetch: only the active research project's hypothesis graph + metrics + report flag (omits index, brief, prior-art, and seed result). Used for incremental `research:file_changed` refreshes; the parse cost equals `GetResearchStatus` (both parse the full research root) — only the wire payload is smaller. Empty-state DTO when disabled, the root is unparseable, or there is no active project |

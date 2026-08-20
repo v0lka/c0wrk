@@ -7,10 +7,10 @@ Manages real-time event subscription, validation, and store updates. Events flow
 ## Key Files
 
 - `frontend/src/hooks/useSessionEvents.ts` — master event subscription hook
-- `frontend/src/hooks/events/useChatEvents.ts` — streaming, thoughts, errors, task lifecycle (task_complete, task_cancelled), and `session_paused` (sets the per-session `paused` flag + clears `taskActive`, unlocking the input)
+- `frontend/src/hooks/events/useChatEvents.ts` — streaming, thoughts, errors, task lifecycle (task_complete, task_cancelled), `session_paused` (sets the per-session `paused` flag + clears `taskActive`, unlocking the input), and `session_resumed` (clears the `paused` flag + sets `taskActive`, re-locking the input)
 - `frontend/src/hooks/events/usePlanEvents.ts` — plan generation, step lifecycle
 - `frontend/src/hooks/events/useToolEvents.ts` — tool call/result correlation and tool confirmation (`tool_confirm` via shared handlers)
-- `frontend/src/hooks/events/useActionEvents.ts` — `ask_user`, step limits, resume actions (`task_failed_resumable`/`task_resumed`), `session_resumed` (clears the `paused` flag + sets `taskActive`, re-locking the input), and plan review (`plan_review_ready`) via shared handlers
+- `frontend/src/hooks/events/useActionEvents.ts` — `ask_user`, step limits, resume actions (`task_failed_resumable`/`task_resumed`), and plan review (`plan_review_ready`) via shared handlers
 - `frontend/src/hooks/events/useContextEvents.ts` — context fill, compaction
 - `frontend/src/hooks/events/useLifecycleEvents.ts` — routing, step_start, step_complete, retry, step_retry, tools_assigned (Small-LLM curated tool set card)
 - `frontend/src/hooks/events/useSubagentEvents.ts` — subagent lifecycle
@@ -20,6 +20,8 @@ Manages real-time event subscription, validation, and store updates. Events flow
 - `frontend/src/hooks/events/useReviewRestore.ts` — restores code-review buffer state on session activation (reloads comments, reopens review page if mid-loop, reconciles stale loop flags)
 - `frontend/src/hooks/events/useGoalEvents.ts` — goal-mode events (`goal_proposal` pending action + `goal_status`/`goal_progress` service-phase events → goalStore + chat message)
 - `frontend/src/hooks/events/useSoundEvents.ts` — sound-notification events (plays Web Audio tones on task lifecycle milestones when `soundStore.enabled`); composed by `useSessionEvents`
+- `frontend/src/hooks/useFileDrop.ts` — global `files:dropped` subscription, HTML5 drag overlay, and navigation suppression
+- `frontend/src/hooks/useStageAttachments.ts` — shared picker/drop attachment staging and model-vision filtering
 - `frontend/src/hooks/events/goalHandlers.ts` — shared goal event handlers (`handleGoalProposalEvent`, `handleGoalStatusEvent`, `handleGoalProgressEvent`) used by `useGoalEvents` (foreground) and the background-session watcher (mirrors the `hitlHandlers.ts` pattern)
 - `frontend/src/hooks/events/useTerminalEvents.ts` — terminal output events; **component-mounted** by `terminal/Terminal.tsx` (not delegated by `useSessionEvents`)
 - `frontend/src/hooks/events/useToolJudgeEvents.ts` — LLM judge response events; **component-mounted** by `chat/ToolConfirmation.tsx` (not delegated by `useSessionEvents`)
@@ -90,6 +92,12 @@ Backend emits assistant_done (once, when LLM finishes):
   → permanent ChatMessageUI added to message list
 ```
 
+### Native File Drop
+
+`files:dropped` is a global desktop event, not part of `useSessionEvents`. In chat input mode, `useFileDrop` validates `{paths, x, y}` and forwards a defensive copy of `paths` to `useStageAttachments` for the active session. That shared hook applies the same image/vision filtering and backend `AttachFiles` call as the native picker.
+
+Document-level HTML5 `dragenter`/`dragover`/`dragleave`/`drop` listeners maintain a reference-counted overlay and suppress the webview's default open-file navigation. They do not read filesystem paths from `dataTransfer`; Wails native drop is the sole path source. Leaving chat mode unsubscribes the global event and clears drag state.
+
 ### Pending Actions
 
 Certain events create "pending actions" that require user response:
@@ -117,6 +125,8 @@ Pending actions are stored in chatStore and rendered by the PendingActionsBar co
 - Only one subscription per session at a time (previous unsubscribed on change)
 - Streaming state is per-session (multiple sessions don't interfere)
 - Pending actions expire on task completion/cancellation
+- Native file-drop paths originate only from the validated Wails `files:dropped` event; HTML5 drag events control overlay state and suppress navigation
+- Picker and native drop share one attachment-staging/vision-filtering hook
 - The per-session `paused` flag is set by `session_paused` and cleared by `session_resumed`/`task_resumed`/`task_cancelled`; a paused session unlocks the input and shows Resume + Stop (see [rendering.md](rendering.md))
 
 ## Related Specs

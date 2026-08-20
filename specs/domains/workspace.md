@@ -22,6 +22,8 @@ Manages the project workspace: file tree loading, filesystem watching for change
 - `backend/frontend_api_vector.go` — FrontendAPI vector RPC methods (call the lazy `getVectorManager` accessor)
 - `backend/frontend_api.go` — lazy vector-manager accessors + state: `SetVectorManager` (on `FrontendAPILifecycle`, kept off the Wails RPC surface), `getVectorManager`, and the `vectorManagerMu sync.RWMutex` guarding the `vectorManager` field
 - `backend/api_types.go` — `VectorIndexStatus` struct (shared API response type, also used by frontend_api_vector.go)
+- `frontend/src/components/fileViewer/FileViewerContextMenu.tsx` — file-viewer actions, including selection-based Find Similar vector search
+- `frontend/src/components/layout/VectorSearchResults.tsx` — vector result presentation
 
 ## Core Types
 
@@ -79,8 +81,8 @@ type SearchOptions struct {
 ### Filesystem Watcher
 
 ```
-core/workspace.NewWatcher(projectPath, onChange)  // wired in backend/frontend_api_project.go
-  → fsnotify watches project directory (recursive)
+core/workspace.NewWatcher(root string, onChange ChangeHandler, loggers ...*slog.Logger)  // wired in backend/frontend_api_project.go
+  → fsnotify watches root + .git (not recursive; recursion is opt-in via Watcher.WatchTree)
   → On file change:
       ├─ Debounce (batch rapid changes)
       ├─ Emit global event: workspace:tree_changed
@@ -89,12 +91,14 @@ core/workspace.NewWatcher(projectPath, onChange)  // wired in backend/frontend_a
 
 File watching is enabled for No Project using the active session's
 workspace directory (`__no_project__/<sessionID>/workspace/`) as the
-watcher root (falling back to the project base directory when no
-session exists). Git operations and vector indexing remain skipped.
+watcher root. When no session exists yet, any previous watcher is torn
+down and watcher creation is deferred until the first session activates
+(there is no project-base-directory fallback). Git operations and vector
+indexing remain skipped.
 
 ### Git Integration
 
-- `GetGitStatus(dirPath)` returns per-file status (modified, added, deleted, untracked) for the given directory (containment-checked against the project root)
+- `GetGitStatus(dirPath)` returns whole-repository per-file status (modified, added, deleted, untracked) computed over the project root; `dirPath` is used only for containment validation against the project root
 - `GetFileDiff(path)` returns unified diff for modified files; for paths outside the active project root (or a non-git path) it returns `("", nil)` — no baseline to diff against, so the frontend does not render a diff panel
 - Status integrated into file tree nodes (icon indicators in UI)
 - `.gitignore` filtering in directory listings uses `git ls-files --others --ignored --exclude-standard --directory -z`. In a git repo `.aiignore` is layered on top of that git-derived set via an `ignore.Resolver` (only `IgnoredByAIIgnore` is OR-merged, so the resolver's negation-less matching cannot override a git `!pattern` un-ignore). In a non-git workspace (including No Project) the resolver is the sole authority for both files. A resolver-construction failure is non-fatal; the listing returns with whatever flags were already computed.
@@ -117,8 +121,11 @@ session exists). Git operations and vector indexing remain skipped.
 - Auto-fallback: `ModeHybrid` silently degrades to `ModeVector` when the lexical index is empty or unavailable; `ModeLexical` returns empty (or an error if no lexical index has been opened at all).
 - Dual-write invariant: chromem commits first (source of truth); lexical upsert/delete is best-effort and drift is repaired by `Indexer.RebuildLexical`, which the manager invokes during `SwitchProject` when `chromem.Count() > 0 && lexical.Count() == 0`.
 - Indexing progress is phased: `PhaseBoth` (parallel full index of a fresh project), `PhaseEmbedding` (chromem-only chunk), `PhaseLexical` (bleve backfill). The phase is surfaced to the frontend via the `vector_index:status` event `phase` field.
+- Oversized files are skipped before full reads during project walk and collection validation, with `processFile` repeating the size check as the universal incremental-index backstop. Files whose structure-aware split exceeds `max_chunks_per_file` are skipped as one unit; the remaining index pass continues.
+- Vector documents are handed to chromem/ONNX in fixed sub-batches of at most 200 documents. Cancellation is checked between sub-batches, and the manager tracks/drains every indexing goroutine during teardown so no background writer outlives its collection.
 - Used for:
   - `semantic_search` tool (agent searches code by meaning; accepts `mode`, `must_match`, `file_pattern`, `top_k`)
+  - File Viewer **Find Similar**: when text is selected, the context-menu action runs vector search with that selection and opens the standard vector-results panel
   - RAG hint injection before routing/planning (top-5 relevant files)
 
 Lifecycle:
@@ -146,7 +153,7 @@ Project switched (after vector index ready)
 | `ReadFile(path)`                    | Read file content (no backend-side binary detection; frontend `isBinaryContent` checks null bytes in first 8KB). Not workspace-contained — accepts any absolute path so the viewer can display out-of-workspace files the agent cites (e.g. SDK sources); a trailing `#L<n>`/`#L<n>-L<m>` line anchor is stripped before resolution |
 | `ReadFileAsDataURL(path)`           | Read a file and return it as a base64 `data:` URL (RFC 2397), for embedding local images in the file-viewer markdown renderer (the webview cannot load `file://` or project-root-relative URLs). **Workspace-contained** — the only read-path RPC that retains containment, because image embedding runs during markdown auto-render without an explicit user action. MIME type from `mime.TypeByExtension`; 8 MiB size guard |
 | `GetFileDiff(path)`                 | Unified git diff for file. Not workspace-contained, but returns `("", nil)` for files outside the active project root or a non-git path (no baseline to diff against) |
-| `GetGitStatus(dirPath)`             | Per-file git status summary for the given directory (containment-checked against the project root) |
+| `GetGitStatus(dirPath)`             | Whole-repository per-file git status summary; `dirPath` used only for containment validation against the project root |
 
 Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4rk/tools/builtins/glob.go`), not as a direct Workspace API method.
 
@@ -160,12 +167,14 @@ Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4
 - Pre-fusion score thresholds discard noise-tail hits (low cosine similarity or low BM25) before RRF fusion so they cannot earn a double RRF contribution; thresholds apply only in the hybrid path, not vector-only or lexical-only modes
 - A single `ready atomic.Bool` on `Service`; hybrid auto-falls-back to vector-only when `lexical.Count() == 0`
 - The indexer rejects binary files via a bounded 512-byte header pre-read (null-byte presence, `binaryHeaderSize`) before loading the file into memory; the frontend file viewer detects binary content via null bytes in the first 8KB
+- Every index path applies `max_file_size` before a full file read, and every chunked file stays at or below `max_chunks_per_file`; oversized/pathological files are skipped without aborting the pass
+- Embedding writes use sub-batches of at most 200 documents, observe cancellation between batches, and all manager-launched indexing goroutines are drained before teardown
 - Write-path and structural RPCs (`WriteFile`, `ListDirectory`) reject paths outside the workspace (directory-traversal containment); read-path RPCs (`ReadFile`, `GetFileIcon`, `GetFileDiff`) accept any absolute path so the viewer can display any file the agent cites — this is a display affordance that does not relax the agent's `read_file` tool containment. `ReadFileAsDataURL` is the exception among read RPCs: it retains workspace containment because image embedding runs during markdown auto-render (no explicit user action) and must not let a document read arbitrary files into the webview DOM
 - Every git invocation flows through `exec.CommandContext`; git errors propagate to the caller (no silent fallback)
 - Missing `git` binary blocks the CODE-mode project switch: detected lazily via `exec.LookPath` in `SwitchProject`, it emits a dismissable `runtime_error` toast (`error_code: git_not_found`) and rejects the switch; CHAT / No-Project mode never invokes git and never requires it
 - ONNX embedder loading runs asynchronously after EventBackendReady; it never blocks the critical startup path
 - Vector search RPCs block via `Service.WaitReady` until the index is ready: a search issued while indexing is in progress waits, surfacing a "waiting for index readiness" error only if the request context is cancelled first. When no vector manager is wired (`getVectorManager() == nil`) the RPC returns a "vector search not available" error
-- No Project: git operations and vector indexing are skipped (deactivated at the FrontendAPI layer). File watching is scoped to the active session's workspace directory (`__no_project__/<sessionID>/workspace/`), falling back to the project base directory when no session exists.
+- No Project: git operations and vector indexing are skipped (deactivated at the FrontendAPI layer). File watching is scoped to the active session's workspace directory (`__no_project__/<sessionID>/workspace/`); when no session exists yet, the watcher is torn down and creation deferred until the first session activates (no project-base-directory fallback).
 - No Project: git status and diff always return empty (no git process spawned)
 - No Project: vector search never returns results (indexer is never started, semantic_search tool is disabled anyway)
 
@@ -175,12 +184,17 @@ Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4
 | ---------------- | --------------------- | ---------------------------------- |
 | Workspace path   | Active project config | Root directory for file operations |
 | Ignore patterns | `.gitignore` / `.aiignore` | Ignore files controlling which files/dirs are excluded from tree and index (hidden dirs always excluded) |
-| Index chunk size | Internal (hardcoded)  | Characters per embedding chunk     |
+| Index chunk size | `vector_index.max_chunk_size` (default 1500) | Maximum characters per embedding chunk |
+| Maximum file size | `vector_index.max_file_size` (default 4194304 / 4 MiB) | Files above this size are skipped before full read/chunk/embed |
+| Maximum chunks per file | `vector_index.max_chunks_per_file` (default 4000) | Entire files above this post-split count are skipped as pathological |
+| Embedding sub-batch size | Internal constant (200 documents) | Bounds each chromem/ONNX `AddDocuments` call and cancellation interval |
 | Hybrid RRF k     | `vector_index.hybrid_rrf_k` (default 60) | Reciprocal Rank Fusion constant k |
 | Hybrid fanout    | `vector_index.hybrid_fanout_multiplier` (default 4) / `hybrid_fanout_min` (default 100) | Per-side candidate pool size for RRF |
 | Vector score floor | `vector_index.hybrid_vector_score_floor` (default 0.0) | Absolute cosine-similarity floor; vector hits below this are discarded before fusion |
 | Vector score ratio | `vector_index.hybrid_vector_score_ratio` (default 0.25) | Relative cosine cutoff; vector hits below ratio × top similarity are discarded before fusion |
 | Lexical score ratio | `vector_index.hybrid_lexical_score_ratio` (default 0.1) | Relative BM25 cutoff; lexical hits below ratio × top BM25 are discarded before fusion |
+| Hybrid toggle    | `vector_index.hybrid` (pointer bool, default true) | Master toggle: hybrid (vector + BM25) when true, vector-only when false |
+| Embedding threads | `vector_index.embedding_threads` (default 0) | Caps the ONNX intra-op thread pool during indexing; 0 = all cores (default) |
 
 ## Extension Points
 

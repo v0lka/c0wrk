@@ -35,7 +35,7 @@
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |
 | Message rendering, display items         | [domains/frontend/rendering.md](domains/frontend/rendering.md)           |
 | Code review feature                      | [domains/review.md](domains/review.md)                                   |
-| RESEARCH mode (toggle, research skills seeding, hypothesis graph) | [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Research section), [contracts/event-catalog.md](contracts/event-catalog.md) (`research:*` events) |
+| RESEARCH mode (toggle, research skills seeding, hypothesis graph) | [domains/research.md](domains/research.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Research section), [contracts/event-catalog.md](contracts/event-catalog.md) (`research:*` events) |
 | Core-sp4rk interface boundary            | [contracts/core-sp4rk.md](contracts/core-sp4rk.md)                       |
 | Backend-Core wiring                      | [contracts/backend-core.md](contracts/backend-core.md)                   |
 | Wails bindings, frontend RPC             | [contracts/desktop-frontend.md](contracts/desktop-frontend.md)           |
@@ -111,6 +111,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [tool-manager.md](domains/tool-manager.md) - External binary dependency manager (rg/uv/markitdown): pinned-version reconciliation, SHA256 verification, no-auto-update supply-chain guarantee
 - [workspace.md](domains/workspace.md) - File tree, vector index, workspace watcher
 - [review.md](domains/review.md) - Code review feature (review sessions, diff parsing, hunk/file/general comments, clone-on-fork)
+- [research.md](domains/research.md) - Experimental project-scoped research workspace: briefs, versioned methodology skills, hypothesis DAG parsing, metrics, recursive watcher, and incremental frontend graph updates
 
 ### domains/frontend/
 

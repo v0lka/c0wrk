@@ -22,7 +22,7 @@ Wraps sp4rk `MapBlackboard` with SQLite persistence:
 - Finalizing writes (`CompleteTask`, `FailTask`, `CancelTask`) run synchronously (`persistSynchronously`) so the status change is guaranteed persisted before the method returns; they also shut down the background worker
 - `SetFinalResult` does NOT persist — it only sets the in-memory value; the final result is persisted to the `final_output` column later by `CompleteTask`
 - Supports `RestoreBlackboard()` for task resumption — recreates the full in-memory state from SQLite
-- Tracks task lifecycle: `ReactivateTask()`, `CompleteTask()`, `FailTask()`, `CancelTask()`
+- Tracks task lifecycle: `ReactivateTask()`, `CompleteTask()`, `FailTask()`, `CancelTask()`, `PauseTask()`
 - Emits warnings via `Emitter` if persistence fails (non-fatal)
 
 ### Restore Flow

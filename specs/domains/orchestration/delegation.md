@@ -84,7 +84,11 @@ delegate.Execute(ctx, input)
 │     │   buildSpecializedSystemPrompt applies it (profile body replaces the
 │     │   core directive, shared project-context prefix preserved)
 │     ├─ ContextManager via contextFactory (isolated per subagent)
-│     ├─ Executor = agent.NewExecutor with max_steps, circuit breakers, HITL
+│     ├─ Cooperative-pause checkpoint (when the blackboard result for this ID
+│     │   has Error == agent.ErrPaused): seed its Steps into both the
+│     │   ContextManager (StepSeedable) and Executor (WithResumeSteps)
+│     ├─ Executor = agent.NewExecutor with max_steps, circuit breakers, HITL,
+│     │   and the session pause checker
 │     ├─ Scoped emitter (subagent events flow to UI under the delegation ID)
 │     └─ If allow_redelegate: inject a child Delegation Registry and add
 │         delegate/cancel_delegation to the subagent tool set (depth-capped)
@@ -108,6 +112,19 @@ delegate.Execute(ctx, input)
        ├─ All async: list of { delegation_id, status: "pending" | "running" }
        └─ Mixed: blocking outputs + async IDs
 ```
+
+### Cooperative Subagent Pause and Resume
+
+Every subagent Executor created by `conductorLauncher.configureExecutor` receives the session-level pause checker. At a step boundary, a flipped pause signal returns `agent.ErrPaused` together with the partial trajectory. The launcher stores that trajectory in the blackboard's `StepResult` for the delegation or plan-step ID, preserving the checkpoint across the outer session pause.
+
+When the same ID is built again after session resume:
+
+1. `pausedCheckpoint(id)` accepts only a prior `StepResult` whose error is `agent.ErrPaused`; failed and never-started steps start fresh.
+2. A defensive copy of `StepResult.Steps` is seeded into the isolated ContextManager via `orchestration.StepSeedable.SeedSteps` so prior assistant/tool turns reappear in the prompt.
+3. The same steps are passed to the Executor via `agent.WithResumeSteps`, so execution continues at `len(checkpoint)+1` and the returned trajectory contains both checkpoint and new steps.
+4. If the ContextManager does not implement `StepSeedable`, task construction fails before dispatch. The launcher never silently discards a cooperative-pause checkpoint.
+
+This behavior is shared by direct `delegate` tasks and the subagents underlying `execute_plan`, because both use `conductorLauncher.buildSubAgentTask`. The resumed subagent retains its isolated ContextManager and tool budget; only its own checkpoint is restored.
 
 ### `cancel_delegation` Tool
 
@@ -138,7 +155,7 @@ type DelegationRegistry struct {
 type Delegation struct {
     ID          string
     Summary     string
-    Status      DelegationStatus  // "pending" | "running" | "completed" | "failed" | "cancelled"
+    Status      DelegationStatus  // "pending" | "running" | "completed" | "failed" | "cancelled" | "paused"
     Output      string
     Error       error
     Steps       []agent.Step
@@ -156,6 +173,7 @@ Operations:
 | `Register(id, summary, dependsOn, mode)` | Add a new delegation as "pending" (errors on duplicate ID) |
 | `Start(id, cancelFunc)` | Mark "running", store the cancellation handle |
 | `Complete(id, output, err, steps)` | Mark "completed" or "failed", store output/error/steps |
+| `CompletePaused(id, output, steps)` | Mark "paused" (a cooperative-pause checkpoint distinct from `Complete`), store the partial trajectory/steps |
 | `Cancel(id)` | Cancel via the stored CancelFunc, mark "cancelled" |
 | `Get(id)` | Read a delegation (used by `read_step_output`) |
 | `ListPending()` | Return IDs of all pending/running delegations (used by `finish` join check) |
@@ -205,6 +223,7 @@ The **combined** context is tail-truncated to `OrchestratorConfig.MaxDependencyC
 - **Subagent returns `Finished: false`**: stored as `Status: "failed"` with the abort reason as the error; the `delegate` tool result for that task has `isError: true` with the abort reason. The Conductor decides whether to retry, reflect, or finish.
 - **Subagent returns error**: same as above.
 - **Subagent context cancelled** (via `cancel_delegation` or parent cancellation): stored as `Status: "cancelled"`; no error propagated to the Conductor (cancellation is intentional).
+- **Paused checkpoint cannot seed the ContextManager**: `buildSubAgentTask` returns a descriptive error before launch; the checkpoint remains intact and is not replaced by a fresh run.
 - **Validation failure** (duplicate ID, cycle, depth exceeded): the `delegate` tool call returns `isError: true` with a descriptive message; no subagents launch.
 - **Dependency failed**: a task whose `depends_on` includes a failed or cancelled delegation is marked "failed" with reason "dependency del_X failed"; it does not run.
 
@@ -214,6 +233,8 @@ The **combined** context is tail-truncated to `OrchestratorConfig.MaxDependencyC
 - The combined graph of delegations across all `delegate` calls in a Conductor run is always a valid DAG (no cycles).
 - A subagent's context is always a child of the Conductor's context, so cancelling the Conductor cancels all subagents.
 - A subagent never shares its `ContextManager` with the Conductor or with other subagents.
+- Every subagent Executor receives the session pause checker; a cooperative pause stores the subagent's partial trajectory in its blackboard `StepResult` with `agent.ErrPaused`.
+- A resumed paused subagent seeds the same checkpoint into both a `StepSeedable` ContextManager and the Executor; step numbering and the returned trajectory continue from the checkpoint. A non-seedable ContextManager fails task construction before launch.
 - The `system` group (agent-infrastructure/meta tools) is always included in a subagent's toolset regardless of the `tools` field; toolsets resolve from capability groups via `resolveTaskTools` (`core/conductor.go`) — see [ADR-024](../../decisions/024-group-policies.md).
 - `delegate`, `cancel_delegation` are available to a subagent only when `allow_redelegate` is true; `declare_plan` and `reflect` remain Conductor-only.
 - Recursive delegation depth never exceeds `OrchestratorConfig.MaxRedelegationDepth`.

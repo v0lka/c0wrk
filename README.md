@@ -11,52 +11,58 @@ A desktop AI agent for work that won't fit in a single reply — research, codin
 
 ## What makes c0wrk different
 
-- **Plans before it acts.** For anything non-trivial, c0wrk maps the work to a plan as a dependency graph you can review and approve before it runs a single step — so a wrong approach gets caught in seconds, not after twenty minutes of work. Big jobs get split into isolated sub-tasks handed to sub-agents that run in parallel, each with its own focus, so the independent parts finish together instead of one after another.
-- **Goals that run to the finish.** Start a message with `/goal` and c0wrk commits to a concrete, checkable definition of "done" that you sign off on up front — then keeps working turn after turn, checking its own progress, until it can prove the goal is met, it's stuck, the budget runs out, or you hit pause. No stopping at the first plausible-looking answer.
-- **Two modes for two kinds of work.** **CODE** points the agent at a real project: full toolset, in-place file edits, inline diffs, and git. **CHAT** is for when you want to reason, research, or draft without touching a codebase — each CHAT session gets its own isolated scratch workspace, code-modifying tools are switched off, and no git is required.
-- **The whole loop stays in one window.** Once the code is written you don't switch tools to finish the job. Open the built-in review page and walk every changed file as a real diff, leave comments on individual hunks or whole files, then approve or send it back for another pass — and when it's ready, stage, commit (with a message the model drafts from the diff itself), and push straight from the git panel, no terminal required. Branch info, commit history, and the graph live in the same panel, and the working tree stays in sync so what you review is always what's on disk.
-- **Safe by default, never in your way.** c0wrk stays inside your project and checks every risky step *before* it runs, so nothing destructive ever happens by surprise — and an optional AI judge quietly clears the routine calls so you're asked only about what genuinely matters, not every file write. Since the web pages and files it reads can't hijack it either, you can hand it real, messy work and trust it to stay on task.
-- **Bring your own model.** Works with Anthropic, OpenAI, ChatGPT and any OpenAI- or Anthropic-compatible endpoint. Set it up once, switch models per task.
-- **Runs well on small models.** Turn on Small LLM mode and c0wrk adapts itself to a lightweight or local model instead of fighting it — the router curates only the tools the task needs so the prompt isn't bloated with dozens of schemas, the system prompt trims to a compact core, sampling tightens up, and the loop catches repetition sooner. Each optimization is an independent switch, so you dial in exactly what your model handles and leave the rest off.
-- **Knows your codebase.** Semantic + lexical search means c0wrk finds the right file or symbol even when you describe it loosely, not just when keywords happen to match.
-- **Plays nice with corporate networks.** HTTP/HTTPS proxy support with custom CA certs and bypass lists.
+- **Plans before it acts — and resumes where it stopped.** For non-trivial work, c0wrk maps the task to a graph-based plan that you can review. Independent steps run as isolated subagents in parallel; successful plan steps are reused on retry, while failed, pending, or explicitly targeted steps can run again. Pause creates a resumable checkpoint for ordinary, goal, and delegated work, and graceful app shutdown preserves active work for later resume.
+- **Goals that run to the finish.** Start a message with `goal` option enabled and c0wrk commits to a concrete, checkable definition of "done" that you approve up front, then keeps working and verifying progress until the goal is met, blocked, out of budget, or paused.
+- **Two stable modes, plus experimental research.** **CODE** works in a real project with file edits, diffs, git, semantic search, and a per-session terminal. **CHAT** provides an isolated scratch workspace without requiring git and code-modifying agent tools. With the all-or-nothing **Experimental Features** switch enabled, **RESEARCH** adds a workspace-contained `.research` methodology, hypothesis graph, metrics, and seeded research skills; experimental behavior can change.
+- **Stay in the loop without stopping the loop.** Send a follow-up into a running or paused ordinary task and c0wrk queues it for the next step boundary.
+
+- **The whole code loop stays in one window.** Review changed files as real diffs, comment on hunks or files, approve or request another pass, then stage, commit, push, inspect branches, and browse a lane graph of history.
+- **Layered safety controls, not a sandbox.** Every tool belongs to a capability group with `allow`, `user_confirm`, or `deny` policy; mutating groups require confirmation by default. Path containment, symlink checks, execute blacklists, untrusted-content framing, and an optional conservative Smart Approve judge add independent gates. See [SECURITY.md](SECURITY.md).
+- **Bring your own model.** Works with Anthropic, OpenAI, ChatGPT, and OpenAI- or Anthropic-compatible endpoints. Runtime probes can discover the effective context window exposed by self-hosted OpenAI-compatible servers; explicit config overrides remain authoritative. See the [self-hosted model guide](docs/self-hosted-models.md) for tool-parser and chat-template setup.
+- **Runs well on small models.** The experimental, manually enabled Small-LLM profile can narrow the visible tool set, swap in a compact system prompt, tighten sampling and loop breakers, and compact context earlier. Every optimization has its own switch; the profile is inert unless both Experimental Features and Small-LLM are enabled.
+- **Knows your codebase without indexing everything.** Hybrid semantic + lexical search respects `.gitignore` and `.aiignore`, skips oversized/pathological files using configurable file/chunk limits, and runs embeddings locally through bundled ONNX Runtime.
+- **Plays nice with corporate networks.** HTTP/HTTPS proxy support includes custom CA certificates and bypass lists for outbound LLM, web, MCP, model-registry, and update traffic.
 
 ## Download & install
 
 Prebuilt desktop builds are published on the [GitHub Releases](https://github.com/v0lka/c0wrk/releases) page. Builds are currently **unsigned** — see the per-OS notes below for the one-time workaround.
 
-Each release bundles three artifacts:
+Every release also publishes `SHA256SUMS`. The in-app updater downloads over HTTPS, refuses an archive with a missing or mismatched SHA256 entry, stages an install-tree swap, and keeps a `.old` rollback copy. SHA256 proves that the downloaded archive matches the bytes published with the release; because the artifacts are unsigned, it does **not** prove release authorship if the release account and checksums are compromised. Updates and automatic checks can be disabled independently in Settings or under `updates` in `~/.c0wrk/config.yaml`.
 
-| Artifact                            | Target                   |
-| ----------------------------------- | ------------------------ |
-| `c0wrk-desktop-macos-arm64.zip`     | macOS (Apple Silicon)    |
-| `c0wrk-desktop-linux-amd64.tar.gz`  | Linux (amd64)            |
-| `c0wrk-desktop-windows-amd64.zip`   | Windows (amd64)          |
+Each release bundles three platform archives:
+
+| Artifact                           | Target                |
+| ---------------------------------- | --------------------- |
+| `c0wrk-desktop-macos-arm64.zip`    | macOS (Apple Silicon) |
+| `c0wrk-desktop-linux-amd64.tar.gz` | Linux (amd64)         |
+| `c0wrk-desktop-windows-amd64.zip`  | Windows (amd64)       |
 
 The ONNX Runtime library and the embedding models ship inside every archive, so vector search works without an extra download on your end.
 
 ### macOS (Apple Silicon)
 
 1. Download `c0wrk-desktop-macos-arm64.zip` and unzip it.
-2. The app is unsigned, so macOS Gatekeeper will block first launch. Clear the quarantine attribute:
 
+2. The app is unsigned, so macOS Gatekeeper will block first launch. Clear the quarantine attribute:
+   
    ```bash
    xattr -cr /path/to/c0wrk-desktop.app
    ```
-
+   
    Alternatively, right-click `c0wrk-desktop.app` → **Open** on first launch, then confirm in the Gatekeeper dialog.
+
 3. Launch `c0wrk-desktop.app`.
 
 ### Linux (amd64)
 
 1. Download `c0wrk-desktop-linux-amd64.tar.gz` and extract it:
-
+   
    ```bash
    tar -xzf c0wrk-desktop-linux-amd64.tar.gz
    ```
 
 2. Run the binary:
-
+   
    ```bash
    ./c0wrk-desktop
    ```

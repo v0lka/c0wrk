@@ -42,10 +42,11 @@ Two c0wrk-side facts shape the advice below:
   unset keep the server-side defaults (vLLM `--generation-config`, `llama-server` flags,
   LM Studio preset, Ollama `options`/environment), so server-side configuration remains the
   right place for anything c0wrk does not set explicitly.
-- c0wrk probes model context windows at registration time: LM Studio's
+- c0wrk lazily probes model context windows when a session first builds a local-model client: LM Studio's
   `GET /api/v0/models` (`loaded_context_length`/`max_context_length`) and the OpenAI-style
-  `GET /v1/models` (`max_model_len`, `max_context_length`). Values found there override the
-  `llm.models.<name>.context_window` capability in config.
+  `GET /v1/models` (`max_model_len`, `max_context_length`). A positive runtime value overrides
+  built-in catalog/cache metadata, while an explicit positive
+  `llm.models.<name>.context_window` in config remains authoritative.
 
 ## Cheat sheet: model family → tool parser / template + sampling
 
@@ -81,7 +82,8 @@ Notes on the table:
   [GLM-4.5](https://huggingface.co/zai-org/GLM-4.5#recommended-settings).
 - Sampling that is good for chat is often bad for agent tool loops: slightly higher
   temperature improves prose but degrades JSON validity. For agentic use prefer the low end
-  of every range; c0wrk's small-LLM profile pins `temperature: 0.1`
+  of every range; c0wrk's optional Small-LLM sampling override can lower the active
+  family preset, while unset values continue to inherit that preset
   ([small-llm spec](../specs/domains/small-llm.md)).
 
 ## vLLM
@@ -113,9 +115,10 @@ vllm serve Qwen/Qwen3-Coder-30B-A3B-Instruct \
   `--structured-outputs-config.backend {auto,guidance,outlines,xgrammar}`; `auto` picks the
   best available, `xgrammar` is the fast multi-backend choice for CPU-constrained decoding —
   [structured outputs docs](https://docs.vllm.ai/en/latest/features/structured_outputs/).
-- **Sampling defaults**: c0wrk only sends `temperature`. Pin the rest server-side with
-  `--generation-config auto`, which applies the model repo's `generation_config.json`
-  (`top_p`, `top_k`, `repeat_penalty` and friends) as request defaults —
+- **Sampling defaults**: c0wrk sends the active model family's vendor preset and overlays any
+  enabled `small_llm.sampling` values; fields left unset still inherit server defaults. Use
+  `--generation-config auto` to supply those remaining defaults from the model repo's
+  `generation_config.json` (`top_p`, `top_k`, `repeat_penalty` and friends) —
   [vLLM tool-calling docs](https://docs.vllm.ai/en/stable/features/tool_calling/) (see
   the *Simulating the hidden reasoning* / sampling notes) and
   [`--generation-config` in server args](https://docs.vllm.ai/en/stable/serving/openai_compatible_server/#server-command-line-arguments).
@@ -196,8 +199,9 @@ lms load           # load the model (or load it in the Chat/Developer tab)
 - Model choice matters: LM Studio's own tool-use rollout names **Qwen, Mistral, and
   Llama 3.1/3.2** as working well ([0.3.5 changelog](https://lmstudio.ai/changelog/lmstudio/lmstudio-v0.3.5)).
 - **Sampling presets**: set per-model inference defaults (temperature, top_p, top_k) in the
-  app and save them as config presets — since c0wrk only sends `temperature`, the preset's
-  other values apply ([presets docs](https://lmstudio.ai/docs/app/presets)). For agent
+  app and save them as config presets. c0wrk sends parameters populated by its active family
+  preset or Small-LLM override; the LM Studio preset supplies fields that remain unset
+  ([presets docs](https://lmstudio.ai/docs/app/presets)). For agent
   loops: temp ≤ 0.3, modest `top_p`, preset saved as the model's default config.
 - **Structured output**: LM Studio supports `json_schema` response constraints on the
   OpenAI-compatible endpoint — see the
@@ -235,8 +239,9 @@ llm:
   `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`
   ([Ollama FAQ](https://docs.ollama.com/faq)). Symptom of a too-small window: the model
   "forgets" tools or mid-task instructions.
-- No per-request `top_k`/`repeat_penalty` pass-through on the OpenAI layer — c0wrk's
-  `temperature` is honored; for more, use a custom Modelfile with `PARAMETER` entries
+- Ollama's OpenAI layer does not expose every c0wrk sampling field (notably `top_k` and
+  `repetition_penalty`) per request. Supported preset fields such as `temperature`/`top_p`
+  are honored; configure additional defaults in a custom Modelfile with `PARAMETER` entries
   ([Modelfile docs](https://docs.ollama.com/modelfile)).
 - Thinking models: `reasoning_effort` (`none`/`low`/`medium`/`high`) is supported through
   the OpenAI layer and maps to c0wrk's reasoning-effort capability
@@ -258,6 +263,7 @@ llm:
     Qwen/Qwen3-Coder-30B-A3B-Instruct:
       protocol: chat_completions
       capabilities:
+        attachment: false     # set true only when the endpoint accepts image/PDF inputs
         tool_call: true       # feature flag: server emits native tool_calls
         temperature: true     # server accepts temperature
         reasoning: false
@@ -270,7 +276,8 @@ Notes:
 - `llm.models.<name>` keys match the model name the server reports on `/v1/models`.
 - `capabilities.tool_call` documents that the server produces native `tool_calls`; it does
   not parse text for you — a server that leaks tool calls as text is misconfigured, see the
-  checklist below.
+  checklist below. When `capabilities` is present, all four flags are replaced atomically;
+  include `attachment`, `reasoning`, `temperature`, and `tool_call` rather than a partial map.
 - For small/local models also review the **small-LLM profile**
   (`small_llm.*` in config; [spec](../specs/domains/small-llm.md)): it narrows the tool set
   to essentials, pins low temperature, and tightens loop breakers — orthogonal to, and
@@ -314,8 +321,9 @@ Work top to bottom; each step links the check to its likely fix.
    `curl -s $BASE_URL/v1/chat/completions -d '{"model":"...","messages":[{"role":"user","content":"list files in /tmp using the provided tool"}],"tools":[...]}' | jq '.choices[0].message'`
    — if `tool_calls` is absent but the call text sits in `content`, the server/parser is at
    fault; if `tool_calls` is present, the problem is on the c0wrk side (file an issue).
-9. **Still stuck?** Enable c0wrk's small-LLM profile (`small_llm.enabled`) to reduce the
-   tool-set size and harden the loop while you tune the server — but remember: it narrows
+9. **Still stuck?** Enable **Experimental Features** (`experimental.enabled`) and then the
+   Small-LLM profile (`small_llm.enabled`) to reduce the tool-set size and harden the loop
+   while you tune the server — both gates are required, and the profile narrows
    *which* tools are offered, it cannot make a broken parser emit structured calls.
 
 ## Reference index

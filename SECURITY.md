@@ -66,14 +66,17 @@ c0wrk is a **desktop AI coding-agent** (Go backend + React/TypeScript frontend, 
 
 Entry points where untrusted input or adversarial content reaches the system:
 
-- **Agent prompt inputs (ASI01)** — user messages, retrieved files, `web_search`/`web_fetch` results, `bash_exec` stdout, `ripgrep`/`glob`/`read_file` output, and **all MCP tool output** entering the model context (indirect-injection vectors).
+- **Agent prompt inputs (ASI01)** — user messages, clipboard text/files/images, native file drops, retrieved files, `web_search`/`web_fetch` results, `bash_exec` stdout, `ripgrep`/`glob`/`read_file` output, and **all MCP tool output** entering the model context (indirect-injection vectors).
 - **Multi-source `AGENTS.md` (ASI01)** — `~/.agents/AGENTS.md` (machine-wide writable), `~/.c0wrk/.agents/AGENTS.md`, and `<workspace>/AGENTS.md`, all injected into the system prompt.
 - **Agent tool / function-calling surface (ASI02)** — every tool the agent may invoke, especially side-effecting ones: `bash_exec`/`posh_exec`, `write_file`, `edit_file`, `delete_*`, `web_fetch`, `create_directory`.
 - **Agent-generated shell / code execution (ASI05)** — `bash_exec` (Unix) / `posh_exec` (Windows) running model-generated commands; agent-authored file edits executed by the user's shell.
 - **External MCP registries (ASI04)** — dynamically integrated stdio/HTTP MCP servers whose tool descriptions, schemas, and permissions may be forged; configured commands executed as child processes.
 - **Downloaded tool binaries (ASI04)** — `rg`, `uv`, `markitdown` fetched from public URLs by the tool-manager.
 - **In-app self-update / auto-update (ASI04)** — the self-update pipeline (`core/updater/`) downloads a release archive from GitHub Releases, SHA256-verifies it against `SHA256SUMS`, and atomically swaps the install tree via a two-process re-exec (`--self-update`). This is a **supply-chain delivery vector**: a compromised release (archive *and* checksum) or a MITM that breaks TLS could replace the running binary the user executes. Integrity is SHA256-only, fail-closed; artifacts are **unsigned** (no app-pinned signature key). See [ADR-023](./specs/decisions/023-auto-update.md) for the full threat model and accepted trade-offs.
-- **Agent memory stores (ASI06)** — SQLite `session_messages`, the `chromem-go` vector index, and persistent blackboard facts.
+- **Agent memory stores (ASI06)** — SQLite `session_messages`, the project-scoped vector index, persisted pause/subagent trajectories, RESEARCH artifacts under a workspace-contained root, and persistent blackboard facts.
+- **Prompt-discovered work directories (ASI02/ASI05)** — existing directory paths mentioned by the user may be added to the session's auxiliary roots. Adding a root expands the agent's filesystem reach for that task; containment/symlink/group-policy gates still apply to individual tool calls.
+- **Vector/attachment ingestion (ASI06/ASI10)** — pasted/dropped/selected files and workspace files are parsed, converted, chunked, or embedded. File-size, image-size, conversion-time, chunk-count, and output limits are resource-exhaustion boundaries, not optional tuning conveniences.
+- **RESEARCH mode (ASI06/ASI07)** — experimental methodology skills and recursively watched Markdown artifacts influence routing and future turns. Explicit research roots must remain inside the project workspace; disabling the mode preserves artifacts and seeded skills, which remain untrusted persisted data.
 - **Inter-agent channels (ASI07)** — the subagent delegation protocol (`delegate`, `execute_plan`) and the shared blackboard.
 - **Human-approval / HITL gates (ASI09)** — `tool_confirm`, `ask_user`, plan/goal review prompts.
 - **Outbound HTTP (SSRF)** — `web_fetch`, `web_search`, LLM API calls, MCP HTTP servers.
@@ -287,9 +290,10 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 **Relevant.** Agents operate with autonomy (planning, tool use, delegation); drift, runaway loops, or goal corruption are possible.
 
 **Rules:**
-- **Autonomy bounds are mandatory.** Step caps, loop caps, token budgets, and time-boxed sessions bound every agent run.
+- **Autonomy bounds are mandatory.** Step caps, loop caps, token budgets, tool-output limits, service/main-call timeouts, and circuit breakers bound individual operations and trajectories. c0wrk has no session-wide wall-clock deadline; do not claim one exists unless it is implemented end to end.
 - **Auditable receipt chain.** Plan steps, tool calls, delegations, and reflections are emitted as events and persisted — the trajectory must be reconstructable.
-- **Kill-switch / circuit-breaker.** The operator can cancel a running task at any time; `ConfirmDenyAndStop` and `cancel_delegation` must remain effective and unrecoverable for the current task.
+- **Kill-switch / circuit-breaker.** The operator can cancel or cooperatively pause a running task. Cancel remains terminal for the current task; pause persists a resumable checkpoint. `ConfirmDenyAndStop` and `cancel_delegation` must remain effective and unrecoverable for the current task.
+- **Checkpoint integrity.** A paused conductor/subagent trajectory is persisted as paused, seeded into both executor and context manager on resume, and never reported as completed or failed. Graceful shutdown preserves active work as paused; explicit user cancellation remains cancelled. Archived sessions are read-only at the backend Send/Resume choke point.
 - **Behavioral-drift monitoring.** The reflector (`reflect`) reviews the trajectory and may recommend replan/abort when direction is wrong.
 - **Periodic alignment checks.** Goal proposals (`propose_goal`) and self-evaluation verdicts (`declare_goal_status`) keep the agent aligned with user intent; the orchestrator must not silently abandon or mutate the stated goal.
 
@@ -305,12 +309,13 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 - **Errors.** `errorlint` + `perfsprint` are on. Use `%w` for wrapping, `errors.Is/As`; never `fmt.Errorf` where `errors.New` suffices; never `fmt.Sprintf("%s", s)`.
 - **TOCTOU in file ops.** Resolve and validate paths atomically; re-check after `os.Lstat`/`os.Stat` when the result authorizes an action (symlink detection already does per-component `Lstat`).
 - **Goroutine lifecycle.** Avoid goroutine leaks; context cancellation must propagate to MCP server processes, downloads, and the executor loop.
-- **Integer/loop safety.** Bound untrusted sizes (read windows, token budgets, `agents_md_max_bytes`); avoid unbounded allocation from tool output.
-- **`unsafe` / cgo.** c0wrk is CGO-free by design (pure-Go SQLite). Do not introduce `unsafe` or cgo without explicit justification.
+- **Integer/loop safety.** Bound untrusted sizes (read windows, token budgets, `agents_md_max_bytes`, attachment conversion/image dimensions, vector `max_file_size`/`max_chunk_size`/`max_chunks_per_file`, embedding sub-batches); avoid unbounded allocation from tool output or workspace files. Oversized/pathological files are skipped as a whole rather than partially indexed.
+- **`unsafe` / cgo.** The SQLite driver is pure Go, but the desktop application is not globally CGO-free: Wails/native platform integration and ONNX-related builds require native toolchains on supported platforms. Do not add `unsafe`, cgo, or new native-library dependencies without explicit justification, platform build coverage, lifecycle cleanup, and a security review.
 
 ### React / TypeScript (frontend)
 
-- **XSS.** Never use `dangerouslySetInnerHTML`. Markdown is rendered through `react-markdown` + `rehype-sanitize` (sanitization MUST stay enabled). Tool/agent output rendered in the UI is untrusted — sanitize everything.
+- **XSS.** Never render untrusted HTML directly. Markdown stays behind `react-markdown` + `rehype-sanitize`; Mermaid output stays behind strict Mermaid security settings plus DOMPurify before insertion. Any exceptional `dangerouslySetInnerHTML` use requires sanitized, non-user-controlled output and a focused security test — raw tool/agent/workspace HTML is forbidden.
+- **Clipboard and native drop boundaries.** Clipboard image → file URLs → text precedence is intentional. File URLs and `files:dropped` paths must enter through the shared attachment staging/validation pipeline; never navigate the webview to a dropped path or bypass vision/format/size checks.
 - **Stable Zustand selectors.** Never allocate arrays/objects inside `useStore` selectors (React 19 `useSyncExternalStore` reference-equality → infinite re-render, error #185). Return direct references; derive with `useMemo`.
 - **Token storage.** Do not store secrets in `localStorage`; persist only UI state via Zustand middleware.
 - **Event-data validation.** Validate Wails event payloads with type guards at the ingestion point; everything downstream is typed.
@@ -321,7 +326,9 @@ The unifying principle is **least agency** — grant an agent only the minimum a
 - **Wails bindings** (`frontend/wailsjs/...`) are generated — do not hand-edit; rebuild to regenerate. New frontend-callable methods go in the matching `backend/frontend_api_*.go`.
 - **Tool registry pattern.** Reusable built-in tools live in `sp4rk/tools/builtins/`; c0wrk-specific tools (e.g. `ask_user`) in `core/tools/`; wire via `core/tools/RegisterBuiltinTools`. Every tool declares a capability group (`ToolGroup` on `BaseTool`, ADR-024); the group drives both policy and tool budgets.
 - **MCP integration.** New MCP tools are always untrusted; their output is spotlighted and their calls pass the policy pipeline. Do not mark MCP tools trusted.
-- **Prompts are data.** `core/prompts/*.md` are `go:embed`ded; tests verify every `.md` is referenced — update both when adding/removing prompts.
+- **Auxiliary work directories.** Prompt discovery may add only existing directories and must deduplicate through the workdir subsystem. Treat every added directory as a deliberate expansion of session roots; do not expose implicit OS temp roots or security-only roots in the prompt/UI.
+- **RESEARCH artifacts.** Explicit roots are accepted only inside the project workspace through the centralized containment API. Seed skills non-destructively: user-modified skills and artifacts are preserved and remain untrusted. Recursive watcher add/remove must follow enable/disable lifecycle and must not outlive app shutdown.
+- **Prompts are data.** `core/prompts/*.md` are `go:embed`ded; tests verify every `.md` is referenced — update both when adding/removing prompts. Orchestration uses the unified Conductor prompt path; do not reintroduce planner-family prompt assets without a new architectural decision.
 
 ---
 
@@ -350,7 +357,7 @@ Any AI coding agent (c0wrk itself, Copilot, Cursor, etc.) working on this reposi
 | [config.example.yaml](./config.example.yaml) | Authoritative reference for every security tunable: `security.groups` (per-group `allow`/`user_confirm`/`deny` policies + the `execute` blacklist), `security.injection_defense.enabled`, `security.auto_approve_workspace_writes`, `security.smart_approve`, `security.judge`, `toolLimits`, `proxy`, LLM provider keys (`${ENV_VAR}`). |
 | [.golangci.yml](./.golangci.yml) | Linter config enforcing `errcheck`, `govet`, `staticcheck`, `errorlint`, `bodyclose`, `noctx`, `sqlclosecheck`, `perfsprint`, `unconvert`, `depguard`, etc. |
 | [.gitignore](./.gitignore) | Excludes `.cache/`, `build/bin/`, `config.local.yaml`, coverage outputs. |
-| [.github/workflows/ci.yml](./.github/workflows/ci.yml) | CI gate: build / lint / test on Linux + macOS. |
+| [.github/workflows/ci.yml](./.github/workflows/ci.yml) | CI gate: build / lint / test on Linux, macOS, and Windows. |
 | [.github/workflows/release.yml](./.github/workflows/release.yml) | Release pipeline. |
 | [specs/architecture/security-model.md](./specs/architecture/security-model.md) | Canonical c0wrk security model (tool policies, session roots, injection defense, symlink/bash-blacklist). |
 | [specs/decisions/020-multi-source-agents-md-threat-model.md](./specs/decisions/020-multi-source-agents-md-threat-model.md) | Threat model for multi-source `AGENTS.md` prompt injection. |
@@ -368,3 +375,4 @@ Any AI coding agent (c0wrk itself, Copilot, Cursor, etc.) working on this reposi
 | 2026-08-11 | 1.3     | Smart Approve: strict OWASP ASI (ASI01–ASI10) LLM judge can now automatically resolve effective `user_confirm` calls (opt-in, `security.smart_approve`, default off). Only a strict ALLOW skips UI; CONFIRM/timeout/error/unparseable always fall back to manual confirmation with the verdict reasoning shown and "Ask Agent" hidden. Workspace auto-approval retains priority; `always_allow`/`always_deny`/symlink-forced confirmation unchanged. Also fixes fail-closed behavior: nil `ConfirmFunc` now denies `user_confirm` execution instead of executing silently (aligns with the sp4rk engine invariant). Updated Known Risks to reflect the judge is no longer purely advisory when Smart Approve is enabled. |
 | 2026-08-15 | 1.4     | Tool-capability group policies (ADR-024): per-tool `security.tool_policies`/`security.default_policy` replaced by `security.groups.<group>.{policy, blacklist?}` over 8 declared groups (reserved `system` bypasses policy); skill-policy overrides and per-tool registry overrides removed (group policy is the single resolution layer); the legacy per-tool schema is removed outright — stale keys have no effect; judge reasons classified hard (blacklist/SSRF/symlink escape — never Smart Approve-passable) vs soft (path containment); subagent/verifier tool budgets keyed by group tokens. Rules 2/6 and the Authorization section updated. |
 | 2026-08-17 | 1.5     | Verify-on-edit (ASI09): documented the confirmation-free `registry.ExecuteUnattended` shell path used by the post-edit verification runner — opt-in (`executor.verify_on_edit.*`, default off), command sourced exclusively from user config, hard gates retained (blacklist, execute-group `deny`, hard safety reasons, required-field validation), HITL/advisory-judge steps deliberately skipped; the path must never serve model-initiated tool calls. |
+| 2026-08-20 | 1.6     | Expanded the threat model and contributor rules for clipboard/native-drop attachments, bounded vector ingestion, prompt-discovered workdirs, implicit temp roots, resumable pause/subagent trajectories, and experimental RESEARCH artifacts/watchers; recorded the unified Conductor prompt-path invariant. |

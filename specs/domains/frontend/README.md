@@ -7,7 +7,7 @@ React 19 application providing the user interface for c0wrk: chat interaction, p
 ## Key Files
 
 - `frontend/src/App.tsx` — root component
-- `frontend/src/stores/` — Zustand state management (19 stores)
+- `frontend/src/stores/` — Zustand state management (22 stores)
 - `frontend/src/hooks/` — custom React hooks (event handlers, data loading)
 - `frontend/src/api/` — backend RPC wrapper layer
 - `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config + local image resolution, local file link detection, CodeMirror extensions)
@@ -42,6 +42,8 @@ interface ProjectInfo {
   workspace_path: string
   is_external: boolean
   is_no_project: boolean
+  research_root: string
+  is_research: boolean
   created_at: string
   last_active_at: string
 }
@@ -84,13 +86,14 @@ Note: Wails auto-generates TypeScript types from Go structs using snake_case JSO
 
 ## Layout
 
-Three-column panel layout (no router, single-page app):
+Three-column panel layout (no router, single-page app). The file viewer can be pinned as the classic in-flow third column or unpinned as an overlay above the chat; unpinned floating mode is the default.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  Sidebar (300px)  │  Main Chat Area  │  File Viewer (500px)      │
-│  collapsible→40px │                  │  collapsible→40px         │
-│                   │                  │  (only when files open)   │
+│  Sidebar (persisted) │  Main Chat Area  │  File Viewer           │
+│  collapsible→40px    │                  │  pinned: docked column │
+│                      │                  │  unpinned: chat overlay│
+│                      │                  │  (collapses→40px rail) │
 │  ┌─────────────┐  │  ┌────────────┐  │  ┌─────────────────────┐ │
 │  │ Project sel │  │  │ Pinned msg │  │  │ Tab bar             │ │
 │  │ Session sel │  │  │ Message    │  │  │ File content        │ │
@@ -104,7 +107,9 @@ Three-column panel layout (no router, single-page app):
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Resize handles (4px) between panels. Panel states persisted via localStorage.
+Resize handles (4px) sit between in-flow panels and on the floating viewer's left edge. Sidebar width/collapse, viewer width/collapse, and viewer pin preference persist through Zustand `persist`/localStorage. The unpinned expanded viewer is a right-aligned absolute overlay over the chat, auto-collapses when pointer or keyboard focus moves outside it, and leaves a 40px in-flow rail for reopening; pinning keeps it as a permanently docked, resizable column.
+
+The native desktop window separately persists validated width, height, and maximized state in `~/.c0wrk/window_state.json`. Frontend resize events debounce `PersistWindowBounds`; desktop shutdown performs a final best-effort save, and the next process launch uses valid stored dimensions (falling back to defaults for missing, malformed, or below-minimum values).
 
 ### Sidebar header
 
@@ -164,6 +169,9 @@ Project switching is orchestrated by `useProjectSwitchState`: it saves source-pr
 - `lastRealProjectId` always tracks the most recent non-No-Project project activated (updated in `setActiveProjectId` when switching to a real project; preserved when switching to No Project)
 - CHAT/CODE toggle switches projects via `switchProject()`; CHAT selects No Project, CODE selects `lastRealProjectId` (or first real project if the last one was deleted)
 - All projects created through the CreateProjectDialog always require an external workspace directory; internal workspaces are reserved for No Project auto-creation
+- An unpinned expanded file viewer overlays the chat and auto-collapses on outside pointer/focus; a pinned viewer remains an in-flow resizable column
+- Collapsing an unpinned viewer preserves the unpinned preference and renders a 40px in-flow reopen rail
+- Persisted desktop window dimensions are accepted only at or above the minimum usable size; invalid state falls back to defaults
 
 ## Configuration
 
@@ -176,8 +184,9 @@ Frontend configuration is derived from backend (no separate frontend config file
 | `GetLogLevel()` RPC            | log level          | Console/log verbosity      |
 | `GetSecuritySettings()` RPC    | `security.groups`  | Tool-group policy UI state (per-group policy + execute blacklist, ADR-024) |
 | `ListSkills()` RPC             | skills             | `/skill` autocomplete      |
-| `localStorage`                 | panel widths       | Persistent layout          |
-| `localStorage`                 | collapsed states   | Sidebar/file viewer state  |
+| `localStorage`                 | sidebar width + collapsed state | Persistent left-panel layout |
+| `localStorage`                 | file-viewer width + collapsed + pinned state | Persistent docked/floating right-panel layout |
+| `~/.c0wrk/window_state.json`   | window width, height, maximized | Native desktop geometry across process restarts |
 | `localStorage`                 | execution mode     | Normal/advanced toggle     |
 | `localStorage`                 | selected model     | Per-message model override |
 

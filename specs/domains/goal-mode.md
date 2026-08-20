@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Goal mode is a multi-turn, agent-driven execution loop that pursues a single user-approved success condition to completion. Instead of a single route→Conductor pass that finishes when the agent calls `finish`, a goal request derives a crisp {condition, verify} pair (with user sign-off), then iterates the Conductor turn-by-turn until the agent **declares the goal met**, the **budget is exhausted**, the agent goes **idle (anti-spin)**, or the task is **paused** (a session-level control; see [Pause is Session-Level](#pause-is-session-level)). Goal mode is selected by a leading `/goal` command or an explicit goal flag (e.g. a UI toggle) on any message — including a continuation message, in which case the goal loop runs on the restored blackboard of the prior task (see [Mechanism](#mechanism)).
+Goal mode is a multi-turn, agent-driven execution loop that pursues a single user-approved success condition to completion. Instead of a single route→Conductor pass that finishes when the agent calls `finish`, a goal request derives a crisp {condition, verify} pair (with user sign-off), then iterates the Conductor turn-by-turn until the agent **declares the goal met**, the **budget is exhausted**, the agent goes **idle (anti-spin)**, or the task is **paused** (a session-level control; see [Pause is Session-Level](#pause-is-session-level-universal-pause-signal)). Goal mode is selected by a leading `/goal` command or an explicit goal flag (e.g. a UI toggle) on any message — including a continuation message, in which case the goal loop runs on the restored blackboard of the prior task (see [Mechanism](#mechanism)).
 
 ## Key Files
 
@@ -19,7 +19,7 @@ Goal mode is a multi-turn, agent-driven execution loop that pursues a single use
 - `backend/config/config.go` / `backend/config/defaults.go` — `GoalLoopConfig.Verification` (`independent` default | `off`), validated in `Validate`
 - `desktop/startup_phases.go` — `goalProposerAdapter` (the desktop `GoalProposer` that emits `goal_proposal` and blocks for the user response)
 - `desktop/startup.go` — goal-proposal pending map, `goal_proposal_response` event handler, goal-proposal resolver wiring
-- `backend/frontend_api_session.go` — session-level RPC surface: `PauseSession(sessionID)` / `ResumeSession(sessionID, nudge, modelOverride, reasoningEffort)` (the universal pause/resume controls — apply to **all** tasks, goal and non-goal alike)
+- `backend/frontend_api_session.go` — session-level RPC surface: `PauseSession(sessionID)` / `ResumeSession(sessionID, modelOverride, reasoningEffort, nudge)` (the universal pause/resume controls — apply to **all** tasks, goal and non-goal alike)
 - `backend/frontend_api_goal.go` — RPC surface: `ConfirmGoal`/`CancelGoal`; `ConfirmGoal` forwards the user-approved `verificationMode` through the proposal resolver
 - `backend/session/manager_execution.go` — `PauseSession` (delegates to `Orchestrator.PauseSession`), `ResumeSession` (delegates to `ResumeTask`), `hasPausedUnfinishedTask` (the SendMessage nudge-resume router), `SessionRuntimeStatus.Paused`, the `session_paused`/`session_resumed` emissions
 - `backend/session/manager_goal.go` — `SetGoalProposalResolver`, `ResolveGoalProposal`
@@ -236,7 +236,7 @@ Both directives share the `{goal_condition}`/`{goal_verify_clause}`/`{reported_e
   therefore a session-level control, not a goal-status transition.
 ```
 
-The `GoalStatus` enum retains a `paused` value for legacy/defensive use, but the production cooperative-pause path no longer transitions a goal to `paused` — it is a **task-level** checkpoint that leaves the goal `active` (see [Pause is Session-Level](#pause-is-session-level)). Terminal states (`met`, `exhausted`, `cancelled`) are never re-entered — `Resume` guards on `IsTerminal()` before delegating to `resumeGoalLoop`. `blocked_idle` is resumable: a blocked goal is re-activated to `active` on resume so the `for gs.Status == active` guard enters the loop.
+The `GoalStatus` enum retains a `paused` value for legacy/defensive use, but the production cooperative-pause path no longer transitions a goal to `paused` — it is a **task-level** checkpoint that leaves the goal `active` (see [Pause is Session-Level](#pause-is-session-level-universal-pause-signal)). Terminal states (`met`, `exhausted`, `cancelled`) are never re-entered — `Resume` guards on `IsTerminal()` before delegating to `resumeGoalLoop`. `blocked_idle` is resumable: a blocked goal is re-activated to `active` on resume so the `for gs.Status == active` guard enters the loop.
 
 ## Budgets
 
@@ -318,7 +318,7 @@ The goal budget is **turn-only**. There are no config-level token or wall-clock 
 - **Verification is mode-driven.** *How* "done" is checked is set per goal (`GoalState.VerificationMode`, chosen at derivation, editable at approval): `executable` (default) re-runs a runnable verify clause (`verifierToolFilter`); `re_derivation` delegates a fresh read-only run of the goal's process (`verifierReDerivationToolFilter`). Both modes are read-only — every mutating tool and every goal-control tool is excluded, so `declare_verification` is the verifier's only output channel. The mode takes effect only while the global gate is `independent`.
 - **A `"met"` rejected by the verifier can never terminate the goal as met.** Only a *confirmed* claim (or `verification: off`, or the nil-verifier seam) terminates as `met`; a rejected/non-declaring claim synthesizes a `not_met` verdict, feeds the reason back into the next agent turn, and continues the loop without re-incrementing the turn counter.
 - Anti-spin: a turn with **zero tool calls AND no verdict** halts as `blocked_idle`.
-- **Pause is session-level, not goal-level.** A cooperative `PauseSession` persists the **task** as paused (mid-turn, at the next step boundary) but leaves the **goal** `active`; `ResumeSession` re-enters `resumeGoalLoop` under the same goal. The universal pause signal is installed fresh per request and cleared on exit, so a stale signal never affects a future request. See [Pause is Session-Level](#pause-is-session-level).
+- **Pause is session-level, not goal-level.** A cooperative `PauseSession` persists the **task** as paused (mid-turn, at the next step boundary) but leaves the **goal** `active`; `ResumeSession` re-enters `resumeGoalLoop` under the same goal. The universal pause signal is installed fresh per request and cleared on exit, so a stale signal never affects a future request. See [Pause is Session-Level](#pause-is-session-level-universal-pause-signal).
 - The loop holds the single-flight guard for its entire multi-turn run; `PauseSession` releases it by breaking out (mid-turn, at the next step boundary).
 - Terminal goal states (`met`, `exhausted`, `cancelled`) are never re-entered; `Resume` guards on `IsTerminal()`.
 - The `GoalState` is persisted best-effort; a persistence failure never propagates (degrades only resumability).

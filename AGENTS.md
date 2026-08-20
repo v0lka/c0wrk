@@ -29,7 +29,7 @@ Detailed system specs live in `specs/`. Before making structural changes, read t
 ## Project shape
 
 - Go module: `github.com/v0lka/c0wrk` (root: `core/`, `backend/`, `desktop/`, `frontend/`). Binary/app name is `c0wrk-desktop` (see `wails.json`).
-- Entry point: `main.go` → `desktop.NewApp()` → Wails runs with `OnStartup = app.Startup` (`desktop/startup.go`).
+- Entry point: `main.go` → `desktop.NewApp()` → Wails runs with `OnStartup = app.Startup` (`desktop/startup.go`). Build metadata is injected into `core/version` by Makefile/release `-ldflags` (`Version`, `GitCommit`, `BuildDate`).
 - Go `1.26.3` (single root module; `go.mod` at repo root). Frontend uses React 19, Tailwind v4, Vite 6, TS ~5.7.
 
 ### Layered architecture (import direction matters)
@@ -48,10 +48,12 @@ Rule enforced by layout: `backend/` and `desktop/` import `core` directly. `core
 Use the Makefile; it handles platform-specific ONNX Runtime bootstrap across the single root Go module and the frontend:
 
 - `make test` — `go test ./...` (root) + `cd frontend && npm test` (vitest)
-- `make lint` — `golangci-lint run` (root) + `cd frontend && npm run lint` (config at `.golangci.yml`, v2 schema)
-- `make build` — installs frontend deps, runs `wails build`, then `make fetch-onnx` + `make fetch-embedding-model`
+- `make lint` — `make fmt-check` + `golangci-lint run` (root) + `cd frontend && npm run lint` (config at `.golangci.yml`, v2 schema)
+- `make fmt-check` — fails when `gofmt -l` reports any Go file under the root package, `internal/`, `core/`, `backend/`, or `desktop/`
+- `make build` — installs frontend deps, runs `wails build` with version ldflags, then `make fetch-onnx` + `make fetch-embedding-model`
 - `make dev-desktop` — Vite dev server only (`cd frontend && npm run dev`); for full hot-reload use `wails dev` from repo root
-- `make fetch-onnx` — downloads ONNX Runtime 1.24.1 into `.cache/` and copies into `build/bin/c0wrk-desktop.app/Contents/MacOS/`. **Required after every `wails build`** or the app won't launch.
+- `make fetch-onnx` — downloads ONNX Runtime 1.24.1 into `.cache/` and copies it into the platform build output. **Required after every direct `wails build`** or the app won't launch.
+- `make bump` — resolves the latest `github.com/v0lka/sp4rk` remote commit and updates the module with `GOWORK=off`; use only at the release point of a cross-repo development cycle
 - `make clean` — removes `build/bin`, `.cache`, `frontend/dist`
 
 Frontend-only: `cd frontend && npm run lint | build | dev | test`. Frontend tests use **vitest** (`npm test` / `npm run test:watch`); test files live alongside source (`*.test.ts`).
@@ -64,12 +66,17 @@ Frontend-only: `cd frontend && npm run lint | build | dev | test`. Frontend test
 
 ## Config & runtime
 
-- Runtime config lives at `~/.c0wrk/config.yaml` (default dir constant `config.DefaultAgentDir = ".c0wrk"`). Copy from `config.example.yaml` — it is the authoritative reference for every tunable (LLM providers, executor loop caps, compaction thresholds, tool limits, timeouts, security policies, small-LLM profile).
-- **Small-LLM profile** (`small_llm.*`): an optional, manual-only set of optimizations for running on small/local models — tool-set narrowing (`essential_tools`), system-prompt Lite swap (`system_prompt`), sampling override (`sampling`), loop-hardening (`loop_hardening`), and context-management overrides (`context`). Each variant is gated by BOTH the master `enabled` toggle and its own sub-toggle; the whole profile is a no-op when the master toggle is off (default). Editable at runtime via `GetSmallLLMConfig`/`UpdateSmallLLMConfig`. See `specs/domains/small-llm.md` and `specs/decisions/022-small-llm-profile.md`.
+- Runtime config lives at `~/.c0wrk/config.yaml` (default dir constant `config.DefaultAgentDir = ".c0wrk"`). `config.example.yaml` is the authoritative reference for every tunable (LLM providers, executor loop caps, compaction thresholds, tool limits, timeouts, security policies, Small-LLM profile, vector index, experimental features, updates).
+- **Experimental gate** (`experimental.enabled`, default false) is all-or-nothing. It gates RESEARCH and the entire Small-LLM profile; disabling it leaves stored per-feature config/artifacts intact but makes both features ineffective and hides their UI. `backend/frontend_api_research.go` owns RESEARCH activation, workspace containment, non-destructive skill seeding, watcher setup, and disable semantics.
+- **Small-LLM profile** (`small_llm.*`): an optional, manual-only set of optimizations for running on small/local models — tool-set narrowing (`essential_tools`), system-prompt Lite swap (`system_prompt`), sampling override (`sampling`), loop-hardening (`loop_hardening`), and context-management overrides (`context`). Each variant is gated by BOTH `experimental.enabled`, the profile's master `enabled`, and its own sub-toggle. Editable at runtime via `GetSmallLLMConfig`/`UpdateSmallLLMConfig`. See `specs/domains/small-llm.md` and `specs/decisions/022-small-llm-profile.md`.
+- **Verify-on-edit** (`executor.verify_on_edit`, default off) runs a config-authored command after each successful `write_file`/`edit_file` in CODE tasks and injects bounded output as a system observation. It is disabled for CHAT and goal turns. The command skips interactive confirmation because it is model-inaccessible config, but `ExecuteUnattended` still enforces required fields, disabled tools, execute-group `deny`, the shell blacklist, symlink/hard safety checks, and the `timeouts.bashMaxTimeout` ceiling. Never expose `ExecuteUnattended` to a model-facing path. See `specs/domains/verify-on-edit.md`.
+- `timeouts.llmRequestTimeout` governs main agent calls; `timeouts.serviceLLMRequestTimeout` separately bounds one-shot title, commit-message, and prompt-optimization calls. Keep service calls on the service timeout path.
 - Env vars in config are expanded as `${VAR}`. On macOS, `startup.go` calls `config.LoadShellEnvironment()` **before** any other init because Finder-launched apps don't inherit shell env — preserve this ordering if you touch `Startup`.
-- SQLite DB (via `modernc.org/sqlite`, a CGO-free pure-Go driver) defaults to `~/.c0wrk/database.db`. Wail-level file lock: a single `*sql.DB` is shared across `session`, `project` stores. Note: the *SQLite layer* is CGO-free; the desktop shell uses cgo for native OS bindings (macOS power-state, Windows clipboard) — neither touches untrusted input.
+- SQLite DB (via `modernc.org/sqlite`, a CGO-free pure-Go driver) defaults to `~/.c0wrk/database.db`. Wail-level file lock: a single `*sql.DB` is shared across `session`, `project` stores. The SQLite layer is pure Go; the desktop app is not globally CGO-free because native Wails/ONNX and platform integrations use native toolchains.
 - **External runtime deps**: There are no startup-hard dependencies. `git` is checked lazily on first CODE-mode project switch via `exec.LookPath` in `backend/frontend_api_project.go` — if missing, a `runtime_error` toast is shown and the switch is rejected. CHAT mode (No Project) never requires git. All other tools — `rg` (ripgrep), `uv`, `markitdown` — are managed by the tool-manager (`core/toolmanager/`) and auto-downloaded on first run to `~/.c0wrk/tools/`. See `specs/decisions/010-tool-manager.md`.
-- Vector index needs ONNX Runtime (fetched by `make fetch-onnx`) plus a quantized embedding model + tokenizer (fetched by `make fetch-embedding-model`). The embedder loads asynchronously after `EventBackendReady`; vector search RPCs return empty results until ready.
+- Vector index needs ONNX Runtime plus a quantized embedding model + tokenizer (both fetched by `make build`). The embedder loads asynchronously after `EventBackendReady`. Indexing respects `.gitignore`/`.aiignore`, `vector_index.max_file_size`, `max_chunk_size`, and `max_chunks_per_file`; files that exceed safety limits are skipped rather than partially embedded. Search supports hybrid/vector/lexical modes, and the file viewer's **Find similar** action searches selected text.
+- PTYs are keyed by session in `core/terminal.Manager`; switching sessions preserves each live terminal. DeleteSession stops that session's PTY, while app shutdown calls `StopAll`. Window geometry is persisted by `desktop/window_state.go`; frontend panel/viewer state uses Zustand persistence.
+- In-app updates are controlled by `updates.enabled`, `updates.auto_check`, and `updates.check_interval`. Release archives are checked fail-closed against `SHA256SUMS`, staged via the two-process `--self-update` flow, and installed with a `.old` rollback tree. Artifacts remain unsigned: SHA256 verifies bytes, not release authorship. See ADR-023 and `SECURITY.md`.
 
 ## Conventions & gotchas
 
@@ -80,7 +87,7 @@ Frontend-only: `cd frontend && npm run lint | build | dev | test`. Frontend test
 - **Subagent Profiles**: a specialized subagent persona/budget is a markdown file at `<workspace>/.agents/agents/<name>/AGENT.md` (the `AgentsRelativePath = ".agents/agents"` constant in `core/pathsegments.go`, paralleling `.agents/skills/` for skills). YAML frontmatter declares `name` (must match dir), `description`, and optional `tools` (`all` default | `read-only` | comma-list of tool-group tokens: `execute, local-read, local-write, remote-read, remote-write, local-mcp, remote-mcp, system` — the `system` group is always included on top; unknown tokens fail closed, ADR-024), `max-steps`, `model`, `allow-redelegate`, `hidden`, `color`; the body is the agent's core directive (it replaces the orchestrator system prompt at delegation time via `buildSpecializedSystemPrompt`). Parsed/managed by the self-contained `github.com/v0lka/sp4rk/agents` package (`AgentManager`, `ParseAgent`); applied in `core/conductor.go` `buildSubAgentTask`. Two targeting modes: (1) **explicit `#agent-name` mention** — the user types `#code-reviewer`, the frontend extracts it (`lib/parseReferences.ts` `extractAgentRefs`), `sendMessage` threads it as `activeAgents` (arg 4 → Go `SendMessage` arg 4 → `HandleOptions.UserAgents`), `PreprocessMessageText` strips the ref, and `enrichAgentContext` attaches it as a `## Requested Subagents` directive the Conductor MUST delegate to; (2) **implicit/discovery** — a non-empty catalog renders `## Available Subagents` so the Conductor may delegate via `delegate(agent: "name")` at its discretion. `#` is used (not `@`) because `@` is the file-ref trigger and `@file#L20` line anchors must not collide; `#review`, `/review`, `@review` are three distinct refs. Plan steps target an agent via `declare_plan`'s per-step `agent` field (`PlanStep.Agent` survives JSON restore + the blackboard `copyPlan` fix). See [ADR-021](specs/decisions/021-subagents.md).
 - **Prompts are data**: markdown files under `core/prompts/` are embedded via `prompts.go` in the same dir. Tests verify every `.md` file is referenced — update both when adding/removing a prompt.
 - **Generated Wails bindings** at `frontend/wailsjs/go/desktop/App.{js,d.ts}` are regenerated by `wails build` / `wails dev` from the methods on `desktop.App`. Don't hand-edit them; if they drift, rebuild.
-- **Desktop API surface**: `*desktop.App` embeds `*backend.FrontendAPI`; promoted methods are visible to the Wails binding generator. Frontend-callable methods are split across `backend/frontend_api_*.go` files by area (`agents`, `attachment`, `config`, `git`, `goal`, `mcp`, `project`, `prompt`, `review`, `session`, `skills`, `terminal`, `vector`, `workdirs`, `workspace`). New frontend-callable methods go in the matching `backend/frontend_api_*.go`.
+- **Desktop API surface**: `*desktop.App` embeds `*backend.FrontendAPI`; promoted methods are visible to the Wails binding generator. Frontend-callable methods are split across `backend/frontend_api_*.go` files by area (`agents`, `attachment`, `config`, `git`, `goal`, `mcp`, `project`, `prompt`, `research`, `review`, `session`, `skills`, `terminal`, `updater`, `vector`, `workdirs`, `workspace`). New frontend-callable methods go in the matching `backend/frontend_api_*.go` and frontend calls go through `frontend/src/api/*`, never directly to generated bindings.
 - **Security/tool policies** are enforced in `core/builder.go` → `applySecurityPolicies` from `config.Security.Groups` (`security.groups.<group>.{policy, blacklist?}` — per-capability-group policies, ADR-024; short enum `allow`/`user_confirm`/`deny`; mutating groups default to `user_confirm`; blacklist patterns must compile and are execute-only). Pending confirmations flow through `App.pendingConfirmations` sync.Map back to the UI.
 - **Path logic centralization**: All filesystem-path construction and containment validation must go through the centralized path API:
   - `github.com/v0lka/sp4rk/pathutil/` — pure algorithmic primitives (`IsWithinPath`, `SplitPathComponents`, `ResolveExistingPrefix`). Zero project-specific knowledge. Usable from any layer.
@@ -133,14 +140,14 @@ React 19 + TypeScript ~5.7 + Vite 6 + Tailwind CSS v4 + Zustand 5. UI primitives
 
 ### Layout
 
-Three-column panel layout (no router): Sidebar (default innerWidth/5, clamped 180-500px, collapsible to 40px) | Main Chat Area | File Viewer (width persisted, clamped 250-900px, collapsible to 40px). Resize handles between panels (4px `w-1`/`h-1`, drag + keyboard). File viewer only visible when files are open. Sidebar and file viewer states persist via `localStorage`.
+Three-column panel layout (no router): Sidebar (persisted width, clamped 180-500px, collapsible to 40px) | Main Chat Area | File Viewer. The viewer is unpinned/floating by default for fresh installs, can be pinned into the docked column, persists width/collapse/pin state, and auto-collapses when an unpinned viewer has no tabs. Window geometry is persisted by the desktop backend. Resize handles support drag + keyboard.
 
 ### Communication with Go backend
 
-1. **RPC**: `window.go.desktop.App.*` — async promise-based calls for CRUD and data fetching.
-2. **Events**: `window.runtime.EventsOn/EventsEmit` — real-time streaming during task execution.
-   - **Session-scoped** events: `session:${sessionId}:${eventType}` (41 event types for task lifecycle).
-   - **Global** events: `startup_error`, `runtime_error`, `backend:ready`, `projects:loaded`, `sessions:loaded`, `project:*`, `session:renamed`, `workspace:tree_changed`, `skills:changed`, `git:status_changed`, `vector_index:status`, `tool_manager:start`, `tool_manager:progress`, `tool_manager:done`, `workdirs:changed`.
+1. **RPC**: wrappers in `frontend/src/api/*` call `window.go.desktop.App.*` and validate boundary data.
+2. **Events**: wrappers around `window.runtime.EventsOn/EventsEmit` carry real-time execution and desktop state.
+   - **Session-scoped** events: `session:${sessionId}:${eventType}` for task lifecycle, pause/resume, HITL, attachments, metrics, and terminal output.
+   - **Global** events include startup/runtime readiness and errors, projects/sessions/workspace/git/vector/tool-manager/workdirs state, `files:dropped`, `research:*`, and `update:*`. Treat `specs/contracts/event-catalog.md` as the authoritative catalog instead of maintaining a numeric count here.
 
 ### State management (Zustand stores)
 
@@ -151,18 +158,23 @@ Three-column panel layout (no router): Sidebar (default innerWidth/5, clamped 18
 | `sessionStore`       | Session list (sorted by last_active_at), active session ID                                     |
 | `projectStore`       | Project list (sorted by last_active_at), active project ID                                     |
 | `fileTreeStore`      | Lazy-loaded directory tree, expanded dirs, search entries, git status                          |
-| `fileViewerStore`    | Open files (content/diff/language), tabs, panel width, collapsed state                         |
+| `fileViewerStore`    | Open files/content/diff/language, tabs, panel width, collapsed/pinned state                     |
 | `inputModeStore`     | Chat/terminal input mode, panel height, expanded state (persisted)                             |
 | `gitPanelStore`     | Git panel: branch info (ahead/behind), merge/rebase state (persisted)                          |
 | `blackboardStore`    | Blackboard facts and metadata for current session                                              |
 | `settingsStore`      | Settings modal open/close, active tab                                                          |
 | `uiStore`            | Sidebar collapsed state, log level                                                             |
 | `themeStore`         | App theme (`dark` \| `light`), persisted; writes `data-theme` to `<html>`                       |
+| `soundStore`         | Persisted master toggle for synthesized foreground/background notification sounds               |
 | `vectorIndexStore`   | Vector index status/progress                                                                   |
 | `goalStore`          | Goal lifecycle: pending proposal (condition/verify/clarification), status verdict, progress    |
 | `reviewStore`        | Review / human-in-the-loop prompts (plan review, review_prompt items)                         |
 | `attachmentsStore`   | Message attachments (per-session file list, per-file failure tracking)                         |
 | `workDirsStore`      | Additional working directories (multi-repo workspace roots)                                    |
+| `experimentalStore`  | Effective Experimental Features gate exposed by runtime config                                  |
+| `researchStore`      | Experimental research status, hypothesis graph, metrics, active front, and report state          |
+| `updateStore`        | Running version, update availability/download progress, skipped/error state                     |
+| `terminalRegistryStore` | App-lifetime per-session terminal instances; session switches do not destroy PTYs             |
 
 Cross-component scroll coordination uses a React context (`ScrollContext.tsx`), not a Zustand store.
 
@@ -177,11 +189,15 @@ Cross-component scroll coordination uses a React context (`ScrollContext.tsx`), 
 
 - **Sidebar**: Project selector + session selector (dropdowns with context menus, inline rename, search for 5+ sessions) + file tree workspace panel.
 - **Chat Area**: Pinned last user message (sticky, collapsible) + scrollable message list + smart auto-scroll (50px threshold, "New activity" pill) + activity indicator.
-- **Chat Input**: Auto-resize textarea (max 6 lines), Enter sends / Shift+Enter newline, auto-creates session if needed, cancel button during task.
+- **Chat Input**: Auto-resize textarea, Enter sends / Shift+Enter newline, auto-creates a session if needed, and switches the main action between pause/resume/send according to runtime state. Picker, clipboard paste, and native `files:dropped` all stage through the same attachment pipeline with vision gating.
 - **Pending Actions Bar**: Sticky bar for unresolved prompts — tool confirmations (allow/deny/judge), ask-user multi-question forms, step limit, resume after failure.
 - **Execution Panels**: Collapsible plan view with DAG graph (SVG, lane allocation) + item list, click-to-scroll to chat.
 - **Git Panel**: CODE-mode panel with three tabs — Changes (staging/unstaging, per-file + per-hunk), Branch (checkout/create/delete, stash, merge/rebase), and a unified History tab. The History tab merges the former separate History + Graph views into one: an SVG lane gutter (`GitGraphGutter.tsx`) alongside virtualized commit rows (`GitHistoryRow.tsx`, `@tanstack/react-virtual`). Data comes from a single `getGitHistory()` call (replacing the former `GetCommitLog`/`GetGitGraph` pair); each `GitHistoryCommit` carries both log fields (author/email/date/message) and graph topology (parents/refs). Pure render logic (lane geometry, node offsets, edge routing constants) lives in `gitGraphRender.ts` — no React/DOM deps, fully unit-testable; the lane layout algorithm (`computeGraphLayout`/`computeRowYLayout`) lives in `lib/gitGraphLayout.ts`. Commits expand inline to show changed files (fetched lazily via `GetCommitFiles`); a shared glob/regex `FilterBar` narrows the list to commits that touched matching files (the lane graph is hidden while filtering). Right-click a commit for tag management and reset-to-this-commit (`GitHistoryContextMenu.tsx`).
-- **File Viewer**: Tab bar + syntax-highlighted content + unified diff overlay (character-level) + markdown preview toggle. Auto-refreshes on `workspace:tree_changed`. Binary detection (null bytes in first 8KB). State persisted to localStorage.
+- **File Viewer**: Floating-by-default or pinned panel with persistent tabs/width/state, syntax-highlighted content, unified diff overlay, markdown preview, strict sanitized Mermaid rendering with pan/zoom, and a context-menu **Find similar** action for selected text. Auto-refreshes on `workspace:tree_changed`; binary detection checks null bytes in the first 8KB.
+- **Terminal**: `TerminalPanel` binds to an app-lifetime registry keyed by session ID; switching sessions preserves each PTY and its frontend instance. Explicit stop, session deletion, or app shutdown ends it.
+- **Research Panel**: Experimental workspace-contained hypothesis graph/metrics view. It is visible only while `experimental.enabled` is effective and refreshes from lightweight `research:*` events.
+- **Update UI**: `UpdateToast` and settings consume `update:*` events and `updateStore`; checks are best-effort and never block startup, while download/apply errors remain explicit.
+- **Notifications**: `useSoundEvents` handles active-session lifecycle sounds; `useBackgroundSessionWatcher` covers completion/attention events from other sessions without double-playing the foreground event.
 
 ### Design system
 
@@ -207,4 +223,4 @@ Session event handler subscribes to all session-scoped events on session change.
 
 ## Pre-PR checklist
 
-`make build` → `make lint` → `make test`. All three must be clean. CI (`.github/workflows/ci.yml`) runs the same build/lint/test matrix (Linux + macOS) on push and PR to `main`; local verification is the gate before pushing.
+`make build` → `make lint` → `make test`. All three must be clean. CI (`.github/workflows/ci.yml`) runs the corresponding build/lint/test matrix on Linux, macOS, and Windows for pushes and PRs to `main`; local verification is the gate before pushing.

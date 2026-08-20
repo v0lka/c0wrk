@@ -21,6 +21,9 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/session/task_adapter.go` — task step/fact/attachment adapter for persistence
 - `backend/session/manager_attachment.go` — file attachments: `AttachFiles`/`RemovePendingAttachment`/`GetSessionAttachments`, pending-attachment staging (documents + images), `attachments:changed` emission, image metadata persistence/restore
 - `backend/session/image_processor.go` — image decode/resize/re-encode/thumbnail (png/jpeg/gif/webp via stdlib + `golang.org/x/image/webp`)
+- `backend/session/clipboard.go` — cross-platform clipboard probe precedence (image → file URLs → text) and attachment staging
+- `frontend/src/hooks/useFileDrop.ts` — native `files:dropped` subscription, drag overlay, and webview-navigation suppression
+- `frontend/src/hooks/useStageAttachments.ts` — shared picker/drop attachment staging with vision filtering
 - `backend/frontend_api_attachment.go` — FrontendAPI attachment RPC surface
 - `core/markitdown/converter.go` — markdown conversion of attached files (shells out to the managed `markitdown` CLI, ADR-010)
 - `backend/session/title.go` — auto title generation via LLM
@@ -179,6 +182,12 @@ SendMessage flushes pending attachments:
 
 Image attachments survive a backend restart. Before `SendMessage` snapshots and clears the pending image list, the frontend API persists a compact metadata blob (`StoredImagesMetadata`, thumbnail data URI + on-disk path — never the full base64) into `ChatMessage.Metadata`. On lazy session restore the image files are read from disk and re-encoded into `ContentBlock`s, matching what the live session saw.
 
+#### Clipboard and Native File Drop
+
+Clipboard paste is resolved by `PasteFromClipboard(sessionID, supportsVision)` in strict precedence order: image, copied file URLs, then plain text. A failed platform probe is logged and treated as absent so the next representation can be tried. An image present at the highest-priority representation returns an image result (or the explicit non-vision error) rather than falling through to lower-priority file/text representations. Copied files route through the same `AttachFiles` processing as the picker; plain text is returned to the editor without creating an attachment.
+
+Native file drop is the sole path-delivery mechanism for drag-and-drop. Wails emits the global `files:dropped {paths, x, y}` event while webview-native file navigation is disabled. In chat input mode, `useFileDrop` validates the event and sends its paths through `useStageAttachments`, the same staging/vision-filtering pipeline used by the picker. Document files stage regardless of model capability; image paths are rejected before backend staging when the effective model lacks vision. HTML5 drag events only drive the overlay and call `preventDefault`; their `dataTransfer` is never trusted as the filesystem-path source.
+
 ### Plan Review
 
 Plan review is **not** a pipeline stage — under ADR-012 (Conductor pipeline) it is a tool call (`declare_plan`, `core/tools/declare_plan.go`) invoked by the Conductor at a point of its own choosing. The tool has two modes:
@@ -253,7 +262,7 @@ persisted non-terminal `GoalState` is loaded and passed to
 - A cooperative session-pause leaves the goal `active` (pause is task-level), so on resume the turn loop's `for gs.Status == active` guard enters directly; a `blocked_idle` goal is re-activated to `active` first. The prior trajectory is seeded into the first resumed turn only (subsequent turns rely on the Conductor's accumulated trajectory).
 - The universal pause signal is installed fresh for the resumed request (`installPauseSignal`) and cleared on exit, so a stale signal from the prior run cannot affect a future request.
 
-See [goal-mode.md](goal-mode.md) for the full goal-mode lifecycle, budgets, anti-spin, and the [Pause is Session-Level](goal-mode.md#pause-is-session-level) section.
+See [goal-mode.md](goal-mode.md) for the full goal-mode lifecycle, budgets, anti-spin, and the [Pause is Session-Level](goal-mode.md#pause-is-session-level-universal-pause-signal) section.
 
 `recordResumeOutcome` appends **only the assistant side** of the resumed
 execution to the in-memory conversation history — no user/assistant pair is
@@ -340,7 +349,7 @@ User clicks "Cancel"
 
 ### Session Pause / Resume / Nudge
 
-Pause/resume is a **session-level** control that applies uniformly to **all** tasks — goal and non-goal alike. There is no goal-specific pause; the universal pause signal (`Orchestrator.activePause`) is read by every conductor run's pause-checker at each step boundary. See [goal-mode.md § Pause is Session-Level](goal-mode.md#pause-is-session-level).
+Pause/resume is a **session-level** control that applies uniformly to **all** tasks — goal and non-goal alike. There is no goal-specific pause; the universal pause signal (`Orchestrator.activePause`) is read by every conductor run's pause-checker at each step boundary. See [goal-mode.md § Pause is Session-Level](goal-mode.md#pause-is-session-level-universal-pause-signal).
 
 **Pause (cooperative, mid-turn):**
 
@@ -367,7 +376,7 @@ A cooperative pause is a **clean checkpoint, not a degraded completion** — the
 
 ```
 User clicks "Resume" (optionally with model/reasoning-effort overrides)
-  → Frontend: resumeSession(sessionId, nudge="", modelOverride, reasoningEffort)
+  → Frontend: resumeSession(sessionId, modelOverride, reasoningEffort, nudge="")
   → Backend: FrontendAPI.ResumeSession()
       └─ Manager.ResumeSession() → ResumeTask()
           └─ loads unfinished task + persisted state (trajectory, goal state)
@@ -375,7 +384,7 @@ User clicks "Resume" (optionally with model/reasoning-effort overrides)
           └─ orchestrator.Resume → resumeGoalLoop (goal task) or plain Conductor
 ```
 
-`ResumeSession(sessionID, nudge, modelOverride, reasoningEffort)` delegates to `ResumeTask`. The optional `nudge` is injected as a trailing user message into the first resumed turn (one-shot). An empty nudge resumes silently from the checkpoint. `session_resumed` clears the UI's paused state (complementary to `session_paused`).
+`ResumeSession(sessionID, modelOverride, reasoningEffort, nudge)` delegates to `ResumeTask`. The optional `nudge` is injected as a trailing user message into the first resumed turn (one-shot). An empty nudge resumes silently from the checkpoint. `session_resumed` clears the UI's paused state (complementary to `session_paused`).
 
 **Nudge-resume (sending a message into a paused session):**
 
@@ -464,6 +473,12 @@ execution state. The guard runs on the backend (authoritative); the frontend
 also disables the fork button preemptively via the session's
 `has_unfinished_task` flag and the live active status.
 
+### Per-Session Terminal Lifetime
+
+The terminal manager owns at most one PTY per session ID. Switching the active session or project does not stop that PTY: the frontend keeps one xterm instance per session, and `StartTerminal(sessionID)` treats an already-active PTY as a successful reattach. Input, resize, output events, and command history remain session-keyed, so concurrent terminal sessions do not cross streams.
+
+`StartTerminalInDir` is the explicit restart path: the requested working directory must be contained in the session workspace, then any existing PTY for that session is stopped and replaced. `StopTerminal` ends only the named session's PTY. Application shutdown calls the terminal manager's global stop through backend cleanup; terminal processes do not outlive the app.
+
 ### Session Persistence
 
 Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/session/persistence.go` and `backend/project/persistence.go`:
@@ -508,6 +523,7 @@ The `backend/session/persistence.go` defines the `SessionStore` interface:
 | `LoadMessages(ctx, sessionID)`                               | Load all messages for session (ordered by created_at)            |
 | `DeleteMessages(ctx, sessionID)`                             | Delete all messages for session                                  |
 | `ResolvePendingMessage(ctx, sessionID, role, matchField, matchValue, extra)` | Patch metadata of the most recent matching HITL message (tool_confirm/ask_user/step_limit/plan_review) as resolved so it doesn't reappear as pending on reload |
+| `UpsertStepTodoUpdate(ctx, sessionID, stepID, msg)` | Replace/insert the persisted `step_todo_update` message for `stepID` (preserving id and created_at so the checklist keeps its stream position on reload); the Conductor emits one after every tool call, so upserting bounds `session_messages` growth |
 | `SaveTerminalCommand(ctx, sessionID, command)`               | Save terminal command to history                                 |
 | `LoadTerminalCommands(ctx, sessionID, limit)`                | Load most recent terminal commands                               |
 | `SaveSessionWorkDir(ctx, sessionID, rec)`                    | Insert a session-scoped work directory record                    |
@@ -661,6 +677,7 @@ type HandleResult struct {
 - Project switch session restore order is deterministic: valid saved session for destination project, otherwise latest destination session, otherwise new destination session
 - Destination project switch state always persists the resolved `saved_session_id` in `project_ui_state` when project persistence is wired
 - Messages are persisted immediately on receive (not after processing)
+- Archived sessions are read-only history: the session-manager choke point rejects both new `SendMessage` execution and failed/paused task resume until the session is unarchived
 - Task state is checkpointed on each step completion (enables resume)
 - Cancellation is cooperative (executor checks context at each iteration)
 - An unfinished task (`in_progress` or `failed`) is continued by the next user
@@ -701,13 +718,16 @@ type HandleResult struct {
   always followed by `task_failed_resumable` or a `service` warning — never
   delivered as a silent visual success (`Manager.emitTaskComplete`).
 - `GetSessionRuntimeStatus(sessionID)` exposes `{active,
-  has_unfinished_task, unfinished_task_id}`; the frontend calls it after
-  every history load to reconcile UI state (running flag, resume banner,
+  has_unfinished_task, unfinished_task_id, paused}`; the frontend calls it after
+  every history load to reconcile UI state (running/paused flags, resume banner,
   stale step_limit prompts) instead of defaulting to idle.
+- Clipboard paste resolves image → copied file URLs → plain text; platform probe failures fall through, while a present image remains authoritative even when vision support rejects it.
+- Picker and native-drop paths share `useStageAttachments`; native `files:dropped` supplies filesystem paths while HTML5 drag/drop is limited to overlay state and navigation suppression.
+- One PTY is active per session ID; session/project switches preserve it, `StartTerminal` reattaches, and only explicit stop/restart or application shutdown terminates it.
 - A `plan_review_ready` event (emitted by `declare_plan` await_approval) is persisted to `session_messages` (role `plan_review`) so it reappears in history after a restart; the pending plan approval is also surfaced via `GetPendingActions` (`desktop/pending_actions.go` `PlanApprovals`)
 - Plan files live at `~/.c0wrk/projects/<pid>/<sid>/plans/` (written by `declare_plan`); previous plan files are not deleted when the Conductor revises (request_changes) or abandons
 - `DeleteSession` closes all per-step dump files via `Orchestrator.Cleanup()` before closing the session-level log and dump files
-- `Shutdown` closes all per-step dump files for every active session via `Orchestrator.Cleanup()` before canceling and closing session resources
+- `Shutdown` marks shutdown before cancellation, waits for active task goroutines, then converts every still-`in_progress` active task to a persisted `paused` checkpoint; already failed/completed tasks retain their terminal state. It also closes all per-step dump files for every session via `Orchestrator.Cleanup()` before closing session resources.
 - Pending attachments are flushed into the blackboard exactly once on `SendMessage`: the session manager snapshots and clears `session.pendingAttachments`, then passes them via `HandleOptions.PendingAttachments` (both HandleMessage calls in `SendMessage` receive the same snapshot)
 
 ## Configuration

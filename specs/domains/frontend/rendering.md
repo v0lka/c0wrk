@@ -107,6 +107,16 @@ The `Markdown` component (`markdownConfig.tsx`) supplies custom `react-markdown`
 - **External URLs** — `http`/`https`/`mailto`/`ftp`/`data:` hrefs (`localFileLink.isExternalUrl`) are dispatched to the system browser via `openExternalURL` → `runtime.BrowserOpenURL` (`open` / `xdg-open` / Windows shell handler). The Wails webview has no default browser, so `<a target="_blank">` is either ignored or opens inside the webview, which cannot render arbitrary pages; clicks are intercepted (`preventDefault`) and routed through the native runtime instead.
 - **Local images** — a local `src` (relative or absolute disk path, not an external/data URL) is resolved to a base64 `data:` URL via the `ReadFileAsDataURL` RPC, because the webview cannot load `file://` or project-root-relative URLs. Candidates are tried in order (`markdownImageResolve.candidateImagePaths`): absolute `src` → single candidate; relative `src` → the markdown document's directory first, then the workspace root. A 1×1 transparent-PNG placeholder shows while loading or on failure (avoids the broken-image flicker). External/data `src` values pass through unchanged. Image embedding is a **file-viewer** feature: the file viewer passes `baseFilePath` + `workspaceRoot` to `Markdown`, chat rendering does not.
 
+### Mermaid Diagrams
+
+`MermaidBlock` lazy-loads Mermaid and renders assistant-controlled diagram source with `securityLevel: 'strict'` and SVG text labels (`htmlLabels: false`). Before insertion through `dangerouslySetInnerHTML`, DOMPurify applies the SVG/SVG-filter profiles, removing scripts, event handlers, foreign HTML, and any upstream sanitizer regressions. Theme changes rerender the diagram; render/import failures show the source in an error card rather than a blank canvas.
+
+The diagram canvas supports pointer-drag panning, cursor-centered wheel zoom, explicit zoom-in/zoom-out controls, a live percentage, and reset-to-fit. Fit never upscales above natural size; zoom remains clamped, and horizontal-dominant trackpad gestures are left to the browser. Temporary Mermaid render nodes and listeners are removed on source/theme change or unmount.
+
+### Plan Review Feedback
+
+A pending `plan_review` card offers Approve, Request Changes, Abandon, and Open in Viewer. Request Changes reveals a feedback textarea where Enter submits non-empty trimmed feedback and Shift+Enter inserts a newline, matching chat-input keyboard semantics. The decision and optional feedback travel through `plan_approval_response`; the card immediately records its settled decision locally and displays an error banner if emission fails.
+
 ### Chat Input Controls (Pause / Resume / Stop)
 
 The chat input toolbar (`ChatInputToolbar`) adapts its controls to the session's execution state, driven from `chatStore.taskActive` + `chatStore.paused`:
@@ -133,6 +143,8 @@ The goal status indicator (`GoalStatusIndicator`) is a **read-only** badge (icon
 - Streaming text renders in real-time without layout shift
 - Tool call and result are always rendered together (never orphaned)
 - Pending actions are always visible: unresolved action cards sink to the bottom of the chat stream (never scrolled out of reach while the user is at the bottom); resolved action cards settle at their stream position
+- Mermaid SVG always passes through strict Mermaid rendering and an SVG-only DOMPurify sink before DOM insertion; interactive pan/zoom transforms only the sanitized SVG container
+- Plan-review feedback submits on Enter only when non-empty; Shift+Enter always remains a newline
 - Component files are kept small as a target (~300 lines); complexity is managed by extracting sub-hooks/sub-components (see `ChatInput.tsx`). There is no enforced size cap — larger components (e.g. context menus, settings dialogs, modals) are accepted where splitting would reduce cohesion
 
 ## Error Handling
@@ -143,6 +155,7 @@ The goal status indicator (`GoalStatusIndicator`) is a **read-only** badge (icon
 - **Mermaid diagrams**: rendering failures are caught by the Mermaid error callback and displayed as an error snippet instead of a blank diagram; lazy loading failures produce a "Diagram unavailable" placeholder
 - **Streaming interruption**: streaming text lives per-session in `chatStore.streamingText[sessionId]`; it is flushed to a permanent message on `assistant_done` (`addMessage` + `clearStreamingText`), and any leftover streaming state is cleared on task lifecycle events (`task_complete`, `task_cancelled`)
 - **File viewer errors**: binary detection (null byte) returns a "binary file" notice; read failures from backend display the error message in the viewer pane
+- **Prompt optimization errors**: the editor keeps the user's original prompt, `attachmentsStore.promptOptimizeError` drives a dismissible warning banner, and a later Optimize action starts a fresh pipeline after backend rewrite/call retries are exhausted
 - **Local image resolution**: each candidate path is tried in order; a failed `ReadFileAsDataURL` falls through to the next candidate, and if all fail the original `src` is used as-is (which cannot load in the webview, matching prior behavior). Resolution is cancelled on unmount/src-change to avoid setState-after-unmount
 - **Missing message types**: `ChatMessageRenderer` renders unknown display item types as a muted "Unsupported message type" fallback
 - **Scroll lock resilience**: `ChatScrollManager` handles edge cases where the scroll target element is unmounted during a transition (no-op, no exception)
