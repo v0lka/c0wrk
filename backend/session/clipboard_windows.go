@@ -74,10 +74,14 @@ func globalBytes(h uintptr) ([]byte, error) {
 	if ptr == 0 {
 		return nil, errors.New("GlobalLock failed")
 	}
-	// Bytes are already sliced/copied below; GlobalUnlock failure is
-	// non-actionable and the lock is released by the OS on clipboard close.
+	// Copy the bytes while the handle is still locked. The clipboard HGLOBAL
+	// is GMEM_MOVEABLE: once the lock count drops to zero the OS may relocate
+	// the memory, so returning a slice into unlocked memory would be a
+	// use-after-unlock for the caller. GlobalUnlock failure is non-actionable
+	// and the lock is released by the OS on clipboard close.
 	defer func() { _, _, _ = procGlobalUnlock.Call(h) }()
-	return unsafe.Slice((*byte)(unsafe.Pointer(ptr)), size), nil
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), size)
+	return append([]byte(nil), buf...), nil
 }
 
 // clipboardImage reads a CF_DIB device-independent bitmap from the clipboard and

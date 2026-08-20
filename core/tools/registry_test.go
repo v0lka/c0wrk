@@ -1772,7 +1772,7 @@ func TestGoalModeTools_AreAllSystem(t *testing.T) {
 		if !IsGoalModeTool(name) {
 			t.Errorf("goal tool %q is missing from the goalModeTools availability set", name)
 		}
-		if got := tool.Group(); got != sdktools.GroupSystem {
+		if got := sdktools.ToolGroupOf(tool); got != sdktools.GroupSystem {
 			t.Errorf("goal tool %q declares group %q, want %q — it must stay hidden from the security UI and exempt from policies", name, got, sdktools.GroupSystem)
 		}
 	}

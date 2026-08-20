@@ -25,9 +25,10 @@ type Config struct {
 
 	// SetGlobalEnv, when true, mutates HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_DIR
 	// in the process environment so subprocesses inherit the proxy settings.
-	// Default false — most callers should use the explicitly threaded *http.Client
-	// returned by BuildClient instead. Mutating global env affects every child
-	// process and other Go libraries that read these vars.
+	// The zero value is false; c0wrk's config layer defaults it to true when a
+	// proxy is enabled (backward compat). Mutating global env affects every
+	// child process and other Go libraries that read these vars, so prefer the
+	// explicitly threaded *http.Client returned by BuildClient where possible.
 	SetGlobalEnv bool
 }
 
@@ -94,16 +95,21 @@ func BuildClient(cfg Config, timeout time.Duration, logger *slog.Logger) (*http.
 
 // SetEnvVars sets HTTP_PROXY, HTTPS_PROXY, NO_PROXY, and SSL_CERT_DIR
 // environment variables based on the proxy configuration.
-// These are inherited by child processes (e.g. bash_exec).
+// These are inherited by child processes (e.g. bash_exec children, MCP stdio
+// servers). Credentials embedded in the proxy URL (user:password@) are
+// stripped before the variables are set, so child processes inherit the proxy
+// routing without the secret; the authenticated URL itself is applied only
+// in-process via BuildClient/BuildTransport.
 func SetEnvVars(cfg Config) {
 	if !cfg.Enabled || cfg.URL == "" {
 		ClearEnvVars()
 		return
 	}
-	_ = os.Setenv("HTTP_PROXY", cfg.URL)
-	_ = os.Setenv("HTTPS_PROXY", cfg.URL)
-	_ = os.Setenv("http_proxy", cfg.URL)
-	_ = os.Setenv("https_proxy", cfg.URL)
+	safeURL := stripCredentials(cfg.URL)
+	_ = os.Setenv("HTTP_PROXY", safeURL)
+	_ = os.Setenv("HTTPS_PROXY", safeURL)
+	_ = os.Setenv("http_proxy", safeURL)
+	_ = os.Setenv("https_proxy", safeURL)
 
 	if len(cfg.BypassList) > 0 {
 		noProxy := strings.Join(cfg.BypassList, ",")
@@ -143,6 +149,21 @@ func MaskURL(rawURL string) string {
 	if _, hasPass := parsed.User.Password(); hasPass {
 		parsed.User = url.UserPassword(parsed.User.Username(), "***")
 	}
+	return parsed.String()
+}
+
+// stripCredentials removes the userinfo component (user:password@) from a
+// proxy URL so the value can be exported to the process environment without
+// leaking the proxy credential to child processes (bash_exec children, MCP
+// stdio servers). If the URL carries no userinfo or cannot be parsed, it is
+// returned unchanged. This complements MaskURL, which masks the password for
+// display rather than removing it for export.
+func stripCredentials(rawURL string) string {
+	parsed, err := parseProxyURL(rawURL)
+	if err != nil || parsed.User == nil {
+		return rawURL
+	}
+	parsed.User = nil
 	return parsed.String()
 }
 

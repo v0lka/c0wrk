@@ -59,8 +59,8 @@ func TestPersistTaskOutcome_FailureDoesNotRecordFinalResult(t *testing.T) {
 // pause (ExecutionStatusPaused) marks the task paused — neither completed nor
 // failed — so the resume safety net (GetUnfinishedTask matches the paused
 // status) can offer a Resume action and SessionRuntimeStatus.Paused reports
-// true. This is the core acceptance criterion: "на паузе задача персистится
-// как paused".
+// true. This is the core acceptance criterion: "on pause the task persists
+// as paused".
 func TestPersistTaskOutcome_PausedStaysResumable(t *testing.T) {
 	pbb := newTestPersistableBlackboard()
 

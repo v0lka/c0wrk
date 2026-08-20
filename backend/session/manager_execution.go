@@ -833,14 +833,14 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 			// through to the goal dispatch below. Best-effort; a missing task
 			// store or no unfinished task is a no-op.
 			m.abandonUnfinishedTaskForGoal(id)
-		} else if took, resumeAction := m.tryContinueInterruptedTask(ctx, id, session, msg, modelOverride, reasoningEffort, pendingAttachments); took {
+		} else if m.tryContinueInterruptedTask(ctx, id, session, msg, modelOverride, reasoningEffort, pendingAttachments) {
 			// Continue an interrupted (unfinished) task if one exists: the new
 			// user message is appended as a final user-nudge turn to the prior
 			// trajectory and the ReAct cycle resumes — no routing, no new task,
-			// no conversation-history pair. resumeAction propagates how the
-			// resumed run ended so the epilogue treats its leftovers the same
-			// way as a fresh run's.
-			action = resumeAction
+			// no conversation-history pair. The function fully owns terminal
+			// handling (deactivate + emit + follow-up) for every outcome, so
+			// mark finished to skip the deferred epilogue's second deactivation.
+			finished = true
 			return
 		}
 
@@ -1051,32 +1051,32 @@ func (m *Manager) tryContinueInterruptedTask(
 	message string,
 	modelOverride, reasoningEffort string,
 	pendingAttachments []orchestration.Attachment,
-) (bool, liveAction) {
+) bool {
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
 	if ts == nil {
-		return false, liveActionNone
+		return false
 	}
 
 	adapter := NewTaskStoreAdapter(ts)
 	taskID, err := adapter.GetUnfinishedTaskID(id)
 	if err != nil {
 		m.log().Warn("continue-interrupted-task: failed to look up unfinished task; falling back to fresh task", "session", id, "error", err)
-		return false, liveActionNone
+		return false
 	}
 	if taskID == "" {
-		return false, liveActionNone
+		return false
 	}
 
 	// Restore the blackboard (facts / step results) for the interrupted task.
 	bb, err := RestoreBlackboard(taskID, id, adapter, nil)
 	if err != nil {
 		m.log().Warn("continue-interrupted-task: failed to restore blackboard; falling back to fresh task", "session", id, "error", err)
-		return false, liveActionNone
+		return false
 	}
 	if bb == nil {
-		return false, liveActionNone
+		return false
 	}
 
 	// Apply per-request model/reasoning overrides. This path bypasses
@@ -1098,7 +1098,7 @@ func (m *Manager) tryContinueInterruptedTask(
 	resumeSteps, err := adapter.LoadTrajectory(taskID)
 	if err != nil {
 		m.log().Warn("continue-interrupted-task: failed to load trajectory; falling back to fresh task", "session", id, "error", err)
-		return false, liveActionNone
+		return false
 	}
 	resumeSteps = append(resumeSteps, agent.Step{UserNudge: message})
 
@@ -1128,9 +1128,11 @@ func (m *Manager) tryContinueInterruptedTask(
 			if m.emitTaskCancelledUnlessShuttingDown(id) {
 				m.abandonGoalIfUnfinished(id)
 				bb.CancelTask()
-				return true, liveActionDiscard
+				m.deactivateSessionTask(session, liveActionDiscard)
+				return true
 			}
-			return true, liveActionNone
+			m.deactivateSessionTask(session, liveActionNone)
+			return true
 		}
 		m.emitFunc(Event{
 			SessionID: id,
@@ -1142,7 +1144,21 @@ func (m *Manager) tryContinueInterruptedTask(
 		})
 		m.emitAgentMetrics(id, "failed")
 		m.emitResumableIfUnfinished(id, resumableReasonFromError(err))
-		return true, liveActionNone
+		m.deactivateSessionTask(session, liveActionNone)
+		return true
+	}
+
+	// A cooperative pause during resume is a clean checkpoint (see the
+	// SendMessage and ResumeTask goroutines): emit session_paused instead of a
+	// degraded task_complete. Checked before the task-ID store below so a
+	// paused result does not update lastCompletedTaskID (the task is not
+	// completed). Deactivate BEFORE the terminal event so a consumer reacting
+	// to session_paused already observes active == false (see
+	// deactivateSessionTask).
+	if result != nil && result.Status == orchestration.ExecutionStatusPaused {
+		m.deactivateSessionTask(session, liveActionNone)
+		m.emitFunc(Event{SessionID: id, Type: "session_paused"})
+		return true
 	}
 
 	// Store the task ID for potential further continuations.
@@ -1152,8 +1168,16 @@ func (m *Manager) tryContinueInterruptedTask(
 		session.mu.Unlock()
 	}
 
+	// Deactivate BEFORE emitting task_complete: the event is the frontend's
+	// signal that the session is free for a Resume/Send, so a consumer reacting
+	// to it must already observe active == false (see deactivateSessionTask).
+	// The follow-up for queued live messages is drained and launched here; the
+	// caller marks the run finished so its deferred epilogue does not
+	// deactivate a second time and clobber the just-launched follow-up.
+	leftover := m.deactivateSessionTask(session, liveActionFollowUp)
 	m.emitTaskComplete(id, result, nil)
-	return true, liveActionFollowUp
+	m.finishLiveLeftover(ctx, id, session, leftover)
+	return true
 }
 
 // ResumeTask checks for an unfinished task in the given session and resumes it.

@@ -32,17 +32,19 @@ export function ItemAction({ label, onClick, disabled, disabledReason, children 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button
-          type="button"
-          onClick={onClick}
-          disabled={disabled}
-          className={cn(
-            'rounded p-0.5',
-            disabled && 'cursor-not-allowed opacity-30 hover:bg-transparent',
-          )}
-        >
-          {children}
-        </button>
+        <span tabIndex={disabled ? 0 : undefined} className={disabled ? 'cursor-not-allowed' : undefined}>
+          <button
+            type="button"
+            onClick={onClick}
+            disabled={disabled}
+            className={cn(
+              'rounded p-0.5',
+              disabled && 'pointer-events-none opacity-30',
+            )}
+          >
+            {children}
+          </button>
+        </span>
       </TooltipTrigger>
       <TooltipContent side="left">{disabled && disabledReason ? disabledReason : label}</TooltipContent>
     </Tooltip>

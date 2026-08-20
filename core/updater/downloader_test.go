@@ -174,7 +174,7 @@ func TestDownload_Success(t *testing.T) {
 	}
 }
 
-// TestDownload_BadByteMismatch covers the "битый-байт" (corrupt byte)
+// TestDownload_BadByteMismatch covers the "corrupt-byte" (corrupt byte)
 // criterion: a single differing byte changes the digest, so verification must
 // fail-closed (ErrChecksumMismatch) and the archive must be removed from
 // staging.
@@ -199,7 +199,7 @@ func TestDownload_BadByteMismatch(t *testing.T) {
 	}
 }
 
-// TestDownload_MissingChecksumLine covers the "отсутствующая-строка" criterion:
+// TestDownload_MissingChecksumLine covers the "missing-line" criterion:
 // the sums file exists but has no entry for the asset → fail-closed
 // (ErrChecksumNotFound) and the archive removed.
 func TestDownload_MissingChecksumLine(t *testing.T) {
@@ -219,7 +219,7 @@ func TestDownload_MissingChecksumLine(t *testing.T) {
 	}
 }
 
-// TestDownload_EmptySums covers the "пустой-sums" criterion: an empty sums body
+// TestDownload_EmptySums covers the "empty-sums" criterion: an empty sums body
 // → no entry → fail-closed.
 func TestDownload_EmptySums(t *testing.T) {
 	assetBody := []byte("payload")
@@ -235,7 +235,7 @@ func TestDownload_EmptySums(t *testing.T) {
 	}
 }
 
-// TestDownload_MalformedSums covers the "мальформированная-строка" criterion: a
+// TestDownload_MalformedSums covers the "malformed-line" criterion: a
 // malformed sums line → fail-closed.
 func TestDownload_MalformedSums(t *testing.T) {
 	assetBody := []byte("payload")

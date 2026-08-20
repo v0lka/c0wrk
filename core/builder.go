@@ -143,8 +143,9 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 			logger.Warn("failed to build proxy client, proceeding without proxy", "error", err)
 		} else {
 			b.proxyClient = proxyClient
-			// Opt-in global env mutation (W-12). SetGlobalEnv defaults to false;
-			// only set when the user explicitly opts in via config.
+			// Global env mutation (W-12). SetGlobalEnv defaults to true when the
+			// proxy is enabled (backward compat); credentials embedded in the
+			// proxy URL are stripped before export (see proxy.SetEnvVars).
 			if cfg.Proxy.SetGlobalEnv {
 				proxy.SetEnvVars(cfg.Proxy)
 			}
@@ -814,8 +815,9 @@ func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConf
 		b.mu.Lock()
 		b.proxyClient = proxyClient
 		b.mu.Unlock()
-		// Opt-in global env mutation (W-12). SetGlobalEnv defaults to false;
-		// only set when the user explicitly opts in via config. Never clear
+		// Global env mutation (W-12). SetGlobalEnv defaults to true when the
+		// proxy is enabled (backward compat); credentials embedded in the proxy
+		// URL are stripped before export (see proxy.SetEnvVars). Never clear
 		// when proxy is enabled — the user may have set proxy env vars externally.
 		if cfg.Proxy.SetGlobalEnv {
 			proxy.SetEnvVars(cfg.Proxy)

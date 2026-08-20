@@ -32,10 +32,13 @@ var homeRelativeRe = regexp.MustCompile(`~[A-Za-z0-9_.\-]*(?:/[A-Za-z0-9/_.\-~]+
 //
 // Only paths that exist on disk and are directories are added; non-existent
 // paths and regular files are skipped. Paths already recorded for the session
-// (deduplicated by canonical path) are not re-added. The whole operation is
-// best-effort: any per-path error is logged and skipped, and a failure never
-// blocks the user's message. Emits a single workdirs:changed event when at
-// least one directory was added.
+// (deduplicated by canonical path) are not re-added. Broadly-scoped paths — the
+// filesystem/volume root, the home-directory root, and top-level system
+// directories — are skipped (see [isSensitiveWorkDir]) so a mere mention of
+// "~", "/", "/etc", etc. does not silently make a whole subtree a containment
+// root. The whole operation is best-effort: any per-path error is logged and
+// skipped, and a failure never blocks the user's message. Emits a single
+// workdirs:changed event when at least one directory was added.
 func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, text string) {
 	if f.store == nil || strings.TrimSpace(text) == "" {
 		return
@@ -69,6 +72,9 @@ func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, text string) {
 		if err != nil {
 			continue // non-existent or not a directory — skip per the policy.
 		}
+		if isSensitiveWorkDir(resolved) {
+			continue // broad system/home/root path — do not silently widen scope.
+		}
 		if _, ok := existing[resolved]; ok {
 			continue // already recorded for this session.
 		}
@@ -93,6 +99,34 @@ func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, text string) {
 	if added > 0 {
 		f.emitWorkDirsChanged()
 	}
+}
+
+// isSensitiveWorkDir reports whether an auto-discovered work-directory path
+// grants such broad access that it must never be added silently from a prompt
+// mention: the filesystem/volume root, the user's home-directory root, or a
+// top-level system directory. Narrowly-scoped subdirectories (e.g. /opt/build)
+// are not in the set and remain auto-addable — the concern is only a mention
+// of a path that would make an entire broad subtree a containment root.
+func isSensitiveWorkDir(resolved string) bool {
+	resolved = filepath.Clean(resolved)
+	// Filesystem/volume root ("/", "C:\").
+	if filepath.Dir(resolved) == resolved {
+		return true
+	}
+	// Home-directory root (a bare "~" mention).
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if resolved == filepath.Clean(home) {
+			return true
+		}
+	}
+	// Top-level system directories (POSIX). Their immediate subdirectories are
+	// intentionally NOT listed, so a specific path like /opt/build still passes.
+	switch resolved {
+	case "/etc", "/usr", "/var", "/bin", "/sbin", "/boot", "/dev", "/proc", "/sys", "/tmp",
+		"/System", "/Library", "/private", "/opt", "/home", "/Users", "/Applications", "/Volumes":
+		return true
+	}
+	return false
 }
 
 // extractPromptPathCandidates extracts local path-like tokens from prompt text:

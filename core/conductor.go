@@ -841,11 +841,12 @@ func (l *conductorLauncher) runBlocking(ctx context.Context, tasks []tools.Deleg
 	var regularTasks []tools.DelegationTask
 	var redelegTasks []tools.DelegationTask
 	for _, t := range tasks {
-		// A profile's allow-redelegate (when set) overrides the task flag —
-		// it is the authoritative permission for a specialized subagent. The
-		// other profile fields (prompt/tools/max-steps/model) are applied in
-		// buildSubAgentTask; only allow-redelegate must be resolved here
-		// because it selects the dispatch path.
+		// A profile's allow-redelegate only ever upgrades (never downgrades) —
+		// a profile with allow-redelegate: true wins over a false task flag, but
+		// a false profile value never revokes an explicitly-granted task flag
+		// (ADR-021 §5). The other profile fields (prompt/tools/max-steps/model)
+		// are applied in buildSubAgentTask; only allow-redelegate must be
+		// resolved here because it selects the dispatch path.
 		if t.Agent != "" {
 			t.AllowRedelegate = l.resolveAgentAllowRedelegate(ctx, t.Agent, t.AllowRedelegate)
 		}
@@ -872,11 +873,14 @@ func (l *conductorLauncher) runBlocking(ctx context.Context, tasks []tools.Deleg
 }
 
 // resolveAgentAllowRedelegate applies a profile's allow-redelegate override.
-// When the profile is found and sets AllowRedelegate=true, it wins over the
-// task flag. When the profile is not found (or no resolver), the task flag is
-// preserved unchanged — validateDelegationTasks already rejected unknown
-// agents, so a not-found here is a benign race (agent removed mid-run) that
-// keeps the safer (task) default.
+// The override only ever upgrades (never downgrades): a profile that sets
+// AllowRedelegate=true wins over a false task flag, while a profile with false
+// preserves the task flag unchanged — the profile can grant nested delegation
+// but never revoke a delegation the caller explicitly granted (ADR-021 §5).
+// When the profile is not found (or no resolver), the task flag is preserved
+// unchanged — validateDelegationTasks already rejected unknown agents, so a
+// not-found here is a benign race (agent removed mid-run) that keeps the safer
+// (task) default.
 func (l *conductorLauncher) resolveAgentAllowRedelegate(ctx context.Context, agentName string, taskFlag bool) bool {
 	resolver := tools.AgentResolverFrom(ctx)
 	if resolver == nil {
@@ -970,10 +974,12 @@ func (l *conductorLauncher) pausedCheckpoint(stepID string) (orchestration.StepR
 func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tools.DelegationTask, registry *tools.DelegationRegistry) []tools.DelegationResult {
 	subCtx := subagentCtx(ctx)
 	subTasks := make([]agent.SubAgentTask, 0, len(tasks))
+	buildFailures := make([]tools.DelegationResult, 0)
 	for _, t := range tasks {
 		st, err := l.buildSubAgentTask(subCtx, t, registry, l.scopeEvents(t.ID))
 		if err != nil {
 			registry.Complete(t.ID, "", err, nil)
+			buildFailures = append(buildFailures, tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusFailed, Error: err})
 			continue
 		}
 		registry.Start(t.ID, nil)
@@ -981,15 +987,12 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 	}
 
 	if len(subTasks) == 0 {
-		out := make([]tools.DelegationResult, 0, len(tasks))
-		for _, t := range tasks {
-			out = append(out, tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusFailed, Error: errors.New("subagent task construction failed")})
-		}
-		return out
+		return buildFailures
 	}
 
 	subResults := agent.RunSubAgentsParallel(subCtx, subTasks)
-	out := make([]tools.DelegationResult, 0, len(subResults))
+	out := make([]tools.DelegationResult, 0, len(subResults)+len(buildFailures))
+	out = append(out, buildFailures...)
 	for _, sr := range subResults {
 		if isPaused(sr.Error) {
 			l.bb.SetStepResult(sr.StepID, sr.Output, sr.Error, sr.Steps)
@@ -1160,12 +1163,12 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 
 	// A profile's tool preference (when non-nil) overrides the task field. The
 	// profile is the authoritative tool grant for a specialized subagent;
-	// resolveTaskTools accepts ToolPreference's []string group-token form
+	// resolveTaskTools accepts ToolPreferenceWithError's []string group-token form
 	// directly (parseToolGroups handles both []string and []any). An invalid
 	// `tools` field (unknown/duplicate group token) fails the delegation —
 	// never silently widened to the full toolset.
 	if profile != nil {
-		pref, err := profile.ToolPreference()
+		pref, err := profile.ToolPreferenceWithError()
 		if err != nil {
 			return agent.SubAgentTask{}, fmt.Errorf("delegation %q: profile %q: %w", t.ID, t.Agent, err)
 		}

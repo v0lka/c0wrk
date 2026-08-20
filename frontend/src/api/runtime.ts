@@ -64,6 +64,11 @@ export function getApp(): any {
 
 /** Subscribe to a Wails event; returns an unsubscribe function */
 export function subscribe(eventName: string, callback: (...data: unknown[]) => void): () => void {
+  if (typeof window === 'undefined' || !window.runtime) {
+    // No-op unsubscribe so hooks can subscribe unconditionally without
+    // throwing in environments where the Wails runtime is absent (vitest, SSR).
+    return () => {}
+  }
   const rt = getRuntime()
   return rt.EventsOn(eventName, callback)
 }

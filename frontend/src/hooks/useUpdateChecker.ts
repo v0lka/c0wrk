@@ -25,27 +25,57 @@ import {
   onUpdateError,
   getUpdateSettings,
 } from '@/api/updater'
+import { subscribe } from '@/api/runtime'
 import { useUpdateStore } from '@/stores/updateStore'
 import { logger } from '@/lib/logger'
 
 export function useUpdateChecker(): void {
   // ── Load running version on mount ─────────────────────────────────────
   // The running version is always loaded so the Settings panel and the toast
-  // can show "вы на vX.Y.Z" regardless of whether an update is available.
+  // can show "you're on vX.Y.Z" regardless of whether an update is available.
+  // The load is attempted on mount and, if it fails (e.g. the backend is still
+  // starting), retried on `backend:ready` — mirroring useExperimentalFeatures —
+  // so a transient startup race doesn't leave the version label empty for the
+  // whole session.
   useEffect(() => {
     let cancelled = false
-    getUpdateSettings()
-      .then((settings) => {
-        if (cancelled) return
-        useUpdateStore.getState().setCurrentVersion(settings.current_version)
-      })
-      .catch((err) => {
-        // Settings unavailable (e.g. backend not ready yet) — non-fatal; the
-        // Settings button still lets the user check manually.
-        logger.warn('Could not load update settings:', err)
-      })
+    let inFlight = false
+    let pendingRetry = false
+
+    const load = () => {
+      if (useUpdateStore.getState().currentVersion !== '') return
+      if (inFlight) {
+        // A retry (e.g. backend:ready) arrived while a fetch is in flight:
+        // remember it and re-run after the current attempt settles.
+        pendingRetry = true
+        return
+      }
+      inFlight = true
+      getUpdateSettings()
+        .then((settings) => {
+          if (cancelled) return
+          useUpdateStore.getState().setCurrentVersion(settings.current_version)
+        })
+        .catch((err) => {
+          // Settings unavailable (e.g. backend not ready yet) — non-fatal; the
+          // Settings button still lets the user check manually.
+          logger.warn('Could not load update settings:', err)
+        })
+        .finally(() => {
+          inFlight = false
+          if (pendingRetry && !cancelled && useUpdateStore.getState().currentVersion === '') {
+            pendingRetry = false
+            load()
+          }
+        })
+    }
+
+    load()
+    const unsubscribe = subscribe('backend:ready', load)
+
     return () => {
       cancelled = true
+      unsubscribe?.()
     }
   }, [])
 

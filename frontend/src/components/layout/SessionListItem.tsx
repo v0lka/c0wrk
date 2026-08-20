@@ -55,7 +55,7 @@ function SessionRowContent({ session, isActive, status, onPin, onFork, onRename,
   // A running task or unfinished work blocks session-state mutations (fork,
   // archive, delete) until the session settles. The guard mirrors fork so the
   // three actions are consistent for active/unfinished sessions.
-  const busy = status === 'active' || session.has_unfinished_task
+  const busy = status === 'active' || status === 'paused' || session.has_unfinished_task
   const forkReason = status === 'active' ? 'Cannot fork while a task is running' : 'Cannot fork a session with an unfinished task'
   const archiveReason = status === 'active' ? 'Cannot archive while a task is running' : 'Cannot archive a session with an unfinished task'
   const deleteReason = status === 'active' ? 'Cannot delete while a task is running' : 'Cannot delete a session with an unfinished task'

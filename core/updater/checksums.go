@@ -6,6 +6,15 @@
 // supply-chain integrity): a missing checksum entry or a hash mismatch always
 // results in the archive being removed and an error returned, never a silent
 // acceptance of an unverified artifact.
+//
+// Integrity is SHA256-only and unsigned. The archive and its SHA256SUMS file
+// are fetched from the same release over the same TLS channel, so the checksum
+// pins the archive to the released bytes but does NOT prove release authorship:
+// a TLS-interception proxy whose CA the app trusts, or a fully compromised
+// release, can substitute both archive and checksum. The fail-closed gate
+// therefore protects against transport corruption and non-interception
+// attackers, not against a trusted-CA MITM. See ADR-023 and SECURITY.md for
+// the full threat model and accepted trade-offs.
 package updater
 
 import (

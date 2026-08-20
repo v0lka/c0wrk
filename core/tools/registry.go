@@ -373,7 +373,7 @@ func (r *ToolRegistry) RegisterWithSource(tool sdktools.Tool, source string) {
 // Execute looks up a tool by name and executes it with the given input.
 // Returns an error if the tool is not found.
 //
-// Security is resolved by the tool's capability GROUP (Tool.Group()), never by
+// Security is resolved by the tool's capability GROUP (sdktools.ToolGroupOf), never by
 // tool name. Gate order:
 //
 //  1. required-field validation (schema "required" keys),
@@ -429,7 +429,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 
 	// Gate 3: system group — internal orchestration/state tools bypass the
 	// remaining policy and judge checks.
-	if tool.Group() == sdktools.GroupSystem {
+	if sdktools.ToolGroupOf(tool) == sdktools.GroupSystem {
 		return tool.Execute(ctx, input)
 	}
 
@@ -473,7 +473,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 		}
 	}
 
-	group := tool.Group()
+	group := sdktools.ToolGroupOf(tool)
 
 	// Gate 6: group policy deny — a hard block.
 	policy := r.groupPolicy(group)

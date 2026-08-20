@@ -221,15 +221,18 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		newMap := make(map[string]config.OpenAICompatibleConfig, len(req.OpenAICompatible))
 		for name, ocReq := range req.OpenAICompatible {
 			apiKey := ocReq.APIKey
-			if apiKey == maskedAPIKey || apiKey == "" {
-				if existing, ok := f.config.LLM.OpenAICompatible[name]; ok {
+			outputReserve := 0
+			if existing, ok := f.config.LLM.OpenAICompatible[name]; ok {
+				if apiKey == maskedAPIKey || apiKey == "" {
 					apiKey = existing.APIKey
 				}
+				outputReserve = existing.OutputTokenReserve
 			}
 			newMap[name] = config.OpenAICompatibleConfig{
-				APIKey:  apiKey,
-				BaseURL: ocReq.BaseURL,
-				Models:  ocReq.Models,
+				APIKey:             apiKey,
+				BaseURL:            ocReq.BaseURL,
+				Models:             ocReq.Models,
+				OutputTokenReserve: outputReserve,
 			}
 		}
 		f.config.LLM.OpenAICompatible = newMap
@@ -238,15 +241,18 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		newMap := make(map[string]config.AnthropicCompatibleConfig, len(req.AnthropicCompatible))
 		for name, acReq := range req.AnthropicCompatible {
 			apiKey := acReq.APIKey
-			if apiKey == maskedAPIKey || apiKey == "" {
-				if existing, ok := f.config.LLM.AnthropicCompatible[name]; ok {
+			outputReserve := 0
+			if existing, ok := f.config.LLM.AnthropicCompatible[name]; ok {
+				if apiKey == maskedAPIKey || apiKey == "" {
 					apiKey = existing.APIKey
 				}
+				outputReserve = existing.OutputTokenReserve
 			}
 			newMap[name] = config.AnthropicCompatibleConfig{
-				APIKey:  apiKey,
-				BaseURL: acReq.BaseURL,
-				Models:  acReq.Models,
+				APIKey:             apiKey,
+				BaseURL:            acReq.BaseURL,
+				Models:             acReq.Models,
+				OutputTokenReserve: outputReserve,
 			}
 		}
 		f.config.LLM.AnthropicCompatible = newMap

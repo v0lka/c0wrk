@@ -132,8 +132,8 @@ export function UserMessage({ item, sticky = false }: UserMessageProps) {
           role="button"
           tabIndex={0}
           aria-expanded={expanded}
-          aria-label={expanded ? 'Свернуть сообщение' : 'Развернуть сообщение'}
-          title={expanded ? 'Свернуть' : 'Развернуть'}
+          aria-label={expanded ? 'Collapse message' : 'Expand message'}
+          title={expanded ? 'Collapse' : 'Expand'}
           onClick={handleClick}
           onKeyDown={handleKeyDown}
         >

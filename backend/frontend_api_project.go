@@ -252,9 +252,11 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 	// This mirrors what EnableResearch does, ensuring the incremental update
 	// path works even when switching to a project that already has research
 	// enabled (e.g. after a restart or project switch).
-	if p.ResearchRoot != "" {
-		f.activeResearchRoot = p.ResearchRoot
-	}
+	// Always assign (including "") so switching to a project with research
+	// disabled — or to No Project — clears a stale research root from the
+	// previously-active project and stops cross-project research:file_changed
+	// events.
+	f.activeResearchRoot = p.ResearchRoot
 	f.activeProjectMu.Unlock()
 
 	// Invalidate cached skill list since project-local skills may differ.

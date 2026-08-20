@@ -18,17 +18,19 @@ import (
 // errNonHTTPS is returned when a download URL is not HTTPS-only. The update
 // channel must be end-to-end encrypted: a compromised API response or a MITM
 // proxy must not be able to downgrade the archive/checksum fetch to plain HTTP.
-// (The fail-closed SHA256 verification remains the real integrity gate; this
-// is defense-in-depth that matches the SECURITY.md claim.)
+// (SHA256 verification pins the archive to the released bytes but does not
+// prove release authorship; HTTPS-only transport is defense-in-depth against
+// plaintext downgrade and matches the SECURITY.md claim.)
 var errNonHTTPS = errors.New("update download URL must use HTTPS")
 
 // requireHTTPS rejects any URL whose scheme is not https, with a single
 // exception for loopback addresses (127.0.0.1, ::1, localhost). Loopback
 // traffic never traverses the network, so the downgrade/MITM threat the HTTPS
 // rule defends against does not apply — and this keeps the package testable
-// with httptest.NewServer. The fail-closed SHA256 verification remains the
-// real integrity gate; this check is defense-in-depth matching the SECURITY.md
-// claim of HTTPS-only asset/checksum URLs.
+// with httptest.NewServer. SHA256 verification pins the archive to the released
+// bytes but does not prove release authorship; HTTPS-only transport is
+// defense-in-depth matching the SECURITY.md claim of HTTPS-only asset/checksum
+// URLs.
 func requireHTTPS(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {

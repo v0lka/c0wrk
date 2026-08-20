@@ -206,6 +206,40 @@ func TestSetEnvVars_Roundtrip(t *testing.T) {
 	}
 }
 
+func TestSetEnvVars_StripsCredentials(t *testing.T) {
+	keys := []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"}
+	prev := map[string]string{}
+	for _, k := range keys {
+		prev[k] = os.Getenv(k)
+	}
+	t.Cleanup(func() {
+		for k, v := range prev {
+			if v == "" {
+				_ = os.Unsetenv(k)
+			} else {
+				_ = os.Setenv(k, v)
+			}
+		}
+	})
+
+	SetEnvVars(Config{
+		Enabled: true,
+		URL:     "http://alice:s3cret@proxy.example:3128",
+	})
+
+	for _, k := range keys {
+		if got := os.Getenv(k); got != "http://proxy.example:3128" {
+			t.Errorf("%s = %q, want credentials stripped (%q)", k, got, "http://proxy.example:3128")
+		}
+	}
+
+	// Scheme-less credentialed form is also stripped (normalized to http://).
+	SetEnvVars(Config{Enabled: true, URL: "alice:s3cret@proxy.example:3128"})
+	if got := os.Getenv("HTTP_PROXY"); got != "http://proxy.example:3128" {
+		t.Errorf("scheme-less HTTP_PROXY = %q, want credentials stripped", got)
+	}
+}
+
 func TestSetEnvVars_Disabled(t *testing.T) {
 	prev := os.Getenv("HTTP_PROXY")
 	t.Cleanup(func() {

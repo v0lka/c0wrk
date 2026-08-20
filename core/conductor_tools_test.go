@@ -188,7 +188,7 @@ func TestResolveTaskTools_ExplicitGroupsExactGrant(t *testing.T) {
 // execute toolset (acceptance criterion 1, profile entry point).
 func TestResolveTaskTools_ProfileLocalReadExecute(t *testing.T) {
 	profile := &agents.Agent{Metadata: agents.AgentMetadata{Tools: "local-read, execute"}}
-	pref, err := profile.ToolPreference()
+	pref, err := profile.ToolPreferenceWithError()
 	if err != nil {
 		t.Fatalf("ToolPreference() error = %v, want nil", err)
 	}

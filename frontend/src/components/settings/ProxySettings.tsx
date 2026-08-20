@@ -23,6 +23,7 @@ export function ProxySettings() {
   const [saveError, setSaveError] = useState<string | null>(null)
   const [bypassText, setBypassText] = useState('')
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const pendingConfigRef = useRef<ProxyConfig | null>(null)
 
   useEffect(() => {
     const load = async () => {
@@ -57,11 +58,27 @@ export function ProxySettings() {
   }, [])
 
   const debouncedSave = useCallback((newConfig: ProxyConfig) => {
+    pendingConfigRef.current = newConfig
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
-    saveTimeoutRef.current = setTimeout(() => saveSettings(newConfig), 800)
+    saveTimeoutRef.current = setTimeout(() => {
+      saveTimeoutRef.current = null
+      pendingConfigRef.current = null
+      void saveSettings(newConfig)
+    }, 800)
   }, [saveSettings])
 
-  useEffect(() => () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current) }, [])
+  // Flush a pending debounced save on unmount so a user who edits the proxy
+  // URL/bypass list and closes the modal within the debounce window does not
+  // lose the change.
+  useEffect(() => () => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current)
+      saveTimeoutRef.current = null
+    }
+    const pending = pendingConfigRef.current
+    pendingConfigRef.current = null
+    if (pending) void saveSettings(pending)
+  }, [saveSettings])
 
   const handleEnabledChange = (checked: boolean) => {
     const newConfig = { ...config, enabled: checked }

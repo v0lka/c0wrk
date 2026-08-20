@@ -1,9 +1,9 @@
 // Update toast — surfaces the self-update lifecycle to the user.
 //
 // Renders nothing while the store phase is `idle`. Otherwise shows one of:
-//   • available   — "c0wrk vX.Y.Z доступно (вы на vA.B.C)" + [Обновить][Пропустить][Позже]
+//   • available   — "c0wrk vX.Y.Z is available (you're on vA.B.C)" + [Update][Skip][Later]
 //   • downloading — indeterminate/progress bar (bytes done / total)
-//   • downloaded  — "Перезапустить для установки?" + [Перезапуск][Позже]
+//   • downloaded  — "Restart to install?" + [Restart][Later]
 //   • error       — the failure message + a dismiss button
 //
 // Performance: the parent subscribes ONLY to `phase` (and the static `info`
@@ -68,7 +68,7 @@ function DownloadProgressBar() {
         )}
       </div>
       <div className="flex items-center justify-between text-xs text-muted-foreground tabular-nums">
-        <span>{known ? `${formatBytes(done)} / ${formatBytes(total)}` : 'Загрузка…'}</span>
+        <span>{known ? `${formatBytes(done)} / ${formatBytes(total)}` : 'Loading…'}</span>
         {known && <span>{pct(done, total)}%</span>}
       </div>
     </div>
@@ -104,7 +104,7 @@ function ToastShell({
           <button
             onClick={onClose}
             className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            aria-label="Закрыть"
+            aria-label="Close"
           >
             <X className="size-4" />
           </button>
@@ -139,6 +139,9 @@ function AvailableSurface() {
     const latest = info.latest_version
     try {
       await skipVersion(latest)
+    } catch {
+      // skipVersion already logs the failure; still dismiss below so the toast
+      // doesn't reappear for this version within the session.
     } finally {
       // Whether or not the persist succeeded, hide the toast for this version
       // this session. SkipVersion invalidates the cached check on the backend.
@@ -157,22 +160,22 @@ function AvailableSurface() {
       <div className="space-y-3">
         <div>
           <p className="text-sm font-medium text-foreground">
-            c0wrk {formatVersion(info.latest_version)} доступно
+            c0wrk {formatVersion(info.latest_version)} is available
           </p>
           <p className="text-xs text-muted-foreground">
-            {currentVersion ? `вы на ${formatVersion(currentVersion)}` : 'доступно новое обновление'}
+            {currentVersion ? `you're on ${formatVersion(currentVersion)}` : 'a new update is available'}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Button size="xs" onClick={handleUpdate} disabled={isDownloading}>
             <Download className="size-3" />
-            Обновить
+            Update
           </Button>
           <Button size="xs" variant="ghost" onClick={handleSkip}>
-            Пропустить
+            Skip
           </Button>
           <Button size="xs" variant="ghost" onClick={dismiss}>
-            Позже
+            Later
           </Button>
         </div>
       </div>
@@ -184,7 +187,7 @@ function DownloadingSurface() {
   return (
     <ToastShell icon={<Download className="size-5 text-info" />} accent="info">
       <div className="space-y-2">
-        <p className="text-sm font-medium text-foreground">Загрузка обновления…</p>
+        <p className="text-sm font-medium text-foreground">Downloading update…</p>
         <DownloadProgressBar />
       </div>
     </ToastShell>
@@ -208,16 +211,16 @@ function DownloadedSurface() {
     >
       <div className="space-y-3">
         <div>
-          <p className="text-sm font-medium text-foreground">Обновление готово</p>
-          <p className="text-xs text-muted-foreground">Перезапустить для установки?</p>
+          <p className="text-sm font-medium text-foreground">Update ready</p>
+          <p className="text-xs text-muted-foreground">Restart to install?</p>
         </div>
         <div className="flex items-center gap-2">
           <Button size="xs" onClick={handleRestart}>
             <RefreshCw className="size-3" />
-            Перезапуск
+            Restart
           </Button>
           <Button size="xs" variant="ghost" onClick={dismiss}>
-            Позже
+            Later
           </Button>
         </div>
       </div>
@@ -235,8 +238,8 @@ function ErrorSurface() {
       onClose={dismiss}
     >
       <div className="space-y-1">
-        <p className="text-sm font-medium text-foreground">Не удалось обновить</p>
-        <p className="text-xs text-muted-foreground">{errorMessage ?? 'Произошла ошибка'}</p>
+        <p className="text-sm font-medium text-foreground">Update failed</p>
+        <p className="text-xs text-muted-foreground">{errorMessage ?? 'An error occurred'}</p>
       </div>
     </ToastShell>
   )

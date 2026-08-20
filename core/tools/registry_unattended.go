@@ -73,7 +73,7 @@ func (r *ToolRegistry) ExecuteUnattended(ctx context.Context, name string, input
 		}, nil
 	}
 
-	group := tool.Group()
+	group := sdktools.ToolGroupOf(tool)
 
 	// Gate 4: group policy deny.
 	if policy := r.groupPolicy(group); policy == sdktools.PolicyAlwaysDeny {
