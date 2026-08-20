@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1341,6 +1342,54 @@ func TestMCPServerConfig_YAMLMarshal(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestMCPServerConfig_JSONMarshal tests that MCPServerConfig serializes with the
+// lowercase JSON keys the frontend reads. The MCP edit dialog consumes
+// `transport`, `command`, `args`, `env`, `url`, and `headers`; without JSON tags,
+// encoding/json would emit the capitalized Go field names and every value would
+// render empty.
+func TestMCPServerConfig_JSONMarshal(t *testing.T) {
+	cfg := MCPServerConfig{
+		Transport: "http",
+		Command:   "/usr/bin/mcp-server",
+		Args:      []string{"--port", "8080"},
+		Env:       map[string]string{"API_KEY": "secret"},
+		URL:       "https://api.example.com/mcp",
+		Headers:   map[string]string{"Authorization": "Bearer token"},
+	}
+
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("json.Marshal() failed: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal() failed: %v", err)
+	}
+
+	for _, key := range []string{"transport", "command", "args", "env", "url", "headers"} {
+		if _, ok := got[key]; !ok {
+			t.Errorf("JSON output missing lowercase key %q (got %s)", key, data)
+		}
+	}
+	for _, key := range []string{"Transport", "Command", "Args", "Env", "URL", "Headers"} {
+		if _, ok := got[key]; ok {
+			t.Errorf("JSON output leaked capitalized key %q (got %s)", key, data)
+		}
+	}
+
+	var restored MCPServerConfig
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("json.Unmarshal() round-trip failed: %v", err)
+	}
+	if restored.Transport != cfg.Transport || restored.Command != cfg.Command || restored.URL != cfg.URL {
+		t.Errorf("round-trip mismatch: got %+v, want %+v", restored, cfg)
+	}
+	if len(restored.Args) != len(cfg.Args) || len(restored.Env) != len(cfg.Env) || len(restored.Headers) != len(cfg.Headers) {
+		t.Errorf("round-trip length mismatch: got %+v, want %+v", restored, cfg)
 	}
 }
 

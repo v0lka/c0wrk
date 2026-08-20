@@ -251,16 +251,16 @@ type MCPConfig struct {
 
 // MCPServerConfig defines how to launch an MCP server.
 type MCPServerConfig struct {
-	Transport string `yaml:"transport,omitempty"` // "stdio" | "http"; default "stdio"
+	Transport string `yaml:"transport,omitempty" json:"transport,omitempty"` // "stdio" | "http"; default "stdio"
 
 	// stdio fields (existing)
-	Command string            `yaml:"command,omitempty"`
-	Args    []string          `yaml:"args,omitempty"`
-	Env     map[string]string `yaml:"env,omitempty"`
+	Command string            `yaml:"command,omitempty" json:"command,omitempty"`
+	Args    []string          `yaml:"args,omitempty" json:"args,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 
 	// http fields (new)
-	URL     string            `yaml:"url,omitempty"`
-	Headers map[string]string `yaml:"headers,omitempty"`
+	URL     string            `yaml:"url,omitempty" json:"url,omitempty"`
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 }
 
 // RouterConfig holds router settings.
