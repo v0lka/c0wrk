@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { cn } from '@/lib/utils'
+import { formatVersion } from '@/lib/formatters'
 import type { ToolManagerToolInfo, ToolManagerProgressData } from '@/types/events'
 import { Download, PackageOpen } from 'lucide-react'
 
@@ -53,7 +54,7 @@ function ToolProgressRow({ tool, progress }: { tool: ToolManagerToolInfo; progre
           </span>
           {tool.version && (
             <span className="text-xs text-muted-foreground shrink-0">
-              v{tool.version}
+              {formatVersion(tool.version)}
             </span>
           )}
         </div>
