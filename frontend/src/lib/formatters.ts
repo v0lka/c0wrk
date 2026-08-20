@@ -34,6 +34,12 @@ export function formatRelativeTime(dateStr: string): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
+/** Display a release version with one `v` prefix while preserving channels such as `dev`. */
+export function formatVersion(version: string): string {
+  if (version.startsWith('v') || !/^\d/.test(version)) return version
+  return `v${version}`
+}
+
 /** Human-readable byte size using binary units (B/KB/MB/GB). */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'

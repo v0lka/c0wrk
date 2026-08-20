@@ -25,6 +25,7 @@ import {
   useUpdateStore,
 } from '@/stores/updateStore'
 import { logger } from '@/lib/logger'
+import { formatVersion } from '@/lib/formatters'
 
 type CheckOutcome = 'idle' | 'up-to-date' | 'error'
 
@@ -105,7 +106,7 @@ export function UpdateSettings() {
           <div>
             <p className="text-sm text-foreground">Current version</p>
             <p className="text-xs text-muted-foreground">
-              {currentVersion ? `v${currentVersion}` : '—'}
+              {currentVersion ? formatVersion(currentVersion) : '—'}
             </p>
           </div>
           <Button

@@ -116,7 +116,6 @@ func TestDownload_RejectsPathTraversalAssetName(t *testing.T) {
 		"sub/evil-macos-arm64.plist",
 	}
 	for _, name := range bad {
-		name := name
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			d := NewDownloader(nil, nil)

@@ -12,6 +12,7 @@ import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
 import * as reviewApi from '@/api/review'
 import { generateMessageId } from '@/lib/ids'
 import type { ChatMessageUI } from '@/types/messages'
+import { handleSessionPausedEvent, handleSessionResumedEvent } from './sessionLifecycleHandlers'
 
 /**
  * Decide whether a task_complete.output should be added as a new assistant
@@ -254,13 +255,7 @@ export function useChatEvents(sessionId: string | null): void {
     // no longer running — it is suspended, resumable via Resume or a nudge.
     cleanups.push(
       onSessionEvent(sessionId, 'session_paused', () => {
-        const store = useChatStore.getState()
-        // The pause landed: drop the in-flight flag FIRST so the spinner is
-        // replaced by the paused controls (Resume/Stop) in the same commit.
-        store.setPausing(sessionId, false)
-        store.setPaused(sessionId, true)
-        store.setTaskActive(sessionId, false)
-        store.setActivityStatus(sessionId, 'Paused')
+        handleSessionPausedEvent(sessionId)
       }),
     )
 
@@ -269,11 +264,7 @@ export function useChatEvents(sessionId: string | null): void {
     // Complementary to session_paused and task_resumed (which also fires).
     cleanups.push(
       onSessionEvent(sessionId, 'session_resumed', () => {
-        const store = useChatStore.getState()
-        store.setPausing(sessionId, false)
-        store.setPaused(sessionId, false)
-        store.setTaskActive(sessionId, true)
-        store.setActivityStatus(sessionId, 'Resuming...')
+        handleSessionResumedEvent(sessionId)
       }),
     )
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatDuration, formatTokenCount } from './formatters'
+import { formatDuration, formatTokenCount, formatVersion } from './formatters'
 
 describe('formatDuration', () => {
   it('returns "0ms" for 0', () => {
@@ -75,5 +75,19 @@ describe('formatTokenCount', () => {
   it('returns M suffix for values >= 1000000', () => {
     expect(formatTokenCount(1000000)).toBe('1.0M')
     expect(formatTokenCount(2300000)).toBe('2.3M')
+  })
+})
+
+describe('formatVersion', () => {
+  it('keeps an existing release prefix', () => {
+    expect(formatVersion('v1.2.3')).toBe('v1.2.3')
+  })
+
+  it('adds a release prefix when absent', () => {
+    expect(formatVersion('1.2.3')).toBe('v1.2.3')
+  })
+
+  it('preserves non-release channel labels', () => {
+    expect(formatVersion('dev')).toBe('dev')
   })
 })

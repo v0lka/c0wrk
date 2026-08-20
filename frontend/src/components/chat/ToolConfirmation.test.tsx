@@ -100,6 +100,23 @@ describe('ToolConfirmation — confirmation reason', () => {
     expect(text).toContain('rm -rf /')
   })
 
+  it('keeps the tool input scrollbar inside an unclipped container', () => {
+    render(makeItem({ args: JSON.stringify({ command: 'x'.repeat(400) }) }))
+
+    const inputLabel = Array.from(container.querySelectorAll('p')).find(
+      (element) => element.textContent === 'Input:',
+    )
+    const inputContainer = inputLabel?.parentElement
+    const input = inputContainer?.querySelector('pre')
+
+    expect(inputContainer).not.toBeNull()
+    expect(inputContainer?.classList.contains('overflow-hidden')).toBe(false)
+    expect(input?.classList.contains('w-full')).toBe(true)
+    expect(input?.classList.contains('max-h-64')).toBe(true)
+    expect(input?.classList.contains('overflow-auto')).toBe(true)
+    expect(input?.classList.contains('custom-scrollbar')).toBe(true)
+  })
+
   it('hides the Ask Agent action when disable_judge is set', () => {
     render(makeItem({ reasoning: 'Judge already evaluated this call', disable_judge: true }))
     const text = container.textContent ?? ''

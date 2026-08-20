@@ -84,9 +84,17 @@ const chatStoreState = {
   taskActive: {} as Record<string, boolean>,
   activityStatus: {} as Record<string, string>,
   streamingText: {} as Record<string, string>,
+  paused: {} as Record<string, boolean>,
   pausing: {} as Record<string, boolean>,
   setTaskActive: (sid: string, active: boolean) => {
     chatStoreState.taskActive = { ...chatStoreState.taskActive, [sid]: active }
+  },
+  setPaused: (sid: string, paused: boolean) => {
+    if (paused) {
+      chatStoreState.paused = { ...chatStoreState.paused, [sid]: true }
+    } else {
+      delete chatStoreState.paused[sid]
+    }
   },
   setPausing: (sid: string, pausing: boolean) => {
     if (pausing) {
@@ -155,6 +163,7 @@ function resetStores(): void {
   chatStoreState.taskActive = {}
   chatStoreState.activityStatus = {}
   chatStoreState.streamingText = {}
+  chatStoreState.paused = {}
   chatStoreState.pausing = {}
   sessionStoreState.activeSessionId = null
 }
@@ -192,6 +201,8 @@ describe('useBackgroundSessionWatcher', () => {
     expect(subscriptions.has('bg-1:task_complete')).toBe(true)
     expect(subscriptions.has('bg-1:task_cancelled')).toBe(true)
     expect(subscriptions.has('bg-1:error')).toBe(true)
+    expect(subscriptions.has('bg-1:session_paused')).toBe(true)
+    expect(subscriptions.has('bg-1:session_resumed')).toBe(true)
     expect(subscriptions.has('bg-1:tool_confirm')).toBe(true)
     expect(subscriptions.has('bg-1:step_limit')).toBe(true)
     expect(subscriptions.has('bg-1:plan_review_ready')).toBe(true)
@@ -208,6 +219,8 @@ describe('useBackgroundSessionWatcher', () => {
     expect(subscriptions.has('active-1:task_complete')).toBe(false)
     expect(subscriptions.has('active-1:task_cancelled')).toBe(false)
     expect(subscriptions.has('active-1:error')).toBe(false)
+    expect(subscriptions.has('active-1:session_paused')).toBe(false)
+    expect(subscriptions.has('active-1:session_resumed')).toBe(false)
     expect(subscriptions.has('active-1:tool_confirm')).toBe(false)
     expect(subscriptions.has('active-1:step_limit')).toBe(false)
     expect(subscriptions.has('active-1:plan_review_ready')).toBe(false)
@@ -233,8 +246,8 @@ describe('useBackgroundSessionWatcher', () => {
 
     expect(subscriptions.has('bg-1:task_complete')).toBe(true)
     expect(subscriptions.has('bg-2:task_complete')).toBe(true)
-    // 8 events × 2 sessions = 16 subscriptions
-    expect(subscriptions.size).toBe(16)
+    // 10 events × 2 sessions = 20 subscriptions
+    expect(subscriptions.size).toBe(20)
   })
 
   it('resets taskActive to false on task_complete without touching the active session state', () => {
@@ -299,12 +312,43 @@ describe('useBackgroundSessionWatcher', () => {
     expect(chatStoreState.activityStatus['active-1']).toBe('Generating response...')
   })
 
+  it('transitions a background pause-in-flight session to paused at the checkpoint', () => {
+    chatStoreState.setTaskActive('bg-1', true)
+    chatStoreState.setPausing('bg-1', true)
+    chatStoreState.setActivityStatus('bg-1', 'Pausing')
+    sessionStoreState.activeSessionId = 'active-1'
+
+    useRenderWatcher()
+    fireSessionEvent('bg-1', 'session_paused')
+
+    expect(chatStoreState.pausing['bg-1']).toBeUndefined()
+    expect(chatStoreState.paused['bg-1']).toBe(true)
+    expect(chatStoreState.taskActive['bg-1']).toBe(false)
+    expect(chatStoreState.activityStatus['bg-1']).toBe('Paused')
+  })
+
+  it('keeps a paused background session subscribed and transitions it on resume', () => {
+    chatStoreState.setTaskActive('bg-1', false)
+    chatStoreState.setPaused('bg-1', true)
+    chatStoreState.setActivityStatus('bg-1', 'Paused')
+    sessionStoreState.activeSessionId = 'active-1'
+
+    useRenderWatcher()
+    expect(subscriptions.has('bg-1:session_resumed')).toBe(true)
+    fireSessionEvent('bg-1', 'session_resumed')
+
+    expect(chatStoreState.pausing['bg-1']).toBeUndefined()
+    expect(chatStoreState.paused['bg-1']).toBeUndefined()
+    expect(chatStoreState.taskActive['bg-1']).toBe(true)
+    expect(chatStoreState.activityStatus['bg-1']).toBe('Resuming...')
+  })
+
   it('unsubscribes when a session is no longer running', () => {
     chatStoreState.setTaskActive('bg-1', true)
     sessionStoreState.activeSessionId = 'active-1'
 
     useRenderWatcher()
-    expect(subscriptions.size).toBe(8)
+    expect(subscriptions.size).toBe(10)
 
     // Session completes via another path.
     chatStoreState.setTaskActive('bg-1', false)

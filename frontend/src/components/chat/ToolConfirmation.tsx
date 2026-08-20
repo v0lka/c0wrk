@@ -151,9 +151,9 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
       <div className="mt-1.5 space-y-1.5">
         <p className="text-xs text-muted-foreground"><span className="text-muted-foreground/60">Tool:</span> <span className="font-medium text-foreground">{tool || 'Unknown'}</span></p>
         {args && (
-          <div className="min-w-0 overflow-hidden">
+          <div className="min-w-0">
             <p className="text-xs text-muted-foreground/60 mb-1">Input:</p>
-            <pre className="p-2 bg-background/50 rounded text-xs font-mono overflow-auto custom-scrollbar border border-border max-w-full min-w-0 max-h-64">
+            <pre className="w-full min-w-0 max-w-full max-h-64 overflow-auto custom-scrollbar rounded border border-border bg-background/50 p-2 font-mono text-xs">
               <code>{formatJson(args)}</code>
             </pre>
           </div>

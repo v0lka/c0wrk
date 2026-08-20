@@ -8,9 +8,9 @@
 // the send button renders as a red "stop" when the user eventually switches
 // to that session.
 //
-// This hook subscribes to the three terminal events for EVERY session with
-// taskActive === true that is NOT the active session, and resets the flag in
-// real time. The final answer and intermediate history are already persisted
+// This hook subscribes to lifecycle and terminal events for EVERY background
+// session that is running, pausing, or paused, and keeps the keyed UI state in
+// sync in real time. The final answer and intermediate history are already
 // by the backend's EventPersister and will be loaded from the DB by the
 // reconcile effect in ChatArea when the user switches to the session.
 //
@@ -31,6 +31,7 @@ import { isToolConfirmData, isAskUserData, isStepLimitData, isPlanReviewReadyDat
 import type { SessionEventKey } from '@/types/events'
 import { handleToolConfirmEvent, handleAskUserEvent, handleStepLimitEvent, handlePlanReviewEvent } from './events/hitlHandlers'
 import { handleGoalProposalEvent } from './events/goalHandlers'
+import { handleSessionPausedEvent, handleSessionResumedEvent } from './events/sessionLifecycleHandlers'
 import { classifySessionEvent } from './events/useSoundEvents'
 import { playSound } from '@/lib/sound'
 
@@ -48,13 +49,13 @@ function playBackgroundCue(event: SessionEventKey, data: unknown): void {
 }
 
 /**
- * Watch all running background sessions for completion and HITL events.
+ * Watch all live background sessions for lifecycle, completion, and HITL events.
  *
- * For each session with `taskActive === true` that is not the active session,
- * subscribes to `task_complete`, `task_cancelled`, and `error` (resetting
- * taskActive) and to `tool_confirm`, `step_limit`, `plan_review_ready`,
- * `ask_user` (adding the pending-action message to the chat store so the
- * user can respond even when viewing a different session).
+ * For each background session that is running, pausing, or paused, subscribes
+ * to terminal and pause/resume lifecycle events, and to
+ * `tool_confirm`, `step_limit`, `plan_review_ready`, `ask_user` (adding the
+ * pending-action message to the chat store so the user can respond even when
+ * viewing a different session).
  *
  * Sound parity: every watched event also plays the audible cue the active
  * session would play (`classifySessionEvent` → `playSound`), so a task that
@@ -66,13 +67,20 @@ function playBackgroundCue(event: SessionEventKey, data: unknown): void {
  */
 export function useBackgroundSessionWatcher(): void {
   const taskActive = useChatStore(s => s.taskActive)
+  const paused = useChatStore(s => s.paused)
+  const pausing = useChatStore(s => s.pausing)
   const activeSessionId = useSessionStore(s => s.activeSessionId)
 
-  // Compute a stable string key from the set of background running sessions.
-  // This prevents the effect from re-running on every taskActive mutation
-  // when the set of watched sessions hasn't actually changed.
-  const watchedKey = Object.keys(taskActive)
-    .filter(id => taskActive[id] === true && id !== activeSessionId)
+  // Watch background sessions throughout the running → pausing → paused
+  // lifecycle. Keeping paused sessions subscribed is necessary for a later
+  // session_resumed event to reach the store even though taskActive is false.
+  const watchedIds = new Set([
+    ...Object.keys(taskActive),
+    ...Object.keys(paused),
+    ...Object.keys(pausing),
+  ])
+  const watchedKey = [...watchedIds]
+    .filter(id => (taskActive[id] === true || paused[id] === true || pausing[id] === true) && id !== activeSessionId)
     .sort()
     .join('\n')
 
@@ -110,6 +118,16 @@ export function useBackgroundSessionWatcher(): void {
       )
       cleanups.push(
         onSessionEvent(sessionId, 'error', (data) => { playBackgroundCue('error', data); handleCompletion() }),
+      )
+      cleanups.push(
+        onSessionEvent(sessionId, 'session_paused', () => {
+          handleSessionPausedEvent(sessionId)
+        }),
+      )
+      cleanups.push(
+        onSessionEvent(sessionId, 'session_resumed', () => {
+          handleSessionResumedEvent(sessionId)
+        }),
       )
 
       // HITL events — the agent goroutine blocks until the user responds.

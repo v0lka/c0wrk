@@ -26,6 +26,7 @@ import {
 import { downloadUpdate, applyUpdate, skipVersion } from '@/api/updater'
 import { useUpdateStore } from '@/stores/updateStore'
 import { cn } from '@/lib/utils'
+import { formatVersion } from '@/lib/formatters'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -156,10 +157,10 @@ function AvailableSurface() {
       <div className="space-y-3">
         <div>
           <p className="text-sm font-medium text-foreground">
-            c0wrk v{info.latest_version} доступно
+            c0wrk {formatVersion(info.latest_version)} доступно
           </p>
           <p className="text-xs text-muted-foreground">
-            {currentVersion ? `вы на v${currentVersion}` : 'доступно новое обновление'}
+            {currentVersion ? `вы на ${formatVersion(currentVersion)}` : 'доступно новое обновление'}
           </p>
         </div>
         <div className="flex items-center gap-2">
