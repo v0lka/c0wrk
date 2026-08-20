@@ -25,6 +25,13 @@ func findInstallRoot() (string, error) {
 	return filepath.Dir(exe), nil
 }
 
+// hasInstallMarker reports whether root contains the canonical c0wrk-desktop.exe
+// binary — the install-root shape the updater swaps on Windows.
+func hasInstallMarker(root string) bool {
+	info, err := os.Stat(filepath.Join(root, "c0wrk-desktop.exe"))
+	return err == nil && !info.IsDir()
+}
+
 // resolveNewTreePlatform returns the extraction directory itself on Windows: the
 // update archive (build\bin\*) unpacks to the new install tree directly.
 func resolveNewTreePlatform(extractDir string) (string, error) {

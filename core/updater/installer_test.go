@@ -29,6 +29,46 @@ func writeMarker(t *testing.T, dir, name, content string) {
 	}
 }
 
+// installRootName returns the directory name to use for an install root on the
+// current platform. On macOS the install root is a .app bundle, so the name
+// gains a .app suffix; on Linux/Windows the directory itself is the install
+// root and the marker is a file inside it.
+func installRootName(name string) string {
+	if runtime.GOOS == "darwin" {
+		return name + ".app"
+	}
+	return name
+}
+
+// writeInstallMarker plants the platform-appropriate install marker so
+// validateStandardLocation's install-root check passes. On macOS the marker is
+// the .app directory suffix (created by the caller via installRootName); on
+// Linux/Windows it is the canonical app binary file inside the directory.
+func writeInstallMarker(t *testing.T, dir string) {
+	t.Helper()
+	switch runtime.GOOS {
+	case "darwin":
+		// The .app suffix is the marker; nothing to write.
+	case "windows":
+		writeMarker(t, dir, "c0wrk-desktop.exe", "binary")
+	default:
+		writeMarker(t, dir, "c0wrk-desktop", "binary")
+	}
+}
+
+// makeInstallRoot creates a valid install root under parent and returns its
+// path. The directory is registered for automatic cleanup.
+func makeInstallRoot(t *testing.T, parent, name string) string {
+	t.Helper()
+	dir := filepath.Join(parent, installRootName(name))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir install root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	writeInstallMarker(t, dir)
+	return dir
+}
+
 // newNonTempDir creates a fresh directory that is deliberately OUTSIDE the OS
 // temporary directory and outside any Downloads folder, so it can exercise the
 // non-temp / non-Downloads branches of validateStandardLocation.
@@ -82,9 +122,26 @@ func newNonTempDir(t *testing.T) string {
 }
 
 func TestValidateStandardLocation_OK(t *testing.T) {
-	dir := newNonTempDir(t)
+	base := newNonTempDir(t)
+	dir := makeInstallRoot(t, base, "app")
 	if err := validateStandardLocation(dir); err != nil {
-		t.Fatalf("expected no error for writable dir, got: %v", err)
+		t.Fatalf("expected no error for writable install root, got: %v", err)
+	}
+}
+
+// TestValidateStandardLocation_NoInstallMarkerRejected verifies that a writable
+// non-temp/non-Downloads directory that does not look like an install root (no
+// .app suffix on macOS, no canonical app binary on Linux/Windows) is rejected.
+// This is the bare-dev-binary data-loss guard: a directory that merely happens
+// to hold the binary must not be swapped out wholesale.
+func TestValidateStandardLocation_NoInstallMarkerRejected(t *testing.T) {
+	dir := newNonTempDir(t)
+	err := validateStandardLocation(dir)
+	if !errors.Is(err, ErrNonStandardLocation) {
+		t.Fatalf("expected ErrNonStandardLocation for markerless dir, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "install root") {
+		t.Fatalf("error should mention install root, got: %q", err.Error())
 	}
 }
 
@@ -669,7 +726,7 @@ func TestApplySelfUpdate_Smoke(t *testing.T) {
 	dead := spawnDeadPID(t)
 
 	root := newNonTempDir(t)
-	target := filepath.Join(root, "install-target")
+	target := makeInstallRoot(t, root, "install-target")
 	writeMarker(t, target, "version.txt", "old")
 	stageDir := t.TempDir()
 

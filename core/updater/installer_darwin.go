@@ -13,8 +13,10 @@ import (
 
 // findInstallRoot resolves the .app bundle enclosing the running executable on
 // macOS. The executable lives at <bundle>.app/Contents/MacOS/<name>; we climb
-// ancestors until we find a directory whose suffix is ".app". If no bundle is
-// present (e.g. a bare dev binary), the executable's directory is used.
+// ancestors until we find a directory whose suffix is ".app". A bare dev binary
+// (no enclosing .app bundle) has no safe install root — the directory it was
+// placed in may contain unrelated user files, and swapping that directory in
+// place would displace them — so it is refused with ErrNonStandardLocation.
 func findInstallRoot() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -31,8 +33,14 @@ func findInstallRoot() (string, error) {
 			return d, nil
 		}
 	}
-	// No .app ancestor: use the binary directory (dev build / command-line run).
-	return dir, nil
+	// No .app ancestor: refuse a bare-binary in-place update.
+	return "", ErrNonStandardLocation
+}
+
+// hasInstallMarker reports whether root is a macOS .app bundle — the only
+// install-root shape the updater swaps on this platform.
+func hasInstallMarker(root string) bool {
+	return filepath.Ext(root) == ".app"
 }
 
 // resolveNewTreePlatform locates the top-level *.app bundle inside the

@@ -50,7 +50,10 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
   try {
     const app = getApp()
     const result = await app.CheckForUpdates()
-    return result as UpdateInfo
+    if (!isUpdateInfoData(result)) {
+      throw new Error('Invalid update info response from backend')
+    }
+    return result
   } catch (err) {
     logger.error('Failed to check for updates:', err)
     throw err
@@ -103,7 +106,10 @@ export async function getUpdateSettings(): Promise<UpdateSettings> {
   try {
     const app = getApp()
     const result = await app.GetUpdateSettings()
-    return result as UpdateSettings
+    if (!isUpdateSettingsData(result)) {
+      throw new Error('Invalid update settings response from backend')
+    }
+    return result
   } catch (err) {
     logger.error('Failed to get update settings:', err)
     throw err
@@ -118,7 +124,10 @@ export async function setUpdateSettings(autoCheck: boolean): Promise<UpdateSetti
   try {
     const app = getApp()
     const result = await app.SetUpdateSettings(autoCheck)
-    return result as UpdateSettings
+    if (!isUpdateSettingsData(result)) {
+      throw new Error('Invalid update settings response from backend')
+    }
+    return result
   } catch (err) {
     logger.error('Failed to set update settings:', err)
     throw err
@@ -181,6 +190,17 @@ export function isUpdateInfoData(d: unknown): d is UpdateInfoData {
     typeof o.published_at === 'string' &&
     typeof o.html_url === 'string' &&
     typeof o.asset_name === 'string'
+  )
+}
+
+export function isUpdateSettingsData(d: unknown): d is UpdateSettings {
+  if (typeof d !== 'object' || d === null) return false
+  const o = d as Record<string, unknown>
+  return (
+    typeof o.auto_check === 'boolean' &&
+    typeof o.skipped_version === 'string' &&
+    typeof o.current_version === 'string' &&
+    typeof o.operator_enabled === 'boolean'
   )
 }
 

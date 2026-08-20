@@ -123,6 +123,14 @@ func validateStandardLocation(root string) error {
 	if !isWritable(parent) {
 		return fmt.Errorf("%w: %s is not writable (cannot rename install tree)", ErrNonStandardLocation, parent)
 	}
+	// The target must actually be the install root, not merely a writable
+	// directory: a bare dev binary placed in an arbitrary folder (a project
+	// directory, ~/Documents, etc.) must not be "validated" into swapping that
+	// whole folder out and later deleting its .old backup. On macOS the marker
+	// is the .app suffix; on Linux/Windows it is the canonical app binary.
+	if !hasInstallMarker(abs) {
+		return fmt.Errorf("%w: %s does not look like an install root", ErrNonStandardLocation, abs)
+	}
 	return nil
 }
 
@@ -294,9 +302,11 @@ func ApplySelfUpdate(opts SelfUpdateOptions, log *slog.Logger) error {
 	// re-run the full standard-location validation. The production caller
 	// already computed the target via DiscoverInstallRoot, but ApplySelfUpdate
 	// must not trust a crafted or buggy --target: re-checking here rejects temp
-	// dirs, Downloads, and — most importantly for the data-loss case — any
-	// target whose parent is not writable, which stops a `--target $HOME` from
-	// renaming the entire home directory.
+	// dirs, Downloads, read-only paths, and any target that does not look like
+	// an install root (a .app bundle on macOS, or a directory containing the
+	// canonical app binary on Linux/Windows). Together these stop a
+	// `--target $HOME` or `--target ~/projects/acme` from renaming an unrelated
+	// directory and later deleting its .old backup.
 	cleanTarget := filepath.Clean(opts.TargetDir)
 	switch filepath.Base(cleanTarget) {
 	case ".", "..", string(filepath.Separator):

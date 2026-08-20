@@ -100,7 +100,15 @@ function isResearchStatus(v: unknown): v is ResearchStatus {
   if (typeof v['project_id'] !== 'string') return false
   if (typeof v['research_root'] !== 'string') return false
   if (v['root'] !== undefined && v['root'] !== null) {
-    if (!isRecord(v['root']) || !isArrayOrMissing(v['root']['projects'])) return false
+    const root = v['root']
+    if (!isRecord(root) || !isArrayOrMissing(root['projects'])) return false
+    const projects = root['projects']
+    if (Array.isArray(projects)) {
+      for (const p of projects) {
+        if (!isRecord(p) || !isRecord(p['graph'])) return false
+        if (!isArrayOrMissing(p['graph']['nodes']) || !isArrayOrMissing(p['graph']['edges'])) return false
+      }
+    }
   }
   return true
 }
@@ -116,10 +124,17 @@ function isResearchGraphResponse(v: unknown): v is ResearchGraphResponse {
 }
 
 /** Normalize backend `null` slice fields to `[]` so downstream store/UI code
- *  can rely on the declared array types (e.g. `.map`, `.length`). */
+ *  can rely on the declared array types (e.g. `.map`, `.length`). The graph
+ *  path (normalizeResearchGraphResponse) normalizes only a single graph; the
+ *  status path carries a project list, so every project's graph must be
+ *  normalized the same way. */
 function normalizeResearchStatus(status: ResearchStatus): ResearchStatus {
   if (status.root) {
     status.root.projects ??= []
+    for (const project of status.root.projects) {
+      project.graph.nodes ??= []
+      project.graph.edges ??= []
+    }
   }
   return status
 }

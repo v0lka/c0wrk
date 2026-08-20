@@ -34,11 +34,17 @@ export interface ContextFillStore {
  * absent value to 0 would overwrite a previously-valid fill.
  */
 export function handleContextFill(store: ContextFillStore, sessionId: string, data: ContextFillData): void {
+  // Guard every optional-typed field the same way the session_tokens handler
+  // guards fill_percent/used_tokens/max_tokens: isContextFillData only verifies
+  // fill_percent/status, so the token totals (and model/family) may be absent at
+  // runtime. Coercing an absent token total to 0 (or setting model/family to
+  // undefined) would overwrite a previously-valid value on the store's shallow
+  // merge.
   const totals: Partial<TokenInfo> = {
-    total_input_tokens: data.session_input_tokens ?? 0,
-    total_output_tokens: data.session_output_tokens ?? 0,
-    model: data.model,
-    family: data.family,
+    ...(typeof data.session_input_tokens === 'number' ? { total_input_tokens: data.session_input_tokens } : {}),
+    ...(typeof data.session_output_tokens === 'number' ? { total_output_tokens: data.session_output_tokens } : {}),
+    ...(typeof data.model === 'string' ? { model: data.model } : {}),
+    ...(typeof data.family === 'string' ? { family: data.family } : {}),
   }
   if (data.plan_step_id) {
     store.setStepContextFill(data.plan_step_id, data.fill_percent)

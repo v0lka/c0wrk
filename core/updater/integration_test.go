@@ -193,7 +193,7 @@ func TestPipeline_CheckDownloadVerifyStage_E2E(t *testing.T) {
 	dead := spawnDeadPID(t)
 
 	root := newNonTempDir(t)
-	target := filepath.Join(root, "install-target")
+	target := makeInstallRoot(t, root, "install-target")
 	writeMarker(t, target, "version.txt", "old")
 
 	// Stub relaunch so no GUI process is started.
