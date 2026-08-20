@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isAgentMetricsData, isTaskCompleteData } from './events'
+import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData } from './events'
 
 describe('isTaskCompleteData', () => {
     it('accepts valid data with string output', () => {
@@ -59,10 +59,11 @@ describe('isAgentMetricsData', () => {
     const valid = {
         finish: 'full',
         parse_errors: 2,
-        nudges: { repeat: 1, same_tool: 1, fruitless: 0, parse: 1 },
-        aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0 },
+        nudges: { repeat: 1, same_tool: 1, fruitless: 0, parse: 1, truncation: 0 },
+        aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0, truncation: 0 },
         steps: 12,
         output_tokens: 3400,
+        invalid_tool_calls: 2,
         small_llm: { enabled: true, variants: ['essential_tools', 'sampling'] },
     }
 
@@ -88,16 +89,65 @@ describe('isAgentMetricsData', () => {
     it('rejects malformed counter blocks', () => {
         expect(isAgentMetricsData({ ...valid, nudges: { repeat: 1 } })).toBe(false)
         expect(isAgentMetricsData({ ...valid, aborts: { repeat: 'x', same_tool: 1, fruitless: 1, parse: 1 } })).toBe(false)
+        expect(isAgentMetricsData({ ...valid, nudges: { repeat: 1, same_tool: 1, fruitless: 0, parse: 1 } })).toBe(false)
+        expect(isAgentMetricsData({ ...valid, aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0, truncation: '0' } })).toBe(false)
     })
 
     it('rejects wrong scalar types', () => {
         expect(isAgentMetricsData({ ...valid, parse_errors: '2' })).toBe(false)
         expect(isAgentMetricsData({ ...valid, steps: true })).toBe(false)
         expect(isAgentMetricsData({ ...valid, finish: 42 })).toBe(false)
+        expect(isAgentMetricsData({ ...valid, invalid_tool_calls: '2' })).toBe(false)
+        expect(isAgentMetricsData({ ...valid, invalid_tool_calls: undefined })).toBe(false)
     })
 
     it('rejects malformed small_llm block', () => {
         expect(isAgentMetricsData({ ...valid, small_llm: { enabled: 'yes' } })).toBe(false)
         expect(isAgentMetricsData({ ...valid, small_llm: undefined })).toBe(false)
+    })
+})
+
+describe('normalizeAgentMetricsData', () => {
+    const full = {
+        finish: 'full',
+        parse_errors: 2,
+        nudges: { repeat: 1, same_tool: 1, fruitless: 0, parse: 1, truncation: 0 },
+        aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0, truncation: 1 },
+        steps: 12,
+        output_tokens: 3400,
+        invalid_tool_calls: 2,
+        small_llm: { enabled: true, variants: ['essential_tools', 'sampling'] },
+    }
+
+    it('returns the payload unchanged when all fields are present', () => {
+        expect(normalizeAgentMetricsData(full)).toEqual(full)
+    })
+
+    it('defaults invalid_tool_calls to 0 for legacy rows', () => {
+        const legacy = { ...full }
+        delete (legacy as { invalid_tool_calls?: number }).invalid_tool_calls
+        const got = normalizeAgentMetricsData(legacy)
+        expect(got?.invalid_tool_calls).toBe(0)
+    })
+
+    it('defaults the truncation counter to 0 for legacy rows', () => {
+        const legacy = { ...full, nudges: { repeat: 1, same_tool: 1, fruitless: 0, parse: 1 }, aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0 } }
+        const got = normalizeAgentMetricsData(legacy)
+        expect(got?.nudges.truncation).toBe(0)
+        expect(got?.aborts.truncation).toBe(0)
+    })
+
+    it('preserves non-zero legacy-adjacent values', () => {
+        const legacy = { ...full, invalid_tool_calls: 3, aborts: { repeat: 0, same_tool: 0, fruitless: 1, parse: 0, truncation: 2 } }
+        const got = normalizeAgentMetricsData(legacy)
+        expect(got?.invalid_tool_calls).toBe(3)
+        expect(got?.aborts.truncation).toBe(2)
+    })
+
+    it('returns undefined for non-metrics payloads', () => {
+        expect(normalizeAgentMetricsData(null)).toBeUndefined()
+        expect(normalizeAgentMetricsData(undefined)).toBeUndefined()
+        expect(normalizeAgentMetricsData({ skills: ['x'] })).toBeUndefined()
+        expect(normalizeAgentMetricsData({ ...full, steps: true })).toBeUndefined()
     })
 })

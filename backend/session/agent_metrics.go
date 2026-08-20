@@ -20,12 +20,13 @@ import (
 // into the session totals — mirroring how tokenState is shared. Safe for
 // concurrent use.
 type metricsState struct {
-	mu          sync.Mutex
-	parseErrors int
-	nudges      AgentMetricsCounters
-	aborts      AgentMetricsCounters
-	steps       int
-	smallLLM    SmallLLMMetaInfo
+	mu               sync.Mutex
+	parseErrors      int
+	invalidToolCalls int
+	nudges           AgentMetricsCounters
+	aborts           AgentMetricsCounters
+	steps            int
+	smallLLM         SmallLLMMetaInfo
 }
 
 // observeDiagnostic maps an executor diagnostic event name onto the counters.
@@ -56,6 +57,8 @@ func (m *metricsState) observeDiagnostic(event string) {
 	case "parse_error_abort", "tool_call_syntax_abort":
 		m.aborts.Parse++
 		m.parseErrors++
+	case "truncation_abort":
+		m.aborts.Truncation++
 	}
 }
 
@@ -64,6 +67,21 @@ func (m *metricsState) observeStep() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.steps++
+}
+
+// observeToolResult classifies a single tool result and counts "invalid tool
+// call" errors — model-produced calls the executor rejected as malformed or
+// structurally invalid (parse failures, unknown tools, malformed batches).
+// Runtime failures (shell errors, missing files) and security/policy/HITL
+// refusals are intentionally excluded: they are not invalid *calls*, they are
+// invalid (or disallowed) *operations*.
+func (m *metricsState) observeToolResult(isError bool, content string) {
+	if !isError || !isInvalidToolCall(content) {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.invalidToolCalls++
 }
 
 // setSmallLLM snapshots the Small-LLM profile the session runs under.
@@ -80,15 +98,17 @@ func (m *metricsState) snapshot(finish string, outputTokens int) AgentMetricsDat
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	data := AgentMetricsData{
-		Finish:       finish,
-		ParseErrors:  m.parseErrors,
-		Nudges:       m.nudges,
-		Aborts:       m.aborts,
-		Steps:        m.steps,
-		OutputTokens: outputTokens,
-		SmallLLM:     smallLLMInfoSnapshot(m.smallLLM),
+		Finish:           finish,
+		ParseErrors:      m.parseErrors,
+		InvalidToolCalls: m.invalidToolCalls,
+		Nudges:           m.nudges,
+		Aborts:           m.aborts,
+		Steps:            m.steps,
+		OutputTokens:     outputTokens,
+		SmallLLM:         smallLLMInfoSnapshot(m.smallLLM),
 	}
 	m.parseErrors = 0
+	m.invalidToolCalls = 0
 	m.nudges = AgentMetricsCounters{}
 	m.aborts = AgentMetricsCounters{}
 	m.steps = 0

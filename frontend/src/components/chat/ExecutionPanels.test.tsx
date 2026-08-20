@@ -20,10 +20,11 @@ import type { PlanGroup } from '@/types/models'
 const metrics: AgentMetricsData = {
   finish: 'full',
   parse_errors: 0,
-  nudges: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0 },
-  aborts: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0 },
+  nudges: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0, truncation: 0 },
+  aborts: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0, truncation: 0 },
   steps: 3,
   output_tokens: 1200,
+  invalid_tool_calls: 0,
   small_llm: { enabled: false, variants: [] },
 }
 

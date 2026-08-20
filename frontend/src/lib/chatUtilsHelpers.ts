@@ -4,7 +4,7 @@
  */
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 import { isArrayOf } from '@/types/guards'
-import { isAgentMetricsData } from '@/types/events'
+import { normalizeAgentMetricsData } from '@/types/events'
 
 /** Build a composite tool key for correlating tool_call ↔ tool_result. */
 export function makeToolKey(
@@ -183,7 +183,7 @@ export function reconstructContent(role: string, rawContent: string, meta: Recor
       // planStore.sessionStats (see lastAgentMetricsFromHistory) and filters
       // them out of the chat, so raw JSON never renders. The empty string is
       // the fallback for any path that converts rows without filtering.
-      if (isAgentMetricsData(meta)) {
+      if (normalizeAgentMetricsData(meta) !== undefined) {
         return ''
       }
       return (meta.content as string) || rawContent

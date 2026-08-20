@@ -28,9 +28,10 @@ func TestAgentMetrics_ExecutorDiagnosticsToPayload(t *testing.T) {
 	emitter.ExecutorDiagnostic(5, "same_tool_repeat_abort", nil)
 	emitter.ExecutorDiagnostic(6, "fruitless_abort", nil)
 	emitter.ExecutorDiagnostic(7, "parse_error_abort", nil)
+	emitter.ExecutorDiagnostic(8, "truncation_abort", nil)
 	// Informational diagnostics must not affect quality counters.
-	emitter.ExecutorDiagnostic(8, "executor_finish_nudge", nil)
-	emitter.ExecutorDiagnostic(9, "pre_compaction_nudge", nil)
+	emitter.ExecutorDiagnostic(9, "executor_finish_nudge", nil)
+	emitter.ExecutorDiagnostic(10, "pre_compaction_nudge", nil)
 
 	// Steps: two conductor steps plus one subagent step emitted through a
 	// plan-scoped copy — the copy must share the session-level counters.
@@ -45,7 +46,7 @@ func TestAgentMetrics_ExecutorDiagnosticsToPayload(t *testing.T) {
 		Finish:       "full",
 		ParseErrors:  2,
 		Nudges:       AgentMetricsCounters{Repeat: 1, SameTool: 1, Fruitless: 1, Parse: 1},
-		Aborts:       AgentMetricsCounters{SameTool: 1, Fruitless: 1, Parse: 1},
+		Aborts:       AgentMetricsCounters{SameTool: 1, Fruitless: 1, Parse: 1, Truncation: 1},
 		Steps:        3,
 		OutputTokens: 1200,
 		SmallLLM: SmallLLMMetaInfo{
@@ -166,12 +167,14 @@ func TestEventPersister_AgentMetricsPersistedAsStatus(t *testing.T) {
 		SessionID: "s1",
 		Type:      "agent_metrics",
 		Data: AgentMetricsData{
-			Finish:       "full",
-			ParseErrors:  1,
-			Nudges:       AgentMetricsCounters{Parse: 1},
-			Steps:        3,
-			OutputTokens: 42,
-			SmallLLM:     SmallLLMMetaInfo{Enabled: false, Variants: []string{}},
+			Finish:           "full",
+			ParseErrors:      1,
+			InvalidToolCalls: 2,
+			Nudges:           AgentMetricsCounters{Parse: 1},
+			Aborts:           AgentMetricsCounters{Truncation: 1},
+			Steps:            3,
+			OutputTokens:     42,
+			SmallLLM:         SmallLLMMetaInfo{Enabled: false, Variants: []string{}},
 		},
 	})
 
@@ -182,9 +185,77 @@ func TestEventPersister_AgentMetricsPersistedAsStatus(t *testing.T) {
 	if rows[0].Role != "status" {
 		t.Fatalf("expected role %q, got %q", "status", rows[0].Role)
 	}
-	for _, want := range []string{`"finish":"full"`, `"parse_errors":1`, `"steps":3`, `"output_tokens":42`} {
+	for _, want := range []string{`"finish":"full"`, `"parse_errors":1`, `"invalid_tool_calls":2`, `"truncation":1`, `"steps":3`, `"output_tokens":42`} {
 		if !strings.Contains(string(rows[0].Metadata), want) {
 			t.Errorf("metadata %s must contain %s", string(rows[0].Metadata), want)
 		}
+	}
+}
+
+// TestIsInvalidToolCall verifies the classifier predicate in isolation: each
+// recognized invalid-tool-call prefix matches, while runtime errors, security/
+// policy refusals and ordinary output do not.
+func TestIsInvalidToolCall(t *testing.T) {
+	valid := []string{
+		"failed to parse input: invalid json",
+		"validation error: path is required",
+		"tool not found: ghost_tool",
+		"batch parse error: unexpected end of JSON",
+		"batch: no calls provided (empty calls array)",
+		"error: batch cannot be nested inside another batch call",
+	}
+	for _, c := range valid {
+		if !isInvalidToolCall(c) {
+			t.Errorf("expected %q to classify as an invalid tool call", c)
+		}
+	}
+
+	notInvalid := []string{
+		"",
+		"some ordinary tool output",
+		"error executing command: exit status 1",
+		"file not found: /tmp/missing",
+		"shell command failed: permission denied",
+		"policy denied: tool not allowed",
+		"user confirmation required",
+		"error: something went wrong at runtime", // generic "error:" prefix must not match
+	}
+	for _, c := range notInvalid {
+		if isInvalidToolCall(c) {
+			t.Errorf("expected %q NOT to classify as an invalid tool call", c)
+		}
+	}
+}
+
+// TestMetricsState_ObserveToolResult verifies that the tool-result observer
+// increments InvalidToolCalls only for error results matching the recognized
+// invalid-tool-call forms — never for runtime/security refusals, and never for
+// non-error results regardless of content.
+func TestMetricsState_ObserveToolResult(t *testing.T) {
+	emitter := NewEventEmitter("sess-3", func(Event) {})
+
+	// One of each recognized invalid-tool-call prefix.
+	emitter.ToolResult(1, 0, 0, "failed to parse input: bad json", true)
+	emitter.ToolResult(1, 1, 0, "validation error: path is required", true)
+	emitter.ToolResult(1, 2, 0, "tool not found: ghost", true)
+	emitter.ToolResult(1, 3, 0, "batch parse error: bad input", true)
+	emitter.ToolResult(1, 4, 0, "batch: no calls provided (empty calls array)", true)
+	emitter.ToolResult(1, 5, 0, "error: batch cannot be nested inside another batch call", true)
+
+	// Runtime / security / policy refusals and non-error results must not count.
+	emitter.ToolResult(1, 6, 0, "error executing command: exit status 1", true)
+	emitter.ToolResult(1, 7, 0, "file not found: /tmp/missing", true)
+	emitter.ToolResult(1, 8, 0, "policy denied: tool not allowed", true)
+	emitter.ToolResult(1, 9, 0, "failed to parse input: bad json", false)
+
+	got := emitter.EmitAgentMetrics("full")
+	if got.InvalidToolCalls != 6 {
+		t.Fatalf("expected 6 invalid tool calls, got %d: %+v", got.InvalidToolCalls, got)
+	}
+
+	// Counter resets after snapshot: a second emission reports zero.
+	next := emitter.EmitAgentMetrics("failed")
+	if next.InvalidToolCalls != 0 {
+		t.Fatalf("expected invalid tool calls to reset after snapshot, got %d", next.InvalidToolCalls)
 	}
 }

@@ -110,6 +110,7 @@ export interface AgentMetricsCounters {
   readonly same_tool: number
   readonly fruitless: number
   readonly parse: number
+  readonly truncation: number
 }
 
 export interface AgentMetricsSmallLLM {
@@ -124,6 +125,7 @@ export interface AgentMetricsData {
   readonly aborts: AgentMetricsCounters
   readonly steps: number
   readonly output_tokens: number
+  readonly invalid_tool_calls: number
   readonly small_llm: AgentMetricsSmallLLM
 }
 export interface BlackboardUpdatedData { change_type: string }
@@ -511,7 +513,8 @@ function isAgentMetricsCounters(v: unknown): v is AgentMetricsCounters {
     typeof v.repeat === 'number' &&
     typeof v.same_tool === 'number' &&
     typeof v.fruitless === 'number' &&
-    typeof v.parse === 'number'
+    typeof v.parse === 'number' &&
+    typeof v.truncation === 'number'
   )
 }
 
@@ -523,12 +526,71 @@ export function isAgentMetricsData(d: unknown): d is AgentMetricsData {
     typeof d.parse_errors === 'number' &&
     typeof d.steps === 'number' &&
     typeof d.output_tokens === 'number' &&
+    typeof d.invalid_tool_calls === 'number' &&
     isAgentMetricsCounters(d.nudges) &&
     isAgentMetricsCounters(d.aborts) &&
     isObj(d.small_llm) &&
     typeof (d.small_llm as { enabled?: unknown }).enabled === 'boolean' &&
     Array.isArray((d.small_llm as { variants?: unknown }).variants)
   )
+}
+
+/**
+ * Normalize a persisted `agent_metrics` payload for history-load, tolerating
+ * fields added after the row was saved. Older rows predate
+ * `invalid_tool_calls` and the `truncation` abort counter; both are defaulted
+ * to 0 here. The live `agent_metrics` event handler keeps using the strict
+ * `isAgentMetricsData` guard (Go always serializes the full shape for fresh
+ * events). Returns undefined when the payload is not an agent_metrics row.
+ */
+export function normalizeAgentMetricsData(d: unknown): AgentMetricsData | undefined {
+  if (!isObj(d)) return undefined
+  if (
+    typeof d.finish !== 'string' ||
+    typeof d.parse_errors !== 'number' ||
+    typeof d.steps !== 'number' ||
+    typeof d.output_tokens !== 'number'
+  ) {
+    return undefined
+  }
+  const counters = (v: unknown): AgentMetricsCounters | undefined => {
+    if (!isObj(v)) return undefined
+    if (
+      typeof v.repeat !== 'number' ||
+      typeof v.same_tool !== 'number' ||
+      typeof v.fruitless !== 'number' ||
+      typeof v.parse !== 'number'
+    ) {
+      return undefined
+    }
+    return {
+      repeat: v.repeat,
+      same_tool: v.same_tool,
+      fruitless: v.fruitless,
+      parse: v.parse,
+      truncation: typeof v.truncation === 'number' ? v.truncation : 0,
+    }
+  }
+  const nudges = counters(d.nudges)
+  const aborts = counters(d.aborts)
+  if (!nudges || !aborts) return undefined
+  const small = d.small_llm
+  if (!isObj(small) || typeof small.enabled !== 'boolean' || !Array.isArray(small.variants)) {
+    return undefined
+  }
+  return {
+    finish: d.finish,
+    parse_errors: d.parse_errors,
+    steps: d.steps,
+    output_tokens: d.output_tokens,
+    invalid_tool_calls: typeof d.invalid_tool_calls === 'number' ? d.invalid_tool_calls : 0,
+    nudges,
+    aborts,
+    small_llm: {
+      enabled: small.enabled,
+      variants: small.variants,
+    },
+  }
 }
 export function isReflectionData(d: unknown): d is ReflectionData { return isObj(d) && has(d, 'summary', 'attempt') }
 export function isToolJudgeResponseData(d: unknown): d is ToolJudgeResponseData { return isObj(d) && has(d, 'confirm_id') }

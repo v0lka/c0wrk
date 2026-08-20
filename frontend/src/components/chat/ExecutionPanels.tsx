@@ -9,10 +9,13 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { DAGGraph } from './DAGGraph'
 import { PlanView } from './PlanView'
 
-/** Summarizes one nudges/aborts counter block as "2 (1r · 1s · 0f · 0p)". */
+/** Summarizes one nudges/aborts counter block as "2 (1r·1s·0f·0p)"; the
+ *  truncation "·Nt" segment is omitted while it is zero (nudges never emit it). */
 function countersSummary(c: AgentMetricsCounters): string {
-  const total = c.repeat + c.same_tool + c.fruitless + c.parse
-  return `${total} (${c.repeat}r·${c.same_tool}s·${c.fruitless}f·${c.parse}p)`
+  const total = c.repeat + c.same_tool + c.fruitless + c.parse + c.truncation
+  const parts = [`${c.repeat}r`, `${c.same_tool}s`, `${c.fruitless}f`, `${c.parse}p`]
+  if (c.truncation !== 0) parts.push(`${c.truncation}t`)
+  return `${total} (${parts.join('·')})`
 }
 
 /**
@@ -37,6 +40,7 @@ function SessionStatsRow({ sessionId }: { sessionId: string }) {
       <span>steps: {m.steps}</span>
       <span>out tokens: {m.output_tokens}</span>
       <span>parse errors: {m.parse_errors}</span>
+      <span>invalid calls: {m.invalid_tool_calls}</span>
       <span>nudges: {countersSummary(m.nudges)}</span>
       <span>aborts: {countersSummary(m.aborts)}</span>
       {m.small_llm.enabled && (

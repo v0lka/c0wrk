@@ -572,6 +572,7 @@ func readAttachmentID(data map[string]any) string {
 
 // ToolResult emits a tool result event.
 func (e *EventEmitter) ToolResult(stepNum, callIdx, resultLen int, preview string, isError bool) {
+	e.metrics.observeToolResult(isError, preview)
 	e.log().Debug("emitter: tool result", "sessionID", e.sessionID, "step", stepNum, "callIdx", callIdx, "resultLen", resultLen, "isError", isError)
 	e.mu.Lock()
 	defer e.mu.Unlock()

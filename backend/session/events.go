@@ -261,6 +261,10 @@ type AgentMetricsData struct {
 	// ParseErrors counts malformed model outputs that triggered a corrective
 	// nudge or an abort (tool-input parse errors and tool-call syntax leaks).
 	ParseErrors int `json:"parse_errors"`
+	// InvalidToolCalls counts tool results the executor classified as an
+	// invalid tool call (malformed input, unknown tool, or a structurally
+	// invalid batch) — distinct from runtime errors and policy refusals.
+	InvalidToolCalls int `json:"invalid_tool_calls"`
 	// Nudges counts corrective nudges emitted by the executor loop detectors,
 	// broken down by detector kind.
 	Nudges AgentMetricsCounters `json:"nudges"`
@@ -276,12 +280,14 @@ type AgentMetricsData struct {
 
 // AgentMetricsCounters breaks nudges/aborts down by executor loop detector:
 // repeat — identical tool calls, same_tool — same tool with similar results,
-// fruitless — no-progress detector, parse — malformed output detectors.
+// fruitless — no-progress detector, parse — malformed output detectors,
+// truncation — output-truncation circuit-breaker abort.
 type AgentMetricsCounters struct {
-	Repeat    int `json:"repeat"`
-	SameTool  int `json:"same_tool"`
-	Fruitless int `json:"fruitless"`
-	Parse     int `json:"parse"`
+	Repeat     int `json:"repeat"`
+	SameTool   int `json:"same_tool"`
+	Fruitless  int `json:"fruitless"`
+	Parse      int `json:"parse"`
+	Truncation int `json:"truncation"`
 }
 
 // SmallLLMMetaInfo snapshots the Small-LLM profile state the session ran

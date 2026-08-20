@@ -1,7 +1,7 @@
 import type { ChatMessageUI, MessageType, DisplayItem, GroupedMessages } from '@/types/messages'
 import type { ChatMessage, PlanGroup, PlanItem } from '@/types/models'
 import type { AgentMetricsData } from '@/types/events'
-import { isAgentMetricsData, isGoalStatusData } from '@/types/events'
+import { normalizeAgentMetricsData, isGoalStatusData } from '@/types/events'
 import type { ActiveGoal } from '@/stores/goalStore'
 import { reconstructContent, buildHistoryId, collapseThoughts, dedupThoughtVsAnswer, extractMeta, normalizeThoughtContent } from './chatUtilsHelpers'
 import { buildGoalTransitionNotice, goalStatusToActiveGoal, type GoalCarryOver } from './goalTransition'
@@ -101,7 +101,10 @@ export function isPersistableHistoryMessage(msg: ChatMessage): boolean {
 export function lastAgentMetricsFromHistory(messages: ChatMessageUI[]): AgentMetricsData | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const meta = messages[i]!.metadata
-    if (meta !== undefined && isAgentMetricsData(meta)) return meta
+    if (meta !== undefined) {
+      const normalized = normalizeAgentMetricsData(meta)
+      if (normalized !== undefined) return normalized
+    }
   }
   return undefined
 }
@@ -114,7 +117,7 @@ export function lastAgentMetricsFromHistory(messages: ChatMessageUI[]): AgentMet
  * the newest one back into the ExecutionPanels stats row.
  */
 export function isAgentMetricsRow(msg: ChatMessageUI): boolean {
-  return msg.type === 'status' && msg.metadata !== undefined && isAgentMetricsData(msg.metadata)
+  return msg.type === 'status' && msg.metadata !== undefined && normalizeAgentMetricsData(msg.metadata) !== undefined
 }
 
 /** Transform a flat list of ChatMessageUI into a display-ready tree. */
