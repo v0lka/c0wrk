@@ -101,7 +101,13 @@ export function usePlanEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'step_todo_update', (data) => {
         if (!isStepTodoUpdateData(data)) { reportDroppedEvent('step_todo_update', data); return }
-        useChatStore.getState().addMessage(sessionId, {
+        // Use upsertChecklistMessage (not addMessage): the Conductor emits a
+        // checklist update after every tool call, so adding a fresh row each
+        // time would grow the message list without bound. Collapsing to one
+        // row per step_id keeps the store bounded; groupMessages additionally
+        // collapses root-level checklists across different step_ids to a
+        // single card (one active checklist per chat level).
+        useChatStore.getState().upsertChecklistMessage(sessionId, {
           id: generateMessageId(),
           sessionId,
           type: 'step_todo_update',

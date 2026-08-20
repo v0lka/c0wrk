@@ -1920,6 +1920,9 @@ func (m *mockSessionStoreForRestore) DeleteMessages(_ context.Context, _ string)
 func (m *mockSessionStoreForRestore) ResolvePendingMessage(_ context.Context, _, _, _, _ string, _ map[string]any) error {
 	return nil
 }
+func (m *mockSessionStoreForRestore) UpsertStepTodoUpdate(_ context.Context, _, _ string, _ ChatMessage) error {
+	return nil
+}
 func (m *mockSessionStoreForRestore) SaveTerminalCommand(_ context.Context, _, _ string) error {
 	return nil
 }

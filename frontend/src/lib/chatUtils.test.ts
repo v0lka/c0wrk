@@ -773,6 +773,76 @@ describe('groupMessages — checklist', () => {
     }
   })
 
+  it('collapses multiple root-level checklists (different step_ids) into one', () => {
+    // A standalone checklist (step_id "") and an ad-hoc step_id whose
+    // plan_step block is suppressed both render at the ROOT level. They must
+    // share one key so they supersede each other instead of stacking.
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'cl-main',
+        type: 'step_todo_update',
+        metadata: {
+          step_id: 'main',
+          items: [{ text: 'Ad-hoc task', checked: false }],
+        },
+      }),
+      makeUI({
+        id: 'cl-standalone',
+        type: 'step_todo_update',
+        metadata: {
+          step_id: '',
+          items: [{ text: 'Standalone task', checked: false }],
+        },
+      }),
+    ]
+
+    const result = groupMessages(messages)
+    const checklists = result.items.filter(i => i.kind === 'checklist')
+    expect(checklists).toHaveLength(1)
+    if (checklists[0]!.kind === 'checklist') {
+      expect(checklists[0]!.id).toBe('cl-standalone')
+    }
+  })
+
+  it('keeps one root checklist alongside one nested step checklist', () => {
+    // A plan_step block for step_1 stays open; its checklist nests inside it.
+    // A concurrent standalone checklist belongs to the root level and must NOT
+    // clobber the step checklist (different levels, different keys).
+    const messages: ChatMessageUI[] = [
+      makeUI({
+        id: 'plan-1',
+        type: 'plan',
+        content: '',
+        metadata: { steps: [{ id: 'step_1', description: 'First', summary: 'First' }] },
+      }),
+      makeUI({
+        id: 'step-start',
+        type: 'plan_step_start',
+        metadata: { step_id: 'step_1', description: 'First', summary: 'First' },
+      }),
+      makeUI({
+        id: 'cl-step',
+        type: 'step_todo_update',
+        metadata: { step_id: 'step_1', items: [{ text: 'Step task', checked: false }] },
+      }),
+      makeUI({
+        id: 'cl-root',
+        type: 'step_todo_update',
+        metadata: { step_id: '', items: [{ text: 'Root task', checked: false }] },
+      }),
+    ]
+
+    const result = groupMessages(messages)
+    const step = result.items.find(i => i.kind === 'plan_step')
+    expect(step?.kind).toBe('plan_step')
+    if (step?.kind === 'plan_step') {
+      const stepChecklists = step.children.filter(i => i.kind === 'checklist')
+      expect(stepChecklists).toHaveLength(1)
+    }
+    const rootChecklists = result.items.filter(i => i.kind === 'checklist')
+    expect(rootChecklists).toHaveLength(1)
+  })
+
   it('sinks active checklist to the end of the root container', () => {
     const messages: ChatMessageUI[] = [
       makeUI({

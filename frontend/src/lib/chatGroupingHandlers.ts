@@ -15,10 +15,12 @@ export type ActionDisplayItem = Extract<DisplayItem, { kind: 'tool_confirm' | 'a
 /**
  * handleStepTodoUpdate processes a step_todo_update message into a
  * DisplayItem.kind='checklist'. Each update supersedes the previous one for
- * the same key (stepId || '' for standalone): the old checklist is removed
- * from its container and replaced by the new one at the current stream
- * position. The sinking post-pass in groupMessages moves active (incomplete)
- * checklists to the end of their container.
+ * the same LEVEL: a checklist nested in an open plan_step/subagent is keyed by
+ * its stepId, while every root-level checklist (standalone step_id="" or any
+ * ad-hoc step_id whose block is suppressed/closed) shares a single root key.
+ * The old checklist is removed from its container and replaced by the new one
+ * at the current stream position. The sinking post-pass in groupMessages moves
+ * active (incomplete) checklists to the end of their container.
  */
 export function handleStepTodoUpdate(
   msg: ChatMessageUI, meta: Record<string, unknown> | undefined,
@@ -31,7 +33,19 @@ export function handleStepTodoUpdate(
 
   const todoItems: TodoItem[] = rawItems.map((it) => ({ text: it.text, checked: it.checked }))
   const active = todoItems.some((it) => !it.checked)
-  const key = stepId // '' for standalone
+
+  // Resolve the checklist's container first: a checklist nests inside an open
+  // plan_step/subagent block only when its step_id matches one; otherwise it
+  // belongs to the root (main-chat) level.
+  const container = stepId ? openSteps.get(stepId) : null
+
+  // Key by LEVEL, not by step_id. A nested checklist is scoped to its step
+  // block (key = stepId — one per open step); every root-level checklist must
+  // share a single key so they supersede each other. This enforces the
+  // invariant "one chat level = one active checklist": a standalone (step_id
+  // "") checklist and any ad-hoc step_id whose block is suppressed/closed both
+  // render at root and must collapse to a single card, not stack.
+  const key = container ? stepId : ''
 
   // Supersede the previous checklist for this key — remove it from its container.
   const prev = checklistsByKey.get(key)
@@ -44,8 +58,6 @@ export function handleStepTodoUpdate(
     kind: 'checklist', id: msg.id, stepId: stepId || null, items: todoItems, active,
   }
 
-  // Push into the step's children if stepId matches an open step, otherwise root.
-  const container = stepId ? openSteps.get(stepId) : null
   if (container) {
     container.children.push(checklistItem)
   } else {

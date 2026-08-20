@@ -749,6 +749,44 @@ describe('addMessage idempotency', () => {
   })
 })
 
+describe('upsertChecklistMessage', () => {
+  const SESSION = 'sess-checklist'
+
+  beforeEach(() => {
+    useChatStore.setState({ messages: {}, messageOrder: {} })
+  })
+
+  it('collapses repeated step_todo_update rows for the same step_id to one', () => {
+    const store = useChatStore.getState()
+    store.upsertChecklistMessage(SESSION, { id: 'cl-1', sessionId: SESSION, type: 'step_todo_update', content: '', metadata: { step_id: '', items: [{ text: 'A', checked: false }] }, timestamp: 100 })
+    store.upsertChecklistMessage(SESSION, { id: 'cl-2', sessionId: SESSION, type: 'step_todo_update', content: '', metadata: { step_id: '', items: [{ text: 'A', checked: true }] }, timestamp: 200 })
+
+    const order = useChatStore.getState().messageOrder[SESSION]!
+    expect(order).toEqual(['cl-2'])
+    expect(useChatStore.getState().messages[SESSION]!['cl-1']).toBeUndefined()
+    expect(useChatStore.getState().messages[SESSION]!['cl-2']).toBeDefined()
+  })
+
+  it('keeps checklists for different step_ids separate (store-level)', () => {
+    const store = useChatStore.getState()
+    store.upsertChecklistMessage(SESSION, { id: 'cl-root', sessionId: SESSION, type: 'step_todo_update', content: '', metadata: { step_id: '', items: [{ text: 'Root', checked: false }] }, timestamp: 100 })
+    store.upsertChecklistMessage(SESSION, { id: 'cl-step', sessionId: SESSION, type: 'step_todo_update', content: '', metadata: { step_id: 'step_1', items: [{ text: 'Step', checked: false }] }, timestamp: 200 })
+
+    const order = useChatStore.getState().messageOrder[SESSION]!
+    expect(order).toEqual(['cl-root', 'cl-step'])
+  })
+
+  it('leaves non-checklist messages untouched', () => {
+    const store = useChatStore.getState()
+    store.addMessage(SESSION, { id: 'user-1', sessionId: SESSION, type: 'user', content: 'hi', timestamp: 50 })
+    store.upsertChecklistMessage(SESSION, { id: 'cl-1', sessionId: SESSION, type: 'step_todo_update', content: '', metadata: { step_id: '', items: [{ text: 'A', checked: false }] }, timestamp: 100 })
+
+    const order = useChatStore.getState().messageOrder[SESSION]!
+    expect(order).toEqual(['user-1', 'cl-1'])
+    expect(useChatStore.getState().messages[SESSION]!['user-1']).toBeDefined()
+  })
+})
+
 describe('setPaused', () => {
   const SESSION = 'sess-pause'
 

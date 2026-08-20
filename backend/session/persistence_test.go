@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -2345,5 +2346,117 @@ func TestSessionWorkDir_IsolationBySession(t *testing.T) {
 	}
 	if len(bDirs) != 1 || bDirs[0].Path != "/tmp/b" {
 		t.Errorf("session B should only see its own work dir, got %#v", bDirs)
+	}
+}
+
+// stepTodoMsg builds a step_todo_update ChatMessage whose metadata carries the
+// given step_id and a distinguishable item text, so upsert tests can assert
+// which row was replaced.
+func stepTodoMsg(sessionID, stepID, text, createdAt string) ChatMessage {
+	meta, _ := json.Marshal(map[string]any{
+		"step_id": stepID,
+		"items":   []map[string]any{{"text": text, "checked": false}},
+	})
+	return ChatMessage{
+		SessionID: sessionID,
+		Role:      "step_todo_update",
+		Content:   string(meta),
+		Metadata:  json.RawMessage(meta),
+		CreatedAt: createdAt,
+	}
+}
+
+// TestUpsertStepTodoUpdate verifies that checklist updates for the same step_id
+// replace the previous persisted row in place (preserving id and created_at so
+// the checklist keeps its original stream position), while different step_ids
+// (including the empty standalone step_id) are stored as separate rows. This is
+// what bounds session_messages growth: the Conductor emits a checklist update
+// after every tool call, and persisting one row per update would grow history
+// without bound.
+func TestUpsertStepTodoUpdate(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	const sessionID = "todo-session"
+	if err := store.SaveSession(context.Background(), SessionInfo{
+		ID:        sessionID,
+		ProjectID: testProjectID,
+		Name:      "Todo Session",
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := store.UpsertStepTodoUpdate(ctx, sessionID, "step_1", stepTodoMsg(sessionID, "step_1", "v1", "2024-01-15T10:00:00Z")); err != nil {
+		t.Fatalf("first upsert step_1: %v", err)
+	}
+	if err := store.UpsertStepTodoUpdate(ctx, sessionID, "step_1", stepTodoMsg(sessionID, "step_1", "v2", "2024-01-15T10:00:01Z")); err != nil {
+		t.Fatalf("second upsert step_1: %v", err)
+	}
+	if err := store.UpsertStepTodoUpdate(ctx, sessionID, "step_2", stepTodoMsg(sessionID, "step_2", "v3", "2024-01-15T10:00:02Z")); err != nil {
+		t.Fatalf("first upsert step_2: %v", err)
+	}
+	if err := store.UpsertStepTodoUpdate(ctx, sessionID, "", stepTodoMsg(sessionID, "", "standalone-1", "2024-01-15T10:00:03Z")); err != nil {
+		t.Fatalf("first upsert standalone: %v", err)
+	}
+	if err := store.UpsertStepTodoUpdate(ctx, sessionID, "", stepTodoMsg(sessionID, "", "standalone-2", "2024-01-15T10:00:04Z")); err != nil {
+		t.Fatalf("second upsert standalone: %v", err)
+	}
+
+	messages, err := store.LoadMessages(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 rows (step_1, step_2, standalone), got %d: %+v", len(messages), messages)
+	}
+
+	var step1, step2, standalone *ChatMessage
+	for i := range messages {
+		m := &messages[i]
+		if m.Role != "step_todo_update" {
+			t.Fatalf("unexpected role %q", m.Role)
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(m.Metadata, &meta); err != nil {
+			t.Fatalf("failed to unmarshal metadata: %v", err)
+		}
+		switch meta["step_id"] {
+		case "step_1":
+			step1 = m
+		case "step_2":
+			step2 = m
+		case "":
+			standalone = m
+		default:
+			t.Fatalf("unexpected step_id %q", meta["step_id"])
+		}
+	}
+
+	if step1 == nil || step2 == nil || standalone == nil {
+		t.Fatalf("missing rows: step1=%v step2=%v standalone=%v", step1, step2, standalone)
+	}
+
+	// step_1 was upserted twice: the row's id and created_at must be preserved
+	// (the first insert's position), but its content/metadata reflect v2.
+	if step1.CreatedAt != "2024-01-15T10:00:00Z" {
+		t.Errorf("step_1 created_at not preserved: got %q", step1.CreatedAt)
+	}
+	if !strings.Contains(step1.Content, "v2") {
+		t.Errorf("step_1 content should reflect the latest update v2, got %q", step1.Content)
+	}
+
+	if step2.CreatedAt != "2024-01-15T10:00:02Z" {
+		t.Errorf("step_2 created_at: got %q", step2.CreatedAt)
+	}
+
+	// The empty standalone step_id collapses to a single row too.
+	if standalone.CreatedAt != "2024-01-15T10:00:03Z" {
+		t.Errorf("standalone created_at not preserved: got %q", standalone.CreatedAt)
+	}
+	if !strings.Contains(standalone.Content, "standalone-2") {
+		t.Errorf("standalone content should reflect the latest update, got %q", standalone.Content)
 	}
 }

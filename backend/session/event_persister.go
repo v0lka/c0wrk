@@ -57,6 +57,10 @@ func (p *EventPersister) Persist(evt Event) {
 	}
 
 	var role, content string
+	var (
+		isStepTodoUpdate bool
+		stepTodoStepID   string
+	)
 
 	// Reset per-session assistant tracking on a new user message or session
 	// deletion so the task_complete dedup (below) is scoped to the current
@@ -187,6 +191,12 @@ func (p *EventPersister) Persist(evt Event) {
 		role = "status"
 	case "step_todo_update":
 		role = "step_todo_update"
+		isStepTodoUpdate = true
+		if d, ok := evt.Data.(map[string]any); ok {
+			if sid, ok := d["step_id"].(string); ok {
+				stepTodoStepID = sid
+			}
+		}
 	case "session_tokens",
 		"assistant_chunk", "context_fill", "context_compaction", "finishing",
 		"memory_read", "message_received", "blackboard_updated",
@@ -243,6 +253,19 @@ func (p *EventPersister) Persist(evt Event) {
 	// Exception: for "thought" events, empty content is valid (reasoning lives in metadata).
 	if content == "" && role != "thought" {
 		content = string(metadata)
+	}
+
+	if isStepTodoUpdate {
+		if err := p.store.UpsertStepTodoUpdate(context.Background(), evt.SessionID, stepTodoStepID, ChatMessage{
+			SessionID: evt.SessionID,
+			Role:      role,
+			Content:   content,
+			Metadata:  metadata,
+			CreatedAt: time.Now().Format(time.RFC3339),
+		}); err != nil {
+			p.log().Error("failed to persist step_todo_update message", "session", evt.SessionID, "step_id", stepTodoStepID, "error", err)
+		}
+		return
 	}
 
 	if err := p.store.SaveMessage(context.Background(), ChatMessage{

@@ -47,6 +47,7 @@ interface ChatActions {
   addMessage: (sessionId: string, message: ChatMessageUI) => void
   updateMessage: (sessionId: string, messageId: string, updates: Partial<ChatMessageUI>) => void
   removeMessage: (sessionId: string, messageId: string) => void
+  upsertChecklistMessage: (sessionId: string, message: ChatMessageUI) => void
   setMessages: (sessionId: string, messages: ChatMessageUI[]) => void
   mergeHistoryMessages: (sessionId: string, history: ChatMessageUI[], loadStartedAt: number) => void
   setStreamingText: (sessionId: string, text: string) => void
@@ -186,6 +187,38 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
         ...s.messageOrder,
         [sessionId]: sessionOrder.filter(id => id !== messageId),
       },
+    }
+  }),
+
+  // Replace any existing step_todo_update message for the same step_id with
+  // the new one, appending the new message at the stream end. The Conductor
+  // updates its checklist after every tool call, so storing one row per
+  // update would grow the message list without bound and make groupMessages
+  // re-run over an ever-larger history (O(n^2)). Collapsing to one checklist
+  // row per step_id keeps the live store bounded while preserving the
+  // "settled checklist stays at its stream position" semantics (the surviving
+  // row sits where the latest update landed). Root-level collapse across
+  // DIFFERENT step_ids (standalone "" vs an ad-hoc step_id whose block is
+  // suppressed/closed) is handled separately by groupMessages, which keys
+  // root checklists by level rather than step_id.
+  upsertChecklistMessage: (sessionId, message) => set((s) => {
+    const sessionIndex = s.messages[sessionId] ?? {}
+    const sessionOrder = s.messageOrder[sessionId] ?? []
+    const stepId = (message.metadata?.step_id as string | undefined) ?? ''
+    const nextIndex = { ...sessionIndex }
+    let order = sessionOrder
+    for (const id of sessionOrder) {
+      const m = sessionIndex[id]
+      if (!m || m.type !== 'step_todo_update') continue
+      if (((m.metadata?.step_id as string | undefined) ?? '') !== stepId) continue
+      delete nextIndex[id]
+      order = order.filter(oid => oid !== id)
+    }
+    nextIndex[message.id] = message
+    order = [...order, message.id]
+    return {
+      messages: { ...s.messages, [sessionId]: nextIndex },
+      messageOrder: { ...s.messageOrder, [sessionId]: order },
     }
   }),
 

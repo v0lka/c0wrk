@@ -87,6 +87,15 @@ type SessionStore interface {
 	// don't reappear as pending on session reload.
 	ResolvePendingMessage(ctx context.Context, sessionID, role, matchField, matchValue string, extra map[string]any) error
 
+	// UpsertStepTodoUpdate replaces the most recent persisted step_todo_update
+	// message whose metadata.step_id equals stepID, updating its content and
+	// metadata in place (preserving id and created_at so the checklist keeps its
+	// original stream position for correct nesting on reload). If no such message
+	// exists it inserts a new one. The Conductor emits a checklist update after
+	// every tool call; without this, one row per update would grow
+	// session_messages without bound.
+	UpsertStepTodoUpdate(ctx context.Context, sessionID, stepID string, msg ChatMessage) error
+
 	// Terminal command history
 	SaveTerminalCommand(ctx context.Context, sessionID, command string) error
 	LoadTerminalCommands(ctx context.Context, sessionID string, limit int) ([]TerminalCommand, error)
@@ -673,6 +682,70 @@ func (s *SQLiteSessionStore) ResolvePendingMessage(ctx context.Context, sessionI
 		string(updated), targetID,
 	); err != nil {
 		return fmt.Errorf("failed to update message metadata: %w", err)
+	}
+	return nil
+}
+
+// UpsertStepTodoUpdate replaces the most recent persisted step_todo_update
+// message whose metadata.step_id equals stepID, updating content and metadata
+// in place so the checklist stays at its original stream position (required for
+// correct nesting into its plan_step/subagent block on reload). If no matching
+// message exists it inserts a new row. The Conductor emits a checklist update
+// after every tool call; persisting one row per update would grow
+// session_messages without bound, so the latest update per step supersedes the
+// previous one.
+func (s *SQLiteSessionStore) UpsertStepTodoUpdate(ctx context.Context, sessionID, stepID string, msg ChatMessage) error {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, metadata FROM session_messages
+		WHERE session_id = ? AND role = 'step_todo_update'
+		ORDER BY id DESC`,
+		sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to query step_todo_update messages: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			s.log().Warn("failed to close database rows", "error", cerr)
+		}
+	}()
+
+	var targetID int64
+	for rows.Next() {
+		var id int64
+		var metadataStr string
+		if err := rows.Scan(&id, &metadataStr); err != nil {
+			return fmt.Errorf("failed to scan message: %w", err)
+		}
+		var meta map[string]any
+		if err := json.Unmarshal([]byte(metadataStr), &meta); err != nil {
+			continue
+		}
+		if v, ok := meta["step_id"].(string); ok && v == stepID {
+			targetID = id
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error iterating messages: %w", err)
+	}
+	// Release the pooled connection before the write below. With a single pooled
+	// connection (the production config: db.SetMaxOpenConns(1)), holding the read
+	// cursor open while issuing ExecContext would deadlock — the UPDATE blocks
+	// waiting for the very connection the cursor still holds.
+	if cerr := rows.Close(); cerr != nil {
+		s.log().Warn("failed to close database rows", "error", cerr)
+	}
+
+	if targetID == 0 {
+		return s.SaveMessage(ctx, msg)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE session_messages SET content = ?, metadata = ? WHERE id = ?`,
+		msg.Content, string(msg.Metadata), targetID,
+	); err != nil {
+		return fmt.Errorf("failed to update step_todo_update message: %w", err)
 	}
 	return nil
 }

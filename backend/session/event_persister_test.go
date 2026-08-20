@@ -11,8 +11,15 @@ import (
 // captureStore is a minimal SessionStore that records every saved message so
 // the persister tests can assert on what gets persisted.
 type captureStore struct {
-	mu       sync.Mutex
-	messages []ChatMessage
+	mu              sync.Mutex
+	messages        []ChatMessage
+	stepTodoUpdates []stepTodoUpsertCall
+}
+
+type stepTodoUpsertCall struct {
+	sessionID string
+	stepID    string
+	msg       ChatMessage
 }
 
 func (s *captureStore) SaveSession(_ context.Context, _ SessionInfo) error { return nil }
@@ -41,6 +48,12 @@ func (s *captureStore) SaveMessage(_ context.Context, msg ChatMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messages = append(s.messages, msg)
+	return nil
+}
+func (s *captureStore) UpsertStepTodoUpdate(_ context.Context, sessionID, stepID string, msg ChatMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stepTodoUpdates = append(s.stepTodoUpdates, stepTodoUpsertCall{sessionID: sessionID, stepID: stepID, msg: msg})
 	return nil
 }
 func (s *captureStore) LoadMessages(_ context.Context, _ string) ([]ChatMessage, error) {
@@ -278,5 +291,48 @@ func TestEventPersister_GoalStatusPersisted_GoalProgressTransient(t *testing.T) 
 	// reload path has a payload to reconstruct.
 	if rows[0].Content == "" {
 		t.Error("expected non-empty goal_status content (metadata JSON)")
+	}
+}
+
+// TestEventPersister_StepTodoUpdateRoutedToUpsert verifies that step_todo_update
+// events are persisted via UpsertStepTodoUpdate (not the generic SaveMessage
+// path), so checklist updates for the same step_id collapse to a single row in
+// the store instead of accumulating one row per update.
+func TestEventPersister_StepTodoUpdateRoutedToUpsert(t *testing.T) {
+	store := &captureStore{}
+	p := NewEventPersister(store)
+
+	emit := func(stepID string) {
+		p.Persist(Event{
+			SessionID: "s1",
+			Type:      "step_todo_update",
+			Data: map[string]any{
+				"step_id": stepID,
+				"items":   []map[string]any{{"text": "a", "checked": false}},
+			},
+		})
+	}
+
+	emit("step_1")
+	emit("step_1")
+	emit("")
+	emit("step_2")
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.messages) != 0 {
+		t.Fatalf("step_todo_update must not go through SaveMessage, got %d rows: %+v", len(store.messages), store.messages)
+	}
+	if len(store.stepTodoUpdates) != 4 {
+		t.Fatalf("expected 4 UpsertStepTodoUpdate calls, got %d", len(store.stepTodoUpdates))
+	}
+	if got := store.stepTodoUpdates[0].stepID; got != "step_1" {
+		t.Errorf("first call step_id: got %q", got)
+	}
+	if got := store.stepTodoUpdates[2].stepID; got != "" {
+		t.Errorf("third call step_id (standalone): got %q", got)
+	}
+	if store.stepTodoUpdates[0].msg.Role != "step_todo_update" {
+		t.Errorf("upserted message role: got %q", store.stepTodoUpdates[0].msg.Role)
 	}
 }
