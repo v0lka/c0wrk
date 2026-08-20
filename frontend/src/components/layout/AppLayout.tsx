@@ -19,6 +19,36 @@ const COLLAPSED_WIDTH = 40
 // the final size is captured shortly after dragging stops.
 const WINDOW_PERSIST_DEBOUNCE_MS = 400
 
+/**
+ * Resolve the control that opened a Radix popper portal (dropdown menu, select,
+ * popover, …). Radix renders such popovers in a portal at `document.body`, so a
+ * plain `node.contains(target)` check can't tell that the popover logically
+ * belongs to a control inside the floating viewer — which would collapse the
+ * viewer the moment one of its popovers opens (e.g. the review/file hunk
+ * comboboxes). The portal wrapper holds the content element; Radix pairs that
+ * content with its trigger via `id` / `aria-controls`, so we walk back to the
+ * trigger and re-test containment against the viewer.
+ */
+function resolveRadixPortalTrigger(target: Node | null): Element | null {
+  const element = target instanceof Element ? target : (target?.parentElement ?? null)
+  const wrapper = element?.closest('[data-radix-popper-content-wrapper]')
+  if (!wrapper) return null
+  const content = wrapper.firstElementChild
+  if (!(content instanceof HTMLElement) || !content.id) return null
+  return document.querySelector(`[aria-controls="${content.id}"]`)
+}
+
+/**
+ * Whether a pointer/focus target is considered "inside" the floating viewer:
+ * either directly in its DOM subtree, or inside a Radix portal whose trigger
+ * (the `aria-controls` owner) is inside the viewer.
+ */
+function isInsideViewer(target: Node, viewer: HTMLElement): boolean {
+  if (viewer.contains(target)) return true
+  const trigger = resolveRadixPortalTrigger(target)
+  return trigger !== null && viewer.contains(trigger)
+}
+
 export function AppLayout() {
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useUIStore((s) => s.toggleSidebarCollapsed)
@@ -100,13 +130,16 @@ export function AppLayout() {
   // keyboard) lands anywhere outside it. Disabled while pinned or already
   // collapsed. This keeps the floating panel from permanently covering the
   // chat on narrow displays — it recedes as soon as the user works elsewhere.
+  // Radix popovers opened from inside the viewer render in a portal outside its
+  // DOM subtree; `isInsideViewer` accounts for them so interacting with their
+  // content (e.g. picking a hunk) doesn't collapse the panel.
   const floating = !viewerPinned && !viewerCollapsed
   useEffect(() => {
     if (!floating) return
     const node = floatingViewerRef.current
     const handleOutside = (e: Event) => {
       const target = e.target as Node | null
-      if (node && target && !node.contains(target)) {
+      if (node && target && !isInsideViewer(target, node)) {
         setViewerCollapsed(true)
       }
     }
