@@ -4,6 +4,7 @@ package updater
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -112,8 +113,11 @@ func processAlive(pid int) bool {
 	)
 	handle, err := syscall.OpenProcess(procQueryLimitedInfo, false, uint32(pid))
 	if err != nil {
-		// ERROR_INVALID_PARAMETER (87) means the process is gone.
-		return false
+		// An access-denied result still implies the process exists (it is
+		// running under different credentials), so keep waiting. Other open
+		// failures — notably ERROR_INVALID_PARAMETER for a PID that has exited
+		// — mean the process is gone.
+		return errors.Is(err, syscall.ERROR_ACCESS_DENIED)
 	}
 	defer func() { _ = syscall.CloseHandle(handle) }()
 	var code uint32

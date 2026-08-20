@@ -56,6 +56,7 @@ export function useMessageSender(): UseMessageSenderResult {
     // the UI stays in the running state — the task is untouched.
     const wasPaused = useChatStore.getState().paused[sessionId] ?? false
     const isRunning = useChatStore.getState().taskActive[sessionId] ?? false
+    const wasActivity = useChatStore.getState().activityStatus[sessionId] ?? null
 
     // Optimistic metadata mirroring the SNAKE_CASE blob the backend persists
     // via PendingMessageMetadata: the goal flag, the staged attachments
@@ -123,10 +124,13 @@ export function useMessageSender(): UseMessageSenderResult {
       // A failed LIVE send leaves the running task untouched: the task is
       // still active (its events keep flowing), so only the optimistic user
       // message is rolled back — never the task-active state. Nudge-resume
-      // and fresh-task sends revert their optimistic flags as before.
-      if (!isRunning) {
-        useChatStore.getState().setTaskActive(sessionId, false)
-      }
+      // and fresh-task sends restore the exact pre-send task state instead of
+      // a partial revert: a failed nudge-resume must return the session to
+      // the paused state (and its "Paused" label), and a failed fresh send
+      // must clear the transient "Processing..." activity.
+      useChatStore.getState().setTaskActive(sessionId, isRunning)
+      useChatStore.getState().setPaused(sessionId, wasPaused)
+      useChatStore.getState().setActivityStatus(sessionId, wasActivity)
     } finally {
       setIsProcessing(false)
     }

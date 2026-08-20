@@ -133,4 +133,20 @@ func TestSelectAsset(t *testing.T) {
 			t.Fatal("expected a match despite uppercase filename")
 		}
 	})
+
+	t.Run("prefers archive over companion assets", func(t *testing.T) {
+		t.Parallel()
+		withCompanion := []ReleaseAsset{
+			{Name: "c0wrk-desktop-macos-arm64.zip.sig", BrowserDownloadURL: "https://github.com/v0lka/c0wrk/releases/download/v1.2.3/c0wrk-desktop-macos-arm64.zip.sig"},
+			{Name: "c0wrk-desktop-macos-arm64.zip.asc", BrowserDownloadURL: "https://github.com/v0lka/c0wrk/releases/download/v1.2.3/c0wrk-desktop-macos-arm64.zip.asc"},
+			{Name: "c0wrk-desktop-macos-arm64.zip", BrowserDownloadURL: "https://github.com/v0lka/c0wrk/releases/download/v1.2.3/c0wrk-desktop-macos-arm64.zip"},
+		}
+		got, err := SelectAsset(withCompanion, "darwin", "arm64")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Name != "c0wrk-desktop-macos-arm64.zip" {
+			t.Fatalf("got %q, want the archive asset, not a companion file", got.Name)
+		}
+	})
 }

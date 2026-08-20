@@ -310,6 +310,31 @@ func makeZip(t *testing.T, dest string, files map[string]string) {
 	}
 }
 
+// makeZipSymlink builds a zip at dest containing a single symlink entry whose
+// name is entryName and whose target is linkTarget. It mirrors how macOS
+// `ditto` encodes the symlinks inside a .app bundle.
+func makeZipSymlink(t *testing.T, dest, entryName, linkTarget string) {
+	t.Helper()
+	f, err := os.Create(dest)
+	if err != nil {
+		t.Fatalf("create zip: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	w := zip.NewWriter(f)
+	hdr := &zip.FileHeader{Name: entryName}
+	hdr.SetMode(os.ModeSymlink | 0o777)
+	out, err := w.CreateHeader(hdr)
+	if err != nil {
+		t.Fatalf("create symlink entry: %v", err)
+	}
+	if _, err := io.WriteString(out, linkTarget); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+}
+
 // makeTarGz builds a tar.gz archive at dest from the name->content pairs.
 func makeTarGz(t *testing.T, dest string, files map[string]string) {
 	t.Helper()
@@ -377,6 +402,42 @@ func TestExtractZip_TraversalRejected(t *testing.T) {
 	escape := filepath.Join(filepath.Dir(dest), "escape.txt")
 	if _, err := os.Stat(escape); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("escape file should not exist outside dest: %v", err)
+	}
+}
+
+func TestExtractZip_SymlinkPreserved(t *testing.T) {
+	dest := t.TempDir()
+	archive := filepath.Join(t.TempDir(), "symlink.zip")
+	makeZipSymlink(t, archive, "Versions/Current", "A")
+
+	if err := extractArchive(archive, dest); err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	full := filepath.Join(dest, "Versions", "Current")
+	fi, err := os.Lstat(full)
+	if err != nil {
+		t.Fatalf("lstat symlink: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("extracted entry is not a symlink: mode=%v", fi.Mode())
+	}
+	got, err := os.Readlink(full)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if got != "A" {
+		t.Errorf("readlink = %q, want %q", got, "A")
+	}
+}
+
+func TestExtractZip_SymlinkEscapeRejected(t *testing.T) {
+	dest := t.TempDir()
+	archive := filepath.Join(t.TempDir(), "escape-link.zip")
+	makeZipSymlink(t, archive, "evil", "../../outside")
+
+	err := extractArchive(archive, dest)
+	if err == nil {
+		t.Fatal("expected error for escaping symlink target, got nil")
 	}
 }
 
@@ -490,6 +551,77 @@ func TestSwapInstallTrees_Rollback(t *testing.T) {
 	}
 }
 
+// TestSwapInstallTrees_PreservesBackupOnStageFailure guards the ordering that
+// protects the user's last-known-good rollback target: a pre-existing .old
+// backup must survive a failed staging copy (step 1 of the swap) because it is
+// only cleared after the new tree has been staged beside the install root.
+func TestSwapInstallTrees_PreservesBackupOnStageFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only parent does not reliably block renames on Windows")
+	}
+	root := t.TempDir()
+	parent := filepath.Join(root, "parent")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(parent, "install")
+	writeMarker(t, target, "old.txt", "old")
+	newTree := filepath.Join(root, "new-tree")
+	writeMarker(t, newTree, "new.txt", "new")
+	backup := target + ".old"
+	writeMarker(t, backup, "prev.txt", "prev")
+
+	// Make the staging target's parent read-only so moveDir(newTree,
+	// target+".new") fails on both the rename and the copy fallback.
+	if err := os.Chmod(parent, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+
+	if err := swapInstallTrees(target, newTree, backup); err == nil {
+		t.Fatal("expected swap to fail when staging the new tree is not possible")
+	}
+
+	// The pre-existing .old backup must survive the failed staging attempt.
+	if _, err := os.Stat(filepath.Join(backup, "prev.txt")); err != nil {
+		t.Fatalf("pre-existing .old backup destroyed on staging failure: %v", err)
+	}
+	// The live install tree must also be untouched.
+	if _, err := os.Stat(filepath.Join(target, "old.txt")); err != nil {
+		t.Fatalf("install tree mutated on staging failure: %v", err)
+	}
+}
+
+func TestCopyTreePreservesSymlink(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("target", filepath.Join(src, "link")); err != nil {
+		t.Skipf("symlinks unsupported on this platform: %v", err)
+	}
+	dst := filepath.Join(root, "dst")
+	if err := copyTree(src, dst); err != nil {
+		t.Fatalf("copyTree: %v", err)
+	}
+	full := filepath.Join(dst, "link")
+	fi, err := os.Lstat(full)
+	if err != nil {
+		t.Fatalf("lstat copied symlink: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("copied entry is not a symlink: mode=%v", fi.Mode())
+	}
+	got, err := os.Readlink(full)
+	if err != nil {
+		t.Fatalf("readlink copied symlink: %v", err)
+	}
+	if got != "target" {
+		t.Errorf("readlink = %q, want target", got)
+	}
+}
+
 // buildPlatformArchive builds an update archive at archivePath whose extraction
 // satisfies resolveNewTree on the current platform, planting a marker file so
 // the swap result can be verified. It returns the relative marker path that
@@ -536,7 +668,7 @@ func TestApplySelfUpdate_Smoke(t *testing.T) {
 	// A parent PID that is already dead: spawn a child, wait for it to exit.
 	dead := spawnDeadPID(t)
 
-	root := t.TempDir()
+	root := newNonTempDir(t)
 	target := filepath.Join(root, "install-target")
 	writeMarker(t, target, "version.txt", "old")
 	stageDir := t.TempDir()
@@ -585,6 +717,23 @@ func TestApplySelfUpdate_Smoke(t *testing.T) {
 	// Staging directory cleaned up.
 	if _, err := os.Stat(stageDir); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("staging dir should be removed after update, stat err = %v", err)
+	}
+}
+
+// TestApplySelfUpdate_RejectsNonStandardTarget verifies ApplySelfUpdate re-runs
+// the standard-location validation before any destructive step, so a crafted
+// --target pointing at a Downloads path is refused even when the PID is already
+// dead and the archive would otherwise be processed.
+func TestApplySelfUpdate_RejectsNonStandardTarget(t *testing.T) {
+	dead := spawnDeadPID(t)
+	base := newNonTempDir(t)
+	target := filepath.Join(base, "Downloads", "app")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := ApplySelfUpdate(SelfUpdateOptions{PID: dead, StageDir: t.TempDir(), TargetDir: target}, slog.Default())
+	if !errors.Is(err, ErrNonStandardLocation) {
+		t.Fatalf("expected ErrNonStandardLocation for Downloads target, got: %v", err)
 	}
 }
 

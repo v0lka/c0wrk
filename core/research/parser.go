@@ -174,12 +174,18 @@ func extractSection(content, heading string) string {
 // whose first cell is **fieldName** (Markdown bold), e.g. "| **Status** | open |".
 // Returns "" if the field is absent.
 func extractField(content, fieldName string) string {
-	pattern := `(?m)^\|\s*\*\*` + regexp.QuoteMeta(fieldName) + `\*\*\s*\|\s*(.*?)\s*\|\s*$`
-	m := regexp.MustCompile(pattern).FindStringSubmatch(content)
-	if m == nil {
-		return ""
+	target := "**" + fieldName + "**"
+	for _, line := range strings.Split(content, "\n") {
+		if !strings.HasPrefix(line, "|") {
+			continue
+		}
+		cells := strings.Split(line, "|")
+		if len(cells) < 4 || strings.TrimSpace(cells[1]) != target {
+			continue
+		}
+		return strings.TrimSpace(cells[2])
 	}
-	return strings.TrimSpace(m[1])
+	return ""
 }
 
 // ──────────────────────────────────────────────────────────────────────────

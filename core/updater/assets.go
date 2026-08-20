@@ -64,29 +64,88 @@ func platformToken(goos, goarch string) string {
 }
 
 // SelectAsset picks the release asset whose name matches the given platform.
-// Matching is case-insensitive on the token derived from GOOS/GOARCH, which is
-// unique enough to ignore unrelated assets (checksums, source archives).
+//
+// Matching is exact-first: it prefers the canonical archive filename for the
+// platform (compared case-insensitively against either the asset's Name or the
+// filename portion of its BrowserDownloadURL). Only when that exact name is
+// absent does it fall back to a substring match on the platform token, and that
+// fallback is restricted to recognised archive extensions so that companion
+// files (detached signatures, checksums) never win over the archive itself.
 //
 // It returns ErrNoAssetForPlatform when the platform is unsupported or when no
 // asset in the release matches it.
 func SelectAsset(assets []ReleaseAsset, goos, goarch string) (ReleaseAsset, error) {
-	token := platformToken(goos, goarch)
-	if token == "" {
-		return ReleaseAsset{}, ErrNoAssetForPlatform
+	basename, err := AssetNameForPlatform(goos, goarch)
+	if err != nil {
+		return ReleaseAsset{}, err
 	}
-	needle := strings.ToLower(token)
+	basename = strings.ToLower(basename)
+
+	// First pass: the canonical name is the strongest signal. Prefer it even
+	// if unrelated assets appear earlier in the list.
 	for _, a := range assets {
-		if a.Name == "" && a.BrowserDownloadURL == "" {
-			continue
-		}
-		// Match against the filename portion of either field so that URLs
-		// (…/download/v1.2.3/c0wrk-desktop-macos-arm64.zip) resolve too.
-		if strings.Contains(strings.ToLower(a.Name), needle) ||
-			strings.Contains(strings.ToLower(a.BrowserDownloadURL), needle) {
+		if assetFilename(a) == basename {
 			return a, nil
 		}
 	}
+
+	// Second pass: fall back to the platform token, but only within the
+	// filename (never the whole URL) and only for archive files.
+	token := strings.ToLower(platformToken(goos, goarch))
+	for _, a := range assets {
+		name := assetFilename(a)
+		if name == "" {
+			continue
+		}
+		if isArchiveName(name) && strings.Contains(name, token) {
+			return a, nil
+		}
+	}
+
 	return ReleaseAsset{}, ErrNoAssetForPlatform
+}
+
+// assetFilename returns the lower-cased filename of an asset: the Name field
+// when present, otherwise the last path segment of BrowserDownloadURL.
+func assetFilename(a ReleaseAsset) string {
+	if a.Name != "" {
+		return strings.ToLower(a.Name)
+	}
+	return urlPathBasename(a.BrowserDownloadURL)
+}
+
+// urlPathBasename returns the lower-cased last path segment of a URL, ignoring
+// query strings and fragments. It returns "" when the URL has no path segment.
+func urlPathBasename(rawurl string) string {
+	if rawurl == "" {
+		return ""
+	}
+	if i := strings.IndexAny(rawurl, "?#"); i >= 0 {
+		rawurl = rawurl[:i]
+	}
+	rawurl = strings.TrimRight(rawurl, "/")
+	if rawurl == "" {
+		return ""
+	}
+	if i := strings.LastIndex(rawurl, "/"); i >= 0 {
+		rawurl = rawurl[i+1:]
+	}
+	return strings.ToLower(rawurl)
+}
+
+// archiveExtensions lists the archive suffixes produced by the release matrix
+// (.github/workflows/release.yml). Only files with one of these suffixes are
+// eligible for token-based matching.
+var archiveExtensions = []string{".zip", ".tar.gz"}
+
+// isArchiveName reports whether name ends with a recognised archive extension.
+func isArchiveName(name string) bool {
+	for _, ext := range archiveExtensions {
+		if strings.HasSuffix(name, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // CurrentPlatform returns the GOOS/GOARCH the running binary was built for.

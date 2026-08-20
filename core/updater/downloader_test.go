@@ -101,6 +101,50 @@ func TestRequireHTTPS(t *testing.T) {
 	}
 }
 
+// TestDownload_RejectsPathTraversalAssetName verifies that an attacker-
+// influenced asset name cannot escape the staging directory. The asset name is
+// checked before any network I/O or directory creation, so the test uses
+// synthetic HTTPS URLs and no server.
+func TestDownload_RejectsPathTraversalAssetName(t *testing.T) {
+	t.Parallel()
+	bad := []string{
+		"",
+		".",
+		"..",
+		"../evil-macos-arm64.plist",
+		"../../evil-macos-arm64.plist",
+		"sub/evil-macos-arm64.plist",
+	}
+	for _, name := range bad {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			d := NewDownloader(nil, nil)
+			staging := t.TempDir()
+			_, err := d.Download(
+				context.Background(),
+				"https://example.com/a.zip",
+				"https://example.com/SHA256SUMS",
+				name,
+				staging,
+				nil,
+			)
+			if err == nil {
+				t.Fatalf("Download with asset name %q = nil error, want rejection", name)
+			}
+			// The staging directory must remain empty: the rejection happens
+			// before any file is created.
+			entries, readErr := os.ReadDir(staging)
+			if readErr != nil {
+				t.Fatalf("reading staging dir: %v", readErr)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("staging dir not empty after rejection: %v", entries)
+			}
+		})
+	}
+}
+
 // TestDownload_Success is the happy path: the correct checksums verify the
 // archive, which is left in staging, and the reported size matches.
 func TestDownload_Success(t *testing.T) {

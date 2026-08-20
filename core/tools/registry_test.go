@@ -2490,6 +2490,7 @@ func TestValidateRequiredFields(t *testing.T) {
 		{"content missing", `{"path":"/x"}`, 1},
 		{"both missing", `{}`, 2},
 		{"non-object input", `"rawstring"`, 0}, // fail-safe: skip
+		{"null input", `null`, 0},              // fail-safe: skip (non-object)
 		{"empty input", ``, 0},                 // fail-safe: skip
 	}
 	for _, tt := range tests {

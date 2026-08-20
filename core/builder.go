@@ -758,16 +758,21 @@ func (b *OrchestratorBuilder) UpdateSecurityPolicies(cfg *BuilderConfig) {
 // app restart. A compile failure leaves the previously registered tool in
 // place and is returned to the caller.
 func (b *OrchestratorBuilder) UpdateShellBlacklist(cfg *BuilderConfig) error {
-	// Invariant: BuilderConfig.Security.Groups carries a complete execute
-	// entry — ToBuilderConfig back-fills the shipped defaults for a missing
-	// or nil blacklist, mirroring the config loader. A missing key here
-	// would compile an EMPTY blacklist (fail-open), so hand-built configs
-	// must populate it the same way.
-	var blacklist []string
-	if execGroup, ok := cfg.Security.Groups[string(sdktools.GroupExecute)]; ok {
-		blacklist = execGroup.Blacklist
+	// Fail closed: a hand-built BuilderConfig whose execute group is absent, or
+	// whose blacklist was never materialized (nil), must not re-register the
+	// shell tool with an empty blacklist. ToBuilderConfig back-fills the shipped
+	// defaults for a missing or nil blacklist, so the production path always
+	// reaches here with a non-nil list; this guard only rejects incomplete
+	// programmatic configs. An explicitly emptied (non-nil) list is a deliberate
+	// "clear the blacklist" and is still honoured.
+	execGroup, ok := cfg.Security.Groups[string(sdktools.GroupExecute)]
+	if !ok {
+		return errors.New("security config is missing the execute group; refusing to compile an empty shell blacklist")
 	}
-	return tools.UpdateShellTool(b.registry, blacklist, builtins.BashTimeouts{
+	if execGroup.Blacklist == nil {
+		return errors.New("security config execute group has no blacklist; refusing to compile an empty shell blacklist")
+	}
+	return tools.UpdateShellTool(b.registry, execGroup.Blacklist, builtins.BashTimeouts{
 		MaxTimeout: time.Duration(cfg.Timeouts.BashMaxTimeout) * time.Second,
 		WaitDelay:  time.Duration(cfg.Timeouts.BashWaitDelay) * time.Second,
 	})

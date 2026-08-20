@@ -21,8 +21,9 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useResearchStore } from '@/stores/researchStore'
 
 /** Type guard for the research:file_changed event payload. The backend emits
- *  { project_id: string, paths: string (comma-separated) }. */
-function isResearchFileChangedPayload(data: unknown): data is { project_id: string; paths: string } {
+ *  { project_id: string, paths: string (comma-separated) }; only project_id is
+ *  validated because it is the only field this watcher consumes. */
+function isResearchFileChangedPayload(data: unknown): data is { project_id: string } {
   if (typeof data !== 'object' || data === null) return false
   const obj = data as Record<string, unknown>
   return typeof obj['project_id'] === 'string'
@@ -46,8 +47,11 @@ export function useResearchFileWatcher(): void {
 
     try {
       const graph = await getResearchGraph(projectId)
-      // Guard against stale updates after a project toggle.
-      if (useResearchStore.getState().status?.enabled === researchEnabled) {
+      // Guard against stale updates after a project toggle: only commit the
+      // result if the active project is still the one this fetch targeted.
+      // (researchStore.loadGraph has its own project guard, but only when the
+      // root carries active_project_id — this check is authoritative.)
+      if (useProjectStore.getState().activeProjectId === projectId) {
         useResearchStore.getState().loadGraph(graph)
         logger.debug(
           '[research] graph updated incrementally',

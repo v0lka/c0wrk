@@ -86,6 +86,16 @@ func TestParseFileURIList(t *testing.T) {
 			raw:  "file:///a.txt\r\nfile:///b.txt\r\n",
 			want: []string{"/a.txt", "/b.txt"},
 		},
+		{
+			name: "percent-encoded percent is decoded exactly once",
+			raw:  "file:///home/user/100%25.txt",
+			want: []string{"/home/user/100%.txt"},
+		},
+		{
+			name: "double-encoded space keeps the literal percent sequence",
+			raw:  "file:///home/user/foo%2520bar.txt",
+			want: []string{"/home/user/foo%20bar.txt"},
+		},
 	}
 
 	for _, tc := range tests {

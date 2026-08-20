@@ -31,6 +31,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/v0lka/sp4rk/pathutil"
 )
 
 // ErrNonStandardLocation is returned by DiscoverInstallRoot when the running
@@ -139,17 +141,21 @@ func hasDownloadsComponent(lowerPath string) bool {
 	return false
 }
 
-// pathContains reports whether candidate is equal to or nested under base,
-// comparing cleaned absolute paths. Both are assumed already cleaned.
+// pathContains reports whether candidate is strictly nested under base (not
+// equal to it), comparing cleaned absolute paths. Both are assumed already
+// cleaned. Containment uses the centralized pathutil.IsWithinPath; equality is
+// decided on the symlink-resolved prefixes so a candidate that is the same
+// location as base (including through a symlink) is not "contained".
 func pathContains(candidate, base string) bool {
 	if base == "" {
 		return false
 	}
-	rel, err := filepath.Rel(base, candidate)
-	if err != nil {
+	within, err := pathutil.IsWithinPath(base, candidate)
+	if err != nil || !within {
 		return false
 	}
-	return rel != "." && !strings.HasPrefix(rel, "..") && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return pathutil.ResolveExistingPrefix(filepath.Clean(candidate)) !=
+		pathutil.ResolveExistingPrefix(filepath.Clean(base))
 }
 
 // isWritable reports whether the given directory is writable by attempting to
@@ -257,12 +263,19 @@ func nextArg(args []string, i *int) (string, bool) {
 }
 
 func parseInt(s string) (int, error) {
-	n := 0
+	if s == "" {
+		return 0, errors.New("not a positive integer")
+	}
 	for _, r := range s {
 		if r < '0' || r > '9' {
 			return 0, errors.New("not a positive integer")
 		}
-		n = n*10 + int(r-'0')
+	}
+	// strconv.Atoi rejects values outside the platform int range, closing the
+	// overflow wrap that a hand-rolled accumulation would allow on long input.
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return 0, errors.New("not a positive integer")
 	}
 	return n, nil
 }
@@ -276,6 +289,22 @@ func ApplySelfUpdate(opts SelfUpdateOptions, log *slog.Logger) error {
 		log = slog.Default()
 	}
 	log.Info("self-update starting", "pid", opts.PID, "stage", opts.StageDir, "target", opts.TargetDir)
+
+	// Reject an obviously invalid target before any destructive step, then
+	// re-run the full standard-location validation. The production caller
+	// already computed the target via DiscoverInstallRoot, but ApplySelfUpdate
+	// must not trust a crafted or buggy --target: re-checking here rejects temp
+	// dirs, Downloads, and — most importantly for the data-loss case — any
+	// target whose parent is not writable, which stops a `--target $HOME` from
+	// renaming the entire home directory.
+	cleanTarget := filepath.Clean(opts.TargetDir)
+	switch filepath.Base(cleanTarget) {
+	case ".", "..", string(filepath.Separator):
+		return errors.New("refusing to update into invalid target directory")
+	}
+	if err := validateStandardLocation(opts.TargetDir); err != nil {
+		return err
+	}
 
 	if err := waitForProcessExit(opts.PID, shutdownTimeout, log); err != nil {
 		return err
@@ -305,15 +334,14 @@ func ApplySelfUpdate(opts SelfUpdateOptions, log *slog.Logger) error {
 		return err
 	}
 
-	// Drop any pre-existing .old backup from a previous attempt so the swap has
-	// a free target name.
+	// The .old path is handed to swapInstallTrees, which clears a stale backup
+	// from a previous attempt only AFTER the new tree has been staged beside
+	// the install root. This ordering keeps the previous last-known-good
+	// rollback target intact if the staging copy fails (e.g. out-of-disk on a
+	// cross-filesystem move).
 	oldBackup := opts.TargetDir + ".old"
-	_ = os.RemoveAll(oldBackup)
 
 	if err := swapInstallTrees(opts.TargetDir, newTree, oldBackup); err != nil {
-		// Swap failed: attempt to restore from the just-removed backup is not
-		// possible (we removed it above), but the install tree is untouched
-		// because swapInstallTrees moves newTree into place only on success.
 		return fmt.Errorf("swap install trees: %w", err)
 	}
 
@@ -347,11 +375,13 @@ func ApplySelfUpdate(opts SelfUpdateOptions, log *slog.Logger) error {
 //  1. moveDir newTree → stagedNew (sibling). On a single filesystem this is a
 //     rename; across filesystems it is a copy+remove. If it fails, stagedNew is
 //     discarded and the live install tree is untouched.
-//  2. Rename the current install root → oldBackup (atomic).
-//  3. Rename stagedNew → targetDir (atomic: both are siblings on one volume).
+//  2. Clear any stale oldBackup (previous .old) — only now, so a failure in
+//     step 1 leaves the last-known-good rollback target intact.
+//  3. Rename the current install root → oldBackup (atomic).
+//  4. Rename stagedNew → targetDir (atomic: both are siblings on one volume).
 //
-// A failure between 2 and 3 rolls oldBackup back into targetDir — which is safe
-// because after step 2 the target path is free (no ENOTEMPTY).
+// A failure between 3 and 4 rolls oldBackup back into targetDir — which is safe
+// because after step 3 the target path is free (no ENOTEMPTY).
 func swapInstallTrees(targetDir, newTree, oldBackup string) (retErr error) {
 	if _, err := os.Stat(newTree); err != nil {
 		return fmt.Errorf("new tree missing: %w", err)
@@ -366,7 +396,11 @@ func swapInstallTrees(targetDir, newTree, oldBackup string) (retErr error) {
 		return fmt.Errorf("stage new tree beside install root: %w", err)
 	}
 
-	// Stage 2: move the current install tree aside to the .old backup.
+	// Stage 2: clear any stale .old backup from a previous attempt, then move
+	// the current install tree aside to the .old backup. The stale backup is
+	// removed only now — after the staging copy succeeded — so a failed stage
+	// (step 1) never destroys the user's last-known-good rollback target.
+	_ = os.RemoveAll(oldBackup)
 	if err := os.Rename(targetDir, oldBackup); err != nil {
 		_ = os.RemoveAll(stagedNew)
 		return fmt.Errorf("rename current install to .old backup: %w", err)
@@ -456,6 +490,20 @@ func extractZip(src, dest string) error {
 		if err != nil {
 			return err
 		}
+		// Reproduce symlink entries as symlinks. The macOS release archive is
+		// packaged with `ditto -c -k --keepParent` precisely because the .app
+		// bundle contains framework symlinks; materializing them as regular
+		// files (the previous behavior) installs a bundle that is not launchable.
+		if f.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err := readZipEntry(f)
+			if err != nil {
+				return err
+			}
+			if err := safeCreateSymlink(dest, target, linkTarget); err != nil {
+				return err
+			}
+			continue
+		}
 		if f.FileInfo().IsDir() {
 			if err := os.MkdirAll(target, 0o750); err != nil {
 				return err
@@ -495,6 +543,56 @@ func copyZipFile(target string, f *zip.File) error {
 		return fmt.Errorf("zip entry %q exceeds max size %d bytes (possible zip bomb)", f.Name, maxExtractEntryBytes)
 	}
 	return nil
+}
+
+// readZipEntry reads a zip entry's contents as a string, bounded to
+// maxSymlinkTargetBytes. It is only used for symlink entries, whose content is
+// the link target.
+func readZipEntry(f *zip.File) (string, error) {
+	const maxSymlinkTargetBytes int64 = 4096
+	rc, err := f.Open()
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rc.Close() }()
+	data, err := io.ReadAll(io.LimitReader(rc, maxSymlinkTargetBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if int64(len(data)) > maxSymlinkTargetBytes {
+		return "", fmt.Errorf("zip symlink target %q exceeds %d bytes", f.Name, maxSymlinkTargetBytes)
+	}
+	return string(data), nil
+}
+
+// safeCreateSymlink creates a symlink at target pointing at linkTarget, after
+// verifying the link resolves to a path that stays inside dest. This prevents
+// a crafted archive from smuggling an escape route via a symlink (a
+// symlink-flavored zip-slip). Absolute link targets are rejected unless they
+// still resolve inside dest (which is effectively never for the archives this
+// path consumes).
+func safeCreateSymlink(dest, target, linkTarget string) error {
+	resolved := linkTarget
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(filepath.Dir(target), resolved)
+	}
+	resolved = filepath.Clean(resolved)
+	absDest, err := filepath.Abs(dest)
+	if err != nil {
+		return fmt.Errorf("resolve destination path: %w", err)
+	}
+	absResolved, err := filepath.Abs(resolved)
+	if err != nil {
+		return fmt.Errorf("resolve symlink target: %w", err)
+	}
+	within, err := pathutil.IsWithinPath(absDest, absResolved)
+	if err != nil || !within {
+		return fmt.Errorf("symlink %q points outside destination: %q", target, linkTarget)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		return err
+	}
+	return os.Symlink(linkTarget, target)
 }
 
 // extractTarGz extracts a gzip-compressed tar archive, defending against
@@ -561,24 +659,45 @@ func safeJoin(dest, name string) (string, error) {
 		return "", fmt.Errorf("archive entry escapes destination: %q", name)
 	}
 	joined := filepath.Join(dest, cleaned)
-	rel, err := filepath.Rel(dest, joined)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	absDest, err := filepath.Abs(dest)
+	if err != nil {
+		return "", fmt.Errorf("resolve destination path: %w", err)
+	}
+	absJoined, err := filepath.Abs(joined)
+	if err != nil {
+		return "", fmt.Errorf("resolve archive entry path: %w", err)
+	}
+	within, err := pathutil.IsWithinPath(absDest, absJoined)
+	if err != nil || !within {
 		return "", fmt.Errorf("archive entry escapes destination: %q", name)
 	}
 	return joined, nil
 }
 
-// copyTree recursively copies src into dst (dst is created). Permissions are
-// preserved.
+// copyTree recursively copies src into dst (dst is created). Permissions and
+// symlinks are preserved so a cross-filesystem move of a macOS .app bundle
+// does not flatten its framework symlinks into regular files.
 func copyTree(src, dst string) error {
 	info, err := os.Lstat(src)
 	if err != nil {
 		return err
 	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return copySymlink(src, dst)
+	}
 	if info.IsDir() {
 		return copyDirTree(src, dst, info)
 	}
 	return copyFileTree(src, dst, info)
+}
+
+// copySymlink recreates the symlink at src at the destination path.
+func copySymlink(src, dst string) error {
+	link, err := os.Readlink(src)
+	if err != nil {
+		return err
+	}
+	return os.Symlink(link, dst)
 }
 
 func copyDirTree(src, dst string, info os.FileInfo) error {

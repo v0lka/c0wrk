@@ -87,8 +87,11 @@ export function useFileDrop(activeSessionId: string | null): {
       setDragActive(true)
     }
 
-    const onDragLeave = (e: DragEvent) => {
-      if (!hasFiles(e)) return
+    const onDragLeave = () => {
+      // dataTransfer may be null/empty on dragleave (notably when leaving the
+      // window), so decrement unconditionally to avoid a stuck overlay. The
+      // counter is only ever incremented for file drags (onDragEnter), so a
+      // non-file dragleave simply clamps at zero.
       dragEnterCount.current = Math.max(0, dragEnterCount.current - 1)
       if (dragEnterCount.current === 0) setDragActive(false)
     }

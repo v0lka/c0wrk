@@ -192,7 +192,7 @@ func TestPipeline_CheckDownloadVerifyStage_E2E(t *testing.T) {
 
 	dead := spawnDeadPID(t)
 
-	root := t.TempDir()
+	root := newNonTempDir(t)
 	target := filepath.Join(root, "install-target")
 	writeMarker(t, target, "version.txt", "old")
 

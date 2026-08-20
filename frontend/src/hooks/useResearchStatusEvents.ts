@@ -33,9 +33,14 @@ export function useResearchStatusEvents(): void {
         useResearchStore.getState().loadStatus(status, projectId)
       }
     } catch (err) {
-      useResearchStore.getState().setError(
-        err instanceof Error ? err.message : 'Failed to load research status',
-      )
+      // Stale-guard the error path too: a project switch while the fetch was
+      // in flight must not surface the old project's failure after a newer
+      // project has already started loading.
+      if (useProjectStore.getState().activeProjectId === projectId) {
+        useResearchStore.getState().setError(
+          err instanceof Error ? err.message : 'Failed to load research status',
+        )
+      }
     }
   }, [activeProjectId])
 

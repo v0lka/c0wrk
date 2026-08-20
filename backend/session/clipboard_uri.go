@@ -19,7 +19,7 @@ import (
 //   - x-special/gnome-copied-files: a leading "copy"/"cut" operation header
 //     followed by one "file://" URI per line (the header is ignored).
 //
-// Non-file:// lines and lines that fail to URL-parse/unescape are skipped
+// Non-file:// lines and lines that fail to URL-parse are skipped
 // silently. Returns the decoded filesystem paths in source order (empty slice
 // when no file URI is present).
 func parseFileURIList(raw string) []string {
@@ -41,12 +41,13 @@ func parseFileURIList(raw string) []string {
 		if perr != nil {
 			continue
 		}
-		p, derr := url.PathUnescape(u.Path)
-		if derr != nil {
-			continue
-		}
-		if p != "" {
-			paths = append(paths, p)
+		// url.Parse already percent-decodes the path into u.Path; applying
+		// url.PathUnescape here would decode it a second time and corrupt
+		// filenames that legitimately contain a literal percent (e.g. a file
+		// named "100%.txt" arrives as "file:///…/100%25.txt" and u.Path is
+		// already "…/100%.txt").
+		if u.Path != "" {
+			paths = append(paths, u.Path)
 		}
 	}
 	return paths

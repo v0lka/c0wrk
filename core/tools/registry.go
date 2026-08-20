@@ -767,6 +767,9 @@ func validateRequiredFields(schema, input json.RawMessage) []string {
 	if err := json.Unmarshal(input, &obj); err != nil {
 		return nil // input is not a JSON object (e.g. a raw value) → skip
 	}
+	if obj == nil {
+		return nil // JSON null is a non-object → skip, matching the documented intent
+	}
 	var missing []string
 	for _, field := range s.Required {
 		if _, present := obj[field]; !present {

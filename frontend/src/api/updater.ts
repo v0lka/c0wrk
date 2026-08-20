@@ -171,11 +171,16 @@ export function onUpdateError(cb: (data: UpdateErrorData) => void): () => void {
 // --- Type guards for update event payloads ---
 
 export function isUpdateInfoData(d: unknown): d is UpdateInfoData {
+  if (typeof d !== 'object' || d === null) return false
+  const o = d as Record<string, unknown>
   return (
-    typeof d === 'object' &&
-    d !== null &&
-    typeof (d as UpdateInfoData).available === 'boolean' &&
-    typeof (d as UpdateInfoData).current_version === 'string'
+    typeof o.available === 'boolean' &&
+    typeof o.current_version === 'string' &&
+    typeof o.latest_version === 'string' &&
+    typeof o.release_notes === 'string' &&
+    typeof o.published_at === 'string' &&
+    typeof o.html_url === 'string' &&
+    typeof o.asset_name === 'string'
   )
 }
 

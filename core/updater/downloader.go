@@ -99,6 +99,15 @@ func NewDownloader(client *http.Client, verifier Verifier) *Downloader {
 // created with the context, so a cancelled context surfaces as an error from
 // the body read and the partial tmp file is removed.
 func (d *Downloader) Download(ctx context.Context, assetURL, sumsURL, assetName, stagingDir string, progress func(done, total int64)) (*DownloadResult, error) {
+	// The asset name is attacker-influenceable data (it comes from the GitHub
+	// release API, which a compromised release or a MITM proxy could control).
+	// Never trust it as a path component: require a single plain filename so it
+	// cannot escape stagingDir through "../" or host path separators.
+	safeName := filepath.Base(assetName)
+	if safeName != assetName || safeName == "." || safeName == ".." {
+		return nil, fmt.Errorf("invalid asset name %q: must be a plain filename", assetName)
+	}
+
 	// Enforce HTTPS-only on both the asset and checksum URLs before any network
 	// I/O: a compromised API response or MITM proxy must not downgrade the
 	// fetch to plain HTTP (defense-in-depth alongside the fail-closed SHA256).
@@ -113,7 +122,7 @@ func (d *Downloader) Download(ctx context.Context, assetURL, sumsURL, assetName,
 		return nil, fmt.Errorf("creating staging dir %q: %w", stagingDir, err)
 	}
 
-	archivePath := filepath.Join(stagingDir, assetName)
+	archivePath := filepath.Join(stagingDir, safeName)
 	sumsPath := filepath.Join(stagingDir, sumsFilename)
 
 	// Download both files atomically (tmp + rename). The asset is fetched
@@ -130,13 +139,13 @@ func (d *Downloader) Download(ctx context.Context, assetURL, sumsURL, assetName,
 
 	// Fail-closed verification: on any verification failure, delete the
 	// archive and report the error.
-	if err := d.Verifier.Verify(archivePath, assetName, sumsPath); err != nil {
+	if err := d.Verifier.Verify(archivePath, safeName, sumsPath); err != nil {
 		_ = os.Remove(archivePath)
-		return nil, fmt.Errorf("verifying asset %q: %w", assetName, err)
+		return nil, fmt.Errorf("verifying asset %q: %w", safeName, err)
 	}
 
 	return &DownloadResult{
-		AssetName:   assetName,
+		AssetName:   safeName,
 		ArchivePath: archivePath,
 		SumsPath:    sumsPath,
 		Bytes:       n,
