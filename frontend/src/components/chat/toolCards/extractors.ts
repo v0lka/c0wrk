@@ -23,7 +23,10 @@ function safeParseArgs(args: Args, rawArgs: string): Record<string, unknown> {
 
 export function extractBashTitle(args: Args, rawArgs: string): string {
   const parsed = safeParseArgs(args, rawArgs)
-  return str(parsed, 'command') || 'command'
+  // Return the command value itself; when absent, return an empty string so the
+  // card header falls back to just the verb ("Executed") instead of rendering
+  // the literal JSON field name "command" as a placeholder.
+  return str(parsed, 'command')
 }
 
 export function extractFileTitle(args: Args, rawArgs: string): string {

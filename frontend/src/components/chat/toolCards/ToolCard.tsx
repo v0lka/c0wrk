@@ -102,14 +102,23 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
     ? `${config.verb}: ${filePath}`
     : hint
       ? `${config.verb}: ${hint}`
-      : `${config.verb}: ${title}`
+      : title
+        ? `${config.verb}: ${title}`
+        : config.verb
   const titleNode = useMemo(() => (
     <EllipsisHint fullText={fullText} alwaysShow={Boolean(filePath)} className="text-sm truncate">
-      <span className="text-muted-foreground">{config.verb}: </span>
       {filePath ? (
-        <FileLink path={filePath} line={fileLine} label={title} className="text-sm" nativeTitle={false} />
+        <>
+          <span className="text-muted-foreground">{config.verb}: </span>
+          <FileLink path={filePath} line={fileLine} label={title} className="text-sm" nativeTitle={false} />
+        </>
+      ) : title ? (
+        <>
+          <span className="text-muted-foreground">{config.verb}: </span>
+          {title}
+        </>
       ) : (
-        title
+        <span className="text-muted-foreground">{config.verb}</span>
       )}
     </EllipsisHint>
   ), [config.verb, filePath, fileLine, title, fullText])

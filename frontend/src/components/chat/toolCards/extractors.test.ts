@@ -21,8 +21,8 @@ describe('extractBashTitle', () => {
   it('falls back to raw args', () => {
     expect(extractBashTitle(undefined, '{"command":"npm run build"}')).toBe('npm run build')
   })
-  it('returns fallback when empty', () => {
-    expect(extractBashTitle(undefined, '')).toBe('command')
+  it('returns empty when no command is present', () => {
+    expect(extractBashTitle(undefined, '')).toBe('')
   })
 })
 
