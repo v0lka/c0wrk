@@ -159,7 +159,7 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
           </div>
         )}
       </div>
-      <div className="mt-2 flex flex-wrap gap-2">
+      <div className="pt-3 flex flex-wrap gap-2">
         <Button size="sm" onClick={handleResponseAllowOnce} className="text-xs">Allow Once</Button>
         {!disableJudge && (
           <Button size="sm" variant="secondary" onClick={handleAskAgent} disabled={judgeLoading || judgeReasoning !== null} className="text-xs">

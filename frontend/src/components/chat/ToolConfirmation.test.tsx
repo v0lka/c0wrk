@@ -117,6 +117,19 @@ describe('ToolConfirmation — confirmation reason', () => {
     expect(input?.classList.contains('custom-scrollbar')).toBe(true)
   })
 
+  it('adds action spacing without reducing the input height limit', () => {
+    render(makeItem({ args: JSON.stringify({ command: 'x'.repeat(400) }) }))
+
+    const allowButton = Array.from(container.querySelectorAll('button')).find(
+      (element) => element.textContent === 'Allow Once',
+    )
+    const actions = allowButton?.parentElement
+    const input = container.querySelector('pre')
+
+    expect(actions?.classList.contains('pt-3')).toBe(true)
+    expect(input?.classList.contains('max-h-64')).toBe(true)
+  })
+
   it('hides the Ask Agent action when disable_judge is set', () => {
     render(makeItem({ reasoning: 'Judge already evaluated this call', disable_judge: true }))
     const text = container.textContent ?? ''
