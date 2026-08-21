@@ -730,6 +730,9 @@ func TestGetBranches_ReturnsCurrent(t *testing.T) {
 			if !b.IsCurrent {
 				t.Errorf("branch %q: expected IsCurrent=true", b.Name)
 			}
+			if b.Kind != "local" {
+				t.Errorf("branch %q: expected Kind=local, got %q", b.Name, b.Kind)
+			}
 		}
 	}
 	if !foundCurrent {
@@ -758,11 +761,43 @@ func TestGetBranches_WithExtraBranch(t *testing.T) {
 			if b.IsCurrent {
 				t.Error("feature-x: expected IsCurrent=false")
 			}
+			if b.Kind != "local" {
+				t.Errorf("feature-x: expected Kind=local, got %q", b.Kind)
+			}
 		}
 	}
 	if !foundFeatureX {
 		t.Fatal(`branch "feature-x" not found in GetBranches output`)
 	}
+}
+
+func TestGetBranches_IncludesBranchNamedHEAD(t *testing.T) {
+	tmpDir := t.TempDir()
+	gitInit(t, tmpDir)
+	commitFile(t, tmpDir, "f.txt", "x\n")
+
+	// A real local branch whose name happens to end in "/HEAD" must not be
+	// mistaken for the symbolic origin/HEAD ref and dropped from the list.
+	runGit(t, tmpDir, "branch", "feature/HEAD")
+
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+	branches, err := f.GetBranches()
+	if err != nil {
+		t.Fatalf("GetBranches: %v", err)
+	}
+
+	for _, b := range branches {
+		if b.Name == "feature/HEAD" {
+			if b.Kind != "local" {
+				t.Errorf("feature/HEAD: kind = %q, want local", b.Kind)
+			}
+			if b.IsCurrent {
+				t.Error("feature/HEAD: expected IsCurrent=false")
+			}
+			return
+		}
+	}
+	t.Fatal(`branch "feature/HEAD" was dropped from GetBranches output`)
 }
 
 func TestGetBranches_EmptyRepo(t *testing.T) {
@@ -792,6 +827,65 @@ func TestGetBranches_EmptyRepo(t *testing.T) {
 	// In a freshly initialized repo without commits, there are no branches.
 	if len(branches) != 0 {
 		t.Logf("GetBranches (empty repo): %d branches (expected 0)", len(branches))
+	}
+}
+
+func TestGetBranches_RemoteAndUpstream(t *testing.T) {
+	// Create a bare "origin" repository with a committed default branch.
+	originDir := t.TempDir()
+	runGit(t, originDir, "init", "--bare")
+
+	seedDir := t.TempDir()
+	gitInit(t, seedDir)
+	commitFile(t, seedDir, "f.txt", "x\n")
+	defBranch := gitDefaultBranch(t, seedDir)
+	runGit(t, seedDir, "remote", "add", "origin", originDir)
+	runGit(t, seedDir, "push", "-u", "origin", defBranch)
+
+	// Clone into the project directory; this creates remote-tracking refs
+	// (origin/<defBranch>) and the symbolic origin/HEAD.
+	tmpDir := t.TempDir()
+	cloneCmd := exec.CommandContext(context.Background(), "git", "clone", originDir, tmpDir)
+	if err := cloneCmd.Run(); err != nil {
+		t.Skipf("git clone failed: %v", err)
+	}
+
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+	branches, err := f.GetBranches()
+	if err != nil {
+		t.Fatalf("GetBranches: %v", err)
+	}
+
+	wantUpstream := "origin/" + defBranch
+	foundLocal, foundRemote := false, false
+	for _, b := range branches {
+		if strings.HasSuffix(b.Name, "/HEAD") {
+			t.Errorf("symbolic ref %q should be excluded", b.Name)
+		}
+		switch {
+		case b.Name == defBranch && b.Kind == "local":
+			foundLocal = true
+			if !b.IsCurrent {
+				t.Errorf("local branch %q: expected IsCurrent=true", b.Name)
+			}
+			if b.Upstream != wantUpstream {
+				t.Errorf("local branch %q: upstream = %q, want %q", b.Name, b.Upstream, wantUpstream)
+			}
+		case b.Name == wantUpstream && b.Kind == "remote":
+			foundRemote = true
+			if b.IsCurrent {
+				t.Errorf("remote branch %q: expected IsCurrent=false", b.Name)
+			}
+			if b.Upstream != "" {
+				t.Errorf("remote branch %q: expected empty upstream, got %q", b.Name, b.Upstream)
+			}
+		}
+	}
+	if !foundLocal {
+		t.Errorf("local branch %q (kind=local) not found", defBranch)
+	}
+	if !foundRemote {
+		t.Errorf("remote branch %q (kind=remote) not found", wantUpstream)
 	}
 }
 
@@ -1274,6 +1368,169 @@ func TestCreateBranch_InvalidBase(t *testing.T) {
 	})
 }
 
+// --- RenameBranch tests ---
+
+func TestRenameBranch_NoProject(t *testing.T) {
+	f := &FrontendAPI{}
+	if err := f.RenameBranch("old", "new"); err == nil {
+		t.Fatal("expected error when no active project")
+	}
+}
+
+func TestRenameBranch_EmptyNames(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		if err := f.RenameBranch("", "new"); err == nil {
+			t.Fatal("expected error for empty old name")
+		}
+		if err := f.RenameBranch("old", "   "); err == nil {
+			t.Fatal("expected error for empty new name")
+		}
+	})
+}
+
+func TestRenameBranch_Success(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		runGit(t, dir, "branch", "old-name")
+
+		var emitted string
+		f.emitEvent = func(name string, args ...any) {
+			if name == EventGitStatusChanged && len(args) >= 1 {
+				if p, ok := args[0].(string); ok {
+					emitted = p
+				}
+			}
+		}
+
+		if err := f.RenameBranch("old-name", "new-name"); err != nil {
+			t.Fatalf("RenameBranch: %v", err)
+		}
+
+		if out := gitOut(t, dir, "branch", "--list", "new-name"); out != "new-name" {
+			t.Errorf("new-name not found, got %q", out)
+		}
+		if out := gitOut(t, dir, "branch", "--list", "old-name"); out != "" {
+			t.Errorf("old-name still exists, got %q", out)
+		}
+		if emitted != dir {
+			t.Errorf("event payload: got %q, want %q", emitted, dir)
+		}
+	})
+}
+
+func TestRenameBranch_CurrentBranch(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		def := gitDefaultBranch(t, dir)
+
+		if err := f.RenameBranch(def, "renamed-current"); err != nil {
+			t.Fatalf("RenameBranch current: %v", err)
+		}
+
+		current, err := f.GetCurrentBranch()
+		if err != nil {
+			t.Fatalf("GetCurrentBranch: %v", err)
+		}
+		if current.Name != "renamed-current" {
+			t.Errorf("current branch: got %q, want %q", current.Name, "renamed-current")
+		}
+	})
+}
+
+func TestRenameBranch_AlreadyExists(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		runGit(t, dir, "branch", "existing")
+		runGit(t, dir, "branch", "source")
+
+		err := f.RenameBranch("source", "existing")
+		if err == nil {
+			t.Fatal("expected error for already-existing new name")
+		}
+		if !strings.Contains(err.Error(), "already exists") {
+			t.Errorf("expected 'already exists' message, got: %v", err)
+		}
+	})
+}
+
+// --- DeleteBranch tests ---
+
+func TestDeleteBranch_NoProject(t *testing.T) {
+	f := &FrontendAPI{}
+	if err := f.DeleteBranch("doomed", false); err == nil {
+		t.Fatal("expected error when no active project")
+	}
+}
+
+func TestDeleteBranch_EmptyName(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		if err := f.DeleteBranch("   ", false); err == nil {
+			t.Fatal("expected error for empty branch name")
+		}
+	})
+}
+
+func TestDeleteBranch_Success(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		runGit(t, dir, "branch", "doomed")
+
+		var emitted string
+		f.emitEvent = func(name string, args ...any) {
+			if name == EventGitStatusChanged && len(args) >= 1 {
+				if p, ok := args[0].(string); ok {
+					emitted = p
+				}
+			}
+		}
+
+		if err := f.DeleteBranch("doomed", false); err != nil {
+			t.Fatalf("DeleteBranch: %v", err)
+		}
+
+		if out := gitOut(t, dir, "branch", "--list", "doomed"); out != "" {
+			t.Errorf("doomed still exists, got %q", out)
+		}
+		if emitted != dir {
+			t.Errorf("event payload: got %q, want %q", emitted, dir)
+		}
+	})
+}
+
+func TestDeleteBranch_CurrentBranch(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		def := gitDefaultBranch(t, dir)
+
+		err := f.DeleteBranch(def, true)
+		if err == nil {
+			t.Fatal("expected error deleting current branch")
+		}
+		if !strings.Contains(err.Error(), "currently checked-out") {
+			t.Errorf("expected friendly current-branch message, got: %v", err)
+		}
+	})
+}
+
+func TestDeleteBranch_UnmergedWithoutForce(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		def := gitDefaultBranch(t, dir)
+
+		// Create an unmerged branch: it has a commit the default branch
+		// does not contain.
+		runGit(t, dir, "checkout", "-b", "unmerged")
+		commitFile(t, dir, "unmerged.txt", "u\n")
+		runGit(t, dir, "checkout", def)
+
+		if err := f.DeleteBranch("unmerged", false); err == nil {
+			t.Fatal("expected error deleting unmerged branch without force")
+		}
+
+		// Force delete must succeed.
+		if err := f.DeleteBranch("unmerged", true); err != nil {
+			t.Fatalf("DeleteBranch force: %v", err)
+		}
+		if out := gitOut(t, dir, "branch", "--list", "unmerged"); out != "" {
+			t.Errorf("unmerged still exists, got %q", out)
+		}
+	})
+}
+
 // --- GetBranchBases tests ---
 
 func TestGetBranchBases_NoProject(t *testing.T) {
@@ -1382,6 +1639,42 @@ func TestGetBranchBases_EmptyRepo(t *testing.T) {
 	}
 	if len(bases) != 0 {
 		t.Errorf("expected 0 bases in empty repo, got %d", len(bases))
+	}
+}
+
+func TestGetBranchBases_SkipsSymbolicHeadKeepsBranchNamedHEAD(t *testing.T) {
+	// A symbolic origin/HEAD must be excluded, while a real local branch
+	// literally named "feature/HEAD" must be kept as a start-point.
+	remoteDir := t.TempDir()
+	gitOut(t, remoteDir, "init", "--bare")
+
+	localDir := t.TempDir()
+	gitInit(t, localDir)
+	commitFile(t, localDir, "a.txt", "a\n")
+	gitOut(t, localDir, "remote", "add", "origin", remoteDir)
+	branch := gitDefaultBranch(t, localDir)
+	gitOut(t, localDir, "push", "-u", "origin", branch)
+	// Ensure a symbolic refs/remotes/origin/HEAD exists.
+	gitOut(t, localDir, "remote", "set-head", "origin", branch)
+
+	// A real local branch whose name happens to end in "/HEAD".
+	runGit(t, localDir, "branch", "feature/HEAD")
+
+	f := &FrontendAPI{activeProjectPath: localDir}
+	bases, err := f.GetBranchBases()
+	if err != nil {
+		t.Fatalf("GetBranchBases: %v", err)
+	}
+
+	found := make(map[string]bool)
+	for _, b := range bases {
+		found[b.Ref] = true
+		if b.Ref == "origin/HEAD" {
+			t.Error("symbolic origin/HEAD should be excluded from bases")
+		}
+	}
+	if !found["feature/HEAD"] {
+		t.Fatal(`branch "feature/HEAD" was dropped from GetBranchBases output`)
 	}
 }
 

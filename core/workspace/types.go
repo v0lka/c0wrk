@@ -33,10 +33,16 @@ type DiffStat struct {
 	Deleted int `json:"deleted"`
 }
 
-// Branch represents a local git branch.
+// Branch represents a git branch, local or remote. Kind is "local" for
+// refs under refs/heads/ and "remote" for refs under refs/remotes/.
+// IsCurrent is true only for the currently checked-out local branch.
+// Upstream holds the short name of the branch's upstream (e.g. "origin/main")
+// and is empty when none is configured (including remote branches).
 type Branch struct {
 	Name      string `json:"name"`
 	IsCurrent bool   `json:"is_current"`
+	Kind      string `json:"kind"`
+	Upstream  string `json:"upstream"`
 }
 
 // BranchInfo describes the currently checked-out branch together with its

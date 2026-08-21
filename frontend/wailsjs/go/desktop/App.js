@@ -50,6 +50,10 @@ export function CheckoutBranch(arg1) {
   return window['go']['desktop']['App']['CheckoutBranch'](arg1);
 }
 
+export function CheckoutRemoteBranch(arg1) {
+  return window['go']['desktop']['App']['CheckoutRemoteBranch'](arg1);
+}
+
 export function ClearReview(arg1) {
   return window['go']['desktop']['App']['ClearReview'](arg1);
 }
@@ -82,8 +86,16 @@ export function CreateTag(arg1, arg2) {
   return window['go']['desktop']['App']['CreateTag'](arg1, arg2);
 }
 
+export function DeleteBranch(arg1, arg2) {
+  return window['go']['desktop']['App']['DeleteBranch'](arg1, arg2);
+}
+
 export function DeleteProject(arg1) {
   return window['go']['desktop']['App']['DeleteProject'](arg1);
+}
+
+export function DeleteRemoteBranch(arg1, arg2) {
+  return window['go']['desktop']['App']['DeleteRemoteBranch'](arg1, arg2);
 }
 
 export function DeleteRemoteTag(arg1, arg2) {
@@ -378,6 +390,10 @@ export function Push(arg1, arg2) {
   return window['go']['desktop']['App']['Push'](arg1, arg2);
 }
 
+export function PushBranch(arg1) {
+  return window['go']['desktop']['App']['PushBranch'](arg1);
+}
+
 export function PushTag(arg1, arg2) {
   return window['go']['desktop']['App']['PushTag'](arg1, arg2);
 }
@@ -396,6 +412,10 @@ export function Rebase(arg1) {
 
 export function RemoveAttachment(arg1, arg2) {
   return window['go']['desktop']['App']['RemoveAttachment'](arg1, arg2);
+}
+
+export function RenameBranch(arg1, arg2) {
+  return window['go']['desktop']['App']['RenameBranch'](arg1, arg2);
 }
 
 export function RenameProject(arg1, arg2) {

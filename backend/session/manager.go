@@ -1228,8 +1228,8 @@ func (m *Manager) ArchiveSession(id string) error {
 			}
 		}
 
-		switch {
-		case doneCh == nil:
+		switch doneCh {
+		case nil:
 			// No running task: the temp dir is quiescent and safe to remove.
 			removeTempDir()
 		default:

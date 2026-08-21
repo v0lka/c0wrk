@@ -9,7 +9,13 @@ import type { Branch, BranchBase, BranchInfo, CommitFile, DiffStat, StashEntry, 
 
 function isBranch(v: unknown): v is Branch {
   if (typeof v !== 'object' || v === null) return false
-  return typeof (v as Record<string, unknown>).name === 'string' && typeof (v as Record<string, unknown>).is_current === 'boolean'
+  const o = v as Record<string, unknown>
+  return (
+    typeof o.name === 'string' &&
+    typeof o.is_current === 'boolean' &&
+    (o.kind === 'local' || o.kind === 'remote') &&
+    typeof o.upstream === 'string'
+  )
 }
 
 function isBranchInfo(v: unknown): v is BranchInfo {
@@ -327,6 +333,64 @@ export async function getBranchBases(): Promise<BranchBase[]> {
     return result
   } catch (err) {
     logger.error('getBranchBases failed:', err)
+    throw err
+  }
+}
+
+export async function renameBranch(oldName: string, newName: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.RenameBranch(oldName, newName)
+  } catch (err) {
+    logger.error('renameBranch failed:', err)
+    throw err
+  }
+}
+
+export async function deleteBranch(name: string, force: boolean): Promise<void> {
+  try {
+    const app = getApp()
+    await app.DeleteBranch(name, force)
+  } catch (err) {
+    logger.error('deleteBranch failed:', err)
+    throw err
+  }
+}
+
+export async function pushBranch(name: string): Promise<string> {
+  try {
+    const app = getApp()
+    const result = await app.PushBranch(name)
+    if (typeof result !== 'string') {
+      throw new Error('pushBranch: backend returned non-string output')
+    }
+    return result
+  } catch (err) {
+    logger.error('pushBranch failed:', err)
+    throw err
+  }
+}
+
+export async function checkoutRemoteBranch(remoteBranch: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.CheckoutRemoteBranch(remoteBranch)
+  } catch (err) {
+    logger.error('checkoutRemoteBranch failed:', err)
+    throw err
+  }
+}
+
+export async function deleteRemoteBranch(name: string, remote: string): Promise<string> {
+  try {
+    const app = getApp()
+    const result = await app.DeleteRemoteBranch(name, remote)
+    if (typeof result !== 'string') {
+      throw new Error('deleteRemoteBranch: backend returned non-string output')
+    }
+    return result
+  } catch (err) {
+    logger.error('deleteRemoteBranch failed:', err)
     throw err
   }
 }

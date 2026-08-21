@@ -123,6 +123,8 @@ export interface DiffStat {
 export interface Branch {
   name: string
   is_current: boolean
+  kind: 'local' | 'remote'
+  upstream: string
 }
 
 /** A ref usable as a start-point for CreateBranch (local/remote/tag/commit). */

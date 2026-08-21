@@ -271,18 +271,18 @@ describe('gitPanelStore', () => {
   it('setBranches updates the branch list', () => {
     const { setBranches } = useGitPanelStore.getState()
     setBranches([
-      { name: 'main', is_current: true },
-      { name: 'feature/x', is_current: false },
+      { name: 'main', is_current: true, kind: 'local', upstream: 'origin/main' },
+      { name: 'feature/x', is_current: false, kind: 'local', upstream: '' },
     ])
     expect(useGitPanelStore.getState().branches).toEqual([
-      { name: 'main', is_current: true },
-      { name: 'feature/x', is_current: false },
+      { name: 'main', is_current: true, kind: 'local', upstream: 'origin/main' },
+      { name: 'feature/x', is_current: false, kind: 'local', upstream: '' },
     ])
   })
 
   it('setBranches allows empty array', () => {
     const { setBranches } = useGitPanelStore.getState()
-    setBranches([{ name: 'main', is_current: true }])
+    setBranches([{ name: 'main', is_current: true, kind: 'local', upstream: 'origin/main' }])
     setBranches([])
     expect(useGitPanelStore.getState().branches).toEqual([])
   })
@@ -359,7 +359,7 @@ describe('gitPanelStore', () => {
     store.loadEntries([makeEntry({ path: 'a.ts' })])
     store.setCommitMessage('fix: bug')
     store.setBranch({ name: 'feature/x', upstream: '', ahead: 0, behind: 0 })
-    store.setBranches([{ name: 'main', is_current: true }])
+    store.setBranches([{ name: 'main', is_current: true, kind: 'local', upstream: 'origin/main' }])
     store.setGitRepo(true)
     store.setLoading(true)
     store.setError('some error')

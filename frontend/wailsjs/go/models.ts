@@ -2041,6 +2041,8 @@ export namespace workspace {
 	export class Branch {
 	    name: string;
 	    is_current: boolean;
+	    kind: string;
+	    upstream: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Branch(source);
@@ -2050,6 +2052,8 @@ export namespace workspace {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.is_current = source["is_current"];
+	        this.kind = source["kind"];
+	        this.upstream = source["upstream"];
 	    }
 	}
 	export class BranchBase {

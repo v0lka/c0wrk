@@ -10,6 +10,7 @@ const { gitMocks } = vi.hoisted(() => ({
   gitMocks: {
     getBranches: vi.fn(),
     checkoutBranch: vi.fn(),
+    checkoutRemoteBranch: vi.fn(),
     createBranch: vi.fn(),
     getBranchBases: vi.fn(),
   },
@@ -21,6 +22,7 @@ vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn() },
 }))
 
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { BranchPicker } from './BranchPicker'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 
@@ -31,6 +33,7 @@ beforeEach(() => {
   // Reset call history without removing the mock function identities.
   gitMocks.getBranches.mockReset()
   gitMocks.checkoutBranch.mockReset()
+  gitMocks.checkoutRemoteBranch.mockReset()
   gitMocks.createBranch.mockReset()
   gitMocks.getBranchBases.mockReset()
   // Default: resolve to an empty branch list so the effect always has a
@@ -92,9 +95,23 @@ function allButtons(): HTMLButtonElement[] {
   return Array.from(body().querySelectorAll('button'))
 }
 
+/** Branch rows are `div[role="button"]` (LocalBranchRow / RemoteBranchRow). */
+function branchRows(): HTMLElement[] {
+  return Array.from(body().querySelectorAll('div[role="button"]'))
+}
+
+/** The branch row whose text contains `name`. */
+function branchRow(name: string): HTMLElement | undefined {
+  return branchRows().find((el) => el.textContent?.includes(name))
+}
+
 function renderPicker() {
   act(() => {
-    root.render(<BranchPicker />)
+    root.render(
+      <TooltipProvider>
+        <BranchPicker />
+      </TooltipProvider>,
+    )
   })
 }
 
@@ -107,9 +124,9 @@ describe('BranchPicker', () => {
 
   it('renders the title and loads branches when open', async () => {
     gitMocks.getBranches.mockResolvedValue([
-      { name: 'main', is_current: true },
-      { name: 'feature/x', is_current: false },
-      { name: 'bugfix/123', is_current: false },
+      { name: 'main', is_current: true, kind: 'local', upstream: '' },
+      { name: 'feature/x', is_current: false, kind: 'local', upstream: '' },
+      { name: 'bugfix/123', is_current: false, kind: 'local', upstream: '' },
     ])
     renderPicker()
 
@@ -123,36 +140,52 @@ describe('BranchPicker', () => {
     expect(body().textContent).toContain('bugfix/123')
   })
 
-  it('marks the current branch with a check and disables its button', async () => {
+  it('renders remote branches in a separate group', async () => {
     gitMocks.getBranches.mockResolvedValue([
-      { name: 'main', is_current: true },
-      { name: 'dev', is_current: false },
+      { name: 'main', is_current: true, kind: 'local', upstream: '' },
+      { name: 'origin/feature/x', is_current: false, kind: 'remote', upstream: '' },
     ])
     renderPicker()
     await flush()
 
-    // Find the branch buttons (the ones containing the branch name text).
-    const mainBtn = allButtons().find((b) => b.textContent?.includes('main'))!
-    const devBtn = allButtons().find((b) => b.textContent?.includes('dev'))!
+    expect(body().textContent).toContain('Local')
+    expect(body().textContent).toContain('Remote')
+    expect(body().textContent).toContain('origin/feature/x')
+  })
 
-    expect(mainBtn.disabled).toBe(true)
+  it('marks the current branch with a check and disables its row', async () => {
+    gitMocks.getBranches.mockResolvedValue([
+      { name: 'main', is_current: true, kind: 'local', upstream: '' },
+      { name: 'dev', is_current: false, kind: 'local', upstream: '' },
+    ])
+    renderPicker()
+    await flush()
+
+    const mainRow = branchRow('main')!
+    const devRow = branchRow('dev')!
+
+    // The current branch is non-interactive and marked with aria-current.
+    expect(mainRow.getAttribute('aria-current')).toBe('true')
+    expect(mainRow.getAttribute('tabindex')).toBe('-1')
     // The current branch shows a check icon (lucide renders an <svg>).
-    expect(mainBtn.querySelector('svg')).not.toBeNull()
-    expect(devBtn.disabled).toBe(false)
+    expect(mainRow.querySelector('svg')).not.toBeNull()
+    // Non-current branches are interactive and carry no aria-current.
+    expect(devRow.getAttribute('tabindex')).toBe('0')
+    expect(devRow.getAttribute('aria-current')).toBeNull()
   })
 
   it('calls checkoutBranch and closes the picker when a branch is clicked', async () => {
     gitMocks.getBranches.mockResolvedValue([
-      { name: 'main', is_current: true },
-      { name: 'dev', is_current: false },
+      { name: 'main', is_current: true, kind: 'local', upstream: '' },
+      { name: 'dev', is_current: false, kind: 'local', upstream: '' },
     ])
     gitMocks.checkoutBranch.mockResolvedValue(undefined)
     renderPicker()
     await flush()
 
-    const devBtn = allButtons().find((b) => b.textContent?.includes('dev'))!
+    const devRow = branchRow('dev')!
     await act(async () => {
-      devBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      devRow.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -163,8 +196,8 @@ describe('BranchPicker', () => {
 
   it('shows an error when checkoutBranch fails and stays open', async () => {
     gitMocks.getBranches.mockResolvedValue([
-      { name: 'main', is_current: true },
-      { name: 'dev', is_current: false },
+      { name: 'main', is_current: true, kind: 'local', upstream: '' },
+      { name: 'dev', is_current: false, kind: 'local', upstream: '' },
     ])
     gitMocks.checkoutBranch.mockRejectedValue(
       new Error('local changes would be overwritten'),
@@ -172,9 +205,9 @@ describe('BranchPicker', () => {
     renderPicker()
     await flush()
 
-    const devBtn = allButtons().find((b) => b.textContent?.includes('dev'))!
+    const devRow = branchRow('dev')!
     await act(async () => {
-      devBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      devRow.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -185,10 +218,10 @@ describe('BranchPicker', () => {
 
   it('filters branches by the filter input', async () => {
     gitMocks.getBranches.mockResolvedValue([
-      { name: 'main', is_current: true },
-      { name: 'feature/auth', is_current: false },
-      { name: 'feature/api', is_current: false },
-      { name: 'bugfix/123', is_current: false },
+      { name: 'main', is_current: true, kind: 'local', upstream: '' },
+      { name: 'feature/auth', is_current: false, kind: 'local', upstream: '' },
+      { name: 'feature/api', is_current: false, kind: 'local', upstream: '' },
+      { name: 'bugfix/123', is_current: false, kind: 'local', upstream: '' },
     ])
     renderPicker()
     await flush()
@@ -209,7 +242,7 @@ describe('BranchPicker', () => {
 
   it('creates a new branch via the New button', async () => {
     gitMocks.getBranches.mockResolvedValue([
-      { name: 'main', is_current: true },
+      { name: 'main', is_current: true, kind: 'local', upstream: '' },
     ])
     gitMocks.createBranch.mockResolvedValue(undefined)
     renderPicker()
@@ -235,7 +268,7 @@ describe('BranchPicker', () => {
 
   it('creates a new branch from a selected base', async () => {
     gitMocks.getBranches.mockResolvedValue([
-      { name: 'main', is_current: true },
+      { name: 'main', is_current: true, kind: 'local', upstream: '' },
     ])
     gitMocks.getBranchBases.mockResolvedValue([
       { ref: 'develop', label: 'develop', type: 'local', detail: '' },
@@ -286,7 +319,7 @@ describe('BranchPicker', () => {
 
   it('creates a new branch via Enter key in the new-branch input', async () => {
     gitMocks.getBranches.mockResolvedValue([
-      { name: 'main', is_current: true },
+      { name: 'main', is_current: true, kind: 'local', upstream: '' },
     ])
     gitMocks.createBranch.mockResolvedValue(undefined)
     renderPicker()
@@ -312,7 +345,7 @@ describe('BranchPicker', () => {
 
   it('shows an error when createBranch fails', async () => {
     gitMocks.getBranches.mockResolvedValue([
-      { name: 'main', is_current: true },
+      { name: 'main', is_current: true, kind: 'local', upstream: '' },
     ])
     gitMocks.createBranch.mockRejectedValue(
       new Error('branch "dup" already exists'),

@@ -437,20 +437,23 @@ func (f *FrontendAPI) Commit(message string) (string, error) {
 // Branch RPCs
 // ---------------------------------------------------------------------------
 
-// GetBranches returns all local branches with their current-state flag.
-// Returns an empty slice (not nil) when no branches exist. Returns an
-// error when no project is active, the project is No Project, or the git
-// command fails.
+// GetBranches returns both local and remote branches in a single
+// `git for-each-ref` call. Each Branch carries its kind ("local" or
+// "remote"), whether it is the currently checked-out local branch, and the
+// short name of its upstream (empty when none). Symbolic refs such as
+// origin/HEAD are skipped. Returns an empty slice (not nil) when no
+// branches exist. Returns an error when no project is active, the project
+// is No Project, or the git command fails.
 func (f *FrontendAPI) GetBranches() ([]Branch, error) {
 	repoPath, err := f.resolveGitRepoRoot()
 	if err != nil {
 		return nil, err
 	}
 
-	// --format: %(refname:short)<NUL>%(HEAD)<NUL>
-	// Each branch is separated by LF, fields within a branch by NUL.
-	out, err := f.runGitCmd(repoPath, "for-each-ref", "refs/heads/",
-		"--format=%(refname:short)%00%(HEAD)%00")
+	// --format: full-refname<NUL>short-refname<NUL>HEAD-marker<NUL>upstream-short<NUL>symref<NUL>
+	// Each ref is separated by LF, fields within a ref by NUL.
+	out, err := f.runGitCmd(repoPath, "for-each-ref", "refs/heads/", "refs/remotes/",
+		"--format=%(refname)%00%(refname:short)%00%(HEAD)%00%(upstream:short)%00%(symref)%00")
 	if err != nil {
 		return nil, err
 	}
@@ -464,12 +467,25 @@ func (f *FrontendAPI) GetBranches() ([]Branch, error) {
 	branches := make([]Branch, 0, len(lines))
 	for _, line := range lines {
 		fields := strings.Split(line, "\x00")
-		if len(fields) < 2 {
+		if len(fields) < 5 {
 			continue
 		}
+		fullName := fields[0]
+		// Skip symbolic refs such as origin/HEAD. git reports a symbolic
+		// ref's target in %(symref), whereas a real branch (including one
+		// literally named "*/HEAD") leaves it empty.
+		if fields[4] != "" {
+			continue
+		}
+		kind := "remote"
+		if strings.HasPrefix(fullName, "refs/heads/") {
+			kind = "local"
+		}
 		branches = append(branches, Branch{
-			Name:      fields[0],
-			IsCurrent: fields[1] == "*",
+			Name:      fields[1],
+			IsCurrent: kind == "local" && fields[2] == "*",
+			Kind:      kind,
+			Upstream:  fields[3],
 		})
 	}
 	return branches, nil
@@ -541,10 +557,10 @@ func (f *FrontendAPI) GetBranchBases() ([]BranchBase, error) {
 	}
 
 	// Collect refs (local branches, remote-tracking branches, tags) via
-	// for-each-ref. Format: short-name<NUL>full-refname<NUL>HEAD-marker<NUL>
+	// for-each-ref. Format: short-name<NUL>full-refname<NUL>HEAD-marker<NUL>symref<NUL>
 	out, err := f.runGitCmd(repoPath, "for-each-ref",
 		"refs/heads/", "refs/remotes/", "refs/tags/",
-		"--format=%(refname:short)%00%(refname)%00%(HEAD)%00",
+		"--format=%(refname:short)%00%(refname)%00%(HEAD)%00%(symref)%00",
 	)
 	if err != nil {
 		return nil, err
@@ -555,12 +571,18 @@ func (f *FrontendAPI) GetBranchBases() ([]BranchBase, error) {
 	if out != "" {
 		for _, line := range strings.Split(out, "\n") {
 			fields := strings.Split(line, "\x00")
-			if len(fields) < 3 {
+			if len(fields) < 4 {
 				continue
 			}
 			shortName := fields[0]
 			fullRef := fields[1]
 			isCurrent := fields[2] == "*"
+			// Skip symbolic refs such as origin/HEAD. git reports a
+			// symbolic ref's target in %(symref), whereas a real branch
+			// (including one literally named "*/HEAD") leaves it empty.
+			if fields[3] != "" {
+				continue
+			}
 
 			var refType string
 			switch {
@@ -573,11 +595,6 @@ func (f *FrontendAPI) GetBranchBases() ([]BranchBase, error) {
 				}
 			case strings.HasPrefix(fullRef, "refs/remotes/"):
 				refType = "remote"
-				// Skip symbolic refs like origin/HEAD — not useful as a
-				// start-point.
-				if strings.HasSuffix(shortName, "/HEAD") {
-					continue
-				}
 			case strings.HasPrefix(fullRef, "refs/tags/"):
 				refType = "tag"
 			default:
@@ -736,6 +753,208 @@ func isBranchAlreadyExists(err error) bool {
 func (f *FrontendAPI) isRemoteTrackingRef(repoPath, ref string) bool {
 	_, err := f.runGitCmd(repoPath, "rev-parse", "--verify", "--quiet", "refs/remotes/"+ref)
 	return err == nil
+}
+
+// RenameBranch renames a local branch from oldName to newName
+// (git branch -m <old> <new>). This also works when oldName is the
+// currently checked-out branch — git renames it and keeps HEAD on it.
+// Both names are passed to git as separate argv elements (never
+// interpolated into a command line), per SECURITY.md. Emits
+// git:status_changed on success. Returns an error when no project is
+// active, the project is No Project, either name is empty, the new name
+// already exists, or the git command fails.
+func (f *FrontendAPI) RenameBranch(oldName, newName string) error {
+	oldBranch := strings.TrimSpace(oldName)
+	if oldBranch == "" {
+		return errors.New("old branch name must not be empty")
+	}
+	newBranch := strings.TrimSpace(newName)
+	if newBranch == "" {
+		return errors.New("new branch name must not be empty")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return err
+	}
+
+	if _, err := f.runGitCmd(repoPath, "branch", "-m", oldBranch, newBranch); err != nil {
+		if isBranchAlreadyExists(err) {
+			return fmt.Errorf("branch %q already exists", newBranch)
+		}
+		return err
+	}
+	f.emitGitStatusChanged(repoPath)
+	return nil
+}
+
+// DeleteBranch deletes a local branch (git branch -d <name>, or
+// git branch -D <name> when force is true). The currently checked-out
+// branch is rejected with a clear error before git is invoked, because
+// git cannot delete it anyway and its stderr wording is worktree-specific.
+// The branch name is passed to git as a separate argv element (never
+// interpolated into a command line), per SECURITY.md. Emits
+// git:status_changed on success. Returns an error when no project is
+// active, the project is No Project, the name is empty, the branch is the
+// current branch, the branch has unmerged changes (when force is false),
+// or the git command fails.
+func (f *FrontendAPI) DeleteBranch(name string, force bool) error {
+	branchName := strings.TrimSpace(name)
+	if branchName == "" {
+		return errors.New("branch name must not be empty")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return err
+	}
+
+	current, err := f.currentBranchName(repoPath)
+	if err != nil {
+		return err
+	}
+	if branchName == current {
+		return errors.New("cannot delete the currently checked-out branch")
+	}
+
+	flag := "-d"
+	if force {
+		flag = "-D"
+	}
+	if _, err := f.runGitCmd(repoPath, "branch", flag, branchName); err != nil {
+		return err
+	}
+	f.emitGitStatusChanged(repoPath)
+	return nil
+}
+
+// currentBranchName returns the short name of the currently checked-out
+// branch (git rev-parse --abbrev-ref HEAD). In detached HEAD state it
+// returns "HEAD".
+func (f *FrontendAPI) currentBranchName(repoPath string) (string, error) {
+	out, err := f.runGitCmd(repoPath, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// ---------------------------------------------------------------------------
+// Branch remote operations RPCs (Phase 5)
+// ---------------------------------------------------------------------------
+
+// PushBranch pushes the named local branch to its upstream remote, or
+// publishes it (setting the upstream) when it has no upstream yet.
+//
+// When the branch already has an upstream — that is, git config
+// branch.<name>.remote resolves — the branch is pushed to that remote
+// (git push <remote> <name>). Otherwise the branch has never been
+// published: it is pushed to "origin" with -u so the upstream is set in
+// the same step (git push -u origin <name>). The remote name is always
+// read from git config branch.<name>.remote, falling back to "origin"
+// when unset.
+//
+// Like Pull/Push/Fetch, this is a remote operation: it is serialized via
+// remoteOpMu and bounded by remoteGitCmdTimeout, and it emits
+// git:status_changed on success. The combined stdout+stderr output is
+// returned for display in the UI. Returns an error when no project is
+// active, the project is No Project, the branch name is empty, or the git
+// command fails.
+func (f *FrontendAPI) PushBranch(name string) (string, error) {
+	branchName := strings.TrimSpace(name)
+	if branchName == "" {
+		return "", errors.New("branch name must not be empty")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return "", err
+	}
+
+	remote := f.branchRemote(repoPath, branchName)
+	if remote == "" {
+		// Not published yet: publish and set the upstream against origin.
+		return f.runSerializedRemoteOp(repoPath, "push", "-u", "origin", branchName)
+	}
+	return f.runSerializedRemoteOp(repoPath, "push", remote, branchName)
+}
+
+// branchRemote returns the upstream remote name configured for the given
+// branch (git config branch.<name>.remote), or "" when no upstream is set.
+// The remote part of a branch's upstream is stored under this key, so this
+// doubles as the canonical "does this branch have an upstream" check.
+func (f *FrontendAPI) branchRemote(repoPath, branchName string) string {
+	out, err := f.runGitCmd(repoPath, "config", "--get", "branch."+branchName+".remote")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// CheckoutRemoteBranch creates a local branch from a remote-tracking branch
+// and switches to it (git switch -c <local> --track <remoteBranch>). The
+// local branch name is everything after the first "/" of remoteBranch
+// (e.g. "origin/feature/x" becomes "feature/x"). This is a local operation
+// (the remote-tracking ref must already exist locally, e.g. after a fetch),
+// so it uses the standard git command timeout rather than
+// remoteGitCmdTimeout. Emits git:status_changed on success. Returns an
+// error when no project is active, the project is No Project, remoteBranch
+// is empty or not in <remote>/<branch> form, the local branch already
+// exists, or the git command fails.
+func (f *FrontendAPI) CheckoutRemoteBranch(remoteBranch string) error {
+	rb := strings.TrimSpace(remoteBranch)
+	if rb == "" {
+		return errors.New("remote branch must not be empty")
+	}
+
+	local := ""
+	if i := strings.IndexByte(rb, '/'); i >= 0 {
+		local = rb[i+1:]
+	}
+	if local == "" {
+		return errors.New("remote branch must be in <remote>/<branch> form")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return err
+	}
+
+	if _, err := f.runGitCmd(repoPath, "switch", "-c", local, "--track", rb); err != nil {
+		if isBranchAlreadyExists(err) {
+			return fmt.Errorf("branch %q already exists", local)
+		}
+		return err
+	}
+	f.emitGitStatusChanged(repoPath)
+	return nil
+}
+
+// DeleteRemoteBranch deletes the named branch on the given remote
+// (git push <remote> --delete <name>). When remote is empty, "origin" is
+// used. The combined stdout+stderr output is returned for display in the
+// UI. Like Pull/Push/Fetch, this is a remote operation: it is serialized
+// via remoteOpMu and bounded by remoteGitCmdTimeout, and it emits
+// git:status_changed on success. Returns an error when no project is
+// active, the project is No Project, the branch name is empty, or the git
+// command fails.
+func (f *FrontendAPI) DeleteRemoteBranch(name, remote string) (string, error) {
+	branchName := strings.TrimSpace(name)
+	if branchName == "" {
+		return "", errors.New("branch name must not be empty")
+	}
+
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return "", err
+	}
+
+	remoteName := strings.TrimSpace(remote)
+	if remoteName == "" {
+		remoteName = "origin"
+	}
+
+	return f.runSerializedRemoteOp(repoPath, "push", remoteName, "--delete", branchName)
 }
 
 // ---------------------------------------------------------------------------

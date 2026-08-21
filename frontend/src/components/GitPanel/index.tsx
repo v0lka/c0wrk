@@ -24,7 +24,6 @@ export function GitPanel() {
   // Stable individual selectors — each only triggers re-render when its
   // specific slice changes (prevents infinite re-render loops per AGENTS.md).
   const isGitRepo = useGitPanelStore((s) => s.isGitRepo)
-  const branch = useGitPanelStore((s) => s.branch)
   const isLoading = useGitPanelStore((s) => s.isLoading)
   const error = useGitPanelStore((s) => s.error)
   const activeTab = useGitPanelStore((s) => s.activeTab)
@@ -89,9 +88,7 @@ export function GitPanel() {
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <GitPanelToolbar
-        branch={branch}
-      />
+      <GitPanelToolbar />
       {/* Changes | History tab switcher (graph merged into History) */}
       <div className="flex shrink-0 border-b border-border bg-secondary/20">
         {(['changes', 'history'] as const).map((tab) => (

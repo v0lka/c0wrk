@@ -26,6 +26,11 @@ import {
   checkoutBranch,
   createBranch,
   getBranchBases,
+  renameBranch,
+  deleteBranch,
+  pushBranch,
+  checkoutRemoteBranch,
+  deleteRemoteBranch,
   generateCommitMessage,
   getDiffStat,
   pull,
@@ -51,9 +56,15 @@ import {
 // We test them *indirectly* through getBranches/getDiffStat behavior below,
 // and directly by re-implementing the same logic in these tests.
 
-function isBranch(v: unknown): v is { name: string; is_current: boolean } {
+function isBranch(v: unknown): v is { name: string; is_current: boolean; kind: 'local' | 'remote'; upstream: string } {
   if (typeof v !== 'object' || v === null) return false
-  return typeof (v as Record<string, unknown>).name === 'string' && typeof (v as Record<string, unknown>).is_current === 'boolean'
+  const o = v as Record<string, unknown>
+  return (
+    typeof o.name === 'string' &&
+    typeof o.is_current === 'boolean' &&
+    (o.kind === 'local' || o.kind === 'remote') &&
+    typeof o.upstream === 'string'
+  )
 }
 
 function isDiffStat(v: unknown): v is { added: number; deleted: number } {
@@ -62,12 +73,12 @@ function isDiffStat(v: unknown): v is { added: number; deleted: number } {
 }
 
 describe('isBranch (type guard)', () => {
-  it('accepts valid Branch', () => {
-    expect(isBranch({ name: 'main', is_current: true })).toBe(true)
+  it('accepts valid local Branch', () => {
+    expect(isBranch({ name: 'main', is_current: true, kind: 'local', upstream: 'origin/main' })).toBe(true)
   })
 
-  it('accepts Branch with is_current=false', () => {
-    expect(isBranch({ name: 'feature/x', is_current: false })).toBe(true)
+  it('accepts remote Branch with empty upstream', () => {
+    expect(isBranch({ name: 'origin/feature/x', is_current: false, kind: 'remote', upstream: '' })).toBe(true)
   })
 
   it('rejects null', () => {
@@ -83,19 +94,35 @@ describe('isBranch (type guard)', () => {
   })
 
   it('rejects object with missing name', () => {
-    expect(isBranch({ is_current: true })).toBe(false)
+    expect(isBranch({ is_current: true, kind: 'local', upstream: '' })).toBe(false)
   })
 
   it('rejects object with missing is_current', () => {
-    expect(isBranch({ name: 'main' })).toBe(false)
+    expect(isBranch({ name: 'main', kind: 'local', upstream: '' })).toBe(false)
+  })
+
+  it('rejects object with missing kind', () => {
+    expect(isBranch({ name: 'main', is_current: true, upstream: '' })).toBe(false)
+  })
+
+  it('rejects object with missing upstream', () => {
+    expect(isBranch({ name: 'main', is_current: true, kind: 'local' })).toBe(false)
+  })
+
+  it('rejects object with invalid kind', () => {
+    expect(isBranch({ name: 'main', is_current: true, kind: 'detached', upstream: '' })).toBe(false)
+  })
+
+  it('rejects object with wrong upstream type', () => {
+    expect(isBranch({ name: 'main', is_current: true, kind: 'local', upstream: 42 })).toBe(false)
   })
 
   it('rejects object with wrong name type', () => {
-    expect(isBranch({ name: 42, is_current: true })).toBe(false)
+    expect(isBranch({ name: 42, is_current: true, kind: 'local', upstream: '' })).toBe(false)
   })
 
   it('rejects object with wrong is_current type', () => {
-    expect(isBranch({ name: 'main', is_current: 'yes' })).toBe(false)
+    expect(isBranch({ name: 'main', is_current: 'yes', kind: 'local', upstream: '' })).toBe(false)
   })
 
   it('rejects empty object', () => {
@@ -253,13 +280,13 @@ describe('getBranches', () => {
 
   it('returns parsed branches from backend', async () => {
     mockApp.GetBranches = vi.fn().mockResolvedValue([
-      { name: 'main', is_current: true },
-      { name: 'feature/x', is_current: false },
+      { name: 'main', is_current: true, kind: 'local', upstream: 'origin/main' },
+      { name: 'feature/x', is_current: false, kind: 'local', upstream: '' },
     ])
     const result = await getBranches()
     expect(result).toEqual([
-      { name: 'main', is_current: true },
-      { name: 'feature/x', is_current: false },
+      { name: 'main', is_current: true, kind: 'local', upstream: 'origin/main' },
+      { name: 'feature/x', is_current: false, kind: 'local', upstream: '' },
     ])
   })
 
@@ -271,7 +298,7 @@ describe('getBranches', () => {
 
   it('returns empty array when backend returns array with invalid elements', async () => {
     mockApp.GetBranches = vi.fn().mockResolvedValue([
-      { name: 'main', is_current: true },
+      { name: 'main', is_current: true, kind: 'local', upstream: 'origin/main' },
       'not-a-branch',
     ])
     const result = await getBranches()
@@ -453,6 +480,109 @@ describe('getBranchBases', () => {
   it('propagates errors from backend', async () => {
     mockApp.GetBranchBases = vi.fn().mockRejectedValue(new Error('no active project'))
     await expect(getBranchBases()).rejects.toThrow('no active project')
+  })
+})
+
+describe('renameBranch', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.RenameBranch with old and new names', async () => {
+    mockApp.RenameBranch = vi.fn().mockResolvedValue(undefined)
+    await renameBranch('old-name', 'new-name')
+    expect(mockApp.RenameBranch).toHaveBeenCalledWith('old-name', 'new-name')
+  })
+
+  it('propagates errors from backend', async () => {
+    mockApp.RenameBranch = vi.fn().mockRejectedValue(new Error('branch exists'))
+    await expect(renameBranch('a', 'b')).rejects.toThrow('branch exists')
+  })
+})
+
+describe('deleteBranch', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.DeleteBranch with name and force flag', async () => {
+    mockApp.DeleteBranch = vi.fn().mockResolvedValue(undefined)
+    await deleteBranch('doomed', true)
+    expect(mockApp.DeleteBranch).toHaveBeenCalledWith('doomed', true)
+  })
+
+  it('propagates errors from backend', async () => {
+    mockApp.DeleteBranch = vi.fn().mockRejectedValue(new Error('cannot delete current'))
+    await expect(deleteBranch('main', false)).rejects.toThrow('cannot delete current')
+  })
+})
+
+describe('pushBranch', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.PushBranch and returns output', async () => {
+    mockApp.PushBranch = vi.fn().mockResolvedValue('Branch pushed')
+    const result = await pushBranch('feature/x')
+    expect(result).toBe('Branch pushed')
+    expect(mockApp.PushBranch).toHaveBeenCalledWith('feature/x')
+  })
+
+  it('throws when backend returns non-string', async () => {
+    mockApp.PushBranch = vi.fn().mockResolvedValue(42)
+    await expect(pushBranch('main')).rejects.toThrow('non-string output')
+  })
+
+  it('propagates errors from backend', async () => {
+    mockApp.PushBranch = vi.fn().mockRejectedValue(new Error('rejected'))
+    await expect(pushBranch('main')).rejects.toThrow('rejected')
+  })
+})
+
+describe('checkoutRemoteBranch', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.CheckoutRemoteBranch with remote branch', async () => {
+    mockApp.CheckoutRemoteBranch = vi.fn().mockResolvedValue(undefined)
+    await checkoutRemoteBranch('origin/feature/x')
+    expect(mockApp.CheckoutRemoteBranch).toHaveBeenCalledWith('origin/feature/x')
+  })
+
+  it('propagates errors from backend', async () => {
+    mockApp.CheckoutRemoteBranch = vi.fn().mockRejectedValue(new Error('no remote-tracking ref'))
+    await expect(checkoutRemoteBranch('origin/feature/x')).rejects.toThrow('no remote-tracking ref')
+  })
+})
+
+describe('deleteRemoteBranch', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.DeleteRemoteBranch and returns output', async () => {
+    mockApp.DeleteRemoteBranch = vi.fn().mockResolvedValue('Deleted')
+    const result = await deleteRemoteBranch('feature/x', 'origin')
+    expect(result).toBe('Deleted')
+    expect(mockApp.DeleteRemoteBranch).toHaveBeenCalledWith('feature/x', 'origin')
+  })
+
+  it('passes empty remote to default to origin', async () => {
+    mockApp.DeleteRemoteBranch = vi.fn().mockResolvedValue('Deleted')
+    await deleteRemoteBranch('feature/x', '')
+    expect(mockApp.DeleteRemoteBranch).toHaveBeenCalledWith('feature/x', '')
+  })
+
+  it('throws when backend returns non-string', async () => {
+    mockApp.DeleteRemoteBranch = vi.fn().mockResolvedValue(null)
+    await expect(deleteRemoteBranch('feature/x', 'origin')).rejects.toThrow('non-string output')
+  })
+
+  it('propagates errors from backend', async () => {
+    mockApp.DeleteRemoteBranch = vi.fn().mockRejectedValue(new Error('network'))
+    await expect(deleteRemoteBranch('feature/x', 'origin')).rejects.toThrow('network')
   })
 })
 

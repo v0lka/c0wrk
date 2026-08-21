@@ -33,6 +33,8 @@ export function CheckForUpdates():Promise<backend.UpdateInfo>;
 
 export function CheckoutBranch(arg1:string):Promise<void>;
 
+export function CheckoutRemoteBranch(arg1:string):Promise<void>;
+
 export function ClearReview(arg1:string):Promise<void>;
 
 export function ClearReviewComments(arg1:string):Promise<void>;
@@ -49,7 +51,11 @@ export function CreateSession():Promise<session.SessionInfo>;
 
 export function CreateTag(arg1:string,arg2:string):Promise<void>;
 
+export function DeleteBranch(arg1:string,arg2:boolean):Promise<void>;
+
 export function DeleteProject(arg1:string):Promise<void>;
+
+export function DeleteRemoteBranch(arg1:string,arg2:string):Promise<string>;
 
 export function DeleteRemoteTag(arg1:string,arg2:string):Promise<string>;
 
@@ -197,6 +203,8 @@ export function Pull(arg1:string,arg2:Array<string>):Promise<string>;
 
 export function Push(arg1:string,arg2:Array<string>):Promise<string>;
 
+export function PushBranch(arg1:string):Promise<string>;
+
 export function PushTag(arg1:string,arg2:string):Promise<string>;
 
 export function ReadFile(arg1:string):Promise<string>;
@@ -206,6 +214,8 @@ export function ReadFileAsDataURL(arg1:string):Promise<string>;
 export function Rebase(arg1:string):Promise<void>;
 
 export function RemoveAttachment(arg1:string,arg2:string):Promise<void>;
+
+export function RenameBranch(arg1:string,arg2:string):Promise<void>;
 
 export function RenameProject(arg1:string,arg2:string):Promise<void>;
 

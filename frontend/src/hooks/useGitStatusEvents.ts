@@ -3,7 +3,7 @@
 
 import { useEffect, useCallback, useRef } from 'react'
 import { getGitStatus } from '@/api/workspace'
-import { getCurrentBranch, getRebaseMergeState, getDiffStats } from '@/api/git'
+import { getCurrentBranch, getRebaseMergeState, getDiffStats, getBranches } from '@/api/git'
 import { subscribe } from '@/api/runtime'
 import { useProjectStore } from '@/stores/projectStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
@@ -73,17 +73,27 @@ export function useGitStatusEvents(): void {
   const refresh = useCallback(async () => {
     if (!workspacePath) return
 
-    // Fetch git status, current branch, and merge/rebase state in parallel.
-    // Promise.allSettled ensures one failure does not prevent the others.
-    const [statusResult, branchResult, stateResult] = await Promise.allSettled([
-      getGitStatus(workspacePath),
-      getCurrentBranch(),
-      getRebaseMergeState(),
-    ])
+    // Fetch git status, current branch, merge/rebase state and the full
+    // branch list in parallel. Promise.allSettled ensures one failure does
+    // not prevent the others.
+    const [statusResult, branchResult, stateResult, branchesResult] =
+      await Promise.allSettled([
+        getGitStatus(workspacePath),
+        getCurrentBranch(),
+        getRebaseMergeState(),
+        getBranches(),
+      ])
 
     // Always update branch if the call succeeded
     if (branchResult.status === 'fulfilled') {
       useGitPanelStore.getState().setBranch(branchResult.value)
+    }
+
+    // Full branch list (local + remote) — powers the BranchDropdown and the
+    // BranchPicker modal. Updated on every status change so branch switches,
+    // pushes and deletes are reflected immediately.
+    if (branchesResult.status === 'fulfilled') {
+      useGitPanelStore.getState().setBranches(branchesResult.value)
     }
 
     // Merge/rebase state (Phase 6) — default to "no op in progress" on failure.
