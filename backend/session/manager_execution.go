@@ -2022,7 +2022,13 @@ func (m *Manager) CancelTask(id string) error {
 
 	if !session.active {
 		session.mu.Unlock()
-		return ErrNoActiveTask
+		// Nothing is running, but a cooperatively paused (or otherwise
+		// unfinished, resumable) task is still cancellable via the Stop
+		// button. Discard it and emit task_cancelled so the frontend leaves
+		// the paused state. When there is no unfinished task to discard, keep
+		// ErrNoActiveTask so callers can still distinguish "nothing running"
+		// from a successful cancellation.
+		return m.cancelUnfinishedTask(id)
 	}
 
 	doneCh := session.done
@@ -2040,6 +2046,51 @@ func (m *Manager) CancelTask(id string) error {
 			m.log().Warn("timed out waiting for task goroutine to stop on cancel", "session_id", id)
 		}
 	}
+
+	return nil
+}
+
+// cancelUnfinishedTask discards the session's unfinished (e.g. cooperatively
+// paused) task and emits task_cancelled so the frontend leaves the
+// paused/resumable state. It is the non-active counterpart of CancelTask: the
+// running-task goroutine has already exited, so instead of signalling a
+// context it flips the persisted task to cancelled and emits the terminal
+// event directly. Returns ErrNoActiveTask when there is no unfinished task to
+// cancel, preserving the sentinel callers rely on to distinguish "nothing
+// running" from a successful cancellation.
+func (m *Manager) cancelUnfinishedTask(sessionID string) error {
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts == nil {
+		return ErrNoActiveTask
+	}
+
+	adapter := NewTaskStoreAdapter(ts)
+	taskID, err := adapter.GetUnfinishedTaskID(sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to look up unfinished task: %w", err)
+	}
+	if taskID == "" {
+		return ErrNoActiveTask
+	}
+	if err := adapter.PersistCancellation(taskID); err != nil {
+		return fmt.Errorf("failed to mark task as cancelled: %w", err)
+	}
+	// Mark the prior task_failed_resumable banner (if any) as resolved so it
+	// does not reappear as pending on reload after the user cancels.
+	m.resolveResumableTaskMessage(sessionID, taskID, "cancelled")
+
+	// Emit the same terminal event the active-task cancel path emits so the UI
+	// clears the paused state and shows "Task was cancelled". A cooperatively
+	// paused run has not yet emitted agent metrics (pause is a checkpoint, not
+	// a terminal state), so this is the single terminal emission for the run.
+	m.emitFunc(Event{
+		SessionID: sessionID,
+		Type:      "task_cancelled",
+		Data:      TaskCancelledData{SessionID: sessionID},
+	})
+	m.emitAgentMetrics(sessionID, "cancelled")
 
 	return nil
 }

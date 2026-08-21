@@ -1741,6 +1741,48 @@ func TestCancelUnfinishedTask_NoTaskStore(t *testing.T) {
 	}
 }
 
+// TestCancelTask_PausedSessionCancelsUnfinishedTask verifies that the Stop
+// button's cancel path works for a cooperatively paused session: the task is
+// not active (its goroutine already exited after the pause checkpoint), but
+// CancelTask discards the persisted paused task and emits task_cancelled so
+// the frontend leaves the paused state instead of doing nothing.
+func TestCancelTask_PausedSessionCancelsUnfinishedTask(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+
+	store := &recordingCancelTaskStore{
+		mockTaskStoreForResumable: mockTaskStoreForResumable{
+			unfinished: &TaskRecord{ID: "task-paused", SessionID: "sess-paused", Status: "paused"},
+		},
+	}
+	manager.SetTaskStore(store)
+
+	// The paused task is not active: emulate the post-checkpoint state where
+	// the session is idle in memory but its unfinished task is still resumable.
+	sess := &Session{ID: "sess-paused"}
+	manager.mu.Lock()
+	manager.sessions["sess-paused"] = sess
+	manager.mu.Unlock()
+
+	drainEvents(eventChan)
+
+	if err := manager.CancelTask("sess-paused"); err != nil {
+		t.Fatalf("CancelTask on paused session returned error: %v", err)
+	}
+
+	store.mu.Lock()
+	if store.cancelledCalls != 1 {
+		t.Errorf("expected exactly one CancelTask call, got %d", store.cancelledCalls)
+	}
+	if store.cancelledID != "task-paused" {
+		t.Errorf("expected CancelTask to be called with task-paused, got %q", store.cancelledID)
+	}
+	store.mu.Unlock()
+
+	if n := countEvents(eventChan, "task_cancelled"); n != 1 {
+		t.Errorf("expected one task_cancelled event on paused cancel, got %d", n)
+	}
+}
+
 // TestCancelUnfinishedTask_ResolvesResumableBanner verifies that
 // CancelUnfinishedTask persists the resolution of the task_failed_resumable
 // message (matched by task_id) so the Resume/Cancel banner does not reappear
