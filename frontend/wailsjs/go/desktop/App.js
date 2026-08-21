@@ -278,6 +278,10 @@ export function GetSmallLLMConfig() {
   return window['go']['desktop']['App']['GetSmallLLMConfig']();
 }
 
+export function GetStepOutput(arg1, arg2) {
+  return window['go']['desktop']['App']['GetStepOutput'](arg1, arg2);
+}
+
 export function GetTerminalHistory(arg1) {
   return window['go']['desktop']['App']['GetTerminalHistory'](arg1);
 }
@@ -444,6 +448,10 @@ export function SaveReviewHunkComment(arg1, arg2, arg3, arg4) {
 
 export function SaveReviewPrompt(arg1) {
   return window['go']['desktop']['App']['SaveReviewPrompt'](arg1);
+}
+
+export function SearchBlackboardStepOutputs(arg1, arg2) {
+  return window['go']['desktop']['App']['SearchBlackboardStepOutputs'](arg1, arg2);
 }
 
 export function SearchVectorStore(arg1) {
