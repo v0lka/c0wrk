@@ -4,7 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 import { EllipsisHint } from './EllipsisHint'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { TooltipProvider, TOOLTIP_DELAY_MS } from '@/components/ui/tooltip'
 
 describe('EllipsisHint', () => {
   let container: HTMLElement
@@ -97,7 +97,7 @@ describe('EllipsisHint', () => {
     await act(async () => {
       trigger.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse' }))
       trigger.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse' }))
-      vi.advanceTimersByTime(400)
+      vi.advanceTimersByTime(TOOLTIP_DELAY_MS)
     })
     // Radix portals the content to document.body; it must escape the container
     // and contain the full untruncated value.

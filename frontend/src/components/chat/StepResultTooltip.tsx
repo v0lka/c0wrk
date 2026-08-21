@@ -42,7 +42,7 @@ export function StepResultTooltip({ stepId, result, children }: StepResultToolti
   const description = buildMarkdown(body, result.error)
 
   return (
-    <Tooltip delayDuration={400} onOpenChange={(open) => { if (open) void loadOutput() }}>
+    <Tooltip onOpenChange={(open) => { if (open) void loadOutput() }}>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
       <TooltipContent
         align="start"

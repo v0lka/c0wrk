@@ -3,8 +3,14 @@ import { Tooltip as TooltipPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 
+/**
+ * Default delay before a tooltip opens, in milliseconds.
+ * Single source of truth for the tooltip delay across the whole UI.
+ */
+export const TOOLTIP_DELAY_MS = 1000
+
 function TooltipProvider({
-  delayDuration = 0,
+  delayDuration = TOOLTIP_DELAY_MS,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
   return (

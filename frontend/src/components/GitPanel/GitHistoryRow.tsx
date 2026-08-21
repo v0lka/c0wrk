@@ -63,7 +63,7 @@ export function GitHistoryRow({
 
   return (
     <div style={{ height }}>
-      <Tooltip delayDuration={400}>
+      <Tooltip>
         <TooltipTrigger asChild>
           <button
             type="button"

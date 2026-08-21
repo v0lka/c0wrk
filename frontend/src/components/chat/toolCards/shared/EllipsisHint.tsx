@@ -86,7 +86,7 @@ export function EllipsisHint({ fullText, children, className, alwaysShow = false
   }
 
   return (
-    <Tooltip delayDuration={300}>
+    <Tooltip>
       <TooltipTrigger asChild>
         <span ref={ref} className={merged} onMouseEnter={measure} onFocus={measure}>
           {children}

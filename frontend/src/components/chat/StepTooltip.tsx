@@ -17,7 +17,7 @@ export function StepTooltip({ children, description, enabled = true }: StepToolt
   }
 
   return (
-    <Tooltip delayDuration={400}>
+    <Tooltip>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
       <TooltipContent
         align="start"

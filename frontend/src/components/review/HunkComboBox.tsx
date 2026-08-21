@@ -145,7 +145,7 @@ function HunkRow({ entry, summary, className }: HunkRowProps) {
             leading directories. `direction: rtl` makes the overflow land on
             the left; `<bdi>` isolates the LTR path so neutral chars (/ . -)
             don't reorder under the rtl flow. */}
-        <Tooltip delayDuration={400}>
+        <Tooltip>
           <TooltipTrigger asChild>
             <span
               className="min-w-0 overflow-hidden whitespace-nowrap text-ellipsis text-foreground/90"

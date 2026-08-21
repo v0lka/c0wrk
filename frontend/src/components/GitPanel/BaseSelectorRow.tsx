@@ -63,7 +63,7 @@ export function BaseSelectorRow({
           )}
         </span>
         {base.detail && (
-          <Tooltip delayDuration={300}>
+          <Tooltip>
             <TooltipTrigger asChild>
               <span className="min-w-0 flex-1 truncate text-muted-foreground">
                 {base.detail}
