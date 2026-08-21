@@ -53,9 +53,20 @@ export function useFileDrop(activeSessionId: string | null): {
       return
     }
 
+    const resetDrag = () => {
+      dragEnterCount.current = 0
+      setDragActive(false)
+    }
+
     // --- Stage dropped files from the Wails native drop event. ---
+    // Wails' native `OnFileDrop` intercepts the drop at the OS level, so the
+    // webview never fires the HTML5 `drop`/`dragleave` events that would
+    // otherwise hide the overlay. The `files:dropped` event is therefore also
+    // the authoritative signal that the drop completed — reset the highlight
+    // here so it can't stick after the files are staged.
     const unsub = onGlobalEvent('files:dropped', (data) => {
       if (!isFilesDroppedData(data)) return
+      resetDrag()
       if (data.paths.length === 0) return
       void stageAttachmentPaths(activeSessionId, [...data.paths])
     })
@@ -65,10 +76,6 @@ export function useFileDrop(activeSessionId: string | null): {
     // to suppress its default "open/navigate to the file" behavior. We never
     // read the HTML5 dataTransfer here — paths come from the Wails event — so
     // this is purely visual + navigation-suppression.
-    const resetDrag = () => {
-      dragEnterCount.current = 0
-      setDragActive(false)
-    }
 
     const onDragEnter = (e: DragEvent) => {
       // Only react to drags carrying files.

@@ -193,6 +193,21 @@ describe('useFileDrop', () => {
     expect(capturedDragActive).toBe(false)
   })
 
+  it('hides the overlay after the native files:dropped event (no HTML5 drop)', async () => {
+    stageSpy.mockResolvedValue(undefined)
+    mount('sess-1')
+
+    act(() => { dispatchDragEvent('dragenter') })
+    expect(capturedDragActive).toBe(true)
+
+    // Wails delivers files:dropped without the webview ever seeing an HTML5
+    // drop/dragleave; the overlay must still hide.
+    await act(async () => {
+      emitGlobal('files:dropped', { paths: ['/x/a.md'], x: 0, y: 0 })
+    })
+    expect(capturedDragActive).toBe(false)
+  })
+
   it('ref-counts nested dragenter/dragleave so it stays lit until leaving', () => {
     mount('sess-1')
 
