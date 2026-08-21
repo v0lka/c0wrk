@@ -1,10 +1,14 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import {
   hasUnresolvedHITL,
   deriveSessionIndicatorStatus,
+  isSessionBusy,
 } from './useSessionStatusIndicator'
+import { useChatStore } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
 import type { ChatMessageUI, MessageType } from '@/types/messages'
+import type { SessionInfo } from '@/types/models'
 
 let counter = 0
 function makeMsg(overrides: Partial<ChatMessageUI> & { type: MessageType }): ChatMessageUI {
@@ -141,5 +145,64 @@ describe('deriveSessionIndicatorStatus', () => {
     expect(deriveSessionIndicatorStatus(false, true, [
       makeMsg({ type: 'ask_user', metadata: { request_id: 'r1' } }),
     ])).toBe('pending')
+  })
+})
+
+function makeSessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
+  return {
+    id: 'sess-1',
+    project_id: 'p1',
+    name: 'Session',
+    created_at: new Date(0).toISOString(),
+    last_active_at: new Date(0).toISOString(),
+    archived: false,
+    pinned: false,
+    active: false,
+    total_input_tokens: 0,
+    total_output_tokens: 0,
+    model: '',
+    family: '',
+    has_unfinished_task: false,
+    ...overrides,
+  }
+}
+
+describe('isSessionBusy', () => {
+  beforeEach(() => {
+    useChatStore.setState({ taskActive: {}, paused: {}, messages: {}, messageOrder: {} })
+    useSessionStore.setState({ sessions: null })
+  })
+
+  it('returns false for an idle session with no unfinished task', () => {
+    useSessionStore.setState({ sessions: [makeSessionInfo()] })
+    expect(isSessionBusy('sess-1')).toBe(false)
+  })
+
+  it('returns true when a task is running', () => {
+    useSessionStore.setState({ sessions: [makeSessionInfo()] })
+    useChatStore.setState({ taskActive: { 'sess-1': true } })
+    expect(isSessionBusy('sess-1')).toBe(true)
+  })
+
+  it('returns true when a task is paused', () => {
+    useSessionStore.setState({ sessions: [makeSessionInfo()] })
+    useChatStore.setState({ paused: { 'sess-1': true } })
+    expect(isSessionBusy('sess-1')).toBe(true)
+  })
+
+  it('returns true for a session with an unfinished task', () => {
+    useSessionStore.setState({ sessions: [makeSessionInfo({ has_unfinished_task: true })] })
+    expect(isSessionBusy('sess-1')).toBe(true)
+  })
+
+  it('returns false when a running task is blocked on an unresolved HITL prompt (pending)', () => {
+    const m = makeMsg({ type: 'tool_confirm' })
+    useSessionStore.setState({ sessions: [makeSessionInfo()] })
+    useChatStore.setState({
+      taskActive: { 'sess-1': true },
+      messages: { 'sess-1': { [m.id]: m } },
+      messageOrder: { 'sess-1': [m.id] },
+    })
+    expect(isSessionBusy('sess-1')).toBe(false)
   })
 })

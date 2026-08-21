@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useSessionActions } from "@/hooks/useSessionActions";
 import { SessionItem, type SessionItemSummary } from "./SessionListItem";
+import { SessionActionConfirmDialog } from "./SessionActionConfirmDialog";
 
 /**
  * Dropdown session selector — used in CODE mode (a real project is active).
@@ -43,6 +44,9 @@ export function SessionSelector() {
     handleArchive,
     handlePin,
     handleFork,
+    pendingAction,
+    confirmPendingAction,
+    cancelPendingAction,
   } = useSessionActions();
 
   const [search, setSearch] = useState("");
@@ -173,6 +177,7 @@ export function SessionSelector() {
           <Plus className="size-3.5" />
         </button>
       </div>
+      <SessionActionConfirmDialog pending={pendingAction} onConfirm={confirmPendingAction} onCancel={cancelPendingAction} />
     </div>
   );
 }

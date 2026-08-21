@@ -8,11 +8,16 @@
 // Rename is stateful: callers render the rename input themselves (the
 // dropdown replaces itself with an input; the flat list renders the input
 // inline in the row). This hook owns only the state + async commit.
+//
+// Archive/delete are gated on confirmation for busy sessions: a session with
+// a running, paused, or unfinished task has its task cancelled by the backend
+// first, which is destructive to the resumable state, so we ask first.
 
 import { useState, useRef, useCallback } from 'react'
 import type { RefObject } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useTerminalRegistryStore } from '@/stores/terminalRegistryStore'
+import { isSessionBusy } from '@/hooks/useSessionStatusIndicator'
 import {
   createSession,
   renameSession,
@@ -22,6 +27,15 @@ import {
   pinSession,
 } from '@/api/sessions'
 import { logger } from '@/lib/logger'
+
+/** A destructive action held for user confirmation before execution. */
+export interface PendingSessionAction {
+  kind: 'archive' | 'delete'
+  sessionId: string
+  sessionName: string
+  /** Current archived state — only meaningful for 'archive' (false = archiving). */
+  isArchived: boolean
+}
 
 export interface SessionActions {
   /** Last session-creation error, surfaced inline in the list header. */
@@ -41,6 +55,12 @@ export interface SessionActions {
   handleArchive: (id: string, isArchived: boolean) => Promise<void>
   handlePin: (id: string, isPinned: boolean) => Promise<void>
   handleFork: (id: string) => Promise<void>
+  /** Pending destructive action awaiting confirmation, or null. */
+  pendingAction: PendingSessionAction | null
+  /** Execute the pending action (user confirmed). */
+  confirmPendingAction: () => Promise<void>
+  /** Dismiss the pending action (user cancelled). */
+  cancelPendingAction: () => void
 }
 
 export function useSessionActions(): SessionActions {
@@ -52,6 +72,7 @@ export function useSessionActions(): SessionActions {
   const [createError, setCreateError] = useState<string | null>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [pendingAction, setPendingAction] = useState<PendingSessionAction | null>(null)
   const renameRef = useRef<HTMLInputElement>(null)
 
   const handleNewSession = useCallback(async () => {
@@ -67,7 +88,7 @@ export function useSessionActions(): SessionActions {
     }
   }, [addSession, setActiveSessionId])
 
-  const handleDelete = useCallback(
+  const performDelete = useCallback(
     async (id: string) => {
       try {
         await deleteSession(id)
@@ -82,7 +103,7 @@ export function useSessionActions(): SessionActions {
     [removeSession],
   )
 
-  const handleArchive = useCallback(
+  const performArchive = useCallback(
     async (id: string, isArchived: boolean) => {
       try {
         await archiveSession(id)
@@ -92,6 +113,33 @@ export function useSessionActions(): SessionActions {
       }
     },
     [updateSession],
+  )
+
+  const handleDelete = useCallback(
+    async (id: string) => {
+      // Deleting a busy session cancels its task first (destructive to any
+      // resumable state), so ask for confirmation before proceeding.
+      if (isSessionBusy(id)) {
+        const name = useSessionStore.getState().sessions?.find((s) => s.id === id)?.name ?? id
+        setPendingAction({ kind: 'delete', sessionId: id, sessionName: name, isArchived: false })
+        return
+      }
+      await performDelete(id)
+    },
+    [performDelete],
+  )
+
+  const handleArchive = useCallback(
+    async (id: string, isArchived: boolean) => {
+      // Only archiving (not unarchiving) can cancel a running/unfinished task.
+      if (!isArchived && isSessionBusy(id)) {
+        const name = useSessionStore.getState().sessions?.find((s) => s.id === id)?.name ?? id
+        setPendingAction({ kind: 'archive', sessionId: id, sessionName: name, isArchived })
+        return
+      }
+      await performArchive(id, isArchived)
+    },
+    [performArchive],
   )
 
   const handlePin = useCallback(
@@ -118,6 +166,19 @@ export function useSessionActions(): SessionActions {
     },
     [addSession, setActiveSessionId],
   )
+
+  const confirmPendingAction = useCallback(async () => {
+    if (!pendingAction) return
+    const { kind, sessionId, isArchived } = pendingAction
+    setPendingAction(null)
+    if (kind === 'delete') {
+      await performDelete(sessionId)
+    } else {
+      await performArchive(sessionId, isArchived)
+    }
+  }, [pendingAction, performDelete, performArchive])
+
+  const cancelPendingAction = useCallback(() => setPendingAction(null), [])
 
   const startRename = useCallback((id: string, currentName: string) => {
     setRenamingId(id)
@@ -157,5 +218,8 @@ export function useSessionActions(): SessionActions {
     handleArchive,
     handlePin,
     handleFork,
+    pendingAction,
+    confirmPendingAction,
+    cancelPendingAction,
   }
 }

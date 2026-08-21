@@ -390,6 +390,118 @@ func TestManager_ArchiveSession_KeepsFiles(t *testing.T) {
 	}
 }
 
+// TestManager_ArchiveSession_CancelsActiveTask verifies that archiving a
+// session with a running task first cancels the task (so the archived, read-only
+// session does not keep a task running in the background) before flipping the
+// archived flag.
+func TestManager_ArchiveSession_CancelsActiveTask(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+
+	info, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	drainEvents(eventChan) // session_created
+
+	sess, ok := manager.GetSession(info.ID)
+	if !ok {
+		t.Fatal("session should exist in memory")
+	}
+
+	cancelled := make(chan struct{})
+	done := make(chan struct{})
+	sess.mu.Lock()
+	sess.active = true
+	sess.cancel = func() { close(cancelled) }
+	sess.done = done
+	sess.mu.Unlock()
+
+	// Simulate the task goroutine: it observes the cancel signal and then closes
+	// the done channel, which ArchiveSession waits on before flipping the flag.
+	go func() {
+		<-cancelled
+		close(done)
+	}()
+
+	if err := manager.ArchiveSession(info.ID); err != nil {
+		t.Fatalf("ArchiveSession failed: %v", err)
+	}
+
+	select {
+	case <-done:
+		// done is only closed by the goroutine after it observes the cancel
+		// signal, so reaching here proves the running task was cancelled.
+	default:
+		t.Error("expected the running task to be cancelled before archiving")
+	}
+
+	sess, _ = manager.GetSession(info.ID)
+	if !sess.Archived {
+		t.Error("session should be archived")
+	}
+
+	// Simulate the task goroutine's epilogue (deactivateSessionTask): after the
+	// task finishes it resets active/cancel/done, so the test's manager.Shutdown
+	// cleanup does not re-cancel the already-finished task (which would panic on
+	// the closed signal channel).
+	sess.mu.Lock()
+	sess.active = false
+	sess.cancel = nil
+	sess.done = nil
+	sess.mu.Unlock()
+}
+
+// TestManager_ArchiveSession_CancelsUnfinishedTask verifies that archiving a
+// session with an unfinished (paused/failed) task discards that task by marking
+// it as cancelled in the task store, so the archived, read-only session has no
+// lingering resumable state or resume banner.
+func TestManager_ArchiveSession_CancelsUnfinishedTask(t *testing.T) {
+	manager, _, agentDir := testManager(t)
+
+	store := &recordingCancelTaskStore{
+		mockTaskStoreForResumable: mockTaskStoreForResumable{
+			unfinished: &TaskRecord{ID: "task-abc", SessionID: "sess-1", Status: "paused"},
+		},
+	}
+	manager.SetTaskStore(store)
+
+	// Seed the session directly (bypassing CreateSession) because the nil test
+	// orchestrator cannot wire a task store, and this test only exercises the
+	// archive-time discard path, not session creation.
+	id := "archive-unfinished-session"
+	manager.mu.Lock()
+	manager.sessions[id] = &Session{
+		ID:        id,
+		ProjectID: testProjectID,
+		TempDir:   config.SessionTempDir(agentDir, testProjectID, id),
+	}
+	manager.mu.Unlock()
+
+	if err := manager.ArchiveSession(id); err != nil {
+		t.Fatalf("ArchiveSession failed: %v", err)
+	}
+
+	sess, ok := manager.GetSession(id)
+	if !ok {
+		t.Fatal("session should still exist after archiving")
+	}
+	if !sess.Archived {
+		t.Error("session should be archived")
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.cancelledCalls != 1 {
+		t.Errorf("expected exactly one CancelTask call, got %d", store.cancelledCalls)
+	}
+	if store.cancelledID != "task-abc" {
+		t.Errorf("expected CancelTask to be called with task-abc, got %q", store.cancelledID)
+	}
+	if store.completedCalls != 0 {
+		t.Errorf("expected no CompleteTask calls (discard must cancel, not complete), got %d", store.completedCalls)
+	}
+}
+
 func TestManager_RenameSession(t *testing.T) {
 	manager, eventChan, _ := testManager(t)
 

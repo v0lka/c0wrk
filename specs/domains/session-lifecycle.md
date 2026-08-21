@@ -670,7 +670,7 @@ type HandleResult struct {
 ## Invariants
 
 - One Orchestrator per session (created lazily on first message)
-- `DeleteSession` removes the in-memory session and cleans up the entire per-session
+- `DeleteSession` cancels any running task, removes the in-memory session and cleans up the entire per-session
   directory (`~/.c0wrk/projects/__no_project__/<id>/`) for No Project
   sessions. The session temp directory is always cleaned up regardless.
 - Session state survives app restart (SQLite persistence)
@@ -678,6 +678,7 @@ type HandleResult struct {
 - Destination project switch state always persists the resolved `saved_session_id` in `project_ui_state` when project persistence is wired
 - Messages are persisted immediately on receive (not after processing)
 - Archived sessions are read-only history: the session-manager choke point rejects both new `SendMessage` execution and failed/paused task resume until the session is unarchived
+- Archiving a session that is running or has an unfinished task first cancels the running task and discards the unfinished task, so an archived session is a clean read-only snapshot. The session temp directory is removed once the task goroutine settles; if cancellation does not settle within `stopTimeout`, the archived flag still flips and the temp directory removal is deferred until the goroutine actually finishes (never racing a still-running tool call).
 - Task state is checkpointed on each step completion (enables resume)
 - Cancellation is cooperative (executor checks context at each iteration)
 - An unfinished task (`in_progress` or `failed`) is continued by the next user

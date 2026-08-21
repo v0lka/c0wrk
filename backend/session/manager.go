@@ -1201,16 +1201,68 @@ func (m *Manager) ArchiveSession(id string) error {
 	}
 
 	session.mu.Lock()
+	archiving := !session.Archived
+	session.mu.Unlock()
+
+	// Archiving a session that still has a running or unfinished task must first
+	// stop and settle it: an archived session is read-only (ErrSessionArchived),
+	// so it must not keep a task running in the background or retain a resumable
+	// unfinished task that can no longer be resumed. DeleteSession applies the
+	// same cancellation to the active-task case.
+	if archiving {
+		session.mu.Lock()
+		var doneCh chan struct{}
+		if session.active && session.cancel != nil {
+			session.cancel()
+			doneCh = session.done
+		}
+		tempDir := session.TempDir
+		session.mu.Unlock()
+
+		removeTempDir := func() {
+			if tempDir == "" {
+				return
+			}
+			if err := os.RemoveAll(tempDir); err != nil {
+				m.log().Warn("failed to remove session temp directory on archive", "session_id", id, "temp_dir", tempDir, "error", err)
+			}
+		}
+
+		switch {
+		case doneCh == nil:
+			// No running task: the temp dir is quiescent and safe to remove.
+			removeTempDir()
+		default:
+			select {
+			case <-doneCh:
+				// The task goroutine has fully settled, so its temp files are no
+				// longer in use and can be removed immediately.
+				removeTempDir()
+			case <-time.After(m.stopTimeout):
+				// Cancellation is cooperative: a long-running tool call may not
+				// return within stopTimeout. Do NOT remove the temp dir now — the
+				// goroutine may still be writing into it. Defer the removal until
+				// it actually finishes so archiving never destroys a still-running
+				// task's scratch files.
+				m.log().Warn("timed out waiting for task goroutine to stop before archiving; deferring temp cleanup", "session_id", id)
+				go func() {
+					<-doneCh
+					removeTempDir()
+				}()
+			}
+		}
+
+		// Discard any unfinished (paused/failed) task so the archived session has
+		// no lingering resume banner or resumable state.
+		if err := m.CancelUnfinishedTask(id); err != nil {
+			m.log().Warn("failed to discard unfinished task before archiving", "session_id", id, "error", err)
+		}
+	}
+
+	session.mu.Lock()
 	session.Archived = !session.Archived
 	archived := session.Archived
 	session.mu.Unlock()
-
-	// If archiving, clean up temp directory
-	if archived && session.TempDir != "" {
-		if err := os.RemoveAll(session.TempDir); err != nil {
-			m.log().Warn("failed to remove session temp directory on archive", "session_id", id, "temp_dir", session.TempDir, "error", err)
-		}
-	}
 
 	// Emit session archived/unarchived event
 	eventType := "session_unarchived"

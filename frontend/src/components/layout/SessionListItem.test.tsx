@@ -61,7 +61,7 @@ describe('SessionItem busy-state guards', () => {
     expect(del?.disabled).toBe(false)
   })
 
-  it('disables fork/archive/delete while a task is running (active)', () => {
+  it('disables only fork while a task is running (active); archive/delete stay enabled', () => {
     statusMock.value = 'active'
     const { container } = render(
       <SessionItem variant="flat" session={makeSession()} isActive={false} onSelect={vi.fn()} onRename={vi.fn()} onArchive={vi.fn()} onPin={vi.fn()} onFork={vi.fn()} onDelete={vi.fn()} />,
@@ -69,19 +69,19 @@ describe('SessionItem busy-state guards', () => {
     const btns = actionButtons(container)
     const [, fork, , archive, del] = btns
     expect(fork?.disabled).toBe(true)
-    expect(archive?.disabled).toBe(true)
-    expect(del?.disabled).toBe(true)
+    expect(archive?.disabled).toBe(false)
+    expect(del?.disabled).toBe(false)
   })
 
-  it('disables fork/archive/delete for a session with an unfinished task', () => {
+  it('disables only fork for a session with an unfinished task; archive/delete stay enabled', () => {
     const { container } = render(
       <SessionItem variant="flat" session={makeSession({ has_unfinished_task: true })} isActive={false} onSelect={vi.fn()} onRename={vi.fn()} onArchive={vi.fn()} onPin={vi.fn()} onFork={vi.fn()} onDelete={vi.fn()} />,
     )
     const btns = actionButtons(container)
     const [, fork, , archive, del] = btns
     expect(fork?.disabled).toBe(true)
-    expect(archive?.disabled).toBe(true)
-    expect(del?.disabled).toBe(true)
+    expect(archive?.disabled).toBe(false)
+    expect(del?.disabled).toBe(false)
   })
 
   it('still allows pin & rename for a busy session', () => {

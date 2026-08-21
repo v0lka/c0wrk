@@ -11,6 +11,7 @@
 
 import { useMemo } from 'react'
 import { useChatStore } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import type { ChatMessageUI } from '@/types/messages'
 import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
 
@@ -73,4 +74,33 @@ export function useSessionStatusIndicator(sessionId: string | null): SessionIndi
     }
     return deriveSessionIndicatorStatus(isRunning, isPaused, messages)
   }, [messageOrder, messageIndex, isRunning, isPaused])
+}
+
+/**
+ * Synchronous (non-hook) busy check for non-render code paths (e.g. session
+ * action handlers). Mirrors the row's busy flag: a session is busy when it has
+ * a running task, a paused task, or an unfinished task — destructive to
+ * archive/delete, so those actions request confirmation. A 'pending' session
+ * (awaiting a HITL response) is NOT busy.
+ */
+export function isSessionBusy(sessionId: string): boolean {
+  const chat = useChatStore.getState()
+  const isRunning = chat.taskActive[sessionId] ?? false
+  const isPaused = chat.paused[sessionId] ?? false
+
+  const messages: ChatMessageUI[] = []
+  const messageOrder = chat.messageOrder[sessionId]
+  const messageIndex = chat.messages[sessionId]
+  if (messageOrder && messageIndex) {
+    for (const id of messageOrder) {
+      const m = messageIndex[id]
+      if (m) messages.push(m)
+    }
+  }
+
+  const status = deriveSessionIndicatorStatus(isRunning, isPaused, messages)
+  if (status === 'active' || status === 'paused') return true
+
+  const session = useSessionStore.getState().sessions?.find((s) => s.id === sessionId)
+  return session?.has_unfinished_task ?? false
 }

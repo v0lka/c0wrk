@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { ChevronDown, ChevronRight, Plus, Search } from "lucide-react";
 import { useSessionActions } from "@/hooks/useSessionActions";
 import { SessionItem, type SessionItemSummary } from "./SessionListItem";
+import { SessionActionConfirmDialog } from "./SessionActionConfirmDialog";
 
 /**
  * Flat, scrollable session list — used in CHAT (No Project) mode.
@@ -38,6 +39,9 @@ export function SessionList() {
     handleArchive,
     handlePin,
     handleFork,
+    pendingAction,
+    confirmPendingAction,
+    cancelPendingAction,
   } = useSessionActions();
 
   const [search, setSearch] = useState("");
@@ -161,6 +165,7 @@ export function SessionList() {
           </div>
         )}
       </div>
+      <SessionActionConfirmDialog pending={pendingAction} onConfirm={confirmPendingAction} onCancel={cancelPendingAction} />
     </div>
   );
 }

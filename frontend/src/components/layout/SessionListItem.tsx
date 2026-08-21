@@ -52,13 +52,12 @@ interface SessionRowContentProps extends SessionItemCallbacks {
 }
 
 function SessionRowContent({ session, isActive, status, onPin, onFork, onRename, onArchive, onDelete }: SessionRowContentProps) {
-  // A running task or unfinished work blocks session-state mutations (fork,
-  // archive, delete) until the session settles. The guard mirrors fork so the
-  // three actions are consistent for active/unfinished sessions.
+  // Fork is the only action that requires a settled session: it deep-copies the
+  // execution state, which is impossible while a task is running or unfinished.
+  // Archive and delete are always allowed — the backend cancels/completes any
+  // in-flight or unfinished task as needed before archiving/deleting.
   const busy = status === 'active' || status === 'paused' || session.has_unfinished_task
   const forkReason = status === 'active' ? 'Cannot fork while a task is running' : 'Cannot fork a session with an unfinished task'
-  const archiveReason = status === 'active' ? 'Cannot archive while a task is running' : 'Cannot archive a session with an unfinished task'
-  const deleteReason = status === 'active' ? 'Cannot delete while a task is running' : 'Cannot delete a session with an unfinished task'
 
   return (
     <>
@@ -89,14 +88,14 @@ function SessionRowContent({ session, isActive, status, onPin, onFork, onRename,
         <ItemAction label="Rename" onClick={onRename}>
           <Pencil className="size-3 text-info" />
         </ItemAction>
-        <ItemAction label={session.archived ? 'Unarchive' : 'Archive'} onClick={onArchive} disabled={busy} disabledReason={busy ? archiveReason : undefined}>
+        <ItemAction label={session.archived ? 'Unarchive' : 'Archive'} onClick={onArchive}>
           {session.archived ? (
             <ArchiveRestore className="size-3 text-warning" />
           ) : (
             <Archive className="size-3 text-warning" />
           )}
         </ItemAction>
-        <ItemAction label="Delete" onClick={onDelete} disabled={busy} disabledReason={busy ? deleteReason : undefined}>
+        <ItemAction label="Delete" onClick={onDelete}>
           <Trash2 className="size-3 text-destructive" />
         </ItemAction>
       </ItemActions>
