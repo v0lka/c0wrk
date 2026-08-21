@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
@@ -465,7 +466,8 @@ func convertBlackboardState(state *core.TaskState) *BlackboardStateResponse {
 		resp.Plan = planResp
 	}
 
-	// Step results (summaries only, no full output)
+	// Step results (summary + error only; full output is fetched on demand via
+	// GetStepOutput to keep this payload light).
 	for stepID, sr := range state.StepResults {
 		entry := BlackboardStepResponse{
 			StepID:  stepID,
@@ -512,6 +514,61 @@ func convertBlackboardState(state *core.TaskState) *BlackboardStateResponse {
 	}
 
 	return resp
+}
+
+// taskState returns the current blackboard task state for a session, or
+// (nil, nil) when no task state is available. Shared by GetStepOutput and
+// SearchBlackboardStepOutputs so the restore logic stays in one place.
+func (f *FrontendAPI) taskState(sessionID string) (*core.TaskState, error) {
+	if f.app == nil || f.app.Manager() == nil {
+		return nil, errors.New("session manager not initialized")
+	}
+	bbState, err := f.app.Manager().GetBlackboardState(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if bbState == nil || bbState.TaskState == nil {
+		return nil, nil
+	}
+	return bbState.TaskState, nil
+}
+
+// GetStepOutput returns the full output (body) of a single plan step for the
+// blackboard viewer. It is fetched lazily on tooltip hover so each step's
+// (potentially large) output never rides along in the GetBlackboardState
+// payload. Returns an empty string when the step or its output is absent.
+func (f *FrontendAPI) GetStepOutput(sessionID, stepID string) (string, error) {
+	state, err := f.taskState(sessionID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get task state: %w", err)
+	}
+	if state == nil {
+		return "", nil
+	}
+	return state.StepResults[stepID].FullOutput, nil
+}
+
+// SearchBlackboardStepOutputs returns the IDs of steps whose full output
+// contains the query (case-insensitive). The viewer unions this with its local
+// summary/id filtering so the search box matches step output content without
+// ever shipping full outputs over the list endpoint. An empty query yields no
+// matches.
+func (f *FrontendAPI) SearchBlackboardStepOutputs(sessionID, query string) ([]string, error) {
+	state, err := f.taskState(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get task state: %w", err)
+	}
+	if state == nil || query == "" {
+		return nil, nil
+	}
+	needle := strings.ToLower(query)
+	matches := make([]string, 0)
+	for stepID, sr := range state.StepResults {
+		if strings.Contains(strings.ToLower(sr.FullOutput), needle) {
+			matches = append(matches, stepID)
+		}
+	}
+	return matches, nil
 }
 
 // ResolvePendingMessage patches the metadata of the most recent persisted

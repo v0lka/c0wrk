@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { ChevronDown, ChevronRight, ClipboardList, Search, Paperclip } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatBytes } from '@/lib/formatters'
@@ -7,8 +7,10 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { getBlackboardAttachmentMarkdown } from '@/api/attachments'
+import { searchStepOutputs } from '@/api/blackboard'
 import type { BlackboardState, BlackboardReflection, BlackboardAttachment } from '@/types/models'
 import { StepTooltip } from './StepTooltip'
+import { StepResultTooltip } from './StepResultTooltip'
 
 /** Builds the full markdown value of a reflection entry for the tooltip. */
 function reflectionMarkdown(r: BlackboardReflection): string {
@@ -150,6 +152,35 @@ function SearchBar({ value, onChange }: { value: string; onChange: (v: string) =
 
 function BlackboardContent({ state, search }: { state: BlackboardState; search: string }) {
     const lowerSearch = search.toLowerCase()
+    const activeSessionId = useSessionStore(s => s.activeSessionId)
+
+    // Server-side match set for step outputs: the list endpoint no longer ships
+    // full outputs, so searching their contents happens on the backend and is
+    // unioned with the local summary/id match below.
+    const [matchedStepIds, setMatchedStepIds] = useState<Set<string> | null>(null)
+
+    useEffect(() => {
+        if (!search || !activeSessionId) {
+            setMatchedStepIds(null)
+            return
+        }
+        // Clear stale matches immediately so a new query never flashes the
+        // previous query's output-only results while the search is in flight.
+        setMatchedStepIds(null)
+        let cancelled = false
+        const timer = setTimeout(async () => {
+            try {
+                const ids = await searchStepOutputs(activeSessionId, search)
+                if (!cancelled) setMatchedStepIds(new Set(ids))
+            } catch {
+                if (!cancelled) setMatchedStepIds(new Set())
+            }
+        }, 250)
+        return () => {
+            cancelled = true
+            clearTimeout(timer)
+        }
+    }, [search, activeSessionId])
 
     const filteredFacts = useMemo(
         () => state.facts.filter(f =>
@@ -169,11 +200,14 @@ function BlackboardContent({ state, search }: { state: BlackboardState; search: 
 
     const stepEntries = useMemo(() => Object.entries(state.step_results), [state.step_results])
     const filteredSteps = useMemo(
-        () => stepEntries.filter(([id, sr]) =>
-            !search || id.toLowerCase().includes(lowerSearch) ||
-            sr.summary.toLowerCase().includes(lowerSearch)
-        ),
-        [stepEntries, lowerSearch, search],
+        () => stepEntries.filter(([id, sr]) => {
+            if (!search) return true
+            if (id.toLowerCase().includes(lowerSearch) || sr.summary.toLowerCase().includes(lowerSearch)) {
+                return true
+            }
+            return matchedStepIds?.has(id) ?? false
+        }),
+        [stepEntries, lowerSearch, search, matchedStepIds],
     )
 
     const filteredAttachments = useMemo(
@@ -191,17 +225,13 @@ function BlackboardContent({ state, search }: { state: BlackboardState; search: 
             {filteredSteps.length > 0 && (
                 <CollapsibleSection title="Step Results" count={filteredSteps.length}>
                     {filteredSteps.map(([id, sr]) => (
-                        <StepTooltip
-                            key={id}
-                            description={sr.error ? `${sr.summary}\n\n**Error:** ${sr.error}` : sr.summary}
-                            enabled={!!sr.summary}
-                        >
+                        <StepResultTooltip key={id} stepId={id} result={sr}>
                             <div className="py-0.5 pl-2 border-l border-border cursor-default">
                                 <span className="font-medium text-foreground">{formatStepId(id)}</span>
                                 {sr.error && <span className="ml-1.5 text-destructive">[error]</span>}
                                 <p className="text-muted-foreground mt-0.5 line-clamp-2">{sr.summary}</p>
                             </div>
-                        </StepTooltip>
+                        </StepResultTooltip>
                     ))}
                 </CollapsibleSection>
             )}

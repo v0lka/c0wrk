@@ -472,6 +472,10 @@ type BlackboardPlanStepResponse struct {
 }
 
 // BlackboardStepResponse is a simplified step result for the blackboard viewer.
+// The full output (body) is intentionally excluded: it can be large and would
+// bloat the GetBlackboardState payload. The viewer fetches a single step's full
+// output on demand via GetStepOutput, and matches step outputs against a search
+// query via SearchBlackboardStepOutputs.
 type BlackboardStepResponse struct {
 	StepID  string `json:"step_id"`
 	Summary string `json:"summary"`
