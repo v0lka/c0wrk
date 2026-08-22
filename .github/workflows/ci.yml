@@ -8,7 +8,16 @@ on:
 
 jobs:
   linux:
-    runs-on: ubuntu-24.04
+    strategy:
+      # A failed arm64 leg must not cancel the amd64 diagnostics.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -38,10 +47,14 @@ jobs:
       - name: Build frontend assets
         run: cd frontend && npm run build
 
+      # golangci-lint is arch-independent and slow to install from source;
+      # run it on the amd64 leg only. Tests run on both legs.
       - name: Lint (Go)
+        if: matrix.arch == 'amd64'
         run: golangci-lint run
 
       - name: Lint (frontend)
+        if: matrix.arch == 'amd64'
         run: cd frontend && npm run lint
 
       - name: Test (Go)
