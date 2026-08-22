@@ -42,6 +42,7 @@ func allPlatformAssets(tag string) []ReleaseAsset {
 	return []ReleaseAsset{
 		{Name: "c0wrk-desktop-macos-arm64.zip", BrowserDownloadURL: base + "c0wrk-desktop-macos-arm64.zip"},
 		{Name: "c0wrk-desktop-linux-amd64.tar.gz", BrowserDownloadURL: base + "c0wrk-desktop-linux-amd64.tar.gz"},
+		{Name: "c0wrk-desktop-linux-arm64.tar.gz", BrowserDownloadURL: base + "c0wrk-desktop-linux-arm64.tar.gz"},
 		{Name: "c0wrk-desktop-windows-amd64.zip", BrowserDownloadURL: base + "c0wrk-desktop-windows-amd64.zip"},
 	}
 }
@@ -326,6 +327,7 @@ func TestCheck_SelectsCorrectAssetPerPlatform(t *testing.T) {
 	}{
 		{"darwin", "arm64", "c0wrk-desktop-macos-arm64.zip"},
 		{"linux", "amd64", "c0wrk-desktop-linux-amd64.tar.gz"},
+		{"linux", "arm64", "c0wrk-desktop-linux-arm64.tar.gz"},
 		{"windows", "amd64", "c0wrk-desktop-windows-amd64.zip"},
 	}
 	for _, tc := range cases {

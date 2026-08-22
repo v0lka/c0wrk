@@ -17,7 +17,8 @@ func TestAssetNameForPlatform(t *testing.T) {
 		{name: "darwin/arm64", goos: "darwin", goarch: "arm64", want: "c0wrk-desktop-macos-arm64.zip"},
 		{name: "linux/amd64", goos: "linux", goarch: "amd64", want: "c0wrk-desktop-linux-amd64.tar.gz"},
 		{name: "windows/amd64", goos: "windows", goarch: "amd64", want: "c0wrk-desktop-windows-amd64.zip"},
-		{name: "unsupported linux/arm64", goos: "linux", goarch: "arm64", wantErr: ErrNoAssetForPlatform},
+		{name: "linux/arm64", goos: "linux", goarch: "arm64", want: "c0wrk-desktop-linux-arm64.tar.gz"},
+		{name: "unsupported linux/riscv64", goos: "linux", goarch: "riscv64", wantErr: ErrNoAssetForPlatform},
 		{name: "unsupported darwin/amd64", goos: "darwin", goarch: "amd64", wantErr: ErrNoAssetForPlatform},
 		{name: "empty platform", goos: "", goarch: "", wantErr: ErrNoAssetForPlatform},
 	}
