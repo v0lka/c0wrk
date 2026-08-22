@@ -39,12 +39,13 @@ Prebuilt desktop builds are published on the [GitHub Releases](https://github.co
 
 Every release also publishes `SHA256SUMS`. The in-app updater downloads over HTTPS, refuses an archive with a missing or mismatched SHA256 entry, stages an install-tree swap, and keeps a `.old` rollback copy. SHA256 proves that the downloaded archive matches the bytes published with the release; because the artifacts are unsigned, it does **not** prove release authorship if the release account and checksums are compromised. Updates and automatic checks can be disabled independently in Settings or under `updates` in `~/.c0wrk/config.yaml`.
 
-Each release bundles three platform archives:
+Each release bundles four platform archives:
 
 | Artifact                           | Target                |
 | ---------------------------------- | --------------------- |
 | `c0wrk-desktop-macos-arm64.zip`    | macOS (Apple Silicon) |
 | `c0wrk-desktop-linux-amd64.tar.gz` | Linux (amd64)         |
+| `c0wrk-desktop-linux-arm64.tar.gz` | Linux (arm64)         |
 | `c0wrk-desktop-windows-amd64.zip`  | Windows (amd64)       |
 
 The ONNX Runtime library and the embedding models ship inside every archive, so vector search works without an extra download on your end.
@@ -63,7 +64,7 @@ The ONNX Runtime library and the embedding models ship inside every archive, so 
 
 3. Launch `c0wrk-desktop.app`.
 
-### Linux (amd64)
+### Linux (amd64 and arm64)
 
 1. Download `c0wrk-desktop-linux-amd64.tar.gz` and extract it:
    
@@ -78,6 +79,10 @@ The ONNX Runtime library and the embedding models ship inside every archive, so 
    ```
 
 3. If the binary can't find `libonnxruntime.so`, run it from the extraction directory or add that directory to `LD_LIBRARY_PATH`.
+
+**arm64**: download `c0wrk-desktop-linux-arm64.tar.gz` instead; the steps are
+identical to amd64, including the `LD_LIBRARY_PATH` note if the binary cannot
+find `libonnxruntime.so`.
 
 **Runtime dependencies** (end users only need these shared libraries, not the `-dev` packages):
 
