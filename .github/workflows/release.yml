@@ -191,7 +191,7 @@ jobs:
       # On Windows we call wails build directly (no Makefile), then fetch the
       # ONNX Runtime + embedding model via the dedicated PowerShell scripts.
       # ldflags inject the build-time version (VERSION env, resolved at the
-      # workflow level to the pushed tag) so all three platforms agree.
+      # workflow level to the pushed tag) so all platforms agree.
       - name: Build (Wails)
         shell: bash
         run: >-
