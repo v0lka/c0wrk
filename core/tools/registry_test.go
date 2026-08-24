@@ -822,10 +822,13 @@ func newMockJudgerTool(name string, allow bool, reasoning string) *mockJudgerToo
 }
 
 // newMockHardJudgerTool builds a judger tool whose outcome is a HARD
-// security-control trigger (command blacklist / SSRF posture).
-func newMockHardJudgerTool(name, reasoning string) *mockJudgerTool {
+// security-control trigger (command blacklist / SSRF posture). The code is
+// the typed classification the Smart Approve backstop keys off — mirrors the
+// real generators in sp4rk/tools/builtins.
+func newMockHardJudgerTool(name, reasoning string, code sdktools.JudgeReasonCode) *mockJudgerTool {
 	tool := newMockJudgerTool(name, false, reasoning)
 	tool.outcome.Severity = sdktools.JudgeSeverityHard
+	tool.outcome.ReasonCode = code
 	return tool
 }
 
@@ -924,7 +927,7 @@ func TestPolicyAlwaysAllow_HardReasonForcesConfirmationWithDisabledJudge(t *test
 	registry := NewToolRegistry()
 	setDefaultGroupPolicies(registry)
 	const pattern = `rm\s+-rf\s+/`
-	registry.Register(newMockHardJudgerTool("judger_tool", "command matches blacklist pattern: "+pattern))
+	registry.Register(newMockHardJudgerTool("judger_tool", "command matches blacklist pattern: "+pattern, sdktools.ReasonCodeCommandBlacklist))
 
 	var req sdktools.ConfirmationRequest
 	registry.SetConfirmFunc(func(_ context.Context, r sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
@@ -947,15 +950,16 @@ func TestPolicyAlwaysAllow_HardReasonForcesConfirmationWithDisabledJudge(t *test
 	}
 }
 
-// TestPolicyAlwaysAllow_HardReasonNeverPassesSmartApprove proves hard
-// reasons never reach Smart Approve: even with Smart Approve on and the
-// strict judge scripted to ALLOW, a hard escalation still confirms (and the
-// strict judge is not consulted at all).
-func TestPolicyAlwaysAllow_HardReasonNeverPassesSmartApprove(t *testing.T) {
+// TestPolicyAlwaysAllow_HardReasonNeverAutoApprovedBySmartApprove proves an
+// allow-group call that surfaces a canonical destructive hard reason is never
+// auto-approved: even with Smart Approve on, the strict judge is consulted
+// (its scripted ALLOW is overridden by the backstop) and the call escalates
+// to a forced confirmation.
+func TestPolicyAlwaysAllow_HardReasonNeverAutoApprovedBySmartApprove(t *testing.T) {
 	registry := NewToolRegistry()
 	setDefaultGroupPolicies(registry)
 	registry.SetSmartApprove(true)
-	registry.Register(newMockHardJudgerTool("judger_tool", "command matches blacklist pattern: shutdown"))
+	registry.Register(newMockHardJudgerTool("judger_tool", "command matches blacklist pattern: shutdown", sdktools.ReasonCodeCommandBlacklist))
 
 	judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: looks fine to me", nil)
 	registry.SetJudge(judge)
@@ -973,16 +977,19 @@ func TestPolicyAlwaysAllow_HardReasonNeverPassesSmartApprove(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !confirmCalled {
-		t.Fatal("expected confirmation: hard reasons must not be auto-approved by Smart Approve")
+		t.Fatal("expected confirmation: a canonical destructive hard reason must never be auto-approved")
 	}
 	if result.IsError != true {
 		t.Error("expected IsError=true after denying the forced confirmation")
 	}
-	if got := provider.callCount(); got != 0 {
-		t.Errorf("strict judge calls = %d, want 0 (hard reasons short-circuit Smart Approve)", got)
+	if got := provider.callCount(); got != 1 {
+		t.Errorf("strict judge calls = %d, want 1 (hard reasons now consult the strict judge)", got)
 	}
 	if !req.DisableJudge {
 		t.Error("hard-reason confirmation must disable the advisory judge")
+	}
+	if !strings.Contains(req.JudgeReasoning, "blacklist") {
+		t.Errorf("expected the canonical hard cause to surface in the confirmation, got %q", req.JudgeReasoning)
 	}
 }
 
@@ -1389,7 +1396,7 @@ func TestAutoApproval_AllowedRoot(t *testing.T) {
 func TestAutoApproval_AllowGroup_JudgerHardFlagsBeforeAutoApprove(t *testing.T) {
 	registry := NewToolRegistry()
 	setDefaultGroupPolicies(registry)
-	registry.Register(newMockHardJudgerTool("bash_exec", "command matches blacklist pattern: rm -rf"))
+	registry.Register(newMockHardJudgerTool("bash_exec", "command matches blacklist pattern: rm -rf", sdktools.ReasonCodeCommandBlacklist))
 
 	var req sdktools.ConfirmationRequest
 	registry.SetConfirmFunc(func(_ context.Context, r sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
@@ -1575,8 +1582,8 @@ func TestLocalWriteAutoApproval_SymlinkEscapeForcesHardConfirm(t *testing.T) {
 	if !req.DisableJudge {
 		t.Error("symlink-escape confirmation must disable the advisory judge")
 	}
-	if got := provider.callCount(); got != 0 {
-		t.Errorf("strict judge calls = %d, want 0 (hard reasons short-circuit Smart Approve)", got)
+	if got := provider.callCount(); got != 1 {
+		t.Errorf("strict judge calls = %d, want 1 (hard reasons now consult the strict judge)", got)
 	}
 }
 
@@ -2052,17 +2059,20 @@ func TestSmartApprove_UnavailableJudgeKeepsConcreteReason(t *testing.T) {
 	}
 }
 
-// TestSmartApprove_UserConfirmHardReasonSkipsStrictJudge proves hard reasons
-// never reach Smart Approve on the user_confirm path: a user_confirm tool
-// with a HARD judge reason confirms directly even with Smart Approve on and
-// the strict judge scripted to ALLOW.
-func TestSmartApprove_UserConfirmHardReasonSkipsStrictJudge(t *testing.T) {
+// TestSmartApprove_UserConfirmHardReasonConsultsJudgeThenForcesConfirm proves
+// hard reasons now reach Smart Approve on the user_confirm path: a
+// user_confirm tool with a HARD judge reason is evaluated by the strict judge
+// (scripted to ALLOW), but the deterministic backstop still forces a user
+// confirmation because a canonical destructive hard reason can never be
+// auto-approved.
+func TestSmartApprove_UserConfirmHardReasonConsultsJudgeThenForcesConfirm(t *testing.T) {
 	registry := NewToolRegistry()
 	setDefaultGroupPolicies(registry)
 	registry.SetSmartApprove(true)
 	registry.Register(newMockExecuteJudgerTool("bash_exec", sdktools.JudgeOutcome{
-		Reason:   "command matches blacklist pattern: mkfs",
-		Severity: sdktools.JudgeSeverityHard,
+		Reason:     "command matches blacklist pattern: mkfs",
+		Severity:   sdktools.JudgeSeverityHard,
+		ReasonCode: sdktools.ReasonCodeCommandBlacklist,
 	}))
 
 	judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: trust me", nil)
@@ -2092,8 +2102,48 @@ func TestSmartApprove_UserConfirmHardReasonSkipsStrictJudge(t *testing.T) {
 	if !req.DisableJudge {
 		t.Error("hard-reason confirmation must disable the advisory judge")
 	}
-	if got := provider.callCount(); got != 0 {
-		t.Errorf("strict judge calls = %d, want 0 (hard reasons short-circuit Smart Approve)", got)
+	if got := provider.callCount(); got != 1 {
+		t.Errorf("strict judge calls = %d, want 1 (hard reasons now consult the strict judge)", got)
+	}
+}
+
+// TestSmartApprove_HardScopePatternReasonCanBeClearedByJudge proves a hard
+// reason with a NON-canonical code — a scope/pattern concern such as a command
+// containing an unresolvable path-like token — can be auto-approved by the
+// strict judge: the judge positively clears it and the tool executes without
+// confirmation. Only canonical codes (fired controls and unassessable inputs)
+// are hard-blocked by the backstop.
+func TestSmartApprove_HardScopePatternReasonCanBeClearedByJudge(t *testing.T) {
+	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
+	registry.SetSmartApprove(true)
+	registry.Register(newMockExecuteJudgerTool("bash_exec", sdktools.JudgeOutcome{
+		Reason:     "command contains unresolvable path-like token(s): /tmp/nope",
+		Severity:   sdktools.JudgeSeverityHard,
+		ReasonCode: sdktools.ReasonCodeUnresolvablePathToken,
+	}))
+
+	judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: the token is a harmless missing path", nil)
+	registry.SetJudge(judge)
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmDeny, nil
+	})
+
+	result, err := registry.Execute(context.Background(), "bash_exec", json.RawMessage(`{"command":"echo hello"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if confirmCalled {
+		t.Error("a scope/pattern hard reason the strict judge positively cleared must not require confirmation")
+	}
+	if result.IsError {
+		t.Errorf("expected the tool to execute after the strict judge cleared the reason, got IsError=%v", result.IsError)
+	}
+	if got := provider.callCount(); got != 1 {
+		t.Errorf("strict judge calls = %d, want 1", got)
 	}
 }
 
@@ -2124,18 +2174,23 @@ func TestSmartApprove_WorkspaceAutoApproveHasPriority(t *testing.T) {
 	}
 }
 
-// TestSmartApprove_OnlyEffectiveUserConfirm verifies Smart Approve applies
-// only to the effective user_confirm posture: allow-group clean calls
-// execute without consulting the strict judge, and deny groups stay blocked.
-func TestSmartApprove_OnlyEffectiveUserConfirm(t *testing.T) {
-	for _, tt := range []struct {
-		name   string
-		group  sdktools.ToolGroup
-		policy sdktools.ToolPolicy
+// TestSmartApprove_CleanAllowAndDenyBypassJudge verifies the funnel's reach:
+// clean allow-group calls execute without consulting the strict judge, deny
+// groups stay blocked without consulting it, and the user_confirm posture
+// consults the strict judge and executes on ALLOW.
+func TestSmartApprove_CleanAllowAndDenyBypassJudge(t *testing.T) {
+	tests := []struct {
+		name      string
+		group     sdktools.ToolGroup
+		policy    sdktools.ToolPolicy
+		wantJudge int  // strict-judge consultations: 0 for allow/deny, 1 for user_confirm
+		wantErr   bool // whether the group blocks the call
 	}{
-		{name: "allow group executes without strict judge", group: sdktools.GroupLocalRead, policy: sdktools.PolicyAlwaysAllow},
-		{name: "deny group stays blocked without strict judge", group: sdktools.GroupLocalWrite, policy: sdktools.PolicyAlwaysDeny},
-	} {
+		{name: "allow group executes without strict judge", group: sdktools.GroupLocalRead, policy: sdktools.PolicyAlwaysAllow, wantJudge: 0},
+		{name: "deny group stays blocked without strict judge", group: sdktools.GroupLocalWrite, policy: sdktools.PolicyAlwaysDeny, wantJudge: 0, wantErr: true},
+		{name: "user_confirm posture consults the strict judge and executes on ALLOW", group: sdktools.GroupLocalWrite, policy: sdktools.PolicyUserConfirm, wantJudge: 1},
+	}
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry := NewToolRegistry()
 			registry.SetSmartApprove(true)
@@ -2146,18 +2201,24 @@ func TestSmartApprove_OnlyEffectiveUserConfirm(t *testing.T) {
 			judge, provider := newStrictJudge("VERDICT: ALLOW\nREASON: safe", nil)
 			registry.SetJudge(judge)
 
+			confirmCalled := false
+			registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+				confirmCalled = true
+				return sdktools.ConfirmAllowOnce, nil
+			})
+
 			result, err := registry.Execute(context.Background(), "policy_tool", json.RawMessage(`{"data":"test"}`))
 			if err != nil {
 				t.Fatalf("Execute() error = %v", err)
 			}
-			if tt.policy == sdktools.PolicyAlwaysDeny && !result.IsError {
-				t.Error("deny group must remain blocked")
+			if got := provider.callCount(); got != tt.wantJudge {
+				t.Errorf("strict judge calls = %d, want %d", got, tt.wantJudge)
 			}
-			if tt.policy == sdktools.PolicyAlwaysAllow && result.IsError {
-				t.Error("allow group must execute")
+			if tt.wantErr != result.IsError {
+				t.Errorf("group %s: result.IsError = %v, want %v", tt.group, result.IsError, tt.wantErr)
 			}
-			if got := provider.callCount(); got != 0 {
-				t.Errorf("strict judge calls = %d, want 0", got)
+			if confirmCalled {
+				t.Errorf("group %s: clean call cleared by the strict judge must not fall back to confirmation", tt.group)
 			}
 		})
 	}

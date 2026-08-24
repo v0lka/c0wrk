@@ -8,7 +8,7 @@
 | ---------------------------------------- | ------------------------------------------------------------------------ |
 | Layer boundaries, import rules           | [architecture/layers.md](architecture/layers.md)                         |
 | Request lifecycle end-to-end             | [architecture/data-flow.md](architecture/data-flow.md)                   |
-| Tool policies, confirmations, judge      | [architecture/security-model.md](architecture/security-model.md)         |
+| Tool policies, confirmations, judge      | [architecture/security-model.md](architecture/security-model.md), [decisions/026-smart-approve-unified-funnel.md](decisions/026-smart-approve-unified-funnel.md)         |
 | Prompt injection defense, content wrapping | [architecture/security-model.md](architecture/security-model.md)         |
 | Orchestration overview (Conductor pipeline) | [domains/orchestration/README.md](domains/orchestration/README.md)    |
 | Conductor (top-level ReAct loop)         | [domains/orchestration/conductor.md](domains/orchestration/conductor.md) |
@@ -45,7 +45,7 @@
 | "Why was X designed this way?"           | [decisions/](decisions/)                                                 |
 | Multi-source AGENTS.md threat model     | [decisions/020-multi-source-agents-md-threat-model.md](decisions/020-multi-source-agents-md-threat-model.md) |
 | Subagent Profiles (`.agents/agents`, `#agent-name` mentions) | [decisions/021-subagents.md](decisions/021-subagents.md) |
-| Tool-capability group policies (`security.groups`, group tool budgets) | [decisions/024-group-policies.md](decisions/024-group-policies.md), [architecture/security-model.md](architecture/security-model.md) |
+| Tool-capability group policies (`security.groups`, group tool budgets) | [decisions/024-group-policies.md](decisions/024-group-policies.md), [decisions/026-smart-approve-unified-funnel.md](decisions/026-smart-approve-unified-funnel.md), [architecture/security-model.md](architecture/security-model.md) |
 | Dual-repo dev flow (unpublished sp4rk APIs, parent `go.work`, pin-advance release step) | [decisions/025-dual-repo-dev-flow.md](decisions/025-dual-repo-dev-flow.md) |
 
 ## Domain Dependency Graph
@@ -155,4 +155,5 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [023-auto-update.md](decisions/023-auto-update.md) - Self-update: single-binary re-exec, SHA256-only fail-closed verification, unsigned GitHub-Releases trust anchor, `.old` rollback; threat model for the supply-chain delivery vector (ASI04)
 - [024-group-policies.md](decisions/024-group-policies.md) - Tool-capability group policies: 8 declared groups (incl. reserved `system`), `security.groups.<group>.{policy,blacklist?}`, hard/soft judge severities, legacy per-tool schema removed
 - [025-dual-repo-dev-flow.md](decisions/025-dual-repo-dev-flow.md) - Dual-repo dev flow: mid-cycle c0wrk builds via the parent-dir `go.work` while the `go.mod` sp4rk pin lags unpublished APIs; commit-sp4rk-then-repin is the mandatory release step
+- [026-smart-approve-unified-funnel.md](decisions/026-smart-approve-unified-funnel.md) - Smart Approve unified confirmation funnel: every escalation routes through one strict judge (hard-bias), with a deterministic backstop that forces confirmation for canonical destructive hard reasons (blacklist, SSRF, symlink escape) even on a strict ALLOW
 - [027-linux-arm64-build.md](decisions/027-linux-arm64-build.md) - Linux arm64 release support: platform registry + CI/release matrix + updater asset

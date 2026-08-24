@@ -269,14 +269,26 @@ security:
   auto_approve_workspace_writes: false
 
   # Smart Approve: when true, a strict OWASP ASI (ASI01–ASI10) LLM judge
-  # automatically evaluates calls whose effective policy is user_confirm
-  # after all deterministic gates and workspace auto-approval above.
+  # automatically evaluates every escalated call — whether it comes from an
+  # effective user_confirm policy or from a hard safety reason surfaced by
+  # an allow-group tool — after all deterministic gates and workspace
+  # auto-approval above. This is the unified confirmation funnel: there is
+  # no separate bypass path for hard reasons.
   #   - A strict ALLOW executes without UI.
   #   - CONFIRM, judge errors, timeouts, and unparseable responses always
   #     fall back to manual confirmation (the "Ask Agent" button is hidden
   #     because the strict judge already evaluated the call).
-  # Only effective user_confirm calls are judged; allow/deny and
-  # symlink-forced confirmations are unchanged. Default: false.
+  #   - HARD reasons (a fired security control: command blacklist, SSRF
+  #     escape, symlink escape out of the session roots; or an unassessable
+  #     input: degraded SSRF protection, an undeterminable URL/path) always
+  #     consult the strict judge, even for allow-group tools.
+  #   - Deterministic backstop: a canonical hard reason — a fired control
+  #     (blacklist, SSRF, symlink escape) or an unassessable input — can
+  #     never be auto-approved by the strict judge; canonicality is matched
+  #     by typed reason codes (JudgeOutcome.ReasonCode, an sp4rk contract),
+  #     not by prose. An ALLOW verdict is overridden to CONFIRM, so the
+  #     user still decides.
+  # deny groups are never judged (always blocked). Default: false.
   smart_approve: false
 
   # --- Tool security groups (security.groups) ---

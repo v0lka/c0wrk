@@ -494,28 +494,30 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	//     the roots is NOT a concern — containment reasons about resolved
 	//     paths).
 	judgeOutcome := judgeToolCall(ctx, tool, input)
-	symlinkReason := r.symlinkHardReason(ctx, name, tool, input)
-	hardReason, softReason := splitSafetyReasons(judgeOutcome, symlinkReason)
+	symlinkReason, symlinkCode := r.symlinkHardReason(ctx, name, tool, input)
+	reasons := splitSafetyReasons(judgeOutcome, symlinkReason, symlinkCode)
 
 	if policy == sdktools.PolicyAlwaysAllow {
 		// Hard reasons are security-control triggers (command blacklist, SSRF,
-		// symlink escapes). They force a confirmation the advisory Ask Agent
-		// action cannot weaken (DisableJudge=true) and never pass Smart
-		// Approve — path-locality or a lenient judge must not bypass a fired
-		// security control.
-		if hardReason != "" {
+		// symlink escapes) or unassessable inputs. They now consult the
+		// strict judge like any other escalation, but the deterministic
+		// backstop in smartApproveOrConfirm still forces a user confirmation
+		// for canonical reasons even when the strict judge returns ALLOW —
+		// path-locality or a lenient judge must not bypass a fired security
+		// control, and an unassessable call is not for the judge to resolve.
+		if reasons.hard != "" {
 			r.log().Warn("security: allow-policy tool escalated by hard safety reason",
-				"tool", name, "group", string(group), "reason", hardReason)
-			return r.confirmAndExecuteWithOptions(ctx, tool, name, input, hardReason, true)
+				"tool", name, "group", string(group), "reason", reasons.hard)
+			return r.smartApproveOrConfirm(ctx, tool, name, source, input, reasons.hard, reasons.hardCode, sdktools.JudgeSeverityHard)
 		}
 		// Soft reasons are advisory scope questions (e.g. a read outside the
 		// session roots): Smart Approve weighs them and confirms unless the
 		// strict judge allows. Without Smart Approve they fall back to a plain
 		// confirmation.
-		if softReason != "" {
+		if reasons.soft != "" {
 			r.log().Info("security: allow-policy tool escalated by soft safety reason",
-				"tool", name, "group", string(group), "reason", softReason)
-			return r.smartApproveOrConfirm(ctx, tool, name, source, input, softReason)
+				"tool", name, "group", string(group), "reason", reasons.soft)
+			return r.smartApproveOrConfirm(ctx, tool, name, source, input, reasons.soft, reasons.softCode, sdktools.JudgeSeveritySoft)
 		}
 		return tool.Execute(ctx, input)
 	}
@@ -533,23 +535,23 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	r.mu.RLock()
 	autoApprove := r.autoApproveWorkspaceWrites
 	r.mu.RUnlock()
-	if group == sdktools.GroupLocalWrite && autoApprove && hardReason == "" && judgeOutcome.Allow {
+	if group == sdktools.GroupLocalWrite && autoApprove && reasons.hard == "" && judgeOutcome.Allow {
 		r.log().Debug("workspace auto-approve: local_write target within session roots",
 			"tool", name, "reason", judgeOutcome.Reason)
 		return tool.Execute(ctx, input)
 	}
 
-	if hardReason != "" {
+	if reasons.hard != "" {
 		r.log().Warn("security: user_confirm tool escalated by hard safety reason",
-			"tool", name, "group", string(group), "reason", hardReason)
-		return r.confirmAndExecuteWithOptions(ctx, tool, name, input, hardReason, true)
+			"tool", name, "group", string(group), "reason", reasons.hard)
+		return r.smartApproveOrConfirm(ctx, tool, name, source, input, reasons.hard, reasons.hardCode, sdktools.JudgeSeverityHard)
 	}
 
 	// Smart Approve is deliberately last among automatic gates and applies
 	// only to the effective user_confirm policy. Workspace auto-approval above
 	// therefore retains priority, while deny and hard-reason paths have
 	// already returned before reaching this point.
-	return r.smartApproveOrConfirm(ctx, tool, name, source, input, softReason)
+	return r.smartApproveOrConfirm(ctx, tool, name, source, input, reasons.soft, reasons.softCode, sdktools.JudgeSeveritySoft)
 }
 
 // judgeToolCall runs the tool's optional local safety judge. Tools without a
@@ -561,21 +563,33 @@ func judgeToolCall(ctx context.Context, tool sdktools.Tool, input json.RawMessag
 	return sdktools.JudgeOutcome{}
 }
 
-// splitSafetyReasons folds the collected signals into (hardReason, softReason).
-// At most one reason survives: a hard reason (symlink escape, command
-// blacklist, SSRF) always wins; only a soft judge escalation (path
+// safetyReasons carries the folded tool-local safety signals through the
+// policy branches: at most one hard and one soft reason survive, each with
+// its typed classification code (sdktools.ReasonCode*) — hosts key
+// deterministic policy off the code (see isCanonicalHardReason), never off
+// the prose.
+type safetyReasons struct {
+	hard     string
+	hardCode sdktools.JudgeReasonCode
+	soft     string
+	softCode sdktools.JudgeReasonCode
+}
+
+// splitSafetyReasons folds the collected signals into a safetyReasons pair.
+// At most one reason survives per severity: a hard reason (symlink escape,
+// command blacklist, SSRF) always wins; only a soft judge escalation (path
 // containment) yields a soft reason. Empty strings mean "clean".
-func splitSafetyReasons(judge sdktools.JudgeOutcome, symlinkReason string) (hard, soft string) {
+func splitSafetyReasons(judge sdktools.JudgeOutcome, symlinkReason string, symlinkCode sdktools.JudgeReasonCode) safetyReasons {
 	if !judge.Allow && judge.Reason != "" && judge.Severity == sdktools.JudgeSeverityHard {
-		return judge.Reason, ""
+		return safetyReasons{hard: judge.Reason, hardCode: judge.ReasonCode}
 	}
 	if symlinkReason != "" {
-		return symlinkReason, ""
+		return safetyReasons{hard: symlinkReason, hardCode: symlinkCode}
 	}
 	if !judge.Allow && judge.Reason != "" {
-		return "", judge.Reason
+		return safetyReasons{soft: judge.Reason, softCode: judge.ReasonCode}
 	}
-	return "", ""
+	return safetyReasons{}
 }
 
 // smartApproveOrConfirm applies the Smart Approve gate. When enabled, the
@@ -583,8 +597,13 @@ func splitSafetyReasons(judge sdktools.JudgeOutcome, symlinkReason string) (hard
 // every other verdict (and a missing or failing judge) stays a user
 // confirmation with the advisory Ask Agent action disabled (DisableJudge=true)
 // — the advisory judge must not re-decide what the strict judge already ran
-// on. When Smart Approve is off, the call goes straight to confirmation with
-// the supplied reason (or the default per-tool reason when there is none).
+// on. A hard reason (a fired security control or an unassessable input)
+// additionally carries a non-clearable severity: the deterministic backstop
+// in isCanonicalHardReason forces a user confirmation for canonical codes
+// even when the strict judge returns ALLOW. When Smart Approve is off, the
+// call goes straight to confirmation (with the advisory judge disabled for
+// hard reasons) using the supplied reason, or the default per-tool reason
+// when there is none.
 //
 // The user-facing reasoning always keeps the concrete cause (the supplied
 // reason or the per-tool default): when the strict judge is missing, fails, or
@@ -592,7 +611,7 @@ func splitSafetyReasons(judge sdktools.JudgeOutcome, symlinkReason string) (hard
 // Smart Approve could not decide is prepended, so the confirmation card never
 // degrades to a generic "judge unavailable" text that hides WHY this call
 // needs confirmation.
-func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason string) (sdktools.ToolResult, error) {
+func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason string, code sdktools.JudgeReasonCode, severity sdktools.JudgeSeverity) (sdktools.ToolResult, error) {
 	r.mu.RLock()
 	smartApprove := r.smartApprove
 	strictJudge := r.judge
@@ -601,6 +620,12 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 	if !smartApprove {
 		if reason == "" {
 			reason = defaultConfirmReason(name)
+		}
+		// A hard security control fired: keep the advisory Ask Agent action
+		// disabled (DisableJudge=true) so the advisory judge cannot weaken a
+		// fired control. A soft escalation keeps the advisory judge available.
+		if severity == sdktools.JudgeSeverityHard {
+			return r.confirmAndExecuteWithOptions(ctx, tool, name, input, reason, true)
 		}
 		return r.confirmAndExecute(ctx, tool, name, input, reason)
 	}
@@ -613,15 +638,29 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 	if strictJudge != nil {
 		var judgeErr error
 		verdict, reasoning, judgeErr = strictJudge.JudgeStrict(ctx, sdktools.StrictJudgeRequest{
-			ToolName:    name,
-			Input:       input,
-			TaskContext: sdktools.TaskContextFrom(ctx),
-			ToolSource:  source,
+			ToolName:       name,
+			Input:          input,
+			TaskContext:    sdktools.TaskContextFrom(ctx),
+			ToolSource:     source,
+			JudgeReasoning: reason,
+			JudgeSeverity:  severity,
 		})
 		if judgeErr != nil {
 			verdict = sdktools.VerdictConfirm
 			reasoning = "Strict judge evaluation failed; " + reason
 		}
+	}
+	// Deterministic backstop (ASI02, ASI05): a canonical hard reason must
+	// never be auto-approved, even when the strict judge returns ALLOW — a
+	// fired security control on unmistakably dangerous behavior, or an input
+	// whose safety the judge is structurally unable to assess (degraded SSRF
+	// protection, an undeterminable URL/path), is not for an advisory judge
+	// to waive. Only scope/pattern hard reasons (e.g. an unresolvable
+	// path-like token) that the strict judge positively clears may
+	// auto-approve.
+	if verdict == sdktools.VerdictAllow && severity == sdktools.JudgeSeverityHard && isCanonicalHardReason(code) {
+		verdict = sdktools.VerdictConfirm
+		reasoning = "A security control fired on this destructive call and cannot be waived by an advisory judge; manual confirmation required. " + reason
 	}
 	if verdict != sdktools.VerdictAllow && reasoning == "" {
 		reasoning = reason
@@ -641,6 +680,31 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 		return tool.Execute(ctx, input)
 	}
 	return r.confirmAndExecuteWithOptions(ctx, tool, name, input, reasoning, true)
+}
+
+// isCanonicalHardReason reports whether a fired hard safety reason must never
+// be auto-approved by the strict judge. Canonical codes cover two classes:
+// a security control that fired on unmistakably dangerous behavior (a command
+// blacklist match, an SSRF escape target, a symlink escape out of the
+// session roots) AND an input whose safety the judge is structurally unable
+// to assess — degraded SSRF protection, an undeterminable URL or path —
+// because the judge sees only the prose, not the DNS resolution or filesystem
+// state the deterministic control lacked. Codes are the typed cross-repo
+// contract from sp4rk (sdktools.JudgeReasonCode): prose matching would silently
+// break when sp4rk rewords a reason, an empty/unknown code stays
+// non-canonical (the strict judge may positively clear it).
+func isCanonicalHardReason(code sdktools.JudgeReasonCode) bool {
+	switch code {
+	case sdktools.ReasonCodeCommandBlacklist,
+		sdktools.ReasonCodeSSRFPrivateAddress,
+		sdktools.ReasonCodeSSRFDegraded,
+		sdktools.ReasonCodeUnassessableURL,
+		sdktools.ReasonCodeUnassessablePath,
+		sdktools.ReasonCodeSymlinkEscape:
+		return true
+	default:
+		return false
+	}
 }
 
 // matchExtraShellBlacklist checks a shell-exec tool's command against extra

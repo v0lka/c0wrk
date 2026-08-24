@@ -23,7 +23,7 @@ Source: `core/tools/registry.go` `groupPolicy()`; builder wiring in `core/builde
 
 | Policy (config)  | Runtime value          | Behavior                                                                                               |
 | ---------------- | ---------------------- | ------------------------------------------------------------------------------------------------------ |
-| `allow`          | `PolicyAlwaysAllow`   | Execute immediately. No confirmation, no judge (unless tool implements ToolJudger and flags the call). |
+| `allow`          | `PolicyAlwaysAllow`   | Execute immediately by default. No confirmation and no judge unless the call surfaces a safety reason: a **hard** reason (fired security control — command blacklist, SSRF escape, symlink escape) or a **soft** reason (path containment) routes through the unified confirmation funnel / strict judge (see below). |
 | `user_confirm`   | `PolicyUserConfirm`   | Block execution, send confirmation request to frontend. User must allow or deny.                       |
 | `deny`           | `PolicyAlwaysDeny`    | Immediately return error result. Tool is never executed.                                               |
 
@@ -114,7 +114,7 @@ Without this ordering, a command like `rm -rf /workspace/.git` would have all pa
 
 The Judge returns a `JudgeOutcome{Allow, Reason, Severity}`; flagged outcomes are classified into **hard** and **soft** reasons (ADR-024):
 
-- **Hard** (a fired security control: blacklist pattern, SSRF, symlink escape) → confirmation with `DisableJudge=true`. The advisory "Ask Agent" action is disabled and Smart Approve can NEVER allow the call.
+- **Hard** (a fired security control: blacklist pattern, SSRF, symlink escape; or an unassessable input: degraded SSRF protection, an undeterminable URL/path) → routed through `smartApproveOrConfirm` with severity `Hard` (the unified confirmation funnel, see [ADR-026](../decisions/026-smart-approve-unified-funnel.md)). The strict judge is consulted (when Smart Approve is enabled); a **canonical** reason is then deterministically backstopped to a confirmation with `DisableJudge=true`, so Smart Approve can NEVER auto-approve a canonical hard reason. A non-canonical hard reason (a scope/pattern question such as an unresolvable path-like token) may be cleared by a strict ALLOW.
 - **Soft** (a scope question: path containment outside session roots) → Smart Approve (when enabled) may allow the call; every other outcome — or Smart Approve disabled — falls back to a plain confirmation.
 - `allow=true` / no concern reported → proceeds to auto-approval / direct execution.
 
@@ -146,7 +146,7 @@ The `ToolJudge` (`github.com/v0lka/sp4rk/tools/judge.go`) provides LLM-based saf
 
 ### Strict Judge (Smart Approve)
 
-When `security.smart_approve` is enabled (default: false), a **strict OWASP ASI judge** (`ToolJudge.JudgeStrict`) automatically evaluates calls whose effective policy is `PolicyUserConfirm` — after all deterministic gates and workspace auto-approval have run. The strict judge:
+When `security.smart_approve` is enabled (default: false), a **strict OWASP ASI judge** (`ToolJudge.JudgeStrict`) automatically evaluates **every escalated call** — whether it comes from an effective `PolicyUserConfirm` policy or from a hard/soft safety reason surfaced by an `allow`-group tool — after all deterministic gates and workspace auto-approval have run. This is the unified confirmation funnel: all escalations route through `smartApproveOrConfirm` (see [ADR-026](../decisions/026-smart-approve-unified-funnel.md)), so there is no separate bypass path for hard reasons. The strict judge:
 
 - Always calls the LLM (no path-locality fast-path, no session-root auto-allow)
 - Uses a conservative OWASP Agentic Top 10 (ASI01–ASI10) system prompt: mandatory ASI01/02/03/05/09 checks, plus contextual ASI04/06/07/08/10 when applicable
@@ -158,14 +158,16 @@ When `security.smart_approve` is enabled (default: false), a **strict OWASP ASI 
 
 A strict `ALLOW` executes the tool without UI. A `CONFIRM` (or any failure outcome) falls back to manual confirmation with the strict judge's reasoning shown and the advisory "Ask Agent" button hidden (the `ConfirmationRequest.DisableJudge` flag signals this to the frontend).
 
-Smart Approve applies to effective `PolicyUserConfirm` calls and to **soft** escalations of `allow`-policy calls (path containment). `deny`, **hard** safety reasons (blacklist, SSRF, symlink escape — always `DisableJudge=true`), and workspace auto-approval are unchanged: a denied group never executes, a hard reason always reaches the user, and a workspace-auto-approved call never reaches the strict judge.
+Smart Approve applies to every escalation that reaches `smartApproveOrConfirm` — including **hard** safety reasons (blacklist, SSRF, symlink escape) surfaced by `allow`-group tools, which are judged too (the hard-bias of the unified funnel). When the strict judge does not return ALLOW, the call falls through to a manual confirmation with `DisableJudge=true`. `deny` groups are never judged and always blocked, and a workspace-auto-approved call never reaches the strict judge.
+
+The **deterministic backstop** makes the strict judge non-authoritative over canonical escalations: if the judge returns ALLOW while `isCanonicalHardReason(code)` is true, the verdict is overridden to CONFIRM, so a fired security control — or an input whose safety the judge is structurally unable to assess — always reaches the user. Canonicality is keyed off the **typed reason code** (`JudgeOutcome.ReasonCode`, the stable sp4rk contract in `tools/safety.go`), never off the prose, which sp4rk may reword freely. Canonical codes: `command_blacklist`, `ssrf_private_address`, `symlink_escape` (fired controls), and `ssrf_protection_degraded`, `unassessable_url`, `unassessable_path` (unassessable inputs). Non-canonical hard codes (`unresolvable_path_token`, `symlink_suspicious`, unclassified) may be cleared by a strict ALLOW. The cross-repo contract is guarded by `core/tools/registry_canonical_reasons_test.go`, which drives the real sp4rk builtin judges so a dropped code or reworded classification fails CI.
 
 ## Confirmation Flow
 
 Every confirmation request carries a **human-readable reason** in `ConfirmationRequest.JudgeReasoning` (surfaced to the frontend as `tool_confirm` event `reasoning`), so the user understands *why* approval is needed before deciding. The reason is derived per trigger:
 
 - **Symlink traversal** → the formatted symlink chain (`FormatSymlinkReasoning`).
-- **`allow` group + hard Judge reason** (blacklist match, SSRF, symlink escape) → the tool-specific Judge reasoning, with the advisory Ask Agent action disabled.
+- **`allow` group + hard Judge reason** (blacklist match, SSRF, symlink escape) → routed through `smartApproveOrConfirm` (the unified funnel): the strict judge's reasoning or the hard reason is shown, the canonical backstop forces a confirmation, and the advisory Ask Agent action is disabled.
 - **`allow` group + soft Judge reason** (path containment) → the containment reason, shown on the confirmation produced when Smart Approve is off or its strict judge did not allow.
 - **`user_confirm` + hard reason / Smart Approve outcome** → the hard reason or the strict judge's reasoning (see below).
 - **`user_confirm` (plain)** → a mutating-action explanation from `defaultConfirmReason(name)` (e.g. "This tool runs a shell command on your system."), so the dialog is never blank.
@@ -196,7 +198,7 @@ ToolRegistry.Execute()
 
 ## Symlink Confirmation
 
-After the group-policy deny gate, during safety-signal gathering, the registry inspects ALL tool call inputs (both structured tools and the shell-exec tool) for paths that traverse symlinks. A traversal whose resolution **escapes** the session roots (or input that cannot be resolved at all) is a **hard** reason: the call is routed to user confirmation with `DisableJudge=true` under any group policy — it never passes Smart Approve. A symlink whose resolution stays **inside** the session roots is not a concern: every containment check in the pipeline reasons about resolved paths, so an in-root resolution auto-approves exactly like a direct path. Well-known OS-level infrastructure symlinks (e.g. `/tmp` → `/private/tmp`) are exempt from the escape classification via sp4rk's `IsOSLevelSymlink`.
+After the group-policy deny gate, during safety-signal gathering, the registry inspects ALL tool call inputs (both structured tools and the shell-exec tool) for paths that traverse symlinks. A traversal whose resolution **escapes** the session roots (or input that cannot be resolved at all) is a **hard** reason: the call is routed through `smartApproveOrConfirm` (the unified funnel) under any group policy, consults the strict judge, and — because a symlink escape is a **canonical** hard reason — the deterministic backstop overrides any ALLOW verdict and forces a user confirmation with `DisableJudge=true`: it never passes Smart Approve auto-approval. A symlink whose resolution stays **inside** the session roots is not a concern: every containment check in the pipeline reasons about resolved paths, so an in-root resolution auto-approves exactly like a direct path. Well-known OS-level infrastructure symlinks (e.g. `/tmp` → `/private/tmp`) are exempt from the escape classification via sp4rk's `IsOSLevelSymlink`.
 
 ### Detection
 
@@ -257,7 +259,7 @@ If the input contains suspicious (unexpandable) shell expressions, a warning is 
 
 ## Bash Blacklist
 
-The shell-execution tool (`bash_exec` on Unix, `posh_exec` on Windows) has a regex-based blacklist that blocks dangerous command patterns. The blacklist is the `blacklist` list on the **`execute` group** in `security.groups` (`cfg.Security.Groups["execute"].Blacklist` → the builder's `Groups[GroupExecute].Blacklist`) — a single platform-agnostic list whose default is the dedup union of the bash and PowerShell pattern sets, restricted to **cross-dialect-safe** patterns (exactly one shell tool is registered per host, so the list always carries the other dialect's patterns; a pattern may only hard-confirm command text that is dangerous under whichever shell reads it). The PowerShell Remove-Item **alias** patterns cannot satisfy that invariant (`rm -r -f <dir>` is the routine Unix delete spelling) and are enforced instead as a Windows-only platform supplement appended at shell-tool construction (`core/tools/shelltool_windows.go`) — an engine-level floor on top of the configurable list, not user-removable (see [builtins.md § Shell-Execution Tool](../domains/tool-system/builtins.md#shell-execution-tool-bash_exec--posh_exec)). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's group policy resolves to `allow`, the tool's `Judge()` evaluates the command against compiled blacklist regexes. A match returns `allow=false, severity=hard` with a non-empty reasoning identifying the matched pattern, which escalates to confirmation with `DisableJudge=true` via the PolicyAlwaysAllow Judge Gate (above) — Smart Approve can never allow it. The gate runs **before** workspace/temp auto-approval, so a blacklisted command with paths inside the workspace (e.g., `rm -rf /workspace/.git`) is still routed to confirmation.
+The shell-execution tool (`bash_exec` on Unix, `posh_exec` on Windows) has a regex-based blacklist that blocks dangerous command patterns. The blacklist is the `blacklist` list on the **`execute` group** in `security.groups` (`cfg.Security.Groups["execute"].Blacklist` → the builder's `Groups[GroupExecute].Blacklist`) — a single platform-agnostic list whose default is the dedup union of the bash and PowerShell pattern sets, restricted to **cross-dialect-safe** patterns (exactly one shell tool is registered per host, so the list always carries the other dialect's patterns; a pattern may only hard-confirm command text that is dangerous under whichever shell reads it). The PowerShell Remove-Item **alias** patterns cannot satisfy that invariant (`rm -r -f <dir>` is the routine Unix delete spelling) and are enforced instead as a Windows-only platform supplement appended at shell-tool construction (`core/tools/shelltool_windows.go`) — an engine-level floor on top of the configurable list, not user-removable (see [builtins.md § Shell-Execution Tool](../domains/tool-system/builtins.md#shell-execution-tool-bash_exec--posh_exec)). Blacklisted commands are checked via the `ToolJudger` interface: when the tool's group policy resolves to `allow`, the tool's `Judge()` evaluates the command against compiled blacklist regexes. A match returns `allow=false, severity=hard` with a non-empty reasoning identifying the matched pattern, which escalates to confirmation with `DisableJudge=true` via the unified confirmation funnel / PolicyAlwaysAllow Judge Gate (above) — the blacklist match is a **canonical** hard reason, so the deterministic backstop forces confirmation and Smart Approve can never auto-approve it. The gate runs **before** workspace/temp auto-approval, so a blacklisted command with paths inside the workspace (e.g., `rm -rf /workspace/.git`) is still routed to confirmation.
 
 > **Invariant — the blacklist never hard-denies.** The blacklist exists **only** to route specific commands to user confirmation when the `execute` group's policy is `allow`; it is **never** an unrecoverable block. A blacklist match always flows through `confirmAndExecute` (`core/tools/registry.go`), where the user can choose **Allow Once** to execute **any** command — including blacklisted ones — without exception. There is no code path where a blacklist match produces a final `deny` that the user cannot override; the `allow=false` returned by `ToolJudger.Judge()` on a match means "a safety concern exists, escalate to confirmation", not "deny". The user's ability to run an arbitrary shell command via confirmation must remain unconditional under `allow`. This invariant applies equally to `user_confirm` policy (the blacklist reason merely enriches the prompt) and to every blacklist pattern — git or otherwise.
 
@@ -348,7 +350,7 @@ Source: `github.com/v0lka/sp4rk/security/wrap.go` (wrapping), `core/prompts/inje
 - `GroupSystem` tools ALWAYS execute, regardless of any policy configuration (the group cannot be configured); every non-system tool resolves its policy from its capability group alone — an unconfigured group fails safe to `user_confirm`
 - A tool with an UNDECLARED group matches no allow-list anywhere (registry filtering, subagent budgets, verifier sets) — fail-closed
 - Symlink analysis runs for every non-system tool during safety-signal gathering: a symlink whose resolution stays inside the session roots is NOT a concern; an escape out of the roots (or an unresolvable/suspicious path) is a **hard** reason
-- HARD safety reasons (command blacklist match, SSRF, symlink escape) ALWAYS force confirmation with `DisableJudge=true` — they never pass Smart Approve, under any group policy; SOFT reasons (path containment) force confirmation unless Smart Approve's strict judge allows the call
+- HARD safety reasons (command blacklist match, SSRF, symlink escape, or an unassessable input) are ALWAYS routed through the unified confirmation funnel and consult the strict judge, under any group policy; a **canonical** reason — a fired control (`command_blacklist`, `ssrf_private_address`, `symlink_escape`) or an unassessable input (`ssrf_protection_degraded`, `unassessable_url`, `unassessable_path`), matched by typed code — is deterministically backstopped to confirmation with `DisableJudge=true` — it never passes Smart Approve auto-approval. A non-canonical hard reason (a scope/pattern question, e.g. `unresolvable_path_token`) may be cleared by a strict ALLOW. SOFT reasons (path containment) force confirmation unless Smart Approve's strict judge allows the call
 - `deny` group policy is NEVER bypassed (not by auto-approval, not by judge, not by symlink check, not by any mechanism)
 - For `allow`-policy tools implementing `ToolJudger`, the Judge runs BEFORE workspace/temp auto-approval — safety checks (blacklist, SSRF, path containment) NEVER bypassed by path-locality
 - The session workspace, temp directory, and auxiliary work directories are equal peers — any operation permitted in one is permitted in the others
@@ -384,9 +386,14 @@ security:
     remote_mcp:   { policy: user_confirm } # http MCP server tools
     remote_write: { policy: user_confirm } # remote mutations (e.g. pinned MCP servers)
 
-  # Smart Approve: strict OWASP ASI judge auto-resolves effective user_confirm
-  # calls. Only a strict ALLOW skips UI; all other outcomes fall back to manual
-  # confirmation. Default: false.
+  # Smart Approve: strict OWASP ASI judge auto-resolves every escalated call,
+  # whether from an effective user_confirm policy or a hard reason surfaced by
+  # an allow-group tool (the unified confirmation funnel). Only a strict ALLOW
+  # skips UI; all other outcomes fall back to manual confirmation, and a
+  # canonical hard reason (a fired control: blacklist/SSRF/symlink escape, or
+  # an unassessable input: degraded SSRF protection, an undeterminable
+  # URL/path) is backstopped to confirmation even on a strict ALLOW.
+  # Default: false.
   smart_approve: false
 
   # Indirect prompt injection defense
@@ -400,7 +407,7 @@ Notes: the `system` group is reserved (config validation rejects it); a blacklis
 
 - Setting a mutating group's policy to `allow` in production — removes all safety gates for every tool in that group
 - Tagging a tool `GroupSystem` without careful consideration — it bypasses everything; leaving a tool's group undeclared is equally wrong (it fails closed everywhere, including tool budgets and verifier sets)
-- Relying on the **advisory** judge as a primary safety mechanism — it is on-demand only; Smart Approve's strict judge is a gate, but only when explicitly enabled, only for effective `user_confirm`, and **hard** safety reasons (blacklist, SSRF, symlink escape) never pass Smart Approve at all
+- Relying on the **advisory** judge as a primary safety mechanism — it is on-demand only; Smart Approve's strict judge is a gate, but when enabled it applies to every escalation through the unified funnel (including hard reasons); even so, a **canonical** hard reason (blacklist, SSRF, symlink escape, or an unassessable input) is deterministically backstopped to confirmation and never passes Smart Approve auto-approval
 - Implementing confirmation timeout — blocking indefinitely is intentional (user may be away)
 
 ## Related Specs

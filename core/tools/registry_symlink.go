@@ -24,10 +24,15 @@ import (
 // Unresolvable input escalates fail-closed (hard), mirroring the SSRF judge's
 // "unassessable" posture. The deny policy is enforced by Execute before this
 // runs, so an escape never bypasses an explicit deny.
-func (r *ToolRegistry) symlinkHardReason(ctx context.Context, name string, tool sdktools.Tool, input json.RawMessage) string {
+//
+// The returned code classifies the returned reason (sdktools.ReasonCode*): a
+// confirmed escape reports ReasonCodeSymlinkEscape; unresolvable-only input
+// reports ReasonCodeSymlinkSuspicious. Hosts key deterministic policy off the
+// code, never off the prose.
+func (r *ToolRegistry) symlinkHardReason(ctx context.Context, name string, tool sdktools.Tool, input json.RawMessage) (string, sdktools.JudgeReasonCode) {
 	inside, outside, suspicious := sdktools.DetectSymlinksInToolInput(ctx, name, input, tool.InputSchema(), r.log())
 	if len(inside) == 0 && len(outside) == 0 && !suspicious {
-		return ""
+		return "", ""
 	}
 
 	roots := sdktools.SessionRoots(ctx)
@@ -42,8 +47,12 @@ func (r *ToolRegistry) symlinkHardReason(ctx context.Context, name string, tool 
 	}
 	if len(escapes) == 0 && !suspicious {
 		// Only in-root (or OS-level) traversals — acceptable.
-		return ""
+		return "", ""
 	}
 
-	return sdktools.FormatSymlinkReasoning(inside, escapes, suspicious)
+	code := sdktools.ReasonCodeSymlinkSuspicious
+	if len(escapes) > 0 {
+		code = sdktools.ReasonCodeSymlinkEscape
+	}
+	return sdktools.FormatSymlinkReasoning(inside, escapes, suspicious), code
 }

@@ -86,13 +86,13 @@ func (r *ToolRegistry) ExecuteUnattended(ctx context.Context, name string, input
 
 	// Gate 5: hard safety reasons block outright (no confirmation flow here).
 	judgeOutcome := judgeToolCall(ctx, tool, input)
-	symlinkReason := r.symlinkHardReason(ctx, name, tool, input)
-	hardReason, _ := splitSafetyReasons(judgeOutcome, symlinkReason)
-	if hardReason != "" {
+	symlinkReason, symlinkCode := r.symlinkHardReason(ctx, name, tool, input)
+	reasons := splitSafetyReasons(judgeOutcome, symlinkReason, symlinkCode)
+	if reasons.hard != "" {
 		r.log().Warn("security: unattended tool blocked by hard safety reason",
-			"tool", name, "group", string(group), "reason", hardReason)
+			"tool", name, "group", string(group), "reason", reasons.hard)
 		return sdktools.ToolResult{
-			Content: "command blocked by security policy: " + hardReason,
+			Content: "command blocked by security policy: " + reasons.hard,
 			IsError: true,
 		}, nil
 	}
