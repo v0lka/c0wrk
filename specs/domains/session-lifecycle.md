@@ -25,7 +25,8 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `frontend/src/hooks/useFileDrop.ts` — native `files:dropped` subscription, drag overlay, and webview-navigation suppression
 - `frontend/src/hooks/useStageAttachments.ts` — shared picker/drop attachment staging with vision filtering
 - `backend/frontend_api_attachment.go` — FrontendAPI attachment RPC surface
-- `core/markitdown/converter.go` — markdown conversion of attached files (shells out to the managed `markitdown` CLI, ADR-010)
+- `core/markitdown/converter.go` — markdown conversion of attached files (shells out to the managed `markitdown` CLI, ADR-010); `core/markitdown/vision.go` + `driver.go` — optional vision-assisted conversion via the markitdown Python API (embedded stdlib-only OpenAI-compatible client; the CLI exposes no LLM flags), per-document `VisionOptions` resolved from the currently active model; `core/visionresolver.go` — model/provider → vision-params mapping (vision capability gate via `ModelRegistry.ResolveLocal`; anthropic_compatible proxies excluded — no OpenAI-compatible surface)
+- `core/tools/read_file_doc.go` — read_file document wrapper; vision resolver attached to the task context by the Orchestrator, conversion cache key includes the vision identity
 - `backend/session/title.go` — auto title generation via LLM
 - `backend/frontend_api_session.go` — FrontendAPI session methods
 - `backend/frontend_api_project.go` — project switch state persistence + destination session fallback
@@ -106,7 +107,11 @@ User sends message
       │   ├─ First message: TaskID=""
       │   └─ Continuation: TaskID=lastCompletedTaskID
       ├─ Call orchestrator.HandleMessage(ctx, preprocessedText, sessionId, opts)
-      │   (executes asynchronously, events stream to frontend)
+      │   (executes asynchronously, events stream to frontend;
+      │    prepareRequestContext — and Resume — attach the markitdown vision
+      │    resolver to the task context, inherited by subagent delegations,
+      │    so document conversions inside the task caption embedded images
+      │    with the model active at conversion time)
       ├─ On success: persist result, emit task_complete
       └─ On failure: emit task_failed_resumable or error
 ```
@@ -157,8 +162,15 @@ User clicks Attach (Paperclip) in the chat input toolbar
       │   │         emit attachments:changed (incremental — chips appear one-by-one)
       │   └─ DOCUMENT:
       │       ├─ markitdown.IsSupported? no → record AttachmentFailure, skip
-      │       ├─ converterOrInit() — lazily create core/markitdown.Converter (2min/file timeout)
-      │       ├─ os.Stat; converter.Convert(ctx, path) → markdown
+      │       ├─ converterOrInit() — lazily create core/markitdown.Converter
+      │       │     (2min/file timeout; a single ≥5min budget covers the vision attempt
+      │       │      AND its plain fallback; managed venv python path
+      │       │      enables vision-assisted conversion)
+      │       ├─ resolveSessionVision(session) — PER DOCUMENT: vision params for the
+      │       │     model active on the session's router RIGHT NOW, or nil
+      │       │     (non-vision model / unsupported endpoint / no orchestrator)
+      │       ├─ os.Stat; converter.ConvertWithVision(ctx, path, vision) → markdown
+      │       │     (nil/incomplete vision or driver failure degrades to plain CLI)
       │       └─ append orchestration.Attachment to session.pendingAttachments (guarded by mu)
       │           emit attachments:changed (incremental — chips appear one-by-one)
       └─ if any failures: emit attachments:changed {failed: [...]} (UI toasts names)
@@ -181,6 +193,15 @@ SendMessage flushes pending attachments:
 `AttachFiles` returns a non-nil `error` only for system-level failures (session not found). File-level failures (unsupported format, conversion/decode error, inaccessible file) are reported via the `attachments:changed` event payload's `failed` field — not as an error — so a partial success never discards the successfully attached files or triggers a generic error toast. Converted markdown content never reaches the UI: `AttachmentInfo` is metadata-only (image entries additionally carry `is_image: true` and a `thumbnail` data URI); the agent reads document content via the `read_attachment` tool, and image content reaches the LLM only as a content block.
 
 Image attachments survive a backend restart. Before `SendMessage` snapshots and clears the pending image list, the frontend API persists a compact metadata blob (`StoredImagesMetadata`, thumbnail data URI + on-disk path — never the full base64) into `ChatMessage.Metadata`. On lazy session restore the image files are read from disk and re-encoded into `ContentBlock`s, matching what the live session saw.
+
+#### Vision-assisted Document Conversion — Data Egress
+
+When vision assistance is active (managed venv installed + the currently active model is vision-capable + provider credentials present), document conversion does not just produce local markdown: every image **embedded in the document** (pptx pictures, pdf illustrations, …) is base64-encoded and sent to the active LLM provider's endpoint for captioning. Two things to note about this egress:
+
+- It applies to **both** conversion paths: user-staged attachments (`AttachFiles`) and the agent-driven `read_file` document wrapper. In the `read_file` case the user attached nothing — an agent merely reading a sensitive PDF implicitly sends that document's embedded images to the provider.
+- With a **cloud** provider this is third-party egress of image content the user may not think of as "uploaded"; with a **local** model (LM Studio etc.) the captioning traffic stays on the machine. The connection honors the configured proxy. There is deliberately **no separate config toggle**: gating follows the active model's vision capability, exactly like explicit image attachments (which the user does choose). Disabling vision assistance wholesale is possible by pointing the session at a non-vision model.
+
+Failure containment: captioning failures are swallowed per image by markitdown itself, a wholesale driver failure degrades to plain CLI conversion, and the vision attempt plus its fallback share one elevated per-file deadline — a hung vision endpoint can never make conversion worse (or slower) than the plain path bounded by a single budget.
 
 #### Clipboard and Native File Drop
 

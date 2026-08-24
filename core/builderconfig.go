@@ -23,6 +23,20 @@ type BuilderConfig struct {
 	Timeouts      BuilderTimeoutsConfig
 	Proxy         proxy.Config
 
+	// MarkitdownPythonPath lazily resolves the managed venv interpreter that
+	// can `import markitdown` (toolmanager.VenvPythonPath). It enables
+	// vision-assisted document conversion: the read_file document wrapper
+	// invokes it when initializing its markitdown converter, which then runs
+	// an embedded Python driver (instead of the CLI) when the active model is
+	// vision-capable. The lazy probe exists because the tool-manager installs
+	// the venv asynchronously after app startup — probing at builder creation
+	// would permanently disable vision on fresh installs. A nil probe or an
+	// empty result disables vision-assisted conversion; plain CLI conversion
+	// is unaffected. Injected by the backend as a closure over
+	// toolmanager.VenvPythonPath — a machine-local filesystem fact, not a
+	// runtime-editable setting.
+	MarkitdownPythonPath func() string
+
 	// ExpandEnvVars resolves ${ENV_VAR} patterns in a string.
 	// Injected by the backend so core does not import os/config.
 	ExpandEnvVars func(string) string

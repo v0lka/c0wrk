@@ -325,3 +325,38 @@ func (s *stubInstaller) InstallStaticBinary(archivePath string, tool ToolSpec, b
 func (s *stubInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, toolsDir, binDir string) (*InstallResult, error) { //nolint:gocritic // must match Installer interface
 	return &InstallResult{ToolName: tool.Name, BinPath: filepath.Join(binDir, tool.BinName), Installed: true}, nil
 }
+
+// TestVenvPythonPath probes the exported venv-interpreter lookup against the
+// managed layout this package owns: <toolsDir>/python/venv/{bin/python3 on
+// Unix, Scripts/python.exe on Windows}. Missing venv must return "".
+func TestVenvPythonPath(t *testing.T) {
+	toolsDir, _, _ := makeTestDirs(t)
+
+	// Missing venv → empty path.
+	if got := VenvPythonPath(toolsDir); got != "" {
+		t.Errorf("VenvPythonPath(missing venv) = %q, want \"\"", got)
+	}
+
+	// Platform-correct interpreter inside the venv.
+	var rel string
+	if runtime.GOOS == "windows" {
+		rel = filepath.Join("python", "venv", "Scripts", "python.exe")
+	} else {
+		rel = filepath.Join("python", "venv", "bin", "python3")
+	}
+	interp := filepath.Join(toolsDir, rel)
+	if err := os.MkdirAll(filepath.Dir(interp), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(interp, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := VenvPythonPath(toolsDir)
+	if got == "" {
+		t.Fatal("VenvPythonPath returned \"\" for an existing venv interpreter")
+	}
+	if filepath.Clean(got) != filepath.Clean(interp) {
+		t.Errorf("VenvPythonPath = %q, want %q", got, interp)
+	}
+}

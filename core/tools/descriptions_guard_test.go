@@ -18,7 +18,7 @@ const maxDescriptionLength = 1200
 func builtinTools(t *testing.T) []sdktools.Tool {
 	t.Helper()
 
-	readFileDoc := NewReadFileDocTool(builtins.FileLimits{}, nil)
+	readFileDoc := NewReadFileDocTool(builtins.FileLimits{}, nil, nil)
 
 	tools := []sdktools.Tool{
 		readFileDoc,

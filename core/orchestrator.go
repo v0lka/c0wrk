@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core/goal"
+	"github.com/v0lka/c0wrk/core/markitdown"
 	"github.com/v0lka/c0wrk/core/research"
 	"github.com/v0lka/c0wrk/core/smallllm"
 	"github.com/v0lka/c0wrk/core/tools"
@@ -303,6 +304,7 @@ type Orchestrator struct {
 	router              *router.Router
 	llm                 agent.LLMCaller
 	modelSwitcher       *llm.Router // raw LLM router for per-message model override
+	visionResolver      markitdown.VisionResolver
 	toolRegistry        *sdktools.ToolRegistry
 	toolExec            agent.ToolExecutor  // executor tool surface (per-session policy view)
 	coreToolRegistry    *tools.ToolRegistry // core registry with policy support
@@ -598,6 +600,13 @@ type OrchestratorDeps struct {
 	CoreToolRegistry *tools.ToolRegistry       // per-session registry for No-Project tool disabling and the extra shell blacklist
 	ModelSwitcher    *llm.Router               // raw LLM router for per-message model override
 
+	// VisionResolver inspects the CURRENT active model (per call) and returns
+	// markitdown connection parameters when that model is vision-capable and
+	// served over an OpenAI-compatible endpoint. Injected into the task
+	// context so document conversions caption embedded images with the model
+	// active at conversion time. Optional, nil-safe (vision assistance off).
+	VisionResolver markitdown.VisionResolver
+
 	// Tool result caching and per-tool truncation.
 	ToolCache         *agent.ToolResultCache
 	PerToolTruncation map[string]agent.ToolTruncationConfig
@@ -664,6 +673,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		router:                     deps.Router,
 		llm:                        deps.LLM,
 		modelSwitcher:              deps.ModelSwitcher,
+		visionResolver:             deps.VisionResolver,
 		toolRegistry:               deps.ToolRegistry,
 		toolExec:                   deps.ToolExec,
 		config:                     cfg,
@@ -708,6 +718,19 @@ func (o *Orchestrator) Cleanup() {
 		o.onCleanup = nil
 		fn()
 	}
+}
+
+// ResolveVisionOptions returns markitdown vision connection parameters for
+// the model CURRENTLY active on this session's router, or nil when the model
+// must not be used for captioning (not vision-capable, unsupported endpoint,
+// missing credentials). Intended for per-document use by callers outside the
+// task-context chain (e.g. the session layer's attachment conversion); each
+// call re-resolves, so a model switch is honored by the next document.
+func (o *Orchestrator) ResolveVisionOptions() *markitdown.VisionOptions {
+	if o.visionResolver == nil {
+		return nil
+	}
+	return o.visionResolver()
 }
 
 // SetGoalProposer injects the goal-proposer hook (the desktop approval flow
@@ -890,6 +913,12 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	if origReq := bb.GetOriginalRequest(); origReq != "" {
 		ctx = o.injectVectorSearchHints(ctx, origReq)
 	}
+
+	// Vision-assisted document conversion on the resume path, mirroring
+	// prepareRequestContext: the resolver resolves the model active at each
+	// conversion, so a model switched while the task was paused applies to
+	// documents read after resume. Nil-safe no-op.
+	ctx = markitdown.WithVisionResolver(ctx, o.visionResolver)
 
 	// Wire emitter into restored PersistentBlackboard so persistence warnings
 	// are surfaced to the user (the backend creates the BB without an emitter).

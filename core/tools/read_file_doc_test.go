@@ -17,7 +17,7 @@ import (
 // --- IsContentBacked extension matrix ---
 
 func TestIsContentBacked_DocumentFormats(t *testing.T) {
-	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil)
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, nil)
 
 	docFiles := []string{"report.pdf", "doc.docx", "slides.pptx", "data.xlsx",
 		"text.odt", "page.html", "page.htm"}
@@ -30,7 +30,7 @@ func TestIsContentBacked_DocumentFormats(t *testing.T) {
 }
 
 func TestIsContentBacked_PlainTextFormats(t *testing.T) {
-	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil)
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, nil)
 
 	textFiles := []string{"notes.txt", "readme.md", "data.json", "config.xml",
 		"data.csv", "data.tsv", "doc.rst", "main.go", "app.ts"}
@@ -43,7 +43,7 @@ func TestIsContentBacked_PlainTextFormats(t *testing.T) {
 }
 
 func TestIsContentBacked_EmptyPath(t *testing.T) {
-	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil)
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, nil)
 	input := json.RawMessage(`{"path":""}`)
 	if tool.IsContentBacked(context.Background(), input) {
 		t.Error("IsContentBacked with empty path should be false")
@@ -51,7 +51,7 @@ func TestIsContentBacked_EmptyPath(t *testing.T) {
 }
 
 func TestIsContentBacked_CaseInsensitive(t *testing.T) {
-	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil)
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, nil)
 	for _, f := range []string{"report.PDF", "doc.DOCX", "page.HTML"} {
 		input, _ := json.Marshal(map[string]string{"path": f})
 		if !tool.IsContentBacked(context.Background(), input) {
@@ -63,7 +63,7 @@ func TestIsContentBacked_CaseInsensitive(t *testing.T) {
 // --- Description ---
 
 func TestDescription_MentionsDocumentFormats(t *testing.T) {
-	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil)
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, nil)
 	desc := tool.Description()
 	for _, keyword := range []string{"pdf", "docx", "markdown"} {
 		if !strings.Contains(desc, keyword) {
@@ -75,7 +75,7 @@ func TestDescription_MentionsDocumentFormats(t *testing.T) {
 // --- Name and schema delegation ---
 
 func TestReadFileDocTool_Name(t *testing.T) {
-	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil)
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, nil)
 	if tool.Name() != "read_file" {
 		t.Errorf("Name() = %q, want %q", tool.Name(), "read_file")
 	}
@@ -91,7 +91,7 @@ func TestExecute_DelegatesPlainTextFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil)
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, nil)
 	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
 
 	input, _ := json.Marshal(map[string]string{"path": "test.txt"})
@@ -117,7 +117,7 @@ func TestExecute_DocInvertedRangeReturnsError(t *testing.T) {
 	// markitdown absent — but validation runs before any conversion attempt.
 	t.Setenv("PATH", t.TempDir())
 
-	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil)
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, nil)
 	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
 	ctx = sdktools.WithTempDir(ctx, t.TempDir())
 
@@ -141,7 +141,7 @@ func TestExecute_DocNegativeStartLineReturnsError(t *testing.T) {
 	}
 	t.Setenv("PATH", t.TempDir())
 
-	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil)
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, nil)
 	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
 	ctx = sdktools.WithTempDir(ctx, t.TempDir())
 
@@ -267,24 +267,24 @@ func TestFormatMarkdownWindow_InvertedRangeNoPanic(t *testing.T) {
 // --- docCacheKey stability ---
 
 func TestDocCacheKey_Stable(t *testing.T) {
-	k1 := docCacheKey("/path/doc.pdf", 12345, 6789)
-	k2 := docCacheKey("/path/doc.pdf", 12345, 6789)
+	k1 := docCacheKey("/path/doc.pdf", 12345, 6789, "")
+	k2 := docCacheKey("/path/doc.pdf", 12345, 6789, "")
 	if k1 != k2 {
 		t.Error("docCacheKey should be deterministic for same inputs")
 	}
 }
 
 func TestDocCacheKey_ChangesOnMtime(t *testing.T) {
-	k1 := docCacheKey("/path/doc.pdf", 12345, 6789)
-	k2 := docCacheKey("/path/doc.pdf", 12346, 6789)
+	k1 := docCacheKey("/path/doc.pdf", 12345, 6789, "")
+	k2 := docCacheKey("/path/doc.pdf", 12346, 6789, "")
 	if k1 == k2 {
 		t.Error("docCacheKey should change when mtime changes")
 	}
 }
 
 func TestDocCacheKey_ChangesOnPath(t *testing.T) {
-	k1 := docCacheKey("/path/a.pdf", 12345, 6789)
-	k2 := docCacheKey("/path/b.pdf", 12345, 6789)
+	k1 := docCacheKey("/path/a.pdf", 12345, 6789, "")
+	k2 := docCacheKey("/path/b.pdf", 12345, 6789, "")
 	if k1 == k2 {
 		t.Error("docCacheKey should change when path changes")
 	}
@@ -304,7 +304,7 @@ func TestExecute_FallbackOnConversionFailure(t *testing.T) {
 	// Scope PATH to empty dir so markitdown is definitely not found.
 	t.Setenv("PATH", t.TempDir())
 
-	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil)
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, nil)
 	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
 	ctx = sdktools.WithTempDir(ctx, t.TempDir())
 
@@ -332,7 +332,7 @@ func TestGetOrConvert_CacheHit(t *testing.T) {
 
 	// Pre-populate the conversion cache with known markdown.
 	info, _ := os.Stat(pdfPath)
-	cacheKey := docCacheKey(pdfPath, info.ModTime().UnixNano(), info.Size())
+	cacheKey := docCacheKey(pdfPath, info.ModTime().UnixNano(), info.Size(), "")
 	cacheDir := filepath.Join(tempDir, docConversionSubdir)
 	_ = os.MkdirAll(cacheDir, 0o755)
 	cachedMarkdown := "# Cached Title\n\nThis is cached content."
@@ -341,7 +341,7 @@ func TestGetOrConvert_CacheHit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil)
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, nil)
 	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
 	ctx = sdktools.WithTempDir(ctx, tempDir)
 
@@ -389,4 +389,19 @@ func TestAtomicWriteFile_WritesAndRenames(t *testing.T) {
 // It delegates to the stdlib min builtin (Go 1.21+).
 func min2(a, b int) int {
 	return min(a, b)
+}
+
+// TestDocCacheKey_ChangesOnVision pins the vision-cache contract: the same
+// document must not be served from a cache entry produced under a DIFFERENT
+// vision configuration (or without one) — captions change the output.
+func TestDocCacheKey_ChangesOnVision(t *testing.T) {
+	plain := docCacheKey("/path/deck.pptx", 12345, 6789, "")
+	withVision := docCacheKey("/path/deck.pptx", 12345, 6789, "https://x/v1\x00model-a\x00")
+	otherModel := docCacheKey("/path/deck.pptx", 12345, 6789, "https://x/v1\x00model-b\x00")
+	if plain == withVision {
+		t.Error("cache key must differ between plain and vision-assisted conversion")
+	}
+	if withVision == otherModel {
+		t.Error("cache key must differ between vision models")
+	}
 }

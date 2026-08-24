@@ -75,7 +75,7 @@ Also owns domain services:
 - `core/workspace/` — fsnotify watcher with debouncing, git status/diff operations, file tree walking
 - `core/tools/` — built-in tool registration, c0wrk-specific tool types (ask_user)
 - `core/goal/` — Goal domain: the declared success condition, the budget constraining work toward it, and the runtime state machine tracking progress
-- `core/markitdown/` — document-to-Markdown conversion via the managed markitdown CLI
+- `core/markitdown/` — document-to-Markdown conversion via the managed markitdown CLI; optional vision-assisted conversion through the markitdown Python API (embedded driver) that captions embedded document images with the active vision-capable model (`core/visionresolver.go` maps the active model/provider onto the OpenAI-compatible captioning endpoint; degrades to the plain CLI on any failure)
 - `core/smallllm/` — tool-set narrowing for running the conductor against small/local LLMs
 - `core/toolmanager/` — managed external binary tools (rg, uv, markitdown): version checking, download, install, first-run bootstrap
 - `core/updater/` — application self-update: GitHub release checking, signature verification, asset download/install

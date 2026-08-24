@@ -64,10 +64,11 @@ func isDocExt(path string) bool {
 // results in memory (content-backed) instead of streaming raw bytes from disk.
 type ReadFileDocTool struct {
 	*builtins.ReadFileTool
-	limits    builtins.FileLimits
-	log       *slog.Logger
-	converter *markitdown.Converter
-	convMu    sync.Mutex
+	limits           builtins.FileLimits
+	log              *slog.Logger
+	converter        *markitdown.Converter
+	convMu           sync.Mutex
+	markitdownPython func() string // lazily resolves the managed venv interpreter for vision-assisted conversion; nil/"" = disabled
 }
 
 // NewReadFileDocTool creates a read_file wrapper that converts document formats
@@ -75,14 +76,28 @@ type ReadFileDocTool struct {
 // and used for plain-text files and as a fallback on conversion errors. A nil
 // logger is replaced with a discard handler so the tool never panics on a
 // logging call.
-func NewReadFileDocTool(limits builtins.FileLimits, logger *slog.Logger) *ReadFileDocTool {
+//
+// markitdownPython lazily resolves the managed venv interpreter
+// (toolmanager.VenvPythonPath). The tool-manager installs that venv
+// asynchronously after application startup, so the path is probed at the
+// FIRST converter init (i.e. the first document read) rather than at
+// construction: a probe baked in at app start would see an empty path on
+// fresh installs and silently disable vision-assisted conversion until the
+// app restarts. A nil probe or an empty result keeps the plain CLI path.
+// When the resolved interpreter is available AND the execution context
+// carries a vision resolver whose current model is vision-capable, document
+// conversions run through the markitdown Python API so embedded images are
+// captioned by that model (per-document: the model is re-resolved on every
+// conversion).
+func NewReadFileDocTool(limits builtins.FileLimits, logger *slog.Logger, markitdownPython func() string) *ReadFileDocTool {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	return &ReadFileDocTool{
-		ReadFileTool: builtins.NewReadFileToolWithLimits(limits),
-		limits:       limits,
-		log:          logger,
+		ReadFileTool:     builtins.NewReadFileToolWithLimits(limits),
+		limits:           limits,
+		log:              logger,
+		markitdownPython: markitdownPython,
 	}
 }
 
@@ -175,13 +190,25 @@ func (t *ReadFileDocTool) Execute(ctx context.Context, input json.RawMessage) (s
 
 // converterOrInit lazily initializes the markitdown converter on first use.
 // Returns an error (wrapped exec.ErrNotFound) if markitdown is not on PATH.
+// The venv interpreter path is probed HERE (not at construction): the
+// tool-manager may still be installing during early startup, and a fresh
+// probe per init attempt keeps the first document read after installation
+// vision-capable without an app restart.
 func (t *ReadFileDocTool) converterOrInit() (*markitdown.Converter, error) {
 	t.convMu.Lock()
 	defer t.convMu.Unlock()
 	if t.converter != nil {
 		return t.converter, nil
 	}
-	c, err := markitdown.NewConverter(t.log, docConvertTimeout)
+	pythonPath := ""
+	if t.markitdownPython != nil {
+		pythonPath = t.markitdownPython()
+	}
+	c, err := markitdown.NewConverter(markitdown.Options{
+		Logger:     t.log,
+		Timeout:    docConvertTimeout,
+		PythonPath: pythonPath,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -190,16 +217,28 @@ func (t *ReadFileDocTool) converterOrInit() (*markitdown.Converter, error) {
 }
 
 // getOrConvert returns the markdown representation of the document at absPath.
-// The result is cached in <session-temp>/conversions/<sha256(path+mtime+size)>.md.
+// The result is cached in <session-temp>/conversions/<sha256(path+mtime+size+vision)>.md.
 // A cache hit avoids re-running the markitdown subprocess on repeated reads
 // (including paginated reads with different line ranges).
+//
+// Vision assistance is resolved PER DOCUMENT from the execution context: the
+// resolver (attached by the orchestrator) inspects the model active at THIS
+// moment, so a mid-task model switch is honored by the next conversion. The
+// resolved vision identity (endpoint+model+prompt) participates in the cache
+// key — a document converted without captions must not be served from the
+// cache after switching to a vision-capable model, and vice versa.
 func (t *ReadFileDocTool) getOrConvert(ctx context.Context, absPath string) (string, error) {
 	info, err := os.Stat(absPath)
 	if err != nil {
 		return "", fmt.Errorf("cannot access file: %w", err)
 	}
 
-	cacheKey := docCacheKey(absPath, info.ModTime().UnixNano(), info.Size())
+	var vision *markitdown.VisionOptions
+	if r := markitdown.VisionResolverFrom(ctx); r != nil {
+		vision = r()
+	}
+
+	cacheKey := docCacheKey(absPath, info.ModTime().UnixNano(), info.Size(), vision.CacheKey())
 
 	tempDir := sdktools.TempDirFrom(ctx)
 	if tempDir != "" {
@@ -214,7 +253,7 @@ func (t *ReadFileDocTool) getOrConvert(ctx context.Context, absPath string) (str
 		return "", err
 	}
 
-	markdown, err := conv.Convert(ctx, absPath)
+	markdown, err := conv.ConvertWithVision(ctx, absPath, vision)
 	if err != nil {
 		return "", err
 	}
@@ -240,10 +279,11 @@ func (t *ReadFileDocTool) getOrConvert(ctx context.Context, absPath string) (str
 }
 
 // docCacheKey computes a deterministic cache key from the absolute file path,
-// modification time, and size. The key changes when the source file is
-// modified, invalidating the cached conversion.
-func docCacheKey(absPath string, mtime, size int64) string {
-	h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d", absPath, mtime, size)))
+// modification time, size, and the identity of the vision configuration used
+// for the conversion. The key changes when the source file is modified or when
+// the vision configuration differs, invalidating the cached conversion.
+func docCacheKey(absPath string, mtime, size int64, visionKey string) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%s", absPath, mtime, size, visionKey)))
 	return hex.EncodeToString(h[:])
 }
 

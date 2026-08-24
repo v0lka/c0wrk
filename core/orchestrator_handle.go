@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/google/uuid"
+	"github.com/v0lka/c0wrk/core/markitdown"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
 	"github.com/v0lka/sp4rk/skills"
@@ -40,6 +41,12 @@ func (o *Orchestrator) prepareRequestContext(ctx context.Context, message string
 
 	// Generate RAG hints from vector index (non-blocking, 2s timeout).
 	ctx = o.injectVectorSearchHints(ctx, message)
+
+	// Vision-assisted document conversion: attach the per-document vision
+	// resolver so every markitdown conversion inside this task (including
+	// subagent delegations, which inherit the context) captions embedded
+	// images with the model active at conversion time. Nil-safe no-op.
+	ctx = markitdown.WithVisionResolver(ctx, o.visionResolver)
 
 	// Emit initial 0% context_fill so the frontend has a baseline before any LLM call.
 	o.emitInitialContextFill()

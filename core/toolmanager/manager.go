@@ -306,3 +306,17 @@ func (m *Manager) removeStalePythonEnv(tool ToolSpec) {
 		m.Logger.Warn("failed to remove stale venv", "path", venvDir, "error", err)
 	}
 }
+
+// VenvPythonPath returns the absolute path of the Python interpreter inside
+// the managed markitdown virtual environment (<toolsDir>/python/venv), or ""
+// when the venv (or the interpreter inside it) does not exist. The layout is
+// owned by this package (see InstallPythonPackage), so this is the canonical
+// way for other layers to obtain the interpreter that can `import markitdown`
+// — required for vision-assisted conversion, which must go through the
+// markitdown Python API rather than the CLI.
+//
+// Pure filesystem probing; no installation is triggered.
+func VenvPythonPath(toolsDir string) string {
+	venvDir := filepath.Join(toolsDir, "python", "venv")
+	return findPythonInDir(venvDir, "", runtime.GOOS)
+}

@@ -63,6 +63,8 @@ All config field mapping happens in this one function. When adding config fields
 2. Add to `core.BuilderConfig` if it needs to reach core
 3. Map in `backend/configadapter.go`
 
+Exception: `BuilderConfig.MarkitdownPythonPath` (and its `BuiltinToolsConfig` pass-through) is a machine-local filesystem fact — the presence of the managed markitdown venv interpreter — not a user setting. It is injected as a closure in `backend/application.go`, deliberately absent from `config.yaml` and from `ToBuilderConfig`.
+
 ## Factory Pattern
 
 Backend creates orchestrators through a closure factory:
@@ -120,6 +122,8 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Task ID (continuation) | backend → core | `HandleOptions.TaskID`                   |
 | Pending attachments    | backend → core | `HandleOptions.PendingAttachments` (user-attached documents converted to markdown via `core/markitdown`; flushed into the blackboard once before execution — see [../domains/session-lifecycle.md](../domains/session-lifecycle.md)) |
 | Pending image attachments | backend → core | `HandleOptions.PendingImages` (user-attached images, png/jpg/jpeg/gif/webp, as `[]llm.ContentBlock` base64 image blocks; injected into the context window as image content — NOT routed through the blackboard, which is markdown/text-only — see [../domains/session-lifecycle.md](../domains/session-lifecycle.md)) |
+| Vision params for document conversion | core → backend | `Orchestrator.ResolveVisionOptions()` — per-call markitdown vision connection params for the model currently active on the session's router (nil when the model must not caption); called per document by the backend attachment flow. The in-task counterpart is a resolver attached to the task context by `prepareRequestContext`/`Resume` (see [../domains/session-lifecycle.md](../domains/session-lifecycle.md)) |
+| Managed venv interpreter (vision conversion) | backend → core | `BuilderConfig.MarkitdownPythonPath` — closure over `toolmanager.VenvPythonPath`, injected in `backend/application.go` (NOT via `ToBuilderConfig`); lazily probed at first converter init because the tool-manager installs the venv asynchronously after startup |
 | Available tools config | backend → core | `BuiltinToolsConfig` (incl. ExtraShellBlacklist). Per-tool truncation via `BuilderConfig.ToolLimits.PerToolTruncation`. |
 | No Project mode        | backend → core | `Orchestrator.SetNoProjectMode()` (disables code tools, adds bash blacklist) |
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |

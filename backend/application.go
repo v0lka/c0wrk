@@ -14,6 +14,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/toolmanager"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -113,6 +114,16 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 
 	// 3. OrchestratorBuilder (owns registry, gateway, router, judge).
 	builderCfg := ToBuilderConfig(cfg.Config)
+	// Managed venv interpreter (imports markitdown) enables vision-assisted
+	// document conversion. Machine-local fact, resolved LAZILY: the
+	// tool-manager installs the venv asynchronously after startup, so probing
+	// eagerly here would see an empty path on fresh installs and silently
+	// disable vision for the whole app run. The probe runs at the read_file
+	// document wrapper's first converter init instead.
+	markitdownPython := func() string {
+		return toolmanager.VenvPythonPath(config.ToolsDir(cfg.AgentDir))
+	}
+	builderCfg.MarkitdownPythonPath = markitdownPython
 	builder, err := core.NewOrchestratorBuilder(builderCfg, cfg.AskUserFunc, cfg.PlanApprovalFunc, cfg.Logger)
 	if err != nil {
 		return nil, err
@@ -180,7 +191,12 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 
 	// 5. Orchestrator factory closure for the session manager.
 	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
-		orch, err := builder.Build(ToBuilderConfig(cfg.Config), emitter, logger, workspacePath, bbFactory, app.hitlHandler, dumpWriter, stepDumpTracker)
+		orchCfg := ToBuilderConfig(cfg.Config)
+		// The lazy python probe is consumed at tool registration (builder
+		// creation); propagate it here as well so any future Build-side
+		// consumer sees the closure instead of a zero value.
+		orchCfg.MarkitdownPythonPath = markitdownPython
+		orch, err := builder.Build(orchCfg, emitter, logger, workspacePath, bbFactory, app.hitlHandler, dumpWriter, stepDumpTracker)
 		if err != nil {
 			return nil, err
 		}

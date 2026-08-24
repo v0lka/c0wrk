@@ -6,8 +6,8 @@ The orchestration domain coordinates the full lifecycle of a user request: class
 
 ## Key Files
 
-- `core/orchestrator.go` — top-level Orchestrator (HandleMessage, Resume)
-- `core/orchestrator_handle.go` — HandleMessage body: router → Conductor launch, `prepareRequestContext`
+- `core/orchestrator.go` — top-level Orchestrator (HandleMessage, Resume, `ResolveVisionOptions` — per-call markitdown vision params for the currently active model, consumed by the backend attachment flow)
+- `core/orchestrator_handle.go` — HandleMessage body: router → Conductor launch, `prepareRequestContext` (task-context enrichment incl. the markitdown vision resolver, attached on HandleMessage and Resume; flows through to subagent delegations)
 - `core/orchestrator_goal.go` — goal mode: deriveGoal, runGoalLoop, resumeGoalLoop, runGoalTurns, budgets, anti-spin (see [../goal-mode.md](../goal-mode.md))
 - `core/conductor.go` — Conductor entry point: builds system prompt, tool set, launches `Executor.Run`
 - `core/smallllm/tools_filter.go` — pure tool-set narrowing for the Small-LLM essential-tools variant (see [../small-llm.md](../small-llm.md))

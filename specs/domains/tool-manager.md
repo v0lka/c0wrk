@@ -7,7 +7,7 @@ The tool-manager downloads, installs, and version-tracks the external CLI binari
 ## Key Files
 
 - `core/toolmanager/registry.go` — `ManagedTools()` registry: per-tool pinned `Version`, per-platform download `URLs`, SHA256 `Checksums`, archive-layout metadata (`ArchiveName`, `BinPathInArchive`), and `PipSpec` for Python packages
-- `core/toolmanager/manager.go` — `Manager.EnsureCriticalTools` reconciliation loop, version-mismatch handling, `removeStalePythonEnv`, `PrependToPATH`
+- `core/toolmanager/manager.go` — `Manager.EnsureCriticalTools` reconciliation loop, version-mismatch handling, `removeStalePythonEnv`, `PrependToPATH`, `VenvPythonPath` (pure probe for the managed venv interpreter at `<toolsDir>/python/venv`)
 - `core/toolmanager/install.go` — `FSInstaller`: archive extraction (`StaticBinary`), Python bootstrap (`uv python install` → `uv venv` → `uv pip install`), wrapper-script creation, zip-bomb guard
 - `core/toolmanager/download.go` — HTTP downloader with retry and post-download SHA256 verification
 - `core/toolmanager/versions.go` — `ToolVersions` map and `.versions` JSON read/write
@@ -95,6 +95,7 @@ startup Phase 2: initTools()
 
 - All `exec.CommandContext("rg", ...)` call sites resolve to the managed binary transparently, because `tools/bin/` is prepended to `PATH` at startup before Phase 3.
 - The first run requires network access; every run after the managed tools are installed operates fully offline.
+- The managed venv layout (`<toolsDir>/python/venv`) is owned by this package; `VenvPythonPath` is the canonical accessor other layers use to obtain the interpreter that can `import markitdown` (vision-assisted document conversion runs through the markitdown Python API, not the CLI). It is a pure filesystem probe — it never triggers an installation and returns `""` when the venv is absent, leaving plain CLI conversion intact.
 
 ## Configuration
 

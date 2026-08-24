@@ -102,7 +102,7 @@ func TestIsSupported(t *testing.T) {
 func TestNewConverter_MarkitdownAbsent(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
-	_, err := NewConverter(testLogger(), time.Minute)
+	_, err := NewConverter(Options{Logger: testLogger(), Timeout: time.Minute})
 	if err == nil {
 		t.Fatal("expected error when markitdown is not on PATH, got nil")
 	}
@@ -121,7 +121,7 @@ func TestNewConverter_MarkitdownPresent(t *testing.T) {
 		t.Skipf("markitdown CLI not available on PATH: %v", err)
 	}
 
-	c, err := NewConverter(testLogger(), time.Minute)
+	c, err := NewConverter(Options{Logger: testLogger(), Timeout: time.Minute})
 	if err != nil {
 		t.Fatalf("NewConverter returned error: %v", err)
 	}
@@ -256,5 +256,112 @@ func TestConvert_TrimsOutput(t *testing.T) {
 	}
 	if !strings.Contains(md, "plain text body") {
 		t.Errorf("expected body text in output, got: %q", md)
+	}
+}
+
+// TestConvertWithVision_DriverFallsBackToPlainCLI verifies the degradation
+// contract: when the vision driver cannot complete (here: an unreachable
+// endpoint inside the embedded client, or any driver-level failure),
+// ConvertWithVision must still return a successful conversion via the plain
+// CLI rather than surfacing an error — a broken vision configuration must
+// never make document conversion worse than it is without vision.
+//
+// Runs with the real managed venv interpreter when available; otherwise the
+// driver path is skipped by construction (pythonPath empty) and the test
+// verifies the nil-vision pass-through instead.
+func TestConvertWithVision_DriverFallsBackToPlainCLI(t *testing.T) {
+	if _, err := exec.LookPath("markitdown"); err != nil {
+		t.Skipf("markitdown CLI not available on PATH: %v", err)
+	}
+
+	python := ""
+	for _, cand := range []string{
+		os.Getenv("HOME") + "/.c0wrk/tools/python/venv/bin/python3",
+	} {
+		if _, err := os.Stat(cand); err == nil {
+			python = cand
+			break
+		}
+	}
+
+	// A tiny supported text document.
+	path := filepath.Join(t.TempDir(), "doc.txt")
+	if err := os.WriteFile(path, []byte("plain vision fallback"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Converter{log: testLogger(), timeout: time.Minute, pythonPath: python}
+
+	// Vision options pointing at a guaranteed-unreachable endpoint. The
+	// embedded client will time out / fail to connect per image call; the
+	// driver must still emit markdown (captioning failures are swallowed by
+	// markitdown itself) — and if the driver as a whole fails, the plain CLI
+	// fallback must rescue the conversion.
+	vision := &VisionOptions{
+		APIKey:  "test-key",
+		BaseURL: "http://127.0.0.1:1/v1", // port 1: connection refused quickly
+		Model:   "test-model",
+	}
+
+	markdown, err := c.ConvertWithVision(context.Background(), path, vision)
+	if err != nil {
+		t.Fatalf("ConvertWithVision with unreachable endpoint returned error: %v", err)
+	}
+	if !strings.Contains(markdown, "plain vision fallback") {
+		t.Errorf("converted markdown missing source text: %q", markdown)
+	}
+}
+
+// TestConvertWithVision_NilOptionsPassthrough pins the no-vision contract:
+// nil options (and options without pythonPath) must behave exactly like
+// Convert.
+func TestConvertWithVision_NilOptionsPassthrough(t *testing.T) {
+	if _, err := exec.LookPath("markitdown"); err != nil {
+		t.Skipf("markitdown CLI not available on PATH: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "doc.md")
+	if err := os.WriteFile(path, []byte("passthrough"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &Converter{log: testLogger(), timeout: time.Minute}
+
+	markdown, err := c.ConvertWithVision(context.Background(), path, nil)
+	if err != nil {
+		t.Fatalf("nil vision options returned error: %v", err)
+	}
+	if !strings.Contains(markdown, "passthrough") {
+		t.Errorf("markdown = %q, want passthrough content", markdown)
+	}
+
+	// Incomplete options are treated as "no vision" even with python present.
+	incomplete := &VisionOptions{APIKey: "k"}
+	if _, err := c.ConvertWithVision(context.Background(), path, incomplete); err != nil {
+		t.Fatalf("incomplete vision options returned error: %v", err)
+	}
+}
+
+// TestConvertWithVision_DriverCrashFallsBackToPlainCLI pins the wholesale
+// driver-failure branch: when the driver process cannot even run (here: an
+// interpreter path that does not exist), ConvertWithVision must fall back to
+// the plain CLI and still convert successfully.
+func TestConvertWithVision_DriverCrashFallsBackToPlainCLI(t *testing.T) {
+	if _, err := exec.LookPath("markitdown"); err != nil {
+		t.Skipf("markitdown CLI not available on PATH: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "doc.md")
+	if err := os.WriteFile(path, []byte("crash fallback content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Interpreter path that cannot exist: the driver exec fails immediately.
+	c := &Converter{log: testLogger(), timeout: time.Minute, pythonPath: filepath.Join(t.TempDir(), "no-such-python")}
+
+	vision := &VisionOptions{APIKey: "k", BaseURL: "https://example.invalid/v1", Model: "m"}
+	markdown, err := c.ConvertWithVision(context.Background(), path, vision)
+	if err != nil {
+		t.Fatalf("driver crash must degrade to plain conversion, got error: %v", err)
+	}
+	if !strings.Contains(markdown, "crash fallback content") {
+		t.Errorf("markdown = %q, want plain CLI content", markdown)
 	}
 }

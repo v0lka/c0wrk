@@ -51,6 +51,14 @@ type BuiltinToolsConfig struct {
 	// Logger is threaded through to tools that log (e.g. the read_file document
 	// converter). If nil, those tools fall back to a discard handler.
 	Logger *slog.Logger
+
+	// MarkitdownPythonPath lazily resolves the managed venv interpreter used
+	// by the read_file document wrapper for vision-assisted conversion (nil
+	// or an empty result disables vision assistance; plain conversions are
+	// unaffected). Probed at the wrapper's first converter init because the
+	// tool-manager installs the venv asynchronously after startup.
+	// See BuilderConfig.MarkitdownPythonPath.
+	MarkitdownPythonPath func() string
 }
 
 // RegisterBuiltinTools creates and registers all built-in tools into the registry.
@@ -72,7 +80,7 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	// read_file is wrapped to transparently convert document formats (pdf,
 	// docx, pptx, etc.) to markdown via markitdown. Plain-text files delegate
 	// to the inner sp4rk ReadFileTool unchanged.
-	registry.Register(NewReadFileDocTool(cfg.FileLimits, cfg.Logger))
+	registry.Register(NewReadFileDocTool(cfg.FileLimits, cfg.Logger, cfg.MarkitdownPythonPath))
 	registry.Register(builtins.NewWriteFileTool())
 	registry.Register(builtins.NewEditFileTool())
 	registry.Register(builtins.NewListDirectoryTool())

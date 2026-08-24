@@ -28,7 +28,7 @@
 | Session create/resume/persist/fork       | [domains/session-lifecycle.md](domains/session-lifecycle.md)             |
 | Goal mode (multi-turn objective loop)    | [domains/goal-mode.md](domains/goal-mode.md), [decisions/019-goal-mode.md](decisions/019-goal-mode.md) |
 | Small-LLM profile (tuning for small/local models) | [domains/small-llm.md](domains/small-llm.md), [decisions/022-small-llm-profile.md](decisions/022-small-llm-profile.md) |
-| File & image attachments (pending → blackboard / content blocks)  | [domains/session-lifecycle.md](domains/session-lifecycle.md), [domains/memory/blackboard.md](domains/memory/blackboard.md) |
+| File & image attachments (pending → blackboard / content blocks), vision-assisted document conversion & its egress  | [domains/session-lifecycle.md](domains/session-lifecycle.md), [domains/memory/blackboard.md](domains/memory/blackboard.md) |
 | File tree, vector index, workspace       | [domains/workspace.md](domains/workspace.md)                             |
 | Auxiliary work directories               | [architecture/security-model.md](architecture/security-model.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Work Directories section), [domains/frontend/stores.md](domains/frontend/stores.md) (`workDirsStore`) |
 | Frontend stores, state management        | [domains/frontend/stores.md](domains/frontend/stores.md)                 |

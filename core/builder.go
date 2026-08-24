@@ -671,6 +671,7 @@ func (b *OrchestratorBuilder) Build(
 		Router:            coreRouter,
 		LLM:               loggedLLM,
 		ModelSwitcher:     llmRouter,
+		VisionResolver:    newMarkitdownVisionResolver(llmRouter, modelReg, cfg),
 		ToolExec:          sessionRegistry,         // ToolExecutor (per-session policy view)
 		ToolRegistry:      b.registry.ToolRegistry, // sp4rk ToolRegistry (shared)
 		TokenCounter:      tokenCounter,
@@ -2407,6 +2408,8 @@ func resolveSamplingFunc(s BuilderSmallLLMConfig) llm.SamplingFunc {
 // ---------------------------------------------------------------------------
 
 // configToBuiltinToolsConfig converts BuilderConfig to BuiltinToolsConfig.
+// configToBuiltinToolsConfig maps a BuilderConfig into the tool-registration
+// config. (See the call site for the blacklist sourcing note.)
 func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 	// The command blacklist is sourced from the execute group
 	// (security.groups.execute.blacklist) and compiled into the shell-exec
@@ -2442,6 +2445,8 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 		SearchProvider: cfg.Search.Provider,
 		SearchAPIKey:   cfg.ExpandEnvVars(cfg.Search.APIKey),
 		SearchTimeout:  time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
+
+		MarkitdownPythonPath: cfg.MarkitdownPythonPath,
 	}
 }
 

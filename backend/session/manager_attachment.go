@@ -304,7 +304,14 @@ func (m *Manager) converterOrInit() (*markitdown.Converter, error) {
 	if m.converter != nil {
 		return m.converter, nil
 	}
-	c, err := markitdown.NewConverter(m.log(), attachmentConvertTimeout)
+	// The venv interpreter enabling vision-assisted conversion is resolved
+	// lazily on every init attempt: at startup the tool-manager may not have
+	// finished installing markitdown yet.
+	c, err := markitdown.NewConverter(markitdown.Options{
+		Logger:     m.log(),
+		Timeout:    attachmentConvertTimeout,
+		PythonPath: m.markitdownPythonPath(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("init markitdown converter: %w", err)
 	}
@@ -379,7 +386,11 @@ func (m *Manager) AttachFiles(ctx context.Context, sessionID string, paths []str
 			continue
 		}
 
-		markdown, convErr := converter.Convert(ctx, path)
+		// Per-document vision resolution: inspect the session's CURRENTLY
+		// active model so attachments convert with the model selected right
+		// now (a mid-session model switch applies to the next document).
+		vision := m.resolveSessionVision(session)
+		markdown, convErr := converter.ConvertWithVision(ctx, path, vision)
 		if convErr != nil {
 			failures = append(failures, AttachmentFailure{
 				Path:  filepath.Base(path),

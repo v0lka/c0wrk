@@ -21,6 +21,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/markitdown"
+	"github.com/v0lka/c0wrk/core/toolmanager"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -1602,4 +1603,35 @@ func extractPersistedError(msg ChatMessage) string {
 		}
 	}
 	return "unknown error"
+}
+
+// markitdownPythonPath resolves the managed venv interpreter that can import
+// markitdown (toolmanager layout), used by the attachment converter for
+// vision-assisted conversion. The probe runs on each converter-init ATTEMPT
+// (init fails and retries while the CLI is still missing), but the resolved
+// path is frozen into the converter once init succeeds — it lives for the
+// manager's lifetime. In practice this is equivalent to "probed once at
+// first converter init": the CLI and its venv are installed by a single
+// tool-manager operation, so by the time the CLI resolves the venv exists
+// too. Should the probe nevertheless see an incomplete install, vision stays
+// disabled for this app run (plain conversion is unaffected).
+func (m *Manager) markitdownPythonPath() string {
+	return toolmanager.VenvPythonPath(config.ToolsDir(m.agentDir))
+}
+
+// resolveSessionVision returns markitdown vision connection parameters for the
+// model currently active on the session's orchestrator, or nil when the
+// session has no orchestrator (not yet restored) or the active model must not
+// be used for captioning. Called PER DOCUMENT by AttachFiles.
+func (m *Manager) resolveSessionVision(s *Session) *markitdown.VisionOptions {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	orch := s.orchestrator
+	s.mu.Unlock()
+	if orch == nil {
+		return nil
+	}
+	return orch.ResolveVisionOptions()
 }
