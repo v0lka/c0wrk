@@ -894,6 +894,8 @@ export namespace backend {
 	    model: string;
 	    family: string;
 	    fill_percent: number;
+	    used_tokens?: number;
+	    max_tokens?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionTokensResponse(source);
@@ -906,6 +908,8 @@ export namespace backend {
 	        this.model = source["model"];
 	        this.family = source["family"];
 	        this.fill_percent = source["fill_percent"];
+	        this.used_tokens = source["used_tokens"];
+	        this.max_tokens = source["max_tokens"];
 	    }
 	}
 	export class SkillDescriptorDTO {
@@ -1945,6 +1949,8 @@ export namespace session {
 	    has_unfinished_task: boolean;
 	    unfinished_task_id?: string;
 	    paused: boolean;
+	    activity?: string;
+	    streaming: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionRuntimeStatus(source);
@@ -1956,6 +1962,8 @@ export namespace session {
 	        this.has_unfinished_task = source["has_unfinished_task"];
 	        this.unfinished_task_id = source["unfinished_task_id"];
 	        this.paused = source["paused"];
+	        this.activity = source["activity"];
+	        this.streaming = source["streaming"];
 	    }
 	}
 	export class TerminalCommand {
