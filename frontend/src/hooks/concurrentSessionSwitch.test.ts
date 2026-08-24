@@ -14,7 +14,7 @@
 //      stores/chatStore.ts, hooks/useSessionEvents.ts, hooks/events/useChatEvents.ts,
 //      hooks/useBackgroundSessionWatcher.ts, and the two ChatArea effects.
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 // ──────────────────────────────────────────────────────────────────────────
 // 1. FAITHFUL WAILS v2.12 EVENT RUNTIME  (port of events.js)
@@ -193,7 +193,10 @@ interface ChatStoreState {
   streamingText: Record<string, string>
   activityStatus: Record<string, string>
   taskActive: Record<string, boolean>
-  stepContextFill: Record<string, number>
+  stepContextFill: Record<string, Record<string, number>>
+  // Stamped by the streaming/activity actions (mirrors chatStore.ts) so the
+  // reconcile can detect a stale status snapshot.
+  runtimeEventAt: Record<string, number>
 }
 
 const store: ChatStoreState = {
@@ -203,6 +206,7 @@ const store: ChatStoreState = {
   activityStatus: {},
   taskActive: {},
   stepContextFill: {},
+  runtimeEventAt: {},
 }
 
 function indexMessages(msgs: ChatMessageUI[]): Record<string, ChatMessageUI> {
@@ -237,20 +241,26 @@ function mergeHistoryMessages(sessionId: string, history: ChatMessageUI[], loadS
 
 function setStreamingText(sessionId: string, text: string): void {
   store.streamingText = { ...store.streamingText, [sessionId]: text }
+  store.runtimeEventAt = { ...store.runtimeEventAt, [sessionId]: Date.now() }
 }
 function appendStreamingText(sessionId: string, delta: string): void {
   const prev = store.streamingText[sessionId] ?? ''
   store.streamingText = { ...store.streamingText, [sessionId]: prev + delta }
+  store.runtimeEventAt = { ...store.runtimeEventAt, [sessionId]: Date.now() }
 }
 function clearStreamingText(sessionId: string): void {
+  if (!(sessionId in store.streamingText)) return
   delete store.streamingText[sessionId]
+  store.runtimeEventAt = { ...store.runtimeEventAt, [sessionId]: Date.now() }
 }
 function setActivityStatus(sessionId: string, status: string | null): void {
   if (status === null) {
+    if (!(sessionId in store.activityStatus)) return
     delete store.activityStatus[sessionId]
   } else {
     store.activityStatus = { ...store.activityStatus, [sessionId]: status }
   }
+  store.runtimeEventAt = { ...store.runtimeEventAt, [sessionId]: Date.now() }
 }
 function setTaskActive(sessionId: string, active: boolean): void {
   store.taskActive = { ...store.taskActive, [sessionId]: active }
@@ -274,7 +284,7 @@ function selectSessionMessages(sessionId: string): ChatMessageUI[] {
 
 let activeSessionId: string | null = null
 
-interface RuntimeStatus { active: boolean; has_unfinished_task: boolean }
+interface RuntimeStatus { active: boolean; has_unfinished_task: boolean; activity?: string; streaming?: boolean }
 interface PendingActions { tool_confirms: unknown[]; step_limits: unknown[]; plan_approvals: unknown[]; ask_user: unknown[] }
 
 interface Deferred<T> { promise: Promise<T>; resolve: (v: T | PromiseLike<T>) => void }
@@ -311,14 +321,14 @@ function getHistory(sid: string): Promise<ChatMessageUI[]> {
 //     Source: hooks/useSessionEvents.ts (reset effect) + hooks/events/useChatEvents.ts
 function simulateSessionEvents(sessionId: string | null): void {
   // --- reset effect [deps: sessionId] (useSessionEvents.ts:27-49) ---
-  // NOTE: streamingText/activityStatus are now per-session keyed maps, so they
-  // are NOT reset here — they are naturally preserved across A→B→A switches.
-  // Only the global plan-step fill and the just-switched session's taskActive
-  // flag are reset (the latter is restored asynchronously by the reconcile
-  // effect if the session is still running).
+  // NOTE: streamingText/activityStatus/stepContextFill are per-session keyed
+  // maps, so they are NOT reset here — they are naturally preserved across
+  // A→B→A switches. Only the just-switched session's taskActive flag is reset
+  // (restored asynchronously by the reconcile effect if still running); the
+  // runtime reconcile refreshes/clears the activity label and streaming text
+  // from the backend snapshot.
   registerEffect(() => {
     if (!sessionId) return
-    store.stepContextFill = {}
     store.taskActive = { ...store.taskActive, [sessionId]: false }
     // getSessionTokens(...) is omitted; no async work to guard here.
   }, [sessionId])
@@ -447,11 +457,26 @@ function simulateChatAreaEffects(active: string | null): void {
       if (cancelled) return
       if (history.length > 0) mergeHistoryMessages(active, history, loadStartedAt)
       // UNGUARDED Promise.all — a rejection here abandons reconciliation.
+      const statusReadAt = Date.now()
       const [status, _pending] = await Promise.all([getStatus(active), getPending(active)])
       void _pending
       if (cancelled) return
-      // reconcileRuntimeStatus also sets taskActive (sessionRuntime.ts:95)
+      // reconcileRuntimeStatus (sessionRuntime.ts): taskActive from the
+      // snapshot; the frozen activity label is replaced by the backend's
+      // tracked phase and streaming text cleared when no stream is open —
+      // unless a live event already updated them after statusReadAt (the
+      // stale-snapshot guard: live beats snapshot).
+      const hasFresherLiveState = (store.runtimeEventAt[active] ?? 0) > statusReadAt
       setTaskActive(active, status.active)
+      if (status.active) {
+        if (!hasFresherLiveState) {
+          setActivityStatus(active, status.activity ?? 'Processing...')
+          if (!status.streaming) clearStreamingText(active)
+        }
+      } else if (!hasFresherLiveState) {
+        setActivityStatus(active, null)
+        clearStreamingText(active)
+      }
     })()
     return () => { cancelled = true }
   }, [active])
@@ -517,6 +542,7 @@ function resetAll(): void {
   store.activityStatus = {}
   store.taskActive = {}
   store.stepContextFill = {}
+  store.runtimeEventAt = {}
   activeSessionId = null
   statusDeferred.clear()
   pendingDeferred.clear()
@@ -524,11 +550,20 @@ function resetAll(): void {
   msgCounter = 0
 }
 
-/** Resolve the runtime-status RPC for a session as {active} then re-render. */
-async function deliverStatus(sid: string, active: boolean, hasUnfinished = false): Promise<void> {
+/**
+ * Resolve the runtime-status RPC for a session then re-render. activity/
+ * streaming mirror the extended backend snapshot (SessionRuntimeStatus).
+ */
+async function deliverStatus(
+  sid: string,
+  active: boolean,
+  hasUnfinished = false,
+  activity?: string,
+  streaming?: boolean,
+): Promise<void> {
   // A fresh deferred is created by getStatus() only when awaited. Ensure it exists.
   getStatus(sid)
-  statusDeferred.get(sid)!.resolve({ active, has_unfinished_task: hasUnfinished })
+  statusDeferred.get(sid)!.resolve({ active, has_unfinished_task: hasUnfinished, activity, streaming })
   await flushMicrotasks()
   render()
 }
@@ -668,6 +703,47 @@ describe('concurrent session switching (A→B→A)', () => {
     const assistantAfter = selectSessionMessages(A).filter(m => m.type === 'assistant').length
     expect(assistantAfter).toBe(assistantBefore + 1)
     expect(store.streamingText[A]).toBeUndefined()
+  })
+
+  it('a live event landing while the status RPC is in flight beats the stale snapshot', async () => {
+    // Fake only Date: the guard compares millisecond stamps, and in-process
+    // the read and the event would land in the same millisecond. Deferred
+    // promises are microtasks and stay real.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const A = 'session-A'
+      const B = 'session-B'
+
+      switchTo(A)
+      sendUserMessage(A, 'task A')
+      switchTo(B)
+      sendUserMessage(B, 'task B')
+
+      // Switch back to A: the history+status effect is in flight.
+      switchTo(A)
+
+      // History resolves first — the effect has captured statusReadAt and is
+      // now parked on the status RPC.
+      await deliverHistory(A)
+
+      // Model the RPC flight: a live assistant_chunk lands strictly after
+      // statusReadAt but before the response is applied — its label/stream
+      // are fresher than the snapshot's phase.
+      vi.setSystemTime(Date.now() + 10)
+      wails.emitSession(A, 'assistant_chunk', { content: 'live partial', accumulated_content: 'live partial' })
+      expect(store.streamingText[A]).toBe('live partial')
+
+      // The (older) snapshot claims an earlier phase and no open stream.
+      await deliverStatus(A, true, false, 'Thinking...', false)
+
+      // The stale-snapshot guard preserves the live label and stream...
+      expect(store.activityStatus[A]).toBe('Generating response...')
+      expect(store.streamingText[A]).toBe('live partial')
+      // ...while taskActive still comes from the snapshot.
+      expect(store.taskActive[A]).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('two sessions streaming concurrently keep fully independent streams', () => {

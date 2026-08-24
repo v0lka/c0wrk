@@ -4,7 +4,7 @@ import type { ContextFillData } from '@/types/events'
 import type { TokenInfo } from '@/types/models'
 
 interface Recorded {
-  stepFill: Array<{ stepId: string; fill: number }>
+  stepFill: Array<{ sessionId: string; stepId: string; fill: number }>
   sessionTokens: Array<Partial<TokenInfo>>
 }
 
@@ -12,7 +12,7 @@ function makeStore(): ContextFillStore & { recorded: Recorded } {
   const recorded: Recorded = { stepFill: [], sessionTokens: [] }
   return {
     recorded,
-    setStepContextFill: (stepId, fill) => { recorded.stepFill.push({ stepId, fill }) },
+    setStepContextFill: (sessionId, stepId, fill) => { recorded.stepFill.push({ sessionId, stepId, fill }) },
     setSessionTokens: (_sessionId, tokens) => { recorded.sessionTokens.push(tokens) },
   }
 }
@@ -56,7 +56,7 @@ describe('handleContextFill', () => {
     // session-level fill the status bar renders.
     const store = makeStore()
     handleContextFill(store, 'sess-1', makeData({ plan_step_id: 'step-9' }))
-    expect(store.recorded.stepFill).toEqual([{ stepId: 'step-9', fill: 42.5 }])
+    expect(store.recorded.stepFill).toEqual([{ sessionId: 'sess-1', stepId: 'step-9', fill: 42.5 }])
     expect(store.recorded.sessionTokens).toHaveLength(1)
     expect(store.recorded.sessionTokens[0]).toEqual({
       total_input_tokens: 100,

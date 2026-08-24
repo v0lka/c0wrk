@@ -107,6 +107,10 @@ export function ChatArea() {
 
       // Reconcile AFTER the merge so the store is populated. Fetch the
       // authoritative runtime status and pending-action set in parallel.
+      // statusReadAt predates the snapshot: live events that mutate the
+      // activity label / streaming text after this point are fresher than the
+      // snapshot's phase, and reconcileRuntimeStatus skips overwriting them.
+      const statusReadAt = Date.now()
       const [status, pending] = await Promise.all([
         getSessionRuntimeStatus(activeSessionId),
         getPendingActions(activeSessionId),
@@ -117,7 +121,7 @@ export function ChatArea() {
       // persisted (otherwise they reappear on the next reload).
       const staleResolved: ChatMessageUI[] = []
       if (status) {
-        for (const msg of reconcileRuntimeStatus(activeSessionId, status)) staleResolved.push(msg)
+        for (const msg of reconcileRuntimeStatus(activeSessionId, status, statusReadAt)) staleResolved.push(msg)
       }
       if (pending) {
         for (const msg of reconcilePendingActions(activeSessionId, pending)) staleResolved.push(msg)

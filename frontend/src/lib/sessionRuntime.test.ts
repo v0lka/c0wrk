@@ -15,6 +15,7 @@ function resetStore(): void {
     activityStatus: {},
     paused: {},
     pausing: {},
+    runtimeEventAt: {},
   })
 }
 
@@ -34,6 +35,64 @@ function sessionMessages(): ChatMessageUI[] {
 
 describe('reconcileRuntimeStatus', () => {
   beforeEach(resetStore)
+
+  it('replaces a frozen activity label with the backend-tracked phase for an active session', () => {
+    // Reproduces the "Routing request..." stuck bug: the label froze when the
+    // user switched away mid-routing, while the session advanced far past it.
+    useChatStore.setState({
+      activityStatus: { [SESSION]: 'Routing request...' },
+      taskActive: { [SESSION]: false },
+    })
+
+    reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: true, paused: false, activity: 'Thinking...' })
+
+    expect(useChatStore.getState().activityStatus[SESSION]).toBe('Thinking...')
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(true)
+  })
+
+  it('falls back to the generic label for an active session without tracked activity', () => {
+    reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: false, paused: false })
+
+    expect(useChatStore.getState().activityStatus[SESSION]).toBe('Processing...')
+  })
+
+  it('clears frozen streaming text when the backend reports no open stream', () => {
+    useChatStore.setState({ streamingText: { [SESSION]: 'partial answer that end' } })
+
+    reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: false, paused: false, streaming: false })
+
+    expect(useChatStore.getState().streamingText[SESSION]).toBeUndefined()
+  })
+
+  it('preserves streaming text while the backend reports an open stream', () => {
+    useChatStore.setState({ streamingText: { [SESSION]: 'partial answ' } })
+
+    reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: false, paused: false, streaming: true })
+
+    expect(useChatStore.getState().streamingText[SESSION]).toBe('partial answ')
+  })
+
+  it('clears activity and streaming for a session with no running task', () => {
+    useChatStore.setState({
+      activityStatus: { [SESSION]: 'Thinking...' },
+      streamingText: { [SESSION]: 'stale partial' },
+    })
+
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false })
+
+    expect(useChatStore.getState().activityStatus[SESSION]).toBeUndefined()
+    expect(useChatStore.getState().streamingText[SESSION]).toBeUndefined()
+  })
+
+  it('shows the paused label and clears streaming for a cooperatively paused task', () => {
+    useChatStore.setState({ streamingText: { [SESSION]: 'frozen mid-stream' } })
+
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true, paused: true })
+
+    expect(useChatStore.getState().paused[SESSION]).toBe(true)
+    expect(useChatStore.getState().activityStatus[SESSION]).toBe('Paused')
+    expect(useChatStore.getState().streamingText[SESSION]).toBeUndefined()
+  })
 
   it('restores the running flag for an active session and leaves prompts untouched', () => {
     addMsg({ id: 'sl-1', type: 'step_limit', metadata: { request_id: 'r1' } })
@@ -218,10 +277,96 @@ describe('reconcileRuntimeStatus', () => {
 
     expect(stale).toHaveLength(0)
   })
+
+  // --- stale-snapshot guard (snapshotReadAt) ---
+
+  it('keeps a newer live label and open stream over a stale snapshot', () => {
+    // An assistant_chunk lands while the status RPC is in flight (the event
+    // subscription mounts before the RPC resolves): the live handler updated
+    // the label and streaming text, stamping runtimeEventAt AFTER the caller
+    // read the snapshot. The snapshot's older phase must not roll the label
+    // back nor wipe the accumulating stream.
+    useChatStore.setState({ streamingText: { [SESSION]: 'newer live partial' } })
+    useChatStore.getState().setActivityStatus(SESSION, 'Generating response...')
+
+    reconcileRuntimeStatus(
+      SESSION,
+      { active: true, has_unfinished_task: false, paused: false, activity: 'Thinking...', streaming: false },
+      Date.now() - 5,
+    )
+
+    expect(useChatStore.getState().activityStatus[SESSION]).toBe('Generating response...')
+    expect(useChatStore.getState().streamingText[SESSION]).toBe('newer live partial')
+    // taskActive still comes from the snapshot (assistant_chunk does not own it).
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(true)
+  })
+
+  it('applies the snapshot label/streaming when no live event beat the read', () => {
+    // Same shape as above, but the read is NEWER than the last live mark —
+    // the snapshot is the freshest knowledge and applies normally.
+    useChatStore.setState({ streamingText: { [SESSION]: 'frozen partial' } })
+    useChatStore.getState().setActivityStatus(SESSION, 'Routing request...')
+
+    reconcileRuntimeStatus(
+      SESSION,
+      { active: true, has_unfinished_task: false, paused: false, activity: 'Thinking...', streaming: false },
+      Date.now() + 5_000,
+    )
+
+    expect(useChatStore.getState().activityStatus[SESSION]).toBe('Thinking...')
+    expect(useChatStore.getState().streamingText[SESSION]).toBeUndefined()
+  })
+
+  it('keeps a live label over the paused snapshot but still sets the paused flag', () => {
+    // The pause landed live on switch-back (session_paused arrived after the
+    // snapshot was read): its label survives; the paused flag itself still
+    // comes from the snapshot, which stays authoritative for it.
+    useChatStore.getState().setActivityStatus(SESSION, 'Paused')
+
+    reconcileRuntimeStatus(
+      SESSION,
+      { active: false, has_unfinished_task: true, paused: true },
+      Date.now() - 5,
+    )
+
+    expect(useChatStore.getState().activityStatus[SESSION]).toBe('Paused')
+    expect(useChatStore.getState().paused[SESSION]).toBe(true)
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(false)
+  })
+
+  it('keeps a live terminal clear over a stale active snapshot', () => {
+    // task_complete arrived live while the RPC was in flight and already
+    // cleared the label/stream; an older active=true snapshot must not
+    // resurrect them.
+    useChatStore.setState({ streamingText: { [SESSION]: 'flushed away' } })
+    useChatStore.getState().clearStreamingText(SESSION)
+    useChatStore.getState().setActivityStatus(SESSION, null)
+
+    reconcileRuntimeStatus(
+      SESSION,
+      { active: true, has_unfinished_task: false, paused: false, activity: 'Thinking...', streaming: true },
+      Date.now() - 5,
+    )
+
+    expect(useChatStore.getState().activityStatus[SESSION]).toBeUndefined()
+    expect(useChatStore.getState().streamingText[SESSION]).toBeUndefined()
+  })
 })
 
 describe('reconcilePendingActions', () => {
   beforeEach(resetStore)
+
+  it('surfaces a waiting-for-response label when prompts are genuinely pending', () => {
+    reconcilePendingActions(SESSION, {
+      tool_confirms: [],
+      step_limits: [],
+      plan_approvals: [],
+      ask_user: [{ request_id: 'r1', questions: [{ question: 'Proceed?', options: [] }] }],
+      goal_proposals: [],
+    } as unknown as PendingActionsResponse)
+
+    expect(useChatStore.getState().activityStatus[SESSION]).toBe('Waiting for your response...')
+  })
 
   // After an app restart the in-memory pending maps are empty, so every
   // persisted HITL prompt is reported as "not pending" and must be resolved.

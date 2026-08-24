@@ -10,7 +10,7 @@ import { generateMessageId } from '@/lib/ids'
 
 /** Minimal store surface handleContextFill needs — the chatStore subset. */
 export interface ContextFillStore {
-  setStepContextFill: (stepId: string, fill: number) => void
+  setStepContextFill: (sessionId: string, stepId: string, fill: number) => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
 }
 
@@ -47,7 +47,7 @@ export function handleContextFill(store: ContextFillStore, sessionId: string, da
     ...(typeof data.family === 'string' ? { family: data.family } : {}),
   }
   if (data.plan_step_id) {
-    store.setStepContextFill(data.plan_step_id, data.fill_percent)
+    store.setStepContextFill(sessionId, data.plan_step_id, data.fill_percent)
     store.setSessionTokens(sessionId, totals)
     return
   }

@@ -3,6 +3,7 @@ import { Loader2, CheckCircle2, XCircle, RefreshCw, Circle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
 import { useChatStore } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
 import { StepTooltip } from './StepTooltip'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
@@ -16,7 +17,14 @@ interface PlanStepBlockProps {
 
 export function PlanStepBlock({ item }: PlanStepBlockProps) {
   const { stepId, stepNum, title, description, status, duration, error, isRetry, children } = item
-  const stepContextFill = useChatStore(s => s.stepContextFill[stepId])
+  // Plan groups are rebuilt per session switch, so the displayed steps always
+  // belong to the active session. The nested lookup returns a primitive
+  // (stable selector — no allocation).
+  const activeSessionId = useSessionStore(s => s.activeSessionId)
+  const stepContextFill = useChatStore(s => {
+    const fills = activeSessionId ? s.stepContextFill[activeSessionId] : undefined
+    return fills ? fills[stepId] : undefined
+  })
 
   // Derived open state — auto-opens when running, auto-closes otherwise
   const isAutoOpen = status === 'running'

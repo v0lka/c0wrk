@@ -347,6 +347,13 @@ type SessionTokensResponse struct {
 	Model             string  `json:"model"`
 	Family            string  `json:"family"`
 	FillPercent       float64 `json:"fill_percent"`
+	// UsedTokens/MaxTokens are the conductor's live context-window usage
+	// ("N of M"). They come from the in-memory emitter snapshot (present only
+	// while the session is in memory, e.g. mid-task) — the persisted session
+	// row does not carry them. Zero when only persisted state is available;
+	// the frontend keeps its last live values in that case.
+	UsedTokens int `json:"used_tokens,omitempty"`
+	MaxTokens  int `json:"max_tokens,omitempty"`
 }
 
 // ProjectUIStateRequest is the payload used to persist project switch UI state.

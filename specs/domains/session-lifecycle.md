@@ -740,9 +740,31 @@ type HandleResult struct {
   always followed by `task_failed_resumable` or a `service` warning — never
   delivered as a silent visual success (`Manager.emitTaskComplete`).
 - `GetSessionRuntimeStatus(sessionID)` exposes `{active,
-  has_unfinished_task, unfinished_task_id, paused}`; the frontend calls it after
+  has_unfinished_task, unfinished_task_id, paused, activity, streaming}`; the frontend calls it after
   every history load to reconcile UI state (running/paused flags, resume banner,
-  stale step_limit prompts) instead of defaulting to idle.
+  stale step_limit prompts) instead of defaulting to idle. The `activity` /
+  `streaming` fields are the backend-tracked live snapshot (emitter
+  `activityState`): `activity` is the last user-facing phase label
+  ("Thinking...", "Routing request...", ...) and `streaming` reports an open
+  assistant stream. The reconcile uses them to replace a session's frozen
+  activity label and clear stale streaming text after a session/project switch
+  — events emitted while no frontend listener existed must not leave the UI
+  showing "Routing request..." over a ReAct loop that long moved past it, nor a
+  frozen partial answer from a stream that already finished in the background.
+  A stale-snapshot guard bounds the reverse race: when a live event updates the
+  activity label or streaming text after the frontend read the status snapshot
+  (the event subscription mounts before the RPC resolves), the reconcile keeps
+  the live label/stream and skips only that application; the running/paused
+  flags and prompt resolution still come from the snapshot, which stays
+  authoritative for them.
+- `GetSessionTokens(sessionID)` overlays the live emitter token snapshot
+  (used/max context-window tokens, fresh fill percent, model) over the
+  persisted session row when the session is in memory, so the status bar's
+  context-fill badge survives a switch back to a running session.
+- Per-step context-fill badges (`stepContextFill`) are keyed by session then
+  step id and survive session switches (A→B→A); `plan_generated` invalidates
+  the session's fills because plan step ids are reused by every new plan in
+  the same session.
 - Clipboard paste resolves image → copied file URLs → plain text; platform probe failures fall through, while a present image remains authoritative even when vision support rejects it.
 - Picker and native-drop paths share `useStageAttachments`; native `files:dropped` supplies filesystem paths while HTML5 drag/drop is limited to overlay state and navigation suppression.
 - One PTY is active per session ID; session/project switches preserve it, `StartTerminal` reattaches, and only explicit stop/restart or application shutdown terminates it.

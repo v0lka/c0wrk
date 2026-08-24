@@ -78,11 +78,26 @@ function resolveStaleHitlPrompts(sessionId: string): ChatMessageUI[] {
  * - not active + no unfinished task → resolve all stale prompts left over
  *   from previous runs.
  *
+ * `snapshotReadAt` is the time the caller read the status (before the RPC
+ * resolved). When a live event already updated the activity label or the
+ * streaming text after that read, the snapshot's view of those two fields is
+ * older than what the user is seeing — applying it would roll the label back
+ * a phase and/or wipe an open stream mid-chunk. The activity/streaming
+ * application is therefore skipped in that case; every other decision
+ * (taskActive/paused/pausing, prompt resolution, resume banner) still comes
+ * from the snapshot, which stays authoritative for them.
+ *
  * Returns the messages that were resolved as stale (so the caller can persist
  * the resolution to the backend). Messages already resolved are skipped.
  */
-export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntimeStatus): ChatMessageUI[] {
+export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntimeStatus, snapshotReadAt?: number): ChatMessageUI[] {
   const store = useChatStore.getState()
+
+  // Stale-snapshot guard: runtimeEventAt is stamped by the streaming/activity
+  // store actions on every LIVE event-driven mutation, so a mark newer than
+  // the snapshot read means the UI already holds fresher activity state.
+  const hasFresherLiveState =
+    snapshotReadAt !== undefined && (store.runtimeEventAt[sessionId] ?? 0) > snapshotReadAt
 
   // A cooperatively paused task is a clean checkpoint: set the paused flag and
   // taskActive=false so the UI shows the paused state (unlocked input,
@@ -93,6 +108,14 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
     store.setPausing(sessionId, false)
     store.setPaused(sessionId, true)
     store.setTaskActive(sessionId, false)
+    // A checkpointed task has no open assistant stream; any frozen streaming
+    // text predates the pause and would render a phantom partial answer.
+    // Skipped when a live event already updated the label/stream after the
+    // snapshot was read (e.g. the pause landed live on switch-back).
+    if (!hasFresherLiveState) {
+      store.clearStreamingText(sessionId)
+      store.setActivityStatus(sessionId, 'Paused')
+    }
     // Resolve stale interactive prompts (step_limit, plan_review,
     // tool_confirm, ask_user) whose owning executor no longer exists after a
     // restart, so the two resumable states (paused vs failed-but-resumable)
@@ -112,9 +135,36 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
   }
 
   if (status.active) {
+    // Replace the frozen activity label (the session advanced while the user
+    // was viewing another session/project — its events had no listener) with
+    // the backend-tracked phase. Falls back to the generic label when the
+    // backend has no tracked event yet (e.g. between routing dispatch and the
+    // first tracked emission). Skipped when live events delivered a newer
+    // label/stream after the snapshot was read — the subscription mounts
+    // before the status RPC resolves, so an assistant_chunk that lands in
+    // that window is fresher than the snapshot's phase.
+    if (!hasFresherLiveState) {
+      store.setActivityStatus(sessionId, status.activity || 'Processing...')
+      // A stream that ended in the background leaves frozen partial text; the
+      // completed answer arrives via the history merge. While a stream IS open,
+      // the frozen text stays — the next assistant_chunk carries the full
+      // accumulated content and replaces it.
+      if (!status.streaming) {
+        store.clearStreamingText(sessionId)
+      }
+    }
     // A live task owns its pending prompts (step_limit, ask_user, ...);
     // leave them untouched.
     return []
+  }
+
+  // Terminal state: no task running — any lingering activity label or frozen
+  // stream from before the switch is stale (the background watcher may have
+  // missed the terminal event if the session was never watched). Skipped when
+  // a live terminal event already cleared them after the snapshot was read.
+  if (!hasFresherLiveState) {
+    store.setActivityStatus(sessionId, null)
+    store.clearStreamingText(sessionId)
   }
 
   const order = store.messageOrder[sessionId] ?? []
@@ -343,6 +393,16 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
       verify: g.verify,
       verification_mode: g.verification_mode,
     })
+  }
+
+  // A genuinely pending prompt means the session's agent goroutine is blocked
+  // on the user RIGHT NOW (the backend reports only prompts with a live
+  // waiter). Surface that in the activity label — mirrors what the live HITL
+  // handlers set and overrides any pre-HITL phase the runtime status reported.
+  const pendingCount = pending.tool_confirms.length + pending.step_limits.length
+    + pending.plan_approvals.length + pending.ask_user.length + pending.goal_proposals.length
+  if (pendingCount > 0) {
+    store.setActivityStatus(sessionId, 'Waiting for your response...')
   }
 
   return resolvedStale

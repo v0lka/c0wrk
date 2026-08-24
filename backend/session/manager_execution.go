@@ -1554,6 +1554,21 @@ type SessionRuntimeStatus struct {
 	// status — a cooperative pause checkpoint that the user can resume (with
 	// an optional nudge) or send a new message into (treated as a nudge-resume).
 	Paused bool `json:"paused"`
+	// Activity is the session's last user-facing activity label
+	// ("Thinking...", "Routing request...", "Generating response...", ...)
+	// tracked by the emitter. It lets the frontend replace the frozen
+	// activityStatus left over from before a session/project switch — e.g. a
+	// session that advanced past routing while unobserved must not keep
+	// displaying "Routing request...". Authoritative only while Active is
+	// true: terminal events (task_complete/error/cancel) are emitted by the
+	// Manager outside the emitter and clear the activity on the frontend.
+	Activity string `json:"activity,omitempty"`
+	// Streaming is true while an assistant stream is open (assistant_chunk
+	// emitted without the closing assistant_done). When false, the frontend
+	// clears stale streaming text for the session — a stream that ended while
+	// the session was in the background would otherwise render a frozen
+	// partial answer forever (the full answer arrives via history reload).
+	Streaming bool `json:"streaming"`
 }
 
 // GetSessionRuntimeStatus returns whether a task is currently running in the
@@ -1570,6 +1585,17 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 	m.mu.RUnlock()
 	if sess != nil {
 		status.Active = sess.IsActive()
+		// Live activity/streaming from the session's emitter — the same
+		// signals the (possibly unmounted) frontend listeners would have
+		// received as events. Reading the emitter pointer under sess.mu keeps
+		// the pointer stable; the activity/token states have their own locks.
+		sess.mu.Lock()
+		emitter := sess.emitter
+		sess.mu.Unlock()
+		if emitter != nil {
+			status.Activity = emitter.LastActivity()
+			status.Streaming = emitter.StreamingActive()
+		}
 	}
 
 	m.mu.RLock()
@@ -1596,6 +1622,28 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 	}
 
 	return status, nil
+}
+
+// LiveTokenSnapshot returns the in-memory token/fill state of a session — the
+// same values the emitter broadcasts via session_tokens / context_fill. It
+// exists so GetSessionTokens can serve live used/max tokens (and a fresh
+// fill/model) for a session that is mid-task, values the persisted session
+// row only partially carries. Memory-only: no session restore side effect;
+// ok=false when the session is not in memory (caller falls back to the store).
+func (m *Manager) LiveTokenSnapshot(sessionID string) (TokenSnapshot, bool) {
+	m.mu.RLock()
+	sess := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if sess == nil {
+		return TokenSnapshot{}, false
+	}
+	sess.mu.Lock()
+	emitter := sess.emitter
+	sess.mu.Unlock()
+	if emitter == nil {
+		return TokenSnapshot{}, false
+	}
+	return emitter.TokenSnapshot(), true
 }
 
 // ValidateLiveSend performs the live-send gate checks without queuing: when a

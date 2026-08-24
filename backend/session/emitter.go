@@ -104,6 +104,12 @@ type EventEmitter struct {
 	// Shared token accumulation (shared across WithPlanStepID copies)
 	tokens *tokenState
 
+	// Shared activity tracking (shared across WithPlanStepID copies): the
+	// last user-facing activity label and the open-stream flag, read by the
+	// session runtime-status snapshot to reconcile the frontend's frozen
+	// activity/streaming state after a session/project switch.
+	activity *activityState
+
 	// Shared agent quality metrics (shared across WithPlanStepID copies)
 	metrics *metricsState
 
@@ -137,6 +143,7 @@ func NewEventEmitter(sessionID string, emit func(Event)) *EventEmitter {
 		sessionID:     sessionID,
 		emit:          emit,
 		tokens:        &tokenState{lastFillStatus: "ok"},
+		activity:      &activityState{},
 		metrics:       &metricsState{},
 		toolCallIDs:   &toolCallIDGen{epoch: time.Now().UnixMilli()},
 		isSessionRoot: true,
@@ -269,6 +276,7 @@ func (e *EventEmitter) WithPlanStepID(id string) core.Emitter {
 		planStepID:             id,
 		retryAttempt:           e.retryAttempt,
 		tokens:                 e.tokens,
+		activity:               e.activity,
 		metrics:                e.metrics,
 		toolCallIDs:            e.toolCallIDs,
 		logger:                 e.logger,
@@ -286,6 +294,7 @@ func (e *EventEmitter) WithRetryAttempt(attempt int) core.Emitter {
 		planStepID:             e.planStepID,
 		retryAttempt:           attempt,
 		tokens:                 e.tokens,
+		activity:               e.activity,
 		metrics:                e.metrics,
 		toolCallIDs:            e.toolCallIDs,
 		logger:                 e.logger,
@@ -327,6 +336,11 @@ func (e *EventEmitter) emitEvent(evt Event) {
 			data["retry_attempt"] = e.retryAttempt
 		}
 	}
+	// Track the session's last activity label / open-stream flag BEFORE the
+	// event leaves the emitter: a listener may not exist (the user switched
+	// projects/sessions), and the runtime-status snapshot replays this state
+	// when they switch back. See activityState for the locking contract.
+	e.activity.updateActivity(evt)
 	e.emit(evt)
 }
 

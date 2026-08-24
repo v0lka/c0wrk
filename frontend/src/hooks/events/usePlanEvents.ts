@@ -7,7 +7,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { usePlanStore } from '@/stores/planStore'
 import { generateMessageId } from '@/lib/ids'
 import type { PlanItem, PlanGroup } from '@/types/models'
-import type { PlanStepData } from '@/types/events'
+import type { PlanData, PlanStepData } from '@/types/events'
 
 function toPlanItem(step: PlanStepData, index: number): PlanItem {
   return {
@@ -20,6 +20,46 @@ function toPlanItem(step: PlanStepData, index: number): PlanItem {
   }
 }
 
+/**
+ * plan_generated handler, module-level so it is directly testable against the
+ * real stores (same pattern as hitlHandlers / handleContextFill).
+ */
+export function handlePlanGenerated(sessionId: string, data: PlanData): void {
+  useChatStore.getState().setActivityStatus(sessionId, 'Executing plan...')
+  // Plan step ids (step_1, ...) are reused by every new plan in the same
+  // session, and fills must survive session switches (A→B→A) — so a new
+  // plan is the invalidation point: drop the previous plan's fill
+  // badges here, before the new steps execute and re-emit context_fill.
+  // Without this, a step whose fill has not been re-reported yet would
+  // briefly show the previous plan's percentage.
+  useChatStore.getState().clearStepContextFill(sessionId)
+  if (data.steps) {
+    const items = data.steps.map(toPlanItem)
+    const group: PlanGroup = {
+      id: generateMessageId(),
+      items,
+      progress: data.progress,
+      completedCount: data.completed_count,
+      totalCount: data.total_count,
+    }
+    usePlanStore.getState().setPlan(group)
+  }
+  useChatStore.getState().addMessage(sessionId, {
+    id: generateMessageId(),
+    sessionId,
+    type: 'plan',
+    content: '',
+    metadata: {
+      steps: data.steps,
+      progress: data.progress,
+      current_step_index: data.current_step_index,
+      completed_count: data.completed_count,
+      total_count: data.total_count,
+    },
+    timestamp: Date.now(),
+  })
+}
+
 export function usePlanEvents(sessionId: string | null): void {
   useEffect(() => {
     if (!sessionId) return
@@ -29,32 +69,7 @@ export function usePlanEvents(sessionId: string | null): void {
     cleanups.push(
       onSessionEvent(sessionId, 'plan_generated', (data) => {
         if (!isPlanData(data)) { reportDroppedEvent('plan_generated', data); return }
-        useChatStore.getState().setActivityStatus(sessionId, 'Executing plan...')
-        if (data.steps) {
-          const items = data.steps.map(toPlanItem)
-          const group: PlanGroup = {
-            id: generateMessageId(),
-            items,
-            progress: data.progress,
-            completedCount: data.completed_count,
-            totalCount: data.total_count,
-          }
-          usePlanStore.getState().setPlan(group)
-        }
-        useChatStore.getState().addMessage(sessionId, {
-          id: generateMessageId(),
-          sessionId,
-          type: 'plan',
-          content: '',
-          metadata: {
-            steps: data.steps,
-            progress: data.progress,
-            current_step_index: data.current_step_index,
-            completed_count: data.completed_count,
-            total_count: data.total_count,
-          },
-          timestamp: Date.now(),
-        })
+        handlePlanGenerated(sessionId, data)
       }),
     )
 

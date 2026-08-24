@@ -371,7 +371,11 @@ func (f *FrontendAPI) ResumeSession(sessionID, modelOverride, reasoningEffort, n
 	return f.app.Manager().ResumeSession(f.ctx(), sessionID, modelOverride, reasoningEffort, nudge)
 }
 
-// GetSessionTokens returns persisted token counts for a session.
+// GetSessionTokens returns token counts for a session. The persisted session
+// row is the base; when the session is live in memory, the manager's snapshot
+// overlays fresher values — notably the context-window used/max tokens and the
+// up-to-the-call fill percent — so a switch back to a running session restores
+// the status bar's "N of M" display instead of a stale/partial fill.
 func (f *FrontendAPI) GetSessionTokens(sessionID string) SessionTokensResponse {
 	var result SessionTokensResponse
 	if f.store == nil || sessionID == "" {
@@ -379,13 +383,33 @@ func (f *FrontendAPI) GetSessionTokens(sessionID string) SessionTokensResponse {
 	}
 	info, err := f.store.LoadSession(f.ctx(), sessionID)
 	if err != nil || info == nil {
-		return result
+		info = &session.SessionInfo{}
 	}
 	result.TotalInputTokens = info.TotalInputTokens
 	result.TotalOutputTokens = info.TotalOutputTokens
 	result.Model = info.Model
 	result.Family = info.Family
 	result.FillPercent = info.FillPercent
+
+	if f.app != nil && f.app.Manager() != nil {
+		if snap, ok := f.app.Manager().LiveTokenSnapshot(sessionID); ok {
+			if snap.InputTokens > 0 {
+				result.TotalInputTokens = snap.InputTokens
+			}
+			if snap.OutputTokens > 0 {
+				result.TotalOutputTokens = snap.OutputTokens
+			}
+			if snap.Model != "" {
+				result.Model = snap.Model
+				result.Family = snap.Family
+			}
+			if snap.FillPercent > 0 {
+				result.FillPercent = snap.FillPercent
+			}
+			result.UsedTokens = snap.UsedTokens
+			result.MaxTokens = snap.MaxTokens
+		}
+	}
 	return result
 }
 

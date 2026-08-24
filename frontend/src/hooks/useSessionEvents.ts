@@ -27,20 +27,25 @@ export function useSessionEvents(sessionId: string | null): void {
     // taskActive is reset to false here so the send button doesn't render as
     // a red "stop" immediately on switch — the reconcile effect in ChatArea
     // will set it back to true if the session is genuinely still running.
-    // NOTE: streamingText/activityStatus are now per-session keyed maps, so
-    // they are naturally preserved across A->B->A switches and must NOT be
-    // reset here — doing so would wipe another (background) session's state.
+    // NOTE: streamingText/activityStatus/stepContextFill are per-session keyed
+    // maps, so they are naturally preserved across A->B->A switches and must
+    // NOT be reset here — doing so would wipe another (background) session's
+    // state or the same session's fills the user returns to. The runtime
+    // reconcile (reconcileRuntimeStatus) refreshes or clears the activity
+    // label and streaming text from the backend snapshot on every switch.
     useChatStore.setState({
-      stepContextFill: {},
       taskActive: { ...useChatStore.getState().taskActive, [sessionId]: false },
     })
     usePlanStore.setState({ planGroups: [] })
 
-    // Load persisted session token totals
+    // Load persisted session token totals. On failure the entry keeps its
+    // previous live values (event-driven updates) — or stays absent for a
+    // never-viewed session, in which case the status bar renders no context
+    // badge until the first session_tokens/context_fill event arrives.
     getSessionTokens(sessionId).then((tokens) => {
       if (cancelled) return
       useChatStore.getState().setSessionTokens(sessionId, tokens)
-    }).catch(() => { /* ignore — will show 0 */ })
+    }).catch(() => { /* ignore — see comment above */ })
 
     return () => { cancelled = true }
   }, [sessionId])

@@ -37,10 +37,21 @@ interface ChatState {
   // terminal events (session_paused/task_complete/task_cancelled/error) and
   // by the runtime reconcile once the task is no longer active.
   pausing: Record<string, boolean>
-  // Context fill per step: stepId -> fill percent
-  stepContextFill: Record<string, number>
+  // Context fill per step, keyed by session then step: sessionId -> stepId -> fill percent.
+  // Nested per-session: plan step ids (step_1, ...) are NOT globally unique
+  // across sessions, and fills must survive session switches (A→B→A) — the
+  // global wipe that preceded this keyed form erased the badges of whichever
+  // session the user switched to.
+  stepContextFill: Record<string, Record<string, number>>
   // Session tokens: sessionId -> token info
   sessionTokens: Record<string, TokenInfo>
+  // Timestamp of the last LIVE update to a session's activity label or
+  // streaming text: sessionId -> Date.now() at the mutation. Every event
+  // handler that touches activityStatus/streamingText goes through the store
+  // actions, which stamp this map — reconcileRuntimeStatus compares it against
+  // the time the backend status snapshot was read to detect (and skip) a
+  // stale-snapshot overwrite of newer live state. Absent key = never touched.
+  runtimeEventAt: Record<string, number>
 }
 
 interface ChatActions {
@@ -57,8 +68,8 @@ interface ChatActions {
   setTaskActive: (sessionId: string, active: boolean) => void
   setPaused: (sessionId: string, paused: boolean) => void
   setPausing: (sessionId: string, pausing: boolean) => void
-  setStepContextFill: (stepId: string, fill: number) => void
-  clearStepContextFill: () => void
+  setStepContextFill: (sessionId: string, stepId: string, fill: number) => void
+  clearStepContextFill: (sessionId: string) => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
 }
 
@@ -132,6 +143,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   pausing: {},
   stepContextFill: {},
   sessionTokens: {},
+  runtimeEventAt: {},
 
   addMessage: (sessionId, message) => set((s) => {
     const sessionIndex = s.messages[sessionId] ?? {}
@@ -276,28 +288,43 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     }
   }),
 
+  // Streaming/activity actions stamp runtimeEventAt (see state comment) so
+  // reconcileRuntimeStatus can tell live state from snapshot state.
   setStreamingText: (sessionId, text) => set((s) => ({
     streamingText: { ...s.streamingText, [sessionId]: text },
+    runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() },
   })),
 
   appendStreamingText: (sessionId, delta) => set((s) => {
     const prev = s.streamingText[sessionId] ?? ''
-    return { streamingText: { ...s.streamingText, [sessionId]: prev + delta } }
+    return {
+      streamingText: { ...s.streamingText, [sessionId]: prev + delta },
+      runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() },
+    }
   }),
 
   clearStreamingText: (sessionId) => set((s) => {
     if (!(sessionId in s.streamingText)) return s
     const { [sessionId]: _stream, ...rest } = s.streamingText
-    return { streamingText: rest }
+    return {
+      streamingText: rest,
+      runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() },
+    }
   }),
 
   setActivityStatus: (sessionId, status) => set((s) => {
     if (status === null || status === undefined) {
       if (!(sessionId in s.activityStatus)) return s
       const { [sessionId]: _status, ...rest } = s.activityStatus
-      return { activityStatus: rest }
+      return {
+        activityStatus: rest,
+        runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() },
+      }
     }
-    return { activityStatus: { ...s.activityStatus, [sessionId]: status } }
+    return {
+      activityStatus: { ...s.activityStatus, [sessionId]: status },
+      runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() },
+    }
   }),
 
   setTaskActive: (sessionId, active) => set((s) => ({
@@ -326,11 +353,20 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     return { pausing: { ...s.pausing, [sessionId]: true } }
   }),
 
-  setStepContextFill: (stepId, fill) => set((s) => ({
-    stepContextFill: { ...s.stepContextFill, [stepId]: fill },
+  setStepContextFill: (sessionId, stepId, fill) => set((s) => ({
+    stepContextFill: {
+      ...s.stepContextFill,
+      [sessionId]: { ...s.stepContextFill[sessionId], [stepId]: fill },
+    },
   })),
 
-  clearStepContextFill: () => set({ stepContextFill: {} }),
+  // Clears one session's step fills (absent key = nothing to do); other
+  // sessions' fills survive.
+  clearStepContextFill: (sessionId) => set((s) => {
+    if (!(sessionId in s.stepContextFill)) return s
+    const { [sessionId]: _fills, ...rest } = s.stepContextFill
+    return { stepContextFill: rest }
+  }),
 
   // Merge partial token info into the session entry so event-driven updates
   // (context_fill / session_tokens) that omit fill_percent don't clobber it,

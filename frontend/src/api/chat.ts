@@ -133,6 +133,15 @@ export interface SessionRuntimeStatus {
   unfinished_task_id?: string
   /** True when the resumable unfinished task is cooperatively paused. */
   paused: boolean
+  /**
+   * Live activity label tracked by the backend emitter ("Thinking...",
+   * "Routing request...", "Generating response...", ...). Authoritative only
+   * while `active`; replaces the frozen activityStatus left over from before
+   * a session/project switch. Empty when no tracked event has fired yet.
+   */
+  activity?: string
+  /** True while an assistant stream is open (chunk without the closing done). */
+  streaming?: boolean
 }
 
 function isSessionRuntimeStatus(d: unknown): d is SessionRuntimeStatus {
