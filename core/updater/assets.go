@@ -32,16 +32,18 @@ type platformSpec struct {
 //
 //	darwin/arm64  → c0wrk-desktop-macos-arm64.zip   (ditto of the .app bundle)
 //	linux/amd64   → c0wrk-desktop-linux-amd64.tar.gz
+//	linux/arm64   → c0wrk-desktop-linux-arm64.tar.gz
 //	windows/amd64 → c0wrk-desktop-windows-amd64.zip
 var supportedPlatforms = []platformSpec{
 	{goos: "darwin", goarch: "arm64", basename: "c0wrk-desktop-macos-arm64.zip", token: "macos-arm64"},
 	{goos: "linux", goarch: "amd64", basename: "c0wrk-desktop-linux-amd64.tar.gz", token: "linux-amd64"},
+	{goos: "linux", goarch: "arm64", basename: "c0wrk-desktop-linux-arm64.tar.gz", token: "linux-arm64"},
 	{goos: "windows", goarch: "amd64", basename: "c0wrk-desktop-windows-amd64.zip", token: "windows-amd64"},
 }
 
 // AssetNameForPlatform returns the canonical release asset filename for the
 // given GOOS/GOARCH pair. It returns ErrNoAssetForPlatform when the platform
-// is not part of the release matrix (e.g. linux/arm64, darwin/amd64).
+// is not part of the release matrix (e.g. linux/riscv64, darwin/amd64).
 func AssetNameForPlatform(goos, goarch string) (string, error) {
 	for _, p := range supportedPlatforms {
 		if p.goos == goos && p.goarch == goarch {

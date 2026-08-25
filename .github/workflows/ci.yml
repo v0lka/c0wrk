@@ -8,7 +8,16 @@ on:
 
 jobs:
   linux:
-    runs-on: ubuntu-24.04
+    strategy:
+      # A failed arm64 leg must not cancel the amd64 diagnostics.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +38,10 @@ jobs:
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
+      # golangci-lint is arch-independent and slow to install from source;
+      # install and run it on the amd64 leg only. Tests run on both legs.
       - name: Install golangci-lint
+        if: matrix.arch == 'amd64'
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 
       - name: Install frontend dependencies
@@ -39,9 +51,11 @@ jobs:
         run: cd frontend && npm run build
 
       - name: Lint (Go)
+        if: matrix.arch == 'amd64'
         run: golangci-lint run
 
       - name: Lint (frontend)
+        if: matrix.arch == 'amd64'
         run: cd frontend && npm run lint
 
       - name: Test (Go)

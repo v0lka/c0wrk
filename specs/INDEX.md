@@ -155,3 +155,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [023-auto-update.md](decisions/023-auto-update.md) - Self-update: single-binary re-exec, SHA256-only fail-closed verification, unsigned GitHub-Releases trust anchor, `.old` rollback; threat model for the supply-chain delivery vector (ASI04)
 - [024-group-policies.md](decisions/024-group-policies.md) - Tool-capability group policies: 8 declared groups (incl. reserved `system`), `security.groups.<group>.{policy,blacklist?}`, hard/soft judge severities, legacy per-tool schema removed
 - [025-dual-repo-dev-flow.md](decisions/025-dual-repo-dev-flow.md) - Dual-repo dev flow: mid-cycle c0wrk builds via the parent-dir `go.work` while the `go.mod` sp4rk pin lags unpublished APIs; commit-sp4rk-then-repin is the mandatory release step
+- [027-linux-arm64-build.md](decisions/027-linux-arm64-build.md) - Linux arm64 release support: platform registry + CI/release matrix + updater asset

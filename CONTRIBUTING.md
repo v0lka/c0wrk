@@ -267,7 +267,7 @@ This section describes how to cut a release of **c0wrk**, the artifact inventory
 
 ### Cutting a release
 
-Releases are produced by the `release.yml` GitHub Actions workflow. It builds the app for all three operating systems and publishes a GitHub Release with auto-generated notes and three downloadable artifacts.
+Releases are produced by the `release.yml` GitHub Actions workflow. It builds the app for all four platforms and publishes a GitHub Release with auto-generated notes and four downloadable artifacts.
 
 **Standard flow: tag and push**
 
@@ -279,8 +279,8 @@ git push origin v0.1.0
 What happens next:
 
 1. Pushing a tag named `v*` triggers the **Release** workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml)).
-2. The workflow builds the app for **3 OSes** (macOS arm64, Linux amd64, Windows amd64), injects the release tag plus commit/build time into `core/version`, and bundles the ONNX Runtime shared library and embedding models.
-3. It generates a `SHA256SUMS` file for the three archives and publishes a GitHub Release tied to that tag with auto-generated release notes.
+2. The workflow builds the app for **4 targets** (macOS arm64, Linux amd64/arm64, Windows amd64), injects the release tag plus commit/build time into `core/version`, and bundles the ONNX Runtime shared library and embedding models.
+3. It generates a `SHA256SUMS` file for the four archives and publishes a GitHub Release tied to that tag with auto-generated release notes.
 
 Verify the result under **Releases** → your tag, then promote / announce the release URL.
 
@@ -299,12 +299,13 @@ To exercise the workflow without cutting a real release:
 
 ### Artifact inventory
 
-Each release publishes three platform archives plus `SHA256SUMS`. Unzip/extract the archive matching your OS and architecture.
+Each release publishes four platform archives plus `SHA256SUMS`. Unzip/extract the archive matching your OS and architecture.
 
 | Filename                              | Target                       | Contents                                                                          |
 | ------------------------------------- | ---------------------------- | --------------------------------------------------------------------------------- |
 | `c0wrk-desktop-macos-arm64.zip`       | macOS (Apple Silicon, arm64) | `c0wrk-desktop.app` bundle with bundled `libonnxruntime.dylib` + embedding models |
 | `c0wrk-desktop-linux-amd64.tar.gz`    | Linux (amd64)                | `c0wrk-desktop` binary + `libonnxruntime.so` + embedding models                   |
+| `c0wrk-desktop-linux-arm64.tar.gz`    | Linux (arm64)                | `c0wrk-desktop` binary + `libonnxruntime.so` + embedding models                   |
 | `c0wrk-desktop-windows-amd64.zip`     | Windows (amd64)              | `c0wrk-desktop.exe` + `onnxruntime.dll` + embedding models                        |
 
 > The ONNX Runtime shared library and the quantized embedding model + tokenizer are bundled so vector search works out of the box — no extra download step is required on the user's machine. The in-app updater verifies the selected archive fail-closed against `SHA256SUMS`; artifacts are still unsigned, so the checksum establishes release-byte integrity but not authorship if the release account and checksum are both compromised.
@@ -318,4 +319,3 @@ These items are deliberately **out of scope** for the first release and tracked 
 - **Apple notarization + Developer ID** — produce a notarized, stapled macOS app so Gatekeeper does not block it.
 - **Windows code-signing certificate** — sign `c0wrk-desktop.exe` to silence SmartScreen.
 - **Universal macOS binary** — ship a single `c0wrk-desktop-macos-universal` artifact covering both arm64 and amd64.
-- **Linux arm64 build** — add a `c0wrk-desktop-linux-arm64.tar.gz` target.

@@ -1,8 +1,8 @@
 name: Release
 
-# Builds c0wrk-desktop for macOS arm64, Linux amd64, and Windows amd64,
+# Builds c0wrk-desktop for macOS arm64, Linux amd64/arm64, and Windows amd64,
 # packages each platform as an archive, and publishes a GitHub Release with
-# all three artifacts plus auto-generated release notes.
+# all four artifacts plus auto-generated release notes.
 #
 # Triggers:
 #   - push of a v* tag (normal release path)
@@ -86,7 +86,17 @@ jobs:
           retention-days: 7
 
   build-linux:
-    runs-on: ubuntu-24.04
+    strategy:
+      # fail-fast: true (default) is intentional: a failed arm64 leg must cancel
+      # the whole release rather than risk a partially-published release.
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -126,13 +136,13 @@ jobs:
         # mutating the directory and abort with "file changed as we read it"
         # (exit 1 under `bash -e`). Writing outside the source tree avoids that.
         working-directory: build/bin
-        run: tar -czf ../c0wrk-desktop-linux-amd64.tar.gz .
+        run: tar -czf ../c0wrk-desktop-linux-${{ matrix.arch }}.tar.gz .
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
-          name: c0wrk-desktop-linux-amd64
-          path: build/c0wrk-desktop-linux-amd64.tar.gz
+          name: c0wrk-desktop-linux-${{ matrix.arch }}
+          path: build/c0wrk-desktop-linux-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -181,7 +191,7 @@ jobs:
       # On Windows we call wails build directly (no Makefile), then fetch the
       # ONNX Runtime + embedding model via the dedicated PowerShell scripts.
       # ldflags inject the build-time version (VERSION env, resolved at the
-      # workflow level to the pushed tag) so all three platforms agree.
+      # workflow level to the pushed tag) so all platforms agree.
       - name: Build (Wails)
         shell: bash
         run: >-
