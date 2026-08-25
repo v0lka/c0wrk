@@ -195,10 +195,23 @@ func TestDetectDelegationCycle_NoFalsePositive(t *testing.T) {
 func TestDelegationRegistry_All(t *testing.T) {
 	r := NewDelegationRegistry()
 	_ = r.Register("del_1", "task 1", nil, "blocking")
-	_ = r.Register("del_2", "task 2", nil, "blocking")
+	_ = r.Register("del_2", "task 2", nil, "async")
+	_ = r.Register("del_3", "task 3", nil, "blocking")
+	// A rejected duplicate registration must not corrupt the order tracking.
+	if err := r.Register("del_1", "dup", nil, "blocking"); err == nil {
+		t.Fatal("expected error for duplicate ID")
+	}
+	r.Complete("del_2", "done", nil, nil)
+
 	all := r.All()
-	if len(all) != 2 {
-		t.Fatalf("expected 2, got %d", len(all))
+	if len(all) != 3 {
+		t.Fatalf("expected 3, got %d", len(all))
+	}
+	want := []string{"del_1", "del_2", "del_3"}
+	for i, id := range want {
+		if all[i].ID != id {
+			t.Errorf("All must preserve insertion order: got all[%d].ID=%q, want %q", i, all[i].ID, id)
+		}
 	}
 }
 

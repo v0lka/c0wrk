@@ -44,6 +44,10 @@ type Delegation struct {
 type DelegationRegistry struct {
 	mu          sync.Mutex
 	delegations map[string]*Delegation
+	// order records registration order; All() iterates it because Go map
+	// iteration is randomized. Delegations are never removed from the map
+	// (only cancelFuncs are), so order always stays in sync with the keys.
+	order       []string
 	cancelFuncs map[string]context.CancelFunc
 	depth       int
 }
@@ -90,6 +94,7 @@ func (r *DelegationRegistry) Register(id, summary string, dependsOn []string, mo
 		DependsOn: append([]string(nil), dependsOn...),
 		Mode:      mode,
 	}
+	r.order = append(r.order, id)
 	return nil
 }
 
@@ -236,9 +241,9 @@ func (r *DelegationRegistry) IsCompleted(id string) bool {
 func (r *DelegationRegistry) All() []Delegation {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]Delegation, 0, len(r.delegations))
-	for _, d := range r.delegations {
-		out = append(out, *d)
+	out := make([]Delegation, 0, len(r.order))
+	for _, id := range r.order {
+		out = append(out, *r.delegations[id])
 	}
 	return out
 }

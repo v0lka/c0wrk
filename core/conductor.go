@@ -1027,8 +1027,9 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	childReg := tools.NewDelegationRegistryWithDepth(registry.Depth() + 1)
 	taskCtx := tools.WithDelegationRegistry(ctx, childReg)
 	taskCtx = tools.WithDelegationLauncher(taskCtx, l)
-	// Also inject into the sp4rk-level context key so finishJoinExecutor
-	// (in github.com/v0lka/sp4rk/orchestration/conductor.go) can find the child registry.
+	// Also inject into the sp4rk-level context key so the sp4rk Conductor's
+	// finish guard (executor.SetFinishGuard) can find the child registry and
+	// reject finish while sub-delegations are still pending.
 	taskCtx = orchestration.WithDelegationRegistry(taskCtx, childReg)
 	// Clear the Conductor-only subagent roster so the redelegating subagent
 	// does not inherit the parent's "Available Subagents"/"Requested Subagents"
@@ -1044,9 +1045,9 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	taskCtx = tools.WithGoalStatusSink(taskCtx, nil)
 	taskCtx = tools.WithVerificationSink(taskCtx, nil)
 
-	// Build the subagent task. The finishJoinExecutor in the sp4rk Conductor
-	// will guard against finish with pending async sub-delegations
-	// automatically, since the child registry is in the context.
+	// Build the subagent task. The finish guard in the sp4rk Conductor
+	// (SetFinishGuard) rejects finish with a nudge while pending async
+	// sub-delegations exist, since the child registry is in the context.
 	st, err := l.buildSubAgentTask(taskCtx, t, registry, l.scopeEvents(t.ID))
 	if err != nil {
 		registry.Complete(t.ID, "", err, nil)
@@ -1887,7 +1888,7 @@ func conductorGuidanceForComplexity(complexity int) string {
 //   - Model metadata resolution and system prompt construction
 //   - ContextManager creation
 //   - Executor construction and configuration
-//   - finishJoinExecutor wrapping (prevents finish with pending async delegations)
+//   - finish guard via executor.SetFinishGuard (rejects finish with a nudge while async delegations are pending)
 //   - StepOutputStore and FactStore injection
 //   - ExecutionResult assembly
 func RunConductor(
