@@ -4,6 +4,8 @@
 
 Accepted
 
+> **Drift note (2026-08-25, vibespec-check):** The 200MB disk-space guard is exact in threshold (core/toolmanager/manager.go) but best-effort in nature: it is an explicit no-op on Windows (manager_diskcheck_windows.go) and Unix filesystem errors are swallowed (manager_diskcheck_unix.go).
+
 ## Context
 
 c0wrk needs three external tools at runtime to function correctly:

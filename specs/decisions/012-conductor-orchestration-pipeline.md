@@ -4,6 +4,8 @@
 
 Accepted
 
+> **Drift note (2026-08-25, vibespec-check):** The Conductor tool-surface table lists `set_step_status`; no tool by that name exists today — the todo-progress tool is `update_checklist` (sp4rk) and step lifecycle uses `declare_step_complete` (core/tools); `set_step_status` survives only as a legacy compat alias and a circuit-breaker name in sp4rk.
+
 ## Context
 
 The orchestration pipeline prior to this ADR was **system-driven**: a fixed

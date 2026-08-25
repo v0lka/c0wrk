@@ -204,11 +204,11 @@ After the group-policy deny gate, during safety-signal gathering, the registry i
 
 Path extraction differs by tool type:
 
-- **Structured tools** (JSON input): all string values in the JSON payload are extracted. Paths are identified by heuristics — the value must contain a `/` separator and must not be a URL. Extracted paths are resolved against the workspace directory.
+- **Structured tools** (JSON input): detection is schema-aware first — path fields recognized from the tool's JSON schema (`pathFieldNamesFromSchema`) are scanned exclusively (`extractPathsFromFields`), so non-path string fields (content payloads) are never mistaken for paths. Only as a fallback — when the tool has no schema or no recognizable path field — are ALL string values extracted (`extractAllPathsFromJSON`) and paths identified by heuristics (the value must contain a `/` separator and must not be a URL). Extracted paths are resolved against the workspace directory.
 
 - **`bash_exec`** (shell command): the command is parsed with `mvdan.cc/sh/v3/syntax`. Literal strings, single-quoted and double-quoted strings from `syntax.Word` parts in `*syntax.CallExpr` arguments and redirect paths are extracted. Words containing shell expansions (`$var`, `$(cmd)`, `` `cmd` ``, `<(`) are flagged as **suspicious** — their resolved paths cannot be determined statically, so the entire call is treated as potentially path-masking.
 
-  The shell-command AST parse is dispatched by tool name in sp4rk's `DetectSymlinksInToolInput`, which matches the literal name `bash_exec`. On Windows the shell tool registers as `posh_exec`, so this special-cased command-parsing branch does not run there — a `posh_exec` call is treated as a structured tool (its `command` field is scanned by the generic string-value path heuristic above), and the bash-syntax suspicious-flag for shell expansions does not apply. This is a platform-specific limitation of symlink detection, not a policy gap: the policy/judge/blacklist/auto-approval layers all apply identically to `posh_exec`.
+  The shell-command AST parse is dispatched by tool name in sp4rk's `DetectSymlinksInToolInput`, which has a dedicated branch for each shell tool: `case ToolBashExec` runs the bash AST parse above, and `case ToolPoshExec` runs `extractPoshPathsFromInput`, which mirrors the bash path — it JSON-parses the `command` and `working_directory` fields (`working_directory` falls back to the workspace when absent) and delegates to a PowerShell-aware extractor. The PowerShell branch applies its own unexpandable/dynamic-token detection (`$var`, `$(...)`, `$env:...`, expandable double quotes, backtick escapes), flagging such tokens as **suspicious** for the same reason as the bash expansions. There is no platform-specific gap in symlink detection: both shell dialects get dedicated command parsing, and the policy/judge/blacklist/auto-approval layers apply identically to `posh_exec`.
 
 ### Symlink Traversal
 
@@ -290,7 +290,7 @@ The wrapping occurs in `github.com/v0lka/sp4rk/memory/context.go` `buildStepMess
 
 Untrusted tools:
 - All MCP tools (`IsUntrusted()` returns `true` on `github.com/v0lka/sp4rk/tools/mcp/mcptool.go`)
-- Built-in: `web_search`, `web_fetch`, `bash_exec` (and `posh_exec` on Windows), `ripgrep`, `glob`, `read_file` (`Untrusted: true` on `BaseTool`)
+- Built-in: `web_search`, `web_fetch`, `bash_exec` (and `posh_exec` on Windows), `ripgrep`, `glob`, `read_file`, `list_directory`, `semantic_search`, `tool_result_read`, `read_attachment` (`Untrusted: true` on `BaseTool`; see `sp4rk/tools/builtins`: `file_list.go`, `vector_search.go`, `tool_result_read.go`, `attachments.go`)
 - `finish` tool is trusted (`IsUntrusted()` returns `false`)
 
 Trust classification is determined by `ToolExecutor.IsToolUntrusted()` which delegates to the `IsUntrusted() bool` method on the `Tool` interface. MCP-sourced tools are always considered untrusted regardless of their `IsUntrusted()` value. The executor sets `Step.IsUntrusted` after tool execution; the context builder reads it to decide whether to wrap.

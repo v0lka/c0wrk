@@ -4,6 +4,8 @@
 
 Accepted
 
+> **Drift note (2026-08-25, vibespec-check):** The budget consequence mentions turns/tokens/deadline caps; only the turn budget exists — GoalBudget is a turn-only cap (MaxTurns, 0 = unlimited, core/goal/types.go); tokens are counted per turn for display and no goal-level deadline is enforced.
+
 ## Context
 
 The Conductor pipeline (ADR-012) runs a single `Executor.Run` that finishes

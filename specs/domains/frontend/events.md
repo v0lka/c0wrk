@@ -23,6 +23,7 @@ Manages real-time event subscription, validation, and store updates. Events flow
 - `frontend/src/hooks/useFileDrop.ts` — global `files:dropped` subscription, HTML5 drag overlay, and navigation suppression
 - `frontend/src/hooks/useStageAttachments.ts` — shared picker/drop attachment staging and model-vision filtering
 - `frontend/src/hooks/events/goalHandlers.ts` — shared goal event handlers (`handleGoalProposalEvent`, `handleGoalStatusEvent`, `handleGoalProgressEvent`) used by `useGoalEvents` (foreground) and the background-session watcher (mirrors the `hitlHandlers.ts` pattern)
+- `frontend/src/hooks/events/sessionLifecycleHandlers.ts` — shared session pause/resume handlers (`handleSessionPausedEvent`, `handleSessionResumedEvent`) used by `useChatEvents` (foreground) and the background-session watcher (mirrors the `hitlHandlers.ts` pattern)
 - `frontend/src/hooks/events/useTerminalEvents.ts` — terminal output events; **component-mounted** by `terminal/Terminal.tsx` (not delegated by `useSessionEvents`)
 - `frontend/src/hooks/events/useToolJudgeEvents.ts` — LLM judge response events; **component-mounted** by `chat/ToolConfirmation.tsx` (not delegated by `useSessionEvents`)
 - `frontend/src/types/events.ts` — event payload type definitions

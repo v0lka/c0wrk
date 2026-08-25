@@ -157,7 +157,7 @@ The goal status indicator (`GoalStatusIndicator`) is a **read-only** badge (icon
 - **File viewer errors**: binary detection (null byte) returns a "binary file" notice; read failures from backend display the error message in the viewer pane
 - **Prompt optimization errors**: the editor keeps the user's original prompt, `attachmentsStore.promptOptimizeError` drives a dismissible warning banner, and a later Optimize action starts a fresh pipeline after backend rewrite/call retries are exhausted
 - **Local image resolution**: each candidate path is tried in order; a failed `ReadFileAsDataURL` falls through to the next candidate, and if all fail the original `src` is used as-is (which cannot load in the webview, matching prior behavior). Resolution is cancelled on unmount/src-change to avoid setState-after-unmount
-- **Missing message types**: `ChatMessageRenderer` renders unknown display item types as a muted "Unsupported message type" fallback
+- **Missing message types**: `ChatMessageRenderer` renders unknown display item kinds as nothing (`if (!Component) return null` — no fallback UI); render failures inside a known component are caught by the React error boundary, whose compact fallback reads "Failed to render message" (a separate mechanism)
 - **Scroll lock resilience**: `ChatScrollManager` handles edge cases where the scroll target element is unmounted during a transition (no-op, no exception)
 
 ## Related Specs

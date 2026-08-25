@@ -104,8 +104,10 @@ delegate.Execute(ctx, input)
 │     │   ├─ Update the Registry: status "completed" or "failed"
 │     │   └─ SubAgentComplete emitted by RunSubAgent (sp4rk) — the sole
 │     │      progress signal for delegations; no PlanStepStart/Complete
-│     └─ Tasks with depends_on that are now satisfied remain "pending"
-│        until a later delegate call or read_step_output triggers them
+│     └─ Newly-satisfied dependents run in the next wave of the SAME call;
+│        if no pending task's dependencies can be satisfied, the remainder
+│        fail immediately within this call ("dependencies could not be
+│        satisfied") and do not run
 │
 └─ 8. Return tool result:
        ├─ All blocking: aggregate outputs of blocking tasks
@@ -184,17 +186,17 @@ Operations:
 
 Child registries (for `allow_redelegate`) are created at an incremented depth via `NewDelegationRegistryWithDepth(depth)`; the launcher checks `registry.Depth() >= OrchestratorConfig.MaxRedelegationDepth` before building a redelegating subagent.
 
-### Finish Join Semantics
+### Finish Guard Semantics
 
 When the Conductor calls `finish`:
 
-1. The executor's finish handler checks the Delegation Registry for pending or running async delegations.
+1. Before accepting finish, the executor consults its finish guard (`Executor.SetFinishGuard`, installed by the sp4rk Conductor), which checks the Delegation Registry for pending async delegations.
 2. If any exist and none have been cancelled via `cancel_delegation`:
-   - The finish tool returns an error: "N async delegations are still pending (ids: ...). Call cancel_delegation for each, or wait for them via read_step_output before finishing."
-   - The Conductor continues its loop (this is a soft gate, implemented as a tool error).
+   - The guard rejects finish with an error: "you have N pending async delegation(s): <ids>. Call cancel_delegation for each if you no longer need them, or wait for them to complete via read_step_output before calling finish"
+   - The executor injects a nudge carrying that error and continues the loop — finish is not accepted, and nothing joins or waits.
 3. If all async delegations are completed, failed, or cancelled: `finish` proceeds normally.
 
-This prevents the Conductor from abandoning background work silently. The gate is a tool-level error, not a pipeline-level structural gate.
+This prevents the Conductor from abandoning background work silently. The gate is a guard-level rejection (the executor nudges and retries), not a join/wait and not a pipeline-level structural gate.
 
 ### Recursive Delegation
 
@@ -225,7 +227,7 @@ The **combined** context is tail-truncated to `OrchestratorConfig.MaxDependencyC
 - **Subagent context cancelled** (via `cancel_delegation` or parent cancellation): stored as `Status: "cancelled"`; no error propagated to the Conductor (cancellation is intentional).
 - **Paused checkpoint cannot seed the ContextManager**: `buildSubAgentTask` returns a descriptive error before launch; the checkpoint remains intact and is not replaced by a fresh run.
 - **Validation failure** (duplicate ID, cycle, depth exceeded): the `delegate` tool call returns `isError: true` with a descriptive message; no subagents launch.
-- **Dependency failed**: a task whose `depends_on` includes a failed or cancelled delegation is marked "failed" with reason "dependency del_X failed"; it does not run.
+- **Dependency failed**: a task whose `depends_on` includes a failed or cancelled delegation fails immediately within the same `delegate` call (Launch) with reason "delegation del_X: dependencies could not be satisfied"; it is marked "failed" and does not run. There is no later-trigger path — unsatisfiable pending tasks do not linger awaiting a future `delegate` call or `read_step_output`.
 
 ## Invariants
 
@@ -239,7 +241,7 @@ The **combined** context is tail-truncated to `OrchestratorConfig.MaxDependencyC
 - `delegate`, `cancel_delegation` are available to a subagent only when `allow_redelegate` is true; `declare_plan` and `reflect` remain Conductor-only.
 - Recursive delegation depth never exceeds `OrchestratorConfig.MaxRedelegationDepth`.
 - The Delegation Registry is scoped to a single Conductor run (or a single subagent run for child registries); it does not persist across sessions.
-- `finish` with pending async delegations returns a tool error (via `finishJoinExecutor` wrapping the tool executor) unless each pending delegation has been cancelled or completed.
+- `finish` with pending async delegations is rejected: the executor's finish guard (`Executor.SetFinishGuard`, installed by the sp4rk Conductor) errors while async delegations are pending, and the executor injects a nudge and retries rather than accepting finish. Finish is accepted only once each pending delegation has been cancelled or completed; there is no implicit join/wait.
 - Subagent success requires `result.Finished && !DetectToolCallSyntaxInContent(result.Output)` (defense-in-depth, unchanged from the prior subagent logic).
 
 ## Related Specs

@@ -23,7 +23,9 @@ backend/frontend_api_session.go: FrontendAPI.SendMessage()
          ▼
 backend/session/manager_execution.go: Manager.SendMessage()
   ├─ Creates/reuses Orchestrator for session
-  ├─ Wraps emitter (EventPersister + WailsEmitter)
+  ├─ Uses the combined emitFunc built once at Application init
+  │   (backend/application.go: cfg.UIEmitFunc + session.NewEventPersister);
+  │   the Manager's EventEmitter fans out to UI + persistence through it
   └─ Calls orchestrator.HandleMessage()
          │
          ▼
@@ -217,12 +219,17 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
   │      resolution staying inside the roots = not a concern)
   └─ 10. Branch on the tool's GROUP policy (security.groups, ADR-024; unconfigured
          group → fail-safe user_confirm):
-       ├─ allow → hard reason ⇒ confirm (DisableJudge=true, never passes Smart Approve);
+       ├─ allow → hard reason ⇒ smartApproveOrConfirm (Hard) — unified funnel
+       │          (ADR-026): strict judge consulted (hard-bias); a canonical
+       │          reason (blacklist, SSRF, symlink escape, unassessable input)
+       │          is backstopped to confirm even on ALLOW, a non-canonical
+       │          hard reason may be cleared by a strict ALLOW;
        │          soft reason ⇒ Smart Approve may allow, else confirm; clean ⇒ execute
        ├─ deny → return error result (step 8)
        └─ user_confirm → confirmFunc() blocks until user responds
                 (local_write + auto_approve_workspace_writes + Judge.Allow ⇒ execute;
-                 hard reason ⇒ confirm with DisableJudge=true; otherwise Smart Approve
+                 hard reason ⇒ smartApproveOrConfirm (Hard) — same funnel +
+                 canonical backstop; otherwise Smart Approve
                  evaluates: strict ALLOW ⇒ execute, anything else ⇒ confirm)
                 │
                 ▼ (if confirmed)
@@ -269,7 +276,7 @@ Orchestrator.HandleMessage()
 ## Invariants
 
 - Every user message passes through the full stack (no shortcuts from frontend to core)
-- Events are always both persisted AND emitted to frontend (dual write)
+- Chat-visible (and resume-critical) events are both persisted AND emitted to frontend (dual write); transient UI-state events (`session_tokens`, `attachments:changed`, `goal_progress`, pin/archive toggles) are emit-only and intentionally not persisted (see `backend/session/event_persister.go`)
 - Config changes require explicit reload (no hot-watching of config file)
 - Blackboard is created per-task, never shared across tasks
 - Async init in builder (LLM router, model registry, tool judge — gated by `initDone`) MUST complete before any Build() call returns; MCP gateway init (`mcpDone`) is intentionally decoupled and does NOT block Build() or session restore

@@ -4,6 +4,10 @@
 
 Accepted
 
+> **Drift note (2026-08-25, vibespec-check):**
+> - §1's "Group() is a required method of the sp4rk Tool interface" — Group() is exposed through the OPTIONAL GroupProvider interface (sp4rk/tools/tool.go), read via ToolGroupOf, fail-closed to "" when unimplemented; BaseTool.ToolGroup remains the declaration point and the fail-closed invariant still holds.
+> - §3/§4's "hard reasons never pass Smart Approve (DisableJudge=true)" — superseded by ADR-026: allow-policy hard reasons now route through the strict judge, with a deterministic backstop that auto-approval is denied for canonical hard reason codes only.
+
 ## Context
 
 Until now, security policy was configured **per tool name**. `config.yaml` carried

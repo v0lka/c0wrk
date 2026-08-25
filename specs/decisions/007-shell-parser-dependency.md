@@ -6,6 +6,8 @@ Accepted
 
 > **Related:** the canonical, sp4rk-native version of this decision now lives in [sp4rk: specs/decisions/003-shell-parser-symlink-detection.md](https://github.com/v0lka/sp4rk/blob/main/specs/decisions/003-shell-parser-symlink-detection.md). This c0wrk ADR is retained as historical decision history.
 
+> **Drift note (2026-08-25, vibespec-check):** mvdan.cc/sh/v3/syntax is no longer confined to sp4rk/tools/symlink.go — sp4rk/tools/shellEnvBindings.go also imports it (collectCommandEnvBindings). Both files remain in the same sp4rk `tools` package.
+
 ## Context
 
 `bash_exec` is one of c0wrk's most powerful built-in tools. With symlink traversal detection, the tool needed to parse bash commands to detect cases where an agent attempts to break out of the workspace by following symlinks (e.g., `cat /etc/passwd` via a symlink created in the workspace). The original detection approach used simple string matching, which was fragile: it couldn't distinguish `echo "../etc/passwd"` (safe, a string literal) from `cat ../etc/passwd` (dangerous, a relative path). A proper AST-based parser was needed to resolve argument paths, understand command structure, and correctly identify symlink targets.

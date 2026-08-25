@@ -45,7 +45,9 @@ Conductor.Run(ctx, message, routing, activeSkills, opts)
 │
 ├─ 2. Assemble tool set
 │     ├─ File ops, search, web (filtered by routing domain + No Project)
-│     ├─ Internal tools (always present):
+│     ├─ Internal tools (all always present, except semantic_search —
+│     │    excluded, together with ripgrep/glob, in No-Project (CHAT) mode
+│     │    via NoProjectDisabledTools applied by ListFiltered):
 │     │    ask_user, finish, store_fact, search_facts,
 │     │    update_checklist, declare_step_complete, read_step_output,
 │     │    list_step_outputs, read_final_result, semantic_search
@@ -71,7 +73,11 @@ Conductor.Run(ctx, message, routing, activeSkills, opts)
 │     │
 │     └─ Returns ExecutorResult { Output, Steps, Finished }
 │
-├─ 6. On finish: join pending async delegations (or require cancel_delegation first)
+├─ 6. On finish: the executor's finish guard (Executor.SetFinishGuard, set
+│     by the sp4rk Conductor) rejects finish while async delegations are
+│     pending; the executor injects a nudge and retries — finish is accepted
+│     only once each pending delegation completes or is cancelled via
+│     cancel_delegation (no join/wait exists)
 │
 └─ 7. Return ExecutionResult { Output, Status, Blackboard, Delegations }
 ```
@@ -181,7 +187,7 @@ The guard is consulted in `UpdateChecklistTool.Execute` after parsing succeeds a
 - The Small-LLM Lite swap only replaces the core directive; the injection-defense section is injected separately and UNCHANGED in both modes (strict constraint). The swap is gated on `small_llm.enabled && small_llm.system_prompt.lite` and never applies to specialized runs (e.g. goal derivation). See [../small-llm.md](../small-llm.md).
 - The Conductor context is isolated from subagent contexts: subagents carry their own `ContextManager`, and only their summaries return to the Conductor as tool results.
 - The Delegation Registry is scoped to a single Conductor run; it is injected into the context at launch and does not outlive the run.
-- `finish` with pending async delegations requires either a prior `cancel_delegation` for each pending ID, or an implicit join (the Conductor waits for all pending delegations before finishing).
+- `finish` with pending async delegations is rejected: the executor's finish guard (`Executor.SetFinishGuard`, set by the sp4rk Conductor) errors while async delegations are pending, and the executor injects a nudge and retries rather than accepting finish. Finish is accepted only once each pending delegation completes or is cancelled via `cancel_delegation`; there is no implicit join — nothing waits.
 - The Conductor never receives a fully-specified plan step as a task message (unlike the prior executor). Its task message is the user's original message plus routing context; decomposition is the Conductor's own decision via `delegate`.
 
 ## Related Specs

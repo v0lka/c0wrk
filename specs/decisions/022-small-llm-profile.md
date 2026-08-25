@@ -4,6 +4,8 @@
 
 Accepted
 
+> **Drift note (2026-08-25, vibespec-check):** The negative consequence "TopP is a config value that does nothing today" is resolved — TopP is now wired end-to-end (core/builder.go sampling override; serialized by all sp4rk providers) with tests asserting explicit-value override.
+
 ## Context
 
 c0wrk is designed around frontier-class models with large context windows, dense tool schemas, verbose system prompts, and loose sampling. When an operator points it at a "small" (low-capacity / cheaper) LLM — a local model on LM Studio, a lightweight hosted model, or a budget tier — the same configuration actively hurts: every prompt carries the full JSON schema of every advertised tool, the verbose orchestrator directive exceeds what an SLM can hold in working memory, default sampling drifts into repetition, and the baseline circuit-breaker thresholds let a looping small model burn the token budget before it is caught.

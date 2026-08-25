@@ -4,6 +4,8 @@
 
 Accepted
 
+> **Drift note (2026-08-25, vibespec-check):** The example "genuine core types" list is partly stale: RoutingDecision now lives in sp4rk (agent/router), imported by core/types.go as a pointer field; Emitter and HandleResult do remain core-defined.
+
 ## Context
 
 ADR-002 confined all sp4rk imports to `core/`. To expose sp4rk types to `backend/`, `core/types.go` maintained ~40 type aliases (`type Step = agent.Step`, `type Plan = orchestration.Plan`, etc.). This created a double-hop chain (sp4rk → core → backend), mechanical maintenance burden, and obscured type origins in IDE navigation.

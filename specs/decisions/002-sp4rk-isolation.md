@@ -4,6 +4,8 @@
 
 Superseded by [ADR-008](./008-backend-sp4rk-direct-import.md)
 
+> **Drift note (2026-08-25, vibespec-check):** The core re-export aliases in core/types.go and the adapter indirection (emitterEventsAdapter, plannerSp4rkAdapter) described here were removed; core/types.go now contains only core-defined types. Superseded by ADR-008, which records this removal.
+
 ## Context
 
 The sp4rk layer (the `sdk/` directory) contains reusable agent execution primitives (executor, LLM providers, memory, tools). The backend layer (`backend/`) is the application ViewModel. If backend imports sp4rk directly, it creates a coupling web where changes to low-level sp4rk types ripple through the application layer, and sp4rk effectively becomes non-reusable outside this project.

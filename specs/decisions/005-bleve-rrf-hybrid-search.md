@@ -4,6 +4,8 @@
 
 Superseded by [013](./013-rrf-pre-fusion-score-thresholds.md)
 
+> **Drift note (2026-08-25, vibespec-check):** The shared document-ID notation is `sha256(path)` truncated to the first 8 BYTES rendered as 16 hex chars (core/vectorindex/collection.go), not 8 hex characters as written in Decision §3.
+
 ## Context
 
 The existing vector index uses chromem-go (cosine similarity on ONNX embeddings) for semantic code search. Semantic search excels at concept/intent queries but struggles with exact identifier lookups (e.g., "MatcherFactory", "handleUserAuth"). Users frequently need both modes — a natural-language "how does auth work?" query and an exact-match "find all usages of parseHTMLDoc" query — ideally without toggling modes manually.

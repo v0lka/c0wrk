@@ -4,6 +4,10 @@
 
 Accepted
 
+> **Drift note (2026-08-25, vibespec-check):**
+> - The documented ripgrep limitation ("nested .aiignore not honoured by rg; root-level only via --ignore-file") has since been lifted — ripgrep results are now post-filtered per entry through the ignore checker (sp4rk/tools/builtins/ripgrep.go), honouring root AND nested .aiignore uniformly; no --ignore-file flag is passed.
+> - The Multi construction described as `ignore.NewMulti(workspace + workDirectories...)` is now per-root Resolver construction (fault-isolated, symlink-resolved, deduplicated) combined via NewMultiFromResolvers (backend/session/manager_execution.go).
+
 ## Context
 
 c0wrk historically controlled which files and directories were excluded from the

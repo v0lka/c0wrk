@@ -7,8 +7,10 @@ c0wrk provides tool infrastructure for the agent on top of sp4rk's `Tool`/`ToolR
 ## Key Files
 
 - `core/tools/registry.go` — core `ToolRegistry` (wraps the sp4rk registry; adds policy resolution, judge, hooks, symlink gate, disabled-tool and bash-blacklist enforcement)
+- `core/tools/registry_canonical_reasons_test.go` — drift guard for the ADR-026 cross-repo contract: drives the real sp4rk builtin judges so a dropped/reworded `JudgeReasonCode` fails CI instead of silently making a canonical hard reason clearable
 - `core/tools/registry_symlink.go` — symlink detection/traversal integration calling sp4rk `DetectSymlinksInToolInput`
 - `core/tools/builtin_registration.go` — `RegisterBuiltinTools` function + `BuiltinToolsConfig`
+- `core/tools/registry_unattended.go` — `ExecuteUnattended(ctx, name, input)`: second execution entry point, used by verify-on-edit; enforces required fields, disabled tools, execute-group deny, and the extra shell blacklist; never model-facing (see [../verify-on-edit.md](../verify-on-edit.md))
 - `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
 - `core/toolnames.go` — tool name constants, `NoProjectDisabledTools`, `NoProjectShellBlacklist`
 - `core/toolmanager/` — manages external binary dependencies (`rg`, `uv`, `markitdown`), auto-downloaded on first run (see ADR-010)
@@ -38,6 +40,8 @@ Engine files (`github.com/v0lka/sp4rk/tools/tool.go`, `safety.go`, `registry.go`
 │  + SetDisabledTools()     block tools by name (e.g., No Project) │
 │  + DisabledTools()        read disabled-tool set       │
 │  + SetExtraShellBlacklist() runtime shell command blacklist      │
+│  + ExecuteUnattended()    unattended execution path (verify-on-edit); │
+│                           never model-facing                          │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -58,16 +62,20 @@ core ToolRegistry.Execute(ctx, name, input)
 ├─ 8. Group policy == deny? → return error result (hard block, names the group)
 ├─ 9. Gather safety signals once: tool Judge outcome (hard: blacklist/SSRF; soft: path containment) + symlink analysis (escape/unresolvable = hard; in-roots = not a concern)
 └─ 10. Branch on the tool's GROUP policy:
-      ├─ allow → hard reason ⇒ confirm (DisableJudge=true, never passes Smart Approve)
-      │           soft reason ⇒ Smart Approve may allow, else confirm
+      ├─ allow → hard reason ⇒ smartApproveOrConfirm (Hard) — the unified funnel:
+      │           the strict judge is consulted (hard-bias); a canonical reason
+      │           (blacklist, SSRF, symlink escape, unassessable input) is
+      │           deterministically backstopped to confirm even on ALLOW,
+      │           a non-canonical hard reason may be cleared by a strict ALLOW
+      │           soft reason ⇒ smartApproveOrConfirm (Soft): Smart Approve may allow, else confirm
       │           clean ⇒ execute
       ├─ deny → error result (step 8)
       └─ user_confirm → local_write + auto_approve_workspace_writes + Judge.Allow ⇒ execute
-                         hard reason ⇒ confirm (DisableJudge=true)
+                         hard reason ⇒ smartApproveOrConfirm (Hard) — same funnel + canonical backstop
                          otherwise Smart Approve (ALLOW ⇒ execute, else confirm; off ⇒ plain confirm)
 ```
 
-The group policy resolution, auto-approval (session roots), and symlink gate are c0wrk's session-security layer — detailed in [../../architecture/security-model.md](../../architecture/security-model.md). The model, gate order, and migration are decided in [ADR-024](../../decisions/024-group-policies.md).
+The group policy resolution, auto-approval (session roots), and symlink gate are c0wrk's session-security layer — detailed in [../../architecture/security-model.md](../../architecture/security-model.md). The model, gate order, and migration are decided in [ADR-024](../../decisions/024-group-policies.md); the unified confirmation funnel (every escalation through one strict judge) and the canonical-reason deterministic backstop in [ADR-026](../../decisions/026-smart-approve-unified-funnel.md).
 
 ## Invariants
 
@@ -86,7 +94,7 @@ From `config.yaml`:
 
 ```yaml
 security:
-  smart_approve: false  # strict OWASP ASI judge for effective user_confirm (opt-in)
+  smart_approve: false  # strict OWASP ASI judge for every escalated call (opt-in; ADR-026)
   groups:               # per-capability-group policy (ADR-024); system is reserved
     local_read:  { policy: allow }
     remote_read: { policy: allow }

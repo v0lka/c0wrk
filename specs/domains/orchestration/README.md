@@ -114,7 +114,7 @@ type HandleResult struct {
     Plan            *Plan               // last plan declared via declare_plan, if any
     Blackboard      Blackboard
     Reflections     []orchestration.Reflection           // reflect-tool outputs, if any
-    Status          orchestration.ExecutionStatus  // success | partial | failed | aborted | cancelled
+    Status          orchestration.ExecutionStatus  // success | partial | failed | aborted | cancelled | paused
 }
 ```
 
@@ -180,6 +180,9 @@ HandleMessage(ctx, message, sessionID, opts)
 │     │   store_fact, search_facts, update_checklist, declare_step_complete,
 │     │   read_step_output, semantic_search) + Conductor tools (delegate,
 │     │   declare_plan, execute_plan, reflect, cancel_delegation)
+│     │   (semantic_search — like the search tools ripgrep and glob — is
+│     │   excluded in No-Project (CHAT) mode via NoProjectDisabledTools,
+│     │   applied by ListFiltered)
 │     ├─ ContextManager via contextFactory
 │     └─ Delegation Registry injected into context
 │
@@ -189,7 +192,8 @@ HandleMessage(ctx, message, sessionID, opts)
 │        as tool calls inside this loop.
 │
 ├─ 7. Persist task outcome on BB per typed status (persistTaskOutcome):
-│     success → completed; partial/cancelled → left in_progress (resumable);
+│     success → completed; paused → PauseTask (pause/resume checkpoint; resumable);
+│     partial/cancelled → left in_progress (resumable);
 │     failed/aborted → failed (resumable)
 │
 └─ 8. Return HandleResult (carries Status + Reflections).
@@ -216,8 +220,8 @@ There is no `executionMode` toggle. The Conductor chooses its own granularity ba
 - Exactly one Conductor `Executor.Run` instance owns a given task from start to finish.
 - **Goal mode is a turn-of-Conductors, not one long-lived executor.** When `opts.Goal`, `runGoalLoop` iterates: each turn launches a fresh `Executor.Run` via `RunConductor`, reusing the normal continuation-trajectory mechanism so dialogue context persists across the turn boundary. Goal mode runs on BOTH a fresh task (`opts.TaskID == ""`) and a continuation (`opts.TaskID != ""`); on a continuation the prior task's blackboard is restored and the agent derives a fresh goal against the inherited facts/history. Routing is decided once at the top of `runGoalLoop` (before derivation) and inherited unchanged by every turn; no turn re-routes. The loop holds the single-flight guard for its whole run; `PauseSession` releases it by stopping the in-flight conductor at the next step boundary (the task is persisted as paused; the goal stays `active`). See [../goal-mode.md](../goal-mode.md).
 - The Conductor always has `ask_user`, `declare_plan`, `execute_plan`, `reflect`, `delegate`, `cancel_delegation`, `finish` available (they are `system`-group tools — bypass policy; ADR-024).
-- `finish` with pending async delegations requires either a prior `cancel_delegation` for each, or an implicit join (the Conductor waits for all pending delegations before finishing).
-- `ExecutionResult.Status` is the typed success contract: success | partial | failed | aborted | cancelled. Callers consult it instead of parsing Output.
+- `finish` with pending async delegations is rejected: the executor's finish guard (`Executor.SetFinishGuard`, set by the sp4rk Conductor) returns an error while async delegations are pending, and the executor injects a nudge and retries rather than accepting finish. Finish is accepted only once every pending delegation completes or is cancelled via `cancel_delegation` — there is no implicit join, nothing waits.
+- `ExecutionResult.Status` is the typed success contract: success | partial | failed | aborted | cancelled | paused. Callers consult it instead of parsing Output.
 - Blackboard is created once per first message and restored for continuations.
 - Vector search hints are non-blocking (2s timeout, failure is acceptable).
 - Skills are activated task-wide and rendered verbatim in the Conductor system prompt (no truncation).

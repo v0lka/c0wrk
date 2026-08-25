@@ -6,7 +6,7 @@ c0wrk registers sp4rk's built-in tools plus the c0wrk-specific `ask_user` tool a
 
 ## Key Files
 
-- `core/tools/builtin_registration.go` — `RegisterBuiltinTools(registry, cfg)` + `BuiltinToolsConfig`; sets the config `ShellBlacklist` on the shell tool and delegates the platform-specific constructor call to `newShellExecTool` (the No-Project extra patterns are applied at runtime, not at registration)
+- `core/tools/builtin_registration.go` — `RegisterBuiltinTools(registry, cfg)` + `BuiltinToolsConfig`; merges the config `ShellBlacklist` with `BuiltinToolsConfig.ExtraShellBlacklist` (left unset by the config-driven path today) and passes the merged list to the platform-specific `newShellExecTool` (the No-Project extra patterns are applied at runtime, not at registration)
 - `core/tools/shelltool_unix.go` / `core/tools/shelltool_windows.go` — build-tag split for the shell-exec tool constructor (`builtins.NewBashExecToolWithTimeouts` on Unix, `builtins.NewPoshExecToolWithTimeouts` on Windows); sp4rk's `bash.go`/`posh.go` are mutually exclusive per OS
 - `core/tools/read_file_doc.go` — c0wrk `ReadFileDocTool` wrapper over sp4rk `ReadFileTool` that converts document formats (pdf, docx, pptx, xlsx, odt, html, htm) to markdown via `core/markitdown`; implements sp4rk's `ContentBackedReader` so converted results are content-backed cached
 - `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
@@ -24,13 +24,13 @@ c0wrk's registered tools, their capability group (ADR-024 — drives policy and 
 | `read_file`           | File      | `local_read` | yes       | Read file contents (streaming, O(1) memory, default 2000-line window); document formats (pdf, docx, pptx, xlsx, odt, html, htm) auto-converted to markdown via markitdown |
 | `write_file`          | File      | `local_write` | no        | Create/overwrite file                              |
 | `edit_file`           | File      | `local_write` | no        | Apply targeted edits to existing file              |
-| `list_directory`      | File      | `local_read` | no        | List directory contents                            |
+| `list_directory`      | File      | `local_read` | yes       | List directory contents                            |
 | `create_directory`    | File      | `local_write` | no        | Create directory (recursive)                       |
 | `delete_directory`    | File      | `local_write` | no        | Remove directory recursively                       |
 | `delete_file`         | File      | `local_write` | no        | Remove single file                                 |
 | `glob`                | Search    | `local_read` | yes       | Glob pattern file matching                         |
 | `ripgrep`             | Search    | `local_read` | yes       | Fast regex content search (shells out to `rg`)     |
-| `semantic_search`     | Search    | `system` | no        | Vector similarity search (optional)                |
+| `semantic_search`     | Search    | `system` | yes       | Vector similarity search (optional)                |
 | `web_fetch`           | Web       | `remote_read` | yes       | Fetch URL content                                  |
 | `web_search`          | Web       | `remote_read` | yes       | Search the web (optional, needs API key)           |
 | `finish`              | Agent     | `system` | no        | Signal task/step completion                        |
@@ -45,11 +45,11 @@ c0wrk's registered tools, their capability group (ADR-024 — drives policy and 
 | `declare_step_complete` | Agent   | `system` | no        | Signal inline plan step completion (emits `plan_step_complete`) |
 | `store_fact`          | Agent     | `system` | no        | Store fact to blackboard                           |
 | `search_facts`        | Agent     | `system` | no        | Search blackboard facts                            |
-| `read_attachment`     | Agent     | `system` | no        | Read the markdown content of a user-attached file by ID (from the context-injected `AttachmentStore`) |
+| `read_attachment`     | Agent     | `system` | yes       | Read the markdown content of a user-attached file by ID (from the context-injected `AttachmentStore`) |
 | `batch`               | Agent     | `system` | no        | Execute multiple tool calls sequentially in one turn (intercepted at executor level) |
 | `read_skill_resource` | Agent     | `system` | no        | Read skill resource files                          |
-| `tool_result_read`    | Agent     | `system` | no        | Read cached tool result fragments by hash          |
-| `delegate`            | Agent     | `system` | no        | Launch a subagent for a delegated task (`core/tools/delegate.go`) |
+| `tool_result_read`    | Agent     | `system` | yes       | Read cached tool result fragments by hash          |
+| `delegate`            | Agent     | `system` | yes       | Launch a subagent for a delegated task (`core/tools/delegate.go`) |
 | `cancel_delegation`   | Agent     | `system` | no        | Cancel a running delegation (`core/tools/cancel_delegation.go`) |
 | `reflect`             | Agent     | `system` | no        | Trigger a reflection pass over the task (`core/tools/reflect.go`) |
 | `declare_plan`        | Agent     | `system` | no        | Publish a plan for user sign-off (`core/tools/declare_plan.go`) |
@@ -66,7 +66,7 @@ The shell-execution tool is platform-specific: sp4rk's `bash.go` is `//go:build 
 - `core/tools/shelltool_unix.go` → `builtins.NewBashExecToolWithTimeouts` → registers `bash_exec`
 - `core/tools/shelltool_windows.go` → `builtins.NewPoshExecToolWithTimeouts` → registers `posh_exec`
 
-Both expose the same constructor signature `newShellExecTool(blacklist, timeouts)`; the caller (`RegisterBuiltinTools`) passes the config `ShellBlacklist` through unchanged. The No-Project extra patterns (`core/toolnames.go` `NoProjectShellBlacklist`) are NOT merged at registration — they are applied at runtime via `Orchestrator.SetNoProjectMode` → `ToolRegistry.SetExtraShellBlacklist`. The registered name differs per platform, so all name-keyed configuration and policy lookups resolve through `core.activeShellToolName()` (`bash_exec` on Unix, `posh_exec` on Windows) — see [Blacklist / Policy Key](#blacklist--policy-key) below and [../../architecture/security-model.md](../../architecture/security-model.md).
+Both expose the same constructor signature `newShellExecTool(blacklist, timeouts)`; the caller (`RegisterBuiltinTools`) merges the config `ShellBlacklist` with `BuiltinToolsConfig.ExtraShellBlacklist` (unset on the config-driven path today) and passes the merged list. The No-Project extra patterns (`core/toolnames.go` `NoProjectShellBlacklist`) are NOT merged at registration — they are applied at runtime via `Orchestrator.SetNoProjectMode` → `ToolRegistry.SetExtraShellBlacklist`. The registered name differs per platform, so all name-keyed configuration and policy lookups resolve through `core.activeShellToolName()` (`bash_exec` on Unix, `posh_exec` on Windows) — see [Blacklist / Policy Key](#blacklist--policy-key) below and [../../architecture/security-model.md](../../architecture/security-model.md).
 
 Prompt data references the shell tool through the `{shell_tool}` placeholder rather than a hardcoded name, so tool-priority guidance always points at the tool actually registered on the current platform. The placeholder is resolved by `prompts.SubstituteShellTool` at each prompt-assembly call site (`core/systemprompt.go`); the embedded prompt vars are kept as raw templates (placeholder recoverable).
 

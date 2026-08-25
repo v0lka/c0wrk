@@ -16,6 +16,8 @@ Accepted
 > sp4rk to its own external repository and restored the single-root-module
 > approach for c0wrk.
 
+> **Drift note (2026-08-25, vibespec-check):** The negative consequence "Cannot independently version sp4rk for external consumption (sp4rk is internal to this project)" no longer holds — sp4rk lives in its own repository/module github.com/v0lka/sp4rk with independent versioning (see ADR-015); the Status blockquote above already acknowledges this.
+
 ## Context
 
 The project could be structured as multiple Go modules (one per layer: sp4rk, core, backend, desktop) using `go.work`, or as a single module containing all packages. Multi-module setups provide stronger isolation but introduce complexity with inter-module versioning, replace directives, and CI/CD.

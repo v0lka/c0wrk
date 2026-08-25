@@ -43,10 +43,12 @@ specs/
 │   │   └── blackboard.md
 │   ├── goal-mode.md
 │   ├── llm-providers.md
+│   ├── research.md
 │   ├── review.md
 │   ├── session-lifecycle.md
 │   ├── small-llm.md
 │   ├── tool-manager.md
+│   ├── verify-on-edit.md
 │   ├── workspace.md
 │   └── frontend/
 │       ├── README.md
@@ -66,7 +68,7 @@ specs/
     ├── 001-single-module.md
     ├── 002-sp4rk-isolation.md
     ├── ...
-    └── 023-auto-update.md
+    └── 027-linux-arm64-build.md
 ```
 
 ## Naming Conventions

@@ -4,6 +4,8 @@
 
 Accepted
 
+> **Drift note (2026-08-25, vibespec-check):** The archive-safety claim "skips symlinks during update extraction" now holds only for the tar path (Linux); the zip path (macOS .app) reproduces symlink entries as symlinks via a containment-checked safeCreateSymlink (core/updater/installer.go, TestExtractZip_SymlinkPreserved) because materializing them as regular files produced an unlaunchable bundle.
+
 ## Context
 
 c0wrk is shipped as three single-tree platform packages (a macOS `.app`

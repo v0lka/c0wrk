@@ -16,7 +16,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/session/persistence.go` — SessionStore (SQLite persistence including plan review state)
 - `backend/session/persistence_fork.go` — `(*SQLiteSessionStore).ForkSession` deep-copy (messages, tasks+steps/facts/attachments/trajectory, terminal commands, work directories) with regenerated identifiers in a single atomic transaction
 - `backend/session/events.go` — event data structs (session lifecycle + plan review)
-- `backend/session/emitter.go` — WailsEmitter (bridges events to frontend)
+- `backend/session/emitter.go` — EventEmitter (fans out to the Wails UI and persistence through the combined emitFunc built at Application init)
 - `backend/session/event_persister.go` — EventPersister (persists events to SQLite)
 - `backend/session/task_adapter.go` — task step/fact/attachment adapter for persistence
 - `backend/session/manager_attachment.go` — file attachments: `AttachFiles`/`RemovePendingAttachment`/`GetSessionAttachments`, pending-attachment staging (documents + images), `attachments:changed` emission, image metadata persistence/restore
@@ -93,12 +93,13 @@ Backend SwitchProject path
 User sends message
   → Frontend: SendMessage(sessionId, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode)
   → Backend: FrontendAPI.SendMessage()
-      ├─ Persist original text to DB (preserves /skill and @file refs)
+      ├─ Live-send gate: validate pause window / goal / skill-agent refs
+      │   BEFORE persisting (a rejected send never reaches the store)
       ├─ Preprocess text for orchestrator:
       │   ├─ Strip /skill references from text
       │   └─ Convert @file references to fileref:// URIs (relative paths resolved to absolute against the session workspace)
       ├─ Get or create Orchestrator for session (via factory)
-      ├─ Create emitter (WailsEmitter + EventPersister)
+      ├─ Create emitter (EventEmitter over the combined emitFunc: UI + EventPersister)
       ├─ Enrich task context:
       │   ├─ WithWorkspacePath (project workspace)
       │   ├─ WithTempDir (session-specific temp directory)
@@ -112,6 +113,9 @@ User sends message
       │    resolver to the task context, inherited by subagent delegations,
       │    so document conversions inside the task caption embedded images
       │    with the model active at conversion time)
+      ├─ After dispatch: persist original text to DB (preserves /skill and
+      │   @file refs) with the authoritative classification — is_nudge: true
+      │   for live interjections and nudge-resumes, absent for fresh tasks
       ├─ On success: persist result, emit task_complete
       └─ On failure: emit task_failed_resumable or error
 ```
@@ -290,11 +294,11 @@ execution to the in-memory conversation history — no user/assistant pair is
 recorded (the user message that spawned the task was already recorded when the
 task first ran, or restored from the message store after a restart).
 
-`task_failed_resumable` is NOT emitted when the router decides
-`needs_clarification` (and the user did not explicitly invoke a /skill). In
-that case the planner never runs, so there is nothing to resume — the
-orchestrator marks the just-created task as completed and returns the
-clarification message instead.
+Under ADR-012 the router's `needs_clarification` flag is ignored
+(`Router.NeedsClarification` is read only for logging in
+`core/orchestrator_handle.go`): the Conductor handles clarification itself via
+the `ask_user` tool during execution. A clarification never short-circuits the
+pipeline, so there is no router-driven clarification branch to resume.
 
 #### Continuing an interrupted task with a new message
 
@@ -483,6 +487,7 @@ User clicks Fork (GitFork icon) in SessionSelector on a session item
           ├─ Copy session_work_directories (regenerated UUID PK)
           ├─ For each task: new task id, copy tasks (NULL completed_at preserved)
           │   + task_steps + task_facts + task_attachments + task_trajectory
+          │   + task_goal_state (preserves the task's goal history)
           ├─ cloneReview(src, new) on the same tx (review_state + review_comments)
           └─ Commit (any error rolls back the whole fork; source untouched)
   → Frontend: sessionStore.addSession(forked) + setActiveSessionId(forked.id)
@@ -628,7 +633,9 @@ Dump file creation is controlled by `Manager.logLevel`. When not `DEBUG`:
 
 Cross-cutting LLM calls that don't pass through the per-step `CallerForStep`
 pipeline (title generation, ToolJudge) receive the dump writer via
-`context.Context` using `agent.DumpWriterContextKey`. The writers are injected at
+`context.Context` using `agent.WithDumpWriter(ctx, w)` (backed by an
+unexported key type in `sp4rk/agent/context.go`; read back with
+`agent.DumpWriterFromContext`). The writers are injected at
 the call sites: `SendMessage` for title generation and
 `desktop/event_handlers.go` for ToolJudge.
 
@@ -690,14 +697,14 @@ type HandleResult struct {
 
 ## Invariants
 
-- One Orchestrator per session (created lazily on first message)
+- One Orchestrator per session: `CreateSession` builds it eagerly via the factory; lazy creation applies only to the restart/restore path (`getOrRestoreSession`, on first access after a restart)
 - `DeleteSession` cancels any running task, removes the in-memory session and cleans up the entire per-session
   directory (`~/.c0wrk/projects/__no_project__/<id>/`) for No Project
   sessions. The session temp directory is always cleaned up regardless.
 - Session state survives app restart (SQLite persistence)
 - Project switch session restore order is deterministic: valid saved session for destination project, otherwise latest destination session, otherwise new destination session
 - Destination project switch state always persists the resolved `saved_session_id` in `project_ui_state` when project persistence is wired
-- Messages are persisted immediately on receive (not after processing)
+- User messages are persisted after the authoritative dispatch, not on receive: the `is_nudge` flag is written only once the live-send/fresh classification is known, and a rejected send (pause window, goal gate, attachment gate) never reaches the store
 - Archived sessions are read-only history: the session-manager choke point rejects both new `SendMessage` execution and failed/paused task resume until the session is unarchived
 - Archiving a session that is running or has an unfinished task first cancels the running task and discards the unfinished task, so an archived session is a clean read-only snapshot. The session temp directory is removed once the task goroutine settles; if cancellation does not settle within `stopTimeout`, the archived flag still flips and the temp directory removal is deferred until the goroutine actually finishes (never racing a still-running tool call).
 - Task state is checkpointed on each step completion (enables resume)
@@ -715,9 +722,10 @@ type HandleResult struct {
   TrajectoryStore on every step. A routing decision and a plan are **optional**
   — routing is reused if persisted (otherwise `general` domain), and a plan-less
   task runs the Conductor's standalone checklist.
-- Router-driven `needs_clarification` never produces a resumable task: the
-  planner has not run yet and the just-created task record is closed before
-  the orchestrator returns.
+- Under ADR-012 the router's `needs_clarification` flag is ignored — the
+  Conductor handles clarification itself via the `ask_user` tool, so a
+  router clarification decision never short-circuits the pipeline or closes
+  a task on its own.
 - The Cancel button on the resume prompt is a hard discard: it persists
   cancellation on the unfinished task without launching the orchestrator.
 - Every cancellation path (CancelTask, mid-task ctx-cancel, resume-cancel)
@@ -729,8 +737,9 @@ type HandleResult struct {
   `failed`/`aborted` → `failed` (resumable); `cancelled` → handled by the
   session manager's cancellation paths.
 - Session forking deep-copies all dependent rows (messages, tasks and their
-  steps/facts/attachments/trajectory, terminal commands, work directories,
-  and review data) with freshly generated identifiers in a single atomic
+  steps/facts/attachments/trajectory/goal state, terminal commands, work directories,
+  and review data — `task_goal_state` preserves the forked task's goal history)
+  with freshly generated identifiers in a single atomic
   transaction, so the fork shares no rows with the original. A fork with any
   unfinished (`in_progress` or `failed`) task is rejected by
   `FrontendAPI.ForkSession` (backend guard) and the frontend fork button is

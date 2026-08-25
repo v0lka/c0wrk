@@ -6,6 +6,8 @@ Superseded by [ADR-011](./011-sp4rk-to-core-extraction.md)
 
 > vectorindex and proxy were subsequently moved from sp4rk to `core/`.
 
+> **Drift note (2026-08-25, vibespec-check):** The line-count consequence ("frontend_api_workspace.go reduced from ~574 to ~230 lines") was true at extraction time; the file has since regrown (~518 lines) after git operations moved in/out (frontend_api_git.go).
+
 ## Context
 
 The layer architecture spec defines `backend/` as a ViewModel — the thin "app layer" that the desktop UI interacts with, responsible for path validation, session resolution, icon assignment, and delegating to domain services. In practice, three packages within `backend/` contained pure domain logic with no ViewModel concerns:

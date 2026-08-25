@@ -71,7 +71,7 @@ In No Project (CHAT) mode, `routing.Domain` is overridden from `"code"` to `"gen
 
 - LLM call failure → return error (no fallback routing)
 - JSON parse failure → one retry with repair prompt asking the LLM to fix its JSON
-- Second parse failure → return error
+- Second parse failure → return error — except when the Small-LLM essential-tools/tool-matching profile is enabled (`smallLLMToolMatchingEnabled`): the orchestrator then continues with a default routing decision (`RoutingDecision{Domain: general, Complexity: defaultResumeComplexity}`, logged/emitted "Routing fallback: unparseable routing JSON — continuing with default routing") and the tool filter degrades to the full tool set. The unprofiled path errors as documented.
 
 (Validation rules — domain clamping, complexity range, skill dedup — are engine behavior; see the sp4rk router spec.)
 

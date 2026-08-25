@@ -52,6 +52,8 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `GetSessionHistory`    | id                           | ([]ChatMessage, error)    | Get message history                                   |
 | `GetSessionRuntimeStatus` | id                        | (SessionRuntimeStatus, error) | Live/persisted execution state: `{active, has_unfinished_task, unfinished_task_id?, paused, activity?, streaming}`. `paused` is true when the resumable unfinished task is in the `"paused"` status (a cooperative pause checkpoint). `activity` (omitted until the first tracked emission) is the backend-tracked live phase label ("Thinking...", "Routing request...", ...) and `streaming` reports an open assistant stream. Called after history load to reconcile the UI (running flag, paused flag, resume banner, stale prompts, frozen activity label/streaming text) instead of defaulting to idle |
 | `GetBlackboardState`   | sessionID                    | (\*BlackboardStateResponse, error) | Get blackboard task state                    |
+| `GetStepOutput`        | sessionID, stepID            | (string, error)          | Full output of a single plan step (fetched lazily on hover so large outputs never ride along in `GetBlackboardState`; empty string when the step or its output is absent) |
+| `SearchBlackboardStepOutputs` | sessionID, query     | ([]string, error)        | IDs of steps whose full output contains the query (case-insensitive); unioned with the viewer's local summary/id filtering so the search box matches step output content. Empty query yields no matches |
 | `EmitSessionEvent`     | evt                          | —                               | Emit a session-scoped event (UI + persistence path so it survives app restarts) |
 | `SendMessage`          | id, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, reviewMode | error                     | Send user message (async execution). Execution mode is derived from the active project (No-Project = CHAT); `activeAgents` carries `#agent` refs; `goal`/`goalBudget` start a goal loop; `reviewMode` renders the Code Review prompt section. Rejected for archived sessions (archived history is read-only) |
 | `CancelTask`           | id                           | error                     | Cancel running task                                   |
@@ -108,7 +110,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 
 > **Experimental-features gate**: `ConfigResponse` carries `experimental.enabled` — a single, all-or-nothing switch for features under active development. When off, RESEARCH mode is treated as off for every project (`GetResearchStatus`/`GetResearchGraph` return the empty-state DTO and `EnableResearch` rejects) and the Small-LLM profile is forced off in `ToBuilderConfig` (the stored `small_llm.enabled` is preserved but never activates). The frontend hides the corresponding affordances reactively in the same session: the sidebar research icon/tab and the Small-LLM settings tab.
 
-> **Network-free config read**: `GetConfig` performs no network I/O. `AllModels` metadata resolves through the sp4rk `ModelRegistry.ResolveLocal` (in-memory tiers: overrides, built-ins, fuzzy matches, lazy cache — including LM Studio probe results written via `SetCachedMetadata`; fallback defaults for unknown models). `GetConfig` runs on every settings open, so it always returns from memory and never blocks behind an HTTP probe or timeout; `HasDefaultModel` exists so single-fact UI checks skip even the full response build.
+> **Network-free config read**: `GetConfig` performs no network I/O. `AllModels` metadata resolves through the sp4rk `ModelRegistry.ResolveLocal` (in-memory tiers: overrides, built-ins, fuzzy matches, lazy cache — including LM Studio probe results written via `SetRuntimeMetadata` to the runtime tier, which `ResolveLocal` also serves; fallback defaults for unknown models). `GetConfig` runs on every settings open, so it always returns from memory and never blocks behind an HTTP probe or timeout; `HasDefaultModel` exists so single-fact UI checks skip even the full response build.
 
 ### Workspace (`backend/frontend_api_workspace.go`)
 
@@ -171,6 +173,11 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `GetBranchBases`       | —                       | ([]BranchBase, error)         | Branch base refs (for merge/rebase target UI) |
 | `CheckoutBranch`       | name                    | error                         | Checkout a branch |
 | `CreateBranch`         | name, base              | error                         | Create a new branch at a base ref |
+| `RenameBranch`         | oldName, newName        | error                         | Rename a local branch (git branch -m); works when oldName is the current branch |
+| `DeleteBranch`         | name, force             | error                         | Delete a local branch (git branch -d, or -D when force) |
+| `PushBranch`           | name                    | (string, error)               | Push a local branch to its upstream remote, publishing (setting the upstream) when it has none yet |
+| `CheckoutRemoteBranch` | remoteBranch            | error                         | Create a local branch from a remote-tracking branch and switch to it (git switch -c --track) |
+| `DeleteRemoteBranch`   | name, remote            | (string, error)               | Delete a branch on the given remote (git push <remote> --delete; default origin) |
 | `CreateTag`            | name, sha               | error                         | Create a lightweight tag at a commit |
 | `DeleteTag`            | name                    | error                         | Delete a local tag |
 | `PushTag`              | name, remote            | (string, error)               | Push a single tag to a remote (default origin) |
@@ -342,7 +349,7 @@ See [event-catalog.md](event-catalog.md) for complete event reference.
 
 - **RPC errors**: Go methods return `error`; Wails serializes as `Error` thrown in the TypeScript `Promise` rejection
 - **Event errors**: there is no dedicated "event error" channel; failed event emissions are logged and dropped. User-visible execution errors flow through the global `runtime_error` event and the session-scoped `error` event (see [event-catalog.md](event-catalog.md))
-- **Startup failures**: if backend `Startup()` panics, Wails shows a native error dialog; if startup completes but services fail, `GetConfig()` returns an error which frontend uses to display a "Backend unavailable" banner
+- **Startup failures**: if backend `Startup()` panics, Wails shows a native error dialog; if startup completes but services fail, `GetConfig()` still returns a `ConfigResponse` (no error) with `Loaded: false` plus a `ConfigErrors` list, which the frontend uses to display a "Backend unavailable" banner
 - **Streaming failures**: streaming uses Wails `EventsEmit` (not SSE); if a task errors mid-stream, `assistant_done` may not fire and the partial streaming text is flushed by `chatStore.flushStreamingToMessage()` on completion/error
 - **Panic recovery**: Wails runtime catches Go panics and returns them as RPC errors; backend uses `recover()` middleware in handler chain
 - **Fallback**: methods invoked before backend ready return "backend not initialized" error

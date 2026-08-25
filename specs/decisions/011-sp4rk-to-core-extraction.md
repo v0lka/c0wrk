@@ -6,6 +6,8 @@ Accepted
 
 > **Related:** the canonical, sp4rk-native version of this decision now lives in [sp4rk: specs/decisions/004-application-concept-extraction.md](https://github.com/v0lka/sp4rk/blob/main/specs/decisions/004-application-concept-extraction.md). This c0wrk ADR is retained as historical decision history.
 
+> **Drift note (2026-08-25, vibespec-check):** The refactor landed asymmetrically: FormatFullEnvBlock accepts EnvFormatOptions, but FormatCompactEnvBlock (sp4rk/tools/envinfo.go) still takes no options parameter.
+
 ## Context
 
 ADR-009 placed `vectorindex/` in sp4rk (then the `sdk/` directory) as part of the backend domain logic extraction. Subsequent architectural review identified that both the `vectorindex/` and `proxy/` packages violate two core sp4rk constraints:

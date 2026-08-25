@@ -8,6 +8,8 @@ Superseded (no successor ADR — the decision was reversed by code drift and rec
 
 > **Related:** the canonical, sp4rk-native version of this decision now lives in [sp4rk: specs/decisions/002-skills-mcp-in-sdk.md](https://github.com/v0lka/sp4rk/blob/main/specs/decisions/002-skills-mcp-in-sdk.md). This c0wrk ADR is retained as historical decision history.
 
+> **Drift note (2026-08-25, vibespec-check):** The Consequences claim that depguard prevents accidental sp4rk→core imports no longer applies — the linter config (.golangci.yml) now defines a single rule `core-no-backend`; no rule governs sp4rk↔c0wrk imports (and none could across separate modules).
+
 ## Context
 
 The `skills/` and `tools/mcp/` packages currently reside under `core/`, which sits between sp4rk (the `sdk/` directory, generic engine) and `backend/` (app-specific) in the import hierarchy. The question arose (review suggestion S-16) whether these packages would be more reusable if moved to sp4rk.
