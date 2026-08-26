@@ -64,3 +64,12 @@ func TestWindowStatePath_UnderAgentDir(t *testing.T) {
 		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
+
+func TestDialogStatePath_UnderAgentDir(t *testing.T) {
+	agentDir := filepath.Join("home", ".c0wrk")
+	got := config.DialogStatePath(agentDir)
+	want := filepath.Join(agentDir, "dialog_state.json")
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}

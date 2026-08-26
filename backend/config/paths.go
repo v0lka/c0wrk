@@ -122,6 +122,15 @@ func WindowStatePath(agentDir string) string {
 	return filepath.Join(agentDir, "window_state.json")
 }
 
+// DialogStatePath returns the path to dialog_state.json inside the agent
+// directory. This file holds the last directory chosen in a native picker
+// dialog (e.g. PickDirectory for adding a project) so the next dialog opens
+// where the user left off. Like window_state.json, it is runtime state and
+// deliberately NOT part of config.yaml.
+func DialogStatePath(agentDir string) string {
+	return filepath.Join(agentDir, "dialog_state.json")
+}
+
 // ---------------------------------------------------------------------------
 // Per-project paths (agentDir + projectID)
 // ---------------------------------------------------------------------------

@@ -94,12 +94,35 @@ func (a *App) SetWailsLogger(wl *wailsLogAdapter) {
 	a.wailsLogger = wl
 }
 
-// PickDirectory opens a native directory picker dialog.
-// This must remain on App (not FrontendAPI) because it requires the Wails context.
+// PickDirectory opens a native directory picker dialog. The dialog reopens at
+// the directory the user last picked (persisted in dialog_state.json and
+// validated to still exist); a successful non-cancelled pick updates that
+// memory. This must remain on App (not FrontendAPI) because it requires the
+// Wails context.
 func (a *App) PickDirectory() (string, error) {
-	return wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
-		Title: "Select Workspace Directory",
-	})
+	if a.ctx == nil {
+		return "", errors.New("PickDirectory: application context is not initialized")
+	}
+
+	options := wailsRuntime.OpenDialogOptions{
+		Title:                "Select Workspace Directory",
+		CanCreateDirectories: true,
+	}
+	// DefaultDirectory must reference an existing directory or the runtime
+	// returns an error without showing any dialog; LoadDialogState drops
+	// stale/non-existent paths, so adopting its value is always safe.
+	if last := LoadDialogState(a.agentDir()); last.LastDirectory != "" {
+		options.DefaultDirectory = last.LastDirectory
+	}
+
+	dir, err := wailsRuntime.OpenDirectoryDialog(a.ctx, options)
+	if err != nil {
+		return "", err
+	}
+	// On cancel OpenDirectoryDialog returns ("", nil) — keep the previous
+	// memory instead of overwriting it with an empty path.
+	rememberDialogDirectory(a.agentDir(), dir, a.log())
+	return dir, nil
 }
 
 // attachmentFilterPattern builds the Wails FileFilter pattern string for the
