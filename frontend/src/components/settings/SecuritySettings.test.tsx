@@ -23,6 +23,13 @@ vi.mock('@/api/config', () => ({
   updateSecuritySettings: (...args: unknown[]) => updateSecuritySettingsMock(...args),
 }))
 
+// Failure-path tests (backend rejections on load/save) intentionally make
+// SecuritySettings' logger.error fire; mock the logger so the expected
+// errors don't pollute vitest output.
+vi.mock('@/lib/logger', () => ({
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}))
+
 vi.mock('@/api/mcp', () => ({
   getToolList: vi.fn().mockResolvedValue([
     { name: 'read_file', description: 'Reads a file', source: 'core', group: 'local_read', policy: 'allow' },

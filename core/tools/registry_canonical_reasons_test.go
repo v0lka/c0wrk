@@ -11,38 +11,34 @@ import (
 	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
+// canonicalJudgeCase is one real-judge observation fed to the drift guard
+// below. The platform shell judge cases are supplied by platformShellJudgeCases
+// (registry_canonical_reasons_unix_test.go / _windows_test.go) because the
+// bash_exec and posh_exec constructors live behind opposing build tags in
+// sp4rk, and the two judges do not expose identical hard stages.
+type canonicalJudgeCase struct {
+	name          string
+	outcome       sdktools.JudgeOutcome
+	wantCanonical bool
+}
+
 // TestCanonicalHardReasonCodes_FromRealBuiltinJudges is the drift guard for
 // the cross-repository contract behind the Smart Approve backstop (ADR-026):
 // isCanonicalHardReason keys off sdktools.JudgeReasonCode, so the backstop is
 // only as strong as the codes the REAL sp4rk builtin judges attach. This test
 // drives the real judges — not prose copies in mocks — so a reworded reason or
 // a dropped ReasonCode in sp4rk fails here instead of silently making a fired
-// security control clearable by the strict judge.
+// security control clearable by the strict judge. The platform shell judge
+// (bash_exec on Unix, posh_exec on Windows) is driven through
+// platformShellJudgeCases so this file never references a platform-only
+// constructor.
 func TestCanonicalHardReasonCodes_FromRealBuiltinJudges(t *testing.T) {
 	ctx := context.Background()
 
-	bashTool, err := builtins.NewBashExecTool([]string{`rm\s+-rf\s+/`})
-	if err != nil {
-		t.Fatalf("NewBashExecTool() error = %v", err)
-	}
 	webfetchTool := builtins.NewWebFetchTool(builtins.WebFetchLimits{})
 	readFileTool := builtins.NewReadFileTool()
 
-	tests := []struct {
-		name          string
-		outcome       sdktools.JudgeOutcome
-		wantCanonical bool
-	}{
-		{
-			name:          "bash blacklist match",
-			outcome:       bashTool.Judge(ctx, json.RawMessage(`{"command":"rm -rf /"}`)),
-			wantCanonical: true,
-		},
-		{
-			name:          "bash unresolvable path-like token stays clearable",
-			outcome:       bashTool.Judge(ctx, json.RawMessage(`{"command":"cat ~nosuchuser/secret"}`)),
-			wantCanonical: false,
-		},
+	tests := append([]canonicalJudgeCase{
 		{
 			name:          "web_fetch unassessable URL",
 			outcome:       webfetchTool.Judge(ctx, json.RawMessage(`{}`)),
@@ -58,7 +54,7 @@ func TestCanonicalHardReasonCodes_FromRealBuiltinJudges(t *testing.T) {
 			outcome:       readFileTool.Judge(ctx, json.RawMessage(`{}`)),
 			wantCanonical: true,
 		},
-	}
+	}, platformShellJudgeCases(t)...)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.outcome.Allow {

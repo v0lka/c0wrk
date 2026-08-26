@@ -16,6 +16,11 @@
 //    accessor is replaced with an in-memory Storage before any store module
 //    is imported. defineProperty is used (not assignment) so Node's
 //    warning-emitting getter/setter is never invoked.
+//
+// 3. Range geometry polyfill (jsdom): jsdom lacks Range.getClientRects /
+//    getBoundingClientRect, which CodeMirror's measure cycle calls from
+//    requestAnimationFrame — the async TypeError otherwise shows up in stderr
+//    while the tests stay green. Installed only when a DOM is present.
 
 const g = globalThis as Record<string, unknown>
 
@@ -53,4 +58,34 @@ if (isBrokenAccessor) {
     writable: true,
     configurable: true,
   })
+}
+
+// --- 3. Range geometry polyfill for jsdom ------------------------------------
+// jsdom implements no text-layout geometry on Range: `getClientRects` and
+// `getBoundingClientRect` are missing entirely (Element has them, Range does
+// not). CodeMirror's measure cycle runs in requestAnimationFrame and calls
+// them via EditorView.coordsAtPos (tooltip/cursor positioning); the resulting
+// async TypeError lands in stderr after the assertions already passed, so the
+// suite stays green but noisy. Empty rect lists are a safe substitute:
+// CodeMirror treats "no rects" as "no geometry" and falls back gracefully.
+if (typeof document !== 'undefined' && typeof document.createRange === 'function') {
+  const rangeProto = Object.getPrototypeOf(document.createRange()) as Range
+  if (typeof rangeProto.getClientRects !== 'function') {
+    rangeProto.getClientRects = (): DOMRectList =>
+      ({ length: 0, item: () => null }) as unknown as DOMRectList
+  }
+  if (typeof rangeProto.getBoundingClientRect !== 'function') {
+    rangeProto.getBoundingClientRect = (): DOMRect =>
+      ({
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        toJSON: () => ({}),
+      }) as unknown as DOMRect
+  }
 }

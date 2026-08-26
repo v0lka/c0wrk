@@ -57,6 +57,13 @@ vi.mock('@/hooks/useConfigData', () => ({
   useConfigData: () => ({ allModels: models, defaultModel: 'vision-m', loaded: true }),
 }))
 
+// Failure-path tests (attachFiles rejection) intentionally make the hook's
+// logger.error fire; mock the logger so the expected errors don't pollute
+// vitest output.
+vi.mock('@/lib/logger', () => ({
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}))
+
 const makeSession = (id: string): SessionInfo => ({
   id,
   project_id: 'proj',

@@ -1,3 +1,9 @@
+// jsdom environment: this file imports fileViewerStore, whose zustand persist
+// middleware resolves the default `createJSONStorage(() => window.localStorage)`
+// at import time. Without `window` (plain node env) the middleware degrades to
+// "storage unavailable" and warns on every `set` (see panelPersistence.test.ts
+// for the same jsdom opt-in).
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'

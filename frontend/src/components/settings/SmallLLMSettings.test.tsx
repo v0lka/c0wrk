@@ -11,6 +11,13 @@ vi.mock('@/api/config', () => ({
   updateSmallLLMConfig: (...args: unknown[]) => updateSmallLLMConfigMock(...args),
 }))
 
+// Failure-path tests (backend validation rejection) intentionally make
+// SmallLLMSettings' logger.error fire; mock the logger so the expected
+// errors don't pollute vitest output.
+vi.mock('@/lib/logger', () => ({
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}))
+
 import { SmallLLMSettings } from './SmallLLMSettings'
 
 const baseConfig = {

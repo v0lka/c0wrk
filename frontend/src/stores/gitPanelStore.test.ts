@@ -1,5 +1,12 @@
 // Unit tests for gitPanelStore — Zustand store actions and state transitions
-
+//
+// jsdom environment: the store uses zustand's persist middleware without an
+// explicit `storage` option, so zustand resolves its default
+// `createJSONStorage(() => window.localStorage)` at import time. In the plain
+// node environment `window` is undefined, the getter throws, the middleware
+// degrades to "storage unavailable" and warns on every `set` (matching
+// panelPersistence.test.ts, which opts into jsdom for the same reason).
+// @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, partializeGitPanel, mergeGitPanel, type GitPanelEntry } from '@/stores/gitPanelStore'
 

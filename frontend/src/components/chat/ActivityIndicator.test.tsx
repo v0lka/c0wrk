@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
@@ -19,6 +19,17 @@ describe('ActivityIndicator', () => {
     root = createRoot(container)
     useSessionStore.setState({ activeSessionId: SESSION })
     useChatStore.setState({ activityStatus: {}, pausing: {}, taskActive: {} })
+  })
+
+  // Unmount before the next test's beforeEach store updates run: the rendered
+  // tree stays subscribed to the stores, so setState outside act() on a live
+  // component is what produces "not wrapped in act(...)" warnings.
+  afterEach(() => {
+    act(() => {
+      root.unmount()
+    })
+    container.remove()
+    document.body.replaceChildren()
   })
 
   const render = (): void =>

@@ -46,15 +46,32 @@ export function ProviderAccordion({
     hasRequiredCredentials,
   } = useModelFetch(provider, providerConfigs)
 
-  // Show configured models immediately when the provider API hasn't been
-  // fetched yet. Once the user clicks "Fetch Models" / "Apply", the full
-  // provider model list replaces the configured subset.
+  // The visible model list is the deduplicated union of the models fetched
+  // from the provider API and the models already enabled in the config.
+  // Enabled models never disappear from the list — even when a later fetch
+  // (or a reopened settings dialog) no longer reports them — until the user
+  // unchecks them; duplicates (endpoints reporting the same ID twice) are
+  // collapsed into a single row. Sorted so the order is stable regardless
+  // of fetch state.
   const displayModels = useMemo(() => {
-    if (models.length > 0) return models
-    return config.models
+    const seen = new Set<string>()
+    const result: string[] = []
+    for (const m of [...models, ...config.models]) {
+      if (seen.has(m)) continue
+      seen.add(m)
+      result.push(m)
+    }
+    result.sort()
+    return result
   }, [models, config.models])
 
   const isEmpty = displayModels.length === 0
+
+  // A fetch has completed successfully when the key is no longer dirty
+  // (useModelFetch clears apiKeyDirty only on success) and no fetch error
+  // is pending. Before that we simply don't know what the endpoint reports,
+  // so no staleness signal is shown.
+  const fetchCompleted = !apiKeyDirty && modelsError === null
 
   // Deletion confirmation: warn when the provider owns the default model.
   // `defaultModel` is a composite "provider/name" selector (normalized by
@@ -169,6 +186,12 @@ export function ProviderAccordion({
                 // badge to the single provider that owns the default even when
                 // the same bare name is exposed by multiple providers.
                 const isDefault = compositeModelId(provider, model) === defaultModel
+                // Enabled but absent from the last successful fetch: the
+                // endpoint no longer reports this model. Surfaced so the user
+                // notices the drift instead of silently keeping a model that
+                // may fail at request time.
+                const notReported =
+                  fetchCompleted && isEnabled && !models.includes(model)
                 return (
                   <label
                     key={model}
@@ -184,6 +207,14 @@ export function ProviderAccordion({
                     {isDefault && (
                       <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                         default
+                      </span>
+                    )}
+                    {notReported && (
+                      <span
+                        className="rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+                        title="Enabled in the config, but the last successful fetch did not report this model. It may have been removed from the endpoint."
+                      >
+                        not reported by endpoint
                       </span>
                     )}
                     <button

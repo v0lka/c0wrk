@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -335,6 +336,97 @@ func TestListAnthropicModels_MalformedBody(t *testing.T) {
 	_, err := listAnthropicModels(context.Background(), srv.URL, "", nil)
 	if err == nil {
 		t.Fatal("expected error for malformed response, got nil")
+	}
+}
+
+// TestDedupeModelNames verifies the dedup helper directly: duplicates are
+// removed, first-occurrence order is preserved, and short lists pass through.
+func TestDedupeModelNames(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"nil", nil, nil},
+		{"empty", []string{}, []string{}},
+		{"single", []string{"m"}, []string{"m"}},
+		{"no dups", []string{"a", "b", "c"}, []string{"a", "b", "c"}},
+		{"adjacent dups", []string{"a", "a", "b"}, []string{"a", "b"}},
+		{"scattered dups keep first order", []string{"b", "a", "b", "c", "a"}, []string{"b", "a", "c"}},
+		{"all same", []string{"x", "x", "x"}, []string{"x"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dedupeModelNames(tt.in)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("dedupeModelNames(%v) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestListProviderModels_DeduplicatesOpenAI verifies that ListProviderModels
+// collapses duplicate model IDs reported by an OpenAI-compatible endpoint
+// (LM Studio and multi-tenant gateways legitimately repeat entries) before
+// the list reaches the settings UI.
+func TestListProviderModels_DeduplicatesOpenAI(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"m-b"},{"id":"m-a"},{"id":"m-b"},{"id":"m-a"}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := &BuilderConfig{
+		LLM: BuilderLLMConfig{
+			ProviderConfigs: map[string]BuilderProviderConfig{
+				"local": {ProviderType: "openai", BaseURL: srv.URL},
+			},
+		},
+	}
+	b, err := NewOrchestratorBuilder(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewOrchestratorBuilder failed: %v", err)
+	}
+
+	names, err := b.ListProviderModels(context.Background(), "local", cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"m-a", "m-b"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("names = %v, want %v (duplicates must be collapsed)", names, want)
+	}
+}
+
+// TestListProviderModels_DeduplicatesAnthropicCompatible verifies the same
+// guarantee for anthropic-compatible endpoints: the /v1/models response may
+// repeat an ID, the UI list must not.
+func TestListProviderModels_DeduplicatesAnthropicCompatible(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"claude-x"},{"id":"claude-x"},{"id":"claude-y"}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := &BuilderConfig{
+		LLM: BuilderLLMConfig{
+			ProviderConfigs: map[string]BuilderProviderConfig{
+				"proxy": {ProviderType: "anthropic", BaseURL: srv.URL},
+			},
+		},
+	}
+	b, err := NewOrchestratorBuilder(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewOrchestratorBuilder failed: %v", err)
+	}
+
+	names, err := b.ListProviderModels(context.Background(), "proxy", cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"claude-x", "claude-y"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("names = %v, want %v (duplicates must be collapsed)", names, want)
 	}
 }
 

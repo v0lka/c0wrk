@@ -1327,8 +1327,23 @@ func (b *OrchestratorBuilder) generateCommitMessageWithCaller(
 		"multiple attempts; try a different model or reduce the staged diff size")
 }
 
-// ListProviderModels returns available model names for a given provider.
+// ListProviderModels returns available model names for a given provider,
+// deduplicated: some endpoints (LM Studio, OpenAI-compatible gateways)
+// legitimately report the same model ID more than once, and the settings UI
+// renders the list verbatim — each name must appear exactly once.
 func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider string, cfg *BuilderConfig) ([]string, error) {
+	names, err := b.fetchProviderModels(ctx, provider, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return dedupeModelNames(names), nil
+}
+
+// fetchProviderModels resolves the raw model-name list for provider (built-in
+// registry entries or an endpoint fetch). The result may contain duplicates;
+// the public ListProviderModels applies dedup before handing the list to the
+// UI so every consumer sees each name exactly once.
+func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider string, cfg *BuilderConfig) ([]string, error) {
 	switch provider {
 	case "anthropic":
 		return llm.BuiltInModelNames("anthropic-api"), nil
@@ -1391,6 +1406,25 @@ func filterKnownFamilyModels(models []string) []string {
 		if llm.DetectFamily(m) != llm.FamilyDefault {
 			result = append(result, m)
 		}
+	}
+	return result
+}
+
+// dedupeModelNames removes duplicate entries while preserving first-occurrence
+// order. No sortedness is assumed: built-in registry lists and raw endpoint
+// responses (sorted or not) both flow through here.
+func dedupeModelNames(names []string) []string {
+	if len(names) < 2 {
+		return names
+	}
+	seen := make(map[string]struct{}, len(names))
+	result := make([]string, 0, len(names))
+	for _, n := range names {
+		if _, dup := seen[n]; dup {
+			continue
+		}
+		seen[n] = struct{}{}
+		result = append(result, n)
 	}
 	return result
 }
