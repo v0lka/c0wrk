@@ -1,16 +1,26 @@
 package markitdown
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -363,5 +373,294 @@ func TestConvertWithVision_DriverCrashFallsBackToPlainCLI(t *testing.T) {
 	}
 	if !strings.Contains(markdown, "crash fallback content") {
 		t.Errorf("markdown = %q, want plain CLI content", markdown)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Vision-assisted conversion E2E (embedded PDF / data-URI image captioning).
+// ---------------------------------------------------------------------------
+
+// venvPythonForTests resolves the managed venv interpreter used for
+// vision-assisted conversion. Returns "" when unavailable — the E2E tests
+// then skip (they require the real markitdown library plus pdfminer/Pillow).
+func venvPythonForTests() string {
+	cand := os.Getenv("HOME") + "/.c0wrk/tools/python/venv/bin/python3"
+	if _, err := os.Stat(cand); err == nil {
+		return cand
+	}
+	return ""
+}
+
+// mockVisionEndpoint starts an OpenAI Chat Completions-compatible HTTP server
+// answering every POST with a fixed caption and counting requests. The driver
+// appends "/chat/completions" to the returned base URL (hence the /v1 suffix).
+func mockVisionEndpoint(t *testing.T) (baseURL string, calls *atomic.Int32) {
+	t.Helper()
+	calls = &atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"vision-e2e-model"`) {
+			t.Errorf("vision request missing model, body: %.200s", body)
+		}
+		if !strings.Contains(string(body), `image_url`) {
+			t.Errorf("vision request carries no image block, body: %.200s", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"VISION E2E CAPTION: a red rectangle diagram"}}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/v1", calls
+}
+
+// testJPEG renders a simple 400x300 image and encodes it as JPEG.
+func testJPEG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 400, 300))
+	for y := 0; y < 300; y++ {
+		for x := 0; x < 400; x++ {
+			if x > 50 && x < 350 && y > 50 && y < 250 {
+				img.Set(x, y, color.RGBA{R: 200, G: 30, B: 30, A: 255})
+			} else {
+				img.Set(x, y, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatalf("encode jpeg: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// buildPDFWithImage crafts a minimal one-page PDF whose content stream draws
+// a text line and one DCTDecode (JPEG) image XObject.
+func buildPDFWithImage(text string, jpegBytes []byte, w, h int) []byte {
+	objects := map[int][]byte{}
+	objects[1] = []byte("<< /Type /Catalog /Pages 2 0 R >>")
+	objects[2] = []byte("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+	objects[3] = []byte("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " +
+		"/Resources << /Font << /F1 5 0 R >> /XObject << /Im1 4 0 R >> >> /Contents 6 0 R >>")
+	objects[4] = append([]byte(fmt.Sprintf(
+		"<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB "+
+			"/BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n", w, h, len(jpegBytes))),
+		jpegBytes...)
+	objects[4] = append(objects[4], []byte("\nendstream")...)
+	objects[5] = []byte("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+	content := "BT /F1 24 Tf 72 700 Td (" + text + ") Tj ET\nq 400 0 0 300 72 350 cm /Im1 Do Q\n"
+	objects[6] = append([]byte(fmt.Sprintf("<< /Length %d >>\nstream\n", len(content))),
+		[]byte(content)...)
+	objects[6] = append(objects[6], []byte("\nendstream")...)
+
+	var out bytes.Buffer
+	out.WriteString("%PDF-1.4\n")
+	offsets := map[int]int{}
+	for n := 1; n <= 6; n++ {
+		offsets[n] = out.Len()
+		fmt.Fprintf(&out, "%d 0 obj\n", n)
+		out.Write(objects[n])
+		out.WriteString("\nendobj\n")
+	}
+	xref := out.Len()
+	fmt.Fprintf(&out, "xref\n0 7\n0000000000 65535 f \n")
+	for n := 1; n <= 6; n++ {
+		fmt.Fprintf(&out, "%010d 00000 n \n", offsets[n])
+	}
+	fmt.Fprintf(&out, "trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF", xref)
+	return out.Bytes()
+}
+
+// TestConvertWithVision_PDFEmbeddedImageCaptioned pins the PDF image pass:
+// markitdown 0.1.4 drops embedded PDF images entirely (pdfminer text only),
+// so the driver must extract the DCTDecode XObject itself, caption it via the
+// vision endpoint, and append an "## Embedded images" section to the text —
+// otherwise the agent never sees image content from a PDF.
+func TestConvertWithVision_PDFEmbeddedImageCaptioned(t *testing.T) {
+	if _, err := exec.LookPath("markitdown"); err != nil {
+		t.Skipf("markitdown CLI not available on PATH: %v", err)
+	}
+	python := venvPythonForTests()
+	if python == "" {
+		t.Skip("managed venv python not available")
+	}
+
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "report.pdf")
+	if err := os.WriteFile(pdfPath, buildPDFWithImage("Quarterly revenue report", testJPEG(t), 400, 300), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	baseURL, calls := mockVisionEndpoint(t)
+	c := &Converter{log: testLogger(), timeout: time.Minute, pythonPath: python}
+	vision := &VisionOptions{APIKey: "e2e-key", BaseURL: baseURL, Model: "vision-e2e-model"}
+
+	markdown, err := c.ConvertWithVision(context.Background(), pdfPath, vision)
+	if err != nil {
+		t.Fatalf("ConvertWithVision returned error: %v", err)
+	}
+
+	if !strings.Contains(markdown, "Quarterly revenue report") {
+		t.Errorf("pdf text layer missing from output:\n%s", markdown)
+	}
+	if !strings.Contains(markdown, "## Embedded images") {
+		t.Errorf("embedded images section missing from output:\n%s", markdown)
+	}
+	if !strings.Contains(markdown, "VISION E2E CAPTION: a red rectangle diagram") {
+		t.Errorf("image caption missing from output:\n%s", markdown)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("expected exactly 1 captioning call, got %d", n)
+	}
+}
+
+// TestConvertWithVision_DataURIImageCaptioned pins the data-URI pass for
+// html-family documents (html/docx/epub): the driver converts with
+// keep_data_uris=True so embedded images survive, then replaces each base64
+// blob with an inline caption — the vision model sees the image AND the raw
+// payload never reaches the model context.
+func TestConvertWithVision_DataURIImageCaptioned(t *testing.T) {
+	if _, err := exec.LookPath("markitdown"); err != nil {
+		t.Skipf("markitdown CLI not available on PATH: %v", err)
+	}
+	python := venvPythonForTests()
+	if python == "" {
+		t.Skip("managed venv python not available")
+	}
+
+	dir := t.TempDir()
+	img := image.NewRGBA(image.Rect(0, 0, 200, 150))
+	for y := 0; y < 150; y++ {
+		for x := 0; x < 200; x++ {
+			img.Set(x, y, color.RGBA{R: 30, G: 30, B: 180, A: 255})
+		}
+	}
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, img); err != nil {
+		t.Fatal(err)
+	}
+	dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBuf.Bytes())
+	htmlPath := filepath.Join(dir, "page.html")
+	html := "<html><body><h1>Report</h1><p>Text before</p><img src='" + dataURI + "' alt=''/><p>Text after</p></body></html>"
+	if err := os.WriteFile(htmlPath, []byte(html), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	baseURL, calls := mockVisionEndpoint(t)
+	c := &Converter{log: testLogger(), timeout: time.Minute, pythonPath: python}
+	vision := &VisionOptions{APIKey: "e2e-key", BaseURL: baseURL, Model: "vision-e2e-model"}
+
+	markdown, err := c.ConvertWithVision(context.Background(), htmlPath, vision)
+	if err != nil {
+		t.Fatalf("ConvertWithVision returned error: %v", err)
+	}
+
+	if !strings.Contains(markdown, "VISION E2E CAPTION: a red rectangle diagram") {
+		t.Errorf("inline caption missing from output:\n%s", markdown)
+	}
+	if strings.Contains(markdown, "base64,") {
+		t.Errorf("base64 image payload leaked into output:\n%.400s", markdown)
+	}
+	if !strings.Contains(markdown, "Text before") || !strings.Contains(markdown, "Text after") {
+		t.Errorf("surrounding html text missing from output:\n%s", markdown)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("expected exactly 1 captioning call, got %d", n)
+	}
+}
+
+// TestConvertWithVision_NonRasterDataURIStripped pins the data-URI pass's
+// guarantee that NO embedded image payload leaks verbatim: markitdown emits
+// data URIs for image mime types it does not caption (e.g. EMF metafiles and
+// SVG), and those are outside the raster set Pillow can decode. The pass must
+// still strip their base64 blobs — an EMF/SVG payload reaching the model
+// context would defeat the entire purpose of the pass.
+func TestConvertWithVision_NonRasterDataURIStripped(t *testing.T) {
+	if _, err := exec.LookPath("markitdown"); err != nil {
+		t.Skipf("markitdown CLI not available on PATH: %v", err)
+	}
+	python := venvPythonForTests()
+	if python == "" {
+		t.Skip("managed venv python not available")
+	}
+
+	dir := t.TempDir()
+	htmlPath := filepath.Join(dir, "page.html")
+	// A valid base64 string that is NOT a decodable raster image; paired with
+	// mime types the old regex would have skipped entirely (x-emf, svg+xml).
+	payload := base64.StdEncoding.EncodeToString([]byte("not-a-raster-image"))
+	html := "<html><body><p>emf</p><img src='data:image/x-emf;base64," + payload + "' alt=''/>" +
+		"<p>svg</p><img src='data:image/svg+xml;base64," + payload + "' alt=''/></body></html>"
+	if err := os.WriteFile(htmlPath, []byte(html), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	baseURL, calls := mockVisionEndpoint(t)
+	c := &Converter{log: testLogger(), timeout: time.Minute, pythonPath: python}
+	vision := &VisionOptions{APIKey: "e2e-key", BaseURL: baseURL, Model: "vision-e2e-model"}
+
+	markdown, err := c.ConvertWithVision(context.Background(), htmlPath, vision)
+	if err != nil {
+		t.Fatalf("ConvertWithVision returned error: %v", err)
+	}
+
+	if strings.Contains(markdown, "base64,") {
+		t.Errorf("non-raster base64 image payload leaked into output:\n%.400s", markdown)
+	}
+	if !strings.Contains(markdown, "emf") || !strings.Contains(markdown, "svg") {
+		t.Errorf("surrounding text missing from output:\n%s", markdown)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("expected 0 captioning calls for non-decodable images, got %d", n)
+	}
+}
+
+// TestConvertWithVision_DataURIAltReused pins the double-captioning fix:
+// images that already carry alt text (markitdown's own pptx captioning, or a
+// docx/html alt attribute) must NOT trigger a second LLM round-trip — the
+// data-URI pass reuses the existing description and only strips the base64.
+func TestConvertWithVision_DataURIAltReused(t *testing.T) {
+	if _, err := exec.LookPath("markitdown"); err != nil {
+		t.Skipf("markitdown CLI not available on PATH: %v", err)
+	}
+	python := venvPythonForTests()
+	if python == "" {
+		t.Skip("managed venv python not available")
+	}
+
+	dir := t.TempDir()
+	img := image.NewRGBA(image.Rect(0, 0, 120, 90))
+	for y := 0; y < 90; y++ {
+		for x := 0; x < 120; x++ {
+			img.Set(x, y, color.RGBA{R: 10, G: 120, B: 10, A: 255})
+		}
+	}
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, img); err != nil {
+		t.Fatal(err)
+	}
+	dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBuf.Bytes())
+	htmlPath := filepath.Join(dir, "page.html")
+	html := "<html><body><img src='" + dataURI + "' alt='EXISTING ALT TEXT'/></body></html>"
+	if err := os.WriteFile(htmlPath, []byte(html), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	baseURL, calls := mockVisionEndpoint(t)
+	c := &Converter{log: testLogger(), timeout: time.Minute, pythonPath: python}
+	vision := &VisionOptions{APIKey: "e2e-key", BaseURL: baseURL, Model: "vision-e2e-model"}
+
+	markdown, err := c.ConvertWithVision(context.Background(), htmlPath, vision)
+	if err != nil {
+		t.Fatalf("ConvertWithVision returned error: %v", err)
+	}
+
+	if !strings.Contains(markdown, "EXISTING ALT TEXT") {
+		t.Errorf("existing alt text lost from output:\n%s", markdown)
+	}
+	if strings.Contains(markdown, "base64,") {
+		t.Errorf("base64 image payload leaked into output:\n%.400s", markdown)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("expected 0 captioning calls when alt text already present, got %d", n)
 	}
 }

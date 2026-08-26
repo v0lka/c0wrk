@@ -25,7 +25,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `frontend/src/hooks/useFileDrop.ts` — native `files:dropped` subscription, drag overlay, and webview-navigation suppression
 - `frontend/src/hooks/useStageAttachments.ts` — shared picker/drop attachment staging with vision filtering
 - `backend/frontend_api_attachment.go` — FrontendAPI attachment RPC surface
-- `core/markitdown/converter.go` — markdown conversion of attached files (shells out to the managed `markitdown` CLI, ADR-010); `core/markitdown/vision.go` + `driver.go` — optional vision-assisted conversion via the markitdown Python API (embedded stdlib-only OpenAI-compatible client; the CLI exposes no LLM flags), per-document `VisionOptions` resolved from the currently active model; `core/visionresolver.go` — model/provider → vision-params mapping (vision capability gate via `ModelRegistry.ResolveLocal`; anthropic_compatible proxies excluded — no OpenAI-compatible surface)
+- `core/markitdown/converter.go` — markdown conversion of attached files (shells out to the managed `markitdown` CLI, ADR-010); `core/markitdown/vision.go` + `driver.go` — optional vision-assisted conversion via the markitdown Python API (embedded stdlib-only OpenAI-compatible client; the CLI exposes no LLM flags), per-document `VisionOptions` resolved from the currently active model. markitdown 0.1.4 captions only pptx images internally, so the driver adds two passes: PDF-embedded-image extraction (pdfminer XObject walk + Pillow decode) appended as an `## Embedded images` section, and data-URI replacement for docx/html/epub (converts with `keep_data_uris=True`, captions each blob, strips the base64 from the output); `core/visionresolver.go` — model/provider → vision-params mapping (vision capability gate via `ModelRegistry.ResolveLocal`; anthropic_compatible proxies excluded — no OpenAI-compatible surface)
 - `core/tools/read_file_doc.go` — read_file document wrapper; vision resolver attached to the task context by the Orchestrator, conversion cache key includes the vision identity
 - `backend/session/title.go` — auto title generation via LLM
 - `backend/frontend_api_session.go` — FrontendAPI session methods
@@ -200,12 +200,20 @@ Image attachments survive a backend restart. Before `SendMessage` snapshots and 
 
 #### Vision-assisted Document Conversion — Data Egress
 
-When vision assistance is active (managed venv installed + the currently active model is vision-capable + provider credentials present), document conversion does not just produce local markdown: every image **embedded in the document** (pptx pictures, pdf illustrations, …) is base64-encoded and sent to the active LLM provider's endpoint for captioning. Two things to note about this egress:
+When vision assistance is active (managed venv installed + the currently active model is vision-capable + provider credentials present), document conversion does not just produce local markdown: images **embedded in the document** are base64-encoded and sent to the active LLM provider's endpoint for captioning. Coverage per format (markitdown 0.1.4 captions only pptx internally, so the driver adds two post-processing passes):
+
+- **pptx** — pictures captioned by markitdown's own `llm_caption` integration.
+- **pdf** — markitdown's PDF converter is pure pdfminer text extraction and drops images entirely; the driver walks page XObjects itself (pdfminer + Pillow, both venv-resident; DCTDecode/JPXDecode pass-through, FlateDecode raw-sample reconstruction for DeviceGray/RGB/CMYK and ICCBased at 8bpc) and appends an `## Embedded images` section with one caption per unique image (content-hash deduplication).
+- **docx / html / epub** — the conversion runs with `keep_data_uris=True` so embedded images survive as markdown data-URI images; the driver replaces each base64 blob in place with `![caption](embedded-image-N)`, so the captioned description reaches the context AND the raw base64 payload never does (without vision, markitdown truncates data URIs to inert stubs).
+
+Two things to note about this egress:
 
 - It applies to **both** conversion paths: user-staged attachments (`AttachFiles`) and the agent-driven `read_file` document wrapper. In the `read_file` case the user attached nothing — an agent merely reading a sensitive PDF implicitly sends that document's embedded images to the provider.
 - With a **cloud** provider this is third-party egress of image content the user may not think of as "uploaded"; with a **local** model (LM Studio etc.) the captioning traffic stays on the machine. The connection honors the configured proxy. There is deliberately **no separate config toggle**: gating follows the active model's vision capability, exactly like explicit image attachments (which the user does choose). Disabling vision assistance wholesale is possible by pointing the session at a non-vision model.
 
-Failure containment: captioning failures are swallowed per image by markitdown itself, a wholesale driver failure degrades to plain CLI conversion, and the vision attempt plus its fallback share one elevated per-file deadline — a hung vision endpoint can never make conversion worse (or slower) than the plain path bounded by a single budget.
+Cost and abuse bounds, shared across markitdown's internal captioning and both driver passes: at most **12 captioning LLM calls per document** (images beyond the budget are listed without descriptions; a note is appended when the limit is hit), images smaller than 32px in either dimension are ignored as decorations, and every image is normalized (RGB JPEG, longest side ≤ 2048px) before upload.
+
+Failure containment: captioning failures are swallowed per image (markitdown internally, and by the driver's per-image guards — diagnostics go to stderr and the Go-side debug log), each driver pass is individually exception-guarded (a pass failure leaves the base markdown intact), a wholesale driver failure degrades to plain CLI conversion, and the vision attempt plus its fallback share one elevated per-file deadline — a hung vision endpoint can never make conversion worse (or slower) than the plain path bounded by a single budget.
 
 #### Clipboard and Native File Drop
 
