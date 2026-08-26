@@ -851,6 +851,16 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 		lastTaskID := session.lastCompletedTaskID
 		session.mu.Unlock()
 
+		// Snapshot the anchor's unfinished state BEFORE HandleMessage can
+		// reactivate it. lastCompletedTaskID is restored without a status
+		// check, so after an app restart it may point at a failed task whose
+		// resume path (tryContinueInterruptedTask) then fell back here on a
+		// restore error — such an anchor is unfinished BEFORE the send. The
+		// snapshot lets shouldRetryContinuationFresh tell that case apart from
+		// an anchor reactivated by this send's own execution. The
+		// short-circuit keeps fresh sends (the common case) off the lookup.
+		anchorWasUnfinished := lastTaskID != "" && m.unfinishedTaskID(id) == lastTaskID
+
 		// On a continuation (lastTaskID != ""), goal mode runs ON the restored
 		// blackboard of the prior completed task: the agent keeps the inherited
 		// facts and history, and a fresh goal is derived from the new message.
@@ -896,12 +906,21 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 			err = nil
 		}
 
-		// Fallback: if continuation failed (restore error) and we had a TaskID, retry fresh.
+		// Fallback: if the continuation failed BEFORE it started executing
+		// (blackboard restore or routing error) and we had a TaskID, retry
+		// fresh. shouldRetryContinuationFresh returns false only when this
+		// send's continuation actually started executing — the anchor was
+		// terminal before the send and its row was reactivated to
+		// in_progress, so a fresh retry would orphan it. An anchor that was
+		// ALREADY unfinished when the send began still falls back to fresh:
+		// the resume path cannot restore it (same error every time), so the
+		// banner would dead-end, and the stale-task sweep cancels the row
+		// once the fresh run succeeds.
 		// Preserves goal mode: a failed goal-on-continuation retries as a fresh
 		// goal task rather than silently dropping the flag (and, when goal was
 		// enabled via the "/goal" prefix, leaking the prefix into the fresh task
 		// — hmMsg is already /goal-stripped, msg is not).
-		if err != nil && lastTaskID != "" {
+		if err != nil && m.shouldRetryContinuationFresh(id, lastTaskID, anchorWasUnfinished) {
 			m.log().Warn("continuation failed, falling back to fresh workflow", "session_id", id, "task_id", lastTaskID, "error", err)
 			session.mu.Lock()
 			session.lastCompletedTaskID = ""
@@ -1840,6 +1859,47 @@ func (m *Manager) abandonUnfinishedTaskForGoal(id string) {
 	})
 }
 
+// shouldRetryContinuationFresh reports whether a failed continuation attempt
+// (HandleMessage invoked with a TaskID) should be retried as a fresh task.
+// anchorWasUnfinished is the caller's PRE-HandleMessage snapshot of whether
+// the anchor was already the session's unfinished task when the send began
+// (see SendMessage); it disambiguates the two ways an unfinished lookup can
+// return the anchor after a failed attempt:
+//
+//   - anchorWasUnfinished=false: a normal send only reaches HandleMessage
+//     with a TaskID when no unfinished task existed when the send began (an
+//     unfinished task is continued via tryContinueInterruptedTask instead),
+//     and the anchor is reactivated back to in_progress only once its
+//     execution actually started (post-routing — see the orchestrator's
+//     reactivateContinuationTask). An unfinished lookup returning the anchor
+//     therefore means the continuation's own execution started and failed
+//     mid-flight: retrying fresh would abandon the reactivated row as an
+//     orphaned in_progress task — the session would then report
+//     has_unfinished_task=true forever and re-inject the "Task failed /
+//     Resume" banner after every restart over an otherwise completed
+//     session. In that case the caller must NOT retry fresh; the error
+//     falls through to the shared error path, which emits the resumable
+//     banner for the anchor instead.
+//
+//   - anchorWasUnfinished=true: the anchor predates the send. This happens
+//     when lastCompletedTaskID was restored without a status check (it may
+//     point at a failed task after an app restart) and the resume path
+//     itself could not restore the task's blackboard or trajectory, falling
+//     back to a continuation attempt on a row that never was terminal. A
+//     failed attempt here must NOT dead-end on the resumable banner — the
+//     resume path would hit the same restore error — so a fresh retry is
+//     allowed. Should the fresh run succeed, sweepStaleUnfinishedTasks
+//     cancels the leftover anchor row, so no orphan remains.
+func (m *Manager) shouldRetryContinuationFresh(sessionID, lastTaskID string, anchorWasUnfinished bool) bool {
+	if lastTaskID == "" {
+		return false
+	}
+	if anchorWasUnfinished {
+		return true
+	}
+	return m.unfinishedTaskID(sessionID) != lastTaskID
+}
+
 // unfinishedTaskID returns the ID of the most recent unfinished (in_progress
 // or failed) task for the session, or "" if there is none, no task store is
 // configured, or the lookup errors. It is a pure lookup — it never emits.
@@ -2006,9 +2066,13 @@ func (m *Manager) emitTaskComplete(sessionID string, result *core.HandleResult, 
 	// result above is final. If the task that just ran is still marked
 	// unfinished, the completion write raced or was dropped; surface a
 	// persistence warning instead of a misleading "resume" banner (see
-	// warnIfCompletionDidNotPersist).
+	// warnIfCompletionDidNotPersist). Any OTHER unfinished row in the session
+	// is a stale orphan of an abandoned continuation — cancel it so the
+	// session's has_unfinished_task flag finally clears (see
+	// sweepStaleUnfinishedTasks).
 	if success {
 		m.warnIfCompletionDidNotPersist(sessionID, result)
+		m.sweepStaleUnfinishedTasks(sessionID, result)
 		return
 	}
 
@@ -2052,6 +2116,73 @@ func (m *Manager) warnIfCompletionDidNotPersist(sessionID string, result *core.H
 				"phase":   "persistence",
 			},
 		})
+	}
+}
+
+// maxStaleTaskSweep bounds the stale-task sweep loop defensively: a store
+// that keeps reporting the same unfinished row (e.g. a CancelTask write that
+// silently fails) must not turn the sweep into an infinite loop.
+const maxStaleTaskSweep = 8
+
+// sweepStaleUnfinishedTasks cancels leftover unfinished (in_progress /
+// paused / failed) task rows in the session after a successful completion and
+// resolves their persisted task_failed_resumable banners. Such rows are stale
+// by construction: a session executes one task at a time and a fresh task is
+// only started when no unfinished task exists, so any unfinished row other
+// than the just-completed one is the orphan of an abandoned continuation
+// (historically the reactivated-then-abandoned anchor of the
+// fresh-workflow fallback). Left in place, the row keeps the session's
+// has_unfinished_task=true forever, so every app restart re-injects the
+// "Task failed / Resume" banner over an otherwise successfully completed
+// session. Best-effort: errors are logged only.
+func (m *Manager) sweepStaleUnfinishedTasks(sessionID string, result *core.HandleResult) {
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts == nil {
+		return
+	}
+
+	var completedTaskID string
+	if result != nil {
+		if pbb, ok := result.Blackboard.(core.PersistableBlackboard); ok {
+			completedTaskID = pbb.TaskID()
+		}
+	}
+	// Symmetric with warnIfCompletionDidNotPersist: without a persistable
+	// blackboard there is no ID identifying the task that just completed, so
+	// the sweep cannot tell that task's (possibly racing) unfinished row
+	// apart from a stale orphan. Cancel nothing rather than risk discarding
+	// the live row.
+	if completedTaskID == "" {
+		return
+	}
+
+	adapter := NewTaskStoreAdapter(ts)
+	for range maxStaleTaskSweep {
+		taskID, err := adapter.GetUnfinishedTaskID(sessionID)
+		if err != nil {
+			m.log().Warn("stale-task sweep: unfinished lookup failed", "session", sessionID, "error", err)
+			return
+		}
+		// Done when nothing is unfinished, or when the lookup reaches the row
+		// of the task that just completed (its own completion raced or was
+		// dropped — warnIfCompletionDidNotPersist already surfaced that). The
+		// lookup returns one row at a time, so any older orphan sitting behind
+		// that row is invisible to this sweep and stays for the NEXT
+		// successful completion to cancel — best-effort by design.
+		if taskID == "" || taskID == completedTaskID {
+			return
+		}
+		if err := adapter.PersistCancellation(taskID); err != nil {
+			m.log().Warn("stale-task sweep: failed to cancel orphaned task", "session", sessionID, "task", taskID, "error", err)
+			return
+		}
+		// Resolve the orphan's persisted resume banner so it does not
+		// reappear as pending on the next session reload.
+		m.resolveResumableTaskMessage(sessionID, taskID, "cancelled")
+		m.log().Info("cancelled orphaned unfinished task superseded by a successful completion",
+			"session", sessionID, "task", taskID)
 	}
 }
 

@@ -744,6 +744,42 @@ type HandleResult struct {
   `success` → `completed`; `partial` → left `in_progress` (resumable);
   `failed`/`aborted` → `failed` (resumable); `cancelled` → handled by the
   session manager's cancellation paths.
+- **Continuation reactivation is a commit-point side effect.** A continuation
+  (`HandleMessage` with a `TaskID`) flips its anchor task back to
+  `in_progress` (`ReactivateTask`) only once the continuation has actually
+  committed to executing — after routing succeeded (normal path) or the goal
+  loop is entered (goal path; `core.reactivateContinuationTask`). A failure
+  BEFORE that point (blackboard restore, routing error) leaves the anchor's
+  prior terminal status intact, so the manager's fresh-workflow fallback
+  (`Manager.shouldRetryContinuationFresh`) cannot orphan a reactivated row.
+  The guard classifies the failed attempt via a pre-send snapshot of the
+  anchor's status: a terminal anchor that turns up unfinished after the
+  attempt was reactivated by this send's own execution and failed mid-flight
+  (no fresh retry — the resumable banner covers it), while an anchor that
+  was already unfinished when the send began (a `lastCompletedTaskID`
+  restored without a status check, pointing at a failed task whose resume
+  path fell back on a restore error) retries fresh — the banner would
+  dead-end on the same restore error, and the stale sweep below cancels the
+  leftover row once the fresh run succeeds. This fixes the bug where a
+  routing failure on a continuation reactivated the anchor and the fallback's
+  fresh task left the anchor `in_progress` forever, pinning
+  `has_unfinished_task=true` and re-injecting the "Task failed / Resume"
+  banner after every restart over an otherwise completed session.
+- **A successful completion sweeps stale unfinished rows.**
+  `Manager.emitTaskComplete` on `success=true` cancels any leftover
+  unfinished (`in_progress`/`paused`/`failed`) task rows in the session other
+  than the just-completed task and resolves their persisted
+  `task_failed_resumable` banners (`Manager.sweepStaleUnfinishedTasks`).
+  Such rows are stale by construction — a session runs one task at a time
+  and a fresh task starts only when nothing is unfinished — so this heals
+  legacy databases already carrying orphaned rows. The sweep never runs on
+  degraded completions, where the resumable banner is legitimate, and is
+  skipped when the result carries no persistable blackboard (no completed
+  task ID to shield from cancellation — an unfinished row may belong to the
+  just-completed task, whose completion write raced). It is best-effort: the
+  lookup returns one unfinished row at a time, so an older orphan sitting
+  behind the just-completed task's own unfinished row stays for the next
+  successful completion to cancel.
 - Session forking deep-copies all dependent rows (messages, tasks and their
   steps/facts/attachments/trajectory/goal state, terminal commands, work directories,
   and review data — `task_goal_state` preserves the forked task's goal history)

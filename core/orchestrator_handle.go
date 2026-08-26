@@ -110,11 +110,35 @@ func (o *Orchestrator) setupBlackboard(message, sessionID, taskID string, pendin
 		pbb.AddAttachment(a)
 	}
 
-	// Reactivate task
-	pbb.ReactivateTask()
+	// NOTE: the task is deliberately NOT reactivated here. Reactivation
+	// flips the anchor task's terminal status (completed/cancelled) back to
+	// in_progress — a side effect that must only happen once the
+	// continuation has actually committed to executing (routing succeeded /
+	// goal loop entered). HandleMessage calls reactivateContinuationTask at
+	// that commit point. Reactivating here instead meant a pre-commit
+	// failure (e.g. a routing error) left the anchor orphaned in_progress:
+	// the manager's fresh-workflow fallback then created a NEW task row and
+	// nothing ever closed the reactivated one, so the session reported
+	// has_unfinished_task=true forever and every app restart re-injected the
+	// "Task failed / Resume" banner over an otherwise completed session.
 
 	o.wireAttachmentNameResolver(pbb)
 	return pbb, nil
+}
+
+// reactivateContinuationTask flips a restored continuation task back to
+// in_progress at the continuation's commit point — after routing has
+// succeeded (normal path) or the goal loop is entered (goal path) — so a task
+// whose continuation fails BEFORE execution starts keeps its prior terminal
+// status instead of being orphaned in_progress. No-op for fresh tasks
+// (taskID == ""): their PersistNewTask row already starts in_progress.
+func (o *Orchestrator) reactivateContinuationTask(bb orchestration.Blackboard, taskID string) {
+	if taskID == "" {
+		return
+	}
+	if pbb, ok := bb.(PersistableBlackboard); ok {
+		pbb.ReactivateTask()
+	}
 }
 
 // wireAttachmentNameResolver connects the emitter (when it supports attachment

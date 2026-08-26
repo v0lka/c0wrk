@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -290,6 +291,63 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 
 	if !reactivateCalled {
 		t.Error("expected ReactivateTask to be called for continuation")
+	}
+}
+
+// TestHandleMessage_RoutingFailureDoesNotReactivateTask verifies the commit
+// point of continuation reactivation: when a continuation fails BEFORE its
+// execution starts (routing error), the anchor task keeps its prior terminal
+// status — ReactivateTask must NOT have flipped it back to in_progress.
+// Regression guard for the orphaned in_progress task: the manager's
+// fresh-workflow fallback then created a new task row, nothing ever closed
+// the reactivated anchor, the session kept has_unfinished_task=true forever,
+// and every app restart re-injected the "Task failed / Resume" banner over an
+// otherwise successfully completed session.
+func TestHandleMessage_RoutingFailureDoesNotReactivateTask(t *testing.T) {
+	reactivateCalled := false
+
+	// Every LLM call fails — the router call in particular, mirroring the
+	// real-world repro (router provider outage before execution started).
+	mockLLM := &mockLLMCaller{
+		callFn: func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+			return nil, errors.New("router LLM call failed: connection refused")
+		},
+	}
+
+	registry := createTestRegistry()
+	r := newCoreRouter(mockLLM, 5)
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
+		Router:         r,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   llm.NewSimpleTokenCounter(),
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+	mockStore := &mockTaskStoreWithReactivate{
+		taskState: &TaskState{
+			TaskID:          "task-123",
+			SessionID:       "session-456",
+			OriginalRequest: "original task",
+			Status:          "completed",
+		},
+		reactivateFn: func(string) error {
+			reactivateCalled = true
+			return nil
+		},
+	}
+	orchestrator.SetTaskStore(mockStore)
+	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
+
+	_, err := orchestrator.HandleMessage(context.Background(), "Continue", "session-456", HandleOptions{TaskID: "task-123"})
+	if err == nil {
+		t.Fatal("expected HandleMessage to fail with the routing error")
+	}
+
+	if reactivateCalled {
+		t.Error("ReactivateTask must not be called when the continuation fails before execution starts (routing error)")
 	}
 }
 

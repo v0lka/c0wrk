@@ -1727,6 +1727,11 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// blackboard is restored and the agent runs the goal loop on the inherited
 	// facts/history, deriving a fresh goal from the new message.
 	if opts.Goal {
+		// Commit point for a goal continuation: the restored task is
+		// reactivated only now (see reactivateContinuationTask) — a failure
+		// before this point (e.g. blackboard restore) leaves the anchor's
+		// terminal status intact for the manager's fresh-workflow fallback.
+		o.reactivateContinuationTask(bb, opts.TaskID)
 		return o.runGoalLoop(ctx, message, opts, bb, availableTools, opts.SessionPlansDir)
 	}
 
@@ -1747,8 +1752,16 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// already-augmented taskMessage would double-prefix the skill reference.
 	ctx, routing, _, _, err := o.routeOrContinue(ctx, message, opts, bb, availableTools)
 	if err != nil {
+		// Routing failed BEFORE the continuation committed: the anchor task
+		// keeps its prior terminal status (reactivation happens only below),
+		// so the manager's fresh-workflow fallback cannot orphan it.
 		return nil, err
 	}
+
+	// Commit point for the continuation: routing succeeded, execution is
+	// about to start — flip the anchor task back to in_progress (no-op for
+	// fresh tasks, whose PersistNewTask row already is in_progress).
+	o.reactivateContinuationTask(bb, opts.TaskID)
 
 	// 4. Enrich context with domain/complexity/user-skills for execution.
 	ctx = WithDomain(ctx, routing.Domain)
