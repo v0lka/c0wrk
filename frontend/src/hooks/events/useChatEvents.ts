@@ -253,8 +253,15 @@ export function useChatEvents(sessionId: string | null): void {
     // A cooperative pause is a clean checkpoint: enter the paused UI state
     // (input unlocked, Resume/Stop). taskActive clears because the task is
     // no longer running — it is suspended, resumable via Resume or a nudge.
+    // SUPPRESSED while a manual compaction is in flight: the compaction flow
+    // pauses the running task itself, and the paused affordances (unlocked
+    // input, Resume/Stop) must not appear — the session stays in the
+    // "Compacting" state until compaction_finished, after which the flow
+    // auto-resumes and session_resumed clears everything.
     cleanups.push(
       onSessionEvent(sessionId, 'session_paused', () => {
+        const chat = useChatStore.getState()
+        if (chat.compacting[sessionId]) return
         handleSessionPausedEvent(sessionId)
       }),
     )

@@ -32,6 +32,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/frontend_api_project.go` — project switch state persistence + destination session fallback
 - `core/orchestrator.go` — Orchestrator.HandleMessage, Orchestrator.Resume, `installPauseSignal`/`PauseSession`/`newPauseChecker` (universal pause signal); live user-message queue (`QueueLiveUserMessage`/`DrainLiveUserMessages`/`TakeLiveUserMessages`/`DiscardLiveUserMessages`, wired into every conductor run via `ConductorConfig.UserMessageSource`)
 - `backend/session/manager_execution.go` — `ErrPausePending`, `finishLiveLeftover` (follow-up task for undelivered live messages), `sendMessage(presented)` wrapper, `session.pausing` lifecycle
+- `backend/session/manager_compaction.go` — manual context compaction flow (`CompactSessionContext`/`CancelSessionCompaction`, `ErrSessionCompacting`, `ErrCompactionInFlight`, compaction_started/compaction_finished events, context_compaction marker persistence + restore via `convertChatMessagesToLLM`) — see [memory/compaction.md](memory/compaction.md) § Manual Context Compaction
 - `backend/session/manager_live_send_test.go` — live-send tests (queue-into-running-task, pausing-window rejection, goal/skill rejection, pausing-flag lifecycle)
 - `frontend/src/lib/chatInputLock.ts` — pure input-lock matrix helpers (`computeChatInputDisabled`, `computeChatPlaceholder`) for the live-send affordance
 - `core/orchestrator_goal.go` — goal mode (runGoalLoop, resumeGoalLoop, runGoalTurns, goalLoopResult mid-turn-pause mapping); see [goal-mode.md](goal-mode.md)
@@ -467,9 +468,43 @@ Invariants and edge cases:
 - **Scope**: live delivery applies to the session's main Conductor run only (normal path, resume, every goal-loop turn). Subagent executors never receive live messages.
 - **Text-only**: attachments, `/goal` requests, and `/skill`/`#agent` references are rejected on the live path (they are task-start concerns); the user is asked to wait for pause/completion.
 
-**Input-lock matrix (frontend)**: `computeChatInputDisabled` (pure helper, `lib/chatInputLock.ts`): input is disabled iff `pausing || isNoProject`. A running (`taskActive`) or paused session keeps the input open — running sends interject live; paused sends nudge-resume. The placeholder advertises the affordance ("your message joins the next request to the model").
+**Input-lock matrix (frontend)**: `computeChatInputDisabled` (pure helper, `lib/chatInputLock.ts`): input is disabled iff `compacting || pausing || isNoProject`. A running (`taskActive`) or paused session keeps the input open — running sends interject live; paused sends nudge-resume. While compacting the whole input area (editor, toolbar buttons, selector cluster, send/pause/resume) locks — with one exception: **Stop stays available** (CancelTask carries no compacting guard, and terminating the in-flight request is the one user action that helps the flow's pause-wait land; the Pause/Resume flank is hidden for the window because the flow owns the pause signal). The placeholder advertises the affordance ("your message joins the next request to the model").
 
 **Runtime status after restart / session switch:** `GetSessionRuntimeStatus` reports `Paused: true` when the resumable unfinished task is in the `"paused"` status. The frontend reconciles this on session activation (`reconcileRuntimeStatus`): it sets the `paused` flag and clears `taskActive`, and crucially does **not** inject a `task_failed_resumable` banner — a paused task resumes via the Resume button or a nudge, not a "did not finish" banner.
+
+### Manual Context Compaction
+
+```
+User picks a strategy in the status-bar compact menu (left of the fill indicator)
+  → Frontend: compactSessionContext(sessionId, strategy) → RPC CompactSessionContext
+  → Backend: Manager.CompactSessionContext
+      ├─ Validate strategy (fail fast) / reject ErrCompactionInFlight
+      ├─ Set session.compacting (sends/resumes now fail with ErrSessionCompacting)
+      ├─ Emit compaction_started {strategy}
+      ├─ If a task runs: pausing window + orch.PauseSession() (identical to PauseSession)
+      │    then wait on session.done for the cooperative checkpoint
+      ├─ orch.CompactConversationHistory(strategy) — rewrites o.conversationHistory
+      │    (summarization runs through the session's tracking caller; last message kept)
+      ├─ Persist marker row: role "context_compaction", metadata {strategy,
+      │    before/after %, messages: compacted history snapshot}
+      ├─ Clear compacting, then auto-resume the task this flow paused
+      │    (ResumeTask — only when a paused checkpoint remains; a FAILED
+      │    resume sets paused_without_resume so the UI re-applies the paused
+      │    state — session_paused was suppressed while compacting)
+      └─ Emit compaction_finished {strategy, success|cancelled|error, resumed,
+                                  paused_without_resume?}
+
+Cancel (CancelSessionCompaction):
+  during pause-wait  → still waits for the checkpoint (unflipping the pause signal
+                       mid-flight would race the executor), then skips the
+                       compaction and auto-resumes
+  during compaction  → aborts the summarize calls; history stays untouched
+```
+
+- The UI chat history is untouched — only the LLM-visible conversation history shrinks; the marker row renders as the existing compaction card on reload.
+- History restore (`convertChatMessagesToLLM`): the LAST marker's `messages` snapshot seeds the restored history (conversational rows before it are dropped; later exchanges append on top).
+- While compacting the UI shows the "Compacting" activity (where "Thinking" renders), locks the input area, and suppresses the `session_paused` paused affordances (the flow's own pause). `SessionRuntimeStatus.Compacting` reconciles this on session switch/restart.
+- See [memory/compaction.md](memory/compaction.md) § Manual Context Compaction for the strategy semantics and the orchestrator-level behavior.
 
 ### Session Forking
 

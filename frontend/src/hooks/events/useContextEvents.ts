@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
-import { isContextFillData, isContextCompactionData, isSessionTokensData } from '@/types/events'
+import { isContextFillData, isContextCompactionData, isSessionTokensData, isCompactionStartedData, isCompactionFinishedData } from '@/types/events'
 import type { ContextFillData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
 import type { TokenInfo } from '@/types/models'
@@ -57,6 +57,59 @@ export function handleContextFill(store: ContextFillStore, sessionId: string, da
     ...(typeof data.used_tokens === 'number' ? { used_tokens: data.used_tokens } : {}),
     ...(typeof data.max_tokens === 'number' ? { max_tokens: data.max_tokens } : {}),
   })
+}
+
+/** Minimal store surface the manual-compaction handlers need. */
+export interface CompactionStore {
+  setCompacting: (sessionId: string, compacting: boolean) => void
+  setActivityStatus: (sessionId: string, status: string | null) => void
+  setPausing: (sessionId: string, pausing: boolean) => void
+  setPaused: (sessionId: string, paused: boolean) => void
+  setTaskActive: (sessionId: string, active: boolean) => void
+}
+
+/**
+ * Applies a compaction_started event: locks the input (chatStore.compacting)
+ * and shows the "Compacting" activity label.
+ */
+export function handleCompactionStarted(store: CompactionStore, sessionId: string): void {
+  store.setCompacting(sessionId, true)
+  store.setActivityStatus(sessionId, 'Compacting')
+}
+
+/**
+ * Applies a compaction_finished event: releases the compacting lock and lands
+ * the terminal state. The backend emits session_paused while the flow pauses
+ * the running task (suppressed in useChatEvents while compacting) and
+ * task_resumed sets "Resuming..." when the flow auto-resumes, so:
+ *  - an error surfaces the "Compaction failed" label;
+ *  - a failed auto-resume (paused_without_resume) re-applies the paused
+ *    state — the session sits at a checkpoint the UI never saw;
+ *  - any other outcome with nothing to resume (idle session, cancelled flow,
+ *    plain success) clears the "Compacting" label — nothing is running;
+ *  - a successful auto-resume leaves the label to task_resumed.
+ */
+export function handleCompactionFinished(
+  store: CompactionStore,
+  sessionId: string,
+  data: { success?: boolean; error?: string; cancelled?: boolean; resumed?: boolean; paused_without_resume?: boolean },
+): void {
+  store.setCompacting(sessionId, false)
+  if (data.paused_without_resume) {
+    // Same transitions as handleSessionPausedEvent: unlock into the paused
+    // state so the Resume/Stop controls appear. A compaction error keeps its
+    // failure label instead of "Paused" (the failure is the notable event).
+    store.setPausing(sessionId, false)
+    store.setPaused(sessionId, true)
+    store.setTaskActive(sessionId, false)
+    store.setActivityStatus(sessionId, data.error ? 'Compaction failed' : 'Paused')
+    return
+  }
+  if (data.error) {
+    store.setActivityStatus(sessionId, 'Compaction failed')
+  } else if (!data.resumed) {
+    store.setActivityStatus(sessionId, null)
+  }
 }
 
 export function useContextEvents(sessionId: string | null): void {
@@ -114,6 +167,24 @@ export function useContextEvents(sessionId: string | null): void {
           ...(typeof data.used_tokens === 'number' ? { used_tokens: data.used_tokens } : {}),
           ...(typeof data.max_tokens === 'number' ? { max_tokens: data.max_tokens } : {}),
         })
+      }),
+    )
+
+    // --- compaction_started / compaction_finished (manual compaction) ---
+    // The manual compaction flow: started locks the input (chatStore.compacting)
+    // and shows the "Compacting" activity; finished releases it. The
+    // context_compaction card itself arrives via the context_compaction event
+    // above (emitted by the orchestrator on success).
+    cleanups.push(
+      onSessionEvent(sessionId, 'compaction_started', (data) => {
+        if (!isCompactionStartedData(data)) { reportDroppedEvent('compaction_started', data); return }
+        handleCompactionStarted(useChatStore.getState(), sessionId)
+      }),
+    )
+    cleanups.push(
+      onSessionEvent(sessionId, 'compaction_finished', (data) => {
+        if (!isCompactionFinishedData(data)) { reportDroppedEvent('compaction_finished', data); return }
+        handleCompactionFinished(useChatStore.getState(), sessionId, data)
       }),
     )
 

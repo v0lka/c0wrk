@@ -86,6 +86,14 @@ const chatStoreState = {
   streamingText: {} as Record<string, string>,
   paused: {} as Record<string, boolean>,
   pausing: {} as Record<string, boolean>,
+  compacting: {} as Record<string, boolean>,
+  setCompacting: (sid: string, compacting: boolean) => {
+    if (compacting) {
+      chatStoreState.compacting = { ...chatStoreState.compacting, [sid]: true }
+    } else {
+      delete chatStoreState.compacting[sid]
+    }
+  },
   setTaskActive: (sid: string, active: boolean) => {
     chatStoreState.taskActive = { ...chatStoreState.taskActive, [sid]: active }
   },
@@ -165,6 +173,7 @@ function resetStores(): void {
   chatStoreState.streamingText = {}
   chatStoreState.paused = {}
   chatStoreState.pausing = {}
+  chatStoreState.compacting = {}
   sessionStoreState.activeSessionId = null
 }
 

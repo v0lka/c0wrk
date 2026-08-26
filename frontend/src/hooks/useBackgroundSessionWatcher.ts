@@ -121,6 +121,9 @@ export function useBackgroundSessionWatcher(): void {
       )
       cleanups.push(
         onSessionEvent(sessionId, 'session_paused', () => {
+          // Suppressed during manual compaction (the flow's own pause): the
+          // background session must not surface paused affordances.
+          if (useChatStore.getState().compacting[sessionId]) return
           handleSessionPausedEvent(sessionId)
         }),
       )

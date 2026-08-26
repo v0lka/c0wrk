@@ -68,6 +68,21 @@ export interface ContextFillData {
 }
 
 export interface ContextCompactionData { before_percent: number; after_percent: number; plan_step_id?: string }
+/** Manual context compaction flow started (CompactSessionContext accepted). */
+export interface CompactionStartedData { strategy: string }
+/**
+ * Manual context compaction flow reached a terminal state. Exactly one of
+ * success / cancelled / error applies (success only when the history was
+ * compacted; cancelled when the user aborted — history untouched). resumed
+ * reports whether the flow auto-resumed a task it had paused;
+ * paused_without_resume is set when that auto-resume FAILED — a paused
+ * checkpoint remains that the UI never saw (session_paused is suppressed
+ * while compacting), so the client must re-apply the paused state.
+ */
+export interface CompactionFinishedData {
+  strategy: string; success: boolean; cancelled?: boolean; error?: string
+  before_percent: number; after_percent: number; resumed?: boolean; paused_without_resume?: boolean
+}
 export interface SessionTokensData { session_input_tokens: number; session_output_tokens: number; model: string; family: string; fill_percent?: number; used_tokens?: number; max_tokens?: number }
 export interface AssistantChunkData { content: string; accumulated_content?: string }
 export interface TaskCompleteData {
@@ -320,6 +335,8 @@ export interface SessionEventMap {
   readonly subagent_complete: SubAgentCompleteData
   readonly context_fill: ContextFillData
   readonly context_compaction: ContextCompactionData
+  readonly compaction_started: CompactionStartedData
+  readonly compaction_finished: CompactionFinishedData
   readonly session_tokens: SessionTokensData
   readonly task_failed_resumable: TaskFailedResumableData
   readonly task_resumed: void
@@ -497,6 +514,8 @@ export function isSubAgentLaunchData(d: unknown): d is SubAgentLaunchData { retu
 export function isSubAgentCompleteData(d: unknown): d is SubAgentCompleteData { return isObj(d) && has(d, 'step_id', 'success') }
 export function isContextFillData(d: unknown): d is ContextFillData { return isObj(d) && has(d, 'fill_percent', 'status') }
 export function isContextCompactionData(d: unknown): d is ContextCompactionData { return isObj(d) && has(d, 'before_percent', 'after_percent') }
+export function isCompactionStartedData(d: unknown): d is CompactionStartedData { return isObj(d) && has(d, 'strategy') }
+export function isCompactionFinishedData(d: unknown): d is CompactionFinishedData { return isObj(d) && has(d, 'strategy', 'success', 'before_percent', 'after_percent') }
 export function isSessionTokensData(d: unknown): d is SessionTokensData { return isObj(d) && has(d, 'session_input_tokens', 'session_output_tokens') }
 export function isSessionRenamedData(d: unknown): d is SessionRenamedData { return isObj(d) && has(d, 'new_name') }
 export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableData {

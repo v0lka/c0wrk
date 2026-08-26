@@ -551,13 +551,18 @@ func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) e
 	return nil
 }
 
-// LoadMessages loads all messages for a session ordered by creation time.
+// LoadMessages loads all messages for a session ordered by creation time. The
+// auto-increment id is a deterministic tiebreaker for same-second inserts:
+// created_at has second granularity (RFC3339), and adjacent rows written within
+// one second — e.g. a compaction marker followed by a resumed task's first
+// row — must keep their insertion order (the marker reseed in Manager is
+// order-sensitive).
 func (s *SQLiteSessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ChatMessage, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, session_id, role, content, reasoning_content, tool_calls, metadata, created_at
 		FROM session_messages
 		WHERE session_id = ?
-		ORDER BY created_at ASC`,
+		ORDER BY created_at ASC, id ASC`,
 		sessionID,
 	)
 	if err != nil {

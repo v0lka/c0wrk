@@ -93,11 +93,32 @@ function resolveStaleHitlPrompts(sessionId: string): ChatMessageUI[] {
 export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntimeStatus, snapshotReadAt?: number): ChatMessageUI[] {
   const store = useChatStore.getState()
 
+  // Manual compaction in flight: mirror the flag so a switch back to the
+  // session restores the Compacting UI (locked input, cancel affordance)
+  // even when the compaction_started event fired with no live listener.
+  store.setCompacting(sessionId, status.compacting === true)
+
   // Stale-snapshot guard: runtimeEventAt is stamped by the streaming/activity
   // store actions on every LIVE event-driven mutation, so a mark newer than
   // the snapshot read means the UI already holds fresher activity state.
   const hasFresherLiveState =
     snapshotReadAt !== undefined && (store.runtimeEventAt[sessionId] ?? 0) > snapshotReadAt
+
+  // The compaction flow owns the session: the task it paused shows neither
+  // paused affordances nor a "did not finish" banner — compaction_finished
+  // and the flow's auto-resume own the terminal transitions. Mirrors the
+  // paused branch's stale-HITL resolution so prompts from before the flow
+  // (if any) resolve identically.
+  if (status.compacting) {
+    store.setPausing(sessionId, false)
+    store.setPaused(sessionId, false)
+    store.setTaskActive(sessionId, status.active)
+    if (!hasFresherLiveState) {
+      store.setActivityStatus(sessionId, 'Compacting')
+      store.clearStreamingText(sessionId)
+    }
+    return resolveStaleHitlPrompts(sessionId)
+  }
 
   // A cooperatively paused task is a clean checkpoint: set the paused flag and
   // taskActive=false so the UI shows the paused state (unlocked input,

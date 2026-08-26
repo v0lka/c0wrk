@@ -25,6 +25,8 @@ export function AttachFiles(arg1:string,arg2:Array<string>):Promise<Array<sessio
 
 export function CancelGoal(arg1:string,arg2:string):Promise<void>;
 
+export function CancelSessionCompaction(arg1:string):Promise<void>;
+
 export function CancelTask(arg1:string):Promise<void>;
 
 export function CancelUnfinishedTask(arg1:string):Promise<void>;
@@ -40,6 +42,8 @@ export function ClearReview(arg1:string):Promise<void>;
 export function ClearReviewComments(arg1:string):Promise<void>;
 
 export function Commit(arg1:string):Promise<string>;
+
+export function CompactSessionContext(arg1:string,arg2:string):Promise<void>;
 
 export function ConfirmGoal(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
 

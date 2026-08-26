@@ -9,6 +9,7 @@ import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { IndexingStatus } from "./IndexingStatus";
 import { ContextFillStatus } from "./ContextFillStatus";
+import { CompactContextButton } from "./CompactContextButton";
 import { GoalStatusIndicator } from "./GoalStatusIndicator";
 
 function Sep() {
@@ -65,8 +66,14 @@ export function StatusBar() {
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Context fill (conductor's context window), left of the index status */}
-      {tokens && <ContextFillStatus percent={tokens.fill_percent} usedTokens={tokens.used_tokens} maxTokens={tokens.max_tokens} />}
+      {/* Context fill (conductor's context window) with the manual compaction
+          control immediately to its left */}
+      {tokens && (
+        <>
+          <CompactContextButton />
+          <ContextFillStatus percent={tokens.fill_percent} usedTokens={tokens.used_tokens} maxTokens={tokens.max_tokens} />
+        </>
+      )}
 
       {/* Vector index status (hidden for No Project) */}
       {!isNoProject && (

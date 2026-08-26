@@ -180,6 +180,13 @@ type OrchestratorConfig struct {
 	MaxDependencyContextChars int    // max chars for dependency context in delegation tasks (default: 8000)
 	Model                     string // active model name for ModelRegistry.Resolve()
 
+	// Compaction carries the full executor compaction settings (Small-LLM
+	// context-management overrides already applied by the builder). It feeds
+	// manual conversation-history compaction (CompactConversationHistory);
+	// the per-executor strategies are built from the same values inside
+	// buildContextFactory.
+	Compaction BuilderCompactionConfig
+
 	// ReasoningEffort is the reasoning effort applied to step executors.
 	// When non-empty, each executor gets this value directly (no role adaptation).
 	ReasoningEffort string

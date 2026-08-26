@@ -1949,6 +1949,7 @@ export namespace session {
 	    has_unfinished_task: boolean;
 	    unfinished_task_id?: string;
 	    paused: boolean;
+	    compacting: boolean;
 	    activity?: string;
 	    streaming: boolean;
 	
@@ -1962,6 +1963,7 @@ export namespace session {
 	        this.has_unfinished_task = source["has_unfinished_task"];
 	        this.unfinished_task_id = source["unfinished_task_id"];
 	        this.paused = source["paused"];
+	        this.compacting = source["compacting"];
 	        this.activity = source["activity"];
 	        this.streaming = source["streaming"];
 	    }

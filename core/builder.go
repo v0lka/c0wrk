@@ -507,8 +507,11 @@ func (b *OrchestratorBuilder) Build(
 
 	// Build orchestrator config
 	orchConfig := OrchestratorConfig{
-		KeepFirst:                 exec.Compaction.SlidingWindow.KeepFirst,
-		KeepLast:                  exec.Compaction.SlidingWindow.KeepLast,
+		KeepFirst: exec.Compaction.SlidingWindow.KeepFirst,
+		KeepLast:  exec.Compaction.SlidingWindow.KeepLast,
+		// Full compaction settings (Small-LLM context overrides applied) for
+		// manual conversation-history compaction.
+		Compaction:                exec.Compaction,
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 		MaxRedelegationDepth:      cfg.Orchestration.MaxRedelegationDepth,
 		// OrchestratorConfig.Model is used for model METADATA resolution

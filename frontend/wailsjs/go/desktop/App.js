@@ -34,6 +34,10 @@ export function CancelGoal(arg1, arg2) {
   return window['go']['desktop']['App']['CancelGoal'](arg1, arg2);
 }
 
+export function CancelSessionCompaction(arg1) {
+  return window['go']['desktop']['App']['CancelSessionCompaction'](arg1);
+}
+
 export function CancelTask(arg1) {
   return window['go']['desktop']['App']['CancelTask'](arg1);
 }
@@ -64,6 +68,10 @@ export function ClearReviewComments(arg1) {
 
 export function Commit(arg1) {
   return window['go']['desktop']['App']['Commit'](arg1);
+}
+
+export function CompactSessionContext(arg1, arg2) {
+  return window['go']['desktop']['App']['CompactSessionContext'](arg1, arg2);
 }
 
 export function ConfirmGoal(arg1, arg2, arg3, arg4, arg5) {

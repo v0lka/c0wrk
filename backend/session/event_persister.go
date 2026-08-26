@@ -203,6 +203,11 @@ func (p *EventPersister) Persist(evt Event) {
 		"tool_judge_response", "session_created", "session_deleted",
 		"session_renamed",
 		"goal_progress",
+		// Manual-compaction lifecycle: the marker row (with the compacted
+		// history snapshot) is persisted directly by the manager's flow
+		// (persistCompactionMarker), not via the event pipeline. Persisting
+		// these transient events would duplicate the marker card on reload.
+		"compaction_started", "compaction_finished",
 		// UI-only state events emitted with a SessionID. These drive live UI
 		// updates (attachment chips, sidebar pin/archive toggles) but carry no
 		// conversational content — persisting them would store the raw JSON

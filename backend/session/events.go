@@ -238,6 +238,35 @@ type ContextCompactionEventData struct {
 	PlanStepID    string  `json:"plan_step_id,omitempty"`
 }
 
+// CompactionStartedEventData is the typed Data payload for "compaction_started"
+// session events — the manual context compaction flow (CompactSessionContext)
+// has been accepted and is running. The UI locks the input and shows the
+// "Compacting" activity while it is in flight.
+type CompactionStartedEventData struct {
+	Strategy string `json:"strategy"`
+}
+
+// CompactionFinishedEventData is the typed Data payload for
+// "compaction_finished" session events — the manual compaction flow reached a
+// terminal state. Exactly one of Success / Cancelled / Error applies: Success
+// is true only when the history was compacted; Cancelled is true when the user
+// aborted (Error is then empty and the history is untouched); Error carries the
+// failure message otherwise. Resumed reports whether the flow auto-resumed a
+// task it had paused to reach an idle window. PausedWithoutResume is true when
+// the flow paused a task and the auto-resume FAILED: a paused checkpoint
+// remains, but session_paused was suppressed while compacting — clients must
+// re-apply the paused state from this flag.
+type CompactionFinishedEventData struct {
+	Strategy            string  `json:"strategy"`
+	Success             bool    `json:"success"`
+	Cancelled           bool    `json:"cancelled,omitempty"`
+	Error               string  `json:"error,omitempty"`
+	BeforePercent       float64 `json:"before_percent"`
+	AfterPercent        float64 `json:"after_percent"`
+	Resumed             bool    `json:"resumed,omitempty"`
+	PausedWithoutResume bool    `json:"paused_without_resume,omitempty"`
+}
+
 // SkillsActivatedData is the typed Data payload for "skills_activated" events.
 type SkillsActivatedData struct {
 	Skills []string `json:"skills"`

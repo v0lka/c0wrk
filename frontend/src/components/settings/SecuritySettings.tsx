@@ -248,7 +248,7 @@ export function SecuritySettings() {
         <p className="text-xs text-muted-foreground pl-12">
           When enabled, a strict OWASP ASI (ASI01–ASI10) judge automatically evaluates calls that require
           confirmation. A safe verdict executes without UI; any risk, error, or ambiguity falls back to manual
-          confirmation. Only affects the effective user_confirm policy — allow, deny, and symlink-forced
+          confirmation. Only affects the effective allow and user_confirm policies — deny and symlink-forced
           confirmations are unchanged.
         </p>
       </div>

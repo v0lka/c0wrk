@@ -587,6 +587,8 @@ func liveSendRejectionLocked(session *Session, goal bool, text string, activeSki
 	_, isGoalPrefix := core.DetectAndStripGoalMode(text)
 	goal = goal || isGoalPrefix
 	switch {
+	case session.compacting:
+		return ErrSessionCompacting
 	case session.pausing:
 		return ErrPausePending
 	case goal:
@@ -648,6 +650,14 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 			},
 		})
 		return SendLive, nil
+	}
+	// Manual compaction owns the session from the moment it starts (it waits
+	// for a running task to pause, then swaps the history): a fresh task in
+	// that window would race the swap. The nudge-resume path below is covered
+	// by ResumeTask's own compacting guard.
+	if session.compacting {
+		session.mu.Unlock()
+		return SendFresh, ErrSessionCompacting
 	}
 	session.mu.Unlock()
 
@@ -1297,6 +1307,14 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		session.mu.Unlock()
 		return errors.New("session is already processing a task")
 	}
+	// Manual compaction owns the session until it finishes (it swaps the
+	// conversation history while the session is idle); resuming a task in
+	// that window would race the swap. The compaction flow's own auto-resume
+	// runs after the flag is cleared, so it is not blocked here.
+	if session.compacting {
+		session.mu.Unlock()
+		return ErrSessionCompacting
+	}
 	session.active = true
 	resumeDoneCh := make(chan struct{})
 	session.done = resumeDoneCh
@@ -1573,6 +1591,9 @@ type SessionRuntimeStatus struct {
 	// status — a cooperative pause checkpoint that the user can resume (with
 	// an optional nudge) or send a new message into (treated as a nudge-resume).
 	Paused bool `json:"paused"`
+	// Compacting is true while a manual context compaction is in flight. The
+	// UI locks the input and swaps the compact button for a cancel button.
+	Compacting bool `json:"compacting"`
 	// Activity is the session's last user-facing activity label
 	// ("Thinking...", "Routing request...", "Generating response...", ...)
 	// tracked by the emitter. It lets the frontend replace the frozen
@@ -1604,6 +1625,7 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 	m.mu.RUnlock()
 	if sess != nil {
 		status.Active = sess.IsActive()
+		status.Compacting = sess.IsCompacting()
 		// Live activity/streaming from the session's emitter — the same
 		// signals the (possibly unmounted) frontend listeners would have
 		// received as events. Reading the emitter pointer under sess.mu keeps
@@ -1683,6 +1705,12 @@ func (m *Manager) ValidateLiveSend(sessionID string, goal bool, text string, act
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
+	// A compacting session rejects sends even when no task is running: the
+	// compaction flow owns the idle window between the pause landing and the
+	// auto-resume. Mirrors the authoritative guard in sendMessage.
+	if sess.compacting {
+		return ErrSessionCompacting
+	}
 	if !sess.active {
 		return nil
 	}

@@ -65,6 +65,8 @@ type Session struct {
 	active                  bool               // is currently processing
 	pausing                 bool               // pause requested: the running task is on its way to a cooperative pause checkpoint (guarded by mu)
 	done                    chan struct{}      // closed when task goroutine finishes
+	compacting              bool               // manual context compaction in flight: sends/resumes rejected, UI locked (guarded by mu)
+	compactCancel           context.CancelFunc // cancels the in-flight manual compaction (guarded by mu)
 	lastCompletedTaskID     string             // tracks last completed task for continuations
 	mu                      sync.Mutex
 	pendingAttachments      []orchestration.Attachment // user-attached files staged via AttachFiles, flushed into the blackboard on the next SendMessage (guarded by mu)
@@ -1370,6 +1372,13 @@ func (s *Session) IsActive() bool {
 	return s.active
 }
 
+// IsCompacting returns whether a manual context compaction is in flight.
+func (s *Session) IsCompacting() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.compacting
+}
+
 // DumpFile returns a duplicated file handle for the session's LLM dump file,
 // or nil if DEBUG is disabled. The caller owns the returned handle and must
 // close it when done. Duping ensures that background goroutines (title generation,
@@ -1545,6 +1554,15 @@ func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage, workspacePath str
 			appendAssistant(llm.Message{Role: "assistant", Content: core.HistoryNoteFailed(extractPersistedError(msg))})
 		case "task_cancelled":
 			appendAssistant(llm.Message{Role: "assistant", Content: core.HistoryNoteCancelled})
+		case compactMarkerRole:
+			// A manual compaction marker: the embedded snapshot IS the full
+			// LLM-visible history at that point, so everything accumulated
+			// before it is dropped and the snapshot becomes the seed. Rows
+			// after the marker (later exchanges) append on top. Markers
+			// without a snapshot (older rows) are no-ops.
+			if snapshot := compactedHistoryFromMarker(msg.Metadata); snapshot != nil {
+				result = append(result[:0], snapshot...)
+			}
 		default:
 			m.log().Debug("convertChatMessagesToLLM: skipping non-conversational role", "role", msg.Role)
 		}

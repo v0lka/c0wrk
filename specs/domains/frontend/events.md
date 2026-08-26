@@ -7,11 +7,11 @@ Manages real-time event subscription, validation, and store updates. Events flow
 ## Key Files
 
 - `frontend/src/hooks/useSessionEvents.ts` — master event subscription hook
-- `frontend/src/hooks/events/useChatEvents.ts` — streaming, thoughts, errors, task lifecycle (task_complete, task_cancelled), `session_paused` (sets the per-session `paused` flag + clears `taskActive`, unlocking the input), and `session_resumed` (clears the `paused` flag + sets `taskActive`, re-locking the input)
+- `frontend/src/hooks/events/useChatEvents.ts` — streaming, thoughts, errors, task lifecycle (task_complete, task_cancelled), `session_paused` (sets the per-session `paused` flag + clears `taskActive`, unlocking the input — SUPPRESSED while `chatStore.compacting[session]` is set, the manual-compaction flow's own pause), and `session_resumed` (clears the `paused` flag + sets `taskActive`, re-locking the input)
 - `frontend/src/hooks/events/usePlanEvents.ts` — plan generation, step lifecycle
 - `frontend/src/hooks/events/useToolEvents.ts` — tool call/result correlation and tool confirmation (`tool_confirm` via shared handlers)
 - `frontend/src/hooks/events/useActionEvents.ts` — `ask_user`, step limits, resume actions (`task_failed_resumable`/`task_resumed`), and plan review (`plan_review_ready`) via shared handlers
-- `frontend/src/hooks/events/useContextEvents.ts` — context fill, compaction
+- `frontend/src/hooks/events/useContextEvents.ts` — context fill, compaction. Also owns the manual-compaction lifecycle: `compaction_started` sets `chatStore.compacting` + the "Compacting" activity, `compaction_finished` releases it (failure → "Compaction failed" label; a failed auto-resume → `paused_without_resume` re-applies the paused state, since `session_paused` was suppressed while compacting; any other outcome with nothing to resume — idle session, cancelled flow, plain success — clears the activity; a successful auto-resume leaves the label to `task_resumed`); pure handlers `handleCompactionStarted`/`handleCompactionFinished` are shared-testable
 - `frontend/src/hooks/events/useLifecycleEvents.ts` — routing, step_start, step_complete, retry, step_retry, tools_assigned (Small-LLM curated tool set card)
 - `frontend/src/hooks/events/useSubagentEvents.ts` — subagent lifecycle
 - `frontend/src/hooks/events/useBlackboardEvents.ts` — blackboard state updates
@@ -44,7 +44,7 @@ useSessionEvents(sessionId)
   │   ├─ usePlanEvents → planStore updates
   │   ├─ useToolEvents → chatStore (tool messages, tool_confirm via hitlHandlers)
   │   ├─ useActionEvents → chatStore (pending actions: ask_user/step_limit/resume; plan_review via hitlHandlers)
-  │   ├─ useContextEvents → chatStore (context fill)
+  │   ├─ useContextEvents → chatStore (context fill, manual-compaction lifecycle)
   │   ├─ useLifecycleEvents → chatStore (routing, step_start/complete, retry, tools_assigned status card)
   │   ├─ useSubagentEvents → planStore
   │   ├─ useBlackboardEvents → blackboardStore

@@ -36,6 +36,7 @@ export interface ChatInputController {
   taskActive: boolean
   paused: boolean
   pausing: boolean
+  compacting: boolean
 
   // Mode
   mode: 'chat' | 'terminal'
@@ -75,6 +76,7 @@ export function useChatInputController(): ChatInputController {
   const taskActive = useChatStore((s) => (activeSessionId ? s.taskActive[activeSessionId] ?? false : false))
   const paused = useChatStore((s) => (activeSessionId ? s.paused[activeSessionId] ?? false : false))
   const pausing = useChatStore((s) => (activeSessionId ? s.pausing[activeSessionId] ?? false : false))
+  const compacting = useChatStore((s) => (activeSessionId ? s.compacting[activeSessionId] ?? false : false))
 
   const mode = useInputModeStore((s) => s.mode)
   const height = useInputModeStore((s) => s.height)
@@ -117,11 +119,21 @@ export function useChatInputController(): ChatInputController {
   //    the backend rejects it and the UI mirrors that by disabling input.
   //  - A cooperatively paused task sets taskActive=false, so the input is
   //    unlocked on pause — letting the user send a nudge-resume.
-  const lockInput = { taskActive, paused, pausing, isNoProject }
+  //  - Manual compaction locks the ENTIRE input area (editor + toolbar +
+  //    action buttons): the flow owns the session from pause-wait through
+  //    auto-resume, and the backend rejects sends with ErrSessionCompacting.
+  const lockInput = { taskActive, paused, pausing, isNoProject, compacting }
   const isInputDisabled = computeChatInputDisabled(lockInput)
-  // Stop (cancel) is available whenever a task is running, paused, or a send is
-  // in flight; Pause/Resume flank it depending on the active vs paused state.
-  const showCancel = taskActive || paused || isProcessing
+  // Stop (cancel) is available whenever a task is running, paused, or a send
+  // is in flight; Pause/Resume flank it depending on the active vs paused
+  // state. Also shown while compacting: CancelTask carries no compacting
+  // guard, and terminating the in-flight request is the one user action that
+  // helps the flow's pause-wait land (the request goroutine exits → its done
+  // channel closes → the flow proceeds; a no-op for an idle compaction).
+  // The toolbar hides the Pause/Resume flank for that window — the compaction
+  // flow owns the pause signal, and the compact button's cancel affordance
+  // owns aborting the compaction itself.
+  const showCancel = taskActive || paused || isProcessing || compacting
 
   const placeholderText = computeChatPlaceholder(lockInput)
 
@@ -310,6 +322,7 @@ export function useChatInputController(): ChatInputController {
     taskActive,
     paused,
     pausing,
+    compacting,
     mode,
     setMode,
     height,

@@ -371,6 +371,31 @@ func (f *FrontendAPI) ResumeSession(sessionID, modelOverride, reasoningEffort, n
 	return f.app.Manager().ResumeSession(f.ctx(), sessionID, modelOverride, reasoningEffort, nudge)
 }
 
+// CompactSessionContext starts a manual context compaction for the session's
+// conversation history with the named strategy ("sliding_window" |
+// "summarization" | "hierarchical"). Asynchronous: the call validates and
+// accepts the request (pausing a running task first, exactly like
+// PauseSession, and waiting for its checkpoint), then reports progress via the
+// compaction_started / compaction_finished session events. On completion a
+// task paused by the flow is auto-resumed. Returns an error immediately for an
+// unknown strategy or when a compaction is already in flight.
+func (f *FrontendAPI) CompactSessionContext(sessionID, strategy string) error {
+	if f.app == nil || f.app.Manager() == nil {
+		return errors.New("session manager not initialized")
+	}
+	return f.app.Manager().CompactSessionContext(f.ctx(), sessionID, strategy)
+}
+
+// CancelSessionCompaction aborts an in-flight manual compaction (see
+// CompactSessionContext for the cancellation semantics). A no-op when no
+// compaction is running.
+func (f *FrontendAPI) CancelSessionCompaction(sessionID string) error {
+	if f.app == nil || f.app.Manager() == nil {
+		return errors.New("session manager not initialized")
+	}
+	return f.app.Manager().CancelSessionCompaction(sessionID)
+}
+
 // GetSessionTokens returns token counts for a session. The persisted session
 // row is the base; when the session is live in memory, the manager's snapshot
 // overlays fresher values — notably the context-window used/max tokens and the

@@ -116,6 +116,41 @@ export async function resumeSession(sessionId: string, modelOverride: string = '
   }
 }
 
+/**
+ * Start a manual context compaction of the session's conversation history
+ * with the named strategy ("sliding_window" | "summarization" |
+ * "hierarchical"). Asynchronous: a running task is paused first (exactly like
+ * pauseSession, waiting for its checkpoint), then compacted, then auto-resumed.
+ * Progress arrives via the compaction_started / compaction_finished session
+ * events. Rejects immediately for an unknown strategy or when a compaction is
+ * already in flight.
+ */
+export async function compactSessionContext(sessionId: string, strategy: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.CompactSessionContext(sessionId, strategy)
+  } catch (err) {
+    logger.error('Failed to start context compaction:', err)
+    throw err
+  }
+}
+
+/**
+ * Cancel an in-flight manual context compaction. When the flow is still
+ * waiting for the running task's pause checkpoint it skips the compaction
+ * (the history stays untouched); when the compaction is running it aborts the
+ * summarize calls. No-op when nothing is compacting.
+ */
+export async function cancelSessionCompaction(sessionId: string): Promise<void> {
+  try {
+    const app = getApp()
+    await app.CancelSessionCompaction(sessionId)
+  } catch (err) {
+    logger.error('Failed to cancel context compaction:', err)
+    throw err
+  }
+}
+
 export async function cancelUnfinishedTask(sessionId: string): Promise<void> {
   try {
     const app = getApp()
@@ -133,6 +168,8 @@ export interface SessionRuntimeStatus {
   unfinished_task_id?: string
   /** True when the resumable unfinished task is cooperatively paused. */
   paused: boolean
+  /** True while a manual context compaction is in flight. */
+  compacting?: boolean
   /**
    * Live activity label tracked by the backend emitter ("Thinking...",
    * "Routing request...", "Generating response...", ...). Authoritative only

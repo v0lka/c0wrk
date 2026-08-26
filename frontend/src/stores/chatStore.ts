@@ -37,6 +37,11 @@ interface ChatState {
   // terminal events (session_paused/task_complete/task_cancelled/error) and
   // by the runtime reconcile once the task is no longer active.
   pausing: Record<string, boolean>
+  // Manual context compaction in flight per session: sessionId -> true while
+  // the backend compact flow runs (input locked, compact button → cancel
+  // button). Cleared by compaction_finished and reconciled from the runtime
+  // status snapshot on session switch/restart.
+  compacting: Record<string, boolean>
   // Context fill per step, keyed by session then step: sessionId -> stepId -> fill percent.
   // Nested per-session: plan step ids (step_1, ...) are NOT globally unique
   // across sessions, and fills must survive session switches (A→B→A) — the
@@ -68,6 +73,7 @@ interface ChatActions {
   setTaskActive: (sessionId: string, active: boolean) => void
   setPaused: (sessionId: string, paused: boolean) => void
   setPausing: (sessionId: string, pausing: boolean) => void
+  setCompacting: (sessionId: string, compacting: boolean) => void
   setStepContextFill: (sessionId: string, stepId: string, fill: number) => void
   clearStepContextFill: (sessionId: string) => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
@@ -141,6 +147,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   taskActive: {},
   paused: {},
   pausing: {},
+  compacting: {},
   stepContextFill: {},
   sessionTokens: {},
   runtimeEventAt: {},
@@ -351,6 +358,17 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
       return { pausing: rest }
     }
     return { pausing: { ...s.pausing, [sessionId]: true } }
+  }),
+
+  // Manual context compaction in flight: the input area is locked and the
+  // compact button swaps for a cancel button. Absent key = not compacting.
+  setCompacting: (sessionId, compacting) => set((s) => {
+    if (!compacting) {
+      if (!(sessionId in s.compacting)) return s
+      const { [sessionId]: _compacting, ...rest } = s.compacting
+      return { compacting: rest }
+    }
+    return { compacting: { ...s.compacting, [sessionId]: true } }
   }),
 
   setStepContextFill: (sessionId, stepId, fill) => set((s) => ({

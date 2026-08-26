@@ -33,7 +33,7 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 
 | Store                | Responsibility                                                     | Persistence  |
 | -------------------- | ------------------------------------------------------------------ | ------------ |
-| `chatStore`          | Messages per session, streaming text, activity flags (`taskActive`), token counts, and a per-session `paused` map (absent-key = not paused; `setPaused` action drives it from `session_paused`/`session_resumed` events) | No           |
+| `chatStore`          | Messages per session, streaming text, activity flags (`taskActive`), token counts, a per-session `paused` map (absent-key = not paused; `setPaused` action drives it from `session_paused`/`session_resumed` events), and a per-session `compacting` map (absent-key = not compacting; `setCompacting` drives it from `compaction_started`/`compaction_finished` and the runtime-status reconcile — locks the input area and swaps the status-bar compact button for cancel while set) | No           |
 | `planStore`          | DAG items (`planGroups` — single session-reset array, not keyed by sessionId), step status, routing stats (`sessionStats` — keyed by sessionId) | No           |
 | `sessionStore`       | Session list (sorted by last_active_at), active session ID, project-switch reset (`resetForProjectSwitch`) | No           |
 | `projectStore`       | Project list (sorted by last_active_at, No Project always first), active project ID, lastRealProjectId (for CODE toggle), createDialogOpen (Create Project dialog visibility) | No           |

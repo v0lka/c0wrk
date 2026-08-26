@@ -32,6 +32,7 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
     taskActive,
     paused,
     pausing,
+    compacting,
     hasContent,
     isOptimizing,
     optimizeError,
@@ -57,6 +58,7 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
         variant="ghost"
         size="icon-xs"
         onClick={handleAttach}
+        disabled={compacting}
         title="Attach files"
         aria-label="Attach files"
         className="text-muted-foreground hover:text-foreground"
@@ -67,6 +69,7 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
         variant="ghost"
         size="icon-xs"
         onClick={() => useWorkDirsStore.getState().setOpen(true)}
+        disabled={compacting}
         title="Add working directory"
         aria-label="Add working directory"
         className="text-muted-foreground hover:text-foreground"
@@ -82,6 +85,7 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
           mode === 'chat' && 'text-primary bg-muted/50',
         )}
         onClick={() => setMode('chat')}
+        disabled={compacting}
         title="Chat mode"
         aria-label="Switch to chat mode"
       >
@@ -95,6 +99,7 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
           mode === 'terminal' && 'text-primary bg-muted/50',
         )}
         onClick={() => setMode('terminal')}
+        disabled={compacting}
         title="Terminal mode"
         aria-label="Switch to terminal mode"
       >
@@ -106,11 +111,16 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
       {mode === 'chat' && (
         <>
           <div className="w-px h-4 bg-border mx-1" />
-          <ModelCombobox />
-          <ReasoningCombobox />
-          <div className="w-px h-4 bg-border mx-1" />
-          <GoalToggle />
-          {goalEnabled && <BudgetCombobox />}
+          {/* The selector cluster is inert while compacting: the compaction
+              flow owns the session (pause-wait → history swap → auto-resume),
+              and a model/reasoning/goal change mid-flow would race it. */}
+          <div className={cn('flex items-center gap-1', compacting && 'pointer-events-none opacity-60')}>
+            <ModelCombobox />
+            <ReasoningCombobox />
+            <div className="w-px h-4 bg-border mx-1" />
+            <GoalToggle />
+            {goalEnabled && <BudgetCombobox />}
+          </div>
         </>
       )}
       <div className="flex-1" />
@@ -122,8 +132,12 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
               (between the Pause click and the session_paused event) the
               action button is a NON-CLICKABLE spinner: the ReAct loop is
               still stopping, so neither Pause nor Resume is meaningful and
-              the input stays locked (no premature nudge-resume). */}
-          {paused ? (
+              the input stays locked (no premature nudge-resume).
+              Suppressed entirely while compacting: the compaction flow owns
+              the pause signal, and a stale taskActive (session_paused is
+              suppressed while compacting) must not render a Pause button —
+              only Stop remains. */}
+          {compacting ? null : paused ? (
             <Button
               variant="outline"
               size="icon"
