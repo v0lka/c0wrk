@@ -8,13 +8,12 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-const toolDeclarePlanDescription = `Purpose: publish the task roadmap — ordered steps with acceptance criteria — for user sign-off before any implementation.
-Use when: the user asked to plan first or the task is genuinely multi-step; call once, before acting. Steps may carry an agent field targeting a subagent for that step. Dependencies reference step ids; independent steps can run in parallel. After approval the plan is append-only — new steps may only be added at the end, never edited or deleted.
-Inputs: mode (optional: "present" | "await_approval"); tasks — array of {id (stable, e.g. step_1), summary (5-7 word UI label), description (What/How/Where/Acceptance criteria), depends_on (prerequisite ids), agent (optional Subagent Profile name for this step)}.
-Mode choice: pass "await_approval" when the task is large enough that committing without sign-off is risky, when the user asked to plan first, or when an active skill prescribes an approval gate before implementation. Reserve "present" (display-only, execution continues without sign-off) for low-stakes progress-shaping.
-Outputs: with "present" the plan is displayed and execution continues; with "await_approval" the call blocks until the user approves, requests changes, or abandons — on "request changes" the feedback is returned; revise the tasks and call declare_plan again.
+const toolDeclarePlanDescription = `Purpose: publish the task roadmap — ordered steps with acceptance criteria — for user sign-off before implementation.
+Use when: the user asked to plan first or the task is multi-step; call once before acting. Steps may carry an agent field for a subagent. Dependencies reference step ids; independent steps run in parallel. Approved plans are append-only: add at the end only, never edit or delete.
+Inputs: mode (optional: "present" | "await_approval" — await_approval when sign-off is risky or a skill requires it; present for low-stakes display-only); tasks: array of {id (stable, e.g. step_1), summary (5-7 word label), description (What/How/Where/Acceptance criteria), depends_on (prerequisite ids), agent (optional Subagent Profile name)}.
+Outputs: "present" displays the plan and continues; "await_approval" blocks until the user approves, requests changes, or abandons; on "request changes" feedback is returned; revise and re-declare.
 Example: step 1 "write failing tests", step 2 "implement" with depends_on ["step_1"].
-Anti-example: never implement before approval in await_approval mode; single-step tasks need no plan — act directly; never rewrite approved steps — append corrections instead.`
+Anti-example: never implement before approval in await_approval mode; single-step tasks need no plan; never rewrite approved steps; append corrections instead.`
 
 // PlanPublisher serializes a plan, persists it to the session plans directory,
 // emits the PlanGenerated event, and sets the plan on the blackboard.
