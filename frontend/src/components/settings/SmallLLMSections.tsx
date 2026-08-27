@@ -5,6 +5,7 @@ import type {
   SmallLLMLoopHardening,
 } from '@/types/models'
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible'
+import { Combobox } from '@/components/ui/combobox'
 import { ChevronDown } from 'lucide-react'
 import { Toggle, NumberField, TagList } from './SmallLLMControls'
 import { OptionalNumberField } from './SmallLLMOptionalNumberField'
@@ -163,15 +164,13 @@ export function SamplingSection({ slice, patch, open, onOpenChange }: SectionCom
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-xs text-muted-foreground">Reasoning effort</label>
-            <select
+            <Combobox
+              ariaLabel="Reasoning effort"
               value={slice.reasoning_effort}
-              onChange={(e) => patch({ reasoning_effort: e.target.value })}
-              className="c0-input h-9 px-3 rounded-md border border-input text-sm focus:outline-none min-w-[180px]"
-            >
-              {REASONING_EFFORTS.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
+              onChange={(reasoning_effort) => patch({ reasoning_effort })}
+              className="min-w-[180px]"
+              options={REASONING_EFFORTS}
+            />
           </div>
         </>
       )}

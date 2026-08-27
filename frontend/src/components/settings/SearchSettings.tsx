@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { Input } from '@/components/ui/input'
+import { Combobox } from '@/components/ui/combobox'
 import { getConfig, updateSearchSettings, MASKED_API_KEY } from '@/api/config'
 import { logger } from '@/lib/logger'
 
@@ -97,15 +98,13 @@ export function SearchSettings() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
         <label className="text-xs text-muted-foreground">Search Provider</label>
-        <select
+        <Combobox
+          ariaLabel="Search provider"
           value={config.provider}
-          onChange={(e) => handleProviderChange(e.target.value)}
-          className="c0-input h-9 px-3 rounded-md border border-input text-sm focus:outline-none min-w-[180px]"
-        >
-          {PROVIDER_KEYS.map((key) => (
-            <option key={key} value={key}>{PROVIDER_DISPLAY_NAMES[key]}</option>
-          ))}
-        </select>
+          onChange={handleProviderChange}
+          className="min-w-[180px]"
+          options={PROVIDER_KEYS.map((key) => ({ value: key, label: PROVIDER_DISPLAY_NAMES[key] ?? key }))}
+        />
       </div>
 
       {config.api_key !== MASKED_API_KEY && apiKeyInput.trim() === '' && !NO_API_KEY_PROVIDERS.includes(config.provider) && (

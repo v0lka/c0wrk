@@ -41,6 +41,17 @@ vi.mock('@/api/mcp', () => ({
 import { SecuritySettings } from './SecuritySettings'
 import { getSecuritySettings } from '@/api/config'
 
+// Radix dropdown-menu popper positioning (autoUpdate) observes elements with
+// ResizeObserver, which jsdom does not provide.
+vi.stubGlobal(
+  'ResizeObserver',
+  class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  },
+)
+
 let container: HTMLDivElement
 let root: Root
 
@@ -56,7 +67,34 @@ const render = () =>
     await root.render(<SecuritySettings />)
   })
 
-const selects = () => Array.from(container.querySelectorAll('select'))
+// The policy dropdowns are custom comboboxes built on the Radix
+// dropdown-menu primitives (button trigger + portaled menu), not native
+// <select>, so their colors are themable on Windows too. The trigger carries
+// the aria-label; picking a value happens through the menu portaled to
+// document.body.
+const selects = () =>
+  Array.from(container.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="menu"]'))
+
+const findSelect = (ariaLabel: string) =>
+  selects().find((s) => s.getAttribute('aria-label') === ariaLabel)
+
+/** Open the combobox with `ariaLabel` and click its `optionLabel` option. */
+async function pickOption(ariaLabel: string, optionLabel: string): Promise<void> {
+  const trigger = findSelect(ariaLabel)
+  if (!trigger) throw new Error(`${ariaLabel} dropdown not found`)
+  // Radix's DropdownMenuTrigger toggles on `pointerdown`, not `click`; the
+  // awaited act also lets Radix install its document-level listeners.
+  await act(async () => {
+    trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 10))
+  })
+  const option = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+    .find((o) => o.textContent?.includes(optionLabel))
+  if (!option) throw new Error(`Option "${optionLabel}" not found in ${ariaLabel} menu`)
+  await act(async () => {
+    option.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
 
 describe('SecuritySettings — group schema', () => {
   it('renders exactly seven group policy dropdowns', async () => {
@@ -80,13 +118,7 @@ describe('SecuritySettings — group schema', () => {
 
   it('changing a group policy saves the full seven-group schema only', async () => {
     await render()
-    const execSelect = selects().find((s) => s.getAttribute('aria-label') === 'Execute policy')
-    if (!execSelect) throw new Error('Execute policy dropdown not found')
-
-    await act(async () => {
-      execSelect.value = 'deny'
-      execSelect.dispatchEvent(new Event('change', { bubbles: true }))
-    })
+    await pickOption('Execute policy', 'Deny')
 
     expect(updateSecuritySettingsMock).toHaveBeenCalledTimes(1)
     const payload = updateSecuritySettingsMock.mock.calls[0]![0] as {
@@ -115,25 +147,23 @@ describe('SecuritySettings — group schema', () => {
     )
     await render()
 
-    const execSelect = selects().find((s) => s.getAttribute('aria-label') === 'Execute policy')
+    const execSelect = findSelect('Execute policy')
     if (!execSelect) throw new Error('Execute policy dropdown not found')
     // getSecuritySettings has already run once for the initial load; count
     // from here so the assertion is independent of earlier tests.
     // vi.mocked() exposes the mock's call log while keeping the API type.
     const callsBefore = vi.mocked(getSecuritySettings).mock.calls.length
 
-    await act(async () => {
-      execSelect.value = 'deny'
-      execSelect.dispatchEvent(new Event('change', { bubbles: true }))
-    })
+    await pickOption('Execute policy', 'Deny')
 
     // The backend rejection message is visible to the user...
     const text = container.textContent ?? ''
     expect(text).toContain('blacklist pattern "(" does not compile')
     // ...and the displayed policy re-syncs with the enforced state
     // (execute stays user_confirm from getSecuritySettings, not the
-    // optimistic 'deny' that was never persisted).
-    expect(execSelect.value).toBe('user_confirm')
+    // optimistic 'deny' that was never persisted). The combobox trigger
+    // shows the effective option's label.
+    expect(execSelect.textContent).toContain('User Confirm')
     expect(getSecuritySettings).toHaveBeenCalledTimes(callsBefore + 1) // rollback re-fetch
   })
 
@@ -144,13 +174,7 @@ describe('SecuritySettings — group schema', () => {
     )
     await render()
 
-    const execSelect = selects().find((s) => s.getAttribute('aria-label') === 'Execute policy')
-    if (!execSelect) throw new Error('Execute policy dropdown not found')
-
-    await act(async () => {
-      execSelect.value = 'deny'
-      execSelect.dispatchEvent(new Event('change', { bubbles: true }))
-    })
+    await pickOption('Execute policy', 'Deny')
 
     const text = container.textContent ?? ''
     expect(text).toContain('missing: local_read, remote_mcp')
@@ -178,7 +202,8 @@ describe('SecuritySettings — group schema', () => {
     })
 
     expect(selects()).toHaveLength(7)
-    const execSelect = selects().find((s) => s.getAttribute('aria-label') === 'Execute policy')
-    expect(execSelect?.value).toBe('user_confirm')
+    const execSelect = findSelect('Execute policy')
+    // The combobox trigger shows the enforced policy's option label.
+    expect(execSelect?.textContent).toContain('User Confirm')
   })
 })

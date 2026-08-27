@@ -2,6 +2,7 @@ import { useState, type KeyboardEvent } from 'react'
 import { Plus, RotateCcw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Combobox } from '@/components/ui/combobox'
 import type { GroupPolicy, ToolInfo } from '@/types/models'
 import { EXECUTE_GROUP, GROUP_META, POLICY_OPTIONS } from '@/lib/securityGroups'
 
@@ -42,16 +43,13 @@ export function SecurityGroupCard({
           </span>
           <span className="text-xs text-muted-foreground">{meta.description}</span>
         </div>
-        <select
-          aria-label={`${meta.title} policy`}
+        <Combobox
+          ariaLabel={`${meta.title} policy`}
           value={policy}
-          onChange={(e) => onPolicyChange(group, e.target.value as GroupPolicy)}
-          className="c0-input h-8 px-2 rounded-md border border-input text-xs focus:outline-none min-w-[130px]"
-        >
-          {POLICY_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
-          ))}
-        </select>
+          onChange={(v) => onPolicyChange(group, v as GroupPolicy)}
+          className="h-8 w-auto px-2 text-xs min-w-[130px]"
+          options={POLICY_OPTIONS}
+        />
       </div>
 
       {sorted.length > 0 ? (

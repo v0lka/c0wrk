@@ -5,6 +5,7 @@ import { FIXED_PROVIDERS } from '@/lib/llm-providers'
 import { compositeModelId } from '@/lib/modelId'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import { Combobox } from '@/components/ui/combobox'
 import { FixedProviderForms } from './providers/FixedProviderForms'
 import { OpenAICompatibleProviderForms } from './providers/OpenAICompatibleProviderForms'
 
@@ -172,18 +173,18 @@ export function LLMSettings({
       {/* Global Default Model */}
       <div className="flex flex-col gap-2">
         <label className="text-sm font-medium">Default Model</label>
-        <select
-          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+        <Combobox
+          ariaLabel="Default model"
           value={defaultModel}
-          onChange={(e) => setDefaultModel(e.target.value)}
-        >
-          <option value="">— Select a default model —</option>
-          {allEnabledModels.map(({ id, model, provider }) => (
-            <option key={id} value={id}>
-              {duplicateBareNames.has(model) ? `${model} (${provider})` : model}
-            </option>
-          ))}
-        </select>
+          onChange={setDefaultModel}
+          options={[
+            { value: '', label: '— Select a default model —' },
+            ...allEnabledModels.map(({ id, model, provider }) => ({
+              value: id,
+              label: duplicateBareNames.has(model) ? `${model} (${provider})` : model,
+            })),
+          ]}
+        />
         <p className="text-xs text-muted-foreground">
           The default model is used when no per-message override is set. It must
           be enabled in at least one provider below.
@@ -258,14 +259,15 @@ export function LLMSettings({
               {/* Transport type */}
               <div className="flex flex-col gap-1">
                 <label className="text-xs text-muted-foreground">API type</label>
-                <select
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                <Combobox
+                  ariaLabel="API type"
                   value={addFormType}
-                  onChange={(e) => setAddFormType(e.target.value as 'openai' | 'anthropic')}
-                >
-                  <option value="openai">OpenAI-compatible (Chat Completions)</option>
-                  <option value="anthropic">Anthropic-compatible (Messages API)</option>
-                </select>
+                  onChange={(v) => setAddFormType(v as 'openai' | 'anthropic')}
+                  options={[
+                    { value: 'openai', label: 'OpenAI-compatible (Chat Completions)' },
+                    { value: 'anthropic', label: 'Anthropic-compatible (Messages API)' },
+                  ]}
+                />
                 <p className="text-xs text-muted-foreground">
                   Choose the API protocol spoken by the custom endpoint.
                 </p>

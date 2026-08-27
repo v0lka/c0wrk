@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ChevronDown } from 'lucide-react'
+import { Combobox } from '@/components/ui/combobox'
 
 interface ModelConfigDialogProps {
   /** Bare model name to configure. */
@@ -320,21 +320,13 @@ function SelectField({ label, value, options, onChange, defaultValue, onReset, d
         <label className="text-sm font-medium text-foreground">{label}</label>
         {!isDefault && <ResetButton onClick={onReset} disabled={disabled} />}
       </div>
-      <div className="relative">
-        <select
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          disabled={disabled}
-          className="flex h-9 w-full appearance-none items-center rounded-md border border-border bg-input px-3 pr-8 text-sm text-foreground focus-visible:outline-none disabled:opacity-50 custom-scrollbar"
-        >
-          {options.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-        <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-      </div>
+      <Combobox
+        ariaLabel={label}
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+        options={options}
+      />
       <p className="text-xs text-muted-foreground">
         Default: {defaultLabel}
         {isDefault ? ' (using default)' : ' (overridden)'}

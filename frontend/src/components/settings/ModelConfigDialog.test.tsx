@@ -47,8 +47,14 @@ function numberInputs(): HTMLInputElement[] {
   return Array.from(document.body.querySelectorAll('input[type="number"]'))
 }
 
-function selects(): HTMLSelectElement[] {
-  return Array.from(document.body.querySelectorAll('select'))
+function selects(): HTMLButtonElement[] {
+  // The dropdowns are custom comboboxes built on the Radix dropdown-menu
+  // primitives (button trigger + portaled menu), not native <select>, so
+  // their colors are themable on Windows too. They are portaled to
+  // document.body, like the Radix Dialog.
+  return Array.from(
+    document.body.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="menu"]'),
+  )
 }
 
 function checkboxes(): HTMLInputElement[] {
@@ -123,12 +129,16 @@ describe('ModelConfigDialog', () => {
 
     const sels = selects()
     expect(sels).toHaveLength(3)
-    // Tokenizer select pre-filled with effective value.
-    expect(sels[0]?.value).toBe('tiktoken/o200k_base')
-    // Family select.
-    expect(sels[1]?.value).toBe('openai_flagship')
-    // Protocol select.
-    expect(sels[2]?.value).toBe('chat_completions')
+    // Triggers in declared order, each labeled by its field.
+    expect(sels.map((s) => s.getAttribute('aria-label'))).toEqual([
+      'Tokenizer Type',
+      'Family',
+      'Protocol',
+    ])
+    // Each trigger shows the label of the effective value.
+    expect(sels[0]?.textContent).toContain('o200k_base')
+    expect(sels[1]?.textContent).toContain('OpenAI Flagship')
+    expect(sels[2]?.textContent).toContain('Chat Completions')
   })
 
   it('renders 4 capability checkboxes with correct initial state', async () => {
