@@ -113,8 +113,34 @@ describe('ToolConfirmation — confirmation reason', () => {
     expect(inputContainer?.classList.contains('overflow-hidden')).toBe(false)
     expect(input?.classList.contains('w-full')).toBe(true)
     expect(input?.classList.contains('max-h-64')).toBe(true)
-    expect(input?.classList.contains('overflow-auto')).toBe(true)
+    // Vertical-only scrolling: long values wrap instead of a horizontal bar.
+    expect(input?.classList.contains('overflow-y-auto')).toBe(true)
+    expect(input?.classList.contains('overflow-auto')).toBe(false)
+    expect(input?.classList.contains('overflow-x-auto')).toBe(false)
     expect(input?.classList.contains('custom-scrollbar')).toBe(true)
+  })
+
+  it('wraps long argument values with a hanging indent instead of clipping', () => {
+    render(makeItem({ args: JSON.stringify({ command: 'echo ' + 'x'.repeat(400) }) }))
+
+    const lines = Array.from(container.querySelectorAll('pre span'))
+    // Pretty-printed JSON: "{", the command line, "}".
+    expect(lines.length).toBeGreaterThanOrEqual(3)
+
+    const commandLine = lines.find((element) => element.textContent?.includes('command'))
+    expect(commandLine).toBeDefined()
+    // Soft wrap enabled, and continuation lines indent to the value column
+    // ('  "command": ' is 13 columns) rather than starting at column 0.
+    expect(commandLine?.classList.contains('whitespace-pre-wrap')).toBe(true)
+    expect(commandLine?.classList.contains('block')).toBe(true)
+    expect(commandLine?.style.paddingLeft).toBe('13ch')
+    expect(commandLine?.style.textIndent).toBe('-13ch')
+    expect(commandLine?.style.overflowWrap).toBe('anywhere')
+
+    // Structural lines keep their own indentation as the wrap column.
+    const closing = lines.find((element) => element.textContent === '}')
+    expect(closing?.style.paddingLeft).toBe('0ch')
+    expect(closing?.style.textIndent).toBe('0ch')
   })
 
   it('adds action spacing without reducing the input height limit', () => {

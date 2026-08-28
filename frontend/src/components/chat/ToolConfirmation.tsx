@@ -13,6 +13,40 @@ interface ToolConfirmationProps {
   item: ToolConfirmItem
 }
 
+// Widest key portion ("  " + `"key": `) still worth aligning continuations to;
+// beyond this the hanging indent could exceed the card width, so wrapping
+// falls back to the line's own indentation instead.
+const MAX_HANG_COLUMN = 32
+
+/**
+ * One pretty-printed argument line, soft-wrapped with a hanging indent.
+ *
+ * Long values (e.g. bash_exec/posh_exec command strings) wrap under the start
+ * of their value instead of being clipped at the card edge with a horizontal
+ * scrollbar: continuation lines are indented (`padding-left` + negative
+ * `text-indent` in `ch`, exact for the monospace font) to the column where the
+ * value begins, so the JSON structure stays readable.
+ */
+function ArgLine({ line }: { line: string }) {
+  const indent = /^[ ]*/.exec(line)?.[0].length ?? 0
+  const sep = line.indexOf('": ')
+  const hang =
+    sep !== -1 && sep + 3 - indent <= MAX_HANG_COLUMN ? sep + 3 : indent
+  return (
+    <span
+      className="block whitespace-pre-wrap"
+      style={{
+        paddingLeft: `${hang}ch`,
+        textIndent: `-${hang}ch`,
+        overflowWrap: 'anywhere',
+      }}
+    >
+      {line.length > 0 ? line : '\u00A0'}
+    </span>
+  )
+}
+
+
 export function ToolConfirmation({ item }: ToolConfirmationProps) {
   const { sessionId, metadata } = item.message
   const resolved = getToolConfirmResolution(metadata)
@@ -153,8 +187,12 @@ export function ToolConfirmation({ item }: ToolConfirmationProps) {
         {args && (
           <div className="min-w-0">
             <p className="text-xs text-muted-foreground/60 mb-1">Input:</p>
-            <pre className="w-full min-w-0 max-w-full max-h-64 overflow-auto custom-scrollbar rounded border border-border bg-background/50 p-2 font-mono text-xs">
-              <code>{formatJson(args)}</code>
+            <pre className="w-full min-w-0 max-w-full max-h-64 overflow-y-auto custom-scrollbar rounded border border-border bg-background/50 p-2 font-mono text-xs">
+              <code>
+                {(formatJson(args) ?? '').split('\n').map((line, index) => (
+                  <ArgLine key={index} line={line} />
+                ))}
+              </code>
             </pre>
           </div>
         )}
