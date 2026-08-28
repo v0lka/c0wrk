@@ -179,12 +179,34 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 		return errors.New("project subsystem not initialized")
 	}
 
-	// Idempotency: skip if the same project is already active.
+	// Idempotency: skip the full switch if the same project is already
+	// active. The project:switched event is still emitted so a frontend
+	// whose local activeProjectId went stale (e.g. a concurrent toggle
+	// interleave or a switch RPC that failed after backend-side
+	// activation) reconciles to the backend's authoritative state via its
+	// useProjectLoader subscription. Without the event, a desynced
+	// frontend stays desynced: every later toggle that reaches the
+	// backend takes this early return, ListDirectory then rejects the
+	// frontend's rootPath ("path outside project workspace") and @-file
+	// completions stay empty until an app restart.
 	f.activeProjectMu.RLock()
 	alreadyActive := f.activeProjectID == id
 	f.activeProjectMu.RUnlock()
 	if alreadyActive {
 		f.log().Info("SwitchProject: project already active, skipping", "project", id)
+		// Re-emit so a desynced frontend reconciles (see the comment above).
+		// A lookup failure here is rare (e.g. a race with project deletion),
+		// but without a log it is undiagnosable why the frontend never
+		// repaired itself — so warn instead of failing silently.
+		p, err := f.projectManager.GetProject(id)
+		switch {
+		case err != nil:
+			f.log().Warn("SwitchProject: failed to re-emit project:switched on already-active path", "project", id, "error", err)
+		case p == nil:
+			f.log().Warn("SwitchProject: project not found while already active; skipped project:switched re-emit", "project", id)
+		default:
+			f.emitEvent(EventProjectSwitched, p)
+		}
 		return nil
 	}
 
@@ -197,6 +219,14 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	}
 
 	// CODE mode requires git; No Project (CHAT mode) does not.
+	// Return an ERROR (alongside the runtime_error event that drives the
+	// UI toast): switchProjectWithState treats a rejected RPC as "switch
+	// did not happen" and leaves the frontend's activeProjectId on the
+	// previous project. Returning nil here used to let the frontend flip
+	// its own store to a project the backend never activated — a
+	// frontend/backend desync under which ListDirectory persistently
+	// rejects the frontend's rootPath and @-file completions die until
+	// an app restart.
 	if !p.IsNoProject && !gitOnPath() {
 		f.emitEvent(EventRuntimeError, map[string]string{
 			"id":         uuid.New().String(),
@@ -204,7 +234,7 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 			"error_code": "git_not_found",
 		})
 		f.log().Warn("SwitchProject blocked: git not found on PATH", "project", id)
-		return nil // error already reported via event; no-op the switch
+		return errors.New("git is required for CODE mode")
 	}
 
 	f.switchProjectTeardown(id)

@@ -12,7 +12,7 @@ import type { ProjectSwitchState, SessionInfo } from '@/types/models'
 
 const mocks = vi.hoisted(() => ({
   saveProjectSwitchStateMock: vi.fn<(...args: unknown[]) => Promise<void>>(),
-  switchProjectMock: vi.fn<(...args: unknown[]) => Promise<void>>(),
+  switchProjectMock: vi.fn<(id: string) => Promise<void>>(),
   getProjectSwitchStateMock: vi.fn<(...args: unknown[]) => Promise<ProjectSwitchState | null>>(),
   listSessionsMock: vi.fn<(...args: unknown[]) => Promise<SessionInfo[]>>(),
   createSessionMock: vi.fn<(...args: unknown[]) => Promise<SessionInfo>>(),
@@ -255,5 +255,49 @@ describe('useProjectSwitchState', () => {
     expect(fileState.activeFile).toBe('src/main.ts')
     // No source project to save on initial activation.
     expect(mocks.saveProjectSwitchStateMock).not.toHaveBeenCalled()
+  })
+
+  it('serializes concurrent switches so a rapid CHAT↔CODE toggle cannot interleave store writes', async () => {
+    // Regression: two in-flight switches used to interleave their store
+    // writes (activeSessionId picked from another project's listSessions
+    // snapshot, activeProjectId landing out of order), leaving the file-tree
+    // rootPath outside the backend's active project. ListDirectory then
+    // rejected that root on every call and @-file completions in the chat
+    // input stayed empty until an app restart.
+    useProjectStore.setState({ activeProjectId: 'p1' })
+
+    const rpcOrder: string[] = []
+    mocks.switchProjectMock.mockImplementation(async (id: string) => {
+      rpcOrder.push(id)
+    })
+
+    // The first switch stalls at getProjectSwitchState (deferred gate).
+    // Typed as the mock's value type so mockImplementationOnce accepts it;
+    // releasing resolves null = "no saved state", the same falsy-saved path
+    // the previous void gate produced.
+    let releaseFirst: (() => void) | undefined
+    const gate = new Promise<ProjectSwitchState | null>((resolve) => {
+      releaseFirst = () => resolve(null)
+    })
+    mocks.getProjectSwitchStateMock.mockImplementationOnce(() => gate)
+
+    const { useProjectSwitchState } = await import('@/hooks/useProjectSwitchState')
+    const runSwitch = useProjectSwitchState()
+
+    const first = runSwitch('p2')
+    const second = runSwitch('p3')
+
+    // Let microtasks settle: the second switch must NOT have reached its
+    // switchProject RPC while the first is still mid-flight.
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(rpcOrder).toEqual(['p2'])
+
+    releaseFirst?.()
+    await first
+    await second
+
+    expect(rpcOrder).toEqual(['p2', 'p3'])
+    expect(useProjectStore.getState().activeProjectId).toBe('p3')
   })
 })

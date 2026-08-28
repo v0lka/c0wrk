@@ -135,12 +135,25 @@ func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 
 	if sessionID != "" && f.app != nil {
 		if mgr := f.app.Manager(); mgr != nil {
-			if wsPath, ok := mgr.GetSessionWorkspacePath(sessionID); ok && wsPath != "" {
-				// Return the session workspace if it belongs to the active project.
+			if sess, ok := mgr.GetSession(sessionID); ok && sess != nil && sess.WorkspacePath != "" {
+				// Return the session workspace only if it belongs to the active project.
 				// For No Project, session and project workspaces differ by design
-				// (per-session isolation), so match by project ID instead.
-				if wsPath == activeProject || activeProject == "" || activeProjectID == project.NoProjectID {
-					return wsPath, nil
+				// (per-session isolation), so match by the session's project ID
+				// instead — and REQUIRE that match: a session registered under a
+				// real project must never leak its workspace into CHAT mode. The
+				// old unconditional short-circuit (activeProjectID == NoProjectID)
+				// let a stale cross-project activeSessionId (e.g. after concurrent
+				// project toggles) set the file-tree root to a path outside the
+				// No Project tree — ListDirectory then rejects it ("path outside
+				// project workspace") and @-file completions die until restart.
+				var belongsToActive bool
+				if activeProjectID == project.NoProjectID {
+					belongsToActive = sess.ProjectID == project.NoProjectID
+				} else {
+					belongsToActive = sess.WorkspacePath == activeProject
+				}
+				if belongsToActive || activeProject == "" {
+					return sess.WorkspacePath, nil
 				}
 			}
 		}

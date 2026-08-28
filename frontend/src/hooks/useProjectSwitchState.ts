@@ -26,113 +26,172 @@ function pickLatestSession(sessions: SessionInfo[]): SessionInfo | null {
   }, sessions[0]!)
 }
 
+async function performSwitch(nextProjectId: string): Promise<void> {
+  const projectState = useProjectStore.getState()
+  const currentProjectId = projectState.activeProjectId
+
+  if (!nextProjectId || nextProjectId === currentProjectId) {
+    return
+  }
+
+  // No previously active project ⇒ this is the initial (startup) activation.
+  // The file-viewer store was already rehydrated from localStorage with
+  // exactly the tabs that were open at the last shutdown — the
+  // authoritative, fresh source for open tabs (see fileViewerStore
+  // `partialize`). The backend per-project switch state below, by contrast,
+  // is only persisted when switching *away* from a project, so on restart it
+  // is stale and may still reference tabs the user already dismissed (e.g. a
+  // closed plan). Applying it on startup would silently reopen those stale
+  // tabs, so we must NOT restore from the backend here — trust localStorage.
+  // Mirrors the savedSessionId staleness handling at the bottom of this hook.
+  const isInitialActivation = !currentProjectId
+
+  // Best-effort save of source project UI state before changing active project.
+  if (currentProjectId) {
+    try {
+      const fileViewer = useFileViewerStore.getState()
+      const sessionStore = useSessionStore.getState()
+
+      await saveProjectSwitchState({
+        project_id: currentProjectId,
+        open_tabs: fileViewer.openTabs,
+        active_file: fileViewer.activeFile ?? undefined,
+        saved_session_id: sessionStore.activeSessionId ?? undefined,
+      })
+    } catch (error) {
+      logger.warn('Failed to persist source project switch state; continuing switch', error)
+    }
+  }
+
+  await switchProject(nextProjectId)
+
+  const sessionStore = useSessionStore.getState()
+  const fileViewer = useFileViewerStore.getState()
+
+  // Clear previous project session state before loading destination sessions.
+  sessionStore.resetForProjectSwitch()
+
+  useProjectStore.getState().setActiveProjectId(nextProjectId)
+
+  let savedSessionId = ''
+  let savedTabs: string[] = []
+  let savedActiveFile: string | null = null
+
+  try {
+    const saved = await getProjectSwitchState(nextProjectId)
+    if (saved) {
+      savedSessionId = saved.saved_session_id
+      savedTabs = saved.open_tabs
+      savedActiveFile = saved.active_file || null
+    }
+  } catch (error) {
+    logger.warn('Failed to restore persisted project switch state; using fallback', error)
+  }
+
+  // NOTE: on the initial (startup) activation we intentionally keep the
+  // localStorage-rehydrated tabs untouched and skip this restore. The backend
+  // savedTabs are stale on restart (only written on switch-away), so applying
+  // them would reopen tabs the user already closed (e.g. a dismissed plan).
+  if (!isInitialActivation) {
+    fileViewer.restoreProjectFiles(savedTabs, savedActiveFile)
+  }
+
+  let sessions: SessionInfo[] = []
+  try {
+    sessions = await listSessions()
+    sessionStore.setSessions(sessions)
+  } catch (error) {
+    logger.warn('Failed to list sessions during project switch restore', error)
+  }
+
+  // Deterministic fallback:
+  // 1) latest session by last_active_at (most reliable — based on actual activity)
+  // 2) saved session from previous project switch (only valid if it still exists)
+  // 3) create new session for empty project
+  //
+  // IMPORTANT: pickLatestSession must come FIRST. On app restart, savedSessionId
+  // is stale because it's only persisted when switching *away* from a project.
+  // If the user created newer sessions after the last project switch but before
+  // closing the app, savedSessionId would point to an older session. Picking the
+  // latest by last_active_at prevents this stale-session bug.
+  const latestSession = pickLatestSession(sessions)
+  if (latestSession) {
+    sessionStore.setActiveSessionId(latestSession.id)
+    return
+  }
+
+  if (savedSessionId && isSessionForProject(savedSessionId, sessions)) {
+    sessionStore.setActiveSessionId(savedSessionId)
+    return
+  }
+
+  try {
+    const created = await createSession()
+    sessionStore.addSession(created)
+    sessionStore.setActiveSessionId(created.id)
+  } catch (error) {
+    logger.error('Failed to create fallback session after project switch restore', error)
+    sessionStore.setActiveSessionId(null)
+  }
+}
+
+/**
+ * Serialize project switches: each switch's full state-mutating body
+ * (backend RPC + store writes + session reload) must COMPLETE before the
+ * next one starts. Rapid CHAT↔CODE toggles used to run concurrently and
+ * interleave their store writes — e.g. activeSessionId picked from another
+ * project's listSessions snapshot — leaving the file-tree rootPath pointing
+ * outside the backend's active project. ListDirectory then rejects that
+ * root ("path outside project workspace") on every call and @-file
+ * completions in the chat input stay empty until an app restart.
+ */
+let switchChain: Promise<void> = Promise.resolve()
+
+/**
+ * Watchdog budget for one queued switch: waiting for its predecessor plus
+ * running its own body. Wails bindings have no built-in timeout, so without
+ * this bound a single hung RPC (e.g. a stuck backend switchProject) would
+ * keep every later toggle queued forever — the CHAT↔CODE toggles would
+ * silently stop responding. When the watchdog fires, the queue link settles
+ * (releasing the next queued switch) and the affected caller's promise
+ * rejects with a timeout error. If the hung switch's RPC settles
+ * afterwards, its late store writes can still interleave with the next
+ * switch — an accepted trade-off versus freezing the queue indefinitely.
+ */
+const SWITCH_QUEUE_TIMEOUT_MS = 30_000
+
+function withSwitchTimeout<T>(promise: Promise<T>, nextProjectId: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      logger.warn(`Project switch to "${nextProjectId}" exceeded the ${SWITCH_QUEUE_TIMEOUT_MS}ms watchdog; releasing the switch queue`)
+      reject(new Error(`project switch to "${nextProjectId}" timed out after ${SWITCH_QUEUE_TIMEOUT_MS}ms (previous switch hung or backend RPC stuck)`))
+    }, SWITCH_QUEUE_TIMEOUT_MS)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
+
 export function useProjectSwitchState() {
-  return useCallback(async (nextProjectId: string): Promise<void> => {
-    const projectState = useProjectStore.getState()
-    const currentProjectId = projectState.activeProjectId
-
-    if (!nextProjectId || nextProjectId === currentProjectId) {
-      return
-    }
-
-    // No previously active project ⇒ this is the initial (startup) activation.
-    // The file-viewer store was already rehydrated from localStorage with
-    // exactly the tabs that were open at the last shutdown — the
-    // authoritative, fresh source for open tabs (see fileViewerStore
-    // `partialize`). The backend per-project switch state below, by contrast,
-    // is only persisted when switching *away* from a project, so on restart it
-    // is stale and may still reference tabs the user already dismissed (e.g. a
-    // closed plan). Applying it on startup would silently reopen those stale
-    // tabs, so we must NOT restore from the backend here — trust localStorage.
-    // Mirrors the savedSessionId staleness handling at the bottom of this hook.
-    const isInitialActivation = !currentProjectId
-
-    // Best-effort save of source project UI state before changing active project.
-    if (currentProjectId) {
-      try {
-        const fileViewer = useFileViewerStore.getState()
-        const sessionStore = useSessionStore.getState()
-
-        await saveProjectSwitchState({
-          project_id: currentProjectId,
-          open_tabs: fileViewer.openTabs,
-          active_file: fileViewer.activeFile ?? undefined,
-          saved_session_id: sessionStore.activeSessionId ?? undefined,
-        })
-      } catch (error) {
-        logger.warn('Failed to persist source project switch state; continuing switch', error)
-      }
-    }
-
-    await switchProject(nextProjectId)
-
-    const sessionStore = useSessionStore.getState()
-    const fileViewer = useFileViewerStore.getState()
-
-    // Clear previous project session state before loading destination sessions.
-    sessionStore.resetForProjectSwitch()
-
-    useProjectStore.getState().setActiveProjectId(nextProjectId)
-
-    let savedSessionId = ''
-    let savedTabs: string[] = []
-    let savedActiveFile: string | null = null
-
-    try {
-      const saved = await getProjectSwitchState(nextProjectId)
-      if (saved) {
-        savedSessionId = saved.saved_session_id
-        savedTabs = saved.open_tabs
-        savedActiveFile = saved.active_file || null
-      }
-    } catch (error) {
-      logger.warn('Failed to restore persisted project switch state; using fallback', error)
-    }
-
-    // NOTE: on the initial (startup) activation we intentionally keep the
-    // localStorage-rehydrated tabs untouched and skip this restore. The backend
-    // savedTabs are stale on restart (only written on switch-away), so applying
-    // them would reopen tabs the user already closed (e.g. a dismissed plan).
-    if (!isInitialActivation) {
-      fileViewer.restoreProjectFiles(savedTabs, savedActiveFile)
-    }
-
-    let sessions: SessionInfo[] = []
-    try {
-      sessions = await listSessions()
-      sessionStore.setSessions(sessions)
-    } catch (error) {
-      logger.warn('Failed to list sessions during project switch restore', error)
-    }
-
-    // Deterministic fallback:
-    // 1) latest session by last_active_at (most reliable — based on actual activity)
-    // 2) saved session from previous project switch (only valid if it still exists)
-    // 3) create new session for empty project
-    //
-    // IMPORTANT: pickLatestSession must come FIRST. On app restart, savedSessionId
-    // is stale because it's only persisted when switching *away* from a project.
-    // If the user created newer sessions after the last project switch but before
-    // closing the app, savedSessionId would point to an older session. Picking the
-    // latest by last_active_at prevents this stale-session bug.
-    const latestSession = pickLatestSession(sessions)
-    if (latestSession) {
-      sessionStore.setActiveSessionId(latestSession.id)
-      return
-    }
-
-    if (savedSessionId && isSessionForProject(savedSessionId, sessions)) {
-      sessionStore.setActiveSessionId(savedSessionId)
-      return
-    }
-
-    try {
-      const created = await createSession()
-      sessionStore.addSession(created)
-      sessionStore.setActiveSessionId(created.id)
-    } catch (error) {
-      logger.error('Failed to create fallback session after project switch restore', error)
-      sessionStore.setActiveSessionId(null)
-    }
+  return useCallback((nextProjectId: string): Promise<void> => {
+    const run = switchChain.then(
+      () => performSwitch(nextProjectId),
+      // The chain itself never rejects — a failed switch must not poison
+      // later ones — but the caller still observes the original error via
+      // the returned promise.
+      () => performSwitch(nextProjectId),
+    )
+    const bounded = withSwitchTimeout(run, nextProjectId)
+    // The chain link settles when the switch completes OR its watchdog
+    // fires — either way the next queued switch is allowed to start.
+    switchChain = bounded.then(undefined, () => {})
+    return bounded
   }, [])
 }

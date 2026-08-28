@@ -430,3 +430,107 @@ func TestDeleteProject_RemovesStoreOnlySessionFiles(t *testing.T) {
 		t.Errorf("store-only session directory should be removed: %s (stat err=%v)", sessionDir, err)
 	}
 }
+
+// TestSwitchProject_AlreadyActive_EmitsSwitchedEvent pins the reconciliation
+// contract for the idempotent path: SwitchProject(same id) must STILL emit
+// project:switched. A frontend whose local activeProjectId went stale (e.g.
+// after a failed or interleaved toggle) reconciles exclusively via its
+// project:switched subscription — without the event, every later toggle that
+// reaches the backend takes the early return, the backend never re-syncs the
+// frontend, ListDirectory keeps rejecting the frontend's rootPath ("path
+// outside project workspace") and @-file completions in the chat input stay
+// empty until an app restart.
+func TestSwitchProject_AlreadyActive_EmitsSwitchedEvent(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+
+	// Seed a session so applySavedProjectSwitchState resolves a fallback
+	// without creating one through the nil-orchestrator factory.
+	now := time.Now().UTC().Format(time.RFC3339)
+	h.seedSession(t, "session-a", now, now)
+
+	switched := 0
+	h.api.emitEvent = func(name string, _ ...any) {
+		if name == EventProjectSwitched {
+			switched++
+		}
+	}
+	// The harness Application has no real builder; switchProjectActivate
+	// calls SetMCPWorkDir on it. Without an override, builder() returns an
+	// interface holding a typed-nil *core.OrchestratorBuilder which passes
+	// the nil check and panics on the nil receiver.
+	h.api.builderOverride = &mockBuilder{}
+	t.Cleanup(func() {
+		h.api.watcherMu.Lock()
+		defer h.api.watcherMu.Unlock()
+		if h.api.watcher != nil {
+			_ = h.api.watcher.Close()
+			h.api.watcher = nil
+		}
+	})
+
+	// First switch: full activation path, emits once.
+	if err := h.api.SwitchProject(h.projectID); err != nil {
+		t.Fatalf("SwitchProject: %v", err)
+	}
+	if switched != 1 {
+		t.Fatalf("expected 1 project:switched after full switch, got %d", switched)
+	}
+
+	// Idempotent re-switch: must still emit so a desynced frontend reconciles.
+	if err := h.api.SwitchProject(h.projectID); err != nil {
+		t.Fatalf("SwitchProject (already active): %v", err)
+	}
+	if switched != 2 {
+		t.Fatalf("expected project:switched on the already-active path, got %d events", switched)
+	}
+}
+
+// TestGetSessionWorkspace_NoProject_ForeignSessionDoesNotLeak pins the CHAT
+// mode isolation guard: while No Project is active, GetSessionWorkspace must
+// never return the registered workspace of a session that belongs to a REAL
+// project. The old unconditional short-circuit (activeProjectID == NoProjectID
+// ⇒ return wsPath) let a stale cross-project activeSessionId set the file-tree
+// root outside the No Project tree — ListDirectory then rejected that root on
+// every call and @-file completions died until an app restart.
+func TestGetSessionWorkspace_NoProject_ForeignSessionDoesNotLeak(t *testing.T) {
+	base := t.TempDir()
+	realWS := filepath.Join(base, "real", "workspace")
+	if err := os.MkdirAll(realWS, 0o755); err != nil {
+		t.Fatalf("mkdir real workspace: %v", err)
+	}
+
+	factory := func(core.Emitter, *slog.Logger, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+		return nil, nil
+	}
+	manager := session.NewManager(factory, func(session.Event) {}, base)
+	t.Cleanup(manager.Shutdown)
+
+	// A session registered under a real project with a real workspace.
+	created, err := manager.CreateSession("real-project", realWS)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	f := &FrontendAPI{
+		app:       &Application{manager: manager},
+		agentDir:  base,
+		emitEvent: func(string, ...any) {},
+	}
+	f.activeProjectMu.Lock()
+	f.activeProjectID = project.NoProjectID
+	f.activeProjectPath = filepath.Join(base, "__no_project__")
+	f.activeProjectMu.Unlock()
+
+	got, err := f.GetSessionWorkspace(created.ID)
+	if err != nil {
+		t.Fatalf("GetSessionWorkspace: %v", err)
+	}
+	want, absErr := filepath.Abs(config.NoProjectSessionWorkspace(base, created.ID))
+	if absErr != nil {
+		t.Fatalf("abs: %v", absErr)
+	}
+	if got != want {
+		t.Fatalf("foreign session leaked real workspace into CHAT mode: got %q, want derived No Project path %q", got, want)
+	}
+}

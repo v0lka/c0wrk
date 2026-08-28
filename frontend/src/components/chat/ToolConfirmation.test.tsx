@@ -123,7 +123,7 @@ describe('ToolConfirmation — confirmation reason', () => {
   it('wraps long argument values with a hanging indent instead of clipping', () => {
     render(makeItem({ args: JSON.stringify({ command: 'echo ' + 'x'.repeat(400) }) }))
 
-    const lines = Array.from(container.querySelectorAll('pre span'))
+    const lines = Array.from(container.querySelectorAll<HTMLSpanElement>('pre span'))
     // Pretty-printed JSON: "{", the command line, "}".
     expect(lines.length).toBeGreaterThanOrEqual(3)
 
