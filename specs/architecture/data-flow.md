@@ -210,7 +210,7 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
   ├─ 3. Disabled-tools check (No Project mode) — applies to ALL tools, including system-group
   ├─ 4. Tool's group == system? → execute immediately, bypass policy/judge (disabled check above still applies)
   ├─ 5. Register PostExecuteHook (deferred, runs on every non-early return path)
-  ├─ 6. Extra shell blacklist check (per-session, e.g. No Project mode) — bash_exec/posh_exec only;
+  ├─ 6. Extra shell blacklist check (per-session, via SetExtraShellBlacklist) — bash_exec/posh_exec only;
   │      hard block, reason names the matched pattern
   ├─ 7. PreExecuteHook? → call (may block for indexing gate)
   ├─ 8. Group policy == deny? → return error result (hard block, names the group)

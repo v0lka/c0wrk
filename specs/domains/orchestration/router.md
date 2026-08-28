@@ -63,9 +63,9 @@ Selected (router-matched) skills are merged with user-specified skills (from `/s
 
 When `opts.TaskID` is non-empty (a continuation) AND the restored blackboard has BOTH an existing plan AND a routing decision, the orchestrator **skips the router LLM call entirely**, reuses the prior `RoutingDecision`, and reactivates skills. The plan gate prevents a plan-less continuation from mis-routing (e.g. "continue step 10" without a plan would be misclassified). Every FIRST user message passes through `Route`; only continuations with a restored plan AND routing take the fast-path.
 
-### No Project Override
+### No Project Mode
 
-In No Project (CHAT) mode, `routing.Domain` is overridden from `"code"` to `"general"` after classification, and code tools are disabled (`SetNoProjectMode()`).
+In No Project (CHAT) mode, `SetNoProjectMode()` disables only `semantic_search` — there is no vector index without a project, so the tool would fail or return stale results from the previous CODE-mode project. All other tools, including `ripgrep` and `glob`, stay available under the normal `security.groups` policies, and no extra shell-command blacklist is installed (dev/build commands such as `git` follow the regular `execute` group policy). The routing domain is honest: code-flavored CHAT questions classify as `"code"` — its compaction strategy (`sliding_window`) assumes no project — instead of being rewritten to `"general"`.
 
 ## Error Handling
 

@@ -382,9 +382,11 @@ type Orchestrator struct {
 	verifyOnEditMaxOutputChars int
 
 	// isNoProject is set to true when this orchestrator runs inside the
-	// "No Project" pseudo-project. When true, the routing domain is
-	// overridden from "code" to "general" so that code-oriented planning
-	// and execution strategies are not applied.
+	// "No Project" pseudo-project. When true, index-dependent tools are
+	// disabled (semantic_search — no vector index without a project),
+	// verify-on-edit is suppressed, and auto-RAG hints are skipped. The
+	// routing domain is NOT overridden: code-flavored CHAT questions route
+	// as "code" (its compaction strategy, sliding_window, assumes no project).
 	isNoProject bool
 
 	// requestInFlight enforces the documented "one active request per
@@ -1487,8 +1489,13 @@ func (o *Orchestrator) emitInitialContextFill() {
 }
 
 // SetNoProjectMode configures this orchestrator for No Project mode:
-// disables code-oriented tools, adds extended shell command blacklist,
-// and marks the orchestrator to override code domain to general.
+// disables index-dependent tools (semantic_search — no vector index exists
+// without a project). The routing domain is kept honest (no code→general
+// rewrite): code-flavored CHAT questions route as "code", whose compaction
+// strategy (sliding_window) requires no project. Shell commands are not
+// additionally restricted here: the global security.groups.execute policy
+// (including its destructive blacklist) applies uniformly to CODE and CHAT
+// sessions.
 func (o *Orchestrator) SetNoProjectMode() {
 	o.isNoProject = true
 	if o.coreToolRegistry == nil {
@@ -1498,11 +1505,6 @@ func (o *Orchestrator) SetNoProjectMode() {
 		return
 	}
 	o.coreToolRegistry.SetDisabledTools(NoProjectDisabledTools)
-	if err := o.coreToolRegistry.SetExtraShellBlacklist(NoProjectShellBlacklist); err != nil {
-		if o.logger != nil {
-			o.logger.Warn("failed to set extra shell blacklist for No Project", "error", err)
-		}
-	}
 }
 
 // Emitter returns the orchestrator's event emitter for use by external callers

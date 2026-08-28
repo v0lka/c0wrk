@@ -1740,6 +1740,29 @@ func TestSystemToolDisabledInNoProjectStillBlocked(t *testing.T) {
 	}
 }
 
+// TestToolsAvailableInNoProject verifies the tools kept available in No
+// Project (CHAT) mode execute normally when the No Project disabled set
+// (semantic_search only) is applied: ripgrep and glob were re-enabled for
+// non-code CHAT work and must not regress to being blocked. System-group
+// mocks isolate the disabled-tools gate — the system-group bypass satisfies
+// any policy gate, so only the disabled set can block these calls.
+func TestToolsAvailableInNoProject(t *testing.T) {
+	registry := NewToolRegistry()
+	setDefaultGroupPolicies(registry)
+	registry.SetDisabledTools(map[string]bool{"semantic_search": true})
+
+	for _, name := range []string{"ripgrep", "glob"} {
+		registry.Register(newMockSystemTool(name, "search tool"))
+		result, err := registry.Execute(context.Background(), name, json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		if result.IsError {
+			t.Errorf("%s: expected execution to succeed under the No Project disabled set, got %q", name, result.Content)
+		}
+	}
+}
+
 // --- Goal-mode tool gating tests ---
 
 // TestIsGoalModeTool_GoalSpecificTools verifies the three goal-mode-only tools

@@ -631,7 +631,11 @@ func buildSystemPromptWith(ctx context.Context, userMessage string, modelMeta ll
 	}
 
 	// Environment block (stable: date doesn't change within a session).
-	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx), tools.EnvFormatOptions{HideHomeDir: coretools.IsNoProject(ctx)}); envBlock != "" {
+	// No Project (CHAT) sessions get the REAL environment, including the
+	// home directory: hiding it was cosmetic (the per-session workspace
+	// lives under ~/.c0wrk anyway) and actively harmed OS-config/DevOps
+	// tasks that need real paths.
+	if envBlock := tools.FormatFullEnvBlock(tools.EnvInfoFrom(ctx), tools.EnvFormatOptions{}); envBlock != "" {
 		b.Core(envBlock)
 	}
 

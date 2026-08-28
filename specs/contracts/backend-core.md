@@ -125,7 +125,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Vision params for document conversion | core → backend | `Orchestrator.ResolveVisionOptions()` — per-call markitdown vision connection params for the model currently active on the session's router (nil when the model must not caption); called per document by the backend attachment flow. The in-task counterpart is a resolver attached to the task context by `prepareRequestContext`/`Resume` (see [../domains/session-lifecycle.md](../domains/session-lifecycle.md)) |
 | Managed venv interpreter (vision conversion) | backend → core | `BuilderConfig.MarkitdownPythonPath` — closure over `toolmanager.VenvPythonPath`, injected in `backend/application.go` (NOT via `ToBuilderConfig`); lazily probed at first converter init because the tool-manager installs the venv asynchronously after startup |
 | Available tools config | backend → core | `BuiltinToolsConfig` (incl. ExtraShellBlacklist). Per-tool truncation via `BuilderConfig.ToolLimits.PerToolTruncation`. |
-| No Project mode        | backend → core | `Orchestrator.SetNoProjectMode()` (disables code tools, adds bash blacklist) |
+| No Project mode        | backend → core | `Orchestrator.SetNoProjectMode()` (disables `semantic_search` — no vector index without a project) |
 | Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
 | Security policies (incl. Smart Approve) | backend → core | `BuilderConfig.Security` (carries `Groups map[string]BuilderGroupPolicy` — the group-policy schema, ADR-024 — plus `SmartApprove`, `AutoApproveWorkspaceWrites`, `JudgeModel`, `InjectionDefenseEnabled`) |
 | Execution result       | core → backend | `*HandleResult`                          |

@@ -68,6 +68,13 @@ var FileMutatingTools = map[string]bool{
 // NoProjectDisabledTools is the set of tool names that are blocked from both
 // listing and execution when the current project is "No Project" (__no_project__).
 //
+// Only semantic_search is disabled: without a project there is no vector index
+// (the subsystem stays off for No Project sessions), so a query would either
+// fail or return stale results from the previous CODE-mode project. ripgrep
+// and glob were historically disabled here as "code-oriented" tools, but CHAT
+// sessions legitimately use them beyond code (OS config, DevOps, dotfiles),
+// so they are now allowed under the normal security.groups policies.
+//
 // Note: edit_file and write_file are intentionally NOT in this list. In No Project
 // (CHAT) mode, write/edit operations are constrained to the per-session isolated
 // workspace or temp directory by the Judge layer (judgeWriteInSessionRoots). This
@@ -76,18 +83,5 @@ var FileMutatingTools = map[string]bool{
 // mode was never strictly read-only — bash_exec has always been allowed for
 // session-scoped command execution.
 var NoProjectDisabledTools = map[string]bool{
-	ToolRipgrep:        true,
-	ToolGlob:           true,
 	ToolSemanticSearch: true,
-}
-
-// NoProjectShellBlacklist contains regex patterns for commands blocked in
-// No Project mode. These are development/build tools that only make sense
-// inside a real project workspace. The patterns are matched against the
-// command string of any shell-exec tool (bash_exec, posh_exec).
-var NoProjectShellBlacklist = []string{
-	`^(git|npm|npx|yarn|pnpm|go|rustc|cargo|make|cmake|gcc|g\+\+|cc|clang)\b`,
-	`^(gem|bundle|dotnet|msbuild|docker|kubectl)\b`,
-	`^(helm|terraform|vagrant|ansible|gradle|mvn|sbt|stack|cabal)\b`,
-	`^(nuget|choco|brew|port|apt|apt-get|yum|dnf|pacman|zypper|snap)\b`,
 }

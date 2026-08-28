@@ -131,7 +131,7 @@ security:
 2. Disabled-tools check (No Project mode) — applies to ALL tools incl. system
 3. group == system → execute immediately (bypasses everything below)
 4. [PostExecuteHook deferred]
-5. Extra shell blacklist (No Project) — hard block, reason names the pattern
+5. Extra shell blacklist (per-session) — hard block, reason names the pattern
 6. PreExecuteHook (e.g. index-ready gate)
 7. Group policy deny → hard block
 8. Safety signals gathered once:

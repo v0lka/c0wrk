@@ -344,13 +344,6 @@ func (o *Orchestrator) routeAndActivateSkills(
 		}
 	}
 
-	// No Project mode: override code domain to general so that
-	// code-oriented planning and execution strategies are not applied.
-	// Must happen BEFORE emitting the routing event so the UI sees the corrected domain.
-	if o.isNoProject && routing.Domain == "code" {
-		routing.Domain = "general"
-	}
-
 	// Emit routing decision
 	o.logDebug("orchestrator: routing completed", "domain", routing.Domain, "complexity", routing.Complexity, "needsClarification", routing.NeedsClarification)
 	o.emitter.Routing("conductor", routing.Domain, strconv.Itoa(routing.Complexity))

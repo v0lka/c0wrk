@@ -114,7 +114,7 @@ The native desktop window separately persists validated width, height, and maxim
 ### Sidebar header
 
 Between the collapse and settings buttons sits a CHAT/CODE segmented toggle:
-- **CHAT**: switches to No Project (pseudo-project with code tools disabled, bash blacklist, per-session workspaces)
+- **CHAT**: switches to No Project (pseudo-project with semantic_search disabled, per-session workspaces)
 - **CODE**: switches to `lastRealProjectId` (the most recent non-No-Project project) or the first available real project
 - The toggle is hidden when no projects are loaded yet
 

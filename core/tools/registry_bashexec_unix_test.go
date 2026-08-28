@@ -151,3 +151,41 @@ func TestExtraShellBlacklist_HardBlockNamesPattern(t *testing.T) {
 		t.Errorf("expected the block reason to contain the matched pattern %q (quoted), got %q", pattern, result.Content)
 	}
 }
+
+// TestBashExec_NoProject_DevCommandNotHardBlocked verifies the CHAT tool
+// policy relaxation at the registry level: with the No Project disabled set
+// applied (semantic_search only — No Project no longer installs an extra
+// shell blacklist), a dev command like `git status` follows the normal
+// execute policy (user_confirm by default) and escalates to a confirmation
+// decision instead of being hard-blocked by category.
+func TestBashExec_NoProject_DevCommandNotHardBlocked(t *testing.T) {
+	registry := NewToolRegistry()
+	tool, err := builtins.NewBashExecTool(nil)
+	if err != nil {
+		t.Fatalf("NewBashExecTool: %v", err)
+	}
+	registry.Register(tool)
+	setDefaultGroupPolicies(registry) // execute → user_confirm, production defaults
+	registry.SetDisabledTools(map[string]bool{"semantic_search": true})
+
+	confirmCalled := false
+	registry.SetConfirmFunc(func(context.Context, sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		confirmCalled = true
+		return sdktools.ConfirmDeny, nil // deny: the command must never run in this test
+	})
+
+	ctx := sdktools.WithWorkspacePath(context.Background(), t.TempDir())
+	result, err := registry.Execute(ctx, "bash_exec", json.RawMessage(`{"command":"git status"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !confirmCalled {
+		t.Fatal("expected a confirmation decision (policy path), not a hard block")
+	}
+	if !result.IsError {
+		t.Error("expected IsError result from the denied confirmation (command must not execute)")
+	}
+	if strings.Contains(result.Content, "blacklist") || strings.Contains(result.Content, "No Project mode") {
+		t.Errorf("git must not hit a category hard block in No Project mode, got %q", result.Content)
+	}
+}
