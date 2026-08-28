@@ -267,6 +267,19 @@ type conductorDeps struct {
 	// is the default fresh-start behavior.
 	resumeSteps []agent.Step
 
+	// forceCompactionStrategy is the one-shot manual-compaction override from
+	// the resume flow (RequestResumeCompaction → Resume → runConductor /
+	// resumeGoalLoop). When non-empty, RunConductor (a) replaces the
+	// routing-derived compaction strategy with it for the ENTIRE run — every
+	// compaction the run performs (the forced start-of-run pass AND any later
+	// threshold-triggered reactive compactions) uses this strategy — and (b)
+	// sets ConductorConfig.CompactOnStart so the sp4rk engine compacts the
+	// merged trajectory (seeded resumeSteps + the resumed run) exactly once,
+	// up front, BEFORE the first LLM call, regardless of fill thresholds.
+	// Empty (the default) preserves the normal behavior: the strategy derives
+	// from routing domain/complexity and compaction stays threshold-driven.
+	forceCompactionStrategy string
+
 	// systemPromptOverride, when non-nil, overrides the default Conductor
 	// system-prompt factory (buildSystemPrompt + Conductor Guidance). Used by
 	// goal derivation (deriveGoal) to run the Conductor with the specialized
@@ -1937,6 +1950,18 @@ func RunConductor(
 	domain := DomainFromContext(ctx)
 	complexity := ComplexityFromContext(ctx)
 	compactionStrategy := compactionStrategyForDomain(domain, complexity)
+	// One-shot manual-compaction override (resume with a user-selected
+	// strategy): replace the routing-derived strategy for the WHOLE run and
+	// force a start-of-run compaction pass. The override intentionally spans
+	// the entire run, not just the forced pass: the user picked the strategy
+	// for this resumed task, so reactive threshold-driven compactions later in
+	// the run must use it too rather than switching back to the routing
+	// default mid-run. CompactOnStart makes the sp4rk engine compact the
+	// merged trajectory (seeded resumeSteps + this run) exactly once, before
+	// the first LLM call; Compact is a no-op when there is nothing to compact.
+	if deps.forceCompactionStrategy != "" {
+		compactionStrategy = deps.forceCompactionStrategy
+	}
 	guidance := conductorGuidanceForComplexity(complexity)
 
 	// Inject Conductor-specific context values so the tools (delegate,
@@ -2029,6 +2054,7 @@ func RunConductor(
 		NonCacheableTools:          coreNonCacheableToolNames,
 		ConversationHistory:        deps.conversationHistory,
 		ResumeSteps:                deps.resumeSteps,
+		CompactOnStart:             deps.forceCompactionStrategy != "",
 		ContentBlocks:              deps.contentBlocks,
 		PendingUserInterjection:    deps.nudge,
 		PauseChecker:               deps.pauseChecker,
@@ -2116,10 +2142,17 @@ func adaptContextFactory(cf ContextManagerFactory) orchestration.ContextManagerF
 // context. For HandleMessage, pass o.conversationHistory so the agent sees
 // previous exchanges. For Resume, pass nil — the Conductor continues the
 // same task and the original request is already the task message.
-func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, resumeSteps []agent.Step, contentBlocks []llm.ContentBlock, nudge string) (*orchestration.ExecutionResult, error) {
+//
+// forceCompactionStrategy threads the one-shot resume-compaction request
+// (RequestResumeCompaction) into the Conductor run: non-empty overrides the
+// routing-derived compaction strategy and forces a start-of-run compaction
+// (CompactOnStart) of the merged trajectory. Empty ("" — the HandleMessage
+// default and an unarmed Resume) preserves the normal behavior.
+func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, resumeSteps []agent.Step, contentBlocks []llm.ContentBlock, nudge, forceCompactionStrategy string) (*orchestration.ExecutionResult, error) {
 	deps := o.buildConductorDeps(conversationHistory, resumeSteps)
 	deps.contentBlocks = contentBlocks
 	deps.nudge = nudge
+	deps.forceCompactionStrategy = forceCompactionStrategy
 	return RunConductor(ctx, message, bb, availableTools, deps, plansDir)
 }
 

@@ -249,13 +249,20 @@ type CompactionStartedEventData struct {
 // CompactionFinishedEventData is the typed Data payload for
 // "compaction_finished" session events — the manual compaction flow reached a
 // terminal state. Exactly one of Success / Cancelled / Error applies: Success
-// is true only when the history was compacted; Cancelled is true when the user
-// aborted (Error is then empty and the history is untouched); Error carries the
-// failure message otherwise. Resumed reports whether the flow auto-resumed a
-// task it had paused to reach an idle window. PausedWithoutResume is true when
-// the flow paused a task and the auto-resume FAILED: a paused checkpoint
-// remains, but session_paused was suppressed while compacting — clients must
-// re-apply the paused state from this flag.
+// is true when the flow completed (including the nothing-to-compact no-op);
+// Cancelled is true when the user aborted (Error is then empty and the history
+// is untouched); Error carries the failure message otherwise. NothingCompacted
+// is true when the strategy left the history unchanged (it already fits within
+// the compaction limits): the flow still succeeds, but no marker row is
+// persisted and the percentages are zero. DeferredToResume is true when such a
+// no-op was deferred to the resume of a paused unfinished task: the flow armed
+// the orchestrator's one-shot resume-compaction request before auto-resuming,
+// so the executor's context_compaction card (with the real numbers) arrives
+// from the resumed run instead of this flow's marker row. Resumed reports
+// whether the flow auto-resumed a task it had paused to reach an idle window.
+// PausedWithoutResume is true when the flow paused a task and the auto-resume
+// FAILED: a paused checkpoint remains, but session_paused was suppressed while
+// compacting — clients must re-apply the paused state from this flag.
 type CompactionFinishedEventData struct {
 	Strategy            string  `json:"strategy"`
 	Success             bool    `json:"success"`
@@ -265,6 +272,8 @@ type CompactionFinishedEventData struct {
 	AfterPercent        float64 `json:"after_percent"`
 	Resumed             bool    `json:"resumed,omitempty"`
 	PausedWithoutResume bool    `json:"paused_without_resume,omitempty"`
+	NothingCompacted    bool    `json:"nothing_compacted,omitempty"`
+	DeferredToResume    bool    `json:"deferred_to_resume,omitempty"`
 }
 
 // SkillsActivatedData is the typed Data payload for "skills_activated" events.

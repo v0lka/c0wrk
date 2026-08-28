@@ -85,14 +85,25 @@ export function handleCompactionStarted(store: CompactionStore, sessionId: strin
  *  - an error surfaces the "Compaction failed" label;
  *  - a failed auto-resume (paused_without_resume) re-applies the paused
  *    state — the session sits at a checkpoint the UI never saw;
- *  - any other outcome with nothing to resume (idle session, cancelled flow,
- *    plain success) clears the "Compacting" label — nothing is running;
+ *  - nothing_compacted without a resume (idle session) clears the "Compacting"
+ *    label right here — the backend emits no context_compaction card for a
+ *    no-op, so nothing else would ever clear it;
+ *  - deferred_to_resume WITH the flow's auto-resume behaves like resumed:
+ *    the no-op armed the one-shot resume compaction and the flow auto-resumes
+ *    the task it paused, so task_resumed ("Resuming...") owns the next label —
+ *    and the card with the real numbers arrives from the resumed run. On a
+ *    USER-paused session there is no auto-resume (the flow only resumes the
+ *    task it paused itself) and task_resumed never comes; the session's own
+ *    paused state was already applied by its unsuppressed session_paused, so
+ *    the deferral clears the label right here instead of leaving it dangling;
+ *  - any other outcome with nothing to resume (cancelled flow, plain
+ *    success) clears the "Compacting" label — nothing is running;
  *  - a successful auto-resume leaves the label to task_resumed.
  */
 export function handleCompactionFinished(
   store: CompactionStore,
   sessionId: string,
-  data: { success?: boolean; error?: string; cancelled?: boolean; resumed?: boolean; paused_without_resume?: boolean },
+  data: { success?: boolean; error?: string; cancelled?: boolean; resumed?: boolean; paused_without_resume?: boolean; nothing_compacted?: boolean; deferred_to_resume?: boolean },
 ): void {
   store.setCompacting(sessionId, false)
   if (data.paused_without_resume) {
@@ -108,8 +119,15 @@ export function handleCompactionFinished(
   if (data.error) {
     store.setActivityStatus(sessionId, 'Compaction failed')
   } else if (!data.resumed) {
+    // Covers the idle no-op (nothing_compacted: no card follows, nothing is
+    // running), the no-op deferral on a user-paused session
+    // (deferred_to_resume without an auto-resume: the paused state is
+    // already shown and no task_resumed will ever arrive to take the
+    // label), and plain success/cancel with nothing to resume.
     store.setActivityStatus(sessionId, null)
   }
+  // resumed: keep the current label — task_resumed replaces it with
+  // "Resuming..." when the auto-resumed task spins up.
 }
 
 export function useContextEvents(sessionId: string | null): void {

@@ -122,6 +122,41 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {
     expect(store.recorded.activity).toEqual([{ sessionId: 'sess-1', status: null }])
   })
 
+  it('finished with nothing_compacted and no resume clears the activity right away', () => {
+    // No-op compaction (history already fits the limits): success=true, zero
+    // percentages, and the backend emits NO context_compaction card for a
+    // no-op — nothing else would ever clear the "Compacting" label, so the
+    // handler must null it here.
+    const store = makeCompactionStore()
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: false, nothing_compacted: true })
+    expect(store.recorded.compacting).toEqual([{ sessionId: 'sess-1', value: false }])
+    expect(store.recorded.activity).toEqual([{ sessionId: 'sess-1', status: null }])
+  })
+
+  it('finished with deferred_to_resume keeps the label for task_resumed (behaves like resumed)', () => {
+    // No-op compaction on a session whose task the FLOW paused: the flag
+    // is armed and the flow auto-resumes the task, so the card with the
+    // real numbers arrives from the resumed run. The handler must behave
+    // exactly like resumed=true — task_resumed ("Resuming...") owns the
+    // next label, so no activity transition here.
+    const store = makeCompactionStore()
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: true, nothing_compacted: true, deferred_to_resume: true })
+    expect(store.recorded.compacting).toEqual([{ sessionId: 'sess-1', value: false }])
+    expect(store.recorded.activity).toHaveLength(0)
+  })
+
+  it('finished with deferred_to_resume on a user-paused session clears the label', () => {
+    // No-op compaction on a session the USER paused: the flag is armed but
+    // there is no auto-resume (the flow only resumes the task it paused
+    // itself) and task_resumed never comes. The session's own paused state
+    // was already applied by its unsuppressed session_paused, so the
+    // "Compacting" label must clear here rather than dangle forever.
+    const store = makeCompactionStore()
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: false, nothing_compacted: true, deferred_to_resume: true })
+    expect(store.recorded.compacting).toEqual([{ sessionId: 'sess-1', value: false }])
+    expect(store.recorded.activity).toEqual([{ sessionId: 'sess-1', status: null }])
+  })
+
   it('finished on failure releases the lock and surfaces the failure label', () => {
     const store = makeCompactionStore()
     handleCompactionFinished(store, 'sess-1', { success: false, error: 'boom' })

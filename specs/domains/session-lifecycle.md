@@ -485,14 +485,22 @@ User picks a strategy in the status-bar compact menu (left of the fill indicator
       │    then wait on session.done for the cooperative checkpoint
       ├─ orch.CompactConversationHistory(strategy) — rewrites o.conversationHistory
       │    (summarization runs through the session's tracking caller; last message kept)
-      ├─ Persist marker row: role "context_compaction", metadata {strategy,
-      │    before/after %, messages: compacted history snapshot}
+      ├─ No-op (ErrNothingCompacted — dialogue already fits the limits): a SUCCESS
+      │    with nothing_compacted=true and zero %; NO marker row. When a paused
+      │    unfinished task waits for the auto-resume below, arm
+      │    orch.RequestResumeCompaction(strategy) BEFORE resuming
+      │    (deferred_to_resume=true) → the resumed run force-compacts the
+      │    merged trajectory up front (CompactOnStart, ignores fill thresholds);
+      │    the real numbers arrive as the executor's context_compaction card
+      ├─ Persist marker row (compacted outcome only): role "context_compaction",
+      │    metadata {strategy, before/after %, messages: compacted history snapshot}
       ├─ Clear compacting, then auto-resume the task this flow paused
       │    (ResumeTask — only when a paused checkpoint remains; a FAILED
       │    resume sets paused_without_resume so the UI re-applies the paused
       │    state — session_paused was suppressed while compacting)
       └─ Emit compaction_finished {strategy, success|cancelled|error, resumed,
-                                  paused_without_resume?}
+                                  paused_without_resume?, nothing_compacted?,
+                                  deferred_to_resume?}
 
 Cancel (CancelSessionCompaction):
   during pause-wait  → still waits for the checkpoint (unflipping the pause signal
@@ -502,6 +510,7 @@ Cancel (CancelSessionCompaction):
 ```
 
 - The UI chat history is untouched — only the LLM-visible conversation history shrinks; the marker row renders as the existing compaction card on reload.
+- A no-op outcome never writes a marker (nothing was compacted to snapshot). With a paused task waiting, the no-op defers to the resume instead: the one-shot resume-compaction request is armed strictly before the auto-resume, so the resumed run force-compacts the merged trajectory (checkpoint steps + the resumed run) up front with the user-selected strategy, regardless of fill thresholds — see [memory/compaction.md](memory/compaction.md) § Resume-side Forced Trajectory Compaction. In the UI, `compaction_finished` with `nothing_compacted` and nothing to resume clears the "Compacting" activity at once (no card follows); `deferred_to_resume` keeps the label for the subsequent `task_resumed`, like `resumed`.
 - History restore (`convertChatMessagesToLLM`): the LAST marker's `messages` snapshot seeds the restored history (conversational rows before it are dropped; later exchanges append on top).
 - While compacting the UI shows the "Compacting" activity (where "Thinking" renders), locks the input area, and suppresses the `session_paused` paused affordances (the flow's own pause). `SessionRuntimeStatus.Compacting` reconciles this on session switch/restart.
 - See [memory/compaction.md](memory/compaction.md) § Manual Context Compaction for the strategy semantics and the orchestrator-level behavior.

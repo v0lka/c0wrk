@@ -395,6 +395,14 @@ func (o *Orchestrator) runGoalLoop(
 // ConductorConfig.PendingUserInterjection) so it lands as the final user
 // message next to the pending tool result. Subsequent turns carry no nudge.
 //
+// forceCompactionStrategy is the one-shot resume-compaction request consumed
+// by Resume: when non-empty, the FIRST resumed turn's conductor run compacts
+// the merged trajectory (seeded resumeSteps + that turn) with this strategy
+// before its first LLM call (CompactOnStart) and uses it for the whole turn.
+// Mirroring the nudge, it applies to the first resumed turn only: that is the
+// only turn carrying the seeded prior trajectory, and later turns start fresh
+// context managers with nothing extra to compact up front.
+//
 // A cooperatively-paused goal was left active (pause no longer transitions to
 // a paused status); terminal statuses must never reach here (Resume guards on
 // IsTerminal before delegating).
@@ -408,6 +416,7 @@ func (o *Orchestrator) resumeGoalLoop(
 	gs *goal.GoalState,
 	resumeSteps []agent.Step,
 	nudge string,
+	forceCompactionStrategy string,
 ) (*HandleResult, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -461,6 +470,7 @@ func (o *Orchestrator) resumeGoalLoop(
 	seed := resumeSteps
 	seeded := false
 	nudged := false
+	forceCompacted := false
 	wrapped := func(ctx context.Context, turn int, msg string, b orchestration.Blackboard, tl []sdktools.ToolDescriptor, pd string, hist []llm.Message, deps conductorDeps) (int, *orchestration.ExecutionResult, error) {
 		if !seeded && len(seed) > 0 {
 			deps.resumeSteps = seed
@@ -473,6 +483,15 @@ func (o *Orchestrator) resumeGoalLoop(
 		if !nudged && nudge != "" {
 			deps.nudge = nudge
 			nudged = true
+		}
+		// Resume-with-compaction: force the user-selected strategy on the
+		// first resumed turn only (one-shot, mirroring the nudge). That turn
+		// is the one seeding the prior trajectory, so its start-of-run
+		// compaction covers the merged trajectory; later turns start fresh
+		// context managers and must not re-force compaction.
+		if !forceCompacted && forceCompactionStrategy != "" {
+			deps.forceCompactionStrategy = forceCompactionStrategy
+			forceCompacted = true
 		}
 		if len(resumeContentBlocks) > 0 {
 			deps.contentBlocks = resumeContentBlocks

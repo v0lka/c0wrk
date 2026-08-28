@@ -72,16 +72,24 @@ export interface ContextCompactionData { before_percent: number; after_percent: 
 export interface CompactionStartedData { strategy: string }
 /**
  * Manual context compaction flow reached a terminal state. Exactly one of
- * success / cancelled / error applies (success only when the history was
- * compacted; cancelled when the user aborted — history untouched). resumed
- * reports whether the flow auto-resumed a task it had paused;
- * paused_without_resume is set when that auto-resume FAILED — a paused
+ * success / cancelled / error applies (success covers the nothing-to-compact
+ * no-op too; cancelled when the user aborted — history untouched).
+ * nothing_compacted is set when the strategy left the history unchanged (it
+ * already fits within the compaction limits): the flow still succeeds, but no
+ * marker row is persisted, the percentages are zero, and no context_compaction
+ * card follows — the client must not wait for one. deferred_to_resume is set
+ * when such a no-op hit a paused unfinished task: the flow armed the
+ * orchestrator's one-shot resume compaction before auto-resuming, so the
+ * card with the real numbers arrives from the resumed run (treat like
+ * resumed). resumed reports whether the flow auto-resumed a task it had
+ * paused; paused_without_resume is set when that auto-resume FAILED — a paused
  * checkpoint remains that the UI never saw (session_paused is suppressed
  * while compacting), so the client must re-apply the paused state.
  */
 export interface CompactionFinishedData {
   strategy: string; success: boolean; cancelled?: boolean; error?: string
   before_percent: number; after_percent: number; resumed?: boolean; paused_without_resume?: boolean
+  nothing_compacted?: boolean; deferred_to_resume?: boolean
 }
 export interface SessionTokensData { session_input_tokens: number; session_output_tokens: number; model: string; family: string; fill_percent?: number; used_tokens?: number; max_tokens?: number }
 export interface AssistantChunkData { content: string; accumulated_content?: string }
@@ -515,7 +523,14 @@ export function isSubAgentCompleteData(d: unknown): d is SubAgentCompleteData { 
 export function isContextFillData(d: unknown): d is ContextFillData { return isObj(d) && has(d, 'fill_percent', 'status') }
 export function isContextCompactionData(d: unknown): d is ContextCompactionData { return isObj(d) && has(d, 'before_percent', 'after_percent') }
 export function isCompactionStartedData(d: unknown): d is CompactionStartedData { return isObj(d) && has(d, 'strategy') }
-export function isCompactionFinishedData(d: unknown): d is CompactionFinishedData { return isObj(d) && has(d, 'strategy', 'success', 'before_percent', 'after_percent') }
+export function isCompactionFinishedData(d: unknown): d is CompactionFinishedData {
+  if (!isObj(d) || !has(d, 'strategy', 'success', 'before_percent', 'after_percent')) return false
+  // Validate the optional no-op outcome flags when present (additive fields —
+  // older payloads and non-no-op flows simply omit them).
+  if ('nothing_compacted' in d && d.nothing_compacted !== undefined && typeof d.nothing_compacted !== 'boolean') return false
+  if ('deferred_to_resume' in d && d.deferred_to_resume !== undefined && typeof d.deferred_to_resume !== 'boolean') return false
+  return true
+}
 export function isSessionTokensData(d: unknown): d is SessionTokensData { return isObj(d) && has(d, 'session_input_tokens', 'session_output_tokens') }
 export function isSessionRenamedData(d: unknown): d is SessionRenamedData { return isObj(d) && has(d, 'new_name') }
 export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableData {

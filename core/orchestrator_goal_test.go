@@ -741,7 +741,7 @@ func TestResumeGoalLoop_PausedResumesAndSeedsSteps(t *testing.T) {
 	routing := &router.RoutingDecision{Domain: "general", Complexity: 3}
 
 	result, err := o.resumeGoalLoop(
-		context.Background(), "resume the goal", bb, nil, "", routing, pausedGS, seedSteps, "",
+		context.Background(), "resume the goal", bb, nil, "", routing, pausedGS, seedSteps, "", "",
 	)
 	if err != nil {
 		t.Fatalf("resumeGoalLoop failed: %v", err)
@@ -785,7 +785,7 @@ func TestResumeGoalLoop_ActiveGoalResumes(t *testing.T) {
 	routing := &router.RoutingDecision{Domain: "general", Complexity: 3}
 
 	result, err := o.resumeGoalLoop(
-		context.Background(), "continue", bb, nil, "", routing, activeGS, nil, "",
+		context.Background(), "continue", bb, nil, "", routing, activeGS, nil, "", "",
 	)
 	if err != nil {
 		t.Fatalf("resumeGoalLoop failed: %v", err)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData } from './events'
+import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData, isCompactionFinishedData } from './events'
 
 describe('isTaskCompleteData', () => {
     it('accepts valid data with string output', () => {
@@ -149,5 +149,39 @@ describe('normalizeAgentMetricsData', () => {
         expect(normalizeAgentMetricsData(undefined)).toBeUndefined()
         expect(normalizeAgentMetricsData({ skills: ['x'] })).toBeUndefined()
         expect(normalizeAgentMetricsData({ ...full, steps: true })).toBeUndefined()
+    })
+})
+
+describe('isCompactionFinishedData', () => {
+    const valid = { strategy: 'sliding_window', success: true, before_percent: 80.5, after_percent: 42 }
+
+    it('accepts a minimal valid payload (legacy shape without the no-op flags)', () => {
+        expect(isCompactionFinishedData(valid)).toBe(true)
+    })
+
+    it('accepts a payload with the no-op flags set', () => {
+        expect(isCompactionFinishedData({ ...valid, nothing_compacted: true, deferred_to_resume: false })).toBe(true)
+        expect(isCompactionFinishedData({ ...valid, nothing_compacted: true, deferred_to_resume: true, resumed: true })).toBe(true)
+    })
+
+    it('accepts explicitly-undefined no-op flags (field present but unset)', () => {
+        expect(isCompactionFinishedData({ ...valid, nothing_compacted: undefined })).toBe(true)
+        expect(isCompactionFinishedData({ ...valid, deferred_to_resume: undefined })).toBe(true)
+    })
+
+    it('rejects nothing_compacted with a non-boolean value', () => {
+        expect(isCompactionFinishedData({ ...valid, nothing_compacted: 'yes' })).toBe(false)
+        expect(isCompactionFinishedData({ ...valid, nothing_compacted: 1 })).toBe(false)
+    })
+
+    it('rejects deferred_to_resume with a non-boolean value', () => {
+        expect(isCompactionFinishedData({ ...valid, deferred_to_resume: 'true' })).toBe(false)
+        expect(isCompactionFinishedData({ ...valid, deferred_to_resume: 0 })).toBe(false)
+    })
+
+    it('still rejects payloads missing required fields', () => {
+        expect(isCompactionFinishedData({ success: true, before_percent: 1, after_percent: 1 })).toBe(false)
+        expect(isCompactionFinishedData(null)).toBe(false)
+        expect(isCompactionFinishedData('compaction_finished')).toBe(false)
     })
 })

@@ -1482,9 +1482,12 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 // CancelUnfinishedTask discards any unfinished task in the given session by
 // marking it as cancelled in the task store. After this returns successfully,
 // the session no longer has a resumable task and emitResumableIfUnfinished
-// will not emit a "task_failed_resumable" event for it.
+// will not emit a "task_failed_resumable" event for it. Any deferred
+// resume-compaction armed for the task's future resume is discarded too — it
+// must not outlive the task it was armed for.
 // Returns nil if no task store is configured or no unfinished task exists.
 func (m *Manager) CancelUnfinishedTask(sessionID string) error {
+	m.clearResumeCompaction(sessionID)
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
@@ -1858,6 +1861,11 @@ func (m *Manager) abandonGoalIfUnfinished(sessionID string) {
 // Best-effort: errors are logged only. No-op when there is no task store or
 // no unfinished task.
 func (m *Manager) abandonUnfinishedTaskForGoal(id string) {
+	// The interrupted task being abandoned may carry an armed deferred
+	// resume-compaction (a manual no-op compaction deferred to its resume) —
+	// drop it so the goal loop (or any later task) does not inherit the
+	// forced compaction chosen for the abandoned task.
+	m.clearResumeCompaction(id)
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()

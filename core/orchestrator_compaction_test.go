@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -53,11 +54,15 @@ func newCompactionTestOrchestrator(llmCaller interface {
 	cfg.Compaction.SlidingWindow.KeepLast = 4
 	cfg.Compaction.Summarization.BlockSize = 10
 	cfg.Compaction.Summarization.KeepLast = 4
+	cfg.Compaction.SafetyMarginPercent = 5
 	o := &Orchestrator{
 		emitter:      spy,
 		tokenCounter: llm.NewSimpleTokenCounter(),
 		modelRegistry: llm.NewModelRegistry(map[string]llm.ModelMetadata{
-			"test-model": {ContextWindow: 1000, Family: "test"},
+			// OutputLimit must be explicit: a partial override inherits the
+			// unknown-model fallback (32768), which would swallow the whole
+			// 1000-token window in the effective-base math.
+			"test-model": {ContextWindow: 1000, OutputLimit: 100, Family: "test"},
 		}),
 		config: cfg,
 	}
@@ -111,6 +116,27 @@ func TestCompactConversationHistory_UnknownStrategyKeepsHistory(t *testing.T) {
 	}
 }
 
+func TestCompactConversationHistory_NoOpReturnsErrNothingCompacted(t *testing.T) {
+	o, spy := newCompactionTestOrchestrator(nil)
+	hist := compactionHistory(2) // 4 messages — within KeepFirst(2)+KeepLast(4): nothing to drop
+	o.SetConversationHistory(hist)
+
+	before, after, err := o.CompactConversationHistory(context.Background(), "sliding_window")
+	if !errors.Is(err, ErrNothingCompacted) {
+		t.Fatalf("expected ErrNothingCompacted, got %v", err)
+	}
+	if before != 0 || after != 0 {
+		t.Errorf("no-op must return zero percentages, got %.1f/%.1f", before, after)
+	}
+	// History untouched — the no-op path must not swap.
+	if got := o.ConversationHistory(); len(got) != len(hist) {
+		t.Fatalf("history must be untouched on no-op, got %d of %d messages", len(got), len(hist))
+	}
+	if len(spy.compactions) != 0 || len(spy.fills) != 0 {
+		t.Fatal("no events may be emitted when nothing was compacted")
+	}
+}
+
 func TestCompactConversationHistory_SlidingWindowReplacesHistoryAndEmits(t *testing.T) {
 	o, spy := newCompactionTestOrchestrator(nil)
 	hist := compactionHistory(30) // 60 messages
@@ -130,26 +156,70 @@ func TestCompactConversationHistory_SlidingWindowReplacesHistoryAndEmits(t *test
 		t.Error("last message must be preserved")
 	}
 
-	// Fill percentages against the 1000-token display window.
+	// Returned percentages use the DISPLAY base (the advertised window 1000):
+	// the caller persists them into the marker row and the
+	// compaction_finished event, and the frontend renders the marker's
+	// metadata verbatim on reload — they must match what the live card
+	// shows.
+	const displayMax = 1000
+	counter := llm.NewSimpleTokenCounter()
+	wantBefore := float64(counter.CountMessages(hist)) / displayMax * 100
+	wantAfter := float64(counter.CountMessages(got)) / displayMax * 100
+	if math.Abs(before-wantBefore) > 0.001 || math.Abs(after-wantAfter) > 0.001 {
+		t.Errorf("display-base percentages: got %.2f/%.2f, want %.2f/%.2f", before, after, wantBefore, wantAfter)
+	}
 	if before <= after {
 		t.Errorf("expected before (%.1f) > after (%.1f)", before, after)
 	}
-	if before <= 0 || after < 0 {
-		t.Errorf("unexpected percentages: before=%.1f after=%.1f", before, after)
-	}
 
-	// Events: compaction card + refreshed fill.
+	// Events: compaction card + refreshed fill — on the EFFECTIVE base
+	// (window 1000 − output limit 100 − safety margin 1000*5/100=50 → 850),
+	// the basis the emitter's ContextCompaction display scaling expects.
+	const effectiveMax = 850
+	wantBeforeEff := float64(counter.CountMessages(hist)) / effectiveMax * 100
+	wantAfterEff := float64(counter.CountMessages(got)) / effectiveMax * 100
 	if len(spy.compactions) != 1 {
 		t.Fatalf("expected exactly 1 ContextCompaction emission, got %d", len(spy.compactions))
 	}
-	if spy.compactions[0].before != before || spy.compactions[0].after != after {
-		t.Errorf("ContextCompaction percentages mismatch: %+v (want %.1f→%.1f)", spy.compactions[0], before, after)
+	if math.Abs(spy.compactions[0].before-wantBeforeEff) > 0.001 || math.Abs(spy.compactions[0].after-wantAfterEff) > 0.001 {
+		t.Errorf("ContextCompaction effective-base percentages: got %.2f/%.2f, want %.2f/%.2f", spy.compactions[0].before, spy.compactions[0].after, wantBeforeEff, wantAfterEff)
 	}
 	if len(spy.fills) != 1 {
 		t.Fatalf("expected exactly 1 ContextFill emission, got %d", len(spy.fills))
 	}
-	if spy.fills[0].status != "ok" || spy.fills[0].maxTokens != 1000 {
+	// ContextFill carries the effective max (executor basis); the emitter's
+	// display override recomputes the user-facing values itself.
+	if spy.fills[0].status != "ok" || spy.fills[0].maxTokens != effectiveMax {
 		t.Errorf("unexpected ContextFill payload: %+v", spy.fills[0])
+	}
+	if math.Abs(spy.fills[0].percent-wantAfterEff) > 0.001 {
+		t.Errorf("ContextFill percent = %.2f, want effective-based %.2f", spy.fills[0].percent, wantAfterEff)
+	}
+}
+
+// TestCompactConversationHistory_NilTokenCounterSkipsNoOpDetection verifies
+// the no-op detection guard: without a token counter the token equality is
+// vacuous (0 == 0) and the check would degrade to length-only, misclassifying
+// a real same-length content-rewriting compaction as a no-op and silently
+// dropping it. The guard skips the detection entirely — the compacted history
+// is always swapped and the events emitted; an identical result is a harmless
+// idempotent swap.
+func TestCompactConversationHistory_NilTokenCounterSkipsNoOpDetection(t *testing.T) {
+	o, spy := newCompactionTestOrchestrator(nil)
+	o.tokenCounter = nil
+	hist := compactionHistory(2) // 4 messages — within KeepFirst(2)+KeepLast(4): nothing would drop
+	o.SetConversationHistory(hist)
+
+	before, after, err := o.CompactConversationHistory(context.Background(), "sliding_window")
+	if err != nil {
+		t.Fatalf("nil token counter must skip the no-op detection, got error: %v", err)
+	}
+	if len(spy.compactions) != 1 || len(spy.fills) != 1 {
+		t.Error("events must be emitted when the no-op detection is skipped")
+	}
+	// No counter → no token counts → both percentage bases report unknown (0).
+	if before != 0 || after != 0 {
+		t.Errorf("expected 0 percentages without a token counter, got %.1f/%.1f", before, after)
 	}
 }
 
@@ -203,7 +273,7 @@ func TestCompactConversationHistory_SummarizationUsesCompactionCallPurpose(t *te
 }
 
 func TestCompactConversationHistory_ZeroWindowYieldsZeroPercent(t *testing.T) {
-	// No model registry → display window unknown → percents 0 but compaction
+	// No model registry → effective base unknown → percents 0 but compaction
 	// still succeeds and emits.
 	o, spy := newCompactionTestOrchestrator(nil)
 	o.modelRegistry = nil

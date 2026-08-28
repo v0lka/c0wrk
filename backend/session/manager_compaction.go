@@ -54,11 +54,23 @@ const compactMarkerRole = "context_compaction"
 //  3. The orchestrator's history is compacted (orchestrator.
 //     CompactConversationHistory). LLM-backed strategies run their summarize
 //     calls through the session's tracking caller, so tokens are counted.
+//     A no-op compaction (ErrNothingCompacted — the dialogue already fits
+//     within the strategy's limits) is NOT a failure: the flow finishes
+//     successfully with nothing_compacted=true and no marker row.
+//     3.5. When nothing was compacted but a paused unfinished task is about to
+//     be auto-resumed, the compaction is deferred to the resume instead:
+//     the orchestrator's one-shot resume-compaction request is armed
+//     (RequestResumeCompaction) BEFORE the auto-resume below, so the resumed
+//     Conductor run force-compacts the merged trajectory up front — the real
+//     numbers then arrive as the executor's context_compaction card.
 //  4. On success a marker row (role context_compaction) is persisted with the
 //     compacted history snapshot, so a restart restores the compacted history.
+//     Skipped for the no-op outcome (phase 3): there is no compacted history
+//     to snapshot.
 //  5. If THIS flow paused the session and a paused checkpoint remains, the
 //     task is auto-resumed. compaction_finished is emitted with the outcome
-//     (success / cancelled / error + whether the session was resumed).
+//     (success / cancelled / error + whether the session was resumed, nothing
+//     was compacted, or the compaction was deferred to the resume).
 //
 // Cancellation (CancelSessionCompaction) during the pause-wait still waits for
 // the checkpoint to land (unflipping the pause signal mid-flight would race
@@ -150,12 +162,20 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 		}
 	}
 
-	// Phase 3: compact the orchestrator's conversation history.
+	// Phase 3: compact the orchestrator's conversation history. A no-op
+	// compaction (ErrNothingCompacted — the dialogue already fits within the
+	// strategy's limits) is not a failure: the sentinel returns zero
+	// percentages and leaves the history untouched, so the flow finishes
+	// successfully with nothing_compacted=true.
 	var before, after float64
 	var err error
+	nothingCompacted := false
 	if !cancelled {
 		before, after, err = orch.CompactConversationHistory(compCtx, strategy)
-		if err != nil && compCtx.Err() != nil {
+		if errors.Is(err, core.ErrNothingCompacted) {
+			nothingCompacted = true
+			err = nil
+		} else if err != nil && compCtx.Err() != nil {
 			// The summarize calls were aborted by the cancellation — report it
 			// as a cancellation, not a failure.
 			cancelled = true
@@ -163,8 +183,31 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 		}
 	}
 
+	// Phase 3.5: when nothing was compacted but a paused unfinished task
+	// waits (for this flow's auto-resume, or a later user resume), defer the
+	// compaction to the resume: arm the orchestrator's one-shot
+	// resume-compaction request BEFORE the auto-resume in phase 5, so the
+	// flag is consumed by the resumed run's Resume call. If the task is
+	// instead cancelled or abandoned before resuming (user discard, goal
+	// takeover, archival), the session layer's clearResumeCompaction drops
+	// the flag so it never fires for an unrelated task. The resumed
+	// Conductor run then force-compacts the merged trajectory (seeded
+	// checkpoint + the resumed run) up front, and the real numbers arrive as
+	// the executor's context_compaction card. Deferred only for the no-op
+	// outcome: a successful compaction already shrank the history and
+	// persisted the marker, so re-compacting the merged trajectory at
+	// resume would duplicate the work.
+	deferredToResume := false
+	if nothingCompacted && m.hasPausedUnfinishedTask(sessionID) {
+		orch.RequestResumeCompaction(strategy)
+		deferredToResume = true
+	}
+
 	// Phase 4: persist the marker so a restart restores the compacted history.
-	if err == nil && !cancelled {
+	// Skipped for the no-op outcome — there is no compacted history to
+	// snapshot, and the executor's context_compaction card (phase 3.5) is the
+	// user-facing record of the deferred compaction instead.
+	if err == nil && !cancelled && !nothingCompacted {
 		if perr := m.persistCompactionMarker(sessionID, orch, strategy, before, after); perr != nil {
 			m.log().Error("manual compaction: failed to persist marker", "session", sessionID, "error", perr)
 			// Non-fatal: the in-memory history is already compacted; only the
@@ -213,6 +256,8 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 			AfterPercent:        after,
 			Resumed:             resumed,
 			PausedWithoutResume: pausedWithoutResume,
+			NothingCompacted:    nothingCompacted,
+			DeferredToResume:    deferredToResume,
 		},
 	})
 }
@@ -236,6 +281,26 @@ func (m *Manager) CancelSessionCompaction(sessionID string) error {
 		cancel()
 	}
 	return nil
+}
+
+// clearResumeCompaction discards any armed one-shot resume-compaction
+// request on the session's in-memory orchestrator. Called when the
+// session's unfinished task is cancelled or abandoned: the armed flag
+// belonged to THAT task's future resume and must not leak into an unrelated
+// later one. The flag lives only on the in-memory orchestrator, so a
+// session that is not currently in memory cannot have one — a plain map
+// lookup suffices (no store restore). Best-effort and race-free with a
+// concurrent Resume consume (mutex-guarded on the orchestrator).
+func (m *Manager) clearResumeCompaction(sessionID string) {
+	m.mu.RLock()
+	sess := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if sess == nil {
+		return
+	}
+	if orch := sess.GetOrchestrator(); orch != nil {
+		orch.ClearResumeCompaction()
+	}
 }
 
 // persistCompactionMarker writes the context_compaction marker row carrying

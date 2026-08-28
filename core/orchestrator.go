@@ -443,6 +443,19 @@ type Orchestrator struct {
 	// liveMessages holds queued live user messages in FIFO order. Guarded by
 	// liveMu.
 	liveMessages []string
+
+	// resumeCompactionMu guards resumeCompactionStrategy — the one-shot
+	// "compact on resume" request. The producer (RequestResumeCompaction, a
+	// Wails-RPC goroutine answering the user's strategy choice) and the
+	// consumer (Resume, on the request goroutine) run concurrently, so the
+	// arm/consume pair must be race-free the same way liveMessages is.
+	resumeCompactionMu sync.Mutex
+	// resumeCompactionStrategy holds the strategy name ("sliding_window" |
+	// "summarization" | "hierarchical") armed for the NEXT Resume. Empty (the
+	// default) means no compaction was requested and Resume keeps its normal
+	// routing-derived, threshold-driven compaction behavior. Guarded by
+	// resumeCompactionMu.
+	resumeCompactionStrategy string
 }
 
 // ErrRequestInFlight is returned by HandleMessage when another HandleMessage
@@ -524,6 +537,59 @@ func (o *Orchestrator) DrainLiveUserMessages() string {
 	msg := o.liveMessages[0]
 	o.liveMessages = o.liveMessages[1:]
 	return msg
+}
+
+// RequestResumeCompaction arms the one-shot "compact on resume" request with
+// the user-selected strategy name ("sliding_window" | "summarization" |
+// "hierarchical"). The NEXT Resume call consumes it: the resumed Conductor
+// run compacts the merged trajectory (seeded prior steps + the resumed run)
+// with this strategy up front — before the first LLM call — regardless of the
+// context fill thresholds that normally gate compaction. This is the manual
+// compaction entry point for a paused task: the backend arms the flag before
+// re-entering Resume, so the compaction lands exactly once, at the seam where
+// the full prior trajectory is already seeded into the ContextManager.
+//
+// Safe to call from any goroutine (the UI/backend answer arrives on a
+// Wails-RPC goroutine while Resume may run on the request goroutine);
+// mutex-guarded. An empty strategy is a no-op: an empty string is the "not
+// armed" sentinel, so arming with "" would be indistinguishable from "not
+// requested" and is rejected up front. Arming while a request is armed but
+// not yet consumed simply overwrites the pending strategy.
+func (o *Orchestrator) RequestResumeCompaction(strategy string) {
+	if strategy == "" {
+		return
+	}
+	o.resumeCompactionMu.Lock()
+	defer o.resumeCompactionMu.Unlock()
+	o.resumeCompactionStrategy = strategy
+}
+
+// ClearResumeCompaction discards any armed one-shot resume-compaction
+// request. The session layer calls it when the session's unfinished task is
+// cancelled or abandoned (user discard, goal-mode takeover, archival): an
+// armed flag belonged to THAT task's future resume and must not survive it —
+// a later, unrelated task resuming on the same orchestrator would otherwise
+// inherit a forced compaction chosen for the cancelled one. Idempotent and
+// race-free with a concurrent Resume/consume (mutex-guarded); a no-op when
+// nothing is armed.
+func (o *Orchestrator) ClearResumeCompaction() {
+	o.resumeCompactionMu.Lock()
+	defer o.resumeCompactionMu.Unlock()
+	o.resumeCompactionStrategy = ""
+}
+
+// consumeResumeCompaction atomically reads and clears the armed
+// resume-compaction strategy. It returns "" when no compaction was requested
+// (or the flag was already consumed) — Resume then keeps its normal behavior.
+// Called exactly once at Resume entry, before either branch (goal loop or
+// plain Conductor) is chosen, so the one-shot semantics hold regardless of
+// which path the resumed task takes.
+func (o *Orchestrator) consumeResumeCompaction() string {
+	o.resumeCompactionMu.Lock()
+	defer o.resumeCompactionMu.Unlock()
+	strategy := o.resumeCompactionStrategy
+	o.resumeCompactionStrategy = ""
+	return strategy
 }
 
 // TakeLiveUserMessages atomically removes and returns ALL queued live
@@ -902,6 +968,16 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision, plansDir string, resumeSteps []agent.Step, goalState *goal.GoalState, nudge string) (result *HandleResult, err error) {
 	o.logDebug("orchestrator: resume started", "resumeSteps", len(resumeSteps), "nudge", nudge != "")
 
+	// One-shot resume-compaction request: when the user selected a compaction
+	// strategy for this resume (manual compaction of a paused task), the
+	// backend armed it via RequestResumeCompaction before re-entering here.
+	// Consume it once at entry — before either branch is chosen — and thread
+	// the strategy into BOTH resume paths (goal loop and plain Conductor), so
+	// the merged trajectory is compacted up front regardless of which path the
+	// task takes. An empty string means "not requested": Resume keeps its
+	// normal routing-derived, threshold-driven compaction behavior.
+	forceCompactionStrategy := o.consumeResumeCompaction()
+
 	// Install the universal pause signal for this resumed request. Every
 	// conductor run reads it via the pause-checker at each step boundary;
 	// PauseSession flips it. Mirrors HandleMessage so a resumed task is
@@ -973,7 +1049,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// terminal goal state falls through to the normal resume path.
 	if goalState != nil && !goalState.Status.IsTerminal() {
 		o.logInfo("resume_task: resuming goal loop", "status", goalState.Status, "turn", goalState.TurnCount)
-		return o.resumeGoalLoop(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, routing, goalState, resumeSteps, nudge)
+		return o.resumeGoalLoop(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, routing, goalState, resumeSteps, nudge, forceCompactionStrategy)
 	}
 
 	// Goal-mode-only tools exist solely for goal mode and must not reach a
@@ -997,7 +1073,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 		}
 	}
 
-	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, nil, resumeSteps, resumeContentBlocks, nudge)
+	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, nil, resumeSteps, resumeContentBlocks, nudge, forceCompactionStrategy)
 	// Cooperative pause: a clean, recoverable checkpoint — not a failure.
 	// Surface it, persist the task as resumable (persistTaskOutcome below),
 	// and return the paused result with a nil error so the backend treats it
@@ -1801,7 +1877,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	conductorHistory := truncateHistory(o.conversationHistory, o.config.ConductorHistoryWindow)
 
 	plansDir := opts.SessionPlansDir
-	execResult, err := o.runConductor(ctx, conductorMessage, bb, availableTools, plansDir, conductorHistory, nil, contentBlocks, "")
+	execResult, err := o.runConductor(ctx, conductorMessage, bb, availableTools, plansDir, conductorHistory, nil, contentBlocks, "", "")
 	// Cooperative pause: a clean, recoverable checkpoint — not a failure.
 	// Surface it, persist the task as resumable (persistTaskOutcome via
 	// finalizeResult), and return the paused result with a nil error so the
