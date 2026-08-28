@@ -18,6 +18,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend"
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/crashlog"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/terminal"
@@ -234,6 +235,7 @@ func (a *App) Startup(ctx context.Context) {
 	config.LoadShellEnvironment(nil)
 	log, sessionLogger := a.initLogger(logDir)
 	a.sessionLogger = sessionLogger // stored for cleanup on early Startup exits (W1)
+
 	log.Info("startup phase complete", "phase", "logger", "elapsed_ms", time.Since(startTime).Milliseconds())
 
 	// ── Phase 2: Config + Dependencies + Tools (parallel) ─────────────
@@ -263,6 +265,12 @@ func (a *App) Startup(ctx context.Context) {
 
 	logLevel := cfg.LogLevel
 	log, sessionLogger = a.maybeReinitLogger(logLevel, sessionLogger, log, logDir)
+
+	// Crash forensics: a surviving liveness marker means the previous
+	// instance never reached a clean shutdown (crash, kill, power loss).
+	// Reported after the logger reinit so the warning lands in the session
+	// log of THIS run even when a non-default log_level swapped the file.
+	crashlog.ReportUncleanShutdown(log, logDir)
 
 	// ── Phase 3: Database + Terminal Manager (parallel) ───────────────
 	dbPath := config.DatabasePath(agentDir)
@@ -494,6 +502,12 @@ func (a *App) Startup(ctx context.Context) {
 
 // Shutdown is called when the Wails app is shutting down.
 func (a *App) Shutdown(ctx context.Context) {
+	// Make every quit visible in the session log: a Wails quit (window close
+	// button, Cmd+Q, updater-triggered quit) runs this hook, and without an
+	// explicit record the log just ends mid-activity — indistinguishable
+	// from a crash (the exact ambiguity that motivated crash logging).
+	a.log().Info("application shutdown: starting graceful shutdown")
+
 	// Persist the final window geometry so a normal quit preserves the size
 	// even if no resize fired this session. Best-effort: a torn-down context
 	// makes this a no-op, and the debounced frontend saves already captured
@@ -553,10 +567,6 @@ func (a *App) Shutdown(ctx context.Context) {
 		return true
 	})
 
-	if a.sessionLogger != nil {
-		_ = a.sessionLogger.Close()
-	}
-
 	// Ensure vector manager set by background init is visible to Cleanup (W3).
 	// The background init goroutine calls vectorMgrPtr.Store then SetVectorManager
 	// in sequence; this check catches the narrow window where Store has run but
@@ -582,6 +592,15 @@ func (a *App) Shutdown(ctx context.Context) {
 		if err := a.db.Close(); err != nil {
 			a.log().Error("failed to close database", "error", err)
 		}
+	}
+
+	a.log().Info("application shutdown: complete")
+
+	// The session log is the sink of a.logger; it closes only after the last
+	// record is written so the "complete" bracket (and the db.Close error
+	// above) are persisted instead of silently dropped into a closed file.
+	if a.sessionLogger != nil {
+		_ = a.sessionLogger.Close()
 	}
 }
 

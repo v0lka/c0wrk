@@ -26,6 +26,7 @@
 | Blackboard, facts, persistence           | [domains/memory/blackboard.md](domains/memory/blackboard.md)             |
 | LLM providers, model registry, tokens    | [domains/llm-providers.md](domains/llm-providers.md)                     |
 | Session create/resume/persist/fork       | [domains/session-lifecycle.md](domains/session-lifecycle.md)             |
+| Crash/exit diagnostics (panic capture, unclean-shutdown detection, why the app quit) | [domains/crash-logging.md](domains/crash-logging.md) |
 | Goal mode (multi-turn objective loop)    | [domains/goal-mode.md](domains/goal-mode.md), [decisions/019-goal-mode.md](decisions/019-goal-mode.md) |
 | Small-LLM profile (tuning for small/local models) | [domains/small-llm.md](domains/small-llm.md), [decisions/022-small-llm-profile.md](decisions/022-small-llm-profile.md) |
 | File & image attachments (pending → blackboard / content blocks), vision-assisted document conversion & its egress  | [domains/session-lifecycle.md](domains/session-lifecycle.md), [domains/memory/blackboard.md](domains/memory/blackboard.md) |
@@ -104,6 +105,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 ### domains/ (single-file)
 
 - [llm-providers.md](domains/llm-providers.md) - Thin c0wrk wiring note (provider config → core/builder → sp4rk Router)
+- [crash-logging.md](domains/crash-logging.md) - Crash & exit diagnostics: fd-level stderr capture (panic/signal dumps), liveness marker, unclean-shutdown detection at next start, visible shutdown records
 - [session-lifecycle.md](domains/session-lifecycle.md) - Session and task lifecycle
 - [goal-mode.md](domains/goal-mode.md) - Goal mode: multi-turn agent-driven loop over a user-approved success condition (derivation → approval → self-eval loop, budgets, anti-spin, pause/resume)
 - [small-llm.md](domains/small-llm.md) - Small-LLM profile: master-toggle + five variants (essential-tools narrowing, system-prompt Lite swap, sampling override, loop hardening, context management) for tuning c0wrk to small/local models

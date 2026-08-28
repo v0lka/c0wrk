@@ -12,6 +12,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/crashlog"
 	"github.com/v0lka/c0wrk/core/updater"
 	"github.com/v0lka/c0wrk/desktop"
 )
@@ -19,8 +20,16 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// activeCapture holds the process-wide crash capture installed by mainImpl.
+// Package-level (not returned) because main() must reach it after mainImpl
+// returns to log the exit code. Nil-tolerant methods make the zero state
+// (capture disabled or failed) safe.
+var activeCapture *crashlog.Capture
+
 func main() {
-	os.Exit(mainImpl())
+	code := mainImpl()
+	activeCapture.LogExit(code)
+	os.Exit(code)
 }
 
 func mainImpl() int {
@@ -59,6 +68,21 @@ func mainImpl() int {
 
 	agentDir := config.AgentDir()
 	logDir := config.LogsDir(agentDir)
+
+	// Arm crash capture before anything else can fail: fd 1/2 are redirected
+	// into <logDir>/stderr.log so Go runtime panic dumps, native-library
+	// errors and termination signals are persisted even when launched from
+	// Finder. C0WRK_DISABLE_CRASH_CAPTURE=1 opts out (useful under `wails
+	// dev` to keep live console output). The exact value is compared so a
+	// stray "0"/"false" cannot silently disable capture.
+	if os.Getenv("C0WRK_DISABLE_CRASH_CAPTURE") != "1" {
+		capture, err := crashlog.Install(logDir)
+		if err != nil {
+			slog.Warn("crash capture unavailable; panics may leave no trace", "error", err)
+		} else {
+			activeCapture = capture
+		}
+	}
 
 	wlog, wlogErr := desktop.NewWailsLogger(logDir)
 	if wlogErr != nil {
@@ -111,6 +135,10 @@ func mainImpl() int {
 	if wlog != nil {
 		_ = wlog.Close()
 	}
+	// Clean-exit point for the liveness marker: reached on every normal
+	// return (graceful quit, wails.Run error). A panic escaping mainImpl
+	// skips this — deliberately, so the next start reports the crash.
+	activeCapture.RemoveMarker()
 	if runErr != nil {
 		return 1
 	}
