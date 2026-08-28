@@ -1639,6 +1639,107 @@ embedding_threads: 2
 	}
 }
 
+// TestVectorIndexConfig_TuningKnobs_Defaults pins the compatibility
+// contract for the indexing/search tuning knobs: a zero-value config (an
+// existing config.yaml with no vector_index block, or one written before
+// the knobs existed) must resolve to exactly the historical hardcoded
+// values, so behaviour is identical before and after the knobs were
+// introduced.
+func TestVectorIndexConfig_TuningKnobs_Defaults(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	if cfg.VectorIndex.EmbeddingBatchSize != 32 {
+		t.Errorf("default embedding_batch_size = %d, want 32 (sp4rk embedding.DefaultBatchSize)", cfg.VectorIndex.EmbeddingBatchSize)
+	}
+	if cfg.VectorIndex.PrepWorkers != 2 {
+		t.Errorf("default prep_workers = %d, want 2", cfg.VectorIndex.PrepWorkers)
+	}
+	if cfg.VectorIndex.DebounceMs != 1000 {
+		t.Errorf("default debounce_ms = %d, want 1000 (the historical hardcoded 1s)", cfg.VectorIndex.DebounceMs)
+	}
+	if cfg.VectorIndex.ChunkOverlap != 200 {
+		t.Errorf("default chunk_overlap = %d, want 200 (the historical hardcoded value)", cfg.VectorIndex.ChunkOverlap)
+	}
+	gotTimeout := -1
+	if cfg.VectorIndex.SearchWaitTimeoutMs != nil {
+		gotTimeout = *cfg.VectorIndex.SearchWaitTimeoutMs
+	}
+	if gotTimeout != 3000 {
+		t.Errorf("default search_wait_timeout_ms = %d, want 3000", gotTimeout)
+	}
+}
+
+// TestVectorIndexConfig_TuningKnobs_YAMLRoundTrip covers YAML parsing of
+// the new knobs (including the explicit-0 fail-fast sentinel), the
+// interaction of the sentinel with ApplyDefaults, and the full
+// marshal/unmarshal round-trip.
+func TestVectorIndexConfig_TuningKnobs_YAMLRoundTrip(t *testing.T) {
+	const src = `
+vector_index:
+  embedding_batch_size: 16
+  prep_workers: 4
+  debounce_ms: 250
+  chunk_overlap: 120
+  search_wait_timeout_ms: 0
+`
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(src), &cfg); err != nil {
+		t.Fatalf("yaml.Unmarshal() failed: %v", err)
+	}
+	if cfg.VectorIndex.EmbeddingBatchSize != 16 {
+		t.Errorf("embedding_batch_size = %d, want 16", cfg.VectorIndex.EmbeddingBatchSize)
+	}
+	if cfg.VectorIndex.PrepWorkers != 4 {
+		t.Errorf("prep_workers = %d, want 4", cfg.VectorIndex.PrepWorkers)
+	}
+	if cfg.VectorIndex.DebounceMs != 250 {
+		t.Errorf("debounce_ms = %d, want 250", cfg.VectorIndex.DebounceMs)
+	}
+	if cfg.VectorIndex.ChunkOverlap != 120 {
+		t.Errorf("chunk_overlap = %d, want 120", cfg.VectorIndex.ChunkOverlap)
+	}
+	if cfg.VectorIndex.SearchWaitTimeoutMs == nil || *cfg.VectorIndex.SearchWaitTimeoutMs != 0 {
+		t.Errorf("explicit search_wait_timeout_ms: 0 must parse as the fail-fast sentinel (pointer to 0), got %v", cfg.VectorIndex.SearchWaitTimeoutMs)
+	}
+
+	// ApplyDefaults must fill in unset knobs but PRESERVE the explicit
+	// fail-fast sentinel (an unset key resolves to 3000 instead — covered
+	// by TestVectorIndexConfig_TuningKnobs_Defaults).
+	ApplyDefaults(&cfg)
+	if cfg.VectorIndex.EmbeddingBatchSize != 16 {
+		t.Errorf("ApplyDefaults clobbered explicit embedding_batch_size: got %d, want 16", cfg.VectorIndex.EmbeddingBatchSize)
+	}
+	if cfg.VectorIndex.SearchWaitTimeoutMs == nil || *cfg.VectorIndex.SearchWaitTimeoutMs != 0 {
+		t.Errorf("ApplyDefaults must not overwrite an explicit search_wait_timeout_ms: 0, got %v", cfg.VectorIndex.SearchWaitTimeoutMs)
+	}
+
+	// Marshal → unmarshal round-trip preserves every knob verbatim.
+	data, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal() failed: %v", err)
+	}
+	var restored Config
+	if err := yaml.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("round-trip yaml.Unmarshal() failed: %v", err)
+	}
+	if restored.VectorIndex.EmbeddingBatchSize != 16 {
+		t.Errorf("round-tripped embedding_batch_size = %d, want 16", restored.VectorIndex.EmbeddingBatchSize)
+	}
+	if restored.VectorIndex.PrepWorkers != 4 {
+		t.Errorf("round-tripped prep_workers = %d, want 4", restored.VectorIndex.PrepWorkers)
+	}
+	if restored.VectorIndex.DebounceMs != 250 {
+		t.Errorf("round-tripped debounce_ms = %d, want 250", restored.VectorIndex.DebounceMs)
+	}
+	if restored.VectorIndex.ChunkOverlap != 120 {
+		t.Errorf("round-tripped chunk_overlap = %d, want 120", restored.VectorIndex.ChunkOverlap)
+	}
+	if restored.VectorIndex.SearchWaitTimeoutMs == nil || *restored.VectorIndex.SearchWaitTimeoutMs != 0 {
+		t.Errorf("round-tripped search_wait_timeout_ms must stay the fail-fast sentinel (pointer to 0), got %v", restored.VectorIndex.SearchWaitTimeoutMs)
+	}
+}
+
 // TestGoalLoopConfig_DefaultsToIndependent verifies that goal_loop.verification
 // defaults to "independent" when not specified in the config.
 func TestGoalLoopConfig_DefaultsToIndependent(t *testing.T) {

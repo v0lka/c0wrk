@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	chromem "github.com/philippgille/chromem-go"
@@ -122,6 +123,109 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 	return nil
 }
 
+// readFileFn is an os.ReadFile indirection used by ValidateCollection's slow
+// path. It exists purely as a test seam: tests swap it for a counting wrapper
+// to assert that the stat-based fast path skips content reads entirely for
+// unchanged files. Production code must not reassign it.
+var readFileFn = os.ReadFile
+
+// fileHashEntrySep separates the components of a file-hash sidecar value.
+const fileHashEntrySep = "|"
+
+// fullHashRevalidationEvery bounds how many consecutive ValidateCollection
+// passes may rely on the stat-based fast-path before one pass skips it and
+// re-reads + re-hashes every file. This is the backstop that catches content
+// rewrites preserving both size and mtime (see the fast-path comment in
+// ValidateCollection). 20 keeps the amortized revalidation cost at ~5% of a
+// pass while bounding the detection window to ~20 incremental passes.
+const fullHashRevalidationEvery = 20
+
+// parseFileHashEntry parses a file-hash sidecar value. New-format values are
+// "hash|size|mtimeUnixNano" or "hash|size|mtimeUnixNano|chunkerFP", where
+// size is the file size in bytes recorded at index time, mtimeUnixNano is
+// the file's ModTime in Unix-nanoseconds recorded at index time, and the
+// optional chunkerFP is the chunker-configuration fingerprint the file was
+// chunked under (see ChunkerFingerprint; absent for intermediate-format
+// entries written before the fingerprint existed — retrieve it separately
+// via fileHashEntryChunkerFP). Legacy values are the bare content hash with
+// no separators; for those (and for anything malformed) ok is false and the
+// caller must fall back to the full read+hash comparison.
+func parseFileHashEntry(entry string) (hash string, size, mtimeUnixNano int64, ok bool) {
+	parts := strings.Split(entry, fileHashEntrySep)
+	if len(parts) != 3 && len(parts) != 4 {
+		return entry, 0, 0, false // legacy bare hash
+	}
+	size, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return parts[0], 0, 0, false
+	}
+	mtime, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return parts[0], 0, 0, false
+	}
+	return parts[0], size, mtime, true
+}
+
+// fileHashEntryChunkerFP returns the chunker-configuration fingerprint field
+// of a sidecar entry, or "" when the entry has none (legacy bare hashes and
+// intermediate "hash|size|mtime" entries written before the fingerprint
+// existed). Callers treat "" as "configuration unknown — exempt from
+// fingerprint-based staleness" rather than "default configuration".
+func fileHashEntryChunkerFP(entry string) string {
+	parts := strings.Split(entry, fileHashEntrySep)
+	if len(parts) != 4 {
+		return ""
+	}
+	return parts[3]
+}
+
+// fileHashEntryHash returns the content-hash component of a sidecar value
+// regardless of whether the value is new-format or a legacy bare hash.
+func fileHashEntryHash(entry string) string {
+	if hash, _, _, ok := parseFileHashEntry(entry); ok {
+		return hash
+	}
+	return entry
+}
+
+// ChunkerFingerprint returns a short stable fingerprint of the chunker
+// configuration (max chunk size + overlap — the two ChunkerConfig inputs
+// that determine how a file's content is split). It is embedded as the 4th
+// field of new sidecar entries so ValidateCollection can detect files whose
+// chunks were produced under a different chunking configuration
+// (vector_index.chunk_overlap / max_chunk_size changes) and re-chunk them
+// even though their content hash is unchanged.
+func ChunkerFingerprint(maxChunkSize, overlap int) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("v1|max=%d|overlap=%d", maxChunkSize, overlap)))
+	return hex.EncodeToString(sum[:6]) // 12 hex chars, plenty for a config fingerprint
+}
+
+// fileHashEntryFromMetadata composes the sidecar value for a document.
+// processFile stats every file it reads and records "file_size" and
+// "file_mtime_unix_nano" metadata, so the preferred output is the new-format
+// "hash|size|mtimeUnixNano|chunkerFP" entry that lets ValidateCollection
+// classify the file as unchanged from stat alone (and detect chunker-config
+// changes). chunkerFP is the active fingerprint the document was indexed
+// under; pass "" for entries rebuilt from collection metadata whose chunker
+// configuration is unknown (migration/fallback paths) — such entries are
+// exempt from fingerprint-based staleness. When the size/mtime metadata is
+// absent — legacy documents written before the upgrade, or hand-built
+// documents — the legacy bare-hash value is returned; ValidateCollection
+// still honors it via the full read+hash comparison, and the entry is
+// upgraded to the new format the next time the file is indexed.
+func fileHashEntryFromMetadata(md map[string]string, chunkerFP string) string {
+	hash := md["content_hash"]
+	size, mtime := md["file_size"], md["file_mtime_unix_nano"]
+	if hash == "" || size == "" || mtime == "" {
+		return hash
+	}
+	entry := hash + fileHashEntrySep + size + fileHashEntrySep + mtime
+	if chunkerFP != "" {
+		entry += fileHashEntrySep + chunkerFP
+	}
+	return entry
+}
+
 // ValidateCollection checks stored file hashes against current files on disk.
 // It returns lists of stale (modified), new, and deleted file paths.
 // workspacePath is the root directory to walk for source files. checker is the
@@ -140,6 +244,19 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 	storedHashes, err := s.getCollectionFileHashes()
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("getting collection file hashes: %w", err)
+	}
+
+	// Periodic full-hash revalidation: the stat fast-path below trusts
+	// size+mtime as a content proxy, so a rewrite that preserves both would
+	// otherwise escape detection until the file next really changes. Every
+	// fullHashRevalidationEvery-th validation pass skips the fast-path
+	// entirely and re-reads + re-hashes every file, catching such rewrites
+	// eventually. The counter is atomic because this function runs under the
+	// read lock; validation passes are serialized per indexer in practice,
+	// so concurrent calls could at worst force the revalidation twice.
+	forceFullHash := s.validationsSinceFullHash.Add(1) >= fullHashRevalidationEvery
+	if forceFullHash {
+		s.validationsSinceFullHash.Store(0)
 	}
 
 	// Track which stored files we've seen on disk.
@@ -184,8 +301,42 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 		// limit is the reliable backstop against loading a multi-hundred-MB
 		// asset into memory just to hash it. The limit is configurable via
 		// vector_index.max_file_size (default 4 MiB).
-		if info, infoErr := d.Info(); infoErr == nil && tooLargeForIndex(info.Size(), s.maxFileSize) {
+		info, infoErr := d.Info()
+		if infoErr == nil && tooLargeForIndex(info.Size(), s.maxFileSize) {
 			return nil //nolint:nilerr // skip oversized files
+		}
+
+		// Fast path (stat-based unchanged detection): when the sidecar entry
+		// is current-format ("hash|size|mtimeUnixNano|chunkerFP") and the
+		// size and mtime recorded at index time still match the file's
+		// stat, the content is HEURISTICALLY the same bytes that were
+		// indexed — same length and same modification time almost always
+		// mean an untouched file, but a rewrite that preserves both (an
+		// archive extraction restoring archived mtimes, some file-sync
+		// tools) escapes detection here. The periodic full-hash
+		// revalidation above catches such a rewrite within
+		// fullHashRevalidationEvery passes instead of letting it survive
+		// until the file next changes. The entry's chunker fingerprint
+		// must also match the active chunker configuration; on a config
+		// change the file needs re-chunking and falls through. The file
+		// necessarily passed the oversized/binary/empty guards back then,
+		// so we can mark it seen WITHOUT the header pre-read, the full
+		// os.ReadFile, or the SHA-256 pass. This is what keeps the
+		// 1s-debounced incremental pass (triggered after every file edit)
+		// from re-reading and re-hashing the entire workspace each time.
+		// Legacy bare-hash entries, fingerprint-less intermediate entries,
+		// any size/mtime mismatch, a failed d.Info, or a forced full-hash
+		// pass fall through to the full-read comparison below, which also
+		// upgrades the entry the next time the file is indexed.
+		if !forceFullHash && info != nil {
+			if stored, exists := storedHashes[absPath]; exists {
+				if _, size, mtime, ok := parseFileHashEntry(stored); ok &&
+					size == info.Size() && mtime == info.ModTime().UnixNano() &&
+					fileHashEntryChunkerFP(stored) == s.chunkerFingerprint {
+					seen[absPath] = true
+					return nil //nolint:nilerr // unchanged: skip content read + hash
+				}
+			}
 		}
 
 		// Bounded header pre-read: reject multi-GB binary assets before the
@@ -200,7 +351,7 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 			return nil //nolint:nilerr // skip binary files
 		}
 
-		content, readErr := os.ReadFile(absPath)
+		content, readErr := readFileFn(absPath)
 		if readErr != nil {
 			return nil //nolint:nilerr // skip unreadable files
 		}
@@ -210,9 +361,18 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 
 		currentHash := computeHash(content)
 
-		if storedHash, exists := storedHashes[absPath]; exists {
+		if stored, exists := storedHashes[absPath]; exists {
 			seen[absPath] = true
-			if storedHash != currentHash {
+			if fileHashEntryHash(stored) != currentHash {
+				staleFiles = append(staleFiles, absPath)
+			} else if entryFP := fileHashEntryChunkerFP(stored); entryFP != "" && entryFP != s.chunkerFingerprint {
+				// Content unchanged, but the stored chunks were produced
+				// under a different chunker configuration (vector_index.
+				// chunk_overlap / max_chunk_size changed since the file was
+				// indexed): report stale so the file is re-chunked. Entries
+				// without a fingerprint are exempt — their configuration is
+				// unknown, and forcing a re-chunk of every legacy file in
+				// one pass would cost a full re-embed for no user action.
 				staleFiles = append(staleFiles, absPath)
 			}
 		} else {
@@ -235,8 +395,9 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 	return staleFiles, newFiles, deletedFiles, nil
 }
 
-// GetCollectionFiles returns all unique file paths and their content hashes
-// stored in the current collection.
+// GetCollectionFiles returns all unique file paths and their sidecar entries
+// (content hash, or "hash|size|mtimeUnixNano" for new-format entries) stored
+// in the current collection.
 func (s *Service) GetCollectionFiles() (map[string]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -244,8 +405,11 @@ func (s *Service) GetCollectionFiles() (map[string]string, error) {
 	return s.getCollectionFileHashes()
 }
 
-// getCollectionFileHashes returns the file→hash map from the sidecar store,
-// avoiding an embedding-bearing collection Query on every validation pass.
+// getCollectionFileHashes returns the file→sidecar-entry map from the sidecar
+// store, avoiding an embedding-bearing collection Query on every validation
+// pass. Values are content hashes for legacy entries or
+// "hash|size|mtimeUnixNano" for new-format entries (see parseFileHashEntry);
+// callers that only need the hash should go through fileHashEntryHash.
 // Caller must hold at least s.mu.RLock(). The returned map is a defensive
 // copy: it may outlive the lock and must not race the in-place mutations done
 // by upsertFileHashes/removeFileHashes under the write lock. The sidecar is
@@ -287,10 +451,14 @@ func (s *Service) queryCollectionFileHashes(ctx context.Context) (map[string]str
 	fileHashes := make(map[string]string, len(results))
 	for _, r := range results {
 		fp := r.Metadata["file_path"]
-		hash := r.Metadata["content_hash"]
 		if fp != "" {
-			// Keep one hash per file (all chunks of a file share the same hash).
-			fileHashes[fp] = hash
+			// Keep one hash per file (all chunks of a file share the same hash
+			// and size/mtime metadata, so composing from any chunk is fine).
+			// The chunker configuration these chunks were produced under is
+			// not recoverable from metadata, so no fingerprint is attached:
+			// the entry stays exempt from fingerprint-based staleness until
+			// the file is next indexed.
+			fileHashes[fp] = fileHashEntryFromMetadata(r.Metadata, "")
 		}
 	}
 
@@ -446,8 +614,13 @@ func (s *Service) saveFileHashes() error {
 	return nil
 }
 
-// upsertFileHashes records file_path→content_hash for the given documents into
-// the in-memory sidecar. It deliberately does NOT persist on every call: a
+// upsertFileHashes records file_path→sidecar entry for the given documents
+// into the in-memory sidecar. Entries are composed via
+// fileHashEntryFromMetadata: new-format "hash|size|mtimeUnixNano" when the
+// documents carry the size/mtime metadata processFile records, or the legacy
+// bare hash otherwise (upgraded on the file's next index pass).
+//
+// It deliberately does NOT persist on every call: a
 // single index pass issues one upsert per batch (addDocumentBatchSize docs),
 // so persisting here would write the full map to disk N times per pass
 // (O(batches × files) I/O). The map is flushed at lifecycle boundaries
@@ -461,7 +634,7 @@ func (s *Service) upsertFileHashes(docs []chromem.Document) {
 	}
 	for _, d := range docs {
 		if fp := d.Metadata["file_path"]; fp != "" {
-			s.fileHashes[fp] = d.Metadata["content_hash"]
+			s.fileHashes[fp] = fileHashEntryFromMetadata(d.Metadata, s.chunkerFingerprint)
 		}
 	}
 }
@@ -515,6 +688,17 @@ func (s *Service) RebuildCollection(ctx context.Context) error {
 	return nil
 }
 
+// BatchEmbedder embeds a batch of text documents in a single (internally
+// chunked) inference pass. It is implemented by sp4rk's embedding.Embedder
+// (EmbedDocuments); ServiceConfig.BatchEmbedder wires it into AddDocuments so
+// documents are embedded BEFORE the chromem commit, letting chromem-go skip
+// its per-document embedding calls (v0.7.0 AddDocument treats a pre-populated
+// Document.Embedding as final and only normalizes + persists it). Query-side
+// embedding keeps going through the chromem EmbeddingFunc.
+type BatchEmbedder interface {
+	EmbedDocuments(ctx context.Context, texts []string) ([][]float32, error)
+}
+
 // AddDocuments adds documents to the current collection and mirrors them
 // to the per-branch lexical index. Chromem commits first; lexical errors
 // are logged but not returned, since the reconciliation loop in the
@@ -526,6 +710,13 @@ func (s *Service) RebuildCollection(ctx context.Context) error {
 // (tens of thousands of chunks from a pathological data file) would
 // otherwise hang the embedder and exhaust memory. Sub-batching bounds
 // the per-call work and lets ctx cancellation interrupt mid-batch.
+//
+// When a BatchEmbedder is configured, each sub-batch is embedded up-front
+// (see embedSubBatch) in chunks of at most the configured embedding batch
+// size, and the vectors are assigned to Document.Embedding before the
+// chromem call — chromem then performs zero embedding inferences and only
+// normalizes + persists. A nil BatchEmbedder keeps the legacy path where
+// chromem embeds each document individually.
 // Caller must hold s.mu (write lock).
 func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, lexDocs []lexical.Doc) error {
 	if s.collection == nil {
@@ -544,6 +735,11 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 			end = len(vecDocs)
 		}
 		sub := vecDocs[start:end]
+		if s.batchEmbedder != nil {
+			if err := s.embedSubBatch(ctx, sub); err != nil {
+				return fmt.Errorf("embedding %d documents (offset %d of %d): %w", len(sub), start, len(vecDocs), err)
+			}
+		}
 		if err := s.collection.AddDocuments(ctx, sub, 1); err != nil {
 			return fmt.Errorf("adding %d documents (offset %d of %d): %w", len(sub), start, len(vecDocs), err)
 		}
@@ -564,6 +760,57 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 		if err := s.lexical.Upsert(ctx, lexDocs); err != nil {
 			s.logger.Warn("lexical upsert failed; will be repaired via RebuildLexical",
 				"branch", s.currentBranch, "docs", len(lexDocs), "error", err)
+		}
+	}
+	return nil
+}
+
+// embedSubBatch pre-populates the Embedding field of every document in sub
+// that does not already carry one, so the subsequent chromem AddDocuments
+// call performs zero embedding inferences and only normalizes + persists
+// (chromem-go v0.7.0 AddDocument skips c.embed for a non-empty
+// Document.Embedding). Documents that already have an embedding are passed
+// through untouched — exactly as chromem would treat them on the legacy
+// path.
+//
+// The collected texts are embedded in chunks of at most the configured
+// embedding batch size (EmbeddingBatchSize, mirroring the embedder's ONNX
+// batch session capacity): each EmbedDocuments call maps to at most one
+// full batch inference. ctx is checked per chunk and forwarded to
+// EmbedDocuments, so cancellation interrupts the sub-batch between chunks
+// (the embedder itself is ctx-aware and aborts a pending chunk).
+// Caller must hold s.mu (write lock).
+func (s *Service) embedSubBatch(ctx context.Context, sub []chromem.Document) error {
+	texts := make([]string, 0, len(sub))
+	targets := make([]int, 0, len(sub))
+	for i := range sub {
+		if len(sub[i].Embedding) == 0 {
+			targets = append(targets, i)
+			texts = append(texts, sub[i].Content)
+		}
+	}
+
+	for start := 0; start < len(texts); start += s.embeddingBatchSize {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("embedding documents (cancelled mid-batch): %w", err)
+		}
+		end := start + s.embeddingBatchSize
+		if end > len(texts) {
+			end = len(texts)
+		}
+		chunk := texts[start:end]
+		vecs, err := s.batchEmbedder.EmbedDocuments(ctx, chunk)
+		if err != nil {
+			return fmt.Errorf("embedding %d texts (chunk offset %d of %d): %w", len(chunk), start, len(texts), err)
+		}
+		if len(vecs) != len(chunk) {
+			return fmt.Errorf("batch embedder returned %d vectors for %d texts", len(vecs), len(chunk))
+		}
+		for j, vec := range vecs {
+			if len(vec) == 0 {
+				return fmt.Errorf("batch embedder returned an empty vector (chunk offset %d of %d, text %d)", start, len(texts), j)
+			}
+			sub[targets[start+j]].Embedding = vec
 		}
 	}
 	return nil

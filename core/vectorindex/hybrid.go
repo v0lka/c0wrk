@@ -174,8 +174,30 @@ func ParseQuery(raw string) (base string, mustMatch []string) {
 //
 // Blocks via WaitReady if the index is not yet ready.
 func (s *Service) HybridSearch(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
-	if err := s.WaitReady(ctx); err != nil {
-		return nil, fmt.Errorf("waiting for index readiness: %w", err)
+	return s.hybridSearch(ctx, opts, true)
+}
+
+// HybridSearchNoWait is the non-blocking form of HybridSearch: it never
+// waits for readiness and returns ErrNotReady immediately when the index is
+// not ready. Callers that gate readiness themselves (the search_wait_timeout
+// wiring: the semantic_search tool closure after its bounded waitFunc, the
+// RAG-hint path after its bounded wait, the fail-fast RPC branch) use this
+// form so an incremental pass starting between their gate and the search
+// cannot block them until the pass finishes.
+func (s *Service) HybridSearchNoWait(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
+	return s.hybridSearch(ctx, opts, false)
+}
+
+// hybridSearch implements HybridSearch; wait selects the blocking (WaitReady)
+// or non-blocking (ErrNotReady) readiness gate. See the public wrappers for
+// the contracts.
+func (s *Service) hybridSearch(ctx context.Context, opts SearchOptions, wait bool) ([]SearchResult, error) {
+	if wait {
+		if err := s.WaitReady(ctx); err != nil {
+			return nil, fmt.Errorf("waiting for index readiness: %w", err)
+		}
+	} else if !s.IsReady() {
+		return nil, ErrNotReady
 	}
 
 	mode := opts.Mode

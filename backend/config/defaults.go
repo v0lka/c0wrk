@@ -373,6 +373,29 @@ func ApplyDefaults(cfg *Config) {
 		cfg.VectorIndex.MaxChunksPerFile = vectorindex.DefaultMaxChunksPerFile
 	}
 
+	// Indexing/search tuning knobs. Zero falls back to the vectorindex
+	// package defaults — the historical hardcoded values — so a config
+	// without a vector_index block resolves to exactly the pre-knob
+	// behaviour. SearchWaitTimeoutMs is a pointer-int: nil (unset) resolves
+	// to the 3000 ms default, while an explicit 0 is preserved as the
+	// "fail fast" sentinel and must NOT be defaulted here.
+	if cfg.VectorIndex.EmbeddingBatchSize == 0 {
+		cfg.VectorIndex.EmbeddingBatchSize = vectorindex.DefaultEmbeddingBatchSize
+	}
+	if cfg.VectorIndex.PrepWorkers == 0 {
+		cfg.VectorIndex.PrepWorkers = vectorindex.DefaultPrepWorkers
+	}
+	if cfg.VectorIndex.DebounceMs == 0 {
+		cfg.VectorIndex.DebounceMs = int(vectorindex.DefaultDebounce.Milliseconds())
+	}
+	if cfg.VectorIndex.ChunkOverlap == 0 {
+		cfg.VectorIndex.ChunkOverlap = vectorindex.DefaultChunkOverlap
+	}
+	if cfg.VectorIndex.SearchWaitTimeoutMs == nil {
+		v := int(vectorindex.DefaultSearchWaitTimeout.Milliseconds())
+		cfg.VectorIndex.SearchWaitTimeoutMs = &v
+	}
+
 	// Proxy defaults
 	if cfg.Proxy.BypassList == nil {
 		cfg.Proxy.BypassList = []string{"localhost", "127.0.0.1"}

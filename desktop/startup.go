@@ -307,7 +307,11 @@ func (a *App) Startup(ctx context.Context) {
 	var vectorMgrPtr atomic.Pointer[vectorindex.Manager]
 	vectorReady := make(chan struct{})
 	var vectorOnce sync.Once
-	vectorSearchFunc, vectorSearchWaitFunc := a.buildVectorCallbacks(&vectorMgrPtr, vectorReady)
+	// Bound for vector-search readiness waits (vector_index.search_wait_
+	// timeout_ms; unset → 3000 via config defaults, explicit 0 = fail fast).
+	// Governs both the semantic_search tool callbacks and the RAG-hint wait.
+	vectorSearchWaitTimeout := time.Duration(derefInt(cfg.VectorIndex.SearchWaitTimeoutMs)) * time.Millisecond
+	vectorSearchFunc, vectorSearchWaitFunc := a.buildVectorCallbacks(&vectorMgrPtr, vectorReady, vectorSearchWaitTimeout)
 
 	// File-change notification: called by the PostExecuteHook after a
 	// file-mutating tool completes. Triggers debounced incremental
@@ -342,6 +346,7 @@ func (a *App) Startup(ctx context.Context) {
 		HITLHandler:                 hitlHandler,
 		VectorSearchFunc:            vectorSearchFunc,
 		VectorSearchWaitFunc:        vectorSearchWaitFunc,
+		VectorSearchWaitTimeout:     vectorSearchWaitTimeout,
 		FileChangeNotifyFunc:        fileChangeNotify,
 		FileChangedWorkspaceEmitter: fileChangedWorkspaceEmitter,
 	}, log, startTime)

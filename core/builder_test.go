@@ -17,6 +17,7 @@ import (
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/llm"
 	sdktools "github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // TestToolRegistry_Clone_Independent verifies that the per-session clone
@@ -1134,5 +1135,51 @@ func TestApplyProviderOutputReserves_ConflictingProvidersDeterministic(t *testin
 		if got := overrides["shared-model"].OutputLimit; got != 8192 {
 			t.Fatalf("run %d: shared-model OutputLimit = %d, want 8192 (aaa-gateway wins, lexicographic order)", i, got)
 		}
+	}
+}
+
+// TestRegisterVectorSearch_StoresWaitTimeout verifies the RAG-hint bound
+// travels with the vector-search registration: the waitTimeout argument is
+// stored for per-session OrchestratorDeps.VectorSearchWaitTimeout, and a nil
+// searchFunc remains a no-op.
+func TestRegisterVectorSearch_StoresWaitTimeout(t *testing.T) {
+	cfg := &BuilderConfig{
+		Security:      BuilderSecurityConfig{},
+		ExpandEnvVars: func(string) string { return "" },
+	}
+	b, err := NewOrchestratorBuilder(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewOrchestratorBuilder: %v", err)
+	}
+
+	search := builtins.VectorSearchFunc(func(ctx context.Context, opts builtins.VectorSearchOptions) ([]builtins.VectorSearchResult, error) {
+		return nil, nil
+	})
+	wait := builtins.VectorSearchWaitFunc(func(context.Context) error { return nil })
+	b.RegisterVectorSearch(search, wait, 2*time.Second)
+
+	b.mu.RLock()
+	gotFunc := b.vectorSearchFunc
+	gotWait := b.vectorSearchWaitFunc
+	gotTimeout := b.vectorSearchWaitTimeout
+	b.mu.RUnlock()
+
+	if gotFunc == nil {
+		t.Fatal("expected vectorSearchFunc to be stored")
+	}
+	if gotWait == nil {
+		t.Fatal("expected vectorSearchWaitFunc to be stored (the RAG-hint path calls it under the shared deadline)")
+	}
+	if gotTimeout != 2*time.Second {
+		t.Errorf("vectorSearchWaitTimeout = %v, want 2s", gotTimeout)
+	}
+
+	// nil searchFunc must stay a no-op (no panic, no clearing).
+	b.RegisterVectorSearch(nil, nil, time.Minute)
+	b.mu.RLock()
+	gotFunc = b.vectorSearchFunc
+	b.mu.RUnlock()
+	if gotFunc == nil {
+		t.Error("nil searchFunc must not clear a previously registered search func")
 	}
 }

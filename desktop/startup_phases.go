@@ -655,20 +655,83 @@ func (s *stepLimitHITLAdapter) OnStepLimit(ctx context.Context, currentStep, max
 }
 
 // buildVectorCallbacks returns the lazy vector-search callbacks that gate on
-// background ONNX initialization. They block until vectorReady is closed (or
-// ctx cancels) before delegating to the manager service.
-func (a *App) buildVectorCallbacks(vectorMgrPtr *atomic.Pointer[vectorindex.Manager], vectorReady <-chan struct{}) (builtins.VectorSearchFunc, builtins.VectorSearchWaitFunc) { //nolint:gocritic // unnamedResult is acceptable for tuple returns with distinct types
-	searchFunc := builtins.VectorSearchFunc(func(ctx context.Context, opts builtins.VectorSearchOptions) ([]builtins.VectorSearchResult, error) {
+// background ONNX initialization. The two callbacks have disjoint jobs so a
+// readiness wait is never paid twice:
+//
+//   - waitFunc is THE bounded readiness waiter. One deadline
+//     (vector_index.search_wait_timeout_ms) covers both stages — waiting for
+//     the embedder (vectorReady) and the per-project Service.WaitReady —
+//     after which an actionable error built from the manager's index status
+//     (progress, current file) is returned instead of blocking until
+//     indexing finishes. searchWaitTimeout <= 0 is the fail-fast sentinel:
+//     readiness is checked without waiting and a not-ready index errors
+//     immediately.
+//   - searchFunc never waits for readiness: it dispatches to
+//     HybridSearchNoWait, so an incremental pass that starts between the
+//     caller's readiness gate and this call cannot block it (it fails fast
+//     with the actionable not-ready error instead). The knob's timeout wrap
+//     here bounds only the query execution (embedding the query, scanning
+//     and fusing), as defense-in-depth.
+//
+// Callers pair them under a single budget: the semantic_search tool calls
+// waitFunc then searchFunc (readiness wait ≤ knob, query execution ≤ knob),
+// and the RAG-hint path calls both under one shared deadline (see
+// Orchestrator.injectVectorSearchHints).
+func (a *App) buildVectorCallbacks(vectorMgrPtr *atomic.Pointer[vectorindex.Manager], vectorReady <-chan struct{}, searchWaitTimeout time.Duration) (builtins.VectorSearchFunc, builtins.VectorSearchWaitFunc) { //nolint:gocritic // unnamedResult is acceptable for tuple returns with distinct types
+	errStillLoading := errors.New("vector search not ready (index backend still loading); retry semantic_search later or use ripgrep/glob")
+
+	// notReadyErr prefers the manager's actionable status (state, progress,
+	// current file); the static message covers the embedder-still-loading
+	// window where no manager exists yet.
+	notReadyErr := func() error {
+		if mgr := vectorMgrPtr.Load(); mgr != nil {
+			return mgr.NotReadyError()
+		}
+		return errStillLoading
+	}
+
+	// awaitVectorReady blocks until the embedder is loaded or the (already
+	// bounded) ctx expires. For the fail-fast sentinel it never blocks.
+	awaitVectorReady := func(ctx context.Context) error {
+		if searchWaitTimeout <= 0 {
+			select {
+			case <-vectorReady:
+				return nil
+			default:
+				return errStillLoading
+			}
+		}
 		select {
 		case <-vectorReady:
+			return nil
 		case <-ctx.Done():
-			return nil, fmt.Errorf("vector search not ready: %w", ctx.Err())
+			return notReadyErr()
+		}
+	}
+
+	searchFunc := builtins.VectorSearchFunc(func(ctx context.Context, opts builtins.VectorSearchOptions) ([]builtins.VectorSearchResult, error) {
+		// The timeout wrap bounds the query execution only (embedding the
+		// query, scanning and fusing) — defense-in-depth, not a readiness
+		// wait. Readiness is the caller's bounded step (waitFunc for the
+		// tool, the shared-deadline pre-wait for RAG hints), and the search
+		// below never waits for it.
+		if searchWaitTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, searchWaitTimeout)
+			defer cancel()
+		}
+		if err := awaitVectorReady(ctx); err != nil {
+			return nil, err
 		}
 		mgr := vectorMgrPtr.Load()
 		if mgr == nil {
 			return nil, errors.New("vector search unavailable")
 		}
-		results, err := mgr.Service().HybridSearch(ctx, vectorindex.SearchOptions{
+		// Never enter a blocking readiness wait here: an incremental pass
+		// starting between the caller's readiness gate and this call must
+		// fail fast with the actionable status (progress, current file),
+		// not block until the pass finishes.
+		results, err := mgr.Service().HybridSearchNoWait(ctx, vectorindex.SearchOptions{
 			Query:       opts.Query,
 			TopK:        opts.TopK,
 			Mode:        vectorindex.ParseMode(opts.Mode),
@@ -676,6 +739,9 @@ func (a *App) buildVectorCallbacks(vectorMgrPtr *atomic.Pointer[vectorindex.Mana
 			MustMatch:   opts.MustMatch,
 		})
 		if err != nil {
+			if errors.Is(err, vectorindex.ErrNotReady) {
+				return nil, mgr.NotReadyError()
+			}
 			return nil, err
 		}
 		out := make([]builtins.VectorSearchResult, len(results))
@@ -696,16 +762,37 @@ func (a *App) buildVectorCallbacks(vectorMgrPtr *atomic.Pointer[vectorindex.Mana
 	})
 
 	waitFunc := builtins.VectorSearchWaitFunc(func(ctx context.Context) error {
-		select {
-		case <-vectorReady:
+		if searchWaitTimeout <= 0 {
+			// Fail-fast: non-blocking readiness checks only, zero waiting.
+			if err := awaitVectorReady(ctx); err != nil {
+				return err
+			}
 			mgr := vectorMgrPtr.Load()
 			if mgr == nil {
 				return errors.New("vector search unavailable")
 			}
-			return mgr.Service().WaitReady(ctx)
-		case <-ctx.Done():
-			return fmt.Errorf("vector search not ready: %w", ctx.Err())
+			if !mgr.Service().IsReady() {
+				return mgr.NotReadyError()
+			}
+			return nil
 		}
+		// One deadline covers both stages: waiting for the embedder
+		// (vectorReady) and waiting for per-project index readiness
+		// (Service.WaitReady).
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, searchWaitTimeout)
+		defer cancel()
+		if err := awaitVectorReady(ctx); err != nil {
+			return err
+		}
+		mgr := vectorMgrPtr.Load()
+		if mgr == nil {
+			return errors.New("vector search unavailable")
+		}
+		if err := mgr.Service().WaitReady(ctx); err != nil {
+			return mgr.NotReadyError()
+		}
+		return nil
 	})
 
 	return searchFunc, waitFunc
@@ -899,6 +986,7 @@ func (a *App) startVectorIndexBackground(
 			LibraryPath:    libraryPath,
 			MaxSeqLength:   512,
 			HiddenDim:      512,
+			BatchSize:      cfg.VectorIndex.EmbeddingBatchSize,
 			IntraOpThreads: cfg.VectorIndex.EmbeddingThreads,
 			Logger:         log,
 		})
@@ -910,6 +998,12 @@ func (a *App) startVectorIndexBackground(
 
 		vectorMgr, err := vectorindex.NewManager(vectorindex.ManagerConfig{
 			EmbeddingFunc: emb.EmbeddingFunc(),
+			// BatchEmbedder enables the batched document-embedding path in
+			// Service.AddDocuments: chunk contents are embedded via the
+			// embedder's batch ONNX session BEFORE the chromem commit, so
+			// chromem skips its one-inference-per-chunk calls entirely.
+			// *embedding.Embedder satisfies the interface directly.
+			BatchEmbedder: emb,
 			CloseFn:       emb.Close,
 			HybridConfig: vectorindex.HybridConfig{
 				RRFK:              cfg.VectorIndex.HybridRRFK,
@@ -922,7 +1016,21 @@ func (a *App) startVectorIndexBackground(
 			MaxFileSize:      cfg.VectorIndex.MaxFileSize,
 			MaxChunkSize:     cfg.VectorIndex.MaxChunkSize,
 			MaxChunksPerFile: cfg.VectorIndex.MaxChunksPerFile,
-			Logger:           log,
+			// Indexing/search tuning knobs (vector_index.*). The config is
+			// resolved (ApplyDefaults ran), so every value carries an
+			// explicit default here; EmbeddingBatchSize must match the
+			// EmbedderConfig value above — the Manager stores it for the
+			// batched-embedding path, the embedder uses it as its ONNX
+			// batch session capacity.
+			EmbeddingBatchSize: cfg.VectorIndex.EmbeddingBatchSize,
+			PrepWorkers:        cfg.VectorIndex.PrepWorkers,
+			Debounce:           time.Duration(cfg.VectorIndex.DebounceMs) * time.Millisecond,
+			ChunkOverlap:       cfg.VectorIndex.ChunkOverlap,
+			// SearchWaitTimeout: 0 = "fail fast" (explicit sentinel from
+			// config, never defaulted); stored on the Manager for the
+			// search-path wiring.
+			SearchWaitTimeout: time.Duration(derefInt(cfg.VectorIndex.SearchWaitTimeoutMs)) * time.Millisecond,
+			Logger:            log,
 		})
 		if err != nil {
 			log.Warn("vector search unavailable", "error", err)
@@ -950,6 +1058,16 @@ func (a *App) startVectorIndexBackground(
 // pointer-float64 hybrid thresholds from config into the value-based
 // vectorindex.HybridConfig.
 func derefFloat(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// derefInt returns *p when p is non-nil, else 0. Used to convert the
+// pointer-int vector-index sentinel (search_wait_timeout_ms: unset → default,
+// explicit 0 → fail-fast) into a plain value for vectorindex.ManagerConfig.
+func derefInt(p *int) int {
 	if p == nil {
 		return 0
 	}

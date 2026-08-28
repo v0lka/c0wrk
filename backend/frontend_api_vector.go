@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"errors"
 
 	"github.com/v0lka/c0wrk/core/vectorindex"
@@ -40,21 +41,57 @@ func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, 
 	var results []vectorindex.SearchResult
 	var err error
 
+	// Defense-in-depth: bound the readiness wait inside HybridSearch /
+	// BrowseWithFilter with the same knob that bounds the semantic_search
+	// tool (vector_index.search_wait_timeout_ms), so the RPC can never block
+	// unboundedly while a full index is stuck. The fail-fast sentinel (0)
+	// skips waiting entirely: it dispatches to the NoWait variants, so a
+	// not-ready index errors immediately AND an incremental pass starting
+	// between the readiness state and the call cannot block the RPC until
+	// the pass finishes.
 	ctx := f.ctx()
+	failFast := false
+	if wait := vm.SearchWaitTimeout(); wait > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, wait)
+		defer cancel()
+	} else {
+		failFast = true
+	}
 
 	if req.Query == "" {
-		results, err = vectorSvc.BrowseWithFilter(ctx, topK, req.FilePattern)
+		if failFast {
+			results, err = vectorSvc.BrowseWithFilterNoWait(ctx, topK, req.FilePattern)
+		} else {
+			results, err = vectorSvc.BrowseWithFilter(ctx, topK, req.FilePattern)
+		}
 	} else {
-		mode := vectorindex.ParseMode(req.Mode)
-		results, err = vectorSvc.HybridSearch(ctx, vectorindex.SearchOptions{
+		opts := vectorindex.SearchOptions{
 			Query:       req.Query,
 			TopK:        topK,
-			Mode:        mode,
+			Mode:        vectorindex.ParseMode(req.Mode),
 			FilePattern: req.FilePattern,
 			MustMatch:   req.MustMatch,
-		})
+		}
+		if failFast {
+			results, err = vectorSvc.HybridSearchNoWait(ctx, opts)
+		} else {
+			results, err = vectorSvc.HybridSearch(ctx, opts)
+		}
 	}
 	if err != nil {
+		// Fail-fast dispatch observed a not-ready index (including the
+		// pass-started-after-gate race): surface the actionable index
+		// status (progress, current file) instead of a bare error.
+		if errors.Is(err, vectorindex.ErrNotReady) {
+			return nil, vm.NotReadyError()
+		}
+		// The bound expired while waiting for readiness: surface the
+		// actionable index status (progress, current file) instead of a
+		// bare deadline error.
+		if !vectorSvc.IsReady() {
+			return nil, vm.NotReadyError()
+		}
 		return nil, err
 	}
 

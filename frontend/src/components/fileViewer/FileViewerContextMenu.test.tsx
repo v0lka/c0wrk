@@ -6,8 +6,11 @@ import { createRoot, type Root } from 'react-dom/client'
 // Mock the Zustand stores so the component's handlers reach into controlled
 // fakes instead of the real persisted stores (which crash under jsdom when
 // `window.localStorage` is undefined). Only the surface the component uses is
-// surfaced; the hooks-based `useInputModeStore` is mocked below.
+// surfaced; the hooks-based `useInputModeStore` is mocked below. The vector
+// mock doubles as both the selector-hook target (the component subscribes to
+// `status.state`) and the getState() source for handleFindSimilar.
 const vectorMock = vi.hoisted(() => ({
+  status: { state: 'ready' as string },
   setQuery: vi.fn(),
 }))
 const uiMock = vi.hoisted(() => ({
@@ -18,7 +21,10 @@ const inputMock = vi.hoisted(() => ({
 }))
 
 vi.mock('@/stores/vectorIndexStore', () => ({
-  useVectorIndexStore: { getState: () => vectorMock },
+  useVectorIndexStore: Object.assign(
+    (selector: (s: typeof vectorMock) => unknown) => selector(vectorMock),
+    { getState: () => vectorMock },
+  ),
 }))
 vi.mock('@/stores/uiStore', () => ({
   useUIStore: { getState: () => uiMock },
@@ -37,6 +43,7 @@ describe('FileViewerContextMenu', () => {
 
   beforeEach(() => {
     onClose = vi.fn()
+    vectorMock.status = { state: 'ready' }
     vectorMock.setQuery.mockClear()
     uiMock.setWorkspaceTab.mockClear()
     inputMock.insertTextIntoInput.mockClear()
@@ -119,5 +126,29 @@ describe('FileViewerContextMenu', () => {
     expect(uiMock.setWorkspaceTab).not.toHaveBeenCalled()
     // Still closes the menu.
     expect(onClose).toHaveBeenCalled()
+  })
+
+  it('Find similar is disabled with an index-state hint while the index is not ready', async () => {
+    vectorMock.status = { state: 'indexing' }
+    renderMenu('@foo.go#L1', 'func foo() {}')
+    const item = menuItem('Find similar')
+    expect(item.getAttribute('aria-disabled')).toBe('true')
+    // The hint title explains the current index state.
+    expect(item.title).toContain('indexing')
+    await act(async () => {
+      item.click()
+      await Promise.resolve()
+    })
+    // True no-op: no query seeded, no tab switch, menu stays open.
+    expect(vectorMock.setQuery).not.toHaveBeenCalled()
+    expect(uiMock.setWorkspaceTab).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('Find similar carries no aria-disabled and no hint when the index is ready', () => {
+    renderMenu('@foo.go#L1', 'code')
+    const item = menuItem('Find similar')
+    expect(item.hasAttribute('aria-disabled')).toBe(false)
+    expect(item.title).toBe('')
   })
 })

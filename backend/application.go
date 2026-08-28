@@ -45,6 +45,13 @@ type ApplicationConfig struct {
 	// Vector search callbacks (optional — nil disables semantic_search tool).
 	VectorSearchFunc     builtins.VectorSearchFunc
 	VectorSearchWaitFunc builtins.VectorSearchWaitFunc
+	// VectorSearchWaitTimeout bounds how long vector-search callers (the
+	// semantic_search tool and RAG hint injection) wait for index readiness
+	// before returning an actionable error / skipping hints
+	// (vector_index.search_wait_timeout_ms; 0 = fail fast). The desktop
+	// search closure enforces it; passed through to per-session
+	// orchestrators for the RAG-hint bound.
+	VectorSearchWaitTimeout time.Duration
 
 	// FileChangeNotifyFunc is called after a file-mutating tool (write_file,
 	// edit_file, bash_exec) completes successfully. It triggers debounced
@@ -132,7 +139,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 
 	// 3a. Vector search (optional — registered after builder creation)
 	if cfg.VectorSearchFunc != nil {
-		builder.RegisterVectorSearch(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc)
+		builder.RegisterVectorSearch(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc, cfg.VectorSearchWaitTimeout)
 	}
 
 	// 3b. Skill discovery directories. The builder creates a per-session

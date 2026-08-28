@@ -343,8 +343,19 @@ type Orchestrator struct {
 	trackingCaller      *llm.TrackingCaller   // for per-step context tracker wiring
 	tokenCounter        llm.TokenCounter      // for token counting in planner history compaction
 	vectorSearchFunc    builtins.VectorSearchFunc
-	skillManager        *skills.SkillManager // for skill discovery and activation
-	agentManager        *agents.AgentManager // for subagent discovery (drives "Available/Requested Subagents" prompt sections)
+	// vectorSearchWaitFunc is the bounded readiness waiter paired with
+	// vectorSearchFunc (the desktop search wiring's waitFunc).
+	// injectVectorSearchHints calls it under the SAME deadline as the
+	// search, so readiness waiting and query execution share one budget
+	// instead of the search closure re-waiting (and re-spending) it.
+	vectorSearchWaitFunc builtins.VectorSearchWaitFunc
+	// vectorSearchWaitTimeout bounds how long injectVectorSearchHints waits
+	// for vector-search results before skipping RAG hints. Zero resolves to
+	// defaultVectorSearchWaitTimeout at use time (effective method), so
+	// hint injection never blocks a session start indefinitely.
+	vectorSearchWaitTimeout time.Duration
+	skillManager            *skills.SkillManager // for skill discovery and activation
+	agentManager            *agents.AgentManager // for subagent discovery (drives "Available/Requested Subagents" prompt sections)
 
 	// Conductor dependencies (stored at construction time for runConductor).
 	reflector        *reflector.Reflector
@@ -683,11 +694,26 @@ type OrchestratorDeps struct {
 	BBFactory        BlackboardFactory         // optional, nil = default MapBlackboard
 	TrackingCaller   *llm.TrackingCaller       // optional, for per-step context tracker wiring
 	VectorSearchFunc builtins.VectorSearchFunc // optional, for auto-RAG hint generation
-	SkillManager     *skills.SkillManager      // optional, for skill discovery and activation
-	AgentManager     *agents.AgentManager      // optional, for subagent discovery ("Available/Requested Subagents" prompt sections); nil-safe
-	CoreToolRegistry *tools.ToolRegistry       // per-session registry for No-Project tool disabling and the extra shell blacklist
-	ModelSwitcher    *llm.Router               // raw LLM router for per-message model override
-	JudgeSync        func()                    // optional: re-binds the session's tool judge to the session router after a model switch (session-pinning; nil-safe)
+	// VectorSearchWaitFunc is the bounded readiness waiter paired with
+	// VectorSearchFunc. injectVectorSearchHints calls it (when non-nil)
+	// under the SAME deadline as the search itself, so readiness waiting
+	// and query execution share one budget. The search closure itself is
+	// non-blocking for readiness (HybridSearchNoWait on the desktop wiring),
+	// so without this pre-wait an unready index would skip hints instantly
+	// rather than waiting for the bound.
+	VectorSearchWaitFunc builtins.VectorSearchWaitFunc // optional
+	// VectorSearchWaitTimeout bounds how long injectVectorSearchHints waits
+	// for vector-search results before skipping RAG hints and proceeding
+	// without them (vector_index.search_wait_timeout_ms). Zero (unset)
+	// defaults to defaultVectorSearchWaitTimeout (3s) — mirroring the
+	// config-layer default — so hint injection never blocks a session start
+	// indefinitely.
+	VectorSearchWaitTimeout time.Duration
+	SkillManager            *skills.SkillManager // optional, for skill discovery and activation
+	AgentManager            *agents.AgentManager // optional, for subagent discovery ("Available/Requested Subagents" prompt sections); nil-safe
+	CoreToolRegistry        *tools.ToolRegistry  // per-session registry for No-Project tool disabling and the extra shell blacklist
+	ModelSwitcher           *llm.Router          // raw LLM router for per-message model override
+	JudgeSync               func()               // optional: re-binds the session's tool judge to the session router after a model switch (session-pinning; nil-safe)
 
 	// VisionResolver inspects the CURRENT active model (per call) and returns
 	// markitdown connection parameters when that model is vision-capable and
@@ -776,6 +802,8 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		trackingCaller:             deps.TrackingCaller,
 		tokenCounter:               deps.TokenCounter,
 		vectorSearchFunc:           deps.VectorSearchFunc,
+		vectorSearchWaitFunc:       deps.VectorSearchWaitFunc,
+		vectorSearchWaitTimeout:    deps.VectorSearchWaitTimeout,
 		skillManager:               deps.SkillManager,
 		agentManager:               deps.AgentManager,
 		coreToolRegistry:           deps.CoreToolRegistry,
@@ -1149,6 +1177,22 @@ func lastReasoningContent(bb orchestration.Blackboard) string {
 	return last
 }
 
+// defaultVectorSearchWaitTimeout mirrors vectorindex.DefaultSearchWaitTimeout
+// (the config-layer default for vector_index.search_wait_timeout_ms, 3s). It
+// is duplicated here because core cannot import core/vectorindex, which
+// itself imports core.
+const defaultVectorSearchWaitTimeout = 3 * time.Second
+
+// effectiveVectorSearchWaitTimeout resolves the RAG-hint wait bound: an
+// unset (zero) OrchestratorDeps.VectorSearchWaitTimeout falls back to the
+// 3s default so hint injection never blocks a session start indefinitely.
+func (o *Orchestrator) effectiveVectorSearchWaitTimeout() time.Duration {
+	if o.vectorSearchWaitTimeout > 0 {
+		return o.vectorSearchWaitTimeout
+	}
+	return defaultVectorSearchWaitTimeout
+}
+
 // injectVectorSearchHints queries the vector index for relevant files and
 // attaches the results as VectorSearchHints on the returned context.
 // It also reads AGENTS.md from the workspace root and injects its full
@@ -1164,13 +1208,31 @@ func (o *Orchestrator) injectVectorSearchHints(ctx context.Context, query string
 	// a previously-active CODE project. AGENTS.md injection below is
 	// unaffected (it is workspace-local, not vector-index-dependent).
 	if !o.isNoProject && o.vectorSearchFunc != nil {
-		ragCtx, ragCancel := context.WithTimeout(ctx, 2*time.Second)
-		results, err := o.vectorSearchFunc(ragCtx, builtins.VectorSearchOptions{Query: query, TopK: 5})
+		// One deadline covers BOTH stages: the bounded readiness wait
+		// (vectorSearchWaitFunc — embedder load + index readiness, the same
+		// waiter the semantic_search tool uses) and the search execution
+		// itself. The search closure never waits for readiness on its own
+		// (NoWait form), so this pre-wait is what grants the RAG path its
+		// bounded wait — and because it shares ragCtx, waiting can never
+		// double-spend the knob.
+		ragCtx, ragCancel := context.WithTimeout(ctx, o.effectiveVectorSearchWaitTimeout())
+		var waitErr error
+		if o.vectorSearchWaitFunc != nil {
+			waitErr = o.vectorSearchWaitFunc(ragCtx)
+		}
+		var results []builtins.VectorSearchResult
+		var err error
+		if waitErr == nil {
+			results, err = o.vectorSearchFunc(ragCtx, builtins.VectorSearchOptions{Query: query, TopK: 5})
+		}
 		ragCancel()
 
-		if err != nil {
+		switch {
+		case waitErr != nil:
+			o.logDebug("vector search hints skipped (index not ready)", "error", waitErr)
+		case err != nil:
 			o.logDebug("vector search hints skipped", "error", err)
-		} else if len(results) > 0 {
+		case len(results) > 0:
 			hints = &VectorSearchHints{}
 			for _, r := range results {
 				summary := strutil.TruncateUTF8(r.Content, 100)

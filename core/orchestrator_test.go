@@ -1120,6 +1120,49 @@ func TestOrchestrator_VectorSearchHints_ErrorSkipped(t *testing.T) {
 	}
 }
 
+// TestOrchestrator_VectorSearchHints_TimeoutSkipsHints pins the knob-driven
+// RAG bound (vector_index.search_wait_timeout_ms → OrchestratorDeps.
+// VectorSearchWaitTimeout): a search stuck on index readiness is abandoned
+// when the bound expires and hint injection proceeds without hints — the
+// session/prompt pipeline is never blocked by a stuck index.
+func TestOrchestrator_VectorSearchHints_TimeoutSkipsHints(t *testing.T) {
+	searchFunc := func(ctx context.Context, opts builtins.VectorSearchOptions) ([]builtins.VectorSearchResult, error) {
+		<-ctx.Done() // simulate a search blocked on index readiness
+		return nil, ctx.Err()
+	}
+
+	o := &Orchestrator{
+		vectorSearchFunc:        searchFunc,
+		vectorSearchWaitTimeout: 50 * time.Millisecond,
+	}
+
+	start := time.Now()
+	ctx := o.injectVectorSearchHints(context.Background(), "query")
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Errorf("injectVectorSearchHints blocked for %v; want bounded by ~50ms", elapsed)
+	}
+	if hints := VectorSearchHintsFromContext(ctx); hints != nil {
+		t.Error("expected nil hints when search times out")
+	}
+}
+
+// TestOrchestrator_VectorSearchWaitTimeout_ZeroValueDefaults pins the 3s
+// zero-value default of OrchestratorDeps.VectorSearchWaitTimeout: an unset
+// deps field must keep hint injection bounded, never unbounded.
+func TestOrchestrator_VectorSearchWaitTimeout_ZeroValueDefaults(t *testing.T) {
+	o := &Orchestrator{}
+	if got := o.effectiveVectorSearchWaitTimeout(); got != 3*time.Second {
+		t.Errorf("zero-value default = %v, want 3s", got)
+	}
+
+	o2 := &Orchestrator{vectorSearchWaitTimeout: 1500 * time.Millisecond}
+	if got := o2.effectiveVectorSearchWaitTimeout(); got != 1500*time.Millisecond {
+		t.Errorf("configured value = %v, want 1.5s", got)
+	}
+}
+
 // --- AGENTS.md integration tests ---
 
 // TestOrchestrator_AgentsMD_InjectedWhenPresent verifies that when AGENTS.md
@@ -2049,4 +2092,79 @@ func TestOrchestrator_CleanupHookRunsOnce(t *testing.T) {
 
 	// Nil hook must be safe.
 	NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{}).Cleanup()
+}
+
+// TestOrchestrator_VectorSearchHints_WaitSharesDeadline pins the unified RAG
+// budget (OrchestratorDeps.VectorSearchWaitFunc): the readiness wait and the
+// search run under ONE deadline — a wait that consumes the entire budget
+// leaves the search nothing, the search is skipped, and hint injection
+// proceeds without hints instead of the search spending a second budget.
+func TestOrchestrator_VectorSearchHints_WaitSharesDeadline(t *testing.T) {
+	searchCalled := false
+	searchFunc := func(ctx context.Context, _ builtins.VectorSearchOptions) ([]builtins.VectorSearchResult, error) {
+		searchCalled = true
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return []builtins.VectorSearchResult{{FilePath: "a.go", Content: "content"}}, nil
+	}
+	waitFunc := func(ctx context.Context) error {
+		<-ctx.Done() // simulate a readiness wait that consumes the whole shared deadline
+		return ctx.Err()
+	}
+
+	o := &Orchestrator{
+		vectorSearchFunc:        searchFunc,
+		vectorSearchWaitFunc:    waitFunc,
+		vectorSearchWaitTimeout: 50 * time.Millisecond,
+	}
+
+	start := time.Now()
+	ctx := o.injectVectorSearchHints(context.Background(), "query")
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Errorf("injectVectorSearchHints blocked for %v; want bounded by ~50ms", elapsed)
+	}
+	if searchCalled {
+		t.Error("search must not run when the shared-deadline wait already expired")
+	}
+	if hints := VectorSearchHintsFromContext(ctx); hints != nil {
+		t.Error("expected nil hints when the wait consumed the deadline")
+	}
+}
+
+// TestOrchestrator_VectorSearchHints_WaitNotReadySkipsSearch pins that a
+// failed readiness wait skips the search call entirely: the search closure
+// itself never waits for readiness (NoWait form), so the RAG path gets its
+// bounded wait exclusively through VectorSearchWaitFunc.
+func TestOrchestrator_VectorSearchHints_WaitNotReadySkipsSearch(t *testing.T) {
+	searchCalled := false
+	searchFunc := func(context.Context, builtins.VectorSearchOptions) ([]builtins.VectorSearchResult, error) {
+		searchCalled = true
+		return []builtins.VectorSearchResult{{FilePath: "a.go", Content: "content"}}, nil
+	}
+	waitFunc := func(context.Context) error {
+		return errors.New("vector index not ready")
+	}
+
+	o := &Orchestrator{
+		vectorSearchFunc:        searchFunc,
+		vectorSearchWaitFunc:    waitFunc,
+		vectorSearchWaitTimeout: 50 * time.Millisecond,
+	}
+
+	start := time.Now()
+	ctx := o.injectVectorSearchHints(context.Background(), "query")
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Errorf("injectVectorSearchHints blocked for %v; want immediate skip", elapsed)
+	}
+	if searchCalled {
+		t.Error("search must be skipped when the readiness wait fails")
+	}
+	if hints := VectorSearchHintsFromContext(ctx); hints != nil {
+		t.Error("expected nil hints when the index is not ready")
+	}
 }

@@ -19,8 +19,23 @@ import (
 // ServiceConfig holds configuration for creating a Service.
 type ServiceConfig struct {
 	// EmbeddingFunc is the chromem-go compatible embedding function
-	// (from Embedder.EmbeddingFunc()).
+	// (from Embedder.EmbeddingFunc()). Required. It is attached to every
+	// chromem collection and used for query-side embedding; when
+	// BatchEmbedder is nil it is also the document-side embedder (legacy
+	// one-inference-per-chunk path via chromem).
 	EmbeddingFunc chromem.EmbeddingFunc
+
+	// BatchEmbedder optionally enables the batched document-embedding path
+	// in AddDocuments: the contents of each embedding sub-batch are embedded
+	// up-front via EmbedDocuments (in chunks of at most EmbeddingBatchSize
+	// texts) and assigned to Document.Embedding BEFORE the chromem commit,
+	// so chromem-go skips its per-document embedding calls entirely (v0.7.0
+	// AddDocument only normalizes + persists a pre-populated embedding).
+	// This removes the one-inference-per-chunk bottleneck for both the
+	// vector and lexical sides of indexing. nil keeps the legacy per-doc
+	// path (tests rely on it). Query-side embedding still goes through
+	// EmbeddingFunc.
+	BatchEmbedder BatchEmbedder
 
 	// HybridConfig tunes Reciprocal Rank Fusion (RRF k, fanout, and
 	// pre-fusion score thresholds). A zero value disables score
@@ -33,6 +48,26 @@ type ServiceConfig struct {
 	// skipped before any full read. Defaults to DefaultMaxIndexableFileSize
 	// (4 MiB) when zero. Configurable via vector_index.max_file_size.
 	MaxFileSize int64
+
+	// EmbeddingBatchSize is the fixed row capacity of the embedder's batch
+	// ONNX session (sp4rk embedding.EmbedderConfig.BatchSize), forwarded
+	// from ManagerConfig by the Manager. The embedder itself is constructed
+	// by the caller (desktop startup), which sets the same value there; the
+	// Service stores it for the batched-embedding path. 0 (or unset)
+	// defaults to DefaultEmbeddingBatchSize (32) — identical to the previous
+	// behaviour, where sp4rk applied its own default.
+	EmbeddingBatchSize int
+
+	// ChunkerFingerprint identifies the chunker configuration (max chunk
+	// size + overlap) that the per-project Indexer chunks files with. It is
+	// embedded as the 4th field of new file-hash sidecar entries; when the
+	// active fingerprint no longer matches an entry's (i.e. vector_index.
+	// chunk_overlap / max_chunk_size changed), ValidateCollection reports
+	// the file as stale so it is re-chunked even though its content is
+	// unchanged. Entries without a fingerprint (legacy formats) are exempt
+	// from this check. Empty defaults to the fingerprint of the package
+	// defaults (DefaultMaxChunkSize, DefaultChunkOverlap).
+	ChunkerFingerprint string
 
 	// Logger for structured logging.
 	Logger *slog.Logger
@@ -47,14 +82,20 @@ type Service struct {
 	collection    *chromem.Collection
 	lexical       lexical.Index
 	embeddingFunc chromem.EmbeddingFunc
+	batchEmbedder BatchEmbedder
 	projectID     string
 	projectPath   string // full path to project vector storage (set by SetProject)
 	currentBranch string
-	// fileHashes is a sidecar store mapping file_path → content_hash, kept in
-	// sync with the chromem collection. It lets ValidateCollection compare
-	// stored hashes against disk WITHOUT querying the collection (which would
-	// trigger an ONNX embedding via Query). Loaded per-branch in SwitchBranch
-	// and flushed at lifecycle boundaries (not on every batch).
+	// fileHashes is a sidecar store mapping file_path → sidecar entry, kept in
+	// sync with the chromem collection. Entries are either a bare content
+	// hash (legacy), "hash|size|mtimeUnixNano" (intermediate format), or
+	// "hash|size|mtimeUnixNano|chunkerFP" (current format, see
+	// parseFileHashEntry in collection.go). It lets ValidateCollection compare
+	// stored state against disk WITHOUT querying the collection (which would
+	// trigger an ONNX embedding via Query) and — for current-format entries —
+	// WITHOUT reading or re-hashing unchanged files at all (stat match only).
+	// Loaded per-branch in SwitchBranch and flushed at lifecycle boundaries
+	// (not on every batch).
 	fileHashes map[string]string
 	// fileHashMigrationPending is true while a background sidecar backfill
 	// (collection → file_hashes) is in flight for the current branch.
@@ -89,6 +130,23 @@ type Service struct {
 	// maxFileSize is the upper bound on a file's size for indexing. See
 	// ServiceConfig.MaxFileSize.
 	maxFileSize int64
+
+	// embeddingBatchSize is the resolved batch row capacity for the
+	// batched-embedding path. See ServiceConfig.EmbeddingBatchSize.
+	embeddingBatchSize int
+
+	// chunkerFingerprint is the resolved chunker-configuration fingerprint
+	// embedded in new sidecar entries (see ServiceConfig.ChunkerFingerprint
+	// and the ChunkerFingerprint helper). Never empty: NewService defaults
+	// it to the package-default configuration.
+	chunkerFingerprint string
+
+	// validationsSinceFullHash counts ValidateCollection passes since the
+	// last pass that skipped the stat-based fast-path and re-read +
+	// re-hashed every file (the periodic full-hash revalidation backstop;
+	// see fullHashRevalidationEvery). Atomic: ValidateCollection runs under
+	// the read lock, so the counter must not rely on it.
+	validationsSinceFullHash atomic.Int64
 }
 
 // NewService creates a new vector index Service.
@@ -104,6 +162,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 
 	s := &Service{
 		embeddingFunc: cfg.EmbeddingFunc,
+		batchEmbedder: cfg.BatchEmbedder,
 		readyCh:       make(chan struct{}),
 		logger:        logger,
 		hybridConfig:  ResolveHybridConfig(cfg.HybridConfig),
@@ -112,6 +171,15 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		s.maxFileSize = cfg.MaxFileSize
 	} else {
 		s.maxFileSize = DefaultMaxIndexableFileSize
+	}
+	if cfg.EmbeddingBatchSize > 0 {
+		s.embeddingBatchSize = cfg.EmbeddingBatchSize
+	} else {
+		s.embeddingBatchSize = DefaultEmbeddingBatchSize
+	}
+	s.chunkerFingerprint = cfg.ChunkerFingerprint
+	if s.chunkerFingerprint == "" {
+		s.chunkerFingerprint = ChunkerFingerprint(DefaultMaxChunkSize, DefaultChunkOverlap)
 	}
 
 	return s, nil
@@ -186,8 +254,28 @@ func (s *Service) Browse(ctx context.Context, topK int) ([]SearchResult, error) 
 // semantic ordering, optionally filtered by a file path glob pattern.
 // Blocks via WaitReady if the index is not yet ready.
 func (s *Service) BrowseWithFilter(ctx context.Context, topK int, fileFilter string) ([]SearchResult, error) {
-	if err := s.WaitReady(ctx); err != nil {
-		return nil, fmt.Errorf("waiting for index readiness: %w", err)
+	return s.browseWithFilter(ctx, topK, fileFilter, true)
+}
+
+// BrowseWithFilterNoWait is the non-blocking form of BrowseWithFilter: it
+// never waits for readiness and returns ErrNotReady immediately when the
+// index is not ready. Callers that gate readiness themselves (fail-fast
+// search wiring) use this form so a pass that starts between their gate and
+// the call cannot block them until the pass finishes.
+func (s *Service) BrowseWithFilterNoWait(ctx context.Context, topK int, fileFilter string) ([]SearchResult, error) {
+	return s.browseWithFilter(ctx, topK, fileFilter, false)
+}
+
+// browseWithFilter implements BrowseWithFilter; wait selects the blocking
+// (WaitReady) or non-blocking (ErrNotReady) readiness gate. See the public
+// wrappers for the contracts.
+func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter string, wait bool) ([]SearchResult, error) {
+	if wait {
+		if err := s.WaitReady(ctx); err != nil {
+			return nil, fmt.Errorf("waiting for index readiness: %w", err)
+		}
+	} else if !s.IsReady() {
+		return nil, ErrNotReady
 	}
 
 	s.mu.RLock()
@@ -251,6 +339,15 @@ func (s *Service) SearchWithFilter(ctx context.Context, query string, topK int, 
 func (s *Service) IsReady() bool {
 	return s.ready.Load()
 }
+
+// ErrNotReady is returned by the NoWait search variants (HybridSearchNoWait,
+// BrowseWithFilterNoWait) when the index is not currently ready. Callers that
+// manage their own bounded readiness wait (the vector_index.
+// search_wait_timeout_ms wiring) use the NoWait forms so an incremental pass
+// starting between their readiness gate and the search can never block them;
+// they typically translate this sentinel into an actionable error via
+// Manager.NotReadyError so users learn the index progress instead.
+var ErrNotReady = errors.New("vector index not ready")
 
 // WaitReady blocks until the service is ready or the context is cancelled.
 func (s *Service) WaitReady(ctx context.Context) error {

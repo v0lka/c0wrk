@@ -156,6 +156,56 @@ type VectorIndexConfig struct {
 	// 0 (or unset) defaults to 4000, which sits above any legitimate source
 	// file (a 4 MiB file yields ~3230 chunks).
 	MaxChunksPerFile int `yaml:"max_chunks_per_file"`
+
+	// EmbeddingBatchSize is the fixed row capacity of the embedder's batch
+	// ONNX session (sp4rk embedding.EmbedderConfig.BatchSize). Larger
+	// capacities amortize ONNX inference across more chunks per call
+	// (higher indexing throughput) but linearly grow the per-inference
+	// output tensor (B × 512 × 512 × 4 bytes ≈ B MiB) and single-call
+	// latency. 32 sits at the measured throughput knee. 0 (or unset)
+	// defaults to 32 — identical to the previous behaviour, where sp4rk
+	// applied its own default.
+	EmbeddingBatchSize int `yaml:"embedding_batch_size"`
+
+	// PrepWorkers is the number of parallel file-preparation workers
+	// (read/hash/chunk) overlapping ONNX inference in the indexing
+	// pipeline. 1 reproduces the historical serial behaviour; higher
+	// values overlap file I/O with embedding (embedding itself stays
+	// single-threaded under the service write lock). 0 (or unset)
+	// defaults to 2.
+	PrepWorkers int `yaml:"prep_workers"`
+
+	// DebounceMs is how long file-change notifications wait, in
+	// milliseconds, before a single incremental index pass runs — it
+	// coalesces bursts of watcher events into one pass. 0 (or unset)
+	// defaults to 1000 (the historical hardcoded value).
+	DebounceMs int `yaml:"debounce_ms"`
+
+	// ChunkOverlap is the character overlap between adjacent chunks handed
+	// to the chunker. 0 (or unset) defaults to 200 (the historical
+	// hardcoded value). Changing this (or MaxChunkSize) is picked up
+	// automatically: the file-hash sidecar records the chunker
+	// configuration each file was chunked under, and the next incremental
+	// validation pass reports affected files as stale so they are
+	// re-chunked — no manual Reindex required.
+	ChunkOverlap int `yaml:"chunk_overlap"`
+
+	// SearchWaitTimeoutMs bounds, in milliseconds, how long a consumer may
+	// WAIT for the vector index to become ready (e.g. right after a project
+	// switch while the initial index pass is still running). It is a
+	// pointer-int so an unset key resolves to the 3000 ms default while an
+	// explicit 0 is preserved as the "fail fast" sentinel — never wait,
+	// return immediately with whatever the index can serve now. The bound
+	// covers readiness waiting exactly once per consumer: the
+	// semantic_search tool waits in its dedicated wait step (the search
+	// call itself never waits — it fails fast with an actionable not-ready
+	// error if readiness flipped in between), RAG hint generation calls
+	// wait+search under one shared deadline, and the SearchVectorStore RPC
+	// bounds its single call. On expiry the caller gets an actionable
+	// not-ready error (tool/RPC) or proceeds without hints (RAG). Query
+	// execution is separately bounded by the same value as
+	// defense-in-depth.
+	SearchWaitTimeoutMs *int `yaml:"search_wait_timeout_ms"`
 }
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.

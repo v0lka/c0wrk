@@ -2,6 +2,7 @@ package vectorindex
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1096,5 +1097,45 @@ func TestHybridSearch_FilePatternDoesNotMatchWrongExtension(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Errorf("*.md pattern should not match .go files, got %d results", len(results))
+	}
+}
+
+// TestSearchNoWait_NeverBlocksOnReadiness pins the NoWait contract used by
+// the single-wait search wiring (search_wait_timeout_ms): HybridSearchNoWait
+// and BrowseWithFilterNoWait return ErrNotReady immediately when the index
+// is not ready — never entering WaitReady — and delegate normally once it
+// is. This is what closes the check-then-block race for callers that gate
+// readiness themselves.
+func TestSearchNoWait_NeverBlocksOnReadiness(t *testing.T) {
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+
+	// A tight deadline proves the calls do not wait for it to expire.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	if _, err := svc.HybridSearchNoWait(ctx, SearchOptions{Query: "x", Mode: ModeVector}); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("HybridSearchNoWait on not-ready index: got %v, want ErrNotReady", err)
+	}
+	if _, err := svc.BrowseWithFilterNoWait(ctx, 10, ""); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("BrowseWithFilterNoWait on not-ready index: got %v, want ErrNotReady", err)
+	}
+	if d := time.Since(start); d > 20*time.Millisecond {
+		t.Errorf("NoWait forms took %v on a not-ready index; want immediate", d)
+	}
+
+	// Ready: both forms pass the readiness gate. This service has no
+	// collection, so the ordinary no-collection error surfaces — proving the
+	// gate was passed rather than the readiness check misfiring.
+	svc.SetReady(true)
+	if _, err := svc.HybridSearchNoWait(ctx, SearchOptions{Query: "x", Mode: ModeVector}); err == nil || errors.Is(err, ErrNotReady) {
+		t.Fatalf("HybridSearchNoWait on ready index: got %v, want the ordinary no-collection error", err)
+	}
+	if _, err := svc.BrowseWithFilterNoWait(ctx, 10, ""); err == nil || errors.Is(err, ErrNotReady) {
+		t.Fatalf("BrowseWithFilterNoWait on ready index: got %v, want the ordinary no-collection error", err)
 	}
 }

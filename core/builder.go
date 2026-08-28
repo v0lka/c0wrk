@@ -64,9 +64,19 @@ type OrchestratorBuilder struct {
 	modelRegistry    *llm.ModelRegistry
 	logger           *slog.Logger
 	vectorSearchFunc builtins.VectorSearchFunc
-	baseSkillDirs    []string     // resolved skill directories shared across sessions (highest priority first)
-	baseAgentDirs    []string     // resolved Subagent Profile directories shared across sessions (highest priority first)
-	proxyClient      *http.Client // proxy-configured HTTP client (nil = direct connection)
+	// vectorSearchWaitFunc is the bounded readiness waiter paired with
+	// vectorSearchFunc (OrchestratorDeps.VectorSearchWaitFunc): the RAG-hint
+	// path calls it under the same deadline as the search so readiness
+	// waiting never double-spends the knob. Set alongside vectorSearchFunc
+	// by RegisterVectorSearch. Guarded by b.mu.
+	vectorSearchWaitFunc builtins.VectorSearchWaitFunc
+	// vectorSearchWaitTimeout bounds the RAG-hint wait in per-session
+	// orchestrators (OrchestratorDeps.VectorSearchWaitTimeout), set alongside
+	// vectorSearchFunc by RegisterVectorSearch. Guarded by b.mu.
+	vectorSearchWaitTimeout time.Duration
+	baseSkillDirs           []string     // resolved skill directories shared across sessions (highest priority first)
+	baseAgentDirs           []string     // resolved Subagent Profile directories shared across sessions (highest priority first)
+	proxyClient             *http.Client // proxy-configured HTTP client (nil = direct connection)
 
 	// Cached reasoning effort string. Empty unless seeded by the SmallLLM
 	// sampling profile (applySmallLLMPresets); per-request overrides flow
@@ -681,32 +691,37 @@ func (b *OrchestratorBuilder) Build(
 	}
 
 	return NewOrchestrator(orchConfig, OrchestratorDeps{
-		Router:            coreRouter,
-		LLM:               loggedLLM,
-		ModelSwitcher:     llmRouter,
-		VisionResolver:    newMarkitdownVisionResolver(llmRouter, modelReg, cfg),
-		ToolExec:          sessionRegistry,         // ToolExecutor (per-session policy view)
-		ToolRegistry:      b.registry.ToolRegistry, // sp4rk ToolRegistry (shared)
-		TokenCounter:      tokenCounter,
-		ContextFactory:    contextFactory,
-		Reflector:         coreReflector,
-		Logger:            logger,
-		Emitter:           emitter,
-		ModelRegistry:     modelReg,
-		ToolResultBudget:  toolResultBudget,
-		CircuitBreaker:    circuitBreaker,
-		BBFactory:         bbFactory,
-		TrackingCaller:    trackingCaller,
-		VectorSearchFunc:  b.vectorSearchFunc,
-		SkillManager:      sessionSkillMgr,
-		AgentManager:      sessionAgentMgr,
-		CoreToolRegistry:  sessionRegistry, // per-session registry (No-Project tool disabling, extra shell blacklist)
-		JudgeSync:         syncSessionJudge,
-		ToolCache:         toolCache,
-		PerToolTruncation: perToolTruncation,
-		StepDumpTracker:   stepDumpTracker,
-		ProviderName:      cfg.LLM.DefaultProviderName(),
-		LocalModelProbe:   localProbe,
+		Router:               coreRouter,
+		LLM:                  loggedLLM,
+		ModelSwitcher:        llmRouter,
+		VisionResolver:       newMarkitdownVisionResolver(llmRouter, modelReg, cfg),
+		ToolExec:             sessionRegistry,         // ToolExecutor (per-session policy view)
+		ToolRegistry:         b.registry.ToolRegistry, // sp4rk ToolRegistry (shared)
+		TokenCounter:         tokenCounter,
+		ContextFactory:       contextFactory,
+		Reflector:            coreReflector,
+		Logger:               logger,
+		Emitter:              emitter,
+		ModelRegistry:        modelReg,
+		ToolResultBudget:     toolResultBudget,
+		CircuitBreaker:       circuitBreaker,
+		BBFactory:            bbFactory,
+		TrackingCaller:       trackingCaller,
+		VectorSearchFunc:     b.vectorSearchFunc,
+		VectorSearchWaitFunc: b.vectorSearchWaitFunc,
+		// Raw configured value: 0 (fail-fast) is meaningful only to the
+		// desktop search closure, which enforces it before this bound; the
+		// orchestrator's own zero resolves to the 3s default.
+		VectorSearchWaitTimeout: b.vectorSearchWaitTimeout,
+		SkillManager:            sessionSkillMgr,
+		AgentManager:            sessionAgentMgr,
+		CoreToolRegistry:        sessionRegistry, // per-session registry (No-Project tool disabling, extra shell blacklist)
+		JudgeSync:               syncSessionJudge,
+		ToolCache:               toolCache,
+		PerToolTruncation:       perToolTruncation,
+		StepDumpTracker:         stepDumpTracker,
+		ProviderName:            cfg.LLM.DefaultProviderName(),
+		LocalModelProbe:         localProbe,
 		// Mechanical edit verification runner (nil = disabled). Inert in No
 		// Project (CHAT) mode and goal-loop turns (see buildConductorDeps,
 		// RunConductor, defaultGoalTurnRunner).
@@ -1442,13 +1457,21 @@ func dedupeModelNames(names []string) []string {
 
 // RegisterVectorSearch adds the semantic_search tool to the shared registry.
 // This must be called after NewOrchestratorBuilder when the vector index backend
-// is available. The searchFunc and waitFunc are provided by the desktop layer.
-func (b *OrchestratorBuilder) RegisterVectorSearch(searchFunc builtins.VectorSearchFunc, waitFunc builtins.VectorSearchWaitFunc) {
+// is available. The searchFunc and waitFunc are provided by the desktop layer;
+// waitFunc is stored alongside searchFunc for the RAG-hint path, which calls it
+// under the same deadline as the search so readiness waiting and query
+// execution share one budget (the search closure itself never waits for
+// readiness). waitTimeout (vector_index.search_wait_timeout_ms) bounds the
+// RAG-hint wait in per-session orchestrators (0 keeps the 3s OrchestratorDeps
+// default).
+func (b *OrchestratorBuilder) RegisterVectorSearch(searchFunc builtins.VectorSearchFunc, waitFunc builtins.VectorSearchWaitFunc, waitTimeout time.Duration) {
 	if searchFunc == nil {
 		return
 	}
 	b.mu.Lock()
 	b.vectorSearchFunc = searchFunc
+	b.vectorSearchWaitFunc = waitFunc
+	b.vectorSearchWaitTimeout = waitTimeout
 	b.mu.Unlock()
 	b.registry.Register(builtins.NewVectorSearchTool(searchFunc, waitFunc))
 	if b.logger != nil {

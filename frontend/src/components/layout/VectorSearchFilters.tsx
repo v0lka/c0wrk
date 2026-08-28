@@ -35,6 +35,11 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
 
   const queryInputRef = useRef<HTMLInputElement>(null)
 
+  // While the index is not ready, searches would block on index readiness —
+  // the query/file-pattern inputs are disabled at the widget level (the
+  // search button below is gated the same way).
+  const searchDisabled = status.state !== 'ready'
+
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex gap-1">
@@ -43,6 +48,7 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
+          disabled={searchDisabled}
           placeholder="Keywords... (+tok forces match)"
           className="h-7 text-xs"
         />
@@ -60,6 +66,7 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
           value={filePattern}
           onChange={(e) => setFilePattern(e.target.value)}
           onKeyDown={onKeyDown}
+          disabled={searchDisabled}
           placeholder="File pattern (e.g. *.go, src/**)"
           className="h-7 text-xs"
         />
@@ -67,7 +74,7 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
           variant="default"
           size="sm"
           onClick={onSearch}
-          disabled={isLoading || status.state !== 'ready'}
+          disabled={isLoading || searchDisabled}
           className="h-7 px-2"
         >
           <Search className="size-3.5" />

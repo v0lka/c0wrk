@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +20,34 @@ import (
 // ErrEmbeddingDisabled is returned by NewManager when no EmbeddingFunc is
 // provided, indicating vector search is intentionally not configured.
 var ErrEmbeddingDisabled = errors.New("vector search disabled: no embedding function provided")
+
+// Resource-consumption defaults for indexing/search. These are the historical
+// hardcoded values, now exposed as config defaults (vector_index.* in
+// config.yaml). backend/config/defaults.go references them so a config without
+// a vector_index block resolves to exactly the pre-knob behaviour.
+const (
+	// DefaultDebounce is the watcher debounce window before one incremental
+	// index pass runs (vector_index.debounce_ms). It coalesces bursts of
+	// file-change events into a single pass.
+	DefaultDebounce = 1 * time.Second
+
+	// DefaultPrepWorkers is the default number of parallel file-preparation
+	// workers in the indexing pipeline (vector_index.prep_workers): the
+	// read/hash/chunk stage overlaps with embedding, while embedding itself
+	// stays single-threaded under the service write lock.
+	DefaultPrepWorkers = 2
+
+	// DefaultSearchWaitTimeout is the default bound for how long search waits
+	// for index readiness (vector_index.search_wait_timeout_ms). The explicit
+	// 0 "fail fast" sentinel is applied only at the config layer, never here.
+	DefaultSearchWaitTimeout = 3 * time.Second
+)
+
+// DefaultEmbeddingBatchSize mirrors sp4rk's embedding.DefaultBatchSize — the
+// fixed row capacity of the embedder's persistent batch ONNX session
+// (vector_index.embedding_batch_size). Assigned (not duplicated) so the two
+// can never drift.
+const DefaultEmbeddingBatchSize = embedding.DefaultBatchSize
 
 // shutdownIndexGracePeriod is the maximum time Shutdown and SwitchProject wait
 // for background init/indexing goroutines to exit after cancelling their
@@ -37,6 +67,7 @@ const shutdownIndexGracePeriod = 10 * time.Second
 // depends on model paths, making the package usable with any embedding backend.
 type ManagerConfig struct {
 	EmbeddingFunc    chromem.EmbeddingFunc // Required: embedding function for vector storage
+	BatchEmbedder    BatchEmbedder         // Optional: batched document embedding; nil = legacy per-doc path via chromem
 	CloseFn          func() error          // Optional: called in Shutdown (e.g., embedder.Close)
 	ChunkFn          ChunkFunc             // Optional: defaults to adapter over embedding.ChunkFile
 	HashFn           HashFunc              // Optional: defaults to embedding.ComputeFileHash
@@ -44,7 +75,42 @@ type ManagerConfig struct {
 	MaxFileSize      int64                 // Optional: defaults to DefaultMaxIndexableFileSize (4 MiB)
 	MaxChunkSize     int                   // Optional: defaults to DefaultMaxChunkSize (1500 chars)
 	MaxChunksPerFile int                   // Optional: defaults to DefaultMaxChunksPerFile (4000)
-	Logger           *slog.Logger
+
+	// EmbeddingBatchSize is the fixed row capacity of the embedder's batch
+	// ONNX session (sp4rk embedding.EmbedderConfig.BatchSize). The embedder
+	// itself is constructed by the caller (desktop startup), which sets the
+	// same value there; the Manager forwards it to the Service, where it is
+	// stored for the upcoming batched-embedding path. 0 (or unset) defaults
+	// to DefaultEmbeddingBatchSize (32) — identical to the previous
+	// behaviour, where sp4rk applied its own default.
+	EmbeddingBatchSize int
+
+	// PrepWorkers is the number of parallel file-preparation workers
+	// (read/hash/chunk) in the indexing pipeline, forwarded to the
+	// per-project IndexerConfig.PrepWorkers in initProject; 0 (or unset)
+	// defaults to DefaultPrepWorkers (2). 1 reproduces the historical
+	// strictly serial pipeline.
+	PrepWorkers int
+
+	// Debounce is how long file-change notifications wait before a single
+	// incremental index pass runs, coalescing bursts of watcher events.
+	// 0 (or unset) defaults to DefaultDebounce (1s, the historical value).
+	Debounce time.Duration
+
+	// ChunkOverlap is the character overlap between adjacent chunks, passed
+	// into the per-project IndexerConfig.Overlap. 0 (or unset) defaults to
+	// DefaultChunkOverlap (200, the historical value).
+	ChunkOverlap int
+
+	// SearchWaitTimeout bounds how long search callers may wait for the
+	// index to become ready. Stored on the Manager for the search-path
+	// wiring (a later task); 0 means "fail fast" — do not wait at all — so
+	// no default is applied here. The config layer resolves an unset key to
+	// DefaultSearchWaitTimeout (3s), so production wiring always carries an
+	// explicit value.
+	SearchWaitTimeout time.Duration
+
+	Logger *slog.Logger
 }
 
 // ProjectCallbacks holds callbacks for project-level indexing events.
@@ -77,6 +143,11 @@ type Manager struct {
 
 	debounceMu    sync.Mutex
 	debounceTimer *time.Timer
+	// debounce is the configured watcher debounce window (ManagerConfig.Debounce
+	// via vector_index.debounce_ms). Zero falls back to DefaultDebounce at arm
+	// time (see effectiveDebounce) so zero-value Manager literals — used by
+	// tests and older constructions — keep the historical 1s behaviour.
+	debounce time.Duration
 	// indexing coalesces trailing incremental passes. Embedding itself is
 	// serialized by the service write lock (IndexIncremental → AddDocuments
 	// holds s.mu), so two concurrent passes can never embed at once; this flag
@@ -110,6 +181,29 @@ type Manager struct {
 	maxFileSize      int64
 	maxChunkSize     int
 	maxChunksPerFile int
+
+	// chunkOverlap is the resolved character overlap between adjacent chunks
+	// (ManagerConfig.ChunkOverlap via vector_index.chunk_overlap), passed
+	// into the per-project IndexerConfig.Overlap in initProject.
+	chunkOverlap int
+
+	// embeddingBatchSize is the resolved embedder batch row capacity
+	// (ManagerConfig.EmbeddingBatchSize via
+	// vector_index.embedding_batch_size), forwarded to the Service (see
+	// ServiceConfig.EmbeddingBatchSize).
+	embeddingBatchSize int
+
+	// prepWorkers is the resolved number of parallel file-preparation
+	// workers in the indexing pipeline (ManagerConfig.PrepWorkers via
+	// vector_index.prep_workers), forwarded to the per-project
+	// IndexerConfig.PrepWorkers in initProject.
+	prepWorkers int
+
+	// searchWaitTimeout bounds how long search callers may wait for the
+	// index to become ready (ManagerConfig.SearchWaitTimeout via
+	// vector_index.search_wait_timeout_ms). Reserved: stored for the
+	// search-path wiring (a later task). 0 means "fail fast".
+	searchWaitTimeout time.Duration
 
 	// indexingWG tracks ALL background indexing goroutines launched by the
 	// Manager (the initProject-launched full/incremental pass and any
@@ -151,16 +245,6 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		logger = slog.New(slog.DiscardHandler)
 	}
 
-	svc, err := NewService(ServiceConfig{
-		EmbeddingFunc: cfg.EmbeddingFunc,
-		Logger:        logger,
-		HybridConfig:  cfg.HybridConfig,
-		MaxFileSize:   cfg.MaxFileSize,
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	// Resolve chunk and hash functions with defaults.
 	chunkFn := cfg.ChunkFn
 	if chunkFn == nil {
@@ -183,16 +267,58 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	if maxChunksPerFile <= 0 {
 		maxChunksPerFile = DefaultMaxChunksPerFile
 	}
+	chunkOverlap := cfg.ChunkOverlap
+	if chunkOverlap <= 0 {
+		chunkOverlap = DefaultChunkOverlap
+	}
+	embeddingBatchSize := cfg.EmbeddingBatchSize
+	if embeddingBatchSize <= 0 {
+		embeddingBatchSize = DefaultEmbeddingBatchSize
+	}
+	prepWorkers := cfg.PrepWorkers
+	if prepWorkers <= 0 {
+		prepWorkers = DefaultPrepWorkers
+	}
+	// Debounce and SearchWaitTimeout are stored raw (no default applied
+	// here): Debounce falls back to DefaultDebounce at arm time via
+	// effectiveDebounce so zero-value Manager literals keep the historical
+	// 1s behaviour, and SearchWaitTimeout 0 is the explicit "fail fast"
+	// sentinel for the search-path wiring.
+
+	// The chunker fingerprint is derived from the RESOLVED chunking
+	// configuration (maxChunkSize + chunkOverlap), the exact values the
+	// per-project Indexer chunks with, so sidecar entries record the
+	// configuration that produced their chunks. When the config later
+	// changes (vector_index.chunk_overlap / max_chunk_size), the
+	// fingerprint no longer matches and ValidateCollection re-chunks the
+	// affected files.
+	svc, err := NewService(ServiceConfig{
+		EmbeddingFunc:      cfg.EmbeddingFunc,
+		BatchEmbedder:      cfg.BatchEmbedder,
+		Logger:             logger,
+		HybridConfig:       cfg.HybridConfig,
+		MaxFileSize:        cfg.MaxFileSize,
+		EmbeddingBatchSize: cfg.EmbeddingBatchSize,
+		ChunkerFingerprint: ChunkerFingerprint(maxChunkSize, chunkOverlap),
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	return &Manager{
-		service:          svc,
-		logger:           logger,
-		chunkFn:          chunkFn,
-		hashFn:           hashFn,
-		maxFileSize:      maxFileSize,
-		maxChunkSize:     maxChunkSize,
-		maxChunksPerFile: maxChunksPerFile,
-		closeFn:          cfg.CloseFn,
+		service:            svc,
+		logger:             logger,
+		chunkFn:            chunkFn,
+		hashFn:             hashFn,
+		maxFileSize:        maxFileSize,
+		maxChunkSize:       maxChunkSize,
+		maxChunksPerFile:   maxChunksPerFile,
+		chunkOverlap:       chunkOverlap,
+		embeddingBatchSize: embeddingBatchSize,
+		prepWorkers:        prepWorkers,
+		debounce:           cfg.Debounce,
+		searchWaitTimeout:  cfg.SearchWaitTimeout,
+		closeFn:            cfg.CloseFn,
 	}, nil
 }
 
@@ -421,6 +547,8 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 		MaxFileSize:      m.maxFileSize,
 		MaxChunkSize:     m.maxChunkSize,
 		MaxChunksPerFile: m.maxChunksPerFile,
+		Overlap:          m.chunkOverlap,
+		PrepWorkers:      m.prepWorkers,
 		OnProgress:       m.wrapProgress(cbs.OnProgress),
 		Logger:           m.logger,
 	})
@@ -545,13 +673,26 @@ func (m *Manager) NotifyFileChange() {
 	m.debounceMu.Unlock()
 }
 
-// scheduleIncrementalLocked arms a 1s debounce that runs one incremental index
+// scheduleIncrementalLocked arms the configured debounce
+// (vector_index.debounce_ms, default 1s) that runs one incremental index
 // pass. The fired callback (runIncrementalGuarded) re-reads the active
 // indexer/workspace/context under m.mu, so a project switch between arming and
 // firing is honored rather than indexing a stale workspace. The caller must
 // hold m.debounceMu.
 func (m *Manager) scheduleIncrementalLocked() {
-	m.debounceTimer = time.AfterFunc(1*time.Second, m.runIncrementalGuarded)
+	m.debounceTimer = time.AfterFunc(m.effectiveDebounce(), m.runIncrementalGuarded)
+}
+
+// effectiveDebounce returns the configured watcher debounce window, falling
+// back to DefaultDebounce (1s, the historical hardcoded value) when it is
+// zero. The fallback happens here — at arm time — rather than in NewManager so
+// zero-value Manager literals (used by tests and older constructions) keep the
+// historical behaviour.
+func (m *Manager) effectiveDebounce() time.Duration {
+	if m.debounce > 0 {
+		return m.debounce
+	}
+	return DefaultDebounce
 }
 
 // runIncrementalGuarded runs a single incremental pass unless one is already in
@@ -577,7 +718,7 @@ func (m *Manager) runIncrementalGuarded() {
 		// A pass is in flight: re-arm rather than launching a redundant
 		// trailing pass that would find no new changes.
 		m.debounceMu.Lock()
-		m.debounceTimer = time.AfterFunc(1*time.Second, m.runIncrementalGuarded)
+		m.debounceTimer = time.AfterFunc(m.effectiveDebounce(), m.runIncrementalGuarded)
 		m.debounceMu.Unlock()
 		return
 	}
@@ -707,6 +848,49 @@ func (m *Manager) GetIndexStatus() IndexStatus {
 		CurrentFile:  m.currentFile,
 		Branch:       m.branch,
 	}
+}
+
+// SearchWaitTimeout returns the configured bound for how long search callers
+// may wait for index readiness (ManagerConfig.SearchWaitTimeout,
+// vector_index.search_wait_timeout_ms). The raw value is returned: 0 is the
+// explicit "fail fast" sentinel, so callers must special-case it rather than
+// pass it to context.WithTimeout.
+func (m *Manager) SearchWaitTimeout() time.Duration {
+	return m.searchWaitTimeout
+}
+
+// NotReadyMessage renders an actionable message from an index-status snapshot
+// for callers whose bounded wait for readiness expired. It includes the
+// current state, progress percentage, and the file being indexed (when known)
+// so the model can retry semantic_search later or fall back to ripgrep/glob.
+func NotReadyMessage(st IndexStatus) string {
+	state := string(st.State)
+	if state == "" {
+		state = "initializing"
+	}
+	var sb strings.Builder
+	sb.WriteString("index not yet ready (")
+	sb.WriteString(state)
+	if st.TotalFiles > 0 {
+		pct := st.FilesIndexed * 100 / st.TotalFiles
+		sb.WriteString(", ")
+		sb.WriteString(strconv.Itoa(pct))
+		sb.WriteString("%")
+	}
+	if st.CurrentFile != "" {
+		sb.WriteString(", file ")
+		sb.WriteString(st.CurrentFile)
+	}
+	sb.WriteString("); retry semantic_search later or use ripgrep/glob")
+	return sb.String()
+}
+
+// NotReadyError returns an error carrying the actionable not-ready message
+// built from the current index status. Used by search call sites whose
+// bounded wait (vector_index.search_wait_timeout_ms) expired, so the caller
+// learns how far indexing got instead of a bare deadline error.
+func (m *Manager) NotReadyError() error {
+	return errors.New(NotReadyMessage(m.GetIndexStatus()))
 }
 
 // Reindex triggers a full rebuild of the vector index for the given

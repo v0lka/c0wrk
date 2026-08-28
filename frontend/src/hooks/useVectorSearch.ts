@@ -138,10 +138,13 @@ export function useVectorSearch(): UseVectorSearchResult {
   }, [clearFilter, setEntries])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
+    // Readiness gate: the search button is disabled while the index is not
+    // ready, but keydown handlers on the inputs would bypass that — Enter
+    // must be a no-op too so no search blocks on index readiness.
+    if (e.key === 'Enter' && status.state === 'ready') {
       handleSearch()
     }
-  }, [handleSearch])
+  }, [handleSearch, status.state])
 
   const isSearchMode = query !== ''
 

@@ -86,8 +86,20 @@ type IndexerConfig struct {
 	MaxFileSize      int64
 	MaxChunksPerFile int
 	Overlap          int
-	OnProgress       ProgressCallback
-	Logger           *slog.Logger
+
+	// PrepWorkers is the number of goroutines that run file preparation
+	// (read/hash/chunk — pure I/O+CPU work) in parallel with the embedding
+	// consumer, so one file's ONNX inference overlaps the next file's disk
+	// read and chunking. 1 reproduces the historical strictly serial
+	// pipeline; 0 (or unset) defaults to DefaultPrepWorkers (2). It bounds
+	// only the prep stage: a single consumer still drives
+	// Service.AddDocuments, keeping embedding single-threaded under the
+	// service write lock exactly as before. ChunkFn and HashFn must be safe
+	// for concurrent use (the defaults are pure functions over the file's
+	// bytes).
+	PrepWorkers int
+	OnProgress  ProgressCallback
+	Logger      *slog.Logger
 }
 
 // Indexer orchestrates initial and incremental indexing of project files.
@@ -99,6 +111,7 @@ type Indexer struct {
 	maxFileSize      int64
 	maxChunksPerFile int
 	overlap          int
+	prepWorkers      int
 	onProgress       ProgressCallback
 	logger           *slog.Logger
 
@@ -132,7 +145,11 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 	}
 	overlap := cfg.Overlap
 	if overlap <= 0 {
-		overlap = 200
+		overlap = DefaultChunkOverlap
+	}
+	prepWorkers := cfg.PrepWorkers
+	if prepWorkers <= 0 {
+		prepWorkers = DefaultPrepWorkers
 	}
 	hashFn := cfg.HashFn
 	if hashFn == nil {
@@ -150,6 +167,7 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 		maxFileSize:      maxFileSize,
 		maxChunksPerFile: maxChunksPerFile,
 		overlap:          overlap,
+		prepWorkers:      prepWorkers,
 		onProgress:       onProgress,
 		logger:           logger,
 	}
@@ -188,44 +206,14 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 	idx.service.AcquireWriteLock()
 	defer idx.service.ReleaseWriteLock()
 
-	var vecBatch []chromem.Document
-	var lexBatch []lexical.Doc
-	indexed := 0
-
-	for _, filePath := range files {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("indexing cancelled: %w", err)
-		}
-
-		vecDocs, lexDocs, chunkErr := idx.processFile(filePath)
-		if chunkErr != nil {
-			idx.logger.Warn("skipping file", "path", filePath, "error", chunkErr)
-			continue
-		}
-		vecBatch = append(vecBatch, vecDocs...)
-		lexBatch = append(lexBatch, lexDocs...)
-
-		if len(vecBatch) >= addDocumentBatchSize {
-			idx.logger.Debug("embedding document batch", "batchSize", len(vecBatch), "indexed", indexed, "total", totalFiles)
-			if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
-				return fmt.Errorf("adding document batch: %w", addErr)
-			}
-			idx.logger.Debug("batch embedded successfully")
-			vecBatch = vecBatch[:0]
-			lexBatch = lexBatch[:0]
-		}
-
-		indexed++
-		idx.onProgress(PhaseBoth, IndexStateIndexing, indexed, totalFiles, filePath)
-	}
-
-	// Flush remaining documents.
-	if len(vecBatch) > 0 || len(lexBatch) > 0 {
-		idx.logger.Debug("embedding final document batch", "batchSize", len(vecBatch), "indexed", indexed, "total", totalFiles)
-		if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
-			return fmt.Errorf("adding final document batch: %w", addErr)
-		}
-		idx.logger.Debug("final batch embedded successfully")
+	indexed, idxErr := idx.indexPrepared(ctx, files, indexPipelineOpts{
+		state:        IndexStateIndexing,
+		total:        totalFiles,
+		cancelMsg:    "indexing cancelled",
+		skipLogLabel: "skipping file",
+	})
+	if idxErr != nil {
+		return idxErr
 	}
 
 	idx.onProgress(PhaseBoth, IndexStateReady, totalFiles, totalFiles, "")
@@ -323,47 +311,20 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	filesToIndex = append(filesToIndex, stale...)
 	filesToIndex = append(filesToIndex, newFiles...)
 
-	var vecBatch []chromem.Document
-	var lexBatch []lexical.Doc
-	progress := len(deleted)
-
-	for _, filePath := range filesToIndex {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("incremental indexing cancelled: %w", err)
-		}
-
-		idx.logger.Debug("processing file", "path", filePath, "progress", progress+1, "total", totalChanges)
-
-		vecDocs, lexDocs, chunkErr := idx.processFile(filePath)
-		if chunkErr != nil {
-			idx.logger.Warn("skipping file during incremental index", "path", filePath, "error", chunkErr)
-			progress++
-			idx.onProgress(PhaseBoth, IndexStateReindexing, progress, totalChanges, filePath)
-			continue
-		}
-		vecBatch = append(vecBatch, vecDocs...)
-		lexBatch = append(lexBatch, lexDocs...)
-
-		if len(vecBatch) >= addDocumentBatchSize {
-			idx.logger.Debug("embedding document batch (incremental)", "batchSize", len(vecBatch), "progress", progress, "total", totalChanges)
-			if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
-				return fmt.Errorf("adding document batch: %w", addErr)
-			}
-			idx.logger.Debug("batch embedded successfully")
-			vecBatch = vecBatch[:0]
-			lexBatch = lexBatch[:0]
-		}
-
-		progress++
-		idx.onProgress(PhaseBoth, IndexStateReindexing, progress, totalChanges, filePath)
-	}
-
-	if len(vecBatch) > 0 || len(lexBatch) > 0 {
-		idx.logger.Debug("embedding final document batch (incremental)", "batchSize", len(vecBatch), "progress", progress, "total", totalChanges)
-		if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
-			return fmt.Errorf("adding final document batch: %w", addErr)
-		}
-		idx.logger.Debug("final batch embedded successfully")
+	// progressStart counts the deletions already processed above;
+	// countSkipped makes files that fail preparation still advance progress,
+	// matching the former serial loop's semantics (the incremental
+	// denominator always reaches totalChanges).
+	if _, perr := idx.indexPrepared(ctx, filesToIndex, indexPipelineOpts{
+		state:         IndexStateReindexing,
+		total:         totalChanges,
+		progressStart: len(deleted),
+		countSkipped:  true,
+		cancelMsg:     "incremental indexing cancelled",
+		skipLogLabel:  "skipping file during incremental index",
+		batchLogLabel: " (incremental)",
+	}); perr != nil {
+		return perr
 	}
 
 	totalInIndex := idx.service.collectionUniqueFileCount()
@@ -473,6 +434,13 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 	// info is guaranteed non-nil here: processFile returned early above if the
 	// opening os.Stat failed, so lastModified is always populated.
 	lastModified := info.ModTime().UTC().Format("2006-01-02T15:04:05Z")
+	// file_size + file_mtime_unix_nano feed the file-hash sidecar's
+	// "hash|size|mtimeUnixNano" entries so ValidateCollection can classify
+	// the file as unchanged from stat alone (no ReadFile + SHA-256) on
+	// incremental passes. Recorded from the SAME stat that guarded the read,
+	// so the entry always describes the exact bytes that were hashed.
+	sizeMeta := strconv.FormatInt(info.Size(), 10)
+	mtimeMeta := strconv.FormatInt(info.ModTime().UnixNano(), 10)
 
 	vecDocs := make([]chromem.Document, 0, len(chunks))
 	lexDocs := make([]lexical.Doc, 0, len(chunks))
@@ -482,13 +450,15 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 			ID:      docID,
 			Content: chunk.Content,
 			Metadata: map[string]string{
-				"file_path":     filePath,
-				"file_name":     fileName,
-				"last_modified": lastModified,
-				"content_hash":  hash,
-				"start_line":    strconv.Itoa(chunk.StartLine),
-				"end_line":      strconv.Itoa(chunk.EndLine),
-				"language":      chunk.Language,
+				"file_path":            filePath,
+				"file_name":            fileName,
+				"last_modified":        lastModified,
+				"content_hash":         hash,
+				"file_size":            sizeMeta,
+				"file_mtime_unix_nano": mtimeMeta,
+				"start_line":           strconv.Itoa(chunk.StartLine),
+				"end_line":             strconv.Itoa(chunk.EndLine),
+				"language":             chunk.Language,
 			},
 		})
 		lexDocs = append(lexDocs, lexical.Doc{
@@ -499,6 +469,176 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 		})
 	}
 	return vecDocs, lexDocs, nil
+}
+
+// prepUnit is one file's output from the preparation stage: the parallel
+// chromem and lexical document slices keyed by the same shared document IDs.
+// skipped marks a per-file prep failure (warn-and-skip semantics); such units
+// carry no documents, and whether they still count toward pass progress is a
+// per-pass policy (indexPipelineOpts.countSkipped).
+type prepUnit struct {
+	path    string
+	skipped bool
+	vecDocs []chromem.Document
+	lexDocs []lexical.Doc
+}
+
+// streamPreparedFiles fans file preparation out across idx.prepWorkers
+// goroutines and returns the stream of finished units. Preparation is pure
+// I/O+CPU work — stat, binary-header check, read, hash, chunk; processFile
+// never touches the service or other shared state, and the default chunk/hash
+// functions are pure functions over the file's bytes — so files are prepared
+// concurrently while the single consumer embeds earlier batches. Workers pull
+// paths from an unbuffered input channel, which bounds in-flight preparation
+// to at most prepWorkers files.
+//
+// The returned stream is closed after every path has been prepared, skipped,
+// or dropped due to cancellation. Every send and the feeder select on
+// ctx.Done(), so a consumer that returns early (after cancelling ctx) never
+// deadlocks the pool: the feeder stops feeding, workers abandon in-flight
+// sends, and all goroutines exit.
+func (idx *Indexer) streamPreparedFiles(ctx context.Context, paths []string, skipLogLabel string) <-chan prepUnit {
+	in := make(chan string)
+	out := make(chan prepUnit)
+
+	var wg sync.WaitGroup
+	wg.Add(idx.prepWorkers)
+	for range idx.prepWorkers {
+		go func() {
+			defer wg.Done()
+			for path := range in {
+				// A cancelled pass stops preparing new files; remaining input
+				// is drained so the feeder never blocks on an unread channel.
+				if ctx.Err() != nil {
+					continue
+				}
+				vecDocs, lexDocs, err := idx.processFile(path)
+				unit := prepUnit{path: path, vecDocs: vecDocs, lexDocs: lexDocs}
+				if err != nil {
+					idx.logger.Warn(skipLogLabel, "path", path, "error", err)
+					unit.skipped = true
+					unit.vecDocs, unit.lexDocs = nil, nil
+				}
+				select {
+				case out <- unit:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	go func() {
+		// Execution order (LIFO): close(in) stops the workers' input,
+		// wg.Wait() drains them, close(out) then runs only when no sender
+		// can remain — closing earlier would panic on an in-flight send.
+		defer close(out)
+		defer wg.Wait()
+		defer close(in)
+		for _, p := range paths {
+			select {
+			case in <- p:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return out
+}
+
+// indexPipelineOpts captures the per-pass differences between the full and
+// incremental indexing passes that share the prep-worker pipeline.
+type indexPipelineOpts struct {
+	// state is the IndexState reported by in-pass progress events
+	// (IndexStateIndexing for a full pass, IndexStateReindexing otherwise).
+	state IndexState
+	// total is the denominator reported by in-pass progress events.
+	total int
+	// progressStart is the pass's initial progress value (0 for a full pass;
+	// len(deleted) for an incremental pass that already counted deletions).
+	progressStart int
+	// countSkipped reports whether files that fail preparation still count
+	// toward pass progress (incremental passes count them so the reported
+	// progress always reaches total; full passes do not).
+	countSkipped bool
+	// cancelMsg prefixes the ctx-cancellation error ("indexing cancelled" /
+	// "incremental indexing cancelled"), preserving the former serial loops'
+	// error wording.
+	cancelMsg string
+	// batchLogLabel and skipLogLabel keep the per-pass log wording of the
+	// former serial loops ("" / " (incremental)").
+	batchLogLabel string
+	skipLogLabel  string
+}
+
+// indexPrepared runs one indexing pass over paths: a bounded pool of
+// idx.prepWorkers goroutines prepares files (read/hash/chunk) while this
+// single consumer accumulates the resulting documents and flushes them into
+// Service.AddDocuments in batches of addDocumentBatchSize. Embedding stays
+// single-threaded — only this goroutine calls AddDocuments — and the caller
+// must already hold the service write lock, exactly as the former serial
+// loops did. PrepWorkers=1 reproduces the serial behavior: one file prepared
+// at a time, in input order.
+//
+// It returns the number of files counted toward pass progress. Per-file prep
+// failures are logged and skipped; ctx cancellation aborts the pass with an
+// error wrapping ctx.Err(); an AddDocuments failure aborts the pass.
+func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPipelineOpts) (int, error) {
+	// Derive a cancellable context so the prep pool is released promptly when
+	// this consumer returns early (cancellation or a batch-add failure):
+	// the feeder and every worker send select on ctx.Done.
+	poolCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	units := idx.streamPreparedFiles(poolCtx, paths, o.skipLogLabel)
+
+	progress := o.progressStart
+	var vecBatch []chromem.Document
+	var lexBatch []lexical.Doc
+
+	for unit := range units {
+		if err := ctx.Err(); err != nil {
+			return progress, fmt.Errorf("%s: %w", o.cancelMsg, err)
+		}
+		if unit.skipped && !o.countSkipped {
+			continue
+		}
+		if !unit.skipped {
+			vecBatch = append(vecBatch, unit.vecDocs...)
+			lexBatch = append(lexBatch, unit.lexDocs...)
+			if len(vecBatch) >= addDocumentBatchSize {
+				idx.logger.Debug("embedding document batch"+o.batchLogLabel,
+					"batchSize", len(vecBatch), "progress", progress, "total", o.total)
+				if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
+					return progress, fmt.Errorf("adding document batch: %w", addErr)
+				}
+				idx.logger.Debug("batch embedded successfully")
+				vecBatch = vecBatch[:0]
+				lexBatch = lexBatch[:0]
+			}
+		}
+		progress++
+		idx.onProgress(PhaseBoth, o.state, progress, o.total, unit.path)
+	}
+	// The stream ended. When ctx was cancelled mid-pass the workers drop
+	// their remaining paths without emitting units, so the loop above can
+	// exit through range-end instead of the per-unit check — surface the
+	// cancellation here so a cancelled pass ALWAYS reports an error.
+	if err := ctx.Err(); err != nil {
+		return progress, fmt.Errorf("%s: %w", o.cancelMsg, err)
+	}
+
+	// Flush remaining documents.
+	if len(vecBatch) > 0 || len(lexBatch) > 0 {
+		idx.logger.Debug("embedding final document batch"+o.batchLogLabel,
+			"batchSize", len(vecBatch), "progress", progress, "total", o.total)
+		if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
+			return progress, fmt.Errorf("adding final document batch: %w", addErr)
+		}
+		idx.logger.Debug("final batch embedded successfully")
+	}
+	return progress, nil
 }
 
 // RebuildLexical enumerates the current chromem collection and rebuilds the
@@ -796,6 +936,13 @@ const DefaultMaxChunkSize = 1500
 // ~3230 chunks — so no real source file is dropped, while the 30k-chunk data
 // files that actually cause the hang are still caught.
 const DefaultMaxChunksPerFile = 4000
+
+// DefaultChunkOverlap is the default character overlap between adjacent
+// chunks handed to the chunker. The historical hardcoded value (200); now the
+// config-layer default for vector_index.chunk_overlap. Kept in the vectorindex
+// package (like the other chunk defaults) so backend/config can reference it
+// without duplicating the number.
+const DefaultChunkOverlap = 200
 
 // tooLargeForIndex reports whether a file of the given byte size exceeds the
 // indexable limit and must be skipped before any full read.

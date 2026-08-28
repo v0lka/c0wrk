@@ -27,6 +27,11 @@ interface FileViewerContextMenuProps {
 export function FileViewerContextMenu({ reference, selectedText, position, onClose }: FileViewerContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
   const insertTextIntoInput = useInputModeStore((s) => s.insertTextIntoInput)
+  // Primitive selector — referentially stable across renders. Subscribing
+  // (rather than reading getState at click time) keeps the item's disabled
+  // state live while the menu is open, e.g. when indexing finishes mid-hover.
+  const indexState = useVectorIndexStore((s) => s.status.state)
+  const findSimilarReady = indexState === 'ready'
 
   const handleAddToChat = useCallback(() => {
     insertTextIntoInput(reference)
@@ -46,6 +51,10 @@ export function FileViewerContextMenu({ reference, selectedText, position, onClo
   // Semantics tab ever becomes lazy-unmounted, setQuery alone would update the
   // store with no subscriber to run the search — make setQuery trigger search
   // itself (or keep the panel mounted) before flipping that mount policy.
+  //
+  // While the index is not ready the entry point is disabled outright instead
+  // of seeding a query whose auto-search would block on index readiness —
+  // see the disabled rendering of the menu item below.
   const handleFindSimilar = useCallback(() => {
     const text = selectedText.trim()
     if (!text) {
@@ -119,10 +128,17 @@ export function FileViewerContextMenu({ reference, selectedText, position, onClo
       <div className="my-1 h-px bg-border" />
       <button
         role="menuitem"
-        onClick={handleFindSimilar}
+        aria-disabled={findSimilarReady ? undefined : true}
+        title={
+          findSimilarReady
+            ? undefined
+            : `Find similar is unavailable — the vector index is ${indexState}. It becomes available once indexing completes.`
+        }
+        onClick={findSimilarReady ? handleFindSimilar : undefined}
         className={cn(
           'relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
-          'hover:bg-muted/50 focus:bg-muted/50',
+          findSimilarReady && 'hover:bg-muted/50 focus:bg-muted/50',
+          !findSimilarReady && 'cursor-not-allowed opacity-50',
           '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',
         )}
       >

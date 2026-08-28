@@ -607,6 +607,85 @@ orchestration:
 #   embedding_threads: 1   # minimum CPU load, slowest indexing
 #   embedding_threads: 2   # balance between quiet operation and speed
 #
+# Note: this caps only the ONNX intra-op thread pool — i.e. the vector
+# (embedding) side of the index. The lexical/BM25 side is pure Go and
+# unaffected by this knob.
+#
+# Indexing throughput / latency knobs:
+#
+#   embedding_batch_size: 32   # rows per ONNX batch inference (default).
+#                              # Larger batches amortize inference across more
+#                              # chunks (higher indexing throughput up to the
+#                              # measured plateau) but linearly grow the
+#                              # per-inference output tensor (~1 MiB per row)
+#                              # and single-call latency. 32 sits at the knee
+#                              # of the measured throughput curve; lower it on
+#                              # memory-constrained machines.
+#
+#   prep_workers: 2            # parallel file-preparation workers
+#                              # (read/hash/chunk) overlapping ONNX inference
+#                              # in the indexing pipeline (default 2). 1
+#                              # reproduces the historical serial behaviour;
+#                              # embedding itself stays single-threaded under
+#                              # the service write lock regardless.
+#
+#   debounce_ms: 1000          # watcher debounce window in milliseconds
+#                              # (default 1000, the historical value). Bursts
+#                              # of file-change events coalesce into a single
+#                              # incremental index pass after this quiet
+#                              # period. Lower = fresher index but more passes
+#                              # during active editing; higher = fewer passes.
+#                              # Unchanged files are detected by a stat
+#                              # fast-path (size + mtime) without re-reading
+#                              # or re-hashing them; this is heuristic — a
+#                              # rewrite preserving both (archive extraction
+#                              # restoring mtimes, some sync tools) escapes
+#                              # it — so every 20th validation pass re-reads
+#                              # and re-hashes everything as a backstop.
+#
+#   chunk_overlap: 200         # characters of overlap between adjacent chunks
+#                              # (default 200, the historical value). Higher
+#                              # overlap improves recall at chunk boundaries
+#                              # but increases the number of embedded chunks
+#                              # (and thus indexing time/memory). Changing
+#                              # this (or max_chunk_size) is picked up
+#                              # automatically: sidecar entries record the
+#                              # chunker configuration they were produced
+#                              # under, and the next incremental pass re-
+#                              # indexes affected files — no manual Reindex
+#                              # needed.
+#
+# Search readiness bound:
+#
+#   search_wait_timeout_ms: 3000
+#                              # how long a consumer may WAIT for the vector
+#                              # index to become ready — e.g. right after a
+#                              # project switch while the initial pass is
+#                              # still running (default 3000). An explicit
+#                              # 0 means "fail fast": never wait, serve
+#                              # immediately with whatever is indexed.
+#                              # Unset resolves to 3000; 0 is preserved as a
+#                              # deliberate sentinel, not defaulted. The
+#                              # bound covers readiness waiting exactly once
+#                              # per consumer: the semantic_search tool waits
+#                              # in its dedicated wait step (the search itself
+#                              # never waits), RAG hints call wait+search
+#                              # under one shared deadline, and the
+#                              # SearchVectorStore RPC bounds its single
+#                              # call. Query execution is separately bounded
+#                              # by the same value as defense-in-depth.
+#
+#   max_chunks_per_file: 4000  # upper bound on chunks one file may contribute
+#                              # to an index pass (default 4000). Files that
+#                              # exceed it are skipped wholesale (WARN) — a
+#                              # backstop against data-format files (BPE
+#                              # vocab/merges, minified assets, lockfiles)
+#                              # that would otherwise hang/OOM the embedder.
+#
+# Not exposed (deliberate): the embedding model's MaxSeqLength (512) and
+# HiddenDim (512) are fixed properties of the bundled jina-v2-small model —
+# changing them without swapping the model only produces wrong embeddings,
+# so they are not user-configurable knobs.
 # File-size and chunk-size limits:
 #
 #   max_file_size: 4194304   # 4 MiB (default). Files larger than this are
@@ -635,6 +714,11 @@ orchestration:
 #   hybrid_vector_score_ratio: 0.25
 #   hybrid_lexical_score_ratio: 0.1
 #   embedding_threads: 0
+#   embedding_batch_size: 32
+#   prep_workers: 2
+#   debounce_ms: 1000
+#   chunk_overlap: 200
+#   search_wait_timeout_ms: 3000
 #   max_file_size: 4194304
 #   max_chunk_size: 1500
 #   max_chunks_per_file: 4000
