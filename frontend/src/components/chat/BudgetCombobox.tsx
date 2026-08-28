@@ -79,10 +79,10 @@ const Z_INDEX = 50
  * `position: fixed` so it is never clipped by the message input area's
  * overflow-hidden ancestor (mirrors ModelCombobox).
  */
-export function BudgetCombobox() {
+export function BudgetCombobox({ disabled = false }: { disabled?: boolean }) {
   const goalBudget = useInputModeStore((s) => s.goalBudget)
   const setGoalBudget = useInputModeStore((s) => s.setGoalBudget)
-  const { isOpen, setIsOpen, containerRef, menuRef } = useDropdown()
+  const { isOpen, setIsOpen, containerRef, menuRef } = useDropdown(disabled)
 
   const triggerRef = useRef<HTMLButtonElement>(null)
   const customInputRef = useRef<HTMLInputElement>(null)
@@ -156,10 +156,11 @@ export function BudgetCombobox() {
       <button
         ref={triggerRef}
         type="button"
-        className="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors max-w-[140px] truncate"
+        disabled={disabled}
+        className="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors max-w-[140px] truncate disabled:opacity-50 disabled:cursor-not-allowed"
         onClick={() => setIsOpen((v) => !v)}
         onKeyDown={(e) => { if (e.key === 'Escape' && isOpen) { e.stopPropagation(); close() } }}
-        title={`Budget: ${displayLabel}`}
+        title={disabled ? 'Locked while the session is running' : `Budget: ${displayLabel}`}
         aria-label="Select goal budget"
       >
         <span className="truncate">{displayLabel}</span>

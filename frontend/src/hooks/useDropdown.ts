@@ -20,11 +20,21 @@ interface UseDropdownResult {
 /**
  * Shared dropdown open/close state with outside-click dismissal.
  * Extracted from ModelCombobox and ReasoningCombobox.
+ *
+ * `disabled` closes an open menu the moment it flips to true: portal-rendered
+ * menus attach to document.body, OUTSIDE any pointer-events-none lock wrapper
+ * around the trigger, so without this an open menu would stay clickable while
+ * its owner is locked (e.g. the chat toolbar mid-task). Inline menus benefit
+ * too — keyboard focus would otherwise keep them interactive.
  */
-export function useDropdown(): UseDropdownResult {
+export function useDropdown(disabled = false): UseDropdownResult {
   const [isOpen, setIsOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (disabled) setIsOpen(false)
+  }, [disabled])
 
   const handleClickOutside = useCallback((e: MouseEvent) => {
     const target = e.target as Node | null

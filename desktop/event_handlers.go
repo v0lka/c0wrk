@@ -238,7 +238,11 @@ func (a *App) runJudgeEvaluation(confirmID string, pendingData *pendingConfirmDa
 
 	responsePayload := session.JudgeResponsePayload{ConfirmID: confirmID}
 
-	_, reasoning, err := a.app.EvaluateJudge(judgeCtx, pendingData.toolName, pendingData.input, pendingData.taskContext)
+	// Session-pinned judge evaluation (ADR-028): the manual "Judge" action on
+	// a confirmation card must evaluate on the session's own provider/model —
+	// the same judge automatic escalations use — falling back to the shared
+	// registry's judge when the session context is unavailable.
+	_, reasoning, err := a.app.EvaluateJudgeForSession(judgeCtx, pendingData.sessionID, pendingData.toolName, pendingData.input, pendingData.taskContext)
 	if err != nil {
 		log.Warn("judge: evaluation failed", "confirm_id", confirmID, "tool", pendingData.toolName, "error", err)
 		responsePayload.Error = fmt.Sprintf("Judge evaluation failed: %v", err)

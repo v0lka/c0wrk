@@ -227,3 +227,21 @@ describe('ModelCombobox default-model persistence', () => {
     expect(spies.invalidateConfigCache).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('ModelCombobox disabled (session-pinning lock)', () => {
+  it('renders a disabled trigger and ignores clicks while the session is running', () => {
+    act(() => {
+      root.render(<ModelCombobox disabled />)
+    })
+    const trigger = container.querySelector('button') as HTMLButtonElement
+    expect(trigger).not.toBeNull()
+    expect(trigger.disabled).toBe(true)
+    expect(trigger.getAttribute('title')).toBe('Locked while the session is running')
+
+    // A click on a disabled button must not open the dropdown.
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(document.body.querySelector('[role="listbox"]')).toBeNull()
+  })
+})

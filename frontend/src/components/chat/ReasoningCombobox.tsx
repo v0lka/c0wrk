@@ -11,13 +11,13 @@ import { findModelInfo } from '@/lib/modelId'
  * "Default" means the family default (= maximum reasoning) is used.
  * The selection is persisted in inputModeStore and survives restarts.
  */
-export function ReasoningCombobox() {
+export function ReasoningCombobox({ disabled = false }: { disabled?: boolean }) {
   const selectedModel = useInputModeStore((s) => s.selectedModel)
   const selectedReasoning = useInputModeStore((s) => s.selectedReasoning)
   const setSelectedReasoning = useInputModeStore((s) => s.setSelectedReasoning)
 
   const { allModels, defaultModel, loaded } = useConfigData()
-  const { isOpen, setIsOpen, containerRef } = useDropdown()
+  const { isOpen, setIsOpen, containerRef } = useDropdown(disabled)
 
   // When selectedModel changes, reset reasoning if the new model's family doesn't support it.
   // selectedModel may be a composite "provider/name" id (see ModelCombobox) or
@@ -53,9 +53,10 @@ export function ReasoningCombobox() {
     <div className="relative shrink-0" ref={containerRef}>
       <button
         type="button"
-        className="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors max-w-[150px] truncate"
+        disabled={disabled}
+        className="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors max-w-[150px] truncate disabled:opacity-50 disabled:cursor-not-allowed"
         onClick={() => setIsOpen((v) => !v)}
-        title={`Reasoning: ${displayLabel}`}
+        title={disabled ? 'Locked while the session is running' : `Reasoning: ${displayLabel}`}
       >
         <span className="truncate">{displayLabel}</span>
         <svg className="size-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

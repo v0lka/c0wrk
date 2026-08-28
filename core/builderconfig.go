@@ -40,6 +40,17 @@ type BuilderConfig struct {
 	// ExpandEnvVars resolves ${ENV_VAR} patterns in a string.
 	// Injected by the backend so core does not import os/config.
 	ExpandEnvVars func(string) string
+
+	// JudgeProviderHook is a TEST-ONLY observation point for judge binding:
+	// when non-nil, newJudgeForProvider invokes it with the provider each
+	// judge is about to be bound to (the shared registry's rebuild and every
+	// session syncer) and builds the judge from the returned provider. It
+	// exists because ToolJudge does not expose its provider, so tests assert
+	// which provider a binding resolved to through this hook instead of
+	// pointer identity alone. Returning the argument unchanged preserves
+	// production behavior; returning nil suppresses the judge exactly like a
+	// provider-less config. Production leaves it nil.
+	JudgeProviderHook func(llm.Provider) llm.Provider
 }
 
 // ---------------------------------------------------------------------------

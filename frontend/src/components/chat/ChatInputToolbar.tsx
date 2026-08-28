@@ -50,6 +50,18 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
   // Budget selector is only meaningful when goal mode is enabled.
   const goalEnabled = useInputModeStore((s) => s.goalEnabled)
 
+  // Per-message selectors (model / reasoning / goal / budget) lock while the
+  // session is mid-task: running (taskActive), waiting for the cooperative
+  // pause to land (pausing), or compacting (the compaction flow owns the
+  // session: pause-wait → history swap → auto-resume, and a
+  // model/reasoning/goal change mid-flow would race it). They unlock when the
+  // task finished, failed, or is cooperatively paused — a paused resume
+  // honors a freshly picked model/reasoning override. This is the frontend
+  // half of the session-pinning invariant: everything inside a running
+  // session — judge evaluations included — stays on the provider/model the
+  // session runs on; model picks elsewhere must not move it mid-task.
+  const selectorsLocked = taskActive || pausing || compacting
+
   const blockingMessage = isNoProject ? 'Select or create a project' : null
 
   return (
@@ -111,15 +123,17 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
       {mode === 'chat' && (
         <>
           <div className="w-px h-4 bg-border mx-1" />
-          {/* The selector cluster is inert while compacting: the compaction
-              flow owns the session (pause-wait → history swap → auto-resume),
-              and a model/reasoning/goal change mid-flow would race it. */}
-          <div className={cn('flex items-center gap-1', compacting && 'pointer-events-none opacity-60')}>
-            <ModelCombobox />
-            <ReasoningCombobox />
+          {/* The selector cluster locks with the session (see
+              selectorsLocked): mid-task the run — judge calls included — must
+              stay on the provider/model the session runs on. The wrapper dims
+              the separators too; the controls' native disabled state carries
+              the a11y/keyboard semantics. */}
+          <div className={cn('flex items-center gap-1', selectorsLocked && 'pointer-events-none opacity-60')}>
+            <ModelCombobox disabled={selectorsLocked} />
+            <ReasoningCombobox disabled={selectorsLocked} />
             <div className="w-px h-4 bg-border mx-1" />
-            <GoalToggle />
-            {goalEnabled && <BudgetCombobox />}
+            <GoalToggle disabled={selectorsLocked} />
+            {goalEnabled && <BudgetCombobox disabled={selectorsLocked} />}
           </div>
         </>
       )}

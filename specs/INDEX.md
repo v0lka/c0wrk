@@ -8,7 +8,7 @@
 | ---------------------------------------- | ------------------------------------------------------------------------ |
 | Layer boundaries, import rules           | [architecture/layers.md](architecture/layers.md)                         |
 | Request lifecycle end-to-end             | [architecture/data-flow.md](architecture/data-flow.md)                   |
-| Tool policies, confirmations, judge      | [architecture/security-model.md](architecture/security-model.md), [decisions/026-smart-approve-unified-funnel.md](decisions/026-smart-approve-unified-funnel.md)         |
+| Tool policies, confirmations, judge      | [architecture/security-model.md](architecture/security-model.md), [decisions/026-smart-approve-unified-funnel.md](decisions/026-smart-approve-unified-funnel.md), [decisions/028-session-pinned-judge.md](decisions/028-session-pinned-judge.md)         |
 | Prompt injection defense, content wrapping | [architecture/security-model.md](architecture/security-model.md)         |
 | Orchestration overview (Conductor pipeline) | [domains/orchestration/README.md](domains/orchestration/README.md)    |
 | Conductor (top-level ReAct loop)         | [domains/orchestration/conductor.md](domains/orchestration/conductor.md) |
@@ -157,3 +157,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [025-dual-repo-dev-flow.md](decisions/025-dual-repo-dev-flow.md) - Dual-repo dev flow: mid-cycle c0wrk builds via the parent-dir `go.work` while the `go.mod` sp4rk pin lags unpublished APIs; commit-sp4rk-then-repin is the mandatory release step
 - [026-smart-approve-unified-funnel.md](decisions/026-smart-approve-unified-funnel.md) - Smart Approve unified confirmation funnel: every escalation routes through one strict judge (hard-bias), with a deterministic backstop that forces confirmation for canonical destructive hard reasons (blacklist, SSRF, symlink escape) even on a strict ALLOW
 - [027-linux-arm64-build.md](decisions/027-linux-arm64-build.md) - Linux arm64 release support: platform registry + CI/release matrix + updater asset
+- [028-session-pinned-judge.md](decisions/028-session-pinned-judge.md) - Session-pinned strict judge: each session's judge binds to its own router and re-binds only on the session's own model switch; global default changes never re-bind a live session; per-message selector cluster locks while the task runs

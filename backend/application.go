@@ -267,8 +267,13 @@ func (app *Application) TitleGenerator() *session.TitleGenerator {
 	return app.titleGen
 }
 
-// EvaluateJudge performs an on-demand judge evaluation for a pending tool confirmation.
-// Returns the verdict, reasoning (prefixed with "SAFE: " when allowed), and any error.
+// EvaluateJudge performs an on-demand judge evaluation for a pending tool
+// confirmation using the SHARED registry's judge, which is bound to the
+// builder's global active provider/model. Prefer EvaluateJudgeForSession for
+// evaluations that belong to a live session: it pins the verdict to the
+// session's own provider/model so manual and automatic judge evaluations
+// cannot disagree across models. Returns the verdict, reasoning (prefixed
+// with "SAFE: " when allowed), and any error.
 func (app *Application) EvaluateJudge(ctx context.Context, toolName string, input json.RawMessage, taskContext string) (verdict sdktools.JudgeVerdict, reasoning string, err error) {
 	if err := app.builder.WaitReady(ctx); err != nil {
 		return sdktools.VerdictConfirm, "", fmt.Errorf("judge not available: %w", err)
@@ -281,11 +286,39 @@ func (app *Application) EvaluateJudge(ctx context.Context, toolName string, inpu
 	if judge == nil {
 		return sdktools.VerdictConfirm, "", ErrJudgeNotAvailable
 	}
-	verdict, reasoning, err = judge.Judge(ctx, toolName, input, taskContext)
+	return evaluateJudgeWith(ctx, judge, toolName, input, taskContext)
+}
+
+// EvaluateJudgeForSession performs an on-demand judge evaluation for a pending
+// tool confirmation using the SESSION-pinned judge: the judge bound to the
+// session's own router, so the manual "Judge" action on a confirmation card
+// evaluates on the same provider and model the session runs on — exactly like
+// automatic escalations (session-pinning invariant, ADR-028). Falls back to
+// the shared registry's judge (EvaluateJudge) when the session is unknown,
+// has no orchestrator or registry yet, or its judge is not bound, so a manual
+// evaluation never fails merely because session context is unavailable.
+func (app *Application) EvaluateJudgeForSession(ctx context.Context, sessionID, toolName string, input json.RawMessage, taskContext string) (verdict sdktools.JudgeVerdict, reasoning string, err error) {
+	if sessionID != "" && app.manager != nil {
+		if sess, ok := app.manager.GetSession(sessionID); ok {
+			if orch := sess.GetOrchestrator(); orch != nil {
+				if registry := orch.ToolRegistry(); registry != nil {
+					if judge := registry.GetJudge(); judge != nil {
+						return evaluateJudgeWith(ctx, judge, toolName, input, taskContext)
+					}
+				}
+			}
+		}
+	}
+	return app.EvaluateJudge(ctx, toolName, input, taskContext)
+}
+
+// evaluateJudgeWith runs a single judge evaluation and prefixes the reasoning
+// for safe verdicts so the UI can display contextual info.
+func evaluateJudgeWith(ctx context.Context, judge *sdktools.ToolJudge, toolName string, input json.RawMessage, taskContext string) (sdktools.JudgeVerdict, string, error) {
+	verdict, reasoning, err := judge.Judge(ctx, toolName, input, taskContext)
 	if err != nil {
 		return verdict, reasoning, err
 	}
-	// Prefix reasoning for safe verdicts so the UI can display contextual info.
 	if verdict == sdktools.VerdictAllow {
 		reasoning = "SAFE: " + reasoning
 	}

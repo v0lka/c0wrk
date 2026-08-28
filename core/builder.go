@@ -603,6 +603,16 @@ func (b *OrchestratorBuilder) Build(
 	// hook wired into OrchestratorDeps below.
 	sessionRegistry := b.registerSessionRegistry()
 
+	// Session-pinned tool judge (sessionJudgeSyncer): bind this session's
+	// judge to the session's own router NOW so even the first tool escalation
+	// is evaluated on the provider/model this session runs on — not on the
+	// builder's global active model, which may have been switched by another
+	// session's model picker or the settings UI after this Build began. The
+	// closure is also handed to the orchestrator (JudgeSync) so the session's
+	// own model switches re-bind the judge; global default changes never do.
+	syncSessionJudge := b.sessionJudgeSyncer(cfg, llmRouter, sessionRegistry)
+	syncSessionJudge()
+
 	// HITLHandler.OnToolCall is invoked by the executor before every tool call
 	// (see executor_run.go processSingleToolCall). PolicyUserConfirm tools fall
 	// through to auto-execute when ConfirmFunc is nil (CLI-mode behavior), which
@@ -691,6 +701,7 @@ func (b *OrchestratorBuilder) Build(
 		SkillManager:      sessionSkillMgr,
 		AgentManager:      sessionAgentMgr,
 		CoreToolRegistry:  sessionRegistry, // per-session registry (No-Project tool disabling, extra shell blacklist)
+		JudgeSync:         syncSessionJudge,
 		ToolCache:         toolCache,
 		PerToolTruncation: perToolTruncation,
 		StepDumpTracker:   stepDumpTracker,
@@ -2158,46 +2169,66 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 	}
 }
 
-// rebuildJudgeInternal recreates the ToolJudge and sets it on the registry.
-//
-// The judge calls the active provider DIRECTLY (bypassing the Router), so the
-// model it sends must be the bare model name — the provider prefix is stripped
-// from any composite identifier (DefaultModel may be "provider/model").
-func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter *llm.Router) {
-	if b.registry == nil {
-		return
+// newJudgeForProvider builds a ToolJudge bound to the given provider and the
+// given active model. The judge calls the provider DIRECTLY (bypassing the
+// Router), so the model it sends must be the bare model name — the provider
+// prefix is stripped from any composite identifier (ActiveModel() may be
+// "provider/model"). judgeModel (security.judge.model), when set, pins the
+// judge's model name; providerName feeds the DEBUG-level dump wrapper.
+// Returns nil when the provider is nil (NewToolJudgeFromConfig refuses to
+// build) — callers treat nil as "keep the previous judge" (fail-safe).
+func (b *OrchestratorBuilder) newJudgeForProvider(cfg *BuilderConfig, judgeProvider llm.Provider, providerName, activeModel string) *sdktools.ToolJudge {
+	// Test-only observation point (see BuilderConfig.JudgeProviderHook):
+	// records/replaces the provider each judge binding resolves to. A nil
+	// hook — the production case — passes the provider through untouched.
+	if hook := cfg.JudgeProviderHook; hook != nil {
+		judgeProvider = hook(judgeProvider)
 	}
 
-	// The judge sends the model name straight to the provider API, so it must be
-	// the bare model name (no "provider/" prefix).
-	defaultModel := llm.BareModel(cfg.LLM.DefaultModel)
-	if llmRouter != nil {
-		defaultModel = llm.BareModel(llmRouter.ActiveModel())
-	}
+	defaultModel := llm.BareModel(activeModel)
 	judgeModel := llm.BareModel(cfg.Security.JudgeModel)
 
-	var judgeProvider llm.Provider
-	if llmRouter != nil {
-		judgeProvider = llmRouter.DefaultProvider()
-	} else {
-		// Try building a fresh router
-		newRouter, _, err := b.buildRouter(context.Background(), cfg)
-		if err == nil && newRouter != nil {
-			judgeProvider = newRouter.DefaultProvider()
-		} else if err != nil && b.logger != nil {
-			b.logger.Warn("rebuildJudge: failed to build LLM router for judge", "error", err)
-		}
-	}
-
 	debugEnabled := b.logger != nil && b.logger.Enabled(context.Background(), slog.LevelDebug)
-	judgeProvider = newJudgeDumpProvider(judgeProvider, b.logger, cfg.LLM.DefaultProviderName(), debugEnabled)
+	judgeProvider = newJudgeDumpProvider(judgeProvider, b.logger, providerName, debugEnabled)
 
-	judge := sdktools.NewToolJudgeFromConfig(sdktools.JudgeConfig{
+	return sdktools.NewToolJudgeFromConfig(sdktools.JudgeConfig{
 		Model:        judgeModel,
 		DefaultModel: defaultModel,
 		Provider:     judgeProvider,
 		MaxCacheSize: cfg.Orchestration.MaxJudgeCacheSize,
 	}, b.logger)
+}
+
+// rebuildJudgeInternal recreates the SHARED registry's judge from the builder's
+// global state. That judge is only a clone-time fallback for new sessions —
+// Build immediately overrides every session clone with a judge bound to the
+// session's own router (see sessionJudgeSyncer), so this rebuild (triggered by
+// a default-model change in the settings UI or another session's model picker)
+// never re-binds a live session's judge.
+func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter *llm.Router) {
+	if b.registry == nil {
+		return
+	}
+
+	activeModel := cfg.LLM.DefaultModel
+	providerName := cfg.LLM.DefaultProviderName()
+	var judgeProvider llm.Provider
+	if llmRouter != nil {
+		activeModel = llmRouter.ActiveModel()
+		judgeProvider = llmRouter.DefaultProvider()
+		providerName = llmRouter.ActiveProviderName()
+	} else {
+		// Try building a fresh router
+		newRouter, _, err := b.buildRouter(context.Background(), cfg)
+		if err == nil && newRouter != nil {
+			judgeProvider = newRouter.DefaultProvider()
+			providerName = newRouter.ActiveProviderName()
+		} else if err != nil && b.logger != nil {
+			b.logger.Warn("rebuildJudge: failed to build LLM router for judge", "error", err)
+		}
+	}
+
+	judge := b.newJudgeForProvider(cfg, judgeProvider, providerName, activeModel)
 
 	if judge != nil {
 		b.registry.SetJudge(judge)
@@ -2206,6 +2237,32 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter
 		}
 	} else if b.logger != nil {
 		b.logger.Warn("tool judge rebuild failed: judge will not be available for on-demand evaluation")
+	}
+}
+
+// sessionJudgeSyncer returns a closure that re-binds the SESSION registry's
+// tool judge to the session's OWN router — the per-session router Build
+// created, whose active provider/model is exactly what the session runs on.
+// This is the session-pinning invariant: the global default-model switch
+// (settings UI, another session's model picker) rebuilds only the shared
+// registry's judge for FUTURE sessions, while a live session keeps evaluating
+// escalations on its own provider. The only path that may move a session's
+// judge is the session's own model switch, which invokes the returned closure
+// via OrchestratorDeps.JudgeSync (ApplyRequestOverrides). A nil judge (no
+// active provider) keeps the previous binding — the clone-inherited shared
+// judge on first use — so a session never loses a judge it had.
+func (b *OrchestratorBuilder) sessionJudgeSyncer(cfg *BuilderConfig, llmRouter *llm.Router, sessionRegistry *tools.ToolRegistry) func() {
+	return func() {
+		judge := b.newJudgeForProvider(
+			cfg,
+			llmRouter.DefaultProvider(),
+			llmRouter.ActiveProviderName(),
+			llmRouter.ActiveModel(),
+		)
+		if judge == nil {
+			return
+		}
+		sessionRegistry.SetJudge(judge)
 	}
 }
 

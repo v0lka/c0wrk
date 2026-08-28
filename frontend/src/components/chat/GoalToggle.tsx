@@ -17,7 +17,7 @@ import { cn } from '@/lib/utils'
  * Selectors return direct store refs/primitives only — no allocations
  * (React 19 useSyncExternalStore #185 guard, AGENTS.md §2.7).
  */
-export function GoalToggle() {
+export function GoalToggle({ disabled = false }: { disabled?: boolean }) {
   const goalEnabled = useInputModeStore((s) => s.goalEnabled)
   const setGoalEnabled = useInputModeStore((s) => s.setGoalEnabled)
 
@@ -25,11 +25,12 @@ export function GoalToggle() {
     <button
       type="button"
       onClick={() => setGoalEnabled(!goalEnabled)}
+      disabled={disabled}
       className={cn(
-        'flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors',
+        'flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
         goalEnabled && 'text-primary border-primary/50 bg-primary/10 hover:bg-primary/15',
       )}
-      title={goalEnabled ? 'Goal mode on — click to turn off' : 'Goal mode off — click to turn on'}
+      title={disabled ? 'Locked while the session is running' : goalEnabled ? 'Goal mode on — click to turn off' : 'Goal mode off — click to turn on'}
       aria-pressed={goalEnabled}
       aria-label="Toggle goal mode"
     >

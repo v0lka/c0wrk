@@ -56,12 +56,12 @@ const Z_INDEX = 50
  * `overflow-hidden` ancestor (see ChatInput). It opens upward or downward
  * depending on available space and tracks window resize/scroll while open.
  */
-export function ModelCombobox() {
+export function ModelCombobox({ disabled = false }: { disabled?: boolean }) {
   const selectedModel = useInputModeStore((s) => s.selectedModel)
   const setSelectedModel = useInputModeStore((s) => s.setSelectedModel)
 
   const { allModels: modelInfos, defaultModel, loaded } = useConfigData()
-  const { isOpen, setIsOpen, containerRef, menuRef } = useDropdown()
+  const { isOpen, setIsOpen, containerRef, menuRef } = useDropdown(disabled)
 
   const triggerRef = useRef<HTMLButtonElement>(null)
   const [position, setPosition] = useState<DropdownPosition | null>(null)
@@ -192,11 +192,11 @@ export function ModelCombobox() {
       <button
         ref={triggerRef}
         type="button"
-        disabled={isLoading}
+        disabled={isLoading || disabled}
         className="flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors max-w-[200px] truncate disabled:opacity-50 disabled:cursor-not-allowed"
         onClick={() => setIsOpen((v) => !v)}
         onKeyDown={(e) => { if (e.key === 'Escape' && isOpen) { e.stopPropagation(); close() } }}
-        title={isLoading ? 'Loading models…' : effectiveEntry ? `${effectiveEntry.providerLabel}: ${effectiveEntry.model}` : displayLabel}
+        title={isLoading ? 'Loading models…' : disabled ? 'Locked while the session is running' : effectiveEntry ? `${effectiveEntry.providerLabel}: ${effectiveEntry.model}` : displayLabel}
       >
         <span className="truncate">{isLoading ? 'Loading models\u2026' : displayLabel}</span>
         <svg className="size-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
