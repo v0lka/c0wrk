@@ -505,6 +505,58 @@ func (e *EventEmitter) Finishing(stepNum int, summary string) {
 	})
 }
 
+// JudgeStarted emits the start of a strict-judge (Smart Approve) evaluation.
+// The judge runs BEFORE a confirmation card exists, so the activity label this
+// event maps to ("Safety judge evaluating...") is what honestly describes the
+// session while the judge LLM call is in flight. Transient: the persister
+// skips this event type.
+func (e *EventEmitter) JudgeStarted(toolName string) {
+	e.log().Debug("emitter: judge started", "sessionID", e.sessionID, "tool", toolName)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "tool_judge_started",
+		Data:      map[string]any{"tool": toolName},
+	})
+}
+
+// JudgeFinished emits the end of a strict-judge (Smart Approve) evaluation.
+// Immediately after the verdict, either the tool executes (strict ALLOW) or a
+// confirmation card is issued — both land their own events right after — so
+// the mapped activity label mirrors the live tool-call convention
+// ("Running tool: <tool>...") rather than guessing the verdict outcome.
+// Transient: the persister skips this event type.
+func (e *EventEmitter) JudgeFinished(toolName string) {
+	e.log().Debug("emitter: judge finished", "sessionID", e.sessionID, "tool", toolName)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "tool_judge_finished",
+		Data:      map[string]any{"tool": toolName},
+	})
+}
+
+// ToolConfirm emits a tool-confirmation request. The desktop confirm callback
+// routes the event through the live session emitter (via Manager.EmitToolConfirm)
+// so the activity tracker — and therefore the runtime-status snapshot read on
+// session switches — reports "Awaiting confirmation..." for however long the
+// agent goroutine blocks on the user's decision, instead of a stale
+// "Running tool: ..." label. Transient: the persister skips this event type
+// (pending confirmations are process-local; a persisted row would render as an
+// unresolvable card after a restart).
+func (e *EventEmitter) ToolConfirm(payload ToolConfirmPayload) {
+	e.log().Debug("emitter: tool confirm", "sessionID", e.sessionID, "tool", payload.Tool, "confirmID", payload.ConfirmID)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "tool_confirm",
+		Data:      payload,
+	})
+}
+
 // ToolCall emits a tool call event.
 // If argsPreview is valid JSON, a pre-parsed map is included as "parsed_args"
 // so the frontend doesn't need to JSON.parse() at render time.

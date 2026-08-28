@@ -49,3 +49,35 @@ func (m *Manager) JudgeContext(ctx context.Context, sessionID string) context.Co
 	dirs := m.loadWorkDirectories(session)
 	return m.injectWorkDirectories(ctx, dirs)
 }
+
+// EmitJudgePhase reports a strict-judge (Smart Approve) evaluation phase for a
+// session. The event is routed through the session's emitter when one is live
+// so the activity tracker — and therefore the runtime-status snapshot read on
+// session switches — reflects the judge run; sessions without an emitter
+// (e.g. judged outside a live task) fall back to the raw event pipeline. Both
+// event types are transient (the persister skips them). Best-effort: a missing
+// session only logs at debug level, never blocks the judge.
+func (m *Manager) EmitJudgePhase(sessionID string, started bool, toolName string) {
+	m.mu.RLock()
+	sess := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if sess != nil {
+		sess.mu.Lock()
+		emitter := sess.emitter
+		sess.mu.Unlock()
+		if emitter != nil {
+			if started {
+				emitter.JudgeStarted(toolName)
+			} else {
+				emitter.JudgeFinished(toolName)
+			}
+			return
+		}
+	}
+
+	eventType := "tool_judge_finished"
+	if started {
+		eventType = "tool_judge_started"
+	}
+	m.EmitSessionEvent(sessionID, eventType, map[string]any{"tool": toolName})
+}

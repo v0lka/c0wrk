@@ -1,10 +1,11 @@
-// Tool events: tool_call, tool_result, tool_confirm, tool_judge_response
+// Tool events: tool_call, tool_result, tool_confirm, tool_judge_response,
+// tool_judge_started, tool_judge_finished
 
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
-import { isToolCallData, isToolResultData, isToolConfirmData } from '@/types/events'
+import { isToolCallData, isToolResultData, isToolConfirmData, isToolJudgePhaseData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
-import { handleToolConfirmEvent } from './hitlHandlers'
+import { handleToolConfirmEvent, handleToolJudgeStartedEvent, handleToolJudgeFinishedEvent } from './hitlHandlers'
 
 /** Build the message ID used to correlate tool_call ↔ tool_result */
 function buildToolMsgId(d: { tool_call_id?: string; plan_step_id?: string; step: number; call_idx?: number; retry_attempt?: number }): string {
@@ -90,6 +91,23 @@ export function useToolEvents(sessionId: string | null): void {
       onSessionEvent(sessionId, 'tool_confirm', (data) => {
         if (!isToolConfirmData(data)) { reportDroppedEvent('tool_confirm', data); return }
         handleToolConfirmEvent(sessionId, data)
+      }),
+    )
+
+    // --- tool_judge_started / tool_judge_finished ---
+    // Strict-judge (Smart Approve) phases: the judge runs BEFORE a
+    // confirmation card exists, so the status must honestly say the judge is
+    // working instead of implying a pending user response.
+    cleanups.push(
+      onSessionEvent(sessionId, 'tool_judge_started', (data) => {
+        if (!isToolJudgePhaseData(data)) { reportDroppedEvent('tool_judge_started', data); return }
+        handleToolJudgeStartedEvent(sessionId, data)
+      }),
+    )
+    cleanups.push(
+      onSessionEvent(sessionId, 'tool_judge_finished', (data) => {
+        if (!isToolJudgePhaseData(data)) { reportDroppedEvent('tool_judge_finished', data); return }
+        handleToolJudgeFinishedEvent(sessionId, data)
       }),
     )
 

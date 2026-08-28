@@ -571,7 +571,15 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmF
 			ToolCallID:   toolCallID,
 			DisableJudge: req.DisableJudge,
 		}
-		uiEmit(session.Event{SessionID: sessionID, Type: "tool_confirm", Data: payload})
+		// Route through the Application so the event passes the live session
+		// emitter — keeping the runtime-status snapshot honest ("Awaiting
+		// confirmation..." instead of a stale "Running tool: ..."). Raw UI
+		// emitter only when the Application is not yet initialized.
+		if a.app != nil {
+			a.app.EmitToolConfirm(sessionID, payload)
+		} else {
+			uiEmit(session.Event{SessionID: sessionID, Type: "tool_confirm", Data: payload})
+		}
 
 		select {
 		case resp := <-ch:

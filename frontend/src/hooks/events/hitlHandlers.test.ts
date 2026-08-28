@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import type { ChatMessageUI, MessageType } from '@/stores/chatStore'
-import { handleToolConfirmEvent } from './hitlHandlers'
+import { handleToolConfirmEvent, handleToolJudgeStartedEvent, handleToolJudgeFinishedEvent } from './hitlHandlers'
 
 let idc = 0
 function makeUI(overrides: Partial<ChatMessageUI> & { type: MessageType }): ChatMessageUI {
@@ -107,5 +107,39 @@ describe('handleToolConfirmEvent — tool_call_id correlation', () => {
     const confirm = findConfirm(sessionId)
     expect(confirm).toBeDefined()
     expect(confirm!.metadata?.tool_msg_id).toBe('tool-y')
+  })
+})
+
+describe('judge phase handlers — strict judge (Smart Approve) activity labels', () => {
+  it('says the judge is working while the strict judge runs (before any card exists)', () => {
+    const sessionId = `sess-judge-${idc}`
+    useChatStore.getState().setActivityStatus(sessionId, 'Running tool: bash_exec...')
+
+    handleToolJudgeStartedEvent(sessionId, { tool: 'bash_exec' })
+
+    // Honest status: the judge is evaluating — NOT "waiting for your response",
+    // which would mislead while no confirmation card is in the chat yet.
+    expect(useChatStore.getState().activityStatus[sessionId]).toBe('Safety judge evaluating...')
+  })
+
+  it('clears the judge label when the judge finishes (no verdict in the payload — no guessing)', () => {
+    const sessionId = `sess-judge-done-${idc}`
+    useChatStore.getState().setActivityStatus(sessionId, 'Safety judge evaluating...')
+
+    handleToolJudgeFinishedEvent(sessionId, { tool: 'bash_exec' })
+
+    // The payload carries no verdict, so the handler must not fabricate a
+    // "Running tool" label (wrong when the verdict is CONFIRM and the user
+    // denies). The next factual event sets the accurate label.
+    expect(useChatStore.getState().activityStatus[sessionId]).toBeUndefined()
+
+    // CONFIRM path: the tool_confirm card that lands right after sets the
+    // honest waiting label.
+    handleToolConfirmEvent(sessionId, {
+      confirm_id: 'c9',
+      tool: 'bash_exec',
+      args: '{}',
+    })
+    expect(useChatStore.getState().activityStatus[sessionId]).toBe('Awaiting confirmation...')
   })
 })

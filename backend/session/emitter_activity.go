@@ -75,6 +75,26 @@ func activityForEvent(evt Event) (label string, streaming int8, tracked bool) {
 			return "", streamingUnchanged, false
 		}
 		return "Executing step " + stepID + "...", streamingUnchanged, true
+	case "tool_judge_started":
+		// Strict judge (Smart Approve) evaluation is in flight — at this point
+		// NO confirmation card exists yet, so the label must describe the
+		// judge, not a (nonexistent) pending user response.
+		return "Safety judge evaluating...", streamingUnchanged, true
+	case "tool_judge_finished":
+		tool, _ := mapString(evt.Data, "tool")
+		if tool == "" {
+			return "", streamingUnchanged, false
+		}
+		// Mirrors the frontend's live tool_call label: on a strict-ALLOW verdict
+		// the tool is executing, so the label holds; on a CONFIRM fallback the
+		// tracked tool_confirm event below overwrites it within milliseconds.
+		return fmt.Sprintf("Running tool: %s...", tool), streamingUnchanged, true
+	case "tool_confirm":
+		// Emitted by the desktop confirm callback through the session emitter:
+		// the agent goroutine is blocked on the user's decision, so this is the
+		// honest label for however long the wait lasts. Mirrors the frontend's
+		// live handleToolConfirmEvent.
+		return "Awaiting confirmation...", streamingUnchanged, true
 	default:
 		return "", streamingUnchanged, false
 	}

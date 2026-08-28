@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
@@ -100,5 +101,60 @@ func TestJudgeContext_SetsSessionScope(t *testing.T) {
 	dirs := core.WorkDirectoriesFrom(ctx)
 	if len(dirs) != 1 || dirs[0].Path != auxDir || dirs[0].Description != "shared SDK checkout" {
 		t.Errorf("WorkDirectoriesFrom = %+v; want the aux dir with description", dirs)
+	}
+}
+
+// TestEmitJudgePhase_RoutesThroughSessionEmitter verifies the strict-judge
+// (Smart Approve) phase events flow through the live session's emitter — so
+// they reach the UI AND the activity tracker that backs the runtime-status
+// snapshot read on session switches.
+func TestEmitJudgePhase_RoutesThroughSessionEmitter(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	var captured []Event
+	emitter := NewEventEmitter("sess-judge", func(e Event) { captured = append(captured, e) })
+	manager.mu.Lock()
+	manager.sessions["sess-judge"] = &Session{ID: "sess-judge", emitter: emitter}
+	manager.mu.Unlock()
+
+	manager.EmitJudgePhase("sess-judge", true, "bash_exec")
+	manager.EmitJudgePhase("sess-judge", false, "bash_exec")
+
+	if len(captured) != 2 {
+		t.Fatalf("expected 2 emitted events, got %d: %+v", len(captured), captured)
+	}
+	if captured[0].Type != "tool_judge_started" || captured[1].Type != "tool_judge_finished" {
+		t.Errorf("event types = [%s %s], want [tool_judge_started tool_judge_finished]",
+			captured[0].Type, captured[1].Type)
+	}
+	for _, evt := range captured {
+		if tool, _ := evt.Data.(map[string]any)["tool"].(string); tool != "bash_exec" {
+			t.Errorf("event %s tool = %q, want bash_exec", evt.Type, tool)
+		}
+	}
+	// The emitter's activity tracker advanced through both phases.
+	if got := emitter.LastActivity(); got != "Running tool: bash_exec..." {
+		t.Errorf("LastActivity after finished phase = %q, want %q", got, "Running tool: bash_exec...")
+	}
+}
+
+// TestEmitJudgePhase_FallsBackToRawPipeline verifies a session without a live
+// emitter still emits through the raw pipeline (UI delivery without activity
+// tracking) instead of silently dropping the phase event.
+func TestEmitJudgePhase_FallsBackToRawPipeline(t *testing.T) {
+	manager, eventChan, _ := testManager(t)
+
+	manager.EmitJudgePhase("sess-unknown", true, "bash_exec")
+
+	select {
+	case evt := <-eventChan:
+		if evt.Type != "tool_judge_started" {
+			t.Errorf("fallback event type = %q, want tool_judge_started", evt.Type)
+		}
+		if evt.SessionID != "sess-unknown" {
+			t.Errorf("fallback event session = %q, want sess-unknown", evt.SessionID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the fallback event on the raw emit pipeline")
 	}
 }

@@ -129,6 +129,13 @@ export interface ReflectionData {
 }
 
 export interface ToolJudgeResponseData { confirm_id: string; reasoning?: string; error?: string }
+/**
+ * Strict-judge (Smart Approve) evaluation phase. Emitted around the automatic
+ * judge LLM call that runs BEFORE a confirmation card exists — `started` marks
+ * the evaluation in flight, `finished` its completion (the tool then executes
+ * or a tool_confirm card appears).
+ */
+export interface ToolJudgePhaseData { tool: string }
 export interface TerminalOutputData { data: string }
 export interface SkillsActivatedData { skills: string[] }
 export interface ToolsAssignedData { tools: string[] }
@@ -364,6 +371,8 @@ export interface SessionEventMap {
    *  the UI's paused state: input re-locks, Pause/Stop controls return. */
   readonly session_resumed: void
   readonly tool_judge_response: ToolJudgeResponseData
+  readonly tool_judge_started: ToolJudgePhaseData
+  readonly tool_judge_finished: ToolJudgePhaseData
   readonly finishing: void
   readonly reflection: ReflectionData
   readonly session_renamed: SessionRenamedData
@@ -636,6 +645,7 @@ export function normalizeAgentMetricsData(d: unknown): AgentMetricsData | undefi
 }
 export function isReflectionData(d: unknown): d is ReflectionData { return isObj(d) && has(d, 'summary', 'attempt') }
 export function isToolJudgeResponseData(d: unknown): d is ToolJudgeResponseData { return isObj(d) && has(d, 'confirm_id') }
+export function isToolJudgePhaseData(d: unknown): d is ToolJudgePhaseData { return isObj(d) && has(d, 'tool') }
 export function isBlackboardUpdatedData(d: unknown): d is BlackboardUpdatedData { return isObj(d) && has(d, 'change_type') }
 
 /** Guard for a single backend AttachmentInfo (snake_case). */

@@ -218,6 +218,40 @@ func TestEventPersister_EmptyOutputTaskCompletePersistsPlaceholder(t *testing.T)
 	}
 }
 
+// TestEventPersister_JudgePhaseEventsAreTransient verifies strict-judge (Smart
+// Approve) phase telemetry is never persisted: the labels describe a live
+// judge run that predates any confirmation card; replaying them on reload
+// would resurrect stale "judge working" state.
+func TestEventPersister_JudgePhaseEventsAreTransient(t *testing.T) {
+	store := &captureStore{}
+	p := NewEventPersister(store)
+
+	p.Persist(Event{SessionID: "s1", Type: "tool_judge_started", Data: map[string]any{"tool": "bash_exec"}})
+	p.Persist(Event{SessionID: "s1", Type: "tool_judge_finished", Data: map[string]any{"tool": "bash_exec"}})
+
+	if rows := store.snapshot(); len(rows) != 0 {
+		t.Fatalf("expected 0 persisted rows for judge phase events, got %d: %+v", len(rows), rows)
+	}
+}
+
+// TestEventPersister_ToolConfirmIsTransient verifies tool_confirm events are
+// never persisted, now that the desktop confirm callback routes them through
+// the emitter pipeline (which includes the persister). Pending confirmations
+// are process-local: a persisted row could never be resolved after a restart
+// and would render as a dead confirmation card on reload.
+func TestEventPersister_ToolConfirmIsTransient(t *testing.T) {
+	store := &captureStore{}
+	p := NewEventPersister(store)
+
+	p.Persist(Event{SessionID: "s1", Type: "tool_confirm", Data: ToolConfirmPayload{
+		ConfirmID: "c1", Tool: "bash_exec", Args: "{}",
+	}})
+
+	if rows := store.snapshot(); len(rows) != 0 {
+		t.Fatalf("expected 0 persisted rows for tool_confirm, got %d: %+v", len(rows), rows)
+	}
+}
+
 // TestEventPersister_UIStateEventsAreTransient verifies that UI-only state
 // events emitted with a SessionID (attachments:changed, session pin/archive
 // toggles) are NOT persisted. These carry no conversational content; their

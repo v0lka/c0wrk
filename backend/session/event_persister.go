@@ -166,8 +166,6 @@ func (p *EventPersister) Persist(evt Event) {
 		role = "task_failed_resumable"
 	case "task_resumed":
 		role = "task_resumed"
-	case "tool_confirm":
-		role = "tool_confirm"
 	case "ask_user":
 		role = "ask_user"
 	case "step_limit":
@@ -202,6 +200,14 @@ func (p *EventPersister) Persist(evt Event) {
 		"memory_read", "message_received", "blackboard_updated",
 		"tool_judge_response", "session_created", "session_deleted",
 		"session_renamed",
+		// Strict-judge (Smart Approve) phase telemetry: transient activity
+		// labels for a judge run that predates any confirmation card —
+		// persisting them would replay stale "judge working" rows on reload.
+		"tool_judge_started", "tool_judge_finished",
+		// Tool confirmations are transient by design: the pending-confirm
+		// channel map is process-local, so a persisted row could never be
+		// resolved after a restart and would render as a dead card on reload.
+		"tool_confirm",
 		"goal_progress",
 		// Manual-compaction lifecycle: the marker row (with the compacted
 		// history snapshot) is persisted directly by the manager's flow

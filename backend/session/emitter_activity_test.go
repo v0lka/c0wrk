@@ -49,6 +49,50 @@ func TestEventEmitterLastActivity_TracksLifecycleLabels(t *testing.T) {
 	}
 }
 
+// TestEventEmitterActivity_TracksJudgePhases verifies the strict-judge (Smart
+// Approve) phase events map to honest activity labels: the judge runs BEFORE
+// any confirmation card exists, so the snapshot must say the judge is
+// working, then restore the live tool-call convention when it finishes.
+func TestEventEmitterActivity_TracksJudgePhases(t *testing.T) {
+	emitter := NewEventEmitter("test-session", func(Event) {})
+
+	emitter.StepStart(1)
+	if got := emitter.LastActivity(); got != "Thinking..." {
+		t.Errorf("after StepStart: activity = %q, want %q", got, "Thinking...")
+	}
+
+	emitter.JudgeStarted("bash_exec")
+	if got := emitter.LastActivity(); got != "Safety judge evaluating..." {
+		t.Errorf("after JudgeStarted: activity = %q, want %q", got, "Safety judge evaluating...")
+	}
+
+	emitter.JudgeFinished("bash_exec")
+	if got := emitter.LastActivity(); got != "Running tool: bash_exec..." {
+		t.Errorf("after JudgeFinished: activity = %q, want %q", got, "Running tool: bash_exec...")
+	}
+
+	// A CONFIRM verdict (or judge failure degrading to manual confirmation)
+	// lands a tool_confirm right after: the snapshot must switch to the
+	// honest waiting label for however long the user takes to respond,
+	// instead of claiming the tool is executing.
+	emitter.ToolConfirm(ToolConfirmPayload{ConfirmID: "c1", Tool: "bash_exec", Args: "{}"})
+	if got := emitter.LastActivity(); got != "Awaiting confirmation..." {
+		t.Errorf("after ToolConfirm: activity = %q, want %q", got, "Awaiting confirmation...")
+	}
+}
+
+// TestEventEmitterActivity_TracksToolConfirm verifies a tool_confirm that
+// arrives WITHOUT preceding judge phases (plain user_confirm policy — no
+// Smart Approve) still flips the snapshot to the waiting label.
+func TestEventEmitterActivity_TracksToolConfirm(t *testing.T) {
+	emitter := NewEventEmitter("test-session", func(Event) {})
+
+	emitter.ToolConfirm(ToolConfirmPayload{ConfirmID: "c1", Tool: "edit_file", Args: "{}"})
+	if got := emitter.LastActivity(); got != "Awaiting confirmation..." {
+		t.Errorf("after ToolConfirm: activity = %q, want %q", got, "Awaiting confirmation...")
+	}
+}
+
 // TestEventEmitterStreamingFlag verifies the open-stream flag lifecycle:
 // assistant_chunk opens it, assistant_done closes it. The flag lets the
 // frontend clear frozen partial streaming text after switching back to a

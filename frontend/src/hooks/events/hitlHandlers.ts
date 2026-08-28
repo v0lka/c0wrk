@@ -9,6 +9,7 @@ import type {
   AskUserData,
   StepLimitData,
   PlanReviewReadyData,
+  ToolJudgePhaseData,
 } from '@/types/events'
 
 /** Handle a tool_confirm event for a session (active or background). */
@@ -117,4 +118,26 @@ export function handlePlanReviewEvent(sessionId: string, data: PlanReviewReadyDa
     timestamp: Date.now(),
   })
   useChatStore.getState().setActivityStatus(sessionId, 'Plan is ready for review...')
+}
+
+/**
+ * Handle a tool_judge_started event (active session). The strict judge (Smart
+ * Approve) evaluates an escalated call BEFORE any confirmation card exists,
+ * so the honest activity label says a judge is working — not that the session
+ * waits for the user.
+ */
+export function handleToolJudgeStartedEvent(sessionId: string, _data: ToolJudgePhaseData): void {
+  useChatStore.getState().setActivityStatus(sessionId, 'Safety judge evaluating...')
+}
+
+/**
+ * Handle a tool_judge_finished event (active session). The payload carries no
+ * verdict, so the frontend cannot tell ALLOW (tool now executing) from CONFIRM
+ * (card about to land) — don't guess. Clear the judge label and let the next
+ * factual event set the accurate one: tool_confirm → "Awaiting
+ * confirmation...", or the following step/assistant event after a strict-ALLOW
+ * execution.
+ */
+export function handleToolJudgeFinishedEvent(sessionId: string, _data: ToolJudgePhaseData): void {
+  useChatStore.getState().setActivityStatus(sessionId, null)
 }

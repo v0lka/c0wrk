@@ -90,6 +90,7 @@ type ToolRegistry struct {
 	logger                     *slog.Logger
 	autoApproveWorkspaceWrites bool
 	smartApprove               bool
+	judgeObserver              JudgeObserver
 }
 
 // PreExecuteHook is called before tool execution. It may block to wait for
@@ -106,6 +107,27 @@ type PreExecuteHook func(ctx context.Context, toolName string, source string) er
 // dispatched to a goroutine. If the hook panics, the panic propagates to the
 // caller; hooks should be defensive.
 type PostExecuteHook func(ctx context.Context, toolName string, result sdktools.ToolResult, err error)
+
+// JudgePhase marks a strict-judge (Smart Approve) evaluation boundary reported
+// to a registered JudgeObserver.
+type JudgePhase string
+
+const (
+	// JudgePhaseStarted fires immediately before the strict judge's LLM call.
+	JudgePhaseStarted JudgePhase = "started"
+	// JudgePhaseFinished fires immediately after the strict judge's LLM call
+	// returns, on success and on error alike.
+	JudgePhaseFinished JudgePhase = "finished"
+)
+
+// JudgeObserver is invoked around the strict judge (Smart Approve) evaluation
+// of an escalated tool call. It lets the host surface an honest "judge is
+// working" session status while the evaluation runs — a confirmation card does
+// not exist yet at JudgePhaseStarted (it is only issued when the judge does
+// not return a strict ALLOW, so a plain "waiting for your response" status
+// would mislead the user). The observer must not block; it receives the
+// executor context (which carries the session ID) and the tool name.
+type JudgeObserver func(ctx context.Context, phase JudgePhase, toolName string)
 
 // NewToolRegistry creates a new ToolRegistry with an empty tool map.
 func NewToolRegistry() *ToolRegistry {
@@ -134,6 +156,7 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 		logger:                     r.logger,
 		autoApproveWorkspaceWrites: r.autoApproveWorkspaceWrites,
 		smartApprove:               r.smartApprove,
+		judgeObserver:              r.judgeObserver,
 	}
 	if r.disabledTools != nil {
 		cloned.disabledTools = make(map[string]bool, len(r.disabledTools))
@@ -232,6 +255,16 @@ func (r *ToolRegistry) SetJudge(j *sdktools.ToolJudge) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.judge = j
+}
+
+// SetJudgeObserver registers the strict-judge phase observer (Smart Approve).
+// Nil disables observation. The observer is only invoked while Smart Approve
+// is enabled and a strict judge is configured, always in started/finished
+// pairs around the judge's LLM call.
+func (r *ToolRegistry) SetJudgeObserver(fn JudgeObserver) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.judgeObserver = fn
 }
 
 // GetJudge returns the current tool judge, or nil if not set.
@@ -615,6 +648,7 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 	r.mu.RLock()
 	smartApprove := r.smartApprove
 	strictJudge := r.judge
+	judgeObserver := r.judgeObserver
 	r.mu.RUnlock()
 
 	if !smartApprove {
@@ -637,6 +671,12 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 	verdict := sdktools.VerdictConfirm
 	if strictJudge != nil {
 		var judgeErr error
+		// Surface the judge run to the host so the session status can say a
+		// judge is working — at this point no confirmation card exists yet,
+		// so a "waiting for your response" label would be misleading.
+		if judgeObserver != nil {
+			judgeObserver(ctx, JudgePhaseStarted, name)
+		}
 		verdict, reasoning, judgeErr = strictJudge.JudgeStrict(ctx, sdktools.StrictJudgeRequest{
 			ToolName:       name,
 			Input:          input,
@@ -645,6 +685,9 @@ func (r *ToolRegistry) smartApproveOrConfirm(ctx context.Context, tool sdktools.
 			JudgeReasoning: reason,
 			JudgeSeverity:  severity,
 		})
+		if judgeObserver != nil {
+			judgeObserver(ctx, JudgePhaseFinished, name)
+		}
 		if judgeErr != nil {
 			verdict = sdktools.VerdictConfirm
 			reasoning = "Strict judge evaluation failed; " + reason

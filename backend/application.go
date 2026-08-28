@@ -189,6 +189,22 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 		})
 	}
 
+	// 4b. Smart Approve judge observer: the strict judge evaluates an
+	// escalated call BEFORE any confirmation card exists, so the session
+	// status must say a judge is working instead of implying a pending user
+	// response. The observer resolves the session from the executor context
+	// and emits the transient tool_judge_started/finished session events
+	// (activity-tracked via the session emitter). Session registries inherit
+	// the observer through Clone.
+	builder.ToolRegistry().SetJudgeObserver(func(ctx context.Context, phase coretools.JudgePhase, toolName string) {
+		sessionID := session.SessionIDFromContext(ctx)
+		if sessionID == "" {
+			app.log().Debug("judge observer: no session in context", "tool", toolName)
+			return
+		}
+		app.manager.EmitJudgePhase(sessionID, phase == coretools.JudgePhaseStarted, toolName)
+	})
+
 	// 5. Orchestrator factory closure for the session manager.
 	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		orchCfg := ToBuilderConfig(cfg.Config)
@@ -446,6 +462,19 @@ func (app *Application) EmitSessionEvent(evt session.Event) {
 	if app.emitFunc != nil {
 		app.emitFunc(evt)
 	}
+}
+
+// EmitToolConfirm routes a tool-confirmation request through the live session
+// emitter so the activity tracker (and the runtime-status snapshot read on
+// session switches) reports "Awaiting confirmation..." while the agent
+// goroutine blocks on the user's decision. Desktop's confirm callback calls
+// this instead of the raw UI emitter.
+func (app *Application) EmitToolConfirm(sessionID string, payload session.ToolConfirmPayload) {
+	if app.manager != nil {
+		app.manager.EmitToolConfirm(sessionID, payload)
+		return
+	}
+	app.EmitSessionEvent(session.Event{SessionID: sessionID, Type: "tool_confirm", Data: payload})
 }
 
 // LastToolCallID returns the most recently emitted tool_call_id for a session
