@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/v0lka/c0wrk/core"
@@ -154,5 +155,53 @@ func TestPauseSession_IdleSessionDoesNotOpenWindow(t *testing.T) {
 	sess.mu.Unlock()
 	if pausing {
 		t.Error("expected session.pausing to stay false when no task is active")
+	}
+}
+
+// TestFinishLiveLeftover_FailureEmitsServiceNotice locks the channel contract
+// for a failed follow-up launch: the notice goes out as a `service` event,
+// never as `error`. `error` is reserved for terminal events the UI treats as
+// "the run ended" (it clears task/streaming state and the unfinished-task
+// flag), while this failure does not settle the just-finished task.
+func TestFinishLiveLeftover_FailureEmitsServiceNotice(t *testing.T) {
+	manager, sess, _, events := liveTestSession(t)
+	drainEvents(events)
+
+	// Force the internal sendMessage relaunch to fail: an archived session is
+	// read-only, so the follow-up launch is rejected before any task starts.
+	// active=false mirrors the deactivated state at the epilogue call site.
+	sess.mu.Lock()
+	sess.Archived = true
+	sess.active = false
+	sess.mu.Unlock()
+
+	manager.finishLiveLeftover(context.Background(), sess.ID, sess, []string{"queued text"})
+
+	var got []Event
+	for {
+		select {
+		case evt := <-events:
+			got = append(got, evt)
+		default:
+			goto done
+		}
+	}
+done:
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one notice event, got %d (%v)", len(got), got)
+	}
+	evt := got[0]
+	if evt.Type != "service" {
+		t.Fatalf("expected a service notice, got %q (error must stay terminal-only)", evt.Type)
+	}
+	data, ok := evt.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got %T", evt.Data)
+	}
+	if data["phase"] != "orchestration" {
+		t.Errorf("phase = %v, want orchestration", data["phase"])
+	}
+	if content, _ := data["content"].(string); !strings.HasPrefix(content, "Queued message could not start a follow-up task") {
+		t.Errorf("content = %q, want the follow-up failure notice", content)
 	}
 }

@@ -61,10 +61,16 @@ func (m *Manager) finishLiveLeftover(_ context.Context, id string, _ *Session, l
 	m.log().Info("launching follow-up task for undelivered live messages", "session_id", id, "count", len(leftover))
 	if _, err := m.sendMessage(ContextWithSessionID(context.Background(), id), id, joined, nil, nil, "", "", false, "", false, true); err != nil {
 		m.log().Error("failed to launch follow-up task for live messages", "session_id", id, "error", err)
+		// A service notice, not an error: this failure does not settle the
+		// just-finished task, and `error` is reserved for terminal events the
+		// UI treats as "the run ended" (it clears task/streaming state).
 		m.emitFunc(Event{
 			SessionID: id,
-			Type:      "error",
-			Data:      ErrorData{SessionID: id, Error: "queued message could not start a follow-up task: " + err.Error()},
+			Type:      "service",
+			Data: map[string]any{
+				"content": "Queued message could not start a follow-up task: " + err.Error(),
+				"phase":   "orchestration",
+			},
 		})
 	}
 }
@@ -1380,6 +1386,19 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	// leaves the banner actionable for a retry.
 	m.resolveResumableTaskMessage(id, taskID, "resumed")
 
+	// Flip the persisted task row back to in_progress for the duration of the
+	// resumed run. The row was written 'paused' by the prior run's checkpoint
+	// (PersistentBlackboard.PauseTask) and would otherwise stay 'paused' for
+	// the whole resumed execution — the paused-ghost bug: the store claims a
+	// paused task while it is actively running. A cooperative pause mid-run
+	// rewrites 'paused' at the next checkpoint (persistTaskOutcome), so the
+	// pause contract is preserved. Best-effort like the orchestrator's
+	// reactivateContinuationTask: a failed UPDATE is logged, never fatal —
+	// the resume itself must proceed.
+	if err := adapter.ReactivateTask(taskID); err != nil {
+		m.log().Warn("failed to reactivate task row on resume", "session_id", id, "task_id", taskID, "error", err)
+	}
+
 	// Launch goroutine (same pattern as SendMessage).
 	go func() {
 		action := liveActionNone
@@ -1626,7 +1645,9 @@ type SessionRuntimeStatus struct {
 // GetSessionRuntimeStatus returns whether a task is currently running in the
 // session (in-memory) and whether an unfinished (resumable) task is persisted
 // in the task store. When a resumable task exists, Paused reports whether it is
-// in the paused status. It never restores a session as a side effect.
+// in the paused status — never while the task is running in memory (a live
+// task cannot be paused; see the invariant note in the body). It never
+// restores a session as a side effect.
 func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatus, error) {
 	var status SessionRuntimeStatus
 
@@ -1674,7 +1695,13 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 			// plain in-progress/failed task. LoadTaskState returns the status
 			// field; a missing state is treated as non-paused.
 			if state, stateErr := adapter.LoadTaskState(taskID); stateErr == nil && state != nil {
-				status.Paused = state.Status == "paused"
+				// Invariant: {Active:true, Paused:true} must not exist. A live
+				// task can never be paused — pausing deactivates the session
+				// until the session_paused event lands, so a "paused" status
+				// string observed while a task is running in memory is a stale
+				// snapshot (a resumed/new run racing the status poll) and must
+				// not surface Paused=true.
+				status.Paused = state.Status == "paused" && !status.Active
 			} else if stateErr != nil {
 				m.log().Warn("get session runtime status: failed to load task state", "session", sessionID, "error", stateErr)
 			}

@@ -326,7 +326,18 @@ func (o *Orchestrator) routeAndActivateSkills(
 			}
 		} else {
 			o.logDebug("orchestrator: routing failed", "error", err)
-			if pbb, ok := bb.(PersistableBlackboard); ok {
+			// Commit-point semantics (mirrors reactivateContinuationTask):
+			// FailTask may only flip a LIVE task row to failed — a fresh
+			// task (opts.TaskID == "", its PersistNewTask row already is
+			// in_progress) or a reactivated continuation anchor (the goal
+			// path reactivates BEFORE routing). A normal-path continuation
+			// has NOT been reactivated yet (that happens only after routing
+			// succeeds), so its restored status must stay untouched:
+			// flipping a terminal (completed) anchor to failed made the
+			// session report an unfinished task forever (failed counts as
+			// resumable) and dead-ended the manager's fresh-retry fallback
+			// on the "Task failed / Resume" banner.
+			if pbb, ok := bb.(PersistableBlackboard); ok && (opts.TaskID == "" || opts.Goal) {
 				pbb.FailTask()
 			}
 			return ctx, nil, nil, nil, fmt.Errorf("routing failed: %w", err)

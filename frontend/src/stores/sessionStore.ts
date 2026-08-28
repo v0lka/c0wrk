@@ -27,6 +27,7 @@ interface SessionActions {
   addSession: (session: SessionInfo) => void
   removeSession: (id: string) => void
   updateSession: (id: string, updates: Partial<SessionInfo>) => void
+  setUnfinishedTask: (id: string, value: boolean) => void
   touchSession: (id: string) => void
   resetForProjectSwitch: () => void
 }
@@ -68,6 +69,24 @@ export const useSessionStore = create<SessionState & SessionActions>((set) => ({
       (s.sessions ?? []).map(sess => sess.id === id ? { ...sess, ...updates } : sess)
     ),
   })),
+
+  // Refresh a session's `has_unfinished_task` outside the list-load snapshot.
+  // The list value goes stale the moment a task finishes or a session switch
+  // fetches a fresh runtime status — the runtime reconcile (session switch)
+  // and the terminal task events push the authoritative value through here so
+  // isSessionBusy() stays truthful without an app restart. No-ops when the
+  // session is unknown or the value already matches, keeping the `sessions`
+  // array reference stable (stable-selector principle: a new array on every
+  // call would needlessly re-render every subscriber of `sessions`).
+  setUnfinishedTask: (id, value) => set((s) => {
+    if (!s.sessions) return s
+    const idx = s.sessions.findIndex(sess => sess.id === id)
+    if (idx === -1 || s.sessions[idx]!.has_unfinished_task === value) return s
+    const sessions = [...s.sessions]
+    sessions[idx] = { ...sessions[idx]!, has_unfinished_task: value }
+    // The flag change cannot affect activity ordering — return the copy as-is.
+    return { sessions }
+  }),
 
   touchSession: (id) => set((s) => {
     const now = new Date().toISOString()

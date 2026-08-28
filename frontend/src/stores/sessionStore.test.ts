@@ -68,3 +68,55 @@ describe('sessionStore sorting', () => {
     expect(useSessionStore.getState().sessions!.map((s) => s.id)).toEqual(['y', 'x'])
   })
 })
+
+describe('setUnfinishedTask', () => {
+  beforeEach(resetStore)
+
+  it('clears the flag for the matching session and leaves others untouched', () => {
+    // The runtime reconcile / terminal task events push the authoritative
+    // value through here so isSessionBusy() stays truthful without a restart.
+    useSessionStore.getState().setSessions([
+      makeSession({ id: 'a', has_unfinished_task: true }),
+      makeSession({ id: 'b', has_unfinished_task: true }),
+    ])
+
+    useSessionStore.getState().setUnfinishedTask('a', false)
+
+    const sessions = useSessionStore.getState().sessions!
+    expect(sessions.find((s) => s.id === 'a')!.has_unfinished_task).toBe(false)
+    expect(sessions.find((s) => s.id === 'b')!.has_unfinished_task).toBe(true)
+  })
+
+  it('sets the flag true when a task becomes resumable', () => {
+    useSessionStore.getState().setSessions([makeSession({ id: 'a' })])
+
+    useSessionStore.getState().setUnfinishedTask('a', true)
+
+    expect(useSessionStore.getState().sessions![0]!.has_unfinished_task).toBe(true)
+  })
+
+  it('keeps the sessions reference when the value already matches (stable selectors)', () => {
+    // A new array on a no-op update would needlessly re-render every
+    // subscriber of `sessions` — the guard must return the same reference.
+    useSessionStore.getState().setSessions([makeSession({ id: 'a', has_unfinished_task: true })])
+    const before = useSessionStore.getState().sessions
+
+    useSessionStore.getState().setUnfinishedTask('a', true)
+
+    expect(useSessionStore.getState().sessions).toBe(before)
+  })
+
+  it('no-ops for an unknown session id', () => {
+    useSessionStore.getState().setSessions([makeSession({ id: 'a' })])
+    const before = useSessionStore.getState().sessions
+
+    useSessionStore.getState().setUnfinishedTask('missing', false)
+
+    expect(useSessionStore.getState().sessions).toBe(before)
+  })
+
+  it('no-ops before the session list is loaded', () => {
+    useSessionStore.getState().setUnfinishedTask('a', true)
+    expect(useSessionStore.getState().sessions).toBeNull()
+  })
+})

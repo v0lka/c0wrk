@@ -36,16 +36,53 @@ func (f *finishLLM) Call(_ context.Context, _ llm.ChatRequest) (*llm.ChatRespons
 	}, nil
 }
 
+// gatingLLM is an agent.LLMCaller whose FIRST Call blocks until the test
+// releases it, so a test can observe and steer state while the resumed
+// executor is mid-flight. The first response is a tool call to firstToolCall
+// (a non-terminal step, so the executor loop reaches the next step boundary —
+// where a pending pause signal trips; the tool itself need not exist: an
+// unknown tool yields an error observation and the loop continues). An empty
+// firstToolCall makes the first response a finish call. Subsequent calls
+// always finish.
+type gatingLLM struct {
+	firstToolCall string
+	started       chan struct{}
+	release       chan struct{}
+	once          sync.Once
+}
+
+func (g *gatingLLM) Call(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	first := false
+	g.once.Do(func() {
+		first = true
+		close(g.started)
+		<-g.release
+	})
+	msg := llm.Message{Role: "assistant", Content: "Resuming from checkpoint"}
+	if first && g.firstToolCall != "" {
+		msg.ToolCalls = []llm.ToolCall{{ID: "g1", Name: g.firstToolCall, Input: json.RawMessage(`{}`)}}
+	} else {
+		msg.ToolCalls = []llm.ToolCall{{ID: "g2", Name: "finish", Input: json.RawMessage(`{"answer":"gated-done"}`)}}
+	}
+	return &llm.ChatResponse{Message: msg, StopReason: "tool_use"}, nil
+}
+
 // resumeTaskStore is a configurable TaskStore for ResumeTask tests. It returns a
 // canned TaskRecord (for GetUnfinishedTask + LoadTask) and a canned trajectory,
-// and records whether CompleteTask / LoadTrajectory were called.
+// and records whether CompleteTask / LoadTrajectory were called. ReactivateTask
+// and PauseTask mirror SQLiteSessionStore semantics: they rewrite the canned
+// record's status (in_progress / paused) and record the call, so tests can
+// observe the task-row lifecycle across a resume.
 type resumeTaskStore struct {
 	mockTaskStoreForResumable
-	mu             sync.Mutex
-	task           *TaskRecord
-	trajectory     json.RawMessage
-	loadTrajCalls  int
-	completedCalls int
+	mu              sync.Mutex
+	task            *TaskRecord
+	trajectory      json.RawMessage
+	loadTrajCalls   int
+	completedCalls  int
+	reactivateCalls int
+	reactivateErr   error
+	pauseCalls      int
 }
 
 func (s *resumeTaskStore) GetUnfinishedTask(_ context.Context, _ string) (*TaskRecord, error) {
@@ -84,7 +121,35 @@ func (s *resumeTaskStore) CompleteTask(_ context.Context, _, _ string, _ int) er
 }
 
 func (s *resumeTaskStore) CancelTask(_ context.Context, _ string) error { return nil }
-func (s *resumeTaskStore) PauseTask(_ context.Context, _ string) error  { return nil }
+
+// PauseTask mirrors SQLiteSessionStore.PauseTask: rewrites the row's status to
+// 'paused' and records the call.
+func (s *resumeTaskStore) PauseTask(_ context.Context, _ string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pauseCalls++
+	if s.task != nil {
+		s.task.Status = "paused"
+	}
+	return nil
+}
+
+// ReactivateTask mirrors SQLiteSessionStore.ReactivateTask: rewrites the row's
+// status to 'in_progress' and records the call. reactivateErr, when set, is
+// returned instead WITHOUT touching the status (error-injection for the
+// warn-not-fatal test).
+func (s *resumeTaskStore) ReactivateTask(_ context.Context, _ string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reactivateCalls++
+	if s.reactivateErr != nil {
+		return s.reactivateErr
+	}
+	if s.task != nil {
+		s.task.Status = "in_progress"
+	}
+	return nil
+}
 
 // functionalOrchestratorFactory builds a real *core.Orchestrator wired with a
 // mock LLM and a real (sp4rk) ContextWindow so the full Resume → Conductor path
@@ -696,5 +761,188 @@ func TestManager_ResumeTask_ArchivedRejected(t *testing.T) {
 	store.mu.Unlock()
 	if loads != 0 {
 		t.Errorf("ResumeTask should not consult the task store for an archived session, loadTrajCalls=%d", loads)
+	}
+}
+
+// TestResumeTask_ReactivatesPausedRowDuringRun verifies the paused-ghost fix:
+// a task persisted as 'paused' must have its row flipped to 'in_progress' for
+// the duration of the resumed run. Without the ReactivateTask call in
+// ResumeTask, the row stays 'paused' while the task is actively executing —
+// the store then claims a paused (idle) task over a live one.
+func TestResumeTask_ReactivatesPausedRowDuringRun(t *testing.T) {
+	trajJSON, _ := json.Marshal([]agent.Step{
+		{Thought: "prior", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+	})
+	store := &resumeTaskStore{
+		task: &TaskRecord{
+			ID: "task-resume-reactivate", SessionID: "ignored", OriginalRequest: "paused task",
+			Status: "paused",
+		},
+		trajectory: trajJSON,
+	}
+
+	gate := &gatingLLM{started: make(chan struct{}), release: make(chan struct{})}
+	eventChan := make(chan Event, 100)
+	mgr := NewManager(functionalOrchestratorFactory(gate), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	if err := mgr.ResumeTask(context.Background(), info.ID, "", "", ""); err != nil {
+		t.Fatalf("ResumeTask failed: %v", err)
+	}
+
+	// Block until the resumed executor is inside its first LLM call: the task
+	// is now mid-execution.
+	select {
+	case <-gate.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for the resumed executor to reach its LLM call")
+	}
+
+	store.mu.Lock()
+	status := store.task.Status
+	reactivations := store.reactivateCalls
+	store.mu.Unlock()
+	if reactivations != 1 {
+		t.Errorf("ReactivateTask calls = %d, want 1 (ResumeTask must flip the paused row before launching the run)", reactivations)
+	}
+	if status != "in_progress" {
+		t.Errorf("task row status during resumed execution = %q, want %q (paused-ghost: the row must be reactivated for the run's duration)", status, "in_progress")
+	}
+
+	// Release the executor; the run must complete normally.
+	close(gate.release)
+	if _, ok := waitForEvent(eventChan, "task_complete", 3*time.Second); !ok {
+		t.Fatal("timeout waiting for task_complete event")
+	}
+}
+
+// TestResumeTask_ReactivationFailureDoesNotAbortResume verifies the best-effort
+// contract of the reactivation: when the UPDATE fails, ResumeTask still
+// proceeds — the error is logged as a warning, never surfaced, and the resumed
+// run executes and completes.
+func TestResumeTask_ReactivationFailureDoesNotAbortResume(t *testing.T) {
+	trajJSON, _ := json.Marshal([]agent.Step{
+		{Thought: "prior", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+	})
+	store := &resumeTaskStore{
+		task: &TaskRecord{
+			ID: "task-resume-reactivate-err", SessionID: "ignored", OriginalRequest: "paused task",
+			Status: "paused",
+		},
+		trajectory:    trajJSON,
+		reactivateErr: errors.New("database is locked"),
+	}
+
+	eventChan := make(chan Event, 100)
+	mgr := NewManager(functionalOrchestratorFactory(&finishLLM{answer: "despite-error"}), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	if err := mgr.ResumeTask(context.Background(), info.ID, "", "", ""); err != nil {
+		t.Fatalf("ResumeTask failed: %v", err)
+	}
+
+	// The resume must run to completion despite the failed reactivation.
+	if _, ok := waitForEvent(eventChan, "task_complete", 3*time.Second); !ok {
+		t.Fatal("timeout waiting for task_complete event (a reactivation failure must not abort the resume)")
+	}
+
+	store.mu.Lock()
+	reactivations := store.reactivateCalls
+	store.mu.Unlock()
+	if reactivations != 1 {
+		t.Errorf("ReactivateTask calls = %d, want 1 (the UPDATE must still be attempted)", reactivations)
+	}
+}
+
+// TestResumeTask_CooperativePauseDuringResumedRunRewritesPaused verifies the
+// pause contract survives reactivation: a cooperative pause in the middle of a
+// resumed run rewrites the row to 'paused' (persistTaskOutcome → PauseTask),
+// so the checkpoint stays resumable instead of being lost behind the
+// in_progress flip.
+func TestResumeTask_CooperativePauseDuringResumedRunRewritesPaused(t *testing.T) {
+	trajJSON, _ := json.Marshal([]agent.Step{
+		{Thought: "prior", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+	})
+	store := &resumeTaskStore{
+		task: &TaskRecord{
+			ID: "task-resume-pause-again", SessionID: "ignored", OriginalRequest: "paused task",
+			Status: "paused",
+		},
+		trajectory: trajJSON,
+	}
+
+	// The first LLM response is a non-terminal tool call so the executor
+	// completes a step and reaches the next step boundary, where the pause
+	// signal — flipped while the call was gated — trips.
+	gate := &gatingLLM{firstToolCall: "read_file", started: make(chan struct{}), release: make(chan struct{})}
+	eventChan := make(chan Event, 100)
+	mgr := NewManager(functionalOrchestratorFactory(gate), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr.Shutdown) // close handles before TempDir cleanup (Windows)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	store.mu.Lock()
+	store.task.SessionID = info.ID
+	store.mu.Unlock()
+
+	if err := mgr.ResumeTask(context.Background(), info.ID, "", "", ""); err != nil {
+		t.Fatalf("ResumeTask failed: %v", err)
+	}
+
+	select {
+	case <-gate.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for the resumed executor to reach its LLM call")
+	}
+
+	// Sanity: the row was reactivated for the run.
+	store.mu.Lock()
+	status := store.task.Status
+	store.mu.Unlock()
+	if status != "in_progress" {
+		t.Fatalf("precondition: task row status during resumed execution = %q, want in_progress", status)
+	}
+
+	// Request a cooperative pause while the executor is blocked mid-step,
+	// then let the step complete: the next step boundary trips the signal.
+	if err := mgr.PauseSession(info.ID); err != nil {
+		t.Fatalf("PauseSession failed: %v", err)
+	}
+	close(gate.release)
+
+	if _, ok := waitForEvent(eventChan, "session_paused", 3*time.Second); !ok {
+		t.Fatal("timeout waiting for session_paused event")
+	}
+
+	store.mu.Lock()
+	status = store.task.Status
+	pauses := store.pauseCalls
+	store.mu.Unlock()
+	if pauses != 1 {
+		t.Errorf("PauseTask calls = %d, want 1 (a cooperative pause must persist the checkpoint)", pauses)
+	}
+	if status != "paused" {
+		t.Errorf("task row status after mid-run pause = %q, want %q (the checkpoint must overwrite the reactivated in_progress)", status, "paused")
 	}
 }

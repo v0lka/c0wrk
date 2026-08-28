@@ -1573,6 +1573,77 @@ func TestPauseTask_GetUnfinishedMatches(t *testing.T) {
 	}
 }
 
+// TestSessionReaders_PausedTaskCountsAsUnfinished verifies that every session
+// reader (LoadSession, ListSessions, ListSessionsByProject) reports
+// HasUnfinishedTask=true when the session's task row is checkpointed as
+// paused. This keeps the EXISTS-subqueries consistent with GetUnfinishedTask,
+// which matches paused tasks as resumable checkpoints across app restarts.
+func TestSessionReaders_PausedTaskCountsAsUnfinished(t *testing.T) {
+	store, sessionID, cleanup := setupTestStoreWithSession(t)
+	defer cleanup()
+
+	// The session's only task: created in_progress, then checkpointed as
+	// paused (cooperative pause or shutdown checkpoint).
+	if err := store.SaveTask(context.Background(), TaskRecord{
+		ID: "task-paused", SessionID: sessionID, OriginalRequest: "paused work",
+		RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+		Reflections: json.RawMessage(`[]`), Status: "in_progress", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+	if err := store.PauseTask(context.Background(), "task-paused"); err != nil {
+		t.Fatalf("PauseTask failed: %v", err)
+	}
+
+	// LoadSession must see the paused task as unfinished.
+	loaded, err := store.LoadSession(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("LoadSession failed: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected session to load")
+	}
+	if !loaded.HasUnfinishedTask {
+		t.Error("LoadSession: expected HasUnfinishedTask=true for a paused task")
+	}
+
+	// ListSessions must see the paused task as unfinished.
+	listed, err := store.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	var found bool
+	for _, s := range listed {
+		if s.ID == sessionID {
+			found = true
+			if !s.HasUnfinishedTask {
+				t.Error("ListSessions: expected HasUnfinishedTask=true for a paused task")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("ListSessions: session not found")
+	}
+
+	// ListSessionsByProject must see the paused task as unfinished too.
+	byProject, err := store.ListSessionsByProject(context.Background(), testProjectID)
+	if err != nil {
+		t.Fatalf("ListSessionsByProject failed: %v", err)
+	}
+	found = false
+	for _, s := range byProject {
+		if s.ID == sessionID {
+			found = true
+			if !s.HasUnfinishedTask {
+				t.Error("ListSessionsByProject: expected HasUnfinishedTask=true for a paused task")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("ListSessionsByProject: session not found")
+	}
+}
+
 func TestTaskCascadeDelete(t *testing.T) {
 	store, sessionID, cleanup := setupTestStoreWithSession(t)
 	defer cleanup()

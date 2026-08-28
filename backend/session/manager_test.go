@@ -1581,6 +1581,51 @@ func TestGetSessionRuntimeStatus(t *testing.T) {
 		}
 	})
 
+	t.Run("paused status string with active in-memory session reports Paused=false", func(t *testing.T) {
+		manager, _, _ := testManager(t)
+
+		// In-memory session with a running task. Created before the task
+		// store is attached: the test factory returns a nil orchestrator,
+		// and CreateSession would try to wire the adapter into it.
+		info, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
+		if err != nil {
+			t.Fatalf("CreateSession failed: %v", err)
+		}
+		sess, ok := manager.GetSession(info.ID)
+		if !ok {
+			t.Fatalf("GetSession failed for session %s", info.ID)
+		}
+		sess.mu.Lock()
+		sess.active = true
+		sess.mu.Unlock()
+
+		pausedTask := &TaskRecord{
+			ID: "task-stale-paused", SessionID: "sess-running", Status: "paused",
+			RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+			Reflections: json.RawMessage(`[]`),
+		}
+		manager.SetTaskStore(&mockTaskStoreForResumable{
+			unfinished:     pausedTask,
+			loadTaskResult: pausedTask,
+		})
+
+		// The persisted "paused" status is a stale snapshot while the task
+		// runs in memory and must not surface Paused=true.
+		status, err := manager.GetSessionRuntimeStatus(info.ID)
+		if err != nil {
+			t.Fatalf("GetSessionRuntimeStatus returned error: %v", err)
+		}
+		if !status.Active {
+			t.Errorf("expected Active=true for in-memory running task, got %+v", status)
+		}
+		if !status.HasUnfinishedTask || status.UnfinishedTaskID != "task-stale-paused" {
+			t.Errorf("expected unfinished task task-stale-paused, got %+v", status)
+		}
+		if status.Paused {
+			t.Errorf("expected Paused=false while task is active in memory, got %+v", status)
+		}
+	})
+
 	t.Run("in_progress task reports Paused=false", func(t *testing.T) {
 		manager, _, _ := testManager(t)
 		activeTask := &TaskRecord{

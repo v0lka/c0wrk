@@ -5,6 +5,7 @@ import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isAssistantChunkData, isThoughtData, isErrorData, isTaskCompleteData, isReflectionData } from '@/types/events'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import { useReviewStore } from '@/stores/reviewStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
@@ -124,6 +125,12 @@ export function useChatEvents(sessionId: string | null): void {
         store.setActivityStatus(sessionId, null)
         store.setTaskActive(sessionId, false)
         store.setPausing(sessionId, false)
+        // Terminal event: no unfinished task survives an errored run — the
+        // session is no longer busy for the archive/delete confirmation (the
+        // list's flag was a stale snapshot). A failure that stays resumable is
+        // immediately followed by the backend's task_failed_resumable event,
+        // which re-sets the flag (see useActionEvents).
+        useSessionStore.getState().setUnfinishedTask(sessionId, false)
         // The failed exchange still grew the conversation history — refresh
         // the compaction no-op flag (the compact button's disabled state).
         refreshCompactionNoOp(sessionId)
@@ -139,6 +146,13 @@ export function useChatEvents(sessionId: string | null): void {
         store.setActivityStatus(sessionId, null)
         store.setTaskActive(sessionId, false)
         store.setPausing(sessionId, false)
+        // The task settled: refresh the session list's stale `has_unfinished_task`
+        // snapshot so isSessionBusy() stops reporting the session as busy
+        // without an app restart. Degraded completions (success === false) are
+        // still cleared here — the backend emits its task_failed_resumable
+        // event right AFTER this one when the task stays resumable, and that
+        // handler re-sets the flag (see useActionEvents).
+        useSessionStore.getState().setUnfinishedTask(sessionId, false)
         // The completed exchange was appended to the conversation history
         // (the orchestrator records the outcome before this event fires), so
         // a previously-no-op session may be compactable again — refresh the
@@ -248,6 +262,11 @@ export function useChatEvents(sessionId: string | null): void {
         store.setTaskActive(sessionId, false)
         store.setPaused(sessionId, false)
         store.setPausing(sessionId, false)
+        // A user-initiated cancel persists the task as cancelled in the task
+        // store, so no unfinished task survives it — refresh the session
+        // list's stale `has_unfinished_task` snapshot (busy check for
+        // archive/delete) without waiting for an app restart.
+        useSessionStore.getState().setUnfinishedTask(sessionId, false)
         // A cancelled task still records its exchange in the conversation
         // history (the orchestrator's cancellation epilogue appends the user
         // message + cancellation note), so a previously-no-op session may be

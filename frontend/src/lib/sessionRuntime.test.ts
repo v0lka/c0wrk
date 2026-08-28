@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { reconcileRuntimeStatus, reconcilePendingActions, refreshCompactionNoOp, stalePromptMatchField } from './sessionRuntime'
 import { useChatStore } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import type { ChatMessageUI } from '@/types/messages'
 import { getSessionRuntimeStatus } from '@/api/chat'
 import type { PendingActionsResponse } from '@/api/chat'
@@ -27,6 +28,9 @@ function resetStore(): void {
     compactionNoOp: {},
     runtimeEventAt: {},
   })
+  // reconcileRuntimeStatus mirrors has_unfinished_task into the session list;
+  // reset it so tests start from a clean (null) snapshot state.
+  useSessionStore.setState({ sessions: null, activeSessionId: null })
 }
 
 function addMsg(overrides: Partial<ChatMessageUI> & { id: string; type: ChatMessageUI['type'] }): void {
@@ -158,6 +162,22 @@ describe('reconcileRuntimeStatus', () => {
     expect(useChatStore.getState().paused[SESSION]).toBe(true)
     expect(useChatStore.getState().pausing[SESSION]).toBeUndefined()
     expect(useChatStore.getState().taskActive[SESSION]).toBe(false)
+  })
+
+  it('renders the active UI (never paused) when the snapshot carries a stale paused flag', () => {
+    // Race: the snapshot was read before a resume that landed in the
+    // background, and session_resumed arrived before the snapshot was
+    // applied — the reconcile sees active=true with a leftover paused=true.
+    // `active` wins: the paused branch is skipped, the ghost paused flag is
+    // cleared, and the live task shows no white dot / "Paused" label / Resume
+    // button.
+    useChatStore.setState({ paused: { [SESSION]: true }, taskActive: { [SESSION]: false } })
+
+    reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: true, paused: true })
+
+    expect(useChatStore.getState().paused[SESSION]).toBeUndefined()
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(true)
+    expect(useChatStore.getState().activityStatus[SESSION]).not.toBe('Paused')
   })
 
   it('preserves a pause-in-flight flag for a still-running task (pause not yet landed)', () => {
@@ -383,6 +403,66 @@ describe('reconcileRuntimeStatus', () => {
 
     expect(useChatStore.getState().activityStatus[SESSION]).toBeUndefined()
     expect(useChatStore.getState().streamingText[SESSION]).toBeUndefined()
+  })
+})
+
+describe('reconcileRuntimeStatus → has_unfinished_task mirror', () => {
+  beforeEach(resetStore)
+
+  function seedSession(flag: boolean): void {
+    useSessionStore.setState({
+      sessions: [{
+        id: SESSION,
+        project_id: 'proj-1',
+        name: 'Session',
+        created_at: '2026-01-01T00:00:00Z',
+        last_active_at: '2026-01-01T00:00:00Z',
+        archived: false,
+        pinned: false,
+        active: false,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        model: '',
+        family: '',
+        has_unfinished_task: flag,
+      }],
+    })
+  }
+
+  it('clears a stale unfinished flag when the snapshot reports no unfinished task', () => {
+    // Bug: the list flag was a snapshot from list-load time; a session whose
+    // task finished while unviewed stayed "busy" for archive/delete until an
+    // app restart. The switch reconcile must refresh it from the snapshot.
+    seedSession(true)
+
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false })
+
+    expect(useSessionStore.getState().sessions![0]!.has_unfinished_task).toBe(false)
+  })
+
+  it('restores the unfinished flag when the snapshot reports a resumable task', () => {
+    seedSession(false)
+
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true, paused: false })
+
+    expect(useSessionStore.getState().sessions![0]!.has_unfinished_task).toBe(true)
+  })
+
+  it('mirrors the flag for an actively running session too (snapshot authoritative)', () => {
+    seedSession(false)
+
+    reconcileRuntimeStatus(SESSION, { active: true, has_unfinished_task: true, paused: false })
+
+    expect(useSessionStore.getState().sessions![0]!.has_unfinished_task).toBe(true)
+  })
+
+  it('keeps the sessions reference when the flag value is unchanged (stable selectors)', () => {
+    seedSession(true)
+    const before = useSessionStore.getState().sessions
+
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: true, paused: false })
+
+    expect(useSessionStore.getState().sessions).toBe(before)
   })
 })
 

@@ -1,6 +1,39 @@
-import { describe, it, expect } from 'vitest'
-import { shouldAddTaskCompleteOutput, shouldTriggerReview } from '@/hooks/events/useChatEvents'
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, createElement } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+
+import { shouldAddTaskCompleteOutput, shouldTriggerReview, useChatEvents } from '@/hooks/events/useChatEvents'
+import { useChatStore } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
+import { isSessionBusy } from '@/hooks/useSessionStatusIndicator'
+import type { SessionInfo } from '@/types/models'
 import type { ChatMessageUI, MessageType } from '@/stores/chatStore'
+
+// The terminal-event tests below render the hook: capture the handlers it
+// registers with onSessionEvent so tests can emit events without the Wails
+// runtime (follows the createRoot + jsdom harness pattern, see
+// usePasteHandler.test.tsx).
+const runtimeHandlers = vi.hoisted(() => new Map<string, Array<(data: unknown) => void>>())
+
+vi.mock('@/api/runtime', () => ({
+  onSessionEvent: (_sessionId: string, event: string, cb: (data: unknown) => void) => {
+    const list = runtimeHandlers.get(event) ?? []
+    list.push(cb)
+    runtimeHandlers.set(event, list)
+    return () => {
+      runtimeHandlers.set(event, (runtimeHandlers.get(event) ?? []).filter(fn => fn !== cb))
+    }
+  },
+  reportDroppedEvent: vi.fn(),
+}))
+
+// Terminal handlers call refreshCompactionNoOp → getSessionRuntimeStatus.
+// Stub the RPC (null status = no-op) so the node-free test never touches
+// the Wails-backed wrapper.
+vi.mock('@/api/chat', () => ({
+  getSessionRuntimeStatus: vi.fn(async () => null),
+}))
 
 let counter = 0
 function makeUI(overrides: Partial<ChatMessageUI> & { type: MessageType }): ChatMessageUI {
@@ -89,5 +122,110 @@ describe('shouldTriggerReview', () => {
 
   it('returns false in CODE mode when there are no git changes', () => {
     expect(shouldTriggerReview(false, false)).toBe(false)
+  })
+})
+
+describe('useChatEvents terminal events → has_unfinished_task refresh', () => {
+  const SESSION = 'sess-1'
+
+  function makeSessionInfo(overrides: Partial<SessionInfo>): SessionInfo {
+    return {
+      id: SESSION,
+      project_id: 'proj-1',
+      name: 'Session',
+      created_at: '2026-01-01T00:00:00Z',
+      last_active_at: '2026-01-01T00:00:00Z',
+      archived: false,
+      pinned: false,
+      active: false,
+      total_input_tokens: 0,
+      total_output_tokens: 0,
+      model: '',
+      family: '',
+      has_unfinished_task: false,
+      ...overrides,
+    }
+  }
+
+  function seedBusySession(): void {
+    // Mirror the stale-list-snapshot bug: the flag says "unfinished" while the
+    // task is no longer running (taskActive false, no pending prompts).
+    useChatStore.setState({
+      messages: {},
+      messageOrder: {},
+      taskActive: { [SESSION]: false },
+      paused: {},
+      pausing: {},
+      streamingText: {},
+      activityStatus: {},
+    })
+    useSessionStore.setState({ sessions: [makeSessionInfo({ has_unfinished_task: true })] })
+  }
+
+  function emit(event: string, data?: unknown): void {
+    act(() => {
+      for (const cb of runtimeHandlers.get(event) ?? []) cb(data)
+    })
+  }
+
+  function unfinishedFlag(): boolean {
+    return useSessionStore.getState().sessions![0]!.has_unfinished_task
+  }
+
+  let container: HTMLDivElement
+  let root: Root
+
+  function Harness(): null {
+    useChatEvents(SESSION)
+    return null
+  }
+
+  beforeEach(() => {
+    seedBusySession()
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    act(() => {
+      root.render(createElement(Harness))
+    })
+  })
+
+  afterEach(() => {
+    act(() => {
+      root.unmount()
+    })
+    container.remove()
+  })
+
+  it('task_complete clears the flag and the session passes isSessionBusy', () => {
+    expect(isSessionBusy(SESSION)).toBe(true) // stale snapshot: busy before the event
+
+    emit('task_complete', { success: true, output: 'done' })
+
+    expect(unfinishedFlag()).toBe(false)
+    expect(isSessionBusy(SESSION)).toBe(false) // no app restart needed
+  })
+
+  it('a degraded task_complete also clears the flag (task_failed_resumable re-sets it, see useActionEvents)', () => {
+    // The backend emits task_failed_resumable right AFTER a degraded
+    // completion whenever the task stays resumable — that handler owns
+    // restoring the flag.
+    emit('task_complete', { success: false, output: 'partial' })
+
+    expect(unfinishedFlag()).toBe(false)
+  })
+
+  it('task_cancelled clears the flag', () => {
+    emit('task_cancelled')
+
+    expect(unfinishedFlag()).toBe(false)
+    expect(isSessionBusy(SESSION)).toBe(false)
+  })
+
+  it('a terminal error clears the flag', () => {
+    emit('error', { error: 'boom' })
+
+    expect(unfinishedFlag()).toBe(false)
+    expect(isSessionBusy(SESSION)).toBe(false)
   })
 })

@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isAskUserData, isStepLimitData, isTaskFailedResumableData, isPlanReviewReadyData } from '@/types/events'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import { generateMessageId } from '@/lib/ids'
 import { handleAskUserEvent, handleStepLimitEvent, handlePlanReviewEvent } from './hitlHandlers'
 
@@ -46,6 +47,12 @@ export function useActionEvents(sessionId: string | null): void {
         useChatStore.getState().setActivityStatus(sessionId, null)
         useChatStore.getState().setTaskActive(sessionId, false)
         useChatStore.getState().setPausing(sessionId, false)
+        // The failed task stays resumable, so the session IS busy again: the
+        // backend emits this right AFTER the terminal task_complete/error
+        // (which cleared the list's `has_unfinished_task` snapshot) whenever
+        // the task remains unfinished — re-set it so the archive/delete
+        // confirmation still protects the resumable task.
+        useSessionStore.getState().setUnfinishedTask(sessionId, true)
       }),
     )
 

@@ -19,6 +19,7 @@
 import type { PendingActionsResponse, SessionRuntimeStatus } from '@/api/chat'
 import { getSessionRuntimeStatus } from '@/api/chat'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import { useGoalStore } from '@/stores/goalStore'
 import type { ChatMessageUI, MessageType } from '@/types/messages'
 import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
@@ -94,6 +95,14 @@ function resolveStaleHitlPrompts(sessionId: string): ChatMessageUI[] {
 export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntimeStatus, snapshotReadAt?: number): ChatMessageUI[] {
   const store = useChatStore.getState()
 
+  // The session list's `has_unfinished_task` is a snapshot from the last list
+  // load — nothing refreshed it since, so a session whose task finished while
+  // unviewed stayed "busy" for the archive/delete confirmation until an app
+  // restart. The runtime snapshot is authoritative for this flag in every
+  // branch below (running, paused, compacting, idle): mirror it into the
+  // session store. No-op when the value already matches.
+  useSessionStore.getState().setUnfinishedTask(sessionId, status.has_unfinished_task === true)
+
   // Manual compaction in flight: mirror the flag so a switch back to the
   // session restores the Compacting UI (locked input, cancel affordance)
   // even when the compaction_started event fired with no live listener.
@@ -132,7 +141,13 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
   // Resume/Stop). Crucially, a paused task must NOT trigger the
   // task_failed_resumable banner below — it is resumable via the Resume button
   // or a nudge message, not a "previous task did not finish" banner.
-  if (status.paused) {
+  // ONLY when the task is no longer active: `active` wins over `paused`. A
+  // snapshot can still carry paused=true after a resume that landed in the
+  // background (snapshot read before resume, session_resumed emitted after)
+  // — entering the paused branch then would paint the paused UI (white dot,
+  // Resume button) over a live task. The active branch below clears paused
+  // and restores taskActive=true instead.
+  if (status.paused && !status.active) {
     store.setPausing(sessionId, false)
     store.setPaused(sessionId, true)
     store.setTaskActive(sessionId, false)

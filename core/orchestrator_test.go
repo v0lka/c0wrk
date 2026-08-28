@@ -297,14 +297,19 @@ func TestHandleMessage_ReactivatesTask(t *testing.T) {
 // TestHandleMessage_RoutingFailureDoesNotReactivateTask verifies the commit
 // point of continuation reactivation: when a continuation fails BEFORE its
 // execution starts (routing error), the anchor task keeps its prior terminal
-// status — ReactivateTask must NOT have flipped it back to in_progress.
-// Regression guard for the orphaned in_progress task: the manager's
-// fresh-workflow fallback then created a new task row, nothing ever closed
-// the reactivated anchor, the session kept has_unfinished_task=true forever,
-// and every app restart re-injected the "Task failed / Resume" banner over an
-// otherwise successfully completed session.
+// status — ReactivateTask must NOT have flipped it back to in_progress, and
+// FailTask must NOT have flipped it to failed. Regression guard for the
+// orphaned in_progress task: the manager's fresh-workflow fallback then
+// created a new task row, nothing ever closed the reactivated anchor, the
+// session kept has_unfinished_task=true forever, and every app restart
+// re-injected the "Task failed / Resume" banner over an otherwise
+// successfully completed session. The FailTask guard covers the mirror bug:
+// routing failure used to flip the completed anchor to failed, which counts
+// as unfinished/resumable forever and dead-ends the manager's fresh-retry
+// fallback (shouldRetryContinuationFresh) on the resumable banner.
 func TestHandleMessage_RoutingFailureDoesNotReactivateTask(t *testing.T) {
 	reactivateCalled := false
+	failCalled := false
 
 	// Every LLM call fails — the router call in particular, mirroring the
 	// real-world repro (router provider outage before execution started).
@@ -337,6 +342,10 @@ func TestHandleMessage_RoutingFailureDoesNotReactivateTask(t *testing.T) {
 			reactivateCalled = true
 			return nil
 		},
+		failFn: func(string) error {
+			failCalled = true
+			return nil
+		},
 	}
 	orchestrator.SetTaskStore(mockStore)
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
@@ -349,13 +358,76 @@ func TestHandleMessage_RoutingFailureDoesNotReactivateTask(t *testing.T) {
 	if reactivateCalled {
 		t.Error("ReactivateTask must not be called when the continuation fails before execution starts (routing error)")
 	}
+	if failCalled {
+		t.Error("FailTask must not be called when a routing failure hits a non-reactivated completed anchor: flipping it to failed leaves the session permanently resumable (failed counts as unfinished) and blocks the manager's fresh-retry fallback")
+	}
 }
 
-// mockTaskStoreWithReactivate is a mock TaskPersistence that tracks ReactivateTask calls.
+// TestHandleMessage_RoutingFailureFailsFreshTask verifies the other side of
+// the routing-failure FailTask gate: a LIVE task row must still be flipped to
+// failed. A fresh task's row is created in_progress (SetOriginalRequest →
+// PersistNewTask) before routing runs, so a routing failure must mark it
+// failed — otherwise the row lingers in_progress as a silent-resume
+// candidate. The goal path (reactivated before routing) is covered by the
+// same live-row condition in routeAndActivateSkills.
+func TestHandleMessage_RoutingFailureFailsFreshTask(t *testing.T) {
+	failCalled := false
+
+	// Every LLM call fails — the router call in particular.
+	mockLLM := &mockLLMCaller{
+		callFn: func(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+			return nil, errors.New("router LLM call failed: connection refused")
+		},
+	}
+
+	registry := createTestRegistry()
+	r := newCoreRouter(mockLLM, 5)
+
+	mockStore := &mockTaskStoreWithReactivate{
+		failFn: func(string) error {
+			failCalled = true
+			return nil
+		},
+	}
+
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
+		Router:         r,
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   llm.NewSimpleTokenCounter(),
+		ContextFactory: testContextFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+		// Fresh task: setupBlackboard uses the factory, so the blackboard is
+		// a PersistableBlackboard wired to the mock store (FailTask →
+		// PersistFailure).
+		BBFactory: func(taskID string) orchestration.Blackboard {
+			return &testPersistableBlackboard{
+				MapBlackboard: orchestration.NewMapBlackboard(),
+				taskID:        taskID,
+				store:         mockStore,
+			}
+		},
+	})
+	orchestrator.SetTaskStore(mockStore)
+
+	_, err := orchestrator.HandleMessage(context.Background(), "Fresh task", "session-789", HandleOptions{})
+	if err == nil {
+		t.Fatal("expected HandleMessage to fail with the routing error")
+	}
+
+	if !failCalled {
+		t.Error("FailTask must be called when routing fails on a fresh task: its in_progress row must be marked failed, not left lingering as a silent-resume candidate")
+	}
+}
+
+// mockTaskStoreWithReactivate is a mock TaskPersistence that tracks
+// ReactivateTask and PersistFailure calls.
 type mockTaskStoreWithReactivate struct {
 	taskState    *TaskState
 	loadErr      error
 	reactivateFn func(taskID string) error
+	failFn       func(taskID string) error
 }
 
 func (m *mockTaskStoreWithReactivate) PersistNewTask(taskID, sessionID, originalRequest string) error {
@@ -376,7 +448,12 @@ func (m *mockTaskStoreWithReactivate) PersistReflection(taskID string, r orchest
 func (m *mockTaskStoreWithReactivate) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
 	return nil
 }
-func (m *mockTaskStoreWithReactivate) PersistFailure(taskID string) error      { return nil }
+func (m *mockTaskStoreWithReactivate) PersistFailure(taskID string) error {
+	if m.failFn != nil {
+		return m.failFn(taskID)
+	}
+	return nil
+}
 func (m *mockTaskStoreWithReactivate) PersistCancellation(taskID string) error { return nil }
 func (m *mockTaskStoreWithReactivate) PersistPause(taskID string) error        { return nil }
 func (m *mockTaskStoreWithReactivate) PersistFacts(taskID string, facts []orchestration.Fact) error {

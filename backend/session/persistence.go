@@ -32,9 +32,11 @@ type SessionInfo struct {
 	Model             string  `json:"model"`
 	Family            string  `json:"family"`
 	FillPercent       float64 `json:"fill_percent"`
-	// HasUnfinishedTask is true when the session has an in-progress or failed
-	// task. Such sessions cannot be forked (the fork would duplicate a
-	// half-completed execution state). Populated via a correlated subquery.
+	// HasUnfinishedTask is true when the session has an in-progress, paused,
+	// or failed task. GetUnfinishedTask defines the authoritative status list
+	// that the correlated subqueries below must mirror. Such sessions cannot
+	// be forked (the fork would duplicate a half-completed execution state).
+	// Populated via a correlated subquery.
 	HasUnfinishedTask bool `json:"has_unfinished_task"`
 }
 
@@ -374,7 +376,7 @@ func (s *SQLiteSessionStore) LoadSession(ctx context.Context, id string) (*Sessi
 	var info SessionInfo
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(pinned, 0), COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(fill_percent, 0),
-		EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'failed'))
+		EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed'))
 		FROM sessions WHERE id = ?`,
 		id,
 	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask)
@@ -401,7 +403,7 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 		       COALESCE(model, ''),
 		       COALESCE(family, ''),
 		       COALESCE(fill_percent, 0),
-		       EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'failed'))
+		       EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed'))
 		FROM sessions
 		ORDER BY pinned DESC, COALESCE(last_active_at, created_at) DESC`)
 	if err != nil {
@@ -438,7 +440,7 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 func (s *SQLiteSessionStore) ListSessionsByProject(ctx context.Context, projectID string) ([]SessionInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(pinned, 0), COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(fill_percent, 0),
-		EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'failed'))
+		EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed'))
 		FROM sessions
 		WHERE project_id = ?
 		ORDER BY pinned DESC, COALESCE(last_active_at, created_at) DESC`, projectID)
