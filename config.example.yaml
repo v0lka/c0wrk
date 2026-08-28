@@ -206,6 +206,7 @@ executor:
     maxSummarizeTokens: 16000 # Max tokens for summarization LLM calls
     observationTruncate: 500 # Characters to truncate observations in summaries
     safetyMarginPercent: 5 # % of context window reserved as safety margin
+    manualTargetPercent: 30 # Target context fill (%) user-triggered manual compaction aims to reach; 0/unset falls back to 30
 
   # --- Tool Result Budget ---------------------------------------------------
   tool_result_budget:

@@ -141,6 +141,9 @@ func TestCompactSessionContext_IdleSession(t *testing.T) {
 	if fin.NothingCompacted {
 		t.Error("a 60-message history must actually compact — nothing_compacted must be false")
 	}
+	if !fin.CompactionNoOp {
+		t.Error("after a successful compaction the dialogue fits the target — compaction_noop must be true")
+	}
 	if fin.DeferredToResume {
 		t.Error("no paused task existed — nothing to defer to a resume")
 	}
@@ -200,6 +203,9 @@ func TestCompactSessionContext_NoOpIdleSession(t *testing.T) {
 	}
 	if !fin.NothingCompacted {
 		t.Error("expected nothing_compacted=true for a history within the limits")
+	}
+	if !fin.CompactionNoOp {
+		t.Error("a no-op outcome changed nothing — compaction_noop must be true")
 	}
 	if fin.DeferredToResume {
 		t.Error("no paused task existed — nothing to defer to a resume")
@@ -768,4 +774,59 @@ func TestConvertChatMessages_MarkerWithoutSnapshotIsNoop(t *testing.T) {
 	if len(history) != 2 {
 		t.Fatalf("snapshot-less marker must be a no-op, got %d messages", len(history))
 	}
+}
+
+// TestGetSessionRuntimeStatus_CompactionNoOp verifies the runtime-status
+// snapshot surfaces the orchestrator's manual-compaction no-op prediction:
+// false for a history above the manual-compaction budget (button enabled),
+// true for one within it (button disabled), and FAIL-OPEN false whenever the
+// orchestrator is unknown (bare session, never-initialized session) or the
+// session is not in memory at all.
+func TestGetSessionRuntimeStatus_CompactionNoOp(t *testing.T) {
+	t.Run("history above budget → false", func(t *testing.T) {
+		// 30 pairs ≈ 60 messages ≈ 510 tokens > the 255-token budget
+		// (effective base 850 × 30%): a compaction would shrink it.
+		manager, sess, _, _, _ := newCompactionTestManagerWithHistory(t, 30, nil)
+		status, err := manager.GetSessionRuntimeStatus(sess.ID)
+		if err != nil {
+			t.Fatalf("GetSessionRuntimeStatus failed: %v", err)
+		}
+		if status.CompactionNoOp {
+			t.Error("history above the budget must report compaction_noop=false")
+		}
+	})
+	t.Run("history within budget → true", func(t *testing.T) {
+		// 2 pairs = 4 messages ≈ 34 tokens ≤ 255: a compaction would no-op.
+		manager, sess, _, _, _ := newCompactionTestManagerWithHistory(t, 2, nil)
+		status, err := manager.GetSessionRuntimeStatus(sess.ID)
+		if err != nil {
+			t.Fatalf("GetSessionRuntimeStatus failed: %v", err)
+		}
+		if !status.CompactionNoOp {
+			t.Error("history within the budget must report compaction_noop=true")
+		}
+	})
+	t.Run("no orchestrator → fail-open false", func(t *testing.T) {
+		manager, _, _ := testManager(t)
+		manager.mu.Lock()
+		manager.sessions["sess-bare"] = &Session{ID: "sess-bare"}
+		manager.mu.Unlock()
+		status, err := manager.GetSessionRuntimeStatus("sess-bare")
+		if err != nil {
+			t.Fatalf("GetSessionRuntimeStatus failed: %v", err)
+		}
+		if status.CompactionNoOp {
+			t.Error("a session without an orchestrator must fail open (compaction_noop=false)")
+		}
+	})
+	t.Run("unknown session → fail-open false", func(t *testing.T) {
+		manager, _, _ := testManager(t)
+		status, err := manager.GetSessionRuntimeStatus("sess-unknown")
+		if err != nil {
+			t.Fatalf("GetSessionRuntimeStatus failed: %v", err)
+		}
+		if status.CompactionNoOp {
+			t.Error("an unknown session must fail open (compaction_noop=false)")
+		}
+	})
 }

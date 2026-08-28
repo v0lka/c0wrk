@@ -62,6 +62,7 @@ export function handleContextFill(store: ContextFillStore, sessionId: string, da
 /** Minimal store surface the manual-compaction handlers need. */
 export interface CompactionStore {
   setCompacting: (sessionId: string, compacting: boolean) => void
+  setCompactionNoOp: (sessionId: string, noOp: boolean) => void
   setActivityStatus: (sessionId: string, status: string | null) => void
   setPausing: (sessionId: string, pausing: boolean) => void
   setPaused: (sessionId: string, paused: boolean) => void
@@ -85,9 +86,10 @@ export function handleCompactionStarted(store: CompactionStore, sessionId: strin
  *  - an error surfaces the "Compaction failed" label;
  *  - a failed auto-resume (paused_without_resume) re-applies the paused
  *    state — the session sits at a checkpoint the UI never saw;
- *  - nothing_compacted without a resume (idle session) clears the "Compacting"
- *    label right here — the backend emits no context_compaction card for a
- *    no-op, so nothing else would ever clear it;
+ *  - nothing_compacted without a resume and without a deferral (idle session)
+ *    surfaces the "Context already compacted" label right here — the backend
+ *    emits no context_compaction card for a no-op, so silently dropping the
+ *    "Compacting" label would read as if nothing happened;
  *  - deferred_to_resume WITH the flow's auto-resume behaves like resumed:
  *    the no-op armed the one-shot resume compaction and the flow auto-resumes
  *    the task it paused, so task_resumed ("Resuming...") owns the next label —
@@ -103,9 +105,13 @@ export function handleCompactionStarted(store: CompactionStore, sessionId: strin
 export function handleCompactionFinished(
   store: CompactionStore,
   sessionId: string,
-  data: { success?: boolean; error?: string; cancelled?: boolean; resumed?: boolean; paused_without_resume?: boolean; nothing_compacted?: boolean; deferred_to_resume?: boolean },
+  data: { success?: boolean; error?: string; cancelled?: boolean; resumed?: boolean; paused_without_resume?: boolean; nothing_compacted?: boolean; deferred_to_resume?: boolean; compaction_noop?: boolean },
 ): void {
   store.setCompacting(sessionId, false)
+  // Post-flow no-op verdict from the backend: refresh the compact button's
+  // disabled state without a status refetch (absent on older payloads →
+  // fail-open, the button stays clickable).
+  store.setCompactionNoOp(sessionId, data.compaction_noop === true)
   if (data.paused_without_resume) {
     // Same transitions as handleSessionPausedEvent: unlock into the paused
     // state so the Resume/Stop controls appear. A compaction error keeps its
@@ -119,12 +125,19 @@ export function handleCompactionFinished(
   if (data.error) {
     store.setActivityStatus(sessionId, 'Compaction failed')
   } else if (!data.resumed) {
-    // Covers the idle no-op (nothing_compacted: no card follows, nothing is
-    // running), the no-op deferral on a user-paused session
-    // (deferred_to_resume without an auto-resume: the paused state is
-    // already shown and no task_resumed will ever arrive to take the
-    // label), and plain success/cancel with nothing to resume.
-    store.setActivityStatus(sessionId, null)
+    if (data.nothing_compacted && !data.deferred_to_resume) {
+      // The idle no-op: no context_compaction card follows (the backend
+      // emits none for a no-op) and nothing is running — surface the no-op
+      // as its own label (same pattern as "Compaction failed") instead of
+      // letting "Compacting" silently disappear.
+      store.setActivityStatus(sessionId, 'Context already compacted')
+    } else {
+      // Covers the no-op deferral on a user-paused session
+      // (deferred_to_resume without an auto-resume: the paused state is
+      // already shown and no task_resumed will ever arrive to take the
+      // label), and plain success/cancel with nothing to resume.
+      store.setActivityStatus(sessionId, null)
+    }
   }
   // resumed: keep the current label — task_resumed replaces it with
   // "Resuming..." when the auto-resumed task spins up.

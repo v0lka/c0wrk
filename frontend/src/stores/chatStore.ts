@@ -42,6 +42,15 @@ interface ChatState {
   // button). Cleared by compaction_finished and reconciled from the runtime
   // status snapshot on session switch/restart.
   compacting: Record<string, boolean>
+  // Manual compaction would be a no-op per session: sessionId -> true when the
+  // backend predicts a manual compaction cannot shrink the conversation
+  // history (it already fits the compaction target) — the compact button
+  // renders disabled with an explanatory tooltip. Absent key = unknown/false
+  // (fail-open: the button stays clickable). Set from the runtime-status
+  // snapshot (reconcile/refetch), refreshed by compaction_finished, and
+  // re-evaluated by the targeted refetch after terminal task events (a
+  // finished task grew the history past the target again).
+  compactionNoOp: Record<string, boolean>
   // Context fill per step, keyed by session then step: sessionId -> stepId -> fill percent.
   // Nested per-session: plan step ids (step_1, ...) are NOT globally unique
   // across sessions, and fills must survive session switches (A→B→A) — the
@@ -74,6 +83,7 @@ interface ChatActions {
   setPaused: (sessionId: string, paused: boolean) => void
   setPausing: (sessionId: string, pausing: boolean) => void
   setCompacting: (sessionId: string, compacting: boolean) => void
+  setCompactionNoOp: (sessionId: string, noOp: boolean) => void
   setStepContextFill: (sessionId: string, stepId: string, fill: number) => void
   clearStepContextFill: (sessionId: string) => void
   setSessionTokens: (sessionId: string, tokens: Partial<TokenInfo>) => void
@@ -148,6 +158,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   paused: {},
   pausing: {},
   compacting: {},
+  compactionNoOp: {},
   stepContextFill: {},
   sessionTokens: {},
   runtimeEventAt: {},
@@ -369,6 +380,18 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
       return { compacting: rest }
     }
     return { compacting: { ...s.compacting, [sessionId]: true } }
+  }),
+
+  // Manual compaction would be a no-op: the compact button renders disabled
+  // with an explanatory tooltip. Absent key = unknown/false (fail-open — the
+  // button stays clickable).
+  setCompactionNoOp: (sessionId, noOp) => set((s) => {
+    if (!noOp) {
+      if (!(sessionId in s.compactionNoOp)) return s
+      const { [sessionId]: _noOp, ...rest } = s.compactionNoOp
+      return { compactionNoOp: rest }
+    }
+    return { compactionNoOp: { ...s.compactionNoOp, [sessionId]: true } }
   }),
 
   setStepContextFill: (sessionId, stepId, fill) => set((s) => ({

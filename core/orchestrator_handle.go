@@ -298,7 +298,7 @@ func (o *Orchestrator) routeAndActivateSkills(
 		routerSkills[i] = router.SkillDescriptor{Name: sd.Name, Description: sd.Description}
 	}
 
-	routing, err := o.router.Route(ctx, routingMessage, availableTools, o.conversationHistory, routerSkills)
+	routing, err := o.router.Route(ctx, routingMessage, availableTools, o.historySnapshot(), routerSkills)
 	if err != nil {
 		// Small-LLM degradation path: when semantic tool matching is enabled
 		// and the routing JSON is unparseable even after the router's

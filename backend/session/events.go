@@ -263,6 +263,13 @@ type CompactionStartedEventData struct {
 // PausedWithoutResume is true when the flow paused a task and the auto-resume
 // FAILED: a paused checkpoint remains, but session_paused was suppressed while
 // compacting — clients must re-apply the paused state from this flag.
+// CompactionNoOp reports whether ANOTHER manual compaction right now would
+// still change nothing — recomputed by the orchestrator on the post-flow
+// history: true after a successful compaction (the compacted dialogue now
+// fits the target) and after the nothing_compacted outcome (nothing changed);
+// for a cancelled or failed flow it is simply the untouched history's own
+// verdict. The UI refreshes the compact button's disabled state from it
+// without a status refetch.
 type CompactionFinishedEventData struct {
 	Strategy            string  `json:"strategy"`
 	Success             bool    `json:"success"`
@@ -274,6 +281,7 @@ type CompactionFinishedEventData struct {
 	PausedWithoutResume bool    `json:"paused_without_resume,omitempty"`
 	NothingCompacted    bool    `json:"nothing_compacted,omitempty"`
 	DeferredToResume    bool    `json:"deferred_to_resume,omitempty"`
+	CompactionNoOp      bool    `json:"compaction_noop"`
 }
 
 // SkillsActivatedData is the typed Data payload for "skills_activated" events.

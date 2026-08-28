@@ -171,6 +171,15 @@ export interface SessionRuntimeStatus {
   /** True while a manual context compaction is in flight. */
   compacting?: boolean
   /**
+   * True when a manual compaction of the session's conversation history is
+   * guaranteed to change nothing (the dialogue already fits the
+   * manual-compaction target) — the compact button renders disabled with an
+   * explanatory tooltip. Absent/undefined (older backend, unknown session)
+   * fails OPEN: the button stays clickable and a pointless click reports the
+   * existing nothing_compacted outcome.
+   */
+  compaction_noop?: boolean
+  /**
    * Live activity label tracked by the backend emitter ("Thinking...",
    * "Routing request...", "Generating response...", ...). Authoritative only
    * while `active`; replaces the frozen activityStatus left over from before
@@ -185,6 +194,9 @@ function isSessionRuntimeStatus(d: unknown): d is SessionRuntimeStatus {
   return typeof d === 'object' && d !== null
     && typeof (d as Record<string, unknown>).active === 'boolean'
     && typeof (d as Record<string, unknown>).has_unfinished_task === 'boolean'
+    && (!('compaction_noop' in d)
+      || (d as Record<string, unknown>).compaction_noop === undefined
+      || typeof (d as Record<string, unknown>).compaction_noop === 'boolean')
 }
 
 /**

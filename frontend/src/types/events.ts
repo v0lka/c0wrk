@@ -77,19 +77,26 @@ export interface CompactionStartedData { strategy: string }
  * nothing_compacted is set when the strategy left the history unchanged (it
  * already fits within the compaction limits): the flow still succeeds, but no
  * marker row is persisted, the percentages are zero, and no context_compaction
- * card follows — the client must not wait for one. deferred_to_resume is set
- * when such a no-op hit a paused unfinished task: the flow armed the
+ * card follows — the client must not wait for one; when the flow also did not
+ * resume a task (idle session, no deferral), the client surfaces the
+ * "Context already compacted" activity label instead. deferred_to_resume is
+ * set when such a no-op hit a paused unfinished task: the flow armed the
  * orchestrator's one-shot resume compaction before auto-resuming, so the
  * card with the real numbers arrives from the resumed run (treat like
  * resumed). resumed reports whether the flow auto-resumed a task it had
  * paused; paused_without_resume is set when that auto-resume FAILED — a paused
  * checkpoint remains that the UI never saw (session_paused is suppressed
  * while compacting), so the client must re-apply the paused state.
+ * compaction_noop is the post-flow no-op verdict recomputed by the backend on
+ * the CURRENT history: true after a successful compaction (the dialogue now
+ * fits the target) and after the nothing_compacted outcome; the untouched
+ * history's own verdict after a cancelled/failed flow. The client refreshes
+ * the compact button's disabled state from it without a status refetch.
  */
 export interface CompactionFinishedData {
   strategy: string; success: boolean; cancelled?: boolean; error?: string
   before_percent: number; after_percent: number; resumed?: boolean; paused_without_resume?: boolean
-  nothing_compacted?: boolean; deferred_to_resume?: boolean
+  nothing_compacted?: boolean; deferred_to_resume?: boolean; compaction_noop?: boolean
 }
 export interface SessionTokensData { session_input_tokens: number; session_output_tokens: number; model: string; family: string; fill_percent?: number; used_tokens?: number; max_tokens?: number }
 export interface AssistantChunkData { content: string; accumulated_content?: string }
@@ -529,6 +536,7 @@ export function isCompactionFinishedData(d: unknown): d is CompactionFinishedDat
   // older payloads and non-no-op flows simply omit them).
   if ('nothing_compacted' in d && d.nothing_compacted !== undefined && typeof d.nothing_compacted !== 'boolean') return false
   if ('deferred_to_resume' in d && d.deferred_to_resume !== undefined && typeof d.deferred_to_resume !== 'boolean') return false
+  if ('compaction_noop' in d && d.compaction_noop !== undefined && typeof d.compaction_noop !== 'boolean') return false
   return true
 }
 export function isSessionTokensData(d: unknown): d is SessionTokensData { return isObj(d) && has(d, 'session_input_tokens', 'session_output_tokens') }

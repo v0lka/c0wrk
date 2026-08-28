@@ -314,6 +314,11 @@ type BuilderCompactionConfig struct {
 	MaxSummarizeTokens  int
 	ObservationTruncate int
 	SafetyMarginPercent int
+
+	// ManualTargetPercent is the target context fill (in % of the context
+	// window) that user-triggered manual compaction aims to reach. Zero means
+	// "unset" — the consumer falls back to 30.
+	ManualTargetPercent int
 }
 
 // BuilderSlidingWindow configures sliding-window compaction.

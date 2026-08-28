@@ -1,8 +1,16 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { reconcileRuntimeStatus, reconcilePendingActions, stalePromptMatchField } from './sessionRuntime'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { reconcileRuntimeStatus, reconcilePendingActions, refreshCompactionNoOp, stalePromptMatchField } from './sessionRuntime'
 import { useChatStore } from '@/stores/chatStore'
 import type { ChatMessageUI } from '@/types/messages'
+import { getSessionRuntimeStatus } from '@/api/chat'
 import type { PendingActionsResponse } from '@/api/chat'
+
+// refreshCompactionNoOp calls the runtime-status RPC — stub it (the module
+// also re-exports window-touching wails wrappers, so a factory mock keeps the
+// node-env test free of the real module).
+vi.mock('@/api/chat', () => ({
+  getSessionRuntimeStatus: vi.fn(),
+}))
 
 const SESSION = 'sess-1'
 
@@ -15,6 +23,8 @@ function resetStore(): void {
     activityStatus: {},
     paused: {},
     pausing: {},
+    compacting: {},
+    compactionNoOp: {},
     runtimeEventAt: {},
   })
 }
@@ -36,8 +46,31 @@ function sessionMessages(): ChatMessageUI[] {
 describe('reconcileRuntimeStatus', () => {
   beforeEach(resetStore)
 
-  it('replaces a frozen activity label with the backend-tracked phase for an active session', () => {
-    // Reproduces the "Routing request..." stuck bug: the label froze when the
+  it('mirrors the compaction_noop prediction into the per-session store flag', () => {
+    // The backend predicts a manual compaction would change nothing — the
+    // compact button must render disabled for this session after the
+    // reconcile (session switch/restart).
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false, compaction_noop: true })
+    expect(useChatStore.getState().compactionNoOp[SESSION]).toBe(true)
+  })
+
+  it('clears a stale no-op flag when the backend reports compactable again', () => {
+    // A finished task grew the history past the target while unobserved; the
+    // fresh snapshot reports compaction_noop=false and the reconcile must
+    // lift a previously-disabled button.
+    useChatStore.setState({ compactionNoOp: { [SESSION]: true } })
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false, compaction_noop: false })
+    expect(useChatStore.getState().compactionNoOp[SESSION]).toBeUndefined()
+  })
+
+  it('treats an absent compaction_noop field as fail-open (flag cleared)', () => {
+    // Older backend without the field must not leave a stale disabled state.
+    useChatStore.setState({ compactionNoOp: { [SESSION]: true } })
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false })
+    expect(useChatStore.getState().compactionNoOp[SESSION]).toBeUndefined()
+  })
+
+  it('replaces a frozen activity label with the backend-tracked phase for an active session', () => {    // Reproduces the "Routing request..." stuck bug: the label froze when the
     // user switched away mid-routing, while the session advanced far past it.
     useChatStore.setState({
       activityStatus: { [SESSION]: 'Routing request...' },
@@ -430,5 +463,48 @@ describe('stalePromptMatchField', () => {
   it('returns null for non-persistable types', () => {
     expect(stalePromptMatchField('assistant')).toBeNull()
     expect(stalePromptMatchField('error')).toBeNull()
+  })
+})
+
+describe('refreshCompactionNoOp', () => {
+  beforeEach(() => {
+    vi.mocked(getSessionRuntimeStatus).mockReset()
+    resetStore()
+  })
+
+  it('applies the fetched verdict (true and false)', async () => {
+    vi.mocked(getSessionRuntimeStatus).mockResolvedValue({
+      active: false,
+      has_unfinished_task: false,
+      paused: false,
+      compaction_noop: true,
+    })
+    refreshCompactionNoOp(SESSION)
+    await vi.waitFor(() => expect(useChatStore.getState().compactionNoOp[SESSION]).toBe(true))
+
+    // A finished task grew the history past the target: the refetch lifts the
+    // disabled state without a session switch.
+    vi.mocked(getSessionRuntimeStatus).mockResolvedValue({
+      active: false,
+      has_unfinished_task: false,
+      paused: false,
+      compaction_noop: false,
+    })
+    refreshCompactionNoOp(SESSION)
+    await vi.waitFor(() => expect(useChatStore.getState().compactionNoOp[SESSION]).toBeUndefined())
+  })
+
+  it('keeps the previous flag when the RPC fails or returns null (best-effort)', async () => {
+    useChatStore.setState({ compactionNoOp: { [SESSION]: true } })
+
+    vi.mocked(getSessionRuntimeStatus).mockResolvedValue(null)
+    refreshCompactionNoOp(SESSION)
+    await vi.waitFor(() => expect(getSessionRuntimeStatus).toHaveBeenCalled())
+    expect(useChatStore.getState().compactionNoOp[SESSION]).toBe(true)
+
+    vi.mocked(getSessionRuntimeStatus).mockRejectedValue(new Error('rpc down'))
+    refreshCompactionNoOp(SESSION)
+    await vi.waitFor(() => expect(getSessionRuntimeStatus).toHaveBeenCalled())
+    expect(useChatStore.getState().compactionNoOp[SESSION]).toBe(true)
   })
 })

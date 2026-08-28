@@ -308,20 +308,34 @@ type BlackboardFactory func(taskID string) orchestration.Blackboard
 // instance. The session manager enforces this contract — concurrent requests to the
 // same session are rejected before reaching HandleMessage.
 type Orchestrator struct {
-	router              *router.Router
-	llm                 agent.LLMCaller
-	modelSwitcher       *llm.Router // raw LLM router for per-message model override
-	visionResolver      markitdown.VisionResolver
-	toolRegistry        *sdktools.ToolRegistry
-	toolExec            agent.ToolExecutor  // executor tool surface (per-session policy view)
-	coreToolRegistry    *tools.ToolRegistry // core registry with policy support
-	config              OrchestratorConfig
-	contextFactory      ContextManagerFactory
-	logger              *slog.Logger
-	emitter             Emitter
-	modelRegistry       *llm.ModelRegistry
-	localModelProbe     LocalModelProbe // lazily probes OpenAI-compatible endpoints (LM Studio/vLLM/…) for the runtime context window
-	bbFactory           BlackboardFactory
+	router           *router.Router
+	llm              agent.LLMCaller
+	modelSwitcher    *llm.Router // raw LLM router for per-message model override
+	visionResolver   markitdown.VisionResolver
+	toolRegistry     *sdktools.ToolRegistry
+	toolExec         agent.ToolExecutor  // executor tool surface (per-session policy view)
+	coreToolRegistry *tools.ToolRegistry // core registry with policy support
+	config           OrchestratorConfig
+	contextFactory   ContextManagerFactory
+	logger           *slog.Logger
+	emitter          Emitter
+	modelRegistry    *llm.ModelRegistry
+	localModelProbe  LocalModelProbe // lazily probes OpenAI-compatible endpoints (LM Studio/vLLM/…) for the runtime context window
+	bbFactory        BlackboardFactory
+	// historyMu guards conversationHistory against cross-goroutine access.
+	// Writers run on the request goroutine (the recordConversationOutcome /
+	// recordResumeOutcome epilogues, CompactConversationHistory's swap) and
+	// on the session-restore path (SetConversationHistory, before the session
+	// accepts requests); readers include Wails-RPC goroutines — the runtime
+	// status poll (GetSessionRuntimeStatus → ManualCompactionWouldNoOp) and
+	// the manual-compaction flow can observe the history while a request is
+	// finishing, the same cross-goroutine window liveMu covers for
+	// liveMessages. All access goes through historySnapshot /
+	// setConversationHistory / appendHistory so no raw read or write escapes
+	// those helpers.
+	historyMu sync.RWMutex
+	// conversationHistory holds prior user/assistant exchanges from the
+	// session. Guarded by historyMu.
 	conversationHistory []llm.Message
 	taskStore           TaskPersistence       // optional, for ContinueTask blackboard restoration
 	bbRestoreFunc       BlackboardRestoreFunc // optional, restores PersistableBlackboard from store
@@ -1067,7 +1081,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// image-bearing task would lose its images (SetTask is text-only).
 	var resumeContentBlocks []llm.ContentBlock
 	if origReq := bb.GetOriginalRequest(); origReq != "" {
-		if imageBlocks := imageBlocksForRequest(o.conversationHistory, origReq); len(imageBlocks) > 0 {
+		if imageBlocks := imageBlocksForRequest(o.historySnapshot(), origReq); len(imageBlocks) > 0 {
 			conductorMessage := o.augmentWithAttachments(origReq, bb)
 			resumeContentBlocks = buildContentBlocks(conductorMessage, imageBlocks)
 		}
@@ -1544,12 +1558,61 @@ func (o *Orchestrator) SetTaskStore(store TaskPersistence) {
 // Call this during session restore to pre-populate the history from persistent storage,
 // ensuring the planner sees all previous messages even after a backend restart.
 func (o *Orchestrator) SetConversationHistory(history []llm.Message) {
+	o.setConversationHistory(history)
+}
+
+// ConversationHistory returns a copy of the current conversation history (for
+// testing and for the session layer's compaction-marker snapshot). The copy is
+// deliberate: callers run on other goroutines (the marker is marshaled on the
+// compaction flow's goroutine while a resumed request may append) and must not
+// alias the live slice.
+func (o *Orchestrator) ConversationHistory() []llm.Message {
+	return o.historySnapshot()
+}
+
+// historySnapshot returns a deep copy of the conversation history taken under
+// historyMu. Cross-goroutine readers (routing, conductor context seeding, SDK
+// compaction, token counting, the no-op predicate) operate on the copy so a
+// concurrent append or swap on the request goroutine can never race them —
+// neither on the slice header nor on the backing array (appendHistory's
+// retry-collapse rewrites slots a stale header snapshot would still cover).
+func (o *Orchestrator) historySnapshot() []llm.Message {
+	o.historyMu.RLock()
+	defer o.historyMu.RUnlock()
+	if o.conversationHistory == nil {
+		return nil
+	}
+	snapshot := make([]llm.Message, len(o.conversationHistory))
+	copy(snapshot, o.conversationHistory)
+	return snapshot
+}
+
+// setConversationHistory replaces the conversation history under historyMu.
+func (o *Orchestrator) setConversationHistory(history []llm.Message) {
+	o.historyMu.Lock()
+	defer o.historyMu.Unlock()
 	o.conversationHistory = history
 }
 
-// ConversationHistory returns the current conversation history (for testing).
-func (o *Orchestrator) ConversationHistory() []llm.Message {
-	return o.conversationHistory
+// appendHistory appends msgs to the conversation history in one atomic step
+// under historyMu. When retryMessage is non-empty and the history ends with a
+// failed attempt of that exact user message, the failed exchange is collapsed
+// first — the continuation-retry dedup (see recordConversationOutcome). The
+// collapse and the append share one critical section so a concurrent reader
+// can never observe the collapsed-but-not-yet-reappended state.
+func (o *Orchestrator) appendHistory(retryMessage string, msgs ...llm.Message) {
+	o.historyMu.Lock()
+	defer o.historyMu.Unlock()
+	if retryMessage != "" {
+		if n := len(o.conversationHistory); n >= 2 {
+			prev, last := o.conversationHistory[n-2], o.conversationHistory[n-1]
+			if prev.Role == "user" && prev.Content == retryMessage &&
+				last.Role == "assistant" && strings.HasPrefix(last.Content, historyNoteFailedPrefix) {
+				o.conversationHistory = o.conversationHistory[:n-2]
+			}
+		}
+	}
+	o.conversationHistory = append(o.conversationHistory, msgs...)
 }
 
 // HistoryNoteCancelled is the assistant-side conversation-history note
@@ -1625,18 +1688,14 @@ func (o *Orchestrator) recordConversationOutcome(ctx context.Context, message st
 	// it with the retry's outcome instead of duplicating the user message.
 	// This also matches how the persisted store reads after a restart
 	// (consecutive assistant entries collapse to the most recent one).
-	if n := len(o.conversationHistory); n >= 2 {
-		prev, last := o.conversationHistory[n-2], o.conversationHistory[n-1]
-		if prev.Role == "user" && prev.Content == message &&
-			last.Role == "assistant" && strings.HasPrefix(last.Content, historyNoteFailedPrefix) {
-			o.conversationHistory = o.conversationHistory[:n-2]
-		}
-	}
+	// The collapse and the append run as ONE locked step (appendHistory) —
+	// historyMu's other readers are Wails-RPC goroutines, so the epilogue
+	// must not touch the field directly.
 
 	switch {
 	case err == nil || errors.Is(err, orchestration.ErrExecutionIncomplete):
 		if result == nil {
-			o.conversationHistory = append(o.conversationHistory, userMsg)
+			o.appendHistory(message, userMsg)
 			return
 		}
 		var reasoning string
@@ -1652,17 +1711,17 @@ func (o *Orchestrator) recordConversationOutcome(ctx context.Context, message st
 		if agent.DetectToolCallSyntaxInContent(assistantContent) {
 			assistantContent = HistoryNoteFailed("task ended in failure-mode: model printed tool-call syntax as text instead of using tool_use blocks")
 		}
-		o.conversationHistory = append(o.conversationHistory, userMsg,
+		o.appendHistory(message, userMsg,
 			llm.Message{Role: "assistant", Content: assistantContent, ReasoningContent: reasoning})
 	case ctx.Err() != nil:
 		// Cancellation (or deadline): the manager persists a task_cancelled
 		// event; mirror it in the in-memory history.
-		o.conversationHistory = append(o.conversationHistory, userMsg,
+		o.appendHistory(message, userMsg,
 			llm.Message{Role: "assistant", Content: HistoryNoteCancelled})
 	default:
 		// Hard failure: the manager persists an error event; mirror it so
 		// the rejected request stays visible to future routing/planning.
-		o.conversationHistory = append(o.conversationHistory, userMsg,
+		o.appendHistory(message, userMsg,
 			llm.Message{Role: "assistant", Content: HistoryNoteFailed(err.Error())})
 	}
 }
@@ -1679,13 +1738,13 @@ func (o *Orchestrator) recordResumeOutcome(ctx context.Context, bb orchestration
 		if agent.DetectToolCallSyntaxInContent(assistantContent) {
 			assistantContent = HistoryNoteFailed("task ended in failure-mode: model printed tool-call syntax as text instead of using tool_use blocks")
 		}
-		o.conversationHistory = append(o.conversationHistory,
+		o.appendHistory("",
 			llm.Message{Role: "assistant", Content: assistantContent, ReasoningContent: lastReasoningContent(bb)})
 	case ctx.Err() != nil:
-		o.conversationHistory = append(o.conversationHistory,
+		o.appendHistory("",
 			llm.Message{Role: "assistant", Content: HistoryNoteCancelled})
 	case err != nil:
-		o.conversationHistory = append(o.conversationHistory,
+		o.appendHistory("",
 			llm.Message{Role: "assistant", Content: HistoryNoteFailed(err.Error())})
 	}
 }
@@ -1874,7 +1933,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// sessions don't overflow the Conductor's context. The most recent
 	// messages are kept — they carry the dialogue context the agent needs
 	// to understand follow-up references (e.g. "implement variant a").
-	conductorHistory := truncateHistory(o.conversationHistory, o.config.ConductorHistoryWindow)
+	conductorHistory := truncateHistory(o.historySnapshot(), o.config.ConductorHistoryWindow)
 
 	plansDir := opts.SessionPlansDir
 	execResult, err := o.runConductor(ctx, conductorMessage, bb, availableTools, plansDir, conductorHistory, nil, contentBlocks, "", "")

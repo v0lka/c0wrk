@@ -353,6 +353,7 @@ type CompactionConfig struct {
 	MaxSummarizeTokens  int                  `yaml:"maxSummarizeTokens"`  // max tokens for summarization LLM calls (default: 16000)
 	ObservationTruncate int                  `yaml:"observationTruncate"` // chars to truncate observations in summaries (default: 500)
 	SafetyMarginPercent int                  `yaml:"safetyMarginPercent"` // % of context window reserved as safety margin (default: 5)
+	ManualTargetPercent int                  `yaml:"manualTargetPercent"` // target context fill % user-triggered manual compaction aims to reach (default: 30)
 }
 
 // CompactionThresholds defines context window usage thresholds for compaction triggers.

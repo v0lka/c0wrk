@@ -17,6 +17,7 @@
  * the next reload).
  */
 import type { PendingActionsResponse, SessionRuntimeStatus } from '@/api/chat'
+import { getSessionRuntimeStatus } from '@/api/chat'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import { useGoalStore } from '@/stores/goalStore'
 import type { ChatMessageUI, MessageType } from '@/types/messages'
@@ -97,6 +98,12 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
   // session restores the Compacting UI (locked input, cancel affordance)
   // even when the compaction_started event fired with no live listener.
   store.setCompacting(sessionId, status.compacting === true)
+
+  // Manual compaction would be a no-op: mirror the backend's prediction so
+  // the compact button renders disabled (with its tooltip) for a history
+  // already within the compaction target. Absent field (older backend)
+  // resolves to false — fail-open, the button stays clickable.
+  store.setCompactionNoOp(sessionId, status.compaction_noop === true)
 
   // Stale-snapshot guard: runtimeEventAt is stamped by the streaming/activity
   // store actions on every LIVE event-driven mutation, so a mark newer than
@@ -427,4 +434,27 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
   }
 
   return resolvedStale
+}
+
+/**
+ * Targeted refresh of the compaction no-op flag (the compact button's
+ * disabled state) after an event that changed the conversation history
+ * WITHOUT a session switch — a finished task appended its exchange to the
+ * history, so a previously-no-op session may now be compactable again.
+ * reconcileRuntimeStatus above only runs on history load (ChatArea), so
+ * terminal task events call this instead.
+ *
+ * Deliberately narrow: fetches the runtime status and applies ONLY
+ * compactionNoOp — the full reconcile is load-time logic (stale-prompt
+ * resolution, resume banners) that must not run from an event handler.
+ * Best-effort: on RPC failure the flag keeps its previous value until the
+ * next reconcile/refetch.
+ */
+export function refreshCompactionNoOp(sessionId: string): void {
+  getSessionRuntimeStatus(sessionId)
+    .then((status) => {
+      if (!status) return
+      useChatStore.getState().setCompactionNoOp(sessionId, status.compaction_noop === true)
+    })
+    .catch(() => { /* best-effort — see doc comment */ })
 }

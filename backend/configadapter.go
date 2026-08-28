@@ -142,6 +142,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 				MaxSummarizeTokens:  cfg.Executor.Compaction.MaxSummarizeTokens,
 				ObservationTruncate: cfg.Executor.Compaction.ObservationTruncate,
 				SafetyMarginPercent: cfg.Executor.Compaction.SafetyMarginPercent,
+				ManualTargetPercent: cfg.Executor.Compaction.ManualTargetPercent,
 			},
 			ToolResultBudget: core.BuilderToolResultBudget{
 				HardCapTokens:   cfg.Executor.ToolResultBudget.HardCapTokens,

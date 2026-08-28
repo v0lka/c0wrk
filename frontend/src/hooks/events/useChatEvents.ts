@@ -11,6 +11,7 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
 import * as reviewApi from '@/api/review'
 import { generateMessageId } from '@/lib/ids'
+import { refreshCompactionNoOp } from '@/lib/sessionRuntime'
 import type { ChatMessageUI } from '@/types/messages'
 import { handleSessionPausedEvent, handleSessionResumedEvent } from './sessionLifecycleHandlers'
 
@@ -123,6 +124,9 @@ export function useChatEvents(sessionId: string | null): void {
         store.setActivityStatus(sessionId, null)
         store.setTaskActive(sessionId, false)
         store.setPausing(sessionId, false)
+        // The failed exchange still grew the conversation history — refresh
+        // the compaction no-op flag (the compact button's disabled state).
+        refreshCompactionNoOp(sessionId)
       }),
     )
 
@@ -135,6 +139,11 @@ export function useChatEvents(sessionId: string | null): void {
         store.setActivityStatus(sessionId, null)
         store.setTaskActive(sessionId, false)
         store.setPausing(sessionId, false)
+        // The completed exchange was appended to the conversation history
+        // (the orchestrator records the outcome before this event fires), so
+        // a previously-no-op session may be compactable again — refresh the
+        // compaction no-op flag (the compact button's disabled state).
+        refreshCompactionNoOp(sessionId)
         if (data.output) {
           // Dedup: in the implicit text-only finish path the executor streams
           // the answer via assistant_done (already flushed to a permanent
@@ -239,6 +248,12 @@ export function useChatEvents(sessionId: string | null): void {
         store.setTaskActive(sessionId, false)
         store.setPaused(sessionId, false)
         store.setPausing(sessionId, false)
+        // A cancelled task still records its exchange in the conversation
+        // history (the orchestrator's cancellation epilogue appends the user
+        // message + cancellation note), so a previously-no-op session may be
+        // compactable again — refresh the compaction no-op flag (the compact
+        // button's disabled state), mirroring task_complete / error.
+        refreshCompactionNoOp(sessionId)
         store.addMessage(sessionId, {
           id: generateMessageId(),
           sessionId,

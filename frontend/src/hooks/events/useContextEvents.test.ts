@@ -81,6 +81,7 @@ describe('handleContextFill', () => {
 describe('handleCompactionStarted / handleCompactionFinished', () => {
   interface CompactionRecorded {
     compacting: Array<{ sessionId: string; value: boolean }>
+    compactionNoOp: Array<{ sessionId: string; value: boolean }>
     activity: Array<{ sessionId: string; status: string | null }>
     pausing: Array<{ sessionId: string; value: boolean }>
     paused: Array<{ sessionId: string; value: boolean }>
@@ -88,10 +89,11 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {
   }
 
   function makeCompactionStore() {
-    const recorded: CompactionRecorded = { compacting: [], activity: [], pausing: [], paused: [], taskActive: [] }
+    const recorded: CompactionRecorded = { compacting: [], compactionNoOp: [], activity: [], pausing: [], paused: [], taskActive: [] }
     return {
       recorded,
       setCompacting: (sessionId: string, value: boolean) => { recorded.compacting.push({ sessionId, value }) },
+      setCompactionNoOp: (sessionId: string, value: boolean) => { recorded.compactionNoOp.push({ sessionId, value }) },
       setActivityStatus: (sessionId: string, status: string | null) => { recorded.activity.push({ sessionId, status }) },
       setPausing: (sessionId: string, value: boolean) => { recorded.pausing.push({ sessionId, value }) },
       setPaused: (sessionId: string, value: boolean) => { recorded.paused.push({ sessionId, value }) },
@@ -122,15 +124,17 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {
     expect(store.recorded.activity).toEqual([{ sessionId: 'sess-1', status: null }])
   })
 
-  it('finished with nothing_compacted and no resume clears the activity right away', () => {
+  it('finished with nothing_compacted and no resume shows the "Context already compacted" label', () => {
     // No-op compaction (history already fits the limits): success=true, zero
     // percentages, and the backend emits NO context_compaction card for a
-    // no-op — nothing else would ever clear the "Compacting" label, so the
-    // handler must null it here.
+    // no-op — silently dropping the "Compacting" label would read as if
+    // nothing happened, so the handler surfaces the no-op as its own label
+    // (same pattern as "Compaction failed"). The compacting lock still
+    // releases.
     const store = makeCompactionStore()
     handleCompactionFinished(store, 'sess-1', { success: true, resumed: false, nothing_compacted: true })
     expect(store.recorded.compacting).toEqual([{ sessionId: 'sess-1', value: false }])
-    expect(store.recorded.activity).toEqual([{ sessionId: 'sess-1', status: null }])
+    expect(store.recorded.activity).toEqual([{ sessionId: 'sess-1', status: 'Context already compacted' }])
   })
 
   it('finished with deferred_to_resume keeps the label for task_resumed (behaves like resumed)', () => {
@@ -155,6 +159,20 @@ describe('handleCompactionStarted / handleCompactionFinished', () => {
     handleCompactionFinished(store, 'sess-1', { success: true, resumed: false, nothing_compacted: true, deferred_to_resume: true })
     expect(store.recorded.compacting).toEqual([{ sessionId: 'sess-1', value: false }])
     expect(store.recorded.activity).toEqual([{ sessionId: 'sess-1', status: null }])
+  })
+
+  it('finished mirrors the backend compaction_noop verdict into the store (absent → fail-open false)', () => {
+    // The post-flow no-op verdict refreshes the compact button's disabled
+    // state without a status refetch: true after a successful compaction /
+    // no-op outcome, the untouched history's verdict after cancelled/error.
+    // An absent field (older backend) must resolve to false (fail-open).
+    const store = makeCompactionStore()
+    handleCompactionFinished(store, 'sess-1', { success: true, resumed: false, compaction_noop: true })
+    expect(store.recorded.compactionNoOp).toEqual([{ sessionId: 'sess-1', value: true }])
+
+    const store2 = makeCompactionStore()
+    handleCompactionFinished(store2, 'sess-1', { success: false, error: 'boom' })
+    expect(store2.recorded.compactionNoOp).toEqual([{ sessionId: 'sess-1', value: false }])
   })
 
   it('finished on failure releases the lock and surfaces the failure label', () => {

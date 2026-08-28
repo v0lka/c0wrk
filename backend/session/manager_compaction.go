@@ -244,6 +244,12 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 	if err != nil {
 		errMsg = err.Error()
 	}
+	// Post-flow no-op verdict for the client (the compact button's disabled
+	// state), recomputed on the orchestrator's CURRENT history: a successful
+	// compaction left the dialogue within the target → true; a no-op outcome
+	// changed nothing → true; a cancelled/failed flow left the history
+	// untouched → its own verdict.
+	compactionNoOp := orch.ManualCompactionWouldNoOp()
 	m.emitFunc(Event{
 		SessionID: sessionID,
 		Type:      "compaction_finished",
@@ -258,6 +264,7 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 			PausedWithoutResume: pausedWithoutResume,
 			NothingCompacted:    nothingCompacted,
 			DeferredToResume:    deferredToResume,
+			CompactionNoOp:      compactionNoOp,
 		},
 	})
 }

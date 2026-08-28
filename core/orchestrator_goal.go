@@ -353,7 +353,7 @@ func (o *Orchestrator) runGoalLoop(
 
 	// Truncate conversation history once; the trajectory accumulates across
 	// turns via the blackboard so the agent keeps dialogue context.
-	conversationHistory := truncateHistory(o.conversationHistory, o.config.ConductorHistoryWindow)
+	conversationHistory := truncateHistory(o.historySnapshot(), o.config.ConductorHistoryWindow)
 
 	turnRunner := o.goalTurnRunner
 	if turnRunner == nil {
@@ -436,7 +436,7 @@ func (o *Orchestrator) resumeGoalLoop(
 	// request (including this goal loop); every turn's conductor run carries
 	// the pause-checker via buildConductorDeps. No goal-specific signal here.
 
-	conversationHistory := truncateHistory(o.conversationHistory, o.config.ConductorHistoryWindow)
+	conversationHistory := truncateHistory(o.historySnapshot(), o.config.ConductorHistoryWindow)
 
 	// Reuse the persisted routing decision (default to general when absent).
 	if routing == nil {
@@ -465,7 +465,7 @@ func (o *Orchestrator) resumeGoalLoop(
 	// this, a resumed image-bearing goal task would lose its images.
 	resumeContentBlocks := buildContentBlocks(
 		o.augmentWithAttachments(message, bb),
-		imageBlocksForRequest(o.conversationHistory, message),
+		imageBlocksForRequest(o.historySnapshot(), message),
 	)
 	seed := resumeSteps
 	seeded := false

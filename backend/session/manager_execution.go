@@ -1597,6 +1597,15 @@ type SessionRuntimeStatus struct {
 	// Compacting is true while a manual context compaction is in flight. The
 	// UI locks the input and swaps the compact button for a cancel button.
 	Compacting bool `json:"compacting"`
+	// CompactionNoOp is true when a manual compaction of the session's
+	// current conversation history is guaranteed to change nothing (the
+	// dialogue already fits the manual-compaction target — see
+	// Orchestrator.ManualCompactionWouldNoOp). The UI disables the compact
+	// button with an explanatory tooltip. Fail-open: false whenever the
+	// session or its orchestrator is not in memory — a status poll must
+	// never guess "disabled"; a pointless click simply reports the existing
+	// nothing_compacted outcome.
+	CompactionNoOp bool `json:"compaction_noop"`
 	// Activity is the session's last user-facing activity label
 	// ("Thinking...", "Routing request...", "Generating response...", ...)
 	// tracked by the emitter. It lets the frontend replace the frozen
@@ -1633,12 +1642,19 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 		// signals the (possibly unmounted) frontend listeners would have
 		// received as events. Reading the emitter pointer under sess.mu keeps
 		// the pointer stable; the activity/token states have their own locks.
+		// The orchestrator pointer is read under the same lock; the no-op
+		// predicate runs outside it (it only reads orchestrator state, the
+		// same unlocked access pattern the accessors use).
 		sess.mu.Lock()
 		emitter := sess.emitter
+		orch := sess.orchestrator
 		sess.mu.Unlock()
 		if emitter != nil {
 			status.Activity = emitter.LastActivity()
 			status.Streaming = emitter.StreamingActive()
+		}
+		if orch != nil {
+			status.CompactionNoOp = orch.ManualCompactionWouldNoOp()
 		}
 	}
 

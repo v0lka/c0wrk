@@ -179,6 +179,17 @@ describe('isCompactionFinishedData', () => {
         expect(isCompactionFinishedData({ ...valid, deferred_to_resume: 0 })).toBe(false)
     })
 
+    it('accepts compaction_noop as a boolean and as explicitly undefined', () => {
+        expect(isCompactionFinishedData({ ...valid, compaction_noop: true })).toBe(true)
+        expect(isCompactionFinishedData({ ...valid, compaction_noop: false })).toBe(true)
+        expect(isCompactionFinishedData({ ...valid, compaction_noop: undefined })).toBe(true)
+    })
+
+    it('rejects compaction_noop with a non-boolean value', () => {
+        expect(isCompactionFinishedData({ ...valid, compaction_noop: 'yes' })).toBe(false)
+        expect(isCompactionFinishedData({ ...valid, compaction_noop: 1 })).toBe(false)
+    })
+
     it('still rejects payloads missing required fields', () => {
         expect(isCompactionFinishedData({ success: true, before_percent: 1, after_percent: 1 })).toBe(false)
         expect(isCompactionFinishedData(null)).toBe(false)

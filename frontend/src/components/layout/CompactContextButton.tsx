@@ -27,6 +27,13 @@ export function CompactContextButton() {
   const compacting = useChatStore((s) =>
     activeSessionId ? s.compacting[activeSessionId] ?? false : false,
   )
+  // Backend-predicted no-op (the dialogue already fits the compaction target):
+  // the button is disabled with an explanatory tooltip. Absent key/undefined
+  // (unknown, older backend) fails OPEN — the button stays clickable and a
+  // pointless click reports the backend's nothing_compacted outcome.
+  const compactionNoOp = useChatStore((s) =>
+    activeSessionId ? s.compactionNoOp[activeSessionId] === true : false,
+  )
 
   const startCompaction = useCallback(
     async (strategy: string) => {
@@ -60,6 +67,25 @@ export function CompactContextButton() {
         className="h-6 w-6 shrink-0 text-warning hover:text-warning"
       >
         <X className="size-3.5" />
+      </Button>
+    )
+  }
+
+  // Guaranteed no-op: a manual compaction cannot shrink the dialogue (it is
+  // already under the compaction target), so the strategy menu is replaced by
+  // a disabled button with the explanation. Fail-open: an unknown verdict
+  // (undefined) never lands here — the dropdown stays available.
+  if (compactionNoOp) {
+    return (
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        disabled
+        title="Context is already under the compaction target"
+        aria-label="Compact context (already under the compaction target)"
+        className="h-6 w-6 shrink-0 text-muted-foreground/50"
+      >
+        <Shrink className="size-3.5" />
       </Button>
     )
   }
