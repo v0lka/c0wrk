@@ -1950,6 +1950,7 @@ export namespace session {
 	    unfinished_task_id?: string;
 	    paused: boolean;
 	    compacting: boolean;
+	    compaction_noop: boolean;
 	    activity?: string;
 	    streaming: boolean;
 	
@@ -1964,6 +1965,7 @@ export namespace session {
 	        this.unfinished_task_id = source["unfinished_task_id"];
 	        this.paused = source["paused"];
 	        this.compacting = source["compacting"];
+	        this.compaction_noop = source["compaction_noop"];
 	        this.activity = source["activity"];
 	        this.streaming = source["streaming"];
 	    }
