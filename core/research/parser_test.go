@@ -356,7 +356,7 @@ Coverage >= 90%.
 // the ID carried only in the Identifier table field. The parser must recover
 // both the ID (from the field) and a clean title (prefix-stripped H1).
 func TestParseBrief_DescriptiveH1(t *testing.T) {
-	content := `# Research Brief: Flawgate — Transparent Security Proxy
+	content := `# Research Brief: Aurora — Sample Integration Service
 
 | Field | Value |
 |---|---|
@@ -367,7 +367,7 @@ func TestParseBrief_DescriptiveH1(t *testing.T) {
 	if b.ID != "R-002" {
 		t.Errorf("ID = %q, want R-002 (from Identifier field)", b.ID)
 	}
-	if b.Title != "Flawgate — Transparent Security Proxy" {
+	if b.Title != "Aurora — Sample Integration Service" {
 		t.Errorf("Title = %q, want prefix-stripped H1", b.Title)
 	}
 	if b.Status != "Active" {

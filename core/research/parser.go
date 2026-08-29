@@ -245,7 +245,7 @@ func ParseBrief(content string) Brief {
 var briefH1Re = regexp.MustCompile(`(?m)^#\s+(.+)$`)
 
 // briefTitleFromH1 extracts a human-readable title from a descriptive brief H1
-// such as "# Research Brief: Flawgate — ..." by stripping well-known prefixes
+// such as "# Research Brief: Aurora — ..." by stripping well-known prefixes
 // ("Research Brief:", "Brief:", "Research:", case-insensitive). When no prefix
 // is recognized the raw H1 text is returned. It returns "" when there is no H1.
 // This is a fallback used only when the canonical "# [R-NNN] Title" form is

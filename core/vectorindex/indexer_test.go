@@ -654,7 +654,7 @@ func TestTooLargeForIndex(t *testing.T) {
 	}
 }
 
-// TestProcessFile_SkipsOversized is the regression test for the Flawgate
+// TestProcessFile_SkipsOversized is the regression test for the oversized-file
 // hang: a multi-hundred-MB ONNX model file (protobuf with readable ASCII
 // header, no NUL byte) must be rejected by the size guard — NOT read fully
 // into memory. Without the guard, os.ReadFile + chunkFn would load the whole
@@ -730,7 +730,7 @@ func TestWalkProjectFiles_SkipsOversized(t *testing.T) {
 	}
 }
 
-// pathologicalChunkFunc is a test ChunkFunc that simulates the Flawgate
+// pathologicalChunkFunc is a test ChunkFunc that simulates the
 // tokenizer.json failure mode: a small (under size-limit) data-format file
 // that the structure-aware splitter fragments into a huge number of tiny
 // chunks. The real tokenizer.json (695 KiB HuggingFace BPE vocab/merges)
@@ -751,7 +751,7 @@ func pathologicalChunkFunc(chunkCount int) ChunkFunc {
 }
 
 // TestProcessFile_SkipsExcessChunks is the regression test for the second
-// Flawgate hang: after the oversized model.onnx was skipped, indexing moved
+// indexer hang: after the oversized model.onnx was skipped, indexing moved
 // on to tokenizer.json (695 KiB) and hung because the chunker produced 30,635
 // fragments that reached the embedder in a single batch. The per-file
 // chunk-count cap must skip such a file before it produces any documents,

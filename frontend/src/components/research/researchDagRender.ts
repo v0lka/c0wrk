@@ -480,7 +480,7 @@ export interface ResearchFilePaths {
 /**
  * Resolve the project's directory prefix relative to the research root from
  * the root index entry (whose `path` is a brief.md link like
- * "R-002-flawgate/brief.md" or, for the flat single-project layout, just
+ * "R-002-project/brief.md" or, for the flat single-project layout, just
  * "brief.md"). Returns "" for the flat layout (artifacts live at the root).
  * When no index entry matches, "" is returned (flat fallback).
  */
