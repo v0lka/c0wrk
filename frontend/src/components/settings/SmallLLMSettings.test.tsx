@@ -36,6 +36,7 @@ const baseConfig = {
     top_p: 0,
     top_k: 0,
     repetition_penalty: 0,
+    presence_penalty: 0,
     reasoning_effort: '',
   },
   loop_hardening: {
@@ -145,6 +146,28 @@ describe('SmallLLMSettings — sampling inherit semantics', () => {
     await blur(rep)
     expect(rep.value).toBe('1.2')
     expect(updateSmallLLMConfigMock).not.toHaveBeenCalled()
+  })
+
+  it('presence penalty: inherit renders empty, explicit value commits, >2 rejected', async () => {
+    // Unset (0) renders as an empty input with the inherit placeholder.
+    await render()
+    const pp = field('Presence penalty')!
+    expect(pp).not.toBeNull()
+    expect(pp.value).toBe('')
+    expect(pp.placeholder).toBe('vendor default')
+
+    // An explicit value (the Qwen instruct default 1.5) is sent through on commit.
+    await setField(pp, '1.5')
+    await blur(pp)
+    const sent = updateSmallLLMConfigMock.mock.calls[updateSmallLLMConfigMock.mock.calls.length - 1]?.[0]
+    expect(sent.sampling.presence_penalty).toBe(1.5)
+
+    // Out-of-bounds input (> 2) is rejected and keeps the previous value.
+    const before = updateSmallLLMConfigMock.mock.calls.length
+    await setField(pp, '2.5')
+    await blur(pp)
+    expect(pp.value).toBe('1.5')
+    expect(updateSmallLLMConfigMock.mock.calls.length).toBe(before)
   })
 })
 

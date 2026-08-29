@@ -1768,11 +1768,57 @@ func TestUpdateSmallLLMConfig_InvalidSampling(t *testing.T) {
 			t.Fatalf("zero repetition_penalty means inherit and must be accepted, got: %v", err)
 		}
 	})
+	t.Run("presence_penalty out of range", func(t *testing.T) {
+		cfg := validSmallLLMConfig()
+		cfg.Sampling.PresencePenalty = 2.5
+		err := f.UpdateSmallLLMConfig(cfg)
+		if err == nil {
+			t.Fatal("expected error for presence_penalty > 2")
+		}
+		if !strings.Contains(err.Error(), "presence_penalty") || !strings.Contains(err.Error(), "[0, 2]") {
+			t.Errorf("error must name the field and its range, got: %v", err)
+		}
+		cfg = validSmallLLMConfig()
+		cfg.Sampling.PresencePenalty = -0.5
+		if err := f.UpdateSmallLLMConfig(cfg); err == nil {
+			t.Fatal("expected error for negative presence_penalty")
+		}
+		cfg = validSmallLLMConfig()
+		cfg.Sampling.PresencePenalty = 0 // zero means inherit, valid
+		if err := f.UpdateSmallLLMConfig(cfg); err != nil {
+			t.Fatalf("zero presence_penalty means inherit and must be accepted, got: %v", err)
+		}
+		cfg = validSmallLLMConfig()
+		cfg.Sampling.PresencePenalty = 1.5 // Qwen instruct default, valid
+		if err := f.UpdateSmallLLMConfig(cfg); err != nil {
+			t.Fatalf("presence_penalty 1.5 (Qwen instruct default) must be accepted, got: %v", err)
+		}
+	})
 	t.Run("invalid reasoning effort", func(t *testing.T) {
 		cfg := validSmallLLMConfig()
 		cfg.Sampling.ReasoningEffort = "ultra"
 		if err := f.UpdateSmallLLMConfig(cfg); err == nil {
 			t.Fatal("expected error for invalid reasoning_effort")
+		}
+	})
+	t.Run("seeded default reasoning effort", func(t *testing.T) {
+		// On a freshly defaulted config (ApplyDefaults runs inside
+		// newTestAPI), GetSmallLLMConfig reports the seeded default
+		// "medium" (docs/small-llm-defaults-research.md, R3): an unset
+		// value would inherit the model's own default — xhigh on qwen
+		// thinking models — which measured as overthinking on trivial
+		// tasks. A fresh API is used because sibling subtests above
+		// persist fixtures whose effort is "".
+		fresh, _, _ := newTestAPI(t)
+		if got := fresh.GetSmallLLMConfig().Sampling.ReasoningEffort; got != "medium" {
+			t.Fatalf("GetSmallLLMConfig().Sampling.ReasoningEffort = %q on a fresh config, want the seeded default %q", got, "medium")
+		}
+		// The seeded default must validate and persist like any explicit
+		// value.
+		cfg := validSmallLLMConfig()
+		cfg.Sampling.ReasoningEffort = "medium"
+		if err := f.UpdateSmallLLMConfig(cfg); err != nil {
+			t.Fatalf("seeded default reasoning_effort %q must be accepted, got: %v", "medium", err)
 		}
 	})
 }
@@ -1823,6 +1869,7 @@ func TestSmallLLMConfig_RoundTrip_FullProfileLossless(t *testing.T) {
 			TopP:              0.85,
 			TopK:              40,
 			RepetitionPenalty: 1.15,
+			PresencePenalty:   1.5,
 			ReasoningEffort:   "low",
 		},
 		LoopHardening: SmallLLMLoopHardeningResp{
@@ -1919,6 +1966,9 @@ func TestSmallLLMConfig_RoundTrip_FullProfileLossless(t *testing.T) {
 	}
 	if got.Sampling.RepetitionPenalty != want.Sampling.RepetitionPenalty {
 		t.Errorf("Sampling.RepetitionPenalty = %v, want %v", got.Sampling.RepetitionPenalty, want.Sampling.RepetitionPenalty)
+	}
+	if got.Sampling.PresencePenalty != want.Sampling.PresencePenalty {
+		t.Errorf("Sampling.PresencePenalty = %v, want %v", got.Sampling.PresencePenalty, want.Sampling.PresencePenalty)
 	}
 	if got.Sampling.ReasoningEffort != want.Sampling.ReasoningEffort {
 		t.Errorf("Sampling.ReasoningEffort = %q, want %q", got.Sampling.ReasoningEffort, want.Sampling.ReasoningEffort)

@@ -1006,6 +1006,7 @@ export namespace backend {
 	    top_p: number;
 	    top_k: number;
 	    repetition_penalty: number;
+	    presence_penalty: number;
 	    reasoning_effort: string;
 	
 	    static createFrom(source: any = {}) {
@@ -1019,6 +1020,7 @@ export namespace backend {
 	        this.top_p = source["top_p"];
 	        this.top_k = source["top_k"];
 	        this.repetition_penalty = source["repetition_penalty"];
+	        this.presence_penalty = source["presence_penalty"];
 	        this.reasoning_effort = source["reasoning_effort"];
 	    }
 	}

@@ -471,6 +471,8 @@ export interface SmallLLMSampling {
   top_p: number
   top_k: number
   repetition_penalty: number
+  /** 0 = inherit the vendor preset (field not sent). Qwen card: 0–2. */
+  presence_penalty: number
   reasoning_effort: string
 }
 

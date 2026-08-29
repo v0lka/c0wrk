@@ -51,8 +51,11 @@ func TestSmallLLMDefaultMaxToolsFitsGuaranteedSet(t *testing.T) {
 // context-management variant defaults (zero → variant value), mirroring the
 // other variants: values are visible/editable while the profile itself stays
 // a no-op until the toggles are enabled. The variant defaults are tighter
-// than — or, for the reserve, equal to — the general executor baselines
-// (10 / 7 / 85 / 3 / 8192).
+// than the general executor baselines (10 / 7 / 85 / 3); the reserve is
+// deliberately LARGER than the general 8192 — it feeds only the router's
+// context-window validation fallback for models without a resolved
+// OutputLimit (effectively unreachable), and the MaxTokens ceiling itself
+// is the resolved per-model/per-provider OutputLimit (see defaults.go).
 func TestSmallLLMContextDefaultsSeeded(t *testing.T) {
 	cfg := &Config{}
 	ApplyDefaults(cfg)
@@ -72,7 +75,61 @@ func TestSmallLLMContextDefaultsSeeded(t *testing.T) {
 	if got := cfg.SmallLLM.Context.ToolOutputKeepLastN; got != 2 {
 		t.Errorf("context.tool_output_keep_last_n default = %d, want 2", got)
 	}
+	if got := cfg.SmallLLM.Context.OutputTokenReserve; got != 16384 {
+		t.Errorf("context.output_token_reserve default = %d, want 16384", got)
+	}
+}
+
+// TestSmallLLMContextReserveExplicitValuePreserved pins the seeding guard:
+// an explicit non-zero output_token_reserve from YAML (e.g. the former 8192
+// default, still correct for local 16–32K context windows where a 16384
+// reserve would eat half or more of the input budget) must never be
+// overwritten by the variant default.
+func TestSmallLLMContextReserveExplicitValuePreserved(t *testing.T) {
+	cfg := &Config{}
+	cfg.SmallLLM.Context.OutputTokenReserve = 8192
+	ApplyDefaults(cfg)
+
 	if got := cfg.SmallLLM.Context.OutputTokenReserve; got != 8192 {
-		t.Errorf("context.output_token_reserve default = %d, want 8192", got)
+		t.Errorf("explicit context.output_token_reserve = %d after ApplyDefaults, want the preserved 8192", got)
+	}
+}
+
+// TestSmallLLMSamplingReasoningEffortDefaultSeeded verifies that ApplyDefaults
+// seeds the sampling variant's reasoning effort to "medium": an unset value
+// would otherwise inherit the model's own default, which on qwen thinking
+// models is "xhigh" — measured overthinking on trivial tasks (22,276
+// reasoning tokens / 21 min for a simple SVG vs 3,715 tokens / 137 s with
+// thinking off; docs/small-llm-defaults-research.md, R3). "medium" is the
+// model's native pre-training regime with no effort instruction injected.
+// Like the other variant values the seed is unconditional (visible/editable
+// in the UI) while the profile itself stays a no-op until both toggles are on.
+func TestSmallLLMSamplingReasoningEffortDefaultSeeded(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	if cfg.SmallLLM.Sampling.Enabled {
+		t.Error("sampling variant must default to disabled")
+	}
+	if got := cfg.SmallLLM.Sampling.ReasoningEffort; got != "medium" {
+		t.Errorf("sampling.reasoning_effort default = %q, want %q", got, "medium")
+	}
+}
+
+// TestSmallLLMSamplingReasoningEffortExplicitPreserved pins the seeding guard:
+// an explicit non-empty reasoning_effort from YAML must never be overwritten
+// by the variant default. ("" is the documented "unset" sentinel — at the
+// plain-string type level it is indistinguishable from an absent key — and
+// resolves to the seeded "medium"; operators wanting the vendor xhigh inherit
+// disable the sampling variant instead.)
+func TestSmallLLMSamplingReasoningEffortExplicitPreserved(t *testing.T) {
+	for _, explicit := range []string{"off", "low", "medium"} {
+		cfg := &Config{}
+		cfg.SmallLLM.Sampling.ReasoningEffort = explicit
+		ApplyDefaults(cfg)
+
+		if got := cfg.SmallLLM.Sampling.ReasoningEffort; got != explicit {
+			t.Errorf("explicit sampling.reasoning_effort %q was overwritten to %q by ApplyDefaults", explicit, got)
+		}
 	}
 }

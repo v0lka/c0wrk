@@ -424,14 +424,31 @@ func ApplyDefaults(cfg *Config) {
 		// configs where the guaranteed set alone exceeds the budget.
 		cfg.SmallLLM.EssentialTools.MaxTools = 16
 	}
-	// Sampling parameters are deliberately NOT seeded: zero means "inherit
-	// the vendor preset" (see SmallLLMSamplingConfig). Seeding a constant
-	// temperature here previously forced 0.1/top_p 0.9 onto every family the
-	// moment the sampling variant was enabled, clobbering vendor-tuned
-	// presets (the 27-30B regression). Users who want an override set an
-	// explicit value in YAML or the UI.
-	// ReasoningEffort defaults to "" (inherit the model's default). It is left
-	// unset rather than forced so an explicit "" in YAML is preserved.
+	// Sampling numeric parameters are deliberately NOT seeded: zero means
+	// "inherit the vendor preset" (see SmallLLMSamplingConfig). Seeding a
+	// constant temperature here previously forced 0.1/top_p 0.9 onto every
+	// family the moment the sampling variant was enabled, clobbering
+	// vendor-tuned presets (the 27-30B regression). Users who want an
+	// override set an explicit value in YAML or the UI.
+	// ReasoningEffort is the deliberate exception. An unset value inherits
+	// the model's own default, which for qwen thinking models is "xhigh" —
+	// measured overthinking on trivial tasks (22,276 reasoning tokens /
+	// 21 min for a simple SVG vs 3,715 tokens / 137 s with thinking off;
+	// docs/small-llm-defaults-research.md, R3). "medium" is the model's
+	// native pre-training regime — no effort instruction is injected, unlike
+	// "low" which shortens traces but risks retries in multi-turn agentic
+	// tasks — and cuts thinking-token spend 60–90%. So it is seeded like
+	// the other variant values: unconditionally (visible/editable in the
+	// UI), and a no-op until both the master and variant toggles are on.
+	// An explicit non-empty YAML value ("off" | "low" | "medium") is never
+	// overwritten; "" is the "unset" sentinel (indistinguishable from an
+	// absent key at the type level) and resolves to this default. Operators
+	// wanting the vendor xhigh default can disable the sampling variant —
+	// with every numeric parameter unset that is otherwise a behavioral
+	// no-op.
+	if cfg.SmallLLM.Sampling.ReasoningEffort == "" {
+		cfg.SmallLLM.Sampling.ReasoningEffort = "medium"
+	}
 
 	// Loop-hardening thresholds — tighter than the baseline CircuitBreaker so a
 	// small model that repeats itself or makes no progress is caught sooner.
@@ -468,8 +485,27 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.SmallLLM.Context.ToolOutputKeepLastN == 0 {
 		cfg.SmallLLM.Context.ToolOutputKeepLastN = 2
 	}
+	// The output reserve reaches the router as llm.RouterConfig.
+	// OutputTokenReserve and is consulted only there, as the output
+	// reserve in pre-submission context-window validation
+	// (validateContextWindow) for models whose resolved metadata carries
+	// no OutputLimit. The registry resolves every model to a non-zero
+	// OutputLimit (built-in catalog, probe cache, or the 32768 static
+	// fallback), so the fallback tier is effectively unreachable and this
+	// knob does not change the per-request MaxTokens generation ceiling.
+	// The ceiling is the model's resolved ModelMetadata.OutputLimit:
+	// per-model llm.models.<model>.output_limit > per-provider
+	// llm.<provider>.output_token_reserve (applyProviderOutputReserves
+	// seeds it into the registry overrides) > catalog/probe tiers. For a
+	// thinking-capable small model whose catalog output limit (e.g. 8192)
+	// truncates reasoning + answer (thinking tokens are spent before
+	// content; measured ~3.7K-22.3K per turn), raise the ceiling via
+	// llm.models.<model>.output_limit or the per-provider reserve. The
+	// 16384 seed keeps the fallback tier thinking-aware relative to the
+	// general executor default 8192. An explicit YAML value always wins
+	// over this seed (zero → default, non-zero → kept).
 	if cfg.SmallLLM.Context.OutputTokenReserve == 0 {
-		cfg.SmallLLM.Context.OutputTokenReserve = 8192
+		cfg.SmallLLM.Context.OutputTokenReserve = 16384
 	}
 
 	// Self-update defaults. Enabled is the master switch and defaults to true

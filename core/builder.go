@@ -2516,6 +2516,9 @@ func resolveSamplingFunc(s BuilderSmallLLMConfig) llm.SamplingFunc {
 		if s.Sampling.RepetitionPenalty > 0 {
 			d.RepetitionPenalty = &s.Sampling.RepetitionPenalty
 		}
+		if s.Sampling.PresencePenalty > 0 {
+			d.PresencePenalty = &s.Sampling.PresencePenalty
+		}
 		return d
 	}
 }

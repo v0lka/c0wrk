@@ -139,6 +139,27 @@ func TestToBuilderConfig_SmallLLMContext(t *testing.T) {
 	}
 }
 
+// TestToBuilderConfig_SmallLLMSamplingReasoningEffortDefault verifies the
+// seeded reasoning-effort default (docs/small-llm-defaults-research.md, R3)
+// end to end on the c0wrk side: a freshly defaulted config with the sampling
+// variant enabled resolves to reasoning effort "medium" in the builder
+// config. applySmallLLMPresets (core) then seeds it as the builder-level
+// default, and sp4rk's qwen mapping sends the native reasoning_effort
+// parameter per request.
+func TestToBuilderConfig_SmallLLMSamplingReasoningEffortDefault(t *testing.T) {
+	cfg := &config.Config{}
+	config.ApplyDefaults(cfg)
+	cfg.Experimental.Enabled = true
+	cfg.SmallLLM.Enabled = true
+	cfg.SmallLLM.Sampling.Enabled = true
+
+	bc := ToBuilderConfig(cfg)
+
+	if got := bc.SmallLLM.Sampling.ReasoningEffort; got != "medium" {
+		t.Errorf("fresh config with the sampling variant enabled resolves ReasoningEffort = %q, want the seeded default %q", got, "medium")
+	}
+}
+
 // TestToBuilderConfig_ExperimentalGatesSmallLLM verifies the experimental
 // master switch forces the Small-LLM profile off regardless of the stored
 // SmallLLM.Enabled value, and restores it when experimental features are on.

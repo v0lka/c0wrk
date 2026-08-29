@@ -172,14 +172,14 @@ func TestResolveSamplingFunc_Enabled_NoExplicitValues_InheritsVendorPreset(t *te
 }
 
 func TestResolveSamplingFunc_Enabled_AllSamplingKnobsOverride(t *testing.T) {
-	// Full explicit profile: temperature, top_p, top_k and repetition_penalty
-	// are all plumbed through to the router preset; presence_penalty is not
-	// part of the SmallLLM profile and always inherits.
+	// Full explicit profile: temperature, top_p, top_k, repetition_penalty
+	// and presence_penalty are all plumbed through to the router preset.
 	const (
 		wantTemp = 0.25
 		wantTopP = 0.9
 		wantTopK = 7
 		wantRep  = 1.1
+		wantPP   = 1.5
 	)
 	fn := resolveSamplingFunc(BuilderSmallLLMConfig{
 		Enabled: true,
@@ -189,6 +189,7 @@ func TestResolveSamplingFunc_Enabled_AllSamplingKnobsOverride(t *testing.T) {
 			TopP:              wantTopP,
 			TopK:              wantTopK,
 			RepetitionPenalty: wantRep,
+			PresencePenalty:   wantPP,
 		},
 	})
 
@@ -206,10 +207,11 @@ func TestResolveSamplingFunc_Enabled_AllSamplingKnobsOverride(t *testing.T) {
 		if got.RepetitionPenalty == nil || *got.RepetitionPenalty != wantRep {
 			t.Errorf("family %q: repetition_penalty = %v, want %v", family, got.RepetitionPenalty, wantRep)
 		}
-		vendor := prompt.DefaultSampling(family)
-		if (got.PresencePenalty == nil) != (vendor.PresencePenalty == nil) ||
-			(got.PresencePenalty != nil && *got.PresencePenalty != *vendor.PresencePenalty) {
-			t.Errorf("family %q: presence_penalty = %v, want vendor %v (inherit)", family, got.PresencePenalty, vendor.PresencePenalty)
+		// No family preset sets presence_penalty, so an explicit profile value
+		// must be the sole non-nil source — the sanctioned Qwen
+		// anti-repetition lever (0–2, instruct default 1.5).
+		if got.PresencePenalty == nil || *got.PresencePenalty != wantPP {
+			t.Errorf("family %q: presence_penalty = %v, want %v", family, got.PresencePenalty, wantPP)
 		}
 	}
 }
@@ -334,7 +336,7 @@ func baselineExecutorConfig() BuilderExecutorConfig {
 }
 
 // smallLLMContextProfile builds a full context variant with the variant
-// defaults (6 / 5 / 80 / 2 / 8192).
+// defaults (6 / 5 / 80 / 2 / 16384).
 func smallLLMContextProfile(master bool) BuilderSmallLLMConfig {
 	return BuilderSmallLLMConfig{
 		Enabled: master,
@@ -346,7 +348,7 @@ func smallLLMContextProfile(master bool) BuilderSmallLLMConfig {
 				TriggerPercent: 80,
 			},
 			ToolOutputKeepLastN: 2,
-			OutputTokenReserve:  8192,
+			OutputTokenReserve:  16384,
 		},
 	}
 }
@@ -366,8 +368,8 @@ func TestApplyContextManagement_Enabled_OverridesExecutorValues(t *testing.T) {
 	if got.ToolOutputPruning.KeepLastN != 2 {
 		t.Errorf("ToolOutputPruning.KeepLastN = %d, want 2", got.ToolOutputPruning.KeepLastN)
 	}
-	if got.OutputTokenReserve != 8192 {
-		t.Errorf("OutputTokenReserve = %d, want 8192", got.OutputTokenReserve)
+	if got.OutputTokenReserve != 16384 {
+		t.Errorf("OutputTokenReserve = %d, want 16384", got.OutputTokenReserve)
 	}
 
 	// Knobs outside the variant must keep their baseline.
@@ -469,7 +471,7 @@ func TestApplyContextManagement_Disabled_ReturnsBaselineByteForByte(t *testing.T
 		profile BuilderSmallLLMConfig
 	}{
 		{"master-off", BuilderSmallLLMConfig{Enabled: false, Context: smallLLMContextProfile(true).Context}},
-		{"variant-off", BuilderSmallLLMConfig{Enabled: true, Context: BuilderSmallLLMContext{Enabled: false, Compaction: BuilderSmallLLMCompaction{KeepLast: 6, BlockSize: 5, TriggerPercent: 80}, ToolOutputKeepLastN: 2, OutputTokenReserve: 8192}}},
+		{"variant-off", BuilderSmallLLMConfig{Enabled: true, Context: BuilderSmallLLMContext{Enabled: false, Compaction: BuilderSmallLLMCompaction{KeepLast: 6, BlockSize: 5, TriggerPercent: 80}, ToolOutputKeepLastN: 2, OutputTokenReserve: 16384}}},
 		{"fully-off", BuilderSmallLLMConfig{}},
 	}
 	for _, tc := range cases {

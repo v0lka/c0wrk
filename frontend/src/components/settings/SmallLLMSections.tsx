@@ -10,8 +10,13 @@ import { ChevronDown } from 'lucide-react'
 import { Toggle, NumberField, TagList } from './SmallLLMControls'
 import { OptionalNumberField } from './SmallLLMOptionalNumberField'
 
+// No "unset" option: the backend seeds an unset/"" reasoning_effort to the
+// profile default "medium" (docs/small-llm-defaults-research.md, R3), so the
+// default is an ordinary choice — "Medium" — rather than a distinct sentinel
+// that would transiently mean vendor-xhigh-inherit until the next config load.
+// Consequence: the vendor inherit (e.g. qwen xhigh) is not expressible while
+// the variant is on — disabling the variant is the documented escape hatch.
 const REASONING_EFFORTS: { value: string; label: string }[] = [
-  { value: '', label: 'Inherit' },
   { value: 'off', label: 'Off' },
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
@@ -126,6 +131,9 @@ export function SamplingSection({ slice, patch, open, onOpenChange }: SectionCom
         <>
           <p className="text-xs text-muted-foreground">
             Empty fields inherit the vendor preset for the selected model.
+            Reasoning effort is always set while this variant is on — the
+            vendor default (e.g. qwen xhigh) is reachable only by disabling
+            the variant.
           </p>
           <div className="grid grid-cols-2 gap-3">
             <OptionalNumberField
@@ -157,6 +165,15 @@ export function SamplingSection({ slice, patch, open, onOpenChange }: SectionCom
               value={slice.repetition_penalty}
               onChange={(repetition_penalty) => patch({ repetition_penalty })}
               min={1}
+              max={2}
+              step={0.05}
+              placeholder="vendor default"
+            />
+            <OptionalNumberField
+              label="Presence penalty"
+              value={slice.presence_penalty}
+              onChange={(presence_penalty) => patch({ presence_penalty })}
+              min={0.01}
               max={2}
               step={0.05}
               placeholder="vendor default"

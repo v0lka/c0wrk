@@ -219,6 +219,7 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 				TopP:              cfg.SmallLLM.Sampling.TopP,
 				TopK:              cfg.SmallLLM.Sampling.TopK,
 				RepetitionPenalty: cfg.SmallLLM.Sampling.RepetitionPenalty,
+				PresencePenalty:   cfg.SmallLLM.Sampling.PresencePenalty,
 				ReasoningEffort:   cfg.SmallLLM.Sampling.ReasoningEffort,
 			},
 			LoopHardening: core.BuilderLoopHardening{

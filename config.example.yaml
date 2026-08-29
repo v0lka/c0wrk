@@ -842,6 +842,13 @@ orchestration:
 #     # A persisted cap below the guaranteed count (possible with configs
 #     # saved by older builds) is raised to it automatically on save, so a
 #     # stale config self-heals instead of rejecting every settings change.
+#     # WARNING: this budget cannot cap the guaranteed set — the 12 default
+#     # always-present tools ∪ 5 protected (4 overlap → 13 unique) plus
+#     # EVERY MCP-sourced tool are never trimmed. Several MCP servers can
+#     # push the tool set past the ~10–20-tool safe zone where tool-selection
+#     # accuracy measurably degrades. Trim always_present or the MCP server
+#     # list to compensate. See specs/domains/small-llm.md and
+#     # docs/small-llm-defaults-research.md.
 #     max_tools: 16
 #     # Replace every known builtin's full description (rubric:
 #     # purpose/when-to-use/inputs/outputs/example/anti-example, 480-1100
@@ -872,10 +879,13 @@ orchestration:
 #   sampling:
 #     # Gates this variant.
 #     enabled: false
-#     # Every sampling parameter below uses "inherit by default": an unset
+#     # Every sampling numeric parameter uses "inherit by default": an unset
 #     # (zero) value keeps the per-family vendor preset instead of replacing
 #     # it with a constant. Only explicitly set parameters override the
-#     # preset — enabling the variant with no values is a behavioral no-op.
+#     # preset. The one exception is reasoning_effort (see below), which
+#     # seeds "medium" — so enabling this variant with no explicit values
+#     # lowers the reasoning depth from the inherited vendor default
+#     # (xhigh on qwen thinking models) to medium.
 #     # Generation temperature (lower = more deterministic). When set, must
 #     # be > 0. Default: inherit the vendor preset.
 #     temperature: 0
@@ -890,10 +900,29 @@ orchestration:
 #     # providers that support it (LM Studio/vLLM-style endpoints).
 #     # Default: inherit the vendor preset.
 #     repetition_penalty: 0
-#     # Reasoning depth: "" (inherit the model default) | "off" | "low" |
-#     # "medium". Smaller models generally benefit from reduced effort.
-#     # Default: "" (inherit).
-#     reasoning_effort: ""
+#     # Presence penalty (OpenAI-schema anti-repetition lever). When set,
+#     # must be in [0, 2] — the Qwen card sanctions 0–2 (instruct default
+#     # 1.5); values above 2 increase language mixing. Unlike
+#     # repetition_penalty this is part of the official OpenAI Chat
+#     # Completions schema, so it is sent to every OpenAI-compatible
+#     # endpoint when set (including strict api.openai.com); the Anthropic
+#     # and Google providers do not serialize it.
+#     # Default: inherit the vendor preset (field not sent).
+#     presence_penalty: 0
+#     # Reasoning depth: "off" | "low" | "medium". Default: "medium" when
+#     # unset — an empty/absent value inherits the model's own default,
+#     # which for qwen thinking models is "xhigh": measured overthinking on
+#     # trivial tasks (22,276 reasoning tokens / 21 min for a simple SVG vs
+#     # 3,715 tokens / 137 s with thinking off). "medium" is the model's
+#     # native pre-training regime — no effort instruction is injected —
+#     # and cuts thinking-token spend 60–90%. Prefer it over "low" for
+#     # agentic work: Qwen warns that reduced effort can *increase* total
+#     # time in multi-turn agent tasks via failures and retries. Explicit
+#     # values here are never overwritten by the default; "" is the
+#     # documented "unset" sentinel and resolves to "medium" — disable this
+#     # variant to inherit the vendor xhigh default instead.
+#     # Rationale: docs/small-llm-defaults-research.md (R3).
+#     reasoning_effort: medium
 #
 #   # --- Loop Hardening ------------------------------------------------------
 #   # Tightens the executor circuit-breaker thresholds so a small model that
@@ -922,9 +951,11 @@ orchestration:
 #   # --- Context Management --------------------------------------------------
 #   # Aggressive context management for small context windows: tightens
 #   # compaction, prunes older tool outputs harder, and reserves headroom for
-#   # the model's own answer. Every value here is tighter than — or, for the
-#   # reserve, equal to — the general executor/compaction defaults (keep_last
-#   # 10, block_size 7, trigger 85%, tool keep_last 3, reserve 8192).
+#   # the model's own answer. Every value here is tighter than the general
+#   # executor/compaction defaults (keep_last 10, block_size 7, trigger 85%,
+#   # tool keep_last 3) — except the reserve, which is deliberately LARGER
+#   # than the general executor default (8192); see output_token_reserve
+#   # below for why.
 #   context:
 #     # Gates this variant in addition to the master `enabled` toggle above
 #     # (overrides are applied only when both are on).
@@ -944,11 +975,22 @@ orchestration:
 #     # are pruned harder than the general keep_last 3. Default: 2. Must be
 #     # >= 1 when the variant is enabled.
 #     tool_output_keep_last_n: 2
-#     # Tokens reserved from the context window for the model's own answer
-#     # (compaction fires early enough to leave room). Default: 8192 (same
-#     # as the general executor default). Must be >= 1 when the variant is
-#     # enabled.
-#     output_token_reserve: 8192
+#     # Output reserve for the router's pre-submission context-window
+#     # validation: it overrides executor.output_token_reserve while this
+#     # variant is on and is consulted ONLY as the fallback when a model's
+#     # resolved metadata carries no OutputLimit (the registry resolves a
+#     # catalog, probe-cache, or 32768 static value for every model, so
+#     # this is effectively unreachable). This knob does NOT change the
+#     # per-request MaxTokens generation ceiling: the ceiling is the
+#     # model's resolved OutputLimit — raise llm.models.<model>.
+#     # output_limit (or the per-provider llm.<provider>.
+#     # output_token_reserve) when a thinking model's catalog ceiling
+#     # (e.g. 8192) truncates reasoning + answer (thinking tokens are
+#     # spent before content; measured ~3.7K–22.3K per turn).
+#     # Default: 16384 (thinking-aware fallback headroom vs the general
+#     # executor default 8192).
+#     # Must be >= 1 when the variant is enabled.
+#     output_token_reserve: 16384
 
 # ---------------------------------------------------------------------------
 # Goal — budget model.

@@ -840,6 +840,11 @@ func validateSmallLLMConfig(cfg SmallLLMConfigResponse) error {
 	if rp := cfg.Sampling.RepetitionPenalty; rp != 0 && (rp < 1 || rp > 2) {
 		return fmt.Errorf("small_llm.sampling.repetition_penalty must be in the range [1, 2] when set, got %v (0 inherits the vendor preset)", rp)
 	}
+	// Qwen card: presence_penalty 0–2 is the sanctioned anti-repetition
+	// lever (instruct default 1.5); values above 2 increase language mixing.
+	if pp := cfg.Sampling.PresencePenalty; pp != 0 && (pp < 0 || pp > 2) {
+		return fmt.Errorf("small_llm.sampling.presence_penalty must be in the range [0, 2] when set, got %v (0 inherits the vendor preset)", pp)
+	}
 	if _, ok := validSmallLLMReasoningEfforts[cfg.Sampling.ReasoningEffort]; !ok {
 		return fmt.Errorf("small_llm.sampling.reasoning_effort %q is invalid (allowed: off, low, medium)", cfg.Sampling.ReasoningEffort)
 	}
@@ -934,6 +939,7 @@ func smallLLMToResponse(c config.SmallLLMConfig) SmallLLMConfigResponse {
 			TopP:              c.Sampling.TopP,
 			TopK:              c.Sampling.TopK,
 			RepetitionPenalty: c.Sampling.RepetitionPenalty,
+			PresencePenalty:   c.Sampling.PresencePenalty,
 			ReasoningEffort:   c.Sampling.ReasoningEffort,
 		},
 		LoopHardening: SmallLLMLoopHardeningResp{
@@ -979,6 +985,7 @@ func responseToSmallLLM(r SmallLLMConfigResponse) config.SmallLLMConfig {
 			TopP:              r.Sampling.TopP,
 			TopK:              r.Sampling.TopK,
 			RepetitionPenalty: r.Sampling.RepetitionPenalty,
+			PresencePenalty:   r.Sampling.PresencePenalty,
 			ReasoningEffort:   r.Sampling.ReasoningEffort,
 		},
 		LoopHardening: config.LoopHardeningConfig{

@@ -240,6 +240,7 @@ type SmallLLMSamplingResp struct {
 	TopP              float64 `json:"top_p"`
 	TopK              int     `json:"top_k"`
 	RepetitionPenalty float64 `json:"repetition_penalty"`
+	PresencePenalty   float64 `json:"presence_penalty"`
 	ReasoningEffort   string  `json:"reasoning_effort"`
 }
 

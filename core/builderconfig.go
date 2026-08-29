@@ -143,6 +143,14 @@ type BuilderSmallLLMSampling struct {
 	// SamplingFunc when the variant is enabled.
 	RepetitionPenalty float64
 
+	// PresencePenalty penalizes tokens already present in the context — the
+	// OpenAI-schema anti-repetition lever (Qwen card: 0–2, instruct default
+	// 1.5; higher values increase language mixing). 0 (unset) inherits the
+	// vendor preset (no family preset sets it, so the field is not sent);
+	// values in (0, 2] override it via the router's SamplingFunc when the
+	// variant is enabled.
+	PresencePenalty float64
+
 	// ReasoningEffort controls reasoning depth: "" (inherit) | "off" | "low" |
 	// "medium". When non-empty it seeds the builder-level default; per-request
 	// overrides (HandleOptions.ReasoningEffort) still take precedence.

@@ -708,8 +708,18 @@ type SmallLLMSamplingConfig struct {
 	// vendor preset; when set it must be in [1, 2].
 	RepetitionPenalty float64 `yaml:"repetition_penalty"`
 
-	// ReasoningEffort controls reasoning depth: "" (inherit) | "off" | "low" |
-	// "medium". Smaller models generally benefit from reduced reasoning effort.
+	// PresencePenalty penalizes tokens already present in the context — the
+	// OpenAI-schema anti-repetition lever. The Qwen card sanctions 0–2 (the
+	// instruct default is 1.5); values above 2 increase language mixing, so
+	// they are rejected. 0 (unset) inherits the vendor preset (no family
+	// preset sets it, so the field is simply not sent); when set it must be
+	// in [0, 2].
+	PresencePenalty float64 `yaml:"presence_penalty"`
+
+	// ReasoningEffort controls reasoning depth: "" (unset → default
+	// "medium", see defaults.go) | "off" | "low" | "medium". Smaller models
+	// generally benefit from reduced reasoning effort; explicit values are
+	// never overwritten by the seeded default.
 	ReasoningEffort string `yaml:"reasoning_effort"`
 }
 
