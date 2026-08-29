@@ -17,6 +17,14 @@ import (
 	"github.com/v0lka/c0wrk/internal/shellresolver"
 )
 
+// sameEnvKey reports whether two environment variable names denote the same
+// variable. Unix names are case-sensitive: inherited entries always use the
+// exact spelling of the configured or built-in key they collide with, so
+// byte equality is sufficient (and stricter than any fold).
+func sameEnvKey(a, b string) bool {
+	return a == b
+}
+
 // Session represents a single PTY-backed shell session.
 type Session struct {
 	cmd    *exec.Cmd

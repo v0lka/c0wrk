@@ -54,12 +54,13 @@ func buildTermEnv(extra map[string]string) []string {
 	hasTerm := false
 	hasColorterm := false
 	for _, e := range raw {
+		name, _, _ := strings.Cut(e, "=")
 		switch {
-		case strings.HasPrefix(e, "TERM_PROGRAM="), strings.HasPrefix(e, "TERM_PROGRAM_VERSION="):
+		case sameEnvKey(name, "TERM_PROGRAM"), sameEnvKey(name, "TERM_PROGRAM_VERSION"):
 			continue // force-set below, never inherited
-		case strings.HasPrefix(e, "TERM="):
+		case sameEnvKey(name, "TERM"):
 			hasTerm = true
-		case strings.HasPrefix(e, "COLORTERM="):
+		case sameEnvKey(name, "COLORTERM"):
 			hasColorterm = true
 		}
 		env = append(env, e)
@@ -78,14 +79,15 @@ func buildTermEnv(extra map[string]string) []string {
 		if k == "" {
 			continue
 		}
-		prefix := k + "="
 		next := make([]string, 0, len(env)+1)
 		for _, e := range env {
-			if !strings.HasPrefix(e, prefix) {
-				next = append(next, e)
+			name, _, _ := strings.Cut(e, "=")
+			if sameEnvKey(name, k) {
+				continue
 			}
+			next = append(next, e)
 		}
-		next = append(next, prefix+v)
+		next = append(next, k+"="+v)
 		env = next
 	}
 	return env

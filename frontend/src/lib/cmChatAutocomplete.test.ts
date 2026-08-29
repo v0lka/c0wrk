@@ -139,6 +139,50 @@ describe('cmChatAutocomplete @-file source', () => {
     expect(listDirectoryMock).not.toHaveBeenCalledWith('/stale-project-ws', true)
   })
 
+  it('resolves the completion root once per session, re-resolving only after a switch', async () => {
+    // Every keystroke of an @-query re-runs the completion source; root
+    // resolution must be memoized per active session instead of issuing one
+    // GetSessionWorkspace RPC per trigger — and must re-resolve when the
+    // active session changes.
+    useSessionStore.setState({ sessions: [], activeSessionId: 's1' })
+    getSessionWorkspaceMock.mockResolvedValue('/ws-one')
+    listDirectoryMock.mockResolvedValue([
+      { name: 'one.txt', path: '/ws-one/one.txt', is_dir: false },
+    ])
+
+    const fixture = makeView()
+    views.push(fixture)
+    const { view } = fixture
+
+    typeAndComplete(view, '@')
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'one.txt'),
+      'completions from the s1 root',
+    )
+    expect(getSessionWorkspaceMock).toHaveBeenCalledTimes(1)
+
+    // Further triggers within the same session hit the memo — no extra RPC.
+    typeAndComplete(view, 'n')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(getSessionWorkspaceMock).toHaveBeenCalledTimes(1)
+    expect(currentCompletions(view.state).some((c) => c.label === 'one.txt')).toBe(true)
+
+    // A session switch drops the memo: the next trigger re-resolves against
+    // the new session's workspace.
+    useSessionStore.setState({ sessions: [], activeSessionId: 's2' })
+    getSessionWorkspaceMock.mockResolvedValue('/ws-two')
+    listDirectoryMock.mockResolvedValue([
+      { name: 'two.txt', path: '/ws-two/two.txt', is_dir: false },
+    ])
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: '@' } })
+    startCompletion(view)
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'two.txt'),
+      'completions from the re-resolved s2 root',
+    )
+    expect(getSessionWorkspaceMock).toHaveBeenCalledTimes(2)
+  })
+
   it('refetches when the active project changes even if the tree root is unchanged', async () => {
     useFileTreeStore.setState({ rootPath: '/ws' })
     useProjectStore.setState({ projects: [], activeProjectId: 'proj-a' })

@@ -43,6 +43,15 @@ let filesCacheRoot = ''
 let filesFetchFailedAt = 0
 const FILES_FAILURE_COOLDOWN_MS = 1000
 
+// Memoized completion root, keyed by the active session. resolveCompletionRoot
+// runs on EVERY completion trigger (each keystroke of an @-query), so the
+// GetSessionWorkspace RPC behind it must not: the memo serves repeated
+// triggers, and invalidateFilesCache drops it — the transitions that refresh
+// the listing caches (project/session switches, file-tree root changes,
+// workspace tree changes) are exactly the ones that can change the
+// backend-authoritative root or heal a memoized RPC-failure fallback.
+let completionRootMemo: { sessionId: string; root: string | null } | null = null
+
 /**
  * Resolve the workspace root for the @-file completion source.
  *
@@ -57,23 +66,41 @@ const FILES_FAILURE_COOLDOWN_MS = 1000
  * restart.
  *
  * Falls back to the file-tree root when no session is active or the RPC
- * fails (e.g. backend has no active project yet).
+ * fails (e.g. backend has no active project yet). The per-session memo above
+ * bounds the RPC to real transitions; the fallback keeps read-live semantics
+ * in the no-session case.
  */
 async function resolveCompletionRoot(): Promise<string | null> {
   const sessionId = useSessionStore.getState().activeSessionId
-  if (sessionId) {
-    try {
-      const ws = await getSessionWorkspace(sessionId)
-      if (ws) return ws
-    } catch (err) {
-      logger.warn('completion root: GetSessionWorkspace failed; falling back to the file-tree root', err)
-    }
+  if (!sessionId) {
+    // No session ⇒ no backend authority to ask: serve the live file-tree
+    // root without memoizing (the store read is already fresh).
+    return useFileTreeStore.getState().rootPath
   }
-  return useFileTreeStore.getState().rootPath
+  if (completionRootMemo && completionRootMemo.sessionId === sessionId) {
+    return completionRootMemo.root
+  }
+  let root: string | null = null
+  try {
+    const ws = await getSessionWorkspace(sessionId)
+    if (ws) root = ws
+  } catch (err) {
+    logger.warn('completion root: GetSessionWorkspace failed; falling back to the file-tree root', err)
+  }
+  if (root === null) {
+    root = useFileTreeStore.getState().rootPath
+  }
+  completionRootMemo = { sessionId, root }
+  return root
 }
 
 function invalidateFilesCache() {
   filesLoaded = false
+  // The memoized root shares the listing cache's lifecycle: every trigger
+  // that can change the backend-authoritative root also refreshes the
+  // listings, so dropping both here keeps a stale root — or a memoized
+  // RPC-failure fallback — from outliving the transition.
+  completionRootMemo = null
 }
 
 function invalidateSkillsCache() {

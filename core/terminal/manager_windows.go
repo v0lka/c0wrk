@@ -20,6 +20,20 @@ import (
 	"github.com/UserExistsError/conpty"
 )
 
+// sameEnvKey reports whether two environment variable names denote the same
+// variable. Windows names are case-insensitive but case-preserving: the
+// inherited block (GetEnvironmentStrings) may spell a variable differently
+// than our built-ins or the user's terminal.env keys (e.g. inherited `Path`
+// vs configured `path`), and per-name comparisons must fold case or
+// differently-cased duplicates slip into the ConPTY env block with
+// child-side lookup order undefined. buildTermEnv funnels every
+// inherited-entry filter and every terminal.env replacement through this
+// predicate so the child env block never receives two entries for one
+// variable.
+func sameEnvKey(a, b string) bool {
+	return strings.EqualFold(a, b)
+}
+
 // resolveWindowsShell picks the shell binary to spawn under the pseudo console.
 // It prefers Windows PowerShell (powershell.exe, ships with every Windows
 // install) and falls back to cmd.exe. The returned args string may be empty.

@@ -41,6 +41,12 @@ async function performSwitch(nextProjectId: string, seq: number): Promise<void> 
     logger.warn(`Project switch to "${nextProjectId}" was superseded while in flight; discarding its remaining state writes`)
     return true
   }
+  // First guard: a body found stale as early as its first await (the watchdog
+  // overlap case) skips even the best-effort source-state save below, keeping
+  // the guard symmetric — every RPC in this function has one after it. A body
+  // suspended INSIDE the save RPC resumes past this point and is caught by
+  // the follow-up guard instead.
+  if (abortIfSuperseded()) return
 
   const projectState = useProjectStore.getState()
   const currentProjectId = projectState.activeProjectId
@@ -77,6 +83,9 @@ async function performSwitch(nextProjectId: string, seq: number): Promise<void> 
       logger.warn('Failed to persist source project switch state; continuing switch', error)
     }
   }
+  // A body suspended INSIDE the save RPC above (watchdog overlap) resumes
+  // right here — past the early guard at the top of the function — so this
+  // follow-up guard is what stops its stale writes.
   if (abortIfSuperseded()) return
 
   await switchProject(nextProjectId)
