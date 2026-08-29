@@ -125,7 +125,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   apiMocks.agents.listAgents.mockResolvedValue([])
   useChatInputStore.setState({ inputs: {} })
-  useAttachmentsStore.setState({ attachmentsBySession: {}, namesById: {}, imageErrorBySession: {} })
+  useAttachmentsStore.setState({ attachmentsBySession: {}, uploadsBySession: {}, namesById: {}, imageErrorBySession: {} })
   useSessionStore.setState({ sessions: [], activeSessionId: 'sess-a' })
   useProjectStore.setState({ activeProjectId: 'proj-1' })
   useChatStore.setState({ messages: {}, messageOrder: {}, taskActive: {}, paused: {}, pausing: {}, compacting: {} })
@@ -431,5 +431,62 @@ describe('sentinel image-error retirement', () => {
     await switchSession('sess-a')
     await switchSession('sess-b')
     expect(useAttachmentsStore.getState().imageErrorBySession['sess-b']).toBe('no vision')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Send lock while attachment uploads are in flight
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('send locked during attachment uploads', () => {
+  it('exposes attachmentsUploading and blocks handleSend while the active session has in-flight uploads', async () => {
+    render()
+    await type('msg with attachment')
+
+    // Seed one in-flight upload placeholder for the ACTIVE session.
+    await act(async () => {
+      useAttachmentsStore.setState({
+        uploadsBySession: {
+          'sess-a': [{ id: 'u1', fileName: 'doc.pdf', path: '/p/doc.pdf', isImage: false }],
+        },
+      })
+    })
+    expect(controllerRef.current!.attachmentsUploading).toBe(true)
+
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+
+    // The send never left the client and the draft stays in the editor…
+    expect(sendMock).not.toHaveBeenCalled()
+    expect(editorText()).toBe('msg with attachment')
+    // …and the Enter path surfaces WHY it is blocked instead of failing silently.
+    expect(slice('sess-a')?.sendError).toBe(
+      'Processing attachments — send unlocks when they finish',
+    )
+
+    // Uploads settle → the flag flips and the send goes through.
+    sendMock.mockResolvedValue(undefined)
+    await act(async () => {
+      useAttachmentsStore.setState({ uploadsBySession: {} })
+    })
+    expect(controllerRef.current!.attachmentsUploading).toBe(false)
+
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+    expect(sendMock).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the flag false for uploads of OTHER sessions', async () => {
+    render()
+    await act(async () => {
+      useAttachmentsStore.setState({
+        uploadsBySession: {
+          'sess-b': [{ id: 'u1', fileName: 'doc.pdf', path: '/p/doc.pdf', isImage: false }],
+        },
+      })
+    })
+    expect(controllerRef.current!.attachmentsUploading).toBe(false)
   })
 })

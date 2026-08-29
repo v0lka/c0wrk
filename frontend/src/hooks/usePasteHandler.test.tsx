@@ -18,7 +18,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-import { usePasteHandler } from '@/hooks/usePasteHandler'
+import { usePasteHandler, collectPasteUploadDescriptors } from '@/hooks/usePasteHandler'
+import { resetAttachmentUploadState } from '@/lib/attachmentUploads'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -26,6 +27,7 @@ import type { SessionInfo, AttachmentInfoUI, ModelInfo, PasteResultUI } from '@/
 
 const spies = vi.hoisted(() => ({
   pasteFromClipboard: vi.fn<(sessionId: string, supportsVision: boolean) => Promise<PasteResultUI>>(),
+  removeAttachment: vi.fn<(sessionId: string, attachmentId: string) => Promise<void>>(),
   createSession: vi.fn<() => Promise<SessionInfo>>(),
   emit: vi.fn<(event: string, data: unknown) => void>(),
   insertAtCursor: vi.fn<(text: string) => void>(),
@@ -36,6 +38,7 @@ vi.mock('@/api/attachments', async (importOriginal) => {
   return {
     ...actual,
     pasteFromClipboard: spies.pasteFromClipboard,
+    removeAttachment: spies.removeAttachment,
   }
 })
 
@@ -96,12 +99,23 @@ function Harness() {
   return null
 }
 
-async function runPaste(): Promise<void> {
+async function runPaste(data?: DataTransfer): Promise<void> {
   if (!captured) throw new Error('harness did not capture onPaste')
-  // DataTransfer is not exposed in this jsdom build; the handler ignores the
-  // argument (it routes purely on the backend's PasteResult), so a minimal
-  // stub object is sufficient.
-  await captured({} as DataTransfer)
+  // DataTransfer is not exposed in this jsdom build; when the caller passes
+  // no explicit stub the handler sees a minimal object (no file items → no
+  // optimistic placeholders; routing is driven by the backend PasteResult).
+  await captured(data ?? ({} as DataTransfer))
+}
+
+/** Minimal DataTransfer stub with typed file items (kind 'file'|'string'). */
+function fakeTransfer(items: Array<{ kind: string; type: string; name?: string }>): DataTransfer {
+  return {
+    items: items.map((it) => ({
+      kind: it.kind,
+      type: it.type,
+      getAsFile: () => (it.name === undefined ? null : { name: it.name }),
+    })),
+  } as unknown as DataTransfer
 }
 
 let container: HTMLDivElement
@@ -113,14 +127,16 @@ beforeEach(() => {
   // outside act().
   act(() => {
     useInputModeStore.setState({ selectedModel: null })
-    useAttachmentsStore.setState({ attachmentsBySession: {}, namesById: {}, imageErrorBySession: {} })
+    useAttachmentsStore.setState({ attachmentsBySession: {}, uploadsBySession: {}, namesById: {}, imageErrorBySession: {} })
     useSessionStore.setState({ sessions: [], activeSessionId: 'sess-1' })
   })
 
   spies.pasteFromClipboard.mockReset()
+  spies.removeAttachment.mockReset().mockResolvedValue(undefined)
   spies.createSession.mockReset()
   spies.emit.mockReset()
   spies.insertAtCursor.mockReset()
+  resetAttachmentUploadState()
 
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -296,5 +312,98 @@ describe('usePasteHandler per-session regression (switch while pending)', () => 
     // …and the newly-visible session's slice was never touched.
     expect(useAttachmentsStore.getState().attachmentsBySession['sess-b']).toBeUndefined()
     expect(useAttachmentsStore.getState().imageErrorBySession['sess-b']).toBeUndefined()
+  })
+})
+
+describe('collectPasteUploadDescriptors (optimistic paste placeholders)', () => {
+  it('maps an image paste to ONE display-labelled descriptor (vision on)', () => {
+    const data = fakeTransfer([
+      { kind: 'file', type: 'image/png' },
+      { kind: 'string', type: 'text/plain' },
+    ])
+    expect(collectPasteUploadDescriptors(data, true)).toEqual([
+      { path: '', fileName: 'pasted-image', isImage: true },
+    ])
+  })
+
+  it('maps clipboard FILE pastes to per-file descriptors with their names', () => {
+    const data = fakeTransfer([
+      { kind: 'file', type: '', name: 'spec.pdf' },
+      { kind: 'file', type: '', name: 'img.png' },
+    ])
+    expect(collectPasteUploadDescriptors(data, true)).toEqual([
+      { path: '', fileName: 'spec.pdf', isImage: false },
+      { path: '', fileName: 'img.png', isImage: true },
+    ])
+  })
+
+  it('drops image-ext file descriptors when the model lacks vision', () => {
+    const data = fakeTransfer([
+      { kind: 'file', type: '', name: 'spec.pdf' },
+      { kind: 'file', type: '', name: 'img.png' },
+    ])
+    expect(collectPasteUploadDescriptors(data, false)).toEqual([
+      { path: '', fileName: 'spec.pdf', isImage: false },
+    ])
+  })
+
+  it('stages nothing descriptively when an image paste is vision-rejected', () => {
+    const data = fakeTransfer([{ kind: 'file', type: 'image/jpeg' }])
+    expect(collectPasteUploadDescriptors(data, false)).toEqual([])
+  })
+
+  it('returns no descriptors for a text-only paste', () => {
+    const data = fakeTransfer([{ kind: 'string', type: 'text/plain' }])
+    expect(collectPasteUploadDescriptors(data, true)).toEqual([])
+  })
+})
+
+describe('usePasteHandler optimistic placeholders', () => {
+  it('shows a spinner placeholder for an image paste in flight and drains it on resolve', async () => {
+    const data = fakeTransfer([{ kind: 'file', type: 'image/png' }])
+
+    let resolvePaste!: (result: PasteResultUI) => void
+    spies.pasteFromClipboard.mockImplementation(
+      () => new Promise<PasteResultUI>((res) => { resolvePaste = res }),
+    )
+
+    let pending!: Promise<void>
+    await act(async () => {
+      pending = runPaste(data)
+    })
+
+    // Placeholder visible before the RPC resolves. Its label is display-only
+    // (no extension synthesis) — claiming is ID-window based.
+    expect(
+      useAttachmentsStore.getState().uploadsBySession['sess-1']?.map((u) => u.fileName),
+    ).toEqual(['pasted-image'])
+
+    const list = [makeAttachment('img1')]
+    await act(async () => {
+      resolvePaste({ kind: 'image', files: list })
+      await pending
+    })
+
+    expect(useAttachmentsStore.getState().uploadsBySession['sess-1']).toBeUndefined()
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-1']).toEqual(list)
+  })
+
+  it('drains placeholders when the clipboard turns out to hold text', async () => {
+    const data = fakeTransfer([{ kind: 'file', type: '', name: 'spec.pdf' }])
+    spies.pasteFromClipboard.mockResolvedValue({ kind: 'text', files: [], text: 't' })
+
+    await act(async () => { await runPaste(data) })
+
+    expect(useAttachmentsStore.getState().uploadsBySession['sess-1']).toBeUndefined()
+    expect(spies.insertAtCursor).toHaveBeenCalledWith('t')
+  })
+
+  it('drains placeholders when the paste RPC fails', async () => {
+    const data = fakeTransfer([{ kind: 'file', type: '', name: 'spec.pdf' }])
+    spies.pasteFromClipboard.mockRejectedValue(new Error('boom'))
+
+    await act(async () => { await runPaste(data) })
+
+    expect(useAttachmentsStore.getState().uploadsBySession['sess-1']).toBeUndefined()
   })
 })

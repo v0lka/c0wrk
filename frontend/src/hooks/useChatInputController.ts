@@ -4,7 +4,7 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useChatInputStore, getInputState, NULL_SESSION_KEY } from '@/stores/chatInputStore'
-import { useAttachmentsStore } from '@/stores/attachmentsStore'
+import { useAttachmentsStore, useHasActiveUploads } from '@/stores/attachmentsStore'
 import { useMessageSender } from '@/hooks/useMessageSender'
 import { useChatEditor, type ChatEditorAPI } from '@/hooks/useChatEditor'
 import { usePasteHandler } from '@/hooks/usePasteHandler'
@@ -38,6 +38,8 @@ export interface ChatInputController {
   paused: boolean
   pausing: boolean
   compacting: boolean
+  /** Attachment uploads in flight for the active session (send is locked). */
+  attachmentsUploading: boolean
 
   // Mode
   mode: 'chat' | 'terminal'
@@ -74,6 +76,9 @@ export function useChatInputController(): ChatInputController {
   const paused = useChatStore((s) => (activeSessionId ? s.paused[activeSessionId] ?? false : false))
   const pausing = useChatStore((s) => (activeSessionId ? s.pausing[activeSessionId] ?? false : false))
   const compacting = useChatStore((s) => (activeSessionId ? s.compacting[activeSessionId] ?? false : false))
+  // In-flight attachment uploads for the ACTIVE session lock the send action
+  // (primitive selector — re-renders only when the flag actually flips).
+  const attachmentsUploading = useHasActiveUploads(activeSessionId)
 
   // Per-session input state (draft / optimize flag / optimize + send errors)
   // lives in chatInputStore so it survives session switches and async results
@@ -250,6 +255,20 @@ export function useChatInputController(): ChatInputController {
     const originSessionId = activeSessionId
     const messageText = editor.getText().trim()
     if (!messageText) return
+    // Attachments still processing → the send must wait: sending now would
+    // start the task without them (the send-flush would drop them from the
+    // pending list). The toolbar mirrors this with a disabled send button;
+    // this guard covers the Enter key path and surfaces WHY it is a no-op
+    // (the hint auto-dismisses like any send error once uploads settle).
+    if (
+      originSessionId !== null &&
+      (useAttachmentsStore.getState().uploadsBySession[originSessionId]?.length ?? 0) > 0
+    ) {
+      useChatInputStore
+        .getState()
+        .setSendError(originSessionId, 'Processing attachments — send unlocks when they finish')
+      return
+    }
     const skills = extractSkillRefs(messageText)
     const rawAgentRefs = extractAgentRefs(messageText)
     // Clear the editor SYNCHRONOUSLY before any async work. An #mention
@@ -410,6 +429,7 @@ export function useChatInputController(): ChatInputController {
     paused,
     pausing,
     compacting,
+    attachmentsUploading,
     mode,
     setMode,
     height,

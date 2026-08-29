@@ -14,6 +14,11 @@ vi.mock('@/api/attachments', () => ({
   removeAttachment: vi.fn().mockResolvedValue(undefined),
 }))
 
+// Mock the optimistic-upload lifecycle so the cancel button stays unit-level.
+vi.mock('@/lib/attachmentUploads', () => ({
+  cancelAttachmentUpload: vi.fn(),
+}))
+
 // Mock emit so runtime_error events don't touch the Wails runtime.
 vi.mock('@/api/runtime', () => ({
   emit: vi.fn(),
@@ -32,7 +37,7 @@ function render(el: React.ReactElement): HTMLElement {
 }
 
 function resetStores() {
-  useAttachmentsStore.setState({ attachmentsBySession: {}, namesById: {}, imageErrorBySession: {} })
+  useAttachmentsStore.setState({ attachmentsBySession: {}, uploadsBySession: {}, namesById: {}, imageErrorBySession: {} })
   useSessionStore.setState({ activeSessionId: 's1' })
 }
 
@@ -48,6 +53,7 @@ const IMG: AttachmentInfoUI = {
 
 describe('AttachmentChips', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     resetStores()
     document.body.innerHTML = ''
     root = null
@@ -112,5 +118,61 @@ describe('AttachmentChips', () => {
     useAttachmentsStore.getState().setAttachments('s2', [DOC])
     const container = render(<AttachmentChips />)
     expect(container.innerHTML).toBe('')
+  })
+
+  it('renders a spinner chip for in-flight uploads (ahead of staged chips)', () => {
+    useAttachmentsStore.getState().setAttachments('s1', [DOC])
+    useAttachmentsStore.setState({
+      uploadsBySession: {
+        s1: [{ id: 'u1', fileName: 'notes.md', path: '/p/notes.md', isImage: false }],
+      },
+    })
+
+    const container = render(<AttachmentChips />)
+
+    // Spinner chip renders with the file name and a spinning indicator.
+    expect(container.textContent).toContain('notes.md')
+    expect(container.querySelector('.animate-spin')).not.toBeNull()
+    // Staged chips still render alongside.
+    expect(container.textContent).toContain('report.pdf')
+  })
+
+  it('renders an image icon on image upload placeholders', () => {
+    useAttachmentsStore.setState({
+      uploadsBySession: {
+        s1: [{ id: 'u1', fileName: 'photo.png', path: '/p/photo.png', isImage: true }],
+      },
+    })
+    const container = render(<AttachmentChips />)
+    expect(container.textContent).toContain('photo.png')
+    expect(container.querySelector('.animate-spin')).not.toBeNull()
+  })
+
+  it('cancel X on an upload chip calls cancelAttachmentUpload with the session + upload', async () => {
+    const upload = { id: 'u1', fileName: 'notes.md', path: '/p/notes.md', isImage: false }
+    useAttachmentsStore.setState({ uploadsBySession: { s1: [upload] } })
+
+    const container = render(<AttachmentChips />)
+    const cancelBtn = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Cancel uploading notes.md"]',
+    )
+    expect(cancelBtn).not.toBeNull()
+
+    await act(async () => {
+      cancelBtn!.click()
+    })
+
+    const { cancelAttachmentUpload } = await import('@/lib/attachmentUploads')
+    expect(cancelAttachmentUpload).toHaveBeenCalledWith('s1', upload)
+  })
+
+  it('renders the chips row for uploads only (no staged attachments yet)', () => {
+    useAttachmentsStore.setState({
+      uploadsBySession: {
+        s1: [{ id: 'u1', fileName: 'notes.md', path: '/p/notes.md', isImage: false }],
+      },
+    })
+    const container = render(<AttachmentChips />)
+    expect(container.textContent).toContain('notes.md')
   })
 })

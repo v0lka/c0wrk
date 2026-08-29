@@ -9,15 +9,16 @@
 // replaces the store, so no local refetch is needed (same model as workDirs).
 
 import { useCallback, type MouseEvent } from 'react'
-import { FileText, X } from 'lucide-react'
+import { FileText, Image as ImageIcon, Loader2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useAttachments } from '@/stores/attachmentsStore'
+import { useAttachments, useAttachmentUploads } from '@/stores/attachmentsStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { removeAttachment } from '@/api/attachments'
+import { cancelAttachmentUpload } from '@/lib/attachmentUploads'
 import { emit } from '@/api/runtime'
 import { formatBytes } from '@/lib/formatters'
 import { logger } from '@/lib/logger'
-import type { AttachmentInfoUI } from '@/types/models'
+import type { AttachmentInfoUI, AttachmentUploadUI } from '@/types/models'
 
 function AttachmentChip({
   attachment,
@@ -65,6 +66,9 @@ export function AttachmentChips(): React.JSX.Element | null {
   // The chips render only the active session's pending list; other sessions'
   // lists stay in the store untouched.
   const attachments = useAttachments(activeSessionId)
+  // Optimistic in-flight uploads render as spinner chips ahead of the staged
+  // list; their X cancels the upload (placeholder + staged file removed).
+  const uploads = useAttachmentUploads(activeSessionId)
 
   const handleRemove = useCallback(
     async (id: string) => {
@@ -83,13 +87,62 @@ export function AttachmentChips(): React.JSX.Element | null {
     [activeSessionId],
   )
 
-  if (attachments.length === 0) return null
+  const handleCancelUpload = useCallback(
+    (upload: AttachmentUploadUI) => {
+      if (!activeSessionId) return
+      cancelAttachmentUpload(activeSessionId, upload)
+    },
+    [activeSessionId],
+  )
+
+  if (attachments.length === 0 && uploads.length === 0) return null
 
   return (
     <div className={cn('flex flex-wrap items-center gap-1.5 px-3 py-1 shrink-0 border-b border-border')}>
+      {uploads.map((u) => (
+        <UploadingChip key={u.id} upload={u} onCancel={handleCancelUpload} />
+      ))}
       {attachments.map((a) => (
         <AttachmentChip key={a.id} attachment={a} onRemove={handleRemove} />
       ))}
     </div>
+  )
+}
+
+/** Spinner chip for an in-flight upload: icon + name + cancel. Format/size
+ *  are unknown until the backend finishes processing, so the spinner stands
+ *  in for them. */
+function UploadingChip({
+  upload,
+  onCancel,
+}: {
+  upload: AttachmentUploadUI
+  onCancel: (upload: AttachmentUploadUI) => void
+}): React.JSX.Element {
+  return (
+    <span
+      className="inline-flex items-center gap-1 max-w-[220px] h-6 pl-2 pr-1 rounded-md border border-border bg-muted/40 text-xs text-foreground"
+      title={`Processing ${upload.fileName}…`}
+    >
+      {upload.isImage ? (
+        <ImageIcon className="size-3 shrink-0 text-muted-foreground" />
+      ) : (
+        <FileText className="size-3 shrink-0 text-muted-foreground" />
+      )}
+      <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground" aria-label="Processing" />
+      <span className="truncate">{upload.fileName}</span>
+      <button
+        type="button"
+        onClick={(e: MouseEvent) => {
+          e.stopPropagation()
+          onCancel(upload)
+        }}
+        className="ml-0.5 inline-flex items-center justify-center size-4 rounded-sm text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+        title="Cancel upload"
+        aria-label={`Cancel uploading ${upload.fileName}`}
+      >
+        <X className="size-3" />
+      </button>
+    </span>
   )
 }

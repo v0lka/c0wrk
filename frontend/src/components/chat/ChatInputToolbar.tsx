@@ -38,6 +38,7 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
     optimizeError,
     sendError,
     activeSessionId,
+    attachmentsUploading,
     handleSend,
     handleOptimize,
     handlePause,
@@ -231,9 +232,9 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
           </Button>
           <Button
             onClick={handleSend}
-            disabled={!hasContent || isInputDisabled || isOptimizing}
+            disabled={!hasContent || isInputDisabled || isOptimizing || attachmentsUploading}
             className="shrink-0 h-8 w-8 rounded-md text-input bg-success hover:bg-success/90 active:bg-success/75 transition-colors"
-            title="Send message"
+            title={attachmentsUploading ? 'Processing attachments — send unlocks when they finish' : 'Send message'}
             aria-label="Send message"
           >
             <Play className="h-3.5 w-3.5 fill-current" />

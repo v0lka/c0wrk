@@ -22,7 +22,7 @@ function render(el: React.ReactElement): HTMLElement {
 }
 
 function resetStore() {
-  useAttachmentsStore.setState({ attachmentsBySession: {}, namesById: {}, imageErrorBySession: {} })
+  useAttachmentsStore.setState({ attachmentsBySession: {}, uploadsBySession: {}, namesById: {}, imageErrorBySession: {} })
   useSessionStore.setState({ activeSessionId: 's1' })
 }
 

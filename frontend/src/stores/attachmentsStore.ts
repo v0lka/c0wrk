@@ -18,7 +18,7 @@
 // useSyncExternalStore compares snapshots by reference (error #185).
 
 import { create } from 'zustand'
-import type { AttachmentInfoUI } from '@/types/models'
+import type { AttachmentInfoUI, AttachmentUploadUI } from '@/types/models'
 
 /**
  * Stable empty list returned for sessions with no pending attachments.
@@ -27,9 +27,24 @@ import type { AttachmentInfoUI } from '@/types/models'
  */
 export const EMPTY_ATTACHMENTS: AttachmentInfoUI[] = []
 
+/**
+ * Stable empty list for sessions with no in-flight uploads (same
+ * referential-stability contract as EMPTY_ATTACHMENTS).
+ */
+export const EMPTY_UPLOADS: AttachmentUploadUI[] = []
+
 interface AttachmentsState {
   /** Pending attachments per session; sparse — absent key = none. */
   attachmentsBySession: Record<string, AttachmentInfoUI[]>
+  /**
+   * Optimistic in-flight upload placeholders per session; sparse — absent
+   * key = none. Written the moment a staging RPC starts (spinner chips) and
+   * drained as the backend's incremental `attachments:changed` events land
+   * their records (the lib's ID-window claim pass calls endUploads) or when
+   * the staging RPC settles. Same sparse-key discipline as
+   * attachmentsBySession.
+   */
+  uploadsBySession: Record<string, AttachmentUploadUI[]>
   /**
    * Accumulated attachment-id → original-name map, folded from every list the
    * store receives. Entries are never removed individually so committed
@@ -52,6 +67,11 @@ interface AttachmentsState {
 interface AttachmentsActions {
   /** Replace a session's entire pending list (the backend always sends the full list). */
   setAttachments: (sessionId: string, attachments: AttachmentInfoUI[]) => void
+  /** Append optimistic upload placeholders (spinner chips) for a session. */
+  beginUploads: (sessionId: string, uploads: AttachmentUploadUI[]) => void
+  /** Remove listed upload placeholders (staging settled / upload cancelled /
+   *  its staged record landed and was claimed by the lib's registry). */
+  endUploads: (sessionId: string, uploadIds: string[]) => void
   /** Set a session's transient image-attachment error (null to clear). */
   setImageError: (sessionId: string, message: string | null) => void
   /** Drop the slices of deleted sessions (keeps the maps bounded; namesById stays). */
@@ -60,6 +80,7 @@ interface AttachmentsActions {
 
 export const useAttachmentsStore = create<AttachmentsState & AttachmentsActions>((set) => ({
   attachmentsBySession: {},
+  uploadsBySession: {},
   namesById: {},
   imageErrorBySession: {},
 
@@ -94,6 +115,35 @@ export const useAttachmentsStore = create<AttachmentsState & AttachmentsActions>
       return { attachmentsBySession, namesById }
     }),
 
+  beginUploads: (sessionId, uploads) => {
+    if (uploads.length === 0) return
+    set((s) => {
+      const current = s.uploadsBySession[sessionId]
+      return {
+        uploadsBySession: {
+          ...s.uploadsBySession,
+          [sessionId]: current ? [...current, ...uploads] : uploads,
+        },
+      }
+    })
+  },
+
+  endUploads: (sessionId, uploadIds) => {
+    if (uploadIds.length === 0) return
+    set((s) => {
+      const current = s.uploadsBySession[sessionId]
+      if (!current) return s
+      const ids = new Set(uploadIds)
+      const next = current.filter((u) => !ids.has(u.id))
+      if (next.length === current.length) return s
+      const uploadsBySession = { ...s.uploadsBySession }
+      // Sparse discipline: an emptied slice drops its key entirely.
+      if (next.length === 0) delete uploadsBySession[sessionId]
+      else uploadsBySession[sessionId] = next
+      return { uploadsBySession }
+    })
+  },
+
   setImageError: (sessionId, message) =>
     set((s) => {
       if (message === null) {
@@ -117,6 +167,15 @@ export const useAttachmentsStore = create<AttachmentsState & AttachmentsActions>
           delete attachmentsBySession[id]
         }
       }
+      let uploadsBySession = s.uploadsBySession
+      for (const id of sessionIds) {
+        if (id in uploadsBySession) {
+          if (uploadsBySession === s.uploadsBySession) {
+            uploadsBySession = { ...s.uploadsBySession }
+          }
+          delete uploadsBySession[id]
+        }
+      }
       let imageErrorBySession = s.imageErrorBySession
       for (const id of sessionIds) {
         if (id in imageErrorBySession) {
@@ -128,11 +187,12 @@ export const useAttachmentsStore = create<AttachmentsState & AttachmentsActions>
       }
       if (
         attachmentsBySession === s.attachmentsBySession &&
+        uploadsBySession === s.uploadsBySession &&
         imageErrorBySession === s.imageErrorBySession
       ) {
         return s
       }
-      return { attachmentsBySession, imageErrorBySession }
+      return { attachmentsBySession, uploadsBySession, imageErrorBySession }
     }),
 }))
 
@@ -157,4 +217,28 @@ export function useAttachments(sessionId: string | null): AttachmentInfoUI[] {
  */
 export function useAttachmentName(id: string | undefined | null): string | undefined {
   return useAttachmentsStore((s) => (id ? s.namesById[id] : undefined))
+}
+
+/**
+ * Read a session's in-flight upload placeholders (spinner chips).
+ *
+ * Same stability contract as useAttachments: the direct slice reference or
+ * the shared EMPTY_UPLOADS constant — never an allocation inside the
+ * selector.
+ */
+export function useAttachmentUploads(sessionId: string | null): AttachmentUploadUI[] {
+  return useAttachmentsStore((s) =>
+    sessionId ? s.uploadsBySession[sessionId] ?? EMPTY_UPLOADS : EMPTY_UPLOADS,
+  )
+}
+
+/**
+ * Whether the session has any in-flight attachment uploads. Primitive
+ * selector — drives the send-button lock without re-rendering on list
+ * identity changes that preserve the empty/non-empty status.
+ */
+export function useHasActiveUploads(sessionId: string | null): boolean {
+  return useAttachmentsStore((s) =>
+    sessionId ? (s.uploadsBySession[sessionId]?.length ?? 0) > 0 : false,
+  )
 }

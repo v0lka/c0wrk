@@ -17,7 +17,20 @@ import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent, emit } from '@/api/runtime'
 import { isAttachmentsChangedData } from '@/types/events'
 import { getAttachments, mapAttachments } from '@/api/attachments'
+import { processIncomingAttachments } from '@/lib/attachmentUploads'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
+import type { AttachmentInfoUI } from '@/types/models'
+
+/**
+ * Apply an incoming FULL pending list to the store: the lib's registry
+ * attributes newly landed ids to in-flight uploads (retiring their spinner
+ * placeholders one-by-one and stripping cancelled ones with a backend
+ * removal), then the kept list replaces the session's slice.
+ */
+function applyIncomingAttachments(sessionId: string, list: AttachmentInfoUI[]): void {
+  const kept = processIncomingAttachments(sessionId, list)
+  useAttachmentsStore.getState().setAttachments(sessionId, kept)
+}
 
 export function useAttachmentEvents(sessionId: string | null): void {
   useEffect(() => {
@@ -34,7 +47,7 @@ export function useAttachmentEvents(sessionId: string | null): void {
     // away and back). Errors are ignored — the slice stays as-is and live
     // events will correct it.
     getAttachments(sessionId)
-      .then((list) => { if (!cancelled) useAttachmentsStore.getState().setAttachments(sessionId, list) })
+      .then((list) => { if (!cancelled) applyIncomingAttachments(sessionId, list) })
       .catch(() => { /* ignore — keep the existing slice */ })
 
     const cleanup = onSessionEvent(sessionId, 'attachments:changed', (data) => {
@@ -42,7 +55,7 @@ export function useAttachmentEvents(sessionId: string | null): void {
         reportDroppedEvent('attachments:changed', data)
         return
       }
-      useAttachmentsStore.getState().setAttachments(sessionId, mapAttachments(data.attachments))
+      applyIncomingAttachments(sessionId, mapAttachments(data.attachments))
 
       // Surface per-file failures (e.g. unsupported format picked via the
       // "All files" filter). The backend already sends the basename as `path`.

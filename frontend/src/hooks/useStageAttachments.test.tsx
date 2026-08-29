@@ -15,26 +15,29 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 import { useStageAttachments } from '@/hooks/useStageAttachments'
+import { cancelAttachmentUpload, resetAttachmentUploadState } from '@/lib/attachmentUploads'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { NULL_SESSION_KEY } from '@/stores/chatInputStore'
-import type { SessionInfo, AttachmentInfoUI, ModelInfo } from '@/types/models'
+import type { SessionInfo, AttachmentInfoUI, AttachmentUploadUI, ModelInfo } from '@/types/models'
 
 // Spies exist before vi.mock factories run so they can be referenced there
 // and re-asserted/reset in test bodies.
 const spies = vi.hoisted(() => ({
   attachFiles: vi.fn<(sessionId: string, paths: string[]) => Promise<AttachmentInfoUI[]>>(),
+  removeAttachment: vi.fn<(sessionId: string, attachmentId: string) => Promise<void>>(),
   createSession: vi.fn<() => Promise<SessionInfo>>(),
   emit: vi.fn<(event: string, data: unknown) => void>(),
 }))
 
-// Mock the attachment API: keep isImagePath real (pure), spy on the RPC.
+// Mock the attachment API: keep isImagePath real (pure), spy on the RPCs.
 vi.mock('@/api/attachments', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/attachments')>()
   return {
     ...actual,
     attachFiles: spies.attachFiles,
+    removeAttachment: spies.removeAttachment,
   }
 })
 
@@ -111,13 +114,15 @@ beforeEach(() => {
   // mutation would re-render them outside act().
   act(() => {
     useInputModeStore.setState({ selectedModel: null })
-    useAttachmentsStore.setState({ attachmentsBySession: {}, namesById: {}, imageErrorBySession: {} })
+    useAttachmentsStore.setState({ attachmentsBySession: {}, uploadsBySession: {}, namesById: {}, imageErrorBySession: {} })
     useSessionStore.setState({ sessions: [], activeSessionId: null })
   })
 
   spies.attachFiles.mockReset()
+  spies.removeAttachment.mockReset().mockResolvedValue(undefined)
   spies.createSession.mockReset()
   spies.emit.mockReset()
+  resetAttachmentUploadState()
 
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -307,5 +312,84 @@ describe('useStageAttachments per-session regression (switch while pending)', ()
 
     expect(useAttachmentsStore.getState().imageErrorBySession['sess-a']).toContain('novision-m')
     expect(useAttachmentsStore.getState().imageErrorBySession['sess-b']).toBeUndefined()
+  })
+})
+
+describe('useStageAttachments optimistic upload placeholders', () => {
+  it('shows spinner placeholders immediately while attachFiles is in flight and drains them on resolve', async () => {
+    let resolveAttach!: (list: AttachmentInfoUI[]) => void
+    spies.attachFiles.mockImplementation(
+      () => new Promise<AttachmentInfoUI[]>((res) => { resolveAttach = res }),
+    )
+
+    let pending!: Promise<void>
+    await act(async () => {
+      pending = stage('sess-1', ['/p/a.md', '/p/b.md'])
+    })
+
+    // Placeholders exist BEFORE the RPC resolves — the chips render instantly.
+    const uploads = useAttachmentsStore.getState().uploadsBySession['sess-1'] ?? []
+    expect(uploads.map((u) => u.fileName)).toEqual(['a.md', 'b.md'])
+    expect(uploads.map((u) => u.isImage)).toEqual([false, false])
+
+    const list: AttachmentInfoUI[] = [
+      { id: 'd1', originalName: 'a.md', format: 'md', sizeBytes: 1 },
+      { id: 'd2', originalName: 'b.md', format: 'md', sizeBytes: 1 },
+    ]
+    await act(async () => {
+      resolveAttach(list)
+      await pending
+    })
+
+    expect(useAttachmentsStore.getState().uploadsBySession['sess-1']).toBeUndefined()
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-1']).toEqual(list)
+  })
+
+  it('a cancelled upload is stripped from the staged list and removed on the backend', async () => {
+    let resolveAttach!: (list: AttachmentInfoUI[]) => void
+    spies.attachFiles.mockImplementation(
+      () => new Promise<AttachmentInfoUI[]>((res) => { resolveAttach = res }),
+    )
+
+    let pending!: Promise<void>
+    await act(async () => {
+      pending = stage('sess-1', ['/p/a.md', '/p/b.md'])
+    })
+
+    // Cancel the first upload while the RPC is still converting.
+    const uploads = useAttachmentsStore.getState().uploadsBySession['sess-1'] ?? []
+    expect(uploads).toHaveLength(2)
+    act(() => {
+      cancelAttachmentUpload('sess-1', uploads[0] as AttachmentUploadUI)
+    })
+    expect(useAttachmentsStore.getState().uploadsBySession['sess-1']?.map((u) => u.fileName)).toEqual(['b.md'])
+
+    const list: AttachmentInfoUI[] = [
+      { id: 'd1', originalName: 'a.md', format: 'md', sizeBytes: 1 },
+      { id: 'd2', originalName: 'b.md', format: 'md', sizeBytes: 1 },
+    ]
+    await act(async () => {
+      resolveAttach(list)
+      await pending
+    })
+
+    // The cancelled file never becomes a staged chip…
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-1']).toEqual([
+      { id: 'd2', originalName: 'b.md', format: 'md', sizeBytes: 1 },
+    ])
+    // …and the backend copy is removed.
+    expect(spies.removeAttachment).toHaveBeenCalledWith('sess-1', 'd1')
+  })
+
+  it('drains placeholders when attachFiles fails', async () => {
+    spies.attachFiles.mockRejectedValue(new Error('boom'))
+
+    await act(async () => { await stage('sess-1', ['/p/doc.md']) })
+
+    expect(useAttachmentsStore.getState().uploadsBySession['sess-1']).toBeUndefined()
+    expect(spies.emit).toHaveBeenCalledWith(
+      'runtime_error',
+      expect.objectContaining({ message: 'Failed to attach files' }),
+    )
   })
 })

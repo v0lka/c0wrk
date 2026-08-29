@@ -87,6 +87,29 @@ export interface AttachmentInfoUI {
   readonly mediaType?: string
 }
 
+/** Optimistic in-flight attachment upload rendered as a spinner chip. Created
+ *  locally the moment a file/image staging starts (picker, drag-and-drop,
+ *  paste) — before the backend RPC resolves — so the user sees immediate
+ *  feedback and can cancel it. Replaced by the real AttachmentInfoUI when the
+ *  backend's incremental `attachments:changed` events land. The join between
+ *  a placeholder and its landed record is made by the lib's ID-window claim
+ *  pass — never by string identity (image records carry a processed path and
+ *  pasted images are renamed server-side). */
+export interface AttachmentUploadUI {
+  /** Client-generated stable id; doubles as the cancel key. */
+  readonly id: string
+  /** Display label: the staged path's basename for picker/drop, or a generic
+   *  "pasted-image" label for clipboard images. Used only as an attribution
+   *  hint inside the upload's ID window. */
+  readonly fileName: string
+  /** Absolute staged path ('' when unknown — clipboard image pastes). Kept
+   *  as an exact-path attribution hint; it is NOT the landed record's path
+   *  (images are re-encoded to a server-side copy). */
+  readonly path: string
+  /** True for image files (drives the placeholder chip icon). */
+  readonly isImage: boolean
+}
+
 /** Discriminator for the kind of content found on the clipboard by the
  *  backend PasteFromClipboard, in priority order image → files → text → empty.
  *  Shared by the raw (events.ts PasteResultRaw) and UI (PasteResultUI) shapes. */

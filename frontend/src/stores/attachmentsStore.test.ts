@@ -4,13 +4,16 @@
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useAttachmentsStore, EMPTY_ATTACHMENTS } from '@/stores/attachmentsStore'
-import type { AttachmentInfoUI } from '@/types/models'
+import type { AttachmentInfoUI, AttachmentUploadUI } from '@/types/models'
 
 const A1: AttachmentInfoUI = { id: 'a1', originalName: 'report.pdf', format: 'pdf', sizeBytes: 1024 }
 const A2: AttachmentInfoUI = { id: 'a2', originalName: 'image.png', format: 'png', sizeBytes: 2048 }
 
+const U1: AttachmentUploadUI = { id: 'u1', fileName: 'notes.md', path: '/p/notes.md', isImage: false }
+const U2: AttachmentUploadUI = { id: 'u2', fileName: 'photo.png', path: '/p/photo.png', isImage: true }
+
 function resetStore() {
-  useAttachmentsStore.setState({ attachmentsBySession: {}, namesById: {}, imageErrorBySession: {} })
+  useAttachmentsStore.setState({ attachmentsBySession: {}, uploadsBySession: {}, namesById: {}, imageErrorBySession: {} })
 }
 
 describe('attachmentsStore', () => {
@@ -166,6 +169,59 @@ describe('attachmentsStore', () => {
       useAttachmentsStore.getState().setAttachments('sess-a', [A1])
       useAttachmentsStore.getState().dropSessions(['sess-a'])
       expect(useAttachmentsStore.getState().namesById).toEqual({ a1: 'report.pdf' })
+    })
+
+    it('drops in-flight upload placeholders with the session slice', () => {
+      const { beginUploads, dropSessions } = useAttachmentsStore.getState()
+      beginUploads('sess-a', [U1])
+      beginUploads('sess-b', [U2])
+
+      dropSessions(['sess-a'])
+
+      const s = useAttachmentsStore.getState()
+      expect(s.uploadsBySession['sess-a']).toBeUndefined()
+      expect(s.uploadsBySession['sess-b']).toEqual([U2])
+    })
+  })
+
+  describe('uploadsBySession (optimistic placeholders)', () => {
+    it('begins empty and beginUploads creates the slice on demand', () => {
+      expect(useAttachmentsStore.getState().uploadsBySession).toEqual({})
+      useAttachmentsStore.getState().beginUploads('sess-a', [U1])
+      expect(useAttachmentsStore.getState().uploadsBySession['sess-a']).toEqual([U1])
+    })
+
+    it('beginUploads appends to an existing slice (batched staging)', () => {
+      const { beginUploads } = useAttachmentsStore.getState()
+      beginUploads('sess-a', [U1])
+      beginUploads('sess-a', [U2])
+      expect(useAttachmentsStore.getState().uploadsBySession['sess-a']).toEqual([U1, U2])
+    })
+
+    it('beginUploads with an empty list is a no-op', () => {
+      const before = useAttachmentsStore.getState()
+      useAttachmentsStore.getState().beginUploads('sess-a', [])
+      expect(useAttachmentsStore.getState()).toBe(before)
+    })
+
+    it('endUploads removes the listed ids and drops the key when emptied', () => {
+      const { beginUploads, endUploads } = useAttachmentsStore.getState()
+      beginUploads('sess-a', [U1, U2])
+
+      endUploads('sess-a', [U1.id])
+      expect(useAttachmentsStore.getState().uploadsBySession['sess-a']).toEqual([U2])
+
+      endUploads('sess-a', [U2.id])
+      expect(useAttachmentsStore.getState().uploadsBySession['sess-a']).toBeUndefined()
+    })
+
+    it('endUploads with unknown ids or an absent slice is a stable no-op', () => {
+      const { beginUploads, endUploads } = useAttachmentsStore.getState()
+      beginUploads('sess-a', [U1])
+      const before = useAttachmentsStore.getState()
+      endUploads('sess-a', ['nope'])
+      endUploads('sess-nope', [U1.id])
+      expect(useAttachmentsStore.getState()).toBe(before)
     })
   })
 })

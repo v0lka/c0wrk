@@ -111,7 +111,7 @@ beforeEach(() => {
   // act().
   act(() => {
     useInputModeStore.setState({ selectedModel: null })
-    useAttachmentsStore.setState({ attachmentsBySession: {}, namesById: {}, imageErrorBySession: {} })
+    useAttachmentsStore.setState({ attachmentsBySession: {}, uploadsBySession: {}, namesById: {}, imageErrorBySession: {} })
     useSessionStore.setState({ sessions: [], activeSessionId: null })
   })
 

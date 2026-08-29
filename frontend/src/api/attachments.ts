@@ -51,6 +51,16 @@ export function isImagePath(path: string): boolean {
   return IMAGE_EXTENSIONS.has(ext)
 }
 
+/** Basename of a staged file path — the display label for picker and
+ *  drag-and-drop upload placeholders. Mirrors the backend's `filepath.Base`
+ *  fallback for AttachmentInfo.OriginalName, so it understands BOTH path
+ *  separators: the backend runs on Windows too, where absolute paths arrive
+ *  with backslashes. */
+export function attachmentBaseName(path: string): string {
+  const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return idx === -1 ? path : path.slice(idx + 1)
+}
+
 /**
  * Open the native file picker for attachment selection.
  * Returns the chosen absolute paths (empty if the user cancelled).

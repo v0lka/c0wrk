@@ -23,7 +23,12 @@
 
 import { useCallback } from 'react'
 import { emit } from '@/api/runtime'
-import { attachFiles, isImagePath } from '@/api/attachments'
+import { attachFiles, attachmentBaseName, isImagePath } from '@/api/attachments'
+import {
+  beginAttachmentUploads,
+  completeAttachmentUploads,
+  failAttachmentUploads,
+} from '@/lib/attachmentUploads'
 import { createSession } from '@/api/sessions'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
@@ -105,9 +110,27 @@ export function useStageAttachments(): {
 
         const toAttach = supportsVision ? paths : docPaths
 
-        // attachFiles returns the FULL current pending list (already mapped).
-        const list = await attachFiles(sessionId, toAttach)
-        useAttachmentsStore.getState().setAttachments(sessionId, list)
+        // Optimistic upload placeholders: spinner chips appear instantly and
+        // drain as the backend's incremental `attachments:changed` events land
+        // matching attachments (or when this RPC settles). Uploads cancelled
+        // via their chip's X are stripped here and removed from the backend.
+        const uploads = beginAttachmentUploads(
+          sessionId,
+          toAttach.map((p) => ({
+            path: p,
+            fileName: attachmentBaseName(p),
+            isImage: isImagePath(p),
+          })),
+        )
+        try {
+          // attachFiles returns the FULL current pending list (already mapped).
+          const list = await attachFiles(sessionId, toAttach)
+          const kept = completeAttachmentUploads(sessionId, uploads, list)
+          useAttachmentsStore.getState().setAttachments(sessionId, kept)
+        } catch (err) {
+          failAttachmentUploads(uploads)
+          throw err
+        }
       } catch (err) {
         logger.error('Failed to attach files:', err)
         emit('runtime_error', {

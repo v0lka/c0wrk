@@ -5,7 +5,7 @@
 // RPCs. No React, no Wails runtime — just the mappers and the event guard.
 
 import { describe, it, expect } from 'vitest'
-import { mapAttachment, mapAttachments, isImagePath, mapPasteResult } from '@/api/attachments'
+import { mapAttachment, mapAttachments, isImagePath, attachmentBaseName, mapPasteResult } from '@/api/attachments'
 import { isAttachmentsChangedData, isAttachmentInfoRaw, isPasteResultRaw } from '@/types/events'
 
 describe('mapAttachment', () => {
@@ -165,6 +165,22 @@ describe('isImagePath', () => {
 
   it('returns false for files without an extension', () => {
     expect(isImagePath('/tmp/README')).toBe(false)
+  })
+})
+
+describe('attachmentBaseName', () => {
+  it('returns the last POSIX path segment', () => {
+    expect(attachmentBaseName('/home/user/docs/report.pdf')).toBe('report.pdf')
+    expect(attachmentBaseName('report.pdf')).toBe('report.pdf')
+  })
+
+  it('understands Windows backslash separators (the backend runs on Windows too)', () => {
+    expect(attachmentBaseName('C:\\Users\\vk\\photo.png')).toBe('photo.png')
+    expect(attachmentBaseName('C:\\photo.png')).toBe('photo.png')
+  })
+
+  it('handles mixed separators', () => {
+    expect(attachmentBaseName('/mnt/c\\Users\\vk\\note.md')).toBe('note.md')
   })
 })
 

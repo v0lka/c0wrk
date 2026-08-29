@@ -102,7 +102,7 @@ beforeEach(() => {
     useSessionStore.setState({ sessions: [], activeSessionId: null })
     useChatStore.setState({ messages: {}, messageOrder: {}, paused: {}, taskActive: {} })
     useInputModeStore.setState({ goalEnabled: false, goalBudget: '', selectedModel: null, selectedReasoning: null })
-    useAttachmentsStore.setState({ attachmentsBySession: {}, namesById: {}, imageErrorBySession: {} })
+    useAttachmentsStore.setState({ attachmentsBySession: {}, uploadsBySession: {}, namesById: {}, imageErrorBySession: {} })
   })
   container = document.createElement('div')
   document.body.appendChild(container)

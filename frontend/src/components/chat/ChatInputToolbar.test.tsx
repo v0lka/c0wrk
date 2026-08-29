@@ -45,6 +45,7 @@ function makeController(overrides: Partial<ChatInputController>): ChatInputContr
     paused: false,
     pausing: false,
     compacting: false,
+    attachmentsUploading: false,
     mode: 'chat',
     setMode: vi.fn(),
     height: 200,
