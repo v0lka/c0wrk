@@ -6,10 +6,14 @@ import { startCompletion, currentCompletions } from '@codemirror/autocomplete'
 import type { FileEntry } from '@/types/models'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 
-const { listDirectoryMock } = vi.hoisted(() => ({ listDirectoryMock: vi.fn() }))
+const { listDirectoryMock, getSessionWorkspaceMock } = vi.hoisted(() => ({
+  listDirectoryMock: vi.fn(),
+  getSessionWorkspaceMock: vi.fn(),
+}))
 
 vi.mock('@/api/workspace', () => ({
   listDirectory: (...args: unknown[]) => listDirectoryMock(...args),
+  getSessionWorkspace: (...args: unknown[]) => getSessionWorkspaceMock(...args),
 }))
 vi.mock('@/api/skills', () => ({
   listSkills: vi.fn().mockResolvedValue([]),
@@ -23,6 +27,8 @@ vi.mock('@/api/runtime', () => ({
 
 import { createChatAutocomplete } from './cmChatAutocomplete'
 import { createChatExtensions } from './cmChatExtensions'
+import { useProjectStore } from '@/stores/projectStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import type { MutableRefObject } from 'react'
 import { Compartment } from '@codemirror/state'
 
@@ -67,6 +73,8 @@ describe('cmChatAutocomplete @-file source', () => {
     views.length = 0
     vi.clearAllMocks()
     useFileTreeStore.setState({ rootPath: '' })
+    useSessionStore.setState({ sessions: null, activeSessionId: null })
+    useProjectStore.setState({ projects: null, activeProjectId: null })
   })
 
   it('recovers after a transient empty listing instead of caching it until restart', async () => {
@@ -104,6 +112,84 @@ describe('cmChatAutocomplete @-file source', () => {
     expect(listDirectoryMock).toHaveBeenCalledTimes(2)
     expect(currentCompletions(view.state).some((c) => c.label === 'alpha.txt')).toBe(true)
   })
+
+  it('resolves the completion root from the backend session workspace when stores disagree', async () => {
+    // Frontend/backend desync after rapid switches: the file-tree root still
+    // points at the previous project's workspace while the backend has moved
+    // on. The completion must fetch the backend-authoritative root — a root
+    // taken from the file tree alone fails containment on every call and
+    // @-hints stay empty until an app restart.
+    useFileTreeStore.setState({ rootPath: '/stale-project-ws' })
+    useSessionStore.setState({ sessions: [], activeSessionId: 's1' })
+    getSessionWorkspaceMock.mockResolvedValue('/current-project-ws')
+    listDirectoryMock.mockResolvedValue([
+      { name: 'gamma.ts', path: '/current-project-ws/gamma.ts', is_dir: false },
+    ])
+
+    const fixture = makeView()
+    views.push(fixture)
+    const { view } = fixture
+
+    typeAndComplete(view, '@')
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'gamma.ts'),
+      '@-completions from the backend-authoritative root',
+    )
+    expect(listDirectoryMock).toHaveBeenCalledWith('/current-project-ws', true)
+    expect(listDirectoryMock).not.toHaveBeenCalledWith('/stale-project-ws', true)
+  })
+
+  it('refetches when the active project changes even if the tree root is unchanged', async () => {
+    useFileTreeStore.setState({ rootPath: '/ws' })
+    useProjectStore.setState({ projects: [], activeProjectId: 'proj-a' })
+    listDirectoryMock.mockResolvedValue(ENTRIES)
+
+    const fixture = makeView()
+    views.push(fixture)
+    const { view } = fixture
+
+    typeAndComplete(view, '@')
+    await until(() => currentCompletions(view.state).length > 0, 'initial completions')
+    const callsAfterFirst = listDirectoryMock.mock.calls.length
+
+    // A project switch invalidates the completion cache even when the file
+    // tree has not caught up yet (e.g. FileTreePanel unmounted — collapsed
+    // sidebar or a non-explorer workspace tab).
+    useProjectStore.setState({ projects: [], activeProjectId: 'proj-b' })
+    typeAndComplete(view, 'l')
+    await until(
+      () => listDirectoryMock.mock.calls.length > callsAfterFirst,
+      'refetch after project switch',
+    )
+  })
+
+  it('throttles refetching while the listing keeps failing, then retries after the cooldown', async () => {
+    useFileTreeStore.setState({ rootPath: '/ws' })
+    listDirectoryMock.mockRejectedValue(new Error('path outside project workspace'))
+
+    const fixture = makeView()
+    views.push(fixture)
+    const { view } = fixture
+
+    typeAndComplete(view, '@')
+    await until(() => listDirectoryMock.mock.calls.length >= 1, 'first failing fetch')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    // Failures repeat per keystroke while broken — the cooldown bounds the
+    // retry storm without giving up self-healing.
+    typeAndComplete(view, 'a')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(listDirectoryMock.mock.calls.length).toBe(1)
+
+    // After the cooldown the next trigger retries and recovers.
+    listDirectoryMock.mockResolvedValue(ENTRIES)
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    typeAndComplete(view, 'a')
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'alpha.txt'),
+      'completions recover after the cooldown expires',
+    )
+  }, 8000)
 })
 
 describe('chat editor tooltip placement', () => {

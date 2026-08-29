@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -485,6 +486,88 @@ func TestSwitchProject_AlreadyActive_EmitsSwitchedEvent(t *testing.T) {
 		t.Fatalf("expected project:switched on the already-active path, got %d events", switched)
 	}
 }
+
+// TestSwitchProject_ConcurrentSwitchesSerialize pins the backend-side switch
+// serialization contract. Wails runs each binding call in its own goroutine,
+// so two rapid CHAT↔CODE toggles arrive on two goroutines. Without serializing
+// the SwitchProject body, the switches interleave inside the backend and a
+// slower EARLIER switch can overwrite activeProjectID after a later switch has
+// already completed — the backend ends on the older project while the
+// frontend's serialized switch chain believes the newer one. Every subsequent
+// ListDirectory against the frontend's rootPath then fails containment
+// ("path outside project workspace") and @-file completions stay empty until
+// an app restart.
+func TestSwitchProject_ConcurrentSwitchesSerialize(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+
+	second, err := h.api.projectManager.CreateProject("Switch Target 2", "")
+	if err != nil {
+		t.Fatalf("failed to create second test project: %v", err)
+	}
+
+	h.api.emitEvent = func(string, ...any) {}
+	h.api.builderOverride = &mockBuilder{}
+	t.Cleanup(func() {
+		h.api.watcherMu.Lock()
+		defer h.api.watcherMu.Unlock()
+		if h.api.watcher != nil {
+			_ = h.api.watcher.Close()
+			h.api.watcher = nil
+		}
+	})
+
+	// Block the FIRST switch mid-body (inside switchMu) and only let it finish
+	// after the second switch has been dispatched. The hook runs once; later
+	// switches pass through unblocked.
+	inFirst := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var hookOnce sync.Once
+	h.api.switchInProgressHook = func(string) {
+		hookOnce.Do(func() {
+			close(inFirst)
+			<-releaseFirst
+		})
+	}
+
+	errFirst := make(chan error, 1)
+	go func() { errFirst <- h.api.SwitchProject(h.projectID) }()
+	<-inFirst // first switch is mid-body, holding switchMu
+
+	errSecond := make(chan error, 1)
+	go func() { errSecond <- h.api.SwitchProject(second.ID) }()
+
+	// While the first switch is in progress the second must NOT be able to
+	// complete: switchMu must exclude it. Sample for 150ms.
+	select {
+	case err := <-errSecond:
+		t.Fatalf("second switch completed while first was still in progress (switch serialization broken): %v", err)
+	case <-time.After(150 * time.Millisecond):
+		// Expected: second switch is blocked on switchMu.
+	}
+
+	close(releaseFirst)
+	if err := <-errFirst; err != nil {
+		t.Fatalf("first SwitchProject: %v", err)
+	}
+	if err := <-errSecond; err != nil {
+		t.Fatalf("second SwitchProject: %v", err)
+	}
+
+	// The LAST-arrived switch must always win. Without serialization, the
+	// interleaved first switch's activate step could land after the second
+	// switch completed, leaving the backend on h.projectID.
+	if got := activeProjectIDForTest(h.api); got != second.ID {
+		t.Fatalf("backend ended on project %q, want the last-arrived switch target %q", got, second.ID)
+	}
+}
+
+func activeProjectIDForTest(f *FrontendAPI) string {
+	f.activeProjectMu.RLock()
+	defer f.activeProjectMu.RUnlock()
+	return f.activeProjectID
+}
+
 
 // TestGetSessionWorkspace_NoProject_ForeignSessionDoesNotLeak pins the CHAT
 // mode isolation guard: while No Project is active, GetSessionWorkspace must

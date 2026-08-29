@@ -300,4 +300,55 @@ describe('useProjectSwitchState', () => {
     expect(rpcOrder).toEqual(['p2', 'p3'])
     expect(useProjectStore.getState().activeProjectId).toBe('p3')
   })
+
+  it('discards the late writes of a watchdog-released switch instead of reverting the newer switch', async () => {
+    vi.useFakeTimers()
+    try {
+      useProjectStore.setState({ activeProjectId: 'p0' })
+
+      // Switch 1 stalls at its switchProject RPC (deferred, resolved
+      // manually after the watchdog has already released the queue).
+      let releaseStalled: (() => void) | undefined
+      const stalled = new Promise<void>((resolve) => {
+        releaseStalled = resolve
+      })
+      mocks.switchProjectMock.mockImplementation((id: string) =>
+        id === 'p1-stalled' ? stalled : Promise.resolve(),
+      )
+
+      const { useProjectSwitchState } = await import('@/hooks/useProjectSwitchState')
+      const runSwitch = useProjectSwitchState()
+
+      const first = runSwitch('p1-stalled')
+      void first.catch(() => { /* watchdog rejection is asserted below */ })
+      // Flush microtasks so switch 1 reaches its stalled RPC.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mocks.switchProjectMock).toHaveBeenCalledWith('p1-stalled')
+
+      // A newer switch is requested while switch 1 is still stalled.
+      const second = runSwitch('p2-fresh')
+      // The 30s watchdog fires, releases the queue, and switch 2 completes.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(useProjectStore.getState().activeProjectId).toBe('p2-fresh')
+      const sessionsAfterSecond = useSessionStore.getState().sessions
+
+      // The stalled RPC finally settles — switch 1's body resumes.
+      releaseStalled?.()
+      await stalled
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+
+      // Switch 1's remaining store writes are DISCARDED (seq guard). Without
+      // the guard the late body reverts activeProjectId to p1-stalled while
+      // the backend is on p2-fresh — a desync under which ListDirectory
+      // persistently rejects the frontend's rootPath and @-completions stay
+      // empty until an app restart.
+      expect(useProjectStore.getState().activeProjectId).toBe('p2-fresh')
+      expect(useSessionStore.getState().sessions).toBe(sessionsAfterSecond)
+      await expect(first).rejects.toThrow(/timed out/)
+      await second
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

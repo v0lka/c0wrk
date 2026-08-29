@@ -179,6 +179,18 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 		return errors.New("project subsystem not initialized")
 	}
 
+	// Serialize the entire switch (see switchMu in frontend_api.go): rapid
+	// toggles arrive on separate goroutines and must not interleave
+	// teardown/activate — otherwise the backend can end on the OLDER switch
+	// while the frontend's serialized chain already moved on, a desync under
+	// which every ListDirectory (and with it @-file completion) fails
+	// containment until an app restart.
+	f.switchMu.Lock()
+	defer f.switchMu.Unlock()
+	if f.switchInProgressHook != nil {
+		f.switchInProgressHook(id)
+	}
+
 	// Idempotency: skip the full switch if the same project is already
 	// active. The project:switched event is still emitted so a frontend
 	// whose local activeProjectId went stale (e.g. a concurrent toggle

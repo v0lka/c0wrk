@@ -7,10 +7,13 @@ import {
 import type { Extension } from '@codemirror/state'
 import { listSkills } from '@/api/skills'
 import { listAgents } from '@/api/agents'
-import { listDirectory } from '@/api/workspace'
+import { listDirectory, getSessionWorkspace } from '@/api/workspace'
 import { subscribe } from '@/api/runtime'
+import { logger } from '@/lib/logger'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { useProjectStore } from '@/stores/projectStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import { fuzzyFilter } from '@/lib/fuzzyMatch'
 import type { SkillDescriptor, AgentDescriptor, FileEntry } from '@/types/models'
 
@@ -31,6 +34,43 @@ let agentsLoaded = false
 let filesCache: FileEntry[] = []
 let filesLoaded = false
 let filesCacheRoot = ''
+// Timestamp of the last failed listing fetch. While a fetch keeps failing
+// (e.g. backend and frontend transiently disagree about the active project),
+// every keystroke would otherwise fire a fresh ListDirectory RPC — a busy
+// retry storm with no benefit, since the failure persists until the next
+// switch. A short cooldown keeps self-healing (retry on the next trigger
+// after it expires) while bounding the chatter.
+let filesFetchFailedAt = 0
+const FILES_FAILURE_COOLDOWN_MS = 1000
+
+/**
+ * Resolve the workspace root for the @-file completion source.
+ *
+ * The backend is the authority: ListDirectory validates every path against
+ * ITS active project, so the completion must ask the backend which root it
+ * would accept. GetSessionWorkspace(activeSessionId) returns exactly that —
+ * the session's workspace when it belongs to the active project, the active
+ * project workspace otherwise — and is therefore immune to the transient
+ * frontend/backend desyncs that follow rapid CHAT↔CODE / project / session
+ * switches. Under those desyncs a root taken from fileTreeStore alone kept
+ * failing containment on every call and @-hints stayed empty until an app
+ * restart.
+ *
+ * Falls back to the file-tree root when no session is active or the RPC
+ * fails (e.g. backend has no active project yet).
+ */
+async function resolveCompletionRoot(): Promise<string | null> {
+  const sessionId = useSessionStore.getState().activeSessionId
+  if (sessionId) {
+    try {
+      const ws = await getSessionWorkspace(sessionId)
+      if (ws) return ws
+    } catch (err) {
+      logger.warn('completion root: GetSessionWorkspace failed; falling back to the file-tree root', err)
+    }
+  }
+  return useFileTreeStore.getState().rootPath
+}
 
 function invalidateFilesCache() {
   filesLoaded = false
@@ -58,6 +98,29 @@ function ensureRootSubscription() {
   useFileTreeStore.subscribe((s) => {
     if (s.rootPath !== prevRoot) {
       prevRoot = s.rootPath
+      invalidateFilesCache()
+      invalidateSkillsCache()
+      invalidateAgentsCache()
+    }
+  })
+  // Project and session switches change which workspace the backend expects
+  // (and which root GetSessionWorkspace resolves to) even when the file-tree
+  // root is momentarily unchanged or its writer (FileTreePanel) is unmounted
+  // — e.g. collapsed sidebar or a non-explorer workspace tab. The completion
+  // cache must not survive those transitions.
+  let prevProjectId = useProjectStore.getState().activeProjectId
+  useProjectStore.subscribe((s) => {
+    if (s.activeProjectId !== prevProjectId) {
+      prevProjectId = s.activeProjectId
+      invalidateFilesCache()
+      invalidateSkillsCache()
+      invalidateAgentsCache()
+    }
+  })
+  let prevSessionId = useSessionStore.getState().activeSessionId
+  useSessionStore.subscribe((s) => {
+    if (s.activeSessionId !== prevSessionId) {
+      prevSessionId = s.activeSessionId
       invalidateFilesCache()
       invalidateSkillsCache()
       invalidateAgentsCache()
@@ -106,10 +169,11 @@ async function getAgents(): Promise<AgentDescriptor[]> {
   return agentsCache
 }
 
-async function getFiles(): Promise<FileEntry[]> {
-  const rootPath = useFileTreeStore.getState().rootPath
-  if (!rootPath) return []
-  if (filesLoaded && filesCacheRoot === rootPath) return filesCache
+async function getFiles(): Promise<{ entries: FileEntry[]; root: string | null }> {
+  const rootPath = await resolveCompletionRoot()
+  if (!rootPath) return { entries: [], root: null }
+  if (filesLoaded && filesCacheRoot === rootPath) return { entries: filesCache, root: rootPath }
+  if (Date.now() - filesFetchFailedAt < FILES_FAILURE_COOLDOWN_MS) return { entries: [], root: rootPath }
   try {
     const entries = await listDirectory(rootPath, true)
     filesCache = entries
@@ -122,10 +186,17 @@ async function getFiles(): Promise<FileEntry[]> {
     // completion trigger self-heals once the directory exists.
     filesLoaded = entries.length > 0
     filesCacheRoot = rootPath
-  } catch {
+    filesFetchFailedAt = 0
+    return { entries, root: rootPath }
+  } catch (err) {
     filesCache = []
+    filesFetchFailedAt = Date.now()
+    // Never silent: a completion root the backend keeps rejecting is exactly
+    // the "hints are dead until restart" failure mode, and without a log it
+    // is undiagnosable which side of the desync produced it.
+    logger.error(`completion: ListDirectory failed for root ${rootPath}`, err)
+    return { entries: [], root: rootPath }
   }
-  return filesCache
 }
 
 function relativePath(absPath: string, rootPath: string | null): string {
@@ -244,10 +315,9 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
   const from = line.from + triggerIdx + 1
   const query = textBefore.slice(triggerIdx + 1)
 
-  const entries = await getFiles()
+  const { entries, root: rootPath } = await getFiles()
   if (entries.length === 0) return null
 
-  const rootPath = useFileTreeStore.getState().rootPath
   const openTabs = useFileViewerStore.getState().openTabs
   const openTabsSet = new Set(openTabs)
 

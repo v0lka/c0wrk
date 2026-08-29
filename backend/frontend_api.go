@@ -64,6 +64,21 @@ type FrontendAPI struct {
 	activeProjectPath string
 	activeProjectMu   sync.RWMutex
 
+	// switchMu serializes the whole SwitchProject body (teardown → activate →
+	// watcher → vector → event). Wails runs each binding call in its own
+	// goroutine, so two rapid CHAT↔CODE toggles used to interleave inside the
+	// backend: a slower earlier switch could overwrite activeProjectID AFTER a
+	// later switch had completed, leaving the backend on the older project
+	// while the frontend (whose switch chain is serialized) believes the newer
+	// one. Every subsequent ListDirectory against the frontend's rootPath then
+	// fails containment ("path outside project workspace") and @-file
+	// completions in the chat input stay empty until an app restart.
+	switchMu sync.Mutex
+
+	// switchInProgressHook is a test-only seam invoked inside SwitchProject
+	// while switchMu is held (i.e. mid-switch). Nil in production.
+	switchInProgressHook func(id string)
+
 	// Active research root path (empty when RESEARCH is off). Guarded by
 	// activeProjectMu so it stays in sync with project switches.
 	activeResearchRoot string

@@ -26,7 +26,22 @@ function pickLatestSession(sessions: SessionInfo[]): SessionInfo | null {
   }, sessions[0]!)
 }
 
-async function performSwitch(nextProjectId: string): Promise<void> {
+async function performSwitch(nextProjectId: string, seq: number): Promise<void> {
+  // A superseded switch must not touch state: its queue slot was released by
+  // the watchdog while a NEWER switch is already running (or done). Every
+  // store write and every follow-up RPC below is guarded — otherwise the
+  // late body of switch N reverts activeProjectId/activeSessionId set by
+  // switch N+1, leaving the frontend on the older project while the backend
+  // is on the newer one. Under that desync ListDirectory persistently
+  // rejects the frontend's rootPath and @-file completions stay empty until
+  // an app restart.
+  const superseded = (): boolean => seq !== switchSeq
+  const abortIfSuperseded = (): boolean => {
+    if (!superseded()) return false
+    logger.warn(`Project switch to "${nextProjectId}" was superseded while in flight; discarding its remaining state writes`)
+    return true
+  }
+
   const projectState = useProjectStore.getState()
   const currentProjectId = projectState.activeProjectId
 
@@ -62,8 +77,10 @@ async function performSwitch(nextProjectId: string): Promise<void> {
       logger.warn('Failed to persist source project switch state; continuing switch', error)
     }
   }
+  if (abortIfSuperseded()) return
 
   await switchProject(nextProjectId)
+  if (abortIfSuperseded()) return
 
   const sessionStore = useSessionStore.getState()
   const fileViewer = useFileViewerStore.getState()
@@ -87,6 +104,7 @@ async function performSwitch(nextProjectId: string): Promise<void> {
   } catch (error) {
     logger.warn('Failed to restore persisted project switch state; using fallback', error)
   }
+  if (abortIfSuperseded()) return
 
   // NOTE: on the initial (startup) activation we intentionally keep the
   // localStorage-rehydrated tabs untouched and skip this restore. The backend
@@ -103,6 +121,7 @@ async function performSwitch(nextProjectId: string): Promise<void> {
   } catch (error) {
     logger.warn('Failed to list sessions during project switch restore', error)
   }
+  if (abortIfSuperseded()) return
 
   // Deterministic fallback:
   // 1) latest session by last_active_at (most reliable — based on actual activity)
@@ -124,14 +143,18 @@ async function performSwitch(nextProjectId: string): Promise<void> {
     sessionStore.setActiveSessionId(savedSessionId)
     return
   }
+  if (abortIfSuperseded()) return
 
   try {
     const created = await createSession()
+    if (abortIfSuperseded()) return
     sessionStore.addSession(created)
     sessionStore.setActiveSessionId(created.id)
   } catch (error) {
     logger.error('Failed to create fallback session after project switch restore', error)
-    sessionStore.setActiveSessionId(null)
+    if (!superseded()) {
+      sessionStore.setActiveSessionId(null)
+    }
   }
 }
 
@@ -148,15 +171,25 @@ async function performSwitch(nextProjectId: string): Promise<void> {
 let switchChain: Promise<void> = Promise.resolve()
 
 /**
+ * Monotonic sequence of switch requests. Each queued switch captures its
+ * sequence at enqueue time; when the watchdog releases the queue while an
+ * earlier switch's body is still running, the stale body detects
+ * `seq !== switchSeq` after every await and discards its remaining store
+ * writes instead of reverting the newer switch's state (see performSwitch).
+ */
+let switchSeq = 0
+
+/**
  * Watchdog budget for one queued switch: waiting for its predecessor plus
  * running its own body. Wails bindings have no built-in timeout, so without
  * this bound a single hung RPC (e.g. a stuck backend switchProject) would
  * keep every later toggle queued forever — the CHAT↔CODE toggles would
  * silently stop responding. When the watchdog fires, the queue link settles
  * (releasing the next queued switch) and the affected caller's promise
- * rejects with a timeout error. If the hung switch's RPC settles
- * afterwards, its late store writes can still interleave with the next
- * switch — an accepted trade-off versus freezing the queue indefinitely.
+ * rejects with a timeout error. If the hung switch's RPC settles afterwards,
+ * its late body resumes — but every store write is guarded by the switch
+ * sequence (see performSwitch), so a superseded body discards its remaining
+ * writes instead of reverting the newer switch's state.
  */
 const SWITCH_QUEUE_TIMEOUT_MS = 30_000
 
@@ -182,15 +215,22 @@ function withSwitchTimeout<T>(promise: Promise<T>, nextProjectId: string): Promi
 export function useProjectSwitchState() {
   return useCallback((nextProjectId: string): Promise<void> => {
     const run = switchChain.then(
-      () => performSwitch(nextProjectId),
+      // The sequence number is captured when the body STARTS, not when the
+      // switch is requested: a merely-queued newer switch does not supersede
+      // the currently-running body (it cannot start until the chain link
+      // settles). Only a body that is still in flight when a NEWER body has
+      // begun (the watchdog overlap case) must discard its remaining writes.
+      () => performSwitch(nextProjectId, ++switchSeq),
       // The chain itself never rejects — a failed switch must not poison
       // later ones — but the caller still observes the original error via
       // the returned promise.
-      () => performSwitch(nextProjectId),
+      () => performSwitch(nextProjectId, ++switchSeq),
     )
     const bounded = withSwitchTimeout(run, nextProjectId)
     // The chain link settles when the switch completes OR its watchdog
-    // fires — either way the next queued switch is allowed to start.
+    // fires — either way the next queued switch is allowed to start. The
+    // superseded early body (seq guard in performSwitch) keeps the late
+    // writes of a watchdog-released switch from corrupting the newer one.
     switchChain = bounded.then(undefined, () => {})
     return bounded
   }, [])
