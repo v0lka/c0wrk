@@ -122,9 +122,11 @@ export function GitFileEntry({ entry, workspaceRoot, onToggle, onOpenDiff }: Git
       )}
 
       {/* File name — grows to fill remaining space so the diff stat and
-          status badge are pushed to the right edge of the row. */}
+          status badge are pushed to the right edge of the row. The native
+          title exposes the untruncated path when the name overflows. */}
       <span
         className="min-w-0 flex-1 truncate text-sm leading-none"
+        title={displayPath}
       >
         {dir && (
           <span className="text-muted-foreground/60">{dir}</span>
