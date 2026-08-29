@@ -120,6 +120,13 @@ func mainImpl() int {
 		},
 		OnStartup:  app.Startup,
 		OnShutdown: app.Shutdown,
+		// Close guard: every quit path (window close button, Cmd+Q / the OS
+		// quit menu, runtime.Quit — including the updater's quit) funnels
+		// through this hook on all platforms. While sessions have live work
+		// the hook intercepts the quit, emits app:exit_requested, and the
+		// frontend shows a confirmation modal; ConfirmExit re-issues the quit
+		// with a bypass flag so it goes through. See desktop/exit_guard.go.
+		OnBeforeClose: app.ShouldPreventClose,
 		Bind: []any{
 			app,
 		},

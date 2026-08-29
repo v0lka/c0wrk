@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -1709,6 +1710,50 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 	}
 
 	return status, nil
+}
+
+// ActiveSessionInfo identifies a session that currently has live background
+// work, for the desktop close-confirmation guard.
+type ActiveSessionInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Compacting is true when the session's live work is an in-flight manual
+	// context compaction rather than a running task.
+	Compacting bool `json:"compacting"`
+}
+
+// ActiveSessions returns the in-memory sessions that currently have live
+// background work — a running task or an in-flight manual compaction. The
+// desktop close guard uses it to decide whether quitting the app needs user
+// confirmation: this work dies with the process, unlike paused/unfinished
+// tasks which are persisted and resumable after restart. Memory-only by
+// design: a session that is not in memory cannot have live work, and the
+// check must never restore sessions as a side effect.
+func (m *Manager) ActiveSessions() []ActiveSessionInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	active := make([]ActiveSessionInfo, 0)
+	for _, s := range m.sessions {
+		s.mu.Lock()
+		running := s.active
+		compacting := s.compacting
+		name := s.Name
+		s.mu.Unlock()
+		if !running && !compacting {
+			continue
+		}
+		active = append(active, ActiveSessionInfo{
+			ID:         s.ID,
+			Name:       name,
+			Compacting: compacting && !running,
+		})
+	}
+
+	// Deterministic order (map iteration is random) so repeated guard checks
+	// produce a stable payload for the frontend dialog.
+	sort.Slice(active, func(i, j int) bool { return active[i].ID < active[j].ID })
+	return active
 }
 
 // LiveTokenSnapshot returns the in-memory token/fill state of a session — the

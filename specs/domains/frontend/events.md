@@ -21,6 +21,7 @@ Manages real-time event subscription, validation, and store updates. Events flow
 - `frontend/src/hooks/events/useGoalEvents.ts` — goal-mode events (`goal_proposal` pending action + `goal_status`/`goal_progress` service-phase events → goalStore + chat message)
 - `frontend/src/hooks/events/useSoundEvents.ts` — sound-notification events (plays Web Audio tones on task lifecycle milestones when `soundStore.enabled`); composed by `useSessionEvents`
 - `frontend/src/hooks/useFileDrop.ts` — global `files:dropped` subscription, HTML5 drag overlay, and navigation suppression
+- `frontend/src/hooks/useExitGuard.ts` — global `app:exit_requested` subscription (mounted once at the app root, above the per-phase renders): validates the intercepted-quit payload and writes `exitGuardStore`; a malformed payload is reported via `reportDroppedEvent` and still opens the generic list-less modal — the backend has already prevented the quit, so an unanswered dialog would leave the app unclosable. The user's decision travels back through the `ConfirmExit` RPC from `ExitConfirmDialog` (a pure view over the store; `update_pending` in the payload switches it to restart context)
 - `frontend/src/hooks/useStageAttachments.ts` — shared picker/drop attachment staging and model-vision filtering
 - `frontend/src/hooks/events/goalHandlers.ts` — shared goal event handlers (`handleGoalProposalEvent`, `handleGoalStatusEvent`, `handleGoalProgressEvent`) used by `useGoalEvents` (foreground) and the background-session watcher (mirrors the `hitlHandlers.ts` pattern)
 - `frontend/src/hooks/events/sessionLifecycleHandlers.ts` — shared session pause/resume handlers (`handleSessionPausedEvent`, `handleSessionResumedEvent`) used by `useChatEvents` (foreground) and the background-session watcher (mirrors the `hitlHandlers.ts` pattern)
@@ -98,6 +99,10 @@ Backend emits assistant_done (once, when LLM finishes):
 `files:dropped` is a global desktop event, not part of `useSessionEvents`. In chat input mode, `useFileDrop` validates `{paths, x, y}` and forwards a defensive copy of `paths` to `useStageAttachments` for the active session. That shared hook applies the same image/vision filtering and backend `AttachFiles` call as the native picker.
 
 Document-level HTML5 `dragenter`/`dragover`/`dragleave`/`drop` listeners maintain a reference-counted overlay and suppress the webview's default open-file navigation. They do not read filesystem paths from `dataTransfer`; Wails native drop is the sole path source. Leaving chat mode unsubscribes the global event and clears drag state.
+
+### Close Guard
+
+`app:exit_requested` is a global desktop event: the Wails `OnBeforeClose` hook intercepted a quit because sessions have live work (running task or in-flight manual compaction; paused/unfinished tasks are persisted and don't count). `useExitGuard` — mounted once at the app root, above the per-phase renders — validates `{sessions, update_pending}` and opens `ExitConfirmDialog` over `exitGuardStore`; store-backed state survives the app-phase remounts of the dialog component. A malformed payload is reported via `reportDroppedEvent` and degrades to the generic list-less modal, because the backend has already prevented the quit and an unanswered dialog would leave the app unclosable. The user's answer travels back through the `ConfirmExit` RPC — never a response event, since the decision must reach the process that owns the exit-confirmed bypass flag. `update_pending: true` (the intercepted quit belongs to `ApplyUpdate`) switches the dialog to restart context; the backend marker self-expires with the staged updater's parent-wait window, so a cancelled-then-retried quit after it degrades to a plain quit.
 
 ### Pending Actions
 

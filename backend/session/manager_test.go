@@ -1651,6 +1651,75 @@ func TestGetSessionRuntimeStatus(t *testing.T) {
 	})
 }
 
+// TestActiveSessions verifies the close-guard enumeration: only in-memory
+// sessions with live work (running task or in-flight compaction) are
+// reported, idle sessions are not, and the result is deterministic.
+func TestActiveSessions(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	idle, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	running, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	compacting, err := manager.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	if sess, ok := manager.GetSession(running.ID); ok {
+		sess.mu.Lock()
+		sess.active = true
+		sess.mu.Unlock()
+	} else {
+		t.Fatalf("GetSession failed for session %s", running.ID)
+	}
+	if sess, ok := manager.GetSession(compacting.ID); ok {
+		sess.mu.Lock()
+		sess.compacting = true
+		sess.mu.Unlock()
+	} else {
+		t.Fatalf("GetSession failed for session %s", compacting.ID)
+	}
+
+	active := manager.ActiveSessions()
+	if len(active) != 2 {
+		t.Fatalf("expected 2 active sessions, got %d: %+v", len(active), active)
+	}
+	// Deterministic order: sorted by ID ascending (IDs are random UUIDs, so
+	// assert sortedness rather than a fixed session sequence).
+	if active[0].ID > active[1].ID {
+		t.Errorf("expected sessions sorted by ID, got %+v", active)
+	}
+	byID := map[string]ActiveSessionInfo{}
+	for _, s := range active {
+		byID[s.ID] = s
+	}
+	if _, listed := byID[idle.ID]; listed {
+		t.Errorf("idle session %s must not be reported active", idle.ID)
+	}
+	if s := byID[compacting.ID]; !s.Compacting {
+		t.Errorf("expected Compacting=true for compaction-only session, got %+v", s)
+	}
+	if s := byID[running.ID]; s.Compacting {
+		t.Errorf("expected Compacting=false for task-running session, got %+v", s)
+	}
+
+	// Once the work finishes, the session must drop out of the report.
+	if sess, ok := manager.GetSession(running.ID); ok {
+		sess.mu.Lock()
+		sess.active = false
+		sess.mu.Unlock()
+	}
+	active = manager.ActiveSessions()
+	if len(active) != 1 || active[0].ID != compacting.ID {
+		t.Fatalf("expected only the compacting session to remain, got %+v", active)
+	}
+}
+
 // recordingCancelTaskStore extends mockTaskStoreForResumable by capturing
 // CompleteTask, CancelTask, and PauseTask invocations so shutdown/cancel tests
 // can assert on them.

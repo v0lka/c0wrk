@@ -13,6 +13,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend"
 	"github.com/v0lka/c0wrk/backend/logger"
+	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/markitdown"
 	"github.com/v0lka/c0wrk/core/vectorindex"
 )
@@ -75,6 +76,50 @@ type App struct {
 	// set during Phase 2 and prepended to PATH so exec.CommandContext calls
 	// resolve managed binaries (rg, uv, markitdown).
 	toolsBinPath string
+
+	// exitConfirmed bypasses the close guard (ShouldPreventClose) once the
+	// user confirmed quitting despite active sessions. Wails routes every
+	// quit path — including the runtime.Quit issued by ConfirmExit itself —
+	// through OnBeforeClose, so the confirmed quit must not be intercepted
+	// a second time.
+	//
+	// Invariant: the flag is armed only immediately before an imminent quit
+	// (ConfirmExit stores it and calls wailsRuntime.Quit in the same
+	// breath), and the platform quit paths that follow cannot be cancelled
+	// by the user — so an armed flag never outlives the process it was armed
+	// for, and a later guard bypass with newly active sessions is
+	// impossible. Any change that makes quit cancellable after arming must
+	// reset this flag on cancellation.
+	exitConfirmed atomic.Bool
+
+	// updateQuitAt records when the updater-driven quit (ApplyUpdate →
+	// quitApp) was issued, so the close guard can tell the frontend that an
+	// intercepted quit belongs to a pending self-update (payload flag
+	// update_pending) and the confirmation modal can present restart
+	// context. It is a timestamp rather than a sticky flag for honesty
+	// about cancellation: the staged updater gives up once the parent
+	// misses StagedUpdaterShutdownWait, so after that window a quit no
+	// longer completes the update and must not be presented as one. The
+	// zero value (never armed) disables the context. Accessed atomically
+	// because quitApp runs on a Wails RPC goroutine while OnBeforeClose
+	// runs on the main thread.
+	updateQuitAt atomic.Value // time.Time
+
+	// activeSessionsFn, when non-nil, replaces the backend active-session
+	// lookup in the close guard. Lets tests exercise the guard without a
+	// live backend application. Production wiring keeps it nil.
+	activeSessionsFn func() []session.ActiveSessionInfo
+
+	// quitFn, when non-nil, replaces wailsRuntime.Quit in ConfirmExit. Lets
+	// tests observe the confirmed quit without a live Wails runtime.
+	// Production wiring keeps it nil.
+	quitFn func(ctx context.Context)
+
+	// windowShowFn, when non-nil, replaces wailsRuntime.WindowShow in the
+	// close guard. Lets tests run the interception path without a live Wails
+	// runtime (wailsRuntime panics on a foreign context). Production wiring
+	// keeps it nil.
+	windowShowFn func(ctx context.Context)
 }
 
 // NewApp creates a new App instance.

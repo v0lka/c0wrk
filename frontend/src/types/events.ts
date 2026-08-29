@@ -414,6 +414,34 @@ export interface FilesDroppedData {
   readonly y: number
 }
 
+// --- App exit-guard payloads ---
+//
+// Mirror the backend DTOs in desktop/exit_guard.go (snake_case JSON keys).
+// Emitted when a quit attempt is intercepted because sessions have live work.
+
+/** One session with live background work (running task or in-flight manual
+ *  compaction) whose work would be interrupted by quitting. */
+export interface ExitRequestedSession {
+  readonly id: string
+  readonly name: string
+  /** True when the live work is a manual compaction, not a running task. */
+  readonly compacting: boolean
+}
+
+/** Payload of the global `app:exit_requested` event. The user answers through
+ *  the ConfirmExit RPC (never a response event — the decision must reach the
+ *  process that owns the exit-confirmed flag). */
+export interface ExitRequestedData {
+  readonly sessions: readonly ExitRequestedSession[]
+  /** True when the intercepted quit belongs to a pending self-update
+   *  (ApplyUpdate already launched the staged updater): the confirmation
+   *  modal presents restart context. Optional — an absent flag means a
+   *  plain quit. The backend arms it only while the staged updater is
+   *  still waiting, so a cancelled-then-retried quit after its window
+   *  degrades to a plain quit context. */
+  readonly update_pending?: boolean
+}
+
 // --- Self-update event payloads ---
 //
 // Mirror the backend DTOs in backend/frontend_api_updater.go (snake_case JSON
@@ -466,6 +494,10 @@ export interface GlobalEventMap {
   readonly 'tool_manager:done': ToolManagerDoneData
   readonly 'workdirs:changed': void
   readonly 'files:dropped': FilesDroppedData
+  /** Quit attempt intercepted because sessions have live work; the user
+   *  confirms through the ConfirmExit RPC. Emitted by the close guard
+   *  (desktop/exit_guard.go, Wails OnBeforeClose). */
+  readonly 'app:exit_requested': ExitRequestedData
   /** Self-update lifecycle: a newer release is available. Payload is the
    *  check result (UpdateInfo). Emitted by CheckForUpdates. */
   readonly 'update:available': UpdateInfoData
@@ -746,6 +778,20 @@ export function isFilesDroppedData(d: unknown): d is FilesDroppedData {
   if (!Array.isArray(d.paths)) return false
   if (!d.paths.every((p) => typeof p === 'string')) return false
   return typeof d.x === 'number' && typeof d.y === 'number'
+}
+
+/** Guard for an `app:exit_requested` payload (intercepted quit). Strict:
+ *  each session entry needs `id` and `name` strings, and `update_pending`,
+ *  when present, must be a boolean. A payload that fails this guard never
+ *  reaches the modal's session list — the consumer (useExitGuard) reports
+ *  the drop and opens the generic list-less modal instead, because the
+ *  backend has already prevented the quit and an unanswered one would
+ *  leave the app unclosable. */
+export function isExitRequestedData(d: unknown): d is ExitRequestedData {
+  if (!isObj(d)) return false
+  if (!Array.isArray(d.sessions)) return false
+  if (d.update_pending !== undefined && typeof d.update_pending !== 'boolean') return false
+  return d.sessions.every((s) => isObj(s) && typeof s.id === 'string' && typeof s.name === 'string')
 }
 
 const VALID_VECTOR_STATES: ReadonlySet<string> = new Set(['idle', 'indexing', 'ready', 'reindexing', 'unavailable'])

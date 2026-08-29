@@ -9,7 +9,9 @@ import { WorkDirsModal } from '@/components/chat/WorkDirsModal'
 import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
 import { ToolInstallSplash } from '@/components/ToolInstallSplash'
 import { UpdateToast } from '@/components/UpdateToast'
+import { ExitConfirmDialog } from '@/components/ExitConfirmDialog'
 import { useUpdateChecker } from '@/hooks/useUpdateChecker'
+import { useExitGuard } from '@/hooks/useExitGuard'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useProjectLoader } from '@/hooks/useProjectLoader'
 import { useSessionLoader } from '@/hooks/useSessionLoader'
@@ -62,6 +64,10 @@ function App() {
   useBackgroundSessionWatcher()
   useUpdateChecker()
   useExperimentalFeatures()
+  // Close-guard subscription — mounted once at the root so app-phase
+  // transitions never create an event gap; ExitConfirmDialog (rendered in
+  // every phase branch) is a pure view over the store this hook writes.
+  useExitGuard()
 
   // ── Tool manager lifecycle ────────────────────────────────────────────
 
@@ -192,25 +198,39 @@ function App() {
 
   // Phase: splash (tool install in progress).
   if (phase === 'splash' && splashTools !== null) {
-    return <ToolInstallSplash tools={splashTools} progressMap={progressMap} />
+    return (
+      <>
+        <ToolInstallSplash tools={splashTools} progressMap={progressMap} />
+        {/* Mounted in every phase: a webview reload (wake recovery) can land
+            back in splash while sessions keep running in the backend, and the
+            close guard's confirmation modal must still be renderable then. */}
+        <ExitConfirmDialog />
+      </>
+    )
   }
 
   // Phase: splash but no tool_manager:start received yet — show minimal spinner.
   if (phase === 'splash') {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
-        <div className="size-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-      </div>
+      <>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
+          <div className="size-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        </div>
+        <ExitConfirmDialog />
+      </>
     )
   }
 
   // Phase: waiting_ready — tools done, waiting for backend.
   if (phase === 'waiting_ready') {
     return (
-      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-background">
-        <div className="size-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-        <p className="text-sm text-muted-foreground">Starting c0wrk…</p>
-      </div>
+      <>
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-background">
+          <div className="size-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          <p className="text-sm text-muted-foreground">Starting c0wrk…</p>
+        </div>
+        <ExitConfirmDialog />
+      </>
     )
   }
 
@@ -258,6 +278,7 @@ function App() {
       <WorkDirsModal />
       <CreateProjectDialogAlwaysMounted />
       <UpdateToast />
+      <ExitConfirmDialog />
     </TooltipProvider>
   )
 }

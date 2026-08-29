@@ -53,9 +53,16 @@ type SelfUpdateOptions struct {
 	TargetDir string
 }
 
+// StagedUpdaterShutdownWait is how long a launched staging updater waits for
+// the parent process to exit before giving up (and exiting itself). Exported
+// so other layers can reason about the window in which a parent quit still
+// completes a pending self-update (e.g. the desktop close guard's
+// update_pending payload flag).
+const StagedUpdaterShutdownWait = 60 * time.Second
+
 // shutdownTimeout is how long ApplySelfUpdate waits for the parent PID to exit
 // before giving up. It is a var so tests can shorten it.
-var shutdownTimeout = 60 * time.Second
+var shutdownTimeout = StagedUpdaterShutdownWait
 
 // pollInterval is how often the PID-death waiter re-checks the parent.
 var pollInterval = 500 * time.Millisecond

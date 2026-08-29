@@ -390,6 +390,12 @@ func (a *App) Startup(ctx context.Context) {
 			return a.ctx
 		},
 		QuitApp: func() {
+			// quitApp is invoked exclusively by ApplyUpdate after the staged
+			// updater is already launched, so this is the single point where
+			// the desktop layer learns "this quit belongs to a pending
+			// self-update". Arm the marker before quitting so the close
+			// guard (should the quit be intercepted) can flag the context.
+			a.markUpdateQuit()
 			wailsRuntime.Quit(a.ctx)
 		},
 	}, configLoadErrors, projStore, log, startTime)

@@ -162,3 +162,15 @@ export function onGlobalEvent<K extends GlobalEventKey>(
     callback(data as GlobalEventMap[K])
   })
 }
+
+/** Confirm quitting the app despite active sessions (close guard).
+ *
+ * Counterpart to the global `app:exit_requested` event: the backend's
+ * OnBeforeClose guard intercepts a quit while sessions have live work, emits
+ * that event, and waits for the user's decision. This RPC arms the backend
+ * exit-confirmed flag and re-issues the graceful quit so the normal Shutdown
+ * sequence still runs. */
+export async function confirmExit(): Promise<void> {
+  const app = getApp()
+  await app.ConfirmExit()
+}
