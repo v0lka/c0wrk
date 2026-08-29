@@ -41,10 +41,12 @@ package markitdown
 //     is replaced with a neutral label rather than leaked verbatim.
 //
 // Cost and abuse bounds, shared across markitdown's internal captioning and
-// both passes: at most 12 captioning LLM calls per document (images beyond
-// the budget are listed/skipped without descriptions), images smaller than
-// 32px in either dimension are ignored as decorations, and images are
-// normalized (RGB JPEG, longest side ≤ 2048px) before upload.
+// both passes: every unique image (deduplicated by content hash) is captioned
+// — there is deliberately no per-document call cap — images smaller than 32px
+// in either dimension are ignored as decorations, and images are normalized
+// (RGB JPEG, longest side ≤ 2048px) before upload. The outer bound is the
+// Go-side per-file vision deadline shared with the plain-CLI fallback (see
+// Converter.convert).
 //
 // Failure semantics: every pass is individually exception-guarded and every
 // per-image captioning error is caught, so a broken vision endpoint (or an
@@ -61,17 +63,9 @@ _model = os.environ["MARKITDOWN_LLM_MODEL"]
 _raw_prompt = os.environ.get("MARKITDOWN_LLM_PROMPT")
 _caption_prompt = _raw_prompt if _raw_prompt else "Write a detailed caption for this image."
 
-_MAX_CAPTIONS = 12
 _MIN_DIM = 32
 _MAX_DIM = 2048
 _MAX_PIXELS = 40000000
-
-_llm_calls = 0
-_budget_skipped = 0
-
-
-class _BudgetError(Exception):
-    pass
 
 
 class _Obj:
@@ -80,10 +74,6 @@ class _Obj:
 
 class _Completions:
     def create(self, model=None, messages=None):
-        global _llm_calls
-        _llm_calls += 1
-        if _llm_calls > _MAX_CAPTIONS:
-            raise _BudgetError("per-document caption budget exhausted")
         payload = json.dumps({"model": model, "messages": messages}).encode("utf-8")
         req = urllib.request.Request(
             _base_url + "/chat/completions",
@@ -158,7 +148,6 @@ _captions = {}
 
 
 def _caption_cached(jpeg, size, label):
-    global _budget_skipped
     if size[0] < _MIN_DIM or size[1] < _MIN_DIM:
         return None
     key = hashlib.sha256(jpeg).hexdigest()
@@ -166,9 +155,6 @@ def _caption_cached(jpeg, size, label):
         return _captions[key]
     try:
         cap = _caption(jpeg)
-    except _BudgetError:
-        _budget_skipped += 1
-        return None
     except Exception as e:
         print("markitdown driver: caption failed for %s: %s" % (label, e), file=sys.stderr)
         return None
@@ -199,9 +185,6 @@ def _datauri_pass(markdown):
                 img = Image.open(io.BytesIO(raw))
                 img.load()
                 cap = _caption_cached(_to_jpeg(img), img.size, label)
-            except _BudgetError:
-                global _budget_skipped
-                _budget_skipped += 1
             except Exception as e:
                 print("markitdown driver: caption failed for %s: %s" % (label, e), file=sys.stderr)
         # The base64 blob is replaced by the caption (or a neutral label)
@@ -312,9 +295,6 @@ def _pdf_pass(path, markdown):
             lines.append("- Page %d, %dx%d: %s" % (pageno, w, h, cap.replace("\n", " ")))
         else:
             lines.append("- Page %d, %dx%d: (image present; no description available)" % (pageno, w, h))
-    if _budget_skipped:
-        lines.append("")
-        lines.append("(%d additional image(s) were not described: per-document caption limit of %d reached)" % (_budget_skipped, _MAX_CAPTIONS))
     return markdown + "\n".join(lines) + "\n"
 
 
