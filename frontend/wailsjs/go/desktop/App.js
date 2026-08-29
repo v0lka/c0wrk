@@ -74,6 +74,10 @@ export function CompactSessionContext(arg1, arg2) {
   return window['go']['desktop']['App']['CompactSessionContext'](arg1, arg2);
 }
 
+export function ConfirmExit() {
+  return window['go']['desktop']['App']['ConfirmExit']();
+}
+
 export function ConfirmGoal(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['desktop']['App']['ConfirmGoal'](arg1, arg2, arg3, arg4, arg5);
 }

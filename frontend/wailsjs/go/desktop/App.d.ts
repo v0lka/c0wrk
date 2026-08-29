@@ -45,6 +45,8 @@ export function Commit(arg1:string):Promise<string>;
 
 export function CompactSessionContext(arg1:string,arg2:string):Promise<void>;
 
+export function ConfirmExit():Promise<void>;
+
 export function ConfirmGoal(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
 
 export function CreateBranch(arg1:string,arg2:string):Promise<void>;
