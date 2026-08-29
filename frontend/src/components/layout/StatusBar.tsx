@@ -29,7 +29,7 @@ export function StatusBar() {
   return (
     <div
       className={cn(
-        "flex h-8 shrink-0 items-center gap-0.5 overflow-hidden border-t border-border bg-background px-3 text-xs text-muted-foreground",
+        "flex h-8 shrink-0 select-none items-center gap-0.5 overflow-hidden border-t border-border bg-background px-3 text-xs text-muted-foreground",
         sidebarCollapsed && "ml-1",
         viewerCollapsed && "mr-1",
       )}
