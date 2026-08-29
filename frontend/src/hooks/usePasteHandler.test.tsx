@@ -113,7 +113,7 @@ beforeEach(() => {
   // outside act().
   act(() => {
     useInputModeStore.setState({ selectedModel: null })
-    useAttachmentsStore.getState().clear()
+    useAttachmentsStore.setState({ attachmentsBySession: {}, namesById: {}, imageErrorBySession: {} })
     useSessionStore.setState({ sessions: [], activeSessionId: 'sess-1' })
   })
 
@@ -139,8 +139,8 @@ describe('usePasteHandler routing', () => {
 
     // supportsVision forwarded to the backend (default model is vision-m).
     expect(spies.pasteFromClipboard).toHaveBeenCalledWith('sess-1', true)
-    expect(useAttachmentsStore.getState().attachments).toEqual(list)
-    expect(useAttachmentsStore.getState().imageError).toBeNull()
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-1']).toEqual(list)
+    expect(useAttachmentsStore.getState().imageErrorBySession['sess-1']).toBeUndefined()
   })
 
   it('surfaces a localized banner and stages nothing when the image is rejected (non-vision)', async () => {
@@ -159,8 +159,8 @@ describe('usePasteHandler routing', () => {
 
     // supportsVision=false forwarded to the backend.
     expect(spies.pasteFromClipboard).toHaveBeenCalledWith('sess-1', false)
-    expect(useAttachmentsStore.getState().attachments).toEqual([])
-    const err = useAttachmentsStore.getState().imageError ?? ''
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-1']).toBeUndefined()
+    const err = useAttachmentsStore.getState().imageErrorBySession['sess-1'] ?? ''
     expect(err).toContain('does not support images')
     expect(err).toContain('novision-m')
   })
@@ -174,7 +174,9 @@ describe('usePasteHandler routing', () => {
 
     await act(async () => { await runPaste() })
 
-    expect(useAttachmentsStore.getState().imageError).toBe('failed to write temp image: disk full')
+    expect(useAttachmentsStore.getState().imageErrorBySession['sess-1']).toBe(
+      'failed to write temp image: disk full',
+    )
   })
 
   it('surfaces a banner when pasted image files are skipped (non-vision, kind=files)', async () => {
@@ -191,8 +193,8 @@ describe('usePasteHandler routing', () => {
 
     await act(async () => { await runPaste() })
 
-    expect(useAttachmentsStore.getState().attachments).toEqual([])
-    const err = useAttachmentsStore.getState().imageError ?? ''
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-1']).toBeUndefined()
+    const err = useAttachmentsStore.getState().imageErrorBySession['sess-1'] ?? ''
     expect(err).toContain('does not support images')
     expect(err).toContain('novision-m')
   })
@@ -200,12 +202,14 @@ describe('usePasteHandler routing', () => {
   it('does not clear an existing banner when nothing was staged and nothing skipped', async () => {
     // A concurrent/empty result with no files and no skips must leave an
     // existing banner (e.g. from a concurrent drop) untouched.
-    act(() => { useAttachmentsStore.getState().setImageError('stale banner from a drop') })
+    act(() => { useAttachmentsStore.getState().setImageError('sess-1', 'stale banner from a drop') })
     spies.pasteFromClipboard.mockResolvedValue({ kind: 'files', files: [] })
 
     await act(async () => { await runPaste() })
 
-    expect(useAttachmentsStore.getState().imageError).toBe('stale banner from a drop')
+    expect(useAttachmentsStore.getState().imageErrorBySession['sess-1']).toBe(
+      'stale banner from a drop',
+    )
   })
 
   it('stages copied files (kind=files)', async () => {
@@ -214,8 +218,8 @@ describe('usePasteHandler routing', () => {
 
     await act(async () => { await runPaste() })
 
-    expect(useAttachmentsStore.getState().attachments).toEqual(list)
-    expect(useAttachmentsStore.getState().imageError).toBeNull()
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-1']).toEqual(list)
+    expect(useAttachmentsStore.getState().imageErrorBySession['sess-1']).toBeUndefined()
   })
 
   it('inserts text at the cursor (kind=text), no attachment', async () => {
@@ -224,7 +228,7 @@ describe('usePasteHandler routing', () => {
     await act(async () => { await runPaste() })
 
     expect(spies.insertAtCursor).toHaveBeenCalledWith('hello world')
-    expect(useAttachmentsStore.getState().attachments).toEqual([])
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-1']).toBeUndefined()
   })
 
   it('is a no-op for empty clipboard (kind=empty)', async () => {
@@ -233,7 +237,7 @@ describe('usePasteHandler routing', () => {
     await act(async () => { await runPaste() })
 
     expect(spies.insertAtCursor).not.toHaveBeenCalled()
-    expect(useAttachmentsStore.getState().attachments).toEqual([])
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-1']).toBeUndefined()
   })
 
   it('creates a session on demand when none is active', async () => {
@@ -258,5 +262,39 @@ describe('usePasteHandler routing', () => {
     expect(spies.emit).toHaveBeenCalledWith('runtime_error', expect.objectContaining({
       message: 'Failed to paste from clipboard',
     }))
+  })
+})
+
+describe('usePasteHandler per-session regression (switch while pending)', () => {
+  it('a paste started in A lands its list in A after switching to B mid-flight', async () => {
+    // Paste starts with A active; the backend probe stays pending while the
+    // test switches the active session to B. The staged list must land in
+    // A's key (captured before the await) — B's slice stays untouched.
+    act(() => { useSessionStore.setState({ sessions: [], activeSessionId: 'sess-a' }) })
+
+    let resolvePaste!: (result: PasteResultUI) => void
+    spies.pasteFromClipboard.mockImplementation(
+      () => new Promise<PasteResultUI>((res) => { resolvePaste = res }),
+    )
+
+    let pending!: Promise<void>
+    await act(async () => {
+      pending = runPaste()
+    })
+
+    // Switch the visible session while the paste RPC is still in flight.
+    act(() => { useSessionStore.setState({ sessions: [], activeSessionId: 'sess-b' }) })
+
+    const list = [makeAttachment('p1'), makeAttachment('p2')]
+    await act(async () => {
+      resolvePaste({ kind: 'files', files: list })
+      await pending
+    })
+
+    // The staged files landed in the ORIGINATING session's key…
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-a']).toEqual(list)
+    // …and the newly-visible session's slice was never touched.
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-b']).toBeUndefined()
+    expect(useAttachmentsStore.getState().imageErrorBySession['sess-b']).toBeUndefined()
   })
 })

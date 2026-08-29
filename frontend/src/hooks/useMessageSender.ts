@@ -5,7 +5,7 @@ import { useCallback, useState } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
-import { useAttachmentsStore } from '@/stores/attachmentsStore'
+import { useAttachmentsStore, EMPTY_ATTACHMENTS } from '@/stores/attachmentsStore'
 import { buildUserMessageMeta } from '@/lib/userMessageMeta'
 import { sendMessage, cancelTask } from '@/api/chat'
 import { createSession } from '@/api/sessions'
@@ -60,13 +60,14 @@ export function useMessageSender(): UseMessageSenderResult {
 
     // Optimistic metadata mirroring the SNAKE_CASE blob the backend persists
     // via PendingMessageMetadata: the goal flag, the staged attachments
-    // (document summaries + image records), and the nudge marker. Snapshot the
-    // pending list BEFORE the send RPC — the backend's send-clear
-    // "attachments:changed" event empties the store only after this message is
-    // already rendered with its goal/attachment badges, so the indicators no
-    // longer wait for a session/project switch to appear.
+    // (document summaries + image records), and the nudge marker. Snapshot
+    // THIS session's pending list BEFORE the send RPC — the backend's send-clear
+    // "attachments:changed" event empties the session's slice only after this
+    // message is already rendered with its goal/attachment badges, so the
+    // indicators no longer wait for a session/project switch to appear.
     const goalEnabled = useInputModeStore.getState().goalEnabled
-    const pendingAttachments = useAttachmentsStore.getState().attachments
+    const pendingAttachments =
+      useAttachmentsStore.getState().attachmentsBySession[sessionId] ?? EMPTY_ATTACHMENTS
     const metadata = buildUserMessageMeta(goalEnabled, pendingAttachments, wasPaused || isRunning)
 
     const optimisticId = generateMessageId()

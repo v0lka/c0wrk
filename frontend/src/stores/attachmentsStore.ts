@@ -1,101 +1,159 @@
-// Zustand store for a session's pending file attachments.
+// Zustand store for per-session pending file attachments.
 //
-// Stable selectors: the attachments array is a direct store property returned
-// by reference — never allocated inside a useStore selector. React 19's
-// useSyncExternalStore compares snapshots by reference; a fresh array on every
-// render would trigger an infinite re-render loop (error #185). Derive derived
-// values (length, etc.) via the useAttachments() / useHasAttachments() hooks
-// which return primitives or direct references.
+// Keying by session id means:
+//  - an upload staged in session A that completes after the user switched to
+//    session B lands its list in A's key (the staging hooks capture the
+//    session id before their awaits) — B's slice is never clobbered;
+//  - the chips / image-error banner render only the ACTIVE session's state;
+//  - pending lists survive session switches (no clear-on-switch), so
+//    switching back shows the session's own list immediately.
+//
+// namesById stays a global accumulating cache (never wiped on switch): it
+// resolves committed attachment ids to file names for read_attachment tool
+// cards across sessions.
+//
+// Stable selectors: every hook returns a primitive or a direct store
+// reference — the per-session list or the module-level EMPTY_ATTACHMENTS
+// constant. Never allocate inside a useStore selector; React 19's
+// useSyncExternalStore compares snapshots by reference (error #185).
 
 import { create } from 'zustand'
 import type { AttachmentInfoUI } from '@/types/models'
 
+/**
+ * Stable empty list returned for sessions with no pending attachments.
+ * Referentially stable (module constant) so the useAttachments selector
+ * never allocates.
+ */
+export const EMPTY_ATTACHMENTS: AttachmentInfoUI[] = []
+
 interface AttachmentsState {
-  /** Pending attachments for the active session. */
-  attachments: AttachmentInfoUI[]
+  /** Pending attachments per session; sparse — absent key = none. */
+  attachmentsBySession: Record<string, AttachmentInfoUI[]>
   /**
-   * Accumulated attachment-id → original-name map. Populated from every
-   * attachment list the store receives. The send-flush is a no-op for this
-   * cache since it carries an empty list. Entries are never removed
-   * individually so that committed attachments stay resolvable after the
-   * pending chips are cleared — the read_attachment tool card uses this to
-   * show the file name instead of the opaque attachment id. Cleared on
-   * session switch together with the pending list.
+   * Accumulated attachment-id → original-name map, folded from every list the
+   * store receives. Entries are never removed individually so committed
+   * attachments stay resolvable after the pending chips are cleared — the
+   * read_attachment tool card uses this to show the file name instead of the
+   * opaque attachment id. Deliberately NOT keyed by session: names resolve
+   * across sessions and survive switches (global cache).
    */
   namesById: Record<string, string>
   /**
-   * Transient image-attachment error message. Set when the user tries to
+   * Transient image-attachment error per session. Set when the user tries to
    * attach image files while a non-vision model is selected; cleared on
-   * dismiss, successful attach, or session switch. null = no banner.
+   * dismiss or successful attach. Absent key = no banner. Callers that can
+   * act without an active session key it under the NULL_SESSION_KEY sentinel
+   * ('' from chatInputStore) so the banner remains visible in the input.
    */
-  imageError: string | null
-  /**
-   * Transient prompt-optimization error message. Set when the LLM fails to
-   * produce an optimized prompt; cleared on dismiss, successful optimization,
-   * or session switch. null = no banner.
-   */
-  promptOptimizeError: string | null
+  imageErrorBySession: Record<string, string>
 }
 
 interface AttachmentsActions {
-  /** Replace the entire pending list (the backend always sends the full list). */
-  setAttachments: (attachments: AttachmentInfoUI[]) => void
-  /** Set the transient image-attachment error message (null to clear). */
-  setImageError: (message: string | null) => void
-  /** Set the transient prompt-optimization error message (null to clear). */
-  setPromptOptimizeError: (message: string | null) => void
-  /** Clear the store (e.g. on session switch). */
-  clear: () => void
+  /** Replace a session's entire pending list (the backend always sends the full list). */
+  setAttachments: (sessionId: string, attachments: AttachmentInfoUI[]) => void
+  /** Set a session's transient image-attachment error (null to clear). */
+  setImageError: (sessionId: string, message: string | null) => void
+  /** Drop the slices of deleted sessions (keeps the maps bounded; namesById stays). */
+  dropSessions: (sessionIds: string[]) => void
 }
 
 export const useAttachmentsStore = create<AttachmentsState & AttachmentsActions>((set) => ({
-  attachments: [],
+  attachmentsBySession: {},
   namesById: {},
-  imageError: null,
-  promptOptimizeError: null,
+  imageErrorBySession: {},
 
-  setAttachments: (attachments) =>
-    set((state) => {
+  setAttachments: (sessionId, attachments) =>
+    set((s) => {
       // Fold the freshly received attachment metadata into the id→name cache.
-      // Reusing the incoming list keeps the `attachments` reference stable for
-      // the chips selector; only namesById gets a new object.
-      let namesById = state.namesById
+      // Reusing the incoming list keeps the slice reference stable; only the
+      // touched records get new objects.
+      let namesById = s.namesById
       for (const a of attachments) {
         if (namesById[a.id] !== a.originalName) {
-          if (namesById === state.namesById) namesById = { ...state.namesById }
+          if (namesById === s.namesById) namesById = { ...s.namesById }
           namesById[a.id] = a.originalName
         }
       }
-      return { attachments, namesById }
+
+      // Empty lists (the send-flush) keep the record sparse: drop the
+      // session's key instead of storing an empty array. Re-setting the same
+      // array reference is a no-op so event replays don't churn subscribers.
+      let attachmentsBySession = s.attachmentsBySession
+      const current = attachmentsBySession[sessionId]
+      if (attachments.length === 0) {
+        if (current !== undefined) {
+          attachmentsBySession = { ...s.attachmentsBySession }
+          delete attachmentsBySession[sessionId]
+        }
+      } else if (current !== attachments) {
+        attachmentsBySession = { ...s.attachmentsBySession, [sessionId]: attachments }
+      }
+
+      if (namesById === s.namesById && attachmentsBySession === s.attachmentsBySession) return s
+      return { attachmentsBySession, namesById }
     }),
 
-  setImageError: (message) => set({ imageError: message }),
+  setImageError: (sessionId, message) =>
+    set((s) => {
+      if (message === null) {
+        if (!(sessionId in s.imageErrorBySession)) return s
+        const imageErrorBySession = { ...s.imageErrorBySession }
+        delete imageErrorBySession[sessionId]
+        return { imageErrorBySession }
+      }
+      if (s.imageErrorBySession[sessionId] === message) return s
+      return { imageErrorBySession: { ...s.imageErrorBySession, [sessionId]: message } }
+    }),
 
-  setPromptOptimizeError: (message) => set({ promptOptimizeError: message }),
-
-  clear: () => set({ attachments: [], namesById: {}, imageError: null, promptOptimizeError: null }),
+  dropSessions: (sessionIds) =>
+    set((s) => {
+      let attachmentsBySession = s.attachmentsBySession
+      for (const id of sessionIds) {
+        if (id in attachmentsBySession) {
+          if (attachmentsBySession === s.attachmentsBySession) {
+            attachmentsBySession = { ...s.attachmentsBySession }
+          }
+          delete attachmentsBySession[id]
+        }
+      }
+      let imageErrorBySession = s.imageErrorBySession
+      for (const id of sessionIds) {
+        if (id in imageErrorBySession) {
+          if (imageErrorBySession === s.imageErrorBySession) {
+            imageErrorBySession = { ...s.imageErrorBySession }
+          }
+          delete imageErrorBySession[id]
+        }
+      }
+      if (
+        attachmentsBySession === s.attachmentsBySession &&
+        imageErrorBySession === s.imageErrorBySession
+      ) {
+        return s
+      }
+      return { attachmentsBySession, imageErrorBySession }
+    }),
 }))
 
 /**
- * Read the active session's pending attachments.
+ * Read a session's pending attachments.
  *
- * Returns the direct store array reference — referentially stable as long as
- * the list itself is unchanged, so this is safe to pass to useStore directly.
+ * Returns the direct store slice reference — referentially stable as long as
+ * the list itself is unchanged — or the shared EMPTY_ATTACHMENTS constant
+ * when the session has none. Safe to pass to useStore directly.
  */
-export function useAttachments(): AttachmentInfoUI[] {
-  return useAttachmentsStore((s) => s.attachments)
-}
-
-/** Whether there are any pending attachments (primitive — always stable). */
-export function useHasAttachments(): boolean {
-  return useAttachmentsStore((s) => s.attachments.length > 0)
+export function useAttachments(sessionId: string | null): AttachmentInfoUI[] {
+  return useAttachmentsStore((s) =>
+    sessionId ? s.attachmentsBySession[sessionId] ?? EMPTY_ATTACHMENTS : EMPTY_ATTACHMENTS,
+  )
 }
 
 /**
  * Resolve an attachment id to its original file name. Returns undefined when
- * the id is unknown (e.g. an attachment committed before this session's store
- * was seeded, such as after an app restart). A primitive selector, so it only
- * re-renders when the resolved name actually changes.
+ * the id is unknown (e.g. an attachment committed before this app run, such
+ * as after a restart). A primitive selector, so it only re-renders when the
+ * resolved name actually changes.
  */
 export function useAttachmentName(id: string | undefined | null): string | undefined {
   return useAttachmentsStore((s) => (id ? s.namesById[id] : undefined))

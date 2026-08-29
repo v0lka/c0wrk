@@ -8,7 +8,7 @@
 // panelPersistence.test.ts, which opts into jsdom for the same reason).
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
-import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, partializeGitPanel, mergeGitPanel, type GitPanelEntry } from '@/stores/gitPanelStore'
+import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, EMPTY_COMMIT_DRAFT, partializeGitPanel, mergeGitPanel, type GitPanelEntry } from '@/stores/gitPanelStore'
 
 /** Reset the store to initial state before each test */
 function resetStore() {
@@ -41,14 +41,13 @@ describe('gitPanelStore', () => {
     expect(s.sortBy).toBe('path')
     expect(s.groupBy).toBe('none')
     expect(s.entries).toEqual([])
-    expect(s.commitMessage).toBe('')
+    expect(s.commitByProject).toEqual({})
     expect(s.branch).toEqual({ name: '', upstream: '', ahead: 0, behind: 0 })
     expect(s.branches).toEqual([])
     expect(s.expandedDirs).toEqual(new Set())
     expect(s.isLoading).toBe(false)
     expect(s.isGitRepo).toBe(false)
     expect(s.isBranchPickerOpen).toBe(false)
-    expect(s.isGeneratingCommit).toBe(false)
     expect(s.remoteOperationInProgress).toBe(false)
     expect(s.activeTab).toBe('changes')
     expect(s.error).toBeNull()
@@ -64,19 +63,34 @@ describe('gitPanelStore', () => {
     expect(useGitPanelStore.getState().viewMode).toBe('flat')
   })
 
-  // ── setCommitMessage ──
+  // ── setCommitMessage (per-project) ──
 
-  it('setCommitMessage updates the message', () => {
+  it('setCommitMessage updates the message of the given project', () => {
     const { setCommitMessage } = useGitPanelStore.getState()
-    setCommitMessage('fix: update config')
-    expect(useGitPanelStore.getState().commitMessage).toBe('fix: update config')
+    setCommitMessage('proj-1', 'fix: update config')
+    expect(useGitPanelStore.getState().commitByProject['proj-1']).toEqual({
+      message: 'fix: update config',
+      isGenerating: false,
+      isCommitting: false,
+      error: null,
+      lastCommitSha: null,
+    })
   })
 
   it('setCommitMessage allows empty string', () => {
     const { setCommitMessage } = useGitPanelStore.getState()
-    setCommitMessage('initial')
-    setCommitMessage('')
-    expect(useGitPanelStore.getState().commitMessage).toBe('')
+    setCommitMessage('proj-1', 'initial')
+    setCommitMessage('proj-1', '')
+    expect(useGitPanelStore.getState().commitByProject['proj-1']!.message).toBe('')
+  })
+
+  it('setCommitMessage is scoped per project', () => {
+    const { setCommitMessage } = useGitPanelStore.getState()
+    setCommitMessage('proj-a', 'feat: a')
+    setCommitMessage('proj-b', 'fix: b')
+    const s = useGitPanelStore.getState().commitByProject
+    expect(s['proj-a']!.message).toBe('feat: a')
+    expect(s['proj-b']!.message).toBe('fix: b')
   })
 
   // ── setLoading ──
@@ -311,15 +325,24 @@ describe('gitPanelStore', () => {
     expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(false)
   })
 
-  // ── setGeneratingCommit ──
+  // ── setGeneratingCommit (per-project) ──
 
-  it('setGeneratingCommit toggles isGeneratingCommit', () => {
+  it('setGeneratingCommit toggles the flag of the given project', () => {
     const { setGeneratingCommit } = useGitPanelStore.getState()
-    expect(useGitPanelStore.getState().isGeneratingCommit).toBe(false)
-    setGeneratingCommit(true)
-    expect(useGitPanelStore.getState().isGeneratingCommit).toBe(true)
-    setGeneratingCommit(false)
-    expect(useGitPanelStore.getState().isGeneratingCommit).toBe(false)
+    expect(useGitPanelStore.getState().commitByProject['proj-1']).toBeUndefined()
+    setGeneratingCommit('proj-1', true)
+    expect(useGitPanelStore.getState().commitByProject['proj-1']!.isGenerating).toBe(true)
+    setGeneratingCommit('proj-1', false)
+    expect(useGitPanelStore.getState().commitByProject['proj-1']!.isGenerating).toBe(false)
+  })
+
+  it('setGeneratingCommit preserves other fields of the slice', () => {
+    const { setCommitMessage, setGeneratingCommit } = useGitPanelStore.getState()
+    setCommitMessage('proj-1', 'draft')
+    setGeneratingCommit('proj-1', true)
+    const slice = useGitPanelStore.getState().commitByProject['proj-1']!
+    expect(slice.message).toBe('draft')
+    expect(slice.isGenerating).toBe(true)
   })
 
   // ── setRemoteOperationInProgress ──
@@ -364,7 +387,10 @@ describe('gitPanelStore', () => {
     const store = useGitPanelStore.getState()
     store.setViewMode('tree')
     store.loadEntries([makeEntry({ path: 'a.ts' })])
-    store.setCommitMessage('fix: bug')
+    store.setCommitMessage('proj-1', 'fix: bug')
+    store.setGeneratingCommit('proj-1', true)
+    store.setCommitError('proj-1', 'boom')
+    store.setCommitSuccess('proj-2', 'abc123def456')
     store.setBranch({ name: 'feature/x', upstream: '', ahead: 0, behind: 0 })
     store.setBranches([{ name: 'main', is_current: true, kind: 'local', upstream: 'origin/main' }])
     store.setGitRepo(true)
@@ -372,21 +398,19 @@ describe('gitPanelStore', () => {
     store.setError('some error')
     store.toggleExpandedDir('src')
     store.openBranchPicker()
-    store.setGeneratingCommit(true)
 
     store.reset()
 
     const s = useGitPanelStore.getState()
     expect(s.viewMode).toBe('flat')
     expect(s.entries).toEqual([])
-    expect(s.commitMessage).toBe('')
+    expect(s.commitByProject).toEqual({})
     expect(s.branch).toEqual({ name: '', upstream: '', ahead: 0, behind: 0 })
     expect(s.branches).toEqual([])
     expect(s.expandedDirs).toEqual(new Set())
     expect(s.isLoading).toBe(false)
     expect(s.isGitRepo).toBe(false)
     expect(s.isBranchPickerOpen).toBe(false)
-    expect(s.isGeneratingCommit).toBe(false)
     expect(s.remoteOperationInProgress).toBe(false)
     expect(s.activeTab).toBe('changes')
     expect(s.error).toBeNull()
@@ -410,7 +434,7 @@ describe('gitPanelStore', () => {
     expect(useGitPanelStore.getState().entries.find(e => e.path === 'src/app.ts')!.staged).toBe(true)
 
     // Set commit message
-    store.setCommitMessage('feat: add app module')
+    store.setCommitMessage('proj-1', 'feat: add app module')
 
     // Simulate loading during commit
     store.setLoading(true)
@@ -418,9 +442,9 @@ describe('gitPanelStore', () => {
 
     // Commit succeeds — reload
     store.loadEntries([])
-    store.setCommitMessage('')
+    store.setCommitMessage('proj-1', '')
     expect(useGitPanelStore.getState().entries).toEqual([])
-    expect(useGitPanelStore.getState().commitMessage).toBe('')
+    expect(useGitPanelStore.getState().commitByProject['proj-1']!.message).toBe('')
   })
 
   it('handles error during refresh', () => {
@@ -588,5 +612,116 @@ describe('gitPanelStore — D8 (sortBy / groupBy)', () => {
     const merged = mergeGitPanel({ sortBy: 'bogus', groupBy: 'nope' }, current)
     expect(merged.sortBy).toBe('path')
     expect(merged.groupBy).toBe('none')
+  })
+})
+
+// --- Per-project commit-box state (commitByProject) ---
+
+describe('gitPanelStore — per-project commit state', () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  it('exposes EMPTY_COMMIT_DRAFT matching the default slice', () => {
+    expect(EMPTY_COMMIT_DRAFT).toEqual({
+      message: '',
+      isGenerating: false,
+      isCommitting: false,
+      error: null,
+      lastCommitSha: null,
+    })
+  })
+
+  it('setCommitting toggles the flag on the given project only', () => {
+    const { setCommitting } = useGitPanelStore.getState()
+    setCommitting('proj-1', true)
+    expect(useGitPanelStore.getState().commitByProject['proj-1']!.isCommitting).toBe(true)
+    expect(useGitPanelStore.getState().commitByProject['proj-2']).toBeUndefined()
+    setCommitting('proj-1', false)
+    expect(useGitPanelStore.getState().commitByProject['proj-1']!.isCommitting).toBe(false)
+  })
+
+  it('a no-op commit-slice patch keeps the state reference stable', () => {
+    const { setCommitMessage, setCommitting } = useGitPanelStore.getState()
+    setCommitMessage('proj-1', 'draft')
+    const before = useGitPanelStore.getState()
+    // Same value on an existing slice, and false on an absent slice.
+    setCommitting('proj-1', false)
+    setCommitting('proj-never', false)
+    expect(useGitPanelStore.getState()).toBe(before)
+  })
+
+  it('setCommitError sets and clears the error of the given project', () => {
+    const { setCommitError } = useGitPanelStore.getState()
+    setCommitError('proj-1', 'generation failed')
+    expect(useGitPanelStore.getState().commitByProject['proj-1']!.error).toBe('generation failed')
+    setCommitError('proj-1', null)
+    expect(useGitPanelStore.getState().commitByProject['proj-1']!.error).toBeNull()
+  })
+
+  it('setCommitSuccess stores the SHA and clears the draft message', () => {
+    const { setCommitMessage, setCommitSuccess } = useGitPanelStore.getState()
+    setCommitMessage('proj-1', 'feat: thing')
+    setCommitSuccess('proj-1', 'abc123def456789')
+    const slice = useGitPanelStore.getState().commitByProject['proj-1']!
+    expect(slice.lastCommitSha).toBe('abc123def456789')
+    expect(slice.message).toBe('')
+  })
+
+  it('setCommitSuccess(null) dismisses the banner without wiping a new draft', () => {
+    // The banner auto-dismiss timer fires seconds after the commit; by then
+    // the user may have started typing a new message that must survive.
+    const { setCommitSuccess, setCommitMessage } = useGitPanelStore.getState()
+    setCommitSuccess('proj-1', 'abc123def456789')
+    setCommitMessage('proj-1', 'next draft')
+    setCommitSuccess('proj-1', null)
+    const slice = useGitPanelStore.getState().commitByProject['proj-1']!
+    expect(slice.lastCommitSha).toBeNull()
+    expect(slice.message).toBe('next draft')
+  })
+
+  it('dropProjectCommitState removes only the given project', () => {
+    const { setCommitMessage, dropProjectCommitState } = useGitPanelStore.getState()
+    setCommitMessage('proj-a', 'draft a')
+    setCommitMessage('proj-b', 'draft b')
+    dropProjectCommitState('proj-a')
+    const s = useGitPanelStore.getState().commitByProject
+    expect(s['proj-a']).toBeUndefined()
+    expect(s['proj-b']!.message).toBe('draft b')
+  })
+
+  it('dropProjectCommitState is a no-op for an unknown project', () => {
+    const { setCommitMessage, dropProjectCommitState } = useGitPanelStore.getState()
+    setCommitMessage('proj-a', 'draft a')
+    expect(() => dropProjectCommitState('never-seen')).not.toThrow()
+    expect(useGitPanelStore.getState().commitByProject['proj-a']!.message).toBe('draft a')
+  })
+
+  it('commit state survives an A→B→A project switch (in-memory)', () => {
+    const { setCommitMessage, setCommitError, setGeneratingCommit } = useGitPanelStore.getState()
+    setCommitMessage('proj-a', 'feat: a')
+    setGeneratingCommit('proj-a', true)
+    setCommitError('proj-a', 'err')
+    setCommitMessage('proj-b', 'fix: b')
+
+    // Switch away to B and back to A — A's values are restored untouched.
+    const s = useGitPanelStore.getState().commitByProject
+    expect(s['proj-a']).toEqual({
+      message: 'feat: a',
+      isGenerating: true,
+      isCommitting: false,
+      error: 'err',
+      lastCommitSha: null,
+    })
+    expect(s['proj-b']!.message).toBe('fix: b')
+    expect(s['proj-b']!.isGenerating).toBe(false)
+  })
+
+  it('commitByProject is transient: excluded from the persisted partial', () => {
+    const { setCommitMessage, setCommitSuccess } = useGitPanelStore.getState()
+    setCommitMessage('proj-1', 'draft')
+    setCommitSuccess('proj-1', 'abc123')
+    const partial = partializeGitPanel(useGitPanelStore.getState())
+    expect(partial).not.toHaveProperty('commitByProject')
   })
 })

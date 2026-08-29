@@ -61,8 +61,10 @@ function AttachmentChip({
 }
 
 export function AttachmentChips(): React.JSX.Element | null {
-  const attachments = useAttachments()
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
+  // The chips render only the active session's pending list; other sessions'
+  // lists stay in the store untouched.
+  const attachments = useAttachments(activeSessionId)
 
   const handleRemove = useCallback(
     async (id: string) => {

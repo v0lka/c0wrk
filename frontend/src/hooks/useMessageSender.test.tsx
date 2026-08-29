@@ -102,7 +102,7 @@ beforeEach(() => {
     useSessionStore.setState({ sessions: [], activeSessionId: null })
     useChatStore.setState({ messages: {}, messageOrder: {}, paused: {}, taskActive: {} })
     useInputModeStore.setState({ goalEnabled: false, goalBudget: '', selectedModel: null, selectedReasoning: null })
-    useAttachmentsStore.getState().clear()
+    useAttachmentsStore.setState({ attachmentsBySession: {}, namesById: {}, imageErrorBySession: {} })
   })
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -144,7 +144,7 @@ describe('useMessageSender optimistic metadata', () => {
   it('mirrors document and image attachments into the optimistic message', async () => {
     useSessionStore.setState({ activeSessionId: 's1' })
     act(() => {
-      useAttachmentsStore.getState().setAttachments([DOC, IMG])
+      useAttachmentsStore.getState().setAttachments('s1', [DOC, IMG])
     })
     await act(async () => {
       await capturedSend!('summarize these')
@@ -163,11 +163,35 @@ describe('useMessageSender optimistic metadata', () => {
     })
   })
 
+  it('mirrors only the target session own pending attachments', async () => {
+    // Per-session slices: s1 has a doc pending, s2 has an image. A send into
+    // s2 must reflect s2's list only — never another session's.
+    useSessionStore.setState({ activeSessionId: 's2' })
+    act(() => {
+      useAttachmentsStore.getState().setAttachments('s1', [DOC])
+      useAttachmentsStore.getState().setAttachments('s2', [IMG])
+    })
+    await act(async () => {
+      await capturedSend!('describe the picture')
+    })
+    expect(sentUser('s2').metadata).toEqual({
+      images: [
+        {
+          id: 'img-1',
+          name: 'cat.png',
+          thumbnail: 'data:image/jpeg;base64,AAA',
+          path: '/tmp/cat.png',
+          media_type: 'image/png',
+        },
+      ],
+    })
+  })
+
   it('combines goal + attachments in one blob', async () => {
     useSessionStore.setState({ activeSessionId: 's1' })
     act(() => {
       useInputModeStore.setState({ goalEnabled: true })
-      useAttachmentsStore.getState().setAttachments([DOC])
+      useAttachmentsStore.getState().setAttachments('s1', [DOC])
     })
     await act(async () => {
       await capturedSend!('goal with doc')

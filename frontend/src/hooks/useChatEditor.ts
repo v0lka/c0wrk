@@ -41,8 +41,18 @@ export function shouldFastPathPaste(data: DataTransfer): boolean {
 interface UseChatEditorOptions {
   disabled: boolean
   placeholder: string
+  /**
+   * Initial document text, applied when the editor is CREATED (mount only —
+   * later changes are ignored; use setText for updates). The controller
+   * passes the active session's stored draft so a remount (e.g. a CHAT↔CODE
+   * mode switch) restores the draft into the editor without relying on
+   * effect ordering.
+   */
+  initialText?: string
   onSend: () => void
-  onContentChange?: (hasContent: boolean) => void
+  /** Invoked with the FULL editor text on every document change. The
+   *  controller persists it as the active session's draft. */
+  onContentChange?: (text: string) => void
   /** Async paste handler invoked when the editor (focused) receives a paste
    *  that is NOT a plain-text/html fast path (i.e. it may carry an image or
    *  files). Receives the clipboard DataTransfer so the handler can branch on
@@ -90,15 +100,14 @@ export function useChatEditor(options: UseChatEditorOptions): ChatEditorAPI {
     const extensions = createChatExtensions(onSendRef, themeCompartment.current)
 
     const state = EditorState.create({
-      doc: '',
+      doc: options.initialText ?? '',
       extensions: [
         editableComp.current.of(EditorView.editable.of(!options.disabled)),
         placeholderComp.current.of(placeholder(options.placeholder)),
         ...extensions,
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
-            const hasContent = update.state.doc.length > 0
-            onContentChangeRef.current?.(hasContent)
+            onContentChangeRef.current?.(update.state.doc.toString())
           }
         }),
         // Paste interception — SCOPED to the editor: this handler only fires

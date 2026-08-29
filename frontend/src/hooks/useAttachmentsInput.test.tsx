@@ -111,7 +111,7 @@ beforeEach(() => {
   // act().
   act(() => {
     useInputModeStore.setState({ selectedModel: null })
-    useAttachmentsStore.getState().clear()
+    useAttachmentsStore.setState({ attachmentsBySession: {}, namesById: {}, imageErrorBySession: {} })
     useSessionStore.setState({ sessions: [], activeSessionId: null })
   })
 
@@ -151,9 +151,9 @@ describe('useAttachmentsInput.handleAttach (📎 button)', () => {
 
     expect(spies.createSession).not.toHaveBeenCalled()
     expect(spies.attachFiles).toHaveBeenCalledWith('sess-1', ['/x/doc.md'])
-    expect(useAttachmentsStore.getState().attachments).toEqual(list)
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-1']).toEqual(list)
     // Successful attach clears any stale image error.
-    expect(useAttachmentsStore.getState().imageError).toBeNull()
+    expect(useAttachmentsStore.getState().imageErrorBySession['sess-1']).toBeUndefined()
   })
 
   it('creates a session on demand when none is active', async () => {
@@ -187,7 +187,7 @@ describe('useAttachmentsInput.handleAttach (📎 button)', () => {
     // Image rejected, document staged.
     expect(spies.attachFiles).toHaveBeenCalledWith('sess-1', ['/p/doc.md'])
     // Error banner surfaced naming the (bare) model.
-    expect(useAttachmentsStore.getState().imageError).toContain('novision-m')
+    expect(useAttachmentsStore.getState().imageErrorBySession['sess-1']).toContain('novision-m')
   })
 
   it('rejects an image-only selection on a non-vision model and stages nothing', async () => {
@@ -200,7 +200,7 @@ describe('useAttachmentsInput.handleAttach (📎 button)', () => {
 
     // Nothing to stage → attachFiles never called.
     expect(spies.attachFiles).not.toHaveBeenCalled()
-    expect(useAttachmentsStore.getState().imageError).toContain('novision-m')
+    expect(useAttachmentsStore.getState().imageErrorBySession['sess-1']).toContain('novision-m')
   })
 
   it('stages images normally when the model supports vision', async () => {
@@ -211,7 +211,7 @@ describe('useAttachmentsInput.handleAttach (📎 button)', () => {
 
     // Both image and document passed through unchanged.
     expect(spies.attachFiles).toHaveBeenCalledWith('sess-1', ['/p/img.png', '/p/doc.md'])
-    expect(useAttachmentsStore.getState().imageError).toBeNull()
+    expect(useAttachmentsStore.getState().imageErrorBySession['sess-1']).toBeUndefined()
   })
 
   it('surfaces a runtime_error toast when attachFiles fails', async () => {

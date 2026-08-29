@@ -17,6 +17,8 @@ import { useState, useRef, useCallback } from 'react'
 import type { RefObject } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useTerminalRegistryStore } from '@/stores/terminalRegistryStore'
+import { useChatInputStore } from '@/stores/chatInputStore'
+import { useAttachmentsStore } from '@/stores/attachmentsStore'
 import { isSessionBusy } from '@/hooks/useSessionStatusIndicator'
 import {
   createSession,
@@ -96,6 +98,13 @@ export function useSessionActions(): SessionActions {
         // The backend stopped this session's terminal PTY in DeleteSession;
         // drop its (now-dead) instance from the app-lifetime registry.
         useTerminalRegistryStore.getState().removeInstances([id])
+        // Drop the deleted session's chat-input slice (draft, optimize flag,
+        // optimize error) so the per-session map stays bounded.
+        useChatInputStore.getState().dropSessions([id])
+        // Drop its pending-attachment slice + transient image-error banner
+        // for the same reason (namesById stays — committed names remain
+        // resolvable for tool cards).
+        useAttachmentsStore.getState().dropSessions([id])
       } catch (error) {
         logger.error('Failed to delete session:', error)
       }

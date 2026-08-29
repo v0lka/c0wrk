@@ -2,6 +2,9 @@ import { useState, useCallback, useRef } from "react";
 import { useProjectStore } from "@/stores/projectStore";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useTerminalRegistryStore } from "@/stores/terminalRegistryStore";
+import { useGitPanelStore } from "@/stores/gitPanelStore";
+import { useChatInputStore } from "@/stores/chatInputStore";
+import { useAttachmentsStore } from "@/stores/attachmentsStore";
 import { renameProject, deleteProject } from "@/api/projects";
 import { useProjectSwitchState } from "@/hooks/useProjectSwitchState";
 import { CreateProjectDialog } from "@/components/project/CreateProjectDialog";
@@ -62,8 +65,19 @@ export function ProjectSelector() {
           .map((s) => s.id);
         if (removedSessionIds.length > 0) {
           useTerminalRegistryStore.getState().removeInstances(removedSessionIds);
+          // Drop the deleted sessions' chat-input slices (drafts, optimize
+          // flags/errors) so the per-session map stays bounded.
+          useChatInputStore.getState().dropSessions(removedSessionIds);
+          // Drop their pending-attachment slices + transient image-error
+          // banners too (namesById stays — committed names remain resolvable
+          // for tool cards).
+          useAttachmentsStore.getState().dropSessions(removedSessionIds);
         }
         removeProject(id);
+        // Drop the deleted project's transient commit-box state (draft
+        // message, generation flag, error/success banner) so the per-project
+        // map stays bounded.
+        useGitPanelStore.getState().dropProjectCommitState(id);
         if (id === activeProjectId) {
           const remaining = useProjectStore.getState().projects;
           if (remaining && remaining.length > 0) {

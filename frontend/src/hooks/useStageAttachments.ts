@@ -13,6 +13,11 @@
 //   3. Staging + store sync — attachFiles stages the paths and returns the FULL
 //      current pending list; we push it into the store in one shot.
 //
+// Every store write is keyed to the session captured at stage time (the
+// caller's activeSessionId, or the session created on demand) — NEVER to the
+// currently-visible session. The attachFiles round-trip can straddle a
+// session switch; its result must land in the session the user staged into.
+//
 // The picker (native file dialog) stays in useAttachmentsInput; only the
 // post-pick staging logic lives here so drop/paste can reuse it verbatim.
 
@@ -22,6 +27,7 @@ import { attachFiles, isImagePath } from '@/api/attachments'
 import { createSession } from '@/api/sessions'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
+import { NULL_SESSION_KEY } from '@/stores/chatInputStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useConfigData } from '@/hooks/useConfigData'
 import { resolveModelContext, visionRejectionMessage } from '@/lib/vision'
@@ -62,20 +68,24 @@ export function useStageAttachments(): {
           }
         }
 
-        if (imagePaths.length > 0 && !supportsVision) {
+        const visionRejected = imagePaths.length > 0 && !supportsVision
+        if (visionRejected && docPaths.length === 0) {
+          // Nothing stageable: surface the rejection without creating a
+          // session. With no active session the banner is keyed under the
+          // NULL_SESSION_KEY sentinel so it still renders in the input.
           useAttachmentsStore
             .getState()
-            .setImageError(visionRejectionMessage(effectiveModel, modelInfo))
-          // Only stage documents; skip images entirely.
-          if (docPaths.length === 0) return
-        } else {
-          // Clear any stale error from a previous attempt.
-          useAttachmentsStore.getState().setImageError(null)
+            .setImageError(
+              activeSessionId ?? NULL_SESSION_KEY,
+              visionRejectionMessage(effectiveModel, modelInfo),
+            )
+          return
         }
 
-        const toAttach = supportsVision ? paths : docPaths
-
         // Ensure a session exists — terminal mode does the same on demand.
+        // From here on every write is keyed to this id, captured BEFORE the
+        // awaits below: if the user switches sessions while attachFiles is in
+        // flight, the result still lands in this (origin) session's key.
         let sessionId = activeSessionId
         if (!sessionId) {
           const newSession = await createSession()
@@ -84,9 +94,20 @@ export function useStageAttachments(): {
           sessionId = newSession.id
         }
 
+        if (visionRejected) {
+          useAttachmentsStore
+            .getState()
+            .setImageError(sessionId, visionRejectionMessage(effectiveModel, modelInfo))
+        } else {
+          // Clear any stale error from a previous attempt.
+          useAttachmentsStore.getState().setImageError(sessionId, null)
+        }
+
+        const toAttach = supportsVision ? paths : docPaths
+
         // attachFiles returns the FULL current pending list (already mapped).
         const list = await attachFiles(sessionId, toAttach)
-        useAttachmentsStore.getState().setAttachments(list)
+        useAttachmentsStore.getState().setAttachments(sessionId, list)
       } catch (err) {
         logger.error('Failed to attach files:', err)
         emit('runtime_error', {

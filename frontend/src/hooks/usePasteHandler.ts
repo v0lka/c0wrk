@@ -71,6 +71,10 @@ export function usePasteHandler(editor: ChatEditorAPI): {
         const supportsVision = resolveSupportsVision(selectedModel, defaultModel, allModels)
 
         // Ensure a session exists before probing (the backend paste needs one).
+        // Captured BEFORE the awaits: every store write below is keyed to this
+        // id, so a paste that resolves after the user switched sessions still
+        // lands in the session the paste was made from — never in the
+        // currently-visible one.
         let sessionId = useSessionStore.getState().activeSessionId
         if (!sessionId) {
           const newSession = await createSession()
@@ -85,8 +89,9 @@ export function usePasteHandler(editor: ChatEditorAPI): {
           case 'image':
           case 'files': {
             // The backend staged the attachments and returned the FULL current
-            // pending list (image and/or files). Push it into the store.
-            useAttachmentsStore.getState().setAttachments(result.files)
+            // pending list (image and/or files). Push it into the origin
+            // session's slice.
+            useAttachmentsStore.getState().setAttachments(sessionId, result.files)
             // Vision rejection: a raw clipboard image declined (sentinel) OR
             // image-ext files skipped because the active model lacks vision.
             // Synthesize the localized banner so copy has a single source of
@@ -102,16 +107,16 @@ export function usePasteHandler(editor: ChatEditorAPI): {
               )
               useAttachmentsStore
                 .getState()
-                .setImageError(visionRejectionMessage(effectiveModel, modelInfo))
+                .setImageError(sessionId, visionRejectionMessage(effectiveModel, modelInfo))
             } else if (result.rejected) {
               // A real processing error (e.g. temp-file write failure) — show it
               // verbatim rather than masking it as a vision rejection.
-              useAttachmentsStore.getState().setImageError(result.rejected)
+              useAttachmentsStore.getState().setImageError(sessionId, result.rejected)
             } else if (result.files.length > 0) {
               // Successful attach — clear any stale banner. Only clear when
               // something was actually staged, so a concurrent drop's rejection
               // that is still relevant is not dismissed.
-              useAttachmentsStore.getState().setImageError(null)
+              useAttachmentsStore.getState().setImageError(sessionId, null)
             }
             break
           }

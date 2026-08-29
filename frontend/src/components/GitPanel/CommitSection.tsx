@@ -1,25 +1,35 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useRef, useEffect, useCallback } from "react";
 import { Loader2, Sparkles, Check } from "lucide-react";
-import { useGitPanelStore } from "@/stores/gitPanelStore";
+import { useGitPanelStore, EMPTY_COMMIT_DRAFT } from "@/stores/gitPanelStore";
+import { useProjectStore } from "@/stores/projectStore";
 import { commit, generateCommitMessage } from "@/api/git";
 import { cn } from "@/lib/utils";
 
 export function CommitSection() {
+  const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const entries = useGitPanelStore((s) => s.entries);
-  const commitMessage = useGitPanelStore((s) => s.commitMessage);
   const setCommitMessage = useGitPanelStore((s) => s.setCommitMessage);
+  const setGenerating = useGitPanelStore((s) => s.setGeneratingCommit);
+  const setCommitting = useGitPanelStore((s) => s.setCommitting);
+  const setCommitError = useGitPanelStore((s) => s.setCommitError);
+  const setCommitSuccess = useGitPanelStore((s) => s.setCommitSuccess);
 
-  const [isCommitting, setIsCommitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [successSha, setSuccessSha] = useState<string | null>(null);
+  // Per-project commit-box slice. The selector returns the stored slice (a
+  // stable reference) or undefined when the project has no state yet — never
+  // a fresh object — so the stable-selector rule holds. Defaults come from a
+  // module constant, keeping the draft/generating/committing/error/success
+  // state alive across project switches and GitPanel unmounts (CHAT mode).
+  const storedDraft = useGitPanelStore((s) =>
+    activeProjectId === null ? undefined : s.commitByProject[activeProjectId],
+  );
+  const draft = storedDraft ?? EMPTY_COMMIT_DRAFT;
+  const { message: commitMessage, isGenerating, isCommitting, error, lastCommitSha: successSha } = draft;
   const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const stagedCount = entries.filter((e) => e.staged).length;
   const isEmpty = commitMessage.trim().length === 0;
   const isDisabled = stagedCount === 0 || isEmpty || isCommitting;
-  const isGenerating = useGitPanelStore((s) => s.isGeneratingCommit);
-  const setGenerating = useGitPanelStore((s) => s.setGeneratingCommit);
   const isGenerateDisabled = stagedCount === 0 || isGenerating || isCommitting;
 
   // Auto-height: expand up to ~6 lines
@@ -50,46 +60,62 @@ export function CommitSection() {
   }, []);
 
   const handleCommit = async () => {
-    if (isDisabled) return;
-    setIsCommitting(true);
-    setError(null);
+    // Capture the project at click time: every write below (success SHA,
+    // error, draft clear) must land in the project whose draft is being
+    // committed, even if the user switches projects mid-flight.
+    const projectId = activeProjectId;
+    if (projectId === null || isDisabled) return;
+    const message = commitMessage;
+    setCommitting(projectId, true);
+    setCommitError(projectId, null);
     if (successTimerRef.current !== null) {
       clearTimeout(successTimerRef.current);
       successTimerRef.current = null;
     }
     try {
       // commit() now returns the new commit's full SHA (FE-1 / B1).
-      const sha = await commit(commitMessage);
-      setCommitMessage("");
-      setSuccessSha(sha);
-      // Auto-clear the success banner after a few seconds.
-      successTimerRef.current = setTimeout(() => setSuccessSha(null), 4000);
+      const sha = await commit(message);
+      // Stores the SHA for the success banner and clears this project's draft.
+      setCommitSuccess(projectId, sha);
+      // Auto-clear the success banner after a few seconds. `null` dismisses
+      // the banner without touching the draft the user may be editing by then.
+      successTimerRef.current = setTimeout(() => {
+        const current = useGitPanelStore.getState().commitByProject[projectId];
+        if (current?.lastCommitSha === sha) {
+          setCommitSuccess(projectId, null);
+        }
+      }, 4000);
       // Status refresh is handled by the git:status_changed event emitted
       // by the backend after a successful commit (picked up by useGitStatusEvents)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Commit failed");
+      setCommitError(projectId, err instanceof Error ? err.message : "Commit failed");
     } finally {
-      setIsCommitting(false);
+      setCommitting(projectId, false);
     }
   };
 
   const handleGenerate = async () => {
+    // Capture the project at click time so the result (or error) is written
+    // into the project that requested generation — never into whichever
+    // project happens to be active when the promise settles.
+    const projectId = activeProjectId;
+    if (projectId === null) return;
     const stagedEntries = entries.filter((e) => e.staged);
     if (stagedEntries.length === 0 || isGenerating) return;
 
-    setGenerating(true);
-    setError(null);
+    setGenerating(projectId, true);
+    setCommitError(projectId, null);
     try {
       // The backend obtains the staged diff itself via a single
       // `git diff --staged` invocation, so no diff is collected here.
       // An empty staged diff (e.g. stale entries) is reported by the
       // backend as an error and surfaced below.
       const message = await generateCommitMessage();
-      setCommitMessage(message);
+      setCommitMessage(projectId, message);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to generate commit message");
+      setCommitError(projectId, err instanceof Error ? err.message : "Failed to generate commit message");
     } finally {
-      setGenerating(false);
+      setGenerating(projectId, false);
     }
   };
 
@@ -107,8 +133,9 @@ export function CommitSection() {
         ref={textareaRef}
         value={commitMessage}
         onChange={(e) => {
-          setCommitMessage(e.target.value);
-          if (error) setError(null);
+          if (activeProjectId === null) return;
+          setCommitMessage(activeProjectId, e.target.value);
+          if (error) setCommitError(activeProjectId, null);
         }}
         onKeyDown={handleKeyDown}
         placeholder="Describe your changes..."

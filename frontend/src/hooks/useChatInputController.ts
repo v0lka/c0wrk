@@ -1,8 +1,9 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useLayoutEffect } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
+import { useChatInputStore, getInputState, NULL_SESSION_KEY } from '@/stores/chatInputStore'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
 import { useMessageSender } from '@/hooks/useMessageSender'
 import { useChatEditor, type ChatEditorAPI } from '@/hooks/useChatEditor'
@@ -51,9 +52,10 @@ export interface ChatInputController {
   // Active session id (used by terminal panel)
   activeSessionId: string | null
 
-  // Actions
-  handleSend: () => void
-  handleOptimize: () => void
+  // Actions (async actions return their promise for callers that need to
+  // await settlement; UI onClick handlers may ignore it).
+  handleSend: () => Promise<void>
+  handleOptimize: () => Promise<void>
   handlePause: () => void
   handleResume: () => void
   cancel: () => void
@@ -66,17 +68,22 @@ export interface ChatInputController {
  * presentation component slim and unit-testable.
  */
 export function useChatInputController(): ChatInputController {
-  const [isOptimizing, setIsOptimizing] = useState(false)
-  const [optimizeError, setOptimizeError] = useState<string | null>(null)
-  const [sendError, setSendError] = useState<string | null>(null)
-  const [hasContent, setHasContent] = useState(false)
-
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const taskActive = useChatStore((s) => (activeSessionId ? s.taskActive[activeSessionId] ?? false : false))
   const paused = useChatStore((s) => (activeSessionId ? s.paused[activeSessionId] ?? false : false))
   const pausing = useChatStore((s) => (activeSessionId ? s.pausing[activeSessionId] ?? false : false))
   const compacting = useChatStore((s) => (activeSessionId ? s.compacting[activeSessionId] ?? false : false))
+
+  // Per-session input state (draft / optimize flag / optimize + send errors)
+  // lives in chatInputStore so it survives session switches and async results
+  // always target the session captured at action time. All selectors return
+  // primitives — referentially stable by construction.
+  const draft = useChatInputStore((s) => getInputState(s.inputs, activeSessionId).draft)
+  const isOptimizing = useChatInputStore((s) => getInputState(s.inputs, activeSessionId).isOptimizing)
+  const optimizeError = useChatInputStore((s) => getInputState(s.inputs, activeSessionId).optimizeError)
+  const sendError = useChatInputStore((s) => getInputState(s.inputs, activeSessionId).sendError)
+  const hasContent = draft.length > 0
 
   const mode = useInputModeStore((s) => s.mode)
   const height = useInputModeStore((s) => s.height)
@@ -99,7 +106,11 @@ export function useChatInputController(): ChatInputController {
           useSessionStore.getState().setActiveSessionId(newSession.id)
         } catch (err) {
           logger.error('Failed to implicitly create session for terminal:', err)
-          setSendError('Failed to create session — please create one first.')
+          // Keyed to the origin context (no session was active — that is why
+          // creation was attempted), never to whatever becomes active later.
+          useChatInputStore
+            .getState()
+            .setSendError(sid ?? NULL_SESSION_KEY, 'Failed to create session — please create one first.')
           return // stay in current mode
         }
       }
@@ -154,10 +165,55 @@ export function useChatInputController(): ChatInputController {
   const editor = useChatEditor({
     disabled: isInputDisabled,
     placeholder: placeholderText,
+    // Mount-only initial document: the stored draft of the (freshly) active
+    // session. The draft-swap layout effect covers subsequent switches, but
+    // on mount it runs before the editor view exists — initialText makes the
+    // remount case (CHAT↔CODE) independent of effect ordering.
+    initialText: draft,
     onSend: () => handleSendHolder.current(),
-    onContentChange: setHasContent,
+    // Every keystroke (or programmatic doc change) persists the full text as
+    // the active session's draft. `editor.setText` calls echo the same value
+    // back through here — setDraft bails on no-op writes, so there is no
+    // state churn.
+    onContentChange: (text: string) => {
+      useChatInputStore.getState().setDraft(activeSessionId ?? NULL_SESSION_KEY, text)
+    },
     onPaste: (data: DataTransfer) => onPasteHolder.current(data),
   })
+
+  // Per-session draft swap: when the active session changes, the editor's
+  // current text is saved under the session we are LEAVING and the newly
+  // active session's draft is loaded into the editor. The cleanup closure
+  // still sees the previous activeSessionId (React runs it before the next
+  // effect body), so the save lands under the correct key even though the
+  // store's active id has already moved on. Runs on unmount too, persisting
+  // the last session's draft (e.g. CHAT↔CODE mode switches).
+  //
+  // useLayoutEffect (not useEffect): the swap must complete synchronously
+  // inside the commit that switched the session. With a passive effect, an
+  // async result (optimize/send) settling between that commit and the
+  // passive-effects flush would write the leaving session's slice via
+  // writeTextToSession — and this cleanup would then clobber it with the
+  // editor's pre-swap text. Synchronous execution closes that window (and
+  // removes the one-frame flash of the leaving session's text).
+  useLayoutEffect(() => {
+    // A real session becoming active retires any NULL_SESSION_KEY
+    // image-error banner: the rejection was raised against the no-session
+    // scratch input, and the sentinel slot must not resurface it the next
+    // time no session is active.
+    if (activeSessionId !== null) {
+      useAttachmentsStore.getState().setImageError(NULL_SESSION_KEY, null)
+    }
+    const inputs = useChatInputStore.getState().inputs
+    editor.setText(getInputState(inputs, activeSessionId).draft)
+    return () => {
+      useChatInputStore
+        .getState()
+        .setDraft(activeSessionId ?? NULL_SESSION_KEY, editor.getText())
+    }
+    // editor is a stable useMemo'd API object, so this effect only re-runs
+    // when the active session actually changes.
+  }, [activeSessionId, editor])
 
   // Non-fast-path paste routing (images / copied files). The editor takes the
   // fast path for pure text; everything else flows through here.
@@ -171,7 +227,27 @@ export function useChatInputController(): ChatInputController {
     clearPendingInsertion()
   }, [pendingInsertion, editor, clearPendingInsertion])
 
+  // Write text to the session an action ORIGINATED from, regardless of what
+  // is active when the async action settles. When the user still views the
+  // origin session, the editor is updated in place (its onContentChange then
+  // persists the draft); otherwise the draft is written straight into the
+  // origin session's store slice, so it shows up when the user returns — and
+  // can never clobber the editor of an unrelated session.
+  const writeTextToSession = useCallback(
+    (originSessionId: string | null, text: string) => {
+      const originKey = originSessionId ?? NULL_SESSION_KEY
+      const activeNow = useSessionStore.getState().activeSessionId
+      if (originKey === (activeNow ?? NULL_SESSION_KEY)) {
+        editor.setText(text)
+      } else {
+        useChatInputStore.getState().setDraft(originKey, text)
+      }
+    },
+    [editor],
+  )
+
   const handleSend = useCallback(async () => {
+    const originSessionId = activeSessionId
     const messageText = editor.getText().trim()
     if (!messageText) return
     const skills = extractSkillRefs(messageText)
@@ -181,7 +257,7 @@ export function useChatInputController(): ChatInputController {
     // press during that fetch reads an empty editor and returns early instead
     // of duplicating the message/task (the catch restores text on failure).
     editor.clear()
-    setSendError(null)
+    useChatInputStore.getState().setSendError(originSessionId ?? NULL_SESSION_KEY, null)
     // Only #mentions of real Subagent Profiles are threaded/stripped, so
     // extraction stays consistent with the (catalog-filtered) #-autocomplete.
     // Without this, common coding-domain prose like "#42" (issue/PR numbers)
@@ -203,10 +279,16 @@ export function useChatInputController(): ChatInputController {
       await send(messageText, skills, agents)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      setSendError(message)
-      editor.setText(messageText)
+      // Both the error and the restored text are keyed to the session the
+      // send ORIGINATED from (the no-session scratch when origin is null:
+      // the only failure that escapes send() is the auto-create RPC, and
+      // when it fails no session was created to own the message). Keying by
+      // origin keeps the failure out of an unrelated session the user may
+      // have switched to while the request was in flight.
+      useChatInputStore.getState().setSendError(originSessionId ?? NULL_SESSION_KEY, message)
+      writeTextToSession(originSessionId, messageText)
     }
-  }, [editor, send])
+  }, [editor, send, activeSessionId, writeTextToSession])
   handleSendHolder.current = handleSend
 
   // Cooperatively pause the running task. The executor stops at the next step
@@ -255,53 +337,58 @@ export function useChatInputController(): ChatInputController {
   }, [activeSessionId])
 
   const handleOptimize = useCallback(async () => {
+    // Capture the origin session at click time: every store write below —
+    // the in-flight flag, the result draft, the error, the restored text —
+    // targets THIS session, so completing after a session switch can never
+    // land text in another session's editor.
+    const originSessionId = useSessionStore.getState().activeSessionId
+    const originKey = originSessionId ?? NULL_SESSION_KEY
     const text = editor.getText().trim()
-    if (!text || isOptimizing) return
-    setIsOptimizing(true)
-    setOptimizeError(null)
-    useAttachmentsStore.getState().setPromptOptimizeError(null)
+    if (!text) return
+    if (useChatInputStore.getState().inputs[originKey]?.isOptimizing) return
+    const store = useChatInputStore.getState()
+    store.setOptimizing(originKey, true)
+    store.setOptimizeError(originKey, null)
     try {
       const result = await optimizePrompt(text)
-      editor.setText(result.optimized_prompt)
+      writeTextToSession(originSessionId, result.optimized_prompt)
     } catch (error) {
       logger.error('Failed to optimize prompt:', error)
       // Restore the original prompt text so the user doesn't lose it.
-      editor.setText(text)
-      // Set a persistent banner (dismissable) alongside the transient
-      // inline error for immediate feedback (W-34).
+      writeTextToSession(originSessionId, text)
+      // Set a dismissible banner error on the origin session (W-34).
       const message = error instanceof Error && error.message
         ? `Optimization failed: ${error.message}`
         : 'Optimization failed — try again.'
-      setOptimizeError(message)
-      useAttachmentsStore.getState().setPromptOptimizeError(message)
+      useChatInputStore.getState().setOptimizeError(originKey, message)
     } finally {
-      setIsOptimizing(false)
+      useChatInputStore.getState().setOptimizing(originKey, false)
     }
-  }, [editor, isOptimizing])
+  }, [editor, writeTextToSession])
 
-  // Auto-dismiss the optimize error after a few seconds.
+  // Auto-dismiss the optimize error (inline + banner) after a few seconds.
+  // The timeout clears the ACTIVE session's error only; a stale error on a
+  // background session is cleared the same way once its session is active.
   useEffect(() => {
     if (!optimizeError) return
-    const handle = window.setTimeout(() => setOptimizeError(null), 4000)
-    return () => window.clearTimeout(handle)
-  }, [optimizeError])
-
-  // Auto-dismiss the persistent optimize banner after 8 seconds.
-  const bannerError = useAttachmentsStore((s) => s.promptOptimizeError)
-  useEffect(() => {
-    if (!bannerError) return
+    const sid = activeSessionId
     const handle = window.setTimeout(() => {
-      useAttachmentsStore.getState().setPromptOptimizeError(null)
-    }, 8000)
+      useChatInputStore.getState().setOptimizeError(sid ?? NULL_SESSION_KEY, null)
+    }, 4000)
     return () => window.clearTimeout(handle)
-  }, [bannerError])
+  }, [optimizeError, activeSessionId])
 
-  // Auto-dismiss the send error after a few seconds.
+  // Auto-dismiss the send error after a few seconds. The timeout clears the
+  // ACTIVE session's error only; a stale error on a background session is
+  // cleared the same way once its session is active.
   useEffect(() => {
     if (!sendError) return
-    const handle = window.setTimeout(() => setSendError(null), 6000)
+    const sid = activeSessionId
+    const handle = window.setTimeout(() => {
+      useChatInputStore.getState().setSendError(sid ?? NULL_SESSION_KEY, null)
+    }, 6000)
     return () => window.clearTimeout(handle)
-  }, [sendError])
+  }, [sendError, activeSessionId])
 
   // Refocus the editor when switching back to chat mode.
   useEffect(() => {

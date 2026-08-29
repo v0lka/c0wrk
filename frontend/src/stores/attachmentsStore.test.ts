@@ -1,15 +1,16 @@
-// Unit tests for attachmentsStore — setAttachments / clear reducer and the
-// id→name accumulation cache used to resolve read_attachment tool cards.
+// Unit tests for attachmentsStore — keyed setAttachments / setImageError
+// reducers, dropSessions, and the id→name accumulation cache used to resolve
+// read_attachment tool cards.
 
 import { describe, it, expect, beforeEach } from 'vitest'
-import { useAttachmentsStore } from '@/stores/attachmentsStore'
+import { useAttachmentsStore, EMPTY_ATTACHMENTS } from '@/stores/attachmentsStore'
 import type { AttachmentInfoUI } from '@/types/models'
 
 const A1: AttachmentInfoUI = { id: 'a1', originalName: 'report.pdf', format: 'pdf', sizeBytes: 1024 }
 const A2: AttachmentInfoUI = { id: 'a2', originalName: 'image.png', format: 'png', sizeBytes: 2048 }
 
 function resetStore() {
-  useAttachmentsStore.setState({ attachments: [], namesById: {} })
+  useAttachmentsStore.setState({ attachmentsBySession: {}, namesById: {}, imageErrorBySession: {} })
 }
 
 describe('attachmentsStore', () => {
@@ -18,43 +19,56 @@ describe('attachmentsStore', () => {
   })
 
   it('starts empty', () => {
-    expect(useAttachmentsStore.getState().attachments).toEqual([])
+    expect(useAttachmentsStore.getState().attachmentsBySession).toEqual({})
   })
 
-  it('setAttachments replaces the entire list', () => {
-    useAttachmentsStore.getState().setAttachments([A1])
-    expect(useAttachmentsStore.getState().attachments).toEqual([A1])
+  it('setAttachments writes the session slice and keeps sessions isolated', () => {
+    useAttachmentsStore.getState().setAttachments('sess-a', [A1])
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-a']).toEqual([A1])
+    // Another session's slice is untouched.
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-b']).toBeUndefined()
 
     // A second setAttachments replaces, not appends.
-    useAttachmentsStore.getState().setAttachments([A2])
-    expect(useAttachmentsStore.getState().attachments).toEqual([A2])
+    useAttachmentsStore.getState().setAttachments('sess-a', [A2])
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-a']).toEqual([A2])
   })
 
   it('setAttachments replaces with a new reference (stable selector contract)', () => {
     const first = [A1]
-    useAttachmentsStore.getState().setAttachments(first)
-    const before = useAttachmentsStore.getState().attachments
-    useAttachmentsStore.getState().setAttachments([A1]) // same contents
-    const after = useAttachmentsStore.getState().attachments
+    useAttachmentsStore.getState().setAttachments('sess-a', first)
+    const before = useAttachmentsStore.getState().attachmentsBySession['sess-a']
+    useAttachmentsStore.getState().setAttachments('sess-a', [A1]) // same contents
+    const after = useAttachmentsStore.getState().attachmentsBySession['sess-a']
     // Identity MUST change so useSyncExternalStore sees a new snapshot.
     expect(after).not.toBe(before)
   })
 
-  it('setAttachments([]) empties the list', () => {
-    useAttachmentsStore.getState().setAttachments([A1, A2])
-    useAttachmentsStore.getState().setAttachments([])
-    expect(useAttachmentsStore.getState().attachments).toEqual([])
+  it('setAttachments with the same array reference is a no-op (stable state)', () => {
+    const list = [A1]
+    useAttachmentsStore.getState().setAttachments('sess-a', list)
+    const before = useAttachmentsStore.getState()
+    useAttachmentsStore.getState().setAttachments('sess-a', list)
+    expect(useAttachmentsStore.getState()).toBe(before)
   })
 
-  it('clear empties the list', () => {
-    useAttachmentsStore.getState().setAttachments([A1, A2])
-    useAttachmentsStore.getState().clear()
-    expect(useAttachmentsStore.getState().attachments).toEqual([])
+  it('setAttachments(sid, []) drops the key (send-flush keeps the record sparse)', () => {
+    useAttachmentsStore.getState().setAttachments('sess-a', [A1, A2])
+    useAttachmentsStore.getState().setAttachments('sess-a', [])
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-a']).toBeUndefined()
+    // Setting empty on an absent key is a no-op.
+    const before = useAttachmentsStore.getState()
+    useAttachmentsStore.getState().setAttachments('sess-nope', [])
+    expect(useAttachmentsStore.getState()).toBe(before)
+  })
+
+  it('EMPTY_ATTACHMENTS is a stable module constant distinct from stored slices', () => {
+    useAttachmentsStore.getState().setAttachments('sess-a', [A1])
+    expect(useAttachmentsStore.getState().attachmentsBySession['sess-a']).not.toBe(EMPTY_ATTACHMENTS)
   })
 
   describe('namesById accumulation', () => {
     it('setAttachments folds attachment names into namesById', () => {
-      useAttachmentsStore.getState().setAttachments([A1, A2])
+      useAttachmentsStore.getState().setAttachments('sess-a', [A1, A2])
       expect(useAttachmentsStore.getState().namesById).toEqual({
         a1: 'report.pdf',
         a2: 'image.png',
@@ -62,9 +76,9 @@ describe('attachmentsStore', () => {
     })
 
     it('survives the send-flush empty list (committed attachments stay resolvable)', () => {
-      useAttachmentsStore.getState().setAttachments([A1, A2])
-      useAttachmentsStore.getState().setAttachments([])
-      expect(useAttachmentsStore.getState().attachments).toEqual([])
+      useAttachmentsStore.getState().setAttachments('sess-a', [A1, A2])
+      useAttachmentsStore.getState().setAttachments('sess-a', [])
+      expect(useAttachmentsStore.getState().attachmentsBySession['sess-a']).toBeUndefined()
       // namesById must NOT be cleared by an empty list.
       expect(useAttachmentsStore.getState().namesById).toEqual({
         a1: 'report.pdf',
@@ -73,41 +87,85 @@ describe('attachmentsStore', () => {
     })
 
     it('accumulates across successive non-empty lists', () => {
-      useAttachmentsStore.getState().setAttachments([A1])
-      useAttachmentsStore.getState().setAttachments([A2])
+      useAttachmentsStore.getState().setAttachments('sess-a', [A1])
+      useAttachmentsStore.getState().setAttachments('sess-a', [A2])
       expect(useAttachmentsStore.getState().namesById).toEqual({
         a1: 'report.pdf',
         a2: 'image.png',
       })
     })
 
-    it('clear resets namesById (e.g. on session switch)', () => {
-      useAttachmentsStore.getState().setAttachments([A1])
-      useAttachmentsStore.getState().clear()
-      expect(useAttachmentsStore.getState().namesById).toEqual({})
+    it('accumulates across sessions (cross-session name resolution)', () => {
+      useAttachmentsStore.getState().setAttachments('sess-a', [A1])
+      useAttachmentsStore.getState().setAttachments('sess-b', [A2])
+      expect(useAttachmentsStore.getState().namesById).toEqual({
+        a1: 'report.pdf',
+        a2: 'image.png',
+      })
     })
   })
 
-  describe('imageError', () => {
-    it('starts as null', () => {
-      expect(useAttachmentsStore.getState().imageError).toBeNull()
+  describe('imageErrorBySession', () => {
+    it('starts absent (no banner)', () => {
+      expect(useAttachmentsStore.getState().imageErrorBySession).toEqual({})
     })
 
-    it('setImageError sets the message', () => {
-      useAttachmentsStore.getState().setImageError('Model does not support images')
-      expect(useAttachmentsStore.getState().imageError).toBe('Model does not support images')
+    it('setImageError sets the message per session and isolates sessions', () => {
+      useAttachmentsStore.getState().setImageError('sess-a', 'Model does not support images')
+      expect(useAttachmentsStore.getState().imageErrorBySession['sess-a']).toBe(
+        'Model does not support images',
+      )
+      expect(useAttachmentsStore.getState().imageErrorBySession['sess-b']).toBeUndefined()
     })
 
-    it('setImageError(null) clears the message', () => {
-      useAttachmentsStore.getState().setImageError('Model does not support images')
-      useAttachmentsStore.getState().setImageError(null)
-      expect(useAttachmentsStore.getState().imageError).toBeNull()
+    it('setImageError(null) clears the message and keeps the record sparse', () => {
+      useAttachmentsStore.getState().setImageError('sess-a', 'Model does not support images')
+      useAttachmentsStore.getState().setImageError('sess-a', null)
+      expect('sess-a' in useAttachmentsStore.getState().imageErrorBySession).toBe(false)
     })
 
-    it('clear resets imageError (e.g. on session switch)', () => {
-      useAttachmentsStore.getState().setImageError('Model does not support images')
-      useAttachmentsStore.getState().clear()
-      expect(useAttachmentsStore.getState().imageError).toBeNull()
+    it('setting the same message again is a no-op (stable state reference)', () => {
+      useAttachmentsStore.getState().setImageError('sess-a', 'msg')
+      const before = useAttachmentsStore.getState()
+      useAttachmentsStore.getState().setImageError('sess-a', 'msg')
+      expect(useAttachmentsStore.getState()).toBe(before)
+    })
+
+    it('clearing an absent key is a no-op (stable state reference)', () => {
+      const before = useAttachmentsStore.getState()
+      useAttachmentsStore.getState().setImageError('sess-nope', null)
+      expect(useAttachmentsStore.getState()).toBe(before)
+    })
+  })
+
+  describe('dropSessions', () => {
+    it('drops only the listed sessions from both keyed maps', () => {
+      const { setAttachments, setImageError, dropSessions } = useAttachmentsStore.getState()
+      setAttachments('sess-a', [A1])
+      setAttachments('sess-b', [A2])
+      setImageError('sess-a', 'no vision')
+      setImageError('sess-b', 'no vision')
+
+      dropSessions(['sess-a'])
+
+      const s = useAttachmentsStore.getState()
+      expect(s.attachmentsBySession['sess-a']).toBeUndefined()
+      expect(s.imageErrorBySession['sess-a']).toBeUndefined()
+      expect(s.attachmentsBySession['sess-b']).toEqual([A2])
+      expect(s.imageErrorBySession['sess-b']).toBe('no vision')
+    })
+
+    it('is a no-op for unknown ids (stable reference)', () => {
+      useAttachmentsStore.getState().setAttachments('sess-a', [A1])
+      const before = useAttachmentsStore.getState()
+      useAttachmentsStore.getState().dropSessions(['sess-nope'])
+      expect(useAttachmentsStore.getState()).toBe(before)
+    })
+
+    it('keeps namesById (committed names stay resolvable for tool cards)', () => {
+      useAttachmentsStore.getState().setAttachments('sess-a', [A1])
+      useAttachmentsStore.getState().dropSessions(['sess-a'])
+      expect(useAttachmentsStore.getState().namesById).toEqual({ a1: 'report.pdf' })
     })
   })
 })

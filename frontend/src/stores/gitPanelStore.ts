@@ -42,16 +42,50 @@ const SORT_BY_VALUES = new Set<SortBy>(['path', 'status', 'extension'])
 /** Valid GroupBy values — used by persist `merge` to validate localStorage. */
 const GROUP_BY_VALUES = new Set<GroupBy>(['none', 'status', 'directory'])
 
+/**
+ * Per-project state for the commit box: the draft message, the AI-generation
+ * flag, the commit-in-flight flag, the last error, and the SHA of the most
+ * recent commit (success banner). Keyed by project id so a draft survives
+ * project switches and CHAT↔CODE mode switches (GitPanel unmount), and so a
+ * mid-generation project switch can never land text in the wrong project's
+ * box. Transient — NOT persisted.
+ */
+export interface CommitDraftState {
+  /** Draft commit message shown in the textarea. */
+  message: string
+  /** True while an AI commit-message generation is in flight. */
+  isGenerating: boolean
+  /** True while the commit RPC itself is in flight (disables the buttons). */
+  isCommitting: boolean
+  /** Last generation/commit error surfaced under the textarea. */
+  error: string | null
+  /** SHA of the most recently created commit (FE-1). Drives the success banner. */
+  lastCommitSha: string | null
+}
+
+/**
+ * Default per-project commit slice, used when a project has no entry yet.
+ * Referentially stable (module constant) so components can derive defaults
+ * without allocating inside Zustand selectors.
+ */
+export const EMPTY_COMMIT_DRAFT: CommitDraftState = {
+  message: '',
+  isGenerating: false,
+  isCommitting: false,
+  error: null,
+  lastCommitSha: null,
+}
+
 // --- State types ---
 
 interface GitPanelState {
   viewMode: 'flat' | 'tree'
   entries: GitPanelEntry[]
-  commitMessage: string
+  /** Transient per-project commit-box state, keyed by project id. Not persisted. */
+  commitByProject: Record<string, CommitDraftState>
   branch: BranchInfo
   branches: Branch[]
   isBranchPickerOpen: boolean
-  isGeneratingCommit: boolean
   expandedDirs: Set<string>
   isLoading: boolean
   isGitRepo: boolean
@@ -62,8 +96,6 @@ interface GitPanelState {
   activeTab: 'changes' | 'history'
   /** Transient: whether a merge or rebase is currently in progress (Phase 6). Not persisted. */
   mergeRebaseState: MergeRebaseState
-  /** Transient: SHA of the most recently created commit (FE-1). Not persisted. */
-  lastCommitSha: string | null
   /** Sort criterion for the Changes list, persisted across sessions (D8). */
   sortBy: SortBy
   /** Grouping criterion for the Changes list, persisted across sessions (D8). */
@@ -82,14 +114,28 @@ interface GitPanelState {
 
 interface GitPanelActions {
   setViewMode: (mode: 'flat' | 'tree') => void
-  setCommitMessage: (message: string) => void
+  /** Set the commit-message draft for a project. */
+  setCommitMessage: (projectId: string, message: string) => void
   loadEntries: (entries: GitPanelEntry[]) => void
   toggleStage: (path: string) => void
   setBranch: (branch: BranchInfo) => void
   setBranches: (branches: Branch[]) => void
   openBranchPicker: () => void
   closeBranchPicker: () => void
-  setGeneratingCommit: (generating: boolean) => void
+  /** Toggle the AI-generation flag for a project. */
+  setGeneratingCommit: (projectId: string, generating: boolean) => void
+  /** Toggle the commit-in-flight flag for a project. */
+  setCommitting: (projectId: string, committing: boolean) => void
+  /** Set or clear the commit-box error for a project. */
+  setCommitError: (projectId: string, error: string | null) => void
+  /**
+   * Record a successful commit for a project: store the new SHA (drives the
+   * success banner) and clear that project's draft message. Passing `null`
+   * clears the banner only (banner auto-dismiss timer) and keeps the draft.
+   */
+  setCommitSuccess: (projectId: string, sha: string | null) => void
+  /** Drop a project's commit-box state entirely (project deleted). */
+  dropProjectCommitState: (projectId: string) => void
   setGitRepo: (isRepo: boolean) => void
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
@@ -99,7 +145,6 @@ interface GitPanelActions {
   setRemoteOperationInProgress: (inProgress: boolean) => void
   setActiveTab: (tab: 'changes' | 'history') => void
   setMergeRebaseState: (state: MergeRebaseState) => void
-  setLastCommitSha: (sha: string | null) => void
   setSortBy: (mode: SortBy) => void
   setGroupBy: (mode: GroupBy) => void
   /** Queue a file-path filter for the git history tab. */
@@ -118,19 +163,17 @@ interface GitPanelActions {
 const initialState: GitPanelState = {
   viewMode: 'flat',
   entries: [],
-  commitMessage: '',
+  commitByProject: {},
   branch: EMPTY_BRANCH_INFO,
   branches: [],
   expandedDirs: new Set<string>(),
   isLoading: false,
   isGitRepo: false,
   isBranchPickerOpen: false,
-  isGeneratingCommit: false,
   error: null,
   remoteOperationInProgress: false,
   activeTab: 'changes',
   mergeRebaseState: EMPTY_MERGE_REBASE_STATE,
-  lastCommitSha: null,
   sortBy: 'path',
   groupBy: 'none',
   pendingHistoryFilter: null,
@@ -193,6 +236,32 @@ export function mergeGitPanel(
 
 // --- Store ---
 
+/**
+ * Spread-update one project's commit slice, creating it with defaults first
+ * if the project has no entry yet. Other projects' slices are untouched.
+ * A patch that changes nothing returns the state itself (reference-equal no-
+ * op, the same contract the per-key stores use) so subscribers don't churn.
+ */
+function withCommitDraft(
+  s: GitPanelState,
+  projectId: string,
+  patch: Partial<CommitDraftState>,
+): GitPanelState | Pick<GitPanelState, 'commitByProject'> {
+  const current = s.commitByProject[projectId] ?? EMPTY_COMMIT_DRAFT
+  if ((Object.keys(patch) as (keyof CommitDraftState)[]).every((k) => current[k] === patch[k])) {
+    return s
+  }
+  return {
+    commitByProject: {
+      ...s.commitByProject,
+      [projectId]: {
+        ...current,
+        ...patch,
+      },
+    },
+  }
+}
+
 export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
   persist(
     (set) => ({
@@ -200,7 +269,8 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
 
       setViewMode: (mode) => set({ viewMode: mode }),
 
-      setCommitMessage: (message) => set({ commitMessage: message }),
+      setCommitMessage: (projectId, message) =>
+        set((s) => withCommitDraft(s, projectId, { message })),
 
       setLoading: (loading) => set({ isLoading: loading }),
 
@@ -225,7 +295,33 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
 
       closeBranchPicker: () => set({ isBranchPickerOpen: false }),
 
-      setGeneratingCommit: (generating) => set({ isGeneratingCommit: generating }),
+      setGeneratingCommit: (projectId, generating) =>
+        set((s) => withCommitDraft(s, projectId, { isGenerating: generating })),
+
+      setCommitting: (projectId, committing) =>
+        set((s) => withCommitDraft(s, projectId, { isCommitting: committing })),
+
+      setCommitError: (projectId, error) =>
+        set((s) => withCommitDraft(s, projectId, { error })),
+
+      setCommitSuccess: (projectId, sha) =>
+        set((s) =>
+          withCommitDraft(s, projectId, {
+            lastCommitSha: sha,
+            // A real SHA marks a completed commit: consume the draft.
+            // `null` only dismisses the banner (auto-dismiss timer) and
+            // must not wipe a draft the user may have started typing.
+            ...(sha !== null ? { message: '' } : {}),
+          }),
+        ),
+
+      dropProjectCommitState: (projectId) =>
+        set((s) => {
+          if (s.commitByProject[projectId] === undefined) return {}
+          const next = { ...s.commitByProject }
+          delete next[projectId]
+          return { commitByProject: next }
+        }),
 
       setGitRepo: (isRepo) => set({ isGitRepo: isRepo }),
 
@@ -249,8 +345,6 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
 
       setMergeRebaseState: (state) => set({ mergeRebaseState: state }),
 
-      setLastCommitSha: (sha) => set({ lastCommitSha: sha }),
-
       setSortBy: (mode) => set({ sortBy: mode }),
 
       setGroupBy: (mode) => set({ groupBy: mode }),
@@ -263,7 +357,13 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
 
       clearPendingBranchBase: () => set({ pendingBranchBase: null }),
 
-      reset: () => set({ ...initialState, expandedDirs: new Set<string>() }),
+      reset: () =>
+        set({
+          ...initialState,
+          expandedDirs: new Set<string>(),
+          // Fresh empty map — never share the initial-state object across resets.
+          commitByProject: {},
+        }),
     }),
     {
       name: 'git-panel-settings',

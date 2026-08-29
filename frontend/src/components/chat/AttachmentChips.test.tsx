@@ -32,7 +32,7 @@ function render(el: React.ReactElement): HTMLElement {
 }
 
 function resetStores() {
-  useAttachmentsStore.setState({ attachments: [], namesById: {}, imageError: null })
+  useAttachmentsStore.setState({ attachmentsBySession: {}, namesById: {}, imageErrorBySession: {} })
   useSessionStore.setState({ activeSessionId: 's1' })
 }
 
@@ -66,7 +66,7 @@ describe('AttachmentChips', () => {
   })
 
   it('renders a FileText icon for document attachments', () => {
-    useAttachmentsStore.getState().setAttachments([DOC])
+    useAttachmentsStore.getState().setAttachments('s1', [DOC])
     const container = render(<AttachmentChips />)
     // Document chip has no <img> element.
     expect(container.querySelector('img')).toBeNull()
@@ -74,7 +74,7 @@ describe('AttachmentChips', () => {
   })
 
   it('renders a thumbnail <img> for image attachments', () => {
-    useAttachmentsStore.getState().setAttachments([IMG])
+    useAttachmentsStore.getState().setAttachments('s1', [IMG])
     const container = render(<AttachmentChips />)
     const img = container.querySelector('img')
     expect(img).not.toBeNull()
@@ -84,10 +84,33 @@ describe('AttachmentChips', () => {
   })
 
   it('renders both document and image chips together', () => {
-    useAttachmentsStore.getState().setAttachments([DOC, IMG])
+    useAttachmentsStore.getState().setAttachments('s1', [DOC, IMG])
     const container = render(<AttachmentChips />)
     expect(container.textContent).toContain('report.pdf')
     expect(container.textContent).toContain('screenshot.png')
     expect(container.querySelector('img')).not.toBeNull()
+  })
+
+  it('renders only the active session list (switching sessions swaps the chips)', () => {
+    // Two sessions with different pending lists; s1 is active.
+    useAttachmentsStore.getState().setAttachments('s1', [DOC])
+    useAttachmentsStore.getState().setAttachments('s2', [IMG])
+
+    const container = render(<AttachmentChips />)
+    expect(container.textContent).toContain('report.pdf')
+    expect(container.textContent).not.toContain('screenshot.png')
+
+    // Switch the active session — the same mounted chips now show s2's list.
+    act(() => {
+      useSessionStore.setState({ activeSessionId: 's2' })
+    })
+    expect(container.textContent).toContain('screenshot.png')
+    expect(container.textContent).not.toContain('report.pdf')
+  })
+
+  it('renders nothing when only ANOTHER session has pending attachments', () => {
+    useAttachmentsStore.getState().setAttachments('s2', [DOC])
+    const container = render(<AttachmentChips />)
+    expect(container.innerHTML).toBe('')
   })
 })

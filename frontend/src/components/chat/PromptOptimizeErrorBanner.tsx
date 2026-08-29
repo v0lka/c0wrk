@@ -1,15 +1,21 @@
 // PromptOptimizeErrorBanner shows a dismissible warning when prompt
 // optimization fails (e.g. the model produces no usable output). Reads the
-// transient `promptOptimizeError` from the attachmentsStore and renders
-// nothing when the error is null. Styled per the design system
-// (warning color #d19a66 via Tailwind `text-warning` / `bg-warning` tokens).
+// ACTIVE session's transient `optimizeError` from the chatInputStore (keyed
+// per session — an optimize failure on a background session surfaces only
+// when its session is active) and renders nothing when the error is null.
+// Styled per the design system (warning color #d19a66 via Tailwind
+// `text-warning` / `bg-warning` tokens).
 
 import { Sparkles, X } from 'lucide-react'
-import { useAttachmentsStore } from '@/stores/attachmentsStore'
+import { useSessionStore } from '@/stores/sessionStore'
+import { useChatInputStore, getInputState, NULL_SESSION_KEY } from '@/stores/chatInputStore'
 
 export function PromptOptimizeErrorBanner(): React.JSX.Element | null {
-  const promptOptimizeError = useAttachmentsStore((s) => s.promptOptimizeError)
-  const setPromptOptimizeError = useAttachmentsStore((s) => s.setPromptOptimizeError)
+  const activeSessionId = useSessionStore((s) => s.activeSessionId)
+  const promptOptimizeError = useChatInputStore((s) =>
+    getInputState(s.inputs, activeSessionId).optimizeError,
+  )
+  const setOptimizeError = useChatInputStore((s) => s.setOptimizeError)
 
   if (!promptOptimizeError) return null
 
@@ -19,7 +25,7 @@ export function PromptOptimizeErrorBanner(): React.JSX.Element | null {
       <span className="text-xs text-warning flex-1 min-w-0">{promptOptimizeError}</span>
       <button
         type="button"
-        onClick={() => setPromptOptimizeError(null)}
+        onClick={() => setOptimizeError(activeSessionId ?? NULL_SESSION_KEY, null)}
         className="inline-flex items-center justify-center size-4 rounded-sm text-warning/70 hover:text-warning hover:bg-warning/10 shrink-0"
         title="Dismiss"
         aria-label="Dismiss prompt optimization error"

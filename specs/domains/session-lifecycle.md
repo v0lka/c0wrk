@@ -154,7 +154,7 @@ User clicks Attach (Paperclip) in the chat input toolbar
       Wails context, two filters: "Supported documents" + "Images" png/jpg/jpeg/gif/webp)
   → Frontend vision gating (useAttachmentsInput): resolve the effective model's
       capability (ModelInfo.vision). When the model lacks vision, image files are
-      filtered out before staging and an error banner is shown (attachmentsStore.imageError);
+      filtered out before staging and an error banner is shown (the session's slice of attachmentsStore.imageErrorBySession);
       documents stage normally regardless of model capability.
   → Frontend: attachFiles(sessionId, paths) → RPC AttachFiles
   → Backend: Manager.AttachFiles(sessionID, paths) (manager_attachment.go)
