@@ -5,6 +5,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/config"
 	sdktools "github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
 // --- UpdateMCPServers ---
@@ -137,6 +138,83 @@ func TestGetMCPStatus_NoApp(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("expected empty slice, got %d", len(got))
+	}
+}
+
+// --- GetMCPStatus merge (configured servers always visible) ---
+
+// TestMergeConfiguredMCPServers verifies the pure core of the
+// "configured servers are always visible" contract: every configured name
+// missing from the live gateway status is appended as a disconnected entry
+// with a defaulted transport, and the result stays sorted by name.
+func TestMergeConfiguredMCPServers(t *testing.T) {
+	status := []mcp.ServerStatus{
+		{Name: "live", Transport: "stdio", Connected: true, Tools: []string{}},
+		{Name: "dead", Transport: "http", Connected: false, Tools: []string{}, Error: "conn refused"},
+	}
+	configured := map[string]config.MCPServerConfig{
+		"live":    {Transport: "stdio", Command: "cmd"},
+		"dead":    {Transport: "http", URL: "http://x"},
+		"unknown": {Command: "cmd"}, // transport empty → defaults to stdio
+		"remote":  {Transport: "http", URL: "http://y"},
+	}
+
+	got := mergeConfiguredMCPServers(status, configured)
+
+	if len(got) != 4 {
+		t.Fatalf("expected 4 entries, got %d: %+v", len(got), got)
+	}
+	// Sorted by name: dead, live, remote, unknown.
+	wantOrder := []string{"dead", "live", "remote", "unknown"}
+	for i, want := range wantOrder {
+		if got[i].Name != want {
+			t.Errorf("got[%d].Name = %q, want %q", i, got[i].Name, want)
+		}
+	}
+	// Existing entries must pass through untouched.
+	if !got[1].Connected || got[1].Name != "live" {
+		t.Errorf("live server status mutated: %+v", got[1])
+	}
+	// Missing configured servers are synthesized as disconnected.
+	unknown := got[3]
+	if unknown.Connected || unknown.Error != "unavailable" || unknown.Transport != "stdio" {
+		t.Errorf("unknown = %+v, want disconnected stdio entry with error", unknown)
+	}
+	remote := got[2]
+	if remote.Connected || remote.Transport != "http" {
+		t.Errorf("remote = %+v, want disconnected http entry", remote)
+	}
+}
+
+// TestMergeConfiguredMCPServers_EmptyConfig verifies that an empty (or nil)
+// configuration leaves the gateway status untouched.
+func TestMergeConfiguredMCPServers_EmptyConfig(t *testing.T) {
+	status := []mcp.ServerStatus{{Name: "live", Connected: true}}
+	if got := mergeConfiguredMCPServers(status, nil); len(got) != 1 {
+		t.Errorf("expected untouched status for nil config, got %+v", got)
+	}
+	if got := mergeConfiguredMCPServers(status, map[string]config.MCPServerConfig{}); len(got) != 1 {
+		t.Errorf("expected untouched status for empty config, got %+v", got)
+	}
+}
+
+// TestIsMCPStartupPlaceholder pins the placeholder detection that suppresses
+// the config merge while the gateway is still starting.
+func TestIsMCPStartupPlaceholder(t *testing.T) {
+	starting := []mcp.ServerStatus{{Name: "_gateway", Starting: true}}
+	if !isMCPStartupPlaceholder(starting) {
+		t.Error("starting placeholder not detected")
+	}
+	failed := []mcp.ServerStatus{{Name: "_gateway", Error: "boom"}}
+	if isMCPStartupPlaceholder(failed) {
+		t.Error("startup-error placeholder must not be treated as starting (config merge must apply)")
+	}
+	live := []mcp.ServerStatus{{Name: "srv", Connected: true}}
+	if isMCPStartupPlaceholder(live) {
+		t.Error("live status must not be treated as placeholder")
+	}
+	if isMCPStartupPlaceholder(nil) {
+		t.Error("nil status must not be treated as placeholder")
 	}
 }
 

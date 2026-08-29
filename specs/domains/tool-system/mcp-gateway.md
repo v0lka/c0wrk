@@ -44,6 +44,12 @@ MCP tools are wrapped in sp4rk `mcp.Tool` (implements the `Tool` interface) and 
 
 `gateway.Status()` returns per-server `ServerStatus` (`Name`, `Transport`, `Connected`, `Starting`, `ToolCount`, `Tools`, `Error`), exposed to the frontend MCP management UI via `GetMCPStatus`.
 
+Every **configured** server is always visible in the settings UI, unavailable ones rendered with a red indicator:
+
+- `Gateway.Status()` includes configured servers whose connection/discovery failed (`Connected: false` + last error; kept in the gateway's separate `failedServers` map, never in the live connection map).
+- `FrontendAPI.GetMCPStatus` additionally merges names present in the stored config but absent from the gateway status (gateway missing or failed to start, config ahead of a failed reconfigure) as disconnected entries with error `unavailable`.
+- While the gateway startup placeholder (`_gateway`, `Starting: true`) is active, the merge is suppressed — availability is unknown; the UI shows "Starting…" and refreshes on `mcp:ready`.
+
 ## Configuration
 
 From `config.yaml`:

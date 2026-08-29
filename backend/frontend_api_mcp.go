@@ -4,19 +4,71 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	sdktools "github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
-// GetMCPStatus returns current MCP server connection statuses.
+// GetMCPStatus returns the status of every CONFIGURED MCP server so the
+// settings UI always renders the full configuration, unavailable servers
+// included (shown with a red indicator). Configured names missing from the
+// live gateway status — the gateway is missing entirely, failed to start, or
+// dropped a server — are synthesized as disconnected entries. While gateway
+// startup is still in flight (the "_gateway" starting placeholder) nothing is
+// merged: availability is genuinely unknown, and the frontend refreshes on
+// the mcp:ready event once startup completes.
 // Returns an empty slice if the backend application is not initialized.
 func (f *FrontendAPI) GetMCPStatus() []mcp.ServerStatus {
 	if f.app == nil {
 		return []mcp.ServerStatus{}
 	}
-	return f.app.GetMCPStatus()
+	status := f.app.GetMCPStatus()
+	if isMCPStartupPlaceholder(status) {
+		return status
+	}
+	return mergeConfiguredMCPServers(status, f.GetMCPServers())
+}
+
+// isMCPStartupPlaceholder reports whether status is the synthetic
+// gateway-starting placeholder Application.GetMCPStatus returns while the MCP
+// startup goroutine is still running.
+func isMCPStartupPlaceholder(status []mcp.ServerStatus) bool {
+	return len(status) == 1 && status[0].Name == "_gateway" && status[0].Starting
+}
+
+// mergeConfiguredMCPServers appends a disconnected entry (Error "unavailable")
+// for every configured server absent from status, then sorts the result by
+// name. This keeps the settings list a mirror of the configuration even when
+// the gateway cannot report a server itself (failed startup, gateway missing,
+// config ahead of a failed reconfigure).
+func mergeConfiguredMCPServers(status []mcp.ServerStatus, configured map[string]config.MCPServerConfig) []mcp.ServerStatus {
+	if len(configured) == 0 {
+		return status
+	}
+	present := make(map[string]bool, len(status))
+	for _, s := range status {
+		present[s.Name] = true
+	}
+	for name, cfg := range configured {
+		if present[name] {
+			continue
+		}
+		transport := cfg.Transport
+		if transport == "" {
+			transport = "stdio"
+		}
+		status = append(status, mcp.ServerStatus{
+			Name:      name,
+			Transport: transport,
+			Connected: false,
+			Tools:     []string{},
+			Error:     "unavailable",
+		})
+	}
+	sort.Slice(status, func(i, j int) bool { return status[i].Name < status[j].Name })
+	return status
 }
 
 // GetMCPServers returns the current MCP server configurations.
