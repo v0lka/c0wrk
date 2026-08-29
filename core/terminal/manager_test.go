@@ -24,7 +24,7 @@ func testManager(t *testing.T) (mgr *Manager, output chan []byte) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	return NewManager(context.Background(), logger, emitFunc, nil), outputChan
+	return NewManager(context.Background(), logger, emitFunc, nil, nil), outputChan
 }
 
 func TestManager_StartStop(t *testing.T) {
@@ -199,7 +199,7 @@ func TestManager_OnExitFiredOnNaturalExit(t *testing.T) {
 		}
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(context.Background(), logger, emitFunc, onExit)
+	mgr := NewManager(context.Background(), logger, emitFunc, onExit, nil)
 
 	workDir := t.TempDir()
 	if err := mgr.Start("sess-exit", workDir); err != nil {
@@ -245,7 +245,7 @@ func TestManager_OnExitNotFiredOnStop(t *testing.T) {
 		}
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	mgr := NewManager(context.Background(), logger, emitFunc, onExit)
+	mgr := NewManager(context.Background(), logger, emitFunc, onExit, nil)
 
 	workDir := t.TempDir()
 	if err := mgr.Start("sess-stop", workDir); err != nil {

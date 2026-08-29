@@ -284,7 +284,7 @@ func (a *App) Startup(ctx context.Context) {
 	})
 	safeGo(log, "terminal", func() {
 		defer phase3.Done()
-		termManager = a.initTerminalManager(log)
+		termManager = a.initTerminalManager(log, cfg.Terminal.Env)
 	})
 	phase3.Wait()
 	log.Info("startup phase complete", "phase", "database", "elapsed_ms", time.Since(startTime).Milliseconds())

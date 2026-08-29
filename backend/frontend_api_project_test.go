@@ -568,7 +568,6 @@ func activeProjectIDForTest(f *FrontendAPI) string {
 	return f.activeProjectID
 }
 
-
 // TestGetSessionWorkspace_NoProject_ForeignSessionDoesNotLeak pins the CHAT
 // mode isolation guard: while No Project is active, GetSessionWorkspace must
 // never return the registered workspace of a session that belongs to a REAL

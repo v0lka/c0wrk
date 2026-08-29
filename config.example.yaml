@@ -1004,3 +1004,34 @@ orchestration:
 # the user controls it via pause/stop.
 
 
+
+# ---------------------------------------------------------------------------
+# Terminal — embedded PTY terminal (the in-app terminal panel).
+# ---------------------------------------------------------------------------
+# The terminal panel runs your login shell inside the app (xterm.js over a
+# PTY). The shell always receives TERM=xterm-256color, COLORTERM=truecolor
+# and TERM_PROGRAM=c0wrk (+ TERM_PROGRAM_VERSION). TERM_PROGRAM identifies
+# the embedded terminal so your shell rc files can tell it apart from your
+# real terminal — the same convention VSCode (TERM_PROGRAM=vscode), WezTerm
+# and ghostty use.
+#
+# tmux users: if your rc auto-attaches tmux, guard it so the embedded
+# terminal opens a fresh shell in the project directory instead of
+# hijacking your live tmux session:
+#
+#   # ~/.zshrc
+#   if [[ -z "$TMUX" && "$TERM_PROGRAM" != "c0wrk" ]]; then
+#     tmux attach -t main || tmux new -s main
+#   fi
+#
+# (A bare `exec tmux` with no guards cannot be intercepted by any app —
+# the same is true in VSCode.)
+#
+# terminal:
+#   # Extra environment variables for every terminal shell process. Values
+#   # win over the inherited environment AND the built-in defaults above;
+#   # ${VAR} references are expanded at startup. Use them to feed your rc
+#   # files any marker they check (e.g. your own guard variable).
+#   env:
+#     C0WRK_TERMINAL: "1"
+#     # MY_MARKER: ${MY_MARKER_VALUE}

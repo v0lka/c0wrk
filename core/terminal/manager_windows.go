@@ -62,7 +62,10 @@ type Session struct {
 // The emit callback streams raw ConPTY output; onExit is fired when a shell
 // process exits on its own (not on explicit Stop/StopAll). Both are optional
 // (nil → no-op).
-func NewManager(rootCtx context.Context, logger *slog.Logger, emit func(sessionID string, data []byte), onExit func(sessionID string)) *Manager {
+// userEnv (optional, may be nil) carries user-configured environment variables
+// (config `terminal.env`) set on every shell process; values win over the
+// inherited environment and built-in defaults.
+func NewManager(rootCtx context.Context, logger *slog.Logger, emit func(sessionID string, data []byte), onExit func(sessionID string), userEnv map[string]string) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -78,6 +81,7 @@ func NewManager(rootCtx context.Context, logger *slog.Logger, emit func(sessionI
 		logger:   logger,
 		emit:     emit,
 		onExit:   onExit,
+		userEnv:  userEnv,
 	}
 }
 
@@ -103,7 +107,7 @@ func (m *Manager) Start(sessionID, workDir string) error {
 
 	opts := []conpty.ConPtyOption{
 		conpty.ConPtyDimensions(80, 24),
-		conpty.ConPtyEnv(buildTermEnv()),
+		conpty.ConPtyEnv(buildTermEnv(m.userEnv)),
 	}
 	if workDir != "" {
 		opts = append(opts, conpty.ConPtyWorkDir(workDir))

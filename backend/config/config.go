@@ -35,6 +35,7 @@ type Config struct {
 	GoalLoop      GoalLoopConfig      `yaml:"goal_loop"`
 	VectorIndex   VectorIndexConfig   `yaml:"vector_index"`
 	Proxy         ProxyConfig         `yaml:"proxy"`
+	Terminal      TerminalConfig      `yaml:"terminal"`
 
 	// SmallLLM configures optimizations applied when running on a "small"
 	// (low-capacity / cheaper) LLM. The master toggle is manual only — there
@@ -95,6 +96,24 @@ type ProxyConfig struct {
 	// third-party Go libraries that read env vars at init time.
 	// Pointer-bool so callers can distinguish "unset" from "explicitly false".
 	SetGlobalEnv *bool `yaml:"set_global_env"`
+}
+
+// TerminalConfig configures the embedded PTY terminal (xterm.js panel).
+type TerminalConfig struct {
+	// Env holds extra environment variables set on every terminal shell
+	// process, on top of the app's inherited environment and the built-in
+	// terminal defaults (TERM, COLORTERM, TERM_PROGRAM=c0wrk). Values win
+	// over both, so a user can override the defaults. `${VAR}` references
+	// are expanded at startup.
+	//
+	// Typical use: marker variables that shell rc files check to skip
+	// behaviors that assume a real standalone terminal — most commonly
+	// tmux auto-attach (the embedded terminal is NOT the user's own tmux
+	// instance; attaching would land the panel in an unrelated session
+	// and directory). Example rc guard:
+	//
+	//	[[ -z "$TMUX" && "$TERM_PROGRAM" != "c0wrk" ]] && tmux attach
+	Env map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 }
 
 // VectorIndexConfig holds vector / hybrid search runtime settings.

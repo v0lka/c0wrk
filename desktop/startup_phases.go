@@ -237,7 +237,14 @@ func (a *App) initDatabase(dbPath string, log *slog.Logger) *sql.DB {
 // base64-encoded before emission to preserve raw bytes across JSON serialization
 // (string(data) would corrupt invalid UTF-8 split across read boundaries, and
 // json.Marshal replaces invalid UTF-8 with U+FFFD).
-func (a *App) initTerminalManager(log *slog.Logger) *terminal.Manager {
+// userEnv carries config `terminal.env` entries; ${VAR} references are expanded
+// here (backend/config convention: refs are stored raw, resolved at use time)
+// and values are never logged — they may contain user secrets.
+func (a *App) initTerminalManager(log *slog.Logger, userEnv map[string]string) *terminal.Manager {
+	env := make(map[string]string, len(userEnv))
+	for k, v := range userEnv {
+		env[k] = config.ExpandEnvVars(v)
+	}
 	return terminal.NewManager(a.ctx, log,
 		func(sessionID string, data []byte) {
 			eventName := fmt.Sprintf("session:%s:terminal_output", sessionID)
@@ -251,6 +258,7 @@ func (a *App) initTerminalManager(log *slog.Logger) *terminal.Manager {
 			eventName := fmt.Sprintf("session:%s:terminal_exited", sessionID)
 			a.emit(eventName, map[string]string{})
 		},
+		env,
 	)
 }
 
