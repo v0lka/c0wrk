@@ -218,6 +218,34 @@ describe('UserMessage sticky mode', () => {
     expect(imgs.length).toBeGreaterThanOrEqual(3)
   })
 
+  it('shows the nudge icon in collapsed sticky mode when metadata carries is_nudge', () => {
+    const nudgeItem: Extract<DisplayItem, { kind: 'user' }> = {
+      kind: 'user',
+      message: {
+        ...item.message,
+        content: 'keep going',
+        metadata: { is_nudge: true },
+      },
+    }
+
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    act(() => {
+      root!.render(<UserMessage item={nudgeItem} sticky />)
+    })
+
+    const trigger = container.querySelector('[role="button"]') as Element
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+
+    // Nudge icon (Zap) present in the collapsed indicators row.
+    const nudgeIcon = trigger.querySelector('[aria-label="Nudge"]')
+    expect(nudgeIcon).not.toBeNull()
+    // No other indicators accompany a nudge-only message.
+    expect(trigger.querySelector('[aria-label="Goal"]')).toBeNull()
+    expect(trigger.textContent).toContain('keep going')
+  })
+
   it('renders no indicators in collapsed mode for a plain-text message', () => {
     const container = renderUser(true)
     const trigger = container.querySelector('[role="button"]') as Element

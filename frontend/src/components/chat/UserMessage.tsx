@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Target, FileText, ImageIcon } from 'lucide-react'
+import { Target, FileText, ImageIcon, Zap } from 'lucide-react'
 import type { DisplayItem } from '@/types/messages'
 import { UserMessageContent } from '@/components/chat/UserMessageContent'
 import { MessageFooter } from '@/components/chat/MessageFooter'
@@ -18,7 +18,7 @@ interface UserMessageProps {
  * document attachments, or images — without expanding it. The expanded state
  * renders the full UserMessageMetaBadges row instead.
  *
- *   🎯  📄×N  🖼️×N  <truncated text>
+ *   🎯  ⚡  📄×N  🖼️×N  <truncated text>
  *
  * Icons are purely visual (no counts/text) to keep the single line tight; the
  * exact names/sizes are revealed on expand.
@@ -31,8 +31,9 @@ function CollapsedMessageIndicators({
   const docCount = meta.attachments?.length ?? 0
   const imgCount = meta.images?.length ?? 0
   const hasGoal = meta.goal === true
+  const hasNudge = meta.is_nudge === true
 
-  if (!hasGoal && docCount === 0 && imgCount === 0) return null
+  if (!hasGoal && !hasNudge && docCount === 0 && imgCount === 0) return null
 
   return (
     <span className="inline-flex items-center gap-1 shrink-0">
@@ -40,6 +41,12 @@ function CollapsedMessageIndicators({
         <Target
           className="size-3.5 shrink-0 text-[var(--color-highlight)]"
           aria-label="Goal"
+        />
+      )}
+      {hasNudge && (
+        <Zap
+          className="size-3.5 shrink-0 text-info"
+          aria-label="Nudge"
         />
       )}
       {docCount > 0 && (
