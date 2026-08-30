@@ -142,8 +142,13 @@ func newBatchTestService(t *testing.T, batch BatchEmbedder, embeddingBatchSize i
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	// Register the temp dir BEFORE the svc.Close cleanup: t.Cleanup is LIFO,
+	// so svc.Close (registered later) runs first and releases the lexical
+	// store (.zap/.bolt) handles before TempDir's RemoveAll. Windows refuses
+	// to delete files that still have open handles (EBUSY).
+	projectDir := t.TempDir()
 	t.Cleanup(func() { _ = svc.Close() })
-	if err := svc.SetProject("proj", t.TempDir()); err != nil {
+	if err := svc.SetProject("proj", projectDir); err != nil {
 		t.Fatalf("SetProject: %v", err)
 	}
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {

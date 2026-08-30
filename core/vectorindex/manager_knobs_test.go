@@ -115,13 +115,18 @@ func TestManagerDebounce_ConfiguredDurationReachesTimer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
+	// Create the temp dirs BEFORE registering the Shutdown cleanup:
+	// t.Cleanup is LIFO, so Shutdown (registered later) runs first and
+	// releases the lexical store (.zap/.bolt) handles before TempDir's
+	// RemoveAll. Windows refuses to delete files with open handles (EBUSY).
+	ws := t.TempDir()
+	viRoot := t.TempDir()
 	t.Cleanup(func() { mgr.Shutdown() })
 
-	ws := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
 		t.Fatalf("write a.go: %v", err)
 	}
-	if err := mgr.SwitchProject("proj-debounce", ws, filepath.Join(t.TempDir(), "vi"), ProjectCallbacks{}); err != nil {
+	if err := mgr.SwitchProject("proj-debounce", ws, filepath.Join(viRoot, "vi"), ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject: %v", err)
 	}
 	if err := mgr.Service().WaitReady(context.Background()); err != nil {
@@ -172,13 +177,18 @@ func TestManagerChunkOverlap_ReachesChunker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
+	// Create the temp dirs BEFORE registering the Shutdown cleanup:
+	// t.Cleanup is LIFO, so Shutdown (registered later) runs first and
+	// releases the lexical store (.zap/.bolt) handles before TempDir's
+	// RemoveAll. Windows refuses to delete files with open handles (EBUSY).
+	ws := t.TempDir()
+	viRoot := t.TempDir()
 	t.Cleanup(func() { mgr.Shutdown() })
 
-	ws := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
 		t.Fatalf("write a.go: %v", err)
 	}
-	if err := mgr.SwitchProject("proj-overlap", ws, filepath.Join(t.TempDir(), "vi"), ProjectCallbacks{}); err != nil {
+	if err := mgr.SwitchProject("proj-overlap", ws, filepath.Join(viRoot, "vi"), ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject: %v", err)
 	}
 	if err := mgr.Service().WaitReady(context.Background()); err != nil {
@@ -204,13 +214,18 @@ func TestManagerPrepWorkers_ReachesIndexer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
+	// Create the temp dirs BEFORE registering the Shutdown cleanup:
+	// t.Cleanup is LIFO, so Shutdown (registered later) runs first and
+	// releases the lexical store (.zap/.bolt) handles before TempDir's
+	// RemoveAll. Windows refuses to delete files with open handles (EBUSY).
+	ws := t.TempDir()
+	viRoot := t.TempDir()
 	t.Cleanup(func() { mgr.Shutdown() })
 
-	ws := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
 		t.Fatalf("write a.go: %v", err)
 	}
-	if err := mgr.SwitchProject("proj-prepworkers", ws, filepath.Join(t.TempDir(), "vi"), ProjectCallbacks{}); err != nil {
+	if err := mgr.SwitchProject("proj-prepworkers", ws, filepath.Join(viRoot, "vi"), ProjectCallbacks{}); err != nil {
 		t.Fatalf("SwitchProject: %v", err)
 	}
 	if err := mgr.Service().WaitReady(context.Background()); err != nil {

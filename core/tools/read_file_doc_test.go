@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -406,12 +407,33 @@ func TestDocCacheKey_ChangesOnVision(t *testing.T) {
 	}
 }
 
+// stubMarkitdownOnPATH makes NewConverter's exec.LookPath succeed
+// deterministically, regardless of whether the real markitdown CLI is
+// installed: an empty executable is placed in a temp dir and PATH is scoped
+// to that dir. The stub is never executed — converterOrInit only probes
+// resolvability — so an empty file suffices. On Windows the name must carry
+// a PATHEXT-matched extension (.exe) for LookPath to find it.
+func stubMarkitdownOnPATH(t *testing.T) {
+	t.Helper()
+	binDir := t.TempDir()
+	name := "markitdown"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	if err := os.WriteFile(filepath.Join(binDir, name), nil, 0o755); err != nil {
+		t.Fatalf("write markitdown stub: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+}
+
 // TestConverterOrInit_ReprobesEmptyPythonPath pins the fresh-install
 // recovery: when the first converter init raced the tool-manager's venv
 // installation (probe returned ""), later inits must re-probe and rebuild
 // the converter with the interpreter instead of serving the vision-less
 // converter for the whole app run.
 func TestConverterOrInit_ReprobesEmptyPythonPath(t *testing.T) {
+	stubMarkitdownOnPATH(t)
+
 	probeCalls := 0
 	venvReady := false
 	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, func() string {
