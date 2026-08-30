@@ -260,9 +260,12 @@ type CompactionStartedEventData struct {
 // so the executor's context_compaction card (with the real numbers) arrives
 // from the resumed run instead of this flow's marker row. Resumed reports
 // whether the flow auto-resumed a task it had paused to reach an idle window.
-// PausedWithoutResume is true when the flow paused a task and the auto-resume
-// FAILED: a paused checkpoint remains, but session_paused was suppressed while
-// compacting — clients must re-apply the paused state from this flag.
+// PausedWithoutResume is true when the flow paused a task and the task was
+// left paused without the flow's auto-resume: either the auto-resume FAILED,
+// or the flow honoured a user-owned pause (a user-initiated pause is never
+// stolen — see Session.pauseOwner). A paused checkpoint remains, but
+// session_paused was suppressed while compacting — clients must re-apply the
+// paused state from this flag.
 // CompactionNoOp reports whether ANOTHER manual compaction right now would
 // still change nothing — recomputed by the orchestrator on the post-flow
 // history: true after a successful compaction (the compacted dialogue now

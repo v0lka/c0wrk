@@ -54,13 +54,32 @@ var ErrPausePending = errors.New("session is pausing — send again once the pau
 // as a presented relaunch (no duplicate message_received, no title regen). A
 // fresh context is used: the original task's cancel func must not govern the
 // follow-up.
-func (m *Manager) finishLiveLeftover(_ context.Context, id string, _ *Session, leftover []string) {
+//
+// When a manual context compaction owns the session (it was armed while the
+// task was finishing, so the follow-up send hits the compacting guard), the
+// drained messages are re-queued on the orchestrator instead of being lost:
+// live-message text reaches the model only through this queue, and the first
+// epilogue after the compaction releases the session (the flow's auto-resume,
+// or the next user send) drains it again and delivers the follow-up.
+func (m *Manager) finishLiveLeftover(_ context.Context, id string, session *Session, leftover []string) {
 	if len(leftover) == 0 {
 		return
 	}
 	joined := strings.Join(leftover, "\n\n")
 	m.log().Info("launching follow-up task for undelivered live messages", "session_id", id, "count", len(leftover))
 	if _, err := m.sendMessage(ContextWithSessionID(context.Background(), id), id, joined, nil, nil, "", "", false, "", false, true); err != nil {
+		if errors.Is(err, ErrSessionCompacting) && m.requeueLiveMessages(session, joined) {
+			m.log().Info("follow-up deferred by manual compaction: live messages re-queued", "session_id", id)
+			m.emitFunc(Event{
+				SessionID: id,
+				Type:      "service",
+				Data: map[string]any{
+					"content": "Queued message is held while the session compacts context; it will be delivered when compaction finishes.",
+					"phase":   "orchestration",
+				},
+			})
+			return
+		}
 		m.log().Error("failed to launch follow-up task for live messages", "session_id", id, "error", err)
 		// A service notice, not an error: this failure does not settle the
 		// just-finished task, and `error` is reserved for terminal events the
@@ -74,6 +93,25 @@ func (m *Manager) finishLiveLeftover(_ context.Context, id string, _ *Session, l
 			},
 		})
 	}
+}
+
+// requeueLiveMessages puts live-message text back on the session's
+// orchestrator live queue after a follow-up send was rejected by the
+// compaction guard. Returns false when the session or its orchestrator is
+// gone (e.g. the session was deleted mid-flight) — the caller then falls
+// back to the plain error notice.
+func (m *Manager) requeueLiveMessages(session *Session, joined string) bool {
+	if session == nil {
+		return false
+	}
+	session.mu.Lock()
+	orch := session.orchestrator
+	session.mu.Unlock()
+	if orch == nil {
+		return false
+	}
+	orch.QueueLiveUserMessage(joined)
+	return true
 }
 
 // deactivateSessionTask flips the session back to idle and, for a follow-up
@@ -613,6 +651,10 @@ func liveSendRejectionLocked(session *Session, goal bool, text string, activeSki
 // the message_received emission and title generation because the UI and the
 // message store already hold the message from the original send.
 func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills, activeAgents []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, reviewMode, presented bool) (SendClassification, error) {
+	// No task may be launched once Shutdown has begun (see ResumeTask).
+	if m.shuttingDown.Load() {
+		return SendFresh, errors.New("session manager is shutting down")
+	}
 	session, err := m.getOrRestoreSession(id)
 	if err != nil {
 		return SendFresh, fmt.Errorf("failed to restore session: %w", err)
@@ -695,8 +737,22 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 
 	session.mu.Lock()
 
-	// Set active and create cancellable context with session ID
+	// Re-check the compacting window under the SAME lock hold as the
+	// activation: the guard above ran before the DB reads (nudge-resume
+	// lookup, research info), and CompactSessionContext can have armed in
+	// that gap — it would see active=false and swap the history while this
+	// task runs. ResumeTask checks and activates in one hold for the same
+	// reason; this mirrors it.
+	if session.compacting {
+		session.mu.Unlock()
+		return SendFresh, ErrSessionCompacting
+	}
+
+	// Set active and create cancellable context with session ID. Launching a
+	// task consumes any recorded pause owner: the run supersedes a previous
+	// pause request (this is the resume/fresh-send intent).
 	session.active = true
+	session.pauseOwner = pauseOwnerNone
 	doneCh := make(chan struct{})
 	session.done = doneCh
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
@@ -1226,6 +1282,13 @@ func (m *Manager) tryContinueInterruptedTask(
 // injected as a trailing user message into the first resumed turn (one-shot) —
 // used by the nudge-resume path when a user sends a message into a paused session.
 func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEffort, nudge string) error {
+	// No task may be launched once Shutdown has begun: the teardown drains
+	// and joins all task goroutines, so a resume racing it would spawn a
+	// goroutine nobody waits for (running LLM calls and tools against a
+	// closing backend).
+	if m.shuttingDown.Load() {
+		return errors.New("session manager is shutting down")
+	}
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()
@@ -1322,7 +1385,11 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		session.mu.Unlock()
 		return ErrSessionCompacting
 	}
+	// Launching the resumed task consumes any recorded pause owner (the
+	// resume supersedes a previous pause request — including the user pause
+	// the compaction flow just honoured by NOT auto-resuming).
 	session.active = true
+	session.pauseOwner = pauseOwnerNone
 	resumeDoneCh := make(chan struct{})
 	session.done = resumeDoneCh
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
@@ -1557,7 +1624,13 @@ func (m *Manager) PauseSession(sessionID string) error {
 	// set under the lock BEFORE the pause signal is flipped (after unlock), so
 	// a send that races the signal flip still observes pausing=true and is
 	// rejected — the window stays closed for the whole pause-in-flight period.
+	//
+	// The pause owner is recorded on EVERY call, including on an idle session:
+	// inside the manual-compaction window (checkpoint landed, task paused)
+	// a pause click is the user saying "keep it paused" — the compaction
+	// flow's auto-resume checks the owner and must not override it.
 	session.mu.Lock()
+	session.pauseOwner = pauseOwnerUser
 	if session.active {
 		session.pausing = true
 	}
@@ -2358,10 +2431,14 @@ func (m *Manager) CancelTask(id string) error {
 // paused/resumable state. It is the non-active counterpart of CancelTask: the
 // running-task goroutine has already exited, so instead of signalling a
 // context it flips the persisted task to cancelled and emits the terminal
-// event directly. Returns ErrNoActiveTask when there is no unfinished task to
-// cancel, preserving the sentinel callers rely on to distinguish "nothing
-// running" from a successful cancellation.
+// event directly. Any deferred resume-compaction armed for the task's future
+// resume is discarded too (mirroring CancelUnfinishedTask): a Stop-button
+// cancel of the paused task must not leave a one-shot flag that a later,
+// unrelated task's resume would consume. Returns ErrNoActiveTask when there
+// is no unfinished task to cancel, preserving the sentinel callers rely on
+// to distinguish "nothing running" from a successful cancellation.
 func (m *Manager) cancelUnfinishedTask(sessionID string) error {
+	m.clearResumeCompaction(sessionID)
 	m.mu.RLock()
 	ts := m.taskStore
 	m.mu.RUnlock()

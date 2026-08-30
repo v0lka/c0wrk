@@ -52,6 +52,13 @@ type ApplicationConfig struct {
 	// search closure enforces it; passed through to per-session
 	// orchestrators for the RAG-hint bound.
 	VectorSearchWaitTimeout time.Duration
+	// VectorSearchWaitDisabled marks an EXPLICIT fail-fast
+	// (vector_index.search_wait_timeout_ms: 0). The desktop layer sets it
+	// after the config defaults have resolved "unset" to 3000ms, so a zero
+	// timeout here is unambiguously the user's choice — the orchestrator
+	// layer cannot tell "unset" (keep 3s default) from "explicit 0" (wait
+	// zero) without this flag.
+	VectorSearchWaitDisabled bool
 
 	// FileChangeNotifyFunc is called after a file-mutating tool (write_file,
 	// edit_file, bash_exec) completes successfully. It triggers debounced
@@ -139,7 +146,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 
 	// 3a. Vector search (optional — registered after builder creation)
 	if cfg.VectorSearchFunc != nil {
-		builder.RegisterVectorSearch(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc, cfg.VectorSearchWaitTimeout)
+		builder.RegisterVectorSearch(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc, cfg.VectorSearchWaitTimeout, cfg.VectorSearchWaitDisabled)
 	}
 
 	// 3b. Skill discovery directories. The builder creates a per-session

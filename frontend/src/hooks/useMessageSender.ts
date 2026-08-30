@@ -12,9 +12,18 @@ import { createSession } from '@/api/sessions'
 import { generateMessageId } from '@/lib/ids'
 import { logger } from '@/lib/logger'
 
-interface UseMessageSenderResult {
-  /** Send a user message, auto-creating a session if needed. */
-  send: (messageText: string, activeSkills?: string[], activeAgents?: string[]) => Promise<void>
+export interface UseMessageSenderResult {
+  /** Send a user message, auto-creating a session if needed.
+   *  originSessionId, when provided (non-null), pins the send to the session
+   *  the user initiated it from — the caller may have awaited between the
+   *  send gesture and this call (e.g. the #agent catalog fetch), and the
+   *  then-active session would be the WRONG target. */
+  send: (
+    messageText: string,
+    activeSkills?: string[],
+    activeAgents?: string[],
+    originSessionId?: string | null,
+  ) => Promise<void>
   /** Cancel the running task in the active session. */
   cancel: () => Promise<void>
   /** True while the send/create-session RPC is in flight. */
@@ -24,11 +33,18 @@ interface UseMessageSenderResult {
 export function useMessageSender(): UseMessageSenderResult {
   const [isProcessing, setIsProcessing] = useState(false)
 
-  const send = useCallback(async (messageText: string, activeSkills?: string[], activeAgents?: string[]) => {
+  const send = useCallback(async (
+    messageText: string,
+    activeSkills?: string[],
+    activeAgents?: string[],
+    originSessionId?: string | null,
+  ) => {
     if (!messageText.trim()) return
     setIsProcessing(true)
 
-    let sessionId = useSessionStore.getState().activeSessionId
+    // The pinned origin session wins; only an explicitly null origin (the
+    // no-session scratch space) falls through to the auto-create flow.
+    let sessionId = originSessionId ?? useSessionStore.getState().activeSessionId
     if (!sessionId) {
       try {
         const newSession = await createSession()

@@ -67,10 +67,14 @@ const compactMarkerRole = "context_compaction"
 //     compacted history snapshot, so a restart restores the compacted history.
 //     Skipped for the no-op outcome (phase 3): there is no compacted history
 //     to snapshot.
-//  5. If THIS flow paused the session and a paused checkpoint remains, the
-//     task is auto-resumed. compaction_finished is emitted with the outcome
-//     (success / cancelled / error + whether the session was resumed, nothing
-//     was compacted, or the compaction was deferred to the resume).
+//  5. If THIS flow paused the session, a paused checkpoint remains, AND the
+//     pause is still owned by this flow (a user pause is never stolen: one
+//     that races or follows the flow's own pause overwrites the owner, and
+//     one already in flight when the flow armed keeps the user as owner —
+//     either way the user's pause survives), the task is auto-resumed.
+//     compaction_finished is emitted with the outcome (success / cancelled /
+//     error + whether the session was resumed, nothing was compacted, or the
+//     compaction was deferred to the resume).
 //
 // Cancellation (CancelSessionCompaction) during the pause-wait still waits for
 // the checkpoint to land (unflipping the pause signal mid-flight would race
@@ -106,14 +110,25 @@ func (m *Manager) CompactSessionContext(ctx context.Context, sessionID, strategy
 	session.compacting = true
 	compCtx, cancel := context.WithCancel(context.Background())
 	session.compactCancel = cancel
+	compactDone := make(chan struct{})
+	session.compactDone = compactDone
 	// If a task is running, take it to a cooperative pause checkpoint first —
 	// the same mechanism PauseSession uses (pausing window + signal flip).
+	// Recording the pause owner lets phase 5 distinguish this flow's pause
+	// from a user-initiated one: a user pause is NEVER stolen — neither one
+	// that lands after this arming (PauseSession overwrites the owner) nor
+	// one that is already in flight when the arming happens (a user-owned
+	// pause is left owned by the user). Either way the flow leaves the task
+	// paused in phase 5 instead of silently resuming an operator pause.
 	// doneCh closes when the request goroutine finishes its epilogue.
 	var doneCh chan struct{}
 	pausedForCompaction := false
 	if session.active {
 		pausedForCompaction = true
 		session.pausing = true
+		if session.pauseOwner != pauseOwnerUser {
+			session.pauseOwner = pauseOwnerCompaction
+		}
 		doneCh = session.done
 	}
 	session.mu.Unlock()
@@ -128,7 +143,7 @@ func (m *Manager) CompactSessionContext(ctx context.Context, sessionID, strategy
 		Data:      CompactionStartedEventData{Strategy: strategy},
 	})
 
-	go m.runSessionCompaction(compCtx, cancel, sessionID, session, orch, strategy, doneCh, pausedForCompaction)
+	go m.runSessionCompaction(compCtx, cancel, compactDone, sessionID, session, orch, strategy, doneCh, pausedForCompaction)
 	return nil
 }
 
@@ -137,8 +152,11 @@ func (m *Manager) CompactSessionContext(ctx context.Context, sessionID, strategy
 // session's compacting flag and compactCancel are owned by this flow: they are
 // cleared here before the auto-resume so the resumed task is not rejected by
 // the compacting guards.
-func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.CancelFunc, sessionID string, session *Session, orch *core.Orchestrator, strategy string, doneCh chan struct{}, pausedForCompaction bool) {
+func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.CancelFunc, compactDone chan struct{}, sessionID string, session *Session, orch *core.Orchestrator, strategy string, doneCh chan struct{}, pausedForCompaction bool) {
 	defer cancel()
+	// Shutdown joins this goroutine via compactDone: everything after this
+	// line must tolerate the backend tearing down around it.
+	defer close(compactDone)
 
 	// Phase 2: wait for the running request to reach its pause checkpoint and
 	// exit. A cancellation during the wait still waits for the checkpoint
@@ -182,6 +200,16 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 			err = nil
 		}
 	}
+	// Shutdown cancels the flow's context (Manager.Shutdown): the tail phases
+	// below must not run against a torn-down backend — arming a
+	// resume-compaction for a dead process, persisting a marker into a DB
+	// that is closing, or auto-resuming a task after Shutdown declared all
+	// tasks stopped. The paused checkpoint (if any) is preserved and
+	// persisted by Shutdown's own persistPauseIfUnfinished.
+	shuttingDown := m.shuttingDown.Load()
+	if shuttingDown {
+		cancelled = true
+	}
 
 	// Phase 3.5: when nothing was compacted but a paused unfinished task
 	// waits (for this flow's auto-resume, or a later user resume), defer the
@@ -198,7 +226,7 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 	// persisted the marker, so re-compacting the merged trajectory at
 	// resume would duplicate the work.
 	deferredToResume := false
-	if nothingCompacted && m.hasPausedUnfinishedTask(sessionID) {
+	if nothingCompacted && !shuttingDown && m.hasPausedUnfinishedTask(sessionID) {
 		orch.RequestResumeCompaction(strategy)
 		deferredToResume = true
 	}
@@ -207,7 +235,7 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 	// Skipped for the no-op outcome — there is no compacted history to
 	// snapshot, and the executor's context_compaction card (phase 3.5) is the
 	// user-facing record of the deferred compaction instead.
-	if err == nil && !cancelled && !nothingCompacted {
+	if err == nil && !cancelled && !nothingCompacted && !shuttingDown {
 		if perr := m.persistCompactionMarker(sessionID, orch, strategy, before, after); perr != nil {
 			m.log().Error("manual compaction: failed to persist marker", "session", sessionID, "error", perr)
 			// Non-fatal: the in-memory history is already compacted; only the
@@ -221,22 +249,49 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 	session.mu.Lock()
 	session.compacting = false
 	session.compactCancel = nil
+	session.compactDone = nil
 	session.mu.Unlock()
 
 	// Phase 5: auto-resume the task this flow paused, when a paused checkpoint
 	// remains (the task may have completed normally in the pause window — then
-	// there is nothing to resume).
+	// there is nothing to resume) AND the pause is still owned by this flow.
+	// The owner check is what keeps a user-initiated pause alive in BOTH
+	// orderings: a pause the user requested after this flow armed (PauseSession
+	// writes pauseOwnerUser on every call, racing the flow or landing inside
+	// the compaction window) overwrites the owner, and a pause the user
+	// requested BEFORE the arming keeps it — the arming never steals a
+	// user-owned pause. Either way the task stays paused and clients are told
+	// to re-apply the paused state. The owner is consumed (reset) by this
+	// decision.
 	resumed := false
 	pausedWithoutResume := false
-	if pausedForCompaction && m.hasPausedUnfinishedTask(sessionID) {
-		if rerr := m.ResumeTask(context.Background(), sessionID, "", "", ""); rerr != nil {
-			// The checkpoint is still there with nobody else to resume it, and
-			// the UI never saw session_paused (it is suppressed while
-			// compacting) — flag it so clients re-apply the paused state.
-			pausedWithoutResume = true
-			m.log().Warn("manual compaction: auto-resume failed", "session", sessionID, "error", rerr)
+	session.mu.Lock()
+	ownsPause := session.pauseOwner == pauseOwnerCompaction
+	session.pauseOwner = pauseOwnerNone
+	session.mu.Unlock()
+	// Re-read the flag here: Shutdown may have begun after the mid-flow
+	// snapshot above — the choke points (getOrRestoreSession / ResumeTask)
+	// would reject the resume anyway; skipping it outright keeps the
+	// terminal event honest (no spurious "auto-resume failed" warning
+	// during teardown) and the checkpoint persists as resumable via
+	// Shutdown's persistPauseIfUnfinished.
+	if pausedForCompaction && !shuttingDown && !m.shuttingDown.Load() && m.hasPausedUnfinishedTask(sessionID) {
+		if ownsPause {
+			if rerr := m.ResumeTask(context.Background(), sessionID, "", "", ""); rerr != nil {
+				// The checkpoint is still there with nobody else to resume it, and
+				// the UI never saw session_paused (it is suppressed while
+				// compacting) — flag it so clients re-apply the paused state.
+				pausedWithoutResume = true
+				m.log().Warn("manual compaction: auto-resume failed", "session", sessionID, "error", rerr)
+			} else {
+				resumed = true
+			}
 		} else {
-			resumed = true
+			// The user asked for the paused state while this flow held the
+			// session: honour it — same client contract as a failed
+			// auto-resume (the UI never saw session_paused while compacting).
+			pausedWithoutResume = true
+			m.log().Info("manual compaction: keeping user-requested pause", "session", sessionID)
 		}
 	}
 

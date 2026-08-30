@@ -25,7 +25,7 @@ import { useCallback } from 'react'
 import { emit } from '@/api/runtime'
 import { attachFiles, attachmentBaseName, isImagePath } from '@/api/attachments'
 import {
-  beginAttachmentUploads,
+  beginAttachmentUploadsFresh,
   completeAttachmentUploads,
   failAttachmentUploads,
 } from '@/lib/attachmentUploads'
@@ -110,11 +110,14 @@ export function useStageAttachments(): {
 
         const toAttach = supportsVision ? paths : docPaths
 
-        // Optimistic upload placeholders: spinner chips appear instantly and
-        // drain as the backend's incremental `attachments:changed` events land
+        // Optimistic upload placeholders: spinner chips appear and drain as
+        // the backend's incremental `attachments:changed` events land
         // matching attachments (or when this RPC settles). Uploads cancelled
         // via their chip's X are stripped here and removed from the backend.
-        const uploads = beginAttachmentUploads(
+        // The fresh-baseline variant unions the backend's authoritative
+        // pending list into the claim window first so a stale store slice
+        // cannot shrink it.
+        const uploads = await beginAttachmentUploadsFresh(
           sessionId,
           toAttach.map((p) => ({
             path: p,

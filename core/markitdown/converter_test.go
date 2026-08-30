@@ -2,6 +2,7 @@ package markitdown
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -510,6 +511,157 @@ func TestConvertWithVision_PDFEmbeddedImageCaptioned(t *testing.T) {
 	}
 	if n := calls.Load(); n != 1 {
 		t.Errorf("expected exactly 1 captioning call, got %d", n)
+	}
+}
+
+// zlibCompress compresses raw bytes the way a PDF FlateDecode stream stores
+// them: a zlib wrapper (2-byte header + adler32) around the deflate payload —
+// pdfminer feeds the bytes straight to zlib.decompress.
+func zlibCompress(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := zlib.NewWriter(&buf)
+	if _, err := w.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// buildPDFWithFlateImage crafts a minimal one-page PDF whose image XObject
+// uses FlateDecode with the GIVEN declared dimensions and the given (already
+// zlib-compressed) stream bytes. Declared dimensions and actual stream
+// content are independent on purpose: the bomb test relies on the mismatch.
+func buildPDFWithFlateImage(text string, flateBytes []byte, w, h int) []byte {
+	objects := map[int][]byte{}
+	objects[1] = []byte("<< /Type /Catalog /Pages 2 0 R >>")
+	objects[2] = []byte("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+	objects[3] = []byte("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " +
+		"/Resources << /Font << /F1 5 0 R >> /XObject << /Im1 4 0 R >> >> /Contents 6 0 R >>")
+	objects[4] = append([]byte(fmt.Sprintf(
+		"<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB "+
+			"/BitsPerComponent 8 /Filter /FlateDecode /Length %d >>\nstream\n", w, h, len(flateBytes))),
+		flateBytes...)
+	objects[4] = append(objects[4], []byte("\nendstream")...)
+	objects[5] = []byte("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+	content := "BT /F1 24 Tf 72 700 Td (" + text + ") Tj ET\nq 64 0 0 64 72 350 cm /Im1 Do Q\n"
+	objects[6] = append([]byte(fmt.Sprintf("<< /Length %d >>\nstream\n", len(content))),
+		[]byte(content)...)
+	objects[6] = append(objects[6], []byte("\nendstream")...)
+
+	var out bytes.Buffer
+	out.WriteString("%PDF-1.4\n")
+	offsets := map[int]int{}
+	for n := 1; n <= 6; n++ {
+		offsets[n] = out.Len()
+		fmt.Fprintf(&out, "%d 0 obj\n", n)
+		out.Write(objects[n])
+		out.WriteString("\nendobj\n")
+	}
+	xref := out.Len()
+	fmt.Fprintf(&out, "xref\n0 7\n0000000000 65535 f \n")
+	for n := 1; n <= 6; n++ {
+		fmt.Fprintf(&out, "%010d 00000 n \n", offsets[n])
+	}
+	fmt.Fprintf(&out, "trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF", xref)
+	return out.Bytes()
+}
+
+// TestConvertWithVision_PDFFlateImageCaptioned pins the FlateDecode
+// reconstruction path: a legitimate zlib-compressed RGB image XObject is
+// reconstructed (bounded decompression must not reject honest streams) and
+// captioned like a DCTDecode one.
+func TestConvertWithVision_PDFFlateImageCaptioned(t *testing.T) {
+	if _, err := exec.LookPath("markitdown"); err != nil {
+		t.Skipf("markitdown CLI not available on PATH: %v", err)
+	}
+	python := venvPythonForTests()
+	if python == "" {
+		t.Skip("managed venv python not available")
+	}
+
+	// 64x64 RGB (above the 32px decoration floor), gradient so the
+	// compressed stream is non-trivial.
+	const w, h = 64, 64
+	raw := make([]byte, w*h*3)
+	for i := 0; i < len(raw); i++ {
+		raw[i] = byte(i * 7 % 251)
+	}
+
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "flate.pdf")
+	if err := os.WriteFile(pdfPath, buildPDFWithFlateImage("Flate report", zlibCompress(t, raw), w, h), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	baseURL, calls := mockVisionEndpoint(t)
+	c := &Converter{log: testLogger(), timeout: time.Minute, pythonPath: python}
+	vision := &VisionOptions{APIKey: "e2e-key", BaseURL: baseURL, Model: "vision-e2e-model"}
+
+	markdown, err := c.ConvertWithVision(context.Background(), pdfPath, vision)
+	if err != nil {
+		t.Fatalf("ConvertWithVision returned error: %v", err)
+	}
+	if !strings.Contains(markdown, "Flate report") {
+		t.Errorf("pdf text layer missing from output:\n%s", markdown)
+	}
+	if !strings.Contains(markdown, "VISION E2E CAPTION") {
+		t.Errorf("flate image caption missing from output:\n%s", markdown)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("expected exactly 1 captioning call, got %d", n)
+	}
+}
+
+// TestConvertWithVision_PDFFlateBombSkipped pins the decompression-bomb
+// guard: a stream declaring tiny dimensions (40x40 RGB needs 4800 bytes)
+// whose zlib payload actually expands to 64 MiB must be skipped by the
+// bounded decompressor — no caption entry, no OOM, no measurable stall —
+// while the surrounding conversion still succeeds.
+func TestConvertWithVision_PDFFlateBombSkipped(t *testing.T) {
+	if _, err := exec.LookPath("markitdown"); err != nil {
+		t.Skipf("markitdown CLI not available on PATH: %v", err)
+	}
+	python := venvPythonForTests()
+	if python == "" {
+		t.Skip("managed venv python not available")
+	}
+
+	// 64 MiB of zeros compress to a few dozen KiB; the declared dimensions
+	// claim only 4800 bytes of samples.
+	bomb := zlibCompress(t, make([]byte, 64<<20))
+
+	dir := t.TempDir()
+	pdfPath := filepath.Join(dir, "bomb.pdf")
+	if err := os.WriteFile(pdfPath, buildPDFWithFlateImage("Bomb report", bomb, 40, 40), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	baseURL, calls := mockVisionEndpoint(t)
+	c := &Converter{log: testLogger(), timeout: time.Minute, pythonPath: python}
+	vision := &VisionOptions{APIKey: "e2e-key", BaseURL: baseURL, Model: "vision-e2e-model"}
+
+	start := time.Now()
+	markdown, err := c.ConvertWithVision(context.Background(), pdfPath, vision)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("ConvertWithVision returned error: %v", err)
+	}
+	if !strings.Contains(markdown, "Bomb report") {
+		t.Errorf("pdf text layer missing from output:\n%s", markdown)
+	}
+	if strings.Contains(markdown, "## Embedded images") {
+		t.Errorf("bomb image must be skipped, got an embedded-images section:\n%s", markdown)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("bomb image must not be captioned, got %d calls", n)
+	}
+	// The bounded decompressor stops after the declared-size cap; even the
+	// rlimit fallback aborts on first huge allocation. Generous CI margin.
+	if elapsed > 30*time.Second {
+		t.Errorf("bomb guard took %s; expected a fast skip", elapsed)
 	}
 }
 

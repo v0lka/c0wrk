@@ -95,30 +95,53 @@ function resolveStaleHitlPrompts(sessionId: string): ChatMessageUI[] {
 export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntimeStatus, snapshotReadAt?: number): ChatMessageUI[] {
   const store = useChatStore.getState()
 
+  // Stale-snapshot guard: runtimeEventAt is stamped by the streaming/activity
+  // store actions on every LIVE event-driven mutation (including no-op
+  // clears), so a mark newer than the snapshot read means the UI already
+  // holds fresher live state. Computed BEFORE the mirror writes below: the
+  // mirrors (unfinished/compacting/no-op flags) revert live terminal state
+  // exactly like the activity label does — e.g. a live compaction_finished
+  // (input unlocked) must not be re-locked by a snapshot that still says
+  // compacting=true.
+  const hasFresherLiveState =
+    snapshotReadAt !== undefined && (useChatStore.getState().runtimeEventAt[sessionId] ?? 0) > snapshotReadAt
+
+  // Task-flag freshness uses its OWN stamp (chatStore.taskFlagsEventAt):
+  // activity events (chunks) stamp runtimeEventAt without owning the flags,
+  // so a background-started run still gets its flags restored from the
+  // snapshot — while a live pause/resume/terminal transition (which stamps
+  // the flags map) must never be reverted by an older snapshot.
+  const hasFresherTaskFlags =
+    snapshotReadAt !== undefined && (useChatStore.getState().taskFlagsEventAt[sessionId] ?? 0) > snapshotReadAt
+
   // The session list's `has_unfinished_task` is a snapshot from the last list
   // load — nothing refreshed it since, so a session whose task finished while
   // unviewed stayed "busy" for the archive/delete confirmation until an app
   // restart. The runtime snapshot is authoritative for this flag in every
   // branch below (running, paused, compacting, idle): mirror it into the
-  // session store. No-op when the value already matches.
-  useSessionStore.getState().setUnfinishedTask(sessionId, status.has_unfinished_task === true)
+  // session store. No-op when the value already matches. Skipped when a live
+  // terminal event already updated the flag after the snapshot was read.
+  if (!hasFresherLiveState) {
+    useSessionStore.getState().setUnfinishedTask(sessionId, status.has_unfinished_task === true)
+  }
 
   // Manual compaction in flight: mirror the flag so a switch back to the
   // session restores the Compacting UI (locked input, cancel affordance)
   // even when the compaction_started event fired with no live listener.
-  store.setCompacting(sessionId, status.compacting === true)
+  // Skipped when a live compaction event (compaction_started/finished)
+  // already landed after the snapshot was read.
+  if (!hasFresherLiveState) {
+    store.setCompacting(sessionId, status.compacting === true)
+  }
 
   // Manual compaction would be a no-op: mirror the backend's prediction so
   // the compact button renders disabled (with its tooltip) for a history
   // already within the compaction target. Absent field (older backend)
-  // resolves to false — fail-open, the button stays clickable.
-  store.setCompactionNoOp(sessionId, status.compaction_noop === true)
-
-  // Stale-snapshot guard: runtimeEventAt is stamped by the streaming/activity
-  // store actions on every LIVE event-driven mutation, so a mark newer than
-  // the snapshot read means the UI already holds fresher activity state.
-  const hasFresherLiveState =
-    snapshotReadAt !== undefined && (store.runtimeEventAt[sessionId] ?? 0) > snapshotReadAt
+  // resolves to false — fail-open, the button stays clickable. Skipped when
+  // a live compaction_finished already refreshed the prediction.
+  if (!hasFresherLiveState) {
+    store.setCompactionNoOp(sessionId, status.compaction_noop === true)
+  }
 
   // The compaction flow owns the session: the task it paused shows neither
   // paused affordances nor a "did not finish" banner — compaction_finished
@@ -126,9 +149,11 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
   // paused branch's stale-HITL resolution so prompts from before the flow
   // (if any) resolve identically.
   if (status.compacting) {
-    store.setPausing(sessionId, false)
-    store.setPaused(sessionId, false)
-    store.setTaskActive(sessionId, status.active)
+    if (!hasFresherTaskFlags) {
+      store.setPausing(sessionId, false)
+      store.setPaused(sessionId, false)
+      store.setTaskActive(sessionId, status.active)
+    }
     if (!hasFresherLiveState) {
       store.setActivityStatus(sessionId, 'Compacting')
       store.clearStreamingText(sessionId)
@@ -148,9 +173,11 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
   // Resume button) over a live task. The active branch below clears paused
   // and restores taskActive=true instead.
   if (status.paused && !status.active) {
-    store.setPausing(sessionId, false)
-    store.setPaused(sessionId, true)
-    store.setTaskActive(sessionId, false)
+    if (!hasFresherTaskFlags) {
+      store.setPausing(sessionId, false)
+      store.setPaused(sessionId, true)
+      store.setTaskActive(sessionId, false)
+    }
     // A checkpointed task has no open assistant stream; any frozen streaming
     // text predates the pause and would render a phantom partial answer.
     // Skipped when a live event already updated the label/stream after the
@@ -166,15 +193,17 @@ export function reconcileRuntimeStatus(sessionId: string, status: SessionRuntime
     // task is resumable via the Resume button or a nudge message.
     return resolveStaleHitlPrompts(sessionId)
   }
-  store.setPaused(sessionId, false)
-  store.setTaskActive(sessionId, status.active)
-  // A pause-in-flight flag survives while the task is still running: the
-  // backend status has no visibility into the in-memory pause window, so
-  // clearing it here would unlock the input for a send the backend then
-  // rejects with ErrPausePending. Once the task is no longer active the flag
-  // is stale and is cleared.
-  if (!status.active) {
-    store.setPausing(sessionId, false)
+  if (!hasFresherTaskFlags) {
+    store.setPaused(sessionId, false)
+    store.setTaskActive(sessionId, status.active)
+    // A pause-in-flight flag survives while the task is still running: the
+    // backend status has no visibility into the in-memory pause window, so
+    // clearing it here would unlock the input for a send the backend then
+    // rejects with ErrPausePending. Once the task is no longer active the flag
+    // is stale and is cleared.
+    if (!status.active) {
+      store.setPausing(sessionId, false)
+    }
   }
 
   if (status.active) {

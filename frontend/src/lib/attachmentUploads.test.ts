@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   beginAttachmentUploads,
+  beginAttachmentUploadsFresh,
   cancelAttachmentUpload,
   collectPasteUploadDescriptors,
   completeAttachmentUploads,
@@ -18,16 +19,18 @@ import {
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
 import type { AttachmentInfoUI } from '@/types/models'
 
-const spies = vi.hoisted(() => ({
-  removeAttachment: vi.fn<(sessionId: string, attachmentId: string) => Promise<void>>(),
-}))
-
 vi.mock('@/api/attachments', () => ({
   removeAttachment: spies.removeAttachment,
+  getAttachments: spies.getAttachments,
   // Pure helper used by collectPasteUploadDescriptors; the real one lives in
   // the mocked module's source — a minimal stand-in keeps this factory
   // self-contained.
   isImagePath: (path: string) => /\.(png|jpe?g|gif|webp)$/i.test(path),
+}))
+
+const spies = vi.hoisted(() => ({
+  removeAttachment: vi.fn<(sessionId: string, attachmentId: string) => Promise<void>>(),
+  getAttachments: vi.fn<(sessionId: string) => Promise<AttachmentInfoUI[]>>(),
 }))
 
 vi.mock('@/lib/logger', () => ({
@@ -57,6 +60,7 @@ function resetState() {
   })
   resetAttachmentUploadState()
   spies.removeAttachment.mockReset().mockResolvedValue(undefined)
+  spies.getAttachments.mockReset().mockResolvedValue([])
 }
 
 /** First element with a runtime guarantee (noUncheckedIndexedAccess-friendly). */
@@ -320,5 +324,130 @@ describe('collectPasteUploadDescriptors', () => {
     const data = fakeTransfer([{ kind: 'string', type: 'text/plain' }])
 
     expect(collectPasteUploadDescriptors(data, true)).toEqual([])
+  })
+})
+
+describe('attachmentUploads claim safety (stale baseline / unverified claims)', () => {
+  beforeEach(() => {
+    resetState()
+  })
+
+  it('a cancelled upload never claims via FIFO: an unrelated pre-existing record survives', () => {
+    // The reviewer's stale-baseline scenario: the store slice was empty when
+    // the batch began (initial fetch still in flight), so a pre-existing
+    // unrelated attachment X falls OUTSIDE the baseline. FIFO would hand X
+    // to the cancelled entry and RemoveAttachment would delete the user's
+    // earlier staged file. Verified-claims-only prevents the removal; the
+    // record must pass through untouched.
+    const uploads = beginAttachmentUploads('sess-1', [
+      { path: '/p/notes.txt', fileName: 'notes.txt', isImage: false },
+    ])
+    cancelAttachmentUpload('sess-1', first(uploads))
+
+    const unrelated: AttachmentInfoUI = {
+      id: 'x1',
+      originalName: 'quarterly-report.pdf',
+      format: 'pdf',
+      sizeBytes: 9,
+    }
+    const filtered = processIncomingAttachments('sess-1', [unrelated])
+
+    expect(filtered).toEqual([unrelated])
+    expect(spies.removeAttachment).not.toHaveBeenCalled()
+  })
+
+  it('a same-stem sibling record is NOT verified (extensioned labels match exactly only)', () => {
+    // MUST-FIX regression: the stem tolerance must not apply to extensioned
+    // file names — cancelling notes.md must never remove notes.pdf.
+    const uploads = beginAttachmentUploads('sess-1', [
+      { path: '/p/notes.md', fileName: 'notes.md', isImage: false },
+    ])
+    cancelAttachmentUpload('sess-1', first(uploads))
+
+    const sibling: AttachmentInfoUI = {
+      id: 's1',
+      originalName: 'notes.pdf',
+      format: 'pdf',
+      sizeBytes: 4,
+    }
+    const filtered = processIncomingAttachments('sess-1', [sibling])
+
+    expect(filtered).toEqual([sibling])
+    expect(spies.removeAttachment).not.toHaveBeenCalled()
+  })
+
+  it('a cancelled upload still claims records whose originalName verifies (re-encoded image)', () => {
+    // Realistic cancel: the source file was re-encoded server-side (path
+    // never matches), but the backend preserves the source basename in
+    // originalName — a verified claim, so removal proceeds.
+    const uploads = beginAttachmentUploads('sess-1', [
+      { path: '/x/IMG_2024.heic', fileName: 'IMG_2024.heic', isImage: true },
+    ])
+    cancelAttachmentUpload('sess-1', first(uploads))
+
+    const filtered = processIncomingAttachments('sess-1', [IMG_LANDED])
+
+    expect(filtered).toEqual([])
+    expect(spies.removeAttachment).toHaveBeenCalledWith('sess-1', IMG_LANDED.id)
+  })
+
+  it('a cancelled clipboard-image upload claims the normalized record via stem tolerance', () => {
+    // The paste descriptor carries the extension-less label while the
+    // backend names the record pasted-image.png: 'pasted-image' must match
+    // 'pasted-image.' as a verified claim.
+    const uploads = beginAttachmentUploads('sess-1', [
+      { path: '', fileName: 'pasted-image', isImage: true },
+    ])
+    cancelAttachmentUpload('sess-1', first(uploads))
+
+    const landed: AttachmentInfoUI = {
+      id: 'p1',
+      originalName: 'pasted-image.png',
+      format: 'png',
+      sizeBytes: 3,
+      isImage: true,
+    }
+    const filtered = processIncomingAttachments('sess-1', [landed])
+
+    expect(filtered).toEqual([])
+    expect(spies.removeAttachment).toHaveBeenCalledWith('sess-1', landed.id)
+  })
+
+  it('beginAttachmentUploadsFresh unions the backend pending list into the baseline', async () => {
+    // Same stale-slice start, but the fresh variant's GetAttachments read
+    // knows the pre-existing record: it lands INSIDE the window, so it can
+    // never be claimed — even by a non-cancelled FIFO entry.
+    const preExisting: AttachmentInfoUI = {
+      id: 'old1',
+      originalName: 'existing.md',
+      format: 'md',
+      sizeBytes: 1,
+    }
+    spies.getAttachments.mockResolvedValue([preExisting])
+
+    const uploads = await beginAttachmentUploadsFresh('sess-1', [
+      { path: '/p/a.md', fileName: 'a.md', isImage: false },
+    ])
+    const filtered = processIncomingAttachments('sess-1', [preExisting, DOC_A])
+
+    // The upload's own record (a.md) is claimed — its spinner retires but the
+    // record stays in the list (it is a real staged attachment). The
+    // pre-existing record is inside the baseline, so it can never be claimed
+    // by this batch.
+    expect(filtered).toEqual([preExisting, DOC_A])
+    expect(useAttachmentsStore.getState().uploadsBySession['sess-1']).toBeUndefined()
+    expect(uploads).toHaveLength(1)
+    expect(spies.getAttachments).toHaveBeenCalledWith('sess-1')
+  })
+
+  it('beginAttachmentUploadsFresh falls back to the store slice when the baseline RPC fails', async () => {
+    spies.getAttachments.mockRejectedValue(new Error('rpc down'))
+
+    const uploads = await beginAttachmentUploadsFresh('sess-1', [
+      { path: '/p/a.md', fileName: 'a.md', isImage: false },
+    ])
+
+    expect(uploads).toHaveLength(1)
+    expect(useAttachmentsStore.getState().uploadsBySession['sess-1']).toEqual(uploads)
   })
 })

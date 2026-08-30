@@ -24,7 +24,6 @@ export function CommitSection() {
   );
   const draft = storedDraft ?? EMPTY_COMMIT_DRAFT;
   const { message: commitMessage, isGenerating, isCommitting, error, lastCommitSha: successSha } = draft;
-  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const stagedCount = entries.filter((e) => e.staged).length;
@@ -49,16 +48,6 @@ export function CommitSection() {
     adjustHeight();
   }, [commitMessage, adjustHeight]);
 
-  // Clear the success-banner timer on unmount to avoid leaking.
-  useEffect(() => {
-    return () => {
-      if (successTimerRef.current !== null) {
-        clearTimeout(successTimerRef.current);
-        successTimerRef.current = null;
-      }
-    };
-  }, []);
-
   const handleCommit = async () => {
     // Capture the project at click time: every write below (success SHA,
     // error, draft clear) must land in the project whose draft is being
@@ -68,23 +57,14 @@ export function CommitSection() {
     const message = commitMessage;
     setCommitting(projectId, true);
     setCommitError(projectId, null);
-    if (successTimerRef.current !== null) {
-      clearTimeout(successTimerRef.current);
-      successTimerRef.current = null;
-    }
     try {
       // commit() now returns the new commit's full SHA (FE-1 / B1).
       const sha = await commit(message);
-      // Stores the SHA for the success banner and clears this project's draft.
+      // Stores the SHA for the success banner, clears this project's draft,
+      // and arms the store-owned per-project auto-dismissal (4s) — a banner
+      // in one project is never cleared or left stranded by a commit in
+      // another, and dismissal survives a CHAT-mode GitPanel unmount.
       setCommitSuccess(projectId, sha);
-      // Auto-clear the success banner after a few seconds. `null` dismisses
-      // the banner without touching the draft the user may be editing by then.
-      successTimerRef.current = setTimeout(() => {
-        const current = useGitPanelStore.getState().commitByProject[projectId];
-        if (current?.lastCommitSha === sha) {
-          setCommitSuccess(projectId, null);
-        }
-      }, 4000);
       // Status refresh is handled by the git:status_changed event emitted
       // by the backend after a successful commit (picked up by useGitStatusEvents)
     } catch (err) {

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { reconcileRuntimeStatus, reconcilePendingActions, refreshCompactionNoOp, stalePromptMatchField } from './sessionRuntime'
+import { handleSessionPausedEvent, handleSessionResumedEvent } from '@/hooks/events/sessionLifecycleHandlers'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import type { ChatMessageUI } from '@/types/messages'
@@ -27,6 +28,7 @@ function resetStore(): void {
     compacting: {},
     compactionNoOp: {},
     runtimeEventAt: {},
+    taskFlagsEventAt: {},
   })
   // reconcileRuntimeStatus mirrors has_unfinished_task into the session list;
   // reset it so tests start from a clean (null) snapshot state.
@@ -586,5 +588,111 @@ describe('refreshCompactionNoOp', () => {
     refreshCompactionNoOp(SESSION)
     await vi.waitFor(() => expect(getSessionRuntimeStatus).toHaveBeenCalled())
     expect(useChatStore.getState().compactionNoOp[SESSION]).toBe(true)
+  })
+})
+
+describe('reconcileRuntimeStatus → stale-snapshot guard for mirror flags', () => {
+  beforeEach(resetStore)
+
+  function seedSession(flag: boolean): void {
+    useSessionStore.setState({
+      sessions: [{
+        id: SESSION,
+        project_id: 'proj-1',
+        name: 'Session',
+        created_at: '2026-01-01T00:00:00Z',
+        last_active_at: '2026-01-01T00:00:00Z',
+        archived: false,
+        pinned: false,
+        active: false,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        model: '',
+        family: '',
+        has_unfinished_task: flag,
+      }],
+    })
+  }
+
+  it('does not re-lock the input when a live compaction_finished beats the snapshot', () => {
+    // Switch back to a session whose manual compaction just finished: the
+    // live compaction_finished handler unlocked the input (setCompacting
+    // false) AFTER the status RPC was read but BEFORE it resolved. The
+    // snapshot still says compacting=true — it must not re-lock.
+    const readAt = Date.now()
+    useChatStore.getState().setCompacting(SESSION, true)
+    useChatStore.getState().setCompacting(SESSION, false) // live finished (stamps)
+
+    reconcileRuntimeStatus(
+      SESSION,
+      { active: false, has_unfinished_task: false, paused: false, compacting: true },
+      readAt - 10,
+    )
+
+    expect(useChatStore.getState().compacting[SESSION]).toBeUndefined()
+  })
+
+  it('does not resurrect the unfinished flag when a live terminal event beats the snapshot', () => {
+    // A live task_complete cleared the flag; its setActivityStatus(null) on
+    // an already-null label must still stamp runtimeEventAt, and the stale
+    // snapshot (has_unfinished_task=true, read before completion) must not
+    // re-arm the archive/delete busy state.
+    seedSession(false)
+    const readAt = Date.now()
+    useChatStore.getState().setActivityStatus(SESSION, null) // no-op clear — must stamp
+
+    reconcileRuntimeStatus(
+      SESSION,
+      { active: false, has_unfinished_task: true, paused: false },
+      readAt - 10,
+    )
+
+    expect(useSessionStore.getState().sessions![0]!.has_unfinished_task).toBe(false)
+  })
+
+  it('does not revert a live pause transition that beat the snapshot', () => {
+    // The REAL live session_paused handler sets flags AND label; a snapshot
+    // read before the pause landed must not flip them back to running.
+    const readAt = Date.now() - 10
+    handleSessionPausedEvent(SESSION)
+
+    reconcileRuntimeStatus(
+      SESSION,
+      { active: true, has_unfinished_task: true, paused: false },
+      readAt,
+    )
+
+    expect(useChatStore.getState().paused[SESSION]).toBe(true)
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(false)
+  })
+
+  it('does not revert a live resume transition that beat the snapshot', () => {
+    // session_resumed landed after the snapshot was read: the snapshot still
+    // says paused and must not re-paint the paused UI over the live task.
+    const readAt = Date.now() - 10
+    handleSessionPausedEvent(SESSION)
+    handleSessionResumedEvent(SESSION)
+
+    reconcileRuntimeStatus(
+      SESSION,
+      { active: false, has_unfinished_task: true, paused: true },
+      readAt,
+    )
+
+    expect(useChatStore.getState().paused[SESSION]).toBeUndefined()
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(true)
+  })
+
+  it('still mirrors the flags when no live event intervened', () => {
+    seedSession(true)
+
+    reconcileRuntimeStatus(
+      SESSION,
+      { active: false, has_unfinished_task: false, paused: false, compacting: true },
+      Date.now() + 1000, // snapshot newer than any live mark
+    )
+
+    expect(useSessionStore.getState().sessions![0]!.has_unfinished_task).toBe(false)
+    expect(useChatStore.getState().compacting[SESSION]).toBe(true)
   })
 })

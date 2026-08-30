@@ -351,4 +351,57 @@ describe('useProjectSwitchState', () => {
       vi.useRealTimers()
     }
   })
+
+  it('discards a stale session list resolved after a newer switch began', async () => {
+    // Regression: setSessions used to run immediately when the listSessions
+    // RPC resolved, BEFORE the supersede guard — a stalled list that settled
+    // after a newer switch clobbered the newer switch's session list while
+    // activeProjectId pointed into the new project.
+    vi.useFakeTimers()
+    try {
+      useProjectStore.setState({ activeProjectId: 'p0' })
+
+      // Switch 1 stalls at its listSessions RPC.
+      let releaseStalled: (() => void) | undefined
+      const stalled = new Promise<SessionInfo[]>((resolve) => {
+        releaseStalled = () => resolve([])
+      })
+      mocks.switchProjectMock.mockResolvedValue(undefined)
+      // First call (switch 1) gets the stalled promise; later calls resolve.
+      let firstCall = true
+      mocks.listSessionsMock.mockImplementation(() => {
+        if (firstCall) {
+          firstCall = false
+          return stalled
+        }
+        return Promise.resolve([])
+      })
+
+      const { useProjectSwitchState } = await import('@/hooks/useProjectSwitchState')
+      const runSwitch = useProjectSwitchState()
+
+      const first = runSwitch('p1-stalled')
+      void first.catch(() => { /* watchdog rejection asserted below */ })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mocks.switchProjectMock).toHaveBeenCalledWith('p1-stalled')
+
+      const second = runSwitch('p2-fresh')
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(useProjectStore.getState().activeProjectId).toBe('p2-fresh')
+      const sessionsAfterSecond = useSessionStore.getState().sessions
+
+      // The stalled session list settles AFTER the newer switch completed:
+      // the stale list must never land in the store.
+      releaseStalled?.()
+      await stalled
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(useSessionStore.getState().sessions).toBe(sessionsAfterSecond)
+      await expect(first).rejects.toThrow(/timed out/)
+      await second
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

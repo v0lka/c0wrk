@@ -13,7 +13,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-import { useMessageSender } from '@/hooks/useMessageSender'
+import { useMessageSender, type UseMessageSenderResult } from '@/hooks/useMessageSender'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
@@ -69,7 +69,7 @@ const IMG: AttachmentInfoUI = {
 }
 
 // Harness: capture the send callback from the hook.
-let capturedSend: ((text: string) => Promise<void>) | null = null
+let capturedSend: UseMessageSenderResult['send'] | null = null
 function Harness() {
   const { send } = useMessageSender()
   capturedSend = send
@@ -122,6 +122,23 @@ describe('useMessageSender optimistic metadata', () => {
     expect(msgs).toHaveLength(1)
     expect(sentUser('s1').content).toBe('hello')
     expect(sentUser('s1').metadata).toBeUndefined()
+  })
+
+  it('pins the send to the ORIGIN session when the active session changed mid-flight', async () => {
+    // Regression: send() used to re-read activeSessionId at call time —
+    // after the controller's #agent catalog await the user may have switched
+    // sessions, misrouting the message (and bypassing the origin's
+    // uploads guard). The explicit originSessionId wins.
+    useSessionStore.setState({ activeSessionId: 's-other' })
+    await act(async () => {
+      await capturedSend!('review this', undefined, [], 's-origin')
+    })
+
+    expect(spies.sendMessage).toHaveBeenCalledWith(
+      's-origin', 'review this', [], [], '', '', false, '',
+    )
+    expect(userMessages('s-origin')).toHaveLength(1)
+    expect(userMessages('s-other')).toHaveLength(0)
   })
 
   it('mirrors the goal flag into the optimistic message and resets the toggle', async () => {

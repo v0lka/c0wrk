@@ -461,6 +461,7 @@ User types a message while a task runs → Send
 Invariants and edge cases:
 
 - **Pausing window**: between `PauseSession` (sets `session.pausing` + flips the signal under `session.mu`) and the request epilogue (clears `pausing`), live sends are rejected with `ErrPausePending`. The UI locks the input for the window (`pausing` flag); once `session_paused` lands, sends become nudge-resumes instead.
+- **Pause ownership**: `PauseSession` records `session.pauseOwner = user` on every call; task launch (fresh send or resume) resets it. The manual-compaction flow (see [memory/compaction.md](memory/compaction.md)) records itself as the owner when it arms a pause on a running task, and its auto-resume fires ONLY for a pause it still owns — a user-initiated pause is never stolen, whichever side paused first, so an explicit user pause always survives a compaction that raced it.
 - **Cancel (Stop)**: the epilogue discards queued-but-undelivered messages (`DiscardLiveUserMessages`) — an undelivered message in a cancelled exchange does not leak into a future request.
 - **Completion with leftovers**: when the task finishes successfully without delivering a queued message, the epilogue takes the leftovers atomically (`TakeLiveUserMessages` under the same lock that flipped `active=false`) and launches a follow-up continuation task carrying them (joined with `\n\n`). The message was already persisted/rendered at send time, so the follow-up re-enters the send path in "presented" mode (no duplicate `message_received`, no title regen).
 - **Pause/resumable outcome**: leftovers stay queued; the resumed request drains them at its first step boundary.
@@ -495,12 +496,14 @@ User picks a strategy in the status-bar compact menu (left of the fill indicator
       ├─ Persist marker row (compacted outcome only): role "context_compaction",
       │    metadata {strategy, before/after %, messages: compacted history snapshot}
       ├─ Clear compacting, then auto-resume the task this flow paused
-      │    (ResumeTask — only when a paused checkpoint remains; a FAILED
-      │    resume sets paused_without_resume so the UI re-applies the paused
-      │    state — session_paused was suppressed while compacting)
+      │    (ResumeTask — ONLY a pause the flow still owns: a user-initiated
+      │    pause is never stolen, whichever side paused first, and is left
+      │    paused; a FAILED auto-resume OR an honoured user pause sets
+      │    paused_without_resume so the UI re-applies the paused state —
+      │    session_paused was suppressed while compacting)
       └─ Emit compaction_finished {strategy, success|cancelled|error, resumed,
                                   paused_without_resume?, nothing_compacted?,
-                                  deferred_to_resume?}
+                                  deferred_to_resume?, compaction_noop?}
 
 Cancel (CancelSessionCompaction):
   during pause-wait  → still waits for the checkpoint (unflipping the pause signal

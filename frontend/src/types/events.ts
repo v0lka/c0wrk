@@ -84,9 +84,11 @@ export interface CompactionStartedData { strategy: string }
  * orchestrator's one-shot resume compaction before auto-resuming, so the
  * card with the real numbers arrives from the resumed run (treat like
  * resumed). resumed reports whether the flow auto-resumed a task it had
- * paused; paused_without_resume is set when that auto-resume FAILED — a paused
- * checkpoint remains that the UI never saw (session_paused is suppressed
- * while compacting), so the client must re-apply the paused state.
+ * paused; paused_without_resume is set when the task was left paused without
+ * the flow's auto-resume — the auto-resume FAILED, or the flow honoured a
+ * user-owned pause (never stolen; see the backend's session.pauseOwner) — a
+ * paused checkpoint remains that the UI never saw (session_paused is
+ * suppressed while compacting), so the client must re-apply the paused state.
  * compaction_noop is the post-flow no-op verdict recomputed by the backend on
  * the CURRENT history: true after a successful compaction (the dialogue now
  * fits the target) and after the nothing_compacted outcome; the untouched
@@ -710,11 +712,32 @@ export function isPasteResultRaw(v: unknown): v is PasteResultRaw {
   return true
 }
 
-/** The `attachments:changed` payload is an object with an `attachments` array. */
+/** Guard for a single backend AttachmentFailure (snake_case): both `path`
+ *  and `error` are plain strings (the backend always serializes both — no
+ *  omitempty on the struct fields). */
+export function isAttachmentFailureRaw(v: unknown): v is AttachmentFailureRaw {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    typeof (v as AttachmentFailureRaw).path === 'string' &&
+    typeof (v as AttachmentFailureRaw).error === 'string'
+  )
+}
+
+/** The `attachments:changed` payload is an object with an `attachments` array
+ *  and an OPTIONAL `failed` array of per-file failures. Both arrays must fully
+ *  validate: the handler consumes `failed[].path` to build the user-facing
+ *  error toast, so a malformed entry must drop the event at the boundary
+ *  instead of throwing inside the session event handler. */
 export function isAttachmentsChangedData(d: unknown): d is AttachmentsChangedData {
   if (!isObj(d)) return false
   const atts = d.attachments
-  return Array.isArray(atts) && atts.every(isAttachmentInfoRaw)
+  if (!Array.isArray(atts) || !atts.every(isAttachmentInfoRaw)) return false
+  const failed = d.failed
+  if (failed !== undefined && (!Array.isArray(failed) || !failed.every(isAttachmentFailureRaw))) {
+    return false
+  }
+  return true
 }
 export function isStepTodoUpdateData(d: unknown): d is StepTodoUpdateData {
   return isObj(d) && has(d, 'step_id', 'items') && Array.isArray(d.items)

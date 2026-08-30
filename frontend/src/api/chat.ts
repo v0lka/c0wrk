@@ -197,6 +197,15 @@ function isSessionRuntimeStatus(d: unknown): d is SessionRuntimeStatus {
     && (!('compaction_noop' in d)
       || (d as Record<string, unknown>).compaction_noop === undefined
       || typeof (d as Record<string, unknown>).compaction_noop === 'boolean')
+    && (!('compacting' in d)
+      || (d as Record<string, unknown>).compacting === undefined
+      || typeof (d as Record<string, unknown>).compacting === 'boolean')
+    && (!('streaming' in d)
+      || (d as Record<string, unknown>).streaming === undefined
+      || typeof (d as Record<string, unknown>).streaming === 'boolean')
+    && (!('activity' in d)
+      || (d as Record<string, unknown>).activity === undefined
+      || typeof (d as Record<string, unknown>).activity === 'string')
 }
 
 /**

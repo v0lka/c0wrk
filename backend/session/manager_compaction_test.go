@@ -399,6 +399,227 @@ func TestCompactSessionContext_AutoResumeFailureReportsPaused(t *testing.T) {
 	}
 }
 
+// resumeProbeStore counts LoadTrajectory calls (and fails them, like
+// failingResumeTaskStore) so a test can tell whether the compaction flow's
+// auto-resume actually ATTEMPTED a resume, as opposed to skipping it.
+type resumeProbeStore struct {
+	mockTaskStoreForResumable
+	mu    sync.Mutex
+	loads int
+}
+
+func (s *resumeProbeStore) LoadTrajectory(_ context.Context, _ string) (json.RawMessage, error) {
+	s.mu.Lock()
+	s.loads++
+	s.mu.Unlock()
+	return nil, errors.New("trajectory load failure")
+}
+
+func (s *resumeProbeStore) trajectoryLoads() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loads
+}
+
+// TestCompactSessionContext_UserPauseSurvivesCompaction pins the pause
+// ownership contract: a user-initiated PauseSession racing the compaction
+// flow's own pause (or landing inside the compaction window) must NOT be
+// consumed by the flow's auto-resume — the user's latest intent wins, the
+// task stays paused, and clients are told to re-apply the paused state.
+func TestCompactSessionContext_UserPauseSurvivesCompaction(t *testing.T) {
+	manager, sess, _, events, _ := newCompactionTestManager(t)
+
+	taskRec := &TaskRecord{ID: "task-paused", SessionID: sess.ID, Status: "paused"}
+	store := &resumeProbeStore{mockTaskStoreForResumable: mockTaskStoreForResumable{unfinished: taskRec, loadTaskResult: taskRec}}
+	manager.SetTaskStore(store)
+
+	// Simulate a running request the flow pauses.
+	sess.mu.Lock()
+	doneCh := make(chan struct{})
+	sess.active = true
+	sess.done = doneCh
+	sess.mu.Unlock()
+
+	if err := manager.CompactSessionContext(context.Background(), sess.ID, "sliding_window"); err != nil {
+		t.Fatalf("CompactSessionContext failed: %v", err)
+	}
+	waitForCompactionEvent(t, events, "compaction_started")
+
+	// The user asks for a pause while the flow is still waiting for the
+	// checkpoint — the pause owner flips to the user (last request wins).
+	if err := manager.PauseSession(sess.ID); err != nil {
+		t.Fatalf("PauseSession failed: %v", err)
+	}
+
+	// The pause lands (mirror the request epilogue).
+	sess.mu.Lock()
+	sess.active = false
+	sess.cancel = nil
+	sess.done = nil
+	sess.pausing = false
+	sess.mu.Unlock()
+	close(doneCh)
+
+	finished := waitForCompactionEvent(t, events, "compaction_finished")
+	fin, ok := finished.Data.(CompactionFinishedEventData)
+	if !ok || !fin.Success {
+		t.Fatalf("expected successful compaction, got %+v", finished.Data)
+	}
+	if fin.Resumed {
+		t.Error("the user's pause must survive — the flow may not auto-resume it")
+	}
+	if !fin.PausedWithoutResume {
+		t.Error("expected paused_without_resume=true so clients re-apply the paused state")
+	}
+	if n := store.trajectoryLoads(); n != 0 {
+		t.Errorf("no resume may be attempted for a user-owned pause, got %d LoadTrajectory calls", n)
+	}
+}
+
+// TestCompactSessionContext_UserPauseArmedBeforeCompaction covers the other
+// ordering of the ownership contract: the user's pause is already in flight
+// (checkpoint not yet landed) when the compaction arms. The arming must NOT
+// steal the user-owned pause — the flow still compacts after the checkpoint
+// lands, but phase 5 leaves the task paused instead of auto-resuming it.
+func TestCompactSessionContext_UserPauseArmedBeforeCompaction(t *testing.T) {
+	manager, sess, _, events, _ := newCompactionTestManager(t)
+
+	taskRec := &TaskRecord{ID: "task-paused", SessionID: sess.ID, Status: "paused"}
+	store := &resumeProbeStore{mockTaskStoreForResumable: mockTaskStoreForResumable{unfinished: taskRec, loadTaskResult: taskRec}}
+	manager.SetTaskStore(store)
+
+	// Simulate a running request heading to a user-initiated pause.
+	sess.mu.Lock()
+	doneCh := make(chan struct{})
+	sess.active = true
+	sess.done = doneCh
+	sess.mu.Unlock()
+
+	// The user pauses FIRST; the checkpoint has not landed yet.
+	if err := manager.PauseSession(sess.ID); err != nil {
+		t.Fatalf("PauseSession failed: %v", err)
+	}
+	sess.mu.Lock()
+	owner := sess.pauseOwner
+	sess.mu.Unlock()
+	if owner != pauseOwnerUser {
+		t.Fatalf("PauseSession must record the user owner, got %v", owner)
+	}
+
+	// The compact click races the still-in-flight pause.
+	if err := manager.CompactSessionContext(context.Background(), sess.ID, "sliding_window"); err != nil {
+		t.Fatalf("CompactSessionContext failed: %v", err)
+	}
+	waitForCompactionEvent(t, events, "compaction_started")
+
+	// The arming must not have stolen the user-owned pause.
+	sess.mu.Lock()
+	owner = sess.pauseOwner
+	sess.mu.Unlock()
+	if owner != pauseOwnerUser {
+		t.Fatalf("arming must leave a user-owned pause to the user, got owner %v", owner)
+	}
+
+	// The pause lands (mirror the request epilogue).
+	sess.mu.Lock()
+	sess.active = false
+	sess.cancel = nil
+	sess.done = nil
+	sess.pausing = false
+	sess.mu.Unlock()
+	close(doneCh)
+
+	finished := waitForCompactionEvent(t, events, "compaction_finished")
+	fin, ok := finished.Data.(CompactionFinishedEventData)
+	if !ok || !fin.Success {
+		t.Fatalf("expected successful compaction, got %+v", finished.Data)
+	}
+	if fin.Resumed {
+		t.Error("a user pause armed before the compaction must survive — no auto-resume")
+	}
+	if !fin.PausedWithoutResume {
+		t.Error("expected paused_without_resume=true so clients re-apply the paused state")
+	}
+	if n := store.trajectoryLoads(); n != 0 {
+		t.Errorf("no resume may be attempted for a user-owned pause, got %d LoadTrajectory calls", n)
+	}
+}
+
+// compactingArmingStore simulates CompactSessionContext winning the gap
+// between sendMessage's first compacting guard and its activation hold: the
+// task-store lookup that runs inside the gap arms the compacting window (the
+// real arming would see active=false and proceed without a pause wait).
+type compactingArmingStore struct {
+	mockTaskStoreForResumable
+	sess *Session
+}
+
+func (s *compactingArmingStore) GetUnfinishedTask(_ context.Context, _ string) (*TaskRecord, error) {
+	s.sess.mu.Lock()
+	s.sess.compacting = true
+	s.sess.mu.Unlock()
+	return nil, nil
+}
+
+// TestSendMessage_FreshTaskRejectedWhenCompactionArmsMidGap pins the
+// activation-hold re-check: a fresh-task send that passed the entry guard
+// must not activate a task when a manual compaction armed while the send was
+// between its guards (the nudge-resume/research DB lookups) — the launched
+// task would race the compaction's history swap.
+func TestSendMessage_FreshTaskRejectedWhenCompactionArmsMidGap(t *testing.T) {
+	manager, sess, _, _, _ := newCompactionTestManager(t)
+	manager.SetTaskStore(&compactingArmingStore{sess: sess})
+
+	_, err := manager.sendMessage(context.Background(), sess.ID, "hello", nil, nil, "", "", false, "", false, false)
+	if !errors.Is(err, ErrSessionCompacting) {
+		t.Fatalf("expected ErrSessionCompacting when compaction arms mid-send, got %v", err)
+	}
+	sess.mu.Lock()
+	active := sess.active
+	sess.mu.Unlock()
+	if active {
+		t.Error("no task may be activated inside the compaction window")
+	}
+}
+
+// TestCompactSessionContext_OwnedPauseAutoResumes is the companion of
+// UserPauseSurvives: without a user pause, the flow-owned pause IS handed to
+// the auto-resume (the LoadTrajectory probe proves the attempt was made; it
+// then fails, which the existing AutoResumeFailure test covers in detail).
+func TestCompactSessionContext_OwnedPauseAutoResumes(t *testing.T) {
+	manager, sess, _, events, _ := newCompactionTestManager(t)
+
+	taskRec := &TaskRecord{ID: "task-paused", SessionID: sess.ID, Status: "paused"}
+	store := &resumeProbeStore{mockTaskStoreForResumable: mockTaskStoreForResumable{unfinished: taskRec, loadTaskResult: taskRec}}
+	manager.SetTaskStore(store)
+
+	// Simulate a running request the flow pauses (no user pause this time).
+	sess.mu.Lock()
+	doneCh := make(chan struct{})
+	sess.active = true
+	sess.done = doneCh
+	sess.mu.Unlock()
+
+	if err := manager.CompactSessionContext(context.Background(), sess.ID, "sliding_window"); err != nil {
+		t.Fatalf("CompactSessionContext failed: %v", err)
+	}
+	waitForCompactionEvent(t, events, "compaction_started")
+
+	// The pause lands (mirror the request epilogue).
+	sess.mu.Lock()
+	sess.active = false
+	sess.cancel = nil
+	sess.done = nil
+	sess.pausing = false
+	sess.mu.Unlock()
+	close(doneCh)
+
+	waitForCompactionEvent(t, events, "compaction_finished")
+	if n := store.trajectoryLoads(); n == 0 {
+		t.Error("the flow-owned pause must be handed to the auto-resume (no LoadTrajectory call observed)")
+	}
+}
+
 // --- Deferred-to-resume scaffolding ----------------------------------------
 //
 // The deferral test must observe the one-shot resume-compaction flag from
@@ -696,6 +917,17 @@ func TestDiscardUnfinishedTask_ClearsDeferredResumeCompaction(t *testing.T) {
 	t.Run("goal abandonment", func(t *testing.T) {
 		runScenario(t, func(m *Manager, sessionID string) { m.abandonUnfinishedTaskForGoal(sessionID) })
 	})
+
+	t.Run("stop-button cancel of the paused task", func(t *testing.T) {
+		// The Stop button reaches the private cancelUnfinishedTask (the
+		// non-active counterpart of CancelTask) when the task is paused at a
+		// checkpoint — exactly the state the armed flag survives in.
+		runScenario(t, func(m *Manager, sessionID string) {
+			if err := m.cancelUnfinishedTask(sessionID); err != nil {
+				t.Fatalf("cancelUnfinishedTask failed: %v", err)
+			}
+		})
+	})
 }
 
 func TestSendMessage_RejectedWhileCompacting(t *testing.T) {
@@ -829,4 +1061,95 @@ func TestGetSessionRuntimeStatus_CompactionNoOp(t *testing.T) {
 			t.Error("an unknown session must fail open (compaction_noop=false)")
 		}
 	})
+}
+
+// TestFinishLiveLeftover_HeldWhileCompactingRequeues pins the no-loss
+// contract for live messages drained by an epilogue that races a manual
+// compaction: the follow-up send is rejected with ErrSessionCompacting, and
+// the drained text must be re-queued on the orchestrator (its only path to
+// the model) instead of vanishing into a service notice.
+func TestFinishLiveLeftover_HeldWhileCompactingRequeues(t *testing.T) {
+	manager, sess, orch, _, _ := newCompactionTestManager(t)
+	sess.mu.Lock()
+	sess.compacting = true // armed while the task's epilogue was draining
+	sess.mu.Unlock()
+
+	manager.finishLiveLeftover(context.Background(), sess.ID, sess, []string{"held live message"})
+
+	queued := orch.TakeLiveUserMessages()
+	if len(queued) != 1 || queued[0] != "held live message" {
+		t.Fatalf("expected the drained message to be re-queued verbatim, got %q", queued)
+	}
+}
+
+// TestRunSessionCompaction_ShutdownGatesTailPhases pins the shutdown
+// contract for the compaction flow's tail: with shuttingDown armed, the
+// flow reports a cancelled outcome, persists NO marker row, and never
+// auto-resumes — Manager.Shutdown cancels and joins the goroutine, so its
+// remaining phases must be no-ops against the torn-down backend.
+func TestRunSessionCompaction_ShutdownGatesTailPhases(t *testing.T) {
+	manager, sess, orch, events, store := newCompactionTestManager(t)
+
+	// Simulate the shutdown race: the manager is shutting down while the
+	// flow goroutine reaches its tail phases (Shutdown cancels compactCancel
+	// and joins compactDone; the flow observes both).
+	manager.shuttingDown.Store(true)
+
+	compCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	compactDone := make(chan struct{})
+	sess.mu.Lock()
+	sess.compactDone = compactDone
+	sess.mu.Unlock()
+
+	go manager.runSessionCompaction(compCtx, cancel, compactDone, sess.ID, sess, orch, "sliding_window", nil, false)
+	<-compactDone
+
+	// The flow's terminal event must report cancelled, not resumed.
+	var finished *CompactionFinishedEventData
+	deadline := time.Now().Add(2 * time.Second)
+	for finished == nil && time.Now().Before(deadline) {
+		select {
+		case evt := <-events:
+			if evt.Type == "compaction_finished" {
+				data, ok := evt.Data.(CompactionFinishedEventData)
+				if !ok {
+					t.Fatalf("compaction_finished payload type %T", evt.Data)
+				}
+				finished = &data
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if finished == nil {
+		t.Fatal("compaction_finished was not emitted")
+	}
+	if !finished.Cancelled {
+		t.Error("expected the shutdown-gated flow to report Cancelled=true")
+	}
+	if finished.Resumed {
+		t.Error("auto-resume ran during shutdown")
+	}
+	// No marker row may be persisted against the torn-down backend.
+	for _, msg := range store.savedMessages() {
+		if msg.Role == compactMarkerRole {
+			t.Error("compaction marker persisted during shutdown")
+		}
+	}
+}
+
+// TestResumeAndSendRejectedDuringShutdown pins the launch choke points:
+// once Manager.Shutdown has begun, neither ResumeTask nor sendMessage may
+// spawn a task goroutine — the teardown joins all task goroutines, and a
+// late launch would run against a closing backend.
+func TestResumeAndSendRejectedDuringShutdown(t *testing.T) {
+	manager, sess, _, _, _ := newCompactionTestManager(t)
+	manager.shuttingDown.Store(true)
+
+	if err := manager.ResumeTask(context.Background(), sess.ID, "", "", ""); err == nil {
+		t.Error("ResumeTask must be rejected during shutdown")
+	}
+	if _, err := manager.sendMessage(context.Background(), sess.ID, "hi", nil, nil, "", "", false, "", false, false); err == nil {
+		t.Error("sendMessage must be rejected during shutdown")
+	}
 }

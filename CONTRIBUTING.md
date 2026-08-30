@@ -57,7 +57,7 @@ Verified from project configuration and build files:
 
 - **Go 1.26.3** (single root module; `go.mod` at repo root)
 - **Node.js + npm** (used by Wails frontend commands and `frontend/package.json` scripts)
-- **Wails v2.12.0 CLI** (`wails build`, `wails dev` are used by the Makefile)
+- **Wails v2 CLI, matching the version pinned in `go.mod`** (`github.com/wailsapp/wails/v2`) — the CI and release workflows install the same pinned version; `wails build`/`wails dev` are used by the Makefile
 - **golangci-lint** (for `make lint`)
 - **`git`** — required for CODE mode only; checked on first project switch. CHAT mode (No Project) works without git.
 - **`rg` (ripgrep)** — auto-downloaded by the tool-manager on first run; no manual install needed.

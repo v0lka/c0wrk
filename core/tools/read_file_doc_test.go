@@ -405,3 +405,54 @@ func TestDocCacheKey_ChangesOnVision(t *testing.T) {
 		t.Error("cache key must differ between vision models")
 	}
 }
+
+// TestConverterOrInit_ReprobesEmptyPythonPath pins the fresh-install
+// recovery: when the first converter init raced the tool-manager's venv
+// installation (probe returned ""), later inits must re-probe and rebuild
+// the converter with the interpreter instead of serving the vision-less
+// converter for the whole app run.
+func TestConverterOrInit_ReprobesEmptyPythonPath(t *testing.T) {
+	probeCalls := 0
+	venvReady := false
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, func() string {
+		probeCalls++
+		if venvReady {
+			return "/venv/bin/python3"
+		}
+		return ""
+	})
+
+	// First init: venv not installed yet — plain converter (empty python).
+	first, err := tool.converterOrInit()
+	if err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	if first == nil {
+		t.Fatal("first init returned nil converter")
+	}
+
+	// Venv completes; the next init must rebuild the converter WITH it.
+	venvReady = true
+	second, err := tool.converterOrInit()
+	if err != nil {
+		t.Fatalf("second init: %v", err)
+	}
+	if second == nil {
+		t.Fatal("second init returned nil converter")
+	}
+	if second == first {
+		t.Error("converter was not rebuilt after the venv appeared")
+	}
+	if probeCalls < 2 {
+		t.Errorf("expected the probe to be retried, got %d calls", probeCalls)
+	}
+
+	// Once built with a path, the converter is frozen — no further probes.
+	frozen, err := tool.converterOrInit()
+	if err != nil {
+		t.Fatalf("third init: %v", err)
+	}
+	if frozen != second {
+		t.Error("converter with a resolved python path must be frozen")
+	}
+}

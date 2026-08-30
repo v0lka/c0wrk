@@ -124,13 +124,23 @@ async function performSwitch(nextProjectId: string, seq: number): Promise<void> 
   }
 
   let sessions: SessionInfo[] = []
+  let sessionsLoaded = false
   try {
     sessions = await listSessions()
-    sessionStore.setSessions(sessions)
+    sessionsLoaded = true
   } catch (error) {
     logger.warn('Failed to list sessions during project switch restore', error)
   }
+  // The store write must sit BELOW the supersede guard: resuming from the
+  // listSessions suspension with a newer switch already running means this
+  // stale list must never land — setSessions would clobber the newer
+  // switch's session list while activeProjectId points into the new
+  // project. An empty-but-successful list still clears the previous
+  // project's sessions, so it is written too.
   if (abortIfSuperseded()) return
+  if (sessionsLoaded) {
+    sessionStore.setSessions(sessions)
+  }
 
   // Deterministic fallback:
   // 1) latest session by last_active_at (most reliable — based on actual activity)

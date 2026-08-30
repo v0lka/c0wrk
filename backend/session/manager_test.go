@@ -2261,6 +2261,68 @@ func seedSession(t *testing.T, store *mockSessionStoreForRestore, id, projectID,
 	}
 }
 
+// blockingRestoreStore makes LoadSession block until released, so a test can
+// deterministically reproduce the restore/shutdown TOCTOU window: a restore
+// that passed the entry-time shuttingDown check is still mid-flight when
+// Manager.Shutdown begins.
+type blockingRestoreStore struct {
+	mockSessionStoreForRestore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingRestoreStore) LoadSession(ctx context.Context, id string) (*SessionInfo, error) {
+	close(s.entered)
+	<-s.release
+	return s.mockSessionStoreForRestore.LoadSession(ctx, id)
+}
+
+// TestRestoreSession_ShutdownBeginsMidRestore verifies the write-lock
+// re-check in getOrRestoreSession: when Shutdown begins while a restore is
+// mid-flight (after the entry-time choke point already passed), the restore
+// must NOT insert the session — Shutdown's drain loop has already removed
+// sessions and closed their handles, and a late insertion would leak fresh
+// log/dump handles nobody will close.
+func TestRestoreSession_ShutdownBeginsMidRestore(t *testing.T) {
+	mgr, _, _ := restoreTestManager(t)
+
+	store := &blockingRestoreStore{
+		mockSessionStoreForRestore: *newMockSessionStore(),
+		entered:                    make(chan struct{}),
+		release:                    make(chan struct{}),
+	}
+	mgr.SetSessionStore(store)
+	seedSession(t, &store.mockSessionStoreForRestore, "restore-toctou", testProjectID, "TOCTOU Session", false)
+
+	type restoreResult struct {
+		sess *Session
+		err  error
+	}
+	done := make(chan restoreResult, 1)
+	go func() {
+		sess, err := mgr.getOrRestoreSession("restore-toctou")
+		done <- restoreResult{sess: sess, err: err}
+	}()
+
+	// Wait until the restore is inside the (blocked) store load, then begin
+	// shutdown and let the restore continue past the entry check it already
+	// passed.
+	<-store.entered
+	mgr.shuttingDown.Store(true)
+	close(store.release)
+
+	res := <-done
+	if res.err != nil {
+		t.Fatalf("mid-restore shutdown must not surface an error, got %v", res.err)
+	}
+	if res.sess != nil {
+		t.Fatal("a restore that observed Shutdown mid-flight must return no session")
+	}
+	if _, ok := mgr.GetSession("restore-toctou"); ok {
+		t.Error("the session must not be re-inserted into the in-memory map after Shutdown began")
+	}
+}
+
 // TestRestoreSession_BasicGetSession verifies that GetSession lazily restores
 // a session from the persistent store when it's not in the in-memory map.
 func TestRestoreSession_BasicGetSession(t *testing.T) {

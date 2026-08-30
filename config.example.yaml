@@ -37,8 +37,8 @@ llm:
     # Each key is a named provider (e.g. "lmstudio", "localai", "ollama").
     # The provider name is used in composite model IDs: "lmstudio/gpt-4".
     # NOTE: reliable tool calling on self-hosted servers (vLLM, llama.cpp, LM Studio,
-    # Ollama) requires server-side configuration — see docs/self-hosted-models.md
-    # (parser/template per model family, sampling defaults, diagnostics checklist).
+    # Ollama) requires server-side configuration — see specs/domains/llm-providers.md
+    # (parser/template per model family, sampling defaults, context-window sizing).
     lmstudio:
       base_url: "http://localhost:1234/v1"
       api_key: "" # Local servers usually don't need a key
@@ -137,6 +137,21 @@ skills:
     - "~/.c0wrk/.agents/skills" # c0wrk-specific skills directory
   # Note: in addition to the directories above, the current project's
   # `.agents/skills` directory is always scanned automatically (highest priority).
+
+# ---------------------------------------------------------------------------
+# Subagent Profiles Discovery
+# ---------------------------------------------------------------------------
+# Directories to scan for Subagent Profiles (<name>/AGENT.md, ADR-021).
+# Paths may be absolute or relative to the agent directory (~/.c0wrk).
+# Directories are scanned in priority order (highest first).
+# Omitting the key entirely keeps the defaults below; an explicit empty
+# list opts out of the base directories (mirrors `skills.dirs`).
+agents:
+  dirs:
+    - "~/.agents/agents" # user-wide subagent profiles directory
+    - "~/.c0wrk/.agents/agents" # c0wrk-specific subagent profiles directory
+  # Note: in addition to the directories above, the current project's
+  # `.agents/agents` directory is always scanned automatically (highest priority).
 
 # ---------------------------------------------------------------------------
 # Memory / Persistence

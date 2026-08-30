@@ -155,7 +155,7 @@ describe('ExitConfirmDialog — decisions', () => {
     expect(useExitGuardStore.getState().open).toBe(true)
   })
 
-  it('confirm swallows RPC failures, logs them, and keeps the modal answerable', async () => {
+  it('confirm surfaces RPC failures inline and keeps the modal answerable', async () => {
     runtimeMocks.confirmExit.mockRejectedValue(new Error('context gone'))
     renderDialog()
     act(() => {
@@ -168,6 +168,29 @@ describe('ExitConfirmDialog — decisions', () => {
 
     expect(runtimeMocks.confirmExit).toHaveBeenCalledTimes(1)
     expect(logger.error).toHaveBeenCalled()
+    // The failure is visible in the modal (not only the invisible log), so
+    // the quit dialog is never a silent dead end.
+    const alertEl = document.querySelector('[role="alert"]')
+    expect(alertEl?.textContent).toContain('context gone')
     expect(useExitGuardStore.getState().open).toBe(true)
+  })
+
+  it('a double-click fires exactly one ConfirmExit RPC', async () => {
+    let release: (() => void) | undefined
+    runtimeMocks.confirmExit.mockImplementation(
+      () => new Promise<void>((resolve) => { release = resolve }),
+    )
+    renderDialog()
+    act(() => {
+      useExitGuardStore.getState().present(sessions, false)
+    })
+
+    await act(async () => {
+      clickButton('Quit anyway')
+      clickButton('Quit anyway')
+    })
+
+    expect(runtimeMocks.confirmExit).toHaveBeenCalledTimes(1)
+    release?.()
   })
 })

@@ -67,6 +67,7 @@ type ReadFileDocTool struct {
 	limits           builtins.FileLimits
 	log              *slog.Logger
 	converter        *markitdown.Converter
+	converterHasPyth bool // converter was built with a resolved venv interpreter
 	convMu           sync.Mutex
 	markitdownPython func() string // lazily resolves the managed venv interpreter for vision-assisted conversion; nil/"" = disabled
 }
@@ -191,18 +192,45 @@ func (t *ReadFileDocTool) Execute(ctx context.Context, input json.RawMessage) (s
 // converterOrInit lazily initializes the markitdown converter on first use.
 // Returns an error (wrapped exec.ErrNotFound) if markitdown is not on PATH.
 // The venv interpreter path is probed HERE (not at construction): the
-// tool-manager may still be installing during early startup, and a fresh
-// probe per init attempt keeps the first document read after installation
-// vision-capable without an app restart.
+// tool-manager may still be installing during early startup. When the first
+// init raced that installation (probe returned ""), the probe is RETRIED on
+// every call until it resolves — a cached empty-python converter would pin
+// vision off for the whole app run, which the constructor probe cannot
+// repair without a restart. Once a non-empty path is probed the converter
+// is frozen for the process lifetime (the CLI and its venv are installed by
+// a single tool-manager operation).
 func (t *ReadFileDocTool) converterOrInit() (*markitdown.Converter, error) {
 	t.convMu.Lock()
 	defer t.convMu.Unlock()
-	if t.converter != nil {
-		return t.converter, nil
-	}
 	pythonPath := ""
 	if t.markitdownPython != nil {
 		pythonPath = t.markitdownPython()
+	}
+	if t.converter != nil {
+		if t.converterHasPyth || pythonPath == "" {
+			// Frozen: either the converter was already built with the
+			// interpreter (a resolved path never changes for this
+			// process), or the venv probe still comes up empty — the
+			// plain-CLI converter stays in place (vision-less but
+			// functional).
+			return t.converter, nil
+		}
+		// Cached converter built with an empty python path and the probe
+		// has NOW resolved: rebuild so the fresh-install race does not pin
+		// vision off for the whole app run.
+		c, err := markitdown.NewConverter(markitdown.Options{
+			Logger:     t.log,
+			Timeout:    docConvertTimeout,
+			PythonPath: pythonPath,
+		})
+		if err != nil {
+			// Keep the old (plain) converter — a failed rebuild must not
+			// break document reads.
+			return t.converter, nil
+		}
+		t.converter = c
+		t.converterHasPyth = true
+		return c, nil
 	}
 	c, err := markitdown.NewConverter(markitdown.Options{
 		Logger:     t.log,
@@ -213,6 +241,7 @@ func (t *ReadFileDocTool) converterOrInit() (*markitdown.Converter, error) {
 		return nil, err
 	}
 	t.converter = c
+	t.converterHasPyth = pythonPath != ""
 	return c, nil
 }
 

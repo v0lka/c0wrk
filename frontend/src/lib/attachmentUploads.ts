@@ -29,7 +29,7 @@
 // (which of several concurrently converting files just landed), never as the
 // authority.
 
-import { isImagePath, removeAttachment } from '@/api/attachments'
+import { getAttachments, isImagePath, removeAttachment } from '@/api/attachments'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
 import type { AttachmentInfoUI, AttachmentUploadUI } from '@/types/models'
 import { logger } from '@/lib/logger'
@@ -112,15 +112,44 @@ function scheduleRemoval(sessionId: string, entry: UploadEntry, attachmentId: st
     })
 }
 
+/** Claim identity check: can this entry PROVE the landed record is its own?
+ *  Exact originalName match (the backend preserves the source basename for
+ *  staged files and clipboard pastes) — or, ONLY for an extension-less
+ *  clipboard display label, the stem tolerance ('pasted-image' →
+ *  'pasted-image.png'). The tolerance must never apply to extensioned file
+ *  names: 'notes.md' must not verify a sibling 'notes.pdf' — a cancelled
+ *  entry's claim is destructive (backend RemoveAttachment). The path check
+ *  is future-proofing only: backend records omit Path (documents) or carry
+ *  the processed copy's path (images), so it never fires for current
+ *  staging flows. */
+function claimIsVerified(entry: UploadEntry, att: AttachmentInfoUI): boolean {
+  if (entry.path !== '' && att.path !== undefined && att.path === entry.path) return true
+  if (att.originalName === entry.fileName) return true
+  const dot = entry.fileName.lastIndexOf('.')
+  if (dot < 0) {
+    // Extension-less display label (the clipboard paste case): the backend
+    // normalizes the record name with an extension. dot === 0 (a leading-dot
+    // hidden file like '.env') is NOT a label — its exact-name check above
+    // is the only verifier, so '.env' can never claim '.env.local'.
+    return att.originalName.startsWith(entry.fileName + '.')
+  }
+  return false
+}
+
 /**
  * Attribute every not-yet-claimed attachment id that lies OUTSIDE each
  * upload's begin-time window to exactly one in-flight upload of the session.
  *
  * Preference inside the window: exact path (when both sides know one) >
- * basename > FIFO (oldest unclaimed entry). Returns the placeholder ids of
- * NON-cancelled uploads that just claimed (their spinner chips retire). A
- * CANCELLED upload claims silently — its claimed id is scheduled for backend
- * removal right here.
+ * originalName (incl. the clipboard stem tolerance above) > FIFO (oldest
+ * unclaimed entry). FIFO never assigns to a CANCELLED entry: a cancel's
+ * claim schedules a destructive backend RemoveAttachment, and while the
+ * begin-time baseline can miss pre-existing ids (a stale frontend slice),
+ * the FIFO heuristic cannot prove ownership — a cancelled upload may only
+ * claim a record whose path or originalName verifies as its own. Returns
+ * the placeholder ids of NON-cancelled uploads that just claimed (their
+ * spinner chips retire). A CANCELLED upload claims silently — its claimed
+ * id is scheduled for backend removal right here.
  */
 function claimLandedAttachments(sessionId: string, list: readonly AttachmentInfoUI[]): string[] {
   const open: UploadEntry[] = []
@@ -135,12 +164,12 @@ function claimLandedAttachments(sessionId: string, list: readonly AttachmentInfo
     // existed before that upload began and can never be its record.
     const eligible = open.filter((e) => e.claimedId === null && !e.baseline.has(att.id))
     if (eligible.length === 0) continue
-    const byPath = eligible.find(
-      (e) => e.path !== '' && att.path !== undefined && att.path === e.path,
-    )
-    const byName = eligible.find((e) => e.fileName === att.originalName)
-    const fifo = eligible[0]
-    const entry = byPath ?? byName ?? fifo
+    const verified = eligible.find((e) => claimIsVerified(e, att))
+    // FIFO hands the record to the oldest unclaimed NON-cancelled entry —
+    // spinner retirement only; see the comment above for why a cancelled
+    // entry must never take an unverified claim.
+    const fifo = verified === undefined ? eligible.find((e) => !e.cancelled) : undefined
+    const entry = verified ?? fifo
     if (!entry) continue
     entry.claimedId = att.id
     if (entry.cancelled) scheduleRemoval(sessionId, entry, att.id)
@@ -166,7 +195,10 @@ function purgeStaleCancel(sessionId: string, d: UploadDescriptor): void {
  *  Returns the created placeholder records (for the caller's completion call).
  *
  *  The session's currently staged attachment ids are snapshotted as the
- *  batch's ID window: the batch may only claim records appearing LATER. */
+ *  batch's ID window: the batch may only claim records appearing LATER.
+ *  The snapshot comes from the frontend store — prefer
+ *  beginAttachmentUploadsFresh, which unions in an authoritative backend
+ *  read. */
 export function beginAttachmentUploads(
   sessionId: string,
   descriptors: UploadDescriptor[],
@@ -175,6 +207,50 @@ export function beginAttachmentUploads(
   const baseline = new Set(
     (useAttachmentsStore.getState().attachmentsBySession[sessionId] ?? []).map((a) => a.id),
   )
+  return registerUploads(sessionId, descriptors, baseline)
+}
+
+/**
+ * Fresh-baseline variant of beginAttachmentUploads: reads the backend's
+ * authoritative pending list first (GetAttachments) and unions it with the
+ * store slice before registering the batch. The claim window's guarantee —
+ * "a cancel can only ever delete its own upload's record" — is only as good
+ * as the baseline: a stale frontend slice (initial fetch still in flight on
+ * a session switch) would leave pre-existing ids OUTSIDE the window, where a
+ * claimed-and-removed unrelated record becomes possible. The extra RPC costs
+ * one local IPC round-trip before the spinners appear; on failure the store
+ * slice alone is used (the pre-existing behavior).
+ *
+ * Descriptors must have been collected SYNCHRONOUSLY before the await
+ * (DataTransferItem.getAsFile is invalid afterwards — see
+ * collectPasteUploadDescriptors).
+ */
+export async function beginAttachmentUploadsFresh(
+  sessionId: string,
+  descriptors: UploadDescriptor[],
+): Promise<AttachmentUploadUI[]> {
+  let backendIds: readonly string[] | null = null
+  try {
+    backendIds = (await getAttachments(sessionId)).map((a) => a.id)
+  } catch (err) {
+    logger.warn('attachment upload: fresh baseline fetch failed; using the store slice only', err)
+  }
+  for (const d of descriptors) purgeStaleCancel(sessionId, d)
+  const baseline = new Set(
+    (useAttachmentsStore.getState().attachmentsBySession[sessionId] ?? []).map((a) => a.id),
+  )
+  if (backendIds) {
+    for (const id of backendIds) baseline.add(id)
+  }
+  return registerUploads(sessionId, descriptors, baseline)
+}
+
+/** Shared registration core of the two begin variants above. */
+function registerUploads(
+  sessionId: string,
+  descriptors: UploadDescriptor[],
+  baseline: ReadonlySet<string>,
+): AttachmentUploadUI[] {
   const uploads: AttachmentUploadUI[] = descriptors.map((d) => ({
     id: crypto.randomUUID(),
     fileName: d.fileName,

@@ -319,6 +319,11 @@ func (a *App) Startup(ctx context.Context) {
 	// timeout_ms; unset → 3000 via config defaults, explicit 0 = fail fast).
 	// Governs both the semantic_search tool callbacks and the RAG-hint wait.
 	vectorSearchWaitTimeout := time.Duration(derefInt(cfg.VectorIndex.SearchWaitTimeoutMs)) * time.Millisecond
+	// Explicit fail-fast: the config layer already resolved "unset" to
+	// 3000ms, so a zero reaching here is unambiguously the user's
+	// search_wait_timeout_ms: 0 — carried as an explicit flag because the
+	// orchestrator layer treats a bare zero timeout as "unset" (3s default).
+	vectorSearchWaitDisabled := cfg.VectorIndex.SearchWaitTimeoutMs != nil && *cfg.VectorIndex.SearchWaitTimeoutMs == 0
 	vectorSearchFunc, vectorSearchWaitFunc := a.buildVectorCallbacks(&vectorMgrPtr, vectorReady, vectorSearchWaitTimeout)
 
 	// File-change notification: called by the PostExecuteHook after a
@@ -355,6 +360,7 @@ func (a *App) Startup(ctx context.Context) {
 		VectorSearchFunc:            vectorSearchFunc,
 		VectorSearchWaitFunc:        vectorSearchWaitFunc,
 		VectorSearchWaitTimeout:     vectorSearchWaitTimeout,
+		VectorSearchWaitDisabled:    vectorSearchWaitDisabled,
 		FileChangeNotifyFunc:        fileChangeNotify,
 		FileChangedWorkspaceEmitter: fileChangedWorkspaceEmitter,
 	}, log, startTime)

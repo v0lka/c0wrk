@@ -7,8 +7,8 @@
 // degrades to "storage unavailable" and warns on every `set` (matching
 // panelPersistence.test.ts, which opts into jsdom for the same reason).
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest'
-import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, EMPTY_COMMIT_DRAFT, partializeGitPanel, mergeGitPanel, type GitPanelEntry } from '@/stores/gitPanelStore'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, EMPTY_COMMIT_DRAFT, COMMIT_BANNER_DISMISS_MS, partializeGitPanel, mergeGitPanel, type GitPanelEntry } from '@/stores/gitPanelStore'
 
 /** Reset the store to initial state before each test */
 function resetStore() {
@@ -678,6 +678,44 @@ describe('gitPanelStore — per-project commit state', () => {
     const slice = useGitPanelStore.getState().commitByProject['proj-1']!
     expect(slice.lastCommitSha).toBeNull()
     expect(slice.message).toBe('next draft')
+  })
+
+  it('commit banners auto-dismiss per project and independently', () => {
+    // Regression: a single shared timer left an earlier project's banner
+    // stranded forever when a later commit in another project replaced it.
+    vi.useFakeTimers()
+    try {
+      const { setCommitSuccess } = useGitPanelStore.getState()
+      setCommitSuccess('proj-a', 'sha-a')
+      setCommitSuccess('proj-b', 'sha-b')
+      // Both banners still visible before the dismissal window elapses.
+      expect(useGitPanelStore.getState().commitByProject['proj-a']!.lastCommitSha).toBe('sha-a')
+      expect(useGitPanelStore.getState().commitByProject['proj-b']!.lastCommitSha).toBe('sha-b')
+      vi.advanceTimersByTime(COMMIT_BANNER_DISMISS_MS)
+      expect(useGitPanelStore.getState().commitByProject['proj-a']!.lastCommitSha).toBeNull()
+      expect(useGitPanelStore.getState().commitByProject['proj-b']!.lastCommitSha).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a newer commit banner is not clobbered by an older auto-dismiss timer', () => {
+    vi.useFakeTimers()
+    try {
+      const { setCommitSuccess } = useGitPanelStore.getState()
+      setCommitSuccess('proj-1', 'sha-old')
+      // A second commit in the same project re-arms the dismissal timer.
+      vi.advanceTimersByTime(COMMIT_BANNER_DISMISS_MS - 100)
+      setCommitSuccess('proj-1', 'sha-new')
+      vi.advanceTimersByTime(COMMIT_BANNER_DISMISS_MS - 100)
+      // The old timer was cancelled; the new banner is still within its own
+      // full window.
+      expect(useGitPanelStore.getState().commitByProject['proj-1']!.lastCommitSha).toBe('sha-new')
+      vi.advanceTimersByTime(100)
+      expect(useGitPanelStore.getState().commitByProject['proj-1']!.lastCommitSha).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('dropProjectCommitState removes only the given project', () => {

@@ -13,6 +13,7 @@
 // holds an empty list with `open === true` — the payload failed validation,
 // but the quit still needs an answer.
 
+import { useRef, useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -38,17 +39,35 @@ export function ExitConfirmDialog() {
   const sessions = useExitGuardStore((s) => s.sessions)
   const updatePending = useExitGuardStore((s) => s.updatePending)
   const clear = useExitGuardStore((s) => s.clear)
+  // In-flight + failure state of the ConfirmExit RPC: a persistently failing
+  // binding must never leave the modal a silent dead end (every click doing
+  // nothing with no feedback) — the error renders inline and the user can
+  // retry or cancel. The ref is the synchronous double-click guard (state
+  // does not commit between same-tick clicks); the state drives the UI.
+  const confirmingRef = useRef(false)
+  const [isConfirming, setIsConfirming] = useState(false)
+  const [confirmError, setConfirmError] = useState<string | null>(null)
 
   const count = sessions.length
   const hasList = count > 0
 
   // On success the app quits (the window goes away with it); on failure the
-  // modal stays open so the error is not silently swallowed and the user can
-  // retry or cancel.
+  // modal stays open with the error rendered inline so the user can retry or
+  // cancel. The in-flight guard also absorbs double-clicks (one RPC).
   const confirm = () => {
-    confirmExit().catch((err) => {
-      logger.error('Failed to confirm quit despite active sessions:', err)
-    })
+    if (confirmingRef.current) return
+    confirmingRef.current = true
+    setIsConfirming(true)
+    setConfirmError(null)
+    confirmExit()
+      .catch((err) => {
+        logger.error('Failed to confirm quit despite active sessions:', err)
+        setConfirmError(err instanceof Error ? err.message : 'Failed to quit — the backend did not accept the confirmation.')
+      })
+      .finally(() => {
+        confirmingRef.current = false
+        setIsConfirming(false)
+      })
   }
 
   return (
@@ -91,11 +110,17 @@ export function ExitConfirmDialog() {
           </ul>
         )}
 
+        {confirmError && (
+          <div className="text-xs text-destructive" role="alert">
+            {confirmError}
+          </div>
+        )}
+
         <DialogFooter>
-          <Button variant="outline" onClick={clear} autoFocus>
+          <Button variant="outline" onClick={clear} autoFocus disabled={isConfirming}>
             Cancel
           </Button>
-          <Button variant="destructive" onClick={confirm}>
+          <Button variant="destructive" onClick={confirm} disabled={isConfirming}>
             {updatePending ? 'Restart & Update' : 'Quit anyway'}
           </Button>
         </DialogFooter>

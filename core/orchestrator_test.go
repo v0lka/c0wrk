@@ -2168,3 +2168,21 @@ func TestOrchestrator_VectorSearchHints_WaitNotReadySkipsSearch(t *testing.T) {
 		t.Error("expected nil hints when the index is not ready")
 	}
 }
+
+// TestOrchestrator_VectorSearchWaitTimeout_ExplicitFailFast pins that an
+// EXPLICIT vector_index.search_wait_timeout_ms: 0 (carried as the
+// VectorSearchWaitDisabled flag — a bare zero timeout still means "unset")
+// is honored as a genuine zero-length wait instead of being widened to the
+// 3s default.
+func TestOrchestrator_VectorSearchWaitTimeout_ExplicitFailFast(t *testing.T) {
+	o := &Orchestrator{vectorSearchWaitDisabled: true}
+	if got := o.effectiveVectorSearchWaitTimeout(); got != 0 {
+		t.Errorf("explicit fail-fast = %v, want 0", got)
+	}
+
+	// The flag wins over any leftover timeout value too.
+	o2 := &Orchestrator{vectorSearchWaitTimeout: 2 * time.Second, vectorSearchWaitDisabled: true}
+	if got := o2.effectiveVectorSearchWaitTimeout(); got != 0 {
+		t.Errorf("explicit fail-fast with stale timeout = %v, want 0", got)
+	}
+}

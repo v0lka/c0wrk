@@ -323,6 +323,18 @@ type Orchestrator struct {
 	modelRegistry    *llm.ModelRegistry
 	localModelProbe  LocalModelProbe // lazily probes OpenAI-compatible endpoints (LM Studio/vLLM/…) for the runtime context window
 	bbFactory        BlackboardFactory
+	// modelMu guards the per-request LLM identity fields config.Model and
+	// config.ReasoningEffort against cross-goroutine access. Writers run on
+	// the request goroutine (ApplyRequestOverrides / SetReasoningEffort,
+	// reached from HandleMessage and the resume path); readers include
+	// Wails-RPC goroutines — the runtime status poll (GetSessionRuntimeStatus
+	// → ManualCompactionWouldNoOp → contextBases) — and the
+	// manual-compaction flow goroutine (contextBases, the summarize wiring).
+	// All access goes through currentModel / setCurrentModel /
+	// currentReasoningEffort / setCurrentReasoningEffort so no raw read or
+	// write of these two fields escapes those helpers; the rest of config is
+	// immutable after Build.
+	modelMu sync.RWMutex
 	// historyMu guards conversationHistory against cross-goroutine access.
 	// Writers run on the request goroutine (the recordConversationOutcome /
 	// recordResumeOutcome epilogues, CompactConversationHistory's swap) and
@@ -352,10 +364,19 @@ type Orchestrator struct {
 	// vectorSearchWaitTimeout bounds how long injectVectorSearchHints waits
 	// for vector-search results before skipping RAG hints. Zero resolves to
 	// defaultVectorSearchWaitTimeout at use time (effective method), so
-	// hint injection never blocks a session start indefinitely.
+	// hint injection never blocks a session start indefinitely — UNLESS
+	// vectorSearchWaitDisabled marks an explicit fail-fast configuration
+	// (vector_index.search_wait_timeout_ms: 0), in which case zero is the
+	// genuine zero-length deadline the user asked for.
 	vectorSearchWaitTimeout time.Duration
-	skillManager            *skills.SkillManager // for skill discovery and activation
-	agentManager            *agents.AgentManager // for subagent discovery (drives "Available/Requested Subagents" prompt sections)
+	// vectorSearchWaitDisabled marks an EXPLICIT fail-fast RAG-hint wait
+	// (vector_index.search_wait_timeout_ms: 0). A plain zero-value
+	// OrchestratorDeps (tests, other builders) keeps it false and therefore
+	// keeps the 3s default — 0 alone cannot distinguish "unset" from
+	// "explicitly disabled" at this layer.
+	vectorSearchWaitDisabled bool
+	skillManager             *skills.SkillManager // for skill discovery and activation
+	agentManager             *agents.AgentManager // for subagent discovery (drives "Available/Requested Subagents" prompt sections)
 
 	// Conductor dependencies (stored at construction time for runConductor).
 	reflector        *reflector.Reflector
@@ -709,13 +730,21 @@ type OrchestratorDeps struct {
 	// without them (vector_index.search_wait_timeout_ms). Zero (unset)
 	// defaults to defaultVectorSearchWaitTimeout (3s) — mirroring the
 	// config-layer default — so hint injection never blocks a session start
-	// indefinitely.
+	// indefinitely. An EXPLICIT fail-fast (config value 0) is carried by
+	// VectorSearchWaitDisabled, because zero alone is indistinguishable
+	// from "unset" at this layer.
 	VectorSearchWaitTimeout time.Duration
-	SkillManager            *skills.SkillManager // optional, for skill discovery and activation
-	AgentManager            *agents.AgentManager // optional, for subagent discovery ("Available/Requested Subagents" prompt sections); nil-safe
-	CoreToolRegistry        *tools.ToolRegistry  // per-session registry for No-Project tool disabling and the extra shell blacklist
-	ModelSwitcher           *llm.Router          // raw LLM router for per-message model override
-	JudgeSync               func()               // optional: re-binds the session's tool judge to the session router after a model switch (session-pinning; nil-safe)
+	// VectorSearchWaitDisabled marks an explicit vector_index.
+	// search_wait_timeout_ms: 0 (fail fast — never wait for index
+	// readiness). Supplied by the desktop layer, where the config defaults
+	// have already resolved "unset" to 3000ms, so a zero reaching it is
+	// unambiguously the user's choice.
+	VectorSearchWaitDisabled bool
+	SkillManager             *skills.SkillManager // optional, for skill discovery and activation
+	AgentManager             *agents.AgentManager // optional, for subagent discovery ("Available/Requested Subagents" prompt sections); nil-safe
+	CoreToolRegistry         *tools.ToolRegistry  // per-session registry for No-Project tool disabling and the extra shell blacklist
+	ModelSwitcher            *llm.Router          // raw LLM router for per-message model override
+	JudgeSync                func()               // optional: re-binds the session's tool judge to the session router after a model switch (session-pinning; nil-safe)
 
 	// VisionResolver inspects the CURRENT active model (per call) and returns
 	// markitdown connection parameters when that model is vision-capable and
@@ -806,6 +835,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		vectorSearchFunc:           deps.VectorSearchFunc,
 		vectorSearchWaitFunc:       deps.VectorSearchWaitFunc,
 		vectorSearchWaitTimeout:    deps.VectorSearchWaitTimeout,
+		vectorSearchWaitDisabled:   deps.VectorSearchWaitDisabled,
 		skillManager:               deps.SkillManager,
 		agentManager:               deps.AgentManager,
 		coreToolRegistry:           deps.CoreToolRegistry,
@@ -1186,9 +1216,14 @@ func lastReasoningContent(bb orchestration.Blackboard) string {
 const defaultVectorSearchWaitTimeout = 3 * time.Second
 
 // effectiveVectorSearchWaitTimeout resolves the RAG-hint wait bound: an
-// unset (zero) OrchestratorDeps.VectorSearchWaitTimeout falls back to the
-// 3s default so hint injection never blocks a session start indefinitely.
+// explicit fail-fast (VectorSearchWaitDisabled) waits zero; an unset (zero)
+// OrchestratorDeps.VectorSearchWaitTimeout falls back to the 3s default so
+// hint injection never blocks a session start indefinitely; any positive
+// value is used as configured.
 func (o *Orchestrator) effectiveVectorSearchWaitTimeout() time.Duration {
+	if o.vectorSearchWaitDisabled {
+		return 0
+	}
 	if o.vectorSearchWaitTimeout > 0 {
 		return o.vectorSearchWaitTimeout
 	}
@@ -1474,7 +1509,7 @@ func (o *Orchestrator) capAgentsMD(content string) string {
 func (o *Orchestrator) emitInitialContextFill() {
 	var contextWindow int
 	if o.modelRegistry != nil {
-		model := o.config.Model
+		model := o.currentModel()
 		meta, _ := o.modelRegistry.ResolveLocal(model)
 		if meta.ContextWindow > 0 {
 			contextWindow = meta.ContextWindow
@@ -1569,10 +1604,41 @@ func (o *Orchestrator) RescanSkills() error {
 	return nil
 }
 
+// currentModel returns the session's active model identity, synchronized for
+// the cross-goroutine readers described on modelMu.
+func (o *Orchestrator) currentModel() string {
+	o.modelMu.RLock()
+	defer o.modelMu.RUnlock()
+	return o.config.Model
+}
+
+// setCurrentModel records the session's active model identity (see modelMu).
+func (o *Orchestrator) setCurrentModel(model string) {
+	o.modelMu.Lock()
+	defer o.modelMu.Unlock()
+	o.config.Model = model
+}
+
+// currentReasoningEffort returns the per-request reasoning effort,
+// synchronized for the cross-goroutine readers described on modelMu.
+func (o *Orchestrator) currentReasoningEffort() string {
+	o.modelMu.RLock()
+	defer o.modelMu.RUnlock()
+	return o.config.ReasoningEffort
+}
+
+// setCurrentReasoningEffort records the per-request reasoning effort (see
+// modelMu).
+func (o *Orchestrator) setCurrentReasoningEffort(effort string) {
+	o.modelMu.Lock()
+	defer o.modelMu.Unlock()
+	o.config.ReasoningEffort = effort
+}
+
 // SetReasoningEffort propagates the per-request reasoning effort to all components
 // that make LLM calls: router, reflector, and the direct LLM caller.
 func (o *Orchestrator) SetReasoningEffort(effort string) {
-	o.config.ReasoningEffort = effort
+	o.setCurrentReasoningEffort(effort)
 	if o.router != nil {
 		o.router.SetReasoningEffort(effort)
 	}
@@ -1599,7 +1665,8 @@ func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride,
 				o.logger.Warn("failed to apply model override", "model", modelOverride, "error", err)
 			}
 		} else {
-			o.config.Model = llm.BareModel(modelOverride)
+			bare := llm.BareModel(modelOverride)
+			o.setCurrentModel(bare)
 			// Re-bind the session's tool judge to the newly selected model:
 			// judge calls must follow the session's OWN provider/model. This
 			// is the only path that may move a session's judge — a global
@@ -1614,7 +1681,7 @@ func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride,
 			// lands in the model registry and is picked up by subsequent
 			// context-budget math.
 			if o.localModelProbe != nil {
-				o.localModelProbe(llm.BareModel(modelOverride))
+				o.localModelProbe(bare)
 			}
 			// Synchronize the emitter's cached model so the initial
 			// context_fill — emitted before the first LLM call reports usage —
@@ -1623,12 +1690,12 @@ func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride,
 			// continuation until the first token-usage report arrives.
 			family := ""
 			if o.modelRegistry != nil {
-				if meta, _ := o.modelRegistry.Resolve(ctx, o.config.Model); meta.Family != "" {
+				if meta, _ := o.modelRegistry.Resolve(ctx, bare); meta.Family != "" {
 					family = meta.Family
 				}
 			}
 			if setter, ok := o.emitter.(LastModelSetter); ok {
-				setter.SetLastModel(o.config.Model, family)
+				setter.SetLastModel(bare, family)
 			}
 		}
 	}

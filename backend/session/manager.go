@@ -64,14 +64,34 @@ type Session struct {
 	cancel                  context.CancelFunc // cancel for current task
 	active                  bool               // is currently processing
 	pausing                 bool               // pause requested: the running task is on its way to a cooperative pause checkpoint (guarded by mu)
+	pauseOwner              pauseOwner         // who requested the in-flight/latest pause: the user or the manual-compaction flow (guarded by mu); the flow's auto-resume resumes only its own pause
 	done                    chan struct{}      // closed when task goroutine finishes
 	compacting              bool               // manual context compaction in flight: sends/resumes rejected, UI locked (guarded by mu)
 	compactCancel           context.CancelFunc // cancels the in-flight manual compaction (guarded by mu)
+	compactDone             chan struct{}      // closed when the manual-compaction flow goroutine exits (guarded by mu); joined by Shutdown
 	lastCompletedTaskID     string             // tracks last completed task for continuations
 	mu                      sync.Mutex
 	pendingAttachments      []orchestration.Attachment // user-attached files staged via AttachFiles, flushed into the blackboard on the next SendMessage (guarded by mu)
 	pendingImageAttachments []ImageAttachment          // user-attached images staged via AttachFiles, snapshotted into ContentBlocks on the next SendMessage (guarded by mu)
 }
+
+// pauseOwner distinguishes who requested a pause of the session's running
+// task. PauseSession (the user) and the manual-compaction flow drive the
+// exact same mechanism — the pausing window flag plus the orchestrator's
+// cooperative pause signal — so the shared flag alone cannot tell them
+// apart. The owner recorded at request time lets the compaction flow's
+// auto-resume resume ONLY a pause it armed itself; a user-initiated pause is
+// never stolen, whichever side armed first: a later PauseSession overwrites
+// the owner, and the compaction arming leaves an existing user owner in
+// place. The task therefore stays paused after compaction whenever the user
+// asked for the paused state.
+type pauseOwner int
+
+const (
+	pauseOwnerNone       pauseOwner = iota
+	pauseOwnerUser                  // PauseSession — the user explicitly asked for the paused state
+	pauseOwnerCompaction            // CompactSessionContext — the flow paused a running task for the compaction window
+)
 
 // ImageAttachment represents a user-attached image that has been processed
 // (decoded, optionally resized) and saved to the session's images directory.
@@ -404,6 +424,16 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		m.mu.RUnlock()
 		return sess, nil
 	}
+	// Shutdown choke point: once Shutdown has begun, never resurrect a
+	// session from the store. The drain loop above removed sessions from
+	// m.sessions after closing their file handles; a restore here would
+	// re-insert a session (with fresh log/dump handles nobody will close)
+	// and let callers (ResumeTask, sendMessage follow-ups, racing Wails
+	// calls) spawn task goroutines that outlive the join-and-wait teardown.
+	if m.shuttingDown.Load() {
+		m.mu.RUnlock()
+		return nil, nil
+	}
 	store := m.sessionStore
 	resolver := m.projectResolver
 	m.mu.RUnlock()
@@ -676,6 +706,14 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	// reservation above) this is unreachable for concurrent restores of the
 	// same ID, but it guards against the rare case where the session was
 	// inserted by a code path that bypassed the reservation.
+	//
+	// The shuttingDown re-check closes the TOCTOU window with Shutdown: the
+	// entry-time check above ran BEFORE the slow restore work (store loads,
+	// orchestrator build, file opens), so Shutdown may have begun — and its
+	// drain loop already removed sessions and closed their handles — in the
+	// meantime. Inserting here would resurrect the session with fresh
+	// log/dump handles nobody will close and re-open the exact hole the
+	// choke point exists to prevent.
 	m.mu.Lock()
 	if existing, ok := m.sessions[id]; ok {
 		m.mu.Unlock()
@@ -691,6 +729,22 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		}
 		finishRestore()
 		return existing, nil
+	}
+	if m.shuttingDown.Load() {
+		m.mu.Unlock()
+		// Shutdown began mid-restore: discard the session instead of
+		// inserting it, closing the handles we just opened.
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+		if dumpFile != nil {
+			_ = dumpFile.Close()
+		}
+		if stepDumpTracker != nil {
+			_ = stepDumpTracker.CloseAll()
+		}
+		finishRestore()
+		return nil, nil
 	}
 	m.sessions[id] = sess
 	m.mu.Unlock()
@@ -1429,8 +1483,9 @@ func (m *Manager) Shutdown() {
 	// "process cannot access the file". The done channel is optional and only
 	// waited on for sessions that had an in-flight task at shutdown time.
 	type pending struct {
-		session *Session
-		doneCh  chan struct{}
+		session       *Session
+		doneCh        chan struct{}
+		compactDoneCh chan struct{}
 	}
 	m.mu.Lock()
 	pendingList := make([]pending, 0, len(m.sessions))
@@ -1450,24 +1505,42 @@ func (m *Manager) Shutdown() {
 			session.cancel()
 			activeIDs = append(activeIDs, id)
 		}
+		// Cancel an in-flight manual compaction too: its flow goroutine
+		// (compactDone) must not outlive Shutdown — its LLM calls, marker
+		// persistence and especially its auto-resume would run against a
+		// torn-down backend (the flow itself gates its tail phases on
+		// shuttingDown, this cancellation unblocks it promptly).
+		if session.compactCancel != nil {
+			session.compactCancel()
+		}
 		doneCh := session.done
+		compactDoneCh := session.compactDone
 		session.mu.Unlock()
 
-		pendingList = append(pendingList, pending{session: session, doneCh: doneCh})
+		pendingList = append(pendingList, pending{session: session, doneCh: doneCh, compactDoneCh: compactDoneCh})
 
 		// Remove from map
 		delete(m.sessions, id)
 	}
 	m.mu.Unlock()
 
-	// Wait for active task goroutines to finish outside any lock.
+	// Wait for active task goroutines AND manual-compaction flow goroutines
+	// to finish outside any lock. The compaction goroutine observes the
+	// cancelled compactCancel, skips its shutdown-gated tail phases (marker
+	// persistence, auto-resume) and exits; waiting bounds it by the same
+	// stopTimeout as tasks.
 	for _, p := range pendingList {
-		if p.doneCh == nil {
-			continue
+		if p.doneCh != nil {
+			select {
+			case <-p.doneCh:
+			case <-time.After(m.stopTimeout):
+			}
 		}
-		select {
-		case <-p.doneCh:
-		case <-time.After(m.stopTimeout):
+		if p.compactDoneCh != nil {
+			select {
+			case <-p.compactDoneCh:
+			case <-time.After(m.stopTimeout):
+			}
 		}
 	}
 

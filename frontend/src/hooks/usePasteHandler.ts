@@ -27,7 +27,7 @@ import { useCallback } from 'react'
 import { emit } from '@/api/runtime'
 import { pasteFromClipboard } from '@/api/attachments'
 import {
-  beginAttachmentUploads,
+  beginAttachmentUploadsFresh,
   collectPasteUploadDescriptors,
   completeAttachmentUploads,
   failAttachmentUploads,
@@ -36,6 +36,7 @@ import type { AttachmentUploadUI } from '@/types/models'
 import { createSession } from '@/api/sessions'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
+import { getInputState, useChatInputStore } from '@/stores/chatInputStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useConfigData } from '@/hooks/useConfigData'
 import { resolveModelContext, visionRejectionMessage, VISION_UNSUPPORTED } from '@/lib/vision'
@@ -99,8 +100,11 @@ export function usePasteHandler(editor: ChatEditorAPI): {
         }
 
         // Optimistic spinner chips for the files the backend will stage.
+        // The fresh-baseline variant unions the backend's authoritative
+        // pending list into the claim window first (one local IPC
+        // round-trip) so a stale store slice cannot shrink the window.
         if (descriptors.length > 0) {
-          pasteUploads = beginAttachmentUploads(sessionId, descriptors)
+          pasteUploads = await beginAttachmentUploadsFresh(sessionId, descriptors)
         }
 
         try {
@@ -146,7 +150,19 @@ export function usePasteHandler(editor: ChatEditorAPI): {
               // Nothing staged — drain any optimistic placeholders.
               failAttachmentUploads(pasteUploads)
               if (typeof result.text === 'string' && result.text.length > 0) {
-                editor.insertAtCursor(result.text)
+                // Keyed to the ORIGIN session like every other write in this
+                // handler: if the user switched sessions while the RPC was
+                // in flight, the live editor belongs to another session —
+                // inserting there (and stealing its focus) is cross-session
+                // contamination. Fall back to appending the origin session's
+                // per-session draft instead.
+                if (useSessionStore.getState().activeSessionId === sessionId) {
+                  editor.insertAtCursor(result.text)
+                } else {
+                  const input = useChatInputStore.getState()
+                  const draft = getInputState(input.inputs, sessionId).draft
+                  input.setDraft(sessionId, draft + result.text)
+                }
               }
               break
             }

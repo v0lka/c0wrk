@@ -137,6 +137,8 @@ vi.mock('@/stores/chatStore', () => ({ useChatStore: useChatStoreMock }))
 
 const sessionStoreState = {
   activeSessionId: null as string | null,
+  // Record setUnfinishedTask calls so tests can assert the busy-flag mirror.
+  setUnfinishedTask: vi.fn((_sessionId: string, _value: boolean) => {}),
 }
 
 const useSessionStoreMock = Object.assign(
@@ -153,6 +155,7 @@ vi.mock('@/stores/sessionStore', () => ({ useSessionStore: useSessionStoreMock }
 const { useBackgroundSessionWatcher } = await import('@/hooks/useBackgroundSessionWatcher')
 
 function resetMockState(): void {
+  sessionStoreState.setUnfinishedTask.mockClear()
   subscriptions.clear()
   onSessionEventMock.mockClear()
   reportDroppedEventMock.mockClear()
@@ -255,8 +258,8 @@ describe('useBackgroundSessionWatcher', () => {
 
     expect(subscriptions.has('bg-1:task_complete')).toBe(true)
     expect(subscriptions.has('bg-2:task_complete')).toBe(true)
-    // 10 events × 2 sessions = 20 subscriptions
-    expect(subscriptions.size).toBe(20)
+    // 11 events × 2 sessions = 22 subscriptions
+    expect(subscriptions.size).toBe(22)
   })
 
   it('resets taskActive to false on task_complete without touching the active session state', () => {
@@ -275,6 +278,20 @@ describe('useBackgroundSessionWatcher', () => {
     // The background completion must NOT clear the active session's activity
     // indicator (cross-session global-state contamination).
     expect(chatStoreState.activityStatus['active-1']).toBe('Processing...')
+  })
+
+  it('mirrors the unfinished-task flag: cleared on completion, re-armed on resumable failure', () => {
+    chatStoreState.setTaskActive('bg-1', true)
+    sessionStoreState.activeSessionId = 'active-1'
+    useRenderWatcher()
+
+    fireSessionEvent('bg-1', 'task_complete', { output: 'done', success: true })
+    expect(sessionStoreState.setUnfinishedTask).toHaveBeenCalledWith('bg-1', false)
+
+    // A degraded completion stays resumable: the backend's follow-up event
+    // re-arms the busy flag so archive/delete keeps protecting the task.
+    fireSessionEvent('bg-1', 'task_failed_resumable', { task_id: 't1' })
+    expect(sessionStoreState.setUnfinishedTask).toHaveBeenLastCalledWith('bg-1', true)
   })
 
   it('resets taskActive to false on task_cancelled', () => {
@@ -357,7 +374,7 @@ describe('useBackgroundSessionWatcher', () => {
     sessionStoreState.activeSessionId = 'active-1'
 
     useRenderWatcher()
-    expect(subscriptions.size).toBe(10)
+    expect(subscriptions.size).toBe(11)
 
     // Session completes via another path.
     chatStoreState.setTaskActive('bg-1', false)

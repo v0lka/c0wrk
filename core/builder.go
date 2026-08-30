@@ -74,9 +74,14 @@ type OrchestratorBuilder struct {
 	// orchestrators (OrchestratorDeps.VectorSearchWaitTimeout), set alongside
 	// vectorSearchFunc by RegisterVectorSearch. Guarded by b.mu.
 	vectorSearchWaitTimeout time.Duration
-	baseSkillDirs           []string     // resolved skill directories shared across sessions (highest priority first)
-	baseAgentDirs           []string     // resolved Subagent Profile directories shared across sessions (highest priority first)
-	proxyClient             *http.Client // proxy-configured HTTP client (nil = direct connection)
+	// vectorSearchWaitDisabled carries an EXPLICIT fail-fast
+	// (vector_index.search_wait_timeout_ms: 0) through to the orchestrator:
+	// at this layer a zero timeout alone is indistinguishable from "unset"
+	// (which must keep the 3s default). Guarded by b.mu.
+	vectorSearchWaitDisabled bool
+	baseSkillDirs            []string     // resolved skill directories shared across sessions (highest priority first)
+	baseAgentDirs            []string     // resolved Subagent Profile directories shared across sessions (highest priority first)
+	proxyClient              *http.Client // proxy-configured HTTP client (nil = direct connection)
 
 	// Cached reasoning effort string. Empty unless seeded by the SmallLLM
 	// sampling profile (applySmallLLMPresets); per-request overrides flow
@@ -712,16 +717,17 @@ func (b *OrchestratorBuilder) Build(
 		// Raw configured value: 0 (fail-fast) is meaningful only to the
 		// desktop search closure, which enforces it before this bound; the
 		// orchestrator's own zero resolves to the 3s default.
-		VectorSearchWaitTimeout: b.vectorSearchWaitTimeout,
-		SkillManager:            sessionSkillMgr,
-		AgentManager:            sessionAgentMgr,
-		CoreToolRegistry:        sessionRegistry, // per-session registry (No-Project tool disabling, extra shell blacklist)
-		JudgeSync:               syncSessionJudge,
-		ToolCache:               toolCache,
-		PerToolTruncation:       perToolTruncation,
-		StepDumpTracker:         stepDumpTracker,
-		ProviderName:            cfg.LLM.DefaultProviderName(),
-		LocalModelProbe:         localProbe,
+		VectorSearchWaitTimeout:  b.vectorSearchWaitTimeout,
+		VectorSearchWaitDisabled: b.vectorSearchWaitDisabled,
+		SkillManager:             sessionSkillMgr,
+		AgentManager:             sessionAgentMgr,
+		CoreToolRegistry:         sessionRegistry, // per-session registry (No-Project tool disabling, extra shell blacklist)
+		JudgeSync:                syncSessionJudge,
+		ToolCache:                toolCache,
+		PerToolTruncation:        perToolTruncation,
+		StepDumpTracker:          stepDumpTracker,
+		ProviderName:             cfg.LLM.DefaultProviderName(),
+		LocalModelProbe:          localProbe,
 		// Mechanical edit verification runner (nil = disabled). Inert in No
 		// Project (CHAT) mode and goal-loop turns (see buildConductorDeps,
 		// RunConductor, defaultGoalTurnRunner).
@@ -1462,9 +1468,11 @@ func dedupeModelNames(names []string) []string {
 // under the same deadline as the search so readiness waiting and query
 // execution share one budget (the search closure itself never waits for
 // readiness). waitTimeout (vector_index.search_wait_timeout_ms) bounds the
-// RAG-hint wait in per-session orchestrators (0 keeps the 3s OrchestratorDeps
-// default).
-func (b *OrchestratorBuilder) RegisterVectorSearch(searchFunc builtins.VectorSearchFunc, waitFunc builtins.VectorSearchWaitFunc, waitTimeout time.Duration) {
+// RAG-hint wait in per-session orchestrators; waitDisabled marks an
+// EXPLICIT fail-fast (configured 0) — without it a zero waitTimeout would
+// keep the 3s OrchestratorDeps default, silently widening the user's
+// choice.
+func (b *OrchestratorBuilder) RegisterVectorSearch(searchFunc builtins.VectorSearchFunc, waitFunc builtins.VectorSearchWaitFunc, waitTimeout time.Duration, waitDisabled bool) {
 	if searchFunc == nil {
 		return
 	}
@@ -1472,6 +1480,7 @@ func (b *OrchestratorBuilder) RegisterVectorSearch(searchFunc builtins.VectorSea
 	b.vectorSearchFunc = searchFunc
 	b.vectorSearchWaitFunc = waitFunc
 	b.vectorSearchWaitTimeout = waitTimeout
+	b.vectorSearchWaitDisabled = waitDisabled
 	b.mu.Unlock()
 	b.registry.Register(builtins.NewVectorSearchTool(searchFunc, waitFunc))
 	if b.logger != nil {

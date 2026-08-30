@@ -45,5 +45,5 @@ Guarantees that the fact and the cause of ANY application termination — crash,
 
 ## Non-goals
 
-- No quit-confirmation dialog on window close with active sessions (a product decision; the close button today quits the app immediately — Wails v2 `windowShouldClose` → `"Q"` message).
+- No quit interception logic of its own: window-close interception lives in the exit guard (`desktop/exit_guard.go`, `OnBeforeClose` → `app:exit_requested` → frontend `ExitConfirmDialog` → `ConfirmExit`; see [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md)). Every confirmed quit still funnels through `App.Shutdown`, so the closing-bracket invariant above is unaffected; an abrupt log end remains abnormal termination by construction.
 - No in-process capture of pure native crashes (WebKit/ONNX) — those are covered by OS crash reports (.ips) plus the next-start marker warning.

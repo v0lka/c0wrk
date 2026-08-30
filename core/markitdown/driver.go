@@ -26,9 +26,20 @@ package markitdown
 //
 //   - PDF pass (pdfminer + Pillow, both venv-resident): walks page
 //     XObjects, extracts embedded images (DCTDecode/JPXDecode pass-through,
-//     FlateDecode raw-sample reconstruction for DeviceGray/RGB/CMYK and
-//     ICCBased at 8bpc), and appends an "## Embedded images" section with
-//     one LLM caption per unique image (deduplicated by content hash).
+//     FlateDecode raw-sample reconstruction for DeviceGray/DeviceRGB/
+//     DeviceCMYK at 8bpc, and Flate-wrapped DCT/JPX chains; array-form
+//     color spaces — ICCBased/CalGray/CalRGB — are skipped), and appends an
+//     "## Embedded images" section with one LLM caption per unique image
+//     (deduplicated by content hash). Every decoded path is BOUNDED —
+//     pdfminer's get_data() is never used, because it materializes the full
+//     filter-chain expansion (a crafted FlateDecode/LZW stream declaring
+//     tiny dimensions can expand gigabytes); FlateDecode streams are
+//     decompressed through a cap derived from the declared dimensions or
+//     the physical stream size, other filter chains (LZW, RunLength,
+//     predictors, encrypted documents) are skipped as unsupported, and the
+//     child's address space is capped via RLIMIT_AS (POSIX) as a catch-all
+//     so any remaining bomb degrades to a caption-less image instead of an
+//     OOM.
 //   - data-URI pass: the conversion runs with keep_data_uris=True so
 //     docx/html/epub embedded images survive as markdown data-URI images;
 //     each base64 blob is replaced in place by
@@ -55,7 +66,20 @@ package markitdown
 // fail the driver as a whole — and that falls back to the plain CLI on the
 // Go side (see Converter.convert). Diagnostic warnings go to stderr, which
 // the Go side logs at debug level without polluting the document body.
-const visionDriverScript = `import base64, hashlib, io, json, os, re, sys, urllib.request
+const visionDriverScript = `import base64, hashlib, io, json, os, re, sys, urllib.request, zlib
+
+# Bound the child's address space so a decompression bomb (a crafted PDF
+# FlateDecode/LZW stream declaring tiny dimensions, a hostile archive)
+# becomes a catchable MemoryError — handled per image/pass as a caption-less
+# skip — instead of an OOM kill or a machine-freezing multi-gigabyte
+# transient allocation. Generous enough for legitimate conversions (document
+# parsing plus several 40-megapixel image buffers); POSIX only, best-effort.
+try:
+    import resource
+    _addr_space_cap = 2 * 1024 * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_AS, (_addr_space_cap, _addr_space_cap))
+except Exception:
+    pass
 
 _api_key = os.environ["MARKITDOWN_LLM_API_KEY"]
 _base_url = os.environ["MARKITDOWN_LLM_BASE_URL"].rstrip("/")
@@ -214,6 +238,21 @@ def _pdf_color_mode(cs):
     return None
 
 
+def _flate_limited(raw, limit):
+    # Decompress at most 'limit' bytes: decompressobj.decompress(raw,
+    # max_length) stops at the cap without ever allocating beyond it, so a
+    # crafted stream that would expand past the limit (zlib ratio ~1000:1)
+    # is detected, not materialized. None = over-limit, truncated or corrupt.
+    try:
+        d = zlib.decompressobj()
+        out = d.decompress(raw, limit)
+        if d.unconsumed_tail or not d.eof:
+            return None
+        return out
+    except Exception:
+        return None
+
+
 def _pdf_image_from_stream(stream):
     attrs = stream.attrs
     try:
@@ -223,19 +262,36 @@ def _pdf_image_from_stream(stream):
         return None
     if w < _MIN_DIM or h < _MIN_DIM or w * h > _MAX_PIXELS:
         return None
-    filt = resolve1(attrs.get("Filter"))
-    filters = filt if isinstance(filt, list) else ([filt] if filt is not None else [])
-    last = getattr(filters[-1], "name", None) if filters else None
-    data = stream.get_data()
-    if last in ("DCTDecode", "JPXDecode"):
-        # Encoded image bytes (JPEG / JPEG2000): pass through to Pillow.
+    # NEVER call stream.get_data(): it materializes the WHOLE filter-chain
+    # expansion (zlib/LZW bombs expand gigabytes regardless of the declared
+    # dimensions) before any length check can run — and the RLIMIT_AS
+    # catch-all is best-effort (unsupported on macOS). Only the encodings we
+    # can decode BOUNDED are supported; everything else is skipped.
+    raw = getattr(stream, "rawdata", None)
+    if raw is None or getattr(stream, "decipher", None) is not None:
+        # No physical bytes, or an encrypted document: skip rather than
+        # fall back to an unbounded decode.
+        return None
+    try:
+        fl = list(stream.get_filters())
+    except Exception:
+        return None
+    names = [getattr(f, "name", None) for (f, _p) in fl]
+    if any(p for (_f, p) in fl):
+        # DecodeParms (predictors etc.) could rewrite the byte layout —
+        # unsupported on the bounded paths.
+        return None
+    if names in (["DCTDecode"], ["JPXDecode"]):
+        # The stored bytes ARE the encoded JPEG/JP2 payload — no expansion
+        # risk; Pillow's own decompression-bomb guard plus the declared-
+        # dimension check above bound the decode.
         try:
-            img = Image.open(io.BytesIO(data))
+            img = Image.open(io.BytesIO(raw))
             img.load()
             return img
         except Exception:
             return None
-    if last == "FlateDecode":
+    if names == ["FlateDecode"]:
         # Decoded raw samples: reconstruct by colorspace. Indexed, separated
         # and masked colorspaces are skipped (unsupported, harmless).
         mode = _pdf_color_mode(attrs.get("ColorSpace"))
@@ -247,12 +303,28 @@ def _pdf_image_from_stream(stream):
             return None
         comps = {"L": 1, "RGB": 3, "CMYK": 4}[mode]
         need = w * h * comps
-        if len(data) < need:
+        data = _flate_limited(raw, need + 65536)
+        if data is None or len(data) < need:
             return None
         try:
             return Image.frombytes(mode, (w, h), data[:need])
         except Exception:
             return None
+    if len(names) == 2 and names[0] == "FlateDecode" and names[1] in ("DCTDecode", "JPXDecode"):
+        # Flate-wrapped encoded image: bound the expansion by the physical
+        # compressed size (flate over a JPEG payload is ~1:1; generous
+        # slack), then hand the encoded bytes to Pillow.
+        data = _flate_limited(raw, len(raw) * 8 + (1 << 20))
+        if data is None:
+            return None
+        try:
+            img = Image.open(io.BytesIO(data))
+            img.load()
+            return img
+        except Exception:
+            return None
+    # Any other filter chain (LZWDecode, RunLengthDecode, ASCII-armored,
+    # …): unsupported — decoding them would require the unbounded path.
     return None
 
 

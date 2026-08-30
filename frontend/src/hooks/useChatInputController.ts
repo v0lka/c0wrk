@@ -295,7 +295,11 @@ export function useChatInputController(): ChatInputController {
       agents = filterKnownAgentRefs(rawAgentRefs, knownNames)
     }
     try {
-      await send(messageText, skills, agents)
+      // Pin the send to the ORIGIN session: the #agent catalog await above
+      // means the user may have switched sessions since pressing Enter —
+      // sending into the now-active session would misroute the message
+      // (and bypass the origin's in-flight-uploads guard checked above).
+      await send(messageText, skills, agents, originSessionId)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       // Both the error and the restored text are keyed to the session the

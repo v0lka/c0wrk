@@ -22,6 +22,7 @@ import { usePasteHandler, collectPasteUploadDescriptors } from '@/hooks/usePaste
 import { resetAttachmentUploadState } from '@/lib/attachmentUploads'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
+import { getInputState, useChatInputStore } from '@/stores/chatInputStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import type { SessionInfo, AttachmentInfoUI, ModelInfo, PasteResultUI } from '@/types/models'
 
@@ -245,6 +246,25 @@ describe('usePasteHandler routing', () => {
 
     expect(spies.insertAtCursor).toHaveBeenCalledWith('hello world')
     expect(useAttachmentsStore.getState().attachmentsBySession['sess-1']).toBeUndefined()
+  })
+
+  it('appends text to the ORIGIN session draft when the user switched away mid-RPC', async () => {
+    // Regression: the text branch used to insert into whichever editor was
+    // live when the RPC settled — cross-session contamination plus a focus
+    // steal. The text must land in the origin session's per-session draft.
+    let resolvePaste: ((v: { kind: 'text'; files: never[]; text: string }) => void) | undefined
+    spies.pasteFromClipboard.mockImplementation(
+      () => new Promise((resolve) => { resolvePaste = resolve }),
+    )
+
+    const pastePromise = act(async () => { await runPaste() })
+    // The user switches to another session while the paste RPC is in flight.
+    act(() => { useSessionStore.setState({ activeSessionId: 'sess-2' }) })
+    resolvePaste?.({ kind: 'text', files: [], text: 'pasted text' })
+    await pastePromise
+
+    expect(spies.insertAtCursor).not.toHaveBeenCalled()
+    expect(getInputState(useChatInputStore.getState().inputs, 'sess-1').draft).toBe('pasted text')
   })
 
   it('is a no-op for empty clipboard (kind=empty)', async () => {

@@ -634,6 +634,41 @@ func TestManualCompactionWouldNoOp_ConcurrentWithHistoryWriters(t *testing.T) {
 	}
 }
 
+func TestModelIdentity_ConcurrentReadersAndWriters(t *testing.T) {
+	// The model-identity fields (config.Model / config.ReasoningEffort) are
+	// written by the request goroutine (ApplyRequestOverrides /
+	// SetReasoningEffort) and read from Wails-RPC goroutines (the runtime
+	// status poll → ManualCompactionWouldNoOp → contextBases) — the exact
+	// cross-goroutine window historyMu covers for the history. All access
+	// goes through the modelMu-guarded accessors; `go test -race` turns any
+	// unsynchronized access into a failure.
+	o, _ := newCompactionTestOrchestrator(nil)
+	o.SetConversationHistory(lightHistory(2))
+
+	const writers, iterations = 4, 200
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for w := 0; w < writers; w++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				// Mirrors ApplyRequestOverrides' writer side.
+				o.setCurrentModel("test-model")
+				o.setCurrentReasoningEffort("high")
+			}
+		}()
+	}
+	// Reader side: the status-poll path resolves the model's window while a
+	// request may be switching models mid-flight.
+	for i := 0; i < iterations; i++ {
+		_ = o.currentModel()
+		_ = o.currentReasoningEffort()
+		_, _ = o.contextBases()
+		_ = o.ManualCompactionWouldNoOp()
+	}
+	wg.Wait()
+}
+
 func TestManualCompactionWouldNoOp_AgreesWithCompactionOutcome(t *testing.T) {
 	// The prediction must match what CompactConversationHistory actually
 	// does: a predicted no-op returns ErrNothingCompacted; a predicted

@@ -66,6 +66,14 @@ interface ChatState {
   // the time the backend status snapshot was read to detect (and skip) a
   // stale-snapshot overwrite of newer live state. Absent key = never touched.
   runtimeEventAt: Record<string, number>
+  // Timestamp of the last LIVE update to a session's task FLAGS
+  // (taskActive/paused/pausing): sessionId -> Date.now() at the mutation.
+  // Separate from runtimeEventAt because chunks stamp the activity map
+  // without owning the flags: reconcileRuntimeStatus must still restore
+  // flags from a snapshot for a background-started run (no lifecycle event
+  // ever set them), while a live pause/resume/terminal transition (which
+  // stamps THIS map) must never be reverted by an older snapshot.
+  taskFlagsEventAt: Record<string, number>
 }
 
 interface ChatActions {
@@ -162,6 +170,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   stepContextFill: {},
   sessionTokens: {},
   runtimeEventAt: {},
+  taskFlagsEventAt: {},
 
   addMessage: (sessionId, message) => set((s) => {
     const sessionIndex = s.messages[sessionId] ?? {}
@@ -322,7 +331,12 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   }),
 
   clearStreamingText: (sessionId) => set((s) => {
-    if (!(sessionId in s.streamingText)) return s
+    // Stamp even when the key is absent: a live terminal event that clears
+    // an already-clear stream is still fresher state than a runtime-status
+    // snapshot read before it (see reconcileRuntimeStatus).
+    if (!(sessionId in s.streamingText)) {
+      return { runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() } }
+    }
     const { [sessionId]: _stream, ...rest } = s.streamingText
     return {
       streamingText: rest,
@@ -332,7 +346,11 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
 
   setActivityStatus: (sessionId, status) => set((s) => {
     if (status === null || status === undefined) {
-      if (!(sessionId in s.activityStatus)) return s
+      // Stamp even when already absent (same freshness contract as
+      // clearStreamingText's no-op path).
+      if (!(sessionId in s.activityStatus)) {
+        return { runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() } }
+      }
       const { [sessionId]: _status, ...rest } = s.activityStatus
       return {
         activityStatus: rest,
@@ -347,51 +365,89 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
 
   setTaskActive: (sessionId, active) => set((s) => ({
     taskActive: { ...s.taskActive, [sessionId]: active },
+    taskFlagsEventAt: { ...s.taskFlagsEventAt, [sessionId]: Date.now() },
   })),
 
   setPaused: (sessionId, paused) => set((s) => {
     // Clear the entry when un-pausing so the key's absence encodes "not paused"
     // (consistent with the absent-key semantics used elsewhere in this store).
+    // Stamps taskFlagsEventAt even on no-ops (same freshness contract as the
+    // runtimeEventAt no-op stamps).
     if (!paused) {
-      if (!(sessionId in s.paused)) return s
+      if (!(sessionId in s.paused)) {
+        return { taskFlagsEventAt: { ...s.taskFlagsEventAt, [sessionId]: Date.now() } }
+      }
       const { [sessionId]: _paused, ...rest } = s.paused
-      return { paused: rest }
+      return {
+        paused: rest,
+        taskFlagsEventAt: { ...s.taskFlagsEventAt, [sessionId]: Date.now() },
+      }
     }
-    return { paused: { ...s.paused, [sessionId]: true } }
+    return {
+      paused: { ...s.paused, [sessionId]: true },
+      taskFlagsEventAt: { ...s.taskFlagsEventAt, [sessionId]: Date.now() },
+    }
   }),
 
   setPausing: (sessionId, pausing) => set((s) => {
     // Same absent-key convention as paused: clearing deletes the entry so no
     // state change is emitted for sessions that were never pausing.
     if (!pausing) {
-      if (!(sessionId in s.pausing)) return s
+      if (!(sessionId in s.pausing)) {
+        return { taskFlagsEventAt: { ...s.taskFlagsEventAt, [sessionId]: Date.now() } }
+      }
       const { [sessionId]: _pausing, ...rest } = s.pausing
-      return { pausing: rest }
+      return {
+        pausing: rest,
+        taskFlagsEventAt: { ...s.taskFlagsEventAt, [sessionId]: Date.now() },
+      }
     }
-    return { pausing: { ...s.pausing, [sessionId]: true } }
+    return {
+      pausing: { ...s.pausing, [sessionId]: true },
+      taskFlagsEventAt: { ...s.taskFlagsEventAt, [sessionId]: Date.now() },
+    }
   }),
 
   // Manual context compaction in flight: the input area is locked and the
   // compact button swaps for a cancel button. Absent key = not compacting.
+  // Stamps runtimeEventAt (even on no-ops) so a live compaction_started /
+  // compaction_finished always counts as fresher than an in-flight
+  // runtime-status snapshot whose compacting flag predates it.
   setCompacting: (sessionId, compacting) => set((s) => {
     if (!compacting) {
-      if (!(sessionId in s.compacting)) return s
+      if (!(sessionId in s.compacting)) {
+        return { runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() } }
+      }
       const { [sessionId]: _compacting, ...rest } = s.compacting
-      return { compacting: rest }
+      return {
+        compacting: rest,
+        runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() },
+      }
     }
-    return { compacting: { ...s.compacting, [sessionId]: true } }
+    return {
+      compacting: { ...s.compacting, [sessionId]: true },
+      runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() },
+    }
   }),
 
   // Manual compaction would be a no-op: the compact button renders disabled
   // with an explanatory tooltip. Absent key = unknown/false (fail-open — the
-  // button stays clickable).
+  // button stays clickable). Stamps runtimeEventAt like setCompacting.
   setCompactionNoOp: (sessionId, noOp) => set((s) => {
     if (!noOp) {
-      if (!(sessionId in s.compactionNoOp)) return s
+      if (!(sessionId in s.compactionNoOp)) {
+        return { runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() } }
+      }
       const { [sessionId]: _noOp, ...rest } = s.compactionNoOp
-      return { compactionNoOp: rest }
+      return {
+        compactionNoOp: rest,
+        runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() },
+      }
     }
-    return { compactionNoOp: { ...s.compactionNoOp, [sessionId]: true } }
+    return {
+      compactionNoOp: { ...s.compactionNoOp, [sessionId]: true },
+      runtimeEventAt: { ...s.runtimeEventAt, [sessionId]: Date.now() },
+    }
   }),
 
   setStepContextFill: (sessionId, stepId, fill) => set((s) => ({

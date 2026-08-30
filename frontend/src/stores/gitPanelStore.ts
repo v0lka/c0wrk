@@ -78,6 +78,31 @@ export const EMPTY_COMMIT_DRAFT: CommitDraftState = {
 
 // --- State types ---
 
+/**
+ * Auto-dismissal delay for the per-project commit success banner (FE-1).
+ */
+export const COMMIT_BANNER_DISMISS_MS = 4000
+
+/**
+ * Pending per-project banner-dismissal timers. Module-level (not store
+ * state): timers are imperative runtime objects, not serializable state.
+ * Keyed by project id so banners in different projects dismiss
+ * independently — a single component-owned timer cleared on every new
+ * commit (or killed by a CHAT-mode GitPanel unmount) left earlier projects'
+ * banners stuck until their next commit. Owned by the store so dismissal
+ * survives unmounts and project switches alike.
+ */
+const commitBannerTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** Cancel a project's pending banner-dismissal timer, if any. */
+function clearCommitBannerTimer(projectId: string): void {
+  const timer = commitBannerTimers.get(projectId)
+  if (timer !== undefined) {
+    clearTimeout(timer)
+    commitBannerTimers.delete(projectId)
+  }
+}
+
 interface GitPanelState {
   viewMode: 'flat' | 'tree'
   entries: GitPanelEntry[]
@@ -130,8 +155,11 @@ interface GitPanelActions {
   setCommitError: (projectId: string, error: string | null) => void
   /**
    * Record a successful commit for a project: store the new SHA (drives the
-   * success banner) and clear that project's draft message. Passing `null`
-   * clears the banner only (banner auto-dismiss timer) and keeps the draft.
+   * success banner), clear that project's draft message, and arm a
+   * per-project auto-dismissal timer (COMMIT_BANNER_DISMISS_MS) that clears
+   * the banner again — unless a newer commit replaced it first. Passing
+   * `null` clears the banner immediately (manual dismissal) and keeps the
+   * draft.
    */
   setCommitSuccess: (projectId: string, sha: string | null) => void
   /** Drop a project's commit-box state entirely (project deleted). */
@@ -304,24 +332,44 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
       setCommitError: (projectId, error) =>
         set((s) => withCommitDraft(s, projectId, { error })),
 
-      setCommitSuccess: (projectId, sha) =>
+      setCommitSuccess: (projectId, sha) => {
+        // A manual dismiss (null) or a newer commit replaces any pending
+        // auto-dismissal for this project first.
+        clearCommitBannerTimer(projectId)
+        if (sha === null) {
+          set((s) => withCommitDraft(s, projectId, { lastCommitSha: null }))
+          return
+        }
         set((s) =>
           withCommitDraft(s, projectId, {
             lastCommitSha: sha,
             // A real SHA marks a completed commit: consume the draft.
-            // `null` only dismisses the banner (auto-dismiss timer) and
-            // must not wipe a draft the user may have started typing.
-            ...(sha !== null ? { message: '' } : {}),
+            // `null` only dismisses the banner and must not wipe a draft
+            // the user may have started typing.
+            message: '',
           }),
-        ),
+        )
+        const timer = setTimeout(() => {
+          commitBannerTimers.delete(projectId)
+          set((s) => {
+            // Dismiss only the banner this timer was armed for: a newer
+            // commit in the same project must not be clobbered.
+            if (s.commitByProject[projectId]?.lastCommitSha !== sha) return s
+            return withCommitDraft(s, projectId, { lastCommitSha: null })
+          })
+        }, COMMIT_BANNER_DISMISS_MS)
+        commitBannerTimers.set(projectId, timer)
+      },
 
-      dropProjectCommitState: (projectId) =>
+      dropProjectCommitState: (projectId) => {
+        clearCommitBannerTimer(projectId)
         set((s) => {
           if (s.commitByProject[projectId] === undefined) return {}
           const next = { ...s.commitByProject }
           delete next[projectId]
           return { commitByProject: next }
-        }),
+        })
+      },
 
       setGitRepo: (isRepo) => set({ isGitRepo: isRepo }),
 
@@ -357,13 +405,17 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
 
       clearPendingBranchBase: () => set({ pendingBranchBase: null }),
 
-      reset: () =>
+      reset: () => {
+        for (const projectId of commitBannerTimers.keys()) {
+          clearCommitBannerTimer(projectId)
+        }
         set({
           ...initialState,
           expandedDirs: new Set<string>(),
           // Fresh empty map — never share the initial-state object across resets.
           commitByProject: {},
-        }),
+        })
+      },
     }),
     {
       name: 'git-panel-settings',

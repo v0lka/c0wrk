@@ -1156,7 +1156,7 @@ func TestRegisterVectorSearch_StoresWaitTimeout(t *testing.T) {
 		return nil, nil
 	})
 	wait := builtins.VectorSearchWaitFunc(func(context.Context) error { return nil })
-	b.RegisterVectorSearch(search, wait, 2*time.Second)
+	b.RegisterVectorSearch(search, wait, 2*time.Second, false)
 
 	b.mu.RLock()
 	gotFunc := b.vectorSearchFunc
@@ -1175,7 +1175,7 @@ func TestRegisterVectorSearch_StoresWaitTimeout(t *testing.T) {
 	}
 
 	// nil searchFunc must stay a no-op (no panic, no clearing).
-	b.RegisterVectorSearch(nil, nil, time.Minute)
+	b.RegisterVectorSearch(nil, nil, time.Minute, false)
 	b.mu.RLock()
 	gotFunc = b.vectorSearchFunc
 	b.mu.RUnlock()

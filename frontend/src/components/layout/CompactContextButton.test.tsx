@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
@@ -7,12 +7,23 @@ import { CompactContextButton } from './CompactContextButton'
 import { COMPACTION_STRATEGIES } from './compactionStrategies'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useChatStore } from '@/stores/chatStore'
+import { compactSessionContext, cancelSessionCompaction } from '@/api/chat'
+import { emit } from '@/api/runtime'
+
+vi.mock('@/api/chat', () => ({
+  compactSessionContext: vi.fn(),
+  cancelSessionCompaction: vi.fn(),
+}))
+vi.mock('@/api/runtime', () => ({
+  emit: vi.fn(),
+}))
 
 describe('CompactContextButton', () => {
   let container: HTMLElement
   let root: Root
 
   beforeEach(() => {
+    vi.clearAllMocks()
     container = document.createElement('div')
     document.body.replaceChildren(container)
     root = createRoot(container)
@@ -112,5 +123,51 @@ describe('CompactContextButton', () => {
       expect(s.tooltip.length).toBeGreaterThan(40) // explains when to use it
       expect(s.tooltip).toMatch(/[Bb]est for/)
     }
+  })
+
+  it('surfaces a runtime_error toast when the compaction RPC rejects', async () => {
+    // The dropdown closes and nothing else reacts to the rejection — without
+    // the toast the failure would be invisible (logger-only dead end).
+    vi.mocked(compactSessionContext).mockRejectedValue(new Error('boom'))
+    render()
+
+    const trigger = container.querySelector('button[title="Compact context"]')
+    expect(trigger).not.toBeNull()
+    await act(async () => {
+      trigger!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    })
+
+    // Radix portals the menu to document.body.
+    const first = COMPACTION_STRATEGIES[0]
+    expect(first).toBeDefined()
+    const item = [...document.querySelectorAll('[role="menuitem"]')].find((el) =>
+      el.textContent?.includes(first!.name),
+    )
+    expect(item).toBeDefined()
+    await act(async () => {
+      item!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+      'runtime_error',
+      expect.objectContaining({ message: 'Failed to start context compaction' }),
+    )
+  })
+
+  it('surfaces a runtime_error toast when the cancel RPC rejects', async () => {
+    vi.mocked(cancelSessionCompaction).mockRejectedValue(new Error('boom'))
+    useChatStore.setState({ compacting: { 'sess-1': true } })
+    render()
+
+    const cancel = container.querySelector('button[title="Cancel compaction"]')
+    expect(cancel).not.toBeNull()
+    await act(async () => {
+      cancel!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(vi.mocked(emit)).toHaveBeenCalledWith(
+      'runtime_error',
+      expect.objectContaining({ message: 'Failed to cancel compaction' }),
+    )
   })
 })

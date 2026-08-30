@@ -101,6 +101,25 @@ describe('isAttachmentsChangedData (event payload guard)', () => {
     ).toBe(true)
   })
 
+  it('accepts an absent failed array (remove/send-clear events)', () => {
+    expect(isAttachmentsChangedData({ attachments: [] })).toBe(true)
+  })
+
+  it('rejects a non-array failed value', () => {
+    // The handler iterates failed[].path to build the user-facing toast — a
+    // malformed value must drop the event at the boundary, not throw there.
+    expect(isAttachmentsChangedData({ attachments: [], failed: 'bad.mp3' })).toBe(false)
+    expect(isAttachmentsChangedData({ attachments: [], failed: { path: 'bad.mp3' } })).toBe(false)
+  })
+
+  it('rejects a failed element missing or mangling its string fields', () => {
+    expect(isAttachmentsChangedData({ attachments: [], failed: [{ path: 42 }] })).toBe(false)
+    expect(
+      isAttachmentsChangedData({ attachments: [], failed: [{ path: 'bad.mp3', error: 7 }] }),
+    ).toBe(false)
+    expect(isAttachmentsChangedData({ attachments: [], failed: ['bad.mp3'] })).toBe(false)
+  })
+
   it('rejects a bare array (old payload shape)', () => {
     expect(isAttachmentsChangedData([{ id: '1', format: 'txt' }])).toBe(false)
   })

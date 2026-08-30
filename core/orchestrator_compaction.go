@@ -342,7 +342,7 @@ func (o *Orchestrator) manualCompactionDeps() sdkmemory.CompactionDeps {
 					{Role: "system", Content: coreprompts.CompactionSummarize},
 					{Role: "user", Content: blockText},
 				},
-				ReasoningEffort: o.config.ReasoningEffort,
+				ReasoningEffort: o.currentReasoningEffort(),
 				// Compaction summaries are deterministic calls: no vendor
 				// preset, temperature pinned to the family-safe floor.
 				CallPurpose: llm.CallPurposeCompaction,
@@ -376,7 +376,7 @@ func (o *Orchestrator) contextBases() (effectiveMax, displayMax int) {
 	if o.modelRegistry == nil {
 		return 0, 0
 	}
-	meta, _ := o.modelRegistry.ResolveLocal(o.config.Model)
+	meta, _ := o.modelRegistry.ResolveLocal(o.currentModel())
 	window := meta.ContextWindow
 	if window <= 0 {
 		return 0, 0
