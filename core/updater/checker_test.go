@@ -96,6 +96,49 @@ func TestCheck_NewVersionAvailable(t *testing.T) {
 	}
 }
 
+// TestCheck_ShortBetaTagNewVersionAvailable reproduces the real-world c0wrk
+// release flow: tags omit the patch component ("v0.7-beta"), which strict
+// semver rejects — the checker must still detect the newer release.
+func TestCheck_ShortBetaTagNewVersionAvailable(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(releasePayload("v0.7-beta", allPlatformAssets("v0.7-beta")...)))
+	}))
+	defer ts.Close()
+
+	c := newTestChecker(t, ts, "v0.6-beta", "")
+	res, err := c.Check(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Available {
+		t.Fatal("expected Available=true for v0.6-beta → v0.7-beta")
+	}
+	if res.LatestVersion != "v0.7-beta" {
+		t.Errorf("LatestVersion = %q, want v0.7-beta", res.LatestVersion)
+	}
+	if res.AssetName != "c0wrk-desktop-macos-arm64.zip" {
+		t.Errorf("AssetName = %q, want macos zip", res.AssetName)
+	}
+}
+
+func TestCheck_SameShortBetaTagNotAvailable(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(releasePayload("v0.7-beta", allPlatformAssets("v0.7-beta")...)))
+	}))
+	defer ts.Close()
+
+	c := newTestChecker(t, ts, "v0.7-beta", "")
+	res, err := c.Check(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Available {
+		t.Fatal("expected Available=false when current == latest (v0.7-beta)")
+	}
+}
+
 func TestCheck_SameVersionNotAvailable(t *testing.T) {
 	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -392,6 +435,14 @@ func TestIsUpdateAvailable(t *testing.T) {
 		{"dev current, invalid latest", "dev", "notaversion", false},
 		{"current valid, latest invalid", "v1.2.3", "broken", false},
 		{"without v prefix normalized", "1.2.3", "1.2.4", true},
+		{"short beta tags, minor newer", "v0.6-beta", "v0.7-beta", true},
+		{"short beta tags equal", "v0.7-beta", "v0.7-beta", false},
+		{"short beta tags, older latest", "v0.7-beta", "v0.6-beta", false},
+		{"short tags without suffix", "v0.6", "v0.7", true},
+		{"short tag equals full form", "v0.6.0-beta", "v0.6-beta", false},
+		{"short beta older than same-base stable", "v0.7-beta", "v0.7.0", true},
+		{"single component tags", "v1", "v2", true},
+		{"dev current, short beta latest", "dev", "v0.7-beta", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -416,12 +467,43 @@ func TestIsSkippedVersion(t *testing.T) {
 		{"different", "v1.2.3", "v1.2.4", false},
 		{"empty skipped", "v1.2.3", "", false},
 		{"canonical ignores build metadata", "v1.2.3+build1", "v1.2.3", true},
+		{"short beta exact match", "v0.7-beta", "v0.7-beta", true},
+		{"short beta matches full form", "v0.7-beta", "v0.7.0-beta", true},
+		{"short beta different", "v0.7-beta", "v0.6-beta", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := isSkippedVersion(tc.latest, tc.skipped); got != tc.want {
 				t.Errorf("isSkippedVersion(%q, %q) = %v, want %v", tc.latest, tc.skipped, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeTag(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"v1.2.3", "v1.2.3"},
+		{"1.2.3", "v1.2.3"},
+		{"v1.2.3-rc1", "v1.2.3-rc1"},
+		{"v0.6-beta", "v0.6.0-beta"},
+		{"0.7-beta", "v0.7.0-beta"},
+		{"v0.6", "v0.6.0"},
+		{"v1", "v1.0.0"},
+		{"v1.2+build1", "v1.2.0+build1"},
+		// Non-numeric strings stay untouched (and thus invalid semver), so a
+		// "dev" current version keeps its "unknown" semantics.
+		{"notaversion", "vnotaversion"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			t.Parallel()
+			if got := normalizeTag(tc.in); got != tc.want {
+				t.Errorf("normalizeTag(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}

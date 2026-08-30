@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -243,9 +244,10 @@ type githubRelease struct {
 
 // isUpdateAvailable reports whether latest is strictly newer than current.
 //
-// Both tags are normalised to carry a leading "v" (semver requires it). A
-// current version that is not valid semver (e.g. the "dev" default for local
-// builds) is treated as "unknown", so any valid published release is offered.
+// Both tags are normalised to the strict vMAJOR.MINOR.PATCH form that
+// golang.org/x/mod/semver requires (see normalizeTag). A current version that
+// is not valid semver (e.g. the "dev" default for local builds) is treated as
+// "unknown", so any valid published release is offered.
 func isUpdateAvailable(current, latest string) bool {
 	cur := normalizeTag(current)
 	lat := normalizeTag(latest)
@@ -271,16 +273,44 @@ func isSkippedVersion(latest, skipped string) bool {
 	return lat == skip
 }
 
-// normalizeTag ensures a tag carries the leading "v" that golang.org/x/mod/
-// semver requires. The empty string is passed through unchanged.
+// normalizeTag converts a release tag to the strict vMAJOR.MINOR.PATCH form
+// that golang.org/x/mod/semver requires: it adds the leading "v" when missing
+// and pads numeric tags lacking the minor/patch components with ".0"
+// (c0wrk release tags look like "v0.7-beta", which semver.IsValid rejects as
+// "v0.7" has no patch). Non-numeric strings (e.g. the "dev" default for local
+// builds) stay invalid semver and keep their "unknown version" semantics. The
+// empty string is passed through unchanged.
 func normalizeTag(s string) string {
 	if s == "" {
 		return ""
 	}
-	if strings.HasPrefix(s, "v") {
-		return s
+	if !strings.HasPrefix(s, "v") {
+		s = "v" + s
 	}
-	return "v" + s
+	return padShortVersion(s)
+}
+
+// shortVersionTag matches numeric tags with optional minor/patch components
+// and an optional pre-release ("-beta") or build ("+meta") suffix.
+var shortVersionTag = regexp.MustCompile(`^v(\d+)(?:\.(\d+))?(?:\.(\d+))?([-+].*)?$`)
+
+// padShortVersion expands a numeric tag missing the minor/patch components
+// with ".0" so it satisfies strict semver ("v0.7-beta" → "v0.7.0-beta",
+// "v1" → "v1.0.0"). Already-complete and non-numeric tags are returned
+// unchanged.
+func padShortVersion(v string) string {
+	m := shortVersionTag.FindStringSubmatch(v)
+	if m == nil {
+		return v
+	}
+	major, minor, patch, suffix := m[1], m[2], m[3], m[4]
+	if minor == "" {
+		minor = "0"
+	}
+	if patch == "" {
+		patch = "0"
+	}
+	return "v" + major + "." + minor + "." + patch + suffix
 }
 
 func defaultString(s, def string) string {
