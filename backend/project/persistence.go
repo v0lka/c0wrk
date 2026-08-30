@@ -48,6 +48,11 @@ func (s *SQLiteProjectStore) createTables() error {
 		updated_at TIMESTAMP NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS app_state (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL DEFAULT ''
+	);
+
 	CREATE TABLE IF NOT EXISTS project_work_directories (
 		id TEXT PRIMARY KEY,
 		project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -193,7 +198,7 @@ func (s *SQLiteProjectStore) RenameProject(ctx context.Context, id, name string)
 
 // UpdateProjectActivity updates the last_active_at timestamp to now.
 func (s *SQLiteProjectStore) UpdateProjectActivity(ctx context.Context, id string) error {
-	now := time.Now().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `UPDATE projects SET last_active_at = ? WHERE id = ?`, now, id)
 	if err != nil {
 		return fmt.Errorf("failed to update project activity: %w", err)
@@ -210,7 +215,7 @@ func (s *SQLiteProjectStore) SaveUIState(ctx context.Context, state ProjectUISta
 
 	updatedAt := state.UpdatedAt
 	if updatedAt == "" {
-		updatedAt = time.Now().Format(time.RFC3339)
+		updatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 
 	_, err = s.db.ExecContext(ctx, `
@@ -254,6 +259,60 @@ func (s *SQLiteProjectStore) LoadUIState(ctx context.Context, projectID string) 
 	}
 
 	return &state, nil
+}
+
+// SaveSavedSessionID updates ONLY the saved_session_id column of a project's
+// UI state, preserving any previously persisted open_tabs/active_file. When no
+// row exists yet, one is inserted with empty open tabs and no active file.
+func (s *SQLiteProjectStore) SaveSavedSessionID(ctx context.Context, projectID, sessionID string) error {
+	updatedAt := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO project_ui_state (project_id, saved_session_id, open_tabs, active_file, updated_at)
+		VALUES (?, ?, '[]', '', ?)
+		ON CONFLICT(project_id) DO UPDATE SET
+			saved_session_id = excluded.saved_session_id,
+			updated_at = excluded.updated_at`,
+		projectID, sessionID, updatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save project saved session id: %w", err)
+	}
+	return nil
+}
+
+// SaveAppState upserts an app-level key-value pair into the app_state table.
+func (s *SQLiteProjectStore) SaveAppState(ctx context.Context, key, value string) error {
+	if key == "" {
+		return errors.New("app state key is required")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO app_state (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			value = excluded.value`,
+		key, value,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save app state %q: %w", key, err)
+	}
+	return nil
+}
+
+// LoadAppState reads an app-level value from the app_state table. It returns
+// an empty string (and no error) when the key has never been written.
+func (s *SQLiteProjectStore) LoadAppState(ctx context.Context, key string) (string, error) {
+	if key == "" {
+		return "", errors.New("app state key is required")
+	}
+	var value string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM app_state WHERE key = ?`, key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to load app state %q: %w", key, err)
+	}
+	return value, nil
 }
 
 // Close is a no-op — the DB lifecycle is managed externally.

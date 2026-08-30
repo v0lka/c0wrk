@@ -108,7 +108,7 @@ export function useChatInputController(): ChatInputController {
         try {
           const newSession = await createSession()
           useSessionStore.getState().addSession(newSession)
-          useSessionStore.getState().setActiveSessionId(newSession.id)
+          useSessionStore.getState().selectSession(newSession.id, newSession.project_id)
         } catch (err) {
           logger.error('Failed to implicitly create session for terminal:', err)
           // Keyed to the origin context (no session was active — that is why

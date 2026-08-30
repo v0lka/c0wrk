@@ -676,7 +676,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	// Parse creation time from stored info.
 	createdAt, parseErr := time.Parse(time.RFC3339, info.CreatedAt)
 	if parseErr != nil {
-		createdAt = time.Now()
+		createdAt = time.Now().UTC()
 	}
 
 	// Create session temp directory.
@@ -970,7 +970,7 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 		ID:            id,
 		ProjectID:     projectID,
 		Name:          "Session " + safeSessionPrefix(id), // Default name using first 8 chars of UUID
-		CreatedAt:     time.Now(),
+		CreatedAt:     time.Now().UTC(),
 		Archived:      false,
 		WorkspacePath: workspacePath,
 		TempDir:       tempDir,

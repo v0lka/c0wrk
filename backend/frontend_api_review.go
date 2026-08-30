@@ -152,7 +152,7 @@ func (f *FrontendAPI) SaveReviewPrompt(sessionID string) (*ReviewPromptMessage, 
 		Role:      "review_prompt",
 		Content:   reviewPromptContent,
 		Metadata:  metadata,
-		CreatedAt: time.Now().Format(time.RFC3339),
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}); err != nil {
 		f.log().Error("failed to save review_prompt message", "session", sessionID, "error", err)
 		return nil, fmt.Errorf("failed to save review prompt: %w", err)

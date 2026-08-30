@@ -13,7 +13,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/config/paths.go` — centralized path functions (single source of truth for ~/.c0wrk/ directory structure)
 - `github.com/v0lka/sp4rk/orchestration/step_dump_tracker.go` — StepDumpTracker (per-step LLM dump file management)
 - `backend/session/file_coherence.go` — FileCoherenceTracker (cross-session conflict detection)
-- `backend/session/persistence.go` — SessionStore (SQLite persistence including plan review state)
+- `backend/session/persistence.go` — SessionStore (SQLite persistence including plan review state); session list queries compute effective activity (newest persisted chat message / terminal command) — see § Session Activity Semantics
 - `backend/session/persistence_fork.go` — `(*SQLiteSessionStore).ForkSession` deep-copy (messages, tasks+steps/facts/attachments/trajectory, terminal commands, work directories) with regenerated identifiers in a single atomic transaction
 - `backend/session/events.go` — event data structs (session lifecycle + plan review)
 - `backend/session/emitter.go` — EventEmitter (fans out to the Wails UI and persistence through the combined emitFunc built at Application init)
@@ -29,7 +29,12 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `core/tools/read_file_doc.go` — read_file document wrapper; vision resolver attached to the task context by the Orchestrator, conversion cache key includes the vision identity
 - `backend/session/title.go` — auto title generation via LLM
 - `backend/frontend_api_session.go` — FrontendAPI session methods
-- `backend/frontend_api_project.go` — project switch state persistence + destination session fallback
+- `backend/frontend_api_project.go` — project switch state persistence + destination session fallback; `SaveProjectActiveSession` (targeted saved-session write), `GetLastActiveProjectID` (restart restore)
+- `backend/project/persistence.go` — `app_state` key-value table (`SaveAppState`/`LoadAppState`; holds `last_active_project_id`), `SaveSavedSessionID` (updates ONLY `saved_session_id`, preserving open tabs / active file)
+- `frontend/src/lib/sessionRestore.ts` — shared restore resolver `resolveRestoreSession` (saved-first → latest non-archived by activity → null) used by both `useProjectSwitchState` and `useSessionLoader`
+- `frontend/src/stores/sessionStore.ts` — `selectSession` (explicit user pick; persists `saved_session_id` immediately via `SaveProjectActiveSession`) vs `setActiveSessionId` (restore paths; never echoes to the backend)
+- `frontend/src/hooks/useProjectLoader.ts` — startup restore of the last active project (`pickStartupRestoreTarget`, including No Project/CHAT) with the CODE-first fallback
+- `frontend/src/hooks/useSessionLoader.ts` — session list load on project activation; saved-first restore via `resolveRestoreSession`, guarded to never override an already-active session
 - `core/orchestrator.go` — Orchestrator.HandleMessage, Orchestrator.Resume, `installPauseSignal`/`PauseSession`/`newPauseChecker` (universal pause signal); live user-message queue (`QueueLiveUserMessage`/`DrainLiveUserMessages`/`TakeLiveUserMessages`/`DiscardLiveUserMessages`, wired into every conductor run via `ConductorConfig.UserMessageSource`)
 - `backend/session/manager_execution.go` — `ErrPausePending`, `finishLiveLeftover` (follow-up task for undelivered live messages), `sendMessage(presented)` wrapper, `session.pausing` lifecycle
 - `backend/session/manager_compaction.go` — manual context compaction flow (`CompactSessionContext`/`CancelSessionCompaction`, `ErrSessionCompacting`, `ErrCompactionInFlight`, compaction_started/compaction_finished events, context_compaction marker persistence + restore via `convertChatMessagesToLLM`) — see [memory/compaction.md](memory/compaction.md) § Manual Context Compaction
@@ -60,7 +65,10 @@ User clicks "New Chat" (or first message in empty state)
       │       disable code tools and add bash command blacklist
       ├─ Persist to SQLite (sessions table; best-effort when store wired)
       └─ Return SessionInfo {id, name, projectId, createdAt}
-  → Frontend: sessionStore.addSession()
+  → Frontend: sessionStore.addSession() + selectSession(id, projectId)
+      (activates the new session AND persists it as saved_session_id;
+      implicit creation on send/paste/attach/terminal-mode goes through
+      the same call)
 ```
 
 ### Project Switch Session Restoration
@@ -74,19 +82,130 @@ User switches project
       ├─ Reset session store for destination project
       ├─ GetProjectSwitchState(nextProjectId)
       ├─ Restore open tabs + active file in fileViewerStore
-      └─ Resolve active session deterministically:
-          1) saved_session_id when it belongs to destination project
-          2) latest destination session by activity timestamp
+      └─ Resolve active session deterministically (archived sessions are
+          skipped at every step):
+          1) saved_session_id when it belongs to destination project and is not archived
+          2) latest non-archived destination session by activity timestamp
           3) create new session for empty destination project
 
 Backend SwitchProject path
   → persistCurrentProjectSwitchState(previousProjectID) (normalize/validate persisted source state)
+  → switchProjectActivate(destination)
+      └─ Persist last_active_project_id in app_state (best-effort; restored
+         after app restart via GetLastActiveProjectID)
   → applySavedProjectSwitchState(destinationProjectID)
-      ├─ resolveSavedSessionForProject(projectID, savedSessionID)
-      ├─ fallback to resolveLatestSessionForProject(projectID)
+      ├─ resolveSavedSessionForProject(projectID, savedSessionID) (rejects archived)
+      ├─ fallback to resolveLatestSessionForProject(projectID) (skips archived)
       └─ fallback to createSessionForProject(projectID)
   → Persist resolved saved_session_id in project_ui_state
 ```
+
+Both frontend restore entry points — `useProjectSwitchState` (project switch,
+mode toggle, initial activation) and `useSessionLoader` (initial session load +
+`sessions:loaded` push) — resolve the target through the single shared helper
+`resolveRestoreSession(sessions, savedId)` in `frontend/src/lib/sessionRestore.ts`.
+"Activity timestamp" above means **effective activity** (§ Session Activity
+Semantics): the newest persisted session event, exposed to the frontend as
+`SessionInfo.last_active_at`.
+
+The saved pointer stays authoritative because it is persisted at selection
+time, not only at switch time: every session-activating flow — an explicit
+pick (SessionList / SessionSelector `onSelect`), New Session, fork, and
+implicit creation on send/paste/attach/terminal-mode — goes through
+`sessionStore.selectSession(id, projectId)`, which updates the in-memory
+active session AND fires `SaveProjectActiveSession` (fire-and-forget — a
+failed persist never breaks selection; the next selection or the switch-away
+snapshot repairs the value). The persisted project is the session's owning
+project passed by the caller, never the global `activeProjectId`: mid-switch
+the global already points at the destination while the visible list still
+shows the source project's sessions. Restore paths call `setActiveSessionId`
+instead: they apply an already-persisted value and must not echo it back to
+the backend. `useSessionLoader` reads the saved id once per activation
+(together with `listSessions`, both best-effort) and restores only while no
+session is active yet, so an explicit selection in flight is never
+overridden; a `sessions:loaded` push that arrives before that read settles
+waits for it, so the saved branch is never skipped in favor of the
+latest-activity fallback. On the initial (startup) activation the backend open-tabs
+snapshot is stale (it is only written when switching *away* from a project)
+and is NOT applied — the file viewer rehydrates its own localStorage-persisted
+tabs instead; the saved session id is unaffected by that staleness and IS
+restored.
+
+When only the session selection changes inside an already-active project (no
+project switch), the frontend calls `SaveProjectActiveSession(projectID,
+sessionID)` (via `sessionStore.selectSession`) — a targeted write that updates
+ONLY `saved_session_id` and never clobbers viewer-owned
+`open_tabs`/`active_file`. The project is validated first (the
+`project_ui_state` row has an FK to `projects`); a session id that resolution
+rejects (unknown or archived) normalizes to empty so the next project switch
+falls back to a live session. A failure of the ownership lookup itself
+returns an error and writes nothing — normalizing to empty after a transient
+store failure would clobber a valid saved pointer.
+
+### Session Activity Semantics
+
+Session ordering and "latest session" resolution are based on **effective
+activity**, computed at query time in `backend/session/persistence.go`
+(`sessionEffectiveActivitySQL`):
+
+```
+effective_activity =
+    MAX(last session_messages.created_at, last terminal_commands.created_at)
+    → fallback: sessions.last_active_at (stored column)
+    → fallback: sessions.created_at
+```
+
+- Effective activity is the timestamp of the session's most recent **persisted
+  event** — a chat message or a terminal command — not merely the last
+  SendMessage/selection time. A terminal-only session therefore ranks by its
+  real usage.
+- `ListSessions` and `ListSessionsByProject` expose the computed value as
+  `SessionInfo.last_active_at`; the stored `last_active_at` column and its
+  `UpdateSessionActivity` write path (explicit session selection) are
+  unchanged. Both event subqueries are index-backed by composite
+  `(session_id, created_at)` indexes (`idx_session_messages_session_created`,
+  `idx_terminal_commands_session_created`), so each MAX probe is an
+  index-only lookup instead of a per-session row scan.
+- All timestamp writers store UTC (Z-suffixed) RFC3339, so the lexicographic
+  string comparison used by the effective-activity expression and the list
+  ORDER BY matches chronological order.
+- List ordering is deterministic: `pinned DESC, effective_activity DESC,
+  created_at DESC, id ASC`.
+- The list RPCs do NOT filter archived sessions — the sidebar renders them in
+  the collapsible "Archived" group and needs the rows for unarchive. Every
+  auto-selection consumer (backend `resolveLatestSessionForProject`, frontend
+  `pickLatestRestorableSession`) must skip archived rows itself.
+- The frontend mirrors the same comparison wherever it picks a session:
+  `sessionStore.sortByActivity` and `sessionRestore.getSessionActivityMs` both
+  order by `last_active_at || created_at`.
+
+### Startup Context Restoration
+
+```
+App start (after backend:ready)
+  → Frontend hook: useProjectLoader
+      ├─ listProjects()
+      ├─ activeProjectId already set → skip (a project switch already ran)
+      ├─ GetLastActiveProjectID() (best-effort; RPC failure → '')
+      ├─ activeProjectId set while the RPC was in flight → abort (a manual
+      │   project switch is never overridden by the startup restore)
+      ├─ pickStartupRestoreTarget(projects, lastActiveId):
+      │   ├─ id found in the project list → that project
+      │   │   (including __no_project__ → CHAT mode)
+      │   └─ empty id / project deleted while closed → null
+      ├─ fallback: pickMostRecentRealProject (CODE-first; never No Project)
+      └─ no real projects → Create Project dialog
+  → switchProjectWithState(target.id) — continues as a normal project switch
+     (§ Project Switch Session Restoration; initial activation: tabs from the
+     file viewer's localStorage, saved session id restored)
+```
+
+A restart reopens exactly the context that was active at exit — a real project
+(CODE) or No Project (CHAT) — because `SwitchProject` persists whatever it
+activates, including the pseudo-project. The restore is best-effort and never
+blocks startup: a failed RPC, an empty value, or a deleted project degrades to
+the previous CODE-first default, and No Project is auto-selected on startup
+ONLY through this persisted restore — never by the fallback.
 
 ### Message Handling
 
@@ -545,7 +664,8 @@ User clicks Fork (GitFork icon) in SessionSelector on a session item
           │   + task_goal_state (preserves the task's goal history)
           ├─ cloneReview(src, new) on the same tx (review_state + review_comments)
           └─ Commit (any error rolls back the whole fork; source untouched)
-  → Frontend: sessionStore.addSession(forked) + setActiveSessionId(forked.id)
+  → Frontend: sessionStore.addSession(forked) + selectSession(forked.id, forked.project_id)
+      (activates the fork AND persists it as saved_session_id)
 ```
 
 Forking is rejected when the source session has an unfinished
@@ -566,7 +686,8 @@ Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/sess
 
 - `projects` — project roster (in `backend/project/persistence.go`)
 - `project_ui_state` — project_id, saved_session_id, open_tabs (JSON), active_file, updated_at; stores per-project switch UI restoration state
-- `sessions` — id, project_id, name, created_at, last_active_at, archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent
+- `app_state` — key, value; app-level key-value state (in `backend/project/persistence.go`). Currently holds `last_active_project_id` (destination of the most recent `SwitchProject`, including `__no_project__`) for restart restore
+- `sessions` — id, project_id, name, created_at, last_active_at (stored column, updated on explicit selection via `UpdateSessionActivity`), archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent. List queries expose the computed effective activity (§ Session Activity Semantics) as `SessionInfo.last_active_at` — the stored column is only a fallback there
 - `session_messages` — id, session_id, role, content, reasoning_content, tool_calls, metadata (JSON), created_at
 - `tasks` — id, session_id, original_request, routing_decision (JSON), plan (JSON), reflections (JSON), final_output, attempt_count, status, created_at, completed_at
 - `task_steps` — step_id, task_id, summary, full_output, error_text, steps (JSON), created_at (PRIMARY KEY (task_id, step_id))
@@ -592,8 +713,8 @@ The `backend/session/persistence.go` defines the `SessionStore` interface:
 | ------------------------------------------------------------ | ---------------------------------------------------------------- |
 | `SaveSession(ctx, info)`                                     | Upsert session (INSERT OR REPLACE)                               |
 | `LoadSession(ctx, id)`                                       | Load session by ID (returns nil if not found)                    |
-| `ListSessions(ctx)`                                          | List all sessions ordered by last activity                       |
-| `ListSessionsByProject(ctx, projectID)`                      | List sessions for a specific project                             |
+| `ListSessions(ctx)`                                          | List all sessions ordered by effective activity (§ Session Activity Semantics); archived rows included |
+| `ListSessionsByProject(ctx, projectID)`                      | List sessions for a specific project (same ordering; archived rows included) |
 | `DeleteSession(ctx, id)`                                     | Delete session and cascade messages                              |
 | `ArchiveSession(ctx, id, archived)`                          | Set archived flag on session                                     |
 | `PinSession(ctx, id, pinned)`                                | Set pinned flag on session                                       |
@@ -757,8 +878,14 @@ type HandleResult struct {
   directory (`~/.c0wrk/projects/__no_project__/<id>/`) for No Project
   sessions. The session temp directory is always cleaned up regardless.
 - Session state survives app restart (SQLite persistence)
-- Project switch session restore order is deterministic: valid saved session for destination project, otherwise latest destination session, otherwise new destination session
+- Project switch session restore order is deterministic: valid (non-archived) saved session for destination project, otherwise latest non-archived destination session, otherwise new destination session. Archived sessions are never auto-selected — a saved selection pointing at one resolves to empty and falls through to the latest-live fallback
 - Destination project switch state always persists the resolved `saved_session_id` in `project_ui_state` when project persistence is wired
+- `SwitchProject` persists the destination project id (including `__no_project__`) as `last_active_project_id` in `app_state` (best-effort, never aborts the switch); `GetLastActiveProjectID` exposes it for restart restore
+- `SaveProjectActiveSession` writes ONLY `saved_session_id` (inserting a row with empty tabs when missing): previously persisted `open_tabs`/`active_file` always survive a session-only selection change
+- Session activity for ordering and restore is the effective activity: the newest persisted chat message or terminal command, computed at query time and exposed as `SessionInfo.last_active_at`, falling back to the stored `last_active_at`, then `created_at`; the stored column and its `UpdateSessionActivity` write path are unchanged
+- The session list RPCs never filter archived sessions; every auto-selection path (backend fallback resolution, frontend restore) skips archived rows itself — an archived session is never auto-selected, even when it carries the freshest activity
+- Every session-activating flow (list pick, New Session, fork, implicit create on send/paste/attach/terminal) persists `saved_session_id` immediately (`sessionStore.selectSession` → `SaveProjectActiveSession`, fire-and-forget, keyed under the session's owning project id); restore paths apply the persisted value via `setActiveSessionId` and never echo it back to the backend
+- Startup restores the exact last active context: `useProjectLoader` reopens the `last_active_project_id` from `app_state` when the project still exists (including `__no_project__` → CHAT), otherwise falls back to the most recently active real project (CODE-first), then to the Create Project dialog; No Project is never auto-selected by the fallback, and a failed restore RPC never blocks startup
 - User messages are persisted after the authoritative dispatch, not on receive: the `is_nudge` flag is written only once the live-send/fresh classification is known, and a rejected send (pause window, goal gate, attachment gate) never reaches the store
 - Archived sessions are read-only history: the session-manager choke point rejects both new `SendMessage` execution and failed/paused task resume until the session is unarchived
 - Archiving a session that is running or has an unfinished task first cancels the running task and discards the unfinished task, so an archived session is a clean read-only snapshot. The session temp directory is removed once the task goroutine settles; if cancellation does not settle within `stopTimeout`, the archived flag still flips and the temp directory removal is deferred until the goroutine actually finishes (never racing a still-running tool call).
@@ -887,3 +1014,4 @@ type HandleResult struct {
 - [memory/blackboard.md](memory/blackboard.md) — blackboard persistence
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) — session RPC methods
 - [../contracts/event-catalog.md](../contracts/event-catalog.md) — task lifecycle events
+- [../decisions/030-session-context-restore.md](../decisions/030-session-context-restore.md) — saved-first restore, effective-activity semantics, archived exclusion, last-context startup restore

@@ -2,29 +2,11 @@ import { useCallback } from 'react'
 import { createSession, listSessions } from '@/api/sessions'
 import { getProjectSwitchState, saveProjectSwitchState, switchProject } from '@/api/projects'
 import { logger } from '@/lib/logger'
+import { resolveRestoreSession } from '@/lib/sessionRestore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import type { SessionInfo } from '@/types/models'
-
-function isSessionForProject(sessionId: string, sessions: SessionInfo[]): boolean {
-  return sessions.some((session) => session.id === sessionId)
-}
-
-function getSessionActivityMs(session: SessionInfo): number {
-  const timestamp = Date.parse(session.last_active_at || session.created_at)
-  return Number.isNaN(timestamp) ? 0 : timestamp
-}
-
-function pickLatestSession(sessions: SessionInfo[]): SessionInfo | null {
-  if (sessions.length === 0) {
-    return null
-  }
-
-  return sessions.slice(1).reduce<SessionInfo>((latest, candidate) => {
-    return getSessionActivityMs(candidate) > getSessionActivityMs(latest) ? candidate : latest
-  }, sessions[0]!)
-}
 
 async function performSwitch(nextProjectId: string, seq: number): Promise<void> {
   // A superseded switch must not touch state: its queue slot was released by
@@ -59,12 +41,14 @@ async function performSwitch(nextProjectId: string, seq: number): Promise<void> 
   // The file-viewer store was already rehydrated from localStorage with
   // exactly the tabs that were open at the last shutdown — the
   // authoritative, fresh source for open tabs (see fileViewerStore
-  // `partialize`). The backend per-project switch state below, by contrast,
-  // is only persisted when switching *away* from a project, so on restart it
-  // is stale and may still reference tabs the user already dismissed (e.g. a
-  // closed plan). Applying it on startup would silently reopen those stale
-  // tabs, so we must NOT restore from the backend here — trust localStorage.
-  // Mirrors the savedSessionId staleness handling at the bottom of this hook.
+  // `partialize`). The backend per-project open-tabs snapshot below, by
+  // contrast, is only persisted when switching *away* from a project, so on
+  // restart it is stale and may still reference tabs the user already
+  // dismissed (e.g. a closed plan). Applying it on startup would silently
+  // reopen those stale tabs, so we must NOT restore it here — trust
+  // localStorage. The saved session id is unaffected by this staleness: it
+  // is also persisted on every explicit selection (see selectSession), so
+  // the restore below may trust it even on the initial activation.
   const isInitialActivation = !currentProjectId
 
   // Best-effort save of source project UI state before changing active project.
@@ -142,24 +126,18 @@ async function performSwitch(nextProjectId: string, seq: number): Promise<void> 
     sessionStore.setSessions(sessions)
   }
 
-  // Deterministic fallback:
-  // 1) latest session by last_active_at (most reliable — based on actual activity)
-  // 2) saved session from previous project switch (only valid if it still exists)
-  // 3) create new session for empty project
-  //
-  // IMPORTANT: pickLatestSession must come FIRST. On app restart, savedSessionId
-  // is stale because it's only persisted when switching *away* from a project.
-  // If the user created newer sessions after the last project switch but before
-  // closing the app, savedSessionId would point to an older session. Picking the
-  // latest by last_active_at prevents this stale-session bug.
-  const latestSession = pickLatestSession(sessions)
-  if (latestSession) {
-    sessionStore.setActiveSessionId(latestSession.id)
-    return
-  }
-
-  if (savedSessionId && isSessionForProject(savedSessionId, sessions)) {
-    sessionStore.setActiveSessionId(savedSessionId)
+  // Deterministic restore order (see lib/sessionRestore):
+  // 1) the project's saved session — valid while it still exists and is not
+  //    archived. It is persisted on every explicit selection (selectSession)
+  //    and on switch-away above, so it is authoritative and wins even over
+  //    sessions with newer activity.
+  // 2) the latest NON-archived session by activity — fallback for an empty,
+  //    deleted, or archived saved entry (archived sessions are never
+  //    candidates; the backend list RPCs do not filter them out).
+  // 3) create a new session for an empty project.
+  const restoredSession = resolveRestoreSession(sessions, savedSessionId)
+  if (restoredSession) {
+    sessionStore.setActiveSessionId(restoredSession.id)
     return
   }
   if (abortIfSuperseded()) return

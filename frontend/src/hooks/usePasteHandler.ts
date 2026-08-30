@@ -95,7 +95,7 @@ export function usePasteHandler(editor: ChatEditorAPI): {
         if (!sessionId) {
           const newSession = await createSession()
           useSessionStore.getState().addSession(newSession)
-          useSessionStore.getState().setActiveSessionId(newSession.id)
+          useSessionStore.getState().selectSession(newSession.id, newSession.project_id)
           sessionId = newSession.id
         }
 

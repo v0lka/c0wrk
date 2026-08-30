@@ -230,6 +230,10 @@ export function GetGitStatus(arg1) {
   return window['go']['desktop']['App']['GetGitStatus'](arg1);
 }
 
+export function GetLastActiveProjectID() {
+  return window['go']['desktop']['App']['GetLastActiveProjectID']();
+}
+
 export function GetLogLevel() {
   return window['go']['desktop']['App']['GetLogLevel']();
 }
@@ -456,6 +460,10 @@ export function ResumeTask(arg1, arg2, arg3) {
 
 export function RunBackgroundUpdateCheck() {
   return window['go']['desktop']['App']['RunBackgroundUpdateCheck']();
+}
+
+export function SaveProjectActiveSession(arg1, arg2) {
+  return window['go']['desktop']['App']['SaveProjectActiveSession'](arg1, arg2);
 }
 
 export function SaveProjectSwitchState(arg1) {

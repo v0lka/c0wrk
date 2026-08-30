@@ -49,7 +49,10 @@ export function useMessageSender(): UseMessageSenderResult {
       try {
         const newSession = await createSession()
         useSessionStore.getState().addSession(newSession)
-        useSessionStore.getState().setActiveSessionId(newSession.id)
+        // The implicitly created session becomes the visible active one —
+        // persist it as the project's saved session so an app restart
+        // restores exactly this session.
+        useSessionStore.getState().selectSession(newSession.id, newSession.project_id)
         sessionId = newSession.id
       } catch (error) {
         logger.error('Failed to create session:', error)

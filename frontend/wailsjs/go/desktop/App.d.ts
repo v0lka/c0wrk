@@ -123,6 +123,8 @@ export function GetGitHistory():Promise<Array<workspace.GitHistoryCommit>>;
 
 export function GetGitStatus(arg1:string):Promise<Record<string, workspace.GitStatusEntry>>;
 
+export function GetLastActiveProjectID():Promise<string>;
+
 export function GetLogLevel():Promise<string>;
 
 export function GetMCPServers():Promise<Record<string, config.MCPServerConfig>>;
@@ -236,6 +238,8 @@ export function ResumeSession(arg1:string,arg2:string,arg3:string,arg4:string):P
 export function ResumeTask(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RunBackgroundUpdateCheck():Promise<void>;
+
+export function SaveProjectActiveSession(arg1:string,arg2:string):Promise<void>;
 
 export function SaveProjectSwitchState(arg1:backend.ProjectUIStateRequest):Promise<void>;
 

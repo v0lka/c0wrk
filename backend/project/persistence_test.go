@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -674,6 +675,162 @@ func TestLoadProjectUIState_NotFound(t *testing.T) {
 	}
 	if loaded != nil {
 		t.Error("missing UI state should return nil")
+	}
+}
+
+// TestSaveSavedSessionID_PreservesOpenTabsAndActiveFile pins the targeted
+// update contract: writing a new saved session must NOT clobber previously
+// persisted open_tabs/active_file.
+func TestSaveSavedSessionID_PreservesOpenTabsAndActiveFile(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	proj := ProjectInfo{
+		ID:            "proj-targeted-session",
+		Name:          "Targeted Session",
+		WorkspacePath: "/tmp/targeted-session",
+		CreatedAt:     time.Now().Format(time.RFC3339),
+	}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+
+	if err := store.SaveUIState(context.Background(), ProjectUIState{
+		ProjectID:      proj.ID,
+		SavedSessionID: "session-old",
+		OpenTabs:       []string{"a.go", "dir/b.go"},
+		ActiveFile:     "dir/b.go",
+	}); err != nil {
+		t.Fatalf("failed to save initial UI state: %v", err)
+	}
+
+	if err := store.SaveSavedSessionID(context.Background(), proj.ID, "session-new"); err != nil {
+		t.Fatalf("failed to save saved session id: %v", err)
+	}
+
+	loaded, err := store.LoadUIState(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load UI state: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loaded UI state should not be nil")
+	}
+	if loaded.SavedSessionID != "session-new" {
+		t.Errorf("SavedSessionID mismatch: got %q, want %q", loaded.SavedSessionID, "session-new")
+	}
+	if len(loaded.OpenTabs) != 2 || loaded.OpenTabs[0] != "a.go" || loaded.OpenTabs[1] != "dir/b.go" {
+		t.Errorf("OpenTabs must be preserved, got %#v", loaded.OpenTabs)
+	}
+	if loaded.ActiveFile != "dir/b.go" {
+		t.Errorf("ActiveFile must be preserved, got %q", loaded.ActiveFile)
+	}
+}
+
+// TestSaveSavedSessionID_InsertsRowWhenMissing verifies the insert path: with
+// no prior UI-state row, a new one is created with empty open tabs and no
+// active file.
+func TestSaveSavedSessionID_InsertsRowWhenMissing(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	proj := ProjectInfo{
+		ID:            "proj-targeted-insert",
+		Name:          "Targeted Insert",
+		WorkspacePath: "/tmp/targeted-insert",
+		CreatedAt:     time.Now().Format(time.RFC3339),
+	}
+	if err := store.SaveProject(context.Background(), proj); err != nil {
+		t.Fatalf("failed to save project: %v", err)
+	}
+
+	if err := store.SaveSavedSessionID(context.Background(), proj.ID, "session-fresh"); err != nil {
+		t.Fatalf("failed to save saved session id: %v", err)
+	}
+
+	loaded, err := store.LoadUIState(context.Background(), proj.ID)
+	if err != nil {
+		t.Fatalf("failed to load UI state: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected a UI-state row to be inserted")
+	}
+	if loaded.SavedSessionID != "session-fresh" {
+		t.Errorf("SavedSessionID mismatch: got %q", loaded.SavedSessionID)
+	}
+	if len(loaded.OpenTabs) != 0 {
+		t.Errorf("OpenTabs should default to empty, got %#v", loaded.OpenTabs)
+	}
+	if loaded.ActiveFile != "" {
+		t.Errorf("ActiveFile should default to empty, got %q", loaded.ActiveFile)
+	}
+	if loaded.UpdatedAt == "" {
+		t.Error("UpdatedAt should be populated")
+	}
+}
+
+// TestAppState_RoundTripAcrossReopen verifies app_state survives closing and
+// reopening the database (the restart restore path).
+func TestAppState_RoundTripAcrossReopen(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "app_state.db")
+
+	openStore := func(t *testing.T) (*SQLiteProjectStore, *sql.DB) {
+		t.Helper()
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("failed to open db: %v", err)
+		}
+		db.SetMaxOpenConns(1)
+		for _, pragma := range []string{"PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON"} {
+			if _, err := db.ExecContext(context.Background(), pragma); err != nil {
+				_ = db.Close()
+				t.Fatalf("failed to apply %q: %v", pragma, err)
+			}
+		}
+		store, err := NewSQLiteProjectStore(db)
+		if err != nil {
+			_ = db.Close()
+			t.Fatalf("failed to create project store: %v", err)
+		}
+		return store, db
+	}
+
+	store, db := openStore(t)
+	if err := store.SaveAppState(context.Background(), AppStateKeyLastActiveProjectID, "proj-1"); err != nil {
+		t.Fatalf("failed to save app state: %v", err)
+	}
+	// Upsert over the same key (including the No Project pseudo-project id).
+	if err := store.SaveAppState(context.Background(), AppStateKeyLastActiveProjectID, NoProjectID); err != nil {
+		t.Fatalf("failed to upsert app state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("failed to close db: %v", err)
+	}
+
+	// Reopen through a brand-new DB handle (simulated app restart).
+	reopened, db2 := openStore(t)
+	defer func() { _ = db2.Close() }()
+
+	got, err := reopened.LoadAppState(context.Background(), AppStateKeyLastActiveProjectID)
+	if err != nil {
+		t.Fatalf("failed to load app state after reopen: %v", err)
+	}
+	if got != NoProjectID {
+		t.Errorf("last active project id mismatch after reopen: got %q, want %q", got, NoProjectID)
+	}
+}
+
+// TestAppState_LoadMissingKeyReturnsEmpty verifies a never-written key reads
+// back as an empty string without an error.
+func TestAppState_LoadMissingKeyReturnsEmpty(t *testing.T) {
+	store, _, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	got, err := store.LoadAppState(context.Background(), "never-written")
+	if err != nil {
+		t.Fatalf("missing key should not error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("missing key should return empty string, got %q", got)
 	}
 }
 

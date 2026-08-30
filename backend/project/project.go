@@ -62,6 +62,11 @@ type WorkDirectoryRecord struct {
 // translate a unique-constraint violation into this sentinel.
 var ErrWorkDirAlreadyExists = errors.New("work directory already exists for this project or session")
 
+// AppStateKeyLastActiveProjectID is the app_state key under which the most
+// recently activated project ID is persisted (including NoProjectID) so the
+// last active project can be restored after an app restart.
+const AppStateKeyLastActiveProjectID = "last_active_project_id"
+
 // ProjectStore provides persistent storage for projects.
 type ProjectStore interface {
 	SaveProject(ctx context.Context, info ProjectInfo) error
@@ -72,6 +77,12 @@ type ProjectStore interface {
 	UpdateProjectActivity(ctx context.Context, id string) error
 	SaveUIState(ctx context.Context, state ProjectUIState) error
 	LoadUIState(ctx context.Context, projectID string) (*ProjectUIState, error)
+	// SaveSavedSessionID updates only saved_session_id, preserving open tabs.
+	SaveSavedSessionID(ctx context.Context, projectID, sessionID string) error
+
+	// App-level key-value state (e.g. last active project for restart restore)
+	SaveAppState(ctx context.Context, key, value string) error
+	LoadAppState(ctx context.Context, key string) (string, error)
 
 	// Project-scoped work directories
 	SaveProjectWorkDir(ctx context.Context, projectID string, rec WorkDirectoryRecord) error

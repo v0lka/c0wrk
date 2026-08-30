@@ -2,28 +2,13 @@
 
 import { useEffect } from 'react'
 import { subscribe } from '@/api/runtime'
+import { getProjectSwitchState } from '@/api/projects'
 import { listSessions } from '@/api/sessions'
+import { resolveRestoreSession } from '@/lib/sessionRestore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { isSessionInfo, isArrayOf, isSessionRenamed } from '@/types/guards'
 import type { SessionInfo } from '@/types/models'
-
-// --- Helpers (mirror useProjectSwitchState for consistency) ---
-
-function getSessionActivityMs(session: SessionInfo): number {
-  const timestamp = Date.parse(session.last_active_at || session.created_at)
-  return Number.isNaN(timestamp) ? 0 : timestamp
-}
-
-/** Iterates through all sessions to find the one with the highest activity timestamp. */
-function pickLatestSession(sessions: SessionInfo[]): SessionInfo | null {
-  if (sessions.length === 0) {
-    return null
-  }
-  return sessions.slice(1).reduce<SessionInfo>((latest, candidate) => {
-    return getSessionActivityMs(candidate) > getSessionActivityMs(latest) ? candidate : latest
-  }, sessions[0]!)
-}
 
 export function useSessionLoader(): void {
   const activeProjectId = useProjectStore(s => s.activeProjectId)
@@ -31,12 +16,37 @@ export function useSessionLoader(): void {
   useEffect(() => {
     if (!activeProjectId) return
     let cancelled = false
+    // The project's saved session id, fetched once per activation (below) and
+    // shared by the initial load and the sessions:loaded push handler. It is
+    // the primary restore candidate — persisted on every explicit selection
+    // (selectSession → saveProjectActiveSession) and on switch-away, so it is
+    // fresh; latest-by-activity is only the fallback for a missing or
+    // archived entry (see lib/sessionRestore).
+    let savedSessionId = ''
+    // Released once the saved-session pointer has been fetched (successfully
+    // or not). The sessions:loaded push handler awaits it before restoring:
+    // a push that arrives while the initial fetch is still in flight must not
+    // restore the latest-by-activity fallback in place of the saved session.
+    let resolveSavedSessionIdReady!: () => void
+    const savedSessionIdReady = new Promise<void>((resolve) => {
+      resolveSavedSessionIdReady = resolve
+    })
 
     const cleanups: Array<() => void> = []
     const store = () => useSessionStore.getState()
 
     // Clear stale active session from previous project while destination sessions are loading.
     store().setActiveSessionId(null)
+
+    // Restore only while nothing is active yet: an explicit selection or an
+    // already-completed restore must never be overridden.
+    const restoreIfIdle = (sessions: SessionInfo[]) => {
+      if (store().activeSessionId) return
+      const restored = resolveRestoreSession(sessions, savedSessionId)
+      if (restored) {
+        store().setActiveSessionId(restored.id)
+      }
+    }
 
     // Subscribe to sessions:loaded for push updates.
     // Guard against cross-project contamination: only accept sessions whose
@@ -51,35 +61,35 @@ export function useSessionLoader(): void {
         // Filter to sessions belonging to the active project.
         const owned = data.filter(s => s.project_id === currentProjectId)
         if (owned.length === 0) return
-        store().setSessions(owned)
-        // Auto-select most recent session using deterministic pickLatestSession
-        // (iterates all sessions rather than trusting sorted order alone).
-        const state = store()
-        if (!state.activeSessionId) {
-          const latest = pickLatestSession(owned)
-          if (latest) {
-            store().setActiveSessionId(latest.id)
-          }
-        }
+        // Wait for the saved-session pointer before touching the store: the
+        // initial fetch may still be in flight, and restoring now would pick
+        // the latest-by-activity fallback instead of the saved session (the
+        // fallback then sticks — restoreIfIdle never overrides an active id).
+        void savedSessionIdReady.then(() => {
+          if (cancelled) return
+          store().setSessions(owned)
+          restoreIfIdle(owned)
+        })
       }),
     )
 
-    // Fetch sessions for active project
-    listSessions()
-      .then((sessions) => {
-        if (cancelled) return
-        store().setSessions(sessions)
-        // Auto-select most recent session using deterministic pickLatestSession.
-        // Uses the same logic as useProjectSwitchState for consistency.
-        const state = store()
-        if (!state.activeSessionId) {
-          const latest = pickLatestSession(sessions)
-          if (latest) {
-            store().setActiveSessionId(latest.id)
-          }
-        }
-      })
-      .catch(() => { /* ignore */ })
+    // Fetch sessions for the active project together with its saved-session
+    // pointer (read once per activation). Both are best-effort: a failed
+    // saved-state read just degrades the restore to the latest-by-activity
+    // fallback, a failed session list leaves the store untouched.
+    void Promise.all([
+      getProjectSwitchState(activeProjectId).catch(() => null),
+      listSessions().catch(() => null),
+    ]).then(([saved, sessions]) => {
+      // Capture the pointer and release the push gate in EVERY outcome —
+      // including a failed session-list fetch — so later pushes still
+      // restore against the saved pointer.
+      savedSessionId = saved?.saved_session_id ?? ''
+      resolveSavedSessionIdReady()
+      if (cancelled || sessions === null) return
+      store().setSessions(sessions)
+      restoreIfIdle(sessions)
+    })
 
     // Global session rename (manual or background auto-titling). Updates the
     // session title in the sidebar even when the renamed session is not the

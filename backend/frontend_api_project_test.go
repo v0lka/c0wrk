@@ -616,3 +616,336 @@ func TestGetSessionWorkspace_NoProject_ForeignSessionDoesNotLeak(t *testing.T) {
 		t.Fatalf("foreign session leaked real workspace into CHAT mode: got %q, want derived No Project path %q", got, want)
 	}
 }
+
+// seedArchivedSession stores a store-only session row with archived=true.
+func (h *projectSwitchTestHarness) seedArchivedSession(t *testing.T, id, createdAt, lastActiveAt string) {
+	t.Helper()
+	err := h.sessionStore.SaveSession(h.ctx, session.SessionInfo{
+		ID:           id,
+		ProjectID:    h.projectID,
+		Name:         "Session " + id,
+		CreatedAt:    createdAt,
+		LastActiveAt: lastActiveAt,
+		Archived:     true,
+	})
+	if err != nil {
+		t.Fatalf("failed to seed archived session %q: %v", id, err)
+	}
+}
+
+// TestResolveSavedSessionForProject_SkipsArchived pins the restore contract:
+// an archived session is read-only and hidden, so a saved selection pointing
+// at it must be rejected — both via the session list and via the lazy
+// store-restore fallback (archived sessions remain restorable by design).
+func TestResolveSavedSessionForProject_SkipsArchived(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+
+	now := time.Now().UTC()
+	h.seedArchivedSession(t, "archived-saved", now.Add(-time.Hour).Format(time.RFC3339), now.Add(-time.Minute).Format(time.RFC3339))
+	h.seedSession(t, "live-session", now.Add(-2*time.Hour).Format(time.RFC3339), now.Add(-2*time.Minute).Format(time.RFC3339))
+
+	got, err := h.api.resolveSavedSessionForProject(h.projectID, "archived-saved")
+	if err != nil {
+		t.Fatalf("resolveSavedSessionForProject(archived-saved): %v", err)
+	}
+	if got != "" {
+		t.Fatalf("archived session must not resolve as saved selection, got %q", got)
+	}
+	got, err = h.api.resolveSavedSessionForProject(h.projectID, "live-session")
+	if err != nil {
+		t.Fatalf("resolveSavedSessionForProject(live-session): %v", err)
+	}
+	if got != "live-session" {
+		t.Fatalf("live session must resolve, got %q", got)
+	}
+}
+
+// TestResolveLatestSessionForProject_SkipsArchived verifies the latest-session
+// fallback never picks an archived session, even when it is the most recently
+// active one.
+func TestResolveLatestSessionForProject_SkipsArchived(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+
+	now := time.Now().UTC()
+	h.seedArchivedSession(t, "archived-latest", now.Add(-time.Hour).Format(time.RFC3339), now.Add(-time.Minute).Format(time.RFC3339))
+	h.seedSession(t, "live-older", now.Add(-2*time.Hour).Format(time.RFC3339), now.Add(-5*time.Minute).Format(time.RFC3339))
+
+	if got := h.api.resolveLatestSessionForProject(h.projectID); got != "live-older" {
+		t.Fatalf("latest fallback must skip archived sessions: got %q, want %q", got, "live-older")
+	}
+}
+
+// TestResolveLatestSessionForProject_AllArchivedReturnsEmpty verifies the
+// fallback yields nothing when every session of the project is archived.
+func TestResolveLatestSessionForProject_AllArchivedReturnsEmpty(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	h.seedArchivedSession(t, "archived-a", now, now)
+	h.seedArchivedSession(t, "archived-b", now, now)
+
+	if got := h.api.resolveLatestSessionForProject(h.projectID); got != "" {
+		t.Fatalf("all-archived project must have no latest fallback, got %q", got)
+	}
+}
+
+// TestApplySavedProjectSwitchState_SkipsArchivedSavedSession verifies the
+// end-to-end project-switch restore: a saved selection pointing at an archived
+// session falls back to the latest live session.
+func TestApplySavedProjectSwitchState_SkipsArchivedSavedSession(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+
+	now := time.Now().UTC()
+	h.seedArchivedSession(t, "saved-archived", now.Add(-time.Hour).Format(time.RFC3339), now.Add(-time.Minute).Format(time.RFC3339))
+	h.seedSession(t, "live-latest", now.Add(-2*time.Hour).Format(time.RFC3339), now.Add(-5*time.Minute).Format(time.RFC3339))
+	h.saveUIState(t, "saved-archived")
+
+	h.api.applySavedProjectSwitchState(h.projectID)
+
+	state := h.loadUIState(t)
+	if state.SavedSessionID != "live-latest" {
+		t.Fatalf("expected fallback to latest live session, got %q", state.SavedSessionID)
+	}
+}
+
+// TestSaveProjectActiveSession_PreservesOpenTabsAndActiveFile pins the
+// targeted-write contract: switching the saved session must not clobber the
+// previously persisted open tabs / active file.
+func TestSaveProjectActiveSession_PreservesOpenTabsAndActiveFile(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+
+	now := time.Now().UTC()
+	h.seedSession(t, "session-a", now.Add(-2*time.Hour).Format(time.RFC3339), now.Add(-2*time.Hour).Format(time.RFC3339))
+	h.seedSession(t, "session-b", now.Add(-time.Hour).Format(time.RFC3339), now.Add(-time.Hour).Format(time.RFC3339))
+
+	if err := h.api.SaveProjectUIState(ProjectUIStateRequest{
+		ProjectID:      h.projectID,
+		SavedSessionID: "session-a",
+		OpenTabs:       []string{"README.md", "src/main.go"},
+		ActiveFile:     "src/main.go",
+	}); err != nil {
+		t.Fatalf("failed to save initial UI state: %v", err)
+	}
+
+	if err := h.api.SaveProjectActiveSession(h.projectID, "session-b"); err != nil {
+		t.Fatalf("SaveProjectActiveSession: %v", err)
+	}
+
+	state := h.loadUIState(t)
+	if state.SavedSessionID != "session-b" {
+		t.Fatalf("SavedSessionID mismatch: got %q, want %q", state.SavedSessionID, "session-b")
+	}
+	if len(state.OpenTabs) != 2 || state.OpenTabs[0] != "README.md" || state.OpenTabs[1] != "src/main.go" {
+		t.Fatalf("OpenTabs must be preserved, got %#v", state.OpenTabs)
+	}
+	if state.ActiveFile != "src/main.go" {
+		t.Fatalf("ActiveFile must be preserved, got %q", state.ActiveFile)
+	}
+}
+
+// TestSaveProjectActiveSession_InsertsRowWhenMissing verifies the RPC creates
+// a UI-state row (with empty tabs) when the project has none yet.
+func TestSaveProjectActiveSession_InsertsRowWhenMissing(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	h.seedSession(t, "session-a", now, now)
+
+	if err := h.api.SaveProjectActiveSession(h.projectID, "session-a"); err != nil {
+		t.Fatalf("SaveProjectActiveSession: %v", err)
+	}
+
+	state := h.loadUIState(t)
+	if state.SavedSessionID != "session-a" {
+		t.Fatalf("SavedSessionID mismatch: got %q", state.SavedSessionID)
+	}
+	if len(state.OpenTabs) != 0 || state.ActiveFile != "" {
+		t.Fatalf("fresh row must have empty tabs/active file, got tabs=%#v active=%q", state.OpenTabs, state.ActiveFile)
+	}
+}
+
+// TestSaveProjectActiveSession_RejectsUnknownProject verifies the project is
+// validated before writing (project_ui_state has an FK to projects).
+func TestSaveProjectActiveSession_RejectsUnknownProject(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+
+	if err := h.api.SaveProjectActiveSession("missing-project", "session-a"); err == nil {
+		t.Fatal("expected an error for an unknown project")
+	}
+	if err := h.api.SaveProjectActiveSession("", "session-a"); err == nil {
+		t.Fatal("expected an error for an empty project id")
+	}
+}
+
+// TestSaveProjectActiveSession_ArchivedSelectionNormalizesToEmpty verifies an
+// archived (or otherwise unresolvable) selection is never persisted: it
+// normalizes to empty so the next project switch falls back to a live session.
+func TestSaveProjectActiveSession_ArchivedSelectionNormalizesToEmpty(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+
+	now := time.Now().UTC()
+	h.seedSession(t, "session-a", now.Add(-2*time.Hour).Format(time.RFC3339), now.Add(-2*time.Hour).Format(time.RFC3339))
+	h.seedArchivedSession(t, "archived-b", now.Add(-time.Hour).Format(time.RFC3339), now.Add(-time.Hour).Format(time.RFC3339))
+	h.saveUIState(t, "session-a")
+
+	if err := h.api.SaveProjectActiveSession(h.projectID, "archived-b"); err != nil {
+		t.Fatalf("SaveProjectActiveSession: %v", err)
+	}
+
+	state := h.loadUIState(t)
+	if state.SavedSessionID != "" {
+		t.Fatalf("archived selection must normalize to empty, got %q", state.SavedSessionID)
+	}
+	if len(state.OpenTabs) != 1 || state.OpenTabs[0] != "README.md" || state.ActiveFile != "README.md" {
+		t.Fatalf("OpenTabs/ActiveFile must be preserved, got tabs=%#v active=%q", state.OpenTabs, state.ActiveFile)
+	}
+}
+
+// TestSwitchProject_PersistsLastActiveProjectIDAcrossReopen pins the restart
+// contract: SwitchProject persists the destination project (including the No
+// Project pseudo-project) into app_state, and GetLastActiveProjectID returns
+// it after the database is closed and reopened (simulated app restart).
+func TestSwitchProject_PersistsLastActiveProjectIDAcrossReopen(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "last_active.db")
+
+	openStores := func(t *testing.T) (*sql.DB, *project.SQLiteProjectStore, *session.SQLiteSessionStore) {
+		t.Helper()
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("failed to open db: %v", err)
+		}
+		db.SetMaxOpenConns(1)
+		for _, pragma := range []string{"PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON"} {
+			if _, err := db.ExecContext(ctx, pragma); err != nil {
+				_ = db.Close()
+				t.Fatalf("failed to apply %q: %v", pragma, err)
+			}
+		}
+		projectStore, err := project.NewSQLiteProjectStore(db)
+		if err != nil {
+			_ = db.Close()
+			t.Fatalf("failed to create project store: %v", err)
+		}
+		sessionStore, err := session.NewSQLiteSessionStore(db)
+		if err != nil {
+			_ = db.Close()
+			t.Fatalf("failed to create session store: %v", err)
+		}
+		return db, projectStore, sessionStore
+	}
+
+	db, projectStore, sessionStore := openStores(t)
+
+	agentDir := t.TempDir()
+	projectManager := project.NewManager(projectStore, agentDir, nil)
+	createdProject, err := projectManager.CreateProject("Restart Target", "")
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("failed to create test project: %v", err)
+	}
+	if _, err := projectManager.EnsureNoProject(); err != nil {
+		_ = db.Close()
+		t.Fatalf("failed to ensure No Project: %v", err)
+	}
+
+	factory := func(core.Emitter, *slog.Logger, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+		// A bare orchestrator: the No Project restore path calls
+		// SetNoProjectMode on it, which is nil-safe for the zero value.
+		return &core.Orchestrator{}, nil
+	}
+	manager := session.NewManager(factory, func(session.Event) {}, agentDir)
+	defer manager.Shutdown()
+	manager.SetSessionStore(sessionStore)
+	manager.SetProjectResolver(func(projectID string) (string, error) {
+		p, err := projectManager.GetProject(projectID)
+		if err != nil || p == nil {
+			return "", err
+		}
+		return p.WorkspacePath, nil
+	})
+
+	api := &FrontendAPI{
+		app:            &Application{manager: manager},
+		store:          sessionStore,
+		projStore:      projectStore,
+		projectManager: projectManager,
+		agentDir:       agentDir,
+		appCtx:         func() context.Context { return ctx },
+		emitEvent:      func(string, ...any) {},
+		// Without an override, builder() returns a typed-nil that panics in
+		// switchProjectActivate (see TestSwitchProject_AlreadyActive_EmitsSwitchedEvent).
+		builderOverride: &mockBuilder{},
+	}
+	defer func() {
+		api.watcherMu.Lock()
+		defer api.watcherMu.Unlock()
+		if api.watcher != nil {
+			_ = api.watcher.Close()
+			api.watcher = nil
+		}
+	}()
+
+	// Seed sessions so applySavedProjectSwitchState resolves a fallback
+	// without creating one through the nil-orchestrator factory (also for
+	// No Project, whose fallback would otherwise hit CreateSession).
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := sessionStore.SaveSession(ctx, session.SessionInfo{
+		ID: "session-a", ProjectID: createdProject.ID, Name: "Session session-a",
+		CreatedAt: now, LastActiveAt: now,
+	}); err != nil {
+		t.Fatalf("failed to seed session: %v", err)
+	}
+	if err := sessionStore.SaveSession(ctx, session.SessionInfo{
+		ID: "session-np", ProjectID: project.NoProjectID, Name: "Session session-np",
+		CreatedAt: now, LastActiveAt: now,
+	}); err != nil {
+		t.Fatalf("failed to seed No Project session: %v", err)
+	}
+
+	if err := api.SwitchProject(createdProject.ID); err != nil {
+		t.Fatalf("SwitchProject: %v", err)
+	}
+	if got := api.GetLastActiveProjectID(); got != createdProject.ID {
+		t.Fatalf("last active project after switch: got %q, want %q", got, createdProject.ID)
+	}
+
+	// Switching to No Project must persist the pseudo-project id as well.
+	if err := api.SwitchProject(project.NoProjectID); err != nil {
+		t.Fatalf("SwitchProject(No Project): %v", err)
+	}
+	if got := api.GetLastActiveProjectID(); got != project.NoProjectID {
+		t.Fatalf("last active project after No Project switch: got %q, want %q", got, project.NoProjectID)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("failed to close db: %v", err)
+	}
+
+	// Simulated restart: brand-new DB handle and store over the same file.
+	db2, projectStore2, _ := openStores(t)
+	defer func() { _ = db2.Close() }()
+	restarted := &FrontendAPI{projStore: projectStore2}
+	if got := restarted.GetLastActiveProjectID(); got != project.NoProjectID {
+		t.Fatalf("last active project after reopen: got %q, want %q", got, project.NoProjectID)
+	}
+}
+
+// TestGetLastActiveProjectID_EmptyWhenNeverPersisted verifies the accessor is
+// empty (not an error) before any project switch was persisted.
+func TestGetLastActiveProjectID_EmptyWhenNeverPersisted(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+
+	if got := h.api.GetLastActiveProjectID(); got != "" {
+		t.Fatalf("expected empty last active project id before any switch, got %q", got)
+	}
+}

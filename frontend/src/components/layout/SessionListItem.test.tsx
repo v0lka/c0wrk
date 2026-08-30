@@ -15,6 +15,7 @@ import { SessionItem, type SessionItemSummary } from './SessionListItem'
 function makeSession(overrides: Partial<SessionItemSummary> = {}): SessionItemSummary {
   return {
     id: 's1',
+    project_id: 'proj-1',
     name: 'Session One',
     archived: false,
     pinned: false,

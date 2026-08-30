@@ -1083,6 +1083,213 @@ func TestListSessionsOrderedByActivity(t *testing.T) {
 	}
 }
 
+// TestListSessionsEffectiveActivityEvents verifies that a session whose most
+// recent event (chat message or terminal command) is newer than another
+// session's last_active_at sorts above it, and that the returned
+// LastActiveAt carries the effective activity while the stored column is
+// untouched. Message-only and terminal-only sessions must both count (SQLite's
+// scalar max(a, b) would return NULL for a single populated source).
+func TestListSessionsEffectiveActivityEvents(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	sessions := []SessionInfo{
+		{
+			ID:           "msg-event",
+			ProjectID:    testProjectID,
+			Name:         "Message Event",
+			CreatedAt:    "2024-01-01T09:00:00Z",
+			LastActiveAt: "2024-01-01T10:00:00Z",
+		},
+		{
+			ID:           "term-event",
+			ProjectID:    testProjectID,
+			Name:         "Terminal Event",
+			CreatedAt:    "2024-01-01T09:00:00Z",
+			LastActiveAt: "2024-01-01T10:00:00Z",
+		},
+		{
+			// Later stored last_active_at than both event sessions, but no
+			// events at all: effective activity stays last_active_at and must
+			// lose to any newer event.
+			ID:           "quiet",
+			ProjectID:    testProjectID,
+			Name:         "Quiet Session",
+			CreatedAt:    "2024-01-02T10:00:00Z",
+			LastActiveAt: "2024-03-01T10:00:00Z",
+		},
+	}
+	for _, s := range sessions {
+		if err := store.SaveSession(ctx, s); err != nil {
+			t.Fatalf("failed to save session %q: %v", s.ID, err)
+		}
+	}
+
+	// Newest event overall: a chat message on "msg-event" (message-only session).
+	if err := store.SaveMessage(ctx, ChatMessage{
+		SessionID: "msg-event",
+		Role:      "user",
+		Content:   "hello",
+		Metadata:  json.RawMessage(`{}`),
+		CreatedAt: "2024-06-15T20:00:00Z",
+	}); err != nil {
+		t.Fatalf("failed to save message: %v", err)
+	}
+
+	// Terminal-only session with an event between "quiet" and "msg-event".
+	// SaveTerminalCommand stamps time.Now(), so insert the row directly to fix
+	// the timestamp.
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO terminal_commands (session_id, command, created_at)
+		VALUES (?, ?, ?)`, "term-event", "ls -la", "2024-05-01T10:00:00Z"); err != nil {
+		t.Fatalf("failed to insert terminal command: %v", err)
+	}
+
+	assertOrder := func(t *testing.T, listed []SessionInfo) {
+		t.Helper()
+		if len(listed) != 3 {
+			t.Fatalf("expected 3 sessions, got %d", len(listed))
+		}
+		if listed[0].ID != "msg-event" {
+			t.Errorf("first session should be 'msg-event', got %q", listed[0].ID)
+		}
+		if listed[1].ID != "term-event" {
+			t.Errorf("second session should be 'term-event', got %q", listed[1].ID)
+		}
+		if listed[2].ID != "quiet" {
+			t.Errorf("third session should be 'quiet', got %q", listed[2].ID)
+		}
+		// SessionInfo.LastActiveAt carries the effective activity.
+		if got := listed[0].LastActiveAt; got != "2024-06-15T20:00:00Z" {
+			t.Errorf("msg-event effective activity = %q, want message timestamp", got)
+		}
+		if got := listed[1].LastActiveAt; got != "2024-05-01T10:00:00Z" {
+			t.Errorf("term-event effective activity = %q, want terminal timestamp", got)
+		}
+		if got := listed[2].LastActiveAt; got != "2024-03-01T10:00:00Z" {
+			t.Errorf("quiet effective activity = %q, want stored last_active_at", got)
+		}
+	}
+
+	listed, err := store.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("failed to list sessions: %v", err)
+	}
+	assertOrder(t, listed)
+
+	byProject, err := store.ListSessionsByProject(ctx, testProjectID)
+	if err != nil {
+		t.Fatalf("failed to list sessions by project: %v", err)
+	}
+	assertOrder(t, byProject)
+
+	// The stored last_active_at column must be untouched by the read path.
+	loaded, err := store.LoadSession(ctx, "msg-event")
+	if err != nil {
+		t.Fatalf("failed to load session: %v", err)
+	}
+	if loaded.LastActiveAt != "2024-01-01T10:00:00Z" {
+		t.Errorf("stored last_active_at changed: got %q, want %q", loaded.LastActiveAt, "2024-01-01T10:00:00Z")
+	}
+}
+
+// TestListSessionsEffectiveActivityTieBreak verifies deterministic ordering
+// when effective activities are equal to the second: created_at DESC, then
+// id ASC.
+func TestListSessionsEffectiveActivityTieBreak(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Identical effective activity (no events, same stored last_active_at) for
+	// all three; created_at and id decide the order.
+	sessions := []SessionInfo{
+		{ID: "tie-b", ProjectID: testProjectID, Name: "B", CreatedAt: "2024-01-10T10:00:00Z", LastActiveAt: "2024-01-15T10:00:00Z"},
+		{ID: "tie-c", ProjectID: testProjectID, Name: "C", CreatedAt: "2024-01-12T10:00:00Z", LastActiveAt: "2024-01-15T10:00:00Z"},
+		{ID: "tie-a", ProjectID: testProjectID, Name: "A", CreatedAt: "2024-01-10T10:00:00Z", LastActiveAt: "2024-01-15T10:00:00Z"},
+	}
+	for _, s := range sessions {
+		if err := store.SaveSession(ctx, s); err != nil {
+			t.Fatalf("failed to save session %q: %v", s.ID, err)
+		}
+	}
+
+	assertOrder := func(t *testing.T, listed []SessionInfo) {
+		t.Helper()
+		if len(listed) != 3 {
+			t.Fatalf("expected 3 sessions, got %d", len(listed))
+		}
+		// created_at DESC puts tie-c first; equal created_at breaks by id ASC.
+		want := []string{"tie-c", "tie-a", "tie-b"}
+		for i, id := range want {
+			if listed[i].ID != id {
+				t.Errorf("position %d: got %q, want %q (full order: %q, %q, %q)",
+					i, listed[i].ID, id, listed[0].ID, listed[1].ID, listed[2].ID)
+			}
+		}
+	}
+
+	listed, err := store.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("failed to list sessions: %v", err)
+	}
+	assertOrder(t, listed)
+
+	byProject, err := store.ListSessionsByProject(ctx, testProjectID)
+	if err != nil {
+		t.Fatalf("failed to list sessions by project: %v", err)
+	}
+	assertOrder(t, byProject)
+}
+
+// TestListSessionsEffectiveActivityFallback verifies that a session without
+// events gets effective activity = COALESCE(last_active_at, created_at).
+func TestListSessionsEffectiveActivityFallback(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Stored last_active_at set, no events: effective activity is last_active_at.
+	if err := store.SaveSession(ctx, SessionInfo{
+		ID:           "has-activity",
+		ProjectID:    testProjectID,
+		Name:         "Has Activity",
+		CreatedAt:    "2024-01-01T10:00:00Z",
+		LastActiveAt: "2024-03-01T10:00:00Z",
+	}); err != nil {
+		t.Fatalf("failed to save session: %v", err)
+	}
+
+	// NULL last_active_at, no events: effective activity falls back to created_at.
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO sessions (id, project_id, name, created_at, last_active_at)
+		VALUES (?, ?, ?, ?, NULL)`,
+		"null-activity", testProjectID, "Null Activity", "2024-02-01T10:00:00Z"); err != nil {
+		t.Fatalf("failed to insert session with NULL last_active_at: %v", err)
+	}
+
+	listed, err := store.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("failed to list sessions: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(listed))
+	}
+	if listed[0].ID != "has-activity" {
+		t.Errorf("first session should be 'has-activity', got %q", listed[0].ID)
+	}
+	if got := listed[0].LastActiveAt; got != "2024-03-01T10:00:00Z" {
+		t.Errorf("has-activity effective activity = %q, want stored last_active_at", got)
+	}
+	if listed[1].ID != "null-activity" {
+		t.Errorf("second session should be 'null-activity', got %q", listed[1].ID)
+	}
+	if got := listed[1].LastActiveAt; got != "2024-02-01T10:00:00Z" {
+		t.Errorf("null-activity effective activity = %q, want created_at fallback", got)
+	}
+}
+
 // TestListSessionsByProject verifies filtering sessions by project ID.
 func TestListSessionsByProject(t *testing.T) {
 	db := openTestDB(t)

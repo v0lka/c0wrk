@@ -69,7 +69,7 @@ export function useSessionActions(): SessionActions {
   const addSession = useSessionStore((s) => s.addSession)
   const removeSession = useSessionStore((s) => s.removeSession)
   const updateSession = useSessionStore((s) => s.updateSession)
-  const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId)
+  const selectSession = useSessionStore((s) => s.selectSession)
 
   const [createError, setCreateError] = useState<string | null>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -82,13 +82,16 @@ export function useSessionActions(): SessionActions {
     try {
       const session = await createSession()
       addSession(session)
-      setActiveSessionId(session.id)
+      // A newly created session becomes the visible active one — an explicit
+      // activation, so persist it as the project's saved session right away
+      // (otherwise an app restart would restore a different session).
+      selectSession(session.id, session.project_id)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       logger.error('Failed to create session:', error)
       setCreateError(message)
     }
-  }, [addSession, setActiveSessionId])
+  }, [addSession, selectSession])
 
   const performDelete = useCallback(
     async (id: string) => {
@@ -168,12 +171,14 @@ export function useSessionActions(): SessionActions {
       try {
         const forked = await forkSession(id)
         addSession(forked)
-        setActiveSessionId(forked.id)
+        // Forking activates the fork — persist it as the saved session (same
+        // reasoning as handleNewSession).
+        selectSession(forked.id, forked.project_id)
       } catch (error) {
         logger.error('Failed to fork session:', error)
       }
     },
-    [addSession, setActiveSessionId],
+    [addSession, selectSession],
   )
 
   const confirmPendingAction = useCallback(async () => {

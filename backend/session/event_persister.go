@@ -272,7 +272,7 @@ func (p *EventPersister) Persist(evt Event) {
 			Role:      role,
 			Content:   content,
 			Metadata:  metadata,
-			CreatedAt: time.Now().Format(time.RFC3339),
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
 			p.log().Error("failed to persist step_todo_update message", "session", evt.SessionID, "step_id", stepTodoStepID, "error", err)
 		}
@@ -284,7 +284,7 @@ func (p *EventPersister) Persist(evt Event) {
 		Role:      role,
 		Content:   content,
 		Metadata:  metadata,
-		CreatedAt: time.Now().Format(time.RFC3339),
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}); err != nil {
 		p.log().Error("failed to persist event message", "type", evt.Type, "session", evt.SessionID, "error", err)
 	}

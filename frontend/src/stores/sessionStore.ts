@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import type { SessionInfo } from '@/types/models'
+import { saveProjectActiveSession } from '@/api/projects'
+import { logger } from '@/lib/logger'
 
 // --- Helpers ---
 
@@ -24,6 +26,7 @@ interface SessionState {
 interface SessionActions {
   setSessions: (sessions: SessionInfo[]) => void
   setActiveSessionId: (id: string | null) => void
+  selectSession: (id: string | null, projectId?: string) => void
   addSession: (session: SessionInfo) => void
   removeSession: (id: string) => void
   updateSession: (id: string, updates: Partial<SessionInfo>) => void
@@ -34,7 +37,7 @@ interface SessionActions {
 
 // --- Store ---
 
-export const useSessionStore = create<SessionState & SessionActions>((set) => ({
+export const useSessionStore = create<SessionState & SessionActions>((set, get) => ({
   sessions: null,
   activeSessionId: null,
 
@@ -54,6 +57,33 @@ export const useSessionStore = create<SessionState & SessionActions>((set) => ({
   setActiveSessionId: (id) => set((s) =>
     s.activeSessionId === id ? s : { activeSessionId: id }
   ),
+
+  // User-initiated session selection: updates the in-memory active session AND
+  // persists the choice as the project's saved_session_id right away, so the
+  // persisted value is authoritative by the time a project switch or app exit
+  // snapshots UI state. Restore paths (performSwitch, useSessionLoader) must
+  // keep calling setActiveSessionId — they apply an already-persisted value
+  // and must not echo it back during the switch.
+  //
+  // The caller passes the id of the project that OWNS the session (taken from
+  // the SessionInfo), never the global activeProjectId: during an in-flight
+  // project switch the global already points at the destination while the
+  // visible list still shows the source project's sessions, so reading it
+  // here could persist a source session id under the destination project.
+  selectSession: (id, projectId) => {
+    get().setActiveSessionId(id)
+    if (!id) return
+    if (!projectId) {
+      logger.warn(`sessionStore.selectSession: owning project id missing for session ${id}; selection not persisted`)
+      return
+    }
+    // Fire-and-forget: a failed persist must not break selection — the
+    // in-memory activeSessionId is already updated, and the next successful
+    // selection (or the switch-time save) repairs the persisted value.
+    void saveProjectActiveSession(projectId, id).catch((err: unknown) => {
+      logger.warn('sessionStore.selectSession: failed to persist active session', err)
+    })
+  },
 
   addSession: (session) => set((s) => ({
     sessions: sortByActivity([session, ...(s.sessions ?? [])]),

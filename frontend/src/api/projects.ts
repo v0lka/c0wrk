@@ -64,6 +64,28 @@ export async function switchProject(id: string): Promise<void> {
   }
 }
 
+/**
+ * Fetch the project id that was active when the app last exited (persisted by
+ * the backend on every project switch). Returns the No Project pseudo-project
+ * id when CHAT mode was active, or '' when nothing was persisted yet. Callers
+ * must treat a rejection as "no restore data" and fall back to their default
+ * startup behavior — this RPC must never block startup.
+ */
+export async function getLastActiveProjectID(): Promise<string> {
+  try {
+    const app = getApp()
+    const result = await app.GetLastActiveProjectID()
+    if (typeof result !== 'string') {
+      logger.warn('getLastActiveProjectID: unexpected response shape, returning ""', result)
+      return ''
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to get last active project ID:', err)
+    throw err
+  }
+}
+
 function pickProjectStateSaveRPC(app: Record<string, (...args: unknown[]) => Promise<unknown>>) {
   return app.SaveProjectSwitchState
     ?? app.SaveProjectUIState
@@ -124,6 +146,18 @@ export async function getProjectSwitchState(projectId: string): Promise<ProjectS
     logger.error('Failed to get project switch state:', err)
     throw err
   }
+}
+
+/**
+ * Persist the user's session selection as the project's saved_session_id,
+ * leaving previously saved open tabs / active file untouched (the backend
+ * updates ONLY saved_session_id). Deliberately thin: callers decide how to
+ * surface failures — the session store calls this fire-and-forget and logs a
+ * warning on rejection, so a failed persist never breaks selection.
+ */
+export async function saveProjectActiveSession(projectId: string, sessionId: string): Promise<void> {
+  const app = getApp()
+  await app.SaveProjectActiveSession(projectId, sessionId)
 }
 
 export async function pickDirectory(): Promise<string> {

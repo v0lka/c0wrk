@@ -174,6 +174,10 @@ func (s *SQLiteSessionStore) createTables() error {
 	CREATE INDEX IF NOT EXISTS idx_session_messages_session_id ON session_messages(session_id);
 	CREATE INDEX IF NOT EXISTS idx_session_messages_session_role ON session_messages(session_id, role);
 	CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
+	-- Composite indexes let the effective-activity MAX(created_at) probes in
+	-- sessionEffectiveActivitySQL resolve index-only (O(log n) per session)
+	-- instead of scanning every row of each session on every list call.
+	CREATE INDEX IF NOT EXISTS idx_session_messages_session_created ON session_messages(session_id, created_at);
 
 	CREATE TABLE IF NOT EXISTS tasks (
 		id TEXT PRIMARY KEY,
@@ -232,6 +236,7 @@ func (s *SQLiteSessionStore) createTables() error {
 		created_at TIMESTAMP NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_terminal_commands_session_id ON terminal_commands(session_id);
+	CREATE INDEX IF NOT EXISTS idx_terminal_commands_session_created ON terminal_commands(session_id, created_at);
 
 	CREATE TABLE IF NOT EXISTS session_work_directories (
 		id TEXT PRIMARY KEY,
@@ -391,11 +396,41 @@ func (s *SQLiteSessionStore) LoadSession(ctx context.Context, id string) (*Sessi
 	return &info, nil
 }
 
-// ListSessions returns all sessions ordered by last activity time (newest first).
+// sessionEffectiveActivitySQL is the shared effective-activity expression used
+// by the session list queries: the timestamp of the session's most recent
+// persisted event (a chat message or a terminal command), falling back to the
+// stored sessions.last_active_at, then to sessions.created_at. The two inner
+// SELECTs are scalar subqueries (exactly one row each, NULL when the session
+// has no such events); the outer aggregate MAX ignores NULLs — unlike SQLite's
+// scalar max(a, b), which returns NULL when any argument is NULL. All timestamp
+// writers store UTC (Z-suffixed) RFC3339, so the lexicographic string
+// comparison used here and in ORDER BY matches chronological order.
+const sessionEffectiveActivitySQL = `COALESCE(
+			(SELECT MAX(ts) FROM (
+				SELECT MAX(sm.created_at) AS ts FROM session_messages sm WHERE sm.session_id = sessions.id
+				UNION ALL
+				SELECT MAX(tc.created_at) FROM terminal_commands tc WHERE tc.session_id = sessions.id
+			)),
+			sessions.last_active_at,
+			sessions.created_at
+		)`
+
+// sessionListOrderSQL orders session lists by pinned first, then by effective
+// activity (newest first), with a deterministic tie-break on created_at DESC,
+// id ASC so equal timestamps always yield the same order.
+const sessionListOrderSQL = `ORDER BY pinned DESC, effective_activity DESC, created_at DESC, id ASC`
+
+// ListSessions returns all sessions ordered by effective activity (newest
+// first). Effective activity is the timestamp of the session's most recent
+// persisted event (chat message or terminal command), not merely the last
+// SendMessage time; when a session has no events it falls back to the stored
+// last_active_at, then to created_at. The stored last_active_at column and the
+// write path are untouched — SessionInfo.LastActiveAt carries the computed
+// value.
 func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, project_id, name, created_at,
-		       COALESCE(last_active_at, created_at),
+		       `+sessionEffectiveActivitySQL+` AS effective_activity,
 		       archived,
 		       COALESCE(pinned, 0),
 		       COALESCE(total_input_tokens, 0),
@@ -405,7 +440,7 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 		       COALESCE(fill_percent, 0),
 		       EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed'))
 		FROM sessions
-		ORDER BY pinned DESC, COALESCE(last_active_at, created_at) DESC`)
+		`+sessionListOrderSQL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list sessions: %w", err)
 	}
@@ -436,14 +471,17 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 	return sessions, nil
 }
 
-// ListSessionsByProject returns all sessions for a given project, ordered by last activity (newest first).
+// ListSessionsByProject returns all sessions for a given project, ordered by
+// effective activity (newest first) — see ListSessions for the definition.
 func (s *SQLiteSessionStore) ListSessionsByProject(ctx context.Context, projectID string) ([]SessionInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(pinned, 0), COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(fill_percent, 0),
+		SELECT id, project_id, name, created_at,
+		       `+sessionEffectiveActivitySQL+` AS effective_activity,
+		       archived, COALESCE(pinned, 0), COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(fill_percent, 0),
 		EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed'))
 		FROM sessions
 		WHERE project_id = ?
-		ORDER BY pinned DESC, COALESCE(last_active_at, created_at) DESC`, projectID)
+		`+sessionListOrderSQL, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list sessions by project: %w", err)
 	}
@@ -522,7 +560,7 @@ func (s *SQLiteSessionStore) UpdateSessionTokens(ctx context.Context, id string,
 
 // UpdateSessionActivity updates the last_active_at timestamp for a session.
 func (s *SQLiteSessionStore) UpdateSessionActivity(ctx context.Context, id string) error {
-	now := time.Now().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET last_active_at = ? WHERE id = ?`,
 		now, id,
@@ -759,7 +797,7 @@ func (s *SQLiteSessionStore) UpsertStepTodoUpdate(ctx context.Context, sessionID
 
 // SaveTerminalCommand saves a terminal command to the history.
 func (s *SQLiteSessionStore) SaveTerminalCommand(ctx context.Context, sessionID, command string) error {
-	now := time.Now().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO terminal_commands (session_id, command, created_at)
 		VALUES (?, ?, ?)`,

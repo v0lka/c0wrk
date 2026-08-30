@@ -21,6 +21,7 @@ vi.mock('@/lib/logger', () => ({ logger: { error: vi.fn() } }))
 // --- Mock the session store with a controllable state handle ---
 type SessionRow = {
   id: string
+  project_id: string
   name: string
   archived: boolean
   pinned: boolean
@@ -32,6 +33,7 @@ const { sessionMocks } = vi.hoisted(() => ({
     sessions: [] as SessionRow[],
     activeSessionId: null as string | null,
     setActiveSessionId: vi.fn(),
+    selectSession: vi.fn(),
     addSession: vi.fn(),
     removeSession: vi.fn(),
     updateSession: vi.fn(),
@@ -52,6 +54,7 @@ import { SessionList } from './SessionList'
 function makeSession(overrides: Partial<SessionRow> = {}): SessionRow {
   return {
     id: 's1',
+    project_id: 'proj-1',
     name: 'Session One',
     archived: false,
     pinned: false,
@@ -108,7 +111,9 @@ describe('SessionList', () => {
     })
     expect(apiMocks.createSession).toHaveBeenCalledTimes(1)
     expect(sessionMocks.addSession).toHaveBeenCalledTimes(1)
-    expect(sessionMocks.setActiveSessionId).toHaveBeenCalledWith('new')
+    // A created session becomes the visible active one — an explicit
+    // activation persisted under its owning project (see selectSession).
+    expect(sessionMocks.selectSession).toHaveBeenCalledWith('new', 'proj-1')
   })
 
   it('does not render the search box until there are ≥ 5 sessions', () => {

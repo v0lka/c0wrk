@@ -25,7 +25,7 @@
 | Context window, compaction               | [domains/memory/compaction.md](domains/memory/compaction.md)             |
 | Blackboard, facts, persistence           | [domains/memory/blackboard.md](domains/memory/blackboard.md)             |
 | LLM providers, model registry, tokens    | [domains/llm-providers.md](domains/llm-providers.md)                     |
-| Session create/resume/persist/fork       | [domains/session-lifecycle.md](domains/session-lifecycle.md)             |
+| Session create/resume/persist/fork       | [domains/session-lifecycle.md](domains/session-lifecycle.md), [decisions/030-session-context-restore.md](decisions/030-session-context-restore.md) |
 | Crash/exit diagnostics (panic capture, unclean-shutdown detection, why the app quit) | [domains/crash-logging.md](domains/crash-logging.md) |
 | Goal mode (multi-turn objective loop)    | [domains/goal-mode.md](domains/goal-mode.md), [decisions/019-goal-mode.md](decisions/019-goal-mode.md) |
 | Small-LLM profile (tuning for small/local models) | [domains/small-llm.md](domains/small-llm.md), [decisions/022-small-llm-profile.md](decisions/022-small-llm-profile.md) |
@@ -161,3 +161,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [027-linux-arm64-build.md](decisions/027-linux-arm64-build.md) - Linux arm64 release support: platform registry + CI/release matrix + updater asset
 - [028-session-pinned-judge.md](decisions/028-session-pinned-judge.md) - Session-pinned strict judge: each session's judge binds to its own router and re-binds only on the session's own model switch; global default changes never re-bind a live session; per-message selector cluster locks while the task runs
 - [029-terminal-env-conventions.md](decisions/029-terminal-env-conventions.md) - Embedded terminal env conventions: TERM_PROGRAM=c0wrk marks the in-app terminal so rc files can skip tmux auto-attach; terminal.env config adds user env overrides (win over defaults, ${VAR} expanded at startup)
+- [030-session-context-restore.md](decisions/030-session-context-restore.md) - Session context restore: saved-first (selection-time persistence), effective activity (newest event, read-side), archived never auto-selected, restart restores the exact last mode/project/session via app_state

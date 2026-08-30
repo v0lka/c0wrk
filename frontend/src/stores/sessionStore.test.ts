@@ -1,6 +1,17 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useProjectStore } from '@/stores/projectStore'
+import { saveProjectActiveSession } from '@/api/projects'
+import { logger } from '@/lib/logger'
 import type { SessionInfo } from '@/types/models'
+
+// The persist RPC is mocked so the store is tested in isolation (same pattern
+// as workDirsStore.test.ts).
+vi.mock('@/api/projects', () => ({
+  saveProjectActiveSession: vi.fn(),
+}))
+
+const mockedSave = vi.mocked(saveProjectActiveSession)
 
 function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionInfo {
   return {
@@ -118,5 +129,87 @@ describe('setUnfinishedTask', () => {
   it('no-ops before the session list is loaded', () => {
     useSessionStore.getState().setUnfinishedTask('a', true)
     expect(useSessionStore.getState().sessions).toBeNull()
+  })
+})
+
+describe('selectSession', () => {
+  beforeEach(() => {
+    resetStore()
+    useProjectStore.setState({
+      projects: null,
+      activeProjectId: null,
+      lastRealProjectId: null,
+      createDialogOpen: false,
+    })
+    vi.clearAllMocks()
+    mockedSave.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('persists the user selection as the project saved session (click path)', () => {
+    useSessionStore.getState().selectSession('s1', 'proj-1')
+
+    // Selection applies synchronously AND is persisted under the passed
+    // owning project id so saved_session_id is authoritative by switch/exit
+    // time.
+    expect(useSessionStore.getState().activeSessionId).toBe('s1')
+    expect(mockedSave).toHaveBeenCalledTimes(1)
+    expect(mockedSave).toHaveBeenCalledWith('proj-1', 's1')
+  })
+
+  it('persists under the passed owning project, not the global active project', () => {
+    // Mid-switch the global activeProjectId may already point at the
+    // destination project while the visible list still shows the source
+    // project's sessions — the session's own project_id must win.
+    useProjectStore.getState().setActiveProjectId('proj-destination')
+
+    useSessionStore.getState().selectSession('s1', 'proj-source')
+
+    expect(mockedSave).toHaveBeenCalledWith('proj-source', 's1')
+  })
+
+  it('does not persist on programmatic setActiveSessionId (restore paths)', () => {
+    useProjectStore.getState().setActiveProjectId('proj-1')
+
+    useSessionStore.getState().setActiveSessionId('s2')
+
+    // performSwitch / useSessionLoader apply an already-persisted value —
+    // echoing it back would race the switch-time snapshot.
+    expect(useSessionStore.getState().activeSessionId).toBe('s2')
+    expect(mockedSave).not.toHaveBeenCalled()
+  })
+
+  it('logs a warning and keeps the selection when persisting fails', async () => {
+    mockedSave.mockRejectedValue(new Error('rpc down'))
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+    useSessionStore.getState().selectSession('s1', 'proj-1')
+
+    // The failed persist must not break selection: activeSessionId is already
+    // updated synchronously; the rejection surfaces only as a warning.
+    expect(useSessionStore.getState().activeSessionId).toBe('s1')
+    await vi.waitFor(() => {
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('does not persist when the selection is cleared (id = null)', () => {
+    useSessionStore.getState().selectSession(null)
+
+    expect(useSessionStore.getState().activeSessionId).toBeNull()
+    expect(mockedSave).not.toHaveBeenCalled()
+  })
+
+  it('does not persist when the owning project id is missing', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+    useSessionStore.getState().selectSession('s1')
+
+    expect(useSessionStore.getState().activeSessionId).toBe('s1')
+    expect(mockedSave).not.toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalledTimes(1)
   })
 })

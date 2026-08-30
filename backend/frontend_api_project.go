@@ -125,10 +125,63 @@ func (f *FrontendAPI) SaveProjectUIState(req ProjectUIStateRequest) error {
 		OpenTabs:       req.OpenTabs,
 		ActiveFile:     req.ActiveFile,
 	})
-	state.SavedSessionID = f.resolveSavedSessionForProject(state.ProjectID, state.SavedSessionID)
+	// A resolution failure must not clobber the pointer: keep the original
+	// value instead of normalizing to empty on a transient store error.
+	resolved, err := f.resolveSavedSessionForProject(state.ProjectID, state.SavedSessionID)
+	if err != nil {
+		f.log().Warn("failed to resolve saved session for project UI state; keeping original value", "project", state.ProjectID, "error", err)
+	} else {
+		state.SavedSessionID = resolved
+	}
 
 	if err := f.projStore.SaveUIState(context.Background(), state); err != nil {
 		return fmt.Errorf("failed to save project UI state: %w", err)
+	}
+	return nil
+}
+
+// SaveProjectActiveSession persists ONLY the selected session for a project,
+// leaving any previously saved open tabs / active file untouched. Used by the
+// frontend when the user switches sessions inside a project — a full
+// SaveProjectUIState would race with (and clobber) the tab state owned by the
+// file viewer. When no UI-state row exists yet, one is created with empty
+// open tabs.
+func (f *FrontendAPI) SaveProjectActiveSession(projectID, sessionID string) error {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return errors.New("project_id is required")
+	}
+	if f.projectManager == nil || f.projStore == nil {
+		return errors.New("project subsystem not initialized")
+	}
+
+	// Validate the project exists: project_ui_state.project_id has a foreign
+	// key to projects(id), so inserting for an unknown project would fail with
+	// an opaque constraint error.
+	p, err := f.projectManager.GetProject(projectID)
+	if err != nil {
+		return fmt.Errorf("failed to load project: %w", err)
+	}
+	if p == nil {
+		return fmt.Errorf("project not found: %s", projectID)
+	}
+
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID != "" {
+		// Never persist a selection that resolve would reject (unknown or
+		// archived session); normalize to empty so the next project switch
+		// falls back to the latest live session. A resolution ERROR is
+		// propagated instead of writing anything: persisting "" after a
+		// transient store failure would clobber a valid saved pointer.
+		resolved, err := f.resolveSavedSessionForProject(projectID, sessionID)
+		if err != nil {
+			return fmt.Errorf("failed to resolve session selection: %w", err)
+		}
+		sessionID = resolved
+	}
+
+	if err := f.projStore.SaveSavedSessionID(context.Background(), projectID, sessionID); err != nil {
+		return fmt.Errorf("failed to save project active session: %w", err)
 	}
 	return nil
 }
@@ -151,7 +204,14 @@ func (f *FrontendAPI) GetProjectUIState(projectID string) (*ProjectUIStateRespon
 	}
 
 	normalized := normalizeProjectUIState(*state)
-	normalized.SavedSessionID = f.resolveSavedSessionForProject(projectID, normalized.SavedSessionID)
+	resolved, err := f.resolveSavedSessionForProject(projectID, normalized.SavedSessionID)
+	if err != nil {
+		// Read path: a transient resolution failure must not blank the saved
+		// pointer in the response (nor trigger the normalization write-back).
+		f.log().Warn("failed to resolve saved session for persisted project UI state", "project", projectID, "error", err)
+	} else {
+		normalized.SavedSessionID = resolved
+	}
 	if !projectUIStateEqual(normalized, *state) {
 		if saveErr := f.projStore.SaveUIState(context.Background(), normalized); saveErr != nil {
 			f.log().Warn("failed to normalize persisted project UI state", "project", projectID, "error", saveErr)
@@ -165,6 +225,23 @@ func (f *FrontendAPI) GetProjectUIState(projectID string) (*ProjectUIStateRespon
 		ActiveFile:     normalized.ActiveFile,
 		UpdatedAt:      normalized.UpdatedAt,
 	}, nil
+}
+
+// GetLastActiveProjectID returns the ID of the project that was active at the
+// last SwitchProject call (persisted in app_state, including the No Project
+// pseudo-project ID). The frontend uses it after an app restart to restore the
+// previously active project. Returns an empty string when nothing was
+// persisted yet or persistence is unavailable.
+func (f *FrontendAPI) GetLastActiveProjectID() string {
+	if f.projStore == nil {
+		return ""
+	}
+	id, err := f.projStore.LoadAppState(context.Background(), project.AppStateKeyLastActiveProjectID)
+	if err != nil {
+		f.log().Warn("failed to load last active project id", "error", err)
+		return ""
+	}
+	return id
 }
 
 // SwitchProject activates a project, setting it as the current workspace.
@@ -314,6 +391,12 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 	// Update project activity timestamp.
 	if f.projStore != nil {
 		_ = f.projStore.UpdateProjectActivity(context.Background(), p.ID) // Best-effort; error is non-critical.
+		// Persist the destination project (including the No Project
+		// pseudo-project) so the last active project survives an app restart.
+		// Best-effort: a failed write must not abort the switch.
+		if err := f.projStore.SaveAppState(context.Background(), project.AppStateKeyLastActiveProjectID, p.ID); err != nil {
+			f.log().Warn("failed to persist last active project id", "project", p.ID, "error", err)
+		}
 	}
 }
 
@@ -681,7 +764,14 @@ func (f *FrontendAPI) persistCurrentProjectSwitchState(projectID string) {
 	}
 
 	normalized := normalizeProjectUIState(*state)
-	normalized.SavedSessionID = f.resolveSavedSessionForProject(projectID, normalized.SavedSessionID)
+	resolved, err := f.resolveSavedSessionForProject(projectID, normalized.SavedSessionID)
+	if err != nil {
+		// Keep the original pointer: normalizing to empty after a transient
+		// store failure would clobber a valid saved selection.
+		f.log().Warn("failed to resolve saved session for current project switch state", "project", projectID, "error", err)
+	} else {
+		normalized.SavedSessionID = resolved
+	}
 	if !projectUIStateEqual(normalized, *state) {
 		if saveErr := f.projStore.SaveUIState(context.Background(), normalized); saveErr != nil {
 			f.log().Warn("failed to normalize current project switch state", "project", projectID, "error", saveErr)
@@ -715,7 +805,14 @@ func (f *FrontendAPI) applySavedProjectSwitchState(projectID string) {
 		normalized = project.ProjectUIState{ProjectID: strings.TrimSpace(projectID)}
 	}
 
-	resolvedSessionID, changed := f.resolveSessionFallback(projectID, normalized.SavedSessionID)
+	resolvedSessionID, changed, err := f.resolveSessionFallback(projectID, normalized.SavedSessionID)
+	if err != nil {
+		// Persist nothing on a resolution error: falling back to the latest
+		// session after a transient store failure would overwrite a valid
+		// saved pointer with the wrong value.
+		f.log().Warn("failed to resolve project switch state; leaving persisted state untouched", "project", projectID, "error", err)
+		return
+	}
 	normalized.ProjectID = strings.TrimSpace(projectID)
 	normalized.SavedSessionID = resolvedSessionID
 
@@ -727,25 +824,33 @@ func (f *FrontendAPI) applySavedProjectSwitchState(projectID string) {
 	}
 }
 
-func (f *FrontendAPI) resolveSessionFallback(projectID, savedSessionID string) (string, bool) {
-	resolvedSaved := f.resolveSavedSessionForProject(projectID, savedSessionID)
+func (f *FrontendAPI) resolveSessionFallback(projectID, savedSessionID string) (resolvedID string, changed bool, err error) {
+	resolvedSaved, err := f.resolveSavedSessionForProject(projectID, savedSessionID)
+	if err != nil {
+		return "", false, err
+	}
 	if resolvedSaved != "" {
-		return resolvedSaved, strings.TrimSpace(savedSessionID) != resolvedSaved
+		return resolvedSaved, strings.TrimSpace(savedSessionID) != resolvedSaved, nil
 	}
 
 	latest := f.resolveLatestSessionForProject(projectID)
 	if latest != "" {
-		return latest, strings.TrimSpace(savedSessionID) != latest
+		return latest, strings.TrimSpace(savedSessionID) != latest, nil
 	}
 
 	created := f.createSessionForProject(projectID)
 	if created != "" {
-		return created, strings.TrimSpace(savedSessionID) != created
+		return created, strings.TrimSpace(savedSessionID) != created, nil
 	}
 
-	return "", strings.TrimSpace(savedSessionID) != ""
+	return "", strings.TrimSpace(savedSessionID) != "", nil
 }
 
+// resolveLatestSessionForProject returns the session with the most recent
+// effective activity. ListSessionsByProject exposes that effective activity as
+// SessionInfo.LastActiveAt: the newest persisted session event (chat message
+// or terminal command), falling back to the stored last_active_at, then to
+// created_at.
 func (f *FrontendAPI) resolveLatestSessionForProject(projectID string) string {
 	if strings.TrimSpace(projectID) == "" {
 		return ""
@@ -759,19 +864,25 @@ func (f *FrontendAPI) resolveLatestSessionForProject(projectID string) string {
 		f.log().Warn("failed to list sessions for latest fallback resolution", "project", projectID, "error", err)
 		return ""
 	}
-	if len(sessions) == 0 {
-		return ""
-	}
 
-	latest := sessions[0]
-	latestTS := parseSessionActivityTimestamp(latest)
-	for i := 1; i < len(sessions); i++ {
-		candidate := sessions[i]
+	// Archived sessions are read-only and hidden from the session picker;
+	// they must never be auto-selected as the restore target.
+	latest := session.SessionInfo{}
+	latestTS := time.Time{}
+	found := false
+	for _, candidate := range sessions {
+		if candidate.Archived {
+			continue
+		}
 		candidateTS := parseSessionActivityTimestamp(candidate)
-		if candidateTS.After(latestTS) {
+		if !found || candidateTS.After(latestTS) {
 			latest = candidate
 			latestTS = candidateTS
+			found = true
 		}
+	}
+	if !found {
+		return ""
 	}
 
 	return latest.ID
@@ -843,33 +954,40 @@ func (f *FrontendAPI) resolveNoProjectSessionWorkspace() string {
 	return ws
 }
 
-func (f *FrontendAPI) resolveSavedSessionForProject(projectID, savedSessionID string) string {
+// resolveSavedSessionForProject validates a saved session pointer against the
+// project's sessions: it resolves only when the session still exists, belongs
+// to the project, and is not archived. A resolution ERROR is distinct from a
+// negative answer: callers must not treat a transient store failure as
+// "pointer is stale", because normalizing to empty in that case would clobber
+// a perfectly valid saved selection.
+func (f *FrontendAPI) resolveSavedSessionForProject(projectID, savedSessionID string) (string, error) {
 	savedSessionID = strings.TrimSpace(savedSessionID)
 	if savedSessionID == "" {
-		return ""
+		return "", nil
 	}
 	if f.app == nil || f.app.Manager() == nil {
-		return ""
+		return "", nil
 	}
 
 	sessions, err := f.app.Manager().ListSessionsByProject(projectID)
 	if err != nil {
-		f.log().Warn("failed to list sessions for project switch state resolution", "project", projectID, "error", err)
-		return ""
+		return "", fmt.Errorf("failed to list sessions for saved session resolution: %w", err)
 	}
 	for _, s := range sessions {
-		if s.ID == savedSessionID {
-			return savedSessionID
+		// Archived sessions are read-only; a saved selection pointing at one
+		// must not be restored (fallback resolution picks a live session).
+		if s.ID == savedSessionID && !s.Archived {
+			return savedSessionID, nil
 		}
 	}
 
 	// If session is not listed but a store+resolver may lazily restore it,
 	// validate ownership directly via manager.GetSession.
 	if restored, ok := f.app.Manager().GetSession(savedSessionID); ok && restored != nil {
-		if restored.ProjectID == projectID {
-			return savedSessionID
+		if restored.ProjectID == projectID && !restored.Archived {
+			return savedSessionID, nil
 		}
 	}
 
-	return ""
+	return "", nil
 }

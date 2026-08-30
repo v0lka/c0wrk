@@ -27,6 +27,8 @@ import {
 /** Minimal session shape consumed by a list item. */
 export interface SessionItemSummary {
   id: string
+  /** Owning project — selection persistence is keyed under it (selectSession). */
+  project_id: string
   name: string
   archived: boolean
   pinned: boolean

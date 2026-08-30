@@ -23,7 +23,7 @@ import { SessionActionConfirmDialog } from "./SessionActionConfirmDialog";
 export function SessionList() {
   const sessions = useSessionStore((s) => s.sessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
-  const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
+  const selectSession = useSessionStore((s) => s.selectSession);
 
   const {
     createError,
@@ -91,7 +91,7 @@ export function SessionList() {
         variant="flat"
         session={session}
         isActive={session.id === activeSessionId}
-        onSelect={() => setActiveSessionId(session.id)}
+        onSelect={() => selectSession(session.id, session.project_id)}
         onRename={() => startRename(session.id, session.name)}
         onArchive={() => handleArchive(session.id, session.archived)}
         onPin={() => handlePin(session.id, session.pinned)}

@@ -27,7 +27,7 @@ import { SessionActionConfirmDialog } from "./SessionActionConfirmDialog";
 export function SessionSelector() {
   const sessions = useSessionStore((s) => s.sessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
-  const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
+  const selectSession = useSessionStore((s) => s.selectSession);
 
   const {
     createError,
@@ -95,7 +95,7 @@ export function SessionSelector() {
       session={session}
       isActive={session.id === activeSessionId}
       onSelect={() => {
-        setActiveSessionId(session.id);
+        selectSession(session.id, session.project_id);
         setDropdownOpen(false);
       }}
       onRename={() => startRename(session.id, session.name)}

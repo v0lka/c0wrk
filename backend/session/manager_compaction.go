@@ -392,7 +392,7 @@ func (m *Manager) persistCompactionMarker(sessionID string, orch *core.Orchestra
 		Role:      compactMarkerRole,
 		Content:   fmt.Sprintf("Context compacted from %.0f%% to %.0f%%", before, after),
 		Metadata:  metaJSON,
-		CreatedAt: time.Now().Format(time.RFC3339),
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	})
 }
 

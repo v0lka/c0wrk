@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import { subscribe } from '@/api/runtime'
-import { listProjects } from '@/api/projects'
+import { getLastActiveProjectID, listProjects } from '@/api/projects'
 import { useProjectSwitchState } from '@/hooks/useProjectSwitchState'
 import { useProjectStore } from '@/stores/projectStore'
 import { isProjectInfo, isProjectRenamed } from '@/types/guards'
@@ -21,6 +21,22 @@ export function pickMostRecentRealProject(projects: ProjectInfo[]): ProjectInfo 
     const bt = Date.parse(b.last_active_at || b.created_at) || 0
     return bt - at
   })[0]!
+}
+
+/**
+ * Pick the project to restore on startup from the persisted last-active id.
+ * The match may be ANY project in the list — including the No Project
+ * pseudo-project (CHAT mode) — because the backend persists the id of
+ * whatever was active at exit. Returns null when the id is empty or the
+ * project no longer exists (deleted while the app was closed); the caller
+ * then falls back to the CODE-first default.
+ */
+export function pickStartupRestoreTarget(
+  projects: ProjectInfo[],
+  lastActiveId: string,
+): ProjectInfo | null {
+  if (!lastActiveId) return null
+  return projects.find((p) => p.id === lastActiveId) ?? null
 }
 
 export function useProjectLoader(): void {
@@ -48,10 +64,27 @@ export function useProjectLoader(): void {
         if (cancelled) return
         store().setProjects(projects)
         if (!store().activeProjectId && projects.length > 0) {
-          // CODE-first startup default: prefer the most recently active REAL
-          // project. No Project (CHAT) is only entered when the user explicitly
-          // toggles to it — it is never auto-selected on startup.
-          const target = pickMostRecentRealProject(projects)
+          // Startup restore: reopen exactly the project/mode that was active
+          // at exit — including No Project (CHAT), whose id the backend
+          // persists like any other. A missing/deleted id or a failed RPC
+          // falls back to the CODE-first default; the restore is best-effort
+          // and must never block startup.
+          let lastActiveId = ''
+          try {
+            lastActiveId = await getLastActiveProjectID()
+          } catch {
+            /* silent fallback to the CODE-first default below */
+          }
+          if (cancelled) return
+          // The user may have switched projects manually while the RPC was
+          // in flight; never override an explicit choice with the restore.
+          if (store().activeProjectId) return
+          const target =
+            pickStartupRestoreTarget(projects, lastActiveId) ??
+            // CODE-first startup default: prefer the most recently active
+            // REAL project. No Project (CHAT) is entered on startup only via
+            // the persisted restore above — never by this fallback.
+            pickMostRecentRealProject(projects)
           if (target) {
             await switchProjectWithState(target.id).catch(() => { })
           } else {
