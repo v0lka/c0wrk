@@ -2,6 +2,46 @@
 
 All notable changes to **c0wrk**. Dates follow the tag date.
 
+## v0.7 — 2026-08-30
+
+### Added
+- **Linux arm64 build** — releases now ship a `c0wrk-desktop-linux-arm64.tar.gz` archive alongside macOS, Linux amd64, and Windows, and the in-app updater recognizes the new platform. See [ADR-027](./specs/decisions/027-linux-arm64-build.md).
+- **Manual context compaction** — a status-bar button compacts the session's LLM-visible history on demand, with a choice of strategy (sliding window, summarization, hierarchical). A running task is paused and auto-resumed around the compaction, the compacted snapshot persists and reseeds the history on reload, and a token-budget mode trims to a configurable target fill (`executor.compaction.manualTargetPercent`, default 30%). When compaction would change nothing, the button is disabled with an explanation.
+- **Vision-assisted document conversion** — when the active model is vision-capable, document attachments convert through an embedded markitdown driver that captions embedded images with that model: pptx pictures, pdf illustrations (extracted via pdfminer/Pillow), and docx/html/epub data URIs. Every unique image is captioned, and conversion degrades gracefully to the plain CLI path under a shared per-file deadline.
+- **Crash and exit evidence on disk** — stdout/stderr are mirrored into an append-only, size-rotated `stderr.log` so panics and native errors survive Finder-launched runs, and a liveness marker distinguishes clean quits from crashes and surfaces an unclean-shutdown warning on the next start. Opt out with `C0WRK_DISABLE_CRASH_CAPTURE=1`. See [crash logging](./specs/domains/crash-logging.md).
+- **Quit confirmation with live work** — quitting while a session has live work (a running task or a compaction) is intercepted and asks for confirmation; paused tasks stay resumable and do not block quitting, and an updater-driven quit presents restart context.
+- **Terminal environment configuration** — every embedded terminal shell gets `TERM_PROGRAM=c0wrk` so rc files can detect the in-app terminal and skip behaviors like tmux auto-attach, and a new `terminal.env` config section defines extra environment variables with `${VAR}` expansion. See [ADR-029](./specs/decisions/029-terminal-env-conventions.md).
+- **Vector-index tuning knobs** — `vector_index` gains `embedding_batch_size`, `prep_workers`, `debounce_ms`, `chunk_overlap`, and `search_wait_timeout_ms`, all defaulting to the historical values. Indexing is faster (batched embedding, parallel file preparation, a stat-based skip for unchanged files), search readiness waits are bounded instead of blocking on a stuck index, and chunker-config changes re-index affected files automatically.
+- **Session-pinned safety judge** — each session's Smart Approve judge is bound to that session's own provider/model instead of the global default, so a default-model change can no longer strand a session's judge on a foreign or unreachable provider (which fail-safed into confirmation floods). See [ADR-028](./specs/decisions/028-session-pinned-judge.md).
+- **Small-LLM profile retune** — a new `presence_penalty` sampling knob (validated [0, 2], inherit-by-default), an unset `reasoning_effort` now seeds "medium" (cutting thinking-token spend 60–90% on qwen thinking models), and the context variant's output reserve default rises to 16384. Every default is backed by an [external-evidence review](./docs/small-llm-defaults-research.md).
+- **Per-session input state** — chat drafts, staged attachments, and optimize/send errors are keyed by session, and the git commit box by project: text typed in one session no longer vanishes — or lands in another — on a switch.
+- **Optimistic attachment chips** — staging an attachment (picker, drop, paste) shows a cancellable spinner chip immediately instead of waiting silently for the backend conversion.
+- **Themable settings comboboxes** — native `<select>` popups are replaced by a design-token combobox that renders correctly on every platform and inside modal dialogs.
+- **Honest activity status** — the status bar reports "Safety judge evaluating..." while Smart Approve runs and "Awaiting confirmation..." while the agent blocks on a decision; collapsed sticky messages show an icon when they are live interjections.
+- **Friendlier dialogs** — native directory pickers reopen at the last chosen directory, and truncated file names in the Git panel show a full-path tooltip.
+
+### Improved
+- No Project (CHAT) mode is no longer over-restricted: code-flavored questions route honestly, `ripgrep`/`glob` are re-enabled, shell commands follow the normal `security.groups` execute policy instead of a hard-coded blacklist, and the real home directory is shown in the environment block.
+- Plan-first agent behavior: conductor guidance defaults `declare_plan` to `await_approval`, so the user signs off on a roadmap before implementation.
+- The chat toolbar's model/reasoning/goal/budget selectors lock while a task runs, pauses, or compacts.
+
+### Fixed
+- Project switches: eliminated a frontend/backend desync that made the file tree reject its own root ("path outside project workspace") and emptied @-completions until an app restart; switches are now serialized, and the completion root is memoized per session.
+- Session state: stale task status across resume and terminal events, frozen activity/streaming indicators on session switch, and tasks orphaned by early continuation failures.
+- Settings: deduplicated model lists and kept enabled models visible; configured MCP servers that failed to start no longer vanish from the status list.
+- Chat rendering: long tool arguments wrap instead of clipping behind a scrollbar, and the autocomplete tooltip renders in a body-level container.
+- Windows: environment variables fold case-insensitively (`Path` vs `path`), so `terminal.env` overrides and built-ins can no longer duplicate inherited entries with undefined lookup order.
+- Delegation results return in registration order; the status bar no longer allows text selection.
+
+### Security
+- **Unified Smart Approve funnel with a hard-reason backstop** ([ADR-026](./specs/decisions/026-smart-approve-unified-funnel.md)). Every escalated call — whether from an effective `user_confirm` policy or a hard safety reason surfaced by an allow-group tool — now goes through the strict judge; there is no separate bypass path. A deterministic backstop overrides a strict ALLOW to CONFIRM for canonical hard reasons (command blacklist, SSRF private address, symlink escape, degraded SSRF protection, unassessable URL/path), matched by typed reason codes rather than prose — a fired security control or a structurally unassessable input always reaches the user. `deny` groups and workspace auto-approval are unchanged.
+
+### Internal
+- Wails upgraded from v2.12.0 to v2.15.0.
+- Dependency updates (sp4rk SDK): token-budget compaction with no-op prediction, typed judge reason codes, session-scoped judge binding.
+- CI builds and tests Linux on amd64 and arm64, and workflows can be triggered manually.
+- The self-hosted models guide moved into the [llm-providers spec](./specs/domains/llm-providers.md); specs synced with the code and new ADRs recorded (026–029).
+
 ## v0.6 — 2026-08-21
 
 ### Added
