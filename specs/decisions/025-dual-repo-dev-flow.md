@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-031](./031-gowork-repo-root.md)
+
+> **Note:** only the workspace-file location changed (shared parent directory → gitignored repo root). The mid-cycle pin-lag flow and release checklist below still describe the sanctioned process and are carried forward by ADR-031.
 
 ## Context
 

@@ -200,7 +200,7 @@ SP4RK_REMOTE ?= https://github.com/v0lka/sp4rk
 # repository. The commit is resolved directly from the remote (git ls-remote
 # HEAD), so NO local checkout is needed. GOWORK=off forces resolution from the
 # module source (proxy/VCS) instead of the local workspace replacement defined
-# in the parent go.work.
+# in the local go.work (repo root, gitignored).
 bump:
 	@set -eu; \
 	COMMIT=$$(git ls-remote $(SP4RK_REMOTE) HEAD | awk '{print $$1}'); \

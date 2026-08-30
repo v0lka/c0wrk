@@ -166,7 +166,7 @@ make clean-onnx            # remove ONNX runtime libs from app bundle/cache
 
 ### Cross-repository sp4rk workflow
 
-`c0wrk` remains a single published Go module with no checked-in `go.work` or `replace` directive. During a cross-cutting c0wrk/sp4rk development cycle, a developer may use a `go.work` in the repositories' shared parent directory. At the release point, publish the sp4rk change first, then run `make bump` to update `go.mod`/`go.sum` from the remote with `GOWORK=off`; verify the standalone module with `GOWORK=off` before release. See [`specs/decisions/025-dual-repo-dev-flow.md`](specs/decisions/025-dual-repo-dev-flow.md).
+`c0wrk` remains a single published Go module with no checked-in `go.work` or `replace` directive. During a cross-cutting c0wrk/sp4rk development cycle, a developer may use a gitignored `go.work` at the c0wrk repository root (`use . ../sp4rk`). At the release point, publish the sp4rk change first, then run `make bump` to update `go.mod`/`go.sum` from the remote with `GOWORK=off`; verify the standalone module with `GOWORK=off` before release. See [`specs/decisions/031-gowork-repo-root.md`](specs/decisions/031-gowork-repo-root.md).
 
 ### Frontend-only workflows
 

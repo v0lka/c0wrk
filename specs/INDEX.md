@@ -47,7 +47,7 @@
 | Multi-source AGENTS.md threat model     | [decisions/020-multi-source-agents-md-threat-model.md](decisions/020-multi-source-agents-md-threat-model.md) |
 | Subagent Profiles (`.agents/agents`, `#agent-name` mentions) | [decisions/021-subagents.md](decisions/021-subagents.md) |
 | Tool-capability group policies (`security.groups`, group tool budgets) | [decisions/024-group-policies.md](decisions/024-group-policies.md), [decisions/026-smart-approve-unified-funnel.md](decisions/026-smart-approve-unified-funnel.md), [architecture/security-model.md](architecture/security-model.md) |
-| Dual-repo dev flow (unpublished sp4rk APIs, parent `go.work`, pin-advance release step) | [decisions/025-dual-repo-dev-flow.md](decisions/025-dual-repo-dev-flow.md) |
+| Dual-repo dev flow (unpublished sp4rk APIs, repo-root `go.work`, pin-advance release step) | [decisions/031-gowork-repo-root.md](decisions/031-gowork-repo-root.md) |
 
 ## Domain Dependency Graph
 
@@ -156,9 +156,10 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [022-small-llm-profile.md](decisions/022-small-llm-profile.md) - Small-LLM profile: manual master toggle + five independently sub-toggled variants (essential tools, system-prompt Lite, sampling, loop hardening, context management) for tuning c0wrk to small/local models
 - [023-auto-update.md](decisions/023-auto-update.md) - Self-update: single-binary re-exec, SHA256-only fail-closed verification, unsigned GitHub-Releases trust anchor, `.old` rollback; threat model for the supply-chain delivery vector (ASI04)
 - [024-group-policies.md](decisions/024-group-policies.md) - Tool-capability group policies: 8 declared groups (incl. reserved `system`), `security.groups.<group>.{policy,blacklist?}`, hard/soft judge severities, legacy per-tool schema removed
-- [025-dual-repo-dev-flow.md](decisions/025-dual-repo-dev-flow.md) - Dual-repo dev flow: mid-cycle c0wrk builds via the parent-dir `go.work` while the `go.mod` sp4rk pin lags unpublished APIs; commit-sp4rk-then-repin is the mandatory release step
+- [025-dual-repo-dev-flow.md](decisions/025-dual-repo-dev-flow.md) - Dual-repo dev flow: mid-cycle c0wrk builds via the parent-dir `go.work` while the `go.mod` sp4rk pin lags unpublished APIs; commit-sp4rk-then-repin is the mandatory release step → Superseded by ADR-031
 - [026-smart-approve-unified-funnel.md](decisions/026-smart-approve-unified-funnel.md) - Smart Approve unified confirmation funnel: every escalation routes through one strict judge (hard-bias), with a deterministic backstop that forces confirmation for canonical destructive hard reasons (blacklist, SSRF, symlink escape) even on a strict ALLOW
 - [027-linux-arm64-build.md](decisions/027-linux-arm64-build.md) - Linux arm64 release support: platform registry + CI/release matrix + updater asset
 - [028-session-pinned-judge.md](decisions/028-session-pinned-judge.md) - Session-pinned strict judge: each session's judge binds to its own router and re-binds only on the session's own model switch; global default changes never re-bind a live session; per-message selector cluster locks while the task runs
 - [029-terminal-env-conventions.md](decisions/029-terminal-env-conventions.md) - Embedded terminal env conventions: TERM_PROGRAM=c0wrk marks the in-app terminal so rc files can skip tmux auto-attach; terminal.env config adds user env overrides (win over defaults, ${VAR} expanded at startup)
 - [030-session-context-restore.md](decisions/030-session-context-restore.md) - Session context restore: saved-first (selection-time persistence), effective activity (newest event, read-side), archived never auto-selected, restart restores the exact last mode/project/session via app_state
+- [031-gowork-repo-root.md](decisions/031-gowork-repo-root.md) - Dual-repo dev flow via repo-root gitignored `go.work` (`use . ../sp4rk`): workspace scoped to the c0wrk subtree instead of leaking into sibling projects → Supersedes ADR-025
