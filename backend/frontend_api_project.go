@@ -109,6 +109,21 @@ func (f *FrontendAPI) ListProjects() ([]project.ProjectInfo, error) {
 	return f.projectManager.ListProjects()
 }
 
+// ActiveProjectDir returns the workspace directory of the currently active
+// project, intended as the default location for user-facing native file
+// dialogs (e.g. Save Message as Markdown). It returns "" when no project is
+// active or when the No Project pseudo-project is active — its workspace is
+// c0wrk-internal data storage (~/.c0wrk/projects/__no_project__/), not a
+// directory the user considers "the project directory".
+func (f *FrontendAPI) ActiveProjectDir() string {
+	f.activeProjectMu.RLock()
+	defer f.activeProjectMu.RUnlock()
+	if f.activeProjectID == "" || f.activeProjectID == project.NoProjectID {
+		return ""
+	}
+	return f.activeProjectPath
+}
+
 // SaveProjectUIState persists project-scoped UI switch state.
 func (f *FrontendAPI) SaveProjectUIState(req ProjectUIStateRequest) error {
 	if req.ProjectID == "" {

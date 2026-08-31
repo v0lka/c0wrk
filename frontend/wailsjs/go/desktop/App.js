@@ -10,6 +10,10 @@ export function AbortRebase() {
   return window['go']['desktop']['App']['AbortRebase']();
 }
 
+export function ActiveProjectDir() {
+  return window['go']['desktop']['App']['ActiveProjectDir']();
+}
+
 export function AddWorkDirectory(arg1, arg2, arg3, arg4) {
   return window['go']['desktop']['App']['AddWorkDirectory'](arg1, arg2, arg3, arg4);
 }
@@ -460,6 +464,10 @@ export function ResumeTask(arg1, arg2, arg3) {
 
 export function RunBackgroundUpdateCheck() {
   return window['go']['desktop']['App']['RunBackgroundUpdateCheck']();
+}
+
+export function SaveMessageAsMarkdown(arg1) {
+  return window['go']['desktop']['App']['SaveMessageAsMarkdown'](arg1);
 }
 
 export function SaveProjectActiveSession(arg1, arg2) {

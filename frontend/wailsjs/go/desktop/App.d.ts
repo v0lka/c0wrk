@@ -13,6 +13,8 @@ export function AbortMerge():Promise<void>;
 
 export function AbortRebase():Promise<void>;
 
+export function ActiveProjectDir():Promise<string>;
+
 export function AddWorkDirectory(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function AppendToGitignore(arg1:string):Promise<void>;
@@ -238,6 +240,8 @@ export function ResumeSession(arg1:string,arg2:string,arg3:string,arg4:string):P
 export function ResumeTask(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RunBackgroundUpdateCheck():Promise<void>;
+
+export function SaveMessageAsMarkdown(arg1:string):Promise<string>;
 
 export function SaveProjectActiveSession(arg1:string,arg2:string):Promise<void>;
 

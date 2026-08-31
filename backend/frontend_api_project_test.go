@@ -949,3 +949,39 @@ func TestGetLastActiveProjectID_EmptyWhenNeverPersisted(t *testing.T) {
 		t.Fatalf("expected empty last active project id before any switch, got %q", got)
 	}
 }
+
+// TestActiveProjectDir verifies the dialog default-directory accessor: a real
+// active project exposes its workspace path, while the No Project
+// pseudo-project and the no-active-project state yield "" so callers fall
+// back to their own memory instead of c0wrk-internal data directories.
+func TestActiveProjectDir(t *testing.T) {
+	tests := []struct {
+		name string
+		api  *FrontendAPI
+		want string
+	}{
+		{
+			name: "no active project",
+			api:  &FrontendAPI{},
+			want: "",
+		},
+		{
+			name: "No Project pseudo-project yields empty",
+			api:  &FrontendAPI{activeProjectID: project.NoProjectID, activeProjectPath: "/data/__no_project__"},
+			want: "",
+		},
+		{
+			name: "real project yields its workspace path",
+			api:  &FrontendAPI{activeProjectID: "proj-1", activeProjectPath: "/ws/checkout"},
+			want: "/ws/checkout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.api.ActiveProjectDir(); got != tt.want {
+				t.Errorf("ActiveProjectDir() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
