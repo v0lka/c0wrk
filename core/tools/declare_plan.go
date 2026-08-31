@@ -40,6 +40,17 @@ type PlanTaskInput struct {
 	Agent string `json:"agent,omitempty"`
 }
 
+// PlanContinuation is an OPTIONAL capability of the PlanChecker: it reports
+// whether the CURRENT Conductor run resumed a task whose already-declared plan
+// still has unreached (not successfully completed) steps. Implemented by the
+// core conductorLauncher and detected by declare_plan via a type assertion, so
+// this package stays decoupled from core: when the capability reports true,
+// declare_plan returns a soft "plan already approved — continue with
+// execute_plan" hint instead of publishing a replacement plan.
+type PlanContinuation interface {
+	PlanContinuation() bool
+}
+
 // DeclarePlanTool publishes a roadmap and optionally blocks for user approval.
 type DeclarePlanTool struct {
 	*sdktools.BaseTool
@@ -111,6 +122,20 @@ func (t *DeclarePlanTool) Execute(ctx context.Context, input json.RawMessage) (s
 	publisher := PlanPublisherFrom(ctx)
 	if publisher == nil {
 		return sdktools.ErrorResult("declare_plan: no plan publisher in context (not running inside a Conductor)"), nil
+	}
+
+	// Continuation guard: this Conductor run resumed a task whose approved
+	// plan still has unreached steps. The plan on the blackboard is still
+	// authoritative — re-declaring would replace the approved roadmap and
+	// reset step progress. Return a soft (non-error) hint pointing back to
+	// execute_plan, which resumes the remaining steps and skips the ones that
+	// already succeeded. Detected via the optional PlanContinuation capability
+	// on the context's PlanChecker (implemented by the core conductorLauncher),
+	// so plain Conductor runs are unaffected.
+	if pc := PlanCheckerFrom(ctx); pc != nil {
+		if cont, ok := pc.(PlanContinuation); ok && cont.PlanContinuation() {
+			return sdktools.ToolResult{Content: "A plan has already been declared and approved for this resumed task — do not re-declare it. Call execute_plan to continue the remaining steps (already-completed steps are skipped automatically)."}, nil
+		}
 	}
 
 	planPath, err := publisher.Publish(ctx, params.Tasks)

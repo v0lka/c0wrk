@@ -657,6 +657,7 @@ func (s *resumeCompactionSpyEmitter) Routing(_, _, _ string)                    
 func (s *resumeCompactionSpyEmitter) PlanGenerated(_ int, _ []orchestration.PlanStepEvent)         {}
 func (s *resumeCompactionSpyEmitter) PlanStepStart(_, _, _ string)                                 {}
 func (s *resumeCompactionSpyEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration, _ string) {}
+func (s *resumeCompactionSpyEmitter) PlanStepPaused(_ string, _ time.Duration, _ string)           {}
 func (s *resumeCompactionSpyEmitter) Reflection(_ *orchestration.Reflection, _, _ int)             {}
 func (s *resumeCompactionSpyEmitter) Retry(_, _ int)                                               {}
 func (s *resumeCompactionSpyEmitter) StepRetry(_ string, _, _ int)                                 {}

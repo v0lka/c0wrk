@@ -6,8 +6,9 @@ import type { ActiveGoal } from '@/stores/goalStore'
 import { reconstructContent, buildHistoryId, collapseThoughts, dedupThoughtVsAnswer, extractMeta, normalizeThoughtContent } from './chatUtilsHelpers'
 import { buildGoalTransitionNotice, goalStatusToActiveGoal, type GoalCarryOver } from './goalTransition'
 import {
-  handlePlanStepStart, handlePlanStepComplete, handleSubAgentLaunch, handleSubAgentComplete,
-  handleReflection, handleStepTodoUpdate,
+  handlePlanStepStart, handlePlanStepComplete, handlePlanStepPaused,
+  handleSubAgentLaunch, handleSubAgentComplete, handleSubAgentPaused,
+  handleReflection, handleStepTodoUpdate, resumePausedStep,
   handleToolCall, handleToolResult, handleActionMessage,
   type ToolLike, type StepLikeItem, type ActionDisplayItem,
 } from './chatGroupingHandlers'
@@ -20,8 +21,10 @@ type ChatRole = 'user' | 'assistant' | 'tool_call' | 'tool_result'
   | 'routing' | 'reflection' | 'plan' | 'error'
   | 'thought' | 'thinking' | 'step_done'
   | 'plan_step_start' | 'plan_step_complete'
+  | 'plan_step_paused'
   | 'retry' | 'step_retry'
   | 'subagent_launch' | 'subagent_complete'
+  | 'subagent_paused'
   | 'tool_confirm' | 'ask_user' | 'task_cancelled'
   | 'status' | 'task_resumed'
   | 'task_failed_resumable' | 'step_limit' | 'context_compaction'
@@ -35,8 +38,10 @@ export const roleToType: Record<ChatRole, MessageType> = {
   routing: 'routing', reflection: 'reflection', plan: 'plan', error: 'error',
   thought: 'thought', thinking: 'thinking', step_done: 'step_done',
   plan_step_start: 'plan_step_start', plan_step_complete: 'plan_step_complete',
+  plan_step_paused: 'plan_step_paused',
   retry: 'retry', step_retry: 'step_retry',
   subagent_launch: 'subagent_launch', subagent_complete: 'subagent_complete',
+  subagent_paused: 'subagent_paused',
   tool_confirm: 'tool_confirm', ask_user: 'ask_user', task_cancelled: 'error',
   status: 'status', task_resumed: 'task_resumed',
   // task_failed_resumable and step_limit keep their own types on reload so
@@ -146,7 +151,10 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
 
   const pushItem = (item: DisplayItem, planStepId?: string): DisplayItem[] => {
     const container = planStepId ? openSteps.get(planStepId) : null
-    if (container) { container.children.push(item); return container.children }
+    if (container) {
+      resumePausedStep(container)
+      container.children.push(item); return container.children
+    }
     items.push(item)
     return items
   }
@@ -164,8 +172,10 @@ export function groupMessages(messages: ChatMessageUI[]): GroupedMessages {
     }
     if (msg.type === 'plan_step_start') { handlePlanStepStart(msg, meta, stepIndexMap, stepIdCounts, openSteps, items); continue }
     if (msg.type === 'plan_step_complete') { handlePlanStepComplete(meta, openSteps); continue }
+    if (msg.type === 'plan_step_paused') { handlePlanStepPaused(meta, openSteps); continue }
     if (msg.type === 'subagent_launch') { handleSubAgentLaunch(msg, meta, openSteps, items); continue }
     if (msg.type === 'subagent_complete') { handleSubAgentComplete(meta, openSteps); continue }
+    if (msg.type === 'subagent_paused') { handleSubAgentPaused(meta, openSteps); continue }
     if (msg.type === 'reflection') { handleReflection(msg, meta, openSteps, items); continue }
     if (msg.type === 'step_todo_update') { handleStepTodoUpdate(msg, meta, openSteps, items, checklistsByKey); continue }
 
@@ -312,6 +322,17 @@ export function rebuildPlanFromHistory(messages: ChatMessageUI[], store: PlanSto
       const stepId = msgMeta?.step_id as string | undefined
       const item = stepId ? group.items.find(it => it.id === stepId) : undefined
       if (item) item.status = 'running'
+    } else if (msg.type === 'plan_step_paused') {
+      const stepId = msgMeta?.step_id as string | undefined
+      const duration = msgMeta?.duration as number | undefined
+      const item = stepId ? group.items.find(it => it.id === stepId) : undefined
+      if (item) {
+        // Recoverable checkpoint, not a completion: only the paused step
+        // flips to 'paused' — untouched steps keep 'pending', and a later
+        // plan_step_complete (post-Resume) settles it.
+        item.status = 'paused'
+        if (duration != null) item.duration = duration
+      }
     } else if (msg.type === 'plan_step_complete') {
       const stepId = msgMeta?.step_id as string | undefined
       const success = msgMeta?.success as boolean | undefined

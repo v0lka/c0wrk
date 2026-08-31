@@ -1134,23 +1134,46 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// the unstripped list; strip them here for the normal resume path.
 	availableTools = tools.StripGoalModeTools(availableTools)
 
+	// Continuable resume: the task was paused (or interrupted) while its
+	// approved plan still had unreached steps. Seed the resumed Conductor run
+	// so the plan workflow stays active — execute_plan continues the remaining
+	// steps WITHOUT a re-declare, delegate stays disabled, and declare_plan
+	// returns a soft "already approved" hint. A task whose plan is fully done
+	// (or plan-less) resumes without the flag, so a plan restored from a
+	// previous COMPLETED task keeps its restored-plan refusals.
+	resumedWithPlan := planHasUnreachedSteps(bb)
+	o.logInfo("resume_task", "resumedWithPlan", resumedWithPlan)
+
+	// Task message for the resumed Conductor: the original request, plus — on
+	// a continuable resume — an unambiguous continuation directive so the
+	// model does not have to guess resume semantics (re-declare the plan,
+	// re-delegate from scratch, or treat the pause as a failure). The
+	// directive travels with the resumed task only: recordResumeOutcome
+	// appends just the assistant side to history, so the stored conversation
+	// user message keeps the clean original request.
+	taskMessage := bb.GetOriginalRequest()
+	if resumedWithPlan {
+		taskMessage += resumeContinuationDirective
+	}
+
 	// Reconstruct image content blocks from the conversation history so the
 	// resumed task sees the same images as the original run. The conversation
 	// history (in-memory or restored from the DB via convertChatMessagesToLLM)
 	// carries the user message with ContentBlocks; we find the message
 	// matching the original request and extract its image blocks. The text
-	// block is rebuilt from the blackboard via augmentWithAttachments so it
-	// reflects the current attachment state. Without this, a resumed
-	// image-bearing task would lose its images (SetTask is text-only).
+	// block is rebuilt from the directive-carrying task message via
+	// augmentWithAttachments so it reflects both the current attachment state
+	// and the continuation directive. Without this, a resumed image-bearing
+	// task would lose its images (SetTask is text-only).
 	var resumeContentBlocks []llm.ContentBlock
 	if origReq := bb.GetOriginalRequest(); origReq != "" {
 		if imageBlocks := imageBlocksForRequest(o.historySnapshot(), origReq); len(imageBlocks) > 0 {
-			conductorMessage := o.augmentWithAttachments(origReq, bb)
+			conductorMessage := o.augmentWithAttachments(taskMessage, bb)
 			resumeContentBlocks = buildContentBlocks(conductorMessage, imageBlocks)
 		}
 	}
 
-	execResult, err := o.runConductor(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, nil, resumeSteps, resumeContentBlocks, nudge, forceCompactionStrategy)
+	execResult, err := o.runConductor(ctx, taskMessage, bb, availableTools, plansDir, nil, resumeSteps, resumeContentBlocks, nudge, forceCompactionStrategy, resumedWithPlan)
 	// Cooperative pause: a clean, recoverable checkpoint — not a failure.
 	// Surface it, persist the task as resumable (persistTaskOutcome below),
 	// and return the paused result with a nil error so the backend treats it
@@ -1191,6 +1214,52 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// Propagate ErrExecutionIncomplete alongside the best-effort result, as
 	// documented: callers must errors.Is-check and still use the result.
 	return result, incompleteErr
+}
+
+// resumeContinuationDirective is appended to the resumed Conductor's task
+// message when the task was paused with an approved plan that still has
+// unreached steps (resumedWithPlan). It removes resume-semantic ambiguity the
+// model could otherwise guess wrong: the approved plan must be continued via
+// execute_plan (never re-declared), paused delegations are resumed by
+// re-invoking delegate with the same task id so their checkpointed partial
+// trajectories are picked up, and a pause is a clean checkpoint — never an
+// error. This mirrors the tool-level signals the resumed run already sees
+// (declare_plan's "already approved" soft hint, the delegate result's
+// "Re-invoke delegate with the same task id" note) at the message level,
+// right where the first resumed decision is made.
+const resumeContinuationDirective = `
+
+## Resume Continuation
+
+This task was paused at a step boundary — a clean checkpoint, not an error — and is now resuming with its approved plan intact.
+- The plan is already approved: do NOT call declare_plan. Call execute_plan to continue the remaining steps (already-completed steps are skipped automatically).
+- Delegations that were paused mid-flight are not errors: re-invoke delegate with the same task id to resume each one — its checkpointed partial trajectory is picked up where it left off.
+`
+
+// planHasUnreachedSteps reports whether the blackboard carries a declared plan
+// with at least one step that has not completed successfully — i.e. a plan
+// worth continuing. A step counts as reached only when it has a successful
+// (error-free) StepResult; never-run and failed steps both keep the plan
+// continuable. This is the Resume-side computation that seeds the Conductor
+// run's planRunState (conductorDeps.resumedWithPlan): the approved plan stays
+// authoritative for the resumed run, so execute_plan works without a
+// re-declare. A fully-completed (or absent) plan returns false — restarting a
+// completed task must not silently re-enter the plan workflow.
+func planHasUnreachedSteps(bb orchestration.Blackboard) bool {
+	if bb == nil {
+		return false
+	}
+	plan := bb.GetPlan()
+	if plan == nil || len(plan.Steps) == 0 {
+		return false
+	}
+	for _, step := range plan.Steps {
+		sr, ok := bb.GetStepResult(step.ID)
+		if !ok || sr.Error != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // lastReasoningContent extracts the last non-empty reasoning content from the
@@ -2089,7 +2158,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	conductorHistory := truncateHistory(o.historySnapshot(), o.config.ConductorHistoryWindow)
 
 	plansDir := opts.SessionPlansDir
-	execResult, err := o.runConductor(ctx, conductorMessage, bb, availableTools, plansDir, conductorHistory, nil, contentBlocks, "", "")
+	execResult, err := o.runConductor(ctx, conductorMessage, bb, availableTools, plansDir, conductorHistory, nil, contentBlocks, "", "", false)
 	// Cooperative pause: a clean, recoverable checkpoint — not a failure.
 	// Surface it, persist the task as resumable (persistTaskOutcome via
 	// finalizeResult), and return the paused result with a nil error so the

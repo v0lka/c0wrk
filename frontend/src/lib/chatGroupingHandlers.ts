@@ -38,6 +38,7 @@ export function handleStepTodoUpdate(
   // plan_step/subagent block only when its step_id matches one; otherwise it
   // belongs to the root (main-chat) level.
   const container = stepId ? openSteps.get(stepId) : null
+  resumePausedStep(container)
 
   // Key by LEVEL, not by step_id. A nested checklist is scoped to its step
   // block (key = stepId — one per open step); every root-level checklist must
@@ -81,6 +82,16 @@ export function handlePlanStepStart(
   // Their checklist updates still flow to the chat as DisplayItem.kind='checklist';
   // only the plan_step block is suppressed.
   if (!info && !description && !summary) return
+  // Re-entry of a paused step: a resume re-emits plan_step_start for a step
+  // whose paused block is still open (the pause handler keeps it in openSteps).
+  // Continue the SAME block instead of opening an isRetry duplicate — a pause
+  // is a recoverable checkpoint, not a retry. The re-emitted start flips the
+  // block back to 'running'; the eventual plan_step_complete settles it.
+  const open = openSteps.get(stepId)
+  if (open && open.kind === 'plan_step' && open.status === 'paused') {
+    open.status = 'running'
+    return
+  }
   const resolvedInfo = info || { num: 0, title: summary || description || stepId, description: description || stepId }
   const count = (stepIdCounts.get(stepId) ?? 0) + 1
   stepIdCounts.set(stepId, count)
@@ -103,6 +114,38 @@ export function handlePlanStepComplete(meta: Record<string, unknown> | undefined
   if (step.kind === 'plan_step' && meta?.duration !== undefined) step.duration = meta.duration as number
   if (!meta?.success && meta?.error) step.error = meta.error as string
   openSteps.delete(stepId)
+}
+
+/**
+ * plan_step_paused: the step stopped at a cooperative pause checkpoint — a
+ * recoverable started-but-unfinished state, NOT terminal. Unlike the complete
+ * handlers the step STAYS in openSteps: a Resume re-enters it without a new
+ * plan_step_start (children keep nesting under the same block) and the
+ * eventual plan_step_complete settles it. Untouched steps are not looked up
+ * here at all, so they keep 'pending'.
+ */
+export function handlePlanStepPaused(meta: Record<string, unknown> | undefined, openSteps: Map<string, StepLikeItem>) {
+  const stepId = (meta?.step_id as string) || ''
+  const step = openSteps.get(stepId)
+  if (!step) return
+  step.status = 'paused'
+  if (meta?.duration !== undefined) step.duration = meta.duration as number
+}
+
+/**
+ * resumePausedStep flips a paused step/subagent block back to 'running' when
+ * new activity lands in it: the first child event after a pause is the resume
+ * proof. Delegated subagents have no explicit "resumed" marker in the replay —
+ * the backend re-emits subagent_launch with the SAME task id on resume, which
+ * collapses into the existing launch row (deterministic history id, idempotent
+ * live upsert) — so without this the block would keep its stale 'paused' badge
+ * while the resumed run streams children into it. Plan-step re-entries DO emit
+ * a fresh plan_step_start row, which handlePlanStepStart converts into the
+ * same flip; this helper covers the remaining child-insertion paths
+ * (pushItem, reflections, checklists).
+ */
+export function resumePausedStep(step: StepLikeItem | undefined): void {
+  if (step && step.status === 'paused') step.status = 'running'
 }
 
 export function handleSubAgentLaunch(
@@ -141,6 +184,23 @@ export function handleSubAgentComplete(
   openSteps.delete(stepId)
 }
 
+/**
+ * subagent_paused (pure delegate runs): the subagent stopped at a cooperative
+ * pause checkpoint — recoverable, NOT terminal. Like handlePlanStepPaused the
+ * block stays in openSteps: post-Resume children keep nesting under it and
+ * subagent_complete settles it later.
+ */
+export function handleSubAgentPaused(
+  meta: Record<string, unknown> | undefined,
+  openSteps: Map<string, StepLikeItem>,
+) {
+  const stepId = (meta?.step_id as string) || ''
+  const step = openSteps.get(stepId)
+  if (!step) return
+  step.status = 'paused'
+  if (meta?.duration !== undefined) step.duration = meta.duration as number
+}
+
 export function handleReflection(
   msg: ChatMessageUI, meta: Record<string, unknown> | undefined,
   openSteps: Map<string, StepLikeItem>, items: DisplayItem[],
@@ -154,6 +214,7 @@ export function handleReflection(
   }
   const ref = meta?.plan_step_id as string | undefined
   const container = ref ? openSteps.get(ref) : null
+  resumePausedStep(container)
   if (container) { container.children.push(item); return }
   const openEntries = [...openSteps.values()]
   if (openEntries.length > 0) { openEntries[openEntries.length - 1]!.children.push(item) } else { items.push(item) }

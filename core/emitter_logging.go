@@ -138,6 +138,11 @@ func (l *loggingEmitter) SubAgentComplete(stepID string, success bool, duration 
 	l.inner.SubAgentComplete(stepID, success, duration)
 }
 
+func (l *loggingEmitter) SubAgentPaused(stepID string, duration time.Duration) {
+	l.logger.Debug("subagent: paused", "stepID", stepID, "durationMs", duration.Milliseconds())
+	l.inner.SubAgentPaused(stepID, duration)
+}
+
 func (l *loggingEmitter) AssistantChunk(content string) {
 	// No logging — too noisy for streaming.
 	l.inner.AssistantChunk(content)
@@ -190,6 +195,11 @@ func (l *loggingEmitter) PlanStepStart(stepID, description, summary string) {
 func (l *loggingEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string) {
 	l.logger.Info("plan step complete", "stepID", stepID, "success", success, "durationMs", duration.Milliseconds(), "errMsg", errMsg)
 	l.inner.PlanStepComplete(stepID, success, duration, errMsg)
+}
+
+func (l *loggingEmitter) PlanStepPaused(stepID string, duration time.Duration, errMsg string) {
+	l.logger.Info("plan step paused", "stepID", stepID, "durationMs", duration.Milliseconds(), "errMsg", errMsg)
+	l.inner.PlanStepPaused(stepID, duration, errMsg)
 }
 
 func (l *loggingEmitter) Reflection(reflection *orchestration.Reflection, attempt, maxAttempts int) {

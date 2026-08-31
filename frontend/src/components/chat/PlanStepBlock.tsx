@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Loader2, CheckCircle2, XCircle, RefreshCw, Circle } from 'lucide-react'
+import { Loader2, CheckCircle2, XCircle, RefreshCw, Circle, CirclePause } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
 import { useChatStore } from '@/stores/chatStore'
@@ -38,6 +38,7 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
     running:   { border: 'border-info',         Icon: Loader2,      iconClass: 'text-info animate-spin' },
     completed: { border: 'border-success',      Icon: CheckCircle2, iconClass: 'text-success' },
     failed:    { border: 'border-destructive',  Icon: XCircle,      iconClass: 'text-destructive' },
+    paused:    { border: 'border-warning',      Icon: CirclePause,  iconClass: 'text-warning' },
     pending:   { border: 'border-border',       Icon: Circle,       iconClass: 'text-muted-foreground' },
   } as const
 

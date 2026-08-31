@@ -36,6 +36,41 @@ func TestIsPaused(t *testing.T) {
 	}
 }
 
+// TestPausedRun verifies the finish-fallback gate: a run that ended in a
+// cooperative pause — via the error sentinel (in-memory or persistence
+// round-tripped) or via ExecutionStatusPaused on the result — must be
+// detected so RunConductor skips completeAll and never-started plan steps
+// stay pending for the Resume path. Any other outcome is not a pause.
+func TestPausedRun(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		result *orchestration.ExecutionResult
+		want   bool
+	}{
+		{"nil err and result", nil, nil, false},
+		{"sentinel error", agent.ErrPaused, nil, true},
+		{"persisted error form", errors.New(agent.ErrPaused.Error()), nil, true},
+		{"unrelated error", errors.New("boom"), nil, false},
+		{"paused status", nil, &orchestration.ExecutionResult{Status: orchestration.ExecutionStatusPaused}, true},
+		{
+			"paused status with unrelated error",
+			errors.New("boom"),
+			&orchestration.ExecutionResult{Status: orchestration.ExecutionStatusPaused},
+			true,
+		},
+		{"success status", nil, &orchestration.ExecutionResult{Status: orchestration.ExecutionStatusSuccess}, false},
+		{"failed status", errors.New("boom"), &orchestration.ExecutionResult{Status: orchestration.ExecutionStatusFailed}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pausedRun(tt.err, tt.result); got != tt.want {
+				t.Fatalf("pausedRun(%v, %+v) = %v, want %v", tt.err, tt.result, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestPausedCheckpoint verifies the blackboard lookup returns a step's partial
 // trajectory only when the step carries a paused checkpoint.
 func TestPausedCheckpoint(t *testing.T) {

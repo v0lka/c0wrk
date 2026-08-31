@@ -1,4 +1,4 @@
-import { CheckCircle2, Circle, Loader2, XCircle, Clock } from 'lucide-react'
+import { CheckCircle2, Circle, Loader2, XCircle, Clock, CirclePause } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
 import { usePlanStore } from '@/stores/planStore'
@@ -12,6 +12,8 @@ function StatusIcon({ status }: { status: PlanItem['status'] }) {
       return <CheckCircle2 className="h-3.5 w-3.5 text-success shrink-0" />
     case 'running':
       return <Loader2 className="h-3.5 w-3.5 text-info animate-spin shrink-0" />
+    case 'paused':
+      return <CirclePause className="h-3.5 w-3.5 text-warning shrink-0" />
     case 'pending':
       return <Circle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
     case 'failed':

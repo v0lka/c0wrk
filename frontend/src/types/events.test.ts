@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData, isCompactionFinishedData } from './events'
+import { isAgentMetricsData, normalizeAgentMetricsData, isTaskCompleteData, isCompactionFinishedData, isPlanStepPausedData, isSubAgentPausedData } from './events'
 
 describe('isTaskCompleteData', () => {
     it('accepts valid data with string output', () => {
@@ -194,5 +194,49 @@ describe('isCompactionFinishedData', () => {
         expect(isCompactionFinishedData({ success: true, before_percent: 1, after_percent: 1 })).toBe(false)
         expect(isCompactionFinishedData(null)).toBe(false)
         expect(isCompactionFinishedData('compaction_finished')).toBe(false)
+    })
+})
+
+describe('isPlanStepPausedData', () => {
+    const valid = { step_id: 'step_1', duration: 4200, progress: 0.25, current_step_index: -1, completed_count: 1, total_count: 4 }
+
+    it('accepts a full backend payload', () => {
+        expect(isPlanStepPausedData(valid)).toBe(true)
+    })
+
+    it('accepts a minimal payload (step_id + duration only)', () => {
+        expect(isPlanStepPausedData({ step_id: 'step_1', duration: 1 })).toBe(true)
+    })
+
+    it('accepts an optional error string (pause reason)', () => {
+        expect(isPlanStepPausedData({ step_id: 'step_1', duration: 1, error: 'user pause' })).toBe(true)
+    })
+
+    it('rejects a success field intrusion (a pause is not a completion — but wrong-typed optionals still fail)', () => {
+        expect(isPlanStepPausedData({ step_id: 'step_1', duration: 1, error: 42 })).toBe(false)
+        expect(isPlanStepPausedData({ step_id: 'step_1', duration: 1, progress: 'x' })).toBe(false)
+        expect(isPlanStepPausedData({ step_id: 'step_1', duration: 1, total_count: '4' })).toBe(false)
+    })
+
+    it('rejects missing required fields', () => {
+        expect(isPlanStepPausedData({ step_id: 'step_1' })).toBe(false)
+        expect(isPlanStepPausedData({ duration: 100 })).toBe(false)
+        expect(isPlanStepPausedData({})).toBe(false)
+        expect(isPlanStepPausedData(null)).toBe(false)
+        expect(isPlanStepPausedData(undefined)).toBe(false)
+    })
+})
+
+describe('isSubAgentPausedData', () => {
+    it('accepts the payload shape the backend emits', () => {
+        expect(isSubAgentPausedData({ step_id: 'delegate-1', duration: 900 })).toBe(true)
+    })
+
+    it('rejects wrong-typed or missing fields', () => {
+        expect(isSubAgentPausedData({ step_id: 'delegate-1' })).toBe(false)
+        expect(isSubAgentPausedData({ step_id: 'delegate-1', duration: '900' })).toBe(false)
+        expect(isSubAgentPausedData({ duration: 900 })).toBe(false)
+        expect(isSubAgentPausedData(null)).toBe(false)
+        expect(isSubAgentPausedData(undefined)).toBe(false)
     })
 })

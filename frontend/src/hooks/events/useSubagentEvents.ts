@@ -1,4 +1,4 @@
-// Subagent events: subagent_launch, subagent_complete
+// Subagent events: subagent_launch, subagent_complete, subagent_paused
 //
 // Delegated steps are NOT tracked in the plan panel (Execution panel). They
 // are an execution mechanism, not a planning one. Their progress is shown
@@ -7,8 +7,28 @@
 
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
-import { isSubAgentLaunchData, isSubAgentCompleteData } from '@/types/events'
+import { isSubAgentLaunchData, isSubAgentCompleteData, isSubAgentPausedData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
+import { generateMessageId } from '@/lib/ids'
+import type { SubAgentPausedData } from '@/types/events'
+
+/**
+ * subagent_paused handler — pure delegate runs only (plan-step subagents
+ * surface as plan_step_paused via the backend translator). No plan-store
+ * touch: delegated steps are not tracked in the plan panel. The durable chat
+ * message flips the subagent block to 'paused' in the grouping replay.
+ */
+export function handleSubAgentPaused(sessionId: string, data: SubAgentPausedData): void {
+  useChatStore.getState().setActivityStatus(sessionId, `Paused: sub-agent ${data.step_id}`)
+  useChatStore.getState().addMessage(sessionId, {
+    id: generateMessageId(),
+    sessionId,
+    type: 'subagent_paused',
+    content: '',
+    metadata: { step_id: data.step_id, duration: data.duration },
+    timestamp: Date.now(),
+  })
+}
 
 export function useSubagentEvents(sessionId: string | null): void {
   useEffect(() => {
@@ -44,6 +64,14 @@ export function useSubagentEvents(sessionId: string | null): void {
           metadata: { step_id: data.step_id, success: data.success, duration: data.duration, plan_step_id: data.plan_step_id },
           timestamp: Date.now(),
         })
+      }),
+    )
+
+    // --- subagent_paused ---
+    cleanups.push(
+      onSessionEvent(sessionId, 'subagent_paused', (data) => {
+        if (!isSubAgentPausedData(data)) { reportDroppedEvent('subagent_paused', data); return }
+        handleSubAgentPaused(sessionId, data)
       }),
     )
 

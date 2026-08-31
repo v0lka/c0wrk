@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
+	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
 )
 
@@ -86,6 +88,41 @@ func TestPlanStepEventTranslator_SubAgentComplete_EmitsPlanStepCompleteOnRoot(t 
 	// Scoped copy should not receive PlanStepComplete
 	if len(scoped.planStepCompletes) != 0 {
 		t.Errorf("expected 0 PlanStepComplete on scoped copy, got %d", len(scoped.planStepCompletes))
+	}
+}
+
+func TestPlanStepEventTranslator_SubAgentPaused_EmitsPlanStepPausedOnRoot(t *testing.T) {
+	root := &scopableMockEmitter{}
+	scoped, ok := root.WithPlanStepID("step_2").(*scopableMockEmitter)
+	if !ok {
+		t.Fatal("expected *scopableMockEmitter from WithPlanStepID")
+	}
+	translator := &planStepEventTranslator{
+		Emitter: scoped,
+		root:    root,
+		summary: "Step 2",
+	}
+
+	dur := 5 * time.Second
+	translator.SubAgentPaused("step_2", dur)
+
+	if len(root.planStepPaused) != 1 {
+		t.Fatalf("expected 1 PlanStepPaused on root, got %d", len(root.planStepPaused))
+	}
+	pp := root.planStepPaused[0]
+	if pp.stepID != "step_2" {
+		t.Errorf("expected step_id 'step_2', got %q", pp.stepID)
+	}
+	if pp.duration != dur {
+		t.Errorf("expected duration %v, got %v", dur, pp.duration)
+	}
+	// A pause must not be translated into a terminal PlanStepComplete.
+	if len(root.planStepCompletes) != 0 {
+		t.Errorf("expected 0 PlanStepComplete on root, got %d", len(root.planStepCompletes))
+	}
+	// Scoped copy should not receive PlanStepPaused
+	if len(scoped.planStepPaused) != 0 {
+		t.Errorf("expected 0 PlanStepPaused on scoped copy, got %d", len(scoped.planStepPaused))
 	}
 }
 
@@ -909,4 +946,177 @@ func stringSet(items []string) map[string]struct{} {
 		out[s] = struct{}{}
 	}
 	return out
+}
+
+// ---------------------------------------------------------------------------
+// Execute pause→resume cycle (DAG scheduler level)
+// ---------------------------------------------------------------------------
+
+// TestExecute_PauseMidPlan_ResumeCompletesRemainingSteps drives the full
+// pause→resume cycle through Execute's DAG scheduler with a scripted wave
+// dispatcher. Run 1 (declared plan): s1 completes, s2 pauses mid-work with a
+// checkpointed partial trajectory — s3 is never dispatched and stays pending.
+// Run 2 (continuable resume, seeded exactly like Orchestrator.Resume does):
+// s1 is skipped via its restored successful StepResult and replayed as
+// completed, s2 re-runs, s3 finally runs — every step ends terminal, with no
+// re-declare anywhere.
+func TestExecute_PauseMidPlan_ResumeCompletesRemainingSteps(t *testing.T) {
+	bb := orchestration.NewMapBlackboard()
+	bb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{
+		{ID: "s1", Summary: "first"},
+		{ID: "s2", Summary: "second", DependsOn: []string{"s1"}},
+		{ID: "s3", Summary: "third", DependsOn: []string{"s2"}},
+	}})
+
+	checkpoint := []agent.Step{{
+		Thought:     "halfway through s2",
+		Action:      llm.ToolCall{ID: "p1", Name: "bash_exec", Input: json.RawMessage(`{}`)},
+		Observation: "partial output",
+	}}
+
+	// --- Run 1: wave 1 completes s1, wave 2 pauses inside s2 ---
+	var run1Waves [][]string
+	run1Dispatch := func(_ context.Context, ready []orchestration.PlanStep, _ *tools.DelegationRegistry) []planStepOutcome {
+		ids := make([]string, len(ready))
+		for i, s := range ready {
+			ids[i] = s.ID
+		}
+		run1Waves = append(run1Waves, ids)
+		switch len(run1Waves) {
+		case 1:
+			return []planStepOutcome{{stepID: "s1", output: "s1 done"}}
+		case 2:
+			// The cooperative pause trips inside s2's subagent: the outcome
+			// carries the checkpointed partial trajectory.
+			return []planStepOutcome{{stepID: "s2", output: "partial work", steps: checkpoint, err: agent.ErrPaused}}
+		default:
+			t.Fatalf("run 1 dispatched an unexpected wave %d: %v", len(run1Waves), ids)
+			return nil
+		}
+	}
+
+	emitter1 := &mockEmitter{}
+	planState1 := &planRunState{}
+	planState1.markDeclared() // the plan was declared in THIS run
+	l1 := &conductorLauncher{
+		deps:            conductorDeps{emitter: emitter1},
+		bb:              bb,
+		planState:       planState1,
+		runPlanStepWave: run1Dispatch,
+	}
+	// Production wires the inline lifecycle in RunConductor; Execute needs it
+	// for the pause bookkeeping (markCompleted on the paused step).
+	l1.deps.lifecycle = newInlineStepLifecycle(emitter1, bb)
+
+	results, err := l1.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Execute (pause run) error = %v, want nil (a pause is a clean checkpoint)", err)
+	}
+	if !equalStrings(run1Waves[0], []string{"s1"}) || !equalStrings(run1Waves[1], []string{"s2"}) {
+		t.Fatalf("run 1 waves = %v, want [[s1] [s2]]", run1Waves)
+	}
+	if len(run1Waves) != 2 {
+		t.Fatalf("run 1 dispatched %d waves, want 2 (the pause stops further scheduling)", len(run1Waves))
+	}
+	if len(results) != 2 {
+		t.Fatalf("run 1 results = %+v, want exactly s1 (completed) and s2 (paused)", results)
+	}
+	if results[0].StepID != "s1" || results[0].Status != "completed" || results[0].Output != "s1 done" {
+		t.Errorf("run 1 s1 result = %+v, want completed with 's1 done'", results[0])
+	}
+	if results[1].StepID != "s2" || results[1].Status != "paused" || !isPaused(results[1].Error) {
+		t.Errorf("run 1 s2 result = %+v, want paused", results[1])
+	}
+
+	// Blackboard: s1 succeeded, s2 carries the paused checkpoint, s3 has no
+	// result and is not marked completed — it stays pending for the resume.
+	if sr, ok := bb.GetStepResult("s1"); !ok || sr.Error != nil {
+		t.Errorf("s1 StepResult = %+v (ok=%v), want success", sr, ok)
+	}
+	sr2, ok := bb.GetStepResult("s2")
+	if !ok || !isPaused(sr2.Error) || len(sr2.Steps) != 1 {
+		t.Fatalf("s2 StepResult = %+v (ok=%v), want the paused checkpoint with its partial trajectory", sr2, ok)
+	}
+	if _, ok := bb.GetStepResult("s3"); ok {
+		t.Error("s3 must have no StepResult (never dispatched before the pause)")
+	}
+	if l1.deps.lifecycle.isCompleted("s3") {
+		t.Error("s3 must not be marked completed by the pause run (never-started steps stay pending)")
+	}
+
+	// --- Run 2: continuable resume finishes the plan ---
+	var run2Waves [][]string
+	run2Dispatch := func(_ context.Context, ready []orchestration.PlanStep, _ *tools.DelegationRegistry) []planStepOutcome {
+		ids := make([]string, len(ready))
+		for i, s := range ready {
+			ids[i] = s.ID
+		}
+		run2Waves = append(run2Waves, ids)
+		switch len(run2Waves) {
+		case 1:
+			return []planStepOutcome{{stepID: "s2", output: "s2 resumed"}}
+		case 2:
+			return []planStepOutcome{{stepID: "s3", output: "s3 done"}}
+		default:
+			t.Fatalf("run 2 dispatched an unexpected wave %d: %v", len(run2Waves), ids)
+			return nil
+		}
+	}
+
+	emitter2 := &mockEmitter{}
+	l2 := &conductorLauncher{
+		deps:            conductorDeps{emitter: emitter2},
+		bb:              bb,
+		planState:       newPlanRunState(true), // continuable resume, NOT declared this run
+		runPlanStepWave: run2Dispatch,
+	}
+	l2.deps.lifecycle = newInlineStepLifecycle(emitter2, bb)
+
+	if !l2.HasDeclaredPlan() {
+		t.Fatal("continuable resume must report HasDeclaredPlan=true (plan workflow active without a re-declare)")
+	}
+
+	results2, err := l2.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Execute (resume run) error = %v, want nil", err)
+	}
+	if !equalStrings(run2Waves[0], []string{"s2"}) || !equalStrings(run2Waves[1], []string{"s3"}) {
+		t.Fatalf("run 2 waves = %v, want [[s2] [s3]] (s1 skipped via its restored result)", run2Waves)
+	}
+	if len(results2) != 3 {
+		t.Fatalf("run 2 results = %+v, want all three steps", results2)
+	}
+	// Deterministic plan-declaration ordering, all terminal and error-free.
+	wantStatus := map[string]string{"s1": "completed", "s2": "completed", "s3": "completed"}
+	wantOutput := map[string]string{"s1": "s1 done", "s2": "s2 resumed", "s3": "s3 done"}
+	for i, r := range results2 {
+		if r.StepID != []string{"s1", "s2", "s3"}[i] {
+			t.Errorf("results2[%d].StepID = %q, want plan-declaration order", i, r.StepID)
+		}
+		if r.Status != wantStatus[r.StepID] || r.Output != wantOutput[r.StepID] || r.Error != nil {
+			t.Errorf("results2 entry %s = %+v, want status %q output %q no error", r.StepID, r, wantStatus[r.StepID], wantOutput[r.StepID])
+		}
+	}
+
+	// Blackboard: every step terminal and successful — no paused checkpoints left.
+	for _, id := range []string{"s1", "s2", "s3"} {
+		sr, ok := bb.GetStepResult(id)
+		if !ok || sr.Error != nil || isPaused(sr.Error) {
+			t.Errorf("s StepResult %s = %+v (ok=%v), want a successful terminal result", id, sr, ok)
+		}
+	}
+
+	// The skipped s1 was replayed to the UI as a synthesized success pair.
+	sawS1Replay := false
+	for _, pc := range emitter2.planStepCompletes {
+		if pc.stepID == "s1" {
+			if !pc.success {
+				t.Error("skipped s1 must be replayed as a SUCCESS, got failure")
+			}
+			sawS1Replay = true
+		}
+	}
+	if !sawS1Replay {
+		t.Error("expected a synthesized success PlanStepComplete for the skipped s1 on resume")
+	}
 }

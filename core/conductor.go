@@ -44,18 +44,36 @@ func (h *trajectoryHolder) Steps() []agent.Step {
 	return h.steps
 }
 
-// planRunState tracks whether a plan was declared during the CURRENT Conductor
-// run (via declare_plan → conductorPublisher.Publish). A plan restored from a
-// previous (completed) task is historical context only: on a continuation, the
-// Conductor is free to act plan-less (standalone checklist), declare a new
-// plan, or delegate — a restored plan must NOT lock it into the plan workflow.
+// planRunState tracks whether the plan workflow is active during the CURRENT
+// Conductor run. Two sources activate it:
 //
-// Both the ChecklistGuard (rejects standalone checklists) and the delegate
-// guard (PlanChecker.HasDeclaredPlan) consult this instead of the raw
-// blackboard plan, so a stale restored plan no longer trips either guard.
+//   - declared: a plan was declared in this run (via declare_plan →
+//     conductorPublisher.Publish).
+//   - continuable: this run RESUMED a paused task whose declared plan still
+//     has unreached (not successfully completed) steps — seeded by RunConductor
+//     from conductorDeps.resumedWithPlan, which Orchestrator.Resume computes.
+//     The approved plan on the blackboard is still authoritative, so the run
+//     continues the plan workflow without a re-declare: execute_plan works,
+//     delegate stays disabled, and declare_plan returns a soft hint.
+//
+// A plan restored from a previous COMPLETED task is historical context only:
+// on such a continuation neither flag is set, so the Conductor is free to act
+// plan-less (standalone checklist), declare a new plan, or delegate — and
+// execute_plan refuses to re-run the restored steps.
+//
+// The guards (ChecklistGuard, delegate guard PlanChecker.HasDeclaredPlan, the
+// execute_plan restored-plan guard, and the lifecycle's completeAll gate)
+// consult this instead of the raw blackboard plan.
 type planRunState struct {
-	mu       sync.Mutex
-	declared bool
+	mu          sync.Mutex
+	declared    bool
+	continuable bool
+}
+
+// newPlanRunState creates the per-run plan state. continuable seeds the
+// resumed-with-plan flag (see planRunState doc).
+func newPlanRunState(continuable bool) *planRunState {
+	return &planRunState{continuable: continuable}
 }
 
 // markDeclared records that declare_plan ran in this Conductor run.
@@ -70,6 +88,26 @@ func (s *planRunState) isDeclared() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.declared
+}
+
+// isContinuable reports whether this run resumed a paused task whose declared
+// plan still has unreached steps (the flag is seeded once, at run start).
+func (s *planRunState) isContinuable() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.continuable
+}
+
+// isActive reports whether the plan workflow is active in this run: a plan was
+// declared via declare_plan OR the run resumed a task whose approved plan still
+// has unreached steps. This is what the guards (HasDeclaredPlan, the
+// execute_plan restored-plan guard, ChecklistGuard, completeAll) actually mean
+// to ask — a continuable resumed run is locked into the plan workflow exactly
+// like a freshly declared one.
+func (s *planRunState) isActive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.declared || s.continuable
 }
 
 // compositeTrajectoryStore implements agent.TrajectoryStore. It keeps an
@@ -267,6 +305,18 @@ type conductorDeps struct {
 	// is the default fresh-start behavior.
 	resumeSteps []agent.Step
 
+	// resumedWithPlan marks this run as a RESUME of a task whose declared plan
+	// still has unreached (not successfully completed) steps. Orchestrator.
+	// Resume computes it (plan != nil && at least one step without a successful
+	// StepResult) and RunConductor seeds it into the per-run planRunState, so
+	// the approved plan stays authoritative for this run: execute_plan runs the
+	// remaining steps WITHOUT a re-declare, delegate stays disabled, and
+	// declare_plan returns a soft "already approved — continue with
+	// execute_plan" hint. A plan restored from a previous COMPLETED task does
+	// not set this flag — such a run keeps the restored-plan refusals. Zero
+	// value (false) is the fresh-start / plan-less default.
+	resumedWithPlan bool
+
 	// forceCompactionStrategy is the one-shot manual-compaction override from
 	// the resume flow (RequestResumeCompaction → Resume → runConductor /
 	// resumeGoalLoop). When non-empty, RunConductor (a) replaces the
@@ -367,31 +417,38 @@ type conductorLauncher struct {
 	planState *planRunState
 }
 
-// HasDeclaredPlan implements tools.PlanChecker. Returns true when a plan has
-// been declared in the CURRENT Conductor run via declare_plan. Used by the
-// delegate guard to enforce orthogonality: once a plan is declared, delegate is
-// disabled and execute_plan is the only execution path for plan steps.
+// HasDeclaredPlan implements tools.PlanChecker. Returns true when the plan
+// workflow is active in the CURRENT Conductor run: a plan was declared in this
+// run via declare_plan, OR this run resumed a paused task whose approved plan
+// still has unreached steps (continuable — the approved plan stays
+// authoritative, so delegate stays disabled and execute_plan is the only
+// execution path for plan steps). Used by the delegate guard to enforce
+// orthogonality.
 //
-// Crucially, this consults planRunState (set by conductorPublisher.Publish),
-// NOT the raw blackboard plan: on a continuation, a restored plan from a
-// previous (completed) task must NOT lock the new run into the plan workflow.
-// When planState is nil (direct construction in tests), it falls back to the
-// blackboard-plan check so existing direct-construction tests keep working.
+// Crucially, this consults planRunState, NOT the raw blackboard plan: on a
+// continuation, a plan restored from a previous COMPLETED task must NOT lock
+// the new run into the plan workflow. When planState is nil (direct
+// construction in tests), it falls back to the blackboard-plan check so
+// existing direct-construction tests keep working.
 func (l *conductorLauncher) HasDeclaredPlan() bool {
 	if l.planState != nil {
-		return l.planState.isDeclared()
+		return l.planState.isActive()
 	}
 	return l.bb != nil && l.bb.GetPlan() != nil
 }
 
+// PlanContinuation reports whether THIS Conductor run resumed a task whose
+// approved plan still has unreached steps. Detected by declare_plan via the
+// optional tools.PlanContinuation capability interface, so the tool can return
+// a soft "plan already approved — continue with execute_plan" hint instead of
+// re-publishing (and thereby resetting) the approved roadmap. Nil planState
+// (direct test construction) means no continuation.
+func (l *conductorLauncher) PlanContinuation() bool {
+	return l.planState != nil && l.planState.isContinuable()
+}
+
 // Execute runs the declared plan's steps in DAG order with parallelism for
 // independent steps. It implements tools.PlanStepExecutor.
-//
-// A plan restored from a previous (completed) task is refused: planRunState
-// (fresh per run) tracks whether declare_plan ran in THIS run, and Execute
-// will not re-run a restored plan's steps (which would duplicate side
-// effects). The Conductor must publish a new plan via declare_plan, or use
-// delegate for plan-less work.
 //
 // Execute is resumable. A step that already has a successful result on the
 // blackboard (StepResult.Error == nil) is skipped, so a second call re-runs
@@ -399,6 +456,18 @@ func (l *conductorLauncher) HasDeclaredPlan() bool {
 // explicit stepIDs list forces the named steps — and any step that depends on
 // them, directly or transitively — to re-run even if they previously
 // succeeded; other already-successful steps are still skipped.
+//
+// Two continuation flavors are distinguished:
+//   - Resumed paused task with an approved plan (continuable, seeded by
+//     Orchestrator.Resume via planRunState): Execute runs WITHOUT a
+//     re-declare — the plan on the blackboard is still authoritative and
+//     already-successful steps are skipped by the resume logic above.
+//   - Plan restored from a previous COMPLETED task (neither declared in this
+//     run nor continuable): refused. planRunState (fresh per run) tracks
+//     whether declare_plan ran in THIS run, and Execute will not re-run a
+//     restored plan's steps (which would duplicate side effects). The
+//     Conductor must publish a new plan via declare_plan, or use delegate
+//     for plan-less work.
 //
 // Each step runs as an isolated subagent (its own Executor + ContextManager),
 // but events are emitted as plan_step_start/plan_step_complete (not
@@ -416,15 +485,19 @@ func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]to
 		return nil, errors.New("no plan declared — call declare_plan first")
 	}
 
-	// Restored-plan guard: on a continuation, the blackboard may carry a plan
-	// restored from a previous (completed) task. planRunState (wired in
-	// RunConductor) is fresh — not declared — so HasDeclaredPlan() returns
-	// false for such a plan. Refuse to execute it: re-running a completed
-	// task's steps would duplicate side effects (file edits, etc.) for no
-	// benefit. When planState is nil (direct test construction), this guard is
-	// inert and Execute proceeds on whatever plan is on the blackboard,
-	// preserving the behavior the DAG-scheduler tests rely on.
-	if l.planState != nil && !l.planState.isDeclared() {
+	// Restored-plan guard. Three cases reach this line with planState wired:
+	//   - plan declared in this run (declare_plan)            → execute.
+	//   - continuable resume (paused task, approved plan with
+	//     unreached steps, seeded by Orchestrator.Resume)     → execute WITHOUT
+	//     a re-declare: the approved plan is still authoritative and the resume
+	//     logic below skips already-successful steps.
+	//   - plan merely restored from a previous COMPLETED task → refuse:
+	//     re-running a completed task's steps would duplicate side effects
+	//     (file edits, etc.) for no benefit.
+	// When planState is nil (direct test construction), this guard is inert and
+	// Execute proceeds on whatever plan is on the blackboard, preserving the
+	// behavior the DAG-scheduler tests rely on.
+	if l.planState != nil && !l.planState.isActive() {
 		return nil, errors.New("execute_plan: the plan on the blackboard was restored from a previous (completed) task and was not declared in this run — call declare_plan to publish a new plan, or use delegate for plan-less work")
 	}
 
@@ -967,6 +1040,19 @@ func isPaused(err error) bool {
 		return false
 	}
 	return errors.Is(err, agent.ErrPaused) || err.Error() == agent.ErrPaused.Error()
+}
+
+// pausedRun reports whether the Conductor's run ended in a cooperative pause:
+// either the run returned the pause sentinel (agent.ErrPaused, including its
+// persistence-round-tripped string form) or the engine classified the result
+// as ExecutionStatusPaused. A paused run is a recoverable checkpoint, not a
+// terminal outcome — the finish fallback must not sweep plan steps into
+// terminal states; they stay pending/running for the Resume path.
+func pausedRun(err error, result *orchestration.ExecutionResult) bool {
+	if isPaused(err) {
+		return true
+	}
+	return result != nil && result.Status == orchestration.ExecutionStatusPaused
 }
 
 // pausedCheckpoint returns the blackboard's paused checkpoint for a step, if
@@ -1605,21 +1691,21 @@ func (l *conductorLauncher) scopeEvents(stepID string) agent.Events {
 }
 
 // planStepEventTranslator wraps a scoped emitter and translates the sp4rk
-// subagent lifecycle events (SubAgentLaunch/SubAgentComplete — which are
-// hard-coded inside RunSubAgent) into plan-step lifecycle events
-// (PlanStepStart/PlanStepComplete). This lets plan steps reuse the same
-// subagent machinery (RunSubAgentsParallel, isolated context, parallel waves)
-// while appearing in the UI as plan steps, not delegations.
+// subagent lifecycle events (SubAgentLaunch/SubAgentComplete/SubAgentPaused —
+// which are hard-coded inside RunSubAgent) into plan-step lifecycle events
+// (PlanStepStart/PlanStepComplete/PlanStepPaused). This lets plan steps reuse
+// the same subagent machinery (RunSubAgentsParallel, isolated context,
+// parallel waves) while appearing in the UI as plan steps, not delegations.
 //
 // The translator holds TWO emitter references:
 //   - scoped (embedded): the WithPlanStepID copy — child events (ToolCall,
 //     Thought, AssistantChunk, etc.) carry plan_step_id so they nest under
 //     the step block in the frontend.
-//   - root: the session-root emitter — PlanStepStart/PlanStepComplete are
-//     called here because the scoped copy does NOT share planStartedSet /
-//     planCompletedSet / planTotalSteps (WithPlanStepID creates a shallow
-//     copy without those fields). Calling on root ensures correct progress
-//     tracking and duplicate suppression.
+//   - root: the session-root emitter — PlanStepStart/PlanStepComplete/
+//     PlanStepPaused are called here because the scoped copy does NOT share
+//     planStartedSet / planCompletedSet / planTotalSteps (WithPlanStepID
+//     creates a shallow copy without those fields). Calling on root ensures
+//     correct progress tracking and duplicate suppression.
 type planStepEventTranslator struct {
 	Emitter         // scoped copy (child events with plan_step_id)
 	root    Emitter // session-root emitter (plan-step lifecycle + progress)
@@ -1632,6 +1718,10 @@ func (t *planStepEventTranslator) SubAgentLaunch(stepID, description string) {
 
 func (t *planStepEventTranslator) SubAgentComplete(stepID string, success bool, duration time.Duration) {
 	t.root.PlanStepComplete(stepID, success, duration, "")
+}
+
+func (t *planStepEventTranslator) SubAgentPaused(stepID string, duration time.Duration) {
+	t.root.PlanStepPaused(stepID, duration, "")
 }
 
 // scopePlanStepEvents returns an agent.Events suitable for plan-step execution:
@@ -1914,11 +2004,16 @@ func RunConductor(
 ) (*orchestration.ExecutionResult, error) {
 	// planRunState is shared between the publisher (marks it on declare_plan),
 	// the launcher (HasDeclaredPlan reads it), and the inline-step lifecycle
-	// (completeAll gates plan-step synthesis on it). One fresh instance per
-	// Conductor run, so a restored plan from a previous (completed) task does
-	// not count as "declared" — a continuation stays free to act plan-less,
-	// declare a new plan, or delegate.
-	planState := &planRunState{}
+	// (completeAll gates plan-step synthesis on it). One instance per Conductor
+	// run. It starts continuable when this run RESUMES a task whose approved
+	// plan still has unreached steps (deps.resumedWithPlan, computed by
+	// Orchestrator.Resume): the plan workflow stays active for the run —
+	// execute_plan continues the remaining steps without a re-declare, delegate
+	// stays disabled, declare_plan soft-hints. A plan merely restored from a
+	// previous (completed) task sets no flag: such a continuation stays free to
+	// act plan-less, declare a new plan, or delegate, and execute_plan refuses
+	// to re-run the restored steps.
+	planState := newPlanRunState(deps.resumedWithPlan)
 
 	// Build the inline-step lifecycle up front so it can be threaded into deps
 	// (consumed by Execute) rather than wired by post-construction field
@@ -2075,12 +2170,20 @@ func RunConductor(
 	// steps from being stuck in "running" state if the Conductor forgot to
 	// call declare_step_complete before finishing. On failure, propagate the
 	// conductor error so the UI can show why each pending step failed.
-	success := err == nil && result != nil && result.Status == orchestration.ExecutionStatusSuccess
-	errMsg := ""
-	if err != nil {
-		errMsg = err.Error()
+	//
+	// A cooperative pause is NOT a terminal outcome: the fallback is skipped
+	// so the plan is not swept into terminal states. Never-started steps stay
+	// "pending" and started ones stay "running" — a later Resume re-enters
+	// them (the paused step's partial trajectory was already checkpointed on
+	// the blackboard).
+	if !pausedRun(err, result) {
+		success := err == nil && result != nil && result.Status == orchestration.ExecutionStatusSuccess
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		inlineLifecycle.completeAll(success, errMsg)
 	}
-	inlineLifecycle.completeAll(success, errMsg)
 
 	// Final trajectory flush: the ReAct loop has ended, so no more Syncs will
 	// arrive. This drains any in-flight async write and persists the freshest
@@ -2148,11 +2251,18 @@ func adaptContextFactory(cf ContextManagerFactory) orchestration.ContextManagerF
 // routing-derived compaction strategy and forces a start-of-run compaction
 // (CompactOnStart) of the merged trajectory. Empty ("" — the HandleMessage
 // default and an unarmed Resume) preserves the normal behavior.
-func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, resumeSteps []agent.Step, contentBlocks []llm.ContentBlock, nudge, forceCompactionStrategy string) (*orchestration.ExecutionResult, error) {
+//
+// resumedWithPlan marks a resume of a task whose approved plan still has
+// unreached steps (computed by Resume via planHasUnreachedSteps). RunConductor
+// seeds it into the per-run planRunState so the plan workflow stays active:
+// execute_plan continues the remaining steps without a re-declare, delegate
+// stays disabled, and declare_plan soft-hints. HandleMessage passes false.
+func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orchestration.Blackboard, availableTools []sdktools.ToolDescriptor, plansDir string, conversationHistory []llm.Message, resumeSteps []agent.Step, contentBlocks []llm.ContentBlock, nudge, forceCompactionStrategy string, resumedWithPlan bool) (*orchestration.ExecutionResult, error) {
 	deps := o.buildConductorDeps(conversationHistory, resumeSteps)
 	deps.contentBlocks = contentBlocks
 	deps.nudge = nudge
 	deps.forceCompactionStrategy = forceCompactionStrategy
+	deps.resumedWithPlan = resumedWithPlan
 	return RunConductor(ctx, message, bb, availableTools, deps, plansDir)
 }
 
@@ -2385,21 +2495,35 @@ func (l *inlineStepLifecycle) isCompleted(stepID string) bool {
 	return l.completed[stepID]
 }
 
-// planDeclaredInRun reports whether a plan was declared in the CURRENT
+// planDeclaredInRun reports whether the plan workflow is active in the CURRENT
 // Conductor run. Mirrors conductorLauncher.HasDeclaredPlan: when planState is
-// wired (production path via RunConductor), it reflects only plans declared
-// via declare_plan; a restored plan from a previous (completed) task does NOT
-// count. When planState is nil (direct construction in tests), it falls back
-// to the raw blackboard plan so existing direct-construction tests keep
-// working.
+// wired (production path via RunConductor), it reflects plans declared via
+// declare_plan AND continuable resumes (paused task whose approved plan still
+// has unreached steps) — on both, completeAll must sweep the plan's remaining
+// steps to a terminal state. A plan restored from a previous (completed) task
+// does NOT count. When planState is nil (direct construction in tests), it
+// falls back to the raw blackboard plan so existing direct-construction tests
+// keep working.
 func (l *inlineStepLifecycle) planDeclaredInRun() bool {
 	if l == nil {
 		return false
 	}
 	if l.planState != nil {
-		return l.planState.isDeclared()
+		return l.planState.isActive()
 	}
 	return l.bb != nil && l.bb.GetPlan() != nil
+}
+
+// stepSucceededPreviously reports whether the step already has a SUCCESSFUL
+// (error-free) StepResult on the blackboard — possibly restored from a
+// previous run of this task (pause/resume or restart). Used by completeAll to
+// never repaint an actually-succeeded step with this run's terminal failure.
+func (l *inlineStepLifecycle) stepSucceededPreviously(stepID string) bool {
+	if l == nil || l.bb == nil {
+		return false
+	}
+	sr, ok := l.bb.GetStepResult(stepID)
+	return ok && sr.Error == nil
 }
 
 // completeAll auto-completes any plan steps that have not reached a terminal
@@ -2475,6 +2599,15 @@ func (l *inlineStepLifecycle) completeAll(success bool, errMsg string) {
 	for _, id := range neverStarted {
 		desc, summary := lookupStepDesc(l.bb, id)
 		l.emitter.PlanStepStart(id, desc, summary)
+		// A step with a successful StepResult restored from a previous run
+		// (continuable resume where execute_plan skipped it) must NOT be
+		// repainted with this run's terminal failure — replay its success so
+		// the plan panel keeps it completed (mirrors the launcher's
+		// emitSkippedStepCompleted).
+		if l.stepSucceededPreviously(id) {
+			l.emitter.PlanStepComplete(id, true, 0, "")
+			continue
+		}
 		l.emitter.PlanStepComplete(id, success, 0, errMsg)
 	}
 	// Clear the dynamic step scope after all steps are completed so any

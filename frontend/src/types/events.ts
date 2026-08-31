@@ -40,6 +40,10 @@ export interface PlanData {
 
 export interface PlanStepStartData { step_id: string; description: string; summary?: string }
 export interface PlanStepCompleteData { step_id: string; success: boolean; duration: number; error?: string; progress?: number; current_step_index?: number; completed_count?: number; total_count?: number }
+/** Cooperative pause checkpoint: mirrors plan_step_complete's shape minus the
+ *  `success` field — a pause is a recoverable state, NOT a completion
+ *  (completed_count is untouched; a Resume re-enters the step). */
+export interface PlanStepPausedData { step_id: string; duration: number; error?: string; progress?: number; current_step_index?: number; completed_count?: number; total_count?: number }
 
 export interface ToolConfirmData {
   confirm_id: string
@@ -113,6 +117,10 @@ export interface TaskCompleteData {
 }
 export interface SubAgentLaunchData { step_id: string; description: string; plan_step_id?: string }
 export interface SubAgentCompleteData { step_id: string; success: boolean; duration: number; plan_step_id?: string }
+/** Cooperative pause checkpoint for pure delegate runs (recoverable, not a
+ *  failure — no success field; Resume restores the trajectory). For plan-step
+ *  subagents the backend translator re-emits plan_step_paused instead. */
+export interface SubAgentPausedData { step_id: string; duration: number }
 export interface RetryData { attempt: number; max_attempts: number }
 export interface StepRetryData { step_id: string; attempt: number; max_attempts: number }
 export interface ServiceData { content: string; phase?: string }
@@ -347,6 +355,9 @@ export interface SessionEventMap {
   readonly plan_generated: PlanData
   readonly plan_step_start: PlanStepStartData
   readonly plan_step_complete: PlanStepCompleteData
+  /** Cooperative pause checkpoint for a plan step (recoverable, not a
+   *  completion — no success field, completed_count untouched). */
+  readonly plan_step_paused: PlanStepPausedData
   readonly assistant_chunk: AssistantChunkData
   readonly assistant_done: { readonly content: string; readonly input_tokens: number; readonly output_tokens: number }
   readonly error: ErrorData
@@ -357,6 +368,9 @@ export interface SessionEventMap {
   readonly service: ServiceData
   readonly subagent_launch: SubAgentLaunchData
   readonly subagent_complete: SubAgentCompleteData
+  /** Cooperative pause checkpoint for a pure delegate run (plan-step
+   *  subagents surface as plan_step_paused via the backend translator). */
+  readonly subagent_paused: SubAgentPausedData
   readonly context_fill: ContextFillData
   readonly context_compaction: ContextCompactionData
   readonly compaction_started: CompactionStartedData
@@ -541,6 +555,17 @@ export function isPlanStepCompleteData(d: unknown): d is PlanStepCompleteData {
   if ('total_count' in d && d.total_count !== undefined && typeof d.total_count !== 'number') return false
   return true
 }
+export function isPlanStepPausedData(d: unknown): d is PlanStepPausedData {
+  if (!isObj(d) || !has(d, 'step_id', 'duration')) return false
+  // Same optional-field validation as plan_step_complete, minus `success` —
+  // the payload never carries it (a pause is not a completion).
+  if ('progress' in d && d.progress !== undefined && typeof d.progress !== 'number') return false
+  if ('current_step_index' in d && d.current_step_index !== undefined && typeof d.current_step_index !== 'number') return false
+  if ('completed_count' in d && d.completed_count !== undefined && typeof d.completed_count !== 'number') return false
+  if ('total_count' in d && d.total_count !== undefined && typeof d.total_count !== 'number') return false
+  if ('error' in d && d.error !== undefined && typeof d.error !== 'string') return false
+  return true
+}
 export function isAssistantChunkData(d: unknown): d is AssistantChunkData {
   if (!isObjLocal(d)) return false
   const hasContent = 'content' in d && typeof d.content === 'string'
@@ -570,6 +595,11 @@ export function isStepRetryData(d: unknown): d is StepRetryData { return isObj(d
 export function isServiceData(d: unknown): d is ServiceData { return isObj(d) && has(d, 'content') }
 export function isSubAgentLaunchData(d: unknown): d is SubAgentLaunchData { return isObj(d) && has(d, 'step_id') }
 export function isSubAgentCompleteData(d: unknown): d is SubAgentCompleteData { return isObj(d) && has(d, 'step_id', 'success') }
+export function isSubAgentPausedData(d: unknown): d is SubAgentPausedData {
+  if (!isObj(d) || !has(d, 'step_id', 'duration')) return false
+  if (typeof d.duration !== 'number') return false
+  return true
+}
 export function isContextFillData(d: unknown): d is ContextFillData { return isObj(d) && has(d, 'fill_percent', 'status') }
 export function isContextCompactionData(d: unknown): d is ContextCompactionData { return isObj(d) && has(d, 'before_percent', 'after_percent') }
 export function isCompactionStartedData(d: unknown): d is CompactionStartedData { return isObj(d) && has(d, 'strategy') }

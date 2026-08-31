@@ -1104,6 +1104,127 @@ func TestEventEmitterPlanStepStartAfterPlanGenerated(t *testing.T) {
 	}
 }
 
+// countPlanStepStarts counts plan_step_start events in an accumulated slice.
+func countPlanStepStarts(events []Event) int {
+	n := 0
+	for _, e := range events {
+		if e.Type == "plan_step_start" {
+			n++
+		}
+	}
+	return n
+}
+
+// TestEventEmitterPlanStepStartAfterPauseReEmitted verifies that PlanStepPaused
+// releases the step from the started-set so the resumed run's PlanStepStart for
+// the re-entered step reaches the UI. The emitter outlives individual runs (one
+// instance per session), so without the release the resumed start would be
+// suppressed as a duplicate and the plan panel/chat block would stay "paused"
+// until the final completion.
+func TestEventEmitterPlanStepStartAfterPauseReEmitted(t *testing.T) {
+	var events []Event
+	emit := func(e Event) {
+		events = append(events, e)
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.PlanGenerated(2, nil)
+	emitter.PlanStepStart("step-1", "Do thing", "Do")
+	emitter.PlanStepPaused("step-1", 1500*time.Millisecond, "")
+	emitter.PlanStepStart("step-1", "Do thing", "Do") // resumed run re-enters the step
+
+	if got := countPlanStepStarts(events); got != 2 {
+		t.Errorf("expected 2 plan_step_start events (pre-pause and post-resume), got %d", got)
+	}
+}
+
+// TestEventEmitterPlanStepStartAfterFailureReEmitted verifies that a failed
+// completion releases the step from the started-set so a later re-run (same-run
+// execute_plan retry or a continuable resume re-running failed steps) emits a
+// fresh start instead of being suppressed while the step shows "failed".
+func TestEventEmitterPlanStepStartAfterFailureReEmitted(t *testing.T) {
+	var events []Event
+	emit := func(e Event) {
+		events = append(events, e)
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.PlanGenerated(2, nil)
+	emitter.PlanStepStart("step-1", "Do thing", "Do")
+	emitter.PlanStepComplete("step-1", false, time.Second, "boom")
+	emitter.PlanStepStart("step-1", "Do thing", "Do") // re-run of the failed step
+
+	if got := countPlanStepStarts(events); got != 2 {
+		t.Errorf("expected 2 plan_step_start events (initial and re-run), got %d", got)
+	}
+}
+
+// TestEventEmitterPlanStepStartAfterSuccessStillSuppressed pins the completed
+// side of the dedupe: a successful completion does NOT release the step from
+// the started-set — re-declared or skipped steps synthesize their own pair, and
+// double starts for a still-completed step would only churn the UI.
+func TestEventEmitterPlanStepStartAfterSuccessStillSuppressed(t *testing.T) {
+	var events []Event
+	emit := func(e Event) {
+		events = append(events, e)
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.PlanGenerated(1, nil)
+	emitter.PlanStepStart("step-1", "Do thing", "Do")
+	emitter.PlanStepComplete("step-1", true, time.Second, "")
+	emitter.PlanStepStart("step-1", "Do thing again", "Do2")
+
+	if got := countPlanStepStarts(events); got != 1 {
+		t.Errorf("expected 1 plan_step_start event (success keeps the dedupe), got %d", got)
+	}
+}
+
+// TestEventEmitterPlanStepPaused verifies PlanStepPaused emits the pause event
+// with the pause payload: no "success" field (a pause is not a completion) and
+// completed_count untouched (planCompletedSet is only updated by completions).
+func TestEventEmitterPlanStepPaused(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.PlanGenerated(2, nil)
+	emitter.PlanStepStart("step-1", "Do thing", "Do")
+	emitter.PlanStepComplete("step-1", true, time.Second, "")
+	emitter.PlanStepStart("step-2", "Do more", "More")
+	emitter.PlanStepPaused("step-2", 2500*time.Millisecond, "user requested pause")
+
+	if received.Type != "plan_step_paused" {
+		t.Fatalf("expected type 'plan_step_paused', got %q", received.Type)
+	}
+
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
+	}
+	if data["step_id"] != "step-2" {
+		t.Errorf("expected step_id 'step-2', got %v", data["step_id"])
+	}
+	if data["duration"] != int64(2500) {
+		t.Errorf("expected duration 2500, got %v", data["duration"])
+	}
+	if data["error"] != "user requested pause" {
+		t.Errorf("expected error 'user requested pause', got %v", data["error"])
+	}
+	// A pause is not a completion: no success field, completed_count stays 1.
+	if _, has := data["success"]; has {
+		t.Errorf("plan_step_paused must not carry a success field, got %v", data["success"])
+	}
+	if data["completed_count"] != 1 {
+		t.Errorf("expected completed_count 1 (untouched by the pause), got %v", data["completed_count"])
+	}
+	if data["current_step_index"] != -1 {
+		t.Errorf("expected current_step_index -1, got %v", data["current_step_index"])
+	}
+}
+
 // TestEventEmitterAssistantChunk verifies AssistantChunk emits correct event.
 func TestEventEmitterAssistantChunk(t *testing.T) {
 	var received Event

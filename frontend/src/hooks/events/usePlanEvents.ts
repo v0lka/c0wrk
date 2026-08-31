@@ -1,13 +1,14 @@
-// Plan lifecycle events: plan_generated, plan_step_start, plan_step_complete
+// Plan lifecycle events: plan_generated, plan_step_start, plan_step_complete,
+// plan_step_paused
 
 import { useEffect } from 'react'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
-import { isPlanData, isPlanStepStartData, isPlanStepCompleteData, isStepTodoUpdateData } from '@/types/events'
+import { isPlanData, isPlanStepStartData, isPlanStepCompleteData, isPlanStepPausedData, isStepTodoUpdateData } from '@/types/events'
 import { useChatStore } from '@/stores/chatStore'
 import { usePlanStore } from '@/stores/planStore'
 import { generateMessageId } from '@/lib/ids'
 import type { PlanItem, PlanGroup } from '@/types/models'
-import type { PlanData, PlanStepData } from '@/types/events'
+import type { PlanData, PlanStepData, PlanStepPausedData } from '@/types/events'
 
 function toPlanItem(step: PlanStepData, index: number): PlanItem {
   return {
@@ -55,6 +56,33 @@ export function handlePlanGenerated(sessionId: string, data: PlanData): void {
       current_step_index: data.current_step_index,
       completed_count: data.completed_count,
       total_count: data.total_count,
+    },
+    timestamp: Date.now(),
+  })
+}
+
+/**
+ * plan_step_paused handler: the step stopped at a cooperative pause
+ * checkpoint — a recoverable started-but-unfinished state, NOT a completion
+ * (backend planCompletedSet untouched, so completed_count in the panel is
+ * untouched too). The plan item flips to 'paused' while untouched steps keep
+ * 'pending'; a durable chat message lets the grouping replay restore the
+ * paused block after a restart. Like plan_step_start (unlike
+ * plan_step_complete) this is NOT terminal: the eventual
+ * plan_step_complete/plan_step_start after a Resume settles it.
+ */
+export function handlePlanStepPaused(sessionId: string, data: PlanStepPausedData): void {
+  useChatStore.getState().setActivityStatus(sessionId, `Paused at step ${data.step_id}`)
+  usePlanStore.getState().updateStepStatus(data.step_id, 'paused')
+  useChatStore.getState().addMessage(sessionId, {
+    id: generateMessageId(),
+    sessionId,
+    type: 'plan_step_paused',
+    content: '',
+    metadata: {
+      step_id: data.step_id,
+      duration: data.duration,
+      ...(data.error ? { error: data.error } : {}),
     },
     timestamp: Date.now(),
   })
@@ -110,6 +138,13 @@ export function usePlanEvents(sessionId: string | null): void {
           },
           timestamp: Date.now(),
         })
+      }),
+    )
+
+    cleanups.push(
+      onSessionEvent(sessionId, 'plan_step_paused', (data) => {
+        if (!isPlanStepPausedData(data)) { reportDroppedEvent('plan_step_paused', data); return }
+        handlePlanStepPaused(sessionId, data)
       }),
     )
 

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // countEvents drains the event channel and returns how many events of the
@@ -243,4 +244,175 @@ func TestEmitTaskCancelledUnlessShuttingDown(t *testing.T) {
 			t.Errorf("expected one task_cancelled event, got %d", n)
 		}
 	})
+}
+
+// TestShutdown_MidPlan_RestartResumeCompletesAllStepsTerminal covers the
+// shutdown flavor of the pause→resume scenario: a task is executing a
+// declared two-step plan (s1's subagent is mid-work) when the app SHUTS DOWN.
+// The teardown checkpoints the task as paused with its plan (and trajectory)
+// intact and no successful step result; RestoreBlackboard — what a restarted
+// process runs — hydrates the plan; and a fresh manager over the same stores
+// ("restart") resumes the task: the conductor continues the SAME plan to
+// completion — every step terminal, the row completed, no re-declared plan.
+func TestShutdown_MidPlan_RestartResumeCompletesAllStepsTerminal(t *testing.T) {
+	caller1 := &scriptedPlanLLM{script: []scriptedPlanStep{
+		{respond: routingJSONResponse("general", 2)}, // router classification
+		{respond: declarePlanCall("c1")},             // declare the roadmap
+		{respond: executePlanCall("c2")},             // start executing it
+		// s1's subagent is gated mid-work when the shutdown lands.
+		{respond: bashExecCall("g1"), started: make(chan struct{}), gate: make(chan struct{})},
+	}}
+	bash := newPassthroughBashExec()
+	store := newInMemoryTaskStore()
+	sessions := newMockSessionStore()
+
+	eventChan := make(chan Event, 200)
+	mgr1 := NewManager(planWorkflowFactory(caller1, bash), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr1.Shutdown)
+	// Both stores set BEFORE CreateSession: the task store wires the
+	// PersistentBlackboard factory (real persistence) and the session store
+	// lets the "restarted" manager lazily restore the session.
+	mgr1.SetTaskStore(store)
+	mgr1.SetSessionStore(sessions)
+
+	ws := testWorkspacePath(t)
+	info, err := mgr1.CreateSession(testProjectID, ws)
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	// Seed the session row so the "restarted" manager can lazily restore it
+	// (CreateSession itself does not persist the session row).
+	seedSession(t, sessions, info.ID, testProjectID, "mid-plan shutdown", false)
+
+	if err := mgr1.SendMessage(context.Background(), info.ID, "build the widget in two planned steps", nil, nil, "", "", false, "", false); err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	// Wait until s1's subagent is blocked mid-work.
+	select {
+	case <-caller1.script[3].started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for the s1 subagent to reach its (gated) LLM call")
+	}
+
+	// App shutdown mid-plan. Shutdown cancels the running task and joins its
+	// goroutine; the gated LLM call unblocks exactly on that cancellation
+	// (the gate selects on ctx.Done), so no timing window is involved.
+	shutdownDone := make(chan struct{})
+	go func() {
+		mgr1.Shutdown()
+		close(shutdownDone)
+	}()
+	select {
+	case <-shutdownDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not complete")
+	}
+
+	// The shutdown checkpoint. The cancellation surfaces as a run error, so
+	// HandleMessage marks the row failed (the resumable flavor: failed tasks
+	// match GetUnfinishedTask and reappear as resumable after restart) — the
+	// plan and trajectory survive, with NO successful step result (s1 was cut
+	// mid-work, s2 never started), which is exactly what keeps the plan
+	// continuable on resume.
+	adapter := NewTaskStoreAdapter(store)
+	taskID, err := adapter.GetUnfinishedTaskID(info.ID)
+	if err != nil || taskID == "" {
+		t.Fatalf("GetUnfinishedTaskID after shutdown = %q, %v — the failed task must remain resumable", taskID, err)
+	}
+	state, err := adapter.LoadTaskState(taskID)
+	if err != nil || state == nil {
+		t.Fatalf("LoadTaskState after shutdown = %+v, %v", state, err)
+	}
+	if state.Status != "failed" {
+		t.Errorf("checkpointed row status = %q, want failed (resumable; must not be completed/cancelled)", state.Status)
+	}
+	if state.Plan == nil || len(state.Plan.Steps) != 2 {
+		t.Fatalf("checkpointed plan = %+v, want the declared two-step plan to survive the shutdown", state.Plan)
+	}
+	if sr, ok := state.StepResults["s1"]; ok && sr.Error == nil {
+		t.Errorf("s1 result after shutdown = %+v, want absent or non-success (cut mid-work)", sr)
+	}
+	if sr, ok := state.StepResults["s2"]; ok && sr.Error == nil {
+		t.Errorf("s2 result after shutdown = %+v, want absent or non-success (never started)", sr)
+	}
+	if traj, err := adapter.LoadTrajectory(taskID); err != nil || len(traj) == 0 {
+		t.Fatalf("persisted trajectory after shutdown is empty (%v) — the checkpoint must survive a restart", err)
+	}
+
+	// RestoreBlackboard — the first thing a restarted process does for a
+	// resumable task — must hydrate the plan and the original request.
+	bb, err := RestoreBlackboard(taskID, info.ID, adapter, nil)
+	if err != nil || bb == nil {
+		t.Fatalf("RestoreBlackboard = %+v, %v", bb, err)
+	}
+	if plan := bb.GetPlan(); plan == nil || len(plan.Steps) != 2 {
+		t.Fatalf("restored plan = %+v, want the declared two-step plan", plan)
+	}
+	if bb.GetOriginalRequest() != "build the widget in two planned steps" {
+		t.Errorf("restored original request = %q", bb.GetOriginalRequest())
+	}
+
+	// A resume on the shutting-down manager must be refused: the restart is
+	// part of the contract (the teardown drained every task goroutine).
+	if err := mgr1.ResumeTask(context.Background(), info.ID, "", "", ""); err == nil {
+		t.Error("ResumeTask must be refused once Shutdown has begun")
+	}
+
+	// --- "Restart": a fresh manager over the SAME stores ---
+	caller2 := &scriptedPlanLLM{script: []scriptedPlanStep{
+		// Resumed runs never re-route; the conductor continues the plan.
+		{respond: executePlanCall("r1")},
+		{respond: finishResponse("s1 resumed done")}, // s1 subagent, re-run
+		{respond: finishResponse("s2 done")},         // s2 subagent
+		{respond: finishResponse("plan finished")},   // Conductor finishes
+	}}
+	eventChan2 := make(chan Event, 200)
+	mgr2 := NewManager(planWorkflowFactory(caller2, bash), func(e Event) { eventChan2 <- e }, t.TempDir())
+	t.Cleanup(mgr2.Shutdown)
+	mgr2.SetTaskStore(store)
+	mgr2.SetSessionStore(sessions)
+	mgr2.SetProjectResolver(func(string) (string, error) { return ws, nil })
+
+	if err := mgr2.ResumeTask(context.Background(), info.ID, "", "", ""); err != nil {
+		t.Fatalf("ResumeTask on the restarted manager failed: %v", err)
+	}
+	complete, ok := waitForEvent(eventChan2, "task_complete", 5*time.Second)
+	if !ok {
+		t.Fatal("timeout waiting for task_complete event after the restart resume")
+	}
+	data, ok := complete.Data.(TaskCompleteData)
+	if !ok {
+		t.Fatalf("expected TaskCompleteData, got %T", complete.Data)
+	}
+	if !data.Success || data.Output != "plan finished" {
+		t.Errorf("restarted completion = success=%v output=%q, want success with %q", data.Success, data.Output, "plan finished")
+	}
+
+	// No re-publication after the restart either.
+	if n := countEvents(eventChan2, "plan_generated"); n != 0 {
+		t.Errorf("restarted resume emitted %d plan_generated event(s) — the approved plan must be continued, not re-declared", n)
+	}
+
+	// Every step terminal and error-free, the row completed, the plan intact.
+	finalState, err := adapter.LoadTaskState(taskID)
+	if err != nil || finalState == nil {
+		t.Fatalf("LoadTaskState after the restart resume = %+v, %v", finalState, err)
+	}
+	if finalState.Status != "completed" {
+		t.Errorf("task row status after the restart resume = %q, want completed", finalState.Status)
+	}
+	sr1, ok := finalState.StepResults["s1"]
+	if !ok || sr1.Error != nil || sr1.FullOutput != "s1 resumed done" {
+		t.Errorf("s1 after the restart resume = %+v (ok=%v), want a successful step", sr1, ok)
+	}
+	sr2, ok := finalState.StepResults["s2"]
+	if !ok || sr2.Error != nil || sr2.FullOutput != "s2 done" {
+		t.Errorf("s2 after the restart resume = %+v (ok=%v), want a successful step", sr2, ok)
+	}
+	if finalState.Plan == nil || len(finalState.Plan.Steps) != 2 ||
+		finalState.Plan.Steps[0].ID != "s1" || finalState.Plan.Steps[1].ID != "s2" ||
+		finalState.Plan.Steps[0].Summary != "Do the groundwork" {
+		t.Errorf("plan after the restart resume = %+v, want the originally declared two-step plan (append-only)", finalState.Plan)
+	}
 }

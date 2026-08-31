@@ -427,6 +427,15 @@ func (e *EventEmitter) PlanStepComplete(stepID string, success bool, duration ti
 			e.planCompletedSet = make(map[string]bool)
 		}
 		e.planCompletedSet[stepID] = true
+	} else {
+		// A failed step is eligible for re-run (same-run execute_plan retry or
+		// a continuable resume re-running failed steps). Drop it from the
+		// started-set so the re-run's PlanStepStart is emitted and the UI
+		// flips the step back to "running" instead of lingering "failed".
+		// Successfully completed steps keep their dedupe: a re-declared or
+		// skipped step synthesizes its own start/complete pair, and double
+		// starts for a still-completed step would only churn the UI.
+		delete(e.planStartedSet, stepID)
 	}
 	if e.planCurrentStepID == stepID {
 		e.planCurrentStepID = ""
@@ -447,6 +456,39 @@ func (e *EventEmitter) PlanStepComplete(stepID string, success bool, duration ti
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "plan_step_complete",
+		Data:      data,
+	})
+}
+
+// PlanStepPaused emits a plan step pause event: the step stopped via a
+// cooperative pause checkpoint — a recoverable state, not a failure or a
+// completion. The step is NOT marked completed (planCompletedSet is
+// untouched); a later Resume re-enters it.
+func (e *EventEmitter) PlanStepPaused(stepID string, duration time.Duration, errMsg string) {
+	e.log().Debug("emitter: plan step paused", "sessionID", e.sessionID, "stepID", stepID, "duration", duration, "errMsg", errMsg)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// The emitter outlives individual runs (one instance per session), so the
+	// started-set from the paused run would suppress the resumed run's
+	// PlanStepStart for the re-entered step as a duplicate. Drop it: the
+	// resume path re-emits start so the UI flips the step from "paused" back
+	// to "running" instead of lingering until the final completion.
+	delete(e.planStartedSet, stepID)
+	completedCount := len(e.planCompletedSet)
+	data := map[string]any{
+		"step_id":            stepID,
+		"duration":           duration.Milliseconds(),
+		"progress":           e.computeProgress(completedCount),
+		"current_step_index": -1,
+		"completed_count":    completedCount,
+		"total_count":        e.planTotalSteps,
+	}
+	if errMsg != "" {
+		data["error"] = errMsg
+	}
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "plan_step_paused",
 		Data:      data,
 	})
 }
@@ -702,6 +744,21 @@ func (e *EventEmitter) SubAgentComplete(stepID string, success bool, duration ti
 		Data: map[string]any{
 			"step_id":  stepID,
 			"success":  success,
+			"duration": duration.Milliseconds(),
+		},
+	})
+}
+
+// SubAgentPaused emits a subagent pause event: the sub-agent stopped via a
+// cooperative pause checkpoint (a recoverable state, not a failure).
+func (e *EventEmitter) SubAgentPaused(stepID string, duration time.Duration) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitEvent(Event{
+		SessionID: e.sessionID,
+		Type:      "subagent_paused",
+		Data: map[string]any{
+			"step_id":  stepID,
 			"duration": duration.Milliseconds(),
 		},
 	})

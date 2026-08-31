@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 
@@ -368,5 +369,80 @@ func TestEventPersister_StepTodoUpdateRoutedToUpsert(t *testing.T) {
 	}
 	if store.stepTodoUpdates[0].msg.Role != "step_todo_update" {
 		t.Errorf("upserted message role: got %q", store.stepTodoUpdates[0].msg.Role)
+	}
+}
+
+// TestEventPersister_PauseCheckpointsPersisted verifies that the cooperative
+// pause events (plan_step_paused, subagent_paused) are persisted with their
+// own roles and full metadata (step_id, duration, error) so a paused run
+// survives an app restart: on reload the paused checkpoint reappears as a
+// recognizable row instead of a generic event_unknown JSON blob.
+func TestEventPersister_PauseCheckpointsPersisted(t *testing.T) {
+	store := &captureStore{}
+	p := NewEventPersister(store)
+
+	p.Persist(Event{
+		SessionID: "s1",
+		Type:      "plan_step_paused",
+		Data: map[string]any{
+			"step_id":            "step_2",
+			"duration":           int64(2500),
+			"progress":           0.25,
+			"current_step_index": -1,
+			"completed_count":    1,
+			"total_count":        4,
+			"error":              "awaiting plan review",
+		},
+	})
+	p.Persist(Event{
+		SessionID: "s1",
+		Type:      "subagent_paused",
+		Data: map[string]any{
+			"step_id":  "step_3",
+			"duration": int64(1200),
+		},
+	})
+
+	rows := store.snapshot()
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 persisted rows, got %d: %+v", len(rows), rows)
+	}
+
+	if rows[0].Role != "plan_step_paused" {
+		t.Errorf("plan_step_paused role: got %q", rows[0].Role)
+	}
+	var planMeta struct {
+		StepID  string `json:"step_id"`
+		Error   string `json:"error"`
+		Seconds int64  `json:"duration"`
+	}
+	if err := json.Unmarshal(rows[0].Metadata, &planMeta); err != nil {
+		t.Fatalf("plan_step_paused metadata is not valid JSON: %v", err)
+	}
+	if planMeta.StepID != "step_2" {
+		t.Errorf("plan_step_paused metadata step_id: got %q", planMeta.StepID)
+	}
+	if planMeta.Error != "awaiting plan review" {
+		t.Errorf("plan_step_paused metadata error: got %q", planMeta.Error)
+	}
+	if planMeta.Seconds != 2500 {
+		t.Errorf("plan_step_paused metadata duration: got %d", planMeta.Seconds)
+	}
+
+	if rows[1].Role != "subagent_paused" {
+		t.Errorf("subagent_paused role: got %q", rows[1].Role)
+	}
+	var subMeta struct {
+		StepID   string `json:"step_id"`
+		Duration int64  `json:"duration"`
+	}
+	if err := json.Unmarshal(rows[1].Metadata, &subMeta); err != nil {
+		t.Fatalf("subagent_paused metadata is not valid JSON: %v", err)
+	}
+	if subMeta.StepID != "step_3" {
+		t.Errorf("subagent_paused metadata step_id: got %q", subMeta.StepID)
+	}
+	if subMeta.Duration != 1200 {
+		t.Errorf("subagent_paused metadata duration: got %d", subMeta.Duration)
 	}
 }

@@ -156,12 +156,22 @@ func (p *EventPersister) Persist(evt Event) {
 		role = "plan_step_start"
 	case "plan_step_complete":
 		role = "plan_step_complete"
+	case "plan_step_paused":
+		// Cooperative pause checkpoint: persisted with its full metadata
+		// (step_id, duration, optional error) so the paused step reappears
+		// after a session reload and the Resume flow has a durable record.
+		role = "plan_step_paused"
 	case "retry":
 		role = "retry"
 	case "subagent_launch":
 		role = "subagent_launch"
 	case "subagent_complete":
 		role = "subagent_complete"
+	case "subagent_paused":
+		// Cooperative pause checkpoint for a delegated subagent: persisted
+		// with its metadata (step_id, duration) so the pause survives a
+		// reload; the delegation is recoverable via Resume, not lost.
+		role = "subagent_paused"
 	case "task_failed_resumable":
 		role = "task_failed_resumable"
 	case "task_resumed":

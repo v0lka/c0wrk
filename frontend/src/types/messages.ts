@@ -7,8 +7,8 @@ export type { AskUserQuestion }
 export type MessageType =
   | 'user' | 'assistant' | 'thinking' | 'step_done' | 'tool_call' | 'tool_result'
   | 'tool_confirm' | 'ask_user' | 'routing' | 'reflection' | 'plan' | 'error' | 'thought'
-  | 'plan_step_start' | 'plan_step_complete' | 'retry' | 'step_retry'
-  | 'subagent_launch' | 'subagent_complete' | 'status'
+  | 'plan_step_start' | 'plan_step_complete' | 'plan_step_paused' | 'retry' | 'step_retry'
+  | 'subagent_launch' | 'subagent_complete' | 'subagent_paused' | 'status'
   | 'task_failed_resumable' | 'task_resumed' | 'step_limit' | 'context_compaction'
   | 'step_todo_update' | 'memory_read' | 'plan_review'
   | 'service'
@@ -45,8 +45,8 @@ export type DisplayItem =
   | { kind: 'resume_action'; message: ChatMessageUI }
   | { kind: 'error'; message: ChatMessageUI }
   | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'step_retry' | 'status'; content: string; metadata?: Record<string, unknown> }
-  | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; description?: string; status: 'running' | 'completed' | 'failed'; duration?: number; error?: string; isRetry?: boolean; children: DisplayItem[] }
-  | { kind: 'subagent'; id: string; stepId: string; title: string; description?: string; status: 'running' | 'completed' | 'failed'; duration?: number; error?: string; children: DisplayItem[] }
+  | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; description?: string; status: 'running' | 'completed' | 'failed' | 'paused'; duration?: number; error?: string; isRetry?: boolean; children: DisplayItem[] }
+  | { kind: 'subagent'; id: string; stepId: string; title: string; description?: string; status: 'running' | 'completed' | 'failed' | 'paused'; duration?: number; error?: string; children: DisplayItem[] }
   | { kind: 'reflection'; id: string; summary: string; suggestedAction: string; rootCause: string; failureAnalysis: string; actionPlan: string; reasoning: string; hypotheses: string[]; attempt: number; maxAttempts: number }
   | { kind: 'step_finish'; id: string; stepNum?: number }
   | { kind: 'context_compaction'; id: string; beforePercent: number; afterPercent: number }

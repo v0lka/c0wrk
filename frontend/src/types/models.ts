@@ -277,7 +277,9 @@ export interface PlanItem {
   title: string
   description?: string
   summary?: string
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  /** 'paused': cooperative pause checkpoint — started but unfinished;
+   *  untouched steps keep 'pending'. */
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'paused'
   duration?: number
   dependsOn: string[]
 }

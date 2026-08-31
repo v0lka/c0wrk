@@ -225,6 +225,11 @@ type mockEmitter struct {
 		duration time.Duration
 		errMsg   string
 	}
+	planStepPaused []struct {
+		stepID   string
+		duration time.Duration
+		errMsg   string
+	}
 	stepTodoUpdates []struct {
 		stepID string
 		items  []agent.TodoItem
@@ -248,6 +253,14 @@ func (m *mockEmitter) PlanStepComplete(stepID string, success bool, duration tim
 		errMsg   string
 	}{stepID, success, duration, errMsg})
 }
+func (m *mockEmitter) PlanStepPaused(stepID string, duration time.Duration, errMsg string) {
+	m.eventOrder = append(m.eventOrder, "plan_step_paused")
+	m.planStepPaused = append(m.planStepPaused, struct {
+		stepID   string
+		duration time.Duration
+		errMsg   string
+	}{stepID, duration, errMsg})
+}
 func (m *mockEmitter) StepStart(_ int)                                    {}
 func (m *mockEmitter) Thought(_ int, _, _ string)                         {}
 func (m *mockEmitter) ToolCall(_, _ int, _, _, _ string)                  {}
@@ -255,9 +268,11 @@ func (m *mockEmitter) ToolResult(_, _, _ int, _ string, _ bool)           {}
 func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                {}
 func (m *mockEmitter) SubAgentLaunch(_, _ string)                         {}
 func (m *mockEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration) {}
-func (m *mockEmitter) Reflection(_ *orchestration.Reflection, _, _ int)   {}
-func (m *mockEmitter) Retry(_, _ int)                                     {}
-func (m *mockEmitter) StepRetry(_ string, _, _ int)                       {}
+
+func (m *mockEmitter) SubAgentPaused(_ string, _ time.Duration)         {}
+func (m *mockEmitter) Reflection(_ *orchestration.Reflection, _, _ int) {}
+func (m *mockEmitter) Retry(_, _ int)                                   {}
+func (m *mockEmitter) StepRetry(_ string, _, _ int)                     {}
 func (m *mockEmitter) AssistantChunk(content string) {
 	m.assistantChunks = append(m.assistantChunks, content)
 }

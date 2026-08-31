@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/prompts"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/llm"
@@ -944,5 +946,560 @@ func TestResumeTask_CooperativePauseDuringResumedRunRewritesPaused(t *testing.T)
 	}
 	if status != "paused" {
 		t.Errorf("task row status after mid-run pause = %q, want %q (the checkpoint must overwrite the reactivated in_progress)", status, "paused")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Pause mid-plan → resume → the plan completes without errors/re-publication
+//
+// These tests exercise the FULL plan workflow through the manager: a task
+// declares a plan, starts executing it, and is cooperatively paused (or shut
+// down) mid-plan; the persisted checkpoint (paused row + plan + step results)
+// is then resumed and the conductor continues the SAME plan to completion —
+// every step terminal, no re-declared plan, no errors.
+// ---------------------------------------------------------------------------
+
+// inMemoryTaskStore is a stateful TaskStore fake mirroring the observable
+// semantics of SQLiteSessionStore: upserted task rows, per-task step records
+// (replace by step id), trajectory/facts/attachments/goal-state blobs, and
+// GetUnfinishedTask matching in_progress/paused/failed ordered by creation.
+// Unlike the canned resumeTaskStore, it supports a REAL run persisting into
+// it and a later restore reading it back — the persistence half of the
+// pause→resume scenario.
+type inMemoryTaskStore struct {
+	mu           sync.Mutex
+	tasks        map[string]TaskRecord
+	steps        map[string][]TaskStepRecord // taskID → records (replace by StepID)
+	trajectories map[string]json.RawMessage
+	facts        map[string]json.RawMessage
+	attachments  map[string]json.RawMessage
+	goalStates   map[string]json.RawMessage
+
+	pauseCalls      int
+	reactivateCalls int
+	completeCalls   int
+}
+
+func newInMemoryTaskStore() *inMemoryTaskStore {
+	return &inMemoryTaskStore{
+		tasks:        make(map[string]TaskRecord),
+		steps:        make(map[string][]TaskStepRecord),
+		trajectories: make(map[string]json.RawMessage),
+		facts:        make(map[string]json.RawMessage),
+		attachments:  make(map[string]json.RawMessage),
+		goalStates:   make(map[string]json.RawMessage),
+	}
+}
+
+func (s *inMemoryTaskStore) SaveTask(_ context.Context, rec TaskRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tasks[rec.ID] = rec
+	return nil
+}
+
+func (s *inMemoryTaskStore) UpdateTaskPlan(_ context.Context, taskID string, plan json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.tasks[taskID]
+	if !ok {
+		return errors.New("task not found: " + taskID)
+	}
+	rec.Plan = plan
+	s.tasks[taskID] = rec
+	return nil
+}
+
+func (s *inMemoryTaskStore) UpdateTaskRouting(_ context.Context, taskID string, routing json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.tasks[taskID]
+	if !ok {
+		return errors.New("task not found: " + taskID)
+	}
+	rec.RoutingDecision = routing
+	s.tasks[taskID] = rec
+	return nil
+}
+
+func (s *inMemoryTaskStore) SaveTaskStep(_ context.Context, taskID string, step TaskStepRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	records := s.steps[taskID]
+	for i := range records {
+		if records[i].StepID == step.StepID {
+			records[i] = step // INSERT OR REPLACE semantics
+			return nil
+		}
+	}
+	s.steps[taskID] = append(records, step)
+	return nil
+}
+
+func (s *inMemoryTaskStore) AddTaskReflection(_ context.Context, taskID string, reflectionJSON json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.tasks[taskID]
+	if !ok {
+		return errors.New("task not found: " + taskID)
+	}
+	list := make([]json.RawMessage, 0, 1)
+	if len(rec.Reflections) > 0 {
+		_ = json.Unmarshal(rec.Reflections, &list)
+	}
+	list = append(list, reflectionJSON)
+	updated, err := json.Marshal(list)
+	if err != nil {
+		return err
+	}
+	rec.Reflections = updated
+	s.tasks[taskID] = rec
+	return nil
+}
+
+func (s *inMemoryTaskStore) CompleteTask(_ context.Context, taskID, finalOutput string, attemptCount int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completeCalls++
+	rec, ok := s.tasks[taskID]
+	if !ok {
+		return errors.New("task not found: " + taskID)
+	}
+	now := time.Now().UTC()
+	rec.Status = "completed"
+	rec.FinalOutput = finalOutput
+	rec.AttemptCount = attemptCount
+	rec.CompletedAt = &now
+	s.tasks[taskID] = rec
+	return nil
+}
+
+func (s *inMemoryTaskStore) FailTask(_ context.Context, taskID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.tasks[taskID]
+	if !ok {
+		return errors.New("task not found: " + taskID)
+	}
+	rec.Status = "failed"
+	s.tasks[taskID] = rec
+	return nil
+}
+
+func (s *inMemoryTaskStore) CancelTask(_ context.Context, taskID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.tasks[taskID]
+	if !ok {
+		return errors.New("task not found: " + taskID)
+	}
+	rec.Status = "cancelled"
+	s.tasks[taskID] = rec
+	return nil
+}
+
+func (s *inMemoryTaskStore) PauseTask(_ context.Context, taskID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pauseCalls++
+	rec, ok := s.tasks[taskID]
+	if !ok {
+		return errors.New("task not found: " + taskID)
+	}
+	rec.Status = "paused"
+	s.tasks[taskID] = rec
+	return nil
+}
+
+func (s *inMemoryTaskStore) ReactivateTask(_ context.Context, taskID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reactivateCalls++
+	rec, ok := s.tasks[taskID]
+	if !ok {
+		return errors.New("task not found: " + taskID)
+	}
+	rec.Status = "in_progress"
+	s.tasks[taskID] = rec
+	return nil
+}
+
+func (s *inMemoryTaskStore) LoadTask(_ context.Context, taskID string) (*TaskRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.tasks[taskID]
+	if !ok {
+		return nil, nil
+	}
+	cp := rec
+	return &cp, nil
+}
+
+func (s *inMemoryTaskStore) LoadTaskSteps(_ context.Context, taskID string) ([]TaskStepRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]TaskStepRecord, len(s.steps[taskID]))
+	copy(out, s.steps[taskID])
+	return out, nil
+}
+
+func (s *inMemoryTaskStore) SaveFacts(_ context.Context, taskID string, factsJSON json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.facts[taskID] = factsJSON
+	return nil
+}
+
+func (s *inMemoryTaskStore) LoadFacts(_ context.Context, taskID string) (json.RawMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.facts[taskID], nil
+}
+
+func (s *inMemoryTaskStore) SaveAttachments(_ context.Context, taskID string, attachmentsJSON json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attachments[taskID] = attachmentsJSON
+	return nil
+}
+
+func (s *inMemoryTaskStore) LoadAttachments(_ context.Context, taskID string) (json.RawMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attachments[taskID], nil
+}
+
+func (s *inMemoryTaskStore) SaveTrajectory(_ context.Context, taskID string, stepsJSON json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.trajectories[taskID] = stepsJSON
+	return nil
+}
+
+func (s *inMemoryTaskStore) LoadTrajectory(_ context.Context, taskID string) (json.RawMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.trajectories[taskID], nil
+}
+
+func (s *inMemoryTaskStore) SaveGoalState(_ context.Context, taskID string, goalStateJSON json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.goalStates[taskID] = goalStateJSON
+	return nil
+}
+
+func (s *inMemoryTaskStore) LoadGoalState(_ context.Context, taskID string) (json.RawMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.goalStates[taskID], nil
+}
+
+func (s *inMemoryTaskStore) GetUnfinishedTask(_ context.Context, sessionID string) (*TaskRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var best *TaskRecord
+	for _, rec := range s.tasks {
+		if rec.SessionID != sessionID {
+			continue
+		}
+		switch rec.Status {
+		case "in_progress", "paused", "failed":
+			if best == nil || rec.CreatedAt.After(best.CreatedAt) {
+				cp := rec
+				best = &cp
+			}
+		}
+	}
+	return best, nil
+}
+
+func (s *inMemoryTaskStore) GetLatestTaskID(_ context.Context, sessionID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var best *TaskRecord
+	for _, rec := range s.tasks {
+		if rec.SessionID != sessionID {
+			continue
+		}
+		if best == nil || rec.CreatedAt.After(best.CreatedAt) {
+			cp := rec
+			best = &cp
+		}
+	}
+	if best == nil {
+		return "", nil
+	}
+	return best.ID, nil
+}
+
+// passthroughTool is a minimal always-allow registry tool for session-level
+// plan-workflow tests: the plan-step subagents execute it as real work.
+type passthroughTool struct {
+	*sdktools.BaseTool
+}
+
+func newPassthroughBashExec() *passthroughTool {
+	return &passthroughTool{BaseTool: &sdktools.BaseTool{
+		ToolGroup:       sdktools.GroupExecute,
+		ToolName:        "bash_exec",
+		ToolDescription: "Execute bash commands (test stub)",
+		Schema:          json.RawMessage(`{"type":"object"}`),
+		Policy:          sdktools.PolicyAlwaysAllow,
+	}}
+}
+
+func (t *passthroughTool) Execute(_ context.Context, _ json.RawMessage) (sdktools.ToolResult, error) {
+	return sdktools.ToolResult{Content: "PASSED:command ran"}, nil
+}
+
+// planWorkflowFactory builds a real orchestrator WITH a router (SendMessage
+// path) and the real declare_plan/execute_plan tools registered alongside a
+// stub bash_exec, so the complete declare → execute → pause → resume plan
+// workflow runs end-to-end through the manager.
+func planWorkflowFactory(caller agent.LLMCaller, bash *passthroughTool) OrchestratorFactory {
+	return func(emitter core.Emitter, _ *slog.Logger, _ string, bbFactory core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+		registry := sdktools.NewToolRegistry()
+		registry.Register(bash)
+		registry.Register(coretools.NewDeclarePlanTool(nil))
+		registry.Register(coretools.NewExecutePlanTool())
+		cf := func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...orchestration.PruningOverride) core.ContextManager {
+			cw := memory.NewContextWindow(memory.ContextWindowConfig{
+				SystemPrompt: systemPrompt,
+				ModelMeta:    llm.ModelMetadata{ContextWindow: 128000, OutputLimit: 4096},
+			})
+			return core.NewCoreContextManager(cw)
+		}
+		rtr := router.New(caller, router.Config{
+			SystemPrompt:  prompts.RouterSystem,
+			HistoryWindow: 5,
+		})
+		return core.NewOrchestrator(core.OrchestratorConfig{}, core.OrchestratorDeps{
+			LLM:            caller,
+			Router:         rtr,
+			BBFactory:      bbFactory,
+			ToolExec:       registry,
+			ToolRegistry:   registry,
+			TokenCounter:   llm.NewSimpleTokenCounter(),
+			ContextFactory: cf,
+			Emitter:        emitter,
+			CircuitBreaker: agent.CircuitBreakerConfig{RepeatNudgeThreshold: 3, RepeatAbortThreshold: 4},
+		}), nil
+	}
+}
+
+// scriptedPlanStep is one entry of a plan-workflow LLM script; gate/started
+// coordinate the mid-plan pause with the test (see pauseScriptStep in core).
+type scriptedPlanStep struct {
+	respond *llm.ChatResponse
+	started chan struct{}
+	gate    chan struct{}
+}
+
+// scriptedPlanLLM plays a fixed call sequence across the router, the
+// Conductor loop, and every plan-step subagent (they all share the caller).
+type scriptedPlanLLM struct {
+	mu     sync.Mutex
+	script []scriptedPlanStep
+	idx    int
+}
+
+func (s *scriptedPlanLLM) Call(ctx context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	s.mu.Lock()
+	i := s.idx
+	if i >= len(s.script) {
+		s.mu.Unlock()
+		return nil, errors.New("scriptedPlanLLM: script exhausted — the run deviated from the pause/resume choreography")
+	}
+	step := s.script[i]
+	s.idx++
+	s.mu.Unlock()
+	if step.started != nil {
+		close(step.started)
+	}
+	if step.gate != nil {
+		// Hold the caller until the test releases the gate OR the run's
+		// context is cancelled — the shutdown scenario releases exactly when
+		// Shutdown cancels the task, with no timing window to get wrong.
+		select {
+		case <-step.gate:
+		case <-ctx.Done():
+		}
+	}
+	return step.respond, nil
+}
+
+// declarePlanCall builds the declare_plan tool call for the shared two-step
+// roadmap used by the mid-plan pause tests.
+func declarePlanCall(id string) *llm.ChatResponse {
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role:    "assistant",
+			Content: "declaring the plan",
+			ToolCalls: []llm.ToolCall{{ID: id, Name: "declare_plan", Input: json.RawMessage(`{"tasks":[
+				{"id":"s1","summary":"Do the groundwork","description":"s1: do the groundwork"},
+				{"id":"s2","summary":"Finish the build","description":"s2: finish the build","depends_on":["s1"]}]}`)}},
+		},
+		StopReason: "tool_use",
+	}
+}
+
+// executePlanCall builds the execute_plan tool call.
+func executePlanCall(id string) *llm.ChatResponse {
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role:      "assistant",
+			Content:   "executing the plan",
+			ToolCalls: []llm.ToolCall{{ID: id, Name: "execute_plan", Input: json.RawMessage(`{}`)}},
+		},
+		StopReason: "tool_use",
+	}
+}
+
+// bashExecCall builds the plan-step subagent's work tool call.
+func bashExecCall(id string) *llm.ChatResponse {
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role:      "assistant",
+			Content:   "doing the groundwork",
+			ToolCalls: []llm.ToolCall{{ID: id, Name: "bash_exec", Input: json.RawMessage(`{"command":"echo groundwork","timeout":"5s"}`)}},
+		},
+		StopReason: "tool_use",
+	}
+}
+
+// TestResumeTask_PausedMidPlan_ResumeCompletesAllStepsTerminal covers the
+// manager-level pause→resume scenario end-to-end: SendMessage declares a
+// two-step plan and starts executing it; the user pauses mid-plan while s1's
+// subagent is mid-work (its partial trajectory is checkpointed, s2 is
+// untouched); ResumeTask then restores the blackboard (plan + paused step
+// result) and the conductor continues the SAME plan — s1 re-runs from its
+// checkpoint, s2 finally runs, the row completes, and the plan is never
+// re-declared (no second plan_generated).
+func TestResumeTask_PausedMidPlan_ResumeCompletesAllStepsTerminal(t *testing.T) {
+	caller := &scriptedPlanLLM{script: []scriptedPlanStep{
+		{respond: routingJSONResponse("general", 2)}, // run 1: router classification
+		{respond: declarePlanCall("c1")},             // run 1: declare the roadmap
+		{respond: executePlanCall("c2")},             // run 1: start executing it
+		// s1's subagent is gated mid-work: the test pauses the session while
+		// it is blocked here, then releases it to return real work.
+		{respond: bashExecCall("g1"), started: make(chan struct{}), gate: make(chan struct{})},
+		// Run 2 (ResumeTask): execute_plan continues — NO declare_plan, NO
+		// re-routing (Resume reuses the persisted routing decision).
+		{respond: executePlanCall("c3")},
+		{respond: finishResponse("s1 resumed done")}, // s1 subagent, resumed
+		{respond: finishResponse("s2 done")},         // s2 subagent
+		{respond: finishResponse("plan finished")},   // Conductor finishes
+	}}
+	bash := newPassthroughBashExec()
+	store := newInMemoryTaskStore()
+
+	eventChan := make(chan Event, 200)
+	mgr := NewManager(planWorkflowFactory(caller, bash), func(e Event) { eventChan <- e }, t.TempDir())
+	t.Cleanup(mgr.Shutdown)
+	mgr.SetTaskStore(store)
+
+	info, err := mgr.CreateSession(testProjectID, testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	if err := mgr.SendMessage(context.Background(), info.ID, "build the widget in two planned steps", nil, nil, "", "", false, "", false); err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	// Wait until s1's subagent is blocked in its (gated) LLM call.
+	select {
+	case <-caller.script[3].started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for the s1 subagent to reach its (gated) LLM call")
+	}
+
+	// User pause mid-plan: the signal is armed while the subagent is blocked;
+	// releasing it lets the step finish and the next boundary trips the pause.
+	if err := mgr.PauseSession(info.ID); err != nil {
+		t.Fatalf("PauseSession failed: %v", err)
+	}
+	close(caller.script[3].gate)
+
+	if _, ok := waitForEvent(eventChan, "session_paused", 5*time.Second); !ok {
+		t.Fatal("timeout waiting for session_paused event")
+	}
+
+	// The mid-plan checkpoint is fully persisted: a paused row whose state
+	// carries the plan, s1's paused checkpoint (with its partial trajectory),
+	// and NO result for the never-started s2.
+	adapter := NewTaskStoreAdapter(store)
+	taskID, err := adapter.GetUnfinishedTaskID(info.ID)
+	if err != nil || taskID == "" {
+		t.Fatalf("GetUnfinishedTaskID after pause = %q, %v — want the paused task", taskID, err)
+	}
+	state, err := adapter.LoadTaskState(taskID)
+	if err != nil || state == nil {
+		t.Fatalf("LoadTaskState after pause = %+v, %v", state, err)
+	}
+	if state.Status != "paused" {
+		t.Errorf("checkpointed row status = %q, want paused", state.Status)
+	}
+	if state.Plan == nil || len(state.Plan.Steps) != 2 {
+		t.Fatalf("checkpointed plan = %+v, want the declared two-step plan", state.Plan)
+	}
+	if sr, ok := state.StepResults["s1"]; !ok || sr.Error == nil || sr.Error.Error() != agent.ErrPaused.Error() || len(sr.Steps) != 1 {
+		t.Fatalf("checkpointed s1 result = %+v (ok=%v), want the paused checkpoint with its partial trajectory", sr, ok)
+	}
+	if _, ok := state.StepResults["s2"]; ok {
+		t.Error("s2 must have no persisted result (never started before the pause)")
+	}
+	traj, err := adapter.LoadTrajectory(taskID)
+	if err != nil || len(traj) == 0 {
+		t.Fatalf("persisted trajectory after pause is empty (%v) — the checkpoint must survive a restart", err)
+	}
+
+	// Drain run-1 events so the resume run's assertions start clean.
+	drainEvents(eventChan)
+
+	// Resume: RestoreBlackboard + ResumeTask — the conductor continues the
+	// SAME plan without errors and without re-publication.
+	if err := mgr.ResumeTask(context.Background(), info.ID, "", "", ""); err != nil {
+		t.Fatalf("ResumeTask failed: %v", err)
+	}
+	complete, ok := waitForEvent(eventChan, "task_complete", 5*time.Second)
+	if !ok {
+		t.Fatal("timeout waiting for task_complete event")
+	}
+	data, ok := complete.Data.(TaskCompleteData)
+	if !ok {
+		t.Fatalf("expected TaskCompleteData, got %T", complete.Data)
+	}
+	if !data.Success || data.Output != "plan finished" {
+		t.Errorf("resumed completion = success=%v output=%q, want success with %q", data.Success, data.Output, "plan finished")
+	}
+
+	// No re-publication: the resume must not emit a single plan_generated.
+	if n := countEvents(eventChan, "plan_generated"); n != 0 {
+		t.Errorf("resume emitted %d plan_generated event(s) — the approved plan must be continued, not re-declared", n)
+	}
+
+	// Every step reached a terminal, error-free state and the row completed.
+	finalState, err := adapter.LoadTaskState(taskID)
+	if err != nil || finalState == nil {
+		t.Fatalf("LoadTaskState after resume = %+v, %v", finalState, err)
+	}
+	if finalState.Status != "completed" {
+		t.Errorf("task row status after resume = %q, want completed", finalState.Status)
+	}
+	sr1, ok := finalState.StepResults["s1"]
+	if !ok || sr1.Error != nil || sr1.FullOutput != "s1 resumed done" {
+		t.Errorf("s1 after resume = %+v (ok=%v), want a successful step with the resumed output", sr1, ok)
+	}
+	sr2, ok := finalState.StepResults["s2"]
+	if !ok || sr2.Error != nil || sr2.FullOutput != "s2 done" {
+		t.Errorf("s2 after resume = %+v (ok=%v), want a successful step", sr2, ok)
+	}
+	// The approved plan was never replaced: same step IDs and summaries.
+	if finalState.Plan == nil || len(finalState.Plan.Steps) != 2 ||
+		finalState.Plan.Steps[0].ID != "s1" || finalState.Plan.Steps[1].ID != "s2" ||
+		finalState.Plan.Steps[0].Summary != "Do the groundwork" {
+		t.Errorf("plan after resume = %+v, want the originally declared two-step plan (append-only)", finalState.Plan)
 	}
 }

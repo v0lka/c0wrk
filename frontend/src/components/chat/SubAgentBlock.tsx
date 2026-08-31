@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Bot, Loader2, CheckCircle2, XCircle } from 'lucide-react'
+import { Bot, Loader2, CheckCircle2, XCircle, CirclePause } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
@@ -13,6 +13,7 @@ const statusConfig = {
   running:   { Icon: Loader2,      iconClass: 'text-info animate-spin' },
   completed: { Icon: CheckCircle2, iconClass: 'text-success' },
   failed:    { Icon: XCircle,      iconClass: 'text-destructive' },
+  paused:    { Icon: CirclePause,  iconClass: 'text-warning' },
 } as const
 
 export function SubAgentBlock({ item }: { item: SubAgentItem }) {

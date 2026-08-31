@@ -45,6 +45,12 @@ type Emitter interface {
 	PlanGenerated(stepCount int, steps []orchestration.PlanStepEvent)
 	PlanStepStart(stepID string, description, summary string)
 	PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string)
+	// PlanStepPaused emits a plan-step pause event: the step stopped via a
+	// cooperative pause checkpoint (executor.ErrPaused) — a recoverable
+	// checkpoint, not a failure or a completion. The step is NOT marked
+	// completed: never-started steps stay pending, and a later Resume
+	// re-enters the paused step.
+	PlanStepPaused(stepID string, duration time.Duration, errMsg string)
 	Reflection(reflection *orchestration.Reflection, attempt, maxAttempts int)
 	Retry(attempt, maxAttempts int)
 	StepRetry(stepID string, attempt, maxAttempts int)
@@ -196,6 +202,7 @@ func (n *noopEmitter) Routing(_, _, _ string)                                   
 func (n *noopEmitter) PlanGenerated(_ int, _ []orchestration.PlanStepEvent)         {}
 func (n *noopEmitter) PlanStepStart(_, _, _ string)                                 {}
 func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration, _ string) {}
+func (n *noopEmitter) PlanStepPaused(_ string, _ time.Duration, _ string)           {}
 func (n *noopEmitter) Reflection(_ *orchestration.Reflection, _, _ int)             {}
 func (n *noopEmitter) Retry(_, _ int)                                               {}
 func (n *noopEmitter) StepRetry(_ string, _, _ int)                                 {}

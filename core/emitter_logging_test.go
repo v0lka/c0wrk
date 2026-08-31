@@ -35,6 +35,9 @@ func (s *spyEmitter) SubAgentLaunch(id, desc string)      { s.record("SubAgentLa
 func (s *spyEmitter) SubAgentComplete(id string, ok bool, d time.Duration) {
 	s.record("SubAgentComplete", id, ok, d)
 }
+func (s *spyEmitter) SubAgentPaused(id string, d time.Duration) {
+	s.record("SubAgentPaused", id, d)
+}
 func (s *spyEmitter) AssistantChunk(c string)             { s.record("AssistantChunk", c) }
 func (s *spyEmitter) AssistantDone(c string, in, out int) { s.record("AssistantDone", c, in, out) }
 func (s *spyEmitter) ContextFill(p float64, u, m int, st, id string) {
@@ -56,6 +59,9 @@ func (s *spyEmitter) PlanStepStart(id, desc, summary string) {
 }
 func (s *spyEmitter) PlanStepComplete(id string, ok bool, d time.Duration, errMsg string) {
 	s.record("PlanStepComplete", id, ok, d, errMsg)
+}
+func (s *spyEmitter) PlanStepPaused(id string, d time.Duration, errMsg string) {
+	s.record("PlanStepPaused", id, d, errMsg)
 }
 func (s *spyEmitter) Reflection(r *orchestration.Reflection, a, m int) {
 	s.record("Reflection", r, a, m)
@@ -137,6 +143,7 @@ func TestLoggingEmitter_DelegatesToInner(t *testing.T) {
 		{"StepComplete", func(e Emitter) { e.StepComplete(1, dur) }, "StepComplete"},
 		{"SubAgentLaunch", func(e Emitter) { e.SubAgentLaunch("s1", "desc") }, "SubAgentLaunch"},
 		{"SubAgentComplete", func(e Emitter) { e.SubAgentComplete("s1", true, dur) }, "SubAgentComplete"},
+		{"SubAgentPaused", func(e Emitter) { e.SubAgentPaused("s1", dur) }, "SubAgentPaused"},
 		{"AssistantChunk", func(e Emitter) { e.AssistantChunk("hi") }, "AssistantChunk"},
 		{"AssistantDone", func(e Emitter) { e.AssistantDone("hi", 10, 20) }, "AssistantDone"},
 		{"ContextFill", func(e Emitter) { e.ContextFill(0.5, 500, 1000, "ok", "s1") }, "ContextFill"},
@@ -147,6 +154,7 @@ func TestLoggingEmitter_DelegatesToInner(t *testing.T) {
 		{"PlanGenerated", func(e Emitter) { e.PlanGenerated(1, steps) }, "PlanGenerated"},
 		{"PlanStepStart", func(e Emitter) { e.PlanStepStart("s1", "do it", "summary") }, "PlanStepStart"},
 		{"PlanStepComplete", func(e Emitter) { e.PlanStepComplete("s1", true, dur, "") }, "PlanStepComplete"},
+		{"PlanStepPaused", func(e Emitter) { e.PlanStepPaused("s1", dur, "") }, "PlanStepPaused"},
 		{"Reflection", func(e Emitter) { e.Reflection(&orchestration.Reflection{Summary: "sum"}, 1, 3) }, "Reflection"},
 		{"Retry", func(e Emitter) { e.Retry(1, 3) }, "Retry"},
 		{"StepRetry", func(e Emitter) { e.StepRetry("s1", 1, 3) }, "StepRetry"},

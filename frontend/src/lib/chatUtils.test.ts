@@ -696,6 +696,226 @@ describe('rebuildPlanFromHistory', () => {
     // PlanItem no longer has todoItems — checklists are DisplayItem.kind='checklist'
     expect(group.items[0].todoItems).toBeUndefined()
   })
+
+  it('replays plan_step_paused as a paused item; untouched steps stay pending', () => {
+    const clearPlan = vi.fn()
+    const setPlan = vi.fn()
+
+    const messages: ChatMessageUI[] = [
+      makeUI({ type: 'user', content: 'Build something' }),
+      makeUI({
+        id: 'plan-1',
+        type: 'plan',
+        content: '',
+        metadata: {
+          steps: [
+            { id: 'step-0', description: 'Setup project', summary: 'Setup' },
+            { id: 'step-1', description: 'Implement feature', summary: 'Implement' },
+            { id: 'step-2', description: 'Ship it', summary: 'Ship' },
+          ],
+        },
+      }),
+      makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-0' } }),
+      makeUI({ type: 'plan_step_complete', metadata: { step_id: 'step-0', success: true, duration: 800 } }),
+      makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-1' } }),
+      makeUI({ type: 'plan_step_paused', metadata: { step_id: 'step-1', duration: 4200 } }),
+    ]
+
+    rebuildPlanFromHistory(messages, { clearPlan, setPlan })
+
+    const group = setPlan.mock.calls[0]![0]
+    expect(group.items[0]!.status).toBe('completed')
+    // The paused checkpoint survives the restart — started but unfinished.
+    expect(group.items[1]!.status).toBe('paused')
+    expect(group.items[1]!.duration).toBe(4200)
+    // A pause is not a completion: untouched steps keep 'pending' and the
+    // completion counters are unchanged.
+    expect(group.items[2]!.status).toBe('pending')
+    expect(group.completedCount).toBe(1)
+    expect(group.failedCount).toBe(0)
+  })
+})
+
+describe('groupMessages — pause checkpoints', () => {
+  function makeUI(overrides: Partial<ChatMessageUI>): ChatMessageUI {
+    return {
+      id: 'msg-1',
+      sessionId: 'sess-1',
+      type: 'user',
+      content: '',
+      timestamp: Date.now(),
+      ...overrides,
+    }
+  }
+
+  it('flips an open plan_step block to paused on plan_step_paused', () => {
+    const result = groupMessages([
+      makeUI({
+        id: 'plan-1',
+        type: 'plan',
+        content: '',
+        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] },
+      }),
+      makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      makeUI({ type: 'tool_call', metadata: { tool: 'write_file', plan_step_id: 'step-0', args: '{}', completed: true } }),
+      makeUI({ id: 'pause-1', type: 'plan_step_paused', metadata: { step_id: 'step-0', duration: 1500 } }),
+    ])
+
+    const step = result.items.find((it) => it.kind === 'plan_step')
+    expect(step).toBeDefined()
+    expect((step as { status: string }).status).toBe('paused')
+    expect((step as { duration?: number }).duration).toBe(1500)
+  })
+
+  it('keeps the paused block open so post-resume children still nest under it', () => {
+    const result = groupMessages([
+      makeUI({
+        id: 'plan-1',
+        type: 'plan',
+        content: '',
+        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] },
+      }),
+      makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      makeUI({ id: 'pause-1', type: 'plan_step_paused', metadata: { step_id: 'step-0', duration: 1500 } }),
+      // After a Resume the run re-enters the step (re-emitting plan_step_start,
+      // which the reuse branch folds into this block) — children keep nesting
+      // under the same block.
+      makeUI({ type: 'tool_call', metadata: { tool: 'read_file', plan_step_id: 'step-0', args: '{}', completed: true } }),
+      makeUI({ type: 'plan_step_complete', metadata: { step_id: 'step-0', success: true, duration: 5000 } }),
+    ])
+
+    const step = result.items.find((it) => it.kind === 'plan_step')
+    expect(step).toBeDefined()
+    expect((step as { status: string }).status).toBe('completed')
+    const children = (step as { children: Array<{ kind: string }> }).children
+    expect(children).toHaveLength(1)
+    expect(children[0]!.kind).toBe('tool')
+  })
+
+  it('reuses the paused plan_step block on the re-emitted resume plan_step_start (no isRetry duplicate)', () => {
+    const result = groupMessages([
+      makeUI({
+        id: 'plan-1',
+        type: 'plan',
+        content: '',
+        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] },
+      }),
+      makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      makeUI({ type: 'tool_call', metadata: { tool: 'write_file', plan_step_id: 'step-0', args: '{}', completed: true } }),
+      makeUI({ id: 'pause-1', type: 'plan_step_paused', metadata: { step_id: 'step-0', duration: 1500 } }),
+      // The emitter clears its dedup on pause, so the resumed run re-emits
+      // plan_step_start for the same step_id. It must continue the paused
+      // block — a pause is a checkpoint, not a retry.
+      makeUI({ id: 'start-2', type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
+      makeUI({ type: 'tool_call', metadata: { tool: 'read_file', plan_step_id: 'step-0', args: '{}', completed: true } }),
+      makeUI({ type: 'plan_step_complete', metadata: { step_id: 'step-0', success: true, duration: 5000 } }),
+    ])
+
+    const steps = result.items.filter((it) => it.kind === 'plan_step')
+    expect(steps).toHaveLength(1)
+    const step = steps[0] as { status: string; isRetry?: boolean; children: Array<{ kind: string }> }
+    expect(step.isRetry).toBeUndefined()
+    expect(step.status).toBe('completed')
+    // Children from both the pre-pause and post-resume attempts nest together.
+    expect(step.children).toHaveLength(2)
+  })
+
+  it('flips a subagent block to paused on subagent_paused (pure delegate run)', () => {
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ id: 'pause-1', type: 'subagent_paused', metadata: { step_id: 'delegate-1', duration: 700 } }),
+    ])
+
+    const sub = result.items.find((it) => it.kind === 'subagent')
+    expect(sub).toBeDefined()
+    expect((sub as { status: string }).status).toBe('paused')
+    expect((sub as { duration?: number }).duration).toBe(700)
+  })
+
+  it('subagent_paused followed by subagent_complete settles the block', () => {
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ type: 'subagent_paused', metadata: { step_id: 'delegate-1', duration: 700 } }),
+      makeUI({ type: 'subagent_complete', metadata: { step_id: 'delegate-1', success: true, duration: 3000 } }),
+    ])
+
+    const sub = result.items.find((it) => it.kind === 'subagent')
+    expect(sub).toBeDefined()
+    expect((sub as { status: string }).status).toBe('completed')
+    expect((sub as { duration?: number }).duration).toBe(3000)
+  })
+
+  it('resumes a paused subagent in the SAME block on the first post-pause child', () => {
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ type: 'tool_call', metadata: { tool: 'read_file', plan_step_id: 'delegate-1', args: '{}', completed: true } }),
+      makeUI({ id: 'pause-1', type: 'subagent_paused', metadata: { step_id: 'delegate-1', duration: 700 } }),
+      // On resume the Conductor re-invokes delegate with the same task id, so
+      // the re-emitted subagent_launch collapses into the existing launch row
+      // (deterministic id, live upsert) — no second launch message reaches the
+      // replay. The first post-pause child is the resume proof: same block,
+      // badge back to 'running', children keep nesting under it.
+      makeUI({ type: 'tool_call', metadata: { tool: 'grep', plan_step_id: 'delegate-1', args: '{}', completed: true } }),
+      makeUI({ type: 'assistant', content: 'Continuing the research...', metadata: { plan_step_id: 'delegate-1' } }),
+    ])
+
+    const subs = result.items.filter((it) => it.kind === 'subagent')
+    expect(subs).toHaveLength(1)
+    const sub = subs[0] as { status: string; children: Array<{ kind: string }> }
+    expect(sub.status).toBe('running')
+    expect(sub.children).toHaveLength(3)
+  })
+
+  it('resumed subagent block settles via subagent_complete after the post-pause activity', () => {
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ id: 'pause-1', type: 'subagent_paused', metadata: { step_id: 'delegate-1', duration: 700 } }),
+      makeUI({ type: 'tool_call', metadata: { tool: 'grep', plan_step_id: 'delegate-1', args: '{}', completed: true } }),
+      makeUI({ type: 'subagent_complete', metadata: { step_id: 'delegate-1', success: true, duration: 3000 } }),
+    ])
+
+    const subs = result.items.filter((it) => it.kind === 'subagent')
+    expect(subs).toHaveLength(1)
+    const sub = subs[0] as { status: string; duration?: number }
+    expect(sub.status).toBe('completed')
+    expect(sub.duration).toBe(3000)
+  })
+
+  it('a post-pause checklist also flips the paused subagent block back to running', () => {
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ id: 'pause-1', type: 'subagent_paused', metadata: { step_id: 'delegate-1', duration: 700 } }),
+      makeUI({
+        type: 'step_todo_update',
+        metadata: { step_id: 'delegate-1', items: [{ text: 'Re-scan sources', checked: false }] },
+      }),
+    ])
+
+    const subs = result.items.filter((it) => it.kind === 'subagent')
+    expect(subs).toHaveLength(1)
+    expect((subs[0] as { status: string }).status).toBe('running')
+    const children = (subs[0] as { children: Array<{ kind: string }> }).children
+    expect(children).toHaveLength(1)
+    expect(children[0]!.kind).toBe('checklist')
+  })
+
+  it('keeps the paused badge when no activity follows the pause (still paused)', () => {
+    const result = groupMessages([
+      makeUI({ type: 'subagent_launch', metadata: { step_id: 'delegate-1', description: 'Research topic' } }),
+      makeUI({ id: 'pause-1', type: 'subagent_paused', metadata: { step_id: 'delegate-1', duration: 700 } }),
+      // A child keyed to a DIFFERENT step must not flip this block.
+      makeUI({ type: 'tool_call', metadata: { tool: 'read_file', plan_step_id: 'delegate-2', args: '{}', completed: true } }),
+    ])
+
+    const sub = result.items.find((it) => it.kind === 'subagent')
+    expect(sub).toBeDefined()
+    expect((sub as { status: string }).status).toBe('paused')
+  })
+
+  it('maps the persisted pause roles through roleToType for history reload', () => {
+    expect(roleToType.plan_step_paused).toBe('plan_step_paused')
+    expect(roleToType.subagent_paused).toBe('subagent_paused')
+  })
 })
 
 describe('groupMessages — checklist', () => {
