@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -102,14 +103,15 @@ func safeGo(log *slog.Logger, label string, fn func()) {
 	}()
 }
 
-// initConfigAndDeps loads the config file and ensures managed tools
-// (rg, uv, markitdown) are downloaded/installed — all in parallel.
-// On first run, tool downloads may take 3–10 minutes; subsequent runs check
-// the .versions file and skip.
+// initConfigAndDeps loads the config file and reconciles managed tools
+// (rg, uv, markitdown) — all in parallel. Tool work never aborts startup:
+// the offline pass does local work only and anything missing is completed in
+// the background (see initTools). Only a panic during config resolution
+// (toolsOK=false, resolved nil) aborts startup.
 //
-// Returns the resolved config, the tools/bin/ directory path (empty on
-// failure), whether any tools were installed, and toolsOK=false if the tool
-// install fails.
+// Returns the resolved config, the tools/bin/ directory path (always
+// non-empty), whether any tools were installed during the synchronous pass,
+// and toolsOK=false only when config resolution panicked.
 // The caller must prepend toolsBinPath to PATH before subsequent phases.
 func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved *config.ResolvedConfig, toolsBinPath string, toolsInstalled, toolsOK bool) {
 	var wg sync.WaitGroup
@@ -137,12 +139,17 @@ func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved
 	return resolved, toolsBinPath, toolsInstalled, true
 }
 
-// initTools ensures managed tools (rg, uv, markitdown) are downloaded and
-// installed in <agentDir>/tools/. On first run this blocks startup for several
-// minutes. On subsequent runs it returns immediately (version check). If a tool
-// cannot be installed, a fatal modal is shown and the function returns an empty
-// string so the caller can abort startup. On success, returns the tools/bin/
-// directory path and whether any tools were actually installed.
+// initTools ensures managed tools (rg, uv, markitdown) are available in
+// <agentDir>/tools/. Startup never depends on the network — offline operation
+// is a fully supported steady state, so the synchronous pass runs with network
+// access disabled: existing binaries are version-probed and cached archives
+// are installed (pure local work). Tools left not Ready are retried with
+// network access from a background goroutine that completes while the app is
+// already usable; a runtime_error toast fires only if tools remain unavailable
+// after that final attempt. Nothing here aborts startup: the function always
+// returns the tools/bin/ directory path (PATH prepending happens even when
+// tools are unavailable — late installs are picked up per-exec via PATH) and
+// whether any tool was installed during the synchronous pass.
 func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath string, toolsInstalled bool) {
 	agentDir := config.AgentDir()
 
@@ -190,35 +197,116 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath str
 		})
 	}
 
-	if err := mgr.EnsureCriticalTools(ctx); err != nil {
-		log.Error("failed to install critical tools", "error", err)
-		_, _ = wailsRuntime.MessageDialog(ctx, wailsRuntime.MessageDialogOptions{
-			Type:          wailsRuntime.ErrorDialog,
-			Title:         "Tool Installation Failed",
-			Message:       "c0wrk was unable to download required tools:\n\n" + err.Error() + "\n\nCheck your internet connection and disk space, then restart c0wrk.",
-			Buttons:       []string{"Exit"},
-			DefaultButton: "Exit",
-		})
-		wailsRuntime.Quit(ctx)
-		return "", false
-	}
-
-	switch {
-	case needsErr == nil && len(needed) > 0:
-		a.emit(backend.EventToolManagerDone, map[string]any{
-			"installed_count": len(needed),
-			"skipped_count":   0,
-		})
-	default:
-		// No tools needed or install failed — tell the frontend so it can
-		// transition from splash to waiting_ready before backend:ready arrives.
+	// Synchronous pass: strictly local work. Failures are isolated per tool
+	// and never block startup.
+	statuses, ensureErr := mgr.EnsureCriticalTools(ctx, toolmanager.EnsureOptions{AllowNetwork: false})
+	if ensureErr != nil {
+		// Structural failure (directories, disk space, registry). The splash
+		// must still resolve (done) and the user must still learn why the
+		// tools are missing — but the app starts.
+		log.Error("tool reconciliation failed structurally", "error", ensureErr)
 		a.emit(backend.EventToolManagerDone, map[string]any{
 			"installed_count": 0,
 			"skipped_count":   0,
 		})
+		a.emitToolRuntimeError(ctx, "Tool initialization failed: "+ensureErr.Error())
+		return mgr.PrependToPATH(), false
 	}
 
-	return mgr.PrependToPATH(), len(needed) > 0
+	installed := 0
+	var notReady []toolmanager.ToolStatus
+	for _, s := range statuses {
+		if s.Installed {
+			installed++
+		}
+		if !s.Ready {
+			notReady = append(notReady, s)
+		}
+	}
+
+	a.emit(backend.EventToolManagerDone, map[string]any{
+		"installed_count": installed,
+		"skipped_count":   len(statuses) - installed,
+	})
+
+	if len(notReady) > 0 {
+		// Background pass: complete the missing installs with network access
+		// while the app is already usable. It must NOT emit
+		// tool_manager:start — the frontend transitions splash →
+		// waiting_ready on that event, and the app is past the splash by
+		// now; progress and the final done event are harmless anywhere.
+		safeGo(log, "tools-background", func() {
+			a.finishToolInstallInBackground(ctx, log, mgr, notReady)
+		})
+	}
+
+	return mgr.PrependToPATH(), installed > 0
+}
+
+// finishToolInstallInBackground retries the tools the offline startup pass
+// could not satisfy, this time with network access. It emits the closing
+// tool_manager:done event and, when tools are still unavailable afterwards
+// (genuinely offline, or a broken mirror), a single runtime_error toast —
+// the only user-facing signal; startup itself is never re-blocked.
+func (a *App) finishToolInstallInBackground(ctx context.Context, log *slog.Logger, mgr *toolmanager.Manager, pending []toolmanager.ToolStatus) {
+	pendingNames := make([]string, 0, len(pending))
+	for _, s := range pending {
+		pendingNames = append(pendingNames, s.Tool.Name)
+	}
+	log.Info("retrying tool install with network access in background", "tools", pendingNames)
+
+	statuses, err := mgr.EnsureCriticalTools(ctx, toolmanager.EnsureOptions{AllowNetwork: true})
+	if err != nil {
+		log.Error("background tool reconciliation failed structurally", "error", err)
+		a.emit(backend.EventToolManagerDone, map[string]any{
+			"installed_count": 0,
+			"skipped_count":   0,
+		})
+		a.emitToolRuntimeError(ctx, "Tool installation failed: "+err.Error())
+		return
+	}
+
+	installed := 0
+	var failed []toolmanager.ToolStatus
+	for _, s := range statuses {
+		if s.Installed {
+			installed++
+		}
+		if !s.Ready {
+			failed = append(failed, s)
+		}
+	}
+
+	a.emit(backend.EventToolManagerDone, map[string]any{
+		"installed_count": installed,
+		"skipped_count":   len(statuses) - installed,
+	})
+
+	if len(failed) == 0 {
+		log.Info("background tool install complete", "installed", installed)
+		return
+	}
+
+	failedNames := make([]string, 0, len(failed))
+	for _, s := range failed {
+		failedNames = append(failedNames, s.Tool.Name)
+		log.Error("managed tool unavailable after background install", "tool", s.Tool.Name, "error", s.Err)
+	}
+	a.emitToolRuntimeError(ctx,
+		"c0wrk could not install managed tools ("+strings.Join(failedNames, ", ")+"). "+
+			"Features that rely on them are unavailable this session. "+
+			"Restart c0wrk with network access to retry.")
+}
+
+// emitToolRuntimeError raises a non-fatal, user-visible toast about the
+// managed tools. Tool problems must never escalate to a fatal startup path —
+// this is the deliberate inverse of the pre-offline-support Exit modal.
+func (a *App) emitToolRuntimeError(ctx context.Context, message string) {
+	a.emit(backend.EventRuntimeError, map[string]string{
+		"id":         uuid.New().String(),
+		"message":    message,
+		"error_code": "tool_install_failed",
+	})
 }
 
 // initDatabase opens the shared SQLite connection. On failure logs the error

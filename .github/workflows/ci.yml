@@ -48,6 +48,12 @@ jobs:
       - name: Install frontend dependencies
         run: cd frontend && npm install
 
+      # npm audit is arch- and OS-independent: run the production-dependency
+      # vulnerability gate on the amd64 leg only.
+      - name: Audit frontend production dependencies
+        if: matrix.arch == 'amd64'
+        run: cd frontend && npm audit --omit=dev --audit-level=low
+
       - name: Build frontend assets
         run: cd frontend && npm run build
 
@@ -166,6 +172,28 @@ jobs:
       - name: Lint (frontend)
         run: cd frontend && npm run lint
 
+      # The fetch-onnx / fetch-embedding-model scripts no longer run in CI
+      # (they download large artifacts the build does not need), so at least
+      # parse-check them here: a syntax error in either script would otherwise
+      # ship unnoticed until a Windows `make build`.
+      - name: Syntax-check PowerShell fetch scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($script in @("scripts/fetch-onnx.ps1", "scripts/fetch-embedding-model.ps1")) {
+            $tokens = $null
+            $parseErrors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script).Path, [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors -and $parseErrors.Count -gt 0) {
+              $parseErrors | ForEach-Object {
+                Write-Host "::error file=$script,line=$($_.Extent.StartLineNumber)::$($_.Message)"
+              }
+              throw "PowerShell parse errors found in $script"
+            }
+            Write-Host "OK: $script"
+          }
+
       - name: Test (Go)
         run: go test ./...
 
@@ -175,8 +203,31 @@ jobs:
       - name: Build (Wails)
         run: wails build
 
-      - name: Fetch ONNX Runtime (Windows)
-        run: powershell -ExecutionPolicy Bypass -File scripts/fetch-onnx.ps1
+  # Dependency vulnerability gate: fails CI when a Go vulnerability from the
+  # official database is reachable from this module's code. Run once, not
+  # per-OS like the build/test matrix: scan results are OS/arch-independent.
+  # Mirrors the same gate in the sp4rk SDK CI.
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Fetch embedding model (Windows)
-        run: powershell -ExecutionPolicy Bypass -File scripts/fetch-embedding-model.ps1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+
+      # Same system dependencies as the linux job: govulncheck must load
+      # (compile) every package under ./..., and desktop/ pulls in wails,
+      # which needs the gtk/webkit2gtk cgo headers on Linux.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev build-essential pkg-config
+
+      - name: Install govulncheck
+        # Version pinned so the gate is reproducible; upgrade deliberately.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+
+      - name: Vulnerability scan (Go)
+        run: govulncheck ./...

@@ -52,7 +52,7 @@ Use the Makefile; it handles platform-specific ONNX Runtime bootstrap across the
 - `make fmt-check` — fails when `gofmt -l` reports any Go file under the root package, `internal/`, `core/`, `backend/`, or `desktop/`
 - `make build` — installs frontend deps, runs `wails build` with version ldflags, then `make fetch-onnx` + `make fetch-embedding-model`
 - `make dev-desktop` — Vite dev server only (`cd frontend && npm run dev`); for full hot-reload use `wails dev` from repo root
-- `make fetch-onnx` — downloads ONNX Runtime 1.24.1 into `.cache/` and copies it into the platform build output. **Required after every direct `wails build`** or the app won't launch.
+- `make fetch-onnx` — downloads ONNX Runtime 1.28.1 into `.cache/` and copies it into the platform build output. **Required after every direct `wails build`** or the app won't launch.
 - `make bump` — resolves the latest `github.com/v0lka/sp4rk` remote commit and updates the module with `GOWORK=off`; use only at the release point of a cross-repo development cycle
 - `make clean` — removes `build/bin`, `.cache`, `frontend/dist`
 

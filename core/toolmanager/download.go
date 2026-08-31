@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,12 +41,32 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// DownloadMode tells Download whether it may reach the network.
+type DownloadMode int
+
+const (
+	// DownloadOnline allows network downloads; the local cache is consulted
+	// first and a verified cache hit skips the request entirely.
+	DownloadOnline DownloadMode = iota
+	// DownloadCacheOnly restricts Download to local disk: a cached archive
+	// that passes SHA256 verification is returned; anything else fails fast
+	// with an error wrapping ErrCacheUnavailable. No network I/O is ever
+	// performed. This is what keeps app startup fully functional offline.
+	DownloadCacheOnly
+)
+
+// ErrCacheUnavailable reports that DownloadCacheOnly mode found no cached
+// archive (or one that failed checksum verification). Callers can test for
+// it with errors.Is to distinguish "offline and not cached" from transient
+// download failures.
+var ErrCacheUnavailable = errors.New("cached archive unavailable")
+
 // Downloader handles HTTP downloads for tool archives with checksum verification
 // and cache-resume support. The progress callback receives (bytesDone, bytesTotal)
 // during the download; it may be nil if progress reporting is not needed.
 // The interface exists so tests can substitute a mock implementation.
 type Downloader interface {
-	Download(ctx context.Context, tool ToolSpec, cacheDir string, progress func(int64, int64)) (*DownloadResult, error)
+	Download(ctx context.Context, tool ToolSpec, cacheDir string, mode DownloadMode, progress func(int64, int64)) (*DownloadResult, error)
 }
 
 // HTTPDownloader is the production Downloader that fetches archives from
@@ -66,9 +87,11 @@ func NewHTTPDownloader(client *http.Client) *HTTPDownloader {
 // Download fetches the archive for the given tool and platform. It writes the
 // archive to cacheDir/<ArchiveName>. If the file already exists and its
 // checksum matches, the download is skipped (cache hit).
-// The progress callback receives (bytesDone, bytesTotal) with throttle at
-// ~100ms intervals; may be nil.
-func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir string, progress func(int64, int64)) (*DownloadResult, error) {
+// In DownloadCacheOnly mode no network request is ever made: a verified cache
+// hit is returned, anything else fails fast with an error wrapping
+// ErrCacheUnavailable. The progress callback receives (bytesDone, bytesTotal)
+// with throttle at ~100ms intervals; may be nil.
+func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir string, mode DownloadMode, progress func(int64, int64)) (*DownloadResult, error) {
 	platform := Platform()
 	url, ok := tool.URLs[platform]
 	if !ok || url == "" {
@@ -89,6 +112,13 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 		}
 		// Checksum mismatch — delete and re-download.
 		_ = os.Remove(archivePath)
+	}
+
+	// CacheOnly mode stops here: nothing on disk can satisfy the request and
+	// the network is off-limits. The verified checksum requirement carries
+	// over from the online path — an unverified cache is never trusted.
+	if mode == DownloadCacheOnly {
+		return nil, fmt.Errorf("tool %q: %w", tool.Name, ErrCacheUnavailable)
 	}
 
 	// Download.
@@ -180,11 +210,11 @@ func (d *HTTPDownloader) verifyChecksum(path string, tool ToolSpec, platform str
 }
 
 // DownloadFunc is a function adapter that implements Downloader.
-type DownloadFunc func(ctx context.Context, tool ToolSpec, cacheDir string, progress func(int64, int64)) (*DownloadResult, error)
+type DownloadFunc func(ctx context.Context, tool ToolSpec, cacheDir string, mode DownloadMode, progress func(int64, int64)) (*DownloadResult, error)
 
 // Download implements Downloader.
-func (f DownloadFunc) Download(ctx context.Context, tool ToolSpec, cacheDir string, progress func(int64, int64)) (*DownloadResult, error) {
-	return f(ctx, tool, cacheDir, progress)
+func (f DownloadFunc) Download(ctx context.Context, tool ToolSpec, cacheDir string, mode DownloadMode, progress func(int64, int64)) (*DownloadResult, error) {
+	return f(ctx, tool, cacheDir, mode, progress)
 }
 
 // Compile-time check that DownloadFunc implements Downloader.

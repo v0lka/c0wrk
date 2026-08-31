@@ -74,21 +74,47 @@ func TestManagedTools_MarkitdownIsPythonPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	found := false
 	for _, tool := range tools {
-		if tool.Name == "markitdown" {
-			if tool.Type != PythonPackage {
-				t.Errorf("markitdown has type %s, want python_package", tool.Type)
-			}
-			if tool.PipSpec != "markitdown[all]==0.1.4" {
-				t.Errorf("markitdown PipSpec = %q, want markitdown[all]==0.1.4", tool.PipSpec)
-			}
-			if tool.PythonVersion == "" {
-				t.Error("markitdown has empty PythonVersion")
-			}
-			return
+		if tool.Name != "markitdown" {
+			continue
+		}
+		found = true
+		if tool.Type != PythonPackage {
+			t.Errorf("markitdown has type %s, want python_package", tool.Type)
+		}
+		if tool.PipSpec != "markitdown[all]==0.1.4" {
+			t.Errorf("markitdown PipSpec = %q, want markitdown[all]==0.1.4", tool.PipSpec)
+		}
+		if tool.RequirementsLock == "" {
+			t.Error("markitdown has empty RequirementsLock (fully pinned lock expected)")
+		}
+		if tool.PythonVersion == "" {
+			t.Error("markitdown has empty PythonVersion")
 		}
 	}
-	t.Error("markitdown not found in ManagedTools(nil)")
+	if !found {
+		t.Error("markitdown not found in ManagedTools(nil)")
+	}
+}
+
+// TestManagedTools_PythonToolsDeclareInstallSource enforces the group
+// invariant: every PythonPackage tool must be installable — via a pinned
+// RequirementsLock and/or at least the floating PipSpec fallback. A tool with
+// neither would produce an empty `uv pip install` argument list.
+func TestManagedTools_PythonToolsDeclareInstallSource(t *testing.T) {
+	tools, err := ManagedTools(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools {
+		if tool.Type != PythonPackage {
+			continue
+		}
+		if tool.RequirementsLock == "" && tool.PipSpec == "" {
+			t.Errorf("tool %q declares neither RequirementsLock nor PipSpec", tool.Name)
+		}
+	}
 }
 
 // TestManagedTools_ArchiveNameMatchesURL is the regression test for a

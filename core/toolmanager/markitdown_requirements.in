@@ -1,0 +1,9 @@
+# Direct dependency input for the managed markitdown tool.
+# The full pinned dependency tree is compiled into markitdown_lock.txt:
+#
+#   uv pip compile --universal --python-version 3.12 \
+#     markitdown_requirements.in -o markitdown_lock.txt
+#
+# Regenerate the lock whenever this file or the pinned markitdown
+# version changes, and re-run the OSV vulnerability check on the result.
+markitdown[all]==0.1.4

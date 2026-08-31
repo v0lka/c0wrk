@@ -146,7 +146,14 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 	if venvPython == "" {
 		return nil, fmt.Errorf("tool %q: python binary not found in venv %s", tool.Name, venvDir)
 	}
-	pipCmd := exec.CommandContext(ctx, uvBin, "pip", "install", "--python", venvPython, tool.PipSpec)
+	// Prefer the fully pinned requirements lock (exact audited versions for
+	// every transitive dependency); fall back to the floating PipSpec when the
+	// tool declares no lock.
+	lockPath, err := writeRequirementsLock(tool, toolsDir)
+	if err != nil {
+		return nil, err
+	}
+	pipCmd := exec.CommandContext(ctx, uvBin, pipInstallArgs(venvPython, lockPath, tool.PipSpec)...)
 	sysproc.HideConsole(pipCmd) // avoid flashing console windows on Windows (GUI app)
 	if out, err := pipCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("tool %q: uv pip install failed: %w\n%s", tool.Name, err, out)
@@ -158,6 +165,33 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 	}
 
 	return &InstallResult{ToolName: tool.Name, BinPath: wrapperPath, Installed: true}, nil
+}
+
+// writeRequirementsLock materializes the tool's pinned requirements lock as
+// <toolsDir>/<name>-lock.txt so `uv pip install -r` can consume it. The lock
+// content comes from the repo-embedded ToolSpec.RequirementsLock (trusted,
+// checksum-audited at review time), not from the network. Returns "" when the
+// tool declares no lock — the caller then falls back to the floating PipSpec.
+func writeRequirementsLock(tool ToolSpec, toolsDir string) (string, error) {
+	if tool.RequirementsLock == "" {
+		return "", nil
+	}
+	lockPath := filepath.Join(toolsDir, tool.Name+"-lock.txt")
+	if err := os.WriteFile(lockPath, []byte(tool.RequirementsLock), 0o644); err != nil {
+		return "", fmt.Errorf("tool %q: writing requirements lock: %w", tool.Name, err)
+	}
+	return lockPath, nil
+}
+
+// pipInstallArgs builds the `uv pip install` argument list for the venv
+// interpreter: `-r <lockPath>` when lockPath is non-empty (pinned install),
+// otherwise the floating pipSpec.
+func pipInstallArgs(venvPython, lockPath, pipSpec string) []string {
+	args := []string{"pip", "install", "--python", venvPython}
+	if lockPath != "" {
+		return append(args, "-r", lockPath)
+	}
+	return append(args, pipSpec)
 }
 
 // findPythonInDir searches dir for a Python interpreter binary, preferring an

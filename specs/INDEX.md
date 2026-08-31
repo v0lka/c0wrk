@@ -19,7 +19,7 @@
 | Adding/modifying built-in tools          | [domains/tool-system/builtins.md](domains/tool-system/builtins.md)       |
 | MCP servers, dynamic tools               | [domains/tool-system/mcp-gateway.md](domains/tool-system/mcp-gateway.md) |
 | Tool registry, execution pipeline        | [domains/tool-system/README.md](domains/tool-system/README.md)           |
-| External binary deps (rg, uv, markitdown), tool-manager | [domains/tool-manager.md](domains/tool-manager.md)       |
+| External binary deps (rg, uv, markitdown), tool-manager | [domains/tool-manager.md](domains/tool-manager.md), [decisions/010-tool-manager.md](decisions/010-tool-manager.md), [decisions/032-offline-first-tool-reconciliation.md](decisions/032-offline-first-tool-reconciliation.md) |
 | Supply-chain integrity, pinned tool versions, CVE review before bumping | [domains/tool-manager.md](domains/tool-manager.md) |
 | In-app self-update (auto-update), release integrity, rollback | [decisions/023-auto-update.md](decisions/023-auto-update.md) |
 | Context window, compaction               | [domains/memory/compaction.md](domains/memory/compaction.md)             |
@@ -141,7 +141,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [007-shell-parser-dependency.md](decisions/007-shell-parser-dependency.md) - mvdan.cc/sh shell parser for symlink detection
 - [008-backend-sp4rk-direct-import.md](decisions/008-backend-sp4rk-direct-import.md) - Backend allowed to import sp4rk directly → Supersedes ADR-002
 - [009-backend-domain-logic-extraction.md](decisions/009-backend-domain-logic-extraction.md) - Extraction of domain logic from App/UI layer → Superseded by ADR-011
-- [010-tool-manager.md](decisions/010-tool-manager.md) - Tool manager for external binary dependencies (rg, uv, markitdown) → Supersedes ADR-004 (ripgrep; git now conditional)
+- [010-tool-manager.md](decisions/010-tool-manager.md) - Tool manager for external binary dependencies (rg, uv, markitdown) → Supersedes ADR-004 (ripgrep; git now conditional); amended by ADR-032 (point 8 replaced)
 - [011-sp4rk-to-core-extraction.md](decisions/011-sp4rk-to-core-extraction.md) - Move vector index and proxy from sp4rk to Core → Supersedes ADR-009
 - [012-conductor-orchestration-pipeline.md](decisions/012-conductor-orchestration-pipeline.md) - Conductor-driven ReAct pipeline replacing system-driven plan-execute-reflect
 - [013-rrf-pre-fusion-score-thresholds.md](decisions/013-rrf-pre-fusion-score-thresholds.md) - Pre-fusion score thresholds and configurable RRF parameters for hybrid search → Supersedes ADR-005
@@ -163,3 +163,4 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [029-terminal-env-conventions.md](decisions/029-terminal-env-conventions.md) - Embedded terminal env conventions: TERM_PROGRAM=c0wrk marks the in-app terminal so rc files can skip tmux auto-attach; terminal.env config adds user env overrides (win over defaults, ${VAR} expanded at startup)
 - [030-session-context-restore.md](decisions/030-session-context-restore.md) - Session context restore: saved-first (selection-time persistence), effective activity (newest event, read-side), archived never auto-selected, restart restores the exact last mode/project/session via app_state
 - [031-gowork-repo-root.md](decisions/031-gowork-repo-root.md) - Dual-repo dev flow via repo-root gitignored `go.work` (`use . ../sp4rk`): workspace scoped to the c0wrk subtree instead of leaking into sibling projects → Supersedes ADR-025
+- [032-offline-first-tool-reconciliation.md](decisions/032-offline-first-tool-reconciliation.md) - Offline-first tool reconciliation: two-pass startup (local-only sync pass + background network pass), per-tool failure isolation, no destructive ops without secured replacement bytes → Amends ADR-010

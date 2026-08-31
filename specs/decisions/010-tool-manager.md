@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — amended by [ADR-032](./032-offline-first-tool-reconciliation.md), which replaces decision point 8 (fatal modal on failure) with non-fatal offline-first reconciliation. All other decisions remain in force.
 
 > **Drift note (2026-08-25, vibespec-check):** The 200MB disk-space guard is exact in threshold (core/toolmanager/manager.go) but best-effort in nature: it is an explicit no-op on Windows (manager_diskcheck_windows.go) and Unix filesystem errors are swallowed (manager_diskcheck_unix.go).
 
