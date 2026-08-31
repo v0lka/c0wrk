@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	chromem "github.com/philippgille/chromem-go"
+
+	"github.com/v0lka/c0wrk/core/vectorindex/lexical"
 )
 
 // fakeBatchEmbedder implements BatchEmbedder for tests. Every call is
@@ -21,12 +24,13 @@ import (
 // the raw fake vector is returned, like a hypothetical non-normalizing
 // embedder.
 type fakeBatchEmbedder struct {
-	mu          sync.Mutex
-	calls       [][]string
-	l2Normalize bool                              // return L2-normalized vectors (mirrors sp4rk's ONNX pooling)
-	failErr     error                             // returned when failAfter is exceeded (or immediately, when failAfter == -1)
-	failAfter   int                               // 0: never fail; N: succeed for the first N calls, fail afterwards; -1: fail on first call
-	onSuccess   func(callIdx int, texts []string) // invoked after a call's vectors are computed
+	mu           sync.Mutex
+	calls        [][]string
+	l2Normalize  bool                              // return L2-normalized vectors (mirrors sp4rk's ONNX pooling)
+	failErr      error                             // returned when failAfter is exceeded (or immediately, when failAfter == -1)
+	failAfter    int                               // 0: never fail; N: succeed for the first N calls, fail afterwards; -1: fail on first call
+	onSuccess    func(callIdx int, texts []string) // invoked after a call's vectors are computed
+	poisonSubstr string                            // when non-empty, any call whose texts contain this substring fails — simulates a content-triggered embedder error (e.g. a tokenizer rejecting one pathological text)
 }
 
 func (f *fakeBatchEmbedder) EmbedDocuments(ctx context.Context, texts []string) ([][]float32, error) {
@@ -43,6 +47,13 @@ func (f *fakeBatchEmbedder) EmbedDocuments(ctx context.Context, texts []string) 
 			return nil, f.failErr
 		}
 		return nil, errors.New("fake batch embedder failure")
+	}
+	if f.poisonSubstr != "" {
+		for _, text := range texts {
+			if strings.Contains(text, f.poisonSubstr) {
+				return nil, fmt.Errorf("fake batch embedder: poisoned text (contains %q)", f.poisonSubstr)
+			}
+		}
 	}
 
 	base := fakeEmbeddingFunc()
@@ -473,6 +484,163 @@ func TestAddDocuments_BatchEmbedder_CancelledMidBatch(t *testing.T) {
 	}
 	if got := svc.collection.Count(); got != 0 {
 		t.Errorf("collection Count = %d; want 0 (cancelled before any chromem commit)", got)
+	}
+}
+
+// TestAddDocuments_BatchEmbedder_PerTextFallbackDropsPoisonedDoc verifies
+// the content-failure isolation path: when a chunk fails as a unit because
+// of one pathological text (the production case being a tokenizer bug
+// triggered by specific content), AddDocuments retries each text
+// individually, drops ONLY the offending document, and still commits the
+// rest — one bad file must not abort indexing of everything batched with
+// it. The file-hash sidecar still records every file (the dropped doc's
+// file is considered indexed minus the bad chunk; retrying a deterministic
+// content failure every pass would waste embedding work), and chromem
+// performs zero per-document embedding calls throughout.
+func TestAddDocuments_BatchEmbedder_PerTextFallbackDropsPoisonedDoc(t *testing.T) {
+	fb := &fakeBatchEmbedder{poisonSubstr: "POISON"}
+	var chromemCalls atomic.Int64
+	svc := newBatchTestService(t, fb, 32, nil, &chromemCalls)
+
+	docs := batchTestDocs(40)
+	docs[17].Content = "content 17 POISON \xff\xfeq"
+	svc.AcquireWriteLock()
+	err := svc.AddDocuments(context.Background(), docs, nil)
+	svc.ReleaseWriteLock()
+	if err != nil {
+		t.Fatalf("AddDocuments: %v; want success with only the poisoned doc dropped", err)
+	}
+
+	if got := svc.collection.Count(); got != 39 {
+		t.Errorf("collection Count = %d; want 39 (poisoned doc dropped)", got)
+	}
+
+	// Chromem must never fall back to per-document embedding. Checked BEFORE
+	// the verification Query below, which itself embeds the query text.
+	if got := chromemCalls.Load(); got != 0 {
+		t.Errorf("chromem embedding func invoked %d times; want 0 (dropped doc excluded from commit)", got)
+	}
+
+	// The dropped document must be the poisoned one and nothing else.
+	results, qerr := svc.collection.Query(context.Background(), " ", 39, nil, nil)
+	if qerr != nil {
+		t.Fatalf("Query: %v", qerr)
+	}
+	seen := make(map[string]bool, len(results))
+	for _, r := range results {
+		seen[r.ID] = true
+	}
+	if seen["doc-0017"] {
+		t.Error("poisoned doc-0017 must not be committed to the collection")
+	}
+	if !seen["doc-0016"] || !seen["doc-0018"] {
+		t.Error("the poisoned doc's batch neighbors must still be committed")
+	}
+
+	// The fallback shape: call 1 is the 32-text chunk that fails as a unit,
+	// calls 2..33 are the 32 per-text retries, call 34 is the remaining
+	// 8-text chunk that succeeds as a unit.
+	sizes := fb.recordedBatchSizes()
+	if len(sizes) != 34 {
+		t.Fatalf("EmbedDocuments calls = %d (%v); want 34 ([32, 1×32..., 8])", len(sizes), sizes)
+	}
+	if sizes[0] != 32 || sizes[len(sizes)-1] != 8 {
+		t.Errorf("batch sizes = %v; want first 32, last 8", sizes)
+	}
+	for i := 1; i <= 32; i++ {
+		if sizes[i] != 1 {
+			t.Errorf("per-text fallback call %d has batch size %d; want 1", i+1, sizes[i])
+		}
+	}
+
+	// The sidecar still records every file, including the dropped doc's:
+	// the content failure is deterministic, so the file must NOT be
+	// re-embedded on every subsequent pass.
+	files, ferr := svc.GetCollectionFiles()
+	if ferr != nil {
+		t.Fatalf("GetCollectionFiles: %v", ferr)
+	}
+	if len(files) != 40 {
+		t.Errorf("file-hash sidecar entries = %d; want 40 (all files recorded, dropped chunk included)", len(files))
+	}
+}
+
+// TestAddDocuments_BatchEmbedder_DroppedDocExcludedFromLexical pins the
+// dual-index divergence guard: a document dropped by the per-text fallback
+// must be excluded from the lexical upsert too — otherwise the BM25 index
+// would return hits for a chunk the vector store never committed (lexical
+// hits enrich their content via chromem GetByID, so such a hit would be
+// hollow). The poisoned doc's batch neighbors must remain searchable.
+func TestAddDocuments_BatchEmbedder_DroppedDocExcludedFromLexical(t *testing.T) {
+	fb := &fakeBatchEmbedder{poisonSubstr: "POISON"}
+	svc := newBatchTestService(t, fb, 32, nil, nil)
+
+	docs := batchTestDocs(40)
+	docs[17].Content = "content 17 POISON \xff\xfeq"
+	lexDocs := make([]lexical.Doc, 0, len(docs))
+	for _, d := range docs {
+		lexDocs = append(lexDocs, lexical.Doc{
+			ID:       d.ID,
+			FilePath: d.Metadata["file_path"],
+			Language: "go",
+			Content:  d.Content,
+		})
+	}
+
+	svc.AcquireWriteLock()
+	err := svc.AddDocuments(context.Background(), docs, lexDocs)
+	svc.ReleaseWriteLock()
+	if err != nil {
+		t.Fatalf("AddDocuments: %v; want success with only the poisoned doc dropped", err)
+	}
+
+	lex := svc.GetLexical()
+	if lex == nil {
+		t.Fatal("lexical index must be available after SwitchBranch")
+	}
+	count, cerr := lex.Count()
+	if cerr != nil {
+		t.Fatalf("lexical Count: %v", cerr)
+	}
+	if count != 39 {
+		t.Errorf("lexical Count = %d; want 39 (poisoned doc excluded from upsert)", count)
+	}
+
+	// The dropped doc carried the unique term POISON: it must not be
+	// retrievable from the lexical index at all.
+	hits, qerr := lex.Query(context.Background(), "POISON", 10)
+	if qerr != nil {
+		t.Fatalf("lexical Query: %v", qerr)
+	}
+	if len(hits) != 0 {
+		t.Errorf("lexical Query(POISON) returned %d hits; want 0 (dropped doc leaked into BM25 index)", len(hits))
+	}
+}
+
+// TestAddDocuments_BatchEmbedder_AllTextsFailIndividually verifies the
+// systemic-failure discriminator: when a chunk fails as a unit AND every
+// per-text retry fails too, the embedder itself is broken, so AddDocuments
+// must abort with an error rather than silently drop the whole batch.
+func TestAddDocuments_BatchEmbedder_AllTextsFailIndividually(t *testing.T) {
+	fb := &fakeBatchEmbedder{failAfter: -1} // every call fails, batched or per-text
+	svc := newBatchTestService(t, fb, 32, nil, nil)
+
+	docs := batchTestDocs(40)
+	svc.AcquireWriteLock()
+	err := svc.AddDocuments(context.Background(), docs, nil)
+	svc.ReleaseWriteLock()
+	if err == nil {
+		t.Fatal("AddDocuments must fail when every per-text retry fails (systemic embedder failure)")
+	}
+	if got := svc.collection.Count(); got != 0 {
+		t.Errorf("collection Count = %d; want 0 (nothing committed on systemic failure)", got)
+	}
+	files, ferr := svc.GetCollectionFiles()
+	if ferr != nil {
+		t.Fatalf("GetCollectionFiles: %v", ferr)
+	}
+	if len(files) != 0 {
+		t.Errorf("file-hash sidecar entries = %d; want 0 after a failed pass", len(files))
 	}
 }
 

@@ -726,6 +726,12 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 		return nil
 	}
 
+	// droppedIDs accumulates documents that could not be embedded even via
+	// the per-text fallback (see embedSubBatch). They are excluded from the
+	// chromem commit AND from the lexical upsert below so the two indexes
+	// never diverge.
+	var droppedIDs map[string]struct{}
+
 	for start := 0; start < len(vecDocs); start += embeddingSubBatchSize {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("adding documents (cancelled mid-batch): %w", err)
@@ -736,9 +742,22 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 		}
 		sub := vecDocs[start:end]
 		if s.batchEmbedder != nil {
-			if err := s.embedSubBatch(ctx, sub); err != nil {
-				return fmt.Errorf("embedding %d documents (offset %d of %d): %w", len(sub), start, len(vecDocs), err)
+			kept, dropped, embErr := s.embedSubBatch(ctx, sub)
+			if embErr != nil {
+				return fmt.Errorf("embedding %d documents (offset %d of %d): %w", len(sub), start, len(vecDocs), embErr)
 			}
+			sub = kept
+			if len(dropped) > 0 {
+				if droppedIDs == nil {
+					droppedIDs = make(map[string]struct{}, len(dropped))
+				}
+				for id := range dropped {
+					droppedIDs[id] = struct{}{}
+				}
+			}
+		}
+		if len(sub) == 0 {
+			continue
 		}
 		if err := s.collection.AddDocuments(ctx, sub, 1); err != nil {
 			return fmt.Errorf("adding %d documents (offset %d of %d): %w", len(sub), start, len(vecDocs), err)
@@ -757,6 +776,20 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 	s.upsertFileHashes(vecDocs)
 
 	if s.lexical != nil && len(lexDocs) > 0 {
+		if len(droppedIDs) > 0 {
+			// Clamp the capacity at zero: today's callers pass lexDocs
+			// mirroring vecDocs 1:1 (same IDs), so droppedIDs can never
+			// outnumber lexDocs — but a negative make capacity panics, and
+			// the invariant is not enforced at this boundary.
+			filtered := make([]lexical.Doc, 0, max(len(lexDocs)-len(droppedIDs), 0))
+			for _, d := range lexDocs {
+				if _, drop := droppedIDs[d.ID]; drop {
+					continue
+				}
+				filtered = append(filtered, d)
+			}
+			lexDocs = filtered
+		}
 		if err := s.lexical.Upsert(ctx, lexDocs); err != nil {
 			s.logger.Warn("lexical upsert failed; will be repaired via RebuildLexical",
 				"branch", s.currentBranch, "docs", len(lexDocs), "error", err)
@@ -779,8 +812,22 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 // full batch inference. ctx is checked per chunk and forwarded to
 // EmbedDocuments, so cancellation interrupts the sub-batch between chunks
 // (the embedder itself is ctx-aware and aborts a pending chunk).
+//
+// Content-triggered failures are isolated rather than aborting the whole
+// index pass: when a chunk fails as a unit, every text is retried on its
+// own (see embedChunkPerText) and only the texts that also fail
+// individually are dropped from the returned document set (each logged at
+// WARN). This keeps one pathological chunk — e.g. content that trips a
+// tokenizer bug — from permanently blocking indexing of everything batched
+// with it. Systemic failures (every text in a chunk failing individually)
+// still return an error: a broken embedder must abort the pass, not
+// silently drop the entire batch.
+//
+// Returns the documents to commit (sub itself when nothing was dropped;
+// the input slice is never reordered) and the IDs of dropped documents so
+// the caller can exclude them from the lexical upsert as well.
 // Caller must hold s.mu (write lock).
-func (s *Service) embedSubBatch(ctx context.Context, sub []chromem.Document) error {
+func (s *Service) embedSubBatch(ctx context.Context, sub []chromem.Document) ([]chromem.Document, map[string]struct{}, error) {
 	texts := make([]string, 0, len(sub))
 	targets := make([]int, 0, len(sub))
 	for i := range sub {
@@ -790,9 +837,11 @@ func (s *Service) embedSubBatch(ctx context.Context, sub []chromem.Document) err
 		}
 	}
 
+	failedTargets := make(map[int]struct{}) // indices into targets/texts dropped via the per-text fallback
+
 	for start := 0; start < len(texts); start += s.embeddingBatchSize {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("embedding documents (cancelled mid-batch): %w", err)
+			return nil, nil, fmt.Errorf("embedding documents (cancelled mid-batch): %w", err)
 		}
 		end := start + s.embeddingBatchSize
 		if end > len(texts) {
@@ -801,19 +850,90 @@ func (s *Service) embedSubBatch(ctx context.Context, sub []chromem.Document) err
 		chunk := texts[start:end]
 		vecs, err := s.batchEmbedder.EmbedDocuments(ctx, chunk)
 		if err != nil {
-			return fmt.Errorf("embedding %d texts (chunk offset %d of %d): %w", len(chunk), start, len(texts), err)
+			vecs, err = s.embedChunkPerText(ctx, chunk, start, len(texts), failedTargets)
+			if err != nil {
+				return nil, nil, err
+			}
 		}
 		if len(vecs) != len(chunk) {
-			return fmt.Errorf("batch embedder returned %d vectors for %d texts", len(vecs), len(chunk))
+			return nil, nil, fmt.Errorf("batch embedder returned %d vectors for %d texts", len(vecs), len(chunk))
 		}
 		for j, vec := range vecs {
+			if _, drop := failedTargets[start+j]; drop {
+				continue
+			}
 			if len(vec) == 0 {
-				return fmt.Errorf("batch embedder returned an empty vector (chunk offset %d of %d, text %d)", start, len(texts), j)
+				return nil, nil, fmt.Errorf("batch embedder returned an empty vector (chunk offset %d of %d, text %d)", start, len(texts), j)
 			}
 			sub[targets[start+j]].Embedding = vec
 		}
 	}
-	return nil
+
+	if len(failedTargets) == 0 {
+		return sub, nil, nil
+	}
+	dropped := make(map[string]struct{}, len(failedTargets))
+	dropIdx := make(map[int]struct{}, len(failedTargets))
+	for k := range failedTargets {
+		docIdx := targets[k]
+		dropIdx[docIdx] = struct{}{}
+		dropped[sub[docIdx].ID] = struct{}{}
+		s.logger.Warn("dropping document whose embedding failed",
+			"id", sub[docIdx].ID,
+			"file_path", sub[docIdx].Metadata["file_path"])
+	}
+	kept := make([]chromem.Document, 0, len(sub)-len(dropIdx))
+	for i := range sub {
+		if _, drop := dropIdx[i]; drop {
+			continue
+		}
+		kept = append(kept, sub[i])
+	}
+	return kept, dropped, nil
+}
+
+// embedChunkPerText isolates failures inside a chunk whose batched
+// EmbedDocuments call failed: each text is embedded individually, texts
+// that also fail alone are logged at WARN and recorded in failedTargets
+// (keyed by their absolute index in the sub-batch's texts slice), and the
+// successfully embedded texts keep their vectors. It returns an error only
+// when EVERY text fails individually — that signature means the embedder
+// itself is broken (it fails identically for any input), in which case the
+// whole index pass must abort rather than silently drop the batch.
+func (s *Service) embedChunkPerText(ctx context.Context, chunk []string, start, total int, failedTargets map[int]struct{}) ([][]float32, error) {
+	vecs := make([][]float32, len(chunk))
+	var firstErr error
+	failures := 0
+	for j, text := range chunk {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("embedding documents (cancelled mid-batch): %w", err)
+		}
+		v, err := s.batchEmbedder.EmbedDocuments(ctx, []string{text})
+		if err != nil || len(v) != 1 || len(v[0]) == 0 {
+			failures++
+			textErr := err
+			if textErr == nil {
+				if len(v) != 1 {
+					textErr = fmt.Errorf("embedder returned %d vectors for a single text", len(v))
+				} else {
+					textErr = errors.New("embedder returned an empty vector")
+				}
+			}
+			if firstErr == nil {
+				firstErr = textErr
+			}
+			s.logger.Warn("per-text embedding failed; document will be dropped",
+				"chunk_offset", start+j, "total", total, "text_bytes", len(text), "error", textErr)
+			failedTargets[start+j] = struct{}{}
+			continue
+		}
+		vecs[j] = v[0]
+	}
+	if failures == len(chunk) {
+		return nil, fmt.Errorf("embedding %d texts (chunk offset %d of %d): all texts failed individually too (first error: %w)",
+			len(chunk), start, total, firstErr)
+	}
+	return vecs, nil
 }
 
 // DeleteDocumentsByIDs removes documents with the given IDs from the current

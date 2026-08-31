@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/v0lka/sp4rk/ignore"
 )
@@ -699,6 +700,60 @@ func TestProcessFile_SkipsOversized(t *testing.T) {
 	// NUL heuristic, is what skips the file.
 	if binary, _ := isBinaryHeader(bigPath); binary {
 		t.Fatal("expected header to be NUL-free (binary heuristic must NOT catch it); test premise invalid")
+	}
+}
+
+// TestProcessFile_SanitizesInvalidUTF8 is the regression test for the
+// production crashes caused by sugarme/tokenizer panicking on invalid
+// UTF-8: a text file in a legacy single-byte encoding (here Windows-1251
+// Cyrillic) has no NUL byte, so the binary header check passes it through.
+// processFile must sanitize the content to valid UTF-8 BEFORE chunking so
+// undecodable bytes never reach the tokenizer — while the recorded
+// content_hash must still cover the RAW on-disk bytes so
+// ValidateCollection's unchanged-file detection (which re-hashes raw
+// bytes) keeps matching.
+func TestProcessFile_SanitizesInvalidUTF8(t *testing.T) {
+	svc := setupTestService(t)
+	indexer := NewIndexer(IndexerConfig{
+		Service: svc,
+		ChunkFn: fakeChunkFunc,
+		HashFn:  fakeHashFunc,
+	})
+
+	root := t.TempDir()
+	// "Привет" in Windows-1251: every Cyrillic byte is >= 0xC0, i.e. invalid
+	// UTF-8 when interpreted as such. No NUL byte, so isBinaryHeader passes.
+	raw := []byte{0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2, ' ', 'w', 'o', 'r', 'l', 'd'}
+	if utf8.Valid(raw) {
+		t.Fatal("test premise invalid: Windows-1251 bytes must not be valid UTF-8")
+	}
+	path := filepath.Join(root, "legacy.txt")
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if binary, _ := isBinaryHeader(path); binary {
+		t.Fatal("test premise invalid: NUL-free legacy text must pass the binary header check")
+	}
+
+	vecDocs, lexDocs, err := indexer.processFile(path)
+	if err != nil {
+		t.Fatalf("processFile legacy-encoded file: unexpected error: %v", err)
+	}
+	if len(vecDocs) != 1 || len(lexDocs) != 1 {
+		t.Fatalf("expected 1 vec / 1 lex doc, got %d / %d", len(vecDocs), len(lexDocs))
+	}
+	if !utf8.ValidString(vecDocs[0].Content) {
+		t.Errorf("vec doc content is not valid UTF-8: %q", vecDocs[0].Content)
+	}
+	if !utf8.ValidString(lexDocs[0].Content) {
+		t.Errorf("lex doc content is not valid UTF-8: %q", lexDocs[0].Content)
+	}
+	if !strings.Contains(vecDocs[0].Content, "world") {
+		t.Errorf("sanitized content lost the ASCII payload: %q", vecDocs[0].Content)
+	}
+	// The hash must cover the RAW bytes, not the sanitized form.
+	if got, want := vecDocs[0].Metadata["content_hash"], computeHash(raw); got != want {
+		t.Errorf("content_hash = %s; want raw-bytes hash %s", got, want)
 	}
 }
 

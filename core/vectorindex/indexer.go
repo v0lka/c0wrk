@@ -4,6 +4,7 @@
 package vectorindex
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	chromem "github.com/philippgille/chromem-go"
 
@@ -408,6 +410,22 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 	}
 
 	hash := idx.hashFn(content)
+
+	// The embedding tokenizer (sugarme/tokenizer v0.3.0, via sp4rk) panics
+	// on text that is not valid UTF-8 — its NormalizedString alignment
+	// bookkeeping breaks on undecodable byte sequences. Files in legacy
+	// single-byte encodings (Windows-1251, Latin-1) or with corrupted bytes
+	// pass the NUL-header binary check above, so sanitize the content before
+	// chunking: undecodable sequences are replaced with U+FFFD (the same
+	// lossy conversion sp4rk's Tokenizer.Encode applies as a last resort,
+	// so chunk text stays consistent end-to-end). The hash above
+	// intentionally covers the RAW on-disk bytes: ValidateCollection
+	// re-hashes raw bytes for unchanged-file detection, and hashing anything
+	// else would mark every sanitized file stale on the next pass.
+	if !utf8.Valid(content) {
+		idx.logger.Debug("sanitizing non-UTF-8 file content before indexing", "path", filePath)
+		content = bytes.ToValidUTF8(content, []byte("�"))
+	}
 
 	chunks, err := idx.chunkFn(filePath, content, idx.maxChunkSize, idx.overlap)
 	if err != nil {
