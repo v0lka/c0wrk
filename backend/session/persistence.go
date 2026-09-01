@@ -330,6 +330,28 @@ func (s *SQLiteSessionStore) createTables() error {
 		}
 	}
 
+	// Migration: normalize session_messages.created_at to UTC (Z-suffixed
+	// RFC3339). LoadMessages orders by lexicographic TEXT comparison of
+	// created_at, which only matches chronological order when every writer
+	// stores the same format. SendMessage historically persisted user
+	// messages with a LOCAL-time RFC3339 string (e.g. "...T15:30:00+03:00"
+	// in MSK) while every other writer stored UTC "Z" strings — so in any
+	// timezone east of UTC every user row sorted after all other rows of the
+	// same chat, rendering ALL user messages at the end of the history on
+	// reload (the corrupted order is persisted, so a restart did not help).
+	// strftime understands both offset-suffixed and Z-suffixed inputs and
+	// emits normalized UTC, healing legacy rows in place. Rows already in
+	// canonical form (or unparseable — strftime returns NULL) are left
+	// untouched, making the UPDATE idempotent and safe to run on every start.
+	if _, err := s.db.ExecContext(context.Background(), `
+		UPDATE session_messages
+		SET created_at = strftime('%Y-%m-%dT%H:%M:%SZ', created_at)
+		WHERE created_at <> strftime('%Y-%m-%dT%H:%M:%SZ', created_at)
+		  AND strftime('%Y-%m-%dT%H:%M:%SZ', created_at) IS NOT NULL
+	`); err != nil {
+		s.log().Warn("failed to normalize session_messages.created_at to UTC RFC3339", "error", err)
+	}
+
 	return nil
 }
 

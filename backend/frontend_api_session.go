@@ -316,7 +316,14 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents []
 			Role:      "user",
 			Content:   text,
 			Metadata:  messageMetadata,
-			CreatedAt: time.Now().Format(time.RFC3339),
+			// MUST be UTC (Z-suffixed) like every other timestamp writer:
+			// LoadMessages orders by lexicographic TEXT comparison of
+			// created_at, so a local-time offset suffix (+03:00) would sort
+			// the row after every Z-suffixed row of the same chat —
+			// rendering all user messages at the end of the history after a
+			// reload. See the normalization migration in
+			// session/persistence.go createTables.
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
 			f.log().Error("failed to save user message to store", "error", err)
 		}

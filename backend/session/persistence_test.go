@@ -487,6 +487,90 @@ func TestSaveAndLoadMessages(t *testing.T) {
 	}
 }
 
+// TestLoadMessagesNormalizesLegacyLocalTimestamps reproduces the "all user
+// messages at the end of the chat" bug: SendMessage persisted user messages
+// with a LOCAL-time RFC3339 string (offset suffix like +03:00) while every
+// other writer stored UTC "Z" strings. LoadMessages orders by lexicographic
+// TEXT comparison of created_at, so an offset-suffixed row sorts after every
+// Z-suffixed row of the same chat — pushing ALL user messages to the history
+// tail (persisted, hence surviving app restarts). The startup migration in
+// createTables rewrites legacy rows to canonical UTC RFC3339; loading must
+// then return chronological order.
+func TestLoadMessagesNormalizesLegacyLocalTimestamps(t *testing.T) {
+	db := openTestDB(t)
+	createProjectsTable(t, db)
+	insertTestProject(t, db, testProjectID)
+
+	// First store instance creates the schema (no rows to migrate yet).
+	store, err := NewSQLiteSessionStore(db)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	if err := store.SaveSession(context.Background(), SessionInfo{
+		ID:        "mixed-format",
+		ProjectID: testProjectID,
+		Name:      "Mixed Format",
+		CreatedAt: "2026-09-01T09:00:00Z",
+	}); err != nil {
+		_ = db.Close()
+		t.Fatalf("failed to save session: %v", err)
+	}
+
+	// Seed rows exactly as the bug wrote them: user rows carry local-time
+	// MSK offsets (UTC+3), everything else UTC "Z". Chronological instants:
+	// 09:00Z user, 09:05Z assistant, 09:10Z user, 09:15Z assistant.
+	seed := []struct{ role, createdAt string }{
+		{"user", "2026-09-01T12:00:00+03:00"}, // == 09:00Z
+		{"assistant", "2026-09-01T09:05:00Z"},
+		{"user", "2026-09-01T12:10:00+03:00"}, // == 09:10Z
+		{"assistant", "2026-09-01T09:15:00Z"},
+	}
+	for _, row := range seed {
+		if _, err := store.db.ExecContext(context.Background(),
+			`INSERT INTO session_messages (session_id, role, content, metadata, created_at)
+			 VALUES (?, ?, ?, '{}', ?)`,
+			"mixed-format", row.role, row.role+" message", row.createdAt,
+		); err != nil {
+			_ = db.Close()
+			t.Fatalf("failed to seed %s row: %v", row.role, err)
+		}
+	}
+
+	// Re-open the store over the same DB: createTables re-runs the
+	// normalization migration, exactly as on every app startup.
+	healed, err := NewSQLiteSessionStore(db)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("failed to re-open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	msgs, err := healed.LoadMessages(context.Background(), "mixed-format")
+	if err != nil {
+		t.Fatalf("failed to load messages: %v", err)
+	}
+	if len(msgs) != len(seed) {
+		t.Fatalf("expected %d messages, got %d", len(seed), len(msgs))
+	}
+
+	wantRoles := []string{"user", "assistant", "user", "assistant"}
+	gotRoles := make([]string, len(msgs))
+	for i, msg := range msgs {
+		gotRoles[i] = msg.Role
+		if !strings.HasSuffix(msg.CreatedAt, "Z") {
+			t.Errorf("message %d created_at %q not normalized to UTC", i, msg.CreatedAt)
+		}
+	}
+	if !reflect.DeepEqual(gotRoles, wantRoles) {
+		t.Errorf("chronological order broken: got roles %v, want %v", gotRoles, wantRoles)
+	}
+	if got := msgs[0].CreatedAt; got != "2026-09-01T09:00:00Z" {
+		t.Errorf("first message created_at: got %q, want %q", got, "2026-09-01T09:00:00Z")
+	}
+}
+
 func TestDeleteMessages(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
