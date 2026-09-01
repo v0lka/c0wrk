@@ -51,41 +51,48 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
   )
   const attachmentName = isReadAttachment ? (item.attachmentName ?? storeName) : undefined
 
-  // For cached/batched tools, args are from tool_result_read or batch, not the original tool.
-  // Show the original tool name as title; range info is patched into the header.
-  const title = isBatched
-    ? item.toolName.replace(' (batched)', '')
-    : isCached
-    ? item.toolName.replace(' (cached)', '')
-    : attachmentName ?? config.extractTitle(item.parsedArgs, item.args)
-  const hint = isCached ? undefined : config.extractHint?.(item.parsedArgs, item.args)
+  // Titles are extracted from the call's own args in EVERY variant: plain and
+  // batched calls carry their args (a batch sub-call emits the sub-call's own
+  // input), and cached calls (tool_result_read) carry the ORIGINAL tool's args
+  // with the fragment window overlaid — the executor rewrites the emitted
+  // event's name and args when the hash resolves. Sessions recorded before that
+  // rewrite keep hash-only args; their cards fall back to the extractors'
+  // generic placeholders ('file', 'URL', …), never to a bare tool name.
+  const title = attachmentName ?? config.extractTitle(item.parsedArgs, item.args)
+  const hint = config.extractHint?.(item.parsedArgs, item.args)
   const Icon = config.icon
   const Body = config.Body
 
+  // Badges and the fragment-range note are shrink-0 + whitespace-nowrap: the
+  // title span (EllipsisHint) carries min-w-0, so when the header row runs out
+  // of room the TITLE is what truncates — the cached/batched banners stay
+  // fully visible with no horizontal scrolling.
   const mcpBadge = useMemo(() =>
     item.source && item.source !== '' && item.source !== 'core'
-      ? <span className="text-[10px] font-medium bg-muted-foreground/15 text-foreground px-1.5 py-0.5 rounded">MCP</span>
+      ? <span className="text-[10px] font-medium bg-muted-foreground/15 text-foreground px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap">MCP</span>
       : null
   , [item.source])
 
   // Cached badge
   const cachedBadge = useMemo(() =>
     isCached
-      ? <span className="text-[10px] font-medium bg-info/15 text-info px-1.5 py-0.5 rounded">cached</span>
+      ? <span className="text-[10px] font-medium bg-info/15 text-info px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap">cached</span>
       : null
   , [isCached])
 
   // Batched badge
   const batchedBadge = useMemo(() =>
     isBatched
-      ? <span className="text-[10px] font-medium bg-info/15 text-info px-1.5 py-0.5 rounded">batched</span>
+      ? <span className="text-[10px] font-medium bg-info/15 text-info px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap">batched</span>
       : null
   , [isBatched])
 
-  // Cached tools never get file links — we don't have the original path.
-  // Batched tools DO carry the sub-call's own args, so file links are possible.
+  // File links need a path in the args: plain and batched calls carry their
+  // own args, and cached calls carry the original tool's merged args. Older
+  // persisted cached calls (hash-only args) resolve no path and render without
+  // a link.
   const baseToolName = isBatched ? item.toolName.replace(' (batched)', '') : isCached ? item.toolName.replace(' (cached)', '') : item.toolName
-  const isFileTool = !isCached && ['write_file', 'edit_file', 'read_file', 'read_skill_resource',
+  const isFileTool = ['write_file', 'edit_file', 'read_file', 'read_skill_resource',
     'create_directory', 'delete_file', 'delete_directory', 'list_directory'].includes(baseToolName)
   const filePath = hint && isFileTool ? hint : undefined
   const fileLine = useMemo(
@@ -124,7 +131,7 @@ export const ToolCard = React.memo(function ToolCard({ item }: { item: ToolItem 
   ), [config.verb, filePath, fileLine, title, fullText])
 
   const cacheRangeNode = useMemo(() => cacheRange ? (
-    <span className="text-xs text-hljs-comment">
+    <span className="text-xs text-hljs-comment shrink-0 whitespace-nowrap">
       fragment: lines {cacheRange.start}–{cacheRange.end} of {cacheRange.total}
     </span>
   ) : null
