@@ -793,6 +793,55 @@ func (m *Manager) ListSessionsByProject(projectID string) ([]SessionInfo, error)
 	return sessions, nil
 }
 
+// ListSessionsAll returns metadata for the sessions of ALL projects in a
+// single list — the data source for cross-project indicators. It mirrors
+// ListSessionsByProject without the project filter: rows come from
+// store.ListSessions (every project, ordered pinned first, then by effective
+// activity — newest first), with the live in-memory Active/Pinned state
+// overlaid on top. With no persistent store configured it falls back to the
+// in-memory session list (also all projects, newest first).
+func (m *Manager) ListSessionsAll() ([]SessionInfo, error) {
+	m.mu.RLock()
+	store := m.sessionStore
+	m.mu.RUnlock()
+
+	var sessions []SessionInfo
+	if store == nil {
+		// Fallback: in-memory sessions across all projects.
+		sessions = m.ListSessions()
+	} else {
+		var err error
+		sessions, err = store.ListSessions(context.Background())
+		if err != nil {
+			return nil, err
+		}
+
+		// Overlay in-memory active state from live sessions.
+		m.mu.RLock()
+		for i := range sessions {
+			if s, ok := m.sessions[sessions[i].ID]; ok {
+				s.mu.Lock()
+				sessions[i].Active = s.active
+				sessions[i].Pinned = s.Pinned
+				s.mu.Unlock()
+			}
+		}
+		m.mu.RUnlock()
+	}
+
+	// The cross-project indicator surfaces only LIVE work. An archived session
+	// is never live — a lingering in_progress/paused/failed task must not
+	// resurrect it into the list — so drop archived rows before returning,
+	// regardless of the store/no-store source above.
+	filtered := make([]SessionInfo, 0, len(sessions))
+	for _, s := range sessions {
+		if !s.Archived {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered, nil
+}
+
 // CreateSession creates a new session with a fresh orchestrator.
 // The projectID ties the session to a project; workspacePath is the project's workspace directory.
 func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, error) {

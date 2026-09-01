@@ -226,6 +226,231 @@ func TestManager_ListSessions(t *testing.T) {
 	}
 }
 
+// TestManager_ListSessionsAll verifies the cross-project session listing:
+// sessions from MULTIPLE projects come back in one list ordered by the
+// store's list order (pinned first, then effective activity — newest first),
+// with the live in-memory Active/Pinned state overlaid on the stored rows.
+// Also covers the empty-store case.
+func TestManager_ListSessionsAll(t *testing.T) {
+	db := openTestDB(t)
+	createProjectsTable(t, db)
+	insertTestProject(t, db, "project-a")
+	insertTestProject(t, db, "project-b")
+	store, err := NewSQLiteSessionStore(db)
+	if err != nil {
+		t.Fatalf("failed to create test store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	manager, _, _ := testManager(t)
+	manager.SetSessionStore(store)
+
+	// Empty store: empty list, no error.
+	got, err := manager.ListSessionsAll()
+	if err != nil {
+		t.Fatalf("ListSessionsAll on empty store: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 sessions on empty store, got %d", len(got))
+	}
+
+	// Seed sessions across two projects with distinct activity timestamps.
+	// "b-pinned" has the OLDEST activity but is pinned, so it must come first.
+	seed := func(id, projectID, lastActive string, pinned bool) {
+		t.Helper()
+		if err := store.SaveSession(context.Background(), SessionInfo{
+			ID:           id,
+			ProjectID:    projectID,
+			Name:         id,
+			CreatedAt:    "2024-01-01T00:00:00Z",
+			LastActiveAt: lastActive,
+			Pinned:       pinned,
+		}); err != nil {
+			t.Fatalf("SaveSession(%s): %v", id, err)
+		}
+	}
+	seed("a-oldest", "project-a", "2024-01-01T10:00:00Z", false)
+	seed("b-middle", "project-b", "2024-01-02T10:00:00Z", false)
+	seed("a-newest", "project-a", "2024-01-03T10:00:00Z", false)
+	seed("b-pinned", "project-b", "2023-12-31T10:00:00Z", true)
+
+	got, err = manager.ListSessionsAll()
+	if err != nil {
+		t.Fatalf("ListSessionsAll: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("expected 4 sessions across both projects, got %d", len(got))
+	}
+
+	// Composition: sessions from BOTH projects in the single list.
+	projects := map[string]bool{}
+	for _, s := range got {
+		projects[s.ProjectID] = true
+	}
+	if len(projects) != 2 || !projects["project-a"] || !projects["project-b"] {
+		t.Errorf("expected sessions from both projects, got %v", projects)
+	}
+
+	// Ordering: pinned first, then newest effective activity.
+	wantOrder := []string{"b-pinned", "a-newest", "b-middle", "a-oldest"}
+	for i, want := range wantOrder {
+		if got[i].ID != want {
+			t.Fatalf("order[%d]: got %s, want %s (full order: %s %s %s %s)",
+				i, got[i].ID, want, got[0].ID, got[1].ID, got[2].ID, got[3].ID)
+		}
+	}
+
+	// Overlay: a live in-memory session (persisted by the desktop layer, as
+	// FrontendAPI.CreateSession does) gets its Active/Pinned flags overlaid
+	// from memory onto the stored row.
+	info, err := manager.CreateSession("project-a", testWorkspacePath(t))
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := store.SaveSession(context.Background(), *info); err != nil {
+		t.Fatalf("SaveSession(live): %v", err)
+	}
+	manager.mu.RLock()
+	live := manager.sessions[info.ID]
+	manager.mu.RUnlock()
+	if live == nil {
+		t.Fatalf("live session %s not found in manager", info.ID)
+	}
+	live.mu.Lock()
+	live.active = true
+	live.Pinned = true
+	live.mu.Unlock()
+
+	got, err = manager.ListSessionsAll()
+	if err != nil {
+		t.Fatalf("ListSessionsAll after overlay: %v", err)
+	}
+	var overlaid *SessionInfo
+	for i := range got {
+		if got[i].ID == info.ID {
+			overlaid = &got[i]
+		}
+	}
+	if overlaid == nil {
+		t.Fatalf("live session %s missing from ListSessionsAll", info.ID)
+	}
+	if !overlaid.Active {
+		t.Error("expected Active=true overlaid from the in-memory session")
+	}
+	if !overlaid.Pinned {
+		t.Error("expected Pinned=true overlaid from the in-memory session")
+	}
+}
+
+// TestManager_ListSessionsAll_NoStoreFallsBackToMemory verifies the no-store
+// path: without a persistent store the method returns the in-memory session
+// list (all projects), and an empty manager yields an empty slice.
+func TestManager_ListSessionsAll_NoStoreFallsBackToMemory(t *testing.T) {
+	manager, _, _ := testManager(t) // no SetSessionStore
+
+	// Empty in-memory manager: empty slice, no error.
+	got, err := manager.ListSessionsAll()
+	if err != nil {
+		t.Fatalf("ListSessionsAll on empty manager: %v", err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Errorf("expected empty non-nil slice, got %#v", got)
+	}
+
+	// In-memory sessions across two projects are all listed.
+	if _, err := manager.CreateSession("project-a", testWorkspacePath(t)); err != nil {
+		t.Fatalf("CreateSession(project-a): %v", err)
+	}
+	if _, err := manager.CreateSession("project-b", testWorkspacePath(t)); err != nil {
+		t.Fatalf("CreateSession(project-b): %v", err)
+	}
+
+	got, err = manager.ListSessionsAll()
+	if err != nil {
+		t.Fatalf("ListSessionsAll without store: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 in-memory sessions, got %d", len(got))
+	}
+	projects := map[string]bool{}
+	for _, s := range got {
+		projects[s.ProjectID] = true
+	}
+	if len(projects) != 2 {
+		t.Errorf("expected sessions from both projects, got %v", projects)
+	}
+}
+
+// TestManager_ListSessionsAll_ExcludesArchived verifies that archived sessions
+// never reach the cross-project indicator list, even when they carry a live
+// unfinished task status. Both the store-backed and in-memory fallback paths
+// are covered.
+func TestManager_ListSessionsAll_ExcludesArchived(t *testing.T) {
+	t.Run("store", func(t *testing.T) {
+		db := openTestDB(t)
+		createProjectsTable(t, db)
+		insertTestProject(t, db, "project-a")
+		store, err := NewSQLiteSessionStore(db)
+		if err != nil {
+			t.Fatalf("failed to create test store: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+
+		manager, _, _ := testManager(t)
+		manager.SetSessionStore(store)
+
+		seed := func(id string, archived bool, status string) {
+			t.Helper()
+			if err := store.SaveSession(context.Background(), SessionInfo{
+				ID:                   id,
+				ProjectID:            "project-a",
+				Name:                 id,
+				CreatedAt:            "2024-01-01T00:00:00Z",
+				LastActiveAt:         "2024-01-02T00:00:00Z",
+				Archived:             archived,
+				UnfinishedTaskStatus: status,
+			}); err != nil {
+				t.Fatalf("SaveSession(%s): %v", id, err)
+			}
+		}
+		seed("archived-failed", true, "failed")
+		seed("archived-running", true, "in_progress")
+		seed("live", false, "in_progress")
+
+		got, err := manager.ListSessionsAll()
+		if err != nil {
+			t.Fatalf("ListSessionsAll: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != "live" {
+			t.Fatalf("expected only the non-archived session, got %+v", got)
+		}
+	})
+
+	t.Run("memory", func(t *testing.T) {
+		manager, _, _ := testManager(t) // no SetSessionStore → in-memory fallback
+
+		a, err := manager.CreateSession("project-a", testWorkspacePath(t))
+		if err != nil {
+			t.Fatalf("CreateSession(a): %v", err)
+		}
+		b, err := manager.CreateSession("project-b", testWorkspacePath(t))
+		if err != nil {
+			t.Fatalf("CreateSession(b): %v", err)
+		}
+		if err := manager.ArchiveSession(a.ID); err != nil {
+			t.Fatalf("ArchiveSession(a): %v", err)
+		}
+
+		got, err := manager.ListSessionsAll()
+		if err != nil {
+			t.Fatalf("ListSessionsAll (memory): %v", err)
+		}
+		if len(got) != 1 || got[0].ID != b.ID {
+			t.Fatalf("expected only the non-archived in-memory session, got %+v", got)
+		}
+	})
+}
+
 func TestManager_DeleteSession(t *testing.T) {
 	manager, eventChan, _ := testManager(t)
 

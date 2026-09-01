@@ -1,4 +1,4 @@
-import type { MessageType } from '@/types/messages'
+import type { ChatMessageUI, MessageType } from '@/types/messages'
 
 /**
  * The four HITL (human-in-the-loop) prompt message types — interactive prompts
@@ -32,3 +32,18 @@ export const HITL_PROMPT_TYPES: ReadonlySet<MessageType> = new Set([
   'plan_review',
   'goal_proposal',
 ])
+
+/**
+ * Pure check: does the ordered message list contain an unresolved HITL prompt
+ * (tool_confirm / ask_user / step_limit / plan_review / goal_proposal)?
+ * Lives here — a module with no store or React dependency — so every consumer
+ * (useSessionStatusIndicator, lib/activeSessions) shares ONE implementation.
+ */
+export function hasUnresolvedHITL(messages: readonly ChatMessageUI[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!
+    if (m.metadata?.resolved === true) continue
+    if (HITL_PROMPT_TYPES.has(m.type)) return true
+  }
+  return false
+}

@@ -427,6 +427,7 @@ describe('reconcileRuntimeStatus → has_unfinished_task mirror', () => {
         model: '',
         family: '',
         has_unfinished_task: flag,
+        unfinished_task_status: '',
       }],
     })
   }
@@ -610,6 +611,7 @@ describe('reconcileRuntimeStatus → stale-snapshot guard for mirror flags', () 
         model: '',
         family: '',
         has_unfinished_task: flag,
+        unfinished_task_status: '',
       }],
     })
   }

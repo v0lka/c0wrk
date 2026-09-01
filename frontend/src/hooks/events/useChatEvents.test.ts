@@ -143,6 +143,7 @@ describe('useChatEvents terminal events → has_unfinished_task refresh', () => 
       model: '',
       family: '',
       has_unfinished_task: false,
+      unfinished_task_status: '',
       ...overrides,
     }
   }

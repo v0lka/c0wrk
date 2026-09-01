@@ -1923,6 +1923,7 @@ export namespace session {
 	    family: string;
 	    fill_percent: number;
 	    has_unfinished_task: boolean;
+	    unfinished_task_status: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
@@ -1944,6 +1945,7 @@ export namespace session {
 	        this.family = source["family"];
 	        this.fill_percent = source["fill_percent"];
 	        this.has_unfinished_task = source["has_unfinished_task"];
+	        this.unfinished_task_status = source["unfinished_task_status"];
 	    }
 	}
 	export class SessionRuntimeStatus {

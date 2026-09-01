@@ -5,6 +5,7 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useProjectSwitchState } from '@/hooks/useProjectSwitchState'
 import { cn } from '@/lib/utils'
 import { PanelLeftClose, PanelLeftOpen, Settings, MessageCircle, Code2 } from 'lucide-react'
+import { ActiveSessionsIndicator } from './ActiveSessionsIndicator'
 
 interface SidebarHeaderProps {
   onToggleCollapse: () => void
@@ -47,11 +48,16 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
   }, [noProject, activeProjectId, lastRealProjectId, projects, hasRealProject, switchProjectWithState, setCreateProjectDialogOpen])
 
   return (
-    <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2">
+    // `@container` turns this row into a size container so the
+    // ActiveSessionsIndicator can limit its layout participation to widths
+    // where the row actually fits it (see LAYOUT_FIT_CLASSES there) — the
+    // header must stay intact at the 180px sidebar minimum.
+    <div className="@container flex h-10 shrink-0 items-center gap-1 border-b border-border px-2">
       <Button variant="ghost" size="icon-xs" onClick={onToggleCollapse} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
         {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
       </Button>
       <div className="flex-1" />
+      <ActiveSessionsIndicator />
       {projects && (
         <div className="flex items-center rounded bg-muted/60 p-0.5">
           <button

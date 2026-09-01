@@ -152,6 +152,19 @@ func (f *FrontendAPI) ListSessions() ([]session.SessionInfo, error) {
 	return f.app.Manager().ListSessionsByProject(projectID)
 }
 
+// ListAllSessions returns sessions across ALL projects (not just the active
+// one) in a single list, ordered pinned first and then by effective activity
+// — the data source for the cross-project activity indicator. An
+// uninitialized session manager yields an empty slice rather than an error,
+// so the UI can call this unconditionally during startup.
+func (f *FrontendAPI) ListAllSessions() ([]session.SessionInfo, error) {
+	if f.app == nil || f.app.Manager() == nil {
+		return []session.SessionInfo{}, nil
+	}
+
+	return f.app.Manager().ListSessionsAll()
+}
+
 // RenameSession changes session name.
 func (f *FrontendAPI) RenameSession(id, name string) error {
 	if f.app == nil || f.app.Manager() == nil {

@@ -27,6 +27,7 @@ function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionI
     model: '',
     family: '',
     has_unfinished_task: false,
+    unfinished_task_status: '',
     ...overrides,
   }
 }

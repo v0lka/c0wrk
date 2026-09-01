@@ -165,6 +165,13 @@ func TestListSessions(t *testing.T) {
 			CreatedAt: "2024-01-15T12:00:00Z",
 			Archived:  false,
 		},
+		{
+			ID:        "session-4",
+			ProjectID: testProjectID,
+			Name:      "Fourth Session",
+			CreatedAt: "2024-01-15T09:00:00Z",
+			Archived:  false,
+		},
 	}
 
 	for _, s := range sessions {
@@ -173,13 +180,34 @@ func TestListSessions(t *testing.T) {
 		}
 	}
 
+	// Seed task rows so each session lands in a different unfinished-task
+	// state: no tasks at all, a failed latest task, a paused latest task, and
+	// an in_progress task that is the most recent UNFINISHED one even though
+	// a newer completed task exists (finished tasks must be skipped).
+	seedTask := func(id, sessionID, status string, createdAt time.Time) {
+		t.Helper()
+		if err := store.SaveTask(context.Background(), TaskRecord{
+			ID: id, SessionID: sessionID, OriginalRequest: "test request",
+			RoutingDecision: json.RawMessage(`{}`), Plan: json.RawMessage(`{}`),
+			Reflections: json.RawMessage(`[]`), Status: status, CreatedAt: createdAt,
+		}); err != nil {
+			t.Fatalf("failed to save task %s: %v", id, err)
+		}
+	}
+	seedTask("task-completed-2", "session-2", "completed", time.Date(2024, 1, 15, 11, 5, 0, 0, time.UTC))
+	seedTask("task-failed-2", "session-2", "failed", time.Date(2024, 1, 15, 11, 10, 0, 0, time.UTC))
+	seedTask("task-in-progress-3", "session-3", "in_progress", time.Date(2024, 1, 15, 12, 5, 0, 0, time.UTC))
+	seedTask("task-paused-3", "session-3", "paused", time.Date(2024, 1, 15, 12, 10, 0, 0, time.UTC))
+	seedTask("task-in-progress-4", "session-4", "in_progress", time.Date(2024, 1, 15, 9, 5, 0, 0, time.UTC))
+	seedTask("task-completed-4", "session-4", "completed", time.Date(2024, 1, 15, 9, 10, 0, 0, time.UTC))
+
 	// List sessions - should be ordered by created_at DESC (newest first)
 	listed, err := store.ListSessions(context.Background())
 	if err != nil {
 		t.Fatalf("failed to list sessions: %v", err)
 	}
-	if len(listed) != 3 {
-		t.Errorf("expected 3 sessions, got %d", len(listed))
+	if len(listed) != 4 {
+		t.Errorf("expected 4 sessions, got %d", len(listed))
 	}
 
 	// Verify ordering (newest first)
@@ -190,8 +218,45 @@ func TestListSessions(t *testing.T) {
 		t.Errorf("second session should be session-2, got %s", listed[1].ID)
 	}
 	if listed[2].ID != "session-1" {
-		t.Errorf("third session should be oldest (session-1), got %s", listed[2].ID)
+		t.Errorf("third session should be session-1, got %s", listed[2].ID)
 	}
+	if listed[3].ID != "session-4" {
+		t.Errorf("fourth session should be oldest (session-4), got %s", listed[3].ID)
+	}
+
+	// Per-session unfinished-task expectations: the status of the most
+	// recent unfinished task ('' when none), plus the unchanged boolean.
+	expected := map[string]struct {
+		status     string
+		unfinished bool
+	}{
+		"session-1": {status: "", unfinished: false},
+		"session-2": {status: "failed", unfinished: true},
+		"session-3": {status: "paused", unfinished: true},
+		"session-4": {status: "in_progress", unfinished: true},
+	}
+	assertUnfinishedTask := func(got []SessionInfo, via string) {
+		t.Helper()
+		for _, s := range got {
+			want, ok := expected[s.ID]
+			if !ok {
+				continue
+			}
+			if s.UnfinishedTaskStatus != want.status {
+				t.Errorf("%s: session %s UnfinishedTaskStatus = %q, want %q", via, s.ID, s.UnfinishedTaskStatus, want.status)
+			}
+			if s.HasUnfinishedTask != want.unfinished {
+				t.Errorf("%s: session %s HasUnfinishedTask = %v, want %v", via, s.ID, s.HasUnfinishedTask, want.unfinished)
+			}
+		}
+	}
+	assertUnfinishedTask(listed, "ListSessions")
+
+	byProject, err := store.ListSessionsByProject(context.Background(), testProjectID)
+	if err != nil {
+		t.Fatalf("failed to list sessions by project: %v", err)
+	}
+	assertUnfinishedTask(byProject, "ListSessionsByProject")
 }
 
 func TestDeleteSession(t *testing.T) {

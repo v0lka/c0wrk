@@ -45,6 +45,11 @@ export interface SessionInfo {
   /** True when the session has an in-progress, paused, or failed task (cannot
    *  be forked). Mirrors the backend's GetUnfinishedTask status list. */
   readonly has_unfinished_task: boolean
+  /** Machine status of the unfinished task: "failed" | "in_progress" |
+   *  "paused", or "" when there is none. Only session list queries populate
+   *  it; payloads from older backends may omit the field entirely (the field
+   *  is therefore optional — isSessionInfo admits its absence). */
+  readonly unfinished_task_status?: string
 }
 
 export interface ChatMessage {

@@ -40,7 +40,12 @@ export function isArrayOf<T>(v: unknown, guard: (item: unknown) => item is T): v
 }
 
 export function isSessionInfo(v: unknown): v is SessionInfo {
-    return isObj(v) && has(v, 'id', 'project_id', 'name')
+    // unfinished_task_status is optional for backward compatibility: payloads
+    // from older backends (and non-list readers) omit it entirely; when
+    // present it must be a string status ("failed"|"in_progress"|"paused"|"").
+    return isObj(v)
+        && has(v, 'id', 'project_id', 'name')
+        && (!('unfinished_task_status' in v) || typeof v.unfinished_task_status === 'string')
 }
 
 export function isProjectInfo(v: unknown): v is ProjectInfo {

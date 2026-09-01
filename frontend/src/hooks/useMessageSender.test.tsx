@@ -54,6 +54,7 @@ const makeSession = (id: string): SessionInfo => ({
   model: '',
   family: '',
   has_unfinished_task: false,
+  unfinished_task_status: '',
 })
 
 const DOC: AttachmentInfoUI = { id: 'd1', originalName: 'report.pdf', format: 'pdf', sizeBytes: 1024 }

@@ -13,24 +13,15 @@ import { useMemo } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import type { ChatMessageUI } from '@/types/messages'
-import { HITL_PROMPT_TYPES } from '@/lib/hitlTypes'
+import { hasUnresolvedHITL } from '@/lib/hitlTypes'
+
+// Re-exported for existing importers; the implementation lives in
+// lib/hitlTypes.ts so lib/activeSessions.ts can share it without a
+// hooks → lib dependency inversion.
+export { hasUnresolvedHITL }
 
 /** Sidebar indicator state for a session. */
 export type SessionIndicatorStatus = 'pending' | 'active' | 'paused' | 'idle'
-
-/**
- * Pure check: does the ordered message list contain an unresolved HITL prompt
- * (tool_confirm / ask_user / step_limit / plan_review)? Exported so the
- * detection logic is unit-testable without React rendering.
- */
-export function hasUnresolvedHITL(messages: ChatMessageUI[]): boolean {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]!
-    if (m.metadata?.resolved === true) continue
-    if (HITL_PROMPT_TYPES.has(m.type)) return true
-  }
-  return false
-}
 
 /**
  * Pure derivation of the sidebar indicator from a session's running flag,

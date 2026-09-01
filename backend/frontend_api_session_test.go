@@ -163,3 +163,82 @@ func TestForkSessionRPC_SuccessClonesSessionAndReview(t *testing.T) {
 		t.Fatalf("expected 1 task in fork, got %d", len(tasks))
 	}
 }
+
+// TestListAllSessions_ReturnsSessionsAcrossProjects verifies the RPC returns
+// sessions of MULTIPLE projects in a single list, ordered by effective
+// activity (newest first), regardless of the active project.
+func TestListAllSessions_ReturnsSessionsAcrossProjects(t *testing.T) {
+	ctx := context.Background()
+	dbConn := openProjectSwitchTestDB(t)
+	defer func() { _ = dbConn.Close() }()
+
+	projectStore, err := project.NewSQLiteProjectStore(dbConn)
+	if err != nil {
+		t.Fatalf("project store: %v", err)
+	}
+	sessionStore, err := session.NewSQLiteSessionStore(dbConn)
+	if err != nil {
+		t.Fatalf("session store: %v", err)
+	}
+
+	agentDir := t.TempDir()
+	projectManager := project.NewManager(projectStore, agentDir, nil)
+	projA, err := projectManager.CreateProject("Project A", "")
+	if err != nil {
+		t.Fatalf("create project A: %v", err)
+	}
+	projB, err := projectManager.CreateProject("Project B", "")
+	if err != nil {
+		t.Fatalf("create project B: %v", err)
+	}
+
+	manager := session.NewManager(nil, func(session.Event) {}, agentDir)
+	manager.SetSessionStore(sessionStore)
+
+	api := &FrontendAPI{app: &Application{manager: manager}}
+
+	// Seed one session per project with distinct activity; A is newer.
+	if err := sessionStore.SaveSession(ctx, session.SessionInfo{
+		ID: "b-old", ProjectID: projB.ID, Name: "B old",
+		CreatedAt: "2024-01-01T00:00:00Z", LastActiveAt: "2024-01-01T10:00:00Z",
+	}); err != nil {
+		t.Fatalf("save b-old: %v", err)
+	}
+	if err := sessionStore.SaveSession(ctx, session.SessionInfo{
+		ID: "a-new", ProjectID: projA.ID, Name: "A new",
+		CreatedAt: "2024-01-01T00:00:00Z", LastActiveAt: "2024-01-02T10:00:00Z",
+	}); err != nil {
+		t.Fatalf("save a-new: %v", err)
+	}
+
+	got, err := api.ListAllSessions()
+	if err != nil {
+		t.Fatalf("ListAllSessions: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 sessions across both projects, got %d", len(got))
+	}
+	if got[0].ID != "a-new" || got[1].ID != "b-old" {
+		t.Errorf("expected activity order [a-new b-old], got [%s %s]", got[0].ID, got[1].ID)
+	}
+	if got[0].ProjectID != projA.ID || got[1].ProjectID != projB.ID {
+		t.Errorf("project IDs mismatch: got %q, %q", got[0].ProjectID, got[1].ProjectID)
+	}
+}
+
+// TestListAllSessions_NilManagerReturnsEmpty verifies the guard: without an
+// initialized manager the RPC returns an empty slice, not an error, so the
+// UI can call it unconditionally during startup.
+func TestListAllSessions_NilManagerReturnsEmpty(t *testing.T) {
+	f := &FrontendAPI{} // f.app == nil — mirrors early startup
+	got, err := f.ListAllSessions()
+	if err != nil {
+		t.Fatalf("expected no error with nil manager, got %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 sessions, got %d", len(got))
+	}
+}

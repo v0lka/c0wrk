@@ -44,6 +44,23 @@ export async function listSessions(): Promise<SessionInfo[]> {
   }
 }
 
+/** Sessions across ALL projects (global switcher), sorted pinned-first then by
+ *  effective activity. Errors are handled exactly like listSessions(). */
+export async function listAllSessions(): Promise<SessionInfo[]> {
+  try {
+    const app = getApp()
+    const result = await app.ListAllSessions()
+    if (!isArrayOf(result, isSessionInfo)) {
+      logger.error('listAllSessions: unexpected response shape, returning []', result)
+      return []
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to list all sessions:', err)
+    throw err
+  }
+}
+
 export async function renameSession(id: string, name: string): Promise<void> {
   try {
     const app = getApp()

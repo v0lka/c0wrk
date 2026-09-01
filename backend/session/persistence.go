@@ -38,6 +38,13 @@ type SessionInfo struct {
 	// be forked (the fork would duplicate a half-completed execution state).
 	// Populated via a correlated subquery.
 	HasUnfinishedTask bool `json:"has_unfinished_task"`
+	// UnfinishedTaskStatus is the status ('in_progress', 'paused', or
+	// 'failed') of the session's most recent unfinished task, or "" when the
+	// session has none. It mirrors the same status list as HasUnfinishedTask,
+	// letting the UI distinguish a failed task from a running or paused one,
+	// including after an app restart. Only the session list queries populate
+	// it; other readers (LoadSession, in-memory fallbacks) leave it "".
+	UnfinishedTaskStatus string `json:"unfinished_task_status"`
 }
 
 // ChatMessage represents a stored chat message.
@@ -442,6 +449,14 @@ const sessionEffectiveActivitySQL = `COALESCE(
 // id ASC so equal timestamps always yield the same order.
 const sessionListOrderSQL = `ORDER BY pinned DESC, effective_activity DESC, created_at DESC, id ASC`
 
+// unfinishedTaskStatusSQL is the scalar companion to the HasUnfinishedTask
+// EXISTS-probe in the session list queries: it yields the status of the
+// session's most recent unfinished task (in_progress, paused, or failed —
+// the same list GetUnfinishedTask matches), or the empty string when the
+// session has none. COALESCE is required because a scalar subquery over zero
+// rows evaluates to NULL, which cannot be scanned into a Go string.
+const unfinishedTaskStatusSQL = `COALESCE((SELECT tasks.status FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed') ORDER BY tasks.created_at DESC LIMIT 1), '')`
+
 // ListSessions returns all sessions ordered by effective activity (newest
 // first). Effective activity is the timestamp of the session's most recent
 // persisted event (chat message or terminal command), not merely the last
@@ -460,7 +475,8 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 		       COALESCE(model, ''),
 		       COALESCE(family, ''),
 		       COALESCE(fill_percent, 0),
-		       EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed'))
+		       EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed')),
+		       `+unfinishedTaskStatusSQL+`
 		FROM sessions
 		`+sessionListOrderSQL)
 	if err != nil {
@@ -475,7 +491,7 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 	var sessions []SessionInfo
 	for rows.Next() {
 		var info SessionInfo
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask); err != nil {
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask, &info.UnfinishedTaskStatus); err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
 		}
 		sessions = append(sessions, info)
@@ -500,7 +516,8 @@ func (s *SQLiteSessionStore) ListSessionsByProject(ctx context.Context, projectI
 		SELECT id, project_id, name, created_at,
 		       `+sessionEffectiveActivitySQL+` AS effective_activity,
 		       archived, COALESCE(pinned, 0), COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(fill_percent, 0),
-		EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed'))
+		EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed')),
+		`+unfinishedTaskStatusSQL+`
 		FROM sessions
 		WHERE project_id = ?
 		`+sessionListOrderSQL, projectID)
@@ -516,7 +533,7 @@ func (s *SQLiteSessionStore) ListSessionsByProject(ctx context.Context, projectI
 	var sessions []SessionInfo
 	for rows.Next() {
 		var info SessionInfo
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask); err != nil {
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask, &info.UnfinishedTaskStatus); err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
 		}
 		sessions = append(sessions, info)

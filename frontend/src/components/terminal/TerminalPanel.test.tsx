@@ -77,6 +77,7 @@ function session(id: string): SessionInfo {
     model: 'm',
     family: 'f',
     has_unfinished_task: false,
+    unfinished_task_status: '',
   }
 }
 

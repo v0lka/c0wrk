@@ -342,6 +342,10 @@ export function ListAgents() {
   return window['go']['desktop']['App']['ListAgents']();
 }
 
+export function ListAllSessions() {
+  return window['go']['desktop']['App']['ListAllSessions']();
+}
+
 export function ListDirectory(arg1, arg2) {
   return window['go']['desktop']['App']['ListDirectory'](arg1, arg2);
 }

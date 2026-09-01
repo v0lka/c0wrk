@@ -179,6 +179,8 @@ export function Lifecycle():Promise<backend.FrontendAPILifecycle>;
 
 export function ListAgents():Promise<Array<backend.AgentDescriptorDTO>>;
 
+export function ListAllSessions():Promise<Array<session.SessionInfo>>;
+
 export function ListDirectory(arg1:string,arg2:boolean):Promise<Array<workspace.FileNode>>;
 
 export function ListProjectWorkDirectories(arg1:string):Promise<Array<project.WorkDirectoryRecord>>;

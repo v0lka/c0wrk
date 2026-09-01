@@ -157,6 +157,7 @@ Three-column panel layout (no router): Sidebar (persisted width, clamped 180-500
 | `chatStore`          | Messages per session, streaming text, thinking/activity/task flags, context fill, token counts |
 | `planStore`          | Execution plan groups (DAG items), session stats (routing, attempts)                           |
 | `sessionStore`       | Session list (sorted by last_active_at), active session ID                                     |
+| `activeSessionsStore` | Global cross-project session snapshot (listAllSessions) + pending-HITL overrides for the live-sessions indicator; live execution state stays in chatStore |
 | `projectStore`       | Project list (sorted by last_active_at), active project ID                                     |
 | `fileTreeStore`      | Lazy-loaded directory tree, expanded dirs, search entries, git status                          |
 | `fileViewerStore`    | Open files/content/diff/language, tabs, panel width, collapsed/pinned state                     |
@@ -188,7 +189,7 @@ Cross-component scroll coordination uses a React context (`ScrollContext.tsx`), 
 
 ### Key components
 
-- **Sidebar**: Project selector + session selector (dropdowns with context menus, inline rename, search for 5+ sessions) + file tree workspace panel.
+- **Sidebar**: Project selector + session selector (dropdowns with context menus, inline rename, search for 5+ sessions) + live-sessions indicator (Radar button with a status-dot cluster; its dropdown lists live sessions across all projects — pending/failed first — refreshes via `refreshNow()` + a GetPendingActions sweep on open, and navigates with a project switch when needed) + file tree workspace panel.
 - **Chat Area**: Pinned last user message (sticky, collapsible) + scrollable message list + smart auto-scroll (50px threshold, "New activity" pill) + activity indicator.
 - **Chat Input**: Auto-resize textarea, Enter sends / Shift+Enter newline, auto-creates a session if needed, and switches the main action between pause/resume/send according to runtime state. Picker, clipboard paste, and native `files:dropped` all stage through the same attachment pipeline with vision gating.
 - **Pending Actions Bar**: Sticky bar for unresolved prompts — tool confirmations (allow/deny/judge), ask-user multi-question forms, step limit, resume after failure.
