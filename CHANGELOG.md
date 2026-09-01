@@ -2,6 +2,14 @@
 
 All notable changes to **c0wrk**. Dates follow the tag date.
 
+## v0.7.2 — 2026-09-01
+
+### Fixed
+- **User messages reordered to the end of history after reload** — `SendMessage` persisted user messages with a local-time RFC3339 string (offset suffix like `+03:00`) while every other writer stored UTC `Z` strings, and `LoadMessages` orders by lexicographic comparison of `created_at` — so in timezones east of UTC every user row sorted after all other rows of the same chat, rendering all user messages at the end of the history (persisted, so a restart did not help). User-message timestamps are now written in UTC, and an idempotent startup migration rewrites legacy offset-suffixed rows to canonical UTC RFC3339 via `strftime`, healing already-corrupted history; rows already canonical or unparseable are left untouched.
+
+### Internal
+- The security-model spec now documents that the SDK's `pathutil.DetectCaseInsensitive` memoizes its result per probed directory for the process lifetime, so callers outside the session Manager (the file-tree ignore resolver, the vector indexer) create the case-sensitivity probe file at most once per root per app run.
+
 ## v0.7.1 — 2026-09-01
 
 ### Added
