@@ -2,6 +2,27 @@
 
 All notable changes to **c0wrk**. Dates follow the tag date.
 
+## v0.7.1 — 2026-09-01
+
+### Added
+- **Session and project context restore on restart** — the last open session is persisted at selection time and restored saved-first on the next start (falling back to the latest non-archived session by effective activity), the last active project — including No Project — is remembered in a new `app_state` store and reopened exactly, session lists order by effective activity (the newest persisted chat message or terminal command, not just the last send), and archived sessions are never auto-selected. See [ADR-030](./specs/decisions/030-session-context-restore.md).
+- **Continuable plan resume across pauses** — a plan step or subagent stopped at a cooperative pause checkpoint now emits `plan_step_paused` / `subagent_paused` — persisted, so the paused block reappears after a restart — instead of surfacing as a failure, and the UI shows a "paused" badge on the step. Resuming a task whose approved plan still has unreached steps seeds a continuable run: `execute_plan` continues the remaining steps without a re-declare, `declare_plan` returns a soft "already approved" hint, and steps that already succeeded in a previous run are replayed as successes.
+- **Save message as Markdown** — holding Shift turns a chat message's copy button into a Save action that opens a native save-file dialog (defaulting to the active project's directory), normalizes the chosen name to `.md`, and fails closed when the normalized name already exists on disk.
+- **Offline-first tool reconciliation at startup** — a failed download of a managed tool (`rg`, `uv`, `markitdown`) no longer aborts startup with a fatal dialog: strictly local work (version probes, installs from SHA256-verified cached archives) runs synchronously, network retries continue in the background, and remaining failures surface once as a `runtime_error` toast. Stale binaries and Python envs are removed only after replacement bytes are secured, so a failed offline reinstall never leaves the machine with less than it had; markitdown now installs from a fully pinned embedded requirements lock, and ONNX Runtime is bumped to 1.28.1.
+
+### Fixed
+- **Updater ignored short release tags** — tags lacking minor/patch components (e.g. `v0.7-beta`) were rejected by semver parsing, so the in-app updater never offered newer releases; numeric tags are now padded to the strict `vMAJOR.MINOR.PATCH` form.
+- **Vector-index panics on legacy-encoded files** — non-UTF-8 content is sanitized to U+FFFD before chunking (the tokenizer panicked on it, and legacy single-byte encodings passed the binary check). A failing embedding chunk is retried per text and only genuinely pathological texts are dropped — from both the vector and lexical indexes, so the two never diverge.
+- **macOS crash after ONNX fetch** — rewriting the signed onnxruntime dylib's install name invalidated its code signature, and macOS SIGKILLed the process at `dlopen` (CODESIGNING Invalid Page). The installed copy is now byte-identical to the SHA256-verified cache.
+
+### Security
+- **Supply-chain gates** — `make vulncheck` (govulncheck, version pinned in the Makefile) is a mandatory pre-PR step and the CI `security` job runs the identical command, so local and CI vulnerability results cannot drift. CI also gains an npm audit gate and PowerShell syntax checks, and the ONNX Runtime / embedding-model / tokenizer fetches are SHA256-verified fail-closed in the Makefile and fetch scripts.
+
+### Internal
+- Go toolchain bumped to 1.27.0 (`go.mod` and CI go-version pins in lockstep), golangci-lint to v2.13.2.
+- Dependency updates (sp4rk SDK): cooperative pause checkpoints with continuable plan resume.
+- The dual-repo `go.work` moved from the shared parent directory to a gitignored file at the repository root (`use . ../sp4rk`), so sibling Go checkouts are no longer silently pulled into the c0wrk/sp4rk workspace. See [ADR-031](./specs/decisions/031-gowork-repo-root.md).
+
 ## v0.7 — 2026-08-30
 
 ### Added
