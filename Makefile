@@ -188,16 +188,18 @@ dev-desktop:
 
 # Download and extract ONNX Runtime library next to the executable.
 # Darwin/Linux: bash recipe below. Windows: delegate to scripts/fetch-onnx.ps1
-# (uses Expand-Archive; no /tmp, tar, unzip, or install_name_tool on the path).
+# (uses Expand-Archive; no /tmp, tar, or unzip on the path).
 # Every artifact is SHA256-verified before use, fail-closed: a mismatch removes
 # the bad file and aborts with a non-zero exit. This covers the downloaded
-# archive, the library extracted from it, and the cached copy. The cache holds
-# the PRISTINE library bytes (install_name_tool only ever rewrites the copy in
-# APP_BUNDLE_DIR) so cached artifacts stay byte-comparable to the pinned digest.
-# The installed copy is guarded by a version stamp instead (the Darwin copy is
-# install_name_tool-rewritten and thus not byte-comparable): an ONNX_VERSION
-# bump replaces the stale installed library instead of skipping on "already
-# exists".
+# archive, the library extracted from it, and the cached copy. The installed
+# copy is byte-identical to the cache and is NEVER rewritten in place: an
+# install_name_tool-style edit modifies the signed Mach-O after signing and
+# invalidates its embedded code signature, so macOS SIGKILLs the process at
+# dlopen (CODESIGNING Invalid Page). The library is dlopened by absolute path
+# (desktop/startup.go resolveONNXLibPath), so its LC_ID_DYLIB install name is
+# never consulted. The installed copy is guarded by a version stamp: an
+# ONNX_VERSION bump replaces the stale installed library instead of skipping on
+# "already exists".
 ifneq ($(filter $(UNAME_S),Darwin Linux),)
 fetch-onnx:
 	@mkdir -p $(APP_BUNDLE_DIR); \
@@ -207,7 +209,6 @@ fetch-onnx:
 		echo "Using cached ONNX Runtime library..."; \
 		$(call verify_sha256,$(ONNX_CACHE_DIR)/$(ONNX_LIB_OUT),$(ONNX_LIB_SHA256)); \
 		cp $(ONNX_CACHE_DIR)/$(ONNX_LIB_OUT) $(APP_BUNDLE_DIR)/$(ONNX_LIB_OUT); \
-		if [ "$(UNAME_S)" = "Darwin" ]; then install_name_tool -id @loader_path/libonnxruntime.dylib $(APP_BUNDLE_DIR)/$(ONNX_LIB_OUT); fi; \
 		echo "$(ONNX_VERSION)" > $(ONNX_STAMP); \
 		echo "ONNX Runtime library installed to $(APP_BUNDLE_DIR)/$(ONNX_LIB_OUT)"; \
 	else \
@@ -220,9 +221,6 @@ fetch-onnx:
 		$(call verify_sha256,/tmp/$(ONNX_DIR)/lib/$(ONNX_LIB_NAME),$(ONNX_LIB_SHA256)); \
 		cp /tmp/$(ONNX_DIR)/lib/$(ONNX_LIB_NAME) $(ONNX_CACHE_DIR)/$(ONNX_LIB_OUT); \
 		cp /tmp/$(ONNX_DIR)/lib/$(ONNX_LIB_NAME) $(APP_BUNDLE_DIR)/$(ONNX_LIB_OUT); \
-		if [ "$(UNAME_S)" = "Darwin" ]; then \
-			install_name_tool -id @loader_path/libonnxruntime.dylib $(APP_BUNDLE_DIR)/$(ONNX_LIB_OUT); \
-		fi; \
 		echo "$(ONNX_VERSION)" > $(ONNX_STAMP); \
 		rm -rf /tmp/$(ONNX_ARCHIVE) /tmp/$(ONNX_DIR); \
 		echo "ONNX Runtime library installed to $(APP_BUNDLE_DIR)/$(ONNX_LIB_OUT)"; \
