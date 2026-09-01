@@ -75,7 +75,7 @@ Auxiliary roots enter persistence through two paths:
 
 All roots are treated as **equal peers**: any operation (read or write) permitted inside the workspace is permitted inside the temp directory and any auxiliary directory, and vice versa. There are no second-class roots. Relative paths still resolve against the workspace only; auxiliary directories are reachable only via absolute paths.
 
-Filesystem case sensitivity is detected per physical root before request/judge context construction. `Manager.detectCaseInsensitive` resolves root symlinks for the cache key, shares an in-flight probe among concurrent callers, and caches each distinct root independently for the manager lifetime. Empty paths and defensive probe/type failures use the fail-safe case-sensitive result; one root's result never leaks to another filesystem.
+Filesystem case sensitivity is detected per physical root before request/judge context construction. `Manager.detectCaseInsensitive` resolves root symlinks for the cache key, shares an in-flight probe among concurrent callers, and caches each distinct root independently for the manager lifetime. Empty paths and defensive probe/type failures use the fail-safe case-sensitive result; one root's result never leaks to another filesystem. Below the Manager cache, the SDK's `pathutil.DetectCaseInsensitive` additionally memoizes its result per probed directory for the process lifetime, so paths outside the session Manager (e.g. the file-tree API building an ignore resolver per listing, or the vector indexer rebuilding one per project switch) also create the `CaseSense-*.probe` file at most once per root per app run.
 
 ### Implicit Temp Roots
 
