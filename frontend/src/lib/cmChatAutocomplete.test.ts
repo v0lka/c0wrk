@@ -24,6 +24,12 @@ vi.mock('@/api/agents', () => ({
 vi.mock('@/api/runtime', () => ({
   subscribe: vi.fn(() => () => {}),
 }))
+// The failure-throttling tests below deliberately reject listDirectory;
+// without the mock, logger.error writes the expected failure to the real
+// console and pollutes the test output.
+vi.mock('@/lib/logger', () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}))
 
 import { createChatAutocomplete } from './cmChatAutocomplete'
 import { createChatExtensions } from './cmChatExtensions'

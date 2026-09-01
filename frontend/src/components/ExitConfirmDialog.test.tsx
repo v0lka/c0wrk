@@ -191,6 +191,10 @@ describe('ExitConfirmDialog — decisions', () => {
     })
 
     expect(runtimeMocks.confirmExit).toHaveBeenCalledTimes(1)
-    release?.()
+    // Resolving the deferred RPC triggers the component's finally-block
+    // state update — keep it inside act to avoid the act() warning.
+    await act(async () => {
+      release?.()
+    })
   })
 })

@@ -17,6 +17,12 @@ vi.mock('@/api/chat', () => ({
 vi.mock('@/api/runtime', () => ({
   emit: vi.fn(),
 }))
+// The RPC-rejection tests below deliberately drive the component's error
+// path; without the mock, logger.error writes the expected failure to the
+// real console and pollutes the test output.
+vi.mock('@/lib/logger', () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}))
 
 describe('CompactContextButton', () => {
   let container: HTMLElement

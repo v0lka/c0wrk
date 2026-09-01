@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Combobox, type ComboboxOption } from './combobox'
 
 // Radix popper positioning (autoUpdate) observes the trigger/content with
@@ -230,6 +230,10 @@ describe('Combobox inside a modal Radix dialog', () => {
         <Dialog open onOpenChange={() => {}}>
           <DialogContent>
             <DialogTitle>Settings</DialogTitle>
+            {/* Real usages pair the title with a description (see e.g.
+                ExitConfirmDialog); without one Radix warns about the
+                missing Description on every render. */}
+            <DialogDescription>Test harness dialog</DialogDescription>
             <Combobox
               ariaLabel="Policy"
               value="user_confirm"

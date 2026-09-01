@@ -144,7 +144,7 @@ export function handlePlanStepPaused(meta: Record<string, unknown> | undefined, 
  * same flip; this helper covers the remaining child-insertion paths
  * (pushItem, reflections, checklists).
  */
-export function resumePausedStep(step: StepLikeItem | undefined): void {
+export function resumePausedStep(step: StepLikeItem | null | undefined): void {
   if (step && step.status === 'paused') step.status = 'running'
 }
 

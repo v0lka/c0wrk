@@ -20,6 +20,13 @@ vi.mock('@/api/files', () => ({
   saveMessageAsMarkdown: vi.fn(),
 }))
 
+// The save-rejection test below deliberately drives the component's error
+// path; without the mock, logger.error writes the expected failure to the
+// real console and pollutes the test output.
+vi.mock('@/lib/logger', () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}))
+
 const pressShift = () =>
   act(() => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift' }))

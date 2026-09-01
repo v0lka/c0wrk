@@ -33,6 +33,13 @@ vi.mock('@/api/sessions', () => ({
   createSession: mocks.createSessionMock,
 }))
 
+// The watchdog tests below deliberately stall a switch past its timeout;
+// without the mock, logger.warn writes the expected watchdog/supersede
+// notices to the real console and pollutes the test output.
+vi.mock('@/lib/logger', () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}))
+
 function makeSession(overrides: Partial<SessionInfo> & { id: string; project_id: string }): SessionInfo {
   return {
     id: overrides.id,

@@ -56,6 +56,15 @@ vi.mock('@/api/attachments', () => apiMocks.attachments)
 vi.mock('@/hooks/useMessageSender', () => ({
   useMessageSender: () => ({ send: sendMock, cancel: vi.fn(), isProcessing: false }),
 }))
+// The controller mounts the real usePasteHandler → useConfigData chain, whose
+// getConfig() RPC resolves in a microtask AFTER act() returns — its state
+// update then trips the act() warning in tests with no post-render await
+// (mount-only scenarios). Vision/model data is the paste flow's own tested
+// concern; stub it (same convention as usePasteHandler/useStageAttachments tests).
+vi.mock('@/hooks/useConfigData', () => ({
+  useConfigData: () => ({ allModels: [], defaultModel: '', loaded: true }),
+  invalidateConfigCache: vi.fn(),
+}))
 vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))
