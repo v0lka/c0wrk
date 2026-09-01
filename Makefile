@@ -1,4 +1,8 @@
-.PHONY: build test lint fmt-check dev-desktop bump fetch-onnx fetch-embedding-model clean-onnx clean frontend-deps
+.PHONY: build test lint fmt-check vulncheck dev-desktop bump fetch-onnx fetch-embedding-model clean-onnx clean frontend-deps
+
+# govulncheck version pinned for reproducible vulnerability scans (CI runs the
+# same `make vulncheck` command; upgrade deliberately, both repos in lockstep).
+GOVULNCHECK_VERSION := v1.7.0
 
 # ONNX Runtime version
 ONNX_VERSION := 1.28.1
@@ -157,6 +161,14 @@ test:
 lint: fmt-check
 	golangci-lint run
 	cd frontend && npm run lint
+
+# Go dependency vulnerability gate: fails when a vulnerability from the
+# official Go vulnerability database is reachable from this module's code.
+# Uses the same pinned govulncheck version as the CI `security` job, so local
+# and CI results are identical. Requires network access to fetch vuln.go.dev.
+# Windows (no make): go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+vulncheck:
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 # golangci-lint's `run` mode skips the formatters section (gofumpt is enabled
 # under linters.formatters but only executes via `golangci-lint fmt`), so

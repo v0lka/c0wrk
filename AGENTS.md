@@ -30,7 +30,7 @@ Detailed system specs live in `specs/`. Before making structural changes, read t
 
 - Go module: `github.com/v0lka/c0wrk` (root: `core/`, `backend/`, `desktop/`, `frontend/`). Binary/app name is `c0wrk-desktop` (see `wails.json`).
 - Entry point: `main.go` → `desktop.NewApp()` → Wails runs with `OnStartup = app.Startup` (`desktop/startup.go`). Build metadata is injected into `core/version` by Makefile/release `-ldflags` (`Version`, `GitCommit`, `BuildDate`).
-- Go `1.26.3` (single root module; `go.mod` at repo root). Frontend uses React 19, Tailwind v4, Vite 6, TS ~5.7.
+- Go `1.27.0` (single root module; `go.mod` at repo root). Frontend uses React 19, Tailwind v4, Vite 6, TS ~5.7. The `go` directive in `go.mod` and the `go-version` pins in `.github/workflows/*.yml` must stay in lockstep: CI builds with exactly this toolchain, and `govulncheck` scans its stdlib — bump both together whenever Go ships a security patch, or local and CI results drift apart.
 
 ### Layered architecture (import direction matters)
 
@@ -49,6 +49,7 @@ Use the Makefile; it handles platform-specific ONNX Runtime bootstrap across the
 
 - `make test` — `go test ./...` (root) + `cd frontend && npm test` (vitest)
 - `make lint` — `make fmt-check` + `golangci-lint run` (root) + `cd frontend && npm run lint` (config at `.golangci.yml`, v2 schema)
+- `make vulncheck` — Go dependency vulnerability gate (`govulncheck`, version pinned in the Makefile). Fails when a vulnerability from the official Go vulnerability database is reachable from this module's code. The CI `security` job runs the exact same command. **Mandatory before every PR** — a stale Go toolchain (go.mod below the latest security patch) fails this gate even when lint and test are clean. On Windows (no make): `go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...`
 - `make fmt-check` — fails when `gofmt -l` reports any Go file under the root package, `internal/`, `core/`, `backend/`, or `desktop/`
 - `make build` — installs frontend deps, runs `wails build` with version ldflags, then `make fetch-onnx` + `make fetch-embedding-model`
 - `make dev-desktop` — Vite dev server only (`cd frontend && npm run dev`); for full hot-reload use `wails dev` from repo root
@@ -223,4 +224,4 @@ Session event handler subscribes to all session-scoped events on session change.
 
 ## Pre-PR checklist
 
-`make build` → `make lint` → `make test`. All three must be clean. CI (`.github/workflows/ci.yml`) runs the corresponding build/lint/test matrix on Linux, macOS, and Windows for pushes and PRs to `main`; local verification is the gate before pushing.
+`make build` → `make lint` → `make test` → `make vulncheck`. All four must be clean. CI (`.github/workflows/ci.yml`) runs the corresponding build/lint/test matrix on Linux, macOS, and Windows plus the `security` job (`make vulncheck`) for pushes and PRs to `main`; local verification is the gate before pushing — if `make vulncheck` passes locally but fails in CI (or vice versa), the Go toolchain pins in `go.mod` and `.github/workflows/*.yml` have drifted and must be realigned first.
