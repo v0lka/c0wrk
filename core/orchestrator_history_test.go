@@ -160,6 +160,71 @@ func TestConversationHistory_ResumeAppendsAssistant(t *testing.T) {
 	}
 }
 
+// TestResume_InjectsPriorConversationHistory verifies that resuming a failed
+// task preserves the session's prior dialogue (previous tasks) in the resumed
+// Conductor's context. Regression: Resume previously passed nil conversation
+// history to the Conductor, so a resumed failed task lost all context from
+// earlier tasks in the chat session.
+func TestResume_InjectsPriorConversationHistory(t *testing.T) {
+	var capturedCM *mockContextManager
+	captureFactory := func(systemPrompt string, modelMeta llm.ModelMetadata, compactionStrategy string, _ ...orchestration.PruningOverride) ContextManager {
+		cm := &mockContextManager{systemPrompt: systemPrompt}
+		capturedCM = cm
+		return cm
+	}
+
+	mockLLM := &mockLLMCaller{responses: []*llm.ChatResponse{
+		executorFinishResponse("Resumed and finished"),
+	}}
+	registry := createTestRegistry()
+	orchestrator := NewOrchestrator(OrchestratorConfig{}, OrchestratorDeps{
+		Router:         newCoreRouter(mockLLM, 5),
+		LLM:            mockLLM,
+		ToolExec:       registry,
+		ToolRegistry:   registry,
+		TokenCounter:   llm.NewSimpleTokenCounter(),
+		ContextFactory: captureFactory,
+		CircuitBreaker: defaultCircuitBreakerConfig,
+	})
+
+	// Prior tasks in the session, followed by the interrupted task's user
+	// message that Resume treats as the current task.
+	prior := []llm.Message{
+		{Role: "user", Content: "first task"},
+		{Role: "assistant", Content: "first answer"},
+		{Role: "user", Content: "second task"},
+		{Role: "assistant", Content: "second answer"},
+		{Role: "user", Content: "failed task"},
+	}
+	orchestrator.SetConversationHistory(prior)
+
+	bb := orchestration.NewMapBlackboard()
+	bb.SetOriginalRequest("failed task")
+
+	if _, err := orchestrator.Resume(context.Background(), bb, nil, "", nil, nil, ""); err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	if capturedCM == nil {
+		t.Fatal("context factory was not invoked")
+	}
+	if len(capturedCM.priorConversation) == 0 {
+		t.Fatal("resumed conductor did not receive prior conversation history")
+	}
+
+	// The earlier tasks' dialogue must be present in the injected history.
+	var got strings.Builder
+	for _, msg := range capturedCM.priorConversation {
+		got.WriteString(msg.Content)
+		got.WriteString("\n")
+	}
+	for _, want := range []string{"first task", "first answer", "second task", "second answer"} {
+		if !strings.Contains(got.String(), want) {
+			t.Errorf("prior conversation history missing %q; got:\n%s", want, got.String())
+		}
+	}
+}
+
 // TestConversationHistory_RetryAfterFailureNotDuplicated verifies that when a
 // failed attempt is retried with the same message (the session manager's
 // continuation fallback), the failed pair is replaced by the retry's outcome

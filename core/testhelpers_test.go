@@ -150,6 +150,18 @@ type mockContextManager struct {
 
 	// optional custom CheckFill function
 	checkFillFn func() agent.FillCheck
+
+	// priorConversation records the prior conversation injected via
+	// SetPriorConversation (the sp4rk ConversationAware capability), so tests
+	// can assert that the resumed Conductor received the session's dialogue.
+	priorConversation []llm.Message
+}
+
+// SetPriorConversation implements the sp4rk ConversationAware capability so
+// the mock records the prior conversation the Conductor injects (used by
+// resume tests to verify the session dialogue survives a resume).
+func (m *mockContextManager) SetPriorConversation(msgs []llm.Message) {
+	m.priorConversation = append([]llm.Message(nil), msgs...)
 }
 
 func (m *mockContextManager) BuildPrompt() []llm.Message {

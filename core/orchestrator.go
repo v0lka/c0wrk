@@ -1173,7 +1173,16 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 		}
 	}
 
-	execResult, err := o.runConductor(ctx, taskMessage, bb, availableTools, plansDir, nil, resumeSteps, resumeContentBlocks, nudge, forceCompactionStrategy, resumedWithPlan)
+	// Preserve the session's prior dialogue (previous tasks) in the resumed
+	// Conductor's context. HandleMessage injects this same window; Resume
+	// previously passed nil, so a resumed failed task lost all context from
+	// earlier tasks in the session — only the interrupted task's trajectory
+	// (resumeSteps) was visible. The goal-loop resume path already injects the
+	// truncated history (see resumeGoalLoop); the plain Conductor path must
+	// match so follow-up references to earlier exchanges survive a resume.
+	conversationHistory := truncateHistory(o.historySnapshot(), o.config.ConductorHistoryWindow)
+
+	execResult, err := o.runConductor(ctx, taskMessage, bb, availableTools, plansDir, conversationHistory, resumeSteps, resumeContentBlocks, nudge, forceCompactionStrategy, resumedWithPlan)
 	// Cooperative pause: a clean, recoverable checkpoint — not a failure.
 	// Surface it, persist the task as resumable (persistTaskOutcome below),
 	// and return the paused result with a nil error so the backend treats it
