@@ -68,6 +68,15 @@ export function statusTextClass(status: string): string {
   }
 }
 
+/**
+ * True only for the three terminal lifecycle statuses (confirmed, refuted,
+ * cancelled). Everything else (`open`, `in-progress`, or unknown) is still in
+ * flight and therefore non-terminal.
+ */
+export function isTerminal(status: string): boolean {
+  return status === 'confirmed' || status === 'refuted' || status === 'cancelled'
+}
+
 // ── Adjacency ──────────────────────────────────────────────────────────
 
 /**
@@ -464,6 +473,89 @@ export function findAllRootToLeafPaths(graph: HypothesisGraph): PathEntry[] {
   }
 
   return result
+}
+
+// ── Incomplete-path filtering ─────────────────────────────────────────
+
+/**
+ * Enumerate only the *incomplete* root-to-leaf paths — those that still
+ * contain at least one non-terminal node (`open` / `in-progress`). Paths whose
+ * nodes are all terminal (`confirmed` / `refuted` / `cancelled`) are fully
+ * worked and are dropped. Empty graph → `[]`.
+ *
+ * Reuses `findAllRootToLeafPaths`; pure and unit-tested.
+ */
+export function findIncompletePaths(graph: HypothesisGraph): PathEntry[] {
+  return findAllRootToLeafPaths(graph).filter((entry) =>
+    entry.path.some((t) => !isTerminal(t.node.status)),
+  )
+}
+
+/** Options for `filterPaths`. */
+export interface FilterPathsOptions {
+  /**
+   * When true, terminal (`confirmed` / `refuted` / `cancelled`) nodes are
+   * pruned from each path, and paths that become empty are dropped. Defaults
+   * to false (paths returned unchanged).
+   */
+  hideTerminal?: boolean
+}
+
+/**
+ * Filter an already-enumerated path list for rendering. With
+ * `hideTerminal: true`, terminal nodes are removed from each path (depths are
+ * re-indexed so the pruned path stays a valid `PathEntry`). Paths left empty
+ * by pruning are dropped. With `hideTerminal` false/omitted the input is
+ * returned unchanged. Pure — no DOM — and unit-tested.
+ */
+export function filterPaths(
+  paths: PathEntry[],
+  options: FilterPathsOptions = {},
+): PathEntry[] {
+  if (!options.hideTerminal) return paths
+  const result: PathEntry[] = []
+  for (const entry of paths) {
+    const kept = entry.path.filter((t) => !isTerminal(t.node.status))
+    if (kept.length === 0) continue
+    result.push({ path: kept.map((t, depth) => ({ node: t.node, depth })) })
+  }
+  return result
+}
+
+// ── Display-graph filtering (terminal-hide toggle) ────────────────────
+
+/** Options for `buildDisplayGraph`. */
+export interface FilterGraphOptions {
+  /** When true, hide terminal (completed) hypotheses from the display graph. */
+  hideTerminal?: boolean
+}
+
+/**
+ * Build the graph to render, optionally hiding terminal (completed) nodes.
+ *
+ * With `hideTerminal: true` the input graph is reduced to the *incomplete
+ * frontier*: fully-terminal root→leaf paths are dropped (via
+ * `findIncompletePaths`) and terminal nodes inside the remaining mixed paths
+ * are pruned (via `filterPaths`), so completed hypotheses disappear from the
+ * active front. The surviving node ids become the filtered node set, and only
+ * edges whose both endpoints survive are kept. With `hideTerminal`
+ * false/omitted the input graph is returned unchanged (reference equality).
+ *
+ * Pure — no DOM — and unit-tested.
+ */
+export function buildDisplayGraph(
+  graph: HypothesisGraph,
+  options: FilterGraphOptions = {},
+): HypothesisGraph {
+  if (!options.hideTerminal) return graph
+  const paths = filterPaths(findIncompletePaths(graph), { hideTerminal: true })
+  const ids = new Set<string>()
+  for (const entry of paths) {
+    for (const t of entry.path) ids.add(t.node.id)
+  }
+  const nodes = graph.nodes.filter((n) => ids.has(n.id))
+  const edges = graph.edges.filter((e) => ids.has(e.from) && ids.has(e.to))
+  return { nodes, edges }
 }
 
 // ── Research file paths (derive artifact locations for "open in viewer") ─

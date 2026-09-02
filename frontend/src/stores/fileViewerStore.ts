@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { HunkDiffInfo } from '@/types/models'
+import { RESEARCH_TAB_PATH } from '@/stores/researchStore'
 
 // --- State types ---
 
@@ -51,6 +52,7 @@ interface FileViewerActions {
   openFile: (path: string) => void
   openFileAtLine: (path: string, line: number) => void
   openVirtualFile: (path: string, language?: string) => void
+  openResearch: () => void
   closeFile: (path: string) => void
   closeOthersFiles: (keepPath: string) => void
   setActiveFile: (path: string) => void
@@ -166,6 +168,14 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
             },
           },
         }))
+      },
+
+      // Open the Research workspace tab as a synthetic pseudo-path. It is
+      // virtual (not backed by a file on disk), so the file-viewer data loader
+      // never tries to read it, and FileViewerContent renders the
+      // ResearchWorkspace component instead of a code viewer.
+      openResearch: () => {
+        get().openVirtualFile(RESEARCH_TAB_PATH)
       },
 
       closeFile: (path) => set((s) => {

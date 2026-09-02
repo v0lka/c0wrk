@@ -14,7 +14,11 @@ import {
   edgePath,
   statusColorVar,
   formatRate,
+  isTerminal,
   findAllRootToLeafPaths,
+  findIncompletePaths,
+  filterPaths,
+  buildDisplayGraph,
   mergePathsToTree,
   projectDir,
   projectFilePaths,
@@ -366,6 +370,138 @@ describe('findAllRootToLeafPaths', () => {
       0,
     )
     expect(dCount).toBe(2)
+  })
+})
+
+// ── isTerminal ─────────────────────────────────────────────────────────
+
+describe('isTerminal', () => {
+  it('returns true only for confirmed/refuted/cancelled', () => {
+    expect(isTerminal('confirmed')).toBe(true)
+    expect(isTerminal('refuted')).toBe(true)
+    expect(isTerminal('cancelled')).toBe(true)
+  })
+
+  it('returns false for in-flight and unknown statuses', () => {
+    expect(isTerminal('open')).toBe(false)
+    expect(isTerminal('in-progress')).toBe(false)
+    expect(isTerminal('bogus')).toBe(false)
+  })
+})
+
+// ── findIncompletePaths ────────────────────────────────────────────────
+
+describe('findIncompletePaths', () => {
+  it('returns [] for an empty graph', () => {
+    expect(findIncompletePaths(graphOf([]))).toEqual([])
+  })
+
+  it('drops an all-terminal path', () => {
+    const paths = findIncompletePaths(
+      graphOf([
+        { id: 'a', status: 'confirmed' },
+        { id: 'b', status: 'refuted', parents: ['a'] },
+      ]),
+    )
+    expect(paths).toEqual([])
+  })
+
+  it('keeps a path containing at least one non-terminal node', () => {
+    const paths = findIncompletePaths(
+      graphOf([
+        { id: 'a', status: 'confirmed' },
+        { id: 'b', status: 'open', parents: ['a'] },
+      ]),
+    )
+    expect(paths).toHaveLength(1)
+    expect(paths[0]!.path.map((t) => t.node.id)).toEqual(['a', 'b'])
+  })
+
+  it('drops fully-terminal paths while keeping mixed ones in the same graph', () => {
+    // Two independent chains: a (terminal) → b (terminal); x (terminal) → y (open)
+    const paths = findIncompletePaths(
+      graphOf([
+        { id: 'a', status: 'confirmed' },
+        { id: 'b', status: 'refuted', parents: ['a'] },
+        { id: 'x', status: 'confirmed' },
+        { id: 'y', status: 'open', parents: ['x'] },
+      ]),
+    )
+    expect(paths).toHaveLength(1)
+    expect(paths[0]!.path.map((t) => t.node.id)).toEqual(['x', 'y'])
+  })
+
+  it('keeps both paths of a diamond with a non-terminal convergence node', () => {
+    // a(open) → b(confirmed), a(open) → c(confirmed), b/c → d(open)
+    const paths = findIncompletePaths(
+      graphOf(
+        [
+          { id: 'a', status: 'open' },
+          { id: 'b', status: 'confirmed', parents: ['a'] },
+          { id: 'c', status: 'confirmed', parents: ['a'] },
+          { id: 'd', status: 'open', parents: ['b', 'c'] },
+        ],
+      ),
+    )
+    expect(paths).toHaveLength(2)
+    expect(paths[0]!.path.map((t) => t.node.id)).toEqual(['a', 'b', 'd'])
+    expect(paths[1]!.path.map((t) => t.node.id)).toEqual(['a', 'c', 'd'])
+  })
+})
+
+// ── filterPaths ────────────────────────────────────────────────────────
+
+describe('filterPaths', () => {
+  function pathFromIds(
+    nodes: { id: string; title?: string; status?: string }[],
+  ): PathEntry {
+    return {
+      path: nodes.map((n, depth) => ({
+        node: { id: n.id, title: n.title ?? n.id, status: n.status ?? 'open' },
+        depth,
+      })),
+    }
+  }
+
+  it('returns paths unchanged when hideTerminal is false/omitted', () => {
+    const paths = [pathFromIds([{ id: 'a' }, { id: 'b', status: 'confirmed' }])]
+    expect(filterPaths(paths)).toBe(paths)
+    expect(filterPaths(paths, { hideTerminal: false })).toBe(paths)
+  })
+
+  it('prunes terminal nodes when hideTerminal is true', () => {
+    const paths = [
+      pathFromIds([
+        { id: 'a', status: 'open' },
+        { id: 'b', status: 'confirmed' },
+        { id: 'c', status: 'in-progress' },
+      ]),
+    ]
+    const out = filterPaths(paths, { hideTerminal: true })
+    expect(out).toHaveLength(1)
+    expect(out[0]!.path.map((t) => t.node.id)).toEqual(['a', 'c'])
+    // Depths are re-indexed to stay contiguous after pruning.
+    expect(out[0]!.path[0]!.depth).toBe(0)
+    expect(out[0]!.path[1]!.depth).toBe(1)
+  })
+
+  it('drops paths left empty after pruning', () => {
+    const paths = [pathFromIds([{ id: 'a', status: 'confirmed' }])]
+    expect(filterPaths(paths, { hideTerminal: true })).toEqual([])
+  })
+
+  it('keeps non-empty pruned paths while dropping empty ones', () => {
+    const paths = [
+      pathFromIds([{ id: 'a', status: 'refuted' }]), // all-terminal → dropped
+      pathFromIds([
+        { id: 'x', status: 'open' },
+        { id: 'y', status: 'cancelled' },
+        { id: 'z', status: 'open' },
+      ]),
+    ]
+    const out = filterPaths(paths, { hideTerminal: true })
+    expect(out).toHaveLength(1)
+    expect(out[0]!.path.map((t) => t.node.id)).toEqual(['x', 'z'])
   })
 })
 
@@ -880,5 +1016,61 @@ describe('mergePathsToTree', () => {
     expect(tree[0]!.children[0]!.children).toHaveLength(2)
     const bChildren = tree[0]!.children[0]!.children.map((c) => c.node.id).sort()
     expect(bChildren).toEqual(['c', 'd'])
+  })
+})
+
+describe('buildDisplayGraph', () => {
+  it('returns the input graph unchanged when hideTerminal is false', () => {
+    const g = graphOf([{ id: 'a' }, { id: 'b', parents: ['a'] }])
+    expect(buildDisplayGraph(g)).toBe(g)
+    expect(buildDisplayGraph(g, {})).toBe(g)
+    expect(buildDisplayGraph(g, { hideTerminal: false })).toBe(g)
+  })
+
+  it('drops a fully-terminal path when hideTerminal is true', () => {
+    const g = graphOf(
+      [
+        { id: 'a', status: 'confirmed' },
+        { id: 'b', status: 'refuted', parents: ['a'] },
+      ],
+      [{ from: 'a', to: 'b' }],
+    )
+    const filtered = buildDisplayGraph(g, { hideTerminal: true })
+    expect(filtered.nodes).toEqual([])
+    expect(filtered.edges).toEqual([])
+  })
+
+  it('keeps non-terminal nodes and prunes terminal ones from mixed paths', () => {
+    // a(open) → b(confirmed) → c(open): b is terminal and must be pruned,
+    // but a and c (non-terminal) survive; the edge a→c is NOT present, so
+    // only the nodes remain (no edge connects a→c directly).
+    const g = graphOf(
+      [
+        { id: 'a', status: 'open' },
+        { id: 'b', status: 'confirmed', parents: ['a'] },
+        { id: 'c', status: 'open', parents: ['b'] },
+      ],
+      [
+        { from: 'a', to: 'b' },
+        { from: 'b', to: 'c' },
+      ],
+    )
+    const filtered = buildDisplayGraph(g, { hideTerminal: true })
+    expect(filtered.nodes.map((n) => n.id).sort()).toEqual(['a', 'c'])
+    // Both original edges touch the pruned terminal node → dropped.
+    expect(filtered.edges).toEqual([])
+  })
+
+  it('keeps an edge between two surviving non-terminal nodes', () => {
+    const g = graphOf(
+      [
+        { id: 'a', status: 'open' },
+        { id: 'b', status: 'in-progress', parents: ['a'] },
+      ],
+      [{ from: 'a', to: 'b' }],
+    )
+    const filtered = buildDisplayGraph(g, { hideTerminal: true })
+    expect(filtered.nodes.map((n) => n.id).sort()).toEqual(['a', 'b'])
+    expect(filtered.edges).toEqual([{ from: 'a', to: 'b' }])
   })
 })

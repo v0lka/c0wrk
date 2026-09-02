@@ -701,6 +701,18 @@ func TestParseProject_R001(t *testing.T) {
 	if !reflect.DeepEqual(m.ActiveFront, wantFront) {
 		t.Errorf("ActiveFront = %+v, want %+v", m.ActiveFront, wantFront)
 	}
+
+	// Log: the R-001 fixture carries a log.md with four entries.
+	if len(p.Log) != 4 {
+		t.Fatalf("Log = %d entries, want 4: %+v", len(p.Log), p.Log)
+	}
+	if p.Log[0].Kind != LogKindExperiment || p.Log[0].HypothesisID != "H-001" {
+		t.Errorf("Log[0] = %+v, want experiment on H-001", p.Log[0])
+	}
+	if p.Log[1].Kind != LogKindDecision || p.Log[2].Kind != LogKindStatusChange || p.Log[3].Kind != LogKindNote {
+		t.Errorf("Log kinds = %q,%q,%q, want decision,status_change,note",
+			p.Log[1].Kind, p.Log[2].Kind, p.Log[3].Kind)
+	}
 }
 
 func TestParseProject_R002_EmptyScaffold(t *testing.T) {
@@ -722,6 +734,14 @@ func TestParseProject_R002_EmptyScaffold(t *testing.T) {
 	}
 	if p.HasReport {
 		t.Error("HasReport should be false for the empty scaffold")
+	}
+	// A project without a log.md still parses cleanly: Log is an empty
+	// (non-nil) slice, preserving the partial-state contract.
+	if p.Log == nil {
+		t.Error("Log should be a non-nil empty slice for a project without log.md")
+	}
+	if len(p.Log) != 0 {
+		t.Errorf("Log = %d entries, want 0", len(p.Log))
 	}
 }
 
@@ -898,5 +918,136 @@ func TestParseResearchRoot_NestedUnaffected(t *testing.T) {
 	if parsed.Projects[0].ID != "R-001" {
 		t.Errorf("project ID = %q, want R-001 (nested entry), not the R-099 decoy",
 			parsed.Projects[0].ID)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Research log parsing (pure)
+// ──────────────────────────────────────────────────────────────────────────
+
+func TestParseLog_HappyPath(t *testing.T) {
+	content := "# Research Log\n\n" +
+		"## experiment 2025-04-02T10:15:00Z H-001\n" +
+		"Recovered 97% of modules on the first pass.\n" +
+		"\n" +
+		"## decision 2025-04-03T09:00:00Z\n" +
+		"Continue deepening the current front.\n" +
+		"\n" +
+		"## status_change 2025-04-04T11:30:00Z h-002\n" +
+		"Transitioned H-002 from open to in-progress.\n" +
+		"\n" +
+		"## note 2025-04-05T08:00:00Z\n" +
+		"Benchmark limited to 200 applications.\n"
+
+	entries := ParseLog(content)
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 entries, got %d: %+v", len(entries), entries)
+	}
+
+	// Ordinal IDs assigned in file order.
+	if entries[0].ID != "1" || entries[1].ID != "2" || entries[2].ID != "3" || entries[3].ID != "4" {
+		t.Errorf("IDs = %s,%s,%s,%s, want 1,2,3,4",
+			entries[0].ID, entries[1].ID, entries[2].ID, entries[3].ID)
+	}
+
+	if entries[0].Kind != LogKindExperiment || entries[0].CreatedAt != "2025-04-02T10:15:00Z" {
+		t.Errorf("entry0 kind/ts = %q / %q", entries[0].Kind, entries[0].CreatedAt)
+	}
+	if entries[0].HypothesisID != "H-001" {
+		t.Errorf("entry0 hypothesis = %q, want H-001", entries[0].HypothesisID)
+	}
+	if entries[0].Message != "Recovered 97% of modules on the first pass." {
+		t.Errorf("entry0 message = %q", entries[0].Message)
+	}
+
+	if entries[1].Kind != LogKindDecision || entries[1].HypothesisID != "" {
+		t.Errorf("entry1 kind/hypothesis = %q / %q (project-scoped)", entries[1].Kind, entries[1].HypothesisID)
+	}
+	if entries[1].Message != "Continue deepening the current front." {
+		t.Errorf("entry1 message = %q", entries[1].Message)
+	}
+
+	// Case-insensitive kind + lower-case hypothesis normalized to canonical form.
+	if entries[2].Kind != LogKindStatusChange || entries[2].HypothesisID != "H-002" {
+		t.Errorf("entry2 kind/hypothesis = %q / %q", entries[2].Kind, entries[2].HypothesisID)
+	}
+
+	if entries[3].Kind != LogKindNote || entries[3].Message != "Benchmark limited to 200 applications." {
+		t.Errorf("entry3 = %+v", entries[3])
+	}
+}
+
+func TestParseLog_MultiLineMessage(t *testing.T) {
+	content := "## note 2025-04-05T08:00:00Z\n" +
+		"First line.\n" +
+		"Second line.\n" +
+		"\n" +
+		"Third paragraph after a blank line.\n"
+
+	entries := ParseLog(content)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	want := "First line.\nSecond line.\n\nThird paragraph after a blank line."
+	if entries[0].Message != want {
+		t.Errorf("message = %q, want %q", entries[0].Message, want)
+	}
+}
+
+func TestParseLog_EmptyAndPlaceholder(t *testing.T) {
+	// Empty, whitespace-only, and placeholder-only content yield an empty
+	// (non-nil) slice — the same partial-state contract as the other parsers.
+	for _, c := range []string{"", "   \n\t\n", "# Research Log\n\n*No entries yet.*\n"} {
+		entries := ParseLog(c)
+		if entries == nil {
+			t.Errorf("ParseLog(%q) = nil, want empty non-nil slice", c)
+		}
+		if len(entries) != 0 {
+			t.Errorf("ParseLog(%q) = %d entries, want 0", c, len(entries))
+		}
+	}
+}
+
+func TestParseLog_MalformedKindAndTimestampIgnored(t *testing.T) {
+	// A recognized kind followed by a non-timestamp token is prose, not an
+	// entry; an unknown kind is skipped entirely. Neither yields an entry.
+	content := "## bogus 2025-04-02T10:15:00Z H-001\nignored\n" +
+		"## note about something\nthis is prose, not an entry\n"
+
+	entries := ParseLog(content)
+	if len(entries) != 0 {
+		t.Errorf("expected 0 entries, got %d: %+v", len(entries), entries)
+	}
+}
+
+func TestParseLog_UnknownKindSkippedButValidEntriesKept(t *testing.T) {
+	content := "## experiment 2025-04-02T10:15:00Z H-001\nReal entry.\n" +
+		"## unknown 2025-04-03T09:00:00Z\nSkipped.\n" +
+		"## note 2025-04-04T10:00:00Z\nAnother real entry.\n"
+
+	entries := ParseLog(content)
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries (unknown kind skipped), got %d: %+v", len(entries), entries)
+	}
+	if entries[0].Kind != LogKindExperiment || entries[1].Kind != LogKindNote {
+		t.Errorf("kinds = %q, %q", entries[0].Kind, entries[1].Kind)
+	}
+	// The unknown-kind heading is skipped without consuming an ordinal, but it
+	// must not leak into the first entry's message either.
+	if entries[0].Message != "Real entry." {
+		t.Errorf("entry0 message = %q, want %q (unknown-kind heading must not leak in)", entries[0].Message, "Real entry.")
+	}
+	if entries[1].ID != "2" {
+		t.Errorf("entry1 ID = %q, want 2 (ordinal still sequential)", entries[1].ID)
+	}
+}
+
+func TestParseLog_BareOrdinalNotTimestamp(t *testing.T) {
+	// A bare ordinal in the timestamp slot ("## note 5") must not be mistaken
+	// for a timestamp: it is prose, not an entry.
+	content := "## note 5\nA stray note-like heading.\n"
+	entries := ParseLog(content)
+	if len(entries) != 0 {
+		t.Errorf("expected 0 entries, got %d: %+v", len(entries), entries)
 	}
 }

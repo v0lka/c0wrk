@@ -1,6 +1,7 @@
-import React from 'react'
+import React, { useState } from 'react'
 import type { DisplayItem, DisplayItemKind } from '@/types/messages'
 import { bookmarkKey } from '@/lib/bookmarks'
+import { BookmarkableContext } from './BookmarkableContext'
 import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
 import { ThoughtBlock } from './ThoughtBlock'
@@ -86,11 +87,37 @@ export function CompactErrorFallback() {
 
 const compactErrorFallback = <CompactErrorFallback />
 
+/**
+ * BookmarkableRow — a chat item's left gutter + content, with the star's hover
+ * scoped to THIS row via React state (not CSS group-hover). Because each row
+ * tracks its own hover, hovering a parent block does NOT reveal the stars of
+ * nested rows; hovering a child reveals that child's star (and the parent's
+ * stays visible, which is acceptable). Hovering the parent's own header shows
+ * only the parent's star.
+ */
+function BookmarkableRow({ item, content }: { item: DisplayItem; content: React.ReactNode }) {
+  const [hovered, setHovered] = useState(false)
+  const key = bookmarkKey(item)
+  return (
+    <div
+      className="relative flex items-start gap-2"
+      data-bookmark-id={key}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div className="w-5 shrink-0 flex items-start">
+        <BookmarkStar item={item} hovered={hovered} />
+      </div>
+      <div className="min-w-0 flex-1">{content}</div>
+    </div>
+  )
+}
+
 function renderItem(item: DisplayItem, stickyUserMessage: boolean, bookmarkable: boolean): React.ReactNode {
   const key = bookmarkKey(item)
-  const star = bookmarkable ? <BookmarkStar item={item} /> : null
 
   if (item.kind === 'user') {
+    const star = bookmarkable ? <BookmarkStar item={item} /> : null
     const content = (
       <ErrorBoundary key={key} fallback={compactErrorFallback}>
         <UserMessage item={item} sticky={stickyUserMessage} bookmarkStar={stickyUserMessage ? star : null} />
@@ -101,12 +128,7 @@ function renderItem(item: DisplayItem, stickyUserMessage: boolean, bookmarkable:
     // extra flex parent would shrink the sticky element's containing block and
     // break position:sticky — so its star is rendered inside UserMessage.
     if (stickyUserMessage) return content
-    return (
-      <div key={key} className="group/bm relative flex items-start gap-2" data-bookmark-id={key}>
-        <div className="w-5 shrink-0 pt-0.5">{star}</div>
-        <div className="min-w-0 flex-1">{content}</div>
-      </div>
-    )
+    return <BookmarkableRow key={key} item={item} content={content} />
   }
 
   const Component = renderers[item.kind]
@@ -117,12 +139,7 @@ function renderItem(item: DisplayItem, stickyUserMessage: boolean, bookmarkable:
     </ErrorBoundary>
   )
   if (!bookmarkable) return content
-  return (
-    <div key={key} className="group/bm relative flex items-start gap-2" data-bookmark-id={key}>
-      <div className="w-5 shrink-0 pt-0.5">{star}</div>
-      <div className="min-w-0 flex-1">{content}</div>
-    </div>
-  )
+  return <BookmarkableRow key={key} item={item} content={content} />
 }
 
 function groupIntoStickyTurns(items: DisplayItem[]): DisplayItem[][] {
@@ -159,16 +176,16 @@ export function ChatMessageRenderer({
 }: ChatMessageRendererProps) {
   if (!stickyUserMessages) {
     return (
-      <>
+      <BookmarkableContext.Provider value={bookmarkable}>
         {items.map((item) => renderItem(item, false, bookmarkable))}
         {trailingContent}
-      </>
+      </BookmarkableContext.Provider>
     )
   }
 
   const turns = groupIntoStickyTurns(items)
   return (
-    <>
+    <BookmarkableContext.Provider value={bookmarkable}>
       {turns.map((turn, index) => {
         const startsWithUser = turn[0]?.kind === 'user'
         const isLastTurn = index === turns.length - 1
@@ -180,6 +197,6 @@ export function ChatMessageRenderer({
         )
       })}
       {turns.length === 0 && trailingContent}
-    </>
+    </BookmarkableContext.Provider>
   )
 }

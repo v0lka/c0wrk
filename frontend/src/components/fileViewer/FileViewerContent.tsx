@@ -5,6 +5,8 @@ import { CodeMirrorFileViewer } from '@/components/fileViewer/CodeMirrorFileView
 import { DiffHunkNavBar } from '@/components/fileViewer/DiffHunkNavBar'
 import { PlanEditor } from '@/components/fileViewer/PlanEditor'
 import { ReviewPage } from '@/components/review/ReviewPage'
+import { ResearchWorkspace } from '@/components/research/ResearchWorkspace'
+import { RESEARCH_TAB_PATH } from '@/stores/researchStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import type { HunkDiffInfo } from '@/types/models'
 
@@ -40,6 +42,12 @@ export function FileViewerContent() {
   if (activeFile.startsWith('c0wrk:commit:')) {
     const sha = activeFile.slice('c0wrk:commit:'.length)
     return <ReviewPage commitSha={sha} />
+  }
+
+  // Research workspace: synthetic pseudo-path renders the hypothesis DAG with
+  // an inline editable card instead of a raw file.
+  if (activeFile === RESEARCH_TAB_PATH) {
+    return <ResearchWorkspace />
   }
 
   const fileData = files[activeFile]

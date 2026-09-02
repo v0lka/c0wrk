@@ -7,8 +7,9 @@
 // 50ms debounce. Purely a side-effect hook — returns void.
 
 import { useEffect, useCallback, useRef } from 'react'
-import { getResearchStatus } from '@/api/research'
+import { getResearchStatus, getResearchNextStep } from '@/api/research'
 import { subscribe } from '@/api/runtime'
+import { logger } from '@/lib/logger'
 import { useProjectStore } from '@/stores/projectStore'
 import { useResearchStore } from '@/stores/researchStore'
 
@@ -41,6 +42,18 @@ export function useResearchStatusEvents(): void {
           err instanceof Error ? err.message : 'Failed to load research status',
         )
       }
+    }
+
+    // The recommended next step is a separate lightweight RPC. A failure here
+    // must not surface as a status error — the recommendation is best-effort,
+    // and the dashboard falls back to a muted empty card.
+    try {
+      const nextStep = await getResearchNextStep(projectId)
+      if (useProjectStore.getState().activeProjectId === projectId) {
+        useResearchStore.getState().loadNextStep(nextStep)
+      }
+    } catch (err) {
+      logger.debug('[research] next-step fetch failed:', err)
     }
   }, [activeProjectId])
 

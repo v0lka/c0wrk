@@ -32,6 +32,7 @@ function statusOf(enabled: boolean, projectId = 'proj-1'): ResearchStatus {
               },
               prior_art_count: 0,
               has_report: false,
+              log: [],
             },
           ],
         }
@@ -134,6 +135,7 @@ describe('researchStore selectors', () => {
             },
             prior_art_count: 0,
             has_report: false,
+            log: [],
           },
           {
             id: 'r2',
@@ -148,6 +150,7 @@ describe('researchStore selectors', () => {
             },
             prior_art_count: 0,
             has_report: false,
+            log: [],
           },
         ],
       },

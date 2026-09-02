@@ -8,6 +8,15 @@ import type { DisplayItem } from '@/types/messages'
 
 interface BookmarkStarProps {
   item: DisplayItem
+  /**
+   * Whether the containing row is hovered. When provided it drives the
+   * unbookmarked star's visibility directly, so that hovering a parent row does
+   * NOT cascade to nested rows (avoids the CSS group-hover leak where a parent
+   * block revealed every descendant star). When omitted it falls back to the
+   * ancestor `group/bm` hover — used by the sticky pinned user message, which
+   * contains no nested bookmarkable rows.
+   */
+  hovered?: boolean
 }
 
 /**
@@ -15,10 +24,10 @@ interface BookmarkStarProps {
  * a chat item (or inside the sticky pinned message).
  *
  * Unbookmarked: an outline star in the same muted color as Copy/Save, revealed
- * on item hover (group-hover/bm). Bookmarked: a filled yellow star, always
- * visible. Clicking toggles the bookmark in the per-session persistent store.
+ * on item hover. Bookmarked: a filled yellow star, always visible. Clicking
+ * toggles the bookmark in the per-session persistent store.
  */
-export function BookmarkStar({ item }: BookmarkStarProps) {
+export function BookmarkStar({ item, hovered }: BookmarkStarProps) {
   const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const bookmarks = useSessionBookmarks(activeSessionId)
   const addBookmark = useBookmarkStore((s) => s.addBookmark)
@@ -53,7 +62,14 @@ export function BookmarkStar({ item }: BookmarkStarProps) {
         'inline-flex items-center justify-center rounded-sm p-0.5 transition-opacity',
         isBookmarked
           ? 'opacity-100 text-highlight hover:text-highlight/70'
-          : 'opacity-0 text-muted-foreground group-hover/bm:opacity-100 hover:text-foreground focus-visible:opacity-100',
+          : cn(
+              'text-muted-foreground hover:text-foreground focus-visible:opacity-100',
+              hovered !== undefined
+                ? hovered
+                  ? 'opacity-100'
+                  : 'opacity-0'
+                : 'opacity-0 group-hover/bm:opacity-100',
+            ),
       )}
     >
       <Star className="h-3.5 w-3.5" fill={isBookmarked ? 'currentColor' : 'none'} />

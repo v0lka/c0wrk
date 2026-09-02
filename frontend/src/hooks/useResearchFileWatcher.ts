@@ -14,7 +14,7 @@
 // this incremental path runs.
 
 import { useEffect, useCallback, useRef } from 'react'
-import { getResearchGraph } from '@/api/research'
+import { getResearchGraph, getResearchNextStep } from '@/api/research'
 import { subscribe } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 import { useProjectStore } from '@/stores/projectStore'
@@ -60,6 +60,18 @@ export function useResearchFileWatcher(): void {
           'nodes',
           graph.graph.nodes.length,
         )
+      }
+
+      // A file change can flip the phase (e.g. a status transition), so the
+      // recommendation must be refreshed alongside the graph. Best-effort:
+      // a failure leaves the previous recommendation in place.
+      try {
+        const nextStep = await getResearchNextStep(projectId)
+        if (useProjectStore.getState().activeProjectId === projectId) {
+          useResearchStore.getState().loadNextStep(nextStep)
+        }
+      } catch (err) {
+        logger.debug('[research] incremental next-step fetch failed:', err)
       }
     } catch (err) {
       logger.debug('[research] incremental graph update failed:', err)

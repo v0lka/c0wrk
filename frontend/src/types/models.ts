@@ -648,6 +648,9 @@ export type HypothesisStatus =
   | 'refuted'
   | 'cancelled'
 
+/** Category of a research-log entry (see core/research LogKind). */
+export type LogKind = 'experiment' | 'decision' | 'status_change' | 'note'
+
 export interface HypothesisNode {
   id: string
   title: string
@@ -694,6 +697,16 @@ export interface ResearchMetrics {
   active_front?: string[]
 }
 
+/** A single timestamped entry in a project's log.md (see core/research
+ *  ResearchLogEntry). Mirrors the backend DTO field-for-field. */
+export interface ResearchLogEntry {
+  id: string
+  kind: LogKind
+  hypothesis_id?: string
+  message: string
+  created_at: string
+}
+
 export interface ResearchProject {
   id: string
   brief: ResearchBrief
@@ -701,6 +714,7 @@ export interface ResearchProject {
   metrics: ResearchMetrics
   prior_art_count: number
   has_report: boolean
+  log: ResearchLogEntry[]
 }
 
 export interface ResearchRoot {
@@ -748,4 +762,46 @@ export interface ResearchGraphResponse {
     active_front?: string[]
   }
   has_report: boolean
+  log: ResearchLogEntry[]
+}
+
+/** Recommended next research action kinds (mirrors core/research ActionKind). */
+export type ResearchActionKind =
+  | 'research-init'
+  | 'research-hypothesis'
+  | 'research-experiment'
+  | 'research-decision'
+  | 'research-synthesis'
+
+/** Recommended next research action for the active project's current phase
+ *  (mirrors backend ResearchNextStepDTO). `target` is the hypothesis ID the
+ *  action operates on, or empty when the action is not hypothesis-scoped. */
+export interface ResearchNextStep {
+  project_id: string
+  action: ResearchActionKind
+  target?: string
+  reason: string
+  skill: string
+}
+
+/** Structured field update for an existing hypothesis card (mirrors backend
+ *  HypothesisUpdateFields). Omit a field (leave it undefined) to leave it
+ *  unchanged; set it to an empty string to clear it. Only the five UI-mutable
+ *  fields are exposed. */
+export interface HypothesisUpdateFields {
+  title?: string
+  status?: HypothesisStatus
+  result?: string
+  timebox?: string
+  decision?: string
+}
+
+/** Structured input for creating a new hypothesis card (mirrors backend
+ *  NewHypothesisCard). The card's identifier is assigned by the backend. */
+export interface NewHypothesisCard {
+  title: string
+  statement?: string
+  verification_criterion?: string
+  timebox?: string
+  parents?: string[]
 }

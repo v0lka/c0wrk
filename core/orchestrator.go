@@ -1673,6 +1673,31 @@ func (o *Orchestrator) RescanSkills() error {
 	return nil
 }
 
+// RescanAgents re-scans the Subagent Profile discovery directories and
+// refreshes the per-session agent catalog in place. It mirrors RescanSkills:
+// used when profiles are seeded into the project's .agents/agents directory
+// mid-session (e.g. enabling RESEARCH mode, which seeds the built-in research
+// profile) so the running session can discover them without a restart. Safe to
+// call concurrently with agent lookups — the AgentManager holds its own lock
+// and Scan replaces the catalog atomically. A nil agent manager is a no-op
+// (returns nil).
+func (o *Orchestrator) RescanAgents() error {
+	if o.agentManager == nil {
+		return nil
+	}
+	if err := o.agentManager.Scan(); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("RescanAgents: agent re-scan failed", "error", err)
+		}
+		return err
+	}
+	if o.logger != nil {
+		o.logger.Debug("RescanAgents: agent catalog refreshed",
+			"count", len(o.agentManager.List()))
+	}
+	return nil
+}
+
 // currentModel returns the session's active model identity, synchronized for
 // the cross-goroutine readers described on modelMu.
 func (o *Orchestrator) currentModel() string {

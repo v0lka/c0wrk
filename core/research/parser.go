@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -738,6 +739,127 @@ func isNumeric(s string) bool {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Research log
+// ──────────────────────────────────────────────────────────────────────────
+
+// logEntryHeadingRe matches a research-log entry heading of the form
+//
+//	## <kind> <created_at> [<hypothesis-id>]
+//
+// e.g. "## experiment 2025-04-02T10:15:00Z H-001". Group 1 is the kind token,
+// group 2 is the raw timestamp, and group 3 (optional) is the hypothesis
+// identifier in either "H-001" or "H001" spelling (case-insensitive). The
+// message body is the block of lines following the heading until the next
+// heading or end of file.
+var logEntryHeadingRe = regexp.MustCompile(`(?i)^##\s+(\S+)\s+(\S+)(?:\s+(H-?\d+))?\s*$`)
+
+// normalizeLogKind canonicalizes a log-kind token to its LogKind constant.
+// It returns ok=false for an unrecognized kind, which the parser treats as
+// "not an entry heading" (best-effort, never an error).
+func normalizeLogKind(raw string) (LogKind, bool) {
+	k := LogKind(strings.ToLower(strings.TrimSpace(raw)))
+	switch k {
+	case LogKindExperiment, LogKindDecision, LogKindStatusChange, LogKindNote:
+		return k, true
+	default:
+		return "", false
+	}
+}
+
+// timestampDateRe matches an ISO-8601 date prefix (YYYY-MM-DD) — the minimum
+// component every log timestamp carries, whether the token is a bare date
+// ("2025-04-02") or a full datetime ("2025-04-02T10:15:00Z").
+var timestampDateRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
+
+// looksLikeTimestamp is a light sanity check used to avoid treating a message
+// line that happens to start with "## <word> <word>" as a new entry. A real
+// timestamp token always carries an ISO-8601 date prefix (e.g. "2025-04-02" or
+// "2025-04-02T10:15:00Z"), whereas a prose fragment or a bare ordinal
+// ("## note 5") does not. Requiring a full date — rather than merely "contains
+// a digit" — keeps such bare ordinals from being mistaken for a timestamp.
+func looksLikeTimestamp(s string) bool {
+	return timestampDateRe.MatchString(s)
+}
+
+// ParseLog parses a research-log file (log.md) into a chronological list of
+// entries. It is best-effort and never returns an error: a missing, empty, or
+// malformed file yields an empty (non-nil) slice, and unrecognized lines are
+// simply ignored. Entries are returned in file order with a 1-based ordinal ID
+// assigned by position (logs are append-only, so ordinals are stable).
+//
+// The expected format is a series of level-2 headings, one per entry:
+//
+//	## experiment 2025-04-02T10:15:00Z H-001
+//	Recovered 97% of modules on the first pass.
+//
+//	## decision 2025-04-03T09:00:00Z
+//	Continue deepening the current front.
+//
+// The heading is "<kind> <created_at> [<hypothesis-id>]"; everything following
+// it (up to the next heading) is the message. kind is one of experiment,
+// decision, status_change, or note (case-insensitive). created_at is preserved
+// verbatim. An optional hypothesis ID ("H-001" / "H001") is normalized to the
+// canonical hyphenated form; entries without one are project-scoped.
+func ParseLog(content string) []ResearchLogEntry {
+	entries := make([]ResearchLogEntry, 0)
+	if strings.TrimSpace(content) == "" {
+		return entries
+	}
+
+	var (
+		current *ResearchLogEntry
+		message strings.Builder
+	)
+
+	// flush appends the in-progress entry (if any) to the result and resets the
+	// message accumulator for the next entry.
+	flush := func() {
+		if current == nil {
+			return
+		}
+		current.Message = strings.TrimSpace(message.String())
+		entries = append(entries, *current)
+		current = nil
+		message.Reset()
+	}
+
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// A level-2 heading line is reserved for entry headings; it is never
+		// folded into the preceding entry's message. Lines that do not start
+		// with "## " (including deeper "### " sub-headings inside a message)
+		// are message text.
+		if strings.HasPrefix(trimmed, "## ") {
+			// Any heading terminates the current entry, valid or not.
+			flush()
+			if m := logEntryHeadingRe.FindStringSubmatch(trimmed); m != nil {
+				kind, ok := normalizeLogKind(m[1])
+				if ok && looksLikeTimestamp(m[2]) {
+					current = &ResearchLogEntry{
+						ID:        strconv.Itoa(len(entries) + 1),
+						Kind:      kind,
+						CreatedAt: strings.TrimSpace(m[2]),
+					}
+					if m[3] != "" {
+						current.HypothesisID = NormalizeID(m[3])
+					}
+				}
+			}
+			// Invalid entry heading (unknown kind, non-timestamp token, or a
+			// bare "## "): current stays nil, so the skipped entry's body is
+			// ignored until the next valid heading.
+			continue
+		}
+		if current != nil {
+			message.WriteString(line)
+			message.WriteByte('\n')
+		}
+	}
+	flush()
+	return entries
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Filesystem orchestrators
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -746,12 +868,13 @@ func isNumeric(s string) bool {
 // flags (whether the synthesis report exists, how many prior-art entries are
 // cataloged). It is what the Research panel renders for one project.
 type ResearchProject struct {
-	ID            string          `json:"id"`
-	Brief         Brief           `json:"brief"`
-	Graph         HypothesisGraph `json:"graph"`
-	Metrics       Metrics         `json:"metrics"`
-	PriorArtCount int             `json:"prior_art_count"`
-	HasReport     bool            `json:"has_report"`
+	ID            string             `json:"id"`
+	Brief         Brief              `json:"brief"`
+	Graph         HypothesisGraph    `json:"graph"`
+	Metrics       Metrics            `json:"metrics"`
+	PriorArtCount int                `json:"prior_art_count"`
+	HasReport     bool               `json:"has_report"`
+	Log           []ResearchLogEntry `json:"log"`
 }
 
 // ResearchRoot is the parsed view of a {research-root} directory: the index of
@@ -837,6 +960,9 @@ func ParseProject(projectPath string) (*ResearchProject, error) {
 	priorArtContent, _ := readFile(filepath.Join(projectPath, "prior-art.md"))
 	priorArtCount := ParsePriorArtCount(priorArtContent)
 
+	logContent, _ := readFile(filepath.Join(projectPath, "log.md"))
+	logEntries := ParseLog(logContent)
+
 	_, hasReport := readFile(filepath.Join(projectPath, "report.md"))
 
 	id := brief.ID
@@ -851,6 +977,7 @@ func ParseProject(projectPath string) (*ResearchProject, error) {
 		Metrics:       ComputeMetrics(&graph),
 		PriorArtCount: priorArtCount,
 		HasReport:     hasReport,
+		Log:           logEntries,
 	}, nil
 }
 

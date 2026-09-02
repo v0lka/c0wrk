@@ -52,10 +52,11 @@ type ResearchStatusDTO struct {
 // Used by the frontend's incremental file-change update path so the full
 // status fetch is avoided when only hypothesis cards changed.
 type ResearchGraphDTO struct {
-	ProjectID string          `json:"project_id"`
-	Graph     ResearchGraph   `json:"graph"`
-	Metrics   ResearchMetrics `json:"metrics"`
-	HasReport bool            `json:"has_report"`
+	ProjectID string                      `json:"project_id"`
+	Graph     ResearchGraph               `json:"graph"`
+	Metrics   ResearchMetrics             `json:"metrics"`
+	HasReport bool                        `json:"has_report"`
+	Log       []research.ResearchLogEntry `json:"log"`
 }
 
 // ResearchGraph holds the hypothesis graph (nodes and edges) for a single
@@ -84,6 +85,39 @@ type ResearchSeedResultDTO struct {
 	Updated   []string `json:"updated"`
 	Current   []string `json:"current"`
 	Preserved []string `json:"preserved"`
+}
+
+// ResearchNextStepDTO is the small response for GetResearchNextStep: the single
+// recommended next research action for the active project's current phase.
+// Target is empty when the action is not scoped to a single hypothesis.
+type ResearchNextStepDTO struct {
+	ProjectID string `json:"project_id"`
+	Action    string `json:"action"`
+	Target    string `json:"target,omitempty"`
+	Reason    string `json:"reason"`
+	Skill     string `json:"skill"`
+}
+
+// HypothesisUpdateFields is the structured update payload for UpdateHypothesis.
+// Pointer fields distinguish "leave unchanged" (nil) from "set to empty"
+// (a non-nil pointer to ""). Only the five UI-mutable fields are exposed;
+// identifier, statement, verification criterion, created, and completed are
+// not editable through this path.
+type HypothesisUpdateFields struct {
+	Title    *string `json:"title,omitempty"`
+	Status   *string `json:"status,omitempty"`
+	Result   *string `json:"result,omitempty"`
+	Timebox  *string `json:"timebox,omitempty"`
+	Decision *string `json:"decision,omitempty"`
+}
+
+// NewHypothesisCard is the structured create payload for CreateHypothesis.
+type NewHypothesisCard struct {
+	Title                 string   `json:"title"`
+	Statement             string   `json:"statement,omitempty"`
+	VerificationCriterion string   `json:"verification_criterion,omitempty"`
+	Timebox               string   `json:"timebox,omitempty"`
+	Parents               []string `json:"parents,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +222,25 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 			"current", len(seedRes.Current), "preserved", len(seedRes.Preserved))
 	}
 
+	// Seed the built-in research Subagent Profile into the project's local
+	// agents directory so research steps can be delegated via #research or
+	// delegate(agent:"research"). Idempotent and non-destructive — mirrors the
+	// skill-pack seeding above.
+	agentsDir := config.ProjectAgentsPath(proj.WorkspacePath)
+	agentSeedRes, agentSeedErr := research.SeedAgents(agentsDir, f.log())
+	if agentSeedErr != nil {
+		// Seeding failure is non-fatal to enabling RESEARCH mode itself, but
+		// surface it so the user knows the research profile is missing.
+		f.log().Warn("research.EnableResearch: agent seeding failed",
+			"project_id", projectID, "agents_dir", agentsDir, "error", agentSeedErr)
+	}
+	if agentSeedRes != nil {
+		f.log().Info("research.EnableResearch: agents seeded",
+			"project_id", projectID,
+			"seeded", len(agentSeedRes.Seeded), "updated", len(agentSeedRes.Updated),
+			"current", len(agentSeedRes.Current), "preserved", len(agentSeedRes.Preserved))
+	}
+
 	// Persist the research root on the project.
 	proj.ResearchRoot = researchRoot
 	if err := f.projStore.SaveProject(context.Background(), *proj); err != nil {
@@ -198,6 +251,10 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 	// the freshly seeded research-* skills.
 	f.invalidateSkillCache()
 
+	// Invalidate the agent cache so the next ListAgents re-scans and picks up
+	// the freshly seeded research profile.
+	f.invalidateAgentCache()
+
 	// Reload the skill catalog for any already-running sessions of this project
 	// so the research-* skills are discoverable without a restart. Without this,
 	// a session created before RESEARCH was enabled would emit research router
@@ -206,6 +263,7 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 	if f.app != nil {
 		if manager := f.app.Manager(); manager != nil {
 			manager.RescanSkillsForProject(projectID)
+			manager.RescanAgentsForProject(projectID)
 		}
 	}
 
@@ -388,10 +446,19 @@ func (f *FrontendAPI) GetResearchGraph(projectID string) (*ResearchGraphDTO, err
 		}, nil
 	}
 
-	// Build the response from the active project's graph and metrics.
+	// Build the response from the active project's graph, metrics, and log.
+	return researchGraphDTOFromProject(active), nil
+}
+
+// researchGraphDTOFromProject builds a ResearchGraphDTO from a parsed active
+// research project (graph + metrics + report flag + log). Shared by
+// GetResearchGraph and the mutation RPCs (UpdateHypothesis / CreateHypothesis)
+// so they all serialize the same shape.
+func researchGraphDTOFromProject(active *research.ResearchProject) *ResearchGraphDTO {
 	dto := &ResearchGraphDTO{
 		ProjectID: active.ID,
 		HasReport: active.HasReport,
+		Log:       active.Log,
 	}
 
 	for _, n := range active.Graph.Nodes {
@@ -410,7 +477,195 @@ func (f *FrontendAPI) GetResearchGraph(projectID string) (*ResearchGraphDTO, err
 	dto.Metrics.Breadth = m.Breadth
 	dto.Metrics.ActiveFront = m.ActiveFront
 
-	return dto, nil
+	return dto
+}
+
+// ---------------------------------------------------------------------------
+// GetResearchNextStep
+// ---------------------------------------------------------------------------
+
+// GetResearchNextStep returns the single recommended next research action for
+// a project, derived from the active R-NNN's current phase. When there is no
+// active R-NNN yet (an empty research root, a root with no projects, or
+// RESEARCH not enabled), it returns the setup recommendation (research-init)
+// rather than an error, so the dashboard always has a next step to show.
+func (f *FrontendAPI) GetResearchNextStep(projectID string) (*ResearchNextStepDTO, error) {
+	if projectID == "" {
+		return nil, errors.New("project_id is required")
+	}
+	if !f.experimentalFeaturesEnabled() {
+		return f.setupNextStep(projectID), nil
+	}
+	if f.projectManager == nil {
+		return nil, errors.New("project subsystem not initialized")
+	}
+
+	proj, err := f.loadProjectForResearch(projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	// RESEARCH disabled (no persisted root) → setup recommendation.
+	if proj.ResearchRoot == "" {
+		return f.setupNextStep(projectID), nil
+	}
+
+	root := f.parseResearchRootBestEffort(proj.ResearchRoot)
+	active := research.PickActiveProject(root) // handles nil root → nil
+	rec := research.RecommendNextStep(active)
+
+	// Report the active R-NNN as the subject of the recommendation when one
+	// exists; otherwise fall back to the requested project ID.
+	dtoProjectID := projectID
+	if active != nil {
+		dtoProjectID = active.ID
+	}
+	return &ResearchNextStepDTO{
+		ProjectID: dtoProjectID,
+		Action:    string(rec.Action),
+		Target:    rec.Target,
+		Reason:    rec.Reason,
+		Skill:     rec.Skill,
+	}, nil
+}
+
+// setupNextStep returns the research-init setup recommendation for a project
+// that has no active R-NNN yet (RESEARCH disabled, experimental features off,
+// or an empty research root).
+func (f *FrontendAPI) setupNextStep(projectID string) *ResearchNextStepDTO {
+	rec := research.RecommendNextStep(nil)
+	return &ResearchNextStepDTO{
+		ProjectID: projectID,
+		Action:    string(rec.Action),
+		Target:    rec.Target,
+		Reason:    rec.Reason,
+		Skill:     rec.Skill,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpdateHypothesis / CreateHypothesis
+// ---------------------------------------------------------------------------
+
+// UpdateHypothesis applies a structured update to a hypothesis card and its
+// graph entries for the active R-NNN of a project, then returns the refreshed
+// graph. Status transitions are validated against the methodology's state
+// machine (open → in-progress → confirmed/refuted/cancelled; no backward
+// transitions); an illegal transition returns an error and leaves the card and
+// graph unchanged.
+func (f *FrontendAPI) UpdateHypothesis(projectID, hypothesisID string, fields HypothesisUpdateFields) (*ResearchGraphDTO, error) {
+	researchRoot, err := f.researchRootForMutation(projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	hid := research.NormalizeID(hypothesisID)
+	if hid == "" {
+		return nil, errors.New("invalid hypothesis id")
+	}
+
+	projectDir, err := research.ActiveProjectDir(researchRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	upd := research.HypothesisUpdate{
+		Title:    fields.Title,
+		Status:   fields.Status,
+		Result:   fields.Result,
+		Timebox:  fields.Timebox,
+		Decision: fields.Decision,
+	}
+	if err := research.UpdateHypothesis(projectDir, hid, upd); err != nil {
+		return nil, err
+	}
+
+	hypDir := filepath.Join(projectDir, "hypotheses")
+	f.emitResearchFileChanged(researchRoot, projectID, []string{
+		filepath.Join(hypDir, hid+".md"),
+		filepath.Join(hypDir, "graph.md"),
+	})
+
+	return f.researchGraphAfterMutation(researchRoot), nil
+}
+
+// CreateHypothesis creates a new hypothesis card (assigning the next H-NNN id)
+// and updates the graph (Mermaid node + edges + catalog row) for the active
+// R-NNN of a project, returning the refreshed graph.
+func (f *FrontendAPI) CreateHypothesis(projectID string, newCard NewHypothesisCard) (*ResearchGraphDTO, error) {
+	researchRoot, err := f.researchRootForMutation(projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	projectDir, err := research.ActiveProjectDir(researchRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	hid, err := research.CreateHypothesis(projectDir, research.NewHypothesis{
+		Title:                 newCard.Title,
+		Statement:             newCard.Statement,
+		VerificationCriterion: newCard.VerificationCriterion,
+		Timebox:               newCard.Timebox,
+		Parents:               newCard.Parents,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	hypDir := filepath.Join(projectDir, "hypotheses")
+	f.emitResearchFileChanged(researchRoot, projectID, []string{
+		filepath.Join(hypDir, hid+".md"),
+		filepath.Join(hypDir, "graph.md"),
+	})
+
+	return f.researchGraphAfterMutation(researchRoot), nil
+}
+
+// researchRootForMutation loads the project, verifies experimental features are
+// on and RESEARCH is enabled, and returns the project's research root with
+// workspace containment enforced (SECURITY.md) — defense in depth even though
+// the root was already validated at enable time.
+func (f *FrontendAPI) researchRootForMutation(projectID string) (string, error) {
+	if projectID == "" {
+		return "", errors.New("project_id is required")
+	}
+	if !f.experimentalFeaturesEnabled() {
+		return "", errors.New("experimental features are disabled")
+	}
+	if f.projectManager == nil {
+		return "", errors.New("project subsystem not initialized")
+	}
+
+	proj, err := f.loadProjectForResearch(projectID)
+	if err != nil {
+		return "", err
+	}
+	if proj.ResearchRoot == "" {
+		return "", errors.New("RESEARCH mode is not enabled for this project")
+	}
+
+	contained, withinErr := config.IsWithinPath(proj.WorkspacePath, proj.ResearchRoot)
+	if withinErr != nil {
+		return "", fmt.Errorf("failed to validate research root containment: %w", withinErr)
+	}
+	if !contained {
+		return "", fmt.Errorf("research root %q must be inside the project workspace %q", proj.ResearchRoot, proj.WorkspacePath)
+	}
+	return proj.ResearchRoot, nil
+}
+
+// researchGraphAfterMutation re-parses the research root after a mutation and
+// returns the active project's graph DTO (or an empty DTO when the root is not
+// yet parseable — which should not happen right after a successful write).
+func (f *FrontendAPI) researchGraphAfterMutation(researchRoot string) *ResearchGraphDTO {
+	root := f.parseResearchRootBestEffort(researchRoot)
+	active := research.PickActiveProject(root) // handles nil root → nil
+	if active == nil {
+		return &ResearchGraphDTO{}
+	}
+	return researchGraphDTOFromProject(active)
 }
 
 // ---------------------------------------------------------------------------

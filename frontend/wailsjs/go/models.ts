@@ -1908,6 +1908,26 @@ export namespace session {
 		    return a;
 		}
 	}
+	export class SessionBookmark {
+	    id: string;
+	    session_id: string;
+	    event_key: string;
+	    title: string;
+	    created_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionBookmark(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.session_id = source["session_id"];
+	        this.event_key = source["event_key"];
+	        this.title = source["title"];
+	        this.created_at = source["created_at"];
+	    }
+	}
 	export class SessionInfo {
 	    id: string;
 	    project_id: string;

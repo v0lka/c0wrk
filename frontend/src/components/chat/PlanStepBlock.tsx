@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState, useContext } from 'react'
 import { Loader2, CheckCircle2, XCircle, RefreshCw, Circle, CirclePause } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
@@ -7,6 +7,7 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
 import { StepTooltip } from './StepTooltip'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
+import { BookmarkableContext } from './BookmarkableContext'
 import type { DisplayItem } from '@/types/messages'
 
 type PlanStepItem = Extract<DisplayItem, { kind: 'plan_step' }>
@@ -21,6 +22,7 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
   // belong to the active session. The nested lookup returns a primitive
   // (stable selector — no allocation).
   const activeSessionId = useSessionStore(s => s.activeSessionId)
+  const bookmarkable = useContext(BookmarkableContext)
   const stepContextFill = useChatStore(s => {
     const fills = activeSessionId ? s.stepContextFill[activeSessionId] : undefined
     return fills ? fills[stepId] : undefined
@@ -88,7 +90,7 @@ export function PlanStepBlock({ item }: PlanStepBlockProps) {
         headerExtra={headerExtra}
       >
         <div className={cn('mt-2 border-l-2 rounded pl-3 py-2 space-y-3 min-w-0', borderColor)}>
-          <ChatMessageRenderer items={children} />
+          <ChatMessageRenderer items={children} bookmarkable={bookmarkable} />
         </div>
       </CollapsibleBlock>
     </div>

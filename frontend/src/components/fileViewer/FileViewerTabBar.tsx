@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
-import { X, ChevronDown, PanelRightClose, PanelRightOpen, Pin, PinOff } from "lucide-react";
+import { X, ChevronDown, PanelRightClose, PanelRightOpen, Pin, PinOff, FlaskConical } from "lucide-react";
 import { useFileViewerStore } from "@/stores/fileViewerStore";
+import { RESEARCH_TAB_PATH } from "@/stores/researchStore";
 import { FileIcon } from "@/components/layout/FileIcon";
 import { useFileIcon } from "@/hooks/useFileIcon";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,9 @@ interface FileViewerTabBarProps {
 
 function TabFileIcon({ path }: { path: string }) {
   const iconData = useFileIcon(path);
+  if (path === RESEARCH_TAB_PATH) {
+    return <FlaskConical className="size-3.5 text-success" />
+  }
   return <FileIcon isDir={false} icon={iconData?.icon} iconColor={iconData?.icon_color} />;
 }
 

@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useCallback } from 'react'
 import { FlaskConical, FileText, BookMarked, FileCheck2, Plus, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useResearchStatusEvents } from '@/hooks/useResearchStatusEvents'
@@ -7,30 +7,32 @@ import { useResearchStore, selectActiveProject } from '@/stores/researchStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { ResearchToggle } from './ResearchToggle'
 import { ResearchMetricsRow } from './ResearchMetrics'
-import { ResearchHypothesisList } from './ResearchHypothesisList'
+import { ResearchNextStep } from './ResearchNextStep'
+import { ResearchQuickActions } from './ResearchQuickActions'
+import { ResearchQuickMutate } from './ResearchQuickMutate'
+import { ResearchLog } from './ResearchLog'
 import { projectDir, projectFilePaths } from './researchDagRender'
 
 /**
- * RESEARCH panel — the signature live hypothesis tree + metrics view.
+ * RESEARCH panel — a control dashboard, not a passive mirror.
  *
  * Modeled on the Git panel: subscribes to research:changed /
- * workspace:tree_changed via the side-effect hook, then renders either a
- * compact "Enable RESEARCH" empty state (when off) or the full panel —
- * toolbar with the mode toggle, confirmation/depth/active-front metrics, the
- * hypothesis list (a readable indented vertical tree), and clickable
- * quick-link chips for the brief / prior-art / graph / report.
+ * workspace:tree_changed (full status) and research:file_changed (incremental
+ * graph + log) via the side-effect hooks, then renders a compact control
+ * surface — a status/metrics header, the recommended next step with one-click
+ * execution, a quick-actions row that dispatches research-* skills, quick
+ * status mutations on the active front (t4), and the research log (t1).
  *
- * The bottom links and hypothesis rows are interactive: clicking a quick link
- * opens the underlying `.research` artifact in the file viewer (ReadFile is
- * path-agnostic, so `.research/` files read fine), and "+ New hypothesis"
- * opens the hypothesis graph.md so the user can add an entry.
+ * The hypothesis tree/DAG presentation moved to the Research workspace tab
+ * (t5); the bottom links remain for opening the brief / prior-art / graph /
+ * report artifacts.
  */
 export function ResearchPanel() {
-  // Side-effect hook: keeps researchStore in sync with the backend.
+  // Side-effect hook: keeps researchStore (status + next step) in sync.
   useResearchStatusEvents()
 
-  // Side-effect hook: incrementally updates the hypothesis graph when files
-  // inside the research directory change (hypothesis cards, brief, etc.).
+  // Side-effect hook: incrementally updates the graph, log, and next step when
+  // files inside the research directory change.
   useResearchFileWatcher()
 
   const enabled = useResearchStore((s) => s.status?.enabled ?? false)
@@ -40,20 +42,19 @@ export function ResearchPanel() {
   const error = useResearchStore((s) => s.error)
   const isLoading = useResearchStore((s) => s.isLoading)
 
-  const [selectedNode, setSelectedNode] = useState<string | undefined>(undefined)
-  const onSelectNode = useCallback((id: string) => {
-    setSelectedNode((prev) => (prev === id ? undefined : id))
-  }, [])
-
-  // Ref to the scroll container for preserving scroll position across
-  // incremental graph updates.
-  const scrollContainerRef = useRef<HTMLDivElement>(null)
-
   // Open a research artifact file in the file viewer (path-agnostic ReadFile).
   const openArtifact = useCallback((filePath: string) => {
     const store = useFileViewerStore.getState()
     store.setCollapsed(false)
     store.openFile(filePath)
+  }, [])
+
+  // Open the Research workspace tab (the interactive hypothesis DAG) in the
+  // file viewer instead of the raw graph.md.
+  const openResearchTab = useCallback(() => {
+    const store = useFileViewerStore.getState()
+    store.setCollapsed(false)
+    store.openResearch()
   }, [])
 
   // ── RESEARCH off → toggle empty state ────────────────────────────────
@@ -68,7 +69,6 @@ export function ResearchPanel() {
     )
   }
 
-  const graph = project?.graph ?? { nodes: [], edges: [] }
   const metrics = project?.metrics
   const brief = project?.brief
 
@@ -91,25 +91,20 @@ export function ResearchPanel() {
 
       {error && <ErrorBanner message={error} />}
 
-      {/* Metrics row */}
-      {metrics && <ResearchMetricsRow metrics={metrics} />}
-
-      {/* Hypothesis list (readable vertical tree) */}
-      <div
-        ref={scrollContainerRef}
-        className="flex-1 min-h-0 overflow-auto px-1"
-      >
+      {/* Control dashboard body */}
+      <div className="flex-1 min-h-0 overflow-auto px-1.5 py-1.5 flex flex-col gap-2">
         {isLoading && !project ? (
           <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
             Loading…
           </div>
         ) : (
-          <ResearchHypothesisList
-            graph={graph}
-            selectedId={selectedNode}
-            onSelectNode={onSelectNode}
-            scrollContainerRef={scrollContainerRef}
-          />
+          <>
+            {metrics && <ResearchMetricsRow metrics={metrics} />}
+            <ResearchNextStep />
+            <ResearchQuickActions />
+            <ResearchQuickMutate />
+            <ResearchLog />
+          </>
         )}
       </div>
 
@@ -131,7 +126,7 @@ export function ResearchPanel() {
           icon={FileText}
           label="Graph"
           value=""
-          onClick={() => openArtifact(paths.graph)}
+          onClick={openResearchTab}
         />
         <QuickLink
           icon={FileCheck2}
@@ -145,7 +140,7 @@ export function ResearchPanel() {
           label="New hypothesis"
           value=""
           primary
-          onClick={() => openArtifact(paths.graph)}
+          onClick={openResearchTab}
         />
       </div>
     </div>

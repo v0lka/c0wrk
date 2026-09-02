@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useContext, useEffect, useMemo, useState } from 'react'
 import { Bot, Loader2, CheckCircle2, XCircle, CirclePause } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/formatters'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
 import { StepTooltip } from './StepTooltip'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
+import { BookmarkableContext } from './BookmarkableContext'
 import type { DisplayItem } from '@/types/messages'
 
 type SubAgentItem = Extract<DisplayItem, { kind: 'subagent' }>
@@ -18,6 +19,7 @@ const statusConfig = {
 
 export function SubAgentBlock({ item }: { item: SubAgentItem }) {
   const { stepId, description, status, duration, error, children } = item
+  const bookmarkable = useContext(BookmarkableContext)
 
   // Collapsed by default; user can expand. Auto-collapses again on status change.
   const [userOverride, setUserOverride] = useState<boolean | null>(null)
@@ -67,7 +69,7 @@ export function SubAgentBlock({ item }: { item: SubAgentItem }) {
       headerExtra={headerExtra}
     >
       <div className="mt-2 border-l-2 border-border rounded pl-3 py-2 space-y-3 min-w-0">
-        <ChatMessageRenderer items={children} />
+        <ChatMessageRenderer items={children} bookmarkable={bookmarkable} />
       </div>
     </CollapsibleBlock>
   )

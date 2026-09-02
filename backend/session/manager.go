@@ -1448,6 +1448,25 @@ func (s *Session) RescanSkills(logger *slog.Logger) {
 	}
 }
 
+// RescanAgents re-scans the Subagent Profile catalog for this session's
+// orchestrator, picking up profiles seeded into .agents/agents after the
+// session was created (e.g. the built-in research profile from enabling
+// RESEARCH mode). Best-effort: errors are logged and do not propagate, since a
+// failed re-scan leaves the prior catalog intact and never blocks the caller.
+// A nil orchestrator is a no-op.
+func (s *Session) RescanAgents(logger *slog.Logger) {
+	s.mu.Lock()
+	orch := s.orchestrator
+	s.mu.Unlock()
+	if orch == nil {
+		return
+	}
+	if err := orch.RescanAgents(); err != nil && logger != nil {
+		logger.Warn("RescanAgents: failed to refresh session agent catalog",
+			"session_id", s.ID, "error", err)
+	}
+}
+
 // RescanSkillsForProject re-scans the skill catalog for every live
 // (in-memory) session belonging to projectID. Used by EnableResearch so the
 // research-* skills become discoverable to sessions that are already running
@@ -1465,6 +1484,27 @@ func (m *Manager) RescanSkillsForProject(projectID string) {
 	}
 	if logger != nil {
 		logger.Debug("RescanSkillsForProject completed", "project_id", projectID)
+	}
+}
+
+// RescanAgentsForProject re-scans the Subagent Profile catalog for every live
+// (in-memory) session belonging to projectID. Mirrors RescanSkillsForProject:
+// used by EnableResearch so the built-in research profile becomes discoverable
+// to sessions that are already running without requiring a restart.
+// Lazy-restored or store-only sessions are skipped — they build a fresh agent
+// catalog when next activated.
+func (m *Manager) RescanAgentsForProject(projectID string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	logger := m.log()
+	for _, session := range m.sessions {
+		if session.ProjectID != projectID {
+			continue
+		}
+		session.RescanAgents(logger)
+	}
+	if logger != nil {
+		logger.Debug("RescanAgentsForProject completed", "project_id", projectID)
 	}
 }
 

@@ -1,13 +1,19 @@
 package backend
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/core/research"
 	"github.com/v0lka/c0wrk/core/workspace"
+	_ "modernc.org/sqlite"
 )
 
 // TestResearchFileChanged_NestedSubdir verifies that the research panel update
@@ -111,4 +117,285 @@ func TestResearchFileChanged_NestedSubdir(t *testing.T) {
 		t.Fatal("research:file_changed NOT emitted for new research subdir — auto-add did not work")
 	}
 	t.Logf("PASS: research:file_changed emitted for newly-created research subdir")
+}
+
+// ---------------------------------------------------------------------------
+// Structured mutation RPCs (UpdateHypothesis / CreateHypothesis)
+// ---------------------------------------------------------------------------
+
+// openResearchTestDB opens an in-memory SQLite DB with the pragmas the
+// project store expects (mirrors openProjectSwitchTestDB).
+func openResearchTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode=WAL"); err != nil {
+		_ = db.Close()
+		t.Fatalf("failed to enable WAL: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), "PRAGMA foreign_keys=ON"); err != nil {
+		_ = db.Close()
+		t.Fatalf("failed to enable foreign keys: %v", err)
+	}
+	return db
+}
+
+// researchMutationTestFrontend builds a FrontendAPI wired with a real project
+// manager (backed by an in-memory SQLite store, experimental features enabled)
+// and a project whose workspace contains a minimal nested research root
+// (R-001-test with one open hypothesis). It returns the API, the project ID,
+// and the research root path.
+func researchMutationTestFrontend(t *testing.T) (*FrontendAPI, string, string) {
+	t.Helper()
+	base := t.TempDir()
+	ws := filepath.Join(base, "ws")
+	researchRoot := filepath.Join(ws, ".research")
+
+	hypDir := filepath.Join(researchRoot, "R-001-test", "hypotheses")
+	if err := os.MkdirAll(hypDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	brief := "# [R-001] Test\n"
+	if err := os.WriteFile(filepath.Join(researchRoot, "R-001-test", "brief.md"), []byte(brief), 0o644); err != nil {
+		t.Fatalf("brief: %v", err)
+	}
+	graph := `# Hypothesis Graph — R-001
+
+## Diagram
+
+` + "```mermaid\n" + `graph TD
+    classDef confirmed fill:#4CAF50,color:#fff
+    classDef refuted fill:#F44336,color:#fff
+    classDef in_progress fill:#FF9800,color:#fff
+    classDef open fill:#2196F3,color:#fff
+    classDef cancelled fill:#9E9E9E,color:#fff
+
+    H001["H-001: Static bundle parsing"]:::open
+` + "```\n" + `
+## Hypothesis Catalog
+
+| ID | Hypothesis | Status | Decision | Parent(s) |
+|---|---|---|---|---|
+| [H-001](H-001.md) | Static bundle parsing | open | — | — |
+
+---
+
+[Back to Brief](../brief.md)
+`
+	if err := os.WriteFile(filepath.Join(hypDir, "graph.md"), []byte(graph), 0o644); err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	card := `# H-001: Static bundle parsing
+
+| Field | Value |
+|---|---|
+| **Identifier** | H-001 |
+| **Status** | open |
+| **Timebox** | 5 days |
+| **Parent(s)** | — |
+| **Created** | 2025-04-02 |
+| **Completed** | — |
+| **Decision** | — |
+
+## Statement
+
+Static analysis of webpack bundles can recover the module graph.
+
+## Verification Criterion
+
+Recover >= 95% of modules.
+
+## Experiment Notes
+
+*Not yet started.*
+
+## Result
+
+**Finding:** —
+
+---
+
+[Back to Hypothesis Graph](graph.md) | [Back to Brief](../brief.md)
+`
+	if err := os.WriteFile(filepath.Join(hypDir, "H-001.md"), []byte(card), 0o644); err != nil {
+		t.Fatalf("card: %v", err)
+	}
+
+	db := openResearchTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := project.NewSQLiteProjectStore(db)
+	if err != nil {
+		t.Fatalf("create project store: %v", err)
+	}
+	if err := store.SaveProject(context.Background(), project.ProjectInfo{
+		ID:            "proj-1",
+		Name:          "Research",
+		WorkspacePath: ws,
+		ResearchRoot:  researchRoot,
+	}); err != nil {
+		t.Fatalf("save project: %v", err)
+	}
+
+	mgr := project.NewManager(store, base, nil)
+	f := &FrontendAPI{
+		projectManager: mgr,
+		config:         &config.Config{Experimental: config.ExperimentalConfig{Enabled: true}},
+		emitEvent:      func(_ string, _ ...any) {},
+	}
+	return f, "proj-1", researchRoot
+}
+
+// TestResearchRPC_UpdateAndCreateRoundTrip verifies the structured mutation
+// RPCs: UpdateHypothesis changes the card + graph, and CreateHypothesis assigns
+// the next H-NNN id and wires edges from parents — both reflected by a fresh
+// ParseProject.
+func TestResearchRPC_UpdateAndCreateRoundTrip(t *testing.T) {
+	f, projectID, researchRoot := researchMutationTestFrontend(t)
+
+	status := "in-progress"
+	title := "Refined bundle parsing"
+	result := "Recovered 97% of modules."
+	dto, err := f.UpdateHypothesis(projectID, "H-001", HypothesisUpdateFields{
+		Status: &status,
+		Title:  &title,
+		Result: &result,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHypothesis: %v", err)
+	}
+	if dto == nil {
+		t.Fatal("UpdateHypothesis returned nil DTO")
+	}
+
+	projectDir, err := research.ActiveProjectDir(researchRoot)
+	if err != nil {
+		t.Fatalf("ActiveProjectDir: %v", err)
+	}
+	proj, err := research.ParseProject(projectDir)
+	if err != nil {
+		t.Fatalf("ParseProject after update: %v", err)
+	}
+	n := proj.Graph.Node("H-001")
+	if n == nil {
+		t.Fatal("H-001 missing after update")
+	}
+	if n.Status != research.StatusInProgress {
+		t.Errorf("status = %q, want in-progress", n.Status)
+	}
+	if n.Title != title || n.Result != result {
+		t.Errorf("title/result = %q/%q, want %q/%q", n.Title, n.Result, title, result)
+	}
+
+	// Create H-002 as a child of H-001.
+	dto2, err := f.CreateHypothesis(projectID, NewHypothesisCard{
+		Title:   "Runtime interception",
+		Parents: []string{"H-001"},
+	})
+	if err != nil {
+		t.Fatalf("CreateHypothesis: %v", err)
+	}
+	if dto2 == nil {
+		t.Fatal("CreateHypothesis returned nil DTO")
+	}
+
+	proj2, err := research.ParseProject(projectDir)
+	if err != nil {
+		t.Fatalf("ParseProject after create: %v", err)
+	}
+	n2 := proj2.Graph.Node("H-002")
+	if n2 == nil {
+		t.Fatal("H-002 missing after create")
+	}
+	if len(n2.Parents) != 1 || n2.Parents[0] != "H-001" {
+		t.Errorf("H-002 parents = %v, want [H-001]", n2.Parents)
+	}
+	foundEdge := false
+	for _, e := range proj2.Graph.Edges {
+		if e.From == "H-001" && e.To == "H-002" {
+			foundEdge = true
+		}
+	}
+	if !foundEdge {
+		t.Errorf("edge H-001→H-002 missing; edges=%v", proj2.Graph.Edges)
+	}
+}
+
+// TestResearchRPC_RejectsInvalidInput verifies the guards: illegal/backward
+// transitions error without mutating files, and missing/invalid hypothesis ids
+// are rejected.
+func TestResearchRPC_RejectsInvalidInput(t *testing.T) {
+	f, projectID, researchRoot := researchMutationTestFrontend(t)
+
+	projectDir, err := research.ActiveProjectDir(researchRoot)
+	if err != nil {
+		t.Fatalf("ActiveProjectDir: %v", err)
+	}
+	cardPath := filepath.Join(projectDir, "hypotheses", "H-001.md")
+	graphPath := filepath.Join(projectDir, "hypotheses", "graph.md")
+	cardBefore, _ := os.ReadFile(cardPath)
+	graphBefore, _ := os.ReadFile(graphPath)
+
+	// Illegal transition: open → confirmed (must go through in-progress).
+	bad := "confirmed"
+	if _, err := f.UpdateHypothesis(projectID, "H-001", HypothesisUpdateFields{Status: &bad}); err == nil {
+		t.Fatal("expected error for open→confirmed")
+	}
+
+	cardAfter, _ := os.ReadFile(cardPath)
+	graphAfter, _ := os.ReadFile(graphPath)
+	if string(cardBefore) != string(cardAfter) {
+		t.Error("card changed despite failed transition")
+	}
+	if string(graphBefore) != string(graphAfter) {
+		t.Error("graph changed despite failed transition")
+	}
+
+	// Missing / invalid hypothesis ids.
+	if _, err := f.UpdateHypothesis(projectID, "H-999", HypothesisUpdateFields{}); err == nil {
+		t.Error("expected error for missing hypothesis id")
+	}
+	if _, err := f.UpdateHypothesis(projectID, "not-an-id", HypothesisUpdateFields{}); err == nil {
+		t.Error("expected error for invalid hypothesis id")
+	}
+}
+
+// TestResearchRPC_RejectsOutOfWorkspaceRoot verifies the workspace-containment
+// guard: a persisted research root outside the workspace is rejected.
+func TestResearchRPC_RejectsOutOfWorkspaceRoot(t *testing.T) {
+	base := t.TempDir()
+	ws := filepath.Join(base, "ws")
+	outsideRoot := filepath.Join(base, "outside", ".research")
+	if err := os.MkdirAll(outsideRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll outside root: %v", err)
+	}
+
+	db := openResearchTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := project.NewSQLiteProjectStore(db)
+	if err != nil {
+		t.Fatalf("create project store: %v", err)
+	}
+	if err := store.SaveProject(context.Background(), project.ProjectInfo{
+		ID:            "proj-out",
+		Name:          "Out",
+		WorkspacePath: ws,
+		ResearchRoot:  outsideRoot,
+	}); err != nil {
+		t.Fatalf("save project: %v", err)
+	}
+	mgr := project.NewManager(store, base, nil)
+	f := &FrontendAPI{
+		projectManager: mgr,
+		config:         &config.Config{Experimental: config.ExperimentalConfig{Enabled: true}},
+		emitEvent:      func(_ string, _ ...any) {},
+	}
+
+	if _, err := f.UpdateHypothesis("proj-out", "H-001", HypothesisUpdateFields{}); err == nil {
+		t.Fatal("expected error for out-of-workspace research root")
+	}
+	if _, err := f.CreateHypothesis("proj-out", NewHypothesisCard{Title: "X"}); err == nil {
+		t.Fatal("expected error for out-of-workspace research root")
+	}
 }

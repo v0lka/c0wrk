@@ -163,6 +163,13 @@ A successful straight path does not need justification.
 Update the entry in `{research-root}/index.md` to reflect the completed
 status and add a link to the final report.
 
+### Step 9 — Record the conclusion to the research log
+
+Append a best-effort `note` entry to `log.md` in the research project
+directory (`R-NNN/log.md`) recording that synthesis completed (see
+"Research Log" below). The entry is project-scoped: omit the hypothesis
+identifier.
+
 ## Quarterly Review Preparation
 
 If synthesis coincides with a quarterly review/demo, prepare a presentation
@@ -176,6 +183,31 @@ covering:
 
 This is not a separate artifact — it is a summary derived from the report
 and graph.
+
+## Research Log
+
+Maintain a research-history log at `log.md` in the research project directory
+(`R-NNN/log.md`). When synthesis concludes the project, append one best-effort,
+timestamped entry so the timeline fills in automatically.
+
+Each entry is a level-2 heading plus a one-line message body:
+
+```
+## <kind> <created_at> [<hypothesis-id>]
+<message>
+```
+
+- `<kind>` — `note` for the synthesis conclusion (this skill's entries).
+- `<created_at>` — current UTC time in ISO 8601
+  (`YYYY-MM-DDTHH:MM:SSZ`, e.g. `date -u +%Y-%m-%dT%H:%M:%SZ`).
+- `<hypothesis-id>` — omitted: the conclusion is project-scoped, not tied to
+  a single hypothesis.
+- `<message>` — a single line summarizing the conclusion, e.g.
+  `Synthesis complete: research question answered; report.md written.`
+
+If `log.md` does not exist, create it with a `# Research Log` heading first.
+Always append — never rewrite existing entries. If the log cannot be written,
+continue anyway; the log is best-effort and must not block the synthesis.
 
 ## Relation to Other Skills
 

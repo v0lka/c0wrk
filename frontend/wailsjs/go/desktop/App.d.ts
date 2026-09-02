@@ -15,6 +15,8 @@ export function AbortRebase():Promise<void>;
 
 export function ActiveProjectDir():Promise<string>;
 
+export function AddBookmark(arg1:string,arg2:string,arg3:string):Promise<session.SessionBookmark>;
+
 export function AddWorkDirectory(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function AppendToGitignore(arg1:string):Promise<void>;
@@ -58,6 +60,8 @@ export function CreateProject(arg1:string,arg2:string):Promise<project.ProjectIn
 export function CreateSession():Promise<session.SessionInfo>;
 
 export function CreateTag(arg1:string,arg2:string):Promise<void>;
+
+export function DeleteBookmark(arg1:string,arg2:string):Promise<void>;
 
 export function DeleteBranch(arg1:string,arg2:boolean):Promise<void>;
 
@@ -181,6 +185,8 @@ export function ListAgents():Promise<Array<backend.AgentDescriptorDTO>>;
 
 export function ListAllSessions():Promise<Array<session.SessionInfo>>;
 
+export function ListBookmarks(arg1:string):Promise<Array<session.SessionBookmark>>;
+
 export function ListDirectory(arg1:string,arg2:boolean):Promise<Array<workspace.FileNode>>;
 
 export function ListProjectWorkDirectories(arg1:string):Promise<Array<project.WorkDirectoryRecord>>;
@@ -226,6 +232,8 @@ export function ReadFileAsDataURL(arg1:string):Promise<string>;
 export function Rebase(arg1:string):Promise<void>;
 
 export function RemoveAttachment(arg1:string,arg2:string):Promise<void>;
+
+export function RenameBookmark(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RenameBranch(arg1:string,arg2:string):Promise<void>;
 

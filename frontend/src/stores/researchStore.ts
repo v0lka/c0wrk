@@ -3,7 +3,14 @@ import type {
   ResearchProject,
   ResearchStatus,
   ResearchGraphResponse,
+  ResearchNextStep,
+  ResearchLogEntry,
 } from '@/types/models'
+
+/** Synthetic pseudo-path rendered by the file viewer as the Research
+ *  workspace (the editable hypothesis DAG). Parallels `REVIEW_TAB_PATH`
+ *  ('c0wrk:review') in reviewStore. */
+export const RESEARCH_TAB_PATH = 'c0wrk:research'
 
 // --- State types ---
 
@@ -20,11 +27,17 @@ interface ResearchState {
   /** The projectId the current `status` belongs to. Guards against stale data
    *  when the user switches projects before an in-flight fetch resolves. */
   projectId: string | null
+  /** The single recommended next research action for the active project, or
+   *  null when not yet fetched / RESEARCH off. Pulled via GetResearchNextStep
+   *  (separate from `status` because it is derived from phase, not file state). */
+  nextStep: ResearchNextStep | null
 }
 
 interface ResearchActions {
   /** Replace the parsed status, stamping it with the projectId it belongs to. */
   loadStatus: (status: ResearchStatus, projectId: string) => void
+  /** Replace the recommended next research action for the active project. */
+  loadNextStep: (nextStep: ResearchNextStep) => void
   /** Incrementally update only the active project's graph, metrics, brief,
    *  and has_report fields. Preserves status, projectId, isLoading, error.
    *  Used by the file-change update path to avoid full refetches. */
@@ -46,6 +59,7 @@ const initialState: ResearchState = {
   isToggling: false,
   error: null,
   projectId: null,
+  nextStep: null,
 }
 
 // --- Store ---
@@ -55,6 +69,8 @@ export const useResearchStore = create<ResearchStore>((set) => ({
 
   loadStatus: (status, projectId) =>
     set({ status, projectId, isLoading: false, error: null }),
+
+  loadNextStep: (nextStep) => set({ nextStep }),
 
   loadGraph: (graphResponse) =>
     set((state) => {
@@ -82,6 +98,7 @@ export const useResearchStore = create<ResearchStore>((set) => ({
           },
           metrics: graphResponse.metrics,
           has_report: graphResponse.has_report,
+          log: graphResponse.log,
         }
       })
 
@@ -127,4 +144,16 @@ export function selectActiveProject(state: ResearchStore): ResearchProject | nul
   // index). Use the highest-numbered project (last after ascending sort),
   // mirroring research.PickActiveProject's fallback.
   return root.projects[root.projects.length - 1] ?? null
+}
+
+/** Stable empty log reference — returned when the active project has no log,
+ *  so the selector never allocates a fresh array on every read. */
+const EMPTY_LOG: ResearchLogEntry[] = []
+
+/** The active project's research log (t1 log.md entries), or a stable empty
+ *  array when off / not loaded. A direct reference to `project.log` (already
+ *  normalized to `[]` at the RPC boundary), so it is safe as a selector return
+ *  value and stays in sync via `loadStatus`/`loadGraph`. */
+export function selectActiveLog(state: ResearchStore): ResearchLogEntry[] {
+  return selectActiveProject(state)?.log ?? EMPTY_LOG
 }

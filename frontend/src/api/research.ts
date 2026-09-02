@@ -2,7 +2,13 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
-import type { ResearchStatus, ResearchGraphResponse } from '@/types/models'
+import type {
+  ResearchStatus,
+  ResearchGraphResponse,
+  ResearchNextStep,
+  HypothesisUpdateFields,
+  NewHypothesisCard,
+} from '@/types/models'
 
 /**
  * Enable RESEARCH mode for a project. Seeds the methodology skill-pack,
@@ -77,6 +83,70 @@ export async function getResearchGraph(projectId: string): Promise<ResearchGraph
   }
 }
 
+/**
+ * Get the single recommended next research action for a project, derived from
+ * the active R-NNN's current phase. Returns the setup recommendation
+ * (research-init) when there is no active R-NNN yet.
+ */
+export async function getResearchNextStep(projectId: string): Promise<ResearchNextStep> {
+  try {
+    const app = getApp()
+    const result = await app.GetResearchNextStep(projectId)
+    if (!isResearchNextStep(result)) {
+      throw new Error('Invalid research next-step response from backend')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to get research next step:', err)
+    throw err
+  }
+}
+
+/**
+ * Update an existing hypothesis card and its graph entries (Mermaid node +
+ * catalog row) for a project's active R-NNN. Returns the refreshed graph.
+ * Status transitions are validated by the backend (no backward transitions);
+ * an illegal transition rejects the whole call and leaves the files unchanged.
+ */
+export async function updateHypothesis(
+  projectId: string,
+  hypothesisId: string,
+  fields: HypothesisUpdateFields,
+): Promise<ResearchGraphResponse> {
+  try {
+    const app = getApp()
+    const result = await app.UpdateHypothesis(projectId, hypothesisId, fields)
+    if (!isResearchGraphResponse(result)) {
+      throw new Error('Invalid research graph response from backend')
+    }
+    return normalizeResearchGraphResponse(result)
+  } catch (err) {
+    logger.error('Failed to update hypothesis:', err)
+    throw err
+  }
+}
+
+/**
+ * Create a new hypothesis card (the backend assigns the next H-NNN id) and
+ * update the graph for a project's active R-NNN. Returns the refreshed graph.
+ */
+export async function createHypothesis(
+  projectId: string,
+  newCard: NewHypothesisCard,
+): Promise<ResearchGraphResponse> {
+  try {
+    const app = getApp()
+    const result = await app.CreateHypothesis(projectId, newCard)
+    if (!isResearchGraphResponse(result)) {
+      throw new Error('Invalid research graph response from backend')
+    }
+    return normalizeResearchGraphResponse(result)
+  } catch (err) {
+    logger.error('Failed to create hypothesis:', err)
+    throw err
+  }
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null
 }
@@ -107,6 +177,7 @@ function isResearchStatus(v: unknown): v is ResearchStatus {
       for (const p of projects) {
         if (!isRecord(p) || !isRecord(p['graph'])) return false
         if (!isArrayOrMissing(p['graph']['nodes']) || !isArrayOrMissing(p['graph']['edges'])) return false
+        if (!isArrayOrMissing(p['log'])) return false
       }
     }
   }
@@ -120,6 +191,26 @@ function isResearchGraphResponse(v: unknown): v is ResearchGraphResponse {
   if (!isRecord(v['graph'])) return false
   if (!isArrayOrMissing(v['graph']['nodes']) || !isArrayOrMissing(v['graph']['edges'])) return false
   if (!isRecord(v['metrics'])) return false
+  if (!isArrayOrMissing(v['log'])) return false
+  return true
+}
+
+/** Valid action kinds for GetResearchNextStep (mirrors core/research ActionKind). */
+const RESEARCH_ACTION_KINDS: ReadonlySet<string> = new Set([
+  'research-init',
+  'research-hypothesis',
+  'research-experiment',
+  'research-decision',
+  'research-synthesis',
+])
+
+function isResearchNextStep(v: unknown): v is ResearchNextStep {
+  if (!isRecord(v)) return false
+  if (typeof v['project_id'] !== 'string') return false
+  if (typeof v['reason'] !== 'string') return false
+  if (typeof v['skill'] !== 'string') return false
+  if (typeof v['action'] !== 'string' || !RESEARCH_ACTION_KINDS.has(v['action'])) return false
+  if (v['target'] !== undefined && v['target'] !== null && typeof v['target'] !== 'string') return false
   return true
 }
 
@@ -134,6 +225,7 @@ function normalizeResearchStatus(status: ResearchStatus): ResearchStatus {
     for (const project of status.root.projects) {
       project.graph.nodes ??= []
       project.graph.edges ??= []
+      project.log ??= []
     }
   }
   return status
@@ -142,5 +234,6 @@ function normalizeResearchStatus(status: ResearchStatus): ResearchStatus {
 function normalizeResearchGraphResponse(res: ResearchGraphResponse): ResearchGraphResponse {
   res.graph.nodes ??= []
   res.graph.edges ??= []
+  res.log ??= []
   return res
 }

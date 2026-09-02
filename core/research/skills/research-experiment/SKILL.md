@@ -116,6 +116,9 @@ When the experiment concludes (by result or by timebox expiry):
    - Launch instructions (step-by-step).
    - Setup scripts or configuration files.
 
+4. **Record the result in the research log** (`log.md`) — append an
+   `experiment` entry (see "Research Log" below).
+
 ### Step 6 — Hand off to decision
 
 After recording the result, inform the researcher that the iteration is
@@ -133,6 +136,32 @@ For experiments that are candidates for the final report, verify:
 - [ ] Output artifacts are saved and linked from the hypothesis card.
 
 Intermediate experiments that were discarded do not need to meet this bar.
+
+## Research Log
+
+Maintain a research-history log at `log.md` in the research project directory
+(`R-NNN/log.md`). Whenever this skill records an experiment outcome, append one
+best-effort, timestamped entry so the timeline fills in automatically.
+
+Each entry is a level-2 heading plus a one-line message body:
+
+```
+## <kind> <created_at> [<hypothesis-id>]
+<message>
+```
+
+- `<kind>` — `experiment` for experiment outcomes (this skill's entries).
+- `<created_at>` — current UTC time in ISO 8601
+  (`YYYY-MM-DDTHH:MM:SSZ`, e.g. `date -u +%Y-%m-%dT%H:%M:%SZ`).
+- `<hypothesis-id>` — the canonical `H-NNN` identifier of the hypothesis
+  that was tested.
+- `<message>` — a single line summarizing the outcome, e.g.
+  `Recovered 97% of modules on the first pass.` or
+  `Refuted: the criterion was not met within the timebox.`
+
+If `log.md` does not exist, create it with a `# Research Log` heading first.
+Always append — never rewrite existing entries. If the log cannot be written,
+continue anyway; the log is best-effort and must not block the experiment.
 
 ## Relation to Other Skills
 

@@ -153,6 +153,9 @@ Once the researcher confirms (or modifies) the decision:
    or `cancelled` as appropriate. No new hypotheses are created on this
    branch.
 
+5. **Record the decision in the research log** (`log.md`) — append a
+   `decision` entry (see "Research Log" below).
+
 ## Decision Heuristics
 
 Some rules of thumb encoded in the methodology:
@@ -166,6 +169,31 @@ Some rules of thumb encoded in the methodology:
   be justified. The default is sequential hypothesis testing.
 - **Preserve knowledge from dead ends**: killed branches still produced
   knowledge. Ensure the "what we learned" section of the card is thorough.
+
+## Research Log
+
+Maintain a research-history log at `log.md` in the research project directory
+(`R-NNN/log.md`). Whenever this skill executes an iteration decision, append
+one best-effort, timestamped entry so the timeline fills in automatically.
+
+Each entry is a level-2 heading plus a one-line message body:
+
+```
+## <kind> <created_at> [<hypothesis-id>]
+<message>
+```
+
+- `<kind>` — `decision` for iteration decisions (this skill's entries).
+- `<created_at>` — current UTC time in ISO 8601
+  (`YYYY-MM-DDTHH:MM:SSZ`, e.g. `date -u +%Y-%m-%dT%H:%M:%SZ`).
+- `<hypothesis-id>` — the canonical `H-NNN` identifier of the hypothesis
+  the decision applies to.
+- `<message>` — a single line summarizing the decision, e.g.
+  `Continue deepening the current front: the static-parsing signal is strong.`
+
+If `log.md` does not exist, create it with a `# Research Log` heading first.
+Always append — never rewrite existing entries. If the log cannot be written,
+continue anyway; the log is best-effort and must not block the decision.
 
 ## Relation to Other Skills
 

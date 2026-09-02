@@ -49,7 +49,7 @@ const embedRoot = "skills"
 // CurrentSeedVersion is the pack version stamped into each seeded skill's
 // sidecar marker. Bump this when the embedded skill content changes and
 // existing seeded copies should be refreshed on the next EnableResearch.
-const CurrentSeedVersion = "1"
+const CurrentSeedVersion = "2"
 
 // seedVersionFile is the sidecar marker filename written into every seeded
 // skill directory. Its presence identifies a directory as pack-seeded
@@ -114,18 +114,16 @@ func SeedSkills(destSkillsDir string, logger *slog.Logger) (*SeedSkillsResult, e
 	}
 
 	sortAll(result)
-	log := slog.Default()
 	if logger != nil {
-		log = logger
+		logger.Info("research skill-pack seeded",
+			"dest", destSkillsDir,
+			"version", CurrentSeedVersion,
+			"seeded", len(result.Seeded),
+			"updated", len(result.Updated),
+			"current", len(result.Current),
+			"preserved", len(result.Preserved),
+		)
 	}
-	log.Info("research skill-pack seeded",
-		"dest", destSkillsDir,
-		"version", CurrentSeedVersion,
-		"seeded", len(result.Seeded),
-		"updated", len(result.Updated),
-		"current", len(result.Current),
-		"preserved", len(result.Preserved),
-	)
 	return result, nil
 }
 

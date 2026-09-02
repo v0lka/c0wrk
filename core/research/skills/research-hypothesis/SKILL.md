@@ -97,6 +97,8 @@ When a hypothesis transitions between statuses, update:
 1. **The card file** (`H-NNN.md`): change the Status field.
 2. **The graph diagram**: change the CSS class of the node.
 3. **The catalog table**: update the Status column.
+4. **The research log** (`log.md`): append a `status_change` entry (see
+   "Research Log" below).
 
 Valid transitions:
 
@@ -165,6 +167,31 @@ H002 --> H003
   splitting into two hypotheses.
 - The graph is the primary navigation tool for the research. Keep it accurate
   and up to date at all times.
+
+## Research Log
+
+Maintain a research-history log at `log.md` in the research project directory
+(`R-NNN/log.md`). Whenever this skill mutates hypothesis state, append one
+best-effort, timestamped entry so the timeline fills in automatically.
+
+Each entry is a level-2 heading plus a one-line message body:
+
+```
+## <kind> <created_at> [<hypothesis-id>]
+<message>
+```
+
+- `<kind>` — `status_change` for status transitions (this skill's entries).
+- `<created_at>` — current UTC time in ISO 8601
+  (`YYYY-MM-DDTHH:MM:SSZ`, e.g. `date -u +%Y-%m-%dT%H:%M:%SZ`).
+- `<hypothesis-id>` — the canonical `H-NNN` identifier of the hypothesis
+  whose status changed.
+- `<message>` — a single line summarizing the change, e.g.
+  `Moved H-003 from open to in-progress.`
+
+If `log.md` does not exist, create it with a `# Research Log` heading first.
+Always append — never rewrite existing entries. If the log cannot be written,
+continue anyway; the log is best-effort and must not block the operation.
 
 ## Relation to Other Skills
 

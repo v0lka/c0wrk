@@ -326,3 +326,53 @@ func ComputeMetrics(g *HypothesisGraph) Metrics {
 	m.Breadth = breadth
 	return m
 }
+
+// LogKind is the category of a research-log entry. It is a string enum so it
+// round-trips cleanly through JSON and matches the research log's kind
+// vocabulary (see ParseLog). Each entry in a project's log.md is tagged with
+// exactly one kind.
+type LogKind string
+
+const (
+	// LogKindExperiment records the outcome of an experiment run against a
+	// hypothesis.
+	LogKindExperiment LogKind = "experiment"
+
+	// LogKindDecision records an iteration decision (continue / pivot / kill /
+	// fork) made after reviewing results.
+	LogKindDecision LogKind = "decision"
+
+	// LogKindStatusChange records a hypothesis status transition.
+	LogKindStatusChange LogKind = "status_change"
+
+	// LogKindNote records a free-form observation or note.
+	LogKindNote LogKind = "note"
+)
+
+// ResearchLogEntry is a single timestamped entry parsed from a project's
+// log.md file. It is the atomic unit of the research-history timeline.
+//
+// ID is the stable, 1-based ordinal assigned by ParseLog in file order (logs
+// are append-only, so the ordinal is stable for a given file). HypothesisID is
+// the canonical identifier ("H-001") of the hypothesis the entry pertains to;
+// it is empty for entries that are not tied to a specific hypothesis (e.g.
+// project-level decisions or notes). CreatedAt is the raw timestamp token
+// (ISO 8601) preserved verbatim, mirroring how cards preserve their Timebox.
+type ResearchLogEntry struct {
+	// ID is the 1-based ordinal of the entry in the log (assigned by ParseLog).
+	ID string `json:"id"`
+
+	// Kind is the entry's category: experiment, decision, status_change, or
+	// note.
+	Kind LogKind `json:"kind"`
+
+	// HypothesisID is the canonical hypothesis identifier ("H-001") this entry
+	// refers to, or empty when the entry is project-scoped.
+	HypothesisID string `json:"hypothesis_id,omitempty"`
+
+	// Message is the free-form body of the entry (may span multiple lines).
+	Message string `json:"message"`
+
+	// CreatedAt is the raw timestamp token from the log entry heading.
+	CreatedAt string `json:"created_at"`
+}

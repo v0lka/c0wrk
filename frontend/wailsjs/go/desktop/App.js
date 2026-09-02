@@ -14,6 +14,10 @@ export function ActiveProjectDir() {
   return window['go']['desktop']['App']['ActiveProjectDir']();
 }
 
+export function AddBookmark(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['AddBookmark'](arg1, arg2, arg3);
+}
+
 export function AddWorkDirectory(arg1, arg2, arg3, arg4) {
   return window['go']['desktop']['App']['AddWorkDirectory'](arg1, arg2, arg3, arg4);
 }
@@ -100,6 +104,10 @@ export function CreateSession() {
 
 export function CreateTag(arg1, arg2) {
   return window['go']['desktop']['App']['CreateTag'](arg1, arg2);
+}
+
+export function DeleteBookmark(arg1, arg2) {
+  return window['go']['desktop']['App']['DeleteBookmark'](arg1, arg2);
 }
 
 export function DeleteBranch(arg1, arg2) {
@@ -346,6 +354,10 @@ export function ListAllSessions() {
   return window['go']['desktop']['App']['ListAllSessions']();
 }
 
+export function ListBookmarks(arg1) {
+  return window['go']['desktop']['App']['ListBookmarks'](arg1);
+}
+
 export function ListDirectory(arg1, arg2) {
   return window['go']['desktop']['App']['ListDirectory'](arg1, arg2);
 }
@@ -436,6 +448,10 @@ export function Rebase(arg1) {
 
 export function RemoveAttachment(arg1, arg2) {
   return window['go']['desktop']['App']['RemoveAttachment'](arg1, arg2);
+}
+
+export function RenameBookmark(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['RenameBookmark'](arg1, arg2, arg3);
 }
 
 export function RenameBranch(arg1, arg2) {
