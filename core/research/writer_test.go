@@ -1,6 +1,7 @@
 package research
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -285,10 +286,10 @@ func TestUpdateHypothesis_InvalidTransitionLeavesFilesUnchanged(t *testing.T) {
 
 	cardAfter, _ := os.ReadFile(filepath.Join(dir, "hypotheses", "H-001.md"))
 	graphAfter, _ := os.ReadFile(filepath.Join(dir, "hypotheses", "graph.md"))
-	if string(cardBefore) != string(cardAfter) {
+	if !bytes.Equal(cardBefore, cardAfter) {
 		t.Error("card changed despite failed transition")
 	}
-	if string(graphBefore) != string(graphAfter) {
+	if !bytes.Equal(graphBefore, graphAfter) {
 		t.Error("graph changed despite failed transition")
 	}
 }

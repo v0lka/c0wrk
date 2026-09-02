@@ -429,6 +429,26 @@ export namespace backend {
 	        this.blacklist = source["blacklist"];
 	    }
 	}
+	export class HypothesisUpdateFields {
+	    title?: string;
+	    status?: string;
+	    result?: string;
+	    timebox?: string;
+	    decision?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HypothesisUpdateFields(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.status = source["status"];
+	        this.result = source["result"];
+	        this.timebox = source["timebox"];
+	        this.decision = source["decision"];
+	    }
+	}
 	export class ProviderConfigRequest {
 	    api_key?: string;
 	    base_url?: string;
@@ -580,6 +600,26 @@ export namespace backend {
 		}
 	}
 	
+	export class NewHypothesisCard {
+	    title: string;
+	    statement?: string;
+	    verification_criterion?: string;
+	    timebox?: string;
+	    parents?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new NewHypothesisCard(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.statement = source["statement"];
+	        this.verification_criterion = source["verification_criterion"];
+	        this.timebox = source["timebox"];
+	        this.parents = source["parents"];
+	    }
+	}
 	export class OptimizePromptResponse {
 	    optimized_prompt: string;
 	    keywords: string[];
@@ -714,6 +754,7 @@ export namespace backend {
 	    graph: ResearchGraph;
 	    metrics: ResearchMetrics;
 	    has_report: boolean;
+	    log: research.ResearchLogEntry[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ResearchGraphDTO(source);
@@ -725,6 +766,7 @@ export namespace backend {
 	        this.graph = this.convertValues(source["graph"], ResearchGraph);
 	        this.metrics = this.convertValues(source["metrics"], ResearchMetrics);
 	        this.has_report = source["has_report"];
+	        this.log = this.convertValues(source["log"], research.ResearchLogEntry);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -746,6 +788,26 @@ export namespace backend {
 		}
 	}
 	
+	export class ResearchNextStepDTO {
+	    project_id: string;
+	    action: string;
+	    target?: string;
+	    reason: string;
+	    skill: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ResearchNextStepDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.project_id = source["project_id"];
+	        this.action = source["action"];
+	        this.target = source["target"];
+	        this.reason = source["reason"];
+	        this.skill = source["skill"];
+	    }
+	}
 	export class ResearchSeedResultDTO {
 	    seeded: string[];
 	    updated: string[];
@@ -1634,6 +1696,26 @@ export namespace research {
 	        this.active_front = source["active_front"];
 	    }
 	}
+	export class ResearchLogEntry {
+	    id: string;
+	    kind: string;
+	    hypothesis_id?: string;
+	    message: string;
+	    created_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ResearchLogEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.kind = source["kind"];
+	        this.hypothesis_id = source["hypothesis_id"];
+	        this.message = source["message"];
+	        this.created_at = source["created_at"];
+	    }
+	}
 	export class ResearchProject {
 	    id: string;
 	    brief: Brief;
@@ -1641,6 +1723,7 @@ export namespace research {
 	    metrics: Metrics;
 	    prior_art_count: number;
 	    has_report: boolean;
+	    log: ResearchLogEntry[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ResearchProject(source);
@@ -1654,6 +1737,7 @@ export namespace research {
 	        this.metrics = this.convertValues(source["metrics"], Metrics);
 	        this.prior_art_count = source["prior_art_count"];
 	        this.has_report = source["has_report"];
+	        this.log = this.convertValues(source["log"], ResearchLogEntry);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

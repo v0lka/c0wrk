@@ -94,6 +94,10 @@ export function CreateBranch(arg1, arg2) {
   return window['go']['desktop']['App']['CreateBranch'](arg1, arg2);
 }
 
+export function CreateHypothesis(arg1, arg2) {
+  return window['go']['desktop']['App']['CreateHypothesis'](arg1, arg2);
+}
+
 export function CreateProject(arg1, arg2) {
   return window['go']['desktop']['App']['CreateProject'](arg1, arg2);
 }
@@ -280,6 +284,10 @@ export function GetRebaseMergeState() {
 
 export function GetResearchGraph(arg1) {
   return window['go']['desktop']['App']['GetResearchGraph'](arg1);
+}
+
+export function GetResearchNextStep(arg1) {
+  return window['go']['desktop']['App']['GetResearchNextStep'](arg1);
 }
 
 export function GetResearchStatus(arg1) {
@@ -616,6 +624,10 @@ export function UnwatchDirectory(arg1) {
 
 export function UpdateExperimentalFeatures(arg1) {
   return window['go']['desktop']['App']['UpdateExperimentalFeatures'](arg1);
+}
+
+export function UpdateHypothesis(arg1, arg2, arg3) {
+  return window['go']['desktop']['App']['UpdateHypothesis'](arg1, arg2, arg3);
 }
 
 export function UpdateLLMConfig(arg1) {

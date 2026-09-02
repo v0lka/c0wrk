@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"os"
@@ -147,7 +148,7 @@ func openResearchTestDB(t *testing.T) *sql.DB {
 // and a project whose workspace contains a minimal nested research root
 // (R-001-test with one open hypothesis). It returns the API, the project ID,
 // and the research root path.
-func researchMutationTestFrontend(t *testing.T) (*FrontendAPI, string, string) {
+func researchMutationTestFrontend(t *testing.T) (api *FrontendAPI, projectID, root string) {
 	t.Helper()
 	base := t.TempDir()
 	ws := filepath.Join(base, "ws")
@@ -345,10 +346,10 @@ func TestResearchRPC_RejectsInvalidInput(t *testing.T) {
 
 	cardAfter, _ := os.ReadFile(cardPath)
 	graphAfter, _ := os.ReadFile(graphPath)
-	if string(cardBefore) != string(cardAfter) {
+	if !bytes.Equal(cardBefore, cardAfter) {
 		t.Error("card changed despite failed transition")
 	}
-	if string(graphBefore) != string(graphAfter) {
+	if !bytes.Equal(graphBefore, graphAfter) {
 		t.Error("graph changed despite failed transition")
 	}
 

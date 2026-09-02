@@ -55,6 +55,8 @@ export function ConfirmGoal(arg1:string,arg2:string,arg3:string,arg4:string,arg5
 
 export function CreateBranch(arg1:string,arg2:string):Promise<void>;
 
+export function CreateHypothesis(arg1:string,arg2:backend.NewHypothesisCard):Promise<backend.ResearchGraphDTO>;
+
 export function CreateProject(arg1:string,arg2:string):Promise<project.ProjectInfo>;
 
 export function CreateSession():Promise<session.SessionInfo>;
@@ -148,6 +150,8 @@ export function GetProjectUIState(arg1:string):Promise<backend.ProjectUIStateRes
 export function GetRebaseMergeState():Promise<workspace.MergeRebaseState>;
 
 export function GetResearchGraph(arg1:string):Promise<backend.ResearchGraphDTO>;
+
+export function GetResearchNextStep(arg1:string):Promise<backend.ResearchNextStepDTO>;
 
 export function GetResearchStatus(arg1:string):Promise<backend.ResearchStatusDTO>;
 
@@ -316,6 +320,8 @@ export function UnstageFile(arg1:string):Promise<void>;
 export function UnwatchDirectory(arg1:string):Promise<void>;
 
 export function UpdateExperimentalFeatures(arg1:boolean):Promise<void>;
+
+export function UpdateHypothesis(arg1:string,arg2:string,arg3:backend.HypothesisUpdateFields):Promise<backend.ResearchGraphDTO>;
 
 export function UpdateLLMConfig(arg1:backend.LLMFullConfigRequest):Promise<void>;
 

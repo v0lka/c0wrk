@@ -132,7 +132,7 @@ func setCardHeading(content, id, title string) string {
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
 		m := cardHeadingLineRe.FindStringSubmatch(line)
-		if m == nil || NormalizeID(m[1]) != id {
+		if len(m) < 2 || NormalizeID(m[1]) != id {
 			continue
 		}
 		lines[i] = fmt.Sprintf("# %s: %s", id, title)
@@ -197,13 +197,14 @@ func setFinding(content, value string) string {
 
 	// No finding line: insert after the "## Result" heading if present.
 	for i, line := range lines {
-		if sectionHeadingLower(line) == "result" {
-			result := make([]string, 0, len(lines)+1)
-			result = append(result, lines[:i+1]...)
-			result = append(result, "", "**Finding:** "+value)
-			result = append(result, lines[i+1:]...)
-			return strings.Join(result, "\n")
+		if sectionHeadingLower(line) != "result" {
+			continue
 		}
+		result := make([]string, 0, len(lines)+1)
+		result = append(result, lines[:i+1]...)
+		result = append(result, "", "**Finding:** "+value)
+		result = append(result, lines[i+1:]...)
+		return strings.Join(result, "\n")
 	}
 
 	// No Result section at all: append one.
@@ -255,7 +256,7 @@ func updateMermaidNode(content, id string, title, status *string) string {
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
 		m := mermaidNodeLineRe.FindStringSubmatch(line)
-		if m == nil || NormalizeID(m[2]) != id {
+		if len(m) < 3 || NormalizeID(m[2]) != id {
 			continue
 		}
 		label := m[3]
@@ -511,29 +512,29 @@ func parseIDNum(id string) int {
 // files and the graph.md (catalog + Mermaid) of a project.
 func maxHypothesisNumber(projectDir string) int {
 	hypDir := filepath.Join(projectDir, "hypotheses")
-	max := 0
+	maxNum := 0
 
 	if paths, err := filepath.Glob(filepath.Join(hypDir, "H-*.md")); err == nil {
 		for _, p := range paths {
-			if n := parseIDNum(filepath.Base(p)); n > max {
-				max = n
+			if n := parseIDNum(filepath.Base(p)); n > maxNum {
+				maxNum = n
 			}
 		}
 	}
 	if content, ok := readFile(filepath.Join(hypDir, "graph.md")); ok {
 		for _, c := range ParseCatalog(content) {
-			if n := parseIDNum(c.id); n > max {
-				max = n
+			if n := parseIDNum(c.id); n > maxNum {
+				maxNum = n
 			}
 		}
 		mnodes, _ := ParseMermaidGraph(content)
 		for _, mn := range mnodes {
-			if n := parseIDNum(mn.id); n > max {
-				max = n
+			if n := parseIDNum(mn.id); n > maxNum {
+				maxNum = n
 			}
 		}
 	}
-	return max
+	return maxNum
 }
 
 // ---------------------------------------------------------------------------
