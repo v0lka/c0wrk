@@ -6,6 +6,7 @@ import type {
     ProjectInfo,
     ProjectSwitchState,
     ChatMessage,
+    SessionBookmark,
     TokenInfo,
     FileEntry,
     ConfigResponse,
@@ -58,6 +59,10 @@ export function isProjectSwitchState(v: unknown): v is ProjectSwitchState {
 
 export function isChatMessage(v: unknown): v is ChatMessage {
     return isObj(v) && has(v, 'session_id', 'role', 'content')
+}
+
+export function isSessionBookmark(v: unknown): v is SessionBookmark {
+    return isObj(v) && has(v, 'id', 'session_id', 'event_key', 'title', 'created_at')
 }
 
 export function isTokenInfo(v: unknown): v is TokenInfo {

@@ -10,6 +10,8 @@ import { cn } from '@/lib/utils'
 interface UserMessageProps {
   item: Extract<DisplayItem, { kind: 'user' }>
   sticky?: boolean
+  /** Bookmark star slot rendered inside the sticky floating row (left gutter). */
+  bookmarkStar?: React.ReactNode
 }
 
 /**
@@ -79,7 +81,7 @@ function CollapsedMessageIndicators({
  * buttons in the session list — so the transition reads as a smooth fade rather
  * than a hard clip.
  */
-export function UserMessage({ item, sticky = false }: UserMessageProps) {
+export function UserMessage({ item, sticky = false, bookmarkStar }: UserMessageProps) {
   const { content, timestamp, metadata } = item.message
   const meta = parseUserMessageMeta(metadata)
   const formattedTime = new Date(timestamp).toLocaleTimeString([], {
@@ -127,7 +129,10 @@ export function UserMessage({ item, sticky = false }: UserMessageProps) {
   }
 
   return (
-    <div className="sticky top-0 z-10" data-message-id={item.message.id}>
+    <div className="group/bm sticky top-0 z-10" data-message-id={item.message.id} data-bookmark-id={item.message.id}>
+      {bookmarkStar && (
+        <div className="absolute left-0 top-2 z-10">{bookmarkStar}</div>
+      )}
       {/* Opaque background row (full width) hides chat content scrolling under
           the floating bubble across the whole row, not just behind the bubble. */}
       <div className="flex justify-end bg-background pt-3 pb-1">

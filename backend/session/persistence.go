@@ -67,6 +67,19 @@ type TerminalCommand struct {
 	CreatedAt string `json:"created_at"` // RFC 3339 formatted timestamp
 }
 
+// SessionBookmark represents a user bookmark pinning a chat event within a
+// session. EventKey is the stable DisplayItem key produced by the frontend's
+// groupMessages (see frontend/src/lib/chatUtils — getItemKey semantics), so it
+// survives history reloads and maps back to the rendered chat item for
+// navigation and preview.
+type SessionBookmark struct {
+	ID        string `json:"id"`
+	SessionID string `json:"session_id"`
+	EventKey  string `json:"event_key"`
+	Title     string `json:"title"`
+	CreatedAt string `json:"created_at"` // RFC 3339 formatted timestamp
+}
+
 // SessionStore provides persistent storage for sessions and messages.
 type SessionStore interface {
 	// Session CRUD
@@ -114,6 +127,12 @@ type SessionStore interface {
 	ListSessionWorkDirs(ctx context.Context, sessionID string) ([]project.WorkDirectoryRecord, error)
 	UpdateSessionWorkDirDescription(ctx context.Context, sessionID, id, description string) error
 	DeleteSessionWorkDir(ctx context.Context, sessionID, id string) error
+
+	// Session bookmarks (chat-event bookmarks, isolated per session)
+	SaveBookmark(ctx context.Context, b SessionBookmark) (SessionBookmark, error)
+	ListBookmarks(ctx context.Context, sessionID string) ([]SessionBookmark, error)
+	DeleteBookmark(ctx context.Context, sessionID, id string) error
+	RenameBookmark(ctx context.Context, sessionID, id, title string) error
 
 	// Lifecycle
 	Close() error
@@ -254,6 +273,26 @@ func (s *SQLiteSessionStore) createTables() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_session_work_dirs ON session_work_directories(session_id);
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_session_work_dirs_unique ON session_work_directories(session_id, path);
+
+	CREATE TABLE IF NOT EXISTS session_bookmarks (
+		id TEXT PRIMARY KEY,
+		session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+		event_key TEXT NOT NULL,
+		title TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_session_bookmarks_session_id ON session_bookmarks(session_id);
+	CREATE INDEX IF NOT EXISTS idx_session_bookmarks_session_created ON session_bookmarks(session_id, created_at);
+
+	-- An event can only be bookmarked once per session. Before enforcing the
+	-- unique index, drop any duplicate rows left over from an earlier build of
+	-- this (uncommitted) feature so the index creation below never fails on
+	-- pre-existing data.
+	DELETE FROM session_bookmarks
+	WHERE id NOT IN (
+		SELECT id FROM session_bookmarks GROUP BY session_id, event_key
+	);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_session_bookmarks_session_event ON session_bookmarks(session_id, event_key);
 
 	`
 	_, err := s.db.ExecContext(context.Background(), schema)
@@ -977,6 +1016,83 @@ func (s *SQLiteSessionStore) DeleteSessionWorkDir(ctx context.Context, sessionID
 		`DELETE FROM session_work_directories WHERE id = ? AND session_id = ?`, id, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to delete session work directory: %w", err)
+	}
+	return nil
+}
+
+// SaveBookmark inserts a chat-event bookmark and returns the persisted record
+// (with generated ID/CreatedAt when the caller left them empty). Returning the
+// record lets callers observe the generated fields without a follow-up read.
+func (s *SQLiteSessionStore) SaveBookmark(ctx context.Context, b SessionBookmark) (SessionBookmark, error) {
+	if b.ID == "" {
+		b.ID = uuid.New().String()
+	}
+	if b.CreatedAt == "" {
+		b.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO session_bookmarks (id, session_id, event_key, title, created_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		b.ID, b.SessionID, b.EventKey, b.Title, b.CreatedAt,
+	)
+	if err != nil {
+		return SessionBookmark{}, fmt.Errorf("failed to save bookmark: %w", err)
+	}
+	return b, nil
+}
+
+// ListBookmarks returns all bookmarks for a session, ordered by creation time
+// (oldest first). Returns an empty (non-nil) slice when none exist.
+func (s *SQLiteSessionStore) ListBookmarks(ctx context.Context, sessionID string) ([]SessionBookmark, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, event_key, title, created_at
+		FROM session_bookmarks
+		WHERE session_id = ?
+		ORDER BY created_at ASC, id ASC`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list bookmarks: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			s.log().Warn("failed to close database rows", "error", err)
+		}
+	}()
+
+	var bookmarks []SessionBookmark
+	for rows.Next() {
+		var b SessionBookmark
+		if err := rows.Scan(&b.ID, &b.SessionID, &b.EventKey, &b.Title, &b.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan bookmark: %w", err)
+		}
+		bookmarks = append(bookmarks, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating bookmarks: %w", err)
+	}
+	if bookmarks == nil {
+		bookmarks = []SessionBookmark{}
+	}
+	return bookmarks, nil
+}
+
+// DeleteBookmark removes a bookmark by ID. sessionID is required as a scope
+// guard so a cross-scope ID cannot delete another session's bookmark.
+func (s *SQLiteSessionStore) DeleteBookmark(ctx context.Context, sessionID, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_bookmarks WHERE id = ? AND session_id = ?`, id, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to delete bookmark: %w", err)
+	}
+	return nil
+}
+
+// RenameBookmark updates a bookmark's title by ID. sessionID is required as a
+// scope guard so a cross-scope ID cannot rename another session's bookmark.
+func (s *SQLiteSessionStore) RenameBookmark(ctx context.Context, sessionID, id, title string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE session_bookmarks SET title = ? WHERE id = ? AND session_id = ?`, title, id, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to rename bookmark: %w", err)
 	}
 	return nil
 }

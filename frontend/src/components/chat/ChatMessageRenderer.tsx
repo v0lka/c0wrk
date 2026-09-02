@@ -1,5 +1,6 @@
 import React from 'react'
 import type { DisplayItem, DisplayItemKind } from '@/types/messages'
+import { bookmarkKey } from '@/lib/bookmarks'
 import { UserMessage } from './UserMessage'
 import { AssistantMessage } from './AssistantMessage'
 import { ThoughtBlock } from './ThoughtBlock'
@@ -18,6 +19,7 @@ import { ReviewPromptBlock } from './ReviewPromptBlock'
 import { GoalProposalPanel } from './GoalProposalPanel'
 import { ThoughtGroupBlock } from './ThoughtGroupBlock'
 import { ChecklistCard } from './ChecklistCard'
+import { BookmarkStar } from './BookmarkStar'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { CheckCircle2, Minimize2, BookOpen } from 'lucide-react'
 
@@ -84,26 +86,42 @@ export function CompactErrorFallback() {
 
 const compactErrorFallback = <CompactErrorFallback />
 
-function getItemKey(item: DisplayItem): string {
-  if ('message' in item) return item.message.id
-  return item.id
-}
+function renderItem(item: DisplayItem, stickyUserMessage: boolean, bookmarkable: boolean): React.ReactNode {
+  const key = bookmarkKey(item)
+  const star = bookmarkable ? <BookmarkStar item={item} /> : null
 
-function renderItem(item: DisplayItem, stickyUserMessage: boolean): React.ReactNode {
   if (item.kind === 'user') {
-    return (
-      <ErrorBoundary key={getItemKey(item)} fallback={compactErrorFallback}>
-        <UserMessage item={item} sticky={stickyUserMessage} />
+    const content = (
+      <ErrorBoundary key={key} fallback={compactErrorFallback}>
+        <UserMessage item={item} sticky={stickyUserMessage} bookmarkStar={stickyUserMessage ? star : null} />
       </ErrorBoundary>
+    )
+    if (!bookmarkable) return content
+    // A sticky (pinned) user message cannot be wrapped in a layout shell — the
+    // extra flex parent would shrink the sticky element's containing block and
+    // break position:sticky — so its star is rendered inside UserMessage.
+    if (stickyUserMessage) return content
+    return (
+      <div key={key} className="group/bm relative flex items-start gap-2" data-bookmark-id={key}>
+        <div className="w-5 shrink-0 pt-0.5">{star}</div>
+        <div className="min-w-0 flex-1">{content}</div>
+      </div>
     )
   }
 
   const Component = renderers[item.kind]
   if (!Component) return null
-  return (
-    <ErrorBoundary key={getItemKey(item)} fallback={compactErrorFallback}>
+  const content = (
+    <ErrorBoundary key={key} fallback={compactErrorFallback}>
       <Component item={item} />
     </ErrorBoundary>
+  )
+  if (!bookmarkable) return content
+  return (
+    <div key={key} className="group/bm relative flex items-start gap-2" data-bookmark-id={key}>
+      <div className="w-5 shrink-0 pt-0.5">{star}</div>
+      <div className="min-w-0 flex-1">{content}</div>
+    </div>
   )
 }
 
@@ -125,17 +143,24 @@ interface ChatMessageRendererProps {
   items: DisplayItem[]
   stickyUserMessages?: boolean
   trailingContent?: React.ReactNode
+  /**
+   * Whether to render the bookmark gutter/star and data-bookmark-id anchors.
+   * Defaults true (chat stream). Disable for bookmark tooltip previews so a
+   * rendered card does not render its own star.
+   */
+  bookmarkable?: boolean
 }
 
 export function ChatMessageRenderer({
   items,
   stickyUserMessages = false,
   trailingContent,
+  bookmarkable = true,
 }: ChatMessageRendererProps) {
   if (!stickyUserMessages) {
     return (
       <>
-        {items.map((item) => renderItem(item, false))}
+        {items.map((item) => renderItem(item, false, bookmarkable))}
         {trailingContent}
       </>
     )
@@ -148,8 +173,8 @@ export function ChatMessageRenderer({
         const startsWithUser = turn[0]?.kind === 'user'
         const isLastTurn = index === turns.length - 1
         return (
-          <div key={getItemKey(turn[0]!)} className="space-y-4 min-w-0">
-            {turn.map((item) => renderItem(item, startsWithUser && item.kind === 'user'))}
+          <div key={bookmarkKey(turn[0]!)} className="space-y-4 min-w-0">
+            {turn.map((item) => renderItem(item, startsWithUser && item.kind === 'user', bookmarkable))}
             {isLastTurn && trailingContent}
           </div>
         )

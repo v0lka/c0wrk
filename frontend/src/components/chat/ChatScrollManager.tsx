@@ -17,7 +17,7 @@ export function ChatScrollManager({
   scrollRef,
   children,
 }: ChatScrollManagerProps) {
-  const { setScrollToStep } = useScrollContext()
+  const { setScrollToStep, setScrollToBookmark } = useScrollContext()
   const isAtBottomRef = useRef(true)
   const viewportRef = useRef<HTMLElement | null>(null)
   // The component remounts per session (key={activeSessionId} in ChatArea), so a
@@ -138,6 +138,31 @@ export function ChatScrollManager({
     setScrollToStep(scrollToStepFn)
     return () => setScrollToStep(null)
   }, [setScrollToStep])
+
+  // Register scroll-to-bookmark callback. Unlike steps, a bookmark key can
+  // contain arbitrary characters (plan step ids, tool ids), so match via
+  // getAttribute rather than a CSS attribute selector (which would need
+  // escaping and could break on unusual ids).
+  useEffect(() => {
+    const scrollToBookmarkFn = (key: string) => {
+      const viewport = viewportRef.current
+      if (!viewport) return
+      const elements = viewport.querySelectorAll('[data-bookmark-id]')
+      let target: Element | null = null
+      for (const el of Array.from(elements)) {
+        if (el.getAttribute('data-bookmark-id') === key) {
+          target = el
+          break
+        }
+      }
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        isAtBottomRef.current = false
+      }
+    }
+    setScrollToBookmark(scrollToBookmarkFn)
+    return () => setScrollToBookmark(null)
+  }, [setScrollToBookmark])
 
   return (
     <div className="flex-1 min-w-0 overflow-auto custom-scrollbar" ref={scrollRef}>

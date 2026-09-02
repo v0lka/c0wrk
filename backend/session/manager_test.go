@@ -2434,6 +2434,18 @@ func (m *mockSessionStoreForRestore) UpdateSessionWorkDirDescription(_ context.C
 func (m *mockSessionStoreForRestore) DeleteSessionWorkDir(_ context.Context, _, _ string) error {
 	return nil
 }
+func (m *mockSessionStoreForRestore) SaveBookmark(_ context.Context, b SessionBookmark) (SessionBookmark, error) {
+	return b, nil
+}
+func (m *mockSessionStoreForRestore) ListBookmarks(_ context.Context, _ string) ([]SessionBookmark, error) {
+	return []SessionBookmark{}, nil
+}
+func (m *mockSessionStoreForRestore) DeleteBookmark(_ context.Context, _, _ string) error {
+	return nil
+}
+func (m *mockSessionStoreForRestore) RenameBookmark(_ context.Context, _, _, _ string) error {
+	return nil
+}
 func (m *mockSessionStoreForRestore) Close() error { return nil }
 
 // restoreTestManager creates a Manager pre-wired with a mock session store and

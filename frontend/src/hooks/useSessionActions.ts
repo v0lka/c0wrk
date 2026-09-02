@@ -19,6 +19,7 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { useTerminalRegistryStore } from '@/stores/terminalRegistryStore'
 import { useChatInputStore } from '@/stores/chatInputStore'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
+import { useBookmarkStore } from '@/stores/bookmarkStore'
 import { isSessionBusy } from '@/hooks/useSessionStatusIndicator'
 import {
   createSession,
@@ -108,6 +109,9 @@ export function useSessionActions(): SessionActions {
         // for the same reason (namesById stays — committed names remain
         // resolvable for tool cards).
         useAttachmentsStore.getState().dropSessions([id])
+        // Drop the deleted session's bookmarks so the per-session map stays
+        // bounded (the backend already cascade-deleted them from the DB).
+        useBookmarkStore.getState().clearSession(id)
       } catch (error) {
         logger.error('Failed to delete session:', error)
       }

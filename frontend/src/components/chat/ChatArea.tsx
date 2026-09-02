@@ -1,5 +1,6 @@
 import { useEffect, useRef, useMemo } from 'react'
 import { useChatStore, useSessionMessages } from '@/stores/chatStore'
+import { useBookmarkStore } from '@/stores/bookmarkStore'
 import { groupMessages, chatMessageToUI, rebuildPlanFromHistory, rebuildGoalFromHistory, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow } from '@/lib/chatUtils'
 import { useSessionStore } from '@/stores/sessionStore'
 import { usePlanStore } from '@/stores/planStore'
@@ -14,6 +15,7 @@ import { ChatScrollManager } from './ChatScrollManager'
 import { ChatMessageRenderer, CompactErrorFallback } from './ChatMessageRenderer'
 import { ExecutionPanels } from './ExecutionPanels'
 import { BlackboardPanel } from './BlackboardPanel'
+import { BookmarksPanel } from './BookmarksPanel'
 import { ChatInput } from './ChatInput'
 import { ArchivedBanner } from './ArchivedBanner'
 import { ScrollProvider } from './ScrollContext'
@@ -162,6 +164,11 @@ export function ChatArea() {
     return () => { cancelled = true }
   }, [activeSessionId])
 
+  // Load bookmarks for the active session (bookmarks are isolated per session).
+  useEffect(() => {
+    if (activeSessionId) void useBookmarkStore.getState().loadBookmarks(activeSessionId)
+  }, [activeSessionId])
+
   const { items: displayItems } = useMemo(() => groupMessages(messages), [messages])
 
   if (!activeSessionId) {
@@ -228,6 +235,7 @@ export function ChatArea() {
         <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Panel error</div>}>
           <ExecutionPanels />
           <BlackboardPanel />
+          <BookmarksPanel displayItems={displayItems} />
         </ErrorBoundary>
         <ErrorBoundary fallback={<div className="text-xs text-destructive p-2">Input error</div>}>
           {inputShell}

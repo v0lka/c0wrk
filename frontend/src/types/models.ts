@@ -61,6 +61,17 @@ export interface ChatMessage {
   readonly created_at: string
 }
 
+/** A user bookmark pinning a chat event within a session (mirrors the backend
+ *  session.SessionBookmark). `event_key` is the stable DisplayItem key produced
+ *  by groupMessages and consumed for navigation and preview. */
+export interface SessionBookmark {
+  readonly id: string
+  readonly session_id: string
+  readonly event_key: string
+  readonly title: string
+  readonly created_at: string
+}
+
 export interface FileEntry {
   readonly name: string
   readonly path: string
